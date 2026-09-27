@@ -160,6 +160,7 @@ A boolean, wherever it is read from, is Core's `InterpretBool`
 (`src/common/args.cpp`, same sha): `_interpret_bool` below.
 """
 
+import io
 import json
 import os
 import re
@@ -180,6 +181,7 @@ from btclib_node.config import (
 from btclib_node.constants import MIN_PRUNE_TARGET_MIB
 from btclib_node.dirlock import DirectoryLock, lock_directories
 from btclib_node.exceptions import DirectoryLockError
+from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -311,6 +313,12 @@ _OPTIONS: dict[str, _Option] = {
         f"For backwards compatibility, treat an unused {_DEFAULT_CONF_FILENAME} "
         "file in the datadir as a warning, not an error.",
         _OPTIONS_TITLE,
+    ),
+    "bantime": _Option(
+        "=<n>",
+        "Default duration (in seconds) of manually configured bans (default: "
+        f"{DEFAULT_MISBEHAVING_BANTIME})",
+        _CONNECTION_TITLE,
     ),
     "blocksdir": _Option(
         "=<dir>",
@@ -766,8 +774,12 @@ def _read_conf_file(  # noqa: PLR0913
         raise ValueError(err_msg)
     try:
         # `newline=""`: universal newlines would end a line at a lone
-        # `\r` too, where `std::getline` ends one at `\n` alone
-        text = path.read_text(encoding="utf-8", newline="")
+        # `\r` too, where `std::getline` ends one at `\n` alone.
+        # `surrogateescape`: Core reads the file as bytes and decodes
+        # nothing, so a byte UTF-8 does not accept is kept, as a lone
+        # surrogate `rpc.auth.to_bytes` and the streams `main` writes turn
+        # back into that byte
+        text = path.read_text(encoding="utf-8", errors="surrogateescape", newline="")
     except OSError:
         if include is not None:
             err_msg = f"Failed to include configuration file {include}"
@@ -1365,9 +1377,9 @@ def _after_lock(before: _BeforeLock) -> Config:
     """Refuse what Core refuses after its lock, and return the `Config`.
 
     `AppInitMain` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7) in its
-    order: `CheckHostPortOptions`'s `-port`, `-rpcport` and `-rpcbind`,
-    then `Config.__init__`'s `-rpccookieperms` and `-rpcauth`, which
-    `StartHTTPRPC` reads in that order.
+    order: `CheckHostPortOptions`'s `-port`, `-rpcport` and `-rpcbind`.
+    `-rpccookieperms` and `-rpcauth` are refused later, by
+    `RpcAuth.start`, as `StartHTTPRPC` refuses them.
     """
     settings = before.settings
     p2p_port = _get_port(settings, "port")
@@ -1401,6 +1413,11 @@ def _after_lock(before: _BeforeLock) -> Config:
         else _get_arg(settings, "rpccookiefile") or ""
     )
     server = _get_bool(settings, "server")
+    # `-bantime`, which `AppInitMain` hands to `BanMan` at step 6
+    # (`src/init.cpp:1644`, same sha)
+    ban_time = _get_int(settings, "bantime")
+    if ban_time is None:
+        ban_time = DEFAULT_MISBEHAVING_BANTIME
     prune = before.prune
 
     return Config(
@@ -1418,6 +1435,7 @@ def _after_lock(before: _BeforeLock) -> Config:
         addnode=_get_args(settings, "addnode"),
         listen=listen,
         max_connections=before.max_connections,
+        ban_time=ban_time,
         rpcauth=_get_args(settings, "rpcauth"),
         rpcuser=_get_arg(settings, "rpcuser") or "",
         rpcpassword=_get_arg(settings, "rpcpassword") or "",
@@ -1440,6 +1458,27 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
     return _after_lock(_before_lock(sys.argv[1:] if argv is None else argv))
 
 
+# Core's `SetupEnvironment` (`src/common/system.cpp`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which `bitcoind`'s own
+# `main` calls right after building its `interfaces::Init`
+# (`src/bitcoind.cpp`, same sha): the process umask becomes 0077
+# everywhere but Windows, so every directory and file it creates is its
+# owner's alone.
+# Core has no option to keep the caller's: `-sysperms` is gone by v31.1.
+_PRIVATE_UMASK = 0o077
+
+
+def _setup_environment() -> None:
+    """Make the process umask owner-only, as Core's `SetupEnvironment` does.
+
+    Called by `main` alone: a caller building a `Node` in its own
+    process keeps its own umask, the reason `RpcAuth.generate_cookie`
+    sets the cookie's mode on the file.
+    """
+    if sys.platform != "win32":
+        os.umask(_PRIVATE_UMASK)
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     """Build a `Config` from the command line and `bitcoin.conf`, and run it.
 
@@ -1454,6 +1493,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     `noui_ThreadSafeMessageBox` with that caption (`src/noui.cpp:22-46`, at
     bitcoin/bitcoin@9be056a8a7), and `bitcoind` exits `EXIT_FAILURE`.
     """
+    _setup_environment()
+    # a byte of `bitcoin.conf` or of `argv` that is not UTF-8 reaches a
+    # message as a lone surrogate; written back as that byte, as Core
+    # writes the bytes it read
+    if isinstance(sys.stderr, io.TextIOWrapper):
+        sys.stderr.reconfigure(errors="surrogateescape")
     try:
         before = _before_lock(sys.argv[1:] if argv is None else argv)
         locks = _lock(before.directories)

@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, NoReturn, cast, override
 import pytest
 from bitcoin_core_rpc import RPCErrorCode
 from btclib.block import Block, BlockHeader
+from btclib.consensus import MAX_BLOCK_WEIGHT
 from btclib.exceptions import BTClibValueError
 from btclib.fee import FeeRate
 from btclib.p2p.address import NetworkAddress, ServiceFlags
@@ -32,10 +33,11 @@ from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
+import btclib_node.p2p.banman as banman_module
 import btclib_node.rpc.callbacks as cb
 from btclib_node.block_db import Coin
 from btclib_node.chains import Chain, Main, RegTest
-from btclib_node.chainstate.block_index import block_time, calculate_work
+from btclib_node.chainstate.block_index import BlockStatus, block_time, calculate_work
 from btclib_node.chainstate.muhash import CoinStats
 from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
 from btclib_node.constants import (
@@ -48,10 +50,13 @@ from btclib_node.exceptions import MissingPrevoutError, StoreCorruptionError
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import peer_address
+from btclib_node.p2p.banman import BanEntry, BanMan, lookup_subnet
 from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.connection import PeerStats
 from btclib_node.rpc.callbacks import (
     add_node,
+    callbacks,
+    clear_banned,
     get_best_block_hash,
     get_block,
     get_block_count,
@@ -65,10 +70,12 @@ from btclib_node.rpc.callbacks import (
     get_raw_mempool,
     get_raw_transaction,
     get_tx_out_set_info,
+    list_banned,
     ping,
     prune_blockchain,
     send_raw_transaction,
     service_names,
+    set_ban,
     stop,
     submit_block,
 )
@@ -78,11 +85,16 @@ from btclib_node.rpc.callbacks import (
 from btclib_node.rpc.callbacks import test_mempool_accept as mempool_accept
 from btclib_node.rpc.connection import RawJSON
 from btclib_node.rpc.errors import RpcError
-from tests import generate_coinbase, generate_random_chain, generate_random_header_chain
+from tests import (
+    generate_coinbase,
+    generate_random_chain,
+    generate_random_header_chain,
+    generate_segwit_block,
+)
 from tests.unit.main_test import connect
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
     from btclib_node import Node
     from btclib_node.rpc.connection import RpcConnection
@@ -155,6 +167,8 @@ def a_peer(
     relay: bool = True,
     inbound: bool = True,
     automatic: bool = False,
+    block_relay: bool = False,
+    feeler: bool = False,
     versioned: bool = True,
 ) -> Any:
     """Build a `P2pManager.connections` entry `get_peer_info` can read.
@@ -180,7 +194,6 @@ def a_peer(
         # left unrounded cannot pass
         last_send=1.9,
         last_receive=2.7,
-        last_block_timestamp=3.5,
         last_novel_block_time=4,
         last_novel_tx_time=5,
         connected_time=6,
@@ -189,11 +202,15 @@ def a_peer(
         ping_sent=ping_sent,
         inbound=inbound,
         automatic=automatic,
+        block_relay=block_relay,
+        feeler=feeler,
         stats=PeerStats(),
         block_availability=BlockAvailability(),
         tx_announce_queue=[],
         download_queue=[],
         feefilter=0,
+        # what `Connection` starts every connection at
+        addr_relay_enabled=False,
     )
 
 
@@ -496,6 +513,7 @@ def test_the_fields_this_node_keeps_state_for_read_that_state() -> None:
     peer.tx_announce_queue = [b"\x01" * 32, b"\x02" * 32]
     peer.download_queue = [b"\x0b" * 32, b"\x0a" * 32]
     peer.feefilter = 1234
+    peer.addr_relay_enabled = True
     node = a_node({7: peer}, heights={b"\x0a" * 32: 10, b"\x0b" * 32: 11})
     (info,) = get_peer_info(node, _CONN, [])
     assert info["relaytxes"] is True
@@ -529,22 +547,46 @@ def test_a_peer_that_asked_for_no_relay_has_no_tx_relay() -> None:
 
 
 @pytest.mark.parametrize(
-    ("inbound", "automatic", "connection_type"),
+    ("inbound", "automatic", "block_relay", "feeler", "connection_type"),
     [
-        (True, False, "inbound"),
-        (False, True, "outbound-full-relay"),
-        (False, False, "manual"),
+        (True, False, False, False, "inbound"),
+        (False, True, False, False, "outbound-full-relay"),
+        (False, True, True, False, "block-relay-only"),
+        (False, True, False, True, "feeler"),
+        (False, False, False, False, "manual"),
     ],
 )
 def test_the_connection_type_is_core_s(
     inbound: bool,  # noqa: FBT001
     automatic: bool,  # noqa: FBT001
+    block_relay: bool,  # noqa: FBT001
+    feeler: bool,  # noqa: FBT001
     connection_type: str,
 ) -> None:
-    """Inbound, drawn by this node, or named by an operator."""
-    peer = a_peer(inbound=inbound, automatic=automatic)
+    """Inbound, drawn by this node as any kind, or named by an operator."""
+    peer = a_peer(
+        inbound=inbound, automatic=automatic, block_relay=block_relay, feeler=feeler
+    )
     (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
     assert info["connection_type"] == connection_type
+
+
+def test_a_block_relay_only_peer_has_no_tx_relay_nor_addr_relay() -> None:
+    """ISS 1095: no `TxRelay` whatever it asked for, and no address relay.
+
+    Core's `TxRelay`-backed fields answer 0 and false, and
+    `m_addr_relay_enabled` stays false, `SetupAddressRelay` refusing it.
+    """
+    peer = a_peer(inbound=False, automatic=True, block_relay=True, relay=True)
+    peer.stats = PeerStats(last_inv_sequence=42)
+    peer.tx_announce_queue = [b"\x01" * 32]
+    peer.feefilter = 1234
+    (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
+    assert info["relaytxes"] is False
+    assert info["last_inv_sequence"] == 0
+    assert info["inv_to_send"] == 0
+    assert info["minfeefilter"].text == "0.00000000"
+    assert info["addr_relay_enabled"] is False
 
 
 @pytest.mark.parametrize(
@@ -576,7 +618,7 @@ def test_the_synced_heights_are_the_peer_s_best_known_and_last_common_blocks(
 
 
 def test_the_fields_this_node_has_no_state_for_answer_core_s_value() -> None:
-    """No compact blocks, presync, permissions or BIP324 here."""
+    """No `cmpctblock` announcing, presync, permissions or BIP324 here."""
     (info,) = get_peer_info(a_node({7: a_peer()}), _CONN, [])
     assert info["bip152_hb_to"] is False
     assert info["bip152_hb_from"] is False
@@ -609,29 +651,24 @@ def test_a_connection_removed_mid_loop_does_not_raise() -> None:
     """
     connections: dict[int, Any] = {}
 
-    class PoppingOnCompare:
-        """`p2p_conn.status == P2pConnStatus.Connected`'s own left side.
+    class PoppingOnIter(list[bytes]):
+        """`p2p_conn.download_queue`, which `inflight` iterates.
 
         Standing in for whatever this node's loop is doing when
         `remove_connection` reaches in: the pop happens as a side
-        effect of evaluating peer 7's status, between the iterator's
+        effect of building peer 7's entry, between the iterator's
         own `next()` for peer 7 and its `next()` for peer 8 -- mid-loop
         on a live dict, and not reachable at all from a loop over a list
         built before it started.
         """
 
         @override
-        def __eq__(self, other: object) -> bool:
+        def __iter__(self) -> Iterator[bytes]:
             connections.pop(8, None)
-            return False
+            return super().__iter__()
 
-        # never put in a dict or a set, only compared -- explicit
-        # rather than the implicit None a bare `__eq__` override
-        # already gets, which the object being unhashable does not
-        # itself demonstrate
-        __hash__ = None  # type: ignore[assignment]
-
-    connections[7] = a_peer(status=cast("P2pConnStatus", PoppingOnCompare()))
+    connections[7] = a_peer()
+    connections[7].download_queue = PoppingOnIter()
     connections[8] = a_peer()
     node = a_node(connections)
     # peer 8 is popped from the live `connections` above, not from the
@@ -1327,13 +1364,54 @@ def test_mempool_acceptance_propagates_a_store_error_rather_than_reporting_it(
         mempool_accept(a_node(), _CONN, [[tx.serialize(include_witness=True).hex()]])
 
 
-def test_an_unparsable_transaction_is_named_as_such() -> None:
-    """`testmempoolaccept` reports a transaction that fails to parse as invalid.
+def decode_failure(rawtx: str) -> str:
+    """Core's own `-22` message for a `rawtx` that does not decode."""
+    return f"TX decode failed: {rawtx} Make sure the tx has at least one input."
 
-    'Invalid serialization' is reported rather than raising.
+
+def test_an_unparsable_transaction_ends_the_call() -> None:
+    """A `rawtx` that does not decode is `-22` for the call, as in Core.
+
+    `bitcoind` v31.1 on regtest: `testmempoolaccept '["zz","00"]'` is
+    `-22` "TX decode failed: zz Make sure the tx has at least one input.",
+    where this reported each entry "Invalid serialization"
+    (btclib-org/btclib-node#1329).
     """
-    (result,) = mempool_accept(a_node(), _CONN, [["not a transaction"]])
-    assert result == {"allowed": False, "reject-reason": "Invalid serialization"}
+    with pytest.raises(RpcError) as raised:
+        mempool_accept(a_node(), _CONN, [["zz", "00"]])
+    assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
+    assert raised.value.message == decode_failure("zz")
+
+
+def test_the_first_bad_rawtx_in_order_is_the_one_named() -> None:
+    """Each element is typed and then decoded, one after the other."""
+    with pytest.raises(RpcError) as raised:
+        mempool_accept(a_node(), _CONN, [["zz", 5]])
+    assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
+    with pytest.raises(RpcError) as raised:
+        mempool_accept(a_node(), _CONN, [[5, "zz"]])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+
+
+@pytest.mark.parametrize("count", [0, 26])
+def test_an_array_outside_one_to_twenty_five_is_refused(count: int) -> None:
+    """Core's `MAX_PACKAGE_COUNT`: `-8` for an empty or a 26-entry array.
+
+    `bitcoind` v31.1 on regtest answers both "Array must contain between
+    1 and 25 transactions."
+    """
+    raw = a_tx().serialize(include_witness=True).hex()
+    with pytest.raises(RpcError) as raised:
+        mempool_accept(a_node(), _CONN, [[raw] * count])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert raised.value.message == "Array must contain between 1 and 25 transactions."
+
+
+def test_twenty_five_rawtxs_are_each_answered(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The bound's own edge is inside it."""
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
+    raw = a_tx().serialize(include_witness=True).hex()
+    assert len(mempool_accept(a_node(), _CONN, [[raw] * 25])) == 25
 
 
 def test_test_mempool_accept_with_no_params_is_answered_the_usage() -> None:
@@ -1366,6 +1444,56 @@ def test_test_mempool_accept_rawtxs_of_the_wrong_json_type_is_named() -> None:
         'Wrong type passed:\n{\n    "Position 1 (rawtxs)": "JSON value of '
         'type string is not of expected type array"\n}'
     )
+
+
+@pytest.mark.parametrize(
+    ("rawtx", "json_type"),
+    [
+        (5, "number"),
+        (1.5, "number"),
+        (None, "null"),
+        ([], "array"),
+        ({}, "object"),
+        (True, "bool"),
+    ],
+)
+def test_test_mempool_accept_a_rawtx_of_the_wrong_json_type_is_named(
+    monkeypatch: pytest.MonkeyPatch, rawtx: object, json_type: str
+) -> None:
+    """A `rawtx` that is not a string ends the call with Core's own message.
+
+    `bitcoind` v31.1 on regtest answers `-3` "JSON value of type number
+    is not of expected type string" to `testmempoolaccept [[5]]`, and
+    the same for the other JSON types, where this answered `-32603
+    Internal Error` (btclib-org/btclib-node#1253). The valid entry ahead
+    of the bad one is not validated: Core reads every element before it
+    validates any.
+    """
+    verified: list[object] = []
+    monkeypatch.setattr(
+        cb, "verify_mempool_acceptance", lambda node, tx: verified.append(tx)
+    )
+    raw = a_tx().serialize(include_witness=True).hex()
+    with pytest.raises(RpcError) as raised:
+        mempool_accept(a_node(), _CONN, [[raw, rawtx]])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert raised.value.message == (
+        f"JSON value of type {json_type} is not of expected type string"
+    )
+    assert verified == []
+
+
+def test_a_rawtx_with_a_truncated_script_is_a_decode_failure() -> None:
+    """A script shorter than its declared length does not decode either.
+
+    `Tx.parse` raises `BTClibRuntimeError` there rather than
+    `BTClibValueError`, which answered `-32603 Internal Error`.
+    """
+    truncated = "02000000" + "01" + "00" * 32 + "00000000" + "05" + "0000"
+    with pytest.raises(RpcError) as raised:
+        mempool_accept(a_node(), _CONN, [[truncated]])
+    assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
+    assert raised.value.message == decode_failure(truncated)
 
 
 def test_a_relayed_transaction_is_answered_with_its_txid(
@@ -2750,6 +2878,22 @@ def test_addnode_refuses_a_hostname() -> None:
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
 
 
+def test_addnode_refuses_a_port_int_would_read() -> None:
+    """`127.0.0.1:+80` is refused as `127.0.0.1:0x50` is, not dialled at 80."""
+    dialled: list[object] = []
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chain=SimpleNamespace(port=18444),
+            p2p_manager=SimpleNamespace(connect=dialled.append),
+        ),
+    )
+    with pytest.raises(RpcError) as raised:
+        add_node(node, _CONN, ["127.0.0.1:+80", "onetry"])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert dialled == []
+
+
 def test_addnode_type_checks_node_and_command() -> None:
     """`node` and `command` of the wrong JSON type are named, not coerced."""
     node = cast(
@@ -2765,6 +2909,268 @@ def test_addnode_type_checks_node_and_command() -> None:
     with pytest.raises(RpcError) as raised2:
         add_node(node, _CONN, ["127.0.0.1", 1])
     assert raised2.value.code == RPCErrorCode.TYPE_ERROR
+
+
+_BAN_NOW = 1_700_000_000
+_SETBAN_USAGE = 'setban "subnet" "command" ( bantime absolute )'
+
+
+def a_banning_node(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, list[str]]:
+    """Build a node double with a ban list, its clock stopped at `_BAN_NOW`.
+
+    The list is the second element's record of every subnet
+    `disconnect_subnet` was asked to drop, as `str`.
+    """
+    monkeypatch.setattr(banman_module, "_now", lambda: _BAN_NOW)
+    monkeypatch.setattr(time, "time", lambda: _BAN_NOW + 0.5)
+    dropped: list[str] = []
+    node = SimpleNamespace(
+        p2p_manager=SimpleNamespace(
+            ban_man=BanMan(None, Logger(debug=True)),
+            disconnect_subnet=lambda subnet: dropped.append(str(subnet)),
+        )
+    )
+    return node, dropped
+
+
+def refusal(node: Any, params: list[Any]) -> RpcError:
+    """Return what `setban` raised for `params`, asserting it raised."""
+    with pytest.raises(RpcError) as raised:
+        set_ban(node, _CONN, params)
+    return raised.value
+
+
+def test_setban_is_in_the_method_table() -> None:
+    """`setban`, `listbanned` and `clearbanned` are Core's names."""
+    assert callbacks["setban"] is set_ban
+    assert callbacks["listbanned"] is list_banned
+    assert callbacks["clearbanned"] is clear_banned
+
+
+def test_setban_add_bans_and_drops_the_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Core's `setban add`: the ban, then `DisconnectNode` of what it bans.
+
+    `listbanned` answers it with Core's five fields, a day long by
+    default.
+    """
+    node, dropped = a_banning_node(monkeypatch)
+    set_ban(node, _CONN, ["1.2.3.4", "add"])
+    set_ban(node, _CONN, ["5.6.0.0/16", "add", 100, None])
+    assert dropped == ["1.2.3.4/32", "5.6.0.0/16"]
+    assert list_banned(node, _CONN, []) == [
+        {
+            "address": "1.2.3.4/32",
+            "ban_created": _BAN_NOW,
+            "banned_until": _BAN_NOW + 86400,
+            "ban_duration": 86400,
+            "time_remaining": 86400,
+        },
+        {
+            "address": "5.6.0.0/16",
+            "ban_created": _BAN_NOW,
+            "banned_until": _BAN_NOW + 100,
+            "ban_duration": 100,
+            "time_remaining": 100,
+        },
+    ]
+
+
+def test_setban_add_refuses_what_is_already_banned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An address inside any ban is banned already, a subnet only by its key."""
+    node, dropped = a_banning_node(monkeypatch)
+    set_ban(node, _CONN, ["1.2.3.0/24", "add"])
+    for params in (["1.2.3.4", "add"], ["1.2.3.0/255.255.255.0", "add"]):
+        error = refusal(node, params)
+        assert error.code == RPCErrorCode.CLIENT_NODE_ALREADY_ADDED
+        assert error.message == "Error: IP/Subnet already banned"
+    set_ban(node, _CONN, ["1.2.3.0/25", "add"])
+    assert dropped == ["1.2.3.0/24", "1.2.3.0/25"]
+
+
+@pytest.mark.parametrize(
+    "subnet",
+    [
+        "bloop",
+        "1.2.3.0/33",
+        # without a slash the address has to be a valid one
+        "0.0.0.0",  # noqa: S104
+        "2001:db8::1",
+        "fd87:d87e:eb43::1",
+    ],
+)
+def test_setban_refuses_what_is_no_ip_nor_subnet(
+    monkeypatch: pytest.MonkeyPatch, subnet: str
+) -> None:
+    """Core's `RPC_CLIENT_INVALID_IP_OR_SUBNET`, for add and remove alike."""
+    node, _ = a_banning_node(monkeypatch)
+    for command in ("add", "remove"):
+        error = refusal(node, [subnet, command])
+        assert error.code == RPCErrorCode.CLIENT_INVALID_IP_OR_SUBNET
+        assert error.message == "Error: Invalid IP/Subnet"
+
+
+_ONION = "pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion"
+_I2P = "udhdrtrcetjm5sxzskjyr5ztpeszydbh4dpl3pl4utgqqw2v4jna.b32.i2p"
+
+
+def test_setban_bans_an_onion_or_i2p_host_and_no_subnet_of_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1218: as bitcoind v31.1 answers `setban`.
+
+    The host alone, each on its key whatever its case; a prefix is no
+    subnet of one. `listbanned` lists them after the IP bans.
+    """
+    node, dropped = a_banning_node(monkeypatch)
+    set_ban(node, _CONN, [_I2P, "add"])
+    set_ban(node, _CONN, [_ONION, "add"])
+    set_ban(node, _CONN, ["1.2.3.4", "add"])
+    assert dropped == [_I2P, _ONION, "1.2.3.4/32"]
+    upper = _ONION.removesuffix(".onion").upper() + ".onion"
+    for params in ([upper, "add"], [f"[{_ONION}]", "add"], [_I2P.upper(), "add"]):
+        assert refusal(node, params).code == RPCErrorCode.CLIENT_NODE_ALREADY_ADDED
+    error = refusal(node, [f"{_ONION}/32", "add"])
+    assert error.code == RPCErrorCode.CLIENT_INVALID_IP_OR_SUBNET
+    assert [entry["address"] for entry in list_banned(node, _CONN, [])] == [
+        "1.2.3.4/32",
+        _ONION,
+        _I2P,
+    ]
+    set_ban(node, _CONN, [upper, "remove"])
+    assert [entry["address"] for entry in list_banned(node, _CONN, [])] == [
+        "1.2.3.4/32",
+        _I2P,
+    ]
+
+
+def test_setban_bans_a_scoped_address_on_its_address_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1220: `fe80::1%2` is banned already, and removed, by `fe80::1%1`."""
+    node, _ = a_banning_node(monkeypatch)
+    set_ban(node, _CONN, ["fe80::1%1", "add"])
+    error = refusal(node, ["fe80::1%2", "add"])
+    assert error.code == RPCErrorCode.CLIENT_NODE_ALREADY_ADDED
+    assert [entry["address"] for entry in list_banned(node, _CONN, [])] == [
+        "fe80::1%1/128"
+    ]
+    set_ban(node, _CONN, ["fe80::1%2", "remove"])
+    assert list_banned(node, _CONN, []) == []
+
+
+def test_setban_takes_an_invalid_address_as_a_subnet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With a slash, `CSubNet` is valid of any IPv4 or IPv6 address."""
+    node, _ = a_banning_node(monkeypatch)
+    set_ban(node, _CONN, ["0.0.0.0/32", "add"])
+    assert [entry["address"] for entry in list_banned(node, _CONN, [])] == [
+        "0.0.0.0/32"
+    ]
+
+
+def test_setban_remove_answers_whether_there_was_a_ban(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Core's `Unban failed` for a subnet not on the list, by its exact key."""
+    node, _ = a_banning_node(monkeypatch)
+    set_ban(node, _CONN, ["1.2.3.0/24", "add"])
+    error = refusal(node, ["1.2.3.4", "remove"])
+    assert error.code == RPCErrorCode.CLIENT_INVALID_IP_OR_SUBNET
+    assert error.message == (
+        "Error: Unban failed. Requested address/subnet was not previously"
+        " manually banned."
+    )
+    # the bantime is read by `add` alone
+    set_ban(node, _CONN, ["1.2.3.0/24", "remove", 1.5])
+    assert list_banned(node, _CONN, []) == []
+
+
+def test_setban_absolute_bans_until_the_time_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An absolute bantime is when the ban ends, and never in the past."""
+    node, _ = a_banning_node(monkeypatch)
+    error = refusal(node, ["1.2.3.4", "add", _BAN_NOW - 1, True])
+    assert error.code == RPCErrorCode.INVALID_PARAMETER
+    assert error.message == "Error: Absolute timestamp is in the past"
+    set_ban(node, _CONN, ["1.2.3.4", "add", _BAN_NOW, True])
+    (entry,) = node.p2p_manager.ban_man.banned()
+    assert entry[1] == BanEntry(_BAN_NOW, _BAN_NOW)
+
+
+def test_setban_add_past_int64_succeeds_and_bans_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bantime past `int64_t` succeeds and bans nothing, as in Core v31.1.0.
+
+    The host is dropped all the same, `DisconnectNode` following `Ban`
+    whatever `Ban` did.
+    """
+    node, dropped = a_banning_node(monkeypatch)
+    set_ban(node, _CONN, ["11.0.0.1", "add", (1 << 63) - 1])
+    assert list_banned(node, _CONN, []) == []
+    assert dropped == ["11.0.0.1/32"]
+
+
+@pytest.mark.parametrize(
+    "params",
+    [[], ["1.2.3.4"], ["1.2.3.4", "ban"], ["1.2.3.4", "add", 1, True, None]],
+)
+def test_setban_answers_the_usage(
+    monkeypatch: pytest.MonkeyPatch, params: list[Any]
+) -> None:
+    """Too few or too many arguments, or a command Core has no case for."""
+    node, _ = a_banning_node(monkeypatch)
+    error = refusal(node, params)
+    assert error.code == RPCErrorCode.MISC_ERROR
+    assert error.message == _SETBAN_USAGE
+
+
+@pytest.mark.parametrize(
+    ("params", "expected"),
+    [
+        ([1, "add"], "Position 1 (subnet)"),
+        (["1.2.3.4", 1], "Position 2 (command)"),
+        (["1.2.3.4", "add", "1"], "Position 3 (bantime)"),
+        (["1.2.3.4", "add", True], "Position 3 (bantime)"),
+        (["1.2.3.4", "add", 1, "yes"], "Position 4 (absolute)"),
+        # the types are checked ahead of the command
+        (["1.2.3.4", "ban", "1"], "Position 3 (bantime)"),
+    ],
+)
+def test_setban_type_checks_every_argument(
+    monkeypatch: pytest.MonkeyPatch, params: list[Any], expected: str
+) -> None:
+    """Core's `HandleRequest` names the argument of the wrong JSON type."""
+    node, _ = a_banning_node(monkeypatch)
+    error = refusal(node, params)
+    assert error.code == RPCErrorCode.TYPE_ERROR
+    assert expected in error.message
+
+
+@pytest.mark.parametrize("bantime", [1.5, 1 << 63])
+def test_setban_add_refuses_a_bantime_out_of_range(
+    monkeypatch: pytest.MonkeyPatch, bantime: float
+) -> None:
+    """UniValue's `getInt<int64_t>`: no fraction, and within 64 bits."""
+    node, _ = a_banning_node(monkeypatch)
+    error = refusal(node, ["1.2.3.4", "add", bantime])
+    assert error.code == RPCErrorCode.MISC_ERROR
+    assert error.message == "JSON integer out of range"
+
+
+def test_clearbanned_empties_the_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Core's `clearbanned`."""
+    node, _ = a_banning_node(monkeypatch)
+    set_ban(node, _CONN, ["1.2.3.4", "add"])
+    subnet = lookup_subnet("1.2.3.4")
+    assert subnet is not None
+    assert node.p2p_manager.ban_man.is_subnet_banned(subnet)
+    clear_banned(node, _CONN, [])
+    assert list_banned(node, _CONN, []) == []
 
 
 def test_get_block_answers_the_hex_serialization_of_a_stored_block(
@@ -3047,17 +3453,13 @@ def test_submit_block_answers_a_reason_for_a_header_that_never_gets_indexed(
     assert node.block_db.get_block(broken.header.hash) is None
 
 
-def test_submit_block_invalidates_a_block_whose_body_mismatches_its_header(
+def test_submit_block_leaves_valid_a_header_its_body_does_not_match(
     regtest_node: Callable[..., Node],
 ) -> None:
-    """A block whose merkle root the transactions do not match is invalidated.
+    """ISS 1242: a body the merkle root does not match says nothing of it.
 
-    The header alone is unimpeachable -- valid proof of work, a known
-    parent -- so `add_headers` indexes it; only `block.assert_valid`'s
-    own `assert_valid_merkle_root` (below `assert_valid_structure`) can
-    catch what is wrong with this one, and does, matching
-    `p2p.callbacks.block`'s identical `invalidate`-then-answer shape
-    except for answering rather than raising.
+    Core's `AcceptBlock` marks a block failed unless the failure is
+    `BLOCK_MUTATED`, so the honest body is still accepted afterwards.
     """
     node = regtest_node()
     chain = generate_random_chain(1, node.chain.genesis.hash)
@@ -3076,5 +3478,96 @@ def test_submit_block_invalidates_a_block_whose_body_mismatches_its_header(
     assert isinstance(result, str)
     assert result not in (None, "duplicate", "prev-blk-not-found")
     block_info = node.chainstate.block_index.get_block_info(mismatched.header.hash)
+    assert block_info.status != BlockStatus.invalid
     assert not block_info.downloaded
     assert node.block_db.get_block(mismatched.header.hash) is None
+    honest = chain[0].serialize(check_validity=False).hex()
+    assert submit_block(node, _CONN, [honest]) is None
+
+
+def test_submit_block_leaves_valid_a_committed_body_failing_check_block(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """ISS 1242: Core's `ProcessNewBlock` never marks a `CheckBlock` failure.
+
+    Measured against bitcoind v31.1: `bad-cb-multiple`, and the header
+    absent from `getchaintips`; `headers-only` there where `submitheader`
+    indexed it first. This node indexes the header before `assert_valid`
+    (btclib-org/btclib-node#1339), so the status is what is asserted.
+    """
+    node = regtest_node()
+    twice = generate_segwit_block(generate_coinbase(height=1))
+
+    result = submit_block(node, _CONN, [twice.serialize(check_validity=False).hex()])
+
+    assert result == "more than one coinbase"
+    block_info = node.chainstate.block_index.get_block_info(twice.header.hash)
+    assert block_info.status != BlockStatus.invalid
+
+
+@pytest.mark.parametrize(("segwit_height", "invalid"), [(1, True), (2, False)])
+def test_submit_block_invalidates_a_committed_body_over_the_weight(
+    regtest_node: Callable[..., Node],
+    monkeypatch: pytest.MonkeyPatch,
+    segwit_height: int,
+    invalid: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1242: `bad-blk-weight` marks the block, its witness committed to.
+
+    Where segwit binds only after the block's own height, its witness makes
+    the body mutated and the header is left alone.
+    """
+    node = regtest_node()
+    consensus = replace(node.chain.consensus, segwit_height=segwit_height)
+    monkeypatch.setattr(
+        node,
+        "chain",
+        SimpleNamespace(pow_limit_bits=node.chain.pow_limit_bits, consensus=consensus),
+    )
+    over = generate_segwit_block(witness=bytes(MAX_BLOCK_WEIGHT))
+
+    result = submit_block(node, _CONN, [over.serialize(check_validity=False).hex()])
+
+    assert isinstance(result, str)
+    assert result.startswith("invalid weight")
+    block_info = node.chainstate.block_index.get_block_info(over.header.hash)
+    assert (block_info.status == BlockStatus.invalid) is invalid
+
+
+# A regtest header at height 1 of version -1, as a bitcoind v31.1.0 run with
+# `-testactivationheight=bip34@100` (and `dersig`, `cltv` at 100) took it
+# through `submitblock` and answered it back through `getblockheader false`.
+_A_VERSION_MINUS_ONE_HEADER = (
+    "ffffffff06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f"
+    "a7c0dbac4920cf8d62f0cb6d2efaa0105c5d6bbd3552da2c805dc60856589631dfefb76a"
+    "ffff7f2001000000"
+)
+
+
+def test_a_stored_version_minus_one_header_is_answered_as_bitcoind_answers() -> None:
+    """ISS 1262: the index stores it below BIP34's height, as Core does.
+
+    bitcoind answered the raw header with these same octets, `version`
+    -1 and `versionHex` "ffffffff", Core's `%08x` of its `int32_t`.
+    """
+    header = BlockHeader.parse(
+        bytes.fromhex(_A_VERSION_MINUS_ONE_HEADER), check_validity=False
+    )
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chainstate=SimpleNamespace(block_index=a_block_index([header]))
+        ),
+    )
+    raw = get_block_header(node, _CONN, [header.hash.hex(), False])
+    assert raw == _A_VERSION_MINUS_ONE_HEADER
+    verbose = get_block_header(node, _CONN, [header.hash.hex()])
+    assert isinstance(verbose, dict)
+    assert (verbose["version"], verbose["versionHex"]) == (-1, "ffffffff")
+
+
+def test_a_feeler_has_no_tx_relay() -> None:
+    """ISS 1096: Core builds no `TxRelay` for a feeler either."""
+    peer = a_peer(inbound=False, automatic=True, feeler=True, relay=True)
+    (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
+    assert info["relaytxes"] is False

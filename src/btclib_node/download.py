@@ -4,19 +4,19 @@
 
 """`DownloadManager`, what decides what this node asks its peers for.
 
-Which peer headers are synced from; block download candidates and stall
-detection, transaction announcement and request tracking, and the
-trickle timing behind both -- `feefilter` resends, address relay, and
-the exponential delays that keep two peers from being told the same
-thing in lockstep. Most of the constants here are a named Bitcoin Core
-constant carried over with the commit it was read at beside it, per
-this tree's own convention of matching Core's behaviour, always.
+Which peer headers are synced from; which blocks each peer is asked
+for, and which peer is dropped for stalling the download; transaction
+announcement and request tracking, and the trickle timing behind both
+-- `feefilter` resends, address relay, and the exponential delays that
+keep two peers from being told the same thing in lockstep. Most of the
+constants here are a named Bitcoin Core constant carried over with the
+commit it was read at beside it, per this tree's own convention of
+matching Core's behaviour, always.
 """
 
 import math
 import time
 from bisect import bisect_left
-from collections import Counter
 from random import SystemRandom
 from typing import TYPE_CHECKING
 
@@ -25,13 +25,14 @@ from btclib.p2p.inventory import GetData, Inv, Inventory, InventoryType
 from btclib.p2p.limits import MAX_INV_SZ
 from btclib.p2p.negotiation import FeeFilter, SendHeaders
 
-from btclib_node.chainstate.block_index import MAX_DOWNLOAD_WINDOW
-from btclib_node.constants import MIN_BLOCKS_TO_KEEP, NodeStatus, P2pConnStatus
-from btclib_node.p2p.block_availability import update_last_common_block
+from btclib_node.constants import P2pConnStatus
+from btclib_node.p2p.block_availability import find_next_blocks_to_download
 from btclib_node.p2p.callbacks import (
     MAX_GETDATA_INFLIGHT_BYTES,
     maybe_send_getheaders,
 )
+from btclib_node.p2p.chain_sync import consider_eviction
+from btclib_node.p2p.eviction import get_network
 from btclib_node.p2p.protocol_version import (
     FEEFILTER_VERSION,
     SENDHEADERS_VERSION,
@@ -72,6 +73,13 @@ _OUTBOUND_TX_ANNOUNCE_INTERVAL = 2.0
 # alike beyond this one number. btclib-org/btclib-node#289
 _TX_REQUEST_TIMEOUT = 60.0
 
+# Core's `MAX_PEER_TX_ANNOUNCEMENTS` (`src/node/txdownloadman.h`) and
+# `MAX_GETDATA_SZ` (`src/net_processing.cpp`), at bitcoin/bitcoin@9be056a8a7,
+# the v31.1 tag: the announcements tracked per peer, and the items in one
+# `getdata`
+_MAX_PEER_TX_ANNOUNCEMENTS = 5000
+_MAX_GETDATA_SZ = 1000
+
 # Core's own `AVG_FEEFILTER_BROADCAST_INTERVAL` (10min) and
 # `MAX_FEEFILTER_CHANGE_DELAY` (5min), `net_processing.cpp`, same commit:
 # the mean of the exponential draw `_send_due_feefilters` makes for a
@@ -93,16 +101,32 @@ _MAX_FILTER_FEERATE = 1e7
 # peer is meant not to be able to predict.
 _rng = SystemRandom()
 
-# `block_download`'s own two marks on a peer that has gone quiet
-# mid-sync, not Core's `BLOCK_STALLING_TIMEOUT_DEFAULT` (2s, adaptive up
-# to `BLOCK_STALLING_TIMEOUT_MAX`'s 64s, `net_processing.cpp`,
-# aed80c7395) -- this tree's own coarser pair instead, checked against
-# `last_block_timestamp` rather than a single in-flight request: no
-# block in `_BLOCK_STALL_EVICTION_TIMEOUT` empties this peer's queue and
-# excludes it from new work, and no block in
-# `_BLOCK_STALL_DISCONNECT_TIMEOUT` drops the connection outright.
-_BLOCK_STALL_EVICTION_TIMEOUT = 120
-_BLOCK_STALL_DISCONNECT_TIMEOUT = 300
+# `block_download`'s own timing, in seconds: Core's
+# `BLOCK_STALLING_TIMEOUT_DEFAULT` and `BLOCK_STALLING_TIMEOUT_MAX`, the
+# bounds of how long a peer may hold up the download window, and
+# `BLOCK_DOWNLOAD_TIMEOUT_BASE` and `BLOCK_DOWNLOAD_TIMEOUT_PER_PEER`,
+# the multiples of `_POW_TARGET_SPACING` a block may stay in flight
+# (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+_BLOCK_STALLING_TIMEOUT_DEFAULT = 2
+_BLOCK_STALLING_TIMEOUT_MAX = 64
+_BLOCK_DOWNLOAD_TIMEOUT_BASE = 1
+_BLOCK_DOWNLOAD_TIMEOUT_PER_PEER = 0.5
+
+# Core's `EXTRA_PEER_CHECK_INTERVAL` and `MINIMUM_CONNECT_TIME`
+# (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
+# how often `_check_for_stale_tip_and_evict_peers` runs, and how long
+# the peer it picks must have been connected for it to be dropped.
+_EXTRA_PEER_CHECK_INTERVAL = 45
+_MINIMUM_CONNECT_TIME = 30
+
+# The number of block intervals `CanDirectFetch` (same sha) allows the
+# active tip to lag the clock by, in `_POW_TARGET_SPACING` units.
+_DIRECT_FETCH_SPACINGS = 20
+
+# Core's `STALE_CHECK_INTERVAL` (same sha), in seconds, and the block
+# intervals past which `TipMayBeStale` calls the tip stale.
+_STALE_CHECK_INTERVAL = 10 * 60
+_STALE_TIP_SPACINGS = 3
 
 # `sync_headers`'s own timing, in seconds: `HEADERS_DOWNLOAD_TIMEOUT_BASE`
 # and `HEADERS_DOWNLOAD_TIMEOUT_PER_HEADER` (`net_processing.cpp`, at
@@ -118,23 +142,12 @@ _HEADERS_DOWNLOAD_TIMEOUT_PER_HEADER = 0.001
 _POW_TARGET_SPACING = 10 * 60
 _RECENT_BEST_HEADER = 24 * 60 * 60
 
-# a block hash already queued to this many connections is left for one
-# of them to answer before being handed to yet another -- redundant
-# requests bound rather than eliminated, since a slow or lying peer is
-# what the redundancy is for
-_MAX_CONCURRENT_REQUESTS_PER_BLOCK = 3
-
-# How many blocks `_request_new_block_work` below batches into one
-# outgoing `GetData` at a time, matching Core's own
-# `MAX_BLOCKS_IN_TRANSIT_PER_PEER` (`net_processing.cpp:133`,
-# at bitcoin/bitcoin@b91d983f66). Public rather than this module's usual
-# underscore-prefixed constants: `p2p/connection.py`'s own
-# `MAX_QUEUED_SEND_BYTES` used to be sized from this fact and no longer
-# is, but the fact itself -- the size of the answer a well-behaved peer
-# sends back to one such request -- outlives whichever bound was last
-# sized from it, and is the natural thing a receive-side bound would
-# want if this tree grows one; nothing in this tree does yet.
-MAX_BLOCKS_PER_GETDATA_BURST = 16
+# Core's `MAX_BLOCKS_IN_TRANSIT_PER_PEER` (`net_processing.cpp`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): how many blocks one peer is
+# asked for and has not yet sent. Public because the largest answer a
+# well-behaved peer owes this node is that many blocks, which the tests
+# of the receive-side bounds size against.
+MAX_BLOCKS_IN_TRANSIT_PER_PEER = 16
 
 
 def _fee_filter_buckets(min_relay_feerate: int) -> list[float]:
@@ -214,27 +227,12 @@ def _inbound_net_class(address: NetworkAddressV2) -> BIP155Network | int:
 def _can_serve_blocks(conn: Connection) -> bool:
     """Whether `conn` can serve this node blocks at all.
 
-    Core's own `CanServeBlocks` (net_processing.cpp:1254, at
-    bitcoin/bitcoin@ca7162cde5): `NODE_NETWORK` or `NODE_NETWORK_LIMITED`
-    advertised, either being enough. Core applies it at the call site of
-    `FindNextBlocksToDownload` (net_processing.cpp:6495) -- the same
-    point `_request_new_block_work` below applies it, gating a
-    connection out of block work entirely rather than folding it into
-    `_reachable_blocks`' own per-candidate filter, which is Core's own
-    separation too: `CanServeBlocks` and `IsLimitedPeer` are two
-    different questions there, "can this peer serve blocks at all" and
-    "which ones", and `FindNextBlocks`
-    (net_processing.cpp:1575-1645) only asks the second once the first
-    has already passed. `True` for a connection with no
-    `version_message` rather than a raised `AttributeError` or a `False`
-    that would newly restrict it: `_is_limited_peer` below reads the
-    same absence permissively, `False` there meaning "not limited" and
-    so unrestricted, and the two gates read the same missing state the
-    same direction for the same reason -- every connection
-    `_request_new_block_work` below ever sees has a `version_message` by
-    the time it is promoted, `callbacks.verack` guaranteeing it, so this
-    branch is only ever exercised defensively and never in place of the
-    real check. btclib-org/btclib-node#725
+    Core's own `CanServeBlocks` (`net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `NODE_NETWORK` or
+    `NODE_NETWORK_LIMITED` advertised, either being enough. `True` for
+    a connection with no `version_message`, which `callbacks.verack`
+    never promotes, so that this reads the absence in the direction
+    `_is_limited_peer` below reads it. btclib-org/btclib-node#725
     """
     version_msg = conn.version_message
     if version_msg is None:
@@ -248,19 +246,10 @@ def _can_serve_blocks(conn: Connection) -> bool:
 def _is_limited_peer(conn: Connection) -> bool:
     """Whether `conn` can only serve blocks near its own tip.
 
-    Core's own `IsLimitedPeer` (net_processing.cpp:1261, at
-    bitcoin/bitcoin@ca7162cde5): `NODE_NETWORK_LIMITED` advertised and
-    `NODE_NETWORK` not -- a full archival peer sets both, so this misses
-    it, and so does a peer with neither, which is `_can_serve_blocks`
-    above's own question rather than this one: this tree used to have
-    no counterpart to Core's separate `CanServeBlocks` gate, offering
-    such a peer the whole download window as if it were archival
-    (issue #725, fixed in `_request_new_block_work` below). `False` for
-    a connection with no `version_message` rather than a raised
-    `AttributeError`: every connection `_request_new_block_work` below
-    ever sees has one, `callbacks.verack` refusing to promote one that
-    does not, but that invariant lives in `p2p/callbacks.py` and not
-    here, so this reads defensively rather than asserting it.
+    Core's own `IsLimitedPeer` (`net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `NODE_NETWORK_LIMITED`
+    advertised and `NODE_NETWORK` not. `False` for a connection with no
+    `version_message`, which `callbacks.verack` never promotes.
     """
     version_msg = conn.version_message
     if version_msg is None:
@@ -327,10 +316,11 @@ def _extend_tx_announce_queue(conn: Connection, new_for_conn: list[bytes]) -> No
 class DownloadManager:
     """What decides what this node asks its peers for, one `step` at a time.
 
-    Which peer headers are synced from, block download candidates and
-    stall detection, transaction announcement and request tracking, and
-    the `feefilter` trickle: the module docstring above is where the
-    constants each of those follows are argued against Core's own.
+    Which peer headers are synced from, which blocks each peer is asked
+    for and who stalls them, transaction announcement and request
+    tracking, and the `feefilter` trickle: the module docstring above is
+    where the constants each of those follows are argued against Core's
+    own.
     """
 
     def __init__(self, node: Node, logger: Logger) -> None:
@@ -338,7 +328,10 @@ class DownloadManager:
         self.node = node
         self.logger = logger
 
-        self.block_window: list[bytes] = []
+        # Core's `m_block_stalling_timeout`: how long a peer may hold up
+        # the download window before it is dropped, doubled at each drop
+        # and decayed by `block_connected`.
+        self.block_stalling_timeout: float = _BLOCK_STALLING_TIMEOUT_DEFAULT
 
         # conn_id is `None` for a transaction this node originated
         # (`P2pManager.broadcast_raw_transaction`) rather than received
@@ -402,19 +395,177 @@ class DownloadManager:
         # `callbacks.maybe_send_getheaders` last sent each peer a
         # `getheaders` that no `headers` has answered since.
         self.last_getheaders_timestamps: dict[int, float] = {}
+        # When `_check_for_stale_tip_and_evict_peers` next runs, which
+        # Core schedules `EXTRA_PEER_CHECK_INTERVAL` from start-up, and
+        # Core's `m_initial_sync_finished`.
+        self._next_extra_peer_check = time.time() + _EXTRA_PEER_CHECK_INTERVAL
+        self._initial_sync_finished = False
+        # Core's `m_last_tip_update`, which `main._finalize_fork` stamps
+        # as each block connects, zero until then, and
+        # `m_stale_tip_check_time`, when the stale-tip check next runs.
+        self.last_tip_update = 0.0
+        self._stale_tip_check_time = 0.0
 
     def step(self) -> None:
         """Run one pass.
 
-        Headers, blocks and txs are asked for, and sendheaders and
-        feefilters sent.
+        Headers, blocks and txs are asked for, sendheaders and feefilters
+        sent, outbound peers behind this node's tip given a deadline, and
+        Core's check for a stale tip and extra outbound peers run on its
+        own interval.
         """
         self.sync_headers()
-        self.update_last_common_blocks()
         self.block_download()
         self.tx_download()
         self._send_due_sendheaders()
         self._send_due_feefilters()
+        self._consider_evictions()
+        self._check_for_stale_tip_and_evict_peers()
+
+    def _check_for_stale_tip_and_evict_peers(self) -> None:
+        """Drop an extra outbound peer, and let `P2pManager` dial one more.
+
+        Core's `CheckForStaleTipAndEvictPeers` (`net_processing.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), every
+        `_EXTRA_PEER_CHECK_INTERVAL`. Every `_STALE_CHECK_INTERVAL` it
+        sets `try_new_outbound_peer` where the tip may be stale, under no
+        `-connect`, and clears it where not. Once the active tip is
+        within `CanDirectFetch`'s reach of the clock, it lets
+        `P2pManager` dial an extra block-relay-only peer, once and for
+        good, as `StartExtraBlockRelayPeers` does.
+        """
+        now = time.time()
+        if now < self._next_extra_peer_check:
+            return
+        self._next_extra_peer_check = now + _EXTRA_PEER_CHECK_INTERVAL
+        self._evict_extra_block_relay_peer(now)
+        self._evict_extra_full_relay_peer(now)
+        manager = self.node.p2p_manager
+        if now > self._stale_tip_check_time:
+            if manager.use_addrman_outgoing and self._tip_may_be_stale(now):
+                self.logger.info(
+                    "Potential stale tip detected, will try using extra outbound "
+                    "peer (last tip update: %d seconds ago)",
+                    now - self.last_tip_update,
+                )
+                manager.try_new_outbound_peer = True
+            elif manager.try_new_outbound_peer:
+                manager.try_new_outbound_peer = False
+            self._stale_tip_check_time = now + _STALE_CHECK_INTERVAL
+        if self._initial_sync_finished:
+            return
+        block_index = self.node.chainstate.block_index
+        tip = block_index.header_dict[block_index.active_chain[-1]].header
+        horizon = now - _POW_TARGET_SPACING * _DIRECT_FETCH_SPACINGS
+        if tip.time.timestamp() > horizon:
+            manager.start_extra_block_relay_peers = True
+            self._initial_sync_finished = True
+
+    def _tip_may_be_stale(self, now: float) -> bool:
+        """Core's `TipMayBeStale`: no block for three intervals, none in flight.
+
+        The first call stamps `last_tip_update` where no block has yet
+        connected, as Core's does.
+        """
+        if not self.last_tip_update:
+            self.last_tip_update = now
+        connections = self.node.p2p_manager.connections.copy().values()
+        return (
+            self.last_tip_update < now - _POW_TARGET_SPACING * _STALE_TIP_SPACINGS
+            and (not any(conn.download_queue for conn in connections))
+        )
+
+    def _evict_extra_full_relay_peer(self, now: float) -> None:
+        """Drop one full-relay peer past the target, if one may go.
+
+        The full-relay half of Core's `EvictExtraOutboundPeers`: of the
+        automatic full-relay peers connected, those neither protected by
+        `chain_sync.protect_if_caught_up` nor alone on their network among
+        the manual and full-relay ones, the one that least recently
+        announced a block, the youngest by connection id on a tie -- once
+        connected longer than `_MINIMUM_CONNECT_TIME` and with no block in
+        flight from it. Dropping it clears `try_new_outbound_peer` until
+        the tip is next found stale.
+        """
+        manager = self.node.p2p_manager
+        peers = [
+            conn
+            for conn in manager.connections.copy().values()
+            if conn.status == P2pConnStatus.Connected
+            and conn.automatic
+            and not (conn.block_relay or conn.feeler)
+        ]
+        if len(peers) <= manager.max_outbound_full_relay:
+            return
+        counts = manager.network_conn_counts()
+        worst = None
+        for conn in peers:
+            # Core's order: `m_protect` first, then the network
+            if conn.chain_sync.protect or counts[get_network(conn.address)] <= 1:
+                continue
+            if worst is None or (conn.last_block_announcement, -conn.id) < (
+                worst.last_block_announcement,
+                -worst.id,
+            ):
+                worst = conn
+        if worst is None:
+            return
+        if (
+            now - worst.connected_time > _MINIMUM_CONNECT_TIME
+            and not worst.download_queue
+        ):
+            self.logger.debug(
+                "disconnecting extra outbound peer=%s "
+                "(last block announcement received at time %s)",
+                worst.id,
+                worst.last_block_announcement,
+            )
+            worst.stop()
+            manager.try_new_outbound_peer = False
+
+    def _evict_extra_block_relay_peer(self, now: float) -> None:
+        """Drop one block-relay-only peer past the target, if one may go.
+
+        The block-relay-only half of Core's `EvictExtraOutboundPeers`:
+        of the youngest two such peers, by connection id, the youngest
+        goes unless it delivered a novel block more recently than the
+        other, which then goes instead -- once connected
+        `_MINIMUM_CONNECT_TIME` and with no block in flight from it.
+        Core's `ForEachNode` visits a peer done with its handshake and
+        not disconnected, which is `Connected` here.
+        """
+        manager = self.node.p2p_manager
+        peers = sorted(
+            (
+                conn
+                for conn in manager.connections.copy().values()
+                if conn.block_relay and conn.status == P2pConnStatus.Connected
+            ),
+            key=lambda conn: conn.id,
+        )
+        if len(peers) <= manager.max_outbound_block_relay:
+            return
+        # With no second peer Core's `next_youngest_peer` stays `{-1, 0}`,
+        # an id `ForNode` finds no peer under.
+        youngest = peers[-1]
+        next_youngest = peers[-2] if len(peers) > 1 else None
+        next_time = 0 if next_youngest is None else next_youngest.last_novel_block_time
+        to_disconnect = youngest
+        if youngest.last_novel_block_time > next_time:
+            if next_youngest is None:
+                return
+            to_disconnect = next_youngest
+        if (
+            now - to_disconnect.connected_time >= _MINIMUM_CONNECT_TIME
+            and not to_disconnect.download_queue
+        ):
+            self.logger.debug(
+                "disconnecting extra block-relay-only peer=%s "
+                "(last block received at time %s)",
+                to_disconnect.id,
+                to_disconnect.last_novel_block_time,
+            )
+            to_disconnect.stop()
 
     def tx_download(self) -> None:
         """Announce what this node received, and request what it still wants.
@@ -549,6 +700,12 @@ class DownloadManager:
                 for announced in dict.fromkeys(inv)
                 if announced not in target.tx_requested
             ]
+            # Core's `MAX_PEER_TX_ANNOUNCEMENTS`: an announcement past it
+            # is dropped, the ones already tracked counting against it.
+            # Everything this pass queued is asked for in this pass, so
+            # what is tracked is what is outstanding plus these.
+            room = _MAX_PEER_TX_ANNOUNCEMENTS - len(target.tx_requested)
+            wanted = wanted[: max(room, 0)]
             if not wanted:
                 continue
             for announced in wanted:
@@ -557,7 +714,10 @@ class DownloadManager:
             # `TxRequestTracker`'s delays, none of which this node applies
             # (btclib-org/btclib-node#1196).
             fetch_type = _tx_fetch_type(target)
-            target.send(GetData([Inventory(fetch_type, h) for h in wanted]))
+            # in `getdata`s of at most Core's `MAX_GETDATA_SZ` items
+            for start in range(0, len(wanted), _MAX_GETDATA_SZ):
+                batch = wanted[start : start + _MAX_GETDATA_SZ]
+                target.send(GetData([Inventory(fetch_type, h) for h in batch]))
 
     def _send_due_announcements(self) -> None:
         # Core's `TxRelay::m_next_inv_send_time`/`m_tx_inventory_to_send`
@@ -671,6 +831,17 @@ class DownloadManager:
         txid = self.node.mempool.transactions[wtxid].id
         return Inventory(InventoryType.MSG_TX, txid)
 
+    def _consider_evictions(self) -> None:
+        """Run Core's `ConsiderEviction` for every connected peer.
+
+        `p2p/chain_sync.py` is where it is argued; Core runs it from
+        `SendMessages`, once per peer past its handshake.
+        """
+        now = time.time()
+        for conn in list(self.node.p2p_manager.connections.values()):
+            if conn.status == P2pConnStatus.Connected:
+                consider_eviction(self.node, conn, now, maybe_send_getheaders)
+
     def _send_due_sendheaders(self) -> None:
         """Ask a peer, once, for new blocks as headers (BIP130).
 
@@ -710,15 +881,12 @@ class DownloadManager:
         Core's `fSuccessfullyConnected`: a connection still mid-handshake
         has no peer at the other end of `Connection.send` yet.
 
-        `NetPermissionFlags::ForceRelay`, block-relay-only outbound
-        connections and `-blocksonly` (`m_opts.ignore_incoming_txs`) all
-        have nothing to read here and are not reproduced: every one is
-        a permission, connection-kind or run mode this tree does not
-        have -- `P2pManager` dials and accepts one connection kind, and
-        nothing here grants a peer immunity from this node's own
-        filter. `Connection.own_version`'s own `relay=True` argues the
-        same absence already, for the identical set of Core concepts
-        read against `RejectIncomingTxs`.
+        A block-relay-only connection is sent none, as Core returns for
+        `IsBlockOnlyConn()`: it never announces a transaction to this
+        node. `NetPermissionFlags::ForceRelay` and `-blocksonly`
+        (`m_opts.ignore_incoming_txs`) have nothing to read here and are
+        not reproduced, being a permission and a run mode this tree does
+        not have.
 
         Core's `GetCommonVersion() < FEEFILTER_VERSION` return is kept:
         a peer that old is sent none.
@@ -748,7 +916,7 @@ class DownloadManager:
         min_relay_feerate = self.node.config.min_relay_feerate.sats_per_kvbyte
 
         for conn in self.node.p2p_manager.connections.copy().values():
-            if conn.status != P2pConnStatus.Connected:
+            if conn.status != P2pConnStatus.Connected or conn.block_relay:
                 continue
             if common_version(conn) < FEEFILTER_VERSION:
                 continue
@@ -912,20 +1080,38 @@ class DownloadManager:
                 )
                 conn.stop()
 
-    def update_last_common_blocks(self) -> None:
-        """Move each peer's `last_common` block, as Core's `SendMessages` does.
+    def block_connected(self) -> None:
+        """Bring the stalling timeout back towards its default, a block on.
 
-        Core runs `FindNextBlocksToDownload` for a peer that can serve
-        blocks and has fewer than `MAX_BLOCKS_IN_TRANSIT_PER_PEER` in
-        flight, where this node is out of initial block download or the
-        peer is one `sync_headers` would sync from and not limited
+        Core's `BlockConnected` (`net_processing.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): 85% of it, in whole
+        seconds, and never under `_BLOCK_STALLING_TIMEOUT_DEFAULT`.
+        """
+        self.block_stalling_timeout = max(
+            int(self.block_stalling_timeout * 0.85), _BLOCK_STALLING_TIMEOUT_DEFAULT
+        )
+
+    def block_download(self) -> None:
+        """Drop the peers stalling the download, and ask each for blocks.
+
+        Core's "Detect whether we're stalling", its block download
+        timeout and its "Message: getdata (blocks)" in `SendMessages`
         (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-        tag). This runs the part of it that moves `last_common`
-        (`block_availability.update_last_common_block`) under the same
-        gate, every pass, `block_download` being what chooses the
-        blocks to request. Every connection serves witnesses, which
-        `callbacks.version` requires, so Core's stop at a block a peer
-        without witnesses cannot serve has nothing to stop at.
+        tag), peer by peer. A peer is dropped where it has held up the
+        download window for longer than `block_stalling_timeout`, which
+        then doubles up to `_BLOCK_STALLING_TIMEOUT_MAX`; or where the
+        block at the front of its queue has been awaited for longer than
+        `_POW_TARGET_SPACING` times `_BLOCK_DOWNLOAD_TIMEOUT_BASE`, plus
+        `_BLOCK_DOWNLOAD_TIMEOUT_PER_PEER` for each other peer with a
+        block in flight.
+
+        A peer is asked for blocks where it can serve them, has fewer
+        than `MAX_BLOCKS_IN_TRANSIT_PER_PEER` in flight, and either this
+        node is out of initial block download or the peer is not limited
+        and is one `sync_headers` would sync from. What it is asked for
+        is `find_next_blocks_to_download`'s choice, on the peer's own
+        best known chain; where that leaves the peer with nothing in
+        flight, the peer it waits on is marked as stalling it.
         """
         node = self.node
         connections = [
@@ -933,198 +1119,95 @@ class DownloadManager:
             for conn in list(node.p2p_manager.connections.values())
             if conn.status == P2pConnStatus.Connected
         ]
+        # Core's `mapBlocksInFlight`: a block is asked of one peer at a
+        # time, the walk passing over what is in flight
+        in_flight = {
+            block_hash: conn.id
+            for conn in connections
+            for block_hash in conn.download_queue
+        }
+        downloading_from = sum(bool(conn.download_queue) for conn in connections)
         preferred = sum(_is_preferred_download(conn) for conn in connections)
-        blocks_in_flight = any(conn.download_queue for conn in connections)
-        block_index = node.chainstate.block_index
-        minimum_chain_work = node.chain.consensus.minimum_chain_work
+        by_id = {conn.id: conn for conn in connections}
+        now = time.time()
         for conn in connections:
-            from_peer = (
-                _is_preferred_download(conn) or not preferred or not blocks_in_flight
-            )
-            if (
+            if self._stalling_or_timed_out(conn, now, downloading_from):
+                conn.stop()
+                continue
+            from_peer = _is_preferred_download(conn) or not preferred or not in_flight
+            if not (
                 _can_serve_blocks(conn)
                 and (
                     (from_peer and not _is_limited_peer(conn))
                     or not node.is_initial_block_download
                 )
-                and len(conn.download_queue) < MAX_BLOCKS_PER_GETDATA_BURST
+                and len(conn.download_queue) < MAX_BLOCKS_IN_TRANSIT_PER_PEER
             ):
-                update_last_common_block(
-                    block_index, conn.block_availability, minimum_chain_work
-                )
+                continue
+            blocks, staller = find_next_blocks_to_download(
+                node.chainstate.block_index,
+                conn.block_availability,
+                MAX_BLOCKS_IN_TRANSIT_PER_PEER - len(conn.download_queue),
+                node.chain.consensus.minimum_chain_work,
+                in_flight=in_flight,
+                peer_id=conn.id,
+                limited=_is_limited_peer(conn),
+            )
+            if blocks:
+                downloading_from += not conn.download_queue
+                self._request_blocks(conn, blocks, now)
+                in_flight.update(dict.fromkeys(blocks, conn.id))
+            elif not conn.download_queue and staller in by_id:
+                stalling = by_id[staller].block_availability
+                stalling.stalling_since = stalling.stalling_since or now
 
-    def block_download(self) -> None:
-        """Refresh the block window, evict stalled peers, and request new work.
+    def _stalling_or_timed_out(
+        self, conn: Connection, now: float, downloading_from: int
+    ) -> bool:
+        """Whether `conn` is to be dropped for holding up block download."""
+        state = conn.block_availability
+        timeout = self.block_stalling_timeout
+        if state.stalling_since and state.stalling_since < now - timeout:
+            self.logger.info(
+                "Peer is stalling block download, disconnecting connection %s",
+                conn.id,
+            )
+            self.block_stalling_timeout = min(2 * timeout, _BLOCK_STALLING_TIMEOUT_MAX)
+            return True
+        if conn.download_queue and now > state.downloading_since + (
+            _POW_TARGET_SPACING
+            * (
+                _BLOCK_DOWNLOAD_TIMEOUT_BASE
+                + _BLOCK_DOWNLOAD_TIMEOUT_PER_PEER * (downloading_from - 1)
+            )
+        ):
+            self.logger.info(
+                "Timeout downloading block %s, disconnecting connection %s",
+                conn.download_queue[0].hex(),
+                conn.id,
+            )
+            return True
+        return False
 
-        A no-op before headers are synced -- there is nothing to
-        request candidates against yet -- and stall eviction only runs
-        during IBD, once the chain is synced a slow peer costing this
-        node latency rather than a stalled sync.
-        """
-        node = self.node
-        if node.status < NodeStatus.HeaderSynced:
-            return
-        if not self._refresh_block_window():
-            return
-
-        connections = list(node.p2p_manager.connections.values())
-        if node.status < NodeStatus.BlockSynced:
-            self._evict_stalled_connections(connections)
-
-        pending_and_waiting = self._pending_and_waiting_blocks(connections)
-        if pending_and_waiting is None:
-            return
-        waiting, pending = pending_and_waiting
-
-        self._request_new_block_work(connections, waiting, pending)
-
-    def _refresh_block_window(self) -> bool:
-        """Answer whether `block_window` still has work due this pass."""
-        block_index = self.node.chainstate.block_index
-        if not self.block_window:
-            self.block_window = block_index.get_download_candidates()
-        self.block_window = [
-            x for x in self.block_window if not block_index.get_block_info(x).downloaded
-        ]
-        if not self.block_window:
-            return False
-        current_index = len(block_index.active_chain) - 1
-        download_index = block_index.get_block_info(self.block_window[0]).index
-        # too much ahead with the download
-        return download_index - current_index <= MAX_DOWNLOAD_WINDOW
-
-    def _evict_stalled_connections(self, connections: list[Connection]) -> None:
-        for conn in connections:
-            if (
-                time.time() - conn.last_block_timestamp > _BLOCK_STALL_EVICTION_TIMEOUT
-                and not conn.pending_eviction
-            ):
-                conn.download_queue = []
-                conn.pending_eviction = True
-            if (
-                time.time() - conn.last_block_timestamp
-                > _BLOCK_STALL_DISCONNECT_TIMEOUT
-            ):
-                conn.stop()
-
-    def _pending_and_waiting_blocks(
-        self, connections: list[Connection]
-    ) -> tuple[list[bytes], list[bytes]] | None:
-        """Answer what is still due, or `None` if every queue is full."""
-        block_index = self.node.chainstate.block_index
-        pending: list[bytes] = []
-        skip = True
-        for conn in connections:
-            conn_queue = conn.download_queue
-            new_queue: list[bytes] = [
-                header
-                for header in conn_queue
-                if not block_index.get_block_info(header).downloaded
-            ]
-            conn.download_queue = new_queue
-            pending.extend(new_queue)
-            if not new_queue:
-                skip = False
-        if skip:
-            return None
-
-        waiting = [header for header in self.block_window if header not in pending]
-        pending = [
-            x[0]
-            for x in Counter(pending).most_common()[::-1]
-            if x[1] < _MAX_CONCURRENT_REQUESTS_PER_BLOCK
-        ]
-        return waiting, pending
-
-    def _reachable_blocks(
-        self, conn: Connection, candidates: list[bytes]
-    ) -> list[bytes]:
-        """Filter `candidates` to what `conn` can actually be asked for.
-
-        Unfiltered for a peer that is not `_is_limited_peer` -- Core's own
-        check runs only `if (is_limited_peer)` (`FindNextBlocks`,
-        net_processing.cpp:1635, at bitcoin/bitcoin@ca7162cde5), any other
-        peer's own candidates there being bounded only by the download
-        window, matching this module's own `block_window`. For a limited
-        peer, a candidate more than `MIN_BLOCKS_TO_KEEP - 2` behind
-        `conn.best_known_height` is dropped -- `MIN_BLOCKS_TO_KEEP` stands
-        in for Core's own `NODE_NETWORK_LIMITED_MIN_BLOCKS`, both 288 at
-        that sha (`constants.py`), and `- 2` is Core's own "two blocks
-        buffer for possible races", the same sign as its `>=` skip and
-        the opposite of `_below_prune_threshold`'s `+ 2` on the serving
-        side (`p2p/callbacks.py`) -- the request side wants to stop
-        asking a little before the serving side would actually refuse,
-        not a little after.
-        """
-        if not _is_limited_peer(conn):
-            return candidates
-        block_index = self.node.chainstate.block_index
-        threshold = conn.best_known_height - (MIN_BLOCKS_TO_KEEP - 2)
-        return [
-            h for h in candidates if block_index.get_block_info(h).index > threshold
-        ]
-
-    def _request_new_block_work(
-        self, connections: list[Connection], waiting: list[bytes], pending: list[bytes]
+    def _request_blocks(
+        self, conn: Connection, blocks: list[bytes], now: float
     ) -> None:
-        node = self.node
-        for conn in connections:
-            # `pending_eviction` is this peer's queue having just been
-            # emptied for stalling past `_BLOCK_STALL_EVICTION_TIMEOUT`
-            # above: an empty queue is what this loop otherwise reads as
-            # "ready for more work", so a peer marked here is excluded
-            # rather than being handed back the very blocks it was just
-            # failing to deliver. It clears on the peer's own next block
-            # (callbacks.block), or the peer is gone by
-            # `_BLOCK_STALL_DISCONNECT_TIMEOUT` instead.
-            if conn.download_queue == [] and not conn.pending_eviction:
-                if not waiting and not pending:
-                    return
-                # `_can_serve_blocks`'s own docstring is where gating a
-                # connection out of block work entirely, here rather
-                # than inside `_reachable_blocks`, is argued against
-                # Core's own two-gate structure. A peer that fails it is
-                # `continue`, not `return`, for the same reason
-                # `_reachable_blocks` finding nothing reachable is:
-                # `waiting` and `pending` still hold work for whichever
-                # other connection this same pass reaches next.
-                # btclib-org/btclib-node#725
-                if not _can_serve_blocks(conn):
-                    continue
-                reachable_waiting = self._reachable_blocks(conn, waiting)
-                if reachable_waiting:
-                    new = reachable_waiting[:MAX_BLOCKS_PER_GETDATA_BURST]
-                    waiting = [h for h in waiting if h not in new]
-                else:
-                    reachable_pending = self._reachable_blocks(conn, pending)[:2]
-                    if not reachable_pending:
-                        # Nothing left that this connection can be asked
-                        # for right now: a NODE_NETWORK_LIMITED peer
-                        # without NODE_NETWORK, sitting behind every
-                        # candidate `_reachable_blocks` above passed it.
-                        # `waiting` and `pending` still hold work for
-                        # whichever other connection this same pass
-                        # reaches next, so this is `continue`, not the
-                        # `return` below -- that one fires only once
-                        # neither list holds anything for anybody.
-                        # btclib-org/btclib-node#706
-                        continue
-                    new = reachable_pending
-                    pending = [h for h in pending if h not in new]
-                conn.download_queue = new
-                getdata = GetData(
-                    [
-                        Inventory(InventoryType.MSG_WITNESS_BLOCK, block_hash)
-                        for block_hash in new
-                    ]
-                )
-                # a block asked for here is a block coming back for
-                # `update_chain` to validate, so this is the earliest
-                # point that is actually true, rather than merely
-                # reaching HeaderSynced -- a node whose headers are
-                # synced but which never has a block to ask for (a
-                # header-only peer under test, a peer whose counterpart
-                # stopped serving blocks) never reaches this line and
-                # never builds the pool: btclib-org/btclib-node#262
-                node.warm_worker_pool()
-                conn.send(getdata)
+        """Ask `conn` for `blocks`, queued as Core's `BlockRequested` queues.
+
+        The front of an empty queue is awaited from `now`.
+        """
+        if not conn.download_queue:
+            conn.block_availability.downloading_since = now
+        conn.download_queue.extend(blocks)
+        # a block asked for is a block coming back for `update_chain` to
+        # validate, the earliest point the worker pool is certain to be
+        # wanted: btclib-org/btclib-node#262
+        self.node.warm_worker_pool()
+        conn.send(
+            GetData(
+                [
+                    Inventory(InventoryType.MSG_WITNESS_BLOCK, block_hash)
+                    for block_hash in blocks
+                ]
+            )
+        )

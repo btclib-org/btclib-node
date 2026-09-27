@@ -5,12 +5,15 @@
 """`cli.py`: argument parsing, `bitcoin.conf` reading, and `main`'s dispatch."""
 
 import functools
+import io
 import os
 import re
 import runpy
-from contextlib import suppress
+import stat
+import sys
+from contextlib import redirect_stderr, suppress
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -18,7 +21,7 @@ from btclib_node import Node, cli
 from btclib_node.chains import Main, RegTest
 from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS, Config
 from btclib_node.constants import MIN_PRUNE_TARGET_MIB
-from btclib_node.rpc.auth import COOKIE_FILE, RpcAuthEntry, password_hmac
+from btclib_node.rpc.auth import COOKIE_FILE, RpcAuthEntry, password_hmac, to_bytes
 from tests import (
     RPCAUTH,
     cookie_path,
@@ -27,6 +30,22 @@ from tests import (
     lock_from_another_process,
     wait_until_listening,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Sequence
+
+
+@pytest.fixture(autouse=True)
+def caller_umask() -> Iterator[None]:
+    """Give back, after each test, the umask `cli.main` makes owner-only.
+
+    The umask is the process's, so a test calling `main` would otherwise
+    leave it on every test after it in the same worker.
+    """
+    umask = os.umask(0o022)
+    os.umask(umask)
+    yield
+    os.umask(umask)
 
 
 def test_parse_conf_text_reads_a_key_value_pair_in_the_default_section() -> None:
@@ -144,6 +163,61 @@ def test_parse_conf_text_ends_a_line_at_a_newline_alone() -> None:
     """
     with pytest.raises(ValueError, match=r"^parse error on line 3: bad$"):
         cli._parse_conf_text("regtest=1\nfoo\fbar=1\nbad\n", warnings=[])
+
+
+@pytest.mark.parametrize(
+    ("content", "refusal"),
+    [
+        (b"regtest=1\n# x\xe9y\nbad\n", b"parse error on line 3: bad"),
+        (b"regtest=1\nx\xe9y\n", b"parse error on line 2: x\xe9y"),
+    ],
+    ids=["in a comment", "in the line refused"],
+)
+def test_read_conf_file_reads_a_byte_utf8_refuses(
+    tmp_path: Path, content: bytes, refusal: bytes
+) -> None:
+    """ISS 1290: the file is read as `bitcoind` reads it, as bytes.
+
+    `0xe9`, Latin-1's `e` acute, is no UTF-8. `bitcoind` v31.1.0 reads
+    past it in a comment, and quotes it in the line it refuses; here it
+    is the lone surrogate `surrogateescape` keeps it as, compared as the
+    byte it stands for: a surrogate in a failure's text is one `xdist`
+    cannot send back from its worker.
+    """
+    path = tmp_path / "bitcoin.conf"
+    path.write_bytes(content)
+    with pytest.raises(ValueError, match="parse error") as raised:
+        cli._read_conf_file(path, required=True, warnings=[])
+    assert to_bytes(str(raised.value)) == refusal
+
+
+@pytest.mark.usefixtures("no_node")
+def test_main_writes_a_byte_utf8_refuses_as_that_byte(
+    tmp_path: Path, capfdbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    """ISS 1290: stderr holds the byte the file held, as `bitcoind` writes it.
+
+    Measured on `bitcoind` v31.1.0 over this file: `Error: Error reading
+    configuration file: parse error on line 2: x<0xe9>y`, the prefix
+    being `InitConfig`'s.
+    """
+    (tmp_path / "bitcoin.conf").write_bytes(b"regtest=1\nx\xe9y\n")
+    with pytest.raises(SystemExit):
+        cli.main([f"-datadir={tmp_path}"])
+    assert capfdbinary.readouterr().err.endswith(b"parse error on line 2: x\xe9y\n")
+
+
+@pytest.mark.usefixtures("no_node")
+def test_main_writes_to_a_stderr_it_cannot_reconfigure(tmp_path: Path) -> None:
+    """ISS 1290: a stream with no encoding of its own is written as it is.
+
+    `io.StringIO`, which `redirect_stderr` puts in place, keeps text
+    rather than bytes, so there is no error handler to set on it.
+    """
+    (tmp_path / "bitcoin.conf").write_text("regtest=1\nbad\n", encoding="utf-8")
+    with redirect_stderr(io.StringIO()) as err, pytest.raises(SystemExit):
+        cli.main([f"-datadir={tmp_path}"])
+    assert err.getvalue().endswith("parse error on line 2: bad\n")
 
 
 @pytest.mark.parametrize(
@@ -371,6 +445,31 @@ def _build(tmp_path: Path, *argv: str, conf: str = "") -> Config:
     return cli.build_config([f"-datadir={tmp_path}", *argv])
 
 
+@pytest.mark.parametrize("port", ["+80", " 80", "8_0", "\u0668\u0660"])
+def test_build_config_an_rpcbind_port_int_would_read_is_refused(
+    tmp_path: Path, port: str
+) -> None:
+    """`CheckHostPortOptions`' refusal, as `bitcoind` v31.1.0 words each."""
+    value = f"127.0.0.1:{port}"
+    expected = re.escape(f"Invalid port specified in -rpcbind: '{value}'")
+    with pytest.raises(ValueError, match=f"^{expected}$"):
+        _build(tmp_path, "-regtest", f"-rpcbind={value}")
+
+
+@pytest.mark.parametrize("option", ["connect", "addnode"])
+def test_build_config_a_peer_s_port_int_would_read_is_refused(
+    tmp_path: Path, option: str
+) -> None:
+    """Refused as `0x50` already is, where `int` would dial port 80.
+
+    `bitcoind` v31.1.0 starts with `-connect` or `-addnode` at
+    `127.0.0.1:+<port>` and never connects, as it does for `0x50`:
+    btclib-org/btclib-node#1264's refusal of what Core would look up.
+    """
+    with pytest.raises(ValueError, match="invalid port"):
+        _build(tmp_path, "-regtest", f"-{option}=127.0.0.1:+80")
+
+
 @pytest.mark.parametrize(
     ("key", "info"),
     [
@@ -459,6 +558,26 @@ def test_build_config_refuses_an_argument_that_is_not_an_option(
     )
     with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
         _build(tmp_path, *argv)
+
+
+@pytest.mark.parametrize(
+    ("argv", "conf", "ban_time"),
+    [([], "", 86400), (["-bantime=100"], "", 100), ([], "bantime=5\n", 5)],
+    ids=["Core's default", "command line", "file"],
+)
+def test_build_config_reads_bantime(
+    tmp_path: Path, argv: list[str], conf: str, ban_time: int
+) -> None:
+    """ISS 1219: `-bantime` is a `setban` ban's default length, as in Core."""
+    assert _build(tmp_path, *argv, conf=conf).ban_time == ban_time
+
+
+def test_help_names_bantime() -> None:
+    """ISS 1219: in Core's words, among the connection options."""
+    assert (
+        "Default duration (in seconds) of manually configured bans (default: 86400)"
+        in " ".join(cli._help_message(show_debug=False).split())
+    )
 
 
 def test_build_config_reads_a_double_dash_option(tmp_path: Path) -> None:
@@ -809,8 +928,41 @@ def test_build_config_server_off_reads_no_rpc_option(
     config = _build(tmp_path, "-server=0", argument)
     assert config.rpc_auth == ()
     assert config.rpc_cookie_perms is None
-    with pytest.raises(ValueError, match="rpc"):
-        _build(tmp_path, argument)
+    assert not config.rpc_auth_invalid
+    assert config.rpc_cookie_perms_error is None
+    config = _build(tmp_path, argument)
+    assert config.rpc_auth_invalid or config.rpc_cookie_perms_error is not None
+
+
+@pytest.mark.parametrize(
+    "argument", ["-rpcauth=bogus", "-rpccookieperms=bogus"], ids=["rpcauth", "perms"]
+)
+def test_main_a_refused_rpc_credential_prints_core_s_one_line(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    argument: str,
+) -> None:
+    """Stderr holds "Unable to start HTTP server" alone, as `bitcoind` has it.
+
+    `bitcoind` v31.1.0 with either value, and with both, prints this line
+    alone and exits 1; the value's own line is in its log.
+    """
+    monkeypatch.setattr(cli, "install_signal_handlers", lambda node: None)
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(
+            [
+                f"-datadir={tmp_path}",
+                "-regtest",
+                "-listen=0",
+                f"-rpcport={get_random_port()}",
+                argument,
+            ]
+        )
+    assert excinfo.value.code == 1
+    assert capsys.readouterr().err == (
+        "Error: Unable to start HTTP server. See debug log for details.\n"
+    )
 
 
 def test_build_config_noblocksdir_is_the_working_directory(
@@ -996,13 +1148,12 @@ def test_build_config_norpcauth_is_get_settings_list(
     assert [entry.user.decode() for entry in config.rpc_auth] == users
 
 
-def test_build_config_a_malformed_rpcauth_in_the_file_raises(tmp_path: Path) -> None:
-    """A malformed `rpcauth=` stops the node starting, as it stops Core."""
+def test_build_config_a_malformed_rpcauth_in_the_file_is_kept(tmp_path: Path) -> None:
+    """A malformed `rpcauth=` is left for the RPC listener to refuse."""
     (tmp_path / "bitcoin.conf").write_text(
         "regtest=1\nrpcauth=pytest:no-dollar-sign\n", encoding="utf-8"
     )
-    with pytest.raises(ValueError, match="Invalid -rpcauth argument"):
-        cli.build_config([f"-datadir={tmp_path}"])
+    assert cli.build_config([f"-datadir={tmp_path}"]).rpc_auth_invalid
 
 
 def test_build_config_datadir_a_file_raises(tmp_path: Path) -> None:
@@ -1925,10 +2076,6 @@ def test_main_these_options_are_refused_before_a_held_directory(
             ["-rpcbind=1.2.3.4:0", "-rpcport=0"],
             "Invalid port specified in -rpcport: '0'",
         ),
-        (
-            ["-rpcauth=bogus", "-rpccookieperms=bogus"],
-            "Invalid -rpccookieperms=bogus; must be one of 'owner', 'group', or 'all'.",
-        ),
     ],
     ids=[
         "blocksdir, maxconnections",
@@ -1936,7 +2083,6 @@ def test_main_these_options_are_refused_before_a_held_directory(
         "debug, prune",
         "rpcbind",
         "rpcport, rpcbind",
-        "rpccookieperms, rpcauth",
     ],
 )
 def test_build_config_refuses_in_core_order(
@@ -1944,10 +2090,7 @@ def test_build_config_refuses_in_core_order(
 ) -> None:
     """Two refusals in one command line: the one `bitcoind` names first.
 
-    Each measured on `bitcoind` v31.1.0 but the last, where both refusals
-    are its "Unable to start HTTP server", and `StartHTTPRPC` reads
-    `-rpccookieperms` ahead of `-rpcauth` (`src/httprpc.cpp`, at
-    bitcoin/bitcoin@9be056a8a7).
+    Each measured on `bitcoind` v31.1.0.
     """
     argv = [arg.format(x=tmp_path) for arg in argv]
     expected = re.escape(refusal.format(x=tmp_path))
@@ -2218,8 +2361,9 @@ def test_build_config_rpccookieperms_from_the_file(tmp_path: Path) -> None:
     """`rpccookieperms=` in the file, and a bad value refused."""
     (tmp_path / "bitcoin.conf").write_text("rpccookieperms=all\n", encoding="utf-8")
     assert cli.build_config([f"-datadir={tmp_path}"]).rpc_cookie_perms == 0o644
-    with pytest.raises(ValueError, match=r"^Invalid -rpccookieperms=x;"):
-        cli.build_config([f"-datadir={tmp_path}", "-rpccookieperms=x"])
+    config = cli.build_config([f"-datadir={tmp_path}", "-rpccookieperms=x"])
+    assert config.rpc_cookie_perms_error is not None
+    assert config.rpc_cookie_perms_error.startswith("Invalid -rpccookieperms=x;")
 
 
 def test_build_config_rpcwhitelist_from_the_command_line_and_the_file(
@@ -2282,3 +2426,47 @@ def test_rpcwhitelistdefault_is_read_as_core_s_interpret_bool(
     """
     argv = [f"-datadir={tmp_path}", f"-rpcwhitelistdefault={value}"]
     assert cli.build_config(argv).rpc_whitelist_default == expected
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX modes")
+def test_main_makes_what_the_node_creates_owner_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1198: Core's `SetupEnvironment` umask, set by `main` first.
+
+    Under a group- and world-readable umask, what is created after `main`
+    is 0700 for a directory and 0600 for a file, as `bitcoind` v31.1.0
+    leaves its own chain directory and `debug.log`.
+    """
+    os.umask(0o022)
+    monkeypatch.setattr(cli, "_before_lock", _refused)
+    with pytest.raises(SystemExit):
+        cli.main([])
+    directory = tmp_path / "chain"
+    directory.mkdir()
+    (directory / "history.log").write_text("")
+    assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+    assert stat.S_IMODE((directory / "history.log").stat().st_mode) == 0o600
+
+
+def _refused(argv: Sequence[str]) -> Any:
+    """Stand in for `_before_lock`, refusing whatever it is given."""
+    raise ValueError(argv)
+
+
+def test_setup_environment_leaves_the_umask_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1198: Core's `SetupEnvironment` sets no umask under `WIN32`.
+
+    The calls are recorded rather than read back from the process, so
+    the test answers the same on every platform; the POSIX call after
+    it is the control.
+    """
+    calls: list[int] = []
+    monkeypatch.setattr(os, "umask", calls.append)
+    monkeypatch.setattr(sys, "platform", "win32")
+    cli._setup_environment()
+    monkeypatch.setattr(sys, "platform", "linux")
+    cli._setup_environment()
+    assert calls == [0o077]

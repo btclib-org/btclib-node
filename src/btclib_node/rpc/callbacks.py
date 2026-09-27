@@ -26,17 +26,19 @@ from btclib.tx import Tx
 
 from btclib_node.chainstate.block_index import block_time
 from btclib_node.config import split_host_port
-from btclib_node.constants import MIN_BLOCKS_TO_KEEP, USER_AGENT, P2pConnStatus
+from btclib_node.constants import MIN_BLOCKS_TO_KEEP, USER_AGENT
 from btclib_node.exceptions import MissingPrevoutError
 from btclib_node.main import (
+    is_block_failed,
     parent_lookup,
     prune_up_to_height,
     verify_mempool_acceptance,
 )
 from btclib_node.p2p.address import ip_and_port, peer_address
+from btclib_node.p2p.banman import Subnet, is_valid_host, lookup_host, lookup_subnet
 from btclib_node.p2p.eviction import Network, is_valid, net_class
 from btclib_node.rpc.connection import RawJSON
-from btclib_node.rpc.errors import RpcError, bool_param, type_error
+from btclib_node.rpc.errors import RpcError, bool_param, json_type_name, type_error
 
 if TYPE_CHECKING:
     from btclib_node import Node
@@ -49,6 +51,7 @@ __all__ = [
     "add_node",
     "arg_names",
     "callbacks",
+    "clear_banned",
     "get_best_block_hash",
     "get_block",
     "get_block_count",
@@ -62,10 +65,12 @@ __all__ = [
     "get_raw_mempool",
     "get_raw_transaction",
     "get_tx_out_set_info",
+    "list_banned",
     "ping",
     "prune_blockchain",
     "send_raw_transaction",
     "service_names",
+    "set_ban",
     "stop",
     "submit_block",
     "test_mempool_accept",
@@ -459,8 +464,11 @@ def get_block_header(
 
     if not verbose:
         # src/rpc/blockchain.cpp:668-673: the same eighty bytes a peer
-        # is sent on the wire, hex-encoded rather than the JSON object
-        return header.serialize().hex()
+        # is sent on the wire, hex-encoded rather than the JSON object.
+        # Unchecked, as the index stores it: a version of zero or below,
+        # which Core takes below BIP34's height, is one btclib's own
+        # check refuses (btclib-org/btclib#2309)
+        return header.serialize(check_validity=False).hex()
 
     # the blocks this node has validated and connected, which is what
     # Core hands blockheaderToJSON: `ActiveChain().Tip()`, at
@@ -489,11 +497,10 @@ def get_block_header(
         # src/rpc/blockchain.cpp:175
         "version": header.version,
         # strprintf("%08x", nVersion), src/rpc/blockchain.cpp:176 --
-        # btclib bounds `version` to `0 < version <= 0x7FFFFFFF`
-        # (block_header.py's own `assert_valid`), so the top bit is
-        # never set and a plain positive format matches what Core's
-        # signed `%x` prints
-        "versionHex": f"{header.version:08x}",
+        # Core's int32_t printed as its 32 bits, so a negative version,
+        # which the index stores below BIP34's height, is `ffffffff` for
+        # -1 rather than Python's signed `-0000001`
+        "versionHex": f"{header.version & 0xFFFFFFFF:08x}",
         # src/rpc/blockchain.cpp:177 -- Core's own name, not btclib's
         # `to_dict`'s `merkle_root`
         "merkleroot": header.merkle_root,
@@ -613,21 +620,24 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     bitcoin/bitcoin@bb529657) decodes, indexes the header if it is new,
     and hands the block to `ProcessNewBlock`: `None` for one accepted,
     `"duplicate"` for one already held, and a reject reason for one
-    refused -- `BlockValidationResult::BLOCK_MISSING_PREV`'s own
-    `"prev-blk-not-found"` (`validation.cpp:4225`, same sha) is the one
-    reason this tree reproduces literally, being the one this node's own
-    `block_index.add_headers` answers the identical way `p2p.callbacks
-    .block` already reads it (missing rather than invalid). A
-    structurally invalid block is answered with btclib's own exception
-    message instead of one of Core's: `BlockValidationResult` names
-    dozens of distinct single-word reasons across `validation.cpp`, and
-    this tree does not reproduce that vocabulary.
+    refused. Two reasons are Core's literally:
+    `BlockValidationResult::BLOCK_MISSING_PREV`'s own
+    `"prev-blk-not-found"` (`validation.cpp:4225`, same sha), which this
+    node's own `block_index.add_headers` answers the identical way
+    `p2p.callbacks.block` already reads it (missing rather than invalid),
+    and `ContextualCheckBlockHeader`'s `"bad-version(0x%08x)"`, which
+    `add_headers` raises in Core's words (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Any other invalid block
+    is answered with btclib's own exception message instead of one of
+    Core's: `BlockValidationResult` names dozens of distinct single-word
+    reasons across `validation.cpp`, and this tree does not reproduce
+    that vocabulary.
 
     Stores through the same `block_index`/`block_db` calls
     `p2p.callbacks.block` makes for a block delivered over the wire,
     minus that callback's own `Connection`-specific bookkeeping
-    (`download_queue`, `last_block_timestamp`, `pending_eviction`),
-    none of which applies to a block submitted out of band. Connecting
+    (`remove_block_request`), which does not apply to a block submitted
+    out of band. Connecting
     the block to the active chain, on either path, is `main.
     update_chain`'s own job, run once every pass of `Node`'s loop
     rather than inline here -- the same pass this callback's own return
@@ -668,7 +678,10 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     try:
         block.assert_valid(node.chain.pow_limit_bits)
     except BTClibException as error:
-        block_index.invalidate(block_hash)
+        parent = block_index.get_block_info(block.header.previous_block_hash)
+        segwit = parent.index + 1 >= node.chain.consensus.segwit_height
+        if is_block_failed(block, check_witness_root=segwit):
+            block_index.invalidate(block_hash)
         return str(error)
 
     node.block_db.add_block(block)
@@ -710,13 +723,17 @@ def _network_name(network: Network) -> str:
 
 
 def _connection_type(p2p_conn: Connection) -> str:
-    """Core's `ConnectionTypeAsString` for the three types this node opens.
+    """Core's `ConnectionTypeAsString` for the five types this node opens.
 
     An outbound connection `P2pManager` did not draw itself is a
     `-connect`, `-addnode` or `addnode` peer, Core's `MANUAL`.
     """
     if p2p_conn.inbound:
         return "inbound"
+    if p2p_conn.block_relay:
+        return "block-relay-only"
+    if p2p_conn.feeler:
+        return "feeler"
     return "outbound-full-relay" if p2p_conn.automatic else "manual"
 
 
@@ -731,9 +748,15 @@ def _peer_entry(
     """
     version_message = p2p_conn.version_message
     # Core's `TxRelay` exists only once the peer's `version` asked for
-    # relay, this node offering no `NODE_BLOOM`, and the fields read off
-    # it answer 0 or false where it does not.
-    relays = version_message is not None and version_message.is_relay_requested
+    # relay, this node offering no `NODE_BLOOM`, and never for a
+    # block-relay-only peer or a feeler; the fields read off it answer 0
+    # or false where it does not.
+    relays = (
+        version_message is not None
+        and version_message.is_relay_requested
+        and not p2p_conn.block_relay
+        and not p2p_conn.feeler
+    )
     services = 0 if version_message is None else version_message.services
 
     entry: dict[str, Any] = {"id": connection_id, "addr": addr, "addrbind": addrbind}
@@ -756,9 +779,7 @@ def _peer_entry(
     # Whole seconds, pushed unconditionally, and the ping fields in
     # fractional seconds, each only once it holds a value.
     # `last_block` and `last_transaction` are the last novel block and
-    # transaction, `0` until one arrives. `last_block_timestamp` is not
-    # the field: `callbacks.block` refreshes it for every `block`, novel
-    # or not, for the download stall check.
+    # transaction, `0` until one arrives.
     entry["lastsend"] = int(p2p_conn.last_send)
     entry["lastrecv"] = int(p2p_conn.last_receive)
     entry["last_transaction"] = p2p_conn.last_novel_tx_time
@@ -813,10 +834,9 @@ def _peer_entry(
         block_index.get_block_info(block_hash).index
         for block_hash in p2p_conn.download_queue
     ]
-    # True for every handshake-complete peer, where Core waits on an
-    # inbound one's first `addr`, `addrv2` or `getaddr`
-    # (btclib-org/btclib-node#1178).
-    entry["addr_relay_enabled"] = p2p_conn.status == P2pConnStatus.Connected
+    # Core's `m_addr_relay_enabled`: false for an inbound peer until its
+    # first `addr`, `addrv2` or `getaddr` (btclib-org/btclib-node#1178).
+    entry["addr_relay_enabled"] = p2p_conn.addr_relay_enabled
     entry["addr_processed"] = p2p_conn.stats.addr_processed
     entry["addr_rate_limited"] = p2p_conn.stats.addr_rate_limited
     # No `-whitelist`/`-whitebind`: no peer holds a permission.
@@ -1034,6 +1054,107 @@ def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
         raise RpcError(RPCErrorCode.INVALID_PARAMETER, str(error)) from error
 
     node.p2p_manager.connect(address)
+
+
+_SETBAN_USAGE = 'setban "subnet" "command" ( bantime absolute )'
+
+
+def _setban_params(params: list[Any]) -> tuple[str, str, int | float | None, bool]:
+    """Check `setban`'s arguments as `HandleRequest` does, then `command`."""
+    if not 2 <= len(params) <= 4:  # noqa: PLR2004
+        raise RpcError(RPCErrorCode.MISC_ERROR, _SETBAN_USAGE)
+    if not isinstance(params[0], str):
+        raise type_error(1, "subnet", params[0], "string")
+    if not isinstance(params[1], str):
+        raise type_error(2, "command", params[1], "string")
+    bantime = params[2] if len(params) > 2 else None  # noqa: PLR2004
+    if bantime is not None and (
+        isinstance(bantime, bool) or not isinstance(bantime, (int, float))
+    ):
+        raise type_error(3, "bantime", bantime, "number")
+    absolute = bool_param(params, 3, name="absolute", default=False)
+    if params[1] not in ("add", "remove"):
+        raise RpcError(RPCErrorCode.MISC_ERROR, _SETBAN_USAGE)
+    return params[0], params[1], bantime, absolute
+
+
+def _setban_subnet(subnet_arg: str) -> Subnet:
+    """Parse `setban`'s `subnet`: a subnet with a slash, else a valid host."""
+    subnet: Subnet | None
+    if "/" in subnet_arg:
+        subnet = lookup_subnet(subnet_arg)
+    else:
+        ip = lookup_host(subnet_arg)
+        subnet = Subnet.of(ip) if ip is not None and is_valid_host(ip) else None
+    if subnet is None:
+        raise RpcError(
+            RPCErrorCode.CLIENT_INVALID_IP_OR_SUBNET, "Error: Invalid IP/Subnet"
+        )
+    return subnet
+
+
+def set_ban(node: Node, conn: RpcConnection, params: list[Any]) -> None:
+    """Answer `setban`, Core's own checks in Core's own order.
+
+    Core's `setban` (`src/rpc/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag). A `subnet` holding a slash is a subnet, and is
+    otherwise one address, which has to be a valid one. Adding a ban
+    drops every peer it matches.
+    """
+    subnet_arg, command, bantime, absolute = _setban_params(params)
+    subnet = _setban_subnet(subnet_arg)
+    ban_man = node.p2p_manager.ban_man
+    if command == "remove":
+        if not ban_man.unban(subnet):
+            raise RpcError(
+                RPCErrorCode.CLIENT_INVALID_IP_OR_SUBNET,
+                "Error: Unban failed. Requested address/subnet was not"
+                " previously manually banned.",
+            )
+        return
+    # a single address is banned already where any ban covers it, a
+    # subnet only where that very subnet is banned
+    banned = (
+        ban_man.is_subnet_banned(subnet)
+        if "/" in subnet_arg
+        else ban_man.is_banned(subnet.network)
+    )
+    if banned:
+        raise RpcError(
+            RPCErrorCode.CLIENT_NODE_ALREADY_ADDED, "Error: IP/Subnet already banned"
+        )
+    # UniValue's `getInt<int64_t>`, which only `add` calls
+    if isinstance(bantime, float) or (
+        bantime is not None and not -(1 << 63) <= bantime < 1 << 63
+    ):
+        raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
+    bantime = bantime or 0
+    if absolute and bantime < int(time.time()):
+        raise RpcError(
+            RPCErrorCode.INVALID_PARAMETER, "Error: Absolute timestamp is in the past"
+        )
+    ban_man.ban(subnet, bantime, absolute=absolute)
+    node.p2p_manager.disconnect_subnet(subnet)
+
+
+def list_banned(node: Node, conn: RpcConnection, _: list[Any]) -> list[dict[str, Any]]:
+    """Answer `listbanned`, every unexpired ban in the list's own order."""
+    now = int(time.time())
+    return [
+        {
+            "address": str(subnet),
+            "ban_created": entry.create_time,
+            "banned_until": entry.ban_until,
+            "ban_duration": entry.ban_until - entry.create_time,
+            "time_remaining": entry.ban_until - now,
+        }
+        for subnet, entry in node.p2p_manager.ban_man.banned()
+    ]
+
+
+def clear_banned(node: Node, conn: RpcConnection, _: list[Any]) -> None:
+    """Answer `clearbanned`."""
+    node.p2p_manager.ban_man.clear()
 
 
 def _btc_amount(sats: int) -> RawJSON:
@@ -1414,6 +1535,10 @@ _INVALID_SCRIPT_REASON = "Invalid signatures or script"
 # `RPCErrorCode.VERIFY_REJECTED` (`bitcoin_core_rpc`) already answers a
 # transaction the mempool refused with, above. btclib-org/btclib-node#293
 _MEMPOOL_FULL_REASON = "Mempool is full"
+# Core's own `MAX_PACKAGE_COUNT` (`src/policy/packages.h`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): how many `rawtx` one
+# `testmempoolaccept` takes. btclib-org/btclib-node#1329
+_MAX_PACKAGE_COUNT = 25
 
 
 def test_mempool_accept(
@@ -1453,14 +1578,37 @@ def test_mempool_accept(
         # handler body runs, the same as blockhash and txid elsewhere in
         # this file
         raise type_error(1, "rawtxs", rawtxs, "array")
-    out: list[dict[str, Any]] = []
+    # Core's own handler (`src/rpc/mempool.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    # the v31.1 tag) bounds the array by `MAX_PACKAGE_COUNT` and then reads
+    # every `rawtx` in order, through `UniValue::get_str` and `DecodeHexTx`,
+    # before it validates any: the first element of the wrong type or that
+    # does not decode ends the whole call. btclib-org/btclib-node#1253,
+    # btclib-org/btclib-node#1329
+    if not 1 <= len(rawtxs) <= _MAX_PACKAGE_COUNT:
+        err_msg = f"Array must contain between 1 and {_MAX_PACKAGE_COUNT} transactions."
+        raise RpcError(RPCErrorCode.INVALID_PARAMETER, err_msg)
+    txs: list[Tx] = []
     for rawtx in rawtxs:
+        if not isinstance(rawtx, str):
+            # the accessor's own message, unwrapped: an array's elements
+            # are not among what the argument type check reads
+            message = (
+                f"JSON value of type {json_type_name(rawtx)} is not of expected "
+                "type string"
+            )
+            raise RpcError(RPCErrorCode.TYPE_ERROR, message)
         try:
-            tx = Tx.parse(rawtx)
-        except BTClibValueError:
-            out.append({"allowed": False, "reject-reason": "Invalid serialization"})
-            continue
-
+            txs.append(Tx.parse(rawtx))
+        except BTClibException as error:
+            # `BTClibException`, `send_raw_transaction`'s own clause below:
+            # a script shorter than its declared length raises
+            # `BTClibRuntimeError`, not `BTClibValueError`
+            err_msg = (
+                f"TX decode failed: {rawtx} Make sure the tx has at least one input."
+            )
+            raise RpcError(RPCErrorCode.DESERIALIZATION_ERROR, err_msg) from error
+    out: list[dict[str, Any]] = []
+    for tx in txs:
         tx_res: dict[str, Any] = {
             "txid": tx.id,
             "wtxid": tx.hash,
@@ -1595,8 +1743,8 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
 def ping(node: Node, conn: RpcConnection, _: list[Any]) -> None:
     """Answer `ping` by sending every peer a fresh one, via `ping_all`.
 
-    A peer at `BIP0031_VERSION` or below is sent none, where Core sends
-    it a `ping` with no nonce. btclib-org/btclib-node#1204
+    A peer at `BIP0031_VERSION` or below is sent a `ping` with no nonce,
+    as in Core. btclib-org/btclib-node#1204
 
     Called on `Node`'s own thread, `handle_rpc`'s the same as every
     handler here; `ping_all` is defined on `P2pManager` but reaches this
@@ -1624,6 +1772,9 @@ callbacks = {
     "getconnectioncount": get_connection_count,
     "getnetworkinfo": get_network_info,
     "addnode": add_node,
+    "setban": set_ban,
+    "listbanned": list_banned,
+    "clearbanned": clear_banned,
     "getmempoolinfo": get_mempool_info,
     "getrawmempool": get_raw_mempool,
     "getrawtransaction": get_raw_transaction,
@@ -1655,6 +1806,9 @@ arg_names: dict[str, tuple[str, ...]] = {
     "getconnectioncount": (),
     "getnetworkinfo": (),
     "addnode": ("node", "command", "v2transport"),
+    "setban": ("subnet", "command", "bantime", "absolute"),
+    "listbanned": (),
+    "clearbanned": (),
     "getmempoolinfo": (),
     "getrawmempool": ("verbose", "mempool_sequence"),
     "getrawtransaction": ("txid", "verbosity|verbose", "blockhash"),
