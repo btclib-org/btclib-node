@@ -35,8 +35,7 @@ reaches it, never which callback names it — `handle_p2p`,
 does `update_chain` beside them. `Mempool` is reached from that one
 thread and no other, its `add_tx` and `remove_tx` being called from the
 p2p callbacks, the rpc callbacks and `update_chain`: its own "handled in
-same thread" comment needs no lock to back it, and a `cast` standing on
-the same invariant needs no runtime check either. `PeerDB`, the address
+same thread" comment needs no lock to back it. `PeerDB`, the address
 book above, is not so lucky: `add_active_address` arrives from the
 `verack` callback on `Node`'s thread, `get_active_addresses` from
 `manage_connections` on `P2pManager`'s, and `add_addresses` from both —
