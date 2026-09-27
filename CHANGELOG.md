@@ -764,6 +764,35 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `duplicate-invalid`, on the wire and by `submitblock`, and no longer stored,
   from an outbound peer as misbehaviour** (closes #1344).
 
+### An inbound, manual or feeler peer is kept without `NODE_WITNESS`, as in Core
+
+- **`NODE_WITNESS` is required only where Core's `ExpectServicesFromConn`
+  holds** (closes #1138).
+
+### The configuration's warnings are logged, as `bitcoind` logs them
+
+- **An unknown key, a double negative and `-allowignoredconf`'s warning reach
+  `history.log` alone, and an unrecognised section's reaches it too**
+  (closes #1295), ahead of anything else the node logs.
+
+### An `includeconf` in the chain's own section is read, as `bitcoind` reads it
+
+- **The chain's section is read for `includeconf` before the default one**
+  (closes #1302), the chain resolved first and a conflicting one refused
+  before any include, as `ReadConfigFiles` does.
+
+### An integer option is read as `bitcoind` reads it
+
+- **The digits a value starts with, saturated at the `int64_t` range** (closes
+  #1313, closes #1324), where a value that is not an integer was refused;
+  `-maxconnections` and `-prune` then narrow and wrap as they do in Core.
+
+### Only a peer this node dialled is recorded as answered, as in Core
+
+- **An inbound peer's endpoint no longer enters the answered table, and a
+  dialled one enters it at its own `version`, as Core's `AddrMan::Good`
+  does** (closes #1229, closes #1140).
+
 ### `submitblock` refuses a body its stored header does not commit to
 
 - **A block whose hash names one already stored answers `duplicate` only where

@@ -432,12 +432,9 @@ class P2pManager(threading.Thread):
         self._added_nodes = (
             frozenset(added) if len(added) < _ADDED_NODES_BOUND else frozenset()
         )
-        # Core's own `-dnsseed`, which `InitParameterInteraction` soft-sets
-        # off under `-connect` and under `-maxconnections=0` alike
-        # (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
-        # This node has no `-dnsseed` for an operator to set, so the
-        # soft-set is the whole of it: whether `run` schedules the lookup.
-        self.use_dns_seed = self.use_addrman_outgoing and max_connections > 0
+        # Core's own `-dnsseed`, `Config.dnsseed` having taken its
+        # soft-set: whether `run` schedules the lookup.
+        self.use_dns_seed = node.config.dnsseed
         # Core's `-fixedseeds`, `DEFAULT_FIXEDSEEDS` being true, which
         # this node has no option to turn off; cleared once the seeds
         # are added, as `ThreadOpenConnections` clears `add_fixed_seeds`.
@@ -1118,11 +1115,13 @@ class P2pManager(threading.Thread):
             return
         # By endpoint_key, not raw equality: a drawn address
         # carries the timestamp and services its rows were last
-        # given, by `callbacks.verack`, a peer's own `version` or a
-        # gossip, which is never the pair an existing Connection's
-        # own address was constructed with, so comparing the
-        # dataclasses themselves never matches the peer this node is
-        # already holding a connection with and dials it a second time.
+        # given, by `callbacks.version`'s own recording of a peer it
+        # dialled, its `set_services` for any peer's own word on its
+        # services, or a gossip, which is never the pair an existing
+        # Connection's own address was constructed with, so comparing
+        # the dataclasses themselves never matches the peer this node
+        # is already holding a connection with and dials it a second
+        # time.
         #
         # Locked for the same reason the count above is
         # (btclib-org/btclib-node#355).

@@ -252,6 +252,7 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
                 addnode_args=tuple(addnode_args),
                 listen=listen,
                 max_connections=max_connections,
+                dnsseed=not connect and max_connections > 0,
                 pruned=False,
             ),
             # `Connection.own_version`'s own `start_height`
@@ -966,7 +967,7 @@ def test_a_connected_peer_drawn_with_a_different_timestamp_is_not_redialled(
 ) -> None:
     """A peer drawn back with a different timestamp is still not redialled.
 
-    #70/#71: callbacks.verack records the peer at a live timestamp and
+    #70/#71: callbacks.version records the peer at a live timestamp and
     # with its handshake's own services, so the row PeerDB.random_address
     # can draw back is never equal, field for field, to the Connection's
     # own address -- endpoint_key is what the manager has to compare on
