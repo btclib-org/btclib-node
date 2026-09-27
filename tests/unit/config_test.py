@@ -16,6 +16,7 @@ from btclib_node.config import (
     DEFAULT_MAX_PEER_CONNECTIONS,
     DEFAULT_MIN_RELAY_FEERATE,
     Config,
+    get_path_arg,
     split_host_port,
 )
 from btclib_node.rpc.auth import COOKIE_FILE, RpcAuthEntry, password_hmac
@@ -213,6 +214,12 @@ def test_addnode_is_the_same_shape_as_connect() -> None:
     assert config.connect == ()
 
 
+def test_addnode_keeps_its_values_as_given() -> None:
+    """ISS 1224: `AddedNodesContain` compares the values as given."""
+    config = Config(chain="regtest", addnode=["10.0.0.1:1", "10.0.0.2"])
+    assert config.addnode_args == ("10.0.0.1:1", "10.0.0.2")
+
+
 def test_connect_and_addnode_both_take_several_entries() -> None:
     """Every spec given is resolved, in order, not only the last one."""
     config = Config(
@@ -277,6 +284,29 @@ def test_split_host_port_rejects_a_port_past_the_ceiling() -> None:
         split_host_port("127.0.0.1:70000", 8333)
 
 
+@pytest.mark.parametrize(
+    "port",
+    ["+80", " 80", "80 ", "8_0", "\u0668\u0660", "\u00b2", "99999999999999999999"],
+)
+def test_split_host_port_reads_ascii_digits_alone(port: str) -> None:
+    """`ToIntegral<uint16_t>`: what `int` reads beyond ASCII digits is refused.
+
+    Each refused by `bitcoind` v31.1.0 as `-rpcbind=127.0.0.1:<port>`, the
+    last two read from `std::from_chars` rather than measured.
+    """
+    with pytest.raises(ValueError, match="invalid port"):
+        split_host_port(f"127.0.0.1:{port}", 8333)
+
+
+def test_split_host_port_reads_leading_zeros() -> None:
+    """`bitcoind` v31.1.0 binds `-rpcbind=127.0.0.1:031301` at port 31301."""
+    assert split_host_port("127.0.0.1:031301", 8333) == ("127.0.0.1", 31301)
+    assert split_host_port("127.0.0.1:0000000000000000045000", 1) == (
+        "127.0.0.1",
+        45000,
+    )
+
+
 def test_max_connections_defaults_to_core_s_own() -> None:
     """Core's own `DEFAULT_MAX_PEER_CONNECTIONS`, at the pinned release."""
     assert DEFAULT_MAX_PEER_CONNECTIONS == 125
@@ -303,10 +333,15 @@ def test_rpcauth_is_parsed_into_rpc_auth() -> None:
     )
 
 
-def test_a_malformed_rpcauth_raises() -> None:
-    """Core refuses to start on one, with this message."""
-    with pytest.raises(ValueError, match=r"^Invalid -rpcauth argument\.$"):
-        Config(chain="regtest", rpcauth=["pytest"])
+def test_a_malformed_rpcauth_is_left_for_the_rpc_listener() -> None:
+    """Core refuses one once bound, so `Config` keeps the values before it."""
+    assert not Config(chain="regtest", rpcauth=[RPCAUTH]).rpc_auth_invalid
+    config = Config(chain="regtest", rpcauth=[RPCAUTH, "pytest", RPCAUTH])
+    assert config.rpc_auth_invalid
+    assert config.rpc_auth == (RpcAuthEntry.parse(RPCAUTH),)
+    assert not Config(
+        chain="regtest", rpcauth=["pytest"], allow_rpc=False
+    ).rpc_auth_invalid
 
 
 def test_rpcpassword_is_kept_hashed_and_empty_is_unset() -> None:
@@ -383,10 +418,17 @@ def test_rpccookieperms_is_parsed_unless_rpcpassword_is_set() -> None:
     """Core reads it only on the way to a cookie, refusing a bad one there."""
     assert Config(chain="regtest").rpc_cookie_perms is None
     assert Config(chain="regtest", rpccookieperms="group").rpc_cookie_perms == 0o640
-    with pytest.raises(ValueError, match=r"^Invalid -rpccookieperms=bogus;"):
-        Config(chain="regtest", rpccookieperms="bogus")
+    assert (
+        Config(chain="regtest", rpccookieperms="group").rpc_cookie_perms_error is None
+    )
+    config = Config(chain="regtest", rpccookieperms="bogus")
+    assert config.rpc_cookie_perms is None
+    assert config.rpc_cookie_perms_error == (
+        "Invalid -rpccookieperms=bogus; must be one of 'owner', 'group', or 'all'."
+    )
     config = Config(chain="regtest", rpcpassword="pw", rpccookieperms="bogus")
     assert config.rpc_cookie_perms is None
+    assert config.rpc_cookie_perms_error is None
 
 
 def test_rpcwhitelistdefault_defaults_to_whether_a_whitelist_is_set() -> None:
@@ -417,3 +459,18 @@ def test_rpccookiefile_is_normalised_as_core_s_get_path_arg(
     """
     config = Config(chain="regtest", data_dir=tmp_path, rpccookiefile=value)
     assert config.rpc_cookie_file == config.data_dir / name
+
+
+@pytest.mark.skipif(os.name == "nt", reason="`//` starts a UNC path on Windows")
+def test_a_leading_double_slash_is_collapsed_as_lexically_normal_does(
+    tmp_path: Path,
+) -> None:
+    """`GetPathArg` names `//<X>/c` as `/<X>/c`, where `normpath` keeps `//`.
+
+    Measured on `bitcoind` v31.1.0 with `-conf` under `-datadir=//<X>/d`,
+    named "/<X>/d/missing.conf"; three slashes are one to both.
+    """
+    assert get_path_arg(f"/{tmp_path}/c") == f"{tmp_path}/c"
+    assert get_path_arg(f"//{tmp_path}/c") == f"{tmp_path}/c"
+    config = Config(chain="regtest", data_dir=tmp_path, rpccookiefile=f"/{tmp_path}/c")
+    assert str(config.rpc_cookie_file) == f"{tmp_path}/c"

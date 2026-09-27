@@ -30,6 +30,7 @@ __all__ = [
     "decode",
     "error_reply",
     "error_status",
+    "transform_named_arguments",
 ]
 
 OK = "200 OK"
@@ -172,6 +173,63 @@ class JsonRpcRequest:
         if self.has_id:
             reply["id"] = self.id
         return reply
+
+
+def transform_named_arguments(
+    params: dict[str, Any], arg_names: tuple[str, ...]
+) -> list[Any]:
+    """Map `params`' keys onto positions as `transformNamedArguments` does.
+
+    `src/rpc/server.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag.
+    `arg_names` is the method's own, `a|b` two names for one position.
+    A position left out ahead of one given is a JSON null, and one left
+    out after the last given is not there at all. An `args` array holds
+    the leading positions, the named ones filling in after it, and an
+    `args` that is not an array is dropped. Every pair `params` holds is
+    read, so a key named twice is refused, as it is in Core; so is a
+    position given both ways, and a key no position names.
+
+    Core names the first unknown key its `std::unordered_map` iterates
+    over, an order the C++ standard leaves to the library, so no fixed
+    order matches Core's: `bitcoind` v31.1.0 on macOS names the last of
+    them in the request's own order for some sets of keys and not for
+    others. The last is the one named here.
+    """
+    args_in: dict[str, Any] = {}
+    for key, value in params.items():
+        if key in args_in:
+            message = f"Parameter {key} specified multiple times"
+            raise RpcError(RPCErrorCode.INVALID_PARAMETER, message)
+        args_in[key] = value
+    out: list[Any] = []
+    hole = 0
+    initial_hole_size = 0
+    initial_param: str | None = None
+    for pattern in arg_names:
+        name = next((n for n in pattern.split("|") if n in args_in), None)
+        if name is None:
+            hole += 1
+            if not out:
+                initial_hole_size = hole
+            continue
+        out.extend([None] * hole)
+        hole = 0
+        if initial_param is None:
+            initial_param = pattern
+        out.append(args_in.pop(name))
+    positional = args_in.pop("args", None)
+    if isinstance(positional, list):
+        if initial_param is not None and initial_hole_size < len(positional):
+            message = (
+                f"Parameter {initial_param} specified twice both as positional"
+                " and named argument"
+            )
+            raise RpcError(RPCErrorCode.INVALID_PARAMETER, message)
+        out = positional + out[len(positional) :]
+    if args_in:
+        message = f"Unknown named parameter {next(reversed(args_in))}"
+        raise RpcError(RPCErrorCode.INVALID_PARAMETER, message)
+    return out
 
 
 def error_reply(code: RPCErrorCode, message: str) -> HttpReply:
