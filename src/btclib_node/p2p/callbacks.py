@@ -785,10 +785,10 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
         # good: intended, not overlooked -- the cache is not what a
         # `getaddr` answer's freshness rests on, an `addr` entry already
         # carries its own timestamp for whoever receives it to judge
-        # staleness by, and shortening this lifetime toward the active
-        # table's own three-hour window would give back the privacy this
-        # cache exists for to buy an accuracy guarantee gossip never
-        # promised in the first place.
+        # staleness by, and shortening this lifetime to track the table
+        # more closely would give back the privacy this cache exists for
+        # to buy an accuracy guarantee gossip never promised in the
+        # first place.
         jitter = secrets.SystemRandom().uniform(0, _ADDR_SAMPLE_JITTER)
         peer_db.addr_sample_expiration = now + _ADDR_SAMPLE_LIFETIME + jitter
     sample = peer_db.addr_sample

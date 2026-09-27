@@ -835,6 +835,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   an anchor at one, on any port, ends the pass** (closes #1238); on Windows
   none is found (#1310).
 
+### An answered address is kept for Core's 30-day horizon
+
+- **An answered row leaves the table only when `IsTerrible`'s time tests call
+  it terrible: its handshake stamp over 30 days old or 10 minutes ahead**
+  (closes #1318), where it left three hours after its last handshake.
+
 ### `disconnectnode` drops a connection, as Core's does
 
 - **`disconnectnode` drops a connection by `getpeerinfo`'s address or id, with

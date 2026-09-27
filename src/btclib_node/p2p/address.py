@@ -271,6 +271,30 @@ _MAX_ADDRESSES = 10000
 # `PeerDB.last_try` looks back, so it is also how long a try is kept.
 RECENT_TRY_SECONDS = 10 * 60
 
+# Core's `ADDRMAN_HORIZON` (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7,
+# the v31.1 tag): an address not seen for this long is terrible
+_ADDRMAN_HORIZON = 30 * 24 * 3600
+# how far ahead of the clock a timestamp may be before it is terrible,
+# `IsTerrible`'s "flying DeLorean" (same file and sha)
+_ADDRMAN_FUTURE_SLACK = 10 * 60
+
+
+def _aged_out(address: NetworkAddressV2, now: float) -> bool:
+    """Whether `address`'s handshake stamp fails `IsTerrible`'s time tests.
+
+    The two time tests of `AddrInfo::IsTerrible` (`src/addrman.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): stamped more than ten
+    minutes ahead of `now`, or older than `_ADDRMAN_HORIZON`. Core
+    applies them to `nTime`, which `Good_` leaves alone at the handshake
+    and which gossip and `Connected_` move instead, the latter when a
+    full outbound peer disconnects. `PeerDB.add_addresses` stores a
+    gossiped address with timestamp 0, so there is no gossip time to
+    test, and the handshake's is tested instead
+    (btclib-org/btclib-node#1364).
+    """
+    age = now - address.timestamp
+    return age < -_ADDRMAN_FUTURE_SLACK or age > _ADDRMAN_HORIZON
+
 
 def _storable(address: NetworkAddressV2) -> bool:
     """Whether Core's addrman would hold `address` at all.
@@ -432,8 +456,8 @@ class PeerDB:
 
         self.init_from_db()
         # DNS is asked only where the durable table came back with
-        # nothing this node has itself confirmed working recently:
-        # `get_active_addresses` is what "recently" already means, and
+        # nothing this node has itself confirmed working within
+        # `_ADDRMAN_HORIZON`, what `get_active_addresses` keeps, and
         # `can_connect` is what catches a table `add_addresses` filled
         # with tor, i2p or an ipv6-only answer from a seed -- #89, where
         # a nonempty table was exactly the case DNS was skipped for and
@@ -797,21 +821,25 @@ class PeerDB:
         return self._last_try.get(endpoint_key(address), 0.0)
 
     def get_active_addresses(self) -> list[NetworkAddressV2]:
-        """Return `active_addresses`, pruned of every entry older than 3 hours.
+        """Return `active_addresses`, pruned of every entry `_aged_out` names.
 
         A pruned entry's durable `answered-` row is deleted too. Locked
         with `_active_lock`.
         """
         now = time.time()
         with self._active_lock:
-            # active if seen within the last three hours; an entry that
-            # ages out here loses its `answered-` row too, so the
-            # durable store stays bounded by what is still active rather
-            # than by every endpoint this node has ever dialled and
-            # heard back from over its whole lifetime (#253)
+            # A row's timestamp is its last handshake, and it is kept
+            # until `IsTerrible`'s time tests call that stamp terrible
+            # (`_aged_out`, which says why the stamp is not Core's
+            # `nTime`). Core keeps even a terrible entry in its tried
+            # table, leaving it out of a `getaddr` answer and moving it
+            # back to the new table only when another entry needs its
+            # slot. Here it leaves the table and its `answered-` row
+            # with it, so that the durable store stays bounded by what
+            # answered within the horizon (#253).
             active: list[NetworkAddressV2] = []
             for addr in self.active_addresses:
-                if now - addr.timestamp < 3600 * 3:
+                if not _aged_out(addr, now):
                     active.append(addr)
                 elif self.db is not None:
                     self.db.delete(_ANSWERED + endpoint_key(addr))

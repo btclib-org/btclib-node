@@ -81,9 +81,9 @@ __all__ = ["P2pManager"]
 # table on its own rather than only as a side effect of something asking
 # for it. Not tied to the loop's own sleep below -- an O(n) walk of
 # `active_addresses` every pass buys nothing a run every few minutes
-# does not -- but to `get_active_addresses`'s own three-hour staleness
-# window: far enough under it that a stale row does not linger long past
-# it, however rarely this node is asked for its table.
+# does not -- but far enough under `get_active_addresses`'s own horizon
+# that an aged-out row does not linger long past it, however rarely this
+# node is asked for its table.
 # btclib-org/btclib-node#71
 _ACTIVE_PRUNE_INTERVAL = 300
 
