@@ -741,6 +741,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `history.log` alone, and an unrecognised section's reaches it too**
   (closes #1295), ahead of anything else the node logs.
 
+### An `includeconf` in the chain's own section is read, as `bitcoind` reads it
+
+- **The chain's section is read for `includeconf` before the default one**
+  (closes #1302), the chain resolved first and a conflicting one refused
+  before any include, as `ReadConfigFiles` does.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

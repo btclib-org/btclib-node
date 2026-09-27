@@ -360,11 +360,89 @@ def test_load_conf_tree_warns_about_and_ignores_a_nested_includeconf(
     conf.write_text("includeconf=secrets.conf\n", encoding="utf-8")
     tree = _load(conf)
     assert tree[""]["rpcport"] == ["9001"]
-    assert tree[""]["includeconf"] == ["secrets.conf"]
+    # kept, as `ReadConfigStream` keeps it, and read by nothing
+    assert tree[""]["includeconf"] == ["secrets.conf", "third.conf"]
     assert capsys.readouterr().err == (
         "warning: -includeconf cannot be used from included files; "
         "ignoring -includeconf=third.conf\n"
     )
+
+
+_NESTED = (
+    "warning: -includeconf cannot be used from included files; ignoring -includeconf="
+)
+
+
+def test_load_conf_tree_reads_the_chain_sections_includes_first(tmp_path: Path) -> None:
+    """ISS 1302: the chain's own section's `includeconf`, then the default's.
+
+    As `ReadConfigFiles`'s `add_includes(chain_id)` before
+    `add_includes({})`: `bitcoind` v31.1.0 warns of `a.conf`'s section
+    before `b.conf`'s with this root file.
+    """
+    (tmp_path / "a.conf").write_text("port=1\n", encoding="utf-8")
+    (tmp_path / "b.conf").write_text("port=2\n", encoding="utf-8")
+    conf = tmp_path / "bitcoin.conf"
+    conf.write_text(
+        "regtest=1\nincludeconf=b.conf\n[regtest]\nincludeconf=a.conf\n",
+        encoding="utf-8",
+    )
+    assert _load(conf)[""]["port"] == ["1", "2"]
+
+
+def test_load_conf_tree_reads_the_section_of_the_command_lines_chain(
+    tmp_path: Path,
+) -> None:
+    """ISS 1302: the chain is the command line's and the root file's both."""
+    (tmp_path / "a.conf").write_text("port=1\n", encoding="utf-8")
+    conf = tmp_path / "bitcoin.conf"
+    conf.write_text("[regtest]\nincludeconf=a.conf\n", encoding="utf-8")
+    assert "port" not in _load(conf).get("", {})
+    command_line, _ = cli._parse_parameters(["-regtest"])
+    tree = cli._load_conf_tree(
+        conf,
+        conf_explicit=False,
+        base_dir=tmp_path,
+        use_includes=True,
+        command_line=command_line,
+    )
+    assert tree[""]["port"] == ["1"]
+
+
+def test_load_conf_tree_warns_of_the_includes_of_either_section_it_read(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 1302: the chain's section's first, and never another chain's.
+
+    Measured on `bitcoind` v31.1.0 with these files: it warns of `y.conf`,
+    then `x.conf`, and says nothing of `z.conf`.
+    """
+    (tmp_path / "inc.conf").write_text(
+        "includeconf=x.conf\n[regtest]\nincludeconf=y.conf\n[main]\nincludeconf=z.conf\n",
+        encoding="utf-8",
+    )
+    conf = tmp_path / "bitcoin.conf"
+    conf.write_text("regtest=1\n[regtest]\nincludeconf=inc.conf\n", encoding="utf-8")
+    _load(conf)
+    assert capsys.readouterr().err == f"{_NESTED}y.conf\n{_NESTED}x.conf\n"
+
+
+def test_load_conf_tree_warns_of_the_includes_of_a_chain_an_include_chose(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 1302: `chain_id_final`'s every `includeconf`, the root file's too.
+
+    Measured on `bitcoind` v31.1.0 with these files: `r.conf` is warned
+    about and not read.
+    """
+    (tmp_path / "inc.conf").write_text("regtest=1\n", encoding="utf-8")
+    (tmp_path / "r.conf").write_text("port=1\n", encoding="utf-8")
+    conf = tmp_path / "bitcoin.conf"
+    conf.write_text(
+        "includeconf=inc.conf\n[regtest]\nincludeconf=r.conf\n", encoding="utf-8"
+    )
+    assert "port" not in _load(conf)[""]
+    assert capsys.readouterr().err == f"{_NESTED}r.conf\n"
 
 
 @pytest.mark.parametrize(
@@ -2133,6 +2211,81 @@ def no_node(monkeypatch: pytest.MonkeyPatch) -> None:
     With `Node` in place such an argument starts a node that never stops.
     """
     monkeypatch.delattr(cli, "Node")
+
+
+@pytest.mark.usefixtures("no_node")
+def test_main_reads_an_include_of_the_chains_own_section(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 1302: what it names is read, and refused as `bitcoind` refuses it."""
+    (tmp_path / "bitcoin.conf").write_text(
+        "regtest=1\n[regtest]\nincludeconf=inc.conf\n", encoding="utf-8"
+    )
+    (tmp_path / "inc.conf").write_text("maxconnections=-1\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        cli.main([f"-datadir={tmp_path}"])
+    assert capsys.readouterr().err == (
+        "Error: -maxconnections must be greater or equal than zero\n"
+    )
+
+
+@pytest.mark.usefixtures("no_node")
+@pytest.mark.parametrize(
+    ("argv", "conf", "refusal"),
+    [
+        (
+            ["-chain=bogus"],
+            "includeconf=nosuch.conf\n",
+            "Failed to include configuration file nosuch.conf",
+        ),
+        ([], "chain=bogus\nincludeconf=inc.conf\n", "parse error on line 1: bad"),
+        (
+            ["-chain=bogus"],
+            "[bogus]\nincludeconf=inc.conf\n",
+            "parse error on line 1: bad",
+        ),
+    ],
+    ids=["missing include", "the file's chain", "the unknown chain's section"],
+)
+def test_main_reads_the_includes_of_a_chain_core_does_not_know(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    conf: str,
+    refusal: str,
+) -> None:
+    """ISS 1302: `GetChainTypeString` names it; `GetChainType` refuses later.
+
+    Measured on `bitcoind` v31.1.0 with these files: the include's own
+    refusal, and not "Unknown chain bogus.", which it gives with no
+    include at all.
+    """
+    (tmp_path / "bitcoin.conf").write_text(conf, encoding="utf-8")
+    (tmp_path / "inc.conf").write_text("bad\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        cli.main([f"-datadir={tmp_path}", *argv])
+    assert capsys.readouterr().err == (
+        f"Error: Error reading configuration file: {refusal}\n"
+    )
+
+
+@pytest.mark.usefixtures("no_node")
+def test_main_refuses_a_conflicting_chain_before_any_include(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 1302: the chain `ReadConfigFiles` resolves first, with no prefix.
+
+    `bitcoind` v31.1.0 refuses the combination, not the missing file,
+    and without `InitConfig`'s "Error reading configuration file: ",
+    the refusal being thrown rather than returned; its words are its
+    own (btclib-org/btclib-node#1311).
+    """
+    (tmp_path / "bitcoin.conf").write_text(
+        "regtest=1\nincludeconf=nosuch.conf\n", encoding="utf-8"
+    )
+    with pytest.raises(SystemExit):
+        cli.main([f"-datadir={tmp_path}", "-testnet"])
+    assert capsys.readouterr().err.startswith("Error: invalid combination of ")
 
 
 def test_config_options_records_every_section_as_core_does() -> None:
