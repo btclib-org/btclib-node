@@ -215,9 +215,9 @@ def _numeric_host(text: str) -> IPv4Address | IPv6Address | None:
             return ip.ipv4_mapped
         if ip in _INTERNAL:
             continue
-        if ip in _TORV2:
-            return IPv6Address(0)
         scope = cast("tuple[str, int, int, int]", sockaddr)[3]
+        if ip in _TORV2:
+            ip = IPv6Address(0)
         return IPv6Address(f"{ip}%{scope}") if scope else ip
     return None
 

@@ -4,8 +4,20 @@
 
 """The ban list: Core's `CSubNet`, `LookupSubNet` and `BanMan`.
 
-The subnet cases are Core's own `subnet_test` (`src/test/netbase_tests.cpp`,
-at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), those naming an IP address.
+Read at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, the cases come from:
+
+- `subnet_test` (`src/test/netbase_tests.cpp`), its IP subnets and its
+  onion one;
+- `netbase_dont_resolve_strings_with_embedded_nul_characters`, the same
+  file;
+- the onion and I2P vectors of `src/test/net_tests.cpp`;
+- what a regtest bitcoind v31.1 on macOS answered to `setban`: the
+  forms `getaddrinfo` reads, trailing whitespace, a scope, an onion
+  name in upper case or with a wrong checksum, and the order of the list.
+
+The rest are built here, not taken from Core: an onion or I2P host
+with a prefix or as a netmask, a padded onion name, an I2P name with
+bits left over, and an onion suffix in upper case.
 """
 
 import json
@@ -240,6 +252,8 @@ def test_lookup_host_reads_what_getaddrinfo_reads(text: str, expected: str) -> N
         ("[fe80::3%1]", "fe80::3%1/128"),
         ("fe80::4%1/64", "fe80::%1/64"),
         ("fe80::5%1/ffff:ffff:ffff:ffff::", "fe80::%1/64"),
+        # bitcoind v31.1 keeps the scope of a Tor v2 address it unsets
+        ("fd87:d87e:eb43::1%1", "::%1/128"),
     ],
 )
 def test_a_scope_is_kept_and_written(text: str, expected: str) -> None:
