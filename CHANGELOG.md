@@ -722,6 +722,7 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **An inbound peer's endpoint no longer enters the answered table**,
   matching Core's own `AddrMan::Good`, called under `!pfrom.IsInboundConn()`
   alone (closes #1229, closes #1140).
+
 ### Each peer is asked for blocks of its own best chain, as in Core
 
 - **A peer is asked only for blocks of its best known chain, within Core's
