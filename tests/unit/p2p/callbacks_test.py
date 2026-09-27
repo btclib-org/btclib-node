@@ -1186,6 +1186,25 @@ def test_a_dialled_peer_refused_in_version_is_not_recorded(refused: bytes) -> No
     assert peer_db.active_addresses == []
 
 
+def test_an_inbound_peer_completing_version_is_not_recorded() -> None:
+    """ISS 1229: `version`'s own recording is `not conn.inbound`-gated too.
+
+    `AddrMan::Good` runs under `!pfrom.IsInboundConn()` alone
+    (`net_processing.cpp:3790`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag); an inbound peer reaches the same point in this callback --
+    none of `_refuses`'s checks single it out -- and must still not be
+    recorded, which nothing calling `verack` on an inbound peer alone
+    can show, since this callback never reaches that point for one.
+    """
+    accepted = peer_address("1.2.3.4", 18444)
+    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+    # known, so that it would be recorded if the inbound exclusion did not
+    peer_db.add_addresses([accepted])
+    peer = a_peer(inbound=True, address=accepted)
+    version(a_handshake_node(peer_db=peer_db), a_version(), peer)
+    assert peer_db.active_addresses == []
+
+
 def test_an_inbound_handshake_moves_its_port_and_is_not_recorded() -> None:
     """ISS 1229: Core calls `AddrMan::Good` for a peer it dialled alone.
 
