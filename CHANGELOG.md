@@ -885,6 +885,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   (closes #1249). A test needing IPv6 skips rather than fails the suite
   (closes #1250); the root-skipped one carries its pragma (closes #1251).
 
+### `-dnsseed`, `-fixedseeds` and `-seednode` steer the bootstrap
+
+- **`-dnsseed` and `-fixedseeds` turn DNS seeding and the chain's fixed
+  seeds off, and `-seednode` addr-fetches a peer ahead of the DNS seeds,
+  one at a time** (closes #1192), as Core's `ThreadOpenConnections` does.
+
 ### `[tool.uv]`'s floor rises to the `uv` `dependabot-core` bundles
 
 - **`required-version` reads `>=0.12.19`, the pin in `dependabot-core`'s
