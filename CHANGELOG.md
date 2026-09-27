@@ -769,6 +769,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **It raised `IndexError`: the relaying peer was dropped and the RPC answered
   `-32603`** (closes #1252).
 
+### The mempool sizes a transaction by its sigops too, as Core
+
+- **Every feerate and the size limit read Core's sigop-adjusted vsize, and a
+  transaction over 16000 sigops is refused** (closes #1357), as `bitcoind`
+  answers both.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

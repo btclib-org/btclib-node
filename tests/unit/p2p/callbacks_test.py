@@ -98,7 +98,7 @@ from btclib_node.exceptions import (
     TxRejectedError,
 )
 from btclib_node.log import Logger
-from btclib_node.main import verify_mempool_acceptance
+from btclib_node.main import MempoolAcceptance, verify_mempool_acceptance
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import PeerDB, endpoint_key, host_key, peer_address
 from btclib_node.p2p.banman import BanMan, lookup_subnet
@@ -1872,14 +1872,18 @@ def test_a_transaction_that_verifies_is_kept_and_reported(
 
     Kept in the mempool, and reported to `download_manager.received_txs`
     keyed on the sending peer's id, for the download manager's own
-    announce-to-others bookkeeping.
+    announce-to-others bookkeeping. Kept at the vsize verification
+    answered (btclib-org/btclib-node#1357).
     """
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
+    monkeypatch.setattr(
+        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, 999)
+    )
     transaction = a_transaction()
     node = a_data_node()
     peer = a_peer(id=3)
     tx(node, TxMsg(transaction, include_witness=True).serialize(), peer)
     assert node.mempool.contains_tx(transaction)
+    assert node.mempool.vsizes[transaction.hash] == 999
     assert node.download_manager.received_txs == [(3, transaction.hash)]
     # a novel transaction the mempool took: what eviction reads (ISS 1064)
     assert peer.last_novel_tx_time > 0
@@ -2009,7 +2013,7 @@ def test_a_held_txid_under_another_witness_is_refused_as_held(
     node.is_initial_block_download = False
     reasons: list[str] = []
 
-    def recording(node: Node, transaction: Tx) -> int:
+    def recording(node: Node, transaction: Tx) -> MempoolAcceptance:
         try:
             return verify_mempool_acceptance(node, transaction)
         except TxRejectedError as exc:
@@ -2150,7 +2154,9 @@ def test_a_transaction_received_in_initial_block_download_is_dropped(
     # verify_mempool_acceptance is patched to accept unconditionally,
     # so the mempool staying empty is the gate firing rather than a
     # coincidental rejection
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
+    monkeypatch.setattr(
+        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, tx.vsize)
+    )
     transaction = a_transaction()
     node = a_data_node(is_initial_block_download=True)
     tx(node, TxMsg(transaction, include_witness=True).serialize(), a_peer(id=3))
@@ -2167,7 +2173,9 @@ def test_a_transaction_already_held_is_not_reported_twice(
     never reaches `download_manager.received_txs` even though
     `add_tx` itself would be a harmless no-op for it.
     """
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
+    monkeypatch.setattr(
+        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, tx.vsize)
+    )
     transaction = a_transaction()
     node = a_data_node()
     node.mempool.add_tx(transaction)
@@ -2199,7 +2207,9 @@ def test_a_transaction_a_full_mempool_declined_is_not_reported_either(
     # every other peer, and one that then asks for it gets `notfound`
     # for a transaction this node never actually kept.
     # btclib-org/btclib-node#277
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
+    monkeypatch.setattr(
+        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, tx.vsize)
+    )
     transaction = a_transaction()
     node = a_data_node()
     node.mempool.bytesize_limit = 0
@@ -2731,7 +2741,9 @@ def test_a_transaction_is_taken_in_out_of_ibd_below_block_synced(
     blocks by `submitblock`, say -- keeps the transaction and queues the
     announcement.
     """
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
+    monkeypatch.setattr(
+        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, tx.vsize)
+    )
     transaction, announced = a_transaction(), a_transaction()
     node = a_data_node(status=NodeStatus.SyncingHeaders)
     peer = a_peer(id=3, wtxidrelay_received=True)

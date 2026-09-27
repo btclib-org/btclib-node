@@ -1344,11 +1344,13 @@ def get_raw_mempool(
         return {
             tx.id.hex(): {
                 "size": tx.size,
-                "vsize": tx.vsize,
+                # Core's `GetTxSize`, the sigop-adjusted one.
+                # btclib-org/btclib-node#1357
+                "vsize": node.mempool.vsizes[wtxid],
                 "weight": tx.weight,
                 "wtxid": tx.hash.hex(),
             }
-            for tx in node.mempool.transactions.values()
+            for wtxid, tx in node.mempool.transactions.items()
         }
 
     txids = [txid.hex() for txid in node.mempool.txid_index]
@@ -1609,7 +1611,6 @@ def test_mempool_accept(
             raise RpcError(RPCErrorCode.DESERIALIZATION_ERROR, err_msg) from error
     return [_mempool_accept_verdict(node, tx) for tx in txs]
 
-
 def _mempool_accept_verdict(node: Node, tx: Tx) -> dict[str, Any]:
     """Return `test_mempool_accept`'s own per-tx verdict for `tx`.
 
@@ -1630,10 +1631,12 @@ def _mempool_accept_verdict(node: Node, tx: Tx) -> dict[str, Any]:
         "txid": tx.id,
         "wtxid": tx.hash,
         "allowed": False,
-        "vsize": tx.vsize,
     }
     try:
-        verify_mempool_acceptance(node, tx)
+        # `vsize` for an accepted one alone, as Core answers it: the
+        # sigop-adjusted size, known once the prevouts are read.
+        # btclib-org/btclib-node#1357
+        tx_res["vsize"] = verify_mempool_acceptance(node, tx).vsize
         tx_res["allowed"] = True
     except TxRejectedError as exc:
         # Core's own pair for every reason but `missing-inputs`
@@ -1713,7 +1716,7 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
         node.p2p_manager.broadcast_raw_transaction(held, node.mempool.fees[held.hash])
         return tx.id.hex()
     try:
-        fee = verify_mempool_acceptance(node, tx)
+        fee, vsize = verify_mempool_acceptance(node, tx)
     except MissingPrevoutError as exc:
         # Core's own missing-inputs code, RPC_VERIFY_ERROR
         # (src/rpc/protocol.h): a transaction this node cannot verify
@@ -1738,7 +1741,7 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
     # `tx.id.hex()` regardless of that boolean would tell the caller
     # this transaction was kept when it was not -- the same defect #277
     # fixed on the peer-to-peer path, `p2p/callbacks.py`'s `tx` handler.
-    if not node.mempool.add_tx(tx, fee):
+    if not node.mempool.add_tx(tx, fee, vsize):
         # Not kept: `Mempool._evict_to_limit` ran
         # and took this transaction right back out for being the worst
         # one held once `Mempool.bytesize_limit` was restored -- exactly

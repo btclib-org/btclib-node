@@ -16,7 +16,7 @@ that relay one.
 
 import time
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, NamedTuple, cast
 
 from btclib.block import (
     coinbase_witness_commitment,
@@ -24,7 +24,8 @@ from btclib.block import (
     median_time_past,
 )
 from btclib.block.block_context import BlockContext
-from btclib.consensus import MAX_BLOCK_WEIGHT, subsidy
+from btclib.block.limits import MAX_BLOCK_SIGOPS_COST
+from btclib.consensus import MAX_BLOCK_WEIGHT, WITNESS_SCALE_FACTOR, subsidy
 from btclib.exceptions import BTClibException, BTClibValueError
 from btclib.fee import fee_from_vsize
 from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
@@ -47,7 +48,12 @@ from btclib_node.exceptions import (
     PrevoutCountMismatchError,
     TxRejectedError,
 )
-from btclib_node.interpreter import check_transaction, check_transactions, get_flags
+from btclib_node.interpreter import (
+    check_transaction,
+    check_transactions,
+    get_flags,
+    sig_op_cost,
+)
 from btclib_node.p2p.block_availability import (
     peer_has_header,
     process_block_availability,
@@ -67,6 +73,7 @@ if TYPE_CHECKING:
     from btclib_node.p2p.block_availability import BlockAvailability
 
 __all__ = [
+    "MempoolAcceptance",
     "is_block_failed",
     "is_block_mutated",
     "parent_lookup",
@@ -270,10 +277,10 @@ def _reconcile_mempool_for_reorg(
                 # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a
                 # transaction a block already carried is not held to the
                 # feerate floor a newcomer is. btclib-org/btclib-node#1245
-                fee = verify_mempool_acceptance(node, tx, bypass_limits=True)
+                fee, vsize = verify_mempool_acceptance(node, tx, bypass_limits=True)
             except MissingPrevoutError, BTClibValueError:
                 continue
-            node.mempool.add_tx(tx, fee)
+            node.mempool.add_tx(tx, fee, vsize)
     for block in to_add:
         # an empty mempool holds none of them, and `remove_tx` hashes
         # each transaction to ask, which a block connected during
@@ -962,10 +969,30 @@ def update_chain(node: Node) -> None:
         settle_at_no_candidate(node)
 
 
+# Core's own `MAX_STANDARD_TX_SIGOPS_COST` and `DEFAULT_BYTES_PER_SIGOP`
+# (`src/policy/policy.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
+# the most sigop cost a standard transaction may carry, and the bytes each
+# unit of it weighs in the vsize. btclib-org/btclib-node#1357
+_MAX_STANDARD_TX_SIGOPS_COST = MAX_BLOCK_SIGOPS_COST // 5
+_BYTES_PER_SIGOP = 20
+
+
+class MempoolAcceptance(NamedTuple):
+    """What `verify_mempool_acceptance` answers for a candidate it accepts.
+
+    `fee` in satoshi, and `vsize` Core's `GetVirtualTransactionSize(weight,
+    sigop cost, DEFAULT_BYTES_PER_SIGOP)`, the size the mempool prices and
+    counts the transaction by. btclib-org/btclib-node#1357
+    """
+
+    fee: int
+    vsize: int
+
+
 def verify_mempool_acceptance(
     node: Node, tx: Tx, *, bypass_limits: bool = False
-) -> int:
-    """Verify a transaction against its prevouts and return its fee.
+) -> MempoolAcceptance:
+    """Verify a transaction against its prevouts, return its fee and vsize.
 
     The fee is the same sum-of-inputs-less-sum-of-outputs
     `btclib.script.engine.verify_amounts` already computes and discards
@@ -1092,11 +1119,12 @@ def verify_mempool_acceptance(
     # not for its fee; `check_transaction` below asks it again
     verify_amounts(prev_outputs, tx)
     fee = sum(x.value for x in prev_outputs) - sum(x.value for x in tx.vout)
+    vsize = _sigop_adjusted_vsize(tx, prev_outputs)
     if not bypass_limits:
-        _check_fee_rate(node, tx.vsize, fee)
+        _check_fee_rate(node, vsize, fee)
     # Core's own `ReplacementChecks`, after `PreChecks` and before the
     # scripts, `bypass_limits` or not. btclib-org/btclib-node#1244
-    mempool.check_replacement(tx, fee)
+    mempool.check_replacement(tx, fee, vsize)
 
     # Checked last, after the cheap finality and sequence-lock checks
     # above: Core defers its own script checks the same way, to spend no
@@ -1105,7 +1133,24 @@ def verify_mempool_acceptance(
     # at bitcoin/bitcoin@4519933391).
     check_transaction(prev_outputs, tx)
 
-    return fee
+    return MempoolAcceptance(fee, vsize)
+
+
+def _sigop_adjusted_vsize(tx: Tx, prev_outputs: list[TxOut]) -> int:
+    """Return Core's vsize for `tx`, refusing one over the sigop ceiling.
+
+    `PreChecks` (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag), `bypass_limits` or not: `GetTransactionSigOpCost` under the
+    standard flags, the vsize `GetVirtualTransactionSize` adjusts by it,
+    and "bad-txns-too-many-sigops" past `MAX_STANDARD_TX_SIGOPS_COST`.
+    btclib-org/btclib-node#1357
+    """
+    cost = sig_op_cost(tx, prev_outputs)
+    if cost > _MAX_STANDARD_TX_SIGOPS_COST:
+        reason, details = "bad-txns-too-many-sigops", str(cost)
+        raise TxRejectedError(reason, details)
+    adjusted_weight = max(tx.weight, cost * _BYTES_PER_SIGOP)
+    return -(-adjusted_weight // WITNESS_SCALE_FACTOR)
 
 
 def _check_fee_rate(node: Node, vsize: int, fee: int) -> None:
@@ -1118,8 +1163,7 @@ def _check_fee_rate(node: Node, vsize: int, fee: int) -> None:
     own reason and "<fee> < <floor>". Core also asks whether the rolling
     minimum is positive, which a fee never negative here makes
     redundant: `verify_amounts` has already refused one. `vsize` is
-    `tx.vsize`, where Core's `GetTxSize` is the sigop-adjusted
-    `GetVirtualTransactionSize`: btclib-org/btclib-node#1357.
+    the sigop-adjusted one, Core's `GetTxSize`: btclib-org/btclib-node#1357.
     """
     mempool_reject_fee = fee_from_vsize(vsize, node.mempool.get_min_fee_rate())
     if fee < mempool_reject_fee:
