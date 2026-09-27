@@ -66,9 +66,13 @@ def test_add_tx(rpc_node: Node) -> None:
         )
         return body["result"][0]
 
-    result = accept("00")
-    assert not result["allowed"]
-    assert result["reject-reason"] == "Invalid serialization"
+    _, body = client.call_raw(
+        "testmempoolaccept", [["00"]], jsonrpc="1.0", request_timeout=2
+    )
+    assert body["error"]["code"] == -22
+    assert body["error"]["message"] == (
+        "TX decode failed: 00 Make sure the tx has at least one input."
+    )
 
     result = accept(invalid_tx.serialize(include_witness=True).hex())
     assert not result["allowed"]

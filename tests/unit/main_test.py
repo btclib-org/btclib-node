@@ -4,6 +4,7 @@
 
 """`update_chain`/`verify_mempool_acceptance`: connect, reorg, reject."""
 
+import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -1985,6 +1986,7 @@ def test_a_store_closed_without_a_flush_redoes_only_what_was_never_flushed(
         chain="regtest", data_dir=tmp_path, allow_p2p=False, allow_rpc=False, debug=True
     )
     first = Node(config)
+    first.load()
     first.status = NodeStatus.HeaderSynced
 
     chain = generate_random_chain(3, RegTest().genesis.hash)
@@ -2014,6 +2016,7 @@ def test_a_store_closed_without_a_flush_redoes_only_what_was_never_flushed(
     first.logger.close()
 
     reopened = Node(config)
+    reopened.load()
     reopened.status = NodeStatus.HeaderSynced
     # the store opens without error, and reflects only the one flush
     # that actually happened: fewer than all three blocks are durable
@@ -2410,6 +2413,18 @@ def test_a_fork_longer_than_the_retained_depth_prunes_correctly_on_disk(
     for block_hash in kept_hashes:
         assert reopened.block_index.get_block_info(block_hash).downloaded is True
     reopened.close()
+
+
+def test_a_block_connected_stamps_the_last_tip_update(node: Node) -> None:
+    """ISS 1100: Core's `BlockConnected` stamps `m_last_tip_update`.
+
+    What `DownloadManager` reads a stale tip off: zero until a block
+    connects, the time it did after.
+    """
+    assert node.download_manager.last_tip_update == 0
+    before = time.time()
+    connect(node, generate_random_chain(1, RegTest().genesis.hash))
+    assert before <= node.download_manager.last_tip_update <= time.time()
 
 
 def a_block_over(transactions: list[Tx], committed: list[Tx] | None = None) -> Block:

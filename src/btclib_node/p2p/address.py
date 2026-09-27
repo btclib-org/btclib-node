@@ -42,13 +42,14 @@ from btclib.p2p.addrv2 import (
 
 from btclib_node.db import KeyValueStore
 from btclib_node.exceptions import UnsupportedAddressTypeError
-from btclib_node.p2p.eviction import is_routable
+from btclib_node.p2p.eviction import get_network, is_routable
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
     from pathlib import Path
 
     from btclib_node.chains import Chain
+    from btclib_node.p2p.eviction import Network
 
 __all__ = [
     "RECENT_TRY_SECONDS",
@@ -589,7 +590,9 @@ class PeerDB:
         """
         return self.address_sampler()()
 
-    def address_sampler(self) -> Callable[[], NetworkAddressV2 | None]:
+    def address_sampler(
+        self, *, new_only: bool = False, network: Network | None = None
+    ) -> Callable[[], NetworkAddressV2 | None]:
         """Return a draw over the dialable addresses of both tables, as of now.
 
         Each call of what this returns is one `_select`, between the
@@ -598,9 +601,17 @@ class PeerDB:
         answered endpoint is left out of the gossiped side, where
         `addresses` holds it too, as Core's `Good_` moves an entry from
         the new table to the tried one and `Select_` flips between two
-        tables that never hold one endpoint twice.
+        tables that never hold one endpoint twice. With `new_only` the
+        draw is from the gossiped side alone, Core's `Select(true, ...)`
+        that a feeler makes, and with `network` from both sides kept to
+        the one network, as `CNetAddr::GetNetwork` names it: Core's
+        `Select(false, {network})`, which an extra network peer makes.
         """
-        answered = [addr for addr in self.get_active_addresses() if can_connect(addr)]
+        answered = [
+            addr
+            for addr in self.get_active_addresses()
+            if can_connect(addr) and (network is None or get_network(addr) == network)
+        ]
         tried = {_endpoint(addr) for addr in answered}
         # Drawn from the addresses that can be dialled, rather than from
         # the whole table with a retry on the ones that cannot: a table
@@ -618,9 +629,11 @@ class PeerDB:
             known = [
                 address
                 for address in self.addresses
-                if can_connect(address) and _endpoint(address) not in tried
+                if can_connect(address)
+                and _endpoint(address) not in tried
+                and (network is None or get_network(address) == network)
             ]
-        return partial(_select, answered, known)
+        return partial(_select, [] if new_only else answered, known)
 
     def add_addresses(self, addresses: Iterable[NetworkAddressV2]) -> None:
         """Merge `addresses` into `self.addresses`, checked and deduplicated.

@@ -723,13 +723,17 @@ def _network_name(network: Network) -> str:
 
 
 def _connection_type(p2p_conn: Connection) -> str:
-    """Core's `ConnectionTypeAsString` for the three types this node opens.
+    """Core's `ConnectionTypeAsString` for the five types this node opens.
 
     An outbound connection `P2pManager` did not draw itself is a
     `-connect`, `-addnode` or `addnode` peer, Core's `MANUAL`.
     """
     if p2p_conn.inbound:
         return "inbound"
+    if p2p_conn.block_relay:
+        return "block-relay-only"
+    if p2p_conn.feeler:
+        return "feeler"
     return "outbound-full-relay" if p2p_conn.automatic else "manual"
 
 
@@ -744,9 +748,15 @@ def _peer_entry(
     """
     version_message = p2p_conn.version_message
     # Core's `TxRelay` exists only once the peer's `version` asked for
-    # relay, this node offering no `NODE_BLOOM`, and the fields read off
-    # it answer 0 or false where it does not.
-    relays = version_message is not None and version_message.is_relay_requested
+    # relay, this node offering no `NODE_BLOOM`, and never for a
+    # block-relay-only peer or a feeler; the fields read off it answer 0
+    # or false where it does not.
+    relays = (
+        version_message is not None
+        and version_message.is_relay_requested
+        and not p2p_conn.block_relay
+        and not p2p_conn.feeler
+    )
     services = 0 if version_message is None else version_message.services
 
     entry: dict[str, Any] = {"id": connection_id, "addr": addr, "addrbind": addrbind}
@@ -1527,6 +1537,10 @@ _INVALID_SCRIPT_REASON = "Invalid signatures or script"
 # `RPCErrorCode.VERIFY_REJECTED` (`bitcoin_core_rpc`) already answers a
 # transaction the mempool refused with, above. btclib-org/btclib-node#293
 _MEMPOOL_FULL_REASON = "Mempool is full"
+# Core's own `MAX_PACKAGE_COUNT` (`src/policy/packages.h`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): how many `rawtx` one
+# `testmempoolaccept` takes. btclib-org/btclib-node#1329
+_MAX_PACKAGE_COUNT = 25
 
 
 def test_mempool_accept(
@@ -1566,65 +1580,74 @@ def test_mempool_accept(
         # handler body runs, the same as blockhash and txid elsewhere in
         # this file
         raise type_error(1, "rawtxs", rawtxs, "array")
+    # Core's own handler (`src/rpc/mempool.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    # the v31.1 tag) bounds the array by `MAX_PACKAGE_COUNT` and then reads
+    # every `rawtx` in order, through `UniValue::get_str` and `DecodeHexTx`,
+    # before it validates any: the first element of the wrong type or that
+    # does not decode ends the whole call. btclib-org/btclib-node#1253,
+    # btclib-org/btclib-node#1329
+    if not 1 <= len(rawtxs) <= _MAX_PACKAGE_COUNT:
+        err_msg = f"Array must contain between 1 and {_MAX_PACKAGE_COUNT} transactions."
+        raise RpcError(RPCErrorCode.INVALID_PARAMETER, err_msg)
+    txs: list[Tx] = []
     for rawtx in rawtxs:
         if not isinstance(rawtx, str):
-            # Core reads every `rawtx` through `UniValue::get_str` before
-            # it validates any of them (`src/rpc/mempool.cpp`,
-            # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so one
-            # element of the wrong type ends the whole call with that
-            # accessor's own message, unwrapped: an array's elements are
-            # not among what the argument type check before the handler
-            # body reads. btclib-org/btclib-node#1253
+            # the accessor's own message, unwrapped: an array's elements
+            # are not among what the argument type check reads
             message = (
                 f"JSON value of type {json_type_name(rawtx)} is not of expected "
                 "type string"
             )
             raise RpcError(RPCErrorCode.TYPE_ERROR, message)
-    out: list[dict[str, Any]] = []
-    for rawtx in rawtxs:
         try:
-            tx = Tx.parse(rawtx)
-        except BTClibException:
+            txs.append(Tx.parse(rawtx))
+        except BTClibException as error:
             # `BTClibException`, `send_raw_transaction`'s own clause below:
             # a script shorter than its declared length raises
             # `BTClibRuntimeError`, not `BTClibValueError`
-            out.append({"allowed": False, "reject-reason": "Invalid serialization"})
-            continue
+            err_msg = (
+                f"TX decode failed: {rawtx} Make sure the tx has at least one input."
+            )
+            raise RpcError(RPCErrorCode.DESERIALIZATION_ERROR, err_msg) from error
+    return [_mempool_accept_verdict(node, tx) for tx in txs]
 
-        tx_res: dict[str, Any] = {
-            "txid": tx.id,
-            "wtxid": tx.hash,
-            "allowed": False,
-            "vsize": tx.vsize,
-        }
-        # Only these two, matching Core's own shape: testmempoolaccept's
-        # per-tx loop (src/rpc/mempool.cpp:379-430, at
-        # bitcoin/bitcoin@ca7162cde5) never catches anything itself --
-        # it only ever branches on the TxValidationResult
-        # ProcessTransaction always returns rather than raises, so a
-        # genuine C++ exception escaping that loop is not one tx's own
-        # verdict, it propagates out of the RPC call entirely, to
-        # ExecuteCommand's own catch (src/rpc/server.cpp:874-887, same
-        # commit), which is this tree's handle_rpc (rpc/main.py) --
-        # already logging and answering INTERNAL_ERROR for exactly this,
-        # the same uniform catch send_raw_transaction below already
-        # relies on for anything past its own two excepts
-        # (btclib-org/btclib-node#668).
-        try:
-            verify_mempool_acceptance(node, tx)
-            tx_res["allowed"] = True
-        except TxRejectedError as exc:
-            # Core's own pair for every reason but `missing-inputs`
-            # (`src/rpc/mempool.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-            # v31.1 tag). btclib-org/btclib-node#1245
-            tx_res["reject-reason"] = exc.reason
-            tx_res["reject-details"] = str(exc)
-        except BTClibValueError:
-            tx_res["reject-reason"] = _INVALID_SCRIPT_REASON
-        except MissingPrevoutError:
-            tx_res["reject-reason"] = _MISSING_PREVOUTS_REASON
-        out.append(tx_res)
-    return out
+
+def _mempool_accept_verdict(node: Node, tx: Tx) -> dict[str, Any]:
+    """Return `test_mempool_accept`'s own per-tx verdict for `tx`.
+
+    Only these two, matching Core's own shape: testmempoolaccept's
+    per-tx loop (src/rpc/mempool.cpp:379-430, at
+    bitcoin/bitcoin@ca7162cde5) never catches anything itself -- it
+    only ever branches on the TxValidationResult ProcessTransaction
+    always returns rather than raises, so a genuine C++ exception
+    escaping that loop is not one tx's own verdict, it propagates out
+    of the RPC call entirely, to ExecuteCommand's own catch
+    (src/rpc/server.cpp:874-887, same commit), which is this tree's
+    handle_rpc (rpc/main.py) -- already logging and answering
+    INTERNAL_ERROR for exactly this, the same uniform catch
+    send_raw_transaction below already relies on for anything past its
+    own two excepts (btclib-org/btclib-node#668).
+    """
+    tx_res: dict[str, Any] = {
+        "txid": tx.id,
+        "wtxid": tx.hash,
+        "allowed": False,
+        "vsize": tx.vsize,
+    }
+    try:
+        verify_mempool_acceptance(node, tx)
+        tx_res["allowed"] = True
+    except TxRejectedError as exc:
+        # Core's own pair for every reason but `missing-inputs`
+        # (`src/rpc/mempool.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+        # v31.1 tag). btclib-org/btclib-node#1245
+        tx_res["reject-reason"] = exc.reason
+        tx_res["reject-details"] = str(exc)
+    except BTClibValueError:
+        tx_res["reject-reason"] = _INVALID_SCRIPT_REASON
+    except MissingPrevoutError:
+        tx_res["reject-reason"] = _MISSING_PREVOUTS_REASON
+    return tx_res
 
 
 def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> str:
