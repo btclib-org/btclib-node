@@ -31,7 +31,9 @@ if TYPE_CHECKING:
 
 # the platforms whose `struct sockaddr` has no `sa_len`, named apart from
 # the flag `netif` reads so that a wrong flag reads these wrong
-_NATIVE_FAMILY = sys.platform.startswith(("linux", "win32", "cygwin"))
+_NATIVE_FAMILY = sys.platform.startswith(
+    ("linux", "android", "win32", "cygwin", "sunos")
+)
 
 
 def a_sockaddr(family: int, body: bytes) -> ctypes.Array[ctypes.c_char]:

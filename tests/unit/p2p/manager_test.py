@@ -45,6 +45,7 @@ from btclib_node.p2p.address import (
     PeerDB,
     endpoint_key,
     fixed_seed_addresses,
+    host_key,
     peer_address,
 )
 from btclib_node.p2p.banman import DUMP_BANS_INTERVAL, BanMan, Subnet, lookup_subnet
@@ -1467,21 +1468,22 @@ def test_a_local_address_drawn_ends_the_pass(
 ) -> None:
     """ISS 1238: "if we selected an invalid or local address, restart".
 
-    `IsLocal` compares the port too: this node's own address on another
-    port is dialled.
+    `IsLocal` compares the host alone, `mapLocalHost` being keyed by
+    `CNetAddr`: this node's own address on another port ends the pass
+    too. The draw has no services, so it would be passed over, not end
+    the pass, were `_passed_over` asked first.
     """
     dial = AsyncMock(return_value=None)
     monkeypatch.setattr(manager_module, "dial", dial)
-    drawn_address = a_full_node("1.2.3.4", port)
-    drawn, draw = draws_of(drawn_address, a_full_node("5.6.7.8", 8333))
+    drawn, draw = draws_of(peer_address("1.2.3.4", port), a_full_node("5.6.7.8", 8333))
     manager = a_manager(peer_db=a_peer_db_stub(is_empty=False, random_address=draw))
-    manager.local_addresses = frozenset({endpoint_key(peer_address("1.2.3.4", 8333))})
+    manager.local_addresses = frozenset({host_key(peer_address("1.2.3.4", 8333))})
     asyncio.run(manager._maybe_dial_more_peers())
     assert len(drawn) == 1
-    assert dial.await_count == (port != 8333)
+    assert dial.await_count == 0
 
 
-def test_discover_keeps_each_routable_interface_address_at_the_port(
+def test_discover_keeps_each_routable_interface_address_by_host(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """ISS 1238: Core's `Discover`, each address through `AddLocal`.
@@ -1492,9 +1494,7 @@ def test_discover_keeps_each_routable_interface_address_at_the_port(
     monkeypatch.setattr(manager_module, "local_addresses", lambda: interfaces)
     manager = a_manager()
     manager._discover()
-    assert manager.local_addresses == {
-        endpoint_key(peer_address("1.2.3.4", cast("int", manager.port)))
-    }
+    assert manager.local_addresses == {host_key(peer_address("1.2.3.4", 0))}
 
 
 @pytest.mark.parametrize("listen", [True, False])
@@ -1510,7 +1510,7 @@ def test_run_discovers_where_it_listens_and_nowhere_else(
     try:
         assert manager.start_listener()
         wait_until(manager.loop.is_running)
-        expected = {endpoint_key(peer_address("1.2.3.4", port))} if listen else set()
+        expected = {host_key(peer_address("1.2.3.4", port))} if listen else set()
         assert manager.local_addresses == expected
     finally:
         manager.stop()

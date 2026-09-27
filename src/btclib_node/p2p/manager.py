@@ -531,9 +531,11 @@ class P2pManager(threading.Thread):
         # `async_connect` drops. Nothing retries.
         self.listening = threading.Event()
         # Core's `mapLocalHost` as `IsLocal` reads it: this node's own
-        # addresses, by `endpoint_key`, which `_discover` fills ahead of
-        # the bind. Written before `manage_connections` is scheduled and
-        # read only by it, on this thread.
+        # addresses, by `host_key`, the map being keyed by `CNetAddr`,
+        # so `IsLocal` compares no port (`src/net.h`, `src/net.cpp`, at
+        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `_discover` fills
+        # it ahead of the bind. Written before `manage_connections` is
+        # scheduled and read only by it, on this thread.
         self.local_addresses: frozenset[bytes] = frozenset()
         # set by `run` once it has bound, given up on binding, or been
         # told not to bind by `-listen=0`, which is what
@@ -1079,8 +1081,8 @@ class P2pManager(threading.Thread):
                 continue
             # "if we selected an invalid or local address, restart": an
             # address `_discover` found to be this node's own ends the
-            # pass, as `IsLocal` compares address and port
-            if endpoint_key(address) in self.local_addresses:
+            # pass, on any port, as `IsLocal` compares the host alone
+            if host_key(address) in self.local_addresses:
                 break
             if self._passed_over(address, tries, now):
                 continue
@@ -1107,12 +1109,11 @@ class P2pManager(threading.Thread):
 
         Its four `continue`s after the network-group one, in its order
         (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
-        Its invalid-or-local `break` and its unreachable-network
-        `continue`, between the two, are not here. `address_sampler`
-        draws IPv4 and IPv6 addresses alone, and `_storable` keeps out
-        of the table every address `IsRoutable` refuses, an invalid one
-        among them. `IsLocal` reads `mapLocalHost`, this node's own
-        addresses, and this tree keeps no such table.
+        Its invalid-or-local `break`, between the two, is the caller's,
+        which reads `local_addresses`; an invalid address never reaches
+        it, `_storable` keeping out of the table every address
+        `IsRoutable` refuses. Its unreachable-network `continue` is not
+        here: `address_sampler` draws IPv4 and IPv6 addresses alone.
         """
         last_try = self._last_try.get(endpoint_key(address), 0.0)
         if now - last_try < _RECENT_TRY_SECONDS and tries < _RECENT_TRY_DRAWS:
@@ -1308,7 +1309,7 @@ class P2pManager(threading.Thread):
             address = peer_address(str(ip), port)
             if is_routable(address):
                 self.logger.info("Discover: %s", ip)
-                local.add(endpoint_key(address))
+                local.add(host_key(address))
         self.local_addresses = frozenset(local)
 
     def _bind(self) -> list[socket.socket]:

@@ -636,7 +636,7 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 ### The automatic dial passes over this node's own address, as in Core
 
 - **A listening node records its routable interface addresses, and a draw of
-  one at its port ends the pass** (closes #1238); on Windows none is found
+  one, on any port, ends the pass** (closes #1238); on Windows none is found
   (#1310).
 
 ## v2026.9.24
