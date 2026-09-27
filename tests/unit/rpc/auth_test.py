@@ -26,6 +26,7 @@ from btclib_node.rpc.auth import (
     RpcAuth,
     RpcAuthEntry,
     cookie_perms,
+    parse_whitelist,
     password_hmac,
 )
 from tests import RPCAUTH, RPCAUTH_PASSWORD
@@ -382,6 +383,30 @@ def start(
     recorder = Recorder() if recorder is None else recorder
     auth.start(cast("logging.Logger", recorder))
     return recorder.calls
+
+
+def test_a_byte_utf8_refuses_is_the_byte_a_client_sends() -> None:
+    """ISS 1290: `rpcuser`/`rpcpassword` and `rpcauth` hold the file's bytes.
+
+    `bitcoind` v31.1.0 with `rpcuser=u<0xe9>` and `rpcpassword=p<0xe9>`
+    in `bitcoin.conf` accepts `u<0xe9>:p<0xe9>` and refuses the same
+    user and password sent as UTF-8.
+    """
+    auth = RpcAuth(password=RpcAuthEntry.from_password("u\udce9", "p\udce9"))
+    assert auth.authenticated_user(basic(b"u\xe9:p\xe9")) == b"u\xe9"
+    assert auth.authenticated_user(basic("u\u00e9:p\u00e9".encode())) is None
+    assert RpcAuthEntry.parse("u\udce9:s$h").user == b"u\xe9"
+    assert parse_whitelist(["u\udce9:getblockcount"]) == {
+        b"u\xe9": frozenset({"getblockcount"})
+    }
+    # `bitcoind` logs `RPC User u<0xe9> not allowed to call method ...`
+    whitelisted = RpcAuth(
+        password=RpcAuthEntry.from_password("u\udce9", "p"),
+        whitelist=parse_whitelist(["u\udce9:getblockcount"]),
+    )
+    refusal = whitelisted.refusal(b"u\xe9", {"id": 1, "method": "getnetworkinfo"})
+    assert refusal is not None
+    assert refusal.warning[1] == "u\udce9"
 
 
 def test_start_refuses_rpccookieperms_before_the_cookie(tmp_path: Path) -> None:
