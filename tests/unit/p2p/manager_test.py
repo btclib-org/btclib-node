@@ -1455,7 +1455,8 @@ def test_a_host_held_on_any_port_is_not_dialled_again(
         dialled.append(address)
 
     monkeypatch.setattr(manager_module, "dial", records)
-    drawn_address = peer_address("1.2.3.4", 8333)
+    # the services `_passed_over` asks of a draw
+    drawn_address = a_full_node("1.2.3.4", 8333)
     _, draw = draws_of(drawn_address)
     peer_db = a_peer_db_stub(is_empty=False, random_address=draw)
     held = a_conn(1, address=peer_address(held_host, 55555), inbound=True)
