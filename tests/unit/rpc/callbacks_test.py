@@ -51,8 +51,8 @@ from btclib_node.exceptions import (
     StoreCorruptionError,
     TxRejectedError,
 )
-from btclib_node.main import verify_mempool_acceptance
 from btclib_node.log import Logger
+from btclib_node.main import verify_mempool_acceptance
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.banman import BanEntry, BanMan, lookup_subnet
@@ -2630,9 +2630,9 @@ def test_a_fee_refusal_is_reported_with_core_s_reason_and_details(
 
 
 def a_node_holding(
-    regtest_node: Callable[[], Node], fee: int
+    regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch, fee: int
 ) -> tuple[Node, Tx, list[tuple[bytes, int]]]:
-    """A real node holding a spend paying `fee`, and what it announces."""
+    """Return a node holding a spend paying `fee`, and what it announces."""
     node = regtest_node()
     chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
     connect(node, chain)
@@ -2643,14 +2643,16 @@ def a_node_holding(
         held, verify_mempool_acceptance(node, held, bypass_limits=True)
     )
     announced: list[tuple[bytes, int]] = []
-    node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: announced.append(
-        (tx.hash, fee)
+    monkeypatch.setattr(
+        node.p2p_manager,
+        "broadcast_raw_transaction",
+        lambda tx, fee: announced.append((tx.hash, fee)),
     )
     return node, held, announced
 
 
 def test_a_held_transaction_is_reannounced_not_judged_again(
-    regtest_node: Callable[[], Node],
+    regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A txid already held answers its txid, the real verifier never asked.
 
@@ -2660,7 +2662,7 @@ def test_a_held_transaction_is_reannounced_not_judged_again(
     (btclib-org/btclib-node#1245). The same txid under another witness
     reannounces the mempool's copy.
     """
-    node, held, announced = a_node_holding(regtest_node, 0)
+    node, held, announced = a_node_holding(regtest_node, monkeypatch, 0)
     twin = Tx.parse(held.serialize(include_witness=True))
     twin.vin[0].script_witness = Witness([b"\x01"])
     assert twin.id == held.id
@@ -2672,10 +2674,10 @@ def test_a_held_transaction_is_reannounced_not_judged_again(
 
 
 def test_a_held_transaction_under_a_risen_minimum_is_reannounced(
-    regtest_node: Callable[[], Node],
+    regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A rolling minimum risen past what a held transaction pays is no refusal."""
-    node, held, announced = a_node_holding(regtest_node, 1_000)
+    """A rolling minimum risen past what a held tx pays is no refusal."""
+    node, held, announced = a_node_holding(regtest_node, monkeypatch, 1_000)
     node.mempool._rolling_min_fee_rate = 1_000_000.0
     node.mempool._block_since_last_rolling_fee_bump = False
     raw = held.serialize(include_witness=True).hex()
