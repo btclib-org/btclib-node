@@ -723,6 +723,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   window and in-flight limit, and dropped after Core's timeouts** (closes
   #1179).
 
+### A block asked of a peer without `NODE_WITNESS` carries no witness flag
+
+- **`DownloadManager` asks such a peer for `MSG_BLOCK` rather than
+  `MSG_WITNESS_BLOCK`, and its walk over the peer's chain ends at the first
+  block where SegWit is active** (closes #1208).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

@@ -164,7 +164,9 @@ def make_manager(
         mempool=mempool if mempool is not None else Mempool(Logger(debug=True)),
         warm_worker_pool=warm_worker_pool or (lambda: None),
         config=SimpleNamespace(min_relay_feerate=min_relay_feerate),
-        chain=SimpleNamespace(consensus=SimpleNamespace(minimum_chain_work=0)),
+        chain=SimpleNamespace(
+            consensus=SimpleNamespace(minimum_chain_work=0, segwit_height=0)
+        ),
     )
     manager = DownloadManager(cast("Node", node), Logger(debug=True))
     # `Node`'s own, which `callbacks.maybe_send_getheaders` reads its
@@ -1127,6 +1129,43 @@ def test_each_peer_is_asked_for_the_blocks_of_its_own_best_chain(
         assert conn.block_availability.downloading_since >= before
 
 
+def test_a_witnessless_peer_is_asked_for_pre_segwit_blocks_without_the_flag(
+    index: BlockIndex,
+) -> None:
+    """A peer without `NODE_WITNESS` gets `MSG_BLOCK`, not `MSG_WITNESS_BLOCK`.
+
+    Below the height its `segwit_height` names, it is asked all the same.
+    """
+    chain = extend(index, 2)
+    witnessless = a_version(_FULL & ~ServiceFlags.NODE_WITNESS)
+    conn = knowing(a_conn(1, version_message=witnessless), chain[-1])
+    manager = make_manager([conn], block_index=index)
+    cast("Any", manager.node).chain.consensus.segwit_height = (
+        index.header_dict[chain[-1]].index + 1
+    )
+    manager.block_download()
+    (getdata,) = only(conn, GetData)
+    assert hashes_of(getdata) == chain
+    assert {item.type_code for item in getdata.items} == {InventoryType.MSG_BLOCK}
+
+
+def test_a_witnessless_peer_s_walk_ends_where_segwit_activates(
+    index: BlockIndex,
+) -> None:
+    """Blocks at or past `segwit_height` are not asked of such a peer."""
+    chain = extend(index, 3)
+    witnessless = a_version(_FULL & ~ServiceFlags.NODE_WITNESS)
+    conn = knowing(a_conn(1, version_message=witnessless), chain[-1])
+    manager = make_manager([conn], block_index=index)
+    cast("Any", manager.node).chain.consensus.segwit_height = index.header_dict[
+        chain[1]
+    ].index
+    manager.block_download()
+    (getdata,) = only(conn, GetData)
+    assert hashes_of(getdata) == chain[:1]
+    assert conn.download_queue == chain[:1]
+
+
 def test_a_block_asked_of_one_peer_is_not_asked_of_another(
     index: BlockIndex,
 ) -> None:
@@ -1340,6 +1379,19 @@ def test_can_serve_blocks_is_true_for_either_service_bit_and_no_message() -> Non
     # No `version_message` yet reads permissively, the same direction
     # `_is_limited_peer`'s own same-shaped default does.
     assert download_module._can_serve_blocks(a_conn(1, version_message=None))
+
+
+def test_can_serve_witnesses_is_true_only_with_node_witness_and_a_message() -> None:
+    """`_can_serve_witnesses`: `NODE_WITNESS` advertised, and a message."""
+    assert download_module._can_serve_witnesses(
+        a_conn(1, version_message=a_version(_FULL))
+    )
+    assert not download_module._can_serve_witnesses(
+        a_conn(1, version_message=a_version(_FULL & ~ServiceFlags.NODE_WITNESS))
+    )
+    # No `version_message` yet: not yet known to serve witnesses, the same
+    # direction `_is_limited_peer`'s own same-shaped default reads it in.
+    assert not download_module._can_serve_witnesses(a_conn(1, version_message=None))
 
 
 _OLD = 2 * 24 * 60 * 60
