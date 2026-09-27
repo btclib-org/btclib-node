@@ -356,6 +356,13 @@ class Config:
     # connection outside it too. `P2pManager.__init__` divides it into
     # inbound and outbound slots.
     max_connections: int
+    # Core's own `-dnsseed`, which this node has no option for: whether
+    # `P2pManager` asks the DNS seeds. `InitParameterInteraction`
+    # (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7) soft-sets it off
+    # under `-connect` or a `-maxconnections` whose `int64_t` is not
+    # positive; `__init__` computes that from `max_connections` where it
+    # is given `None`, and `cli` passes it from the `int64_t` itself.
+    dnsseed: bool
     # Core's own `-bantime`: how long a `setban` ban lasts, in seconds,
     # where the call names no length. `Node` hands it to its `BanMan`.
     ban_time: int
@@ -398,6 +405,7 @@ class Config:
         addnode: Sequence[str] = (),
         listen: bool = True,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
+        dnsseed: bool | None = None,
         ban_time: int = DEFAULT_MISBEHAVING_BANTIME,
         rpcauth: Sequence[str] = (),
         rpcuser: str = "",
@@ -450,6 +458,11 @@ class Config:
             err_msg = "-maxconnections must be greater or equal than zero"
             raise ValueError(err_msg)
         self.max_connections = max_connections
+        self.dnsseed = (
+            not self.connect_given and max_connections > 0
+            if dnsseed is None
+            else dnsseed
+        )
         self.ban_time = ban_time
 
         self.p2p_port = None

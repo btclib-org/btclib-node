@@ -640,8 +640,14 @@ def test_build_config_refuses_an_argument_that_is_not_an_option(
 
 @pytest.mark.parametrize(
     ("argv", "conf", "ban_time"),
-    [([], "", 86400), (["-bantime=100"], "", 100), ([], "bantime=5\n", 5)],
-    ids=["Core's default", "command line", "file"],
+    [
+        ([], "", 86400),
+        (["-bantime=100"], "", 100),
+        ([], "bantime=5\n", 5),
+        # ISS 1324: `GetIntArg` saturates at the `int64_t` end
+        (["-bantime=99999999999999999999"], "", 2**63 - 1),
+    ],
+    ids=["Core's default", "command line", "file", "past int64"],
 )
 def test_build_config_reads_bantime(
     tmp_path: Path, argv: list[str], conf: str, ban_time: int
@@ -1071,10 +1077,145 @@ def test_build_config_reads_prune_from_the_file(tmp_path: Path) -> None:
     assert config.prune_target_mib == MIN_PRUNE_TARGET_MIB
 
 
-def test_build_config_refuses_a_non_integer(tmp_path: Path) -> None:
-    """A value that is not an integer is refused where an integer is read."""
-    with pytest.raises(ValueError, match=r"^prune='x' is not an integer$"):
-        _build(tmp_path, "-prune=x")
+@pytest.mark.parametrize(
+    ("value", "read"),
+    [
+        ("7x", 7),
+        (" 12", 12),
+        ("12 x", 12),
+        ("+5", 5),
+        ("-7x", -7),
+        ("+-5", 0),
+        ("x", 0),
+        ("", 0),
+        ("0x10", 0),
+        ("99999999999999999999", 2**63 - 1),
+        ("-99999999999999999999", -(2**63)),
+    ],
+)
+def test_an_integer_is_read_as_core_s_atoi64_reads_it(value: str, read: int) -> None:
+    """ISS 1313, ISS 1324: the leading integer, saturated to `int64_t`."""
+    assert cli._atoi64(value) == read
+
+
+# measured on `bitcoind` v31.1.0 with `-regtest -listen=0`: the limit its
+# "Using at most <n> automatic connections" line gives, `None` where
+# it refuses "-maxconnections must be greater or equal than zero"
+@pytest.mark.parametrize(
+    ("value", "limit"),
+    [
+        ("7x", 7),
+        (" 12", 12),
+        ("12 x", 12),
+        ("+5", 5),
+        ("+-5", 0),
+        ("x", 0),
+        ("", 0),
+        ("0x10", 0),
+        ("99999999999999999999", None),
+        ("-99999999999999999999", 0),
+        ("4294967296", 0),
+        ("4294967297", 1),
+        ("-4294967295", 1),
+        ("2147483648", None),
+        ("-7x", None),
+    ],
+)
+def test_maxconnections_is_the_int_bitcoind_reads(
+    tmp_path: Path, value: str, limit: int | None
+) -> None:
+    """ISS 1313, ISS 1324: `GetIntArg`, then C++'s conversion to `int`."""
+    if limit is None:
+        with pytest.raises(
+            ValueError, match=r"^-maxconnections must be greater or equal than zero$"
+        ):
+            _build(tmp_path, f"-maxconnections={value}")
+    else:
+        assert _build(tmp_path, f"-maxconnections={value}").max_connections == limit
+
+
+@pytest.mark.parametrize(
+    ("value", "listen"),
+    [("4294967296", True), ("-4294967295", False)],
+)
+def test_the_listen_soft_set_reads_maxconnections_before_the_int(
+    tmp_path: Path, value: str, *, listen: bool
+) -> None:
+    """ISS 1324: `InitParameterInteraction` compares the `int64_t` with zero.
+
+    Measured on `bitcoind` v31.1.0: `-maxconnections=4294967296` logs no
+    "setting -listen=0" though its limit is 0, and `-4294967295` logs
+    it though its limit is 1.
+    """
+    assert _build(tmp_path, f"-maxconnections={value}").listen is listen
+
+
+@pytest.mark.parametrize(
+    ("value", "dnsseed"),
+    [("4294967296", True), ("-4294967295", False)],
+)
+def test_the_dnsseed_soft_set_reads_maxconnections_before_the_int(
+    tmp_path: Path, value: str, *, dnsseed: bool
+) -> None:
+    """ISS 1324: the same `if` as `-listen`'s, over the same `int64_t`.
+
+    Measured on `bitcoind` v31.1.0: `-maxconnections=4294967296` logs
+    "dnsseed thread start", and `-4294967295` logs "setting -dnsseed=0".
+    """
+    assert _build(tmp_path, f"-maxconnections={value}").dnsseed is dnsseed
+
+
+# measured on `bitcoind` v31.1.0 with `-regtest -listen=0`:
+# `getblockchaininfo`'s `pruned` and `prune_target_size`, the target in
+# MiB here, and `None` for a start it refuses as below the minimum
+@pytest.mark.parametrize(
+    ("value", "pruned", "target_mib"),
+    [
+        ("+-5", False, None),
+        ("x", False, None),
+        ("", False, None),
+        ("0x10", False, None),
+        ("1", True, None),
+        ("99999999999999999999", True, 2**44 - 1),
+        ("4294967296", True, 2**32),
+        ("17592186044416", False, None),
+        ("17592186044966", True, 550),
+    ],
+)
+def test_prune_is_the_target_bitcoind_reads(
+    tmp_path: Path, value: str, *, pruned: bool, target_mib: int | None
+) -> None:
+    """ISS 1313, ISS 1324: `GetIntArg`, then a wrapped `uint64_t` count."""
+    config = _build(tmp_path, f"-prune={value}")
+    assert config.pruned is pruned
+    assert config.prune_target_mib == target_mib
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        (
+            "7x",
+            "Prune configured below the minimum of 550 MiB.  Please use a higher number.",
+        ),
+        (
+            " 12",
+            "Prune configured below the minimum of 550 MiB.  Please use a higher number.",
+        ),
+        (
+            "17592186044417",
+            "Prune configured below the minimum of 550 MiB.  Please use a higher number.",
+        ),
+        ("-7x", "Prune cannot be configured with a negative value."),
+        ("-99999999999999999999", "Prune cannot be configured with a negative value."),
+    ],
+)
+def test_prune_is_refused_as_bitcoind_refuses_it(
+    tmp_path: Path, value: str, message: str
+) -> None:
+    """ISS 1313, ISS 1324: measured on `bitcoind` v31.1.0, the same words."""
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        _build(tmp_path, f"-prune={value}")
 
 
 @pytest.mark.parametrize("flag", ["-h", "-?", "-help", "-h=0"])

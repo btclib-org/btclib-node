@@ -252,6 +252,7 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
                 addnode_args=tuple(addnode_args),
                 listen=listen,
                 max_connections=max_connections,
+                dnsseed=not connect and max_connections > 0,
                 pruned=False,
             ),
             # `Connection.own_version`'s own `start_height`

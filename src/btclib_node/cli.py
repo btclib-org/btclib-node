@@ -208,6 +208,15 @@ _CHAIN_SECTION = {
 # same file), which is not this node's internal one: `main`/`test`
 # rather than `mainnet`/`testnet`, predating this module and not
 # renamed for it.
+# `LocaleIndependentAtoi`: what `TrimStringView` trims by default, and
+# the integer `std::from_chars` reads at the start of what is left
+_TRIMMED = " \f\n\r\t\v"
+_LEADING_INTEGER = re.compile(r"-?[0-9]+")
+_INT64_MIN, _INT64_MAX = -(2**63), 2**63 - 1
+_INT_MIN = -(2**31)
+# the MiB a `uint64_t` byte count wraps at
+_PRUNE_MIB_WRAP = 2**64 // 2**20
+
 _CHAIN_ALIASES = {
     "main": "mainnet",
     "test": "testnet",
@@ -977,21 +986,47 @@ def _get_bool(settings: _Settings, name: str) -> bool | None:
     return _interpret_bool(value)
 
 
-def _get_int(settings: _Settings, name: str) -> int | None:
-    """Return `name` as an integer, `None` where nothing sets it.
+def _atoi64(text: str) -> int:
+    """Return Core's `LocaleIndependentAtoi<int64_t>` of `text`.
 
-    `0` negated and `1` doubly so, as Core's `GetIntArg` has them. A
-    string that is not an integer is refused, where Core's
-    `LocaleIndependentAtoi` would read what digits it starts with.
+    `src/util/strencodings.h`, at bitcoin/bitcoin@9be056a8a7: the
+    whitespace `TrimStringView` trims is dropped, then one leading `+`
+    (and `+-` is `0`), then `std::from_chars` reads the ASCII digits it
+    starts with, an optional `-` ahead of them, ignoring whatever
+    follows. No digit is `0`, and a value past the `int64_t` range is
+    that range's end on its side.
+    """
+    trimmed = text.strip(_TRIMMED)
+    if trimmed.startswith("+"):
+        if trimmed[1:2] == "-":
+            return 0
+        trimmed = trimmed[1:]
+    match = _LEADING_INTEGER.match(trimmed)
+    if match is None:
+        return 0
+    return max(_INT64_MIN, min(_INT64_MAX, int(match.group())))
+
+
+def _get_int(settings: _Settings, name: str) -> int | None:
+    """Return `name` as Core's `GetIntArg` does, `None` where nothing sets it.
+
+    `0` negated and `1` doubly so, and a string `_atoi64`, as
+    `SettingTo<int64_t>` reads it (`src/common/args.cpp`, at
+    bitcoin/bitcoin@9be056a8a7).
     """
     value = _get_setting(settings, name)
     if value is None or isinstance(value, bool):
         return None if value is None else int(value)
-    try:
-        return int(value)
-    except ValueError:
-        err_msg = f"{name}={value!r} is not an integer"
-        raise ValueError(err_msg) from None
+    return _atoi64(value)
+
+
+def _to_int(value: int) -> int:
+    """Return C++'s conversion of the `int64_t` `value` to a 32-bit `int`.
+
+    Modular since C++20, which is how `AppInitParameterInteraction` reads
+    `-maxconnections` into its `int user_max_connection`.
+    """
+    return (value - _INT_MIN) % 2**32 + _INT_MIN
 
 
 def _get_port(settings: _Settings, name: str) -> int | None:
@@ -1023,18 +1058,10 @@ def _is_set(settings: _Settings, name: str) -> bool:
 def _interpret_bool(value: str) -> bool:
     """Return Core's `InterpretBool` of `value`.
 
-    `""` is true, and anything else is true where `LocaleIndependentAtoi`
-    reads a non-zero integer off its front, once the whitespace Core
-    trims and a leading `+` are gone: `false`, `no`, `yes` and `00` are
-    false.
+    `""` is true, and anything else is true where `_atoi64` reads a
+    non-zero integer: `false`, `no`, `yes` and `00` are false.
     """
-    if not value:
-        return True
-    text = value.strip(" \f\n\r\t\v")
-    if text.startswith("+-"):
-        return False
-    digits = re.match(r"-?[0-9]+", text.removeprefix("+"))
-    return digits is not None and int(digits.group()) != 0
+    return not value or _atoi64(value) != 0
 
 
 class _ChainError(ValueError):
@@ -1254,8 +1281,14 @@ def _check_ignored_conf(
     raise ValueError(error)
 
 
-def _check_prune(prune: int) -> None:
-    """Refuse a `-prune` Core refuses (`node/blockmanager_args.cpp`)."""
+def _prune_target_mib(prune: int) -> int:
+    """Return the MiB `-prune` asks for, refusing what Core refuses.
+
+    `ApplyArgsManOptions` (`node/blockmanager_args.cpp`, at
+    bitcoin/bitcoin@9be056a8a7) multiplies it by a MiB into a `uint64_t`,
+    which wraps: the target is `prune` modulo `_PRUNE_MIB_WRAP` MiB, `0`
+    being no pruning. `1` is manual pruning, and returned as it is.
+    """
     if prune < 0:
         # Core's own wording, node::ApplyArgsManOptions
         # (node/blockmanager_args.cpp:23-25, at bitcoin/bitcoin@ca7162cde5):
@@ -1264,7 +1297,10 @@ def _check_prune(prune: int) -> None:
         # start rather than treating a negative value as "pruning is on".
         err_msg = "Prune cannot be configured with a negative value."
         raise ValueError(err_msg)
-    if 1 < prune < MIN_PRUNE_TARGET_MIB:
+    if prune == 1:
+        return 1
+    target_mib = prune % _PRUNE_MIB_WRAP
+    if 0 < target_mib < MIN_PRUNE_TARGET_MIB:
         # Core's own wording, node::ApplyArgsManOptions
         # (node/blockmanager_args.cpp:31-33, at bitcoin/bitcoin@ca7162cde5):
         # `return util::Error{strprintf(_("Prune configured below the
@@ -1277,6 +1313,7 @@ def _check_prune(prune: int) -> None:
             "Please use a higher number."
         )
         raise ValueError(err_msg)
+    return target_mib
 
 
 def _read_settings(argv: Sequence[str]) -> tuple[_Settings, Path, str]:
@@ -1349,16 +1386,20 @@ def _read_settings(argv: Sequence[str]) -> tuple[_Settings, Path, str]:
 class _BeforeLock:
     """What `_before_lock` read, for `_after_lock` to finish the `Config`.
 
-    `directories` is a `Config` of the chain, the data directory and
-    `-blocksdir`, the fields that name the directories `Node.__init__`
-    locks, and of `-maxconnections`, which `Config.__init__` refuses just
-    after a missing blocks directory, as Core does.
+    `prune` is `_prune_target_mib`'s. `directories` is a `Config` of the
+    chain, the data directory and `-blocksdir`, the fields that name the
+    directories `Node.__init__` locks, and of `-maxconnections`, which
+    `Config.__init__` refuses just after a missing blocks directory, as
+    Core does.
     """
 
     settings: _Settings
     base_dir: Path
     chain_name: str
     blocksdir: str | None
+    # `-maxconnections` as `GetIntArg` reads it, which the soft-set of
+    # `-listen` compares with zero, and as the `int` the limit is
+    max_connections_arg: int
     max_connections: int
     debug: bool
     prune: int
@@ -1400,9 +1441,10 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     blocksdir = _get_arg(settings, "blocksdir")
     if _is_negated(settings, "blocksdir"):
         blocksdir = ""
-    max_connections = _get_int(settings, "maxconnections")
-    if max_connections is None:
-        max_connections = DEFAULT_MAX_PEER_CONNECTIONS
+    max_connections_arg = _get_int(settings, "maxconnections")
+    if max_connections_arg is None:
+        max_connections_arg = DEFAULT_MAX_PEER_CONNECTIONS
+    max_connections = _to_int(max_connections_arg)
     directories = Config(
         chain=chain_name,
         data_dir=base_dir,
@@ -1410,13 +1452,13 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
         max_connections=max_connections,
     )
     debug = _resolve_debug(settings)
-    prune = _get_int(settings, "prune") or 0
-    _check_prune(prune)
+    prune = _prune_target_mib(_get_int(settings, "prune") or 0)
     return _BeforeLock(
         settings,
         base_dir,
         chain_name,
         blocksdir,
+        max_connections_arg,
         max_connections,
         debug,
         prune,
@@ -1471,7 +1513,10 @@ def _after_lock(before: _BeforeLock) -> Config:
     # over (`src/init.cpp`, same sha)
     listen = _get_bool(settings, "listen")
     if listen is None:
-        listen = not connect and not connect_negated and before.max_connections > 0
+        listen = not connect and not connect_negated and before.max_connections_arg > 0
+    # the same `if` soft-sets `-dnsseed`, reading the same `int64_t`, which
+    # `max_connections` has been narrowed from
+    dnsseed = not connect and not connect_negated and before.max_connections_arg > 0
     # `GetAuthCookieFile` (`src/rpc/request.cpp`, same sha): negated, no cookie
     rpccookiefile = (
         None
@@ -1501,6 +1546,7 @@ def _after_lock(before: _BeforeLock) -> Config:
         addnode=_get_args(settings, "addnode"),
         listen=listen,
         max_connections=before.max_connections,
+        dnsseed=dnsseed,
         ban_time=ban_time,
         rpcauth=_get_args(settings, "rpcauth"),
         rpcuser=_get_arg(settings, "rpcuser") or "",
