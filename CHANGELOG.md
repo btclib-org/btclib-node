@@ -735,6 +735,23 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   and one at 70012 or below the final `alert`, as in Core** (closes #1204,
   closes #1205).
 
+### `codeql.yml`'s aggregate reads a lagging row again
+
+- **An unfinished `analyze` row is read again before it is accepted, and a
+  `needs.analyze.result` neither `success` nor `skipped` fails the step**
+  (issue btclib-org/.github#1416) (issue btclib-org/.github#1424).
+
+### `integration-bitcoind.yml` names `skip-reason-prefix`
+
+- **Its comments name `skip-reason-prefix`, left empty, in place of
+  `exclude-classname`** (issue btclib-org/.github#1419).
+
+### The mempool refuses a fee under its floor, as Core
+
+- **A fee under the rolling minimum or `min_relay_feerate` for the vsize is
+  refused in Core's words, which both RPCs report** (closes #1245); a reorg's
+  re-added transactions are exempt.
+
 ### An inbound, manual or feeler peer is kept without `NODE_WITNESS`, as in Core
 
 - **`NODE_WITNESS` is required only where Core's `ExpectServicesFromConn`
