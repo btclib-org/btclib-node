@@ -41,9 +41,9 @@ from btclib_node.rpc.connection import REQUEST_TIMEOUT, RpcConnection
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from concurrent.futures import Future
-    from ipaddress import IPv4Network, IPv6Network
 
     from btclib_node import Node
+    from btclib_node.p2p.banman import Subnet
 
 __all__ = ["RpcManager"]
 
@@ -202,9 +202,7 @@ class RpcManager(threading.Thread):
         # writes it: what `RpcConnection.run` checks every request against
         self.auth = RpcAuth.from_config(node.config)
         # loopback and `-rpcallowip`'s subnets, as `_listen` parses them
-        self.allowed_subnets: tuple[IPv4Network | IPv6Network, ...] = allowed_subnets(
-            ()
-        )
+        self.allowed_subnets: tuple[Subnet, ...] = allowed_subnets(())
         # what `Node` shows ahead of Core's "Unable to start HTTP
         # server" where `_listen` refused a `-rpcallowip` value, as
         # `InitHTTPAllowList` shows its own message ahead of that one
