@@ -95,6 +95,7 @@ from btclib_node.exceptions import (
     MisbehavingError,
     MissingPrevoutError,
     NonStandardTxError,
+    TxRejectedError,
 )
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
@@ -773,22 +774,28 @@ def test_a_peer_speaking_an_older_protocol_is_let_go() -> None:
 
 
 @pytest.mark.parametrize(
-    "protocol",
-    [MIN_PEER_PROTO_VERSION, WTXID_RELAY_VERSION - 1],
+    ("protocol", "sent"),
+    [
+        (MIN_PEER_PROTO_VERSION, ["Verack", "GetAddr", "FinalAlert"]),
+        (70012, ["Verack", "GetAddr", "FinalAlert"]),
+        (70013, ["Verack", "GetAddr"]),
+        (WTXID_RELAY_VERSION - 1, ["Verack", "GetAddr"]),
+    ],
 )
 def test_a_peer_at_or_above_the_floor_is_kept_without_wtxid_relay(
-    protocol: int,
+    protocol: int, sent: list[str]
 ) -> None:
     """ISS 1180: kept from `MIN_PEER_PROTO_VERSION`, as Core keeps it.
 
     Below `WTXID_RELAY_VERSION` it is sent neither `wtxidrelay` nor
-    `sendaddrv2`, which Core too sends only from 70016 up.
+    `sendaddrv2`, which Core too sends only from 70016 up. At 70012 or
+    below it is sent Core's final `alert` last (ISS 1205).
     """
     node = a_handshake_node()
     peer = a_peer()
     version(node, a_version(protocol=protocol), peer)
     assert not peer.stopped
-    assert commands(peer) == ["Verack", "GetAddr"]
+    assert commands(peer) == sent
 
 
 def test_a_peer_without_the_witness_service_is_let_go() -> None:
@@ -1977,6 +1984,32 @@ def test_a_refused_transaction_is_not_reverified_on_resubmission(
         raise BTClibValueError(err_msg)
 
     monkeypatch.setattr(cb, "verify_mempool_acceptance", consensus_invalid)
+    transaction = a_transaction()
+    node = a_data_node()
+    payload = TxMsg(transaction, include_witness=True).serialize()
+    tx(node, payload, a_peer(id=3))
+    tx(node, payload, a_peer(id=4))
+    assert calls == [transaction.hash]
+    assert not node.mempool.contains_tx(transaction)
+
+
+def test_a_fee_refusal_is_recorded_and_the_peer_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fee under the floor is a refusal like any other, recorded once.
+
+    `TxRejectedError` is a `BTClibValueError`, so `tx` catches it rather
+    than letting it reach `_drop`, and a resend is not verified again.
+    btclib-org/btclib-node#1245
+    """
+    calls: list[bytes] = []
+
+    def fee_refusal(node: Any, transaction: Any) -> NoReturn:
+        calls.append(transaction.hash)
+        reason, details = "min relay fee not met", "0 < 11"
+        raise TxRejectedError(reason, details)
+
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", fee_refusal)
     transaction = a_transaction()
     node = a_data_node()
     payload = TxMsg(transaction, include_witness=True).serialize()

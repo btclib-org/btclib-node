@@ -78,8 +78,16 @@ def test_add_tx(rpc_node: Node) -> None:
     assert not result["allowed"]
     assert result["reject-reason"] == "Missing prevouts"
 
-    tx1 = generate_random_transaction(chain[0].transactions[0].id)
-    tx2 = generate_random_transaction(tx1.id)
+    funding = chain[0].transactions[0]
+    tx1 = generate_random_transaction(funding.id, value=funding.vout[0].value - 1000)
+    tx2 = generate_random_transaction(tx1.id, value=tx1.vout[0].value - 1000)
+
+    # fee-free, it is refused in Core's own words (btclib-org/btclib-node#1245)
+    free = generate_random_transaction(funding.id, value=funding.vout[0].value)
+    result = accept(free.serialize(include_witness=True).hex())
+    assert not result["allowed"]
+    assert result["reject-reason"] == "min relay fee not met"
+    assert result["reject-details"].startswith("min relay fee not met, 0 < ")
 
     result = accept(tx1.serialize(include_witness=True).hex())
     assert result["allowed"]
@@ -142,7 +150,8 @@ def test_get_raw_transaction_is_what_btclib_wallet_s_fetcher_gets(
         block_index.set_downloaded(block.header.hash)
     wait_until(lambda: len(block_index.active_chain) == len(chain) + 1)
 
-    tx = generate_random_transaction(chain[0].transactions[0].id)
+    funding = chain[0].transactions[0]
+    tx = generate_random_transaction(funding.id, value=funding.vout[0].value - 1000)
 
     client = BitcoinCoreRpcClient(
         f"http://127.0.0.1:{node.rpc_port}",

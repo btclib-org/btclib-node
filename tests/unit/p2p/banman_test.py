@@ -4,12 +4,26 @@
 
 """The ban list: Core's `CSubNet`, `LookupSubNet` and `BanMan`.
 
-The subnet cases are Core's own `subnet_test` (`src/test/netbase_tests.cpp`,
-at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), those naming an IP address.
+Read at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, the cases come from:
+
+- `subnet_test` (`src/test/netbase_tests.cpp`), its IP subnets and its
+  onion one;
+- `netbase_dont_resolve_strings_with_embedded_nul_characters`, the same
+  file;
+- the onion and I2P vectors of `src/test/net_tests.cpp`;
+- what a regtest bitcoind v31.1 on macOS answered to `setban`: the
+  forms `getaddrinfo` reads, trailing whitespace, a scope, an onion
+  name in upper case or with a wrong checksum, and the order of the list.
+
+The rest are built here, not taken from Core: an onion or I2P host
+with a prefix or as a netmask, a padded onion name, an I2P name with
+bits left over, and an onion suffix in upper case.
 """
 
 import json
 import logging
+import os
+import socket
 from ipaddress import IPv4Address, IPv6Address, ip_address
 from typing import TYPE_CHECKING, Any
 
@@ -37,6 +51,12 @@ _ENTRY = (
     '{"version": 1, "ban_created": 1, "banned_until": 1800000000, "address": "1.2.3.4"}'
 )
 _LOGGER = logging.getLogger(__name__)
+# Core's `net_tests` and `netbase_tests` onion, and its `net_tests` I2P
+_ONION = "pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion"
+_OTHER_ONION = "kpgvmscirrdqpekbqjsvw5teanhatztpp2gl6eee4zkowvwfxwenqaid.onion"
+_I2P = "udhdrtrcetjm5sxzskjyr5ztpeszydbh4dpl3pl4utgqqw2v4jna.b32.i2p"
+# the forms Windows' `getaddrinfo` does not read as an address
+_ATON = pytest.mark.skipif(os.name == "nt", reason="the resolver's own forms")
 
 
 @pytest.fixture(autouse=True)
@@ -127,8 +147,33 @@ def test_a_subnet_matches_no_address_it_does_not_hold(
         "fd6b:88c0:8724::1",
         # not a digit `ToIntegral` reads, nor an address
         "1.2.3.0/²",
-        # a scope id (btclib-org/btclib-node#1220)
-        "fe80::1%1",
+        # `CSubNet` takes a prefix or a netmask of an IP address alone
+        f"{_ONION}/32",
+        f"{_I2P}/0",
+        "1.2.3.4/" + _ONION,
+        # a checksum `SetTor` refuses, and Core's other refusals of it
+        "qg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion",
+        "pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscsad.onion",
+        "pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscrye.onion",
+        "6hzph5hv6337r6p2.onion",
+        "mfrggzak.onion",
+        "mf*g zak.onion",
+        _ONION + "\0",
+        # a length `DecodeBase32` refuses before stripping the padding
+        _ONION.removesuffix(".onion") + "=.onion",
+        # Core's `netbase_dont_resolve_strings_with_embedded_nul_characters`
+        "127.0.0.1\0",
+        "127.0.0.1\0example.com",
+        "1.2.3.0/24\0",
+        _ONION + "\0example.com",
+        # and of `SetI2P`, and bits `DecodeBase32` has left over
+        _I2P.replace("4jna.", "4jnb."),
+        "udhdrtrcetjm5sxzskjyr5ztpeszydbh4dpl3pl4utgqqw2v4jn=.b32.i2p",
+        "udhdrtrcetjm5sxzskjyr5ztpeszydbh4dpl3pl4utgqqw2v4jna=.b32.i2p",
+        "pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscsad.b32.i2p",
+        "tp*szydbh4dp.b32.i2p",
+        # what `getaddrinfo` reads as no address
+        "1.2.3.4 ",
     ],
 )
 def test_a_subnet_that_does_not_parse_is_none(text: str) -> None:
@@ -184,20 +229,140 @@ def test_lookup_host_reads_an_address_as_set_legacy_ipv6_does() -> None:
     assert lookup_host("::ffff:1.2.3.4") == IPv4Address("1.2.3.4")
     assert lookup_host("fd6b:88c0:8724::1") is None
     assert lookup_host("fd87:d87e:eb43::1") == IPv6Address("::")
-    assert lookup_host("1.2.3") is None
 
 
-def test_a_peer_off_the_ip_networks_is_in_no_subnet() -> None:
-    """An onion peer matches nothing, a mapped IPv4 peer its IPv4 subnet."""
-    onion = NetworkAddressV2(0, 0, BIP155Network.TORV3, b"\x11" * 32, 8333)
-    assert not a_subnet("::/0").matches_peer(onion)
+@_ATON
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("1.2.3", "1.2.0.3"),
+        ("0x7f.1", "127.0.0.1"),
+        ("127.1", "127.0.0.1"),
+        ("01.2.3.4", "1.2.3.4"),
+    ],
+)
+def test_lookup_host_reads_what_getaddrinfo_reads(text: str, expected: str) -> None:
+    """ISS 1220: `inet_aton`'s forms, as bitcoind v31.1 bans them on macOS."""
+    assert lookup_host(text) == IPv4Address(expected)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("fe80::1%1", "fe80::1%1/128"),
+        ("[fe80::3%1]", "fe80::3%1/128"),
+        ("fe80::4%1/64", "fe80::%1/64"),
+        ("fe80::5%1/ffff:ffff:ffff:ffff::", "fe80::%1/64"),
+        # bitcoind v31.1 keeps the scope of a Tor v2 address it unsets
+        ("fd87:d87e:eb43::1%1", "::%1/128"),
+    ],
+)
+def test_a_scope_is_kept_and_written(text: str, expected: str) -> None:
+    """ISS 1220: `CSubNet::ToString` writes the scope `sin6_scope_id` gave."""
+    assert str(a_subnet(text)) == expected
+
+
+@_ATON
+def test_a_scope_named_by_its_interface_is_written_as_its_index() -> None:
+    """ISS 1220: `fe80::2%lo0` is `fe80::2%1/128` to bitcoind v31.1 on macOS."""
+    index, name = socket.if_nameindex()[0]
+    assert str(a_subnet(f"fe80::2%{name}")) == f"fe80::2%{index}/128"
+
+
+def test_a_scope_is_no_part_of_the_subnet(tmp_path: Path) -> None:
+    """ISS 1220: `CNetAddr::operator==` does not compare the scope.
+
+    What is banned under one scope is banned, and unbanned, under any,
+    and the list written reads back with the scope it was written with.
+    """
+    path = tmp_path / "banlist.json"
+    ban_man = BanMan(path, _LOGGER)
+    ban_man.ban(a_subnet("fe80::1%1"))
+    assert a_subnet("fe80::1%2") == a_subnet("fe80::1%1")
+    assert ban_man.is_subnet_banned(a_subnet("fe80::1%2"))
+    assert [str(subnet) for subnet, _ in BanMan(path, _LOGGER).banned()] == [
+        "fe80::1%1/128"
+    ]
+    assert ban_man.unban(a_subnet("fe80::1%2"))
+    assert not ban_man.banned()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        _ONION,
+        _ONION.upper().removesuffix(".ONION") + ".onion",
+        f"[{_ONION}]",
+        _I2P,
+        _I2P.upper(),
+        f"[{_I2P}]",
+    ],
+)
+def test_an_onion_or_i2p_host_is_its_own_subnet(text: str) -> None:
+    """ISS 1218: `CSubNet(addr)` of `SetSpecial`'s host, written in lower case.
+
+    `SetTor` asks the suffix in lower case, `SetI2P` in any case, and
+    `DecodeBase32` reads the name in either.
+    """
+    subnet = a_subnet(text)
+    assert subnet.prefix == 0
+    assert str(subnet) in (_ONION, _I2P)
+    assert lookup_subnet(str(subnet)) == subnet
+
+
+def test_an_upper_case_onion_suffix_is_no_onion() -> None:
+    """`SetTor` asks `.onion` exactly."""
+    assert lookup_host(_ONION.removesuffix(".onion") + ".ONION") is None
+
+
+def test_an_onion_subnet_matches_its_own_host_alone() -> None:
+    """Core's `subnet_test`, the non-IP subnets."""
+    subnet = a_subnet(_ONION)
+    onion = lookup_host(_ONION)
+    assert onion is not None
+    assert subnet.matches(onion)
+    other = lookup_host(_OTHER_ONION)
+    assert other is not None
+    assert not subnet.matches(other)
+    assert not subnet.matches(ip("1.2.3.4"))
+    assert not a_subnet("0.0.0.0/0").matches(onion)
+    assert not a_subnet("::/0").matches(onion)
+
+
+def test_a_peer_is_matched_on_its_own_network() -> None:
+    """An onion or I2P peer by its key, a mapped IPv4 peer by its IPv4."""
+    onion = lookup_host(_ONION)
+    assert onion is not None
+    peer = NetworkAddressV2(0, 0, BIP155Network.TORV3, onion.packed, 8333)
+    assert a_subnet(_ONION).matches_peer(peer)
+    assert not a_subnet(_I2P).matches_peer(peer)
+    assert not a_subnet("::/0").matches_peer(peer)
+    i2p = NetworkAddressV2(0, 0, BIP155Network.I2P, b"\x11" * 32, 0)
+    assert not a_subnet(_I2P).matches_peer(i2p)
+    cjdns = NetworkAddressV2(0, 0, BIP155Network.CJDNS, b"\xfc" + bytes(15), 0)
+    assert not a_subnet("::/0").matches_peer(cjdns)
     assert a_subnet("1.2.3.0/24").matches_peer(peer_address("::ffff:1.2.3.4", 1))
 
 
-def test_subnets_are_listed_in_core_s_order() -> None:
-    """IPv4 ahead of IPv6, then by octets, then the wider netmask first."""
+def test_a_banned_onion_peer_is_banned() -> None:
+    """`IsBanned` of an onion peer, which Core's `CSubNet::Match` answers."""
+    onion = lookup_host(_ONION)
+    assert onion is not None
     ban_man = BanMan(None, _LOGGER)
-    texts = ["::1", "1.2.3.4/32", "1.2.3.0/24", "1.2.3.0/25", "0.0.0.0/0"]
+    ban_man.ban(a_subnet(_ONION))
+    peer = NetworkAddressV2(0, 0, BIP155Network.TORV3, onion.packed, 8333)
+    assert ban_man.is_peer_banned(peer)
+    other = NetworkAddressV2(0, 0, BIP155Network.TORV3, b"\x11" * 32, 8333)
+    assert not ban_man.is_peer_banned(other)
+
+
+def test_subnets_are_listed_in_core_s_order() -> None:
+    """IPv4, IPv6, onion, I2P; then by octets, the wider netmask first.
+
+    bitcoind v31.1 lists an I2P ban after its IPv6 ones.
+    """
+    ban_man = BanMan(None, _LOGGER)
+    texts = [_I2P, _ONION, "::1", "1.2.3.4/32", "1.2.3.0/24", "1.2.3.0/25", "0.0.0.0/0"]
     for text in texts:
         ban_man.ban(a_subnet(text))
     assert [str(subnet) for subnet, _ in ban_man.banned()] == [
@@ -206,6 +371,8 @@ def test_subnets_are_listed_in_core_s_order() -> None:
         "1.2.3.0/25",
         "1.2.3.4/32",
         "::1/128",
+        _ONION,
+        _I2P,
     ]
 
 
