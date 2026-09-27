@@ -398,13 +398,14 @@ def test_load_conf_tree_reads_the_section_of_the_command_lines_chain(
     conf = tmp_path / "bitcoin.conf"
     conf.write_text("[regtest]\nincludeconf=a.conf\n", encoding="utf-8")
     assert "port" not in _load(conf).get("", {})
-    command_line, _ = cli._parse_parameters(["-regtest"])
+    command_line, _ = cli._parse_parameters(["-regtest"], [])
     tree = cli._load_conf_tree(
         conf,
         conf_explicit=False,
         base_dir=tmp_path,
         use_includes=True,
         command_line=command_line,
+        warnings=[],
     )
     assert tree[""]["port"] == ["1"]
 

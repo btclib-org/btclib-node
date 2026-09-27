@@ -383,8 +383,11 @@ class Config:
     # constructor answering `Config("regtest")` for one parameter and
     # refusing it for the next -- which also drops PLR0917 (too many
     # positional arguments) below to zero, keyword-only meaning there
-    # is no longer a positional count to measure.
-    def __init__(  # noqa: PLR0913
+    # is no longer a positional count to measure. PLR0915 (too many
+    # statements) measures the same flatness from the body's side: one
+    # assignment per independent setting, which is what grows with every
+    # field this object carries rather than a body that wants splitting.
+    def __init__(  # noqa: PLR0913, PLR0915
         self,
         *,
         chain: Chain | str = DEFAULT_CHAIN,

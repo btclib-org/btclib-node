@@ -753,6 +753,17 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   #1313, closes #1324), where a value that is not an integer was refused;
   `-maxconnections` and `-prune` then narrow and wrap as they do in Core.
 
+### `codeql.yml`'s aggregate reads a lagging row again
+
+- **An unfinished `analyze` row is read again before it is accepted, and a
+  `needs.analyze.result` neither `success` nor `skipped` fails the step**
+  (issue btclib-org/.github#1416) (issue btclib-org/.github#1424).
+
+### `integration-bitcoind.yml` names `skip-reason-prefix`
+
+- **Its comments name `skip-reason-prefix`, left empty, in place of
+  `exclude-classname`** (issue btclib-org/.github#1419).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
