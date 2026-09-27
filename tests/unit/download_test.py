@@ -1824,3 +1824,50 @@ def test_in_initial_block_download_only_a_peer_synced_from_moves(
     )
     expected = [preferred] if in_flight else [preferred, inbound]
     assert moved(manager, monkeypatch) == expected
+
+
+def test_two_full_invs_of_wtxids_draw_capped_getdatas_rather_than_a_raise() -> None:
+    """ISS 1243: twice `MAX_INV_SZ` announced, Core's cap asked, in batches.
+
+    One `GetData` of every announcement raised past `MAX_INV_SZ`, which
+    stopped the node.
+    """
+    conn = a_conn(1)
+    manager = make_manager([conn])
+    announced = [a_hash(n) for n in range(2 * MAX_INV_SZ)]
+    manager.inv_txs = [(1, h) for h in announced]
+    manager.tx_download()
+    getdatas = only(conn, GetData)
+    assert [len(g.items) for g in getdatas] == [download_module._MAX_GETDATA_SZ] * (
+        download_module._MAX_PEER_TX_ANNOUNCEMENTS // download_module._MAX_GETDATA_SZ
+    )
+    asked = [h for g in getdatas for h in hashes_of(g)]
+    assert asked == announced[: download_module._MAX_PEER_TX_ANNOUNCEMENTS]
+
+
+@pytest.mark.parametrize(
+    ("outstanding", "asked"),
+    [(4999, 1), (5000, 0), (5001, 0)],
+    ids=["one-below", "at-the-cap", "past-the-cap"],
+)
+def test_asks_already_outstanding_count_against_the_announcement_cap(
+    outstanding: int, asked: int
+) -> None:
+    """ISS 1243: Core counts what it already tracks for the peer."""
+    conn = a_conn(1)
+    now = time.time()
+    conn.tx_requested = {a_hash(n): now for n in range(outstanding)}
+    manager = make_manager([conn])
+    manager.inv_txs = [(1, a_hash(10_000 + n)) for n in range(2)]
+    manager.tx_download()
+    assert sum(len(g.items) for g in only(conn, GetData)) == asked
+
+
+def test_a_getdata_of_wanted_transactions_holds_at_most_core_s_batch() -> None:
+    """ISS 1243: `MAX_GETDATA_SZ` items to a message, the rest in the next."""
+    conn = a_conn(1)
+    manager = make_manager([conn])
+    size = download_module._MAX_GETDATA_SZ
+    manager.inv_txs = [(1, a_hash(n)) for n in range(size + 1)]
+    manager.tx_download()
+    assert [len(g.items) for g in only(conn, GetData)] == [size, 1]
