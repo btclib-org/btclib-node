@@ -711,6 +711,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A byte that is not UTF-8 no longer stops the node** (closes #1290): it is
   kept, and written back as that byte in stderr, the log and the credentials.
 
+### `REPOSITORY.md` reads the organization's SHA pinning back
+
+- **The organization's `allowed_actions` and `sha_pinning_required` stand
+  beside the repository's**, the latter set at that level (issue
+  btclib-org/.github#1409).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
