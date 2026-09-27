@@ -5,12 +5,13 @@
 """`cli.py`: argument parsing, `bitcoin.conf` reading, and `main`'s dispatch."""
 
 import functools
+import io
 import os
 import re
 import runpy
 import stat
 import sys
-from contextlib import suppress
+from contextlib import redirect_stderr, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -20,7 +21,7 @@ from btclib_node import Node, cli
 from btclib_node.chains import Main, RegTest
 from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS, Config
 from btclib_node.constants import MIN_PRUNE_TARGET_MIB
-from btclib_node.rpc.auth import COOKIE_FILE, RpcAuthEntry, password_hmac
+from btclib_node.rpc.auth import COOKIE_FILE, RpcAuthEntry, password_hmac, to_bytes
 from tests import (
     RPCAUTH,
     cookie_path,
@@ -162,6 +163,61 @@ def test_parse_conf_text_ends_a_line_at_a_newline_alone() -> None:
     """
     with pytest.raises(ValueError, match=r"^parse error on line 3: bad$"):
         cli._parse_conf_text("regtest=1\nfoo\fbar=1\nbad\n")
+
+
+@pytest.mark.parametrize(
+    ("content", "refusal"),
+    [
+        (b"regtest=1\n# x\xe9y\nbad\n", b"parse error on line 3: bad"),
+        (b"regtest=1\nx\xe9y\n", b"parse error on line 2: x\xe9y"),
+    ],
+    ids=["in a comment", "in the line refused"],
+)
+def test_read_conf_file_reads_a_byte_utf8_refuses(
+    tmp_path: Path, content: bytes, refusal: bytes
+) -> None:
+    """ISS 1290: the file is read as `bitcoind` reads it, as bytes.
+
+    `0xe9`, Latin-1's `e` acute, is no UTF-8. `bitcoind` v31.1.0 reads
+    past it in a comment, and quotes it in the line it refuses; here it
+    is the lone surrogate `surrogateescape` keeps it as, compared as the
+    byte it stands for: a surrogate in a failure's text is one `xdist`
+    cannot send back from its worker.
+    """
+    path = tmp_path / "bitcoin.conf"
+    path.write_bytes(content)
+    with pytest.raises(ValueError, match="parse error") as raised:
+        cli._read_conf_file(path, required=True)
+    assert to_bytes(str(raised.value)) == refusal
+
+
+@pytest.mark.usefixtures("no_node")
+def test_main_writes_a_byte_utf8_refuses_as_that_byte(
+    tmp_path: Path, capfdbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    """ISS 1290: stderr holds the byte the file held, as `bitcoind` writes it.
+
+    Measured on `bitcoind` v31.1.0 over this file: `Error: Error reading
+    configuration file: parse error on line 2: x<0xe9>y`, the prefix
+    being `InitConfig`'s.
+    """
+    (tmp_path / "bitcoin.conf").write_bytes(b"regtest=1\nx\xe9y\n")
+    with pytest.raises(SystemExit):
+        cli.main([f"-datadir={tmp_path}"])
+    assert capfdbinary.readouterr().err.endswith(b"parse error on line 2: x\xe9y\n")
+
+
+@pytest.mark.usefixtures("no_node")
+def test_main_writes_to_a_stderr_it_cannot_reconfigure(tmp_path: Path) -> None:
+    """ISS 1290: a stream with no encoding of its own is written as it is.
+
+    `io.StringIO`, which `redirect_stderr` puts in place, keeps text
+    rather than bytes, so there is no error handler to set on it.
+    """
+    (tmp_path / "bitcoin.conf").write_text("regtest=1\nbad\n", encoding="utf-8")
+    with redirect_stderr(io.StringIO()) as err, pytest.raises(SystemExit):
+        cli.main([f"-datadir={tmp_path}"])
+    assert err.getvalue().endswith("parse error on line 2: bad\n")
 
 
 @pytest.mark.parametrize(
@@ -2031,6 +2087,67 @@ def no_node(monkeypatch: pytest.MonkeyPatch) -> None:
     With `Node` in place such an argument starts a node that never stops.
     """
     monkeypatch.delattr(cli, "Node")
+
+
+def test_config_options_records_every_section_as_core_does() -> None:
+    """ISS 1271: `GetConfigOptions`' `sections`, a dotted key's included.
+
+    A `[section]` line, and a key's part before its last `.` where that
+    `.` sits at or past the `[section]` prefix's length: `regtest.x`
+    under `[regtest]`, `regtest` for a top-level `regtest.port`, and
+    `x.` for `.foo` under `[x]`, as `bitcoind` v31.1.0 names it, but not
+    `x` again for `foo` under `[x]`.
+    """
+    sections: list[tuple[str, str, int]] = []
+    text = "regtest.port=1\n[x]\nfoo=1\n.foo=1\n[regtest]\nx.bar=1\nbar=2\n"
+    cli._config_options(text, sections, "f.conf")
+    assert sections == [
+        ("regtest", "f.conf", 1),
+        ("x", "f.conf", 2),
+        ("x.", "f.conf", 4),
+        ("regtest", "f.conf", 5),
+        ("regtest.x", "f.conf", 6),
+    ]
+
+
+def test_warn_unrecognized_sections_is_one_core_warning(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """ISS 1271: `InitWarning`'s lines, a chain's own section left out.
+
+    `testnet4` is one of Core's chains, and so is not warned about.
+    """
+    sections = [("x", "a.conf", 2), ("testnet4", "a.conf", 3), ("y", "b", 1)]
+    cli._warn_unrecognized_sections(sections)
+    assert capsys.readouterr().err == (
+        "Warning: a.conf:2 Section [x] is not recognized.\n"
+        "b:1 Section [y] is not recognized.\n\n"
+    )
+    cli._warn_unrecognized_sections([("main", "a.conf", 1)])
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.usefixtures("no_node")
+def test_main_warns_of_an_unrecognized_section_before_refusing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 1271: the warning, then the blocks directory, as `bitcoind` prints.
+
+    Measured on `bitcoind` v31.1.0 with this file and include: the root
+    file is named by its path, the included one as `includeconf=` names
+    it.
+    """
+    (tmp_path / "bitcoin.conf").write_text(
+        "regtest=1\nincludeconf=inc.conf\n[x]\n", encoding="utf-8"
+    )
+    (tmp_path / "inc.conf").write_text("[z]\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        cli.main([f"-datadir={tmp_path}", f"-blocksdir={tmp_path}/nosuch"])
+    assert capsys.readouterr().err == (
+        f"Warning: {tmp_path / 'bitcoin.conf'}:3 Section [x] is not recognized.\n"
+        "inc.conf:1 Section [z] is not recognized.\n\n"
+        f'Error: Specified blocks directory "{tmp_path}/nosuch" does not exist.\n'
+    )
 
 
 @pytest.mark.usefixtures("no_node")
