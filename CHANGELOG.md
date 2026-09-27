@@ -611,11 +611,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   any entry is validated** (closes #1253); a script shorter than its declared
   length is an invalid serialization.
 
-### An answered address is kept for Core's 30-day horizon
-
-- **An answered row leaves the table only when `IsTerrible`'s time tests call
-  it terrible: its handshake stamp over 30 days old or 10 minutes ahead**
-  (closes #1318), where it left three hours after its last handshake.
 ### A `history.log` line is stamped as `debug.log` stamps it
 
 - **The time is UTC ISO 8601 to the second, then one space** (closes #1297),
@@ -626,6 +621,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`get_random_port` hands each xdist worker, and each of the first as many
   replacements, ports of its own from 11000 to 25999, as Core's tests do**,
   not a port a bind to 0 picked, which anything could take first (closes #1340).
+
+### An answered address is kept for Core's 30-day horizon
+
+- **An answered row leaves the table only when `IsTerrible`'s time tests call
+  it terrible: its handshake stamp over 30 days old or 10 minutes ahead**
+  (closes #1318), where it left three hours after its last handshake.
 
 ## v2026.9.24
 
