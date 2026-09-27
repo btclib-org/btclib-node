@@ -102,9 +102,9 @@ class TxRejectedError(BTClibValueError):
     for a 1p1c package through `Find1P1CPackage`. This tree has no
     package path for that filter to serve, so one reject cache covers
     both. `details` defaults to empty for a reason Core's own checks
-    never attach a debug message to (`bad-txns-nonfinal`,
-    `bad-txns-premature-spend-of-coinbase`), matching `ToString`'s own
-    fallback rather than printing a trailing ", ".
+    never attach a debug message to (`non-final`,
+    `txn-already-in-mempool`), matching `ToString`'s own fallback
+    rather than printing a trailing ", ".
     """
 
     def __init__(self, reason: str, details: str = "") -> None:
