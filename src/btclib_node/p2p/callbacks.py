@@ -888,8 +888,8 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
         return
     except BTClibValueError:
         # Every other refusal `verify_mempool_acceptance` can make --
-        # a relay-policy-only one (`NonStandardTxError`, or a fee below
-        # either floor, `TxRejectedError`, each a `BTClibValueError`)
+        # a relay-policy-only one (`NonStandardTxError`, or one of Core's
+        # own reject reasons, `TxRejectedError`, each a `BTClibValueError`)
         # exactly as much as a genuine consensus one
         # (non-final, a coinbase spent too soon, a bad sequence lock, or
         # the underlying script failure `interpreter.check_transaction`

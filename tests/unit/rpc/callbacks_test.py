@@ -2754,6 +2754,21 @@ def test_testmempoolaccept_refuses_a_held_txid_in_core_s_words(
     ]
 
 
+def test_a_held_fee_free_transaction_is_refused_as_held_not_for_its_fee(
+    regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The held check comes before the fee floor, as in Core's `PreChecks`.
+
+    A fee-free transaction a reorg re-added, put to `testmempoolaccept`,
+    is "txn-already-in-mempool" and not "min relay fee not met".
+    btclib-org/btclib-node#1244
+    """
+    node, held, _ = a_node_holding(regtest_node, monkeypatch, 0)
+    raw = held.serialize(include_witness=True).hex()
+    (answer,) = mempool_accept(node, _CONN, [[raw]])
+    assert answer["reject-reason"] == "txn-already-in-mempool"
+
+
 def test_a_held_transaction_under_a_risen_minimum_is_reannounced(
     regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch
 ) -> None:
