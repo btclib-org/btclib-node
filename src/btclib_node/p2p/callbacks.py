@@ -316,8 +316,8 @@ def maybe_send_getheaders(node: Node, conn: Connection, locator: list[bytes]) ->
 
 
 # The common version at or below which `version` sends the final
-# `alert`: Core's literal 70012 (`src/net_processing.cpp`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag), named for nothing else.
+# `alert`: Core's literal 70012 (`src/net_processing.cpp`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), named for nothing else.
 _FINAL_ALERT_VERSION = 70012
 
 
