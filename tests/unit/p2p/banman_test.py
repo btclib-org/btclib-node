@@ -238,6 +238,7 @@ def test_lookup_host_reads_an_address_as_set_legacy_ipv6_does() -> None:
         ("1.2.3", "1.2.0.3"),
         ("0x7f.1", "127.0.0.1"),
         ("127.1", "127.0.0.1"),
+        ("01.2.3.4", "1.2.3.4"),
     ],
 )
 def test_lookup_host_reads_what_getaddrinfo_reads(text: str, expected: str) -> None:
