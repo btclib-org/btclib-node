@@ -738,9 +738,8 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 ### Only a peer this node dialled is recorded as answered, as in Core
 
 - **An inbound peer's endpoint no longer enters the answered table, and a
-  dialled one enters it at its own `version`, not waiting for a `verack`
-  that may never come**, matching where Core's `AddrMan::Good` runs (closes
-  #1229, closes #1140).
+  dialled one enters it at its own `version`, as Core's `AddrMan::Good`
+  does** (closes #1229, closes #1140).
 
 ## v2026.9.24
 
