@@ -27,6 +27,8 @@ from btclib.tx.limits import COINBASE_MATURITY
 
 from btclib_node.chains import RegTest
 from tests import (
+    TEST_PORTS,
+    PortPool,
     WaitTimeoutError,
     brute_force_nonce,
     build_block,
@@ -39,6 +41,7 @@ from tests import (
     local_addr,
     wait_until,
     wait_until_listening,
+    worker_ports,
 )
 
 
@@ -51,6 +54,61 @@ def test_the_port_offered_is_one_that_can_be_bound() -> None:
     # and a second caller is not handed the first one: two nodes in one
     # test would otherwise fight over it
     assert get_random_port() != port
+
+
+def test_no_port_the_kernel_picks_is_a_test_port() -> None:
+    """Neither a bind to port 0 nor a connection's own end lands in the pool.
+
+    Either would be a port `get_random_port` can hand out while something
+    else is about to take it.
+    """
+    with socket.create_server(("127.0.0.1", 0)) as server:
+        for _ in range(64):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.bind(("", 0))
+                assert sock.getsockname()[1] not in TEST_PORTS
+            with socket.create_connection(server.getsockname()) as client:
+                accepted, _ = server.accept()
+                accepted.close()
+                assert client.getsockname()[1] not in TEST_PORTS
+
+
+@pytest.mark.parametrize("count", [1, 3, 4, 8, 13])
+def test_each_worker_hands_out_ports_of_its_own(count: int) -> None:
+    """A run's workers and their first `count` replacements share no port.
+
+    xdist names a replacement by the next index, `gw{count}` on; only the
+    one after those wraps, onto `gw0`'s slice.
+    """
+    names = [f"gw{index}" for index in range(2 * count)]
+    slices = [set(worker_ports(name, count)) for name in names]
+    for index, ports in enumerate(slices):
+        assert ports
+        assert ports <= set(TEST_PORTS)
+        for other in slices[index + 1 :]:
+            assert not ports & other
+    assert worker_ports(f"gw{2 * count}", count) == worker_ports("gw0", count)
+
+
+def test_a_held_port_is_passed_over() -> None:
+    """The pool skips a port something holds, and raises once all are held."""
+    free = get_random_port()
+    with (
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock,
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM) as other,
+    ):
+        sock.bind(("", 0))
+        held = sock.getsockname()[1]
+        low, high = sorted((free, held))
+        # a pool of exactly the two, walked from `held`
+        ports = range(low, high + 1, high - low)
+        pool = PortPool(ports, start=ports.index(held))
+        assert pool.draw() == free
+        # and round again past `held` to `free`
+        assert pool.draw() == free
+        other.bind(("", free))
+        with pytest.raises(OSError, match="is held"):
+            pool.draw()
 
 
 def test_a_condition_that_holds_is_not_waited_for() -> None:
