@@ -98,8 +98,9 @@ _PEER_CONNECT_TIMEOUT = 60
 # a connection quiet this long is sent a `ping`, and one still quiet
 # this long again after that is dropped. A pending connection is held
 # to `_PEER_CONNECT_TIMEOUT` above instead. A peer at `BIP0031_VERSION`
-# or below is sent no `ping` (`Connection.send_ping`) and is dropped once
-# quiet twice this long.
+# or below answers its `ping` with no `pong` (`Connection.send_ping`), so
+# it is sent one whenever none has been queued to it this long, and is
+# dropped once quiet twice this long.
 _IDLE_TIMEOUT = 120
 
 # `_maybe_redial_specified`'s own backoff for a `-connect`/`-addnode`
@@ -948,46 +949,24 @@ class P2pManager(threading.Thread):
         """Schedule `async_connect(address)` onto this manager's own loop."""
         asyncio.run_coroutine_threadsafe(self.async_connect(address), self.loop)
 
-    def _prune_addr_fetch_or_idle(self, conn: Connection, now: float) -> None:
-        """Drop `conn` for its addr-fetch timeout, or ping/drop it for idling.
-
-        Split out of `_prune_stale_connections` for ruff's complexity
-        ceiling; that method's own loop calls this once `conn` is
-        neither closed nor an addr-fetch peer past its timeout.
-        """
-        if conn.addr_fetch and now - conn.connected_time > _ADDR_FETCH_TIMEOUT:
-            # Core's own log line, `SendMessages` (`net_processing.cpp`,
-            # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): answered
-            # or not, an addr-fetch connection is kept no longer than
-            # this (btclib-org/btclib-node#1284).
-            self.logger.debug("addrfetch connection timeout, peer=%s", conn.id)
-            self.remove_connection(conn.id)
-            return
-        if now - conn.last_receive > _IDLE_TIMEOUT:
-            # One read, not `conn.ping_sent` re-read in the `elif`
-            # below: `callbacks.pong`, on the other thread, clears
-            # it the moment a pong answers this connection's own
-            # ping, and a second read landing right after that
-            # clear turned `now - 0 > _IDLE_TIMEOUT` true for every
-            # `now`, dropping a peer for having just answered.
-            # btclib-org/btclib-node#357
-            ping_sent = conn.ping_sent
-            if common_version(conn) <= BIP0031_VERSION:
-                # no `ping` to wait on (`Connection.send_ping`), so
-                # the whole quiet span is waited out here instead
-                if now - conn.last_receive > 2 * _IDLE_TIMEOUT:
-                    self.remove_connection(conn.id)
-            elif not ping_sent:
-                conn.send_ping()
-            elif now - ping_sent > _IDLE_TIMEOUT:
-                self.remove_connection(conn.id)
-
     def _prune_stale_connections(self, now: float) -> None:
         for conn in self.connections.copy().values():
             if conn.status == P2pConnStatus.Closed:
                 self.remove_connection(conn.id)
                 continue
-            self._prune_addr_fetch_or_idle(conn, now)
+            # Checked first and unconditionally, idle or not: Core's own
+            # `SendMessages` (`net_processing.cpp`, at
+            # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) returns on this
+            # same check before ever reaching `MaybeSendPing`, so a
+            # chatty addr-fetch peer is still cut at this bound, from
+            # `m_connected` rather than from its last message
+            # (btclib-org/btclib-node#1284).
+            if conn.addr_fetch and now - conn.connected_time > _ADDR_FETCH_TIMEOUT:
+                self.logger.debug("addrfetch connection timeout, peer=%s", conn.id)
+                self.remove_connection(conn.id)
+                continue
+            if now - conn.last_receive > _IDLE_TIMEOUT:
+                self._ping_or_drop_idle(conn, now)
         for conn in self.pending_connections.copy().values():
             # Dropped `_PEER_CONNECT_TIMEOUT` after connecting, quiet or
             # not, as Core's `InactivityCheck` drops a connection short
@@ -1001,6 +980,27 @@ class P2pManager(threading.Thread):
                 or conn.connected_time + _PEER_CONNECT_TIMEOUT < now
             ):
                 self.remove_connection(conn.id)
+
+    def _ping_or_drop_idle(self, conn: Connection, now: float) -> None:
+        """Ping or drop `conn`, quiet for `_IDLE_TIMEOUT`, as argued there."""
+        # One read, not `conn.ping_sent` re-read in the `elif` below:
+        # `callbacks.pong`, on the other thread, clears it the moment a
+        # pong answers this connection's own ping, and a second read
+        # landing right after that clear turned `now - 0 > _IDLE_TIMEOUT`
+        # true for every `now`, dropping a peer for having just answered.
+        # btclib-org/btclib-node#357
+        ping_sent = conn.ping_sent
+        if common_version(conn) <= BIP0031_VERSION:
+            # no `pong` to wait on (`Connection.send_ping`), so the whole
+            # quiet span is waited out here instead
+            if now - conn.last_receive > 2 * _IDLE_TIMEOUT:
+                self.remove_connection(conn.id)
+            elif now - conn.ping_start > _IDLE_TIMEOUT:
+                conn.send_ping()
+        elif not ping_sent:
+            conn.send_ping()
+        elif now - ping_sent > _IDLE_TIMEOUT:
+            self.remove_connection(conn.id)
 
     def _maybe_prune_active_addresses(self, now: float) -> None:
         if now - self._last_active_prune < _ACTIVE_PRUNE_INTERVAL:
@@ -2270,9 +2270,9 @@ class P2pManager(threading.Thread):
         self.node.download_manager.received_txs.append((None, tx.hash))
 
     def ping_all(self) -> None:
-        """Send every connected peer a fresh `ping`, as `send_ping` allows.
+        """Send every connected peer a fresh `ping`, through `send_ping`.
 
-        A peer at `BIP0031_VERSION` or below is sent none.
+        A peer at `BIP0031_VERSION` or below is sent one with no nonce.
         btclib-org/btclib-node#1204
         """
         for conn in self.connections.copy().values():

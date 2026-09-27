@@ -28,6 +28,7 @@ from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.p2p.limits import PROTOCOL_VERSION
 from btclib.script import script
 from btclib.script.witness import Witness
+from btclib.tx.limits import COINBASE_MATURITY
 from btclib.tx.out_point import OutPoint
 from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
@@ -46,8 +47,13 @@ from btclib_node.constants import (
     USER_AGENT,
     P2pConnStatus,
 )
-from btclib_node.exceptions import MissingPrevoutError, StoreCorruptionError
+from btclib_node.exceptions import (
+    MissingPrevoutError,
+    StoreCorruptionError,
+    TxRejectedError,
+)
 from btclib_node.log import Logger
+from btclib_node.main import verify_mempool_acceptance
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.banman import BanEntry, BanMan, lookup_subnet
@@ -89,6 +95,7 @@ from tests import (
     generate_coinbase,
     generate_random_chain,
     generate_random_header_chain,
+    generate_random_transaction,
     generate_segwit_block,
 )
 from tests.unit.main_test import connect
@@ -195,7 +202,6 @@ def a_peer(
         # left unrounded cannot pass
         last_send=1.9,
         last_receive=2.7,
-        last_block_timestamp=3.5,
         last_novel_block_time=4,
         last_novel_tx_time=5,
         connected_time=6,
@@ -2709,6 +2715,104 @@ def test_a_transaction_whose_scripts_do_not_verify_is_answered_with_the_refusal(
     assert broadcast == []
 
 
+def a_fee_refusal(node: Any, transaction: Any) -> NoReturn:
+    """Refuse as `verify_mempool_acceptance` refuses a fee under the floor."""
+    reason, details = "min relay fee not met", "0 < 11"
+    raise TxRejectedError(reason, details)
+
+
+def test_a_fee_refusal_is_answered_in_core_s_words(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`sendrawtransaction` answers `-26` and Core's own reason and details.
+
+    `bitcoind` v31.1 on regtest: "min relay fee not met, 0 < 11" for a
+    zero-fee 110-vbyte spend (btclib-org/btclib-node#1245).
+    """
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", a_fee_refusal)
+    tx = a_tx()
+    mempool = Mempool(Logger(debug=True))
+    broadcast: list[Tx] = []
+    node = a_node(mempool=mempool)
+    node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: broadcast.append(tx)
+
+    with pytest.raises(RpcError) as raised:
+        send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
+    assert raised.value.code == RPCErrorCode.VERIFY_REJECTED
+    assert raised.value.message == "min relay fee not met, 0 < 11"
+    assert not mempool.contains_tx(tx)
+    assert broadcast == []
+
+
+def test_a_fee_refusal_is_reported_with_core_s_reason_and_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`testmempoolaccept` reports the reason and details, as Core does."""
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", a_fee_refusal)
+    (result,) = mempool_accept(
+        a_node(), _CONN, [[a_tx().serialize(include_witness=True).hex()]]
+    )
+    assert result["allowed"] is False
+    assert result["reject-reason"] == "min relay fee not met"
+    assert result["reject-details"] == "min relay fee not met, 0 < 11"
+
+
+def a_node_holding(
+    regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch, fee: int
+) -> tuple[Node, Tx, list[tuple[bytes, int]]]:
+    """Return a node holding a spend paying `fee`, and what it announces."""
+    node = regtest_node()
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, chain)
+    funding = chain[0].transactions[0]
+    held = generate_random_transaction(funding.id, value=funding.vout[0].value - fee)
+    # `bypass_limits`, as a reorg re-adds a transaction: no floor at all
+    assert node.mempool.add_tx(
+        held, verify_mempool_acceptance(node, held, bypass_limits=True)
+    )
+    announced: list[tuple[bytes, int]] = []
+    monkeypatch.setattr(
+        node.p2p_manager,
+        "broadcast_raw_transaction",
+        lambda tx, fee: announced.append((tx.hash, fee)),
+    )
+    return node, held, announced
+
+
+def test_a_held_transaction_is_reannounced_not_judged_again(
+    regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A txid already held answers its txid, the real verifier never asked.
+
+    Core's `BroadcastTransaction` returns early for a txid its mempool
+    holds, before any acceptance check: a fee-free transaction a reorg
+    re-added, resubmitted, is not "min relay fee not met"
+    (btclib-org/btclib-node#1245). The same txid under another witness
+    reannounces the mempool's copy.
+    """
+    node, held, announced = a_node_holding(regtest_node, monkeypatch, 0)
+    twin = Tx.parse(held.serialize(include_witness=True))
+    twin.vin[0].script_witness = Witness([b"\x01"])
+    assert twin.id == held.id
+    assert twin.hash != held.hash
+    for resubmitted in (held, twin):
+        raw = resubmitted.serialize(include_witness=True).hex()
+        assert send_raw_transaction(node, _CONN, [raw]) == held.id.hex()
+    assert announced == [(held.hash, 0), (held.hash, 0)]
+
+
+def test_a_held_transaction_under_a_risen_minimum_is_reannounced(
+    regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rolling minimum risen past what a held tx pays is no refusal."""
+    node, held, announced = a_node_holding(regtest_node, monkeypatch, 1_000)
+    node.mempool._rolling_min_fee_rate = 1_000_000.0
+    node.mempool._block_since_last_rolling_fee_bump = False
+    raw = held.serialize(include_witness=True).hex()
+    assert send_raw_transaction(node, _CONN, [raw]) == held.id.hex()
+    assert announced == [(held.hash, 1_000)]
+
+
 def test_a_corrupted_stored_record_is_not_answered_as_the_tx_s_own_refusal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3018,6 +3122,55 @@ def test_setban_refuses_what_is_no_ip_nor_subnet(
         error = refusal(node, [subnet, command])
         assert error.code == RPCErrorCode.CLIENT_INVALID_IP_OR_SUBNET
         assert error.message == "Error: Invalid IP/Subnet"
+
+
+_ONION = "pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion"
+_I2P = "udhdrtrcetjm5sxzskjyr5ztpeszydbh4dpl3pl4utgqqw2v4jna.b32.i2p"
+
+
+def test_setban_bans_an_onion_or_i2p_host_and_no_subnet_of_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1218: as bitcoind v31.1 answers `setban`.
+
+    The host alone, each on its key whatever its case; a prefix is no
+    subnet of one. `listbanned` lists them after the IP bans.
+    """
+    node, dropped = a_banning_node(monkeypatch)
+    set_ban(node, _CONN, [_I2P, "add"])
+    set_ban(node, _CONN, [_ONION, "add"])
+    set_ban(node, _CONN, ["1.2.3.4", "add"])
+    assert dropped == [_I2P, _ONION, "1.2.3.4/32"]
+    upper = _ONION.removesuffix(".onion").upper() + ".onion"
+    for params in ([upper, "add"], [f"[{_ONION}]", "add"], [_I2P.upper(), "add"]):
+        assert refusal(node, params).code == RPCErrorCode.CLIENT_NODE_ALREADY_ADDED
+    error = refusal(node, [f"{_ONION}/32", "add"])
+    assert error.code == RPCErrorCode.CLIENT_INVALID_IP_OR_SUBNET
+    assert [entry["address"] for entry in list_banned(node, _CONN, [])] == [
+        "1.2.3.4/32",
+        _ONION,
+        _I2P,
+    ]
+    set_ban(node, _CONN, [upper, "remove"])
+    assert [entry["address"] for entry in list_banned(node, _CONN, [])] == [
+        "1.2.3.4/32",
+        _I2P,
+    ]
+
+
+def test_setban_bans_a_scoped_address_on_its_address_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1220: `fe80::1%2` is banned already, and removed, by `fe80::1%1`."""
+    node, _ = a_banning_node(monkeypatch)
+    set_ban(node, _CONN, ["fe80::1%1", "add"])
+    error = refusal(node, ["fe80::1%2", "add"])
+    assert error.code == RPCErrorCode.CLIENT_NODE_ALREADY_ADDED
+    assert [entry["address"] for entry in list_banned(node, _CONN, [])] == [
+        "fe80::1%1/128"
+    ]
+    set_ban(node, _CONN, ["fe80::1%2", "remove"])
+    assert list_banned(node, _CONN, []) == []
 
 
 def test_setban_takes_an_invalid_address_as_a_subnet(
@@ -3443,6 +3596,55 @@ def test_submit_block_leaves_valid_a_header_its_body_does_not_match(
     assert node.block_db.get_block(mismatched.header.hash) is None
     honest = chain[0].serialize(check_validity=False).hex()
     assert submit_block(node, _CONN, [honest]) is None
+
+
+def a_block_marked_invalid(node: Node, block: Block) -> str:
+    """Index `block`'s header, mark it invalid, and return the block's hex."""
+    block_index = node.chainstate.block_index
+    block_index.add_headers([block.header])
+    block_index.invalidate(block.header.hash)
+    return block.serialize(check_validity=False).hex()
+
+
+@pytest.mark.parametrize(
+    ("body", "answer"),
+    [
+        ("valid", "duplicate-invalid"),
+        ("over-the-weight", "duplicate-invalid"),
+        ("bad-cb-multiple", "more than one coinbase"),
+    ],
+)
+def test_submit_block_answers_duplicate_invalid_where_check_block_passes(
+    regtest_node: Callable[..., Node], body: str, answer: str
+) -> None:
+    """ISS 1344: Core's `CheckBlock`, then `AcceptBlockHeader`'s cached state.
+
+    Measured against bitcoind v31.1, each body under a header
+    `invalidateblock` marked: `duplicate-invalid`, `duplicate-invalid`,
+    `bad-cb-multiple`. Nothing is stored.
+    """
+    node = regtest_node()
+    block = {
+        "valid": lambda: generate_random_chain(1, RegTest().genesis.hash)[0],
+        "over-the-weight": lambda: generate_segwit_block(
+            witness=bytes(MAX_BLOCK_WEIGHT)
+        ),
+        "bad-cb-multiple": lambda: generate_segwit_block(generate_coinbase(height=1)),
+    }[body]()
+    assert submit_block(node, _CONN, [a_block_marked_invalid(node, block)]) == answer
+    assert node.block_db.get_block(block.header.hash) is None
+
+
+def test_submit_block_answers_duplicate_invalid_for_a_stored_block_marked_since(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """ISS 1344: not `duplicate`, Core's header state being asked first."""
+    node = regtest_node()
+    (block,) = generate_random_chain(1, RegTest().genesis.hash)
+    raw = block.serialize(check_validity=False).hex()
+    assert submit_block(node, _CONN, [raw]) is None
+    node.chainstate.block_index.invalidate(block.header.hash)
+    assert submit_block(node, _CONN, [raw]) == "duplicate-invalid"
 
 
 def test_submit_block_leaves_valid_a_committed_body_failing_check_block(

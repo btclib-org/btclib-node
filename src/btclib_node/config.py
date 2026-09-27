@@ -5,9 +5,9 @@
 """`Config`, the settings one `Node` is built from.
 
 Which chain to join, where its data lives, which listeners to start and
-on which interfaces, and the feerate floor it tells a peer about in
-`feefilter` -- `DEFAULT_MIN_RELAY_FEERATE` below, Core's own
-`DEFAULT_MIN_RELAY_TX_FEE`. `_resolve_chain` is what turns a chain
+on which interfaces, and the feerate floor its mempool accepts at and
+tells a peer about in `feefilter` -- `DEFAULT_MIN_RELAY_FEERATE` below,
+Core's own `DEFAULT_MIN_RELAY_TX_FEE`. `_resolve_chain` is what turns a chain
 already built, or a network's name, into the `Chain` a `Config` carries.
 `split_host_port` is `cli.py`'s own splitter for `-rpcbind`'s optional
 port too, and `get_path_arg` its reader of `-datadir`, `-conf` and
@@ -45,11 +45,10 @@ __all__ = [
 ]
 
 # Core's own floor, `DEFAULT_MIN_RELAY_TX_FEE` (`src/policy/policy.h`,
-# read at bitcoin/bitcoin@58a7869f86): 100 sat/kvB. This node prices
-# nothing at mempool acceptance yet (issue #85 is the open question of
-# what a rejected or evicted transaction costs), so the value below is
-# only ever the floor this node tells a peer about in `feefilter`
-# (btclib-org/btclib-node#94) -- it is not enforced anywhere else.
+# read at bitcoin/bitcoin@58a7869f86): 100 sat/kvB. The floor
+# `main.verify_mempool_acceptance` refuses a candidate under
+# (btclib-org/btclib-node#1245), and the one this node tells a peer about
+# in `feefilter` (btclib-org/btclib-node#94).
 DEFAULT_MIN_RELAY_FEERATE = FeeRate(sats_per_kvbyte=100)
 # Core's own `-maxconnections` default, `DEFAULT_MAX_PEER_CONNECTIONS`
 # (`src/net.h`), read at the release `integration-bitcoind.yml` pins,

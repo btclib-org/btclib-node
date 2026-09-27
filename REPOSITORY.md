@@ -391,12 +391,21 @@ without a person.
 `allowed_actions: all` and `sha_pinning_required: true` are what
 [section 11 states for every
 repository](https://github.com/btclib-org/.github#tokens-publishing-scanning),
-with the reason for each.
+with the reason for each. The organization gives the same two answers,
+`sha_pinning_required` being set at that level:
 
-**What this call cannot say is whether a value is this repository's own
-or the organization's**, there being no endpoint that answers. Whoever
-moves an organization default reads this repository back afterwards
-rather than assuming it moved.
+```shell
+gh api orgs/btclib-org/actions/permissions \
+  --jq '{allowed_actions, sha_pinning_required}'
+# {"allowed_actions":"all","sha_pinning_required":true}
+```
+
+**What the repository's own calls cannot say is whether a value is this
+repository's or the organization's.** For `sha_pinning_required` the
+organization's call above answers it; for the token's two values section
+11 says no endpoint reports an override. Whoever moves an organization
+default reads this repository back afterwards rather than assuming it
+moved.
 
 ## Security and analysis
 

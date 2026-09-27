@@ -77,6 +77,7 @@ def a_conn(
     *,
     status: P2pConnStatus = P2pConnStatus.Connected,
     last_receive: float | None = None,
+    ping_start: float = 0,
     connected_time: int | None = None,
     address: NetworkAddressV2 | None = None,
     relay_tx: bool = True,
@@ -103,6 +104,7 @@ def a_conn(
         status=status,
         address=address or peer_address("1.2.3.4", 18444),
         last_receive=time.time() if last_receive is None else last_receive,
+        ping_start=ping_start,
         connected_time=int(time.time()) if connected_time is None else connected_time,
         ping_sent=0,
         relay_tx=relay_tx,
@@ -124,6 +126,7 @@ def a_conn(
         # a ping already answered by nothing: the manager reads the time
         # it was sent to decide the peer is gone
         conn.ping_sent = time.time() - 200
+        conn.ping_start = time.time()
         conn.sent.append("ping")
 
     conn.send_ping = send_ping
@@ -674,21 +677,26 @@ def test_a_peer_that_has_gone_quiet_is_pinged_and_then_dropped(
     assert not manager.connections
 
 
-def test_a_quiet_peer_at_bip31_or_below_is_dropped_unpinged(
+def test_a_quiet_peer_at_bip31_or_below_is_pinged_and_dropped_on_quiet(
     a_manager: AManagerFactory,
 ) -> None:
-    """ISS 1180: no `ping` to wait on, so twice the idle bound is waited.
+    """ISS 1180: no `pong` to wait on, so twice the idle bound is waited.
 
-    `Connection.send_ping` sends it none, as btclib has no `ping` without
-    a nonce; the same quiet span a pinged peer gets drops it.
+    ISS 1204: meanwhile it is sent a `ping`, with no nonce, where none
+    has been queued to it for the idle bound, and a second pass queues
+    no second one; the same quiet span a pinged peer gets drops it.
     """
     bound = manager_module._IDLE_TIMEOUT
-    quiet = a_conn(1, last_receive=time.time() - bound - 10, protocol=60000)
-    quieter = a_conn(2, last_receive=time.time() - 2 * bound - 10, protocol=60000)
-    manager = a_manager([quiet, quieter])
+    long_ago = time.time() - bound - 10
+    quiet = a_conn(1, last_receive=long_ago, protocol=60000)
+    pinged = a_conn(2, last_receive=long_ago, ping_start=time.time(), protocol=60000)
+    quieter = a_conn(3, last_receive=time.time() - 2 * bound - 10, protocol=60000)
+    manager = a_manager([quiet, pinged, quieter])
     asyncio.run(one_pass(manager))
-    assert quiet.sent == quieter.sent == []
-    assert list(manager.connections) == [1]
+    asyncio.run(one_pass(manager))
+    assert quiet.sent == ["ping"]
+    assert pinged.sent == quieter.sent == []
+    assert list(manager.connections) == [1, 2]
 
 
 def test_a_peer_that_answered_recently_is_left_alone(
@@ -1789,7 +1797,7 @@ def test_process_addr_fetch_never_dials_a_valid_candidate_ahead_of_an_invalid_on
     dialled: list[NetworkAddressV2] = []
 
     async def records(address: NetworkAddressV2) -> None:
-        dialled.append(address)
+        dialled.append(address)  # pragma: no cover -- aborted before any dial
 
     monkeypatch.setattr(secrets, "SystemRandom", _NoShuffle)
     monkeypatch.setattr(
@@ -1819,7 +1827,7 @@ def test_process_addr_fetch_never_dials_a_valid_candidate_ahead_of_a_held_one(
     dialled: list[NetworkAddressV2] = []
 
     async def records(address: NetworkAddressV2) -> None:
-        dialled.append(address)
+        dialled.append(address)  # pragma: no cover -- aborted before any dial
 
     monkeypatch.setattr(secrets, "SystemRandom", _NoShuffle)
     monkeypatch.setattr(
