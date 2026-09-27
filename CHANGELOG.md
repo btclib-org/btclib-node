@@ -622,11 +622,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   replacements, ports of its own from 11000 to 25999, as Core's tests do**,
   not a port a bind to 0 picked, which anything could take first (closes #1340).
 
-### A listener that cannot bind is reported as one, not as a slow one
-
-- **`wait_until_listening` raises `ListenerEndedError` as soon as a manager's
-  thread ends without listening, naming its `bind_error` where it has one**,
-  where it waited out its timeout and reported one (closes #1361).
 ### A body its header does not commit to leaves the header valid, as in Core
 
 - **A mutated body, Core's `IsBlockMutated`, is refused before its header is
@@ -762,6 +757,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`DownloadManager` asks such a peer for `MSG_BLOCK` rather than
   `MSG_WITNESS_BLOCK`, and its walk over the peer's chain ends at the first
   block where SegWit is active** (closes #1208).
+
+### A listener that cannot bind is reported as one, not as a slow one
+
+- **`wait_until_listening` raises `ListenerEndedError` as soon as a manager's
+  thread ends without listening, naming its `bind_error` where it has one**,
+  where it waited out its timeout and reported one (closes #1361).
 
 ## v2026.9.24
 
