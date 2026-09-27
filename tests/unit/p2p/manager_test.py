@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast, override
 from unittest.mock import AsyncMock
 
 import pytest
+from btclib.p2p.address import ServiceFlags
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 from btclib.p2p.keepalive import Ping
 from btclib.p2p.limits import PROTOCOL_VERSION
@@ -38,7 +39,13 @@ from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.log import Logger
 from btclib_node.p2p import manager as manager_module
-from btclib_node.p2p.address import PeerDB, fixed_seed_addresses, peer_address
+from btclib_node.p2p.address import (
+    SEEDS_SERVICE_FLAGS,
+    PeerDB,
+    endpoint_key,
+    fixed_seed_addresses,
+    peer_address,
+)
 from btclib_node.p2p.banman import DUMP_BANS_INTERVAL, BanMan, Subnet, lookup_subnet
 from btclib_node.p2p.main import handle_p2p_handshake
 from btclib_node.p2p.manager import P2pManager
@@ -114,6 +121,11 @@ def a_conn(
     return conn
 
 
+def a_full_node(ip: str, port: int) -> NetworkAddressV2:
+    """Build a peer advertising the services the dial loop requires."""
+    return peer_address(ip, port, services=SEEDS_SERVICE_FLAGS)
+
+
 def a_peer_db_stub(**attributes: Any) -> Any:
     """Build a `PeerDB` double good enough for `manage_connections`'s own loop.
 
@@ -124,11 +136,19 @@ def a_peer_db_stub(**attributes: Any) -> Any:
     about. `holds_network` is too, answering that every network is
     held, so that no fixed seed is added where a test is not about them.
     A `random_address` given is the draw `address_sampler` hands back,
-    so each call of it is one draw of the pass.
+    so each call of it is one draw of the pass. `attempt` records every
+    try in `tries`, by `endpoint_key`, which `last_try` reads: whether
+    the table holds the endpoint is `PeerDB`'s own test.
     """
+    tries: dict[bytes, float] = {}
     defaults: dict[str, Any] = {
         "get_active_addresses": list,
         "holds_network": lambda network_id: True,
+        "tries": tries,
+        "attempt": lambda address: tries.__setitem__(
+            endpoint_key(address), time.time()
+        ),
+        "last_try": lambda address: tries.get(endpoint_key(address), 0.0),
     }
     if "random_address" in attributes:
         draw = attributes.pop("random_address")
@@ -149,6 +169,7 @@ class AManagerFactory(Protocol):
         port: int | None = None,
         connect: Sequence[tuple[str, int]] = (),
         addnode: Sequence[tuple[str, int]] = (),
+        addnode_args: Sequence[str] = (),
         listen: bool = True,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
     ) -> P2pManager:
@@ -169,6 +190,7 @@ def a_manager() -> Iterator[AManagerFactory]:
         port: int | None = None,
         connect: Sequence[tuple[str, int]] = (),
         addnode: Sequence[tuple[str, int]] = (),
+        addnode_args: Sequence[str] = (),
         listen: bool = True,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
     ) -> P2pManager:
@@ -177,8 +199,8 @@ def a_manager() -> Iterator[AManagerFactory]:
         # of this same tree on one machine, or a second worker of this
         # same run (btclib-org/btclib-node#678). `get_random_port()`
         # drawn fresh on every call, rather than once as a mutable
-        # default would be, is what keeps every manager built without
-        # an explicit `port=` off both.
+        # default would be, is what gives every manager built without
+        # an explicit `port=` a port of its own.
         if port is None:
             port = get_random_port()
         node = SimpleNamespace(
@@ -193,9 +215,7 @@ def a_manager() -> Iterator[AManagerFactory]:
             # own: it hands the transaction to this, the same queue a
             # relayed transaction goes through. btclib-org/btclib-node#141
             download_manager=SimpleNamespace(received_txs=[]),
-            # `P2pManager.__init__` reads `node.config.connect_given`,
-            # `node.config.listen`, `node.config.connect`,
-            # `node.config.addnode` and `node.config.max_connections`
+            # `P2pManager.__init__` reads the `node.config` fields below
             # directly, not through `Config` itself: a plain namespace
             # is enough. `connect_given` mirrors what `Config.__init__`
             # itself derives from `connect` -- true whenever the
@@ -208,6 +228,7 @@ def a_manager() -> Iterator[AManagerFactory]:
                 connect=connect,
                 connect_given=bool(connect),
                 addnode=addnode,
+                addnode_args=tuple(addnode_args),
                 listen=listen,
                 max_connections=max_connections,
                 dnsseed=not connect and max_connections > 0,
@@ -877,7 +898,9 @@ def test_an_address_already_connected_to_is_not_dialled_again(
     would raise into the housekeeping loop's own handler, so a quiet
     log is the assertion that the manager never reached it.
     """
-    onion = NetworkAddressV2(0, 0, BIP155Network.TORV3, b"\x11" * 32, 8333)
+    onion = NetworkAddressV2(
+        0, SEEDS_SERVICE_FLAGS, BIP155Network.TORV3, b"\x11" * 32, 8333
+    )
     conn = a_conn(1, address=onion)
     peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: onion)
     manager = a_manager([conn], peer_db=peer_db)
@@ -898,7 +921,9 @@ def test_a_discouraged_address_is_not_dialled_again(
     raise on a network this node cannot open a socket for, straight
     into the same quiet-log assertion.
     """
-    onion = NetworkAddressV2(0, 0, BIP155Network.TORV3, b"\x11" * 32, 8333)
+    onion = NetworkAddressV2(
+        0, SEEDS_SERVICE_FLAGS, BIP155Network.TORV3, b"\x11" * 32, 8333
+    )
     peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: onion)
     manager = a_manager(peer_db=peer_db)
     manager.discourage(onion)
@@ -925,10 +950,16 @@ def test_a_connected_peer_drawn_with_a_different_timestamp_is_not_redialled(
     real `dial`, which raises on a network this node cannot open a
     socket for, straight into the same quiet-log assertion those use.
     """
-    onion = NetworkAddressV2(0, 0, BIP155Network.TORV3, b"\x11" * 32, 8333)
+    onion = NetworkAddressV2(
+        0, SEEDS_SERVICE_FLAGS, BIP155Network.TORV3, b"\x11" * 32, 8333
+    )
     conn = a_conn(1, address=onion)
     gossiped = NetworkAddressV2(
-        int(time.time()), 1, BIP155Network.TORV3, b"\x11" * 32, 8333
+        int(time.time()),
+        SEEDS_SERVICE_FLAGS,
+        BIP155Network.TORV3,
+        b"\x11" * 32,
+        8333,
     )
     peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: gossiped)
     manager = a_manager([conn], peer_db=peer_db)
@@ -947,7 +978,9 @@ def test_a_pending_connection_s_address_is_not_dialled_again_either(
     The same skip checked above against `connections` is checked here
     against `pending_connections` instead.
     """
-    onion = NetworkAddressV2(0, 0, BIP155Network.TORV3, b"\x11" * 32, 8333)
+    onion = NetworkAddressV2(
+        0, SEEDS_SERVICE_FLAGS, BIP155Network.TORV3, b"\x11" * 32, 8333
+    )
     conn = a_conn(1, status=P2pConnStatus.Open, address=onion)
     peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: onion)
     manager = a_manager(peer_db=peer_db)
@@ -969,7 +1002,7 @@ def test_a_promote_racing_the_snapshot_still_counts_as_already_connected(
     thread cannot land between the two reads and go uncounted by both -- which
     is what would let this pass redial a peer whose handshake just completed.
     """
-    address = peer_address("1.2.3.4", 18444)
+    address = a_full_node("1.2.3.4", 18444)
     conn = a_conn(1, status=P2pConnStatus.Open, address=address)
     peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: address)
     manager = a_manager(peer_db=peer_db)
@@ -1041,7 +1074,9 @@ def test_a_promote_racing_the_count_does_not_dial_past_the_target(
     `pending_connections` after the pop, and this pass would then dial past the
     target it was told to stop at.
     """
-    onion = NetworkAddressV2(0, 0, BIP155Network.TORV3, b"\x11" * 32, 8333)
+    onion = NetworkAddressV2(
+        0, SEEDS_SERVICE_FLAGS, BIP155Network.TORV3, b"\x11" * 32, 8333
+    )
     conn = a_conn(1, status=P2pConnStatus.Open, automatic=True)
     peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: onion)
     manager = a_manager(peer_db=peer_db, max_connections=1)
@@ -1096,7 +1131,7 @@ def test_a_dial_that_comes_back_with_nothing_adds_no_connection(
     monkeypatch.setattr(manager_module, "dial", comes_back_with_nothing)
     peer_db = a_peer_db_stub(
         is_empty=False,
-        random_address=lambda: peer_address("5.6.7.8", 18444),
+        random_address=lambda: a_full_node("5.6.7.8", 18444),
     )
     manager = a_manager(peer_db=peer_db)
     asyncio.run(one_pass(manager))
@@ -1112,49 +1147,49 @@ _ONION = NetworkAddressV2(0, 0, BIP155Network.TORV3, b"\x11" * 32, 8333)
     [
         pytest.param(
             a_conn(1, automatic=True, address=peer_address("1.2.3.4", 8333)),
-            peer_address("1.2.200.200", 18444),
+            a_full_node("1.2.200.200", 18444),
             False,
             id="automatic-same-16",
         ),
         pytest.param(
             a_conn(1, automatic=True, address=peer_address("1.2.3.4", 8333)),
-            peer_address("1.3.3.4", 8333),
+            a_full_node("1.3.3.4", 8333),
             True,
             id="automatic-other-16",
         ),
         pytest.param(
             a_conn(1, address=peer_address("1.2.3.4", 8333)),
-            peer_address("1.2.200.200", 18444),
+            a_full_node("1.2.200.200", 18444),
             False,
             id="addnode-same-16",
         ),
         pytest.param(
             a_conn(1, status=P2pConnStatus.Open, automatic=True),
-            peer_address("1.2.200.200", 18444),
+            a_full_node("1.2.200.200", 18444),
             False,
             id="pending-same-16",
         ),
         pytest.param(
             a_conn(1, inbound=True, address=peer_address("1.2.3.4", 8333)),
-            peer_address("1.2.200.200", 18444),
+            a_full_node("1.2.200.200", 18444),
             True,
             id="inbound-same-16",
         ),
         pytest.param(
             a_conn(1, address=peer_address("2001:db9:1::1", 8333)),
-            peer_address("2001:db9:2::2", 8333),
+            a_full_node("2001:db9:2::2", 8333),
             False,
             id="ipv6-same-32",
         ),
         pytest.param(
             a_conn(1, address=peer_address("::ffff:1.2.3.4", 8333)),
-            peer_address("1.2.200.200", 18444),
+            a_full_node("1.2.200.200", 18444),
             False,
             id="mapped-ipv4-same-16",
         ),
         pytest.param(
             a_conn(1, automatic=True, address=_ONION),
-            peer_address("1.2.200.200", 18444),
+            a_full_node("1.2.200.200", 18444),
             True,
             id="onion-held",
         ),
@@ -1360,8 +1395,8 @@ def test_a_held_answered_peer_does_not_stop_the_dialling(
     monkeypatch.setattr(manager_module, "dial", records)
     coins = iter([1, 0])
     monkeypatch.setattr(secrets, "randbelow", lambda n: next(coins))
-    held = peer_address("1.2.3.4", 8333)
-    gossiped = peer_address("5.6.7.8", 8333)
+    held = a_full_node("1.2.3.4", 8333)
+    gossiped = a_full_node("5.6.7.8", 8333)
     peer_db = PeerDB(cast("Any", None), None)
     peer_db.add_addresses([held, gossiped])
     peer_db.add_active_address(held)
@@ -1396,8 +1431,8 @@ def test_a_draw_in_a_held_group_draws_again(
         dialled.append(address)
 
     monkeypatch.setattr(manager_module, "dial", records)
-    same_group = peer_address("1.2.9.9", 8333)
-    other = peer_address("5.6.7.8", 8333)
+    same_group = a_full_node("1.2.9.9", 8333)
+    other = a_full_node("5.6.7.8", 8333)
     drawn, draw = draws_of(same_group, other)
     peer_db = a_peer_db_stub(is_empty=False, random_address=draw)
     held = a_conn(1, address=peer_address("1.2.3.4", 8333))
@@ -1421,8 +1456,8 @@ def test_a_draw_refused_otherwise_ends_the_pass(
     # a double that is never awaited, so it records without a body
     dial = AsyncMock(return_value=None)
     monkeypatch.setattr(manager_module, "dial", dial)
-    refused = peer_address("1.2.3.4", 8333)
-    drawn, draw = draws_of(refused, peer_address("5.6.7.8", 8333))
+    refused = a_full_node("1.2.3.4", 8333)
+    drawn, draw = draws_of(refused, a_full_node("5.6.7.8", 8333))
     peer_db = a_peer_db_stub(is_empty=False, random_address=draw)
     if refusal == "connected":
         manager = a_manager([a_conn(1, address=refused, inbound=True)], peer_db=peer_db)
@@ -1469,7 +1504,7 @@ def test_a_pass_dials_once_and_draws_no_more(
 
     monkeypatch.setattr(manager_module, "dial", records)
     peer_db = a_peer_db_stub(
-        is_empty=False, random_address=lambda: peer_address("5.6.7.8", 8333)
+        is_empty=False, random_address=lambda: a_full_node("5.6.7.8", 8333)
     )
     manager = a_manager(peer_db=peer_db)
     asyncio.run(manager._maybe_dial_more_peers())
@@ -2051,7 +2086,7 @@ def test_a_peer_that_answers_the_dial_becomes_a_connection(
     monkeypatch.setattr(manager_module, "dial", answers)
     peer_db = a_peer_db_stub(
         is_empty=False,
-        random_address=lambda: peer_address("5.6.7.8", 18444),
+        random_address=lambda: a_full_node("5.6.7.8", 18444),
     )
     manager = a_manager(peer_db=peer_db)
 
@@ -2888,6 +2923,29 @@ def test_stop_closes_a_connection_accepted_in_its_own_race_window(
     assert ours.fileno() == -1
 
 
+def test_the_listening_sockets_are_kept_before_listening_is_set(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1325: a thread `listening` wakes finds `_server_sockets` filled."""
+    manager = a_manager(port=get_random_port())
+    seen: list[list[socket.socket]] = []
+
+    class Recording(threading.Event):
+        @override
+        def set(self) -> None:
+            seen.append(list(manager._server_sockets))
+            super().set()
+
+    manager.listening = Recording()
+    try:
+        assert manager.start_listener()
+        assert seen
+        assert seen[0]
+    finally:
+        manager.stop()
+        manager.join(timeout=10)
+
+
 def test_stop_closes_the_listening_socket_even_if_the_accept_task_does_not(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3494,6 +3552,186 @@ def test_report_server_failure_does_not_log_a_returned_cancelled_error(
     assert logged == []
 
 
+# `ThreadOpenConnections`' `nTries > 100`
+_MAX_DRAWS = 100
+
+
+def a_dialling_manager(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    draws: Sequence[NetworkAddressV2],
+    **kwargs: Any,
+) -> tuple[P2pManager, list[None], list[NetworkAddressV2]]:
+    """Build a manager drawing `draws` in turn, recording what it dials."""
+    dialled: list[NetworkAddressV2] = []
+
+    async def records(address: NetworkAddressV2) -> None:
+        dialled.append(address)
+
+    monkeypatch.setattr(manager_module, "dial", records)
+    drawn, draw = draws_of(*draws)
+    peer_db = a_peer_db_stub(is_empty=False, random_address=draw)
+    return a_manager(peer_db=peer_db, **kwargs), drawn, dialled
+
+
+def tries_of(manager: P2pManager) -> dict[bytes, float]:
+    """Return the tries `a_peer_db_stub`'s `attempt` recorded."""
+    return cast("dict[bytes, float]", cast("Any", manager.peer_db).tries)
+
+
+@pytest.mark.parametrize(
+    ("passed_over", "addnode_args"),
+    [
+        (peer_address("1.2.3.4", 8333, services=ServiceFlags.NODE_NETWORK), ()),
+        (a_full_node("1.2.3.4", 22), ()),
+        (a_full_node("1.2.3.4", 8333), ("1.2.3.4",)),
+    ],
+    ids=["missing-services", "bad-port", "addnode"],
+)
+def test_a_draw_core_passes_over_is_followed_by_another(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    passed_over: NetworkAddressV2,
+    addnode_args: tuple[str, ...],
+) -> None:
+    """ISS 1224: each of `ThreadOpenConnections`' `continue`s draws again."""
+    other = a_full_node("5.6.7.8", 8333)
+    manager, drawn, dialled = a_dialling_manager(
+        a_manager, monkeypatch, [passed_over, other], addnode_args=addnode_args
+    )
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert len(drawn) == 2
+    assert dialled == [other]
+
+
+def test_a_recently_tried_draw_is_followed_by_another(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1224: an address dialled under ten minutes ago is passed over."""
+    tried = a_full_node("1.2.3.4", 8333)
+    other = a_full_node("5.6.7.8", 8333)
+    manager, drawn, dialled = a_dialling_manager(
+        a_manager, monkeypatch, [tried, tried, other]
+    )
+    tries_of(manager)[endpoint_key(tried)] = time.time() - (10 * 60 - 5)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert len(drawn) == 3
+    assert dialled == [other]
+
+
+def test_a_try_ten_minutes_old_is_not_recent(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1224: `current_time - addr_last_try < 10min` is what passes over."""
+    tried = a_full_node("1.2.3.4", 8333)
+    manager, _, dialled = a_dialling_manager(a_manager, monkeypatch, [tried])
+    now = time.time()
+    # one clock for the record and the pass, so ten minutes is exact
+    monkeypatch.setattr(time, "time", lambda: now)
+    tries_of(manager)[endpoint_key(tried)] = now - 10 * 60
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert dialled == [tried]
+
+
+@pytest.mark.parametrize(
+    ("address", "recent", "draws"),
+    [(a_full_node("1.2.3.4", 8333), True, 30), (a_full_node("1.2.3.4", 22), False, 50)],
+    ids=["recently-tried", "bad-port"],
+)
+def test_a_skip_core_bounds_by_draws_gives_way_at_its_bound(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    address: NetworkAddressV2,
+    *,
+    recent: bool,
+    draws: int,
+) -> None:
+    """ISS 1224: `nTries < 30` and `nTries < 50`, `nTries` counting this draw.
+
+    The same address drawn every time is passed over until the draw the
+    bound names, and dialled there.
+    """
+    manager, drawn, dialled = a_dialling_manager(
+        a_manager, monkeypatch, [address] * _MAX_DRAWS
+    )
+    if recent:
+        manager.peer_db.attempt(address)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert len(drawn) == draws
+    assert dialled == [address]
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        peer_address("1.2.3.4", 8333, services=ServiceFlags.NODE_WITNESS),
+        a_full_node("1.2.3.4", 8333),
+    ],
+    ids=["missing-services", "addnode"],
+)
+def test_a_skip_core_does_not_bound_holds_for_every_draw(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    address: NetworkAddressV2,
+) -> None:
+    """ISS 1224: the services and `-addnode` checks have no draw bound."""
+    manager, drawn, dialled = a_dialling_manager(
+        a_manager, monkeypatch, [address] * _MAX_DRAWS, addnode_args=("1.2.3.4",)
+    )
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert len(drawn) == _MAX_DRAWS
+    assert dialled == []
+
+
+@pytest.mark.parametrize(
+    ("addnode_args", "address", "named"),
+    [
+        (("1.2.3.4",), a_full_node("1.2.3.4", 18444), True),
+        (("1.2.3.4:8333",), a_full_node("1.2.3.4", 8333), True),
+        (("1.2.3.4:8333",), a_full_node("1.2.3.4", 18444), False),
+        (("2001:db8::1",), a_full_node("2001:db8::1", 18444), True),
+        (("[2001:db8::1]:8333",), a_full_node("2001:db8::1", 8333), True),
+        (("[2001:db8::1]:8333",), a_full_node("2001:db8::1", 18444), False),
+        # compared as text, as Core compares it
+        (("2001:db8:0::1",), a_full_node("2001:db8::1", 8333), False),
+        (("1.2.3.4",) * 23, a_full_node("1.2.3.4", 8333), True),
+        (("1.2.3.4",) * 24, a_full_node("1.2.3.4", 8333), False),
+    ],
+)
+def test_an_addnode_value_names_a_draw_as_added_nodes_contain_does(
+    a_manager: AManagerFactory,
+    addnode_args: tuple[str, ...],
+    address: NetworkAddressV2,
+    *,
+    named: bool,
+) -> None:
+    """ISS 1224: Core's `AddedNodesContain`, and its bound of 24 values."""
+    manager = a_manager(addnode_args=addnode_args)
+    assert manager._added_node(address) is named
+
+
+@pytest.mark.parametrize("dialler", ["automatic", "connect"])
+def test_every_dial_records_its_try(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, dialler: str
+) -> None:
+    """ISS 1277: Core's `ConnectNode` calls `Attempt` for every dial.
+
+    The automatic dial's and `async_connect`'s alike, the latter being
+    the `-connect`/`-addnode` redial's and the `addnode` RPC's, whether
+    or not the dial comes up.
+    """
+    address = a_full_node("5.6.7.8", 8333)
+    manager, _, dialled = a_dialling_manager(a_manager, monkeypatch, [address])
+    now = time.time()
+    monkeypatch.setattr(time, "time", lambda: now)
+    if dialler == "automatic":
+        asyncio.run(manager._maybe_dial_more_peers())
+    else:
+        asyncio.run(manager.async_connect(address))
+    assert dialled == [address]
+    assert tries_of(manager) == {endpoint_key(address): now}
+
+
 def a_subnet(text: str) -> Subnet:
     """Parse `text` as `setban` would, asserting it parses."""
     subnet = lookup_subnet(text)
@@ -3540,13 +3778,13 @@ def test_a_banned_address_is_not_dialled(
         dialled.append(address)
 
     monkeypatch.setattr(manager_module, "dial", records)
-    drawn = [peer_address("1.2.3.4", 18444), peer_address("1.2.4.4", 18444)]
+    drawn = [a_full_node("1.2.3.4", 18444), a_full_node("1.2.4.4", 18444)]
     peer_db = a_peer_db_stub(is_empty=False, random_address=drawn.pop)
     manager = a_manager(peer_db=peer_db)
     manager.ban_man.ban(a_subnet("1.2.4.0/24"))
     asyncio.run(one_pass(manager))
     asyncio.run(one_pass(manager))
-    assert dialled == [peer_address("1.2.3.4", 18444)]
+    assert dialled == [a_full_node("1.2.3.4", 18444)]
 
 
 def test_disconnecting_a_subnet_drops_every_connection_it_holds(
