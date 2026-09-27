@@ -348,8 +348,18 @@ def _refuses(node: Node, conn: Connection, version_msg: Version) -> bool:
     # `common_version` (`p2p/protocol_version.py`)
     if version_msg.version < MIN_PEER_PROTO_VERSION:
         return True
-    # we only connect to witness nodes
-    if not version_msg.services & ServiceFlags.NODE_WITNESS:
+    # `NODE_WITNESS` is in every set `GetDesirableServiceFlags` answers,
+    # so Core requires it of every connection the check below covers,
+    # whatever this node's own sync state, and of no other: an inbound
+    # peer, a manual one, or a feeler is kept without it. `DownloadManager`
+    # asks such a peer for `MSG_BLOCK` rather than `MSG_WITNESS_BLOCK`, and
+    # stops its walk over the peer's chain at SegWit's own activation
+    # height (btclib-org/btclib-node#1208).
+    if (
+        conn.automatic
+        and not conn.feeler
+        and not version_msg.services & ServiceFlags.NODE_WITNESS
+    ):
         return True
     # Core disconnects for missing services only where
     # `ExpectServicesFromConn` (`src/net.h`, at bitcoin/bitcoin@9be056a8a7,
@@ -379,9 +389,10 @@ def _refuses(node: Node, conn: Connection, version_msg: Version) -> bool:
     # computing a new one. The comparison itself is
     # `HasAllDesirableServiceFlags`'s own shape (`net_processing.cpp:3850`,
     # `!(desirable & ~services)`): `NODE_WITNESS` is already required of
-    # every connection above, so it is never the bit that trips this
-    # once reached, but it is kept in `desirable` for the same shape
-    # Core's own check has rather than a narrower one this tree invented.
+    # every connection the check below covers, so it is never the bit
+    # that trips this once reached, but it is kept in `desirable` for
+    # the same shape Core's own check has rather than a narrower one
+    # this tree invented.
     #
     # The same answer is what Core records as `m_has_all_wanted_services`
     # for every connection, inbound included, and reads when choosing an
