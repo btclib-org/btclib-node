@@ -8,9 +8,11 @@ import functools
 import os
 import re
 import runpy
+import stat
+import sys
 from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -28,39 +30,55 @@ from tests import (
     wait_until_listening,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Sequence
+
+
+@pytest.fixture(autouse=True)
+def caller_umask() -> Iterator[None]:
+    """Give back, after each test, the umask `cli.main` makes owner-only.
+
+    The umask is the process's, so a test calling `main` would otherwise
+    leave it on every test after it in the same worker.
+    """
+    umask = os.umask(0o022)
+    os.umask(umask)
+    yield
+    os.umask(umask)
+
 
 def test_parse_conf_text_reads_a_key_value_pair_in_the_default_section() -> None:
     """A bare `key=value` line lands in the `""` (default) section."""
-    assert cli._parse_conf_text("port=9000\n", "conf") == {"": {"port": ["9000"]}}
+    assert cli._parse_conf_text("port=9000\n") == {"": {"port": ["9000"]}}
 
 
 def test_parse_conf_text_reads_a_section() -> None:
     """A `[section]` line switches which section later lines belong to."""
-    tree = cli._parse_conf_text("[regtest]\nport=9000\n", "conf")
+    tree = cli._parse_conf_text("[regtest]\nport=9000\n")
     assert tree == {"regtest": {"port": ["9000"]}}
 
 
 def test_parse_conf_text_reads_a_section_prefix_in_the_key() -> None:
     """`regtest.port=` in the default section is `port=` in `[regtest]`."""
-    tree = cli._parse_conf_text("regtest.port=9000\n", "conf")
+    tree = cli._parse_conf_text("regtest.port=9000\n")
     assert tree == {"regtest": {"port": ["9000"]}}
 
 
 def test_parse_conf_text_strips_a_trailing_comment() -> None:
     """`#` starts a comment that runs to the end of the line."""
-    tree = cli._parse_conf_text("port=9000 # the p2p port\n", "conf")
+    tree = cli._parse_conf_text("port=9000 # the p2p port\n")
     assert tree == {"": {"port": ["9000"]}}
 
 
 def test_parse_conf_text_skips_blank_and_comment_only_lines() -> None:
     """A blank line and a comment-only line contribute nothing."""
-    tree = cli._parse_conf_text("\n# a comment\n   \nport=9000\n", "conf")
+    tree = cli._parse_conf_text("\n# a comment\n   \nport=9000\n")
     assert tree == {"": {"port": ["9000"]}}
 
 
 def test_parse_conf_text_collects_repeated_keys_in_order() -> None:
     """Every occurrence of one key is kept, in the order it was read."""
-    tree = cli._parse_conf_text("addnode=1.2.3.4\naddnode=5.6.7.8\n", "conf")
+    tree = cli._parse_conf_text("addnode=1.2.3.4\naddnode=5.6.7.8\n")
     assert tree[""]["addnode"] == ["1.2.3.4", "5.6.7.8"]
 
 
@@ -72,45 +90,107 @@ def test_parse_conf_text_reads_a_no_prefix_as_a_negation(
     text: str, *, value: bool
 ) -> None:
     """`no<key>` is `<key>` negated, `False`; a double negative is `True`."""
-    assert cli._parse_conf_text(text, "conf") == {"": {"listen": [value]}}
+    assert cli._parse_conf_text(text) == {"": {"listen": [value]}}
 
 
-def test_parse_conf_text_rejects_a_leading_dash() -> None:
-    """A line starting with `-` is refused: no leading `-` in a file."""
-    with pytest.raises(ValueError, match="leading -"):
-        cli._parse_conf_text("-port=9000\n", "conf")
+# `GetConfigOptions`, `IsConfSupported` and `InterpretValue`'s words
+# (`src/common/config.cpp`, `src/common/args.cpp`, at
+# bitcoin/bitcoin@9be056a8a7), each measured on `bitcoind` v31.1.0 with
+# the line below `regtest=1`, which is what numbers it 2
+@pytest.mark.parametrize(
+    ("line", "refusal"),
+    [
+        pytest.param("foo", "parse error on line 2: foo", id="no equals sign"),
+        pytest.param("  foo # c", "parse error on line 2: foo", id="trimmed"),
+        pytest.param("[regtest", "parse error on line 2: [regtest", id="half section"),
+        pytest.param(
+            "nofoo",
+            "parse error on line 2: nofoo, if you intended to specify a negated "
+            "option, use nofoo=1 instead",
+            id="bare negation",
+        ),
+        pytest.param(
+            "no",
+            "parse error on line 2: no, if you intended to specify a negated "
+            "option, use no=1 instead",
+            id="bare no",
+        ),
+        pytest.param(
+            "  -foo = 1 # c",
+            "parse error on line 2: -foo = 1, options in configuration file must "
+            "be specified without leading -",
+            id="leading dash",
+        ),
+        pytest.param(
+            "rpcpassword=a#b",
+            "parse error on line 2, using # in rpcpassword can be ambiguous and "
+            "should be avoided",
+            id="hash in rpcpassword",
+        ),
+        pytest.param(
+            "conf=x.conf",
+            "conf cannot be set in the configuration file; use includeconf= if "
+            "you want to include additional config files",
+            id="conf",
+        ),
+        pytest.param(
+            "noconf=1",
+            "conf cannot be set in the configuration file; use includeconf= if "
+            "you want to include additional config files",
+            id="negated conf",
+        ),
+        pytest.param(
+            "nodatadir=1",
+            "Negating of -datadir is meaningless and therefore forbidden",
+            id="negated datadir",
+        ),
+    ],
+)
+def test_parse_conf_text_refuses_a_line_in_core_s_words(
+    line: str, refusal: str
+) -> None:
+    """ISS 1267: Core's message, numbered as Core numbers it, naming no path."""
+    with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$"):
+        cli._parse_conf_text(f"regtest=1\n{line}\n")
 
 
-def test_parse_conf_text_rejects_a_line_with_no_equals_sign() -> None:
-    """A line matching neither `[section]` nor `key=value` is refused."""
-    with pytest.raises(ValueError, match=r"not a key=value line: 'garbage'$"):
-        cli._parse_conf_text("garbage\n", "conf")
+def test_parse_conf_text_ends_a_line_at_a_newline_alone() -> None:
+    """ISS 1267: `std::getline`'s lines, so a form feed ends none.
+
+    Measured on `bitcoind` v31.1.0: `foo`, a form feed and `bar=1` on
+    line 2 are one line, and `bad` below it is refused as line 3.
+    """
+    with pytest.raises(ValueError, match=r"^parse error on line 3: bad$"):
+        cli._parse_conf_text("regtest=1\nfoo\fbar=1\nbad\n")
 
 
-def test_parse_conf_text_suggests_a_negation_for_a_bare_no_line() -> None:
-    """A bare `nolisten` line gets `GetConfigOptions`'s own hint."""
-    with pytest.raises(ValueError, match=r"use nolisten=1 instead$"):
-        cli._parse_conf_text("nolisten\n", "conf")
+@pytest.mark.parametrize(
+    ("content", "line"),
+    [
+        (b"regtest=1\rfoo\nbad\n", "line 2: bad"),
+        (b"regtest=1\r\nfoo\r\n", "line 2: foo"),
+        (b"regtest=1\n\rfoo\r\n", "line 2: foo"),
+    ],
+    ids=["lone CR", "CRLF", "CR opening a line"],
+)
+def test_read_conf_file_ends_a_line_at_a_newline_alone(
+    tmp_path: Path, content: bytes, line: str
+) -> None:
+    """ISS 1267: a lone carriage return ends no line, as `bitcoind` reads it.
 
-
-@pytest.mark.parametrize("text", ["conf=other.conf\n", "noconf=1\n"])
-def test_parse_conf_text_rejects_conf_inside_a_file(text: str) -> None:
-    """`conf=` cannot be set in a configuration file, negated or not."""
-    with pytest.raises(ValueError, match="conf cannot be set"):
-        cli._parse_conf_text(text, "conf")
-
-
-def test_parse_conf_text_refuses_a_negated_datadir() -> None:
-    """`nodatadir=1` is Core's forbidden negation, in a file too."""
-    with pytest.raises(ValueError, match=r"^conf:1: Negating of -datadir is "):
-        cli._parse_conf_text("nodatadir=1\n", "conf")
+    Each measured on `bitcoind` v31.1.0, which names the same line.
+    """
+    path = tmp_path / "bitcoin.conf"
+    path.write_bytes(content)
+    with pytest.raises(ValueError, match=f"^parse error on {line}$"):
+        cli._read_conf_file(path, required=True)
 
 
 def test_parse_conf_text_warns_about_an_unknown_key_with_its_section(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """An unknown key is warned about, as written, and dropped."""
-    assert cli._parse_conf_text("[regtest]\nwalletnotify=x\n", "conf") == {}
+    assert cli._parse_conf_text("[regtest]\nwalletnotify=x\n") == {}
     assert capsys.readouterr().err == (
         "warning: ignoring unknown configuration value regtest.walletnotify\n"
     )
@@ -126,7 +206,7 @@ def test_parse_conf_text_warns_specifically_about_datadir(
     it gets says why it is never read from a file rather than implying
     it is a typo.
     """
-    assert cli._parse_conf_text("datadir=/x\n", "conf") == {}
+    assert cli._parse_conf_text("datadir=/x\n") == {}
     err = capsys.readouterr().err
     assert "cannot be set in a configuration file" in err
     assert "unknown configuration value" not in err
@@ -408,6 +488,26 @@ def test_build_config_refuses_an_argument_that_is_not_an_option(
     )
     with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
         _build(tmp_path, *argv)
+
+
+@pytest.mark.parametrize(
+    ("argv", "conf", "ban_time"),
+    [([], "", 86400), (["-bantime=100"], "", 100), ([], "bantime=5\n", 5)],
+    ids=["Core's default", "command line", "file"],
+)
+def test_build_config_reads_bantime(
+    tmp_path: Path, argv: list[str], conf: str, ban_time: int
+) -> None:
+    """ISS 1219: `-bantime` is a `setban` ban's default length, as in Core."""
+    assert _build(tmp_path, *argv, conf=conf).ban_time == ban_time
+
+
+def test_help_names_bantime() -> None:
+    """ISS 1219: in Core's words, among the connection options."""
+    assert (
+        "Default duration (in seconds) of manually configured bans (default: 86400)"
+        in " ".join(cli._help_message(show_debug=False).split())
+    )
 
 
 def test_build_config_reads_a_double_dash_option(tmp_path: Path) -> None:
@@ -2027,7 +2127,11 @@ def test_a_hash_on_an_rpcpassword_line_is_refused(tmp_path: Path, text: str) -> 
     """Core's parse error: the `#` may be the password's or a comment's."""
     (tmp_path / "bitcoin.conf").write_text(text, encoding="utf-8")
     line = text.count("\n")
-    err_msg = f":{line}: using # in rpcpassword can be ambiguous and should be avoided$"
+    err_msg = (
+        "^Error reading configuration file: "
+        f"parse error on line {line}, using # in rpcpassword can be ambiguous "
+        "and should be avoided$"
+    )
     with pytest.raises(ValueError, match=err_msg):
         cli.build_config([f"-datadir={tmp_path}"])
 
@@ -2149,3 +2253,47 @@ def test_rpcwhitelistdefault_is_read_as_core_s_interpret_bool(
     """
     argv = [f"-datadir={tmp_path}", f"-rpcwhitelistdefault={value}"]
     assert cli.build_config(argv).rpc_whitelist_default == expected
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX modes")
+def test_main_makes_what_the_node_creates_owner_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1198: Core's `SetupEnvironment` umask, set by `main` first.
+
+    Under a group- and world-readable umask, what is created after `main`
+    is 0700 for a directory and 0600 for a file, as `bitcoind` v31.1.0
+    leaves its own chain directory and `debug.log`.
+    """
+    os.umask(0o022)
+    monkeypatch.setattr(cli, "_before_lock", _refused)
+    with pytest.raises(SystemExit):
+        cli.main([])
+    directory = tmp_path / "chain"
+    directory.mkdir()
+    (directory / "history.log").write_text("")
+    assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+    assert stat.S_IMODE((directory / "history.log").stat().st_mode) == 0o600
+
+
+def _refused(argv: Sequence[str]) -> Any:
+    """Stand in for `_before_lock`, refusing whatever it is given."""
+    raise ValueError(argv)
+
+
+def test_setup_environment_leaves_the_umask_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1198: Core's `SetupEnvironment` sets no umask under `WIN32`.
+
+    The calls are recorded rather than read back from the process, so
+    the test answers the same on every platform; the POSIX call after
+    it is the control.
+    """
+    calls: list[int] = []
+    monkeypatch.setattr(os, "umask", calls.append)
+    monkeypatch.setattr(sys, "platform", "win32")
+    cli._setup_environment()
+    monkeypatch.setattr(sys, "platform", "linux")
+    cli._setup_environment()
+    assert calls == [0o077]

@@ -11,9 +11,10 @@ tag), and the two functions below are the two of Core's that write it:
 runs for every connected peer as Core's `SendMessages` does, and
 `protect_if_caught_up` is the protection at the end of
 `UpdatePeerStateForReceivedHeaders`, which `callbacks.headers` runs on a
-batch that connects.
+batch that connects. `disconnect_if_insufficient_work` is the check that
+function makes before it, during initial block download.
 
-Core applies the two to different sets of outbound connections, which
+Core applies them to different sets of outbound connections, which
 `_outbound_or_block_relay` and `_full_outbound` name after Core's
 `IsOutboundOrBlockRelayConn` and `IsFullOutboundConn`. This node opens
 one kind of automatic outbound connection, Core's `OUTBOUND_FULL_RELAY`,
@@ -42,6 +43,7 @@ __all__ = [
     "MAX_OUTBOUND_PEERS_TO_PROTECT_FROM_DISCONNECT",
     "ChainSyncTimeoutState",
     "consider_eviction",
+    "disconnect_if_insufficient_work",
     "protect_if_caught_up",
 ]
 
@@ -68,7 +70,11 @@ class ChainSyncTimeoutState:
 
 
 def _outbound_or_block_relay(conn: Connection) -> bool:
-    """Core's `IsOutboundOrBlockRelayConn`, which `ConsiderEviction` reads."""
+    """Core's `IsOutboundOrBlockRelayConn`.
+
+    `ConsiderEviction` reads it, and so does the check for insufficient
+    work.
+    """
     return conn.automatic
 
 
@@ -167,6 +173,37 @@ def consider_eviction(
             send_getheaders(node, conn, locator)
             state.sent_getheaders = True
             state.timeout = now + HEADERS_RESPONSE_TIME
+
+
+def disconnect_if_insufficient_work(node: Node, conn: Connection) -> bool:
+    """Drop an outbound peer whose headers chain lacks the minimum chain work.
+
+    The initial-block-download check of Core's
+    `UpdatePeerStateForReceivedHeaders`: a peer this node drew itself,
+    whose best known block has less work than the chain's
+    `minimum_chain_work`, is disconnected, as it cannot serve a chain
+    this node would download. `callbacks.headers` asks it only of a batch
+    that says the peer has nothing more to give and that this node already
+    had, the gates Core puts in front of it. Answers whether the peer was
+    dropped.
+    """
+    best_known = conn.block_availability.best_known
+    if (
+        not node.is_initial_block_download
+        or not _outbound_or_block_relay(conn)
+        or best_known is None
+    ):
+        return False
+    chainwork = node.chainstate.block_index.chainwork[best_known]
+    if chainwork >= node.chain.consensus.minimum_chain_work:
+        return False
+    node.logger.info(
+        "Outbound peer headers chain has insufficient work, "
+        "disconnecting connection %s",
+        conn.id,
+    )
+    conn.stop()
+    return True
 
 
 def protect_if_caught_up(node: Node, conn: Connection) -> None:

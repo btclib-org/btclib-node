@@ -91,7 +91,8 @@ jobs:
 
 
           async def main() -> None:
-              # RegTest carries no seeds -- there is nothing for it to ask
+              # RegTest's one seed is Core's `dummySeed.invalid.`, which
+              # resolves to nothing by design
               silent = [
                   chain.name
                   for chain in (Main(), TestNet(), SigNet())
