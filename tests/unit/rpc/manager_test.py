@@ -26,15 +26,20 @@ import pytest
 from btclib_node.chains import RegTest
 from btclib_node.config import Config
 from btclib_node.log import Logger
+from btclib_node.rpc import manager as manager_module
 from btclib_node.rpc.jsonrpc import OK, HttpReply
 from btclib_node.rpc.manager import RpcManager
 from tests import (
+    LOOPBACKS,
     RPCAUTH,
     RPCAUTH_LINE,
     cookie_path,
     get_random_port,
+    resolvable,
+    taken_loopbacks,
     wait_until,
     wait_until_listening,
+    warnings_into,
 )
 
 if TYPE_CHECKING:
@@ -52,8 +57,9 @@ class AManagerFactory(Protocol):
     def __call__(
         self,
         port: int | None,
-        rpc_host: str = "127.0.0.1",
+        rpc_host: str | None = None,
         rpcbind: tuple[str, ...] = (),
+        rpcallowip: tuple[str, ...] = (),
     ) -> RpcManager:
         """Build an `RpcManager` bound to `port` and `rpc_host` once started."""
         ...
@@ -69,13 +75,17 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
     made: list[RpcManager] = []
 
     def make(
-        port: int | None, rpc_host: str = "127.0.0.1", rpcbind: tuple[str, ...] = ()
+        port: int | None,
+        rpc_host: str | None = None,
+        rpcbind: tuple[str, ...] = (),
+        rpcallowip: tuple[str, ...] = (),
     ) -> RpcManager:
         config = Config(
             chain="regtest",
             data_dir=tmp_path,
             rpc_host=rpc_host,
             rpcbind=rpcbind,
+            rpcallowip=rpcallowip,
             rpcauth=[RPCAUTH],
         )
         config.data_dir.mkdir(exist_ok=True)
@@ -166,31 +176,268 @@ def test_an_answer_is_written_back_to_the_client_that_asked(
         manager.join(timeout=10)
 
 
-def test_bind_uses_config_rpc_host_not_every_interface(
+def bound_hosts(server_sockets: list[socket.socket]) -> list[str]:
+    """Close `server_sockets`, answering the host each of them bound."""
+    hosts = [server_socket.getsockname()[0] for server_socket in server_sockets]
+    for server_socket in server_sockets:
+        server_socket.close()
+    return hosts
+
+
+def test_warnings_into_passes_over_a_loopback_the_host_cannot_bind() -> None:
+    """The control for `warnings_into`: one such warning is not recorded.
+
+    A host without IPv6 logs it for `::1`; here a loopback outside
+    `LOOPBACKS` stands in for it, beside a warning that is recorded.
+    """
+    logged: list[tuple[object, ...]] = []
+    warning = warnings_into(logged)
+    warning("Binding RPC on address %s port %s failed.", "::2", 1)
+    warning("Binding RPC on address %s port %s failed.", LOOPBACKS[0], 1)
+    assert logged == [("Binding RPC on address %s port %s failed.", LOOPBACKS[0], 1)]
+
+
+def test_resolvable_refuses_what_the_lookup_does_not_answer() -> None:
+    """The control for `LOOPBACKS`: a name is not an address it answers."""
+    assert not resolvable("localhost")
+
+
+def test_bind_uses_both_loopbacks_not_every_interface(
     a_manager: AManagerFactory,
 ) -> None:
-    """_bind binds Config.rpc_host's default, not every interface (issue #27).
+    """ISS 1269: `::1` and `127.0.0.1`, as `HTTPBindAddresses` binds (#27).
 
-    The socket itself is asked what it actually bound, rather than only
-    asking whether some interface can still reach it.
+    The sockets themselves are asked what they bound, rather than only
+    asking whether some interface can still reach them.
     """
     manager = a_manager(get_random_port())
-    server_socket = manager._bind()
+    assert bound_hosts(manager._bind()) == LOOPBACKS
+
+
+def test_the_two_loopbacks_bind_in_cores_own_order(a_manager: AManagerFactory) -> None:
+    """ISS 1269: `::1` before `127.0.0.1`, `HTTPBindAddresses`'s own order.
+
+    Independent of `LOOPBACKS` and of `_LOOPBACK_HOSTS`: the expected
+    order is this test's own literal, Core's (`src/httpserver.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and only which of the two
+    a host without IPv6 answers -- never their order -- comes from
+    `resolvable`. Reordering `_LOOPBACK_HOSTS` moves nothing `LOOPBACKS`
+    itself would catch, both sides of that assertion reading the same
+    constant; this one reads the sockets `_bind` actually returned.
+    """
+    manager = a_manager(get_random_port())
+    expected = [host for host in ("::1", "127.0.0.1") if resolvable(host)]
+    assert bound_hosts(manager._bind()) == expected
+
+
+@pytest.mark.parametrize("taken", LOOPBACKS)
+def test_a_loopback_that_cannot_be_bound_is_warned_over_and_passed(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, taken: str
+) -> None:
+    """ISS 1269: `bitcoind` v31.1.0 binds the other loopback and starts.
+
+    Measured with the one address held by another process: it logs
+    "Binding RPC on address <host> port <port> failed." and listens on
+    the other. A loopback the lookup refuses here fails its bind too.
+    """
+    family = socket.AF_INET6 if ":" in taken else socket.AF_INET
+    with socket.socket(family, socket.SOCK_STREAM) as holder:
+        holder.bind((taken, 0))
+        holder.listen()
+        port = holder.getsockname()[1]
+        manager = a_manager(port)
+        warnings: list[tuple[object, ...]] = []
+        monkeypatch.setattr(
+            manager.logger, "warning", lambda *args: warnings.append(args)
+        )
+        hosts = bound_hosts(manager._bind())
+    assert hosts == [host for host in LOOPBACKS if host != taken]
+    assert warnings == [
+        ("Binding RPC on address %s port %s failed.", host, port)
+        for host in ("::1", "127.0.0.1")
+        if host == taken or host not in LOOPBACKS
+    ]
+
+
+@pytest.mark.parametrize("host", LOOPBACKS)
+def test_a_request_is_answered_on_either_loopback(
+    a_manager: AManagerFactory, host: str
+) -> None:
+    """ISS 1269: `server` accepts from every socket `_bind` answers."""
+    port = get_random_port()
+    manager = a_manager(port)
+    manager.start()
     try:
-        assert server_socket.getsockname()[0] == "127.0.0.1"
+        wait_until_listening(manager)
+        with socket.create_connection((host, port), timeout=20) as client:
+            client.sendall(as_http(REQUEST))
+            wait_until(lambda: manager.messages)
+        assert manager.messages.popleft()[0] == REQUEST
     finally:
-        server_socket.close()
+        manager.stop()
+        manager.join(timeout=10)
+
+
+def test_a_listening_socket_carries_libevent_s_options(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1269: `SO_KEEPALIVE`, and `SO_REUSEADDR` off Windows alone.
+
+    `TCP_NODELAY` is Core's own, set once the socket is bound.
+    """
+    manager = a_manager(get_random_port())
+    server_sockets = manager._bind()
+    try:
+        for server_socket in server_sockets:
+            options = socket.SOL_SOCKET
+            assert server_socket.getsockopt(options, socket.SO_KEEPALIVE)
+            nodelay = server_socket.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY)
+            assert nodelay
+            reuse = server_socket.getsockopt(options, socket.SO_REUSEADDR)
+            assert bool(reuse) is (os.name != "nt")
+    finally:
+        bound_hosts(server_sockets)
+
+
+def test_a_socket_refusing_tcp_nodelay_is_kept(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1269: Core logs the refusal and keeps the socket bound."""
+    real_bind_endpoint = manager_module._bind_endpoint
+
+    def refuses(*args: object) -> None:
+        raise OSError(args)
+
+    def refusing(host: str, port: int | None) -> Any:
+        bound = real_bind_endpoint(host, port)
+        return SimpleNamespace(
+            setsockopt=refuses, getsockname=bound.getsockname, close=bound.close
+        )
+
+    monkeypatch.setattr(manager_module, "_bind_endpoint", refusing)
+    manager = a_manager(get_random_port())
+    logged: list[tuple[object, ...]] = []
+    monkeypatch.setattr(manager.logger, "info", lambda *args: logged.append(args))
+    assert bound_hosts(manager._bind()) == LOOPBACKS
+    refusal = (
+        "WARNING: Unable to set TCP_NODELAY on RPC server socket, continuing anyway",
+    )
+    assert logged.count(refusal) == len(LOOPBACKS)
+
+
+@pytest.mark.parametrize("host", ["a..b", "\uff11\uff12\uff17.0.0.1"])
+def test_a_host_is_looked_up_as_its_bytes(host: str) -> None:
+    """ISS 1269: no IDNA, as libevent hands `getaddrinfo` the bytes.
+
+    `a..b` fails as a lookup rather than as a `UnicodeError`, and
+    fullwidth digits are not read as `127.0.0.1`.
+    """
+    with pytest.raises(socket.gaierror):
+        manager_module._first_address(host, 0)
+
+
+PASSIVE = socket.AI_PASSIVE
+ADDRCONFIG = socket.AI_PASSIVE | socket.AI_ADDRCONFIG
+
+
+@pytest.mark.parametrize(
+    ("host", "windows", "flags"),
+    [
+        ("localhost", True, ADDRCONFIG),
+        ("localhost", False, ADDRCONFIG),
+        ("127.0.0.1", True, PASSIVE),
+        ("127.0.0.1", False, ADDRCONFIG),
+        ("::1", True, PASSIVE),
+        ("::1", False, ADDRCONFIG),
+        ("fe80::1%1", True, PASSIVE),
+        ("fe80::1% +1", True, PASSIVE),
+        ("fe80::1%", True, PASSIVE),
+        ("fe80::1%1x", True, ADDRCONFIG),
+        ("fe80::1%no-such-interface", True, ADDRCONFIG),
+        ("1.2.3", True, ADDRCONFIG),
+        ("", False, ADDRCONFIG),
+    ],
+)
+def test_the_lookup_is_held_to_addrconfig_where_libevent_holds_it(
+    monkeypatch: pytest.MonkeyPatch,
+    host: str,
+    windows: bool,  # noqa: FBT001
+    flags: int,
+) -> None:
+    """ISS 1269: a literal libevent parses itself on Windows is not held to it.
+
+    Every other lookup is the system's, asked with `make_addrinfo`'s flags.
+    """
+    monkeypatch.setattr(manager_module, "_WINDOWS", windows)
+    assert manager_module._address_flags(host) == flags
+
+
+def test_a_zone_naming_an_interface_is_a_literal_libevent_parses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1269: `evutil_inet_pton_scope` takes a zone naming an interface."""
+    monkeypatch.setattr(manager_module, "_WINDOWS", True)
+    name = socket.if_nameindex()[0][1]
+    assert manager_module._address_flags(f"fe80::1%{name}") == PASSIVE
+
+
+def test_the_empty_host_is_0_0_0_0_first_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1269: `evutil_getaddrinfo_common_`'s own answer, not the system's."""
+    monkeypatch.setattr(manager_module, "_WINDOWS", True)
+    asked: list[object] = []
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *args, **_: asked.append(args))
+    family, _, _, sockaddr = manager_module._first_address("", 8332)
+    assert (family, sockaddr) == (socket.AF_INET, ("0.0.0.0", 8332))  # noqa: S104
+    assert not asked
+
+
+def test_the_empty_host_is_the_system_s_passive_answer_elsewhere(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1269: `getaddrinfo(NULL, ...)`, as libevent asks it off Windows.
+
+    The system's first answer is bound, whichever family it is.
+    """
+    monkeypatch.setattr(manager_module, "_WINDOWS", False)
+    asked: list[tuple[object, ...]] = []
+    answers: list[tuple[object, ...]] = [
+        (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::", 8332, 0, 0)),
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("0.0.0.0", 8332)),  # noqa: S104
+    ]
+
+    def getaddrinfo(
+        host: bytes | None,
+        port: int | None,
+        *,
+        type: int,  # noqa: A002
+        flags: int,
+    ) -> list[tuple[object, ...]]:
+        asked.append((host, port, type, flags))
+        return answers
+
+    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+    first = manager_module._first_address("", 8332)
+    assert first == (socket.AF_INET6, socket.SOCK_STREAM, 6, ("::", 8332, 0, 0))
+    assert asked == [(None, 8332, socket.SOCK_STREAM, ADDRCONFIG)]
+
+
+def test_bind_warns_of_a_host_idna_would_refuse(a_manager: AManagerFactory) -> None:
+    """ISS 1269: `a..b` is a bind that failed, not an exception out of it."""
+    port = get_random_port()
+    manager = a_manager(port, rpc_host="a..b")
+    logged: list[tuple[object, ...]] = []
+    manager.logger.warning = lambda *args: logged.append(args)  # type: ignore[method-assign]
+    assert manager._bind() == []
+    assert logged == [("Binding RPC on address %s port %s failed.", "a..b", port)]
 
 
 def test_bind_honors_a_different_rpc_host(a_manager: AManagerFactory) -> None:
-    """_bind binds whatever rpc_host the node's own config carries."""
+    """_bind binds whatever rpc_host the node's own config carries, alone."""
     all_interfaces = "0.0.0.0"  # noqa: S104
     manager = a_manager(get_random_port(), rpc_host=all_interfaces)
-    server_socket = manager._bind()
-    try:
-        assert server_socket.getsockname()[0] == all_interfaces
-    finally:
-        server_socket.close()
+    assert bound_hosts(manager._bind()) == [all_interfaces]
 
 
 _IGNORED = (
@@ -209,7 +456,7 @@ _EVERY_INTERFACE = "0.0.0.0"  # noqa: S104
     ("rpc_host", "rpcbind", "warned"),
     [
         pytest.param("127.0.0.1", (), [], id="loopback"),
-        pytest.param("127.0.0.1", (_EVERY_INTERFACE,), [_IGNORED], id="ignored"),
+        pytest.param(None, (_EVERY_INTERFACE,), [_IGNORED], id="ignored"),
         pytest.param(_EVERY_INTERFACE, (), [_EXPOSED], id="every interface"),
         pytest.param("localhost", (), [], id="a name, not looked up"),
     ],
@@ -217,7 +464,7 @@ _EVERY_INTERFACE = "0.0.0.0"  # noqa: S104
 def test_bind_warns_as_cores_http_bind_addresses(
     a_manager: AManagerFactory,
     monkeypatch: pytest.MonkeyPatch,
-    rpc_host: str,
+    rpc_host: str | None,
     rpcbind: tuple[str, ...],
     warned: list[str],
 ) -> None:
@@ -228,14 +475,152 @@ def test_bind_warns_as_cores_http_bind_addresses(
     is logged for an address that binds every interface, once bound.
     """
     manager = a_manager(get_random_port(), rpc_host=rpc_host, rpcbind=rpcbind)
-    warnings: list[str] = []
+    warnings: list[tuple[object, ...]] = []
     infos: list[tuple[object, ...]] = []
-    monkeypatch.setattr(manager.logger, "warning", warnings.append)
+    monkeypatch.setattr(manager.logger, "warning", warnings_into(warnings))
     monkeypatch.setattr(manager.logger, "info", lambda *args: infos.append(args))
-    server_socket = manager._bind()
-    server_socket.close()
-    assert warnings == warned
-    assert infos == [("Binding RPC on address %s port %s", rpc_host, manager.port)]
+    bound_hosts(manager._bind())
+    assert warnings == [(warning,) for warning in warned]
+    hosts = ("::1", "127.0.0.1") if rpc_host is None else (rpc_host,)
+    assert infos == [
+        ("Binding RPC on address %s port %s", host, manager.port) for host in hosts
+    ]
+
+
+_ALLOW_ALONE = (
+    "Option -rpcallowip was specified without -rpcbind; this doesn't usually make sense"
+)
+
+
+def test_rpcallowip_without_rpcbind_is_warned_over_and_loopback_bound(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1268: measured on bitcoind v31.1.0, which binds both loopbacks."""
+    manager = a_manager(get_random_port(), rpcallowip=("10.0.0.0/8",))
+    warnings: list[tuple[object, ...]] = []
+    debugs: list[tuple[object, ...]] = []
+    monkeypatch.setattr(manager.logger, "warning", warnings_into(warnings))
+    monkeypatch.setattr(manager.logger, "debug", lambda *args: debugs.append(args))
+    assert manager.start_listener()
+    try:
+        assert bound_hosts(list(manager._server_sockets)) == LOOPBACKS
+    finally:
+        manager.stop()
+    assert warnings == [(_ALLOW_ALONE,)]
+    # measured with `-debug=http`: every subnet, a space after each
+    assert (
+        "Allowing HTTP connections from: %s",
+        "127.0.0.0/8 ::1/128 10.0.0.0/8 ",
+    ) in debugs
+
+
+def test_rpcbind_beside_rpcallowip_binds_each_endpoint(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1268: `HTTPBindAddresses`'s other branch, one socket an endpoint.
+
+    Measured on bitcoind v31.1.0: `-rpcbind=127.0.0.1 -rpcallowip=127.0.0.1`
+    listens on `127.0.0.1` at `-rpcport`, and a port given overrides it.
+    """
+    port, other = get_random_port(), get_random_port()
+    manager = a_manager(
+        port,
+        rpcbind=("127.0.0.1", f"127.0.0.1:{other}"),
+        rpcallowip=("127.0.0.1",),
+    )
+    infos: list[tuple[object, ...]] = []
+    monkeypatch.setattr(manager.logger, "info", lambda *args: infos.append(args))
+    server_sockets = manager._bind()
+    ports = [server_socket.getsockname()[1] for server_socket in server_sockets]
+    assert bound_hosts(server_sockets) == ["127.0.0.1", "127.0.0.1"]
+    assert ports == [port, other]
+    assert infos == [
+        ("Binding RPC on address %s port %s", "127.0.0.1", port),
+        ("Binding RPC on address %s port %s", "127.0.0.1", other),
+    ]
+
+
+def test_an_rpcbind_idna_would_refuse_is_warned_over_beside_a_good_one(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1268: `a..b` fails as a bind, and `127.0.0.1` still listens.
+
+    Measured on bitcoind v31.1.0 with `-rpcbind=127.0.0.1 -rpcbind=a..b
+    -rpcallowip=127.0.0.1`: it starts, and warns "Binding RPC on address
+    a..b port <port> failed.".
+    """
+    port = get_random_port()
+    manager = a_manager(port, rpcbind=("127.0.0.1", "a..b"), rpcallowip=("127.0.0.1",))
+    warnings: list[tuple[object, ...]] = []
+    # every warning, `warnings_into` passing over a host it cannot bind
+    monkeypatch.setattr(manager.logger, "warning", lambda *args: warnings.append(args))
+    server_sockets = manager._bind()
+    assert bound_hosts(server_sockets) == ["127.0.0.1"]
+    assert ("Binding RPC on address %s port %s failed.", "a..b", port) in warnings
+
+
+def test_an_rpcbind_port_core_refuses_binds_nothing(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1268: `HTTPBindAddresses` logs `InvalidPortErrMsg` and binds nothing.
+
+    `cli` refuses such a value first; a `Config` built in Python reaches
+    this, and the listener does not start.
+    """
+    manager = a_manager(
+        get_random_port(),
+        rpcbind=("127.0.0.1", "127.0.0.1:0"),
+        rpcallowip=("127.0.0.1",),
+    )
+    errors: list[tuple[object, ...]] = []
+    monkeypatch.setattr(manager.logger, "error", lambda *args: errors.append(args))
+    assert not manager.start_listener()
+    wait_until(lambda: not manager.is_alive())
+    assert errors == [
+        ("Invalid port specified in -rpcbind: '%s'", "127.0.0.1:0"),
+        ("Unable to bind any endpoint for RPC server",),
+    ]
+
+
+def test_an_rpcallowip_value_naming_no_subnet_stops_the_listener(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1268: refused before any bind, as `InitHTTPServer` refuses it.
+
+    Measured on bitcoind v31.1.0: `-rpcallowip=bogus` exits 1 with the
+    message naming the value, and then "Unable to start HTTP server". The
+    first is `init_error`, which `Node` shows ahead of the second.
+    """
+    port = get_random_port()
+    manager = a_manager(port, rpcallowip=("bogus",))
+    assert not manager.start_listener()
+    wait_until(lambda: not manager.is_alive())
+    assert manager.init_error is not None
+    assert manager.init_error.startswith(
+        "Invalid -rpcallowip subnet specification: bogus. "
+    )
+    assert manager._server_sockets == []
+    assert not cookie_path(manager.node.config.data_dir).exists()
+
+
+@pytest.mark.parametrize(
+    ("peer", "allowed"),
+    [(("127.0.0.1", 1), True), (("10.0.0.1", 1), False), (OSError(), False)],
+    ids=["loopback", "elsewhere", "gone"],
+)
+def test_client_allowed_reads_the_peer_the_socket_names(
+    a_manager: AManagerFactory, peer: tuple[str, int] | OSError, *, allowed: bool
+) -> None:
+    """ISS 1268: `getpeername`'s host, and a socket with no peer refused."""
+
+    def getpeername() -> tuple[str, int]:
+        if isinstance(peer, OSError):
+            raise peer
+        return peer
+
+    manager = a_manager(get_random_port())
+    client = cast("socket.socket", SimpleNamespace(getpeername=getpeername))
+    assert manager.client_allowed(client) is allowed
 
 
 def test_a_body_that_is_not_json_answers_parse_error_and_forgets_the_client(
@@ -333,27 +718,25 @@ def test_a_manager_that_cannot_bind_stops_being_alive(
     bind comes before the cookie, as in Core's `AppInitServers`, so the
     failure leaves no cookie behind.
     """
-    logged: list[str] = []
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
-        # 127.0.0.1 and not "" (every interface, p2p/manager.py's own
-        # test of the same name): the manager under test binds
-        # Config.rpc_host's default, and a wildcard bind here would not
-        # contend for that specific address the way it did before #27
-        taken.bind(("127.0.0.1", 0))
-        taken.listen()
-        manager = a_manager(taken.getsockname()[1])
-        monkeypatch.setattr(manager.logger, "exception", logged.append)
+    logged: list[tuple[object, ...]] = []
+    # both loopbacks and not "" (every interface, p2p/manager.py's own
+    # test of the same name): the manager under test binds
+    # Config.rpc_host's default, and a wildcard bind here would not
+    # contend for those specific addresses the way it did before #27
+    with taken_loopbacks() as port:
+        manager = a_manager(port)
+        monkeypatch.setattr(manager.logger, "error", lambda *a: logged.append(a))
         assert not manager.start_listener()
         wait_until(lambda: not manager.is_alive())
-    assert logged == ["Could not bind the RPC listener"]
+    assert logged == [("Unable to bind any endpoint for RPC server",)]
     assert not manager.listening.is_set()
     assert not cookie_path(manager.node.config.data_dir).exists()
 
 
-def test_a_manager_whose_auth_refuses_a_value_closes_its_socket_at_once(
+def test_a_manager_whose_auth_refuses_a_value_closes_its_sockets_at_once(
     a_manager: AManagerFactory,
 ) -> None:
-    """`InitRPCAuthentication` refusing a value: not listening, port closed.
+    """`InitRPCAuthentication` refusing a value: not listening, ports closed.
 
     Closed by the thread that bound it, before `stop` closes it again,
     so the port is free while the node is still tearing itself down.
@@ -364,9 +747,9 @@ def test_a_manager_whose_auth_refuses_a_value_closes_its_socket_at_once(
     assert not manager.start_listener()
     wait_until(lambda: not manager.is_alive())
     assert not manager.listening.is_set()
-    assert manager._server_socket is not None
-    # a closed socket's own fileno is -1; still >= 0 is still open
-    assert manager._server_socket.fileno() == -1
+    # every loopback bound, then closed: a closed socket's own fileno is -1
+    assert len(manager._server_sockets) == len(LOOPBACKS)
+    assert all(sock.fileno() == -1 for sock in manager._server_sockets)
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", port))
 
@@ -380,7 +763,7 @@ def test_stop_closes_the_listening_socket_even_when_the_accept_task_never_ran(
     stepped it even once -- what a manager started and stopped in quick
     succession does. `Task.cancel()` reaching a coroutine with no frame
     yet raises `CancelledError` at its own definition point rather than
-    inside the running body, so `with server_socket:` is never entered
+    inside the running body, so `server`'s `ExitStack` is never entered
     and its own `__exit__` never runs (issue #323).
 
     The task is cancelled directly, before the loop has run a single
@@ -390,18 +773,39 @@ def test_stop_closes_the_listening_socket_even_when_the_accept_task_never_ran(
     """
     manager = a_manager(get_random_port())
     loop = manager.loop
-    server_socket = manager._bind()
-    manager._server_socket = server_socket
-    task = loop.create_task(manager.server(loop, server_socket))
+    server_sockets = manager._bind()
+    manager._server_sockets = server_sockets
+    task = loop.create_task(manager.server(loop, server_sockets))
     task.cancel()
     with suppress(asyncio.CancelledError):
         loop.run_until_complete(task)
-    # the `with` was never entered: nothing has closed this yet
-    assert server_socket.fileno() != -1
+    # the `ExitStack` was never entered: nothing has closed these yet
+    assert all(server_socket.fileno() != -1 for server_socket in server_sockets)
 
     manager.stop()
     # a closed socket's own fileno is -1; still >= 0 is still open
-    assert server_socket.fileno() == -1
+    assert all(server_socket.fileno() == -1 for server_socket in server_sockets)
+
+
+def test_server_closes_every_listening_socket_it_was_handed(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1269: cancelled on its own, `server` closes each of its sockets.
+
+    `stop` closes them too, so this is the caller that cancels `server`
+    alone, as `server`'s own `finally` has it.
+    """
+    manager = a_manager(get_random_port())
+    loop = manager.loop
+    server_sockets = manager._bind()
+    task = loop.create_task(manager.server(loop, server_sockets))
+    while manager._accept_queue is None:
+        loop.run_until_complete(asyncio.sleep(0))
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        loop.run_until_complete(task)
+    # a closed socket's own fileno is -1
+    assert all(server_socket.fileno() == -1 for server_socket in server_sockets)
 
 
 def test_server_does_not_lose_a_connection_queued_in_the_instant_of_its_own_cancellation(
@@ -450,7 +854,7 @@ def test_server_does_not_lose_a_connection_queued_in_the_instant_of_its_own_canc
     listening_socket.settimeout(0.0)
     accepted, theirs = socket.socketpair()
 
-    task = loop.create_task(manager.server(loop, listening_socket))
+    task = loop.create_task(manager.server(loop, [listening_socket]))
     try:
         while manager._accept_queue is None:
             loop.run_until_complete(asyncio.sleep(0))
@@ -664,10 +1068,8 @@ def test_stop_does_not_raise_where_start_was_called_but_run_never_reached_run_fo
     the same caller shape #368's own P2pManager test and the one above
     build.
     """
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
-        taken.bind(("127.0.0.1", 0))
-        taken.listen()
-        manager = a_manager(taken.getsockname()[1])
+    with taken_loopbacks() as port:
+        manager = a_manager(port)
         loop = manager.loop
 
         async def a_task() -> None:
@@ -849,7 +1251,7 @@ def test_a_wrong_password_is_logged_with_the_address_it_came_from(
     logged: list[tuple[object, ...]] = []
     port = get_random_port()
     manager = a_manager(port)
-    monkeypatch.setattr(manager.logger, "warning", lambda *args: logged.append(args))
+    monkeypatch.setattr(manager.logger, "warning", warnings_into(logged))
     manager.start()
     try:
         wait_until_listening(manager)
@@ -886,7 +1288,7 @@ def test_a_manager_that_cannot_write_its_cookie_does_not_listen(
     logged: list[tuple[object, ...]] = []
     manager = a_manager(get_random_port())
     manager.node.config.data_dir.rmdir()
-    monkeypatch.setattr(manager.logger, "warning", lambda *args: logged.append(args))
+    monkeypatch.setattr(manager.logger, "warning", warnings_into(logged))
     assert not manager.start_listener()
     wait_until(lambda: not manager.is_alive())
     tmp = f"{cookie_path(manager.node.config.data_dir)}.tmp"
@@ -894,9 +1296,9 @@ def test_a_manager_that_cannot_write_its_cookie_does_not_listen(
         f"Unable to open cookie authentication file {tmp} for writing"
     ]
     assert not manager.listening.is_set()
-    assert manager._server_socket is not None
-    # a closed socket's own fileno is -1; still >= 0 is still open
-    assert manager._server_socket.fileno() == -1
+    # every loopback bound, then closed: a closed socket's own fileno is -1
+    assert len(manager._server_sockets) == len(LOOPBACKS)
+    assert all(sock.fileno() == -1 for sock in manager._server_sockets)
     manager.stop()
 
 
@@ -931,14 +1333,14 @@ def test_an_rpccookiefile_core_cannot_write_stops_the_listener(
     config = Config(chain="regtest", data_dir=data_dir.parent, rpccookiefile=value)
     manager.auth.cookie_file = config.rpc_cookie_file
     manager.auth.cookie_tmp = config.rpc_cookie_tmp
-    monkeypatch.setattr(manager.logger, "warning", lambda *args: logged.append(args))
+    monkeypatch.setattr(manager.logger, "warning", warnings_into(logged))
     assert not manager.start_listener()
     wait_until(lambda: not manager.is_alive())
     assert raised == []
     assert len(logged) == 1
     assert str(logged[0][1]).startswith("Unable to ")
-    assert manager._server_socket is not None
-    assert manager._server_socket.fileno() == -1
+    assert len(manager._server_sockets) == len(LOOPBACKS)
+    assert all(sock.fileno() == -1 for sock in manager._server_sockets)
     assert not data_dir.with_name(data_dir.name + ".tmp").exists()
     manager.stop()
 

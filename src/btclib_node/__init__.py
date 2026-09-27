@@ -304,6 +304,12 @@ class Node(threading.Thread):
         self.terminate_flag = threading.Event()
         log_path = self.data_dir / config.log_path if config.log_path else None
         self.logger = Logger(log_path, debug=config.debug)
+        # what Core logs of its settings, in its order, ahead of anything
+        # the node logs: Core's version line, which it logs between the
+        # warnings it buffered and the section warning, is not written
+        # here (#1309)
+        for warning in config.log_warnings:
+            self.logger.warning(warning)
 
         # A `getcfilters` answer `p2p.callbacks.get_cfilters` could not
         # finish scheduling under its own pacing bound, keyed by
@@ -665,7 +671,14 @@ class Node(threading.Thread):
         """
         try:
             if self.rpc_port and not self.rpc_manager.start_listener():
-                self._abort_start([RPC_INIT_ERROR])
+                # a `-rpcallowip` value's own refusal first, as Core shows
+                # `InitHTTPAllowList`'s message before `InitError`'s
+                init_error = self.rpc_manager.init_error
+                self._abort_start(
+                    [RPC_INIT_ERROR]
+                    if init_error is None
+                    else [init_error, RPC_INIT_ERROR]
+                )
                 return False
             return self._load_or_abort()
         finally:

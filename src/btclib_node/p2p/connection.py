@@ -481,6 +481,11 @@ class Connection:
     # learn whether an address answers, dropped as soon as its `version`
     # has been read. Set and kept as `block_relay` is.
     feeler: bool = False
+    # Core's `IsAddrFetchConn()`: opened by `P2pManager._process_addr_fetch`
+    # to draw a `getaddr` answer out of a DNS seed's bare name and then
+    # close, never counted towards an outbound target. Set and kept as
+    # `block_relay` is (btclib-org/btclib-node#1284).
+    addr_fetch: bool = False
     # Core's `m_last_block_announcement`: when this peer last sent a
     # header new here and with more work than the active tip, which
     # `callbacks.headers` sets and `DownloadManager` evicts the extra
