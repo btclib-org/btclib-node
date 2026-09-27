@@ -117,7 +117,15 @@ class TxRejectedError(BTClibValueError):
     v31.1 tag). `rpc.callbacks` answers `testmempoolaccept`'s
     `reject-reason` and `reject-details` with them, and
     `sendrawtransaction`'s `-26` with `str()`. `BTClibValueError`, so
-    `p2p.callbacks.tx` records it as it records any other refusal.
+    `p2p.callbacks.tx` records it as it records any other refusal, a fee
+    floor's included, until the next block. Core returns a fee floor's
+    as `TX_RECONSIDERABLE` and keeps it in a filter of its own,
+    `RecentRejectsReconsiderableFilter`, and `ReceivedTx`
+    (`src/node/txdownloadman_impl.cpp`, same tag) does consult it -- but
+    only to refuse resubmitting that tx by itself again while it looks
+    for a 1p1c package through `Find1P1CPackage`. This tree has no
+    package path for that filter to serve, so one reject cache covers
+    both.
     """
 
     def __init__(self, reason: str, details: str) -> None:

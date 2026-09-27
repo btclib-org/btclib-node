@@ -27,6 +27,7 @@ from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.p2p.limits import PROTOCOL_VERSION
 from btclib.script import script
 from btclib.script.witness import Witness
+from btclib.tx.limits import COINBASE_MATURITY
 from btclib.tx.out_point import OutPoint
 from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
@@ -50,6 +51,7 @@ from btclib_node.exceptions import (
     StoreCorruptionError,
     TxRejectedError,
 )
+from btclib_node.main import verify_mempool_acceptance
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import peer_address
@@ -88,7 +90,12 @@ from btclib_node.rpc.callbacks import (
 from btclib_node.rpc.callbacks import test_mempool_accept as mempool_accept
 from btclib_node.rpc.connection import RawJSON
 from btclib_node.rpc.errors import RpcError
-from tests import generate_coinbase, generate_random_chain, generate_random_header_chain
+from tests import (
+    generate_coinbase,
+    generate_random_chain,
+    generate_random_header_chain,
+    generate_random_transaction,
+)
 from tests.unit.main_test import connect
 
 if TYPE_CHECKING:
@@ -2622,6 +2629,60 @@ def test_a_fee_refusal_is_reported_with_core_s_reason_and_details(
     assert result["allowed"] is False
     assert result["reject-reason"] == "min relay fee not met"
     assert result["reject-details"] == "min relay fee not met, 0 < 11"
+
+
+def a_node_holding(
+    regtest_node: Callable[[], Node], fee: int
+) -> tuple[Node, Tx, list[tuple[bytes, int]]]:
+    """A real node holding a spend paying `fee`, and what it announces."""
+    node = regtest_node()
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, chain)
+    funding = chain[0].transactions[0]
+    held = generate_random_transaction(funding.id, value=funding.vout[0].value - fee)
+    # `bypass_limits`, as a reorg re-adds a transaction: no floor at all
+    assert node.mempool.add_tx(
+        held, verify_mempool_acceptance(node, held, bypass_limits=True)
+    )
+    announced: list[tuple[bytes, int]] = []
+    node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: announced.append(
+        (tx.hash, fee)
+    )
+    return node, held, announced
+
+
+def test_a_held_transaction_is_reannounced_not_judged_again(
+    regtest_node: Callable[[], Node],
+) -> None:
+    """A txid already held answers its txid, the real verifier never asked.
+
+    Core's `BroadcastTransaction` returns early for a txid its mempool
+    holds, before any acceptance check: a fee-free transaction a reorg
+    re-added, resubmitted, is not "min relay fee not met"
+    (btclib-org/btclib-node#1245). The same txid under another witness
+    reannounces the mempool's copy.
+    """
+    node, held, announced = a_node_holding(regtest_node, 0)
+    twin = Tx.parse(held.serialize(include_witness=True))
+    twin.vin[0].script_witness = Witness([b"\x01"])
+    assert twin.id == held.id
+    assert twin.hash != held.hash
+    for resubmitted in (held, twin):
+        raw = resubmitted.serialize(include_witness=True).hex()
+        assert send_raw_transaction(node, _CONN, [raw]) == held.id.hex()
+    assert announced == [(held.hash, 0), (held.hash, 0)]
+
+
+def test_a_held_transaction_under_a_risen_minimum_is_reannounced(
+    regtest_node: Callable[[], Node],
+) -> None:
+    """A rolling minimum risen past what a held transaction pays is no refusal."""
+    node, held, announced = a_node_holding(regtest_node, 1_000)
+    node.mempool._rolling_min_fee_rate = 1_000_000.0
+    node.mempool._block_since_last_rolling_fee_bump = False
+    raw = held.serialize(include_witness=True).hex()
+    assert send_raw_transaction(node, _CONN, [raw]) == held.id.hex()
+    assert announced == [(held.hash, 1_000)]
 
 
 def test_a_corrupted_stored_record_is_not_answered_as_the_tx_s_own_refusal(
