@@ -628,6 +628,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   read, and a failing block is marked invalid only where Core marks it, over
   the weight, on the wire and in `submitblock`** (closes #1242, closes #1333).
 
+### The P2P listener's sockets are kept before it says it is listening
+
+- **`_bind` records them ahead of setting `listening`** (closes #1325), so
+  a thread woken by it no longer reads an empty list.
+
 ### Two outbound peers are block-relay-only, as in Core
 
 - **Past eight full-relay outbound peers, two more are dialled that relay
