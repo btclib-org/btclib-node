@@ -119,6 +119,10 @@ class Chain:
     # 8334/18334/38334/18445), a port this node does not listen on at
     # all.
     rpc_port: int
+    # Core's `vSeeds` (`src/kernel/chainparams.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag), the DNS seeds, in
+    # Core's order and with its trailing dot, which makes each name
+    # fully qualified for the resolver
     addresses: list[str]
     # Core's `vFixedSeeds` (`src/kernel/chainparams.cpp`, at
     # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): BIP155 serialized
@@ -186,15 +190,14 @@ class Main(Chain):
         self.port = 8333
         self.rpc_port = 8332
         self.addresses = [
-            "seed.bitcoin.sipa.be",
-            "dnsseed.bluematt.me",
-            "dnsseed.bitcoin.dashjr.org",
-            "seed.bitcoinstats.com",
-            "seed.bitcoin.jonasschnelli.ch",
-            "seed.btc.petertodd.org",
-            "seed.bitcoin.sprovoost.nl",
-            "dnsseed.emzy.de",
-            "seed.bitcoin.wiz.biz",
+            "seed.bitcoin.sipa.be.",
+            "dnsseed.bluematt.me.",
+            "seed.bitcoin.jonasschnelli.ch.",
+            "seed.btc.petertodd.net.",
+            "seed.bitcoin.sprovoost.nl.",
+            "dnsseed.emzy.de.",
+            "seed.bitcoin.wiz.biz.",
+            "seed.mainnet.achownodes.xyz.",
         ]
         self.fixed_seeds = CHAINPARAMS_SEED_MAIN
         self.genesis_block = create_genesis(
@@ -216,10 +219,11 @@ class TestNet(Chain):
         self.port = 18333
         self.rpc_port = 18332
         self.addresses = [
-            "testnet-seed.bitcoin.jonasschnelli.ch",
-            "seed.tbtc.petertodd.org",
-            "seed.testnet.bitcoin.sprovoost.nl",
-            "testnet-seed.bluematt.me",
+            "testnet-seed.bitcoin.jonasschnelli.ch.",
+            "seed.tbtc.petertodd.net.",
+            "seed.testnet.bitcoin.sprovoost.nl.",
+            "testnet-seed.bluematt.me.",
+            "seed.testnet.achownodes.xyz.",
         ]
         self.fixed_seeds = CHAINPARAMS_SEED_TEST
         self.genesis_block = create_genesis(
@@ -245,7 +249,10 @@ class SigNet(Chain):
         self.name = "signet"
         self.port = 38333
         self.rpc_port = 38332
-        self.addresses = ["178.128.221.177"]
+        self.addresses = [
+            "seed.signet.bitcoin.sprovoost.nl.",
+            "seed.signet.achownodes.xyz.",
+        ]
         self.fixed_seeds = CHAINPARAMS_SEED_SIGNET
         self.genesis_block = create_genesis(
             1598918400, 52613770, 0x1E0377AE, 1, 50 * 10**8
@@ -256,7 +263,7 @@ class SigNet(Chain):
 
 @dataclass
 class RegTest(Chain):
-    """A local, disposable chain: no seeds, an easy target, no retargeting.
+    """A local, disposable chain: no real seed, an easy target, no retargeting.
 
     P2SH, segwit v0 and taproot are on from the genesis block on every
     chain btclib's own `ConsensusParams.script_flags_at` answers for;
@@ -274,7 +281,9 @@ class RegTest(Chain):
         self.name = "regtest"
         self.port = 18444
         self.rpc_port = 18443
-        self.addresses = []
+        # Core's own placeholder, a name under the `.invalid` top-level
+        # domain, which RFC 6761 reserves to resolve to nothing
+        self.addresses = ["dummySeed.invalid."]
         self.fixed_seeds = b""
         self.genesis_block = create_genesis(1296688602, 2, 0x207FFFFF, 1, 50 * 10**8)
         # src/kernel/chainparams.cpp:601, at bitcoin/bitcoin@ca7162cde5:
