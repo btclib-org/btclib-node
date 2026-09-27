@@ -7,11 +7,13 @@
 A file handler where a caller names a path -- `Node.__init__` resolves
 one under `Config.data_dir` when `Config.log_path` is set -- a stream
 handler otherwise, and `close` to release whichever one it opened.
-Each line carries the level ahead of its message as Core's
-`GetLogPrefix` writes it for a line with no category.
+Each line opens as Core's `debug.log` line does: `LogTimestampStr`'s
+time, in UTC and to the second, then the level as `GetLogPrefix` writes
+it for a line with no category.
 """
 
 import logging
+import time
 from typing import TYPE_CHECKING, override
 
 if TYPE_CHECKING:
@@ -38,11 +40,21 @@ def _level_prefix(levelno: int) -> str:
 
 
 class _LevelFormatter(logging.Formatter):
-    """A `Formatter` putting `_level_prefix` between time and message."""
+    """A `Formatter` writing Core's time, `_level_prefix`, then the message.
+
+    The time is `LogTimestampStr`'s (`src/logging.cpp`, at
+    bitcoin/bitcoin@9be056a8a7) without `-logtimemicros`, which this
+    node does not have: `FormatISO8601DateTime` of the whole second, in
+    UTC, and one space.
+    """
+
+    @override
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(record.created))
 
     @override
     def formatMessage(self, record: logging.LogRecord) -> str:
-        return f"{record.asctime} - {_level_prefix(record.levelno)}{record.message}"
+        return f"{record.asctime} {_level_prefix(record.levelno)}{record.message}"
 
 
 class Logger(logging.Logger):
@@ -66,7 +78,7 @@ class Logger(logging.Logger):
         handler = logging.FileHandler(log_path) if log_path else logging.StreamHandler()
         # `%(asctime)s` in the format string is what makes `format` set
         # `record.asctime` before `formatMessage` reads it
-        formatter = _LevelFormatter("%(asctime)s - %(message)s")
+        formatter = _LevelFormatter("%(asctime)s %(message)s")
         handler.setFormatter(formatter)
         self.addHandler(handler)
 
