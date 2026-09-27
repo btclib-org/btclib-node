@@ -1156,11 +1156,13 @@ class P2pManager(threading.Thread):
             return
         # By endpoint_key, not raw equality: a drawn address
         # carries the timestamp and services its rows were last
-        # given, by `callbacks.verack`, a peer's own `version` or a
-        # gossip, which is never the pair an existing Connection's
-        # own address was constructed with, so comparing the
-        # dataclasses themselves never matches the peer this node is
-        # already holding a connection with and dials it a second time.
+        # given, by `callbacks.version`'s own recording of a peer it
+        # dialled, its `set_services` for any peer's own word on its
+        # services, or a gossip, which is never the pair an existing
+        # Connection's own address was constructed with, so comparing
+        # the dataclasses themselves never matches the peer this node
+        # is already holding a connection with and dials it a second
+        # time.
         #
         # Locked for the same reason the count above is
         # (btclib-org/btclib-node#355).

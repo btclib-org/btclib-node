@@ -32,6 +32,7 @@ from btclib_node.main import (
     is_block_failed,
     is_cached_invalid,
     parent_lookup,
+    passes_check_block,
     prune_up_to_height,
     verify_mempool_acceptance,
 )
@@ -617,13 +618,20 @@ def get_block(node: Node, conn: RpcConnection, params: list[Any]) -> str:
 def _index_submitted_header(block_index: BlockIndex, block: Block) -> str | None:
     """Index a submitted block's header if new; answer why to stop, or None.
 
-    `"duplicate"` for a block already downloaded, `"prev-blk-not-found"`
-    for a header whose parent is unknown, and btclib's own message for
-    a header `add_headers` refuses; `submit_block` argues each.
+    `"duplicate"` for a block already downloaded whose body passes
+    `CheckBlock` (`main.passes_check_block`), `"prev-blk-not-found"` for
+    a header whose parent is unknown, and btclib's own message for a
+    header `add_headers` refuses; `submit_block` argues each.
     """
     block_hash = block.header.hash
     if block_hash in block_index.header_dict:
-        if block_index.get_block_info(block_hash).downloaded:
+        # Core's `ProcessNewBlock` asks `CheckBlock` of every body before
+        # `AcceptBlock` finds it already stored, so a body failing it under
+        # a stored hash is refused for that reason, and a stored block left
+        # as it is (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7)
+        if block_index.get_block_info(block_hash).downloaded and passes_check_block(
+            block
+        ):
             return "duplicate"
     else:
         try:

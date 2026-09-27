@@ -787,6 +787,24 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   #1313, closes #1324), where a value that is not an integer was refused;
   `-maxconnections` and `-prune` then narrow and wrap as they do in Core.
 
+### Only a peer this node dialled is recorded as answered, as in Core
+
+- **An inbound peer's endpoint no longer enters the answered table, and a
+  dialled one enters it at its own `version`, as Core's `AddrMan::Good`
+  does** (closes #1229, closes #1140).
+
+### `submitblock` refuses a body its stored header does not commit to
+
+- **A block whose hash names one already stored answers `duplicate` only where
+  its body passes `CheckBlock`, and the body's reason otherwise, the stored
+  block left as it was** (closes #1346), as Core's `ProcessNewBlock` orders it.
+
+### A block failing `CheckBlock` costs its peer, asked for or not, as in Core
+
+- **A body failing `CheckBlock` is refused before its header is indexed and
+  before an unrequested block is set aside, so its peer is punished either
+  way** (closes #1363), as Core's `ProcessNewBlock` orders it.
+
 ### DNS seeding asks each seed's `x9.` subdomain, and addr-fetches the rest
 
 - **A seed answers only for `NODE_NETWORK | NODE_WITNESS`, at most 32 answers

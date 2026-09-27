@@ -168,7 +168,7 @@ def test_add_active_address_waits_out_a_prune_already_in_progress(
     `_active_index` and then writes into `active_addresses` at the
     position found, and `get_active_addresses` reassigns the list and
     then rebuilds the index against it -- both two statements, not one,
-    reachable respectively from `callbacks.verack` on `Node`'s thread
+    reachable respectively from `callbacks.version` on `Node`'s thread
     and `manage_connections` on `P2pManager`'s. `_reindex_active` is
     paused here, after the list has already been reassigned but before
     the index is rebuilt, which is the exact gap the finding traced --
@@ -178,7 +178,7 @@ def test_add_active_address_waits_out_a_prune_already_in_progress(
     # _active_index and then writes into active_addresses at the
     # position found, and get_active_addresses reassigns the list and
     # then rebuilds the index -- both two statements, not one, and
-    # reachable from two different threads (callbacks.verack on Node's,
+    # reachable from two different threads (callbacks.version on Node's,
     # manage_connections on P2pManager's). Paused mid-prune here rather
     # than raced on timing: `_reindex_active` is where the pause is
     # forced, after the list has already been reassigned but before the
