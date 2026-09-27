@@ -729,6 +729,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   dialled one enters it at its own `version`, not waiting for a `verack`
   that may never come**, matching where Core's `AddrMan::Good` runs (closes
   #1229, closes #1140).
+### `setban` takes an onion or I2P host, and each address `getaddrinfo` reads
+
+- **An onion or I2P host is banned as itself** (closes #1218), and an
+  address is what `getaddrinfo` reads, `1.2.3` among them, with an IPv6
+  scope written and no part of the ban's key (closes #1220).
 
 ## v2026.9.24
 
