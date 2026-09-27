@@ -742,14 +742,20 @@ class BlockIndex:
 
         Core's `duplicate-invalid`, `BLOCK_CACHED_INVALID`: a
         `MisbehavingError` where `punish_cached_invalid`, a plain
-        `BTClibValueError` otherwise.
+        `BTClibValueError` otherwise. The reason is Core's word alone,
+        the hash going to the debug line Core's `AcceptBlockHeader` logs
+        (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        tag).
         """
         header_hash = header.hash
         known = self.header_dict.get(header_hash)
         if known is None:
             return False
         if known.status == BlockStatus.invalid:
-            err_msg = f"duplicate-invalid: {header_hash.hex()}"
+            self.logger.debug(
+                "AcceptBlockHeader: block %s is marked invalid", header_hash.hex()
+            )
+            err_msg = "duplicate-invalid"
             if punish_cached_invalid:
                 raise MisbehavingError(err_msg)
             raise BTClibValueError(err_msg)
@@ -759,13 +765,19 @@ class BlockIndex:
         """Answer `header`'s indexed parent and its height, None if unknown.
 
         Core's `bad-prevblk`, `BLOCK_INVALID_PREV`, where the parent is
-        marked invalid: a `MisbehavingError`.
+        marked invalid: a `MisbehavingError`, its reason Core's word alone
+        and the two hashes on Core's debug line.
         """
         block_info = self.header_dict.get(header.previous_block_hash)
         if block_info is None:
             return None
         if block_info.status == BlockStatus.invalid:
-            err_msg = f"bad-prevblk: {header.hash.hex()}"
+            self.logger.debug(
+                "header %s has prev block invalid: %s",
+                header.hash.hex(),
+                header.previous_block_hash.hex(),
+            )
+            err_msg = "bad-prevblk"
             raise MisbehavingError(err_msg)
         return block_info.header, block_info.index
 

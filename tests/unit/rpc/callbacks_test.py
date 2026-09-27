@@ -3286,7 +3286,7 @@ def test_submit_block_answers_bad_prevblk_for_a_block_on_an_invalid_parent(
     """ISS 1233: `add_headers` refuses the header, `bad-prevblk`.
 
     Measured against bitcoind v31.1, a block on a header `invalidateblock`
-    marked: `bad-prevblk`, where this node's answer carries the hash too.
+    marked: `bad-prevblk`.
     Neither the header nor the block is kept.
     """
     node = regtest_node()
@@ -3297,7 +3297,7 @@ def test_submit_block_answers_bad_prevblk_for_a_block_on_an_invalid_parent(
 
     result = submit_block(node, _CONN, [child.serialize(check_validity=False).hex()])
 
-    assert result == f"bad-prevblk: {child.header.hash.hex()}"
+    assert result == "bad-prevblk"
     assert child.header.hash not in block_index.header_dict
     assert node.block_db.get_block(child.header.hash) is None
 

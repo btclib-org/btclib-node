@@ -102,8 +102,9 @@ table it dispatches through" Core folds into one function. Neither
 raises what a callback raises: each wraps its own dispatch in
 `except Exception as e`, discouraging the peer only for a
 `MisbehavingError` and otherwise logging it and keeping the peer, as
-`p2p/main.py`'s own comment there argues from Core's `ProcessMessages`:
-one bad message does not take the whole loop down over it. A harness
+`p2p/main.py`'s own comment there argues from Core's `ProcessMessages`.
+Either way the exception stops there, so one bad message does not take
+the loop down. A harness
 that only calls `handle_p2p` and trusts what escapes it would therefore
 never see a callback's own bug either -- `main.py`'s own `except` is
 exactly the boundary this harness has to see past rather than trust,
@@ -116,8 +117,8 @@ handler such as `caplog`'s own -- reading `record.exc_info` off every
 `node.logger.exception(...)` call `handle_p2p`/`handle_p2p_handshake`
 themselves make, and sorting it on this harness's own axis,
 `isinstance(exc, BTClibException)`: btclib refusing `data` into
-`refused`, anything else, a bug, into `escaped` -- `handle_p2p` keeping
-the peer for both alike, neither shows in what it returns. What
+`refused`, anything else, a bug, into `escaped` -- `handle_p2p`
+returning nothing for either, neither shows in what it returns. What
 lands in `escaped` is re-raised by `dispatch` below exactly as before,
 so `handle_p2p` runs unmodified, exactly as `Node`'s own loop calls it,
 and what it would have hidden is still what makes this harness red; what
