@@ -7,15 +7,54 @@
 A file handler where a caller names a path -- `Node.__init__` resolves
 one under `Config.data_dir` when `Config.log_path` is set -- a stream
 handler otherwise, and `close` to release whichever one it opened.
+Each line opens as Core's `debug.log` line does: `LogTimestampStr`'s
+time, in UTC and to the second, then the level as `GetLogPrefix` writes
+it for a line with no category.
 """
 
 import logging
-from typing import TYPE_CHECKING
+import time
+from typing import TYPE_CHECKING, override
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 __all__ = ["Logger"]
+
+
+def _level_prefix(levelno: int) -> str:
+    """Return what Core's `GetLogPrefix` puts ahead of a line at `levelno`.
+
+    `src/logging.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, for
+    a line with no category, which is every line this node logs: nothing
+    at `info`, and `[debug] `, `[warning] ` or `[error] ` otherwise.
+    `CRITICAL`, which Core has no level for, is `[error] `.
+    """
+    if levelno >= logging.ERROR:
+        return "[error] "
+    if levelno >= logging.WARNING:
+        return "[warning] "
+    if levelno >= logging.INFO:
+        return ""
+    return "[debug] "
+
+
+class _LevelFormatter(logging.Formatter):
+    """A `Formatter` writing Core's time, `_level_prefix`, then the message.
+
+    The time is `LogTimestampStr`'s (`src/logging.cpp`, at
+    bitcoin/bitcoin@9be056a8a7) without `-logtimemicros`, which this
+    node does not have: `FormatISO8601DateTime` of the whole second, in
+    UTC, and one space.
+    """
+
+    @override
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(record.created))
+
+    @override
+    def formatMessage(self, record: logging.LogRecord) -> str:
+        return f"{record.asctime} {_level_prefix(record.levelno)}{record.message}"
 
 
 class Logger(logging.Logger):
@@ -44,7 +83,9 @@ class Logger(logging.Logger):
             if log_path
             else logging.StreamHandler()
         )
-        formatter = logging.Formatter("%(asctime)s - %(message)s")
+        # `%(asctime)s` in the format string is what makes `format` set
+        # `record.asctime` before `formatMessage` reads it
+        formatter = _LevelFormatter("%(asctime)s %(message)s")
         handler.setFormatter(formatter)
         self.addHandler(handler)
 
