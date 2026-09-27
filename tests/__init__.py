@@ -371,9 +371,11 @@ def generate_random_chain(
 # fixed range: `PORT_MIN`, 11000, on for three `PORT_RANGE`s of 5000
 # (test/functional/test_framework/util.py), and so does this suite. A port
 # the kernel picks itself -- for a bind to port 0, or for an outbound
-# connection's own end -- comes from its ephemeral range, which
-# `test_no_port_the_kernel_picks_is_a_test_port` checks lies outside this
-# one on every platform the suite runs on.
+# connection's own end -- comes from its ephemeral range, whose documented
+# default is 32768-60999 on Linux and 49152-65535 on macOS and Windows.
+# `test_no_port_the_kernel_picks_is_a_test_port` samples such ports and
+# finds none in this range; a kernel handing them out in sequence makes
+# the sample one short run, not the whole range.
 TEST_PORTS = range(11000, 11000 + 3 * 5000)
 
 
@@ -409,12 +411,17 @@ def worker_ports(worker: str, count: int) -> range:
     """Return the slice of `TEST_PORTS` xdist worker `worker` of `count` has.
 
     Where Core gives each test of a run its own `--portseed`, a worker
-    here takes its slice by its index in `gw0`, `gw1`, ..., disjoint from
-    every other worker's. A replacement for a crashed worker takes the
-    next id, so the index wraps.
+    here takes its slice by its index in `gw0`, `gw1`, ... The range is
+    cut into twice `count` slices: xdist names a worker it starts to
+    replace a crashed one by the next index, `gw{count}` on, with `count`
+    unchanged, so the first `count` replacements take slices no worker
+    has. From the one after, the index wraps and a replacement shares a
+    slice with a live worker, the two kept apart only by their PIDs'
+    offsets and the bind check `PortPool` makes.
     """
-    width = len(TEST_PORTS) // count
-    first = TEST_PORTS.start + int(worker.removeprefix("gw")) % count * width
+    slices = 2 * count
+    width = len(TEST_PORTS) // slices
+    first = TEST_PORTS.start + int(worker.removeprefix("gw")) % slices * width
     return range(first, first + width)
 
 
@@ -431,12 +438,13 @@ _PORTS = PortPool(
 
 
 def get_random_port() -> int:
-    """Return a TCP port that nothing holds and no other worker is handed.
+    """Return a TCP port that nothing holds, from this worker's own slice.
 
     The port is free when this returns, not reserved, so a caller has to
-    bind it before another program can; what cannot take it first is
-    another worker of this run, whose slice is its own, or an outbound
-    connection, whose port the kernel picks outside `TEST_PORTS`.
+    bind it before another program can. Another worker of this run draws
+    from a slice of its own, `worker_ports` saying when a replacement for
+    a crashed one does not, and an outbound connection's port is one the
+    kernel picks outside `TEST_PORTS`.
     """
     return _PORTS.draw()
 

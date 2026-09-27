@@ -75,14 +75,19 @@ def test_no_port_the_kernel_picks_is_a_test_port() -> None:
 
 @pytest.mark.parametrize("count", [1, 3, 4, 8, 13])
 def test_each_worker_hands_out_ports_of_its_own(count: int) -> None:
-    """The workers' slices are disjoint, and a replacement wraps to `gw0`'s."""
-    slices = [set(worker_ports(f"gw{index}", count)) for index in range(count)]
+    """A run's workers and their first `count` replacements share no port.
+
+    xdist names a replacement by the next index, `gw{count}` on; only the
+    one after those wraps, onto `gw0`'s slice.
+    """
+    names = [f"gw{index}" for index in range(2 * count)]
+    slices = [set(worker_ports(name, count)) for name in names]
     for index, ports in enumerate(slices):
         assert ports
         assert ports <= set(TEST_PORTS)
         for other in slices[index + 1 :]:
             assert not ports & other
-    assert worker_ports(f"gw{count}", count) == worker_ports("gw0", count)
+    assert worker_ports(f"gw{2 * count}", count) == worker_ports("gw0", count)
 
 
 def test_a_held_port_is_passed_over() -> None:
