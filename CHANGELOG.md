@@ -758,6 +758,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `MSG_WITNESS_BLOCK`, and its walk over the peer's chain ends at the first
   block where SegWit is active** (closes #1208).
 
+### A block under a header already marked invalid is refused, as in Core
+
+- **A body passing `CheckBlock` under a header marked invalid is refused
+  `duplicate-invalid`, on the wire and by `submitblock`, and no longer stored,
+  from an outbound peer as misbehaviour** (closes #1344).
+
 ### An inbound, manual or feeler peer is kept without `NODE_WITNESS`, as in Core
 
 - **`NODE_WITNESS` is required only where Core's `ExpectServicesFromConn`

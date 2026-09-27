@@ -3590,6 +3590,55 @@ def test_submit_block_leaves_valid_a_header_its_body_does_not_match(
     assert submit_block(node, _CONN, [honest]) is None
 
 
+def a_block_marked_invalid(node: Node, block: Block) -> str:
+    """Index `block`'s header, mark it invalid, and return the block's hex."""
+    block_index = node.chainstate.block_index
+    block_index.add_headers([block.header])
+    block_index.invalidate(block.header.hash)
+    return block.serialize(check_validity=False).hex()
+
+
+@pytest.mark.parametrize(
+    ("body", "answer"),
+    [
+        ("valid", "duplicate-invalid"),
+        ("over-the-weight", "duplicate-invalid"),
+        ("bad-cb-multiple", "more than one coinbase"),
+    ],
+)
+def test_submit_block_answers_duplicate_invalid_where_check_block_passes(
+    regtest_node: Callable[..., Node], body: str, answer: str
+) -> None:
+    """ISS 1344: Core's `CheckBlock`, then `AcceptBlockHeader`'s cached state.
+
+    Measured against bitcoind v31.1, each body under a header
+    `invalidateblock` marked: `duplicate-invalid`, `duplicate-invalid`,
+    `bad-cb-multiple`. Nothing is stored.
+    """
+    node = regtest_node()
+    block = {
+        "valid": lambda: generate_random_chain(1, RegTest().genesis.hash)[0],
+        "over-the-weight": lambda: generate_segwit_block(
+            witness=bytes(MAX_BLOCK_WEIGHT)
+        ),
+        "bad-cb-multiple": lambda: generate_segwit_block(generate_coinbase(height=1)),
+    }[body]()
+    assert submit_block(node, _CONN, [a_block_marked_invalid(node, block)]) == answer
+    assert node.block_db.get_block(block.header.hash) is None
+
+
+def test_submit_block_answers_duplicate_invalid_for_a_stored_block_marked_since(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """ISS 1344: not `duplicate`, Core's header state being asked first."""
+    node = regtest_node()
+    (block,) = generate_random_chain(1, RegTest().genesis.hash)
+    raw = block.serialize(check_validity=False).hex()
+    assert submit_block(node, _CONN, [raw]) is None
+    node.chainstate.block_index.invalidate(block.header.hash)
+    assert submit_block(node, _CONN, [raw]) == "duplicate-invalid"
+
+
 def test_submit_block_leaves_valid_a_committed_body_failing_check_block(
     regtest_node: Callable[..., Node],
 ) -> None:
