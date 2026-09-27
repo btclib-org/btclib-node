@@ -6,13 +6,14 @@
 
 import os
 import re
-from ipaddress import ip_network
 
 import pytest
 
 from btclib_node.rpc.allow import allowed_subnets, client_allowed
 
-_LOOPBACK = (ip_network("127.0.0.0/8"), ip_network("::1/128"))
+_LOOPBACK = ("127.0.0.0/8", "::1/128")
+_ONION = "pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion"
+_I2P = "ukeu3k5oycgaauneqgtnvselmt4yemvoilkln7jpvamvfx7dnkdq.b32.i2p"
 # `inet_aton`'s forms, which Windows' `getaddrinfo` need not read
 _ATON = pytest.mark.skipif(os.name == "nt", reason="the resolver's own forms")
 
@@ -40,13 +41,20 @@ _ATON = pytest.mark.skipif(os.name == "nt", reason="the resolver's own forms")
         ("::ffff:1.2.3.4", "1.2.3.4/32"),
         ("::ffff:1.2.3.4/24", "1.2.3.0/24"),
         ("fd87:d87e:eb43::1", "::/128"),
+        # measured on bitcoind v31.1.0, which logs these subnets so:
+        # `SetSpecial`'s names, and an IPv6 scope `CSubNet` writes
+        (_ONION, _ONION),
+        (f"[{_ONION}]", _ONION),
+        (_I2P, _I2P),
+        ("fe80::1%1/64", "fe80::%1/64"),
+        ("::1%1", "::1%1/128"),
     ],
 )
 def test_a_value_names_the_subnet_core_s_lookup_subnet_does(
     value: str, subnet: str
 ) -> None:
-    """ISS 1268: an IP, a network and a netmask, or a network and a prefix."""
-    assert allowed_subnets((value,)) == (*_LOOPBACK, ip_network(subnet))
+    """ISS 1268, ISS 1288: an IP, a network and its mask, a Tor or I2P host."""
+    assert [str(each) for each in allowed_subnets((value,))] == [*_LOOPBACK, subnet]
 
 
 @pytest.mark.parametrize(
@@ -73,6 +81,11 @@ def test_a_value_names_the_subnet_core_s_lookup_subnet_does(
         "a/b/1.2.3.4",
         "fd6b:88c0:8724::1",
         "1.2.3.4\0",
+        # refused by bitcoind v31.1.0, measured: a Tor host takes no mask,
+        # and an IPv4 address no scope
+        f"{_ONION}/32",
+        f"{_ONION}/255.255.255.255",
+        "1.2.3.4%1",
     ],
 )
 def test_a_value_naming_no_subnet_is_refused_in_core_s_words(value: str) -> None:
@@ -100,7 +113,9 @@ def test_a_value_naming_no_subnet_is_refused_in_core_s_words(value: str) -> None
         ("::ffff:10.0.0.1", ("10.0.0.0/8",), True),
         ("10.0.0.1", ("::/0",), False),
         ("2001:db9::1", ("::/0",), True),
-        ("fe80::1%lo0", ("fe80::/64",), True),
+        ("fe80::1%1", ("fe80::/64",), True),
+        # a JSON-RPC client connects over IP, so a Tor subnet matches none
+        ("10.0.0.1", (_ONION,), False),
         # `CNetAddr::IsValid` refuses these whatever the subnet
         ("0.0.0.0", ("0.0.0.0/0",), False),  # noqa: S104 -- a peer, not a bind
         ("255.255.255.255", ("0.0.0.0/0",), False),
