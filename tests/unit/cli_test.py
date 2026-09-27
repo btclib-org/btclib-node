@@ -883,6 +883,21 @@ def test_the_listen_soft_set_reads_maxconnections_before_the_int(
     assert _build(tmp_path, f"-maxconnections={value}").listen is listen
 
 
+@pytest.mark.parametrize(
+    ("value", "dnsseed"),
+    [("4294967296", True), ("-4294967295", False)],
+)
+def test_the_dnsseed_soft_set_reads_maxconnections_before_the_int(
+    tmp_path: Path, value: str, *, dnsseed: bool
+) -> None:
+    """ISS 1324: the same `if` as `-listen`'s, over the same `int64_t`.
+
+    Measured on `bitcoind` v31.1.0: `-maxconnections=4294967296` logs
+    "dnsseed thread start", and `-4294967295` logs "setting -dnsseed=0".
+    """
+    assert _build(tmp_path, f"-maxconnections={value}").dnsseed is dnsseed
+
+
 # measured on `bitcoind` v31.1.0 with `-regtest -listen=0`:
 # `getblockchaininfo`'s `pruned` and `prune_target_size`, the target in
 # MiB here, and `None` for a start it refuses as below the minimum

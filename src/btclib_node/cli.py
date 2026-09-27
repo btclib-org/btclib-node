@@ -1327,6 +1327,9 @@ def _after_lock(before: _BeforeLock) -> Config:
     listen = _get_bool(settings, "listen")
     if listen is None:
         listen = not connect and not connect_negated and before.max_connections_arg > 0
+    # the same `if` soft-sets `-dnsseed`, reading the same `int64_t`, which
+    # `max_connections` has been narrowed from
+    dnsseed = not connect and not connect_negated and before.max_connections_arg > 0
     # `GetAuthCookieFile` (`src/rpc/request.cpp`, same sha): negated, no cookie
     rpccookiefile = (
         None
@@ -1351,6 +1354,7 @@ def _after_lock(before: _BeforeLock) -> Config:
         addnode=_get_args(settings, "addnode"),
         listen=listen,
         max_connections=before.max_connections,
+        dnsseed=dnsseed,
         rpcauth=_get_args(settings, "rpcauth"),
         rpcuser=_get_arg(settings, "rpcuser") or "",
         rpcpassword=_get_arg(settings, "rpcpassword") or "",

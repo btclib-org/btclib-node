@@ -210,6 +210,7 @@ def a_manager() -> Iterator[AManagerFactory]:
                 addnode=addnode,
                 listen=listen,
                 max_connections=max_connections,
+                dnsseed=not connect and max_connections > 0,
                 pruned=False,
             ),
             # `Connection.own_version`'s own `start_height`
