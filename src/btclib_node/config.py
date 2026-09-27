@@ -5,9 +5,9 @@
 """`Config`, the settings one `Node` is built from.
 
 Which chain to join, where its data lives, which listeners to start and
-on which interfaces, and the feerate floor it tells a peer about in
-`feefilter` -- `DEFAULT_MIN_RELAY_FEERATE` below, Core's own
-`DEFAULT_MIN_RELAY_TX_FEE`. `_resolve_chain` is what turns a chain
+on which interfaces, and the feerate floor its mempool accepts at and
+tells a peer about in `feefilter` -- `DEFAULT_MIN_RELAY_FEERATE` below,
+Core's own `DEFAULT_MIN_RELAY_TX_FEE`. `_resolve_chain` is what turns a chain
 already built, or a network's name, into the `Chain` a `Config` carries.
 `split_host_port` is `cli.py`'s own splitter for `-rpcbind`'s optional
 port too, and `get_path_arg` its reader of `-datadir`, `-conf` and
@@ -25,6 +25,7 @@ from btclib.fee import FeeRate
 
 from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet
 from btclib_node.exceptions import InvalidChainTypeError, UnknownChainError
+from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME
 from btclib_node.rpc.auth import (
     COOKIE_FILE,
     RpcAuthEntry,
@@ -44,11 +45,10 @@ __all__ = [
 ]
 
 # Core's own floor, `DEFAULT_MIN_RELAY_TX_FEE` (`src/policy/policy.h`,
-# read at bitcoin/bitcoin@58a7869f86): 100 sat/kvB. This node prices
-# nothing at mempool acceptance yet (issue #85 is the open question of
-# what a rejected or evicted transaction costs), so the value below is
-# only ever the floor this node tells a peer about in `feefilter`
-# (btclib-org/btclib-node#94) -- it is not enforced anywhere else.
+# read at bitcoin/bitcoin@58a7869f86): 100 sat/kvB. The floor
+# `main.verify_mempool_acceptance` refuses a candidate under
+# (btclib-org/btclib-node#1245), and the one this node tells a peer about
+# in `feefilter` (btclib-org/btclib-node#94).
 DEFAULT_MIN_RELAY_FEERATE = FeeRate(sats_per_kvbyte=100)
 # Core's own `-maxconnections` default, `DEFAULT_MAX_PEER_CONNECTIONS`
 # (`src/net.h`), read at the release `integration-bitcoind.yml` pins,
@@ -97,7 +97,10 @@ def split_host_port(spec: str, default_port: int) -> tuple[str, int]:
     calling `SplitHostPort`, which only overwrites it when the spec
     actually names one (`ConnectNode`, `src/net.cpp:505-507`, same sha)
     -- `-connect=1.2.3.4` and `-addnode=1.2.3.4` both dial the chain's
-    own default P2P port this way.
+    own default P2P port this way. The port is `ToIntegral<uint16_t>`'s
+    (`src/util/strencodings.h`, at bitcoin/bitcoin@9be056a8a7): ASCII
+    digits alone, so a sign, a space, a `_` or a non-ASCII digit, which
+    `int` would each accept, make the port invalid.
     """
     host = spec
     port = default_port
@@ -107,10 +110,7 @@ def split_host_port(spec: str, default_port: int) -> tuple[str, int]:
         multi_colon = spec.rfind(":", 0, colon) != -1
         if colon == 0 or bracketed or not multi_colon:
             host, port_text = spec[:colon], spec[colon + 1 :]
-            try:
-                port = int(port_text)
-            except ValueError:
-                port = -1
+            port = int(port_text) if port_text.isascii() and port_text.isdigit() else -1
             if not 0 < port <= 0xFFFF:  # noqa: PLR2004
                 err_msg = f"{spec!r} names an invalid port"
                 raise ValueError(err_msg)
@@ -146,6 +146,28 @@ def _resolve_peers(
         ip_address(host)  # raises ValueError on a hostname or garbage
         peers.append((host, port))
     return tuple(peers)
+
+
+def _read_cookie_perms(value: str) -> tuple[int | None, str | None]:
+    """Return `-rpccookieperms`' mode, or `cookie_perms`' refusal of it."""
+    try:
+        return cookie_perms(value), None
+    except ValueError as err:
+        return None, str(err)
+
+
+def _read_rpcauth(values: Sequence[str]) -> tuple[tuple[RpcAuthEntry, ...], bool]:
+    """Return the `-rpcauth` entries before a malformed one, and whether one is.
+
+    `InitRPCAuthentication` stops at the first malformed value, refusing it.
+    """
+    entries: list[RpcAuthEntry] = []
+    for value in values:
+        try:
+            entries.append(RpcAuthEntry.parse(value))
+        except ValueError:
+            return tuple(entries), True
+    return tuple(entries), False
 
 
 def _resolve_cookie_file(
@@ -236,8 +258,13 @@ class Config:
     # have, and `RpcManager` logs the warning Core logs over them.
     rpcbind: tuple[str, ...]
     # Core's own `-rpcauth`, one entry per value: users the RPC listener
-    # accepts beside the cookie and `rpc_password_entry`.
+    # accepts beside the cookie and `rpc_password_entry`. Where a value
+    # is malformed, the values ahead of it, and `rpc_auth_invalid` set.
     rpc_auth: tuple[RpcAuthEntry, ...]
+    # whether a `-rpcauth` value is malformed, which `RpcAuth.start`
+    # refuses once the listener is bound, as Core's
+    # `InitRPCAuthentication` does
+    rpc_auth_invalid: bool
     # Core's own `-rpcuser`/`-rpcpassword`, hashed with a random salt so
     # that the plaintext password is not what is kept; `None` where
     # `-rpcpassword` is unset or empty. Set, it stops the cookie being
@@ -253,6 +280,10 @@ class Config:
     # maps it to; `None` is its default, owner-only, and is what it is
     # wherever `-rpcpassword` is set, Core not reading it then.
     rpc_cookie_perms: int | None
+    # `rpc.auth.cookie_perms`' own message where Core reads
+    # `-rpccookieperms` and it names no mode, `None` otherwise: refused
+    # by `RpcAuth.start` once the listener is bound, as Core refuses it
+    rpc_cookie_perms_error: str | None
     # Core's own `-rpcwhitelist`, parsed by `rpc.auth.parse_whitelist`:
     # the methods each user named may call.
     rpc_whitelist: Mapping[bytes, frozenset[str]]
@@ -298,6 +329,10 @@ class Config:
     # instead of it: Core's own `-addnode`
     # (`connOptions.m_added_nodes`, `src/init.cpp:2193-2198`, same sha).
     addnode: tuple[tuple[str, int], ...]
+    # the same values as given, which Core's `AddedNodesContain`
+    # (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+    # compares a drawn address's text with
+    addnode_args: tuple[str, ...]
     # Core's own `-listen`, `DEFAULT_LISTEN` (`src/net.h`) true unless
     # `-connect` or `-maxconnections=0` is given, in which case
     # `InitParameterInteraction` (`src/init.cpp`,
@@ -315,6 +350,9 @@ class Config:
     # connection outside it too. `P2pManager.__init__` divides it into
     # inbound and outbound slots.
     max_connections: int
+    # Core's own `-bantime`: how long a `setban` ban lasts, in seconds,
+    # where the call names no length. `Node` hands it to its `BanMan`.
+    ban_time: int
 
     # every parameter here is one independent setting, not a group of
     # related ones this signature happens to expose together: `chain` is
@@ -354,6 +392,7 @@ class Config:
         addnode: Sequence[str] = (),
         listen: bool = True,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
+        ban_time: int = DEFAULT_MISBEHAVING_BANTIME,
         rpcauth: Sequence[str] = (),
         rpcuser: str = "",
         rpcpassword: str = "",
@@ -394,6 +433,7 @@ class Config:
             () if list(connect) == ["0"] else _resolve_peers(connect, self.chain.port)
         )
         self.addnode = _resolve_peers(addnode, self.chain.port)
+        self.addnode_args = tuple(addnode)
         self.listen = listen
 
         if max_connections < 0:
@@ -403,6 +443,7 @@ class Config:
             err_msg = "-maxconnections must be greater or equal than zero"
             raise ValueError(err_msg)
         self.max_connections = max_connections
+        self.ban_time = ban_time
 
         self.p2p_port = None
         if allow_p2p:
@@ -434,15 +475,16 @@ class Config:
         self.rpc_cookie_tmp = _resolve_cookie_file(
             rpccookiefile, self.data_dir, temp=True
         )
-        # an invalid value is fatal, `cookie_perms`' own `ValueError`,
-        # where Core reads it at all
-        self.rpc_cookie_perms = None
+        # Core refuses a malformed value in `InitRPCAuthentication`,
+        # after binding, so its line goes to the log and stderr gets
+        # `RPC_INIT_ERROR`: kept here for `RpcAuth.start` rather than
+        # raised
+        self.rpc_cookie_perms, self.rpc_cookie_perms_error = None, None
         if rpccookieperms is not None and self.rpc_password_entry is None:
-            self.rpc_cookie_perms = cookie_perms(rpccookieperms)
-        # a malformed value is fatal, `RpcAuthEntry.parse`'s own
-        # `ValueError`, as Core refuses to start on one, after
-        # `-rpccookieperms` as `InitRPCAuthentication` reads them
-        self.rpc_auth = tuple(RpcAuthEntry.parse(value) for value in rpcauth)
+            self.rpc_cookie_perms, self.rpc_cookie_perms_error = _read_cookie_perms(
+                rpccookieperms
+            )
+        self.rpc_auth, self.rpc_auth_invalid = _read_rpcauth(rpcauth)
         self.rpc_whitelist = parse_whitelist(rpcwhitelist)
         self.rpc_whitelist_default = (
             bool(rpcwhitelist) if rpcwhitelistdefault is None else rpcwhitelistdefault

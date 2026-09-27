@@ -44,7 +44,9 @@ from btclib_node.p2p.callbacks import (
     MAX_GETDATA_INFLIGHT_BYTES,
     handshake_callbacks,
 )
+from btclib_node.p2p.chain_sync import ChainSyncTimeoutState
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
+from btclib_node.p2p.messages import NoncelessPing
 from btclib_node.p2p.protocol_version import BIP0031_VERSION, common_version
 
 if TYPE_CHECKING:
@@ -217,12 +219,9 @@ MAX_QUEUED_SEND_BYTES = int(
 # protocol violation to punish.
 #
 # The tempting number to size this against instead is this node's own
-# worst legitimate receive burst: `download.py`'s own
-# `_request_new_block_work` never asks one peer for more than
-# `MAX_BLOCKS_PER_GETDATA_BURST` blocks at once (`pending[:2]` never
-# adds to it -- the two are an `if`/`elif` on the same
-# `download_queue`, never both in one batch), each up to
-# `MAX_PROTOCOL_MESSAGE_LENGTH`, and this node never
+# worst legitimate receive burst: `download.py` never has more than
+# `MAX_BLOCKS_IN_TRANSIT_PER_PEER` blocks in flight from one peer, each
+# up to `MAX_PROTOCOL_MESSAGE_LENGTH`, and this node never
 # itself sends `GetCFilters`/`GetCFHeaders`/`GetCFCheckpt`, so no
 # cfilter headroom belongs on this side either -- 64,000,000 bytes,
 # nothing more, would be the whole of it. That is exactly the shape
@@ -463,7 +462,7 @@ class Connection:
     # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): how many gossiped
     # addresses this peer may still have taken in, one to start with so
     # that it can announce itself. Written and read on `Node`'s thread
-    # alone, by `callbacks.verack`, `addr` and `addrv2`; a class default
+    # alone, by `callbacks.version`, `addr` and `addrv2`; a class default
     # for the same reason as `time_received`.
     addr_token_bucket: float = 1.0
     # Core's `Peer::m_sent_sendheaders`: set by
@@ -471,6 +470,31 @@ class Connection:
     # peer for headers announcements, which is asked once. A class
     # default for the same reason as `time_received`.
     sent_sendheaders: bool = False
+    # Core's `IsBlockOnlyConn()`: an automatic outbound connection this
+    # node opened as `BLOCK_RELAY`, which relays blocks alone -- no
+    # transaction and no address traffic either way. Set by
+    # `P2pManager.create_connection` before this connection's task is
+    # scheduled, and never changed after; a class default for the same
+    # reason as `time_received`.
+    block_relay: bool = False
+    # Core's `IsFeelerConn()`: an automatic outbound connection opened to
+    # learn whether an address answers, dropped as soon as its `version`
+    # has been read. Set and kept as `block_relay` is.
+    feeler: bool = False
+    # Core's `m_last_block_announcement`: when this peer last sent a
+    # header new here and with more work than the active tip, which
+    # `callbacks.headers` sets and `DownloadManager` evicts the extra
+    # full-relay peer by. A class default for the reason `time_received`
+    # gives.
+    last_block_announcement: int = 0
+    # Core's `Peer::m_addr_relay_enabled` (`net_processing.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7): whether this peer takes part in
+    # address relay. Set where Core calls `SetupAddressRelay`: by
+    # `callbacks.version` for a peer this node dialled, and by `addr`,
+    # `addrv2` and `getaddr` for one that dialled in. Read by
+    # `getpeerinfo`; a class default for the same reason as
+    # `time_received`.
+    addr_relay_enabled: bool = False
 
     # Core's `CNodeState` block fields (`p2p/block_availability.py`),
     # here rather than in a `DownloadManager` table keyed by connection
@@ -490,6 +514,19 @@ class Connection:
     # class default for the reason `time_received` gives.
     # btclib-org/btclib-node#1164
     _writing: asyncio.Task[object] | None = None
+
+    # Core's `m_ping_start`: when `send_ping` last queued a `ping`,
+    # nonceless or not, stamped as it is pushed rather than once the write
+    # completes, which is what `last_send` records. A class default for
+    # the reason `time_received` gives. btclib-org/btclib-node#1204
+    ping_start: float = 0
+
+    # Core's `CNodeState::m_chain_sync` (`p2p/chain_sync.py`), here for
+    # the same reasons as `block_availability` above.
+    @cached_property
+    def chain_sync(self) -> ChainSyncTimeoutState:
+        """Whether this peer is behind this node's tip, and since when."""
+        return ChainSyncTimeoutState()
 
     def __init__(
         self,
@@ -517,10 +554,13 @@ class Connection:
         self.status: P2pConnStatus = P2pConnStatus.Open
         self.inbound: bool = inbound
         # Whether `P2pManager._maybe_dial_more_peers` dialled this off its
-        # own draw -- Core's `OUTBOUND_FULL_RELAY`, the kind that method's
-        # target counts, where an inbound peer and a `-connect`/`-addnode`
-        # one (Core's `MANUAL`) are not. `P2pManager.create_connection`
-        # sets it.
+        # own draw -- Core's `OUTBOUND_FULL_RELAY`, its `BLOCK_RELAY`
+        # where `block_relay` is set too, or its `FEELER` where `feeler`
+        # is, where an inbound peer and a `-connect`/`-addnode` one
+        # (Core's `MANUAL`) are not. Every automatic connection holds an
+        # outbound grant; the full-relay and block-relay-only targets
+        # count the first two kinds, and not a feeler.
+        # `P2pManager.create_connection` sets it.
         self.automatic: bool = False
         # Core's `CNode::m_prefer_evict`: whether this peer was accepted
         # from a discouraged host, which `select_node_to_evict` reads.
@@ -606,37 +646,9 @@ class Connection:
         self.has_all_wanted_services: bool = False
         self.keyed_net_group: int = 0
 
+        # Core's `vBlocksInFlight`, the rest of whose `CNodeState` is
+        # `block_availability`
         self.download_queue: list[bytes] = []
-        self.pending_eviction: bool = False
-        self.last_block_timestamp: float = time.time()
-
-        # This connection's own best known chain height -- callbacks.version
-        # sets it from the peer's own `start_height` and callbacks.headers
-        # raises it as headers this peer sent verify a taller tip. Core's
-        # own `pindexBestKnownBlock` (net_processing.cpp) is
-        # `block_availability.best_known`, ranked by chainwork and
-        # updated off inv/headers announcements alone; `download.py`
-        # reads this height instead (btclib-org/btclib-node#1179), so
-        # height off what this peer has itself sent stands in for it
-        # there. `start_height` is the useful seed Core's own
-        # field is in practice between two btclib-node peers, once
-        # `Connection.own_version` carries this node's own real tip
-        # (`Node.best_height`) rather than the literal `0` it used to
-        # send unconditionally (btclib-org/btclib-node#722): the peer on
-        # the other end of a fresh handshake seeds `best_known_height`
-        # at that peer's own real height already, and `headers` below
-        # only ever raises it further as that peer's own tip grows past
-        # what its `version` reported. A peer running software that
-        # still sends a literal `0`, or that has not extended its chain
-        # since connecting, is exactly the case `_reachable_blocks`
-        # (download.py) already treats as "nothing ruled out yet" rather
-        # than "confirmed at height 0", the threshold it computes from a
-        # low `best_known_height` excluding nothing a real download
-        # window holds. 0 until callbacks.version writes here, which
-        # every connection `DownloadManager` ever sees has already done
-        # by the time it is promoted (`callbacks.verack` refuses one
-        # that has not). btclib-org/btclib-node#706
-        self.best_known_height: int = 0
 
         # When `addr_token_bucket`, above, was last topped up: Core's
         # `Peer::m_addr_token_timestamp`, which starts at the peer's
@@ -784,6 +796,24 @@ class Connection:
         # own thread instead -- the comment beside it argues why that
         # is where this has to happen. btclib-org/btclib-node#518
         self.loop.call_soon_threadsafe(self._close)
+
+    def stop_when_sent(self) -> None:
+        """Stop once every message already handed to `send` is written.
+
+        Core sets `fDisconnect` on a feeler after `PushMessage` has
+        already written what it sent, and a bare `stop` here would close
+        the socket ahead of it. Each `send` schedules its write through
+        `run_coroutine_threadsafe` in turn, and this call after them;
+        callbacks run in that order, and each write queues on
+        `_write_lock` ahead of this one, which the lock hands on in the
+        order it was asked for.
+        """
+        asyncio.run_coroutine_threadsafe(self._stop_when_sent(), self.loop)
+
+    async def _stop_when_sent(self) -> None:
+        async with self._write_lock:
+            pass
+        self.stop()
 
     def _close(self) -> None:
         """Unregister `self.client`'s reader and writer, then close it.
@@ -1170,15 +1200,15 @@ class Connection:
             # reading this here, off `Node`'s own thread's writes without
             # a lock, is argued. btclib-org/btclib-node#722
             start_height=self.manager.node.best_height,
-            # Core's own `fRelay` is about the connection -- a
-            # block-relay-only peer, a feeler, `-blocksonly`
-            # (`RejectIncomingTxs`, src/net_processing.cpp) -- and never
-            # about `IsInitialBlockDownload()`. None of this node's
-            # connections are any of those, so this is always True and
-            # never has to be revised once the node catches up: what a
-            # peer sends before then is dropped on arrival instead,
+            # Core's own `fRelay` is `!RejectIncomingTxs` -- false for a
+            # block-relay-only peer, a feeler and under `-blocksonly`
+            # (src/net_processing.cpp, at bitcoin/bitcoin@9be056a8a7, the
+            # v31.1 tag) -- and never about `IsInitialBlockDownload()`.
+            # Of those this node has the first two, so the flag never
+            # has to be revised once the node catches up: what a peer
+            # sends before then is dropped on arrival instead,
             # `p2p/callbacks.tx`. btclib-org/btclib-node#129
-            relay=True,
+            relay=not self.block_relay and not self.feeler,
         )
 
     def send_ping(self) -> None:
@@ -1190,11 +1220,15 @@ class Connection:
         (`manage_connections`); `_ping_lock` is what keeps its own two
         writes one step against `callbacks.pong`'s read and clear.
 
-        Nothing is sent at a common version of `BIP0031_VERSION` or
-        below, where Core sends a `ping` with no nonce: btclib's `Ping`
-        has no such form. btclib-org/btclib-node#1204
+        At a common version of `BIP0031_VERSION` or below it is a
+        `NoncelessPing`, as in Core's `MaybeSendPing`
+        (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+        v31.1 tag): no `pong` answers it, so nothing is recorded as
+        outstanding. btclib-org/btclib-node#1204
         """
+        self.ping_start = time.time()
         if common_version(self) <= BIP0031_VERSION:
+            self.send(NoncelessPing())
             return
         # The nonce is the sender's to choose, and btclib's Ping defaults
         # it to zero rather than drawing one. Zero is also what

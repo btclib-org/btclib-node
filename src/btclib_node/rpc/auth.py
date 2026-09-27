@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import RPCErrorCode
 
+from btclib_node.exceptions import RpcCredentialRefusedError
 from btclib_node.rpc.errors import RpcError, json_type_name
 from btclib_node.rpc.jsonrpc import JsonRpcRequest, error_status
 
@@ -65,6 +66,7 @@ __all__ = [
     "cookie_perms",
     "parse_whitelist",
     "password_hmac",
+    "to_bytes",
 ]
 
 # Core's `COOKIEAUTH_USER` and `COOKIEAUTH_FILE`
@@ -114,6 +116,16 @@ def password_hmac(salt: bytes, password: bytes) -> bytes:
     return hmac.new(salt, password, hashlib.sha256).hexdigest().encode()
 
 
+def to_bytes(value: str) -> bytes:
+    """Return the bytes `value` was read from, as Core holds a setting.
+
+    UTF-8, a lone surrogate being the byte `surrogateescape` decoded it
+    from: a `bitcoin.conf` read by `cli._read_conf_file`, and an argument
+    on POSIX, where Python decodes `argv` the same way.
+    """
+    return value.encode("utf-8", "surrogateescape")
+
+
 def cookie_perms(value: str) -> int:
     """Return the mode `-rpccookieperms=<value>` sets: `InterpretPermString`.
 
@@ -142,7 +154,7 @@ def parse_whitelist(values: Sequence[str]) -> dict[bytes, frozenset[str]]:
     whitelist: dict[bytes, frozenset[str]] = {}
     for value in values:
         name, colon, methods = value.partition(":")
-        user = name.encode()
+        user = to_bytes(name)
         intersect = user in whitelist
         allowed = whitelist.setdefault(user, frozenset())
         if colon:
@@ -178,13 +190,13 @@ class RpcAuthEntry:
             err_msg = "Invalid -rpcauth argument."
             raise ValueError(err_msg)
         user, salt, digest = fields[0], *salt_hmac
-        return cls(user.encode(), salt.encode(), digest.encode())
+        return cls(to_bytes(user), to_bytes(salt), to_bytes(digest))
 
     @classmethod
     def from_password(cls, user: str, password: str) -> RpcAuthEntry:
         """Hash `password` with a fresh random salt, as Core stores one."""
         salt = secrets.token_hex(_SALT_SIZE).encode()
-        return cls(user.encode(), salt, password_hmac(salt, password.encode()))
+        return cls(to_bytes(user), salt, password_hmac(salt, to_bytes(password)))
 
 
 @dataclass(frozen=True)
@@ -287,6 +299,8 @@ class RpcAuth:
         cookie_file: Path | None = None,
         cookie_tmp: Path | None = None,
         cookie_perms: int | None = None,
+        cookie_perms_error: str | None = None,
+        rpcauth_invalid: bool = False,
         whitelist: Mapping[bytes, frozenset[str]] | None = None,
         whitelist_default: bool = False,
     ) -> None:
@@ -294,15 +308,19 @@ class RpcAuth:
 
         `password` set is `-rpcpassword` set, which is what stops `start`
         writing a cookie; `cookie_file` `None` is `-norpccookiefile`.
-        `cookie_tmp` is `generate_cookie`'s `tmp`.
+        `cookie_tmp` is `generate_cookie`'s `tmp`. `cookie_perms_error`
+        and `rpcauth_invalid` are what `start` refuses, `Config`'s own
+        `rpc_cookie_perms_error` and `rpc_auth_invalid`.
         """
         self.entries = [password] if password is not None else []
         self.entries.extend(entries)
         self.password_set = password is not None
-        self.rpcauth_set = bool(entries)
+        self.rpcauth_set = bool(entries) or rpcauth_invalid
         self.cookie_file = cookie_file
         self.cookie_tmp = cookie_tmp
         self.cookie_perms = cookie_perms
+        self.cookie_perms_error = cookie_perms_error
+        self.rpcauth_invalid = rpcauth_invalid
         self.whitelist = dict(whitelist or {})
         self.whitelist_default = whitelist_default
         # where `generate_cookie` wrote, and what `delete_cookie`
@@ -319,6 +337,8 @@ class RpcAuth:
             cookie_file=config.rpc_cookie_file,
             cookie_tmp=config.rpc_cookie_tmp,
             cookie_perms=config.rpc_cookie_perms,
+            cookie_perms_error=config.rpc_cookie_perms_error,
+            rpcauth_invalid=config.rpc_auth_invalid,
             whitelist=config.rpc_whitelist,
             whitelist_default=config.rpc_whitelist_default,
         )
@@ -329,8 +349,14 @@ class RpcAuth:
         `InitRPCAuthentication`: no cookie where `-rpcpassword` is set,
         with Core's warning that the password sits in plain text, and
         none where `-norpccookiefile` is given. Raises `generate_cookie`'s
-        `OSError` where the cookie cannot be written or its permissions set.
+        `OSError` where the cookie cannot be written or its permissions set,
+        and `RpcCredentialRefusedError` where Core refuses
+        `-rpccookieperms`, before the cookie, or `-rpcauth`, after it, each
+        logged at Core's level.
         """
+        if self.cookie_perms_error is not None:
+            logger.error("%s", self.cookie_perms_error)
+            raise RpcCredentialRefusedError(self.cookie_perms_error)
         if self.password_set:
             logger.info("Using rpcuser/rpcpassword authentication.")
             logger.warning(RPCPASSWORD_WARNING)
@@ -348,6 +374,10 @@ class RpcAuth:
             logger.info("Using random cookie authentication.")
         if self.rpcauth_set:
             logger.info("Using rpcauth authentication.")
+        if self.rpcauth_invalid:
+            err_msg = "Invalid -rpcauth argument."
+            logger.warning(err_msg)
+            raise RpcCredentialRefusedError(err_msg)
 
     def generate_cookie(
         self, path: Path, perms: int | None = None, *, tmp: Path | None = None
@@ -461,8 +491,9 @@ class RpcAuth:
         checked entry by entry, before any of them runs. Anything else a
         whitelisted user sends is left to the answer anybody else gets.
         """
-        # a name some entry holds, so it decodes, for the log line alone
-        name = user.decode(errors="replace")
+        # for the log line alone: a byte UTF-8 refuses is kept as the
+        # lone surrogate the log's handler writes back as that byte
+        name = user.decode("utf-8", "surrogateescape")
         allowed = self.whitelist.get(user)
         if allowed is None:
             if self.whitelist_default:

@@ -5,15 +5,13 @@
 """`BlockIndex`, every header this node has seen and which chain is active.
 
 `BlockStatus` tracks a header from `valid_header` up through however far
-its block has been validated; `get_download_candidates` and
-`MAX_DOWNLOAD_WINDOW` are what bound how far ahead of the active chain a
-download is allowed to run, read from both `download.py` and here.
-`invalidate` is what a failed contextual check calls, through
-`main.update_header_index`, to drop a header and everything built on it.
-`stage_status` and `finalize` are `set_status` split into its two halves
--- the in-memory move and the disk write -- so that `main._finalize_fork`
-can hold the second half back across more than one block; `db.py`'s own
-docstring is where that staging, shared with `UtxoIndex`, is argued.
+its block has been validated. `invalidate` is what a failed contextual
+check calls, through `main.update_header_index`, to drop a header and
+everything built on it. `stage_status` and `finalize` are `set_status`
+split into its two halves -- the in-memory move and the disk write -- so
+that `main._finalize_fork` can hold the second half back across more
+than one block; `db.py`'s own docstring is where that staging, shared
+with `UtxoIndex`, is argued.
 
 `set_downloaded` and `set_status` both check `pending` before writing
 through, and for the same reason: either can be asked to change a hash
@@ -43,7 +41,9 @@ through `stage_status`, before that fork's own `finalize` ever runs --
 and `to_add` is not bounded by `MIN_BLOCKS_TO_KEEP` anywhere.
 `get_fork_details` walks back to the common ancestor with no depth
 limit, `_ready_fork` accepts whatever it returns once every hash is
-downloaded, and `MAX_DOWNLOAD_WINDOW` allows up to 1024 -- so a single
+downloaded, and a peer is asked for blocks up to
+`block_availability.BLOCK_DOWNLOAD_WINDOW`, 1024, past its own
+`last_common` block -- so a single
 `update_chain` call connecting a fork longer than the retained depth
 stages hashes into `pending` that `prune_up_to_height`, run once at the
 end of that same call, reaches too. `p2p.callbacks.block` only ever
@@ -79,20 +79,12 @@ if TYPE_CHECKING:
     from btclib_node.log import Logger
 
 __all__ = [
-    "MAX_DOWNLOAD_WINDOW",
     "BlockIndex",
     "BlockInfo",
     "BlockStatus",
     "block_time",
     "calculate_work",
 ]
-
-# `get_download_candidates`'s own cap on how many hashes it hands back
-# at once, and `download.py`'s `block_download` reads the same number
-# to decide whether the download window has run too far ahead of the
-# active chain to keep extending it -- one bound on how large that
-# window is ever allowed to get, read from both ends of it.
-MAX_DOWNLOAD_WINDOW = 1024
 
 
 def calculate_work(header: BlockHeader) -> int:
@@ -144,16 +136,21 @@ def _assert_valid_in_context(  # noqa: PLR0913, PLR0917
     `pow_no_retargeting` and `pow_allow_min_difficulty_blocks` among
     them, in Core's own order rather than one this tree chooses.
     `BlockHeader.assert_valid_time` is the one check that needs no
-    chain at all. `BlockHeader.assert_valid_pow` answers the other half
+    chain at all. Last, a version BIP34, BIP66 or BIP65 made obsolete is
+    refused from the height each binds at, `chain.consensus`'s
+    `bip34_height`, `bip66_height` and `bip65_height`, as Core's
+    `bad-version` (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag). `BlockHeader.assert_valid_pow` answers the other half
     of the proof-of-work question -- whether the hash meets the target
     the header itself claims -- and `_validate_header_batch`'s own loop
     has already asked it of `header`, ahead of this.
 
-    The target and the median time are Core's `bad-diffbits` and
-    `time-too-old`, `BLOCK_INVALID_HEADER`, which Core's
-    `MaybePunishNodeForBlock` answers with `Misbehaving`, so they raise
-    `MisbehavingError`. `time-too-new` is `BLOCK_TIME_FUTURE`, which it
-    does not punish, so btclib's own refusal is left as it is
+    The target, the median time and the version are Core's
+    `bad-diffbits`, `time-too-old` and `bad-version`,
+    `BLOCK_INVALID_HEADER`, which Core's `MaybePunishNodeForBlock`
+    answers with `Misbehaving`, so they raise `MisbehavingError`.
+    `time-too-new` is `BLOCK_TIME_FUTURE`, which it does not punish, so
+    btclib's own refusal is left as it is
     (`src/validation.cpp` and `src/net_processing.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
     """
@@ -173,6 +170,18 @@ def _assert_valid_in_context(  # noqa: PLR0913, PLR0917
         raise MisbehavingError(err_msg)
 
     header.assert_valid_time(now)
+
+    # the least version a header may carry once each of BIP34, BIP66 and
+    # BIP65 binds, and the height it binds from
+    consensus = chain.consensus
+    for least, binds_at in (
+        (2, consensus.bip34_height),
+        (3, consensus.bip66_height),
+        (4, consensus.bip65_height),
+    ):
+        if header.version < least and parent_height + 1 >= binds_at:
+            err_msg = f"bad-version(0x{header.version & 0xFFFFFFFF:08x})"
+            raise MisbehavingError(err_msg)
 
 
 class BlockStatus(enum.IntEnum):
@@ -227,8 +236,13 @@ class BlockInfo:
         return cls(header, index, status, downloaded)
 
     def serialize(self) -> bytes:
-        """Serialize this record to the bytes stored under `blkinfo-<hash>`."""
-        out = self.header.serialize()
+        """Serialize this record to the bytes stored under `blkinfo-<hash>`.
+
+        The header unchecked, as `deserialize`'s caller reads it back: a
+        header of a version zero or below is Core's to take below BIP34's
+        height, and btclib's `BlockHeader.assert_valid` refuses it.
+        """
+        out = self.header.serialize(check_validity=False)
         out += var_int.serialize(self.index)
         out += self.status.to_bytes(1, "little")
         out += int(self.downloaded).to_bytes(1, "little")
@@ -835,40 +849,6 @@ class BlockIndex:
                 if self._branch_is_downloaded(block_hash):
                     return candidate
         return best_candidate
-
-    # return a list of blocks that have to be downloaded
-    def get_download_candidates(self) -> list[bytes]:
-        """Return every undownloaded block a candidate branch still needs.
-
-        Walks each entry of `block_candidates` back from its own tip,
-        collecting every not-yet-downloaded hash until it reaches one
-        already seen or already on the active chain, then returns the
-        union in height order, capped at `MAX_DOWNLOAD_WINDOW`.
-        """
-        chainwork = self.chainwork[self.active_chain[-1]]
-        candidates: list[bytes] = []
-        seen = set()
-        i = -1
-        while len(candidates) < MAX_DOWNLOAD_WINDOW:
-            i += 1
-            if i >= len(self.block_candidates):
-                break
-            candidate_hash, candidate_chainwork = self.block_candidates[i]
-            if candidate_chainwork <= chainwork:
-                continue
-            while True:
-                block_info = self.get_block_info(candidate_hash)
-                if (
-                    candidate_hash in seen
-                    or block_info.status == BlockStatus.in_active_chain
-                ):
-                    break
-                if not block_info.downloaded:
-                    candidates.append(candidate_hash)
-                seen.add(candidate_hash)
-                candidate_hash = block_info.header.previous_block_hash
-        candidates.sort(key=lambda x: self.get_block_info(x).index)
-        return candidates[:MAX_DOWNLOAD_WINDOW]
 
     # return a list of block hashes looking at the current best chain
     def get_block_locator_hashes(self, start: bytes | None = None) -> list[bytes]:

@@ -97,7 +97,7 @@ _SUBSIDY = 50 * 10**8
 # `test_a_getdata_answer_pauses_rather_than_filling_the_send_queue`
 # below stands against. It is an ordinary size to be asked for, too: a
 # peer in initial block download asks for
-# `MAX_BLOCKS_PER_GETDATA_BURST` blocks of up to
+# `MAX_BLOCKS_IN_TRANSIT_PER_PEER` blocks of up to
 # `MAX_PROTOCOL_MESSAGE_LENGTH` (`btclib_node/download.py`), which is
 # what this node asks its own peers for.
 _SERVED_BLOCK_BYTES = 1_000_000
