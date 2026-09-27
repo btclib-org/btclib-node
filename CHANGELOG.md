@@ -496,6 +496,143 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 - **Its list is the method table's, with no count** (closes #1221).
 
+### Compact blocks are served, and offered at version 2, as in Core
+
+- **`sendcmpct` offers version 2, and a `MSG_CMPCT_BLOCK` or a `getblocktxn`
+  is answered at Core's depths** (closes #1206).
+
+### Core's licence travels in the fixed seeds' module, not in `license-files`
+
+- **`_chainparamsseeds.py` opens with Core's `COPYING` in full, and
+  `license-files` drops it** (closes btclib-org/.github#1390); the file
+  stays beside the lists, and in the sdist.
+
+### An outbound peer behind this node's tip is dropped, as in Core
+
+- **Core's `ConsiderEviction`: `CHAIN_SYNC_TIMEOUT`, one `getheaders`, then
+  a disconnect, with up to four peers at the tip protected** (closes #1154).
+
+### A malformed `-rpcauth` or `-rpccookieperms` is named in the log alone
+
+- **Stderr reads "Unable to start HTTP server. See debug log for details.",
+  and the log names the value** (closes #1210), refused once the RPC
+  listener is bound, `-rpcauth` after the cookie, as `bitcoind` refuses it.
+
+### An oversized `inv` costs the peer in any sync state, as in Core
+
+- **An `inv` of more than `MAX_INV_SZ` items drops and discourages its
+  sender before the sync state is read** (closes #1145).
+
+### A port is read as Core reads it: ASCII digits alone
+
+- **`-rpcbind`, `-connect`, `-addnode` and `addnode` refuse a port with a
+  sign, a space, a `_` or a non-ASCII digit** (closes #1285), as `bitcoind`
+  refuses it for `-rpcbind`; `int` read each as a number.
+
+### What `btclib-node` creates is its owner's alone, as in Core
+
+- **`btclib-node` sets the umask to 0077 on POSIX, so its chain directory
+  is 0700 and `history.log` 0600, as `bitcoind` leaves them** (closes #1198).
+
+### `getpeerinfo`'s `addr_relay_enabled` is Core's
+
+- **An inbound peer answers `false` until its first `addr`, `addrv2` or
+  `getaddr`, a peer this node dialled `true` from its `version`**, where the
+  `getaddr` to it goes too (closes #1178).
+
+### The dialler passes over the draws Core's loop passes over
+
+- **A draw is passed over for an `-addnode` peer or missing services, and
+  early in a pass for a recent try or a bad port** (closes #1224), as in Core;
+  a DNS seed's answer carries Core's `SeedsServiceFlags` (closes #1236).
+
+### An outbound peer with too little work is dropped in IBD, as in Core
+
+- **During initial block download, a peer this node drew whose headers chain
+  has less than the minimum chain work is disconnected, after a batch this
+  node already had** (closes #1230).
+
+### A malformed `bitcoin.conf` line is refused in Core's words
+
+- **`parse error on line N`, and `conf=` and a forbidden negation as
+  `bitcoind` words them** (closes #1267), with no path; a line ends at a
+  newline alone, as Core counts it.
+
+### `-bantime`, as in Core
+
+- **A `setban` ban that names no length lasts `-bantime` seconds** (closes
+  #1219), 86400 by default, as `bitcoind` has it.
+
+### A block nobody asked for is stored only where Core's `AcceptBlock` would
+
+- **An unrequested block with less work than the tip, more than
+  `MIN_BLOCKS_TO_KEEP` above it, or below the minimum chain work is dropped
+  unstored, and its peer is not punished** (closes #1247).
+
+### A peer's announced transactions are asked for as Core asks for them
+
+- **At most `MAX_PEER_TX_ANNOUNCEMENTS` tracked per peer, in `getdata`s of at
+  most `MAX_GETDATA_SZ` items, so no announcement can make the request raise
+  and stop the node** (closes #1243).
+
+### An obsolete header version is refused `bad-version`
+
+- **A header whose version BIP34, BIP66 or BIP65 made obsolete is refused
+  `bad-version` from that BIP's height, and its sender discouraged, as in
+  Core** (closes #1262).
+
+### A `history.log` line carries its level as `debug.log` does
+
+- **A warning is marked `[warning]` and an error `[error]`** (closes #1280),
+  nothing for info, and `[debug]` for a debug line, where Core's carries its
+  category instead.
+
+### Each chain asks Core's DNS seeds
+
+- **Every chain's seed list is Core v31.1's `vSeeds`, trailing dot included**
+  (closes #1303), where mainnet asked two seeds Core dropped and signet an IP
+  address; regtest names Core's `dummySeed.invalid.`.
+
+### A dial pass no longer serializes every address it could draw
+
+- **`address_sampler` compares endpoints by field, and `get_active_addresses`
+  reindexes only where it pruned a row** (closes #1217, closes #1283), where
+  each pass serialized every answered row and every dialable gossiped one.
+
+### A gossip adds services to an address, and a dialled peer's own replace them
+
+- **`add_addresses` ORs gossiped services into both rows of an endpoint, and
+  an outbound peer's `version` overwrites them** (closes #1276), as Core's
+  `AddSingle` and `SetServices` do, where a gossip replaced a known row's.
+
+### `testmempoolaccept` names a `rawtx` that is not a string, as Core
+
+- **`-3` "JSON value of type number is not of expected type string", before
+  any entry is validated** (closes #1253); a script shorter than its declared
+  length is an invalid serialization.
+
+### A `history.log` line is stamped as `debug.log` stamps it
+
+- **The time is UTC ISO 8601 to the second, then one space** (closes #1297),
+  where it was local time with milliseconds and ` - `.
+
+### The suite's ports come from the range Core's tests use
+
+- **`get_random_port` hands each xdist worker, and each of the first as many
+  replacements, ports of its own from 11000 to 25999, as Core's tests do**,
+  not a port a bind to 0 picked, which anything could take first (closes #1340).
+
+### A body its header does not commit to leaves the header valid, as in Core
+
+- **A mutated body, Core's `IsBlockMutated`, is refused before its header is
+  read, and a failing block is marked invalid only where Core marks it, over
+  the weight, on the wire and in `submitblock`** (closes #1242, closes #1333).
+
+### The P2P listener's sockets are kept before it says it is listening
+
+- **`_bind` records them ahead of setting `listening`** (closes #1325), so
+  a thread woken by it no longer reads an empty list.
+
 ### The automatic dial passes over this node's own address, as in Core
 
 - **A listening node records its routable interface addresses, and a draw of

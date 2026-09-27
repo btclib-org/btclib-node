@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, NoReturn, cast, override
 import pytest
 from bitcoin_core_rpc import RPCErrorCode
 from btclib.block import Block, BlockHeader
+from btclib.consensus import MAX_BLOCK_WEIGHT
 from btclib.exceptions import BTClibValueError
 from btclib.fee import FeeRate
 from btclib.p2p.address import NetworkAddress, ServiceFlags
@@ -36,7 +37,7 @@ import btclib_node.p2p.banman as banman_module
 import btclib_node.rpc.callbacks as cb
 from btclib_node.block_db import Coin
 from btclib_node.chains import Chain, Main, RegTest
-from btclib_node.chainstate.block_index import block_time, calculate_work
+from btclib_node.chainstate.block_index import BlockStatus, block_time, calculate_work
 from btclib_node.chainstate.muhash import CoinStats
 from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
 from btclib_node.constants import (
@@ -84,11 +85,16 @@ from btclib_node.rpc.callbacks import (
 from btclib_node.rpc.callbacks import test_mempool_accept as mempool_accept
 from btclib_node.rpc.connection import RawJSON
 from btclib_node.rpc.errors import RpcError
-from tests import generate_coinbase, generate_random_chain, generate_random_header_chain
+from tests import (
+    generate_coinbase,
+    generate_random_chain,
+    generate_random_header_chain,
+    generate_segwit_block,
+)
 from tests.unit.main_test import connect
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
     from btclib_node import Node
     from btclib_node.rpc.connection import RpcConnection
@@ -200,6 +206,8 @@ def a_peer(
         tx_announce_queue=[],
         download_queue=[],
         feefilter=0,
+        # what `Connection` starts every connection at
+        addr_relay_enabled=False,
     )
 
 
@@ -502,6 +510,7 @@ def test_the_fields_this_node_keeps_state_for_read_that_state() -> None:
     peer.tx_announce_queue = [b"\x01" * 32, b"\x02" * 32]
     peer.download_queue = [b"\x0b" * 32, b"\x0a" * 32]
     peer.feefilter = 1234
+    peer.addr_relay_enabled = True
     node = a_node({7: peer}, heights={b"\x0a" * 32: 10, b"\x0b" * 32: 11})
     (info,) = get_peer_info(node, _CONN, [])
     assert info["relaytxes"] is True
@@ -582,7 +591,7 @@ def test_the_synced_heights_are_the_peer_s_best_known_and_last_common_blocks(
 
 
 def test_the_fields_this_node_has_no_state_for_answer_core_s_value() -> None:
-    """No compact blocks, presync, permissions or BIP324 here."""
+    """No `cmpctblock` announcing, presync, permissions or BIP324 here."""
     (info,) = get_peer_info(a_node({7: a_peer()}), _CONN, [])
     assert info["bip152_hb_to"] is False
     assert info["bip152_hb_from"] is False
@@ -615,29 +624,24 @@ def test_a_connection_removed_mid_loop_does_not_raise() -> None:
     """
     connections: dict[int, Any] = {}
 
-    class PoppingOnCompare:
-        """`p2p_conn.status == P2pConnStatus.Connected`'s own left side.
+    class PoppingOnIter(list[bytes]):
+        """`p2p_conn.download_queue`, which `inflight` iterates.
 
         Standing in for whatever this node's loop is doing when
         `remove_connection` reaches in: the pop happens as a side
-        effect of evaluating peer 7's status, between the iterator's
+        effect of building peer 7's entry, between the iterator's
         own `next()` for peer 7 and its `next()` for peer 8 -- mid-loop
         on a live dict, and not reachable at all from a loop over a list
         built before it started.
         """
 
         @override
-        def __eq__(self, other: object) -> bool:
+        def __iter__(self) -> Iterator[bytes]:
             connections.pop(8, None)
-            return False
+            return super().__iter__()
 
-        # never put in a dict or a set, only compared -- explicit
-        # rather than the implicit None a bare `__eq__` override
-        # already gets, which the object being unhashable does not
-        # itself demonstrate
-        __hash__ = None  # type: ignore[assignment]
-
-    connections[7] = a_peer(status=cast("P2pConnStatus", PoppingOnCompare()))
+    connections[7] = a_peer()
+    connections[7].download_queue = PoppingOnIter()
     connections[8] = a_peer()
     node = a_node(connections)
     # peer 8 is popped from the live `connections` above, not from the
@@ -1372,6 +1376,55 @@ def test_test_mempool_accept_rawtxs_of_the_wrong_json_type_is_named() -> None:
         'Wrong type passed:\n{\n    "Position 1 (rawtxs)": "JSON value of '
         'type string is not of expected type array"\n}'
     )
+
+
+@pytest.mark.parametrize(
+    ("rawtx", "json_type"),
+    [
+        (5, "number"),
+        (1.5, "number"),
+        (None, "null"),
+        ([], "array"),
+        ({}, "object"),
+        (True, "bool"),
+    ],
+)
+def test_test_mempool_accept_a_rawtx_of_the_wrong_json_type_is_named(
+    monkeypatch: pytest.MonkeyPatch, rawtx: object, json_type: str
+) -> None:
+    """A `rawtx` that is not a string ends the call with Core's own message.
+
+    `bitcoind` v31.1 on regtest answers `-3` "JSON value of type number
+    is not of expected type string" to `testmempoolaccept [[5]]`, and
+    the same for the other JSON types, where this answered `-32603
+    Internal Error` (btclib-org/btclib-node#1253). The valid entry ahead
+    of the bad one is not validated: Core reads every element before it
+    validates any.
+    """
+    verified: list[object] = []
+    monkeypatch.setattr(
+        cb, "verify_mempool_acceptance", lambda node, tx: verified.append(tx)
+    )
+    raw = a_tx().serialize(include_witness=True).hex()
+    with pytest.raises(RpcError) as raised:
+        mempool_accept(a_node(), _CONN, [[raw, rawtx]])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert raised.value.message == (
+        f"JSON value of type {json_type} is not of expected type string"
+    )
+    assert verified == []
+
+
+def test_a_rawtx_with_a_truncated_script_is_named_invalid() -> None:
+    """A script shorter than its declared length is an invalid serialization.
+
+    `Tx.parse` raises `BTClibRuntimeError` there rather than
+    `BTClibValueError`, which answered `-32603 Internal Error` instead
+    of this entry's own verdict.
+    """
+    truncated = "02000000" + "01" + "00" * 32 + "00000000" + "05" + "0000"
+    (result,) = mempool_accept(a_node(), _CONN, [[truncated]])
+    assert result == {"allowed": False, "reject-reason": "Invalid serialization"}
 
 
 def test_a_relayed_transaction_is_answered_with_its_txid(
@@ -2756,6 +2809,22 @@ def test_addnode_refuses_a_hostname() -> None:
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
 
 
+def test_addnode_refuses_a_port_int_would_read() -> None:
+    """`127.0.0.1:+80` is refused as `127.0.0.1:0x50` is, not dialled at 80."""
+    dialled: list[object] = []
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chain=SimpleNamespace(port=18444),
+            p2p_manager=SimpleNamespace(connect=dialled.append),
+        ),
+    )
+    with pytest.raises(RpcError) as raised:
+        add_node(node, _CONN, ["127.0.0.1:+80", "onetry"])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert dialled == []
+
+
 def test_addnode_type_checks_node_and_command() -> None:
     """`node` and `command` of the wrong JSON type are named, not coerced."""
     node = cast(
@@ -3266,17 +3335,13 @@ def test_submit_block_answers_a_reason_for_a_header_that_never_gets_indexed(
     assert node.block_db.get_block(broken.header.hash) is None
 
 
-def test_submit_block_invalidates_a_block_whose_body_mismatches_its_header(
+def test_submit_block_leaves_valid_a_header_its_body_does_not_match(
     regtest_node: Callable[..., Node],
 ) -> None:
-    """A block whose merkle root the transactions do not match is invalidated.
+    """ISS 1242: a body the merkle root does not match says nothing of it.
 
-    The header alone is unimpeachable -- valid proof of work, a known
-    parent -- so `add_headers` indexes it; only `block.assert_valid`'s
-    own `assert_valid_merkle_root` (below `assert_valid_structure`) can
-    catch what is wrong with this one, and does, matching
-    `p2p.callbacks.block`'s identical `invalidate`-then-answer shape
-    except for answering rather than raising.
+    Core's `AcceptBlock` marks a block failed unless the failure is
+    `BLOCK_MUTATED`, so the honest body is still accepted afterwards.
     """
     node = regtest_node()
     chain = generate_random_chain(1, node.chain.genesis.hash)
@@ -3295,5 +3360,89 @@ def test_submit_block_invalidates_a_block_whose_body_mismatches_its_header(
     assert isinstance(result, str)
     assert result not in (None, "duplicate", "prev-blk-not-found")
     block_info = node.chainstate.block_index.get_block_info(mismatched.header.hash)
+    assert block_info.status != BlockStatus.invalid
     assert not block_info.downloaded
     assert node.block_db.get_block(mismatched.header.hash) is None
+    honest = chain[0].serialize(check_validity=False).hex()
+    assert submit_block(node, _CONN, [honest]) is None
+
+
+def test_submit_block_leaves_valid_a_committed_body_failing_check_block(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """ISS 1242: Core's `ProcessNewBlock` never marks a `CheckBlock` failure.
+
+    Measured against bitcoind v31.1: `bad-cb-multiple`, and the header
+    absent from `getchaintips`; `headers-only` there where `submitheader`
+    indexed it first. This node indexes the header before `assert_valid`
+    (btclib-org/btclib-node#1339), so the status is what is asserted.
+    """
+    node = regtest_node()
+    twice = generate_segwit_block(generate_coinbase(height=1))
+
+    result = submit_block(node, _CONN, [twice.serialize(check_validity=False).hex()])
+
+    assert result == "more than one coinbase"
+    block_info = node.chainstate.block_index.get_block_info(twice.header.hash)
+    assert block_info.status != BlockStatus.invalid
+
+
+@pytest.mark.parametrize(("segwit_height", "invalid"), [(1, True), (2, False)])
+def test_submit_block_invalidates_a_committed_body_over_the_weight(
+    regtest_node: Callable[..., Node],
+    monkeypatch: pytest.MonkeyPatch,
+    segwit_height: int,
+    invalid: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1242: `bad-blk-weight` marks the block, its witness committed to.
+
+    Where segwit binds only after the block's own height, its witness makes
+    the body mutated and the header is left alone.
+    """
+    node = regtest_node()
+    consensus = replace(node.chain.consensus, segwit_height=segwit_height)
+    monkeypatch.setattr(
+        node,
+        "chain",
+        SimpleNamespace(pow_limit_bits=node.chain.pow_limit_bits, consensus=consensus),
+    )
+    over = generate_segwit_block(witness=bytes(MAX_BLOCK_WEIGHT))
+
+    result = submit_block(node, _CONN, [over.serialize(check_validity=False).hex()])
+
+    assert isinstance(result, str)
+    assert result.startswith("invalid weight")
+    block_info = node.chainstate.block_index.get_block_info(over.header.hash)
+    assert (block_info.status == BlockStatus.invalid) is invalid
+
+
+# A regtest header at height 1 of version -1, as a bitcoind v31.1.0 run with
+# `-testactivationheight=bip34@100` (and `dersig`, `cltv` at 100) took it
+# through `submitblock` and answered it back through `getblockheader false`.
+_A_VERSION_MINUS_ONE_HEADER = (
+    "ffffffff06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f"
+    "a7c0dbac4920cf8d62f0cb6d2efaa0105c5d6bbd3552da2c805dc60856589631dfefb76a"
+    "ffff7f2001000000"
+)
+
+
+def test_a_stored_version_minus_one_header_is_answered_as_bitcoind_answers() -> None:
+    """ISS 1262: the index stores it below BIP34's height, as Core does.
+
+    bitcoind answered the raw header with these same octets, `version`
+    -1 and `versionHex` "ffffffff", Core's `%08x` of its `int32_t`.
+    """
+    header = BlockHeader.parse(
+        bytes.fromhex(_A_VERSION_MINUS_ONE_HEADER), check_validity=False
+    )
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chainstate=SimpleNamespace(block_index=a_block_index([header]))
+        ),
+    )
+    raw = get_block_header(node, _CONN, [header.hash.hex(), False])
+    assert raw == _A_VERSION_MINUS_ONE_HEADER
+    verbose = get_block_header(node, _CONN, [header.hash.hex()])
+    assert isinstance(verbose, dict)
+    assert (verbose["version"], verbose["versionHex"]) == (-1, "ffffffff")
