@@ -552,6 +552,59 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   has less than the minimum chain work is disconnected, after a batch this
   node already had** (closes #1230).
 
+### A malformed `bitcoin.conf` line is refused in Core's words
+
+- **`parse error on line N`, and `conf=` and a forbidden negation as
+  `bitcoind` words them** (closes #1267), with no path; a line ends at a
+  newline alone, as Core counts it.
+
+### `-bantime`, as in Core
+
+- **A `setban` ban that names no length lasts `-bantime` seconds** (closes
+  #1219), 86400 by default, as `bitcoind` has it.
+
+### A block nobody asked for is stored only where Core's `AcceptBlock` would
+
+- **An unrequested block with less work than the tip, more than
+  `MIN_BLOCKS_TO_KEEP` above it, or below the minimum chain work is dropped
+  unstored, and its peer is not punished** (closes #1247).
+
+### A peer's announced transactions are asked for as Core asks for them
+
+- **At most `MAX_PEER_TX_ANNOUNCEMENTS` tracked per peer, in `getdata`s of at
+  most `MAX_GETDATA_SZ` items, so no announcement can make the request raise
+  and stop the node** (closes #1243).
+
+### An obsolete header version is refused `bad-version`
+
+- **A header whose version BIP34, BIP66 or BIP65 made obsolete is refused
+  `bad-version` from that BIP's height, and its sender discouraged, as in
+  Core** (closes #1262).
+
+### A `history.log` line carries its level as `debug.log` does
+
+- **A warning is marked `[warning]` and an error `[error]`** (closes #1280),
+  nothing for info, and `[debug]` for a debug line, where Core's carries its
+  category instead.
+
+### Each chain asks Core's DNS seeds
+
+- **Every chain's seed list is Core v31.1's `vSeeds`, trailing dot included**
+  (closes #1303), where mainnet asked two seeds Core dropped and signet an IP
+  address; regtest names Core's `dummySeed.invalid.`.
+
+### A dial pass no longer serializes every address it could draw
+
+- **`address_sampler` compares endpoints by field, and `get_active_addresses`
+  reindexes only where it pruned a row** (closes #1217, closes #1283), where
+  each pass serialized every answered row and every dialable gossiped one.
+
+### A gossip adds services to an address, and a dialled peer's own replace them
+
+- **`add_addresses` ORs gossiped services into both rows of an endpoint, and
+  an outbound peer's `version` overwrites them** (closes #1276), as Core's
+  `AddSingle` and `SetServices` do, where a gossip replaced a known row's.
+
 ### An old peer is sent Core's nonceless ping and its final alert
 
 - **A peer at protocol version 60000 or below is sent a `ping` with no nonce,
