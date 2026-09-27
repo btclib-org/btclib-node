@@ -4,9 +4,7 @@
 
 """The stop RPC, and a node's own shutdown through it, over a real node."""
 
-import socket
 import time
-from contextlib import ExitStack
 from typing import TYPE_CHECKING
 
 import pytest
@@ -21,6 +19,7 @@ from tests import (
     generate_random_chain,
     get_random_port,
     rpc_client,
+    taken_loopbacks,
     wait_until,
     wait_until_listening,
 )
@@ -29,40 +28,16 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-def _hold_every_loopback(stack: ExitStack) -> int:
-    """Bind one free port across every loopback the RPC listener may try.
-
-    Only `127.0.0.1` binds today; the in-review #1269
-    (btclib-org/btclib-node#1269) has the listener try `::1` first,
-    tolerating one endpoint failing where the other binds -- so holding
-    `127.0.0.1` alone would stop forcing a total bind failure once that
-    lands ahead of this one. `::1` is skipped where this host answers no
-    IPv6 loopback, the same failure a bind to it would raise, in which
-    case `127.0.0.1` alone is exactly what today's listener tries.
-    """
-    port = 0
-    for family, host in ((socket.AF_INET6, "::1"), (socket.AF_INET, "127.0.0.1")):
-        holder = socket.socket(family, socket.SOCK_STREAM)
-        try:
-            holder.bind((host, port))
-        except OSError:
-            holder.close()
-            continue
-        holder.listen()
-        stack.enter_context(holder)
-        port = holder.getsockname()[1]
-    return port
-
-
 def test_a_listener_that_cannot_bind_is_reported_at_once(tmp_path: Path) -> None:
     """ISS 1361: a taken port ends the wait with the failure, not the timeout.
 
-    The node's RPC bind fails on a port another listener holds, and its
-    manager's thread ends: waiting the twenty seconds out would report
-    the failure as a listener too slow to come up.
+    The node's RPC bind fails on every loopback it tries, held by
+    `taken_loopbacks` -- `::1` and `127.0.0.1` both, as the listener
+    itself binds -- and its manager's thread ends: waiting the twenty
+    seconds out would report the failure as a listener too slow to come
+    up.
     """
-    with ExitStack() as stack:
-        port = _hold_every_loopback(stack)
+    with taken_loopbacks() as port:
         node = Node(
             config=Config(
                 chain="regtest", data_dir=tmp_path, allow_p2p=False, rpc_port=port
