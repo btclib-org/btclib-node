@@ -1196,10 +1196,12 @@ class DownloadManager:
         chain by then, nothing is asked, and `block_download` is left
         to it.
 
-        Core also leaves out a block `conn` could not serve without
-        witnesses, where `callbacks.version` refuses such a peer, and
-        asks for a single block as a compact block, which this node does
-        not download.
+        Core also leaves out a block at or past `segwit_height` where
+        `conn` cannot serve witnesses -- `DeploymentActiveAt(*pindexWalk,
+        ..., DEPLOYMENT_SEGWIT) || CanServeWitnesses(peer)`, the same
+        test `find_next_blocks_to_download` makes -- and asks for a
+        single block as a compact block, which this node does not
+        download.
         """
         node = self.node
         block_index = node.chainstate.block_index
@@ -1219,6 +1221,8 @@ class DownloadManager:
             height = header_dict[block_hash].index
             return height < len(active_chain) and active_chain[height] == block_hash
 
+        segwit_height = node.chain.consensus.segwit_height
+        can_serve_witnesses = _can_serve_witnesses(conn)
         in_flight = {
             block_hash
             for peer in list(node.p2p_manager.connections.values())
@@ -1231,7 +1235,11 @@ class DownloadManager:
             and len(to_fetch) <= MAX_BLOCKS_IN_TRANSIT_PER_PEER
         ):
             block_info = header_dict[walk]
-            if not block_info.downloaded and walk not in in_flight:
+            if (
+                not block_info.downloaded
+                and walk not in in_flight
+                and (can_serve_witnesses or block_info.index < segwit_height)
+            ):
                 to_fetch.append(walk)
             walk = block_info.header.previous_block_hash
         if not on_the_active_chain(walk):

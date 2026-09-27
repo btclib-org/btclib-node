@@ -2189,6 +2189,8 @@ def test_a_getdata_of_wanted_transactions_holds_at_most_core_s_batch() -> None:
     manager.inv_txs = [(1, a_hash(n)) for n in range(size + 1)]
     manager.tx_download()
     assert [len(g.items) for g in only(conn, GetData)] == [size, 1]
+
+
 def an_active_chain(block_index: BlockIndex, length: int) -> list[bytes]:
     """Index `length` headers on genesis, held and connected as the chain."""
     chain = extend(block_index, length)
@@ -2316,6 +2318,31 @@ def test_a_reorg_deeper_than_the_limit_is_left_to_block_download(
     shallow = extend(index, MAX_BLOCKS_IN_TRANSIT_PER_PEER + 1)
     manager.headers_direct_fetch(conn, shallow[-1])
     assert conn.download_queue == shallow[:MAX_BLOCKS_IN_TRANSIT_PER_PEER]
+
+
+def test_a_witnessless_peer_s_direct_fetch_stops_at_segwit(
+    index: BlockIndex, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's `CanServeWitnesses` test, run for each candidate.
+
+    A block at or past `segwit_height` is not fetched from a peer
+    without `NODE_WITNESS`, but the walk still passes through it to
+    reach an earlier one that qualifies.
+    """
+    an_active_chain(index, 1)
+    a_clock_at(monkeypatch, index, 60)
+    announced = extend(index, 3, index.active_chain[-1])
+    witnessless = a_conn(
+        1, version_message=a_version(_FULL & ~ServiceFlags.NODE_WITNESS)
+    )
+    manager = make_manager([witnessless], block_index=index)
+    cast("Any", manager.node).chain.consensus.segwit_height = index.header_dict[
+        announced[1]
+    ].index
+    manager.headers_direct_fetch(witnessless, announced[-1])
+    assert witnessless.download_queue == announced[:1]
+    (getdata,) = only(witnessless, GetData)
+    assert {item.type_code for item in getdata.items} == {InventoryType.MSG_BLOCK}
 
 
 def test_a_direct_fetch_reads_the_connections_through_a_snapshot(
