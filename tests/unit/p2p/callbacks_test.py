@@ -3540,14 +3540,12 @@ class FakeHeaderIndex:
         *,
         refuse: bool = False,
         header_index_tip: bytes = b"\xff" * 32,
-        tip_status: BlockStatus = BlockStatus.valid_header,
     ) -> None:
         """Fix `add_headers`'s return, whether it raises, and the tip."""
         self.tip = tip
         self.refuse = refuse
         self.header_index = [header_index_tip]
         self.header_index_pos = {header_index_tip: 0}
-        self.tip_status = tip_status
         self.given: list[BlockHeader] | None = None
         self.punish_cached_invalid: bool | None = None
         # what `update_block_availability` looks a hash up in, and what
@@ -3572,10 +3570,6 @@ class FakeHeaderIndex:
             err_msg = "a header failing on its own terms"
             raise BTClibValueError(err_msg)
         return self.tip
-
-    def get_block_info(self, block_hash: bytes) -> SimpleNamespace:
-        """Answer every hash with the same fixed `tip_status`, and index 0."""
-        return SimpleNamespace(status=self.tip_status, index=0)
 
     def get_block_locator_hashes(self) -> list[bytes]:
         """Return the one fixed locator hash this stand-in ever answers with."""
