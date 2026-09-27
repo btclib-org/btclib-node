@@ -633,6 +633,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`_bind` records them ahead of setting `listening`** (closes #1325), so
   a thread woken by it no longer reads an empty list.
 
+### Every dial records its try, as Core's `Attempt` does
+
+- **A `-connect` or `-addnode` dial counts as a recent try too, for an address
+  a table holds** (closes #1277); as in Core, a restart forgets every try.
+
 ### Two outbound peers are block-relay-only, as in Core
 
 - **Past eight full-relay outbound peers, two more are dialled that relay
