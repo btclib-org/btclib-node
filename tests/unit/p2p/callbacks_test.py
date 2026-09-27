@@ -95,6 +95,7 @@ from btclib_node.exceptions import (
     MisbehavingError,
     MissingPrevoutError,
     NonStandardTxError,
+    TxRejectedError,
 )
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
@@ -537,11 +538,6 @@ def a_peer(**attributes: Any) -> Any:
         # way a real connection whose peer reads promptly never would
         queued_send_bytes=0,
         version_message=None,
-        # what `Connection` starts every fresh connection at, and what
-        # `callbacks.version`/`callbacks.headers` overwrite -- 0 rather
-        # than `None`, matching the real field (`p2p/connection.py`).
-        # btclib-org/btclib-node#706
-        best_known_height=0,
         block_availability=BlockAvailability(),
         chain_sync=ChainSyncTimeoutState(),
         wtxidrelay_received=False,
@@ -550,8 +546,6 @@ def a_peer(**attributes: Any) -> Any:
         # what Connection sets, and what the version callback overwrites
         relay_tx=True,
         download_queue=[],
-        pending_eviction=False,
-        last_block_timestamp=0,
         tx_requested={},
         ping_sent=0,
         ping_nonce=0,
@@ -632,6 +626,7 @@ def a_handshake_node(
         status=status,
         config=SimpleNamespace(min_relay_feerate=min_relay_feerate, pruned=False),
         p2p_manager=SimpleNamespace(
+            connections={},
             pending_outbound_nonces=own_nonces,
             is_self_connect_nonce=own_nonces.__contains__,
             peer_db=(PeerDB(cast("Chain", None), None) if peer_db is None else peer_db),
@@ -640,7 +635,6 @@ def a_handshake_node(
             discouraged=discouraged,
             is_discouraged=lambda address: host_key(address) in discouraged_keys,
             ban_man=a_ban_man(*banned),
-            connections={},
         ),
         chainstate=SimpleNamespace(
             block_index=SimpleNamespace(get_block_locator_hashes=lambda: [b"\x00" * 32])
@@ -780,22 +774,28 @@ def test_a_peer_speaking_an_older_protocol_is_let_go() -> None:
 
 
 @pytest.mark.parametrize(
-    "protocol",
-    [MIN_PEER_PROTO_VERSION, WTXID_RELAY_VERSION - 1],
+    ("protocol", "sent"),
+    [
+        (MIN_PEER_PROTO_VERSION, ["Verack", "GetAddr", "FinalAlert"]),
+        (70012, ["Verack", "GetAddr", "FinalAlert"]),
+        (70013, ["Verack", "GetAddr"]),
+        (WTXID_RELAY_VERSION - 1, ["Verack", "GetAddr"]),
+    ],
 )
 def test_a_peer_at_or_above_the_floor_is_kept_without_wtxid_relay(
-    protocol: int,
+    protocol: int, sent: list[str]
 ) -> None:
     """ISS 1180: kept from `MIN_PEER_PROTO_VERSION`, as Core keeps it.
 
     Below `WTXID_RELAY_VERSION` it is sent neither `wtxidrelay` nor
-    `sendaddrv2`, which Core too sends only from 70016 up.
+    `sendaddrv2`, which Core too sends only from 70016 up. At 70012 or
+    below it is sent Core's final `alert` last (ISS 1205).
     """
     node = a_handshake_node()
     peer = a_peer()
     version(node, a_version(protocol=protocol), peer)
     assert not peer.stopped
-    assert commands(peer) == ["Verack", "GetAddr"]
+    assert commands(peer) == sent
 
 
 def test_a_peer_without_the_witness_service_is_let_go() -> None:
@@ -1993,6 +1993,32 @@ def test_a_refused_transaction_is_not_reverified_on_resubmission(
     assert not node.mempool.contains_tx(transaction)
 
 
+def test_a_fee_refusal_is_recorded_and_the_peer_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fee under the floor is a refusal like any other, recorded once.
+
+    `TxRejectedError` is a `BTClibValueError`, so `tx` catches it rather
+    than letting it reach `_drop`, and a resend is not verified again.
+    btclib-org/btclib-node#1245
+    """
+    calls: list[bytes] = []
+
+    def fee_refusal(node: Any, transaction: Any) -> NoReturn:
+        calls.append(transaction.hash)
+        reason, details = "min relay fee not met", "0 < 11"
+        raise TxRejectedError(reason, details)
+
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", fee_refusal)
+    transaction = a_transaction()
+    node = a_data_node()
+    payload = TxMsg(transaction, include_witness=True).serialize()
+    tx(node, payload, a_peer(id=3))
+    tx(node, payload, a_peer(id=4))
+    assert calls == [transaction.hash]
+    assert not node.mempool.contains_tx(transaction)
+
+
 def test_a_transaction_missing_its_parent_is_reverified_on_resubmission(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2225,10 +2251,8 @@ def a_block() -> Block:
 def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded() -> None:
     """A block matching a pending download-queue entry is stored and marked.
 
-    The peer's own bookkeeping clears too: the hash leaves
-    `download_queue`, `last_block_timestamp` advances, and
-    `pending_eviction` drops, since the block this peer was about to be
-    evicted for being slow on has now arrived.
+    Stored, it is no longer awaited from anybody: it leaves the queue of
+    every peer it was asked of, which stop stalling.
     """
     block = a_block()
     index = FakeBlockIndex({block.header.hash: an_info(downloaded=False)})
@@ -2236,11 +2260,10 @@ def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded() -> None:
     node = a_data_node(
         block_index=index, block_db=SimpleNamespace(add_block=added.append)
     )
-    peer = a_peer(
-        download_queue=[block.header.hash],
-        last_block_timestamp=0,
-        pending_eviction=True,
-    )
+    peer = a_peer(download_queue=[block.header.hash])
+    other = a_peer(id=1, download_queue=[block.header.hash])
+    other.block_availability.stalling_since = 5.0
+    node.p2p_manager.connections = {0: peer, 1: other}
     block_callback(
         node,
         BlockMsg(block, include_witness=True, check_validity=False).serialize(
@@ -2249,8 +2272,8 @@ def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded() -> None:
         peer,
     )
     assert peer.download_queue == []
-    assert peer.last_block_timestamp > 0
-    assert peer.pending_eviction is False
+    assert other.download_queue == []
+    assert other.block_availability.stalling_since == 0.0
     # novel and stored: what eviction reads (ISS 1064)
     assert peer.last_novel_block_time > 0
     assert added == [block]
@@ -2258,14 +2281,19 @@ def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded() -> None:
 
 
 def test_a_block_already_stored_is_not_stored_again() -> None:
-    """A block already downloaded is a no-op: not re-added, not re-marked."""
+    """A block already downloaded is a no-op: not re-added, not re-marked.
+
+    Only the peer that sent it stops being asked for it.
+    """
     block = a_block()
     index = FakeBlockIndex({block.header.hash: an_info(downloaded=True)})
     added: list[Block] = []
     node = a_data_node(
         block_index=index, block_db=SimpleNamespace(add_block=added.append)
     )
-    peer = a_peer()
+    peer = a_peer(download_queue=[block.header.hash])
+    other = a_peer(id=1, download_queue=[block.header.hash])
+    node.p2p_manager.connections = {0: peer, 1: other}
     block_callback(
         node,
         BlockMsg(block, include_witness=True, check_validity=False).serialize(
@@ -2276,6 +2304,8 @@ def test_a_block_already_stored_is_not_stored_again() -> None:
     assert added == []
     assert index.marked == []
     assert peer.last_novel_block_time == 0
+    assert peer.download_queue == []
+    assert other.download_queue == [block.header.hash]
 
 
 def a_block_claiming_an_easier_target_than_the_chain_allows(block: Block) -> Block:
@@ -2686,13 +2716,18 @@ def test_a_block_asked_of_any_peer_is_stored_however_far_ahead(
     """ISS 1247: Core's `IsBlockRequested`, whichever peer it was asked of."""
     node = an_unrequested_block_node(tmp_path, 1)
     block = a_block_at(node, MIN_BLOCKS_TO_KEEP + 10)
-    asked = a_peer(download_queue=[block.header.hash])
+    # a distinct id from `deliver`'s own fresh peer below (`a_peer()`,
+    # id 0 by default), as a real connection's would be
+    asked = a_peer(id=1, download_queue=[block.header.hash])
     if asked_of == "this-peer":
         deliver(node, block, asked)
     else:
         node.p2p_manager.connections = {asked.id: asked}
         deliver(node, block)
-        assert asked.download_queue == [block.header.hash]
+        # stored, so no longer awaited from anybody: Core's `ProcessBlock`
+        # calls `RemoveBlockRequest(hash, std::nullopt)`, clearing every
+        # peer's own queue and not only the one it arrived from
+        assert asked.download_queue == []
     assert node.added == [block]
     node.chainstate.close()
 
@@ -3609,14 +3644,7 @@ class FakeHeaderIndex:
         return self.tip
 
     def get_block_info(self, block_hash: bytes) -> SimpleNamespace:
-        """Answer every hash with the same fixed `tip_status`, and index 0.
-
-        `index` is never asserted against by a test built on this double
-        -- `headers`'s own `conn.best_known_height` update
-        (btclib-org/btclib-node#706) is the only reader, and every test
-        here only checks `Connection.sent`/`node.status`, not the height
-        that update leaves behind.
-        """
+        """Answer every hash with the same fixed `tip_status`, and index 0."""
         return SimpleNamespace(status=self.tip_status, index=0)
 
     def get_block_locator_hashes(self) -> list[bytes]:
