@@ -134,6 +134,7 @@ def test_a_connecting_node_carries_its_own_real_tip_height(tmp_path: Path) -> No
             allow_rpc=False,
         )
     )
+    node1.load()
     block_index = node1.chainstate.block_index
     block_index.add_headers([block.header for block in chain])
     node1.status = NodeStatus.HeaderSynced
@@ -188,6 +189,7 @@ def test_connection_to_ourselves(tmp_path: Path) -> None:
             allow_rpc=False,
         )
     )
+    node.load()
     recording = _RecordingPendingConnections()
     node.p2p_manager.pending_connections = recording
     node.start()
@@ -219,7 +221,8 @@ def test_connection_to_ourselves(tmp_path: Path) -> None:
         # that `tmp_path` has just created empty, `callbacks.addr` and
         # `callbacks.addrv2` need a peer to gossip and the one connection
         # attempted is the self-connect refused above, and
-        # `get_addr_from_dns` iterates `RegTest.addresses`, which is empty
+        # `get_addr_from_dns` iterates `RegTest.addresses`, which names only
+        # Core's `dummySeed.invalid.`, a name that resolves to nothing
         # (`chains.py`). A test that later gains a `connect=`, an `addnode`, a
         # gossiping peer or a seeded chain is standing on all of that and
         # has to re-establish it for itself.

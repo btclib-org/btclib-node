@@ -178,7 +178,7 @@ class FilterIndex:
             built += 1
             if len(self.pending) >= _CATCH_UP_BATCH:
                 # said as it goes, not at the end: this runs inside
-                # Node.__init__, so on a long chain it is the only thing
+                # Node.load, so on a long chain it is the only thing
                 # between starting the node and the node appearing hung
                 self.logger.info("Building block filters: %s so far", built)
                 self.finalize()
