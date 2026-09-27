@@ -1330,7 +1330,7 @@ def test_a_sendcmpct_of_version_two_records_the_peer_s_choice(
 
 
 def test_a_sendcmpct_announce_octet_above_one_is_misbehaving() -> None:
-    """Core's `sendcmpct_hb` is a `uint8_t`, not a `bool`: above one, Misbehaving.
+    """Core's `sendcmpct_hb` is a `uint8_t`, not a `bool`: above one is refused.
 
     Checked ahead of the version, as Core's own order is
     (btclib-org/btclib-node#1223).

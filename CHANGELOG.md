@@ -762,9 +762,7 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 - **A peer's `sendcmpct` of version 2 is recorded, and a peer that chose this
   node as high-bandwidth is sent a lone new block as a `cmpctblock` and reported
-  in `getpeerinfo`'s `bip152_hb_from`** (closes #1223). An announce octet above
-  one is refused as Core's own `Misbehaving` refuses it, ahead of the version
-  check.
+  in `getpeerinfo`'s `bip152_hb_from`** (closes #1223).
 
 ### A new block reaches a high-bandwidth peer before it is connected, as in Core
 
