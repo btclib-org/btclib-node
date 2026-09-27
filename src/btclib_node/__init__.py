@@ -304,6 +304,12 @@ class Node(threading.Thread):
         self.terminate_flag = threading.Event()
         log_path = self.data_dir / config.log_path if config.log_path else None
         self.logger = Logger(log_path, debug=config.debug)
+        # what Core logs of its settings, in its order, ahead of anything
+        # the node logs: Core's version line, which it logs between the
+        # warnings it buffered and the section warning, is not written
+        # here (#1309)
+        for warning in config.log_warnings:
+            self.logger.warning(warning)
 
         # A `getcfilters` answer `p2p.callbacks.get_cfilters` could not
         # finish scheduling under its own pacing bound, keyed by
