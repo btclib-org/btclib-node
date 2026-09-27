@@ -1045,7 +1045,8 @@ class P2pManager(threading.Thread):
         bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the seed leaves the
         queue whether or not it is dialled, as it does there where no
         `semOutbound` grant is free, and `OpenNetworkConnection` refuses
-        one this node already holds a connection with.
+        one this node already holds a connection with. A dial is a try
+        of the address, as every other dial is.
         """
         if not self._addr_fetches:
             return
@@ -1061,6 +1062,9 @@ class P2pManager(threading.Thread):
         if endpoint_key(address) in {endpoint_key(c.address) for c in connected}:
             return
         sock = await dial(address)
+        # `ConnectNode` calls `Attempt` for this dial too, `fCountFailure`
+        # false changing nothing `Attempt_` sets on `m_last_try`
+        self.peer_db.attempt(address)
         if sock:
             self.create_connection(
                 sock, address, inbound=False, automatic=True, addr_fetch=True

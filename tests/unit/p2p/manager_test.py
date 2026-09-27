@@ -4151,6 +4151,27 @@ def test_a_recently_tried_draw_is_followed_by_another(
     assert dialled == [other]
 
 
+def test_a_seed_node_dialled_is_passed_over_as_tried_recently(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1192: `ProcessAddrFetch`'s dial records a try, as `ConnectNode` does.
+
+    Once the addr-fetch connection has gone, the table's draw of the same
+    address is passed over for another.
+    """
+    seed = a_full_node("1.2.3.4", 8333)
+    other = a_full_node("5.6.7.8", 8333)
+    manager, drawn, dialled = a_dialling_manager(
+        a_manager, monkeypatch, [seed, other], seednode=[("1.2.3.4", 8333)]
+    )
+    manager._addr_fetches.append(("1.2.3.4", 8333))
+    asyncio.run(manager._process_addr_fetch())
+    assert [endpoint_key(address) for address in dialled] == [endpoint_key(seed)]
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert len(drawn) == 2
+    assert dialled[1:] == [other]
+
+
 def test_a_try_ten_minutes_old_is_not_recent(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
