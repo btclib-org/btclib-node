@@ -629,22 +629,28 @@ def sendcmpct(node: Node, msg: bytes, conn: Connection) -> None:
     """Record whether the peer wants new blocks announced as `cmpctblock`.
 
     Core's `SENDCMPCT` handler (`src/net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a version other than
-    `CMPCTBLOCKS_VERSION` is ignored, and otherwise the announce octet is
-    the peer's choice of this node as a BIP152 high-bandwidth peer, which
-    a later `sendcmpct` can take back.
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the announce octet is read
+    as a `uint8_t`, not a `bool`, so a value above one is refused as
+    "invalid sendcmpct announce field" before a version other than
+    `CMPCTBLOCKS_VERSION` is ignored; otherwise the announce octet is the
+    peer's choice of this node as a BIP152 high-bandwidth peer, which a
+    later `sendcmpct` can take back.
     """
     # read as Core's `vRecv >> sendcmpct_hb >> sendcmpct_version` reads
-    # it, where btclib's `SendCmpct.parse` refuses more: any non-zero
-    # octet is true, as Core's `Unserialize` of a `bool` makes it
-    # (`src/serialize.h`, same tag), and bytes past the ninth are left
-    # unread
+    # it, bytes past the ninth left unread; btclib's `SendCmpct.parse`
+    # is not used here because BTClibValueError leaves the peer
+    # undiscouraged (`p2p.main._drop`), where Core's own refusal is a
+    # `Misbehaving` call
     if len(msg) < _SENDCMPCT_SIZE:
         err_msg = f"sendcmpct payload of {len(msg)} bytes"
         raise BTClibValueError(err_msg)
+    announce = msg[0]
+    if announce > 1:
+        err_msg = f"invalid sendcmpct announce field: {announce}"
+        raise MisbehavingError(err_msg)
     if int.from_bytes(msg[1:_SENDCMPCT_SIZE], "little") != CMPCTBLOCKS_VERSION:
         return
-    conn.requested_hb_cmpctblocks = msg[0] != 0
+    conn.requested_hb_cmpctblocks = announce != 0
 
 
 def ping(node: Node, msg: bytes, conn: Connection) -> None:

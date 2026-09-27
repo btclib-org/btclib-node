@@ -1311,12 +1311,9 @@ def test_the_flags_a_peer_sets_on_this_connection() -> None:
     [
         (SendCmpct(announce=True, version=2).serialize(), True),
         (SendCmpct(announce=False, version=2).serialize(), False),
-        # Core's `bool` is any non-zero octet, and it reads no further
-        # than the version
-        (b"\x02" + (2).to_bytes(8, "little"), True),
         (SendCmpct(announce=True, version=2).serialize() + b"\x00", True),
     ],
-    ids=["high", "low", "octet-two", "trailing"],
+    ids=["high", "low", "trailing"],
 )
 def test_a_sendcmpct_of_version_two_records_the_peer_s_choice(
     payload: bytes,
@@ -1330,6 +1327,20 @@ def test_a_sendcmpct_of_version_two_records_the_peer_s_choice(
     peer = a_peer(requested_hb_cmpctblocks=not requested)
     sendcmpct(a_handshake_node(), payload, peer)
     assert peer.requested_hb_cmpctblocks is requested
+
+
+def test_a_sendcmpct_announce_octet_above_one_is_misbehaving() -> None:
+    """Core's `sendcmpct_hb` is a `uint8_t`, not a `bool`: above one, Misbehaving.
+
+    Checked ahead of the version, as Core's own order is
+    (btclib-org/btclib-node#1223).
+    """
+    peer = a_peer(requested_hb_cmpctblocks=False)
+    with pytest.raises(MisbehavingError, match="invalid sendcmpct announce field: 2"):
+        sendcmpct(a_handshake_node(), b"\x02" + (2).to_bytes(8, "little"), peer)
+    assert not peer.requested_hb_cmpctblocks
+    with pytest.raises(MisbehavingError):
+        sendcmpct(a_handshake_node(), b"\x02" + (1).to_bytes(8, "little"), peer)
 
 
 def test_a_sendcmpct_of_another_version_is_ignored() -> None:
