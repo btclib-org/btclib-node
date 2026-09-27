@@ -1898,12 +1898,18 @@ def a_data_node(
 
     Out of initial block download by default, since a transaction callback
     only accepts there; `is_initial_block_download` moves that to test the
-    gate.
+    gate. `config.chain` is `node.chain` itself, as `Node.__init__` keeps
+    them (`self.chain = config.chain`), which `new_pow_valid_block`'s own
+    `contextual_check_block` reads through `config` rather than `node`.
     """
     node = a_handshake_node(status=status)
     node.is_initial_block_download = is_initial_block_download
     node.mempool = mempool if mempool is not None else Mempool(Logger(debug=True))
     node.chain = RegTest()
+    node.config.chain = node.chain
+    # `new_pow_valid_block`'s own high-water mark, Core's
+    # `m_highest_fast_announce`, zero until a call moves it
+    node.highest_fast_announce = 0
     node.block_db = block_db
     node.download_manager = SimpleNamespace(
         received_txs=[],
@@ -2262,16 +2268,20 @@ class FakeBlockIndex:
         """
         self.infos = infos
         self.header_dict = infos
-        # a tip no block built here extends, so `new_pow_valid_block`
-        # stops at it and announces nothing
-        self.active_chain = [b"\xee" * 32]
         self.marked: list[bytes] = []
         self.accepts_headers = accepts_headers
         self.added_headers: list[BlockHeader] = []
-        # regtest's genesis alone is active, one unit of work
+        # regtest's genesis alone is active, one unit of work, and always
+        # indexed, as a real `BlockIndex` always has it: `contextual_check_
+        # block`'s own parent lookup reads it for any block built here,
+        # every one of them extending genesis directly
         genesis = RegTest().genesis.hash
         self.active_chain = [genesis]
         self.chainwork = {genesis: 1}
+        self.infos.setdefault(
+            genesis,
+            SimpleNamespace(header=RegTest().genesis, index=0, downloaded=True),
+        )
 
     def get_block_info(self, block_hash: bytes) -> Any:
         """Return the fixed info this block hash was constructed with."""
@@ -2310,7 +2320,9 @@ def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded() -> None:
     every peer it was asked of, which stop stalling.
     """
     block = a_block()
-    index = FakeBlockIndex({block.header.hash: SimpleNamespace(downloaded=False)})
+    index = FakeBlockIndex(
+        {block.header.hash: SimpleNamespace(downloaded=False, index=1)}
+    )
     added: list[Block] = []
     node = a_data_node(
         block_index=index, block_db=SimpleNamespace(add_block=added.append)
@@ -2354,7 +2366,7 @@ def test_a_new_block_stored_is_offered_to_new_pow_valid_block(
         BlockMsg(block, include_witness=True, check_validity=False).serialize(
             check_validity=False
         ),
-        a_peer(),
+        a_peer(download_queue=[block.header.hash]),
     )
     assert offered == ([] if downloaded else [block])
 
@@ -2514,6 +2526,7 @@ def a_chainstate_node(tmp_path: Path, segwit_height: int = 0) -> Any:
         pow_limit_bits=RegTest().pow_limit_bits,
         consensus=replace(RegTest().consensus, segwit_height=segwit_height),
     )
+    node.config.chain = node.chain
     node.added = added
     return node
 
@@ -2730,6 +2743,7 @@ def test_an_unrequested_block_below_the_minimum_chain_work_is_not_stored(
         pow_limit_bits=RegTest().pow_limit_bits,
         consensus=replace(RegTest().consensus, minimum_chain_work=work + surplus),
     )
+    node.config.chain = node.chain
     deliver(node, block)
     assert (node.added == [block]) is stored
     node.chainstate.close()
