@@ -146,11 +146,6 @@ _REACHABLE_NETWORKS = (BIP155Network.IPV4, BIP155Network.IPV6)
 # (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
 _MAX_DRAWS_PER_PASS = 100
 
-# Core's `EXTRA_BLOCK_RELAY_ONLY_PEER_INTERVAL` (`src/net.h`, same sha):
-# the mean of the exponential draw between two extra block-relay-only
-# peers, in seconds.
-_EXTRA_BLOCK_RELAY_ONLY_PEER_INTERVAL = 5 * 60
-
 # `ThreadOpenConnections`' own thresholds, as the constant above: a draw
 # tried less than ten minutes ago is passed over while fewer than 30
 # draws have been made, and one on a port `_BAD_PORTS` holds while fewer
@@ -255,6 +250,11 @@ _BAD_PORTS = frozenset(
         27017,
     }
 )
+
+# Core's `EXTRA_BLOCK_RELAY_ONLY_PEER_INTERVAL` (`src/net.h`, same sha):
+# the mean of the exponential draw between two extra block-relay-only
+# peers, in seconds.
+_EXTRA_BLOCK_RELAY_ONLY_PEER_INTERVAL = 5 * 60
 
 # How many hosts `P2pManager.discourage` remembers. Core keeps them in
 # `BanMan::m_discouraged`, a `CRollingBloomFilter{50000, 0.000001}`
