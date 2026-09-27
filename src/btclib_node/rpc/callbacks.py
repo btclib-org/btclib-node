@@ -1143,6 +1143,15 @@ def disconnect_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
         raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
 
     manager = node.p2p_manager
+    # Unlocked, the same snapshot `get_peer_info` above takes and for the
+    # same reason (btclib-org/btclib-node#356): a connection
+    # `create_connection` adds after this read is simply not in it, and
+    # is answered `RPC_CLIENT_NODE_NOT_CONNECTED` below, which a retry
+    # settles once a later snapshot holds it. One `remove_connection`
+    # itself drops between this read and the call below is answered as
+    # it still was here, and costs nothing there either:
+    # `remove_connection`'s own `pop(..., None)` is already a no-op on
+    # an id that is gone.
     peers = {**manager.pending_connections, **manager.connections}
     if address is not None and node_id is None:
         found = [
