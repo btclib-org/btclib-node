@@ -574,7 +574,7 @@ def test_a_header_built_on_an_invalid_parent_refuses_the_batch_misbehaving(
     block_index.invalidate(chain[0].hash)
 
     extension = generate_random_header_chain(1, chain[1].hash, chain[1].time)
-    with pytest.raises(MisbehavingError, match="bad-prevblk"):
+    with pytest.raises(MisbehavingError, match=r"^bad-prevblk$"):
         block_index.add_headers(extension)
     assert extension[0].hash not in block_index.header_dict
     chainstate.close()
@@ -650,7 +650,7 @@ def test_a_batch_extending_an_invalidated_chain_does_not_move_header_index(
     header_index_before = list(block_index.header_index)
 
     extension = generate_random_header_chain(10, chain[1].hash, chain[1].time)
-    with pytest.raises(MisbehavingError, match="bad-prevblk"):
+    with pytest.raises(MisbehavingError, match=r"^bad-prevblk$"):
         block_index.add_headers(extension)
     assert block_index.header_index == header_index_before
     chainstate.close()
@@ -673,7 +673,7 @@ def test_an_invalid_header_sent_again_refuses_the_batch(
     block_index.add_headers(chain[:1])
     block_index.invalidate(chain[0].hash)
 
-    with pytest.raises(BTClibValueError, match="duplicate-invalid") as refused:
+    with pytest.raises(BTClibValueError, match=r"^duplicate-invalid$") as refused:
         block_index.add_headers(chain, punish_cached_invalid=punish)
     assert isinstance(refused.value, MisbehavingError) is punish
     assert chain[1].hash not in block_index.header_dict

@@ -3522,7 +3522,7 @@ def test_a_batch_on_an_already_invalid_parent_is_refused_misbehaving(
     extension = generate_random_header_chain(2000, victim[0].hash, victim[0].time)
     node = a_data_node(block_index=block_index, status=NodeStatus.SyncingHeaders)
     peer = a_peer()
-    with pytest.raises(MisbehavingError, match="bad-prevblk"):
+    with pytest.raises(MisbehavingError, match=r"^bad-prevblk$"):
         headers(node, Headers(extension).serialize(), peer)
 
     assert extension[0].hash not in block_index.header_dict
@@ -3560,7 +3560,7 @@ def test_a_connecting_batch_refused_from_a_kept_peer_answers_the_getheaders(
     node = a_data_node(block_index=block_index, status=NodeStatus.SyncingHeaders)
     peer = a_peer(inbound=True)
     node.download_manager.last_getheaders_timestamps[peer.id] = time.time()
-    with pytest.raises(BTClibValueError, match="duplicate-invalid"):
+    with pytest.raises(BTClibValueError, match=r"^duplicate-invalid$"):
         headers(node, Headers(chain).serialize(), peer)
     assert peer.id not in node.download_manager.last_getheaders_timestamps
     chainstate.close()
