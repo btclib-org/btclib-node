@@ -31,6 +31,7 @@ from btclib.p2p.addrv2 import BIP155Network, can_addrv1, network_address
 
 from btclib_node.constants import CLIENT_NAME, P2pConnStatus
 from btclib_node.p2p.address import (
+    RECENT_TRY_SECONDS,
     PeerDB,
     dial,
     endpoint_key,
@@ -148,10 +149,9 @@ _REACHABLE_NETWORKS = (BIP155Network.IPV4, BIP155Network.IPV6)
 _MAX_DRAWS_PER_PASS = 100
 
 # `ThreadOpenConnections`' own thresholds, as the constant above: a draw
-# tried less than ten minutes ago is passed over while fewer than 30
-# draws have been made, and one on a port `_BAD_PORTS` holds while fewer
-# than 50 have.
-_RECENT_TRY_SECONDS = 10 * 60
+# tried less than `RECENT_TRY_SECONDS` ago is passed over while fewer
+# than 30 draws have been made, and one on a port `_BAD_PORTS` holds
+# while fewer than 50 have.
 _RECENT_TRY_DRAWS = 30
 _BAD_PORT_DRAWS = 50
 
@@ -405,11 +405,6 @@ class P2pManager(threading.Thread):
         self._next_extra_block_relay = math.inf
         # Core's `next_feeler`, drawn by `run` as the other timer is
         self._next_feeler = math.inf
-        # Core's `AddrInfo::m_last_try` of each endpoint this manager
-        # dialled on its own, by `endpoint_key`, which `_passed_over`
-        # reads. Only this thread reads or writes it, and `_dial_one_draw`
-        # drops an entry once it is too old for that read to use.
-        self._last_try: dict[bytes, float] = {}
         # Core's `m_added_node_params` as `AddedNodesContain` reads it:
         # each `-addnode` value as given, compared with a drawn address's
         # text, and nothing at all past `_ADDED_NODES_BOUND` values.
@@ -866,6 +861,10 @@ class P2pManager(threading.Thread):
         naming it (issue #1020).
         """
         client = await dial(address)
+        # Core's `ConnectNode` calls `Attempt` for every connection it
+        # tries, a `-connect` or `-addnode` one too (`src/net.cpp`, at
+        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+        self.peer_db.attempt(address)
         if client:
             self.create_connection(client, address, inbound=False)
         else:
@@ -1168,8 +1167,8 @@ class P2pManager(threading.Thread):
                 and not self.is_discouraged(address)
                 and not self.ban_man.is_peer_banned(address)
             ):
-                self._record_attempt(address)
                 sock = await dial(address)
+                self.peer_db.attempt(address)
                 if sock:
                     self.create_connection(
                         sock,
@@ -1226,8 +1225,8 @@ class P2pManager(threading.Thread):
         among them. `IsLocal` reads `mapLocalHost`, this node's own
         addresses, and this tree keeps no such table.
         """
-        last_try = self._last_try.get(endpoint_key(address), 0.0)
-        if now - last_try < _RECENT_TRY_SECONDS and tries < _RECENT_TRY_DRAWS:
+        last_try = self.peer_db.last_try(address)
+        if now - last_try < RECENT_TRY_SECONDS and tries < _RECENT_TRY_DRAWS:
             return True
         if feeler:
             if not _may_have_useful_address_db(address):
@@ -1252,23 +1251,6 @@ class P2pManager(threading.Thread):
         with_port = ip_and_port(str(endpoint.ip), endpoint.port)
         host = with_port.rsplit(":", 1)[0].removeprefix("[").removesuffix("]")
         return host in self._added_nodes or with_port in self._added_nodes
-
-    def _record_attempt(self, address: NetworkAddressV2) -> None:
-        """Record a dial of `address`, as Core's `Attempt_` sets `m_last_try`.
-
-        An entry too old for `_passed_over` to read is dropped here, so
-        the table holds the dials of the last `_RECENT_TRY_SECONDS`.
-        Called before the dial, where `ConnectNode` calls `Attempt` once
-        the connect has been tried, so the time kept is earlier than
-        Core's by however long the connect took.
-        """
-        now = time.time()
-        self._last_try = {
-            key: when
-            for key, when in self._last_try.items()
-            if now - when < _RECENT_TRY_SECONDS
-        }
-        self._last_try[endpoint_key(address)] = now
 
     async def _maybe_redial_specified(self) -> None:
         """Redial a `-connect`/`-addnode` peer not connected, on backoff.
