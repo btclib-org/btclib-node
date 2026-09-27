@@ -25,6 +25,7 @@ from btclib.fee import FeeRate
 
 from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet
 from btclib_node.exceptions import InvalidChainTypeError, UnknownChainError
+from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME
 from btclib_node.rpc.auth import (
     COOKIE_FILE,
     RpcAuthEntry,
@@ -356,6 +357,9 @@ class Config:
     # `-seednode`, each dialled to fetch addresses and then dropped
     # (`connOptions.vSeedNodes`, `src/init.cpp`, same sha).
     seednode: tuple[tuple[str, int], ...]
+    # Core's own `-bantime`: how long a `setban` ban lasts, in seconds,
+    # where the call names no length. `Node` hands it to its `BanMan`.
+    ban_time: int
 
     # every parameter here is one independent setting, not a group of
     # related ones this signature happens to expose together: `chain` is
@@ -398,6 +402,7 @@ class Config:
         dnsseed: bool | None = None,
         fixedseeds: bool = True,
         seednode: Sequence[str] = (),
+        ban_time: int = DEFAULT_MISBEHAVING_BANTIME,
         rpcauth: Sequence[str] = (),
         rpcuser: str = "",
         rpcpassword: str = "",
@@ -455,6 +460,7 @@ class Config:
         )
         self.fixedseeds = fixedseeds
         self.seednode = _resolve_peers(seednode, self.chain.port)
+        self.ban_time = ban_time
 
         self.p2p_port = (p2p_port or self.chain.port) if allow_p2p else None
         self.rpc_port = (rpc_port or self.chain.rpc_port) if allow_rpc else None
