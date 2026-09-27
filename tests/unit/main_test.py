@@ -1880,6 +1880,7 @@ def test_a_store_closed_without_a_flush_redoes_only_what_was_never_flushed(
         chain="regtest", data_dir=tmp_path, allow_p2p=False, allow_rpc=False, debug=True
     )
     first = Node(config)
+    first.load()
     first.status = NodeStatus.HeaderSynced
 
     chain = generate_random_chain(3, RegTest().genesis.hash)
@@ -1909,6 +1910,7 @@ def test_a_store_closed_without_a_flush_redoes_only_what_was_never_flushed(
     first.logger.close()
 
     reopened = Node(config)
+    reopened.load()
     reopened.status = NodeStatus.HeaderSynced
     # the store opens without error, and reflects only the one flush
     # that actually happened: fewer than all three blocks are durable
