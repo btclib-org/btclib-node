@@ -14,6 +14,7 @@ import threading
 import time
 from itertools import pairwise
 from types import SimpleNamespace
+from typing import override
 
 import pytest
 from btclib.block import (
@@ -28,6 +29,7 @@ from btclib.tx.limits import COINBASE_MATURITY
 from btclib_node.chains import RegTest
 from tests import (
     TEST_PORTS,
+    ListenerEndedError,
     PortPool,
     WaitTimeoutError,
     brute_force_nonce,
@@ -151,6 +153,42 @@ def test_a_manager_that_never_binds_is_given_up_on() -> None:
     never = SimpleNamespace(listening=threading.Event(), port=18444)
     with pytest.raises(WaitTimeoutError, match=r"18444.* within 0\.2 seconds"):
         wait_until_listening(never, timeout=0.2)
+
+
+class _AManagerThatGivesUp(threading.Thread):
+    """A manager stand-in whose thread ends at once, never listening."""
+
+    def __init__(self, bind_error: str | None) -> None:
+        super().__init__()
+        self.listening = threading.Event()
+        self.port = 18444
+        self.bind_error = bind_error
+
+    @override
+    def run(self) -> None:
+        return
+
+
+@pytest.mark.parametrize("bind_error", [None, "port taken"])
+def test_a_manager_whose_thread_ended_is_not_waited_for(
+    bind_error: str | None,
+) -> None:
+    """ISS 1361: `wait_until_listening` raises at once, with its reason."""
+    manager = _AManagerThatGivesUp(bind_error)
+    manager.start()
+    manager.join()
+    reason = "see its log" if bind_error is None else bind_error
+    start = time.monotonic()
+    with pytest.raises(ListenerEndedError, match=f"18444 ended .*{reason}"):
+        wait_until_listening(manager, timeout=10)
+    assert time.monotonic() - start < 10
+
+
+def test_a_manager_not_yet_started_is_waited_for() -> None:
+    """ISS 1361: a thread not started yet has not ended, so the wait runs."""
+    manager = _AManagerThatGivesUp(None)
+    with pytest.raises(WaitTimeoutError, match=r"within 0\.2 seconds"):
+        wait_until_listening(manager, timeout=0.2)
 
 
 def test_a_bounded_call_hands_back_what_it_returned() -> None:

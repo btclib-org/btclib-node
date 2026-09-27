@@ -108,6 +108,18 @@ class WaitTimeoutError(TimeoutError):
         super().__init__(message)
 
 
+class ListenerEndedError(RuntimeError):
+    """A manager's thread ended without listening: its start failed.
+
+    Not a `WaitTimeoutError`: nothing more was worth waiting for, and the
+    manager's own log, or its `bind_error` where it has one, says why.
+    """
+
+    def __init__(self, message: str) -> None:
+        """Build the error around the caller's own account of the failure."""
+        super().__init__(message)
+
+
 def log_recorder() -> tuple[list[str], Callable[..., None]]:
     """Return a list and a stand-in for a `Logger` method that fills it.
 
@@ -147,7 +159,8 @@ def discourage_recorder() -> tuple[list[Any], Callable[[Any], bool]]:
 
 
 class _ListensOnAPort(Protocol):
-    # what wait_until_listening needs: a manager, or a stand-in for one
+    # what wait_until_listening needs: a manager, or a stand-in for one,
+    # and a manager's `threading.Thread` half where there is one
     listening: threading.Event
     port: int | None
 
@@ -530,11 +543,24 @@ def wait_until_listening(manager: _ListensOnAPort, timeout: float = 20) -> None:
     `async_connect` drops it, and nothing dials again. The
     test then spends its whole timeout waiting for a connection that was
     lost at the start, which is what #46 sees.
+
+    A manager whose thread has ended without listening, a failed bind
+    among the reasons, raises `ListenerEndedError` at once.
     """
     start = time.monotonic()
     while time.monotonic() - start < timeout:
         if manager.listening.is_set():
             return
+        if _ended_without_listening(manager):
+            # a failed bind ends the manager's thread at once: waiting
+            # out the timeout would only report it as slowness
+            # (btclib-org/btclib-node#1361)
+            elapsed = time.monotonic() - start
+            err_msg = f"{type(manager).__name__} on port {manager.port} ended "
+            err_msg += f"without listening after {elapsed:.2f}s"
+            bind_error = getattr(manager, "bind_error", None)
+            err_msg += f": {bind_error}" if bind_error else ", see its log"
+            raise ListenerEndedError(err_msg)
         time.sleep(0.025)
     elapsed = time.monotonic() - start
     # named here rather than left to `wait_until`, whose message is the
@@ -545,6 +571,18 @@ def wait_until_listening(manager: _ListensOnAPort, timeout: float = 20) -> None:
     err_msg = f"{type(manager).__name__} on port {manager.port} was not "
     err_msg += f"listening within {timeout} seconds (waited {elapsed:.2f}s)"
     raise WaitTimeoutError(err_msg)
+
+
+def _ended_without_listening(manager: _ListensOnAPort) -> bool:
+    """Whether `manager`'s thread was started and has ended, not listening.
+
+    `ident` is None until `start()`, and a node starts its managers from
+    its own thread, so a caller may reach this before that has happened.
+    A stand-in that is not a thread never ends.
+    """
+    if not isinstance(manager, threading.Thread) or manager.ident is None:
+        return False
+    return not manager.is_alive() and not manager.listening.is_set()
 
 
 # One `-rpcauth` user, for a test building an `RpcManager` or an

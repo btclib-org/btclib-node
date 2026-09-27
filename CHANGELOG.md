@@ -622,6 +622,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   replacements, ports of its own from 11000 to 25999, as Core's tests do**,
   not a port a bind to 0 picked, which anything could take first (closes #1340).
 
+### A listener that cannot bind is reported as one, not as a slow one
+
+- **`wait_until_listening` raises `ListenerEndedError` as soon as a manager's
+  thread ends without listening, naming its `bind_error` where it has one**,
+  where it waited out its timeout and reported one (closes #1361).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

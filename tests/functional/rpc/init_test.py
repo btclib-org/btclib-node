@@ -4,8 +4,11 @@
 
 """The stop RPC, and a node's own shutdown through it, over a real node."""
 
+import socket
 import time
 from typing import TYPE_CHECKING
+
+import pytest
 
 from btclib_node import Node
 from btclib_node.chains import RegTest
@@ -13,6 +16,7 @@ from btclib_node.config import Config
 from btclib_node.constants import NodeStatus
 from btclib_node.rpc.manager import RpcManager
 from tests import (
+    ListenerEndedError,
     generate_random_chain,
     get_random_port,
     rpc_client,
@@ -23,7 +27,29 @@ from tests import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-    import pytest
+
+def test_a_listener_that_cannot_bind_is_reported_at_once(tmp_path: Path) -> None:
+    """ISS 1361: a taken port ends the wait with the failure, not the timeout.
+
+    The node's RPC bind fails on a port another listener holds, and its
+    manager's thread ends: waiting the twenty seconds out would report
+    the failure as a listener too slow to come up.
+    """
+    with socket.create_server(("127.0.0.1", 0)) as holder:
+        port = holder.getsockname()[1]
+        node = Node(
+            config=Config(
+                chain="regtest", data_dir=tmp_path, allow_p2p=False, rpc_port=port
+            )
+        )
+        node.start()
+        start = time.monotonic()
+        try:
+            with pytest.raises(ListenerEndedError, match=f"port {port} ended"):
+                wait_until_listening(node.rpc_manager)
+        finally:
+            node.stop()
+    assert time.monotonic() - start < 10
 
 
 def test_init(tmp_path: Path) -> None:
