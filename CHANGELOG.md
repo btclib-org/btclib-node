@@ -604,6 +604,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`get_random_port` hands each xdist worker ports of its own from 11000 to
   25999, as Core's tests take theirs**, not a port the kernel picked for a
   bind to 0, which anything could take before bitcoind bound it (closes #1340).
+### A gossip adds services to an address, and a dialled peer's own replace them
+
+- **`add_addresses` ORs gossiped services into both rows of an endpoint, and
+  an outbound peer's `version` overwrites them** (closes #1276), as Core's
+  `AddSingle` and `SetServices` do, where a gossip replaced a known row's.
 
 ## v2026.9.24
 

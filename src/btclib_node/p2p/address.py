@@ -612,10 +612,15 @@ class PeerDB:
         """Merge `addresses` into `self.addresses`, checked and deduplicated.
 
         An address `_storable` refuses is dropped. Every other address
-        settles onto its own `endpoint_key`
-        row, up to `_MAX_ADDRESSES` distinct endpoints, past which a
-        genuinely new one is dropped too. Locked with `_addresses_lock`.
+        settles onto its own `endpoint_key` row, its services ORed into
+        those the row held, up to `_MAX_ADDRESSES` distinct endpoints,
+        past which a genuinely new one is dropped too. The services are
+        ORed into the endpoint's answered row as well, where it has one.
+        Takes `_addresses_lock`, then `_active_lock`, the two never
+        nested.
         """
+        # what each endpoint kept was gossiped with, for its answered row
+        gossiped: dict[bytes, ServiceFlags] = {}
         # a peer's word for when it last saw an address is not evidence,
         # and keeping it would make the one address several entries
         with self._addresses_lock, self._write_batch() as wb:
@@ -637,9 +642,16 @@ class PeerDB:
                 # out of the in-memory set.
                 if not _storable(address):
                     continue
-                known = replace(address, timestamp=0)
-                key = endpoint_key(known)
+                key = endpoint_key(address)
                 existing = by_endpoint.get(key)
+                # a gossip adds services to an endpoint already held and
+                # never takes one away, as Core's `AddSingle` ORs them in
+                # (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+                # v31.1 tag)
+                services = address.services
+                if existing is not None:
+                    services |= existing.services
+                known = replace(address, timestamp=0, services=services)
                 # the cap is on distinct endpoints, so updating one
                 # already held does not spend it -- only a genuinely new
                 # endpoint can run the table out of room
@@ -650,9 +662,66 @@ class PeerDB:
                 self.addresses.add(known)
                 self._known_keys.add(key)
                 by_endpoint[key] = known
+                gossiped[key] = (
+                    gossiped.get(key, ServiceFlags.NODE_NONE) | address.services
+                )
                 if wb is not None:
                     value = known.serialize(check_validity=False)
                     wb.put(_KNOWN + key, value)
+        # Core keeps one entry per endpoint, and `AddSingle` ORs gossip
+        # into a tried one as into a new one
+        with self._active_lock:
+            for key, services in gossiped.items():
+                position = self._active_index.get(key)
+                if position is not None:
+                    row = self.active_addresses[position]
+                    self._set_answered(
+                        position, replace(row, services=row.services | services)
+                    )
+
+    def set_services(self, address: NetworkAddressV2, services: ServiceFlags) -> None:
+        """Overwrite the services held for `address`'s endpoint.
+
+        Core's `AddrMan::SetServices`, which `ProcessMessage` calls with
+        an outbound peer's own `version` (`src/net_processing.cpp`,
+        `src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        tag): what a gossip only adds to, the peer's own word replaces.
+        The known row and the answered row are both written, standing for
+        Core's one entry, and an endpoint neither holds is not recorded.
+        Takes `_addresses_lock`, then `_active_lock`, the two never
+        nested.
+        """
+        key = endpoint_key(address)
+        with self._addresses_lock, self._write_batch() as wb:
+            if key not in self._known_keys:
+                return
+            existing = next(
+                known
+                for known in self.addresses
+                if (known.network_id, known.address, known.port)
+                == (address.network_id, address.address, address.port)
+            )
+            known = replace(existing, services=services)
+            self.addresses.discard(existing)
+            self.addresses.add(known)
+            if wb is not None:
+                wb.put(_KNOWN + key, known.serialize(check_validity=False))
+        with self._active_lock:
+            position = self._active_index.get(key)
+            if position is not None:
+                row = self.active_addresses[position]
+                self._set_answered(position, replace(row, services=services))
+
+    def _set_answered(self, position: int, row: NetworkAddressV2) -> None:
+        """Write `row` at `position` of `active_addresses`, and to the store.
+
+        The caller holds `_active_lock`.
+        """
+        self.active_addresses[position] = row
+        if self.db is not None:
+            self.db.put(
+                _ANSWERED + endpoint_key(row), row.serialize(check_validity=False)
+            )
 
     def get_active_addresses(self) -> list[NetworkAddressV2]:
         """Return `active_addresses`, pruned of every entry older than 3 hours.
