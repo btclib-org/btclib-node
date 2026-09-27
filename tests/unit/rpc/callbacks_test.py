@@ -167,6 +167,8 @@ def a_peer(
     relay: bool = True,
     inbound: bool = True,
     automatic: bool = False,
+    block_relay: bool = False,
+    feeler: bool = False,
     versioned: bool = True,
 ) -> Any:
     """Build a `P2pManager.connections` entry `get_peer_info` can read.
@@ -201,6 +203,8 @@ def a_peer(
         ping_sent=ping_sent,
         inbound=inbound,
         automatic=automatic,
+        block_relay=block_relay,
+        feeler=feeler,
         stats=PeerStats(),
         block_availability=BlockAvailability(),
         tx_announce_queue=[],
@@ -544,22 +548,46 @@ def test_a_peer_that_asked_for_no_relay_has_no_tx_relay() -> None:
 
 
 @pytest.mark.parametrize(
-    ("inbound", "automatic", "connection_type"),
+    ("inbound", "automatic", "block_relay", "feeler", "connection_type"),
     [
-        (True, False, "inbound"),
-        (False, True, "outbound-full-relay"),
-        (False, False, "manual"),
+        (True, False, False, False, "inbound"),
+        (False, True, False, False, "outbound-full-relay"),
+        (False, True, True, False, "block-relay-only"),
+        (False, True, False, True, "feeler"),
+        (False, False, False, False, "manual"),
     ],
 )
 def test_the_connection_type_is_core_s(
     inbound: bool,  # noqa: FBT001
     automatic: bool,  # noqa: FBT001
+    block_relay: bool,  # noqa: FBT001
+    feeler: bool,  # noqa: FBT001
     connection_type: str,
 ) -> None:
-    """Inbound, drawn by this node, or named by an operator."""
-    peer = a_peer(inbound=inbound, automatic=automatic)
+    """Inbound, drawn by this node as any kind, or named by an operator."""
+    peer = a_peer(
+        inbound=inbound, automatic=automatic, block_relay=block_relay, feeler=feeler
+    )
     (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
     assert info["connection_type"] == connection_type
+
+
+def test_a_block_relay_only_peer_has_no_tx_relay_nor_addr_relay() -> None:
+    """ISS 1095: no `TxRelay` whatever it asked for, and no address relay.
+
+    Core's `TxRelay`-backed fields answer 0 and false, and
+    `m_addr_relay_enabled` stays false, `SetupAddressRelay` refusing it.
+    """
+    peer = a_peer(inbound=False, automatic=True, block_relay=True, relay=True)
+    peer.stats = PeerStats(last_inv_sequence=42)
+    peer.tx_announce_queue = [b"\x01" * 32]
+    peer.feefilter = 1234
+    (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
+    assert info["relaytxes"] is False
+    assert info["last_inv_sequence"] == 0
+    assert info["inv_to_send"] == 0
+    assert info["minfeefilter"].text == "0.00000000"
+    assert info["addr_relay_enabled"] is False
 
 
 @pytest.mark.parametrize(
@@ -1337,13 +1365,54 @@ def test_mempool_acceptance_propagates_a_store_error_rather_than_reporting_it(
         mempool_accept(a_node(), _CONN, [[tx.serialize(include_witness=True).hex()]])
 
 
-def test_an_unparsable_transaction_is_named_as_such() -> None:
-    """`testmempoolaccept` reports a transaction that fails to parse as invalid.
+def decode_failure(rawtx: str) -> str:
+    """Core's own `-22` message for a `rawtx` that does not decode."""
+    return f"TX decode failed: {rawtx} Make sure the tx has at least one input."
 
-    'Invalid serialization' is reported rather than raising.
+
+def test_an_unparsable_transaction_ends_the_call() -> None:
+    """A `rawtx` that does not decode is `-22` for the call, as in Core.
+
+    `bitcoind` v31.1 on regtest: `testmempoolaccept '["zz","00"]'` is
+    `-22` "TX decode failed: zz Make sure the tx has at least one input.",
+    where this reported each entry "Invalid serialization"
+    (btclib-org/btclib-node#1329).
     """
-    (result,) = mempool_accept(a_node(), _CONN, [["not a transaction"]])
-    assert result == {"allowed": False, "reject-reason": "Invalid serialization"}
+    with pytest.raises(RpcError) as raised:
+        mempool_accept(a_node(), _CONN, [["zz", "00"]])
+    assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
+    assert raised.value.message == decode_failure("zz")
+
+
+def test_the_first_bad_rawtx_in_order_is_the_one_named() -> None:
+    """Each element is typed and then decoded, one after the other."""
+    with pytest.raises(RpcError) as raised:
+        mempool_accept(a_node(), _CONN, [["zz", 5]])
+    assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
+    with pytest.raises(RpcError) as raised:
+        mempool_accept(a_node(), _CONN, [[5, "zz"]])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+
+
+@pytest.mark.parametrize("count", [0, 26])
+def test_an_array_outside_one_to_twenty_five_is_refused(count: int) -> None:
+    """Core's `MAX_PACKAGE_COUNT`: `-8` for an empty or a 26-entry array.
+
+    `bitcoind` v31.1 on regtest answers both "Array must contain between
+    1 and 25 transactions."
+    """
+    raw = a_tx().serialize(include_witness=True).hex()
+    with pytest.raises(RpcError) as raised:
+        mempool_accept(a_node(), _CONN, [[raw] * count])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert raised.value.message == "Array must contain between 1 and 25 transactions."
+
+
+def test_twenty_five_rawtxs_are_each_answered(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The bound's own edge is inside it."""
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
+    raw = a_tx().serialize(include_witness=True).hex()
+    assert len(mempool_accept(a_node(), _CONN, [[raw] * 25])) == 25
 
 
 def test_test_mempool_accept_with_no_params_is_answered_the_usage() -> None:
@@ -1415,16 +1484,17 @@ def test_test_mempool_accept_a_rawtx_of_the_wrong_json_type_is_named(
     assert verified == []
 
 
-def test_a_rawtx_with_a_truncated_script_is_named_invalid() -> None:
-    """A script shorter than its declared length is an invalid serialization.
+def test_a_rawtx_with_a_truncated_script_is_a_decode_failure() -> None:
+    """A script shorter than its declared length does not decode either.
 
     `Tx.parse` raises `BTClibRuntimeError` there rather than
-    `BTClibValueError`, which answered `-32603 Internal Error` instead
-    of this entry's own verdict.
+    `BTClibValueError`, which answered `-32603 Internal Error`.
     """
     truncated = "02000000" + "01" + "00" * 32 + "00000000" + "05" + "0000"
-    (result,) = mempool_accept(a_node(), _CONN, [[truncated]])
-    assert result == {"allowed": False, "reject-reason": "Invalid serialization"}
+    with pytest.raises(RpcError) as raised:
+        mempool_accept(a_node(), _CONN, [[truncated]])
+    assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
+    assert raised.value.message == decode_failure(truncated)
 
 
 def test_a_relayed_transaction_is_answered_with_its_txid(
@@ -3446,3 +3516,10 @@ def test_a_stored_version_minus_one_header_is_answered_as_bitcoind_answers() -> 
     verbose = get_block_header(node, _CONN, [header.hash.hex()])
     assert isinstance(verbose, dict)
     assert (verbose["version"], verbose["versionHex"]) == (-1, "ffffffff")
+
+
+def test_a_feeler_has_no_tx_relay() -> None:
+    """ISS 1096: Core builds no `TxRelay` for a feeler either."""
+    peer = a_peer(inbound=False, automatic=True, feeler=True, relay=True)
+    (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
+    assert info["relaytxes"] is False

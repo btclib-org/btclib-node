@@ -75,7 +75,14 @@ class Logger(logging.Logger):
         # stood here before the branch was a third handler, built on
         # every path and used on none.
         handler: logging.Handler
-        handler = logging.FileHandler(log_path) if log_path else logging.StreamHandler()
+        # UTF-8 with `surrogateescape`: a setting holding a byte UTF-8 does
+        # not accept is logged as that byte, as Core writes the bytes it
+        # read (`cli._read_conf_file`)
+        handler = (
+            logging.FileHandler(log_path, encoding="utf-8", errors="surrogateescape")
+            if log_path
+            else logging.StreamHandler()
+        )
         # `%(asctime)s` in the format string is what makes `format` set
         # `record.asctime` before `formatMessage` reads it
         formatter = _LevelFormatter("%(asctime)s %(message)s")

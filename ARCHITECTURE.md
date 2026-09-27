@@ -38,7 +38,7 @@ p2p callbacks, the rpc callbacks and `update_chain`: its own "handled in
 same thread" comment needs no lock to back it, and a `cast` standing on
 the same invariant needs no runtime check either. `PeerDB`, the address
 book above, is not so lucky: `add_active_address` arrives from the
-`version` callback on `Node`'s thread, `get_active_addresses` from
+`verack` callback on `Node`'s thread, `get_active_addresses` from
 `manage_connections` on `P2pManager`'s, and `add_addresses` from both —
 gossip on one thread, a DNS answer on the other. It carries two locks
 for that reason, one per table, taken separately and never nested.
