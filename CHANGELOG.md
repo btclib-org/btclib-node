@@ -764,6 +764,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `duplicate-invalid`, on the wire and by `submitblock`, and no longer stored,
   from an outbound peer as misbehaviour** (closes #1344).
 
+### An inbound, manual or feeler peer is kept without `NODE_WITNESS`, as in Core
+
+- **`NODE_WITNESS` is required only where Core's `ExpectServicesFromConn`
+  holds** (closes #1138).
+
 ### Only a peer this node dialled is recorded as answered, as in Core
 
 - **An inbound peer's endpoint no longer enters the answered table, and a

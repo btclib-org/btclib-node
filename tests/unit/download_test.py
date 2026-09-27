@@ -1149,6 +1149,38 @@ def test_a_witnessless_peer_is_asked_for_pre_segwit_blocks_without_the_flag(
     assert {item.type_code for item in getdata.items} == {InventoryType.MSG_BLOCK}
 
 
+@pytest.mark.parametrize(
+    ("inbound", "automatic"), [(True, False), (False, True)], ids=["inbound", "manual"]
+)
+def test_a_witnessless_inbound_or_manual_peer_is_asked_for_msg_block(
+    index: BlockIndex, *, inbound: bool, automatic: bool
+) -> None:
+    """An inbound or manual peer without `NODE_WITNESS` is kept, and asked.
+
+    `_can_serve_witnesses` reads only `conn.version_message.services`,
+    never `conn.inbound` or `conn.automatic`, so the peer this node kept
+    for one of those two reasons (ISS 1138) is fetched from exactly as
+    `test_a_witnessless_peer_is_asked_for_pre_segwit_blocks_without_the_flag`
+    already shows for its own default shape. A feeler is not covered
+    here: `callbacks.version` drops one once its address is recorded,
+    before it could ever reach `block_download`.
+    """
+    chain = extend(index, 2)
+    witnessless = a_version(_FULL & ~ServiceFlags.NODE_WITNESS)
+    conn = knowing(
+        a_conn(1, version_message=witnessless, inbound=inbound, automatic=automatic),
+        chain[-1],
+    )
+    manager = make_manager([conn], block_index=index)
+    cast("Any", manager.node).chain.consensus.segwit_height = (
+        index.header_dict[chain[-1]].index + 1
+    )
+    manager.block_download()
+    (getdata,) = only(conn, GetData)
+    assert hashes_of(getdata) == chain
+    assert {item.type_code for item in getdata.items} == {InventoryType.MSG_BLOCK}
+
+
 def test_a_witnessless_peer_s_walk_ends_where_segwit_activates(
     index: BlockIndex,
 ) -> None:
