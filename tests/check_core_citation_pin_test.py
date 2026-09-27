@@ -53,12 +53,11 @@ _SCRIPT = (
 _GIT = shutil.which("git") or "git"
 
 _WORKFLOW = """\
-      - name: Install bitcoind
-        id: bitcoind
-        uses: ./.github/actions/install-bitcoind
-        with:
-          version: "31.1"
-          sha256: b80d9c3e04da78fb6f0569685673418cf686fadba9042d926d13fb87ff503f9e
+  regtest:
+    uses: btclib-org/.github/.github/workflows/reusable-integration-bitcoind.yml@main
+    with:
+      bitcoind-version: "31.1"
+      bitcoind-sha256: b80d9c3e04da78fb6f0569685673418cf686fadba9042d926d13fb87ff503f9e
 # connecting to bitcoind and reaching its tip took 0.11s measured
 # against a local build of Bitcoin Core v31.1.0 on an otherwise idle
 # machine
