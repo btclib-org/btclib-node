@@ -735,11 +735,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   and one at 70012 or below the final `alert`, as in Core** (closes #1204,
   closes #1205).
 
-### Only a peer this node dialled is recorded as answered, as in Core
-
-- **An inbound peer's endpoint no longer enters the answered table, and a
-  dialled one enters it at its own `version`, as Core's `AddrMan::Good`
-  does** (closes #1229, closes #1140).
 ### `codeql.yml`'s aggregate reads a lagging row again
 
 - **An unfinished `analyze` row is read again before it is accepted, and a
@@ -762,6 +757,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`DownloadManager` asks such a peer for `MSG_BLOCK` rather than
   `MSG_WITNESS_BLOCK`, and its walk over the peer's chain ends at the first
   block where SegWit is active** (closes #1208).
+
+### Only a peer this node dialled is recorded as answered, as in Core
+
+- **An inbound peer's endpoint no longer enters the answered table, and a
+  dialled one enters it at its own `version`, as Core's `AddrMan::Good`
+  does** (closes #1229, closes #1140).
 
 ## v2026.9.24
 
