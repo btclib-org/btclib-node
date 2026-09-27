@@ -227,6 +227,48 @@ def test_a_manager_whose_thread_has_not_run_yet_is_waited_for() -> None:
         manager.join()
 
 
+class _AManagerThatWasStoppedCleanly(threading.Thread):
+    """A manager stand-in that listened, then was stopped, like a real one.
+
+    `RpcManager.stop`/`P2pManager.stop` clear `listening` only once the
+    thread has already ended, so a manager that came up and was then
+    stopped ends its thread with `listening` unset too -- the same state
+    `_AManagerThatGivesUp` reaches by never listening at all. Setting
+    `ever_listened` beside `listening` and never clearing it, exactly as
+    the real managers do, is what tells the two apart.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.listening = threading.Event()
+        self.ever_listened = threading.Event()
+        self.port: int | None = 18444
+
+    @override
+    def run(self) -> None:
+        self.listening.set()
+        self.ever_listened.set()
+        self.listening.clear()
+
+
+def test_a_manager_that_listened_and_was_stopped_is_not_misdiagnosed() -> None:
+    """ISS 1361: a manager that came up and stopped is not `ListenerEndedError`.
+
+    Without `ever_listened`, this reaches the exact state
+    `test_a_manager_whose_thread_ended_is_not_waited_for` raises on --
+    thread ended, `listening` unset -- and would be misdiagnosed as a
+    bind that never came up, when it is a manager that worked and was
+    then stopped.
+    """
+    manager = _AManagerThatWasStoppedCleanly()
+    manager.start()
+    manager.join()
+    start = time.monotonic()
+    with pytest.raises(WaitTimeoutError, match=r"within 0\.2 seconds"):
+        wait_until_listening(manager, timeout=0.2)
+    assert time.monotonic() - start >= 0.2
+
+
 def test_a_bounded_call_hands_back_what_it_returned() -> None:
     """`call_within` returns the wrapped call's own result."""
     assert call_within(lambda: "answer") == "answer"

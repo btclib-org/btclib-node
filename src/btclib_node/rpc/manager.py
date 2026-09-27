@@ -88,6 +88,12 @@ class RpcManager(threading.Thread):
         # has bound anything, and a client that posts on the strength of
         # it is refused
         self.listening = threading.Event()
+        # set beside `listening`, in `_listen`, and never cleared:
+        # `stop` clears `listening` once this thread has already ended,
+        # which on its own reads exactly like a bind that never came up
+        # at all. This is what `wait_until_listening` reads to tell the
+        # two apart (btclib-org/btclib-node#1361).
+        self.ever_listened = threading.Event()
         # set by `run` once it has either set `listening` or given up on
         # it, which is what `start_listener` waits on
         self._start_attempted = threading.Event()
@@ -201,6 +207,7 @@ class RpcManager(threading.Thread):
             self._server_socket.close()
             raise
         self.listening.set()
+        self.ever_listened.set()
         return self._server_socket
 
     def start_listener(self) -> bool:

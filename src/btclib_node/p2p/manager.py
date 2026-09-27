@@ -593,6 +593,12 @@ class P2pManager(threading.Thread):
         # is refused -- and `dial` answers a refusal with None, which
         # `async_connect` drops. Nothing retries.
         self.listening = threading.Event()
+        # set beside `listening`, in `_bind`, and never cleared: `stop`
+        # clears `listening` once this thread has already ended, which
+        # on its own reads exactly like a bind that never came up at
+        # all. This is what `wait_until_listening` reads to tell the two
+        # apart (btclib-org/btclib-node#1361).
+        self.ever_listened = threading.Event()
         # set by `run` once it has bound, given up on binding, or been
         # told not to bind by `-listen=0`, which is what
         # `start_listener` waits on
@@ -1563,6 +1569,7 @@ class P2pManager(threading.Thread):
         # them after (btclib-org/btclib-node#1325)
         self._server_sockets = sockets
         self.listening.set()
+        self.ever_listened.set()
         return sockets
 
     def start_listener(self) -> bool:

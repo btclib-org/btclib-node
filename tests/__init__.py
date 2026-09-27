@@ -593,7 +593,7 @@ def wait_until_listening(manager: _ListensOnAPort, timeout: float = 20) -> None:
 
 
 def _ended_without_listening(manager: _ListensOnAPort) -> bool:
-    """Whether `manager`'s thread was started and has ended, not listening.
+    """Whether `manager`'s thread was started, has ended, and never listened.
 
     `ident` is None until the new thread sets it, and a node starts its
     managers from its own thread, so a caller may reach this first.
@@ -602,12 +602,24 @@ def _ended_without_listening(manager: _ListensOnAPort) -> bool:
     thread that has not run yet. `threading.enumerate()` lists a thread
     from `start()` until its `run` has returned. A stand-in that is not a
     thread never ends.
+
+    A manager stopped after coming up has, by then, both ended and
+    cleared `listening` -- `RpcManager.stop`/`P2pManager.stop` clear it
+    once the thread has already ended, on purpose, so that the flag
+    means only "there is a socket for this to wait on" -- which reads
+    exactly like a bind that never came up at all. `ever_listened`, read
+    here with `getattr` since a stand-in need not carry it, is what a
+    real manager sets beside `listening` and never clears, and is what
+    tells the two apart (btclib-org/btclib-node#1361).
     """
     if not isinstance(manager, threading.Thread) or manager.ident is None:
         return False
     if manager in threading.enumerate():
         return False
-    return not manager.listening.is_set()
+    if manager.listening.is_set():
+        return False
+    ever_listened = getattr(manager, "ever_listened", None)
+    return ever_listened is None or not ever_listened.is_set()
 
 
 # One `-rpcauth` user, for a test building an `RpcManager` or an
