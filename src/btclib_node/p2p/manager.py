@@ -616,14 +616,14 @@ class P2pManager(threading.Thread):
         # thread was started, which is true before `run` below has
         # scheduled anything, so a peer that dials on the strength of it
         # is refused -- and `dial` answers a refusal with None, which
-        # `async_connect` drops. Nothing retries.
-        self.listening = threading.Event()
-        # set beside `listening`, in `_bind`, and never cleared: `stop`
-        # clears `listening` once this thread has already ended, which
-        # on its own reads exactly like a bind that never came up at
-        # all. This is what `wait_until_listening` reads to tell the two
-        # apart (btclib-org/btclib-node#1361).
-        self.ever_listened = threading.Event()
+        # `async_connect` drops. Nothing retries. `ever_listened` is set
+        # beside it, in `_bind`, and never cleared: `stop` clears
+        # `listening` once this thread has already ended, which on its
+        # own reads exactly like a bind that never came up at all --
+        # what `wait_until_listening` reads to tell the two apart
+        # (btclib-org/btclib-node#1361). Assigned together: two
+        # statements here push `__init__` past ruff's statement limit.
+        self.listening, self.ever_listened = threading.Event(), threading.Event()
         # set by `run` once it has bound, given up on binding, or been
         # told not to bind by `-listen=0`, which is what
         # `start_listener` waits on
