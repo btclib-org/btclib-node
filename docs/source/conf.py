@@ -179,6 +179,7 @@ nitpick_ignore = [
     ("py:class", "__annotationlib_name_3__"),
     ("py:class", "__annotationlib_name_4__"),
     ("py:class", "__annotationlib_name_5__"),
+    ("py:class", "__annotationlib_name_6__"),
     ("py:class", "asyncio.events.AbstractEventLoop"),
     ("py:class", "BinaryData"),
     ("py:class", "ScriptFlag"),

@@ -142,8 +142,8 @@ def peers(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Peers]:
         # reason connected to what any test here asks of it
         # (btclib-org/btclib-node#1008). Handing `client` the chain already
         # downloaded, exactly as done for `server` below, is what
-        # `download.py`'s own `_refresh_block_window` reads as nothing left
-        # to request, matching the header-only peer this same module
+        # `find_next_blocks_to_download` reads as nothing left to
+        # request, matching the header-only peer this same module
         # already carries a citation for never building the pool either
         # (btclib-org/btclib-node#262) -- the connection itself, the
         # version handshake and every message a test sends or reads stay a

@@ -371,14 +371,14 @@ def test_a_filter_index_reads_only_its_own_keys(
     reopened.block_db.close()
 
 
-def test_the_index_is_caught_up_before_the_node_is_built(
+def test_the_index_is_caught_up_when_the_node_loads(
     regtest_node: Callable[[], Node],
 ) -> None:
-    """Every filter missing at start-up is rebuilt before Node exists.
+    """Every filter missing at start-up is rebuilt before `Node.load` returns.
 
-    Node.__init__ is where the two databases meet, and a node that
-    advertises the service bit with a half-built index would be
-    promising filters it cannot serve.
+    `Node.load` is where the two databases meet, ahead of the P2P
+    listener, and a node that advertises the service bit with a
+    half-built index would be promising filters it cannot serve.
     """
     node = regtest_node()
     chain = a_chain(node, 2)
@@ -675,7 +675,7 @@ def test_a_long_catch_up_writes_as_it_goes(
 ) -> None:
     """catch_up flushes at `_CATCH_UP_BATCH` rather than holding it all pending.
 
-    It runs inside Node.__init__, so holding the whole index in memory
+    It runs inside Node.load, so holding the whole index in memory
     is what a mainnet-sized chain cannot afford, and writing nothing
     until the end is what makes an interrupted catch-up start over.
     With the batch size patched to 2, `pending` never grows past it,

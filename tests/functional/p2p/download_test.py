@@ -70,6 +70,7 @@ def test_download(tmp_path: Path) -> None:
             allow_rpc=False,
         )
     )
+    bootstrap_node.load()
     bootstrap_node.status = NodeStatus.HeaderSynced
     bootstrap_block_index = bootstrap_node.chainstate.block_index
     for start in range(0, length, 2000):
@@ -136,6 +137,7 @@ def test_download(tmp_path: Path) -> None:
                     allow_rpc=False,
                 )
             )
+            node.load()
             # Each copy is asserted whole on its own, before it ever talks
             # to a peer: `main_node`'s own final assertion below is
             # satisfiable through `bootstrap_node` alone, so it cannot

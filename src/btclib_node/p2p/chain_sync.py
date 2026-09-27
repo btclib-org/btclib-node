@@ -16,10 +16,10 @@ function makes before it, during initial block download.
 
 Core applies them to different sets of outbound connections, which
 `_outbound_or_block_relay` and `_full_outbound` name after Core's
-`IsOutboundOrBlockRelayConn` and `IsFullOutboundConn`. This node opens
-one kind of automatic outbound connection, Core's `OUTBOUND_FULL_RELAY`,
-so today both answer `Connection.automatic`. A block is a hash here
-where Core holds a `CBlockIndex*`, as in `block_availability`.
+`IsOutboundOrBlockRelayConn` and `IsFullOutboundConn`: every automatic
+outbound connection but a feeler for the first, and for the second those
+of them not block-relay-only. A block is a hash here where Core holds a
+`CBlockIndex*`, as in `block_availability`.
 """
 
 from __future__ import annotations
@@ -75,12 +75,12 @@ def _outbound_or_block_relay(conn: Connection) -> bool:
     `ConsiderEviction` reads it, and so does the check for insufficient
     work.
     """
-    return conn.automatic
+    return conn.automatic and not conn.feeler
 
 
 def _full_outbound(conn: Connection) -> bool:
     """Core's `IsFullOutboundConn`, which the protection reads."""
-    return conn.automatic
+    return conn.automatic and not conn.block_relay and not conn.feeler
 
 
 def _locator(block_index: BlockIndex, start: bytes) -> list[bytes]:

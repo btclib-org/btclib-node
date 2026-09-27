@@ -42,15 +42,17 @@ from btclib.p2p.addrv2 import (
 
 from btclib_node.db import KeyValueStore
 from btclib_node.exceptions import UnsupportedAddressTypeError
-from btclib_node.p2p.eviction import is_routable
+from btclib_node.p2p.eviction import get_network, is_routable
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
     from pathlib import Path
 
     from btclib_node.chains import Chain
+    from btclib_node.p2p.eviction import Network
 
 __all__ = [
+    "RECENT_TRY_SECONDS",
     "SEEDS_SERVICE_FLAGS",
     "PeerDB",
     "can_connect",
@@ -260,6 +262,12 @@ _ANSWERED = b"answered-"
 # does for `self.addresses`.
 _MAX_ADDRESSES = 10000
 
+# `ThreadOpenConnections`' own window (`src/net.cpp`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a draw tried less than
+# this long ago is passed over. The longest any reader of
+# `PeerDB.last_try` looks back, so it is also how long a try is kept.
+RECENT_TRY_SECONDS = 10 * 60
+
 # Core's `ADDRMAN_HORIZON` (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7,
 # the v31.1 tag): an address not seen for this long is terrible
 _ADDRMAN_HORIZON = 30 * 24 * 3600
@@ -409,7 +417,7 @@ class PeerDB:
         # `active_addresses` at the position it found -- two statements, not one
         # -- and `get_active_addresses`, where its prune removed a row,
         # reassigns the list and then rebuilds the index against it -- likewise
-        # two. The first runs on `Node`'s own thread, off `callbacks.verack`;
+        # two. The first runs on `Node`'s own thread, off `callbacks.version`;
         # the second runs on `P2pManager`'s, off `manage_connections`, which
         # calls it every few minutes regardless of what else that loop is doing
         # (#71). Interleaved without a lock, a position read before a prune can
@@ -428,6 +436,13 @@ class PeerDB:
         # btclib-org/btclib-node#71
         self.addr_sample: list[NetworkAddressV2] = []
         self.addr_sample_expiration = 0.0
+        # Core's `AddrInfo::m_last_try`, by `endpoint_key`: when this
+        # node last tried to connect to an endpoint either table holds.
+        # In memory only, as `AddrInfo`'s serialization leaves
+        # `m_last_try` out of `peers.dat` (`src/addrman_impl.h`, at
+        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `attempt` writes it
+        # and `last_try` reads it, both on `P2pManager`'s thread alone.
+        self._last_try: dict[bytes, float] = {}
 
         # `None` is a table kept in memory only, which is what every
         # test here wants and what `data_dir` was before this: assigned
@@ -599,7 +614,9 @@ class PeerDB:
         """
         return self.address_sampler()()
 
-    def address_sampler(self) -> Callable[[], NetworkAddressV2 | None]:
+    def address_sampler(
+        self, *, new_only: bool = False, network: Network | None = None
+    ) -> Callable[[], NetworkAddressV2 | None]:
         """Return a draw over the dialable addresses of both tables, as of now.
 
         Each call of what this returns is one `_select`, between the
@@ -608,9 +625,17 @@ class PeerDB:
         answered endpoint is left out of the gossiped side, where
         `addresses` holds it too, as Core's `Good_` moves an entry from
         the new table to the tried one and `Select_` flips between two
-        tables that never hold one endpoint twice.
+        tables that never hold one endpoint twice. With `new_only` the
+        draw is from the gossiped side alone, Core's `Select(true, ...)`
+        that a feeler makes, and with `network` from both sides kept to
+        the one network, as `CNetAddr::GetNetwork` names it: Core's
+        `Select(false, {network})`, which an extra network peer makes.
         """
-        answered = [addr for addr in self.get_active_addresses() if can_connect(addr)]
+        answered = [
+            addr
+            for addr in self.get_active_addresses()
+            if can_connect(addr) and (network is None or get_network(addr) == network)
+        ]
         tried = {_endpoint(addr) for addr in answered}
         # Drawn from the addresses that can be dialled, rather than from
         # the whole table with a retry on the ones that cannot: a table
@@ -628,9 +653,11 @@ class PeerDB:
             known = [
                 address
                 for address in self.addresses
-                if can_connect(address) and _endpoint(address) not in tried
+                if can_connect(address)
+                and _endpoint(address) not in tried
+                and (network is None or get_network(address) == network)
             ]
-        return partial(_select, answered, known)
+        return partial(_select, [] if new_only else answered, known)
 
     def add_addresses(self, addresses: Iterable[NetworkAddressV2]) -> None:
         """Merge `addresses` into `self.addresses`, checked and deduplicated.
@@ -746,6 +773,32 @@ class PeerDB:
             self.db.put(
                 _ANSWERED + endpoint_key(row), row.serialize(check_validity=False)
             )
+
+    def attempt(self, address: NetworkAddressV2) -> None:
+        """Record a try to connect to `address`, as Core's `Attempt_` does.
+
+        `AddrManImpl::Attempt_` (`src/addrman.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag) sets `m_last_try` on
+        the entry addrman holds for the address, and does nothing where
+        it holds none; so is an endpoint `_known_keys` does not hold left
+        out here, an answered one being known too. A try older than
+        `RECENT_TRY_SECONDS` is dropped, since nothing reads one.
+        """
+        key = endpoint_key(address)
+        with self._addresses_lock:
+            if key not in self._known_keys:
+                return
+        now = time.time()
+        self._last_try = {
+            tried: when
+            for tried, when in self._last_try.items()
+            if now - when < RECENT_TRY_SECONDS
+        }
+        self._last_try[key] = now
+
+    def last_try(self, address: NetworkAddressV2) -> float:
+        """Return when `address` was last tried, `0.0` for never or long ago."""
+        return self._last_try.get(endpoint_key(address), 0.0)
 
     def get_active_addresses(self) -> list[NetworkAddressV2]:
         """Return `active_addresses`, pruned of every entry `_aged_out` names.
