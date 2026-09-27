@@ -199,8 +199,8 @@ def a_manager() -> Iterator[AManagerFactory]:
         # of this same tree on one machine, or a second worker of this
         # same run (btclib-org/btclib-node#678). `get_random_port()`
         # drawn fresh on every call, rather than once as a mutable
-        # default would be, is what keeps every manager built without
-        # an explicit `port=` off both.
+        # default would be, is what gives every manager built without
+        # an explicit `port=` a port of its own.
         if port is None:
             port = get_random_port()
         node = SimpleNamespace(
@@ -2920,6 +2920,29 @@ def test_stop_closes_a_connection_accepted_in_its_own_race_window(
     assert landed == [True]
     # a closed socket's own fileno is -1; still >= 0 is still open
     assert ours.fileno() == -1
+
+
+def test_the_listening_sockets_are_kept_before_listening_is_set(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1325: a thread `listening` wakes finds `_server_sockets` filled."""
+    manager = a_manager(port=get_random_port())
+    seen: list[list[socket.socket]] = []
+
+    class Recording(threading.Event):
+        @override
+        def set(self) -> None:
+            seen.append(list(manager._server_sockets))
+            super().set()
+
+    manager.listening = Recording()
+    try:
+        assert manager.start_listener()
+        assert seen
+        assert seen[0]
+    finally:
+        manager.stop()
+        manager.join(timeout=10)
 
 
 def test_stop_closes_the_listening_socket_even_if_the_accept_task_does_not(
