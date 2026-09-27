@@ -35,11 +35,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from bitcoin_core_rpc import BitcoinCoreRpcClient, http_request
-from btclib.block import Block, BlockHeader, build
+from btclib.block import Block, BlockHeader, build, witness_commitment_output
 from btclib.block.mining import candidate_block_header, mine
 from btclib.block.proof_of_work import REGTEST_POW_LIMIT_BITS
 from btclib.exceptions import BTClibValueError
 from btclib.script import script
+from btclib.script.witness import Witness
 from btclib.tx.limits import COINBASE_MATURITY
 from btclib.tx.out_point import OutPoint
 from btclib.tx.tx import Tx
@@ -306,6 +307,24 @@ def build_block(
     # regtest block meets; brute_force_nonce has already checked this
     # header against the limit that does apply to it.
     return Block(header, transactions, check_validity=False)
+
+
+def generate_segwit_block(
+    *extra: Tx, nonce: bytes = bytes(32), witness: bytes = b"\x01" * 3
+) -> Block:
+    """Return a solved block at height 1 committing to a witness it carries.
+
+    A coinbase, a spend whose witness is `witness`, then `extra`; the
+    coinbase's own witness is `nonce`, and its last output the BIP141
+    commitment over all of them.
+    """
+    coinbase = generate_coinbase(height=1)
+    spend = generate_random_transaction()
+    spend.vin[0].script_witness = Witness([witness])
+    transactions = [coinbase, spend, *extra]
+    coinbase.vout = [*coinbase.vout, witness_commitment_output(transactions, nonce)]
+    coinbase.vin[0].script_witness = Witness([nonce])
+    return build_block(RegTest().genesis.hash, transactions, 0)
 
 
 def generate_random_chain(

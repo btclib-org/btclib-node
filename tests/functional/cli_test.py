@@ -94,6 +94,7 @@ def test_a_run_through_the_console_script_stays_one_process(tmp_path: Path) -> N
             allow_rpc=False,
         )
     )
+    bootstrap.load()
     bootstrap.status = NodeStatus.HeaderSynced
     block_index = bootstrap.chainstate.block_index
     block_index.add_headers(headers)

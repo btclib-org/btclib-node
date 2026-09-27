@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from btclib_node.chains import Chain
 
 __all__ = [
+    "RECENT_TRY_SECONDS",
     "SEEDS_SERVICE_FLAGS",
     "PeerDB",
     "can_connect",
@@ -260,6 +261,12 @@ _ANSWERED = b"answered-"
 # does for `self.addresses`.
 _MAX_ADDRESSES = 10000
 
+# `ThreadOpenConnections`' own window (`src/net.cpp`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a draw tried less than
+# this long ago is passed over. The longest any reader of
+# `PeerDB.last_try` looks back, so it is also how long a try is kept.
+RECENT_TRY_SECONDS = 10 * 60
+
 
 def _storable(address: NetworkAddressV2) -> bool:
     """Whether Core's addrman would hold `address` at all.
@@ -404,6 +411,13 @@ class PeerDB:
         # btclib-org/btclib-node#71
         self.addr_sample: list[NetworkAddressV2] = []
         self.addr_sample_expiration = 0.0
+        # Core's `AddrInfo::m_last_try`, by `endpoint_key`: when this
+        # node last tried to connect to an endpoint either table holds.
+        # In memory only, as `AddrInfo`'s serialization leaves
+        # `m_last_try` out of `peers.dat` (`src/addrman_impl.h`, at
+        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `attempt` writes it
+        # and `last_try` reads it, both on `P2pManager`'s thread alone.
+        self._last_try: dict[bytes, float] = {}
 
         # `None` is a table kept in memory only, which is what every
         # test here wants and what `data_dir` was before this: assigned
@@ -722,6 +736,32 @@ class PeerDB:
             self.db.put(
                 _ANSWERED + endpoint_key(row), row.serialize(check_validity=False)
             )
+
+    def attempt(self, address: NetworkAddressV2) -> None:
+        """Record a try to connect to `address`, as Core's `Attempt_` does.
+
+        `AddrManImpl::Attempt_` (`src/addrman.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag) sets `m_last_try` on
+        the entry addrman holds for the address, and does nothing where
+        it holds none; so is an endpoint `_known_keys` does not hold left
+        out here, an answered one being known too. A try older than
+        `RECENT_TRY_SECONDS` is dropped, since nothing reads one.
+        """
+        key = endpoint_key(address)
+        with self._addresses_lock:
+            if key not in self._known_keys:
+                return
+        now = time.time()
+        self._last_try = {
+            tried: when
+            for tried, when in self._last_try.items()
+            if now - when < RECENT_TRY_SECONDS
+        }
+        self._last_try[key] = now
+
+    def last_try(self, address: NetworkAddressV2) -> float:
+        """Return when `address` was last tried, `0.0` for never or long ago."""
+        return self._last_try.get(endpoint_key(address), 0.0)
 
     def get_active_addresses(self) -> list[NetworkAddressV2]:
         """Return `active_addresses`, pruned of every entry older than 3 hours.

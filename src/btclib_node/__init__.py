@@ -21,6 +21,7 @@ import signal
 import sys
 import threading
 import time
+from contextlib import ExitStack
 from math import log2
 from multiprocessing.pool import Pool, ThreadPool
 from typing import TYPE_CHECKING, override
@@ -199,9 +200,10 @@ class Node(threading.Thread):
     """A bitcoin full node, and the thread that runs its main loop.
 
     `config` (or a default `Config` when none is given) is what says
-    which chain, which data directory and which ports; `__init__` opens
-    every database under that directory and wires the p2p and RPC
-    managers to this node before `start()` ever runs `run`'s loop.
+    which chain, which data directory and which ports. `__init__` locks
+    that directory and opens the log; `load` opens every database under
+    it and wires the p2p manager to this node, and `run` calls it once
+    the RPC listener is up.
 
     Building one touches no process-wide state: `install_signal_handlers`
     below is the separate, explicit call a caller makes for that, and
@@ -221,7 +223,7 @@ class Node(threading.Thread):
     def __init__(
         self, config: Config | None = None, *, allow_reimported_main: bool = False
     ) -> None:
-        """Open every database `config` names, and wire the two managers up.
+        """Lock the directories `config` names, open the log, and wire RPC up.
 
         `allow_reimported_main` opts out of the check below: pass it
         where building a `Node` off the main process, under a start
@@ -303,38 +305,6 @@ class Node(threading.Thread):
         log_path = self.data_dir / config.log_path if config.log_path else None
         self.logger = Logger(log_path, debug=config.debug)
 
-        self.chainstate = Chainstate(self.data_dir, self.chain, self.logger)
-        self.block_db = BlockDB(self.data_dir, self.logger, config.blocks_dir)
-        # Core's own `Chainstate::LoadGenesisBlock` (`src/validation.cpp:4974`,
-        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) writes the genesis
-        # block to disk at start, so `getblock` and a peer's `getdata` are
-        # answered for it as for any other block. Not once pruning has
-        # reached height 0: Core writes it only where its block index does
-        # not know genesis yet, never back over a prune.
-        if self.block_db.pruned_up_to < 0:
-            self.block_db.add_block(self.chain.genesis_block)
-        # the two halves of a filter live in different databases -- the
-        # block and its reverse patch in one, the index in the other --
-        # so catching up is here, where both are built, and before
-        # anything is listening: the version message this node sends
-        # says it serves filters for the whole chain
-        self.chainstate.filter_index.catch_up(
-            self.chainstate.block_index.active_chain, self.block_db
-        )
-        self.mempool = Mempool(self.logger)
-
-        # update_chain's own record of the most recent block its trial
-        # loop refused and why: the hash failed_hash already names
-        # there, paired with the exception _validate_block or
-        # check_transactions raised, rather than only the fixed line the
-        # except block logs. Never cleared on a success, so it is the
-        # last rejection this node has hit rather than this call's own
-        # outcome -- read by nothing in this tree but a rejection test,
-        # taken right after the one connect() call meant to trip it,
-        # which is the only reading that needs telling apart from a
-        # stale one. btclib-org/btclib-node#587
-        self.last_rejected_block: tuple[bytes, BaseException] | None = None
-
         # A `getcfilters` answer `p2p.callbacks.get_cfilters` could not
         # finish scheduling under its own pacing bound, keyed by
         # connection id: the connection itself and the heights still
@@ -382,6 +352,82 @@ class Node(threading.Thread):
         # bitcoin/bitcoin@ca7162cde5) starts true the same way.
         self.is_initial_block_download = True
 
+        self.p2p_port: int | None
+        if config.p2p_port:
+            self.p2p_port = config.p2p_port
+        else:
+            self.p2p_port = None
+
+        self.rpc_port: int | None
+        if config.rpc_port:
+            self.rpc_port = config.rpc_port
+        else:
+            self.rpc_port = None
+        self.rpc_manager = RpcManager(self, self.rpc_port)
+        # whether `load` has opened the stores `run`'s teardown closes
+        self.loaded = False
+        # the closes of what `load` opens, in order, which
+        # `_load_or_abort` runs where a later store fails
+        self._opened = ExitStack()
+        # set by `run` once `load` has run or start-up has ended before
+        # it, which `start` waits on
+        self._load_attempted = threading.Event()
+
+    def load(self) -> None:
+        """Open the address table, the ban list, the chainstate and the blocks.
+
+        Core's `AppInitMain` loads `peers.dat` and `banlist.json` at step
+        6 and the chainstate and block index at step 7 (`src/init.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), after step 4a has
+        started the RPC server, so a start that fails there has created
+        none of them. `run` calls this once the RPC listener is up; a node
+        driven without `start` calls it itself. A second call does
+        nothing.
+        """
+        if self.loaded:
+            return
+        peer_db = PeerDB(self.chain, self.data_dir)
+        self._opened.callback(peer_db.close)
+        # Core's `banlist.json`, in the chain's own directory
+        ban_man = BanMan(
+            self.data_dir / "banlist.json", self.logger, self.config.ban_time
+        )
+        self.p2p_manager = P2pManager(self, self.p2p_port, peer_db, ban_man)
+        self._opened.callback(self.p2p_manager.loop.close)
+        self.chainstate = Chainstate(self.data_dir, self.chain, self.logger)
+        self._opened.callback(self.chainstate.close)
+        self.block_db = BlockDB(self.data_dir, self.logger, self.config.blocks_dir)
+        self._opened.callback(self.block_db.close)
+        # Core's own `Chainstate::LoadGenesisBlock` (`src/validation.cpp:4974`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) writes the genesis
+        # block to disk at start, so `getblock` and a peer's `getdata` are
+        # answered for it as for any other block. Not once pruning has
+        # reached height 0: Core writes it only where its block index does
+        # not know genesis yet, never back over a prune.
+        if self.block_db.pruned_up_to < 0:
+            self.block_db.add_block(self.chain.genesis_block)
+        # the two halves of a filter live in different databases -- the
+        # block and its reverse patch in one, the index in the other --
+        # so catching up is here, where both are built, and before the
+        # P2P listener: the version message this node sends
+        # says it serves filters for the whole chain
+        self.chainstate.filter_index.catch_up(
+            self.chainstate.block_index.active_chain, self.block_db
+        )
+        self.mempool = Mempool(self.logger)
+
+        # update_chain's own record of the most recent block its trial
+        # loop refused and why: the hash failed_hash already names
+        # there, paired with the exception _validate_block or
+        # check_transactions raised, rather than only the fixed line the
+        # except block logs. Never cleared on a success, so it is the
+        # last rejection this node has hit rather than this call's own
+        # outcome -- read by nothing in this tree but a rejection test,
+        # taken right after the one connect() call meant to trip it,
+        # which is the only reading that needs telling apart from a
+        # stale one. btclib-org/btclib-node#587
+        self.last_rejected_block: tuple[bytes, BaseException] | None = None
+
         # This node's own active-chain tip height, at the moment
         # `main._finalize_fork` last moved it -- read by
         # `p2p.connection.Connection.own_version`, for an outbound
@@ -407,27 +453,8 @@ class Node(threading.Thread):
         # runs, matching genesis already sitting at `active_chain`'s own
         # index 0. btclib-org/btclib-node#722
         self.best_height = len(self.chainstate.block_index.active_chain) - 1
-
         self.download_manager = DownloadManager(self, self.logger)
-
-        self.p2p_port: int | None
-        if config.p2p_port:
-            self.p2p_port = config.p2p_port
-        else:
-            self.p2p_port = None
-        peer_db = PeerDB(self.chain, self.data_dir)
-        # Core's `banlist.json`, in the chain's own directory
-        ban_man = BanMan(
-            self.data_dir / "banlist.json", self.logger, self.config.ban_time
-        )
-        self.p2p_manager = P2pManager(self, self.p2p_port, peer_db, ban_man)
-
-        self.rpc_port: int | None
-        if config.rpc_port:
-            self.rpc_port = config.rpc_port
-        else:
-            self.rpc_port = None
-        self.rpc_manager = RpcManager(self, self.rpc_port)
+        self.loaded = True
 
     @property
     def worker_pool(self) -> Pool:
@@ -591,12 +618,70 @@ class Node(threading.Thread):
             return True
         return False
 
+    def _load_or_abort(self) -> bool:
+        """Run `load`, and answer whether it opened every store.
+
+        A store that cannot be opened ends start-up as Core's step 7
+        does where it cannot load the block index: its exception's text
+        is the init error `cli.main` prints, and what `load` opened before
+        it is closed again, `run`'s teardown closing only what a finished
+        `load` opened.
+        """
+        try:
+            self.load()
+        except Exception as error:
+            self.logger.exception("Could not open the node's stores")
+            self._opened.close()
+            self._abort_start([str(error)])
+            return False
+        return True
+
     def _abort_start(self, init_errors: list[str]) -> None:
         """End start-up on `init_errors`, logged and kept for `cli.main`."""
         self.init_errors = init_errors
         for message in init_errors:
             self.logger.error(message)
         self.terminate_flag.set()
+
+    @override
+    def start(self) -> None:
+        """Start the node's thread, and wait until its stores are open.
+
+        Or until start-up has ended before them, `init_errors` saying
+        why: `run` opens the stores only once the RPC listener is up, and
+        a caller of `start` reads them as soon as it returns.
+        """
+        super().start()
+        self._load_attempted.wait()
+
+    def _start_rpc_and_load(self) -> bool:
+        """Start the RPC listener, then `load`; answer whether both did.
+
+        The stores open after the RPC listener and before the P2P one,
+        as Core loads `peers.dat` and the chainstate at steps 6 and 7: a
+        node whose RPC start fails has created neither. `start` returns
+        once this has, either way.
+        """
+        try:
+            if self.rpc_port and not self.rpc_manager.start_listener():
+                self._abort_start([RPC_INIT_ERROR])
+                return False
+            return self._load_or_abort()
+        finally:
+            self._load_attempted.set()
+
+    def _stop_managers_and_close_stores(self) -> None:
+        """Stop both managers and close the stores, those `load` opened."""
+        if self.loaded:
+            self.p2p_manager.stop()
+        self.rpc_manager.stop()
+
+        if self.loaded:
+            self.p2p_manager.peer_db.close()
+            # Core's `~BanMan` dumps the list one last time
+            self.p2p_manager.ban_man.dump()
+            self.chainstate.close()
+            self.block_db.close()
 
     @override
     def run(self) -> None:
@@ -616,9 +701,12 @@ class Node(threading.Thread):
         # The P2P listener is waited on too, `connman` failing to bind
         # with `-listen` on ending `AppInitMain` the same way
         # (`src/init.cpp:2283-2285`, same sha).
-        if self.rpc_port and not self.rpc_manager.start_listener():
-            self._abort_start([RPC_INIT_ERROR])
-        elif self.p2p_port and not self.p2p_manager.start_listener():
+        #
+        # A stop asked for while the stores load ends start-up there, as
+        # Core returns on `ShutdownRequested` after loading its block
+        # index, before step 12 (`src/init.cpp:1887-1890`, same sha).
+        started = self._start_rpc_and_load() and not self.terminate_flag.is_set()
+        if started and self.p2p_port and not self.p2p_manager.start_listener():
             # the bind's own reason first, as Core's `CConnman::Bind`
             # shows it before `CConnman::Start` shows its own
             # (`src/net.cpp:3444-3447` and `3497-3503`,
@@ -628,7 +716,7 @@ class Node(threading.Thread):
             self._abort_start(
                 [P2P_INIT_ERROR] if bind_error is None else [bind_error, P2P_INIT_ERROR]
             )
-        elif self.p2p_port:
+        elif started and self.p2p_port:
             # `config.connect` and `config.addnode` together, once the
             # listener is bound, or skipped under `-listen=0`.
             #
@@ -651,14 +739,7 @@ class Node(threading.Thread):
                 time.sleep(IDLE_SLEEP_SECONDS)
             if self._step_chain():
                 break
-        self.p2p_manager.stop()
-        self.rpc_manager.stop()
-
-        self.p2p_manager.peer_db.close()
-        # Core's `~BanMan` dumps the list one last time
-        self.p2p_manager.ban_man.dump()
-        self.chainstate.close()
-        self.block_db.close()
+        self._stop_managers_and_close_stores()
 
         # joined before the read below, not asked for: the same race
         # the attribute's own comment above names
