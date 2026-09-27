@@ -469,6 +469,23 @@ class Connection:
     # peer for headers announcements, which is asked once. A class
     # default for the same reason as `time_received`.
     sent_sendheaders: bool = False
+    # Core's `IsBlockOnlyConn()`: an automatic outbound connection this
+    # node opened as `BLOCK_RELAY`, which relays blocks alone -- no
+    # transaction and no address traffic either way. Set by
+    # `P2pManager.create_connection` before this connection's task is
+    # scheduled, and never changed after; a class default for the same
+    # reason as `time_received`.
+    block_relay: bool = False
+    # Core's `IsFeelerConn()`: an automatic outbound connection opened to
+    # learn whether an address answers, dropped as soon as its `version`
+    # has been read. Set and kept as `block_relay` is.
+    feeler: bool = False
+    # Core's `m_last_block_announcement`: when this peer last sent a
+    # header new here and with more work than the active tip, which
+    # `callbacks.headers` sets and `DownloadManager` evicts the extra
+    # full-relay peer by. A class default for the reason `time_received`
+    # gives.
+    last_block_announcement: int = 0
     # Core's `Peer::m_addr_relay_enabled` (`net_processing.cpp`, at
     # bitcoin/bitcoin@9be056a8a7): whether this peer takes part in
     # address relay. Set where Core calls `SetupAddressRelay`: by
@@ -530,10 +547,13 @@ class Connection:
         self.status: P2pConnStatus = P2pConnStatus.Open
         self.inbound: bool = inbound
         # Whether `P2pManager._maybe_dial_more_peers` dialled this off its
-        # own draw -- Core's `OUTBOUND_FULL_RELAY`, the kind that method's
-        # target counts, where an inbound peer and a `-connect`/`-addnode`
-        # one (Core's `MANUAL`) are not. `P2pManager.create_connection`
-        # sets it.
+        # own draw -- Core's `OUTBOUND_FULL_RELAY`, its `BLOCK_RELAY`
+        # where `block_relay` is set too, or its `FEELER` where `feeler`
+        # is, where an inbound peer and a `-connect`/`-addnode` one
+        # (Core's `MANUAL`) are not. Every automatic connection holds an
+        # outbound grant; the full-relay and block-relay-only targets
+        # count the first two kinds, and not a feeler.
+        # `P2pManager.create_connection` sets it.
         self.automatic: bool = False
         # Core's `CNode::m_prefer_evict`: whether this peer was accepted
         # from a discouraged host, which `select_node_to_evict` reads.
@@ -769,6 +789,24 @@ class Connection:
         # own thread instead -- the comment beside it argues why that
         # is where this has to happen. btclib-org/btclib-node#518
         self.loop.call_soon_threadsafe(self._close)
+
+    def stop_when_sent(self) -> None:
+        """Stop once every message already handed to `send` is written.
+
+        Core sets `fDisconnect` on a feeler after `PushMessage` has
+        already written what it sent, and a bare `stop` here would close
+        the socket ahead of it. Each `send` schedules its write through
+        `run_coroutine_threadsafe` in turn, and this call after them;
+        callbacks run in that order, and each write queues on
+        `_write_lock` ahead of this one, which the lock hands on in the
+        order it was asked for.
+        """
+        asyncio.run_coroutine_threadsafe(self._stop_when_sent(), self.loop)
+
+    async def _stop_when_sent(self) -> None:
+        async with self._write_lock:
+            pass
+        self.stop()
 
     def _close(self) -> None:
         """Unregister `self.client`'s reader and writer, then close it.
@@ -1155,15 +1193,15 @@ class Connection:
             # reading this here, off `Node`'s own thread's writes without
             # a lock, is argued. btclib-org/btclib-node#722
             start_height=self.manager.node.best_height,
-            # Core's own `fRelay` is about the connection -- a
-            # block-relay-only peer, a feeler, `-blocksonly`
-            # (`RejectIncomingTxs`, src/net_processing.cpp) -- and never
-            # about `IsInitialBlockDownload()`. None of this node's
-            # connections are any of those, so this is always True and
-            # never has to be revised once the node catches up: what a
-            # peer sends before then is dropped on arrival instead,
+            # Core's own `fRelay` is `!RejectIncomingTxs` -- false for a
+            # block-relay-only peer, a feeler and under `-blocksonly`
+            # (src/net_processing.cpp, at bitcoin/bitcoin@9be056a8a7, the
+            # v31.1 tag) -- and never about `IsInitialBlockDownload()`.
+            # Of those this node has the first two, so the flag never
+            # has to be revised once the node catches up: what a peer
+            # sends before then is dropped on arrival instead,
             # `p2p/callbacks.tx`. btclib-org/btclib-node#129
-            relay=True,
+            relay=not self.block_relay and not self.feeler,
         )
 
     def send_ping(self) -> None:
