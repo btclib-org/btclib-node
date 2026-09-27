@@ -723,6 +723,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   window and in-flight limit, and dropped after Core's timeouts** (closes
   #1179).
 
+### `setban` takes an onion or I2P host, and each address `getaddrinfo` reads
+
+- **An onion or I2P host is banned as itself** (closes #1218), and an
+  address is what `getaddrinfo` reads, `1.2.3` among them, with an IPv6
+  scope written and no part of the ban's key (closes #1220).
+
 ### An old peer is sent Core's nonceless ping and its final alert
 
 - **A peer at protocol version 60000 or below is sent a `ping` with no nonce,
