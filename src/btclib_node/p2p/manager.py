@@ -374,7 +374,12 @@ class P2pManager(threading.Thread):
     a connection between them are this class's own state for that.
     """
 
-    def __init__(
+    # PLR0915 (too many statements) counts one assignment per piece of
+    # this manager's own state, each set once here and argued beside it;
+    # that grows with every table the manager keeps, as `Config.__init__`'s
+    # own exemption argues for its fields, not with a body that wants
+    # splitting.
+    def __init__(  # noqa: PLR0915
         self,
         node: Node,
         port: int | None,
