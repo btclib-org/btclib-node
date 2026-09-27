@@ -654,6 +654,35 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   refused start leaves `.lock`, `blocks/` and the log and no store,
   `bitcoind` opening its stores only at its steps 6 and 7.
 
+### `REVIEWING.md` lets a filed issue carry its fix
+
+- **An issue filed from a review may say the fix where one is known**,
+  the filing bar standing as it was (issue btclib-org/.github#1378).
+
+### Two outbound peers are block-relay-only, as in Core
+
+- **Past eight full-relay outbound peers, two more are dialled that relay
+  blocks alone** (closes #1095), as `CConnman::ThreadOpenConnections` opens
+  `BLOCK_RELAY`, and a third on its five-minute timer once the tip is recent.
+
+### Feelers test a gossiped address, as in Core
+
+- **Every two minutes on average a short-lived connection is dialled to a
+  gossiped address not in the answered table** (closes #1096), as Core's
+  `FEELER`: asked for addresses, recorded as answered, then dropped.
+
+### Two block-relay-only peers are kept across a restart, as in Core
+
+- **The block-relay-only peers held at shutdown are written to `anchors.dat`
+  and dialled first at the next start** (closes #1097), two at most, in the
+  file format bitcoind v31.1.0 reads and writes.
+
+### An extra outbound peer for a stale tip or an unreached network, as in Core
+
+- **One more full-relay peer is dialled for a stale tip, and one on a
+  network none of the eight is on** (closes #1100), each followed by the
+  eviction of a full-relay peer past the target by `EvictExtraOutboundPeers`.
+
 ### `bitcoin.conf` is read as bytes, as `bitcoind` reads it
 
 - **A byte that is not UTF-8 no longer stops the node** (closes #1290): it is
