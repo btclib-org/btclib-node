@@ -492,8 +492,14 @@ def test_build_config_refuses_an_argument_that_is_not_an_option(
 
 @pytest.mark.parametrize(
     ("argv", "conf", "ban_time"),
-    [([], "", 86400), (["-bantime=100"], "", 100), ([], "bantime=5\n", 5)],
-    ids=["Core's default", "command line", "file"],
+    [
+        ([], "", 86400),
+        (["-bantime=100"], "", 100),
+        ([], "bantime=5\n", 5),
+        # ISS 1324: `GetIntArg` saturates at the `int64_t` end
+        (["-bantime=99999999999999999999"], "", 2**63 - 1),
+    ],
+    ids=["Core's default", "command line", "file", "past int64"],
 )
 def test_build_config_reads_bantime(
     tmp_path: Path, argv: list[str], conf: str, ban_time: int
