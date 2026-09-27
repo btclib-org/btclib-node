@@ -670,7 +670,14 @@ class Node(threading.Thread):
         """
         try:
             if self.rpc_port and not self.rpc_manager.start_listener():
-                self._abort_start([RPC_INIT_ERROR])
+                # a `-rpcallowip` value's own refusal first, as Core shows
+                # `InitHTTPAllowList`'s message before `InitError`'s
+                init_error = self.rpc_manager.init_error
+                self._abort_start(
+                    [RPC_INIT_ERROR]
+                    if init_error is None
+                    else [init_error, RPC_INIT_ERROR]
+                )
                 return False
             return self._load_or_abort()
         finally:
