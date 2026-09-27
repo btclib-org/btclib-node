@@ -95,6 +95,7 @@ from btclib_node.exceptions import (
     MisbehavingError,
     MissingPrevoutError,
     NonStandardTxError,
+    TxRejectedError,
 )
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
@@ -1983,6 +1984,32 @@ def test_a_refused_transaction_is_not_reverified_on_resubmission(
         raise BTClibValueError(err_msg)
 
     monkeypatch.setattr(cb, "verify_mempool_acceptance", consensus_invalid)
+    transaction = a_transaction()
+    node = a_data_node()
+    payload = TxMsg(transaction, include_witness=True).serialize()
+    tx(node, payload, a_peer(id=3))
+    tx(node, payload, a_peer(id=4))
+    assert calls == [transaction.hash]
+    assert not node.mempool.contains_tx(transaction)
+
+
+def test_a_fee_refusal_is_recorded_and_the_peer_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fee under the floor is a refusal like any other, recorded once.
+
+    `TxRejectedError` is a `BTClibValueError`, so `tx` catches it rather
+    than letting it reach `_drop`, and a resend is not verified again.
+    btclib-org/btclib-node#1245
+    """
+    calls: list[bytes] = []
+
+    def fee_refusal(node: Any, transaction: Any) -> NoReturn:
+        calls.append(transaction.hash)
+        reason, details = "min relay fee not met", "0 < 11"
+        raise TxRejectedError(reason, details)
+
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", fee_refusal)
     transaction = a_transaction()
     node = a_data_node()
     payload = TxMsg(transaction, include_witness=True).serialize()

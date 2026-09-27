@@ -139,20 +139,28 @@ def find(
     state: BlockAvailability,
     count: int = 16,
     minimum_chain_work: int = 0,
+    segwit_height: int = 2**32,
     *,
     in_flight: Mapping[bytes, int] | None = None,
     peer_id: int = 1,
     limited: bool = False,
+    can_serve_witnesses: bool = True,
 ) -> tuple[list[bytes], int | None]:
-    """Run `find_next_blocks_to_download` with nothing in flight by default."""
+    """Run `find_next_blocks_to_download` with nothing in flight by default.
+
+    `can_serve_witnesses` defaults to `True`, so `segwit_height`'s own
+    default -- past any height a test reaches -- never trips.
+    """
     return find_next_blocks_to_download(
         block_index,
         state,
         count,
         minimum_chain_work,
+        segwit_height,
         in_flight={} if in_flight is None else in_flight,
         peer_id=peer_id,
         limited=limited,
+        can_serve_witnesses=can_serve_witnesses,
     )
 
 
@@ -226,6 +234,42 @@ def test_the_walk_ends_at_an_invalid_block(index: BlockIndex) -> None:
     state = BlockAvailability(best_known=chain[2])
     assert find(index, state) == ([], None)
     assert state.last_common == chain[0]
+
+
+def test_the_walk_ends_at_the_first_block_a_witnessless_peer_cannot_serve(
+    index: BlockIndex,
+) -> None:
+    """SegWit active and the peer without `NODE_WITNESS`: the walk ends there.
+
+    Blocks below that height are still chosen.
+    """
+    chain = extend(index, 3)
+    state = BlockAvailability(best_known=chain[2])
+    segwit_height = index.header_dict[chain[1]].index
+    assert find(
+        index, state, segwit_height=segwit_height, can_serve_witnesses=False
+    ) == ([chain[0]], None)
+    assert state.last_common == GENESIS
+
+
+def test_a_held_block_at_or_past_segwit_does_not_move_last_common_either(
+    index: BlockIndex,
+) -> None:
+    """A witnessless peer's walk ends there whether or not this node holds it.
+
+    Core's `CanServeWitnesses` check runs ahead of the "already have this
+    block" one in `FindNextBlocks`, so `last_common` does not advance past
+    a block this peer could not have served even where it is held.
+    """
+    chain = extend(index, 2)
+    index.set_downloaded(chain[0])
+    index.set_downloaded(chain[1])
+    state = BlockAvailability(best_known=chain[1])
+    segwit_height = index.header_dict[chain[0]].index
+    assert find(
+        index, state, segwit_height=segwit_height, can_serve_witnesses=False
+    ) == ([], None)
+    assert state.last_common == GENESIS
 
 
 def test_the_last_common_block_is_reset_once_the_peer_leaves_its_chain(

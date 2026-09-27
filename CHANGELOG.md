@@ -746,6 +746,18 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **Its comments name `skip-reason-prefix`, left empty, in place of
   `exclude-classname`** (issue btclib-org/.github#1419).
 
+### The mempool refuses a fee under its floor, as Core
+
+- **A fee under the rolling minimum or `min_relay_feerate` for the vsize is
+  refused in Core's words, which both RPCs report** (closes #1245); a reorg's
+  re-added transactions are exempt.
+
+### A block asked of a peer without `NODE_WITNESS` carries no witness flag
+
+- **`DownloadManager` asks such a peer for `MSG_BLOCK` rather than
+  `MSG_WITNESS_BLOCK`, and its walk over the peer's chain ends at the first
+  block where SegWit is active** (closes #1208).
+
 ### The JSON-RPC listener binds `::1` and `127.0.0.1`, as `bitcoind` does
 
 - **Each loopback is bound and logged in turn, one that fails is warned

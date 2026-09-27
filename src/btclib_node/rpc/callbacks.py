@@ -15,7 +15,7 @@ call every entry, `stop` included, unless `-rpcwhitelistdefault` holds.
 
 import math
 import time
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import RPCErrorCode, chain_from_network
 from btclib.block import Block, median_time_past
@@ -27,7 +27,7 @@ from btclib.tx import Tx
 from btclib_node.chainstate.block_index import block_time
 from btclib_node.config import split_host_port
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, USER_AGENT
-from btclib_node.exceptions import MissingPrevoutError
+from btclib_node.exceptions import MissingPrevoutError, TxRejectedError
 from btclib_node.main import (
     is_block_failed,
     parent_lookup,
@@ -1607,36 +1607,45 @@ def test_mempool_accept(
                 f"TX decode failed: {rawtx} Make sure the tx has at least one input."
             )
             raise RpcError(RPCErrorCode.DESERIALIZATION_ERROR, err_msg) from error
-    out: list[dict[str, Any]] = []
-    for tx in txs:
-        tx_res: dict[str, Any] = {
-            "txid": tx.id,
-            "wtxid": tx.hash,
-            "allowed": False,
-            "vsize": tx.vsize,
-        }
-        # Only these two, matching Core's own shape: testmempoolaccept's
-        # per-tx loop (src/rpc/mempool.cpp:379-430, at
-        # bitcoin/bitcoin@ca7162cde5) never catches anything itself --
-        # it only ever branches on the TxValidationResult
-        # ProcessTransaction always returns rather than raises, so a
-        # genuine C++ exception escaping that loop is not one tx's own
-        # verdict, it propagates out of the RPC call entirely, to
-        # ExecuteCommand's own catch (src/rpc/server.cpp:874-887, same
-        # commit), which is this tree's handle_rpc (rpc/main.py) --
-        # already logging and answering INTERNAL_ERROR for exactly this,
-        # the same uniform catch send_raw_transaction below already
-        # relies on for anything past its own two excepts
-        # (btclib-org/btclib-node#668).
-        try:
-            verify_mempool_acceptance(node, tx)
-            tx_res["allowed"] = True
-        except BTClibValueError:
-            tx_res["reject-reason"] = _INVALID_SCRIPT_REASON
-        except MissingPrevoutError:
-            tx_res["reject-reason"] = _MISSING_PREVOUTS_REASON
-        out.append(tx_res)
-    return out
+    return [_mempool_accept_verdict(node, tx) for tx in txs]
+
+
+def _mempool_accept_verdict(node: Node, tx: Tx) -> dict[str, Any]:
+    """Return `test_mempool_accept`'s own per-tx verdict for `tx`.
+
+    Only these two, matching Core's own shape: testmempoolaccept's
+    per-tx loop (src/rpc/mempool.cpp:379-430, at
+    bitcoin/bitcoin@ca7162cde5) never catches anything itself -- it
+    only ever branches on the TxValidationResult ProcessTransaction
+    always returns rather than raises, so a genuine C++ exception
+    escaping that loop is not one tx's own verdict, it propagates out
+    of the RPC call entirely, to ExecuteCommand's own catch
+    (src/rpc/server.cpp:874-887, same commit), which is this tree's
+    handle_rpc (rpc/main.py) -- already logging and answering
+    INTERNAL_ERROR for exactly this, the same uniform catch
+    send_raw_transaction below already relies on for anything past its
+    own two excepts (btclib-org/btclib-node#668).
+    """
+    tx_res: dict[str, Any] = {
+        "txid": tx.id,
+        "wtxid": tx.hash,
+        "allowed": False,
+        "vsize": tx.vsize,
+    }
+    try:
+        verify_mempool_acceptance(node, tx)
+        tx_res["allowed"] = True
+    except TxRejectedError as exc:
+        # Core's own pair for every reason but `missing-inputs`
+        # (`src/rpc/mempool.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+        # v31.1 tag). btclib-org/btclib-node#1245
+        tx_res["reject-reason"] = exc.reason
+        tx_res["reject-details"] = str(exc)
+    except BTClibValueError:
+        tx_res["reject-reason"] = _INVALID_SCRIPT_REASON
+    except MissingPrevoutError:
+        tx_res["reject-reason"] = _MISSING_PREVOUTS_REASON
+    return tx_res
 
 
 def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> str:
@@ -1646,7 +1655,8 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
     refuses, or that `Mempool.add_tx` evicts right back out under its
     own size limit is each refused with the reject reason and code
     cited beside its own raise, below; one kept is broadcast to peers
-    and its txid answered.
+    and its txid answered, and so is one whose txid is already held,
+    without being verified again.
     """
     if not params:
         # the same mechanism get_block_hash's own missing-argument case
@@ -1686,6 +1696,22 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
             RPCErrorCode.DESERIALIZATION_ERROR,
             "TX decode failed. Make sure the tx has at least one input.",
         ) from error
+    held = node.mempool.get_tx(tx.id)
+    if held is not None:
+        # This txid is already held, possibly under a different witness
+        # -- and therefore a different wtxid -- than what was just
+        # resubmitted. Core's `BroadcastTransaction` (`node/transaction.cpp`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) does not submit it
+        # to the mempool again, where it would now be judged afresh -- a
+        # feerate floor risen since, or a transaction a reorg re-added under
+        # no floor at all (btclib-org/btclib-node#1245) -- and reannounces
+        # the mempool's own copy: "Use the mempool's wtxid for
+        # reannouncement". Announcing the resubmitted object's own wtxid
+        # would queue a wtxid nothing holds: `Mempool.add_tx`'s own comment
+        # on #277 is that defect, one call site over.
+        # btclib-org/btclib-node#293
+        node.p2p_manager.broadcast_raw_transaction(held, node.mempool.fees[held.hash])
+        return tx.id.hex()
     try:
         fee = verify_mempool_acceptance(node, tx)
     except MissingPrevoutError as exc:
@@ -1693,6 +1719,10 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
         # (src/rpc/protocol.h): a transaction this node cannot verify
         # for want of what it spends, not one it refuses
         raise RpcError(RPCErrorCode.VERIFY_ERROR, _MISSING_PREVOUTS_REASON) from exc
+    except TxRejectedError as exc:
+        # the same code, with Core's own reason and details as the
+        # message, `state.ToString()`. btclib-org/btclib-node#1245
+        raise RpcError(RPCErrorCode.VERIFY_REJECTED, str(exc)) from exc
     except BTClibValueError as exc:
         # Core's own RPC_VERIFY_REJECTED: the mempool looked at the
         # transaction and refused it
@@ -1708,35 +1738,14 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
     # `tx.id.hex()` regardless of that boolean would tell the caller
     # this transaction was kept when it was not -- the same defect #277
     # fixed on the peer-to-peer path, `p2p/callbacks.py`'s `tx` handler.
-    kept = node.mempool.add_tx(tx, fee)
-    if kept:
-        to_announce = tx
-    elif tx.id in node.mempool.txid_index:
-        # `add_tx` declined for the other reason it can: this txid is
-        # already held, possibly under a different witness -- and
-        # therefore a different wtxid -- than what was just resubmitted.
-        # Announcing the resubmitted object's own wtxid here, rather
-        # than the mempool's, would queue a wtxid nothing holds:
-        # `Mempool.add_tx`'s own comment on #277 is the defect this
-        # substitution avoids, one call site over. `BroadcastTransaction`
-        # (`node/transaction.cpp`, at bitcoin/bitcoin@58a7869f86) makes the
-        # identical substitution for the identical reason -- "Use the
-        # mempool's wtxid for reannouncement" -- rather than
-        # reannouncing what was just submitted. The type is wider than
-        # the invariant: `get_tx` cannot answer `None` once `txid_index`
-        # holds `tx.id`, checked on this very branch, so this is a cast
-        # rather than a check dead on every path that reaches it,
-        # matching `Connection.own_version`'s own `self.manager.port`.
-        # btclib-org/btclib-node#293
-        to_announce = cast("Tx", node.mempool.get_tx(tx.id))
-    else:
-        # Neither already held nor kept: `Mempool._evict_to_limit` ran
+    if not node.mempool.add_tx(tx, fee):
+        # Not kept: `Mempool._evict_to_limit` ran
         # and took this transaction right back out for being the worst
         # one held once `Mempool.bytesize_limit` was restored -- exactly
         # the case `_MEMPOOL_FULL_REASON`'s own comment names, Core's
         # `TX_RECONSIDERABLE` "mempool full". btclib-org/btclib-node#294
         raise RpcError(RPCErrorCode.VERIFY_REJECTED, _MEMPOOL_FULL_REASON)
-    node.p2p_manager.broadcast_raw_transaction(to_announce, fee)
+    node.p2p_manager.broadcast_raw_transaction(tx, fee)
     return tx.id.hex()
 
 
