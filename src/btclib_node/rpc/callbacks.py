@@ -15,7 +15,7 @@ call every entry, `stop` included, unless `-rpcwhitelistdefault` holds.
 
 import math
 import time
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import RPCErrorCode, chain_from_network
 from btclib.block import Block, median_time_past
@@ -1609,7 +1609,8 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
     refuses, or that `Mempool.add_tx` evicts right back out under its
     own size limit is each refused with the reject reason and code
     cited beside its own raise, below; one kept is broadcast to peers
-    and its txid answered.
+    and its txid answered, and so is one whose txid is already held,
+    without being verified again.
     """
     if not params:
         # the same mechanism get_block_hash's own missing-argument case
@@ -1649,6 +1650,22 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
             RPCErrorCode.DESERIALIZATION_ERROR,
             "TX decode failed. Make sure the tx has at least one input.",
         ) from error
+    held = node.mempool.get_tx(tx.id)
+    if held is not None:
+        # This txid is already held, possibly under a different witness
+        # -- and therefore a different wtxid -- than what was just
+        # resubmitted. Core's `BroadcastTransaction` (`node/transaction.cpp`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) does not submit it
+        # to the mempool again, where it would now be judged afresh -- a
+        # feerate floor risen since, or a transaction a reorg re-added under
+        # no floor at all (btclib-org/btclib-node#1245) -- and reannounces
+        # the mempool's own copy: "Use the mempool's wtxid for
+        # reannouncement". Announcing the resubmitted object's own wtxid
+        # would queue a wtxid nothing holds: `Mempool.add_tx`'s own comment
+        # on #277 is that defect, one call site over.
+        # btclib-org/btclib-node#293
+        node.p2p_manager.broadcast_raw_transaction(held, node.mempool.fees[held.hash])
+        return tx.id.hex()
     try:
         fee = verify_mempool_acceptance(node, tx)
     except MissingPrevoutError as exc:
@@ -1675,35 +1692,14 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
     # `tx.id.hex()` regardless of that boolean would tell the caller
     # this transaction was kept when it was not -- the same defect #277
     # fixed on the peer-to-peer path, `p2p/callbacks.py`'s `tx` handler.
-    kept = node.mempool.add_tx(tx, fee)
-    if kept:
-        to_announce = tx
-    elif tx.id in node.mempool.txid_index:
-        # `add_tx` declined for the other reason it can: this txid is
-        # already held, possibly under a different witness -- and
-        # therefore a different wtxid -- than what was just resubmitted.
-        # Announcing the resubmitted object's own wtxid here, rather
-        # than the mempool's, would queue a wtxid nothing holds:
-        # `Mempool.add_tx`'s own comment on #277 is the defect this
-        # substitution avoids, one call site over. `BroadcastTransaction`
-        # (`node/transaction.cpp`, at bitcoin/bitcoin@58a7869f86) makes the
-        # identical substitution for the identical reason -- "Use the
-        # mempool's wtxid for reannouncement" -- rather than
-        # reannouncing what was just submitted. The type is wider than
-        # the invariant: `get_tx` cannot answer `None` once `txid_index`
-        # holds `tx.id`, checked on this very branch, so this is a cast
-        # rather than a check dead on every path that reaches it,
-        # matching `Connection.own_version`'s own `self.manager.port`.
-        # btclib-org/btclib-node#293
-        to_announce = cast("Tx", node.mempool.get_tx(tx.id))
-    else:
-        # Neither already held nor kept: `Mempool._evict_to_limit` ran
+    if not node.mempool.add_tx(tx, fee):
+        # Not kept: `Mempool._evict_to_limit` ran
         # and took this transaction right back out for being the worst
         # one held once `Mempool.bytesize_limit` was restored -- exactly
         # the case `_MEMPOOL_FULL_REASON`'s own comment names, Core's
         # `TX_RECONSIDERABLE` "mempool full". btclib-org/btclib-node#294
         raise RpcError(RPCErrorCode.VERIFY_REJECTED, _MEMPOOL_FULL_REASON)
-    node.p2p_manager.broadcast_raw_transaction(to_announce, fee)
+    node.p2p_manager.broadcast_raw_transaction(tx, fee)
     return tx.id.hex()
 
 
