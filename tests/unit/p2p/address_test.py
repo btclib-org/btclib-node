@@ -26,6 +26,7 @@ from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2, is_embedded_ipv6
 
 import btclib_node.p2p.address as address_module
 from btclib_node.p2p.address import (
+    RECENT_TRY_SECONDS,
     SEEDS_SERVICE_FLAGS,
     PeerDB,
     can_connect,
@@ -1069,6 +1070,62 @@ def test_a_table_holding_nothing_leaves_the_draw_to_the_other(table: str) -> Non
         drawn = peer_db.random_address()
         assert drawn is not None
         assert drawn.address == address.address
+
+
+@pytest.mark.parametrize("table", ["known", "answered", "neither"])
+def test_a_try_is_recorded_for_an_endpoint_a_table_holds(table: str) -> None:
+    """ISS 1277: Core's `Attempt_` sets `m_last_try` on an entry it finds.
+
+    An endpoint neither table holds gets no record, as `Attempt_` bails
+    out where addrman does not find the address. An answered endpoint is
+    a known one too, `add_active_address` taking no other.
+    """
+    peer_db = a_peer_db()
+    address = peer_address("1.2.3.4", 8333)
+    if table != "neither":
+        peer_db.add_addresses([address])
+    if table == "answered":
+        peer_db.add_active_address(address)
+    before = time.time()
+    peer_db.attempt(address)
+    if table == "neither":
+        assert peer_db.last_try(address) == 0.0
+    else:
+        assert peer_db.last_try(address) >= before
+
+
+def test_a_try_too_old_to_read_is_forgotten(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ISS 1277: a try `RECENT_TRY_SECONDS` old is dropped at the next one."""
+    peer_db = a_peer_db()
+    old = peer_address("1.2.3.4", 8333)
+    new = peer_address("5.6.7.8", 8333)
+    peer_db.add_addresses([old, new])
+    now = time.time()
+    monkeypatch.setattr(time, "time", lambda: now - RECENT_TRY_SECONDS)
+    peer_db.attempt(old)
+    monkeypatch.setattr(time, "time", lambda: now)
+    peer_db.attempt(new)
+    assert peer_db.last_try(old) == 0.0
+    assert peer_db.last_try(new) == now
+
+
+def test_a_try_does_not_survive_a_restart(tmp_path: Path) -> None:
+    """ISS 1277: `peers.dat` does not serialize `m_last_try`, nor does this.
+
+    `AddrInfo`'s `SERIALIZE_METHODS` writes `m_last_success` and
+    `nAttempts` beside the address and its source, and not `m_last_try`
+    (`src/addrman_impl.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    """
+    first = a_peer_db(data_dir=tmp_path)
+    address = peer_address("1.2.3.4", 8333)
+    first.add_addresses([address])
+    first.attempt(address)
+    assert first.last_try(address) > 0
+    first.close()
+    second = a_peer_db(data_dir=tmp_path)
+    assert second.addresses == {address}
+    assert second.last_try(address) == 0.0
+    second.close()
 
 
 def test_a_known_address_survives_a_restart(tmp_path: Path) -> None:

@@ -29,6 +29,7 @@ from btclib_node.config import split_host_port
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, USER_AGENT
 from btclib_node.exceptions import MissingPrevoutError, TxRejectedError
 from btclib_node.main import (
+    is_block_failed,
     parent_lookup,
     prune_up_to_height,
     verify_mempool_acceptance,
@@ -37,7 +38,7 @@ from btclib_node.p2p.address import ip_and_port, peer_address
 from btclib_node.p2p.banman import Subnet, is_valid_host, lookup_host, lookup_subnet
 from btclib_node.p2p.eviction import Network, is_valid, net_class
 from btclib_node.rpc.connection import RawJSON
-from btclib_node.rpc.errors import RpcError, bool_param, type_error
+from btclib_node.rpc.errors import RpcError, bool_param, json_type_name, type_error
 
 if TYPE_CHECKING:
     from btclib_node import Node
@@ -677,7 +678,10 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     try:
         block.assert_valid(node.chain.pow_limit_bits)
     except BTClibException as error:
-        block_index.invalidate(block_hash)
+        parent = block_index.get_block_info(block.header.previous_block_hash)
+        segwit = parent.index + 1 >= node.chain.consensus.segwit_height
+        if is_block_failed(block, check_witness_root=segwit):
+            block_index.invalidate(block_hash)
         return str(error)
 
     node.block_db.add_block(block)
@@ -1561,11 +1565,28 @@ def test_mempool_accept(
         # handler body runs, the same as blockhash and txid elsewhere in
         # this file
         raise type_error(1, "rawtxs", rawtxs, "array")
+    for rawtx in rawtxs:
+        if not isinstance(rawtx, str):
+            # Core reads every `rawtx` through `UniValue::get_str` before
+            # it validates any of them (`src/rpc/mempool.cpp`,
+            # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so one
+            # element of the wrong type ends the whole call with that
+            # accessor's own message, unwrapped: an array's elements are
+            # not among what the argument type check before the handler
+            # body reads. btclib-org/btclib-node#1253
+            message = (
+                f"JSON value of type {json_type_name(rawtx)} is not of expected "
+                "type string"
+            )
+            raise RpcError(RPCErrorCode.TYPE_ERROR, message)
     out: list[dict[str, Any]] = []
     for rawtx in rawtxs:
         try:
             tx = Tx.parse(rawtx)
-        except BTClibValueError:
+        except BTClibException:
+            # `BTClibException`, `send_raw_transaction`'s own clause below:
+            # a script shorter than its declared length raises
+            # `BTClibRuntimeError`, not `BTClibValueError`
             out.append({"allowed": False, "reject-reason": "Invalid serialization"})
             continue
 
