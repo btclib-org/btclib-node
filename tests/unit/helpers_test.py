@@ -161,7 +161,7 @@ class _AManagerThatGivesUp(threading.Thread):
     def __init__(self, bind_error: str | None) -> None:
         super().__init__()
         self.listening = threading.Event()
-        self.port = 18444
+        self.port: int | None = 18444
         self.bind_error = bind_error
 
     @override
