@@ -333,10 +333,13 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     `sendaddrv2` ahead of it where the common version reaches
     `WTXID_RELAY_VERSION` and, to an inbound peer, this node's own
     `version` ahead of all three; setting up address relay with a peer
-    this node dialled, and asking it for addresses; and recording whether
-    the peer asked to have transactions relayed. A feeler then has its
-    address recorded as answered, and is dropped once those are written,
-    as Core's `VERSION` handler ends one (`net_processing.cpp`, at
+    this node dialled, and asking it for addresses; recording a peer
+    this node dialled as answered, right where Core calls
+    `AddrMan::Good` -- not waiting for its own `verack`, which may never
+    come (#1169); and recording whether the peer asked to have
+    transactions relayed. A feeler then has its address recorded as
+    answered, and is dropped once those are written, as Core's
+    `VERSION` handler ends one (`net_processing.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
     """
     if conn.version_message is not None:
@@ -447,6 +450,30 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
         conn.send(GetAddr())
         conn.addr_token_bucket += MAX_ADDR_TO_SEND
 
+    # Right after that `getaddr`, Core calls `m_addrman.Good(pfrom.addr)`
+    # for a peer this node dialled (`net_processing.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag), under
+    # `!pfrom.IsInboundConn()` alone -- not waiting for this connection's
+    # own `verack`, which a peer that answers `version` and then stalls
+    # never sends, and which `manager.py`'s own 60-second drop of a
+    # pending connection (btclib-org/btclib-node#1169) makes a real,
+    # reachable case here. `conn.address` is what this node dialled, and
+    # the socket connecting there already answered.
+    # Not a block-relay-only peer's, and not a feeler's, which `version`
+    # records below, once, at the point Core drops it: the table this
+    # writes into is what `getaddr` answers from, so recording a
+    # block-relay-only peer there would advertise the link, which Core
+    # avoids by never calling `AddrMan::Connected` for one
+    # (`FinalizeNode`); its own `AddrMan::Good`, which this table cannot
+    # record apart from that, is not reproduced (btclib-org/btclib-node#1226).
+    # An inbound peer is not recorded here or anywhere: its connection
+    # proves only that it can reach this node, not that this node can
+    # reach it back. btclib-org/btclib-node#1229
+    if not conn.inbound and not conn.block_relay and not conn.feeler:
+        address = replace(conn.address, services=version_msg.services)
+        conn.address = address
+        node.p2p_manager.peer_db.add_active_address(address)
+
     # relay_tx, which is the attribute Connection defines: the name this
     # wrote before was one letter different, so what the peer asked for
     # landed on an attribute nothing reads and the connection's own flag
@@ -491,9 +518,7 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
     ignores any message there (`src/net_processing.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag). A peer that sent no
     `wtxidrelay` ahead of it completes its handshake all the same, and
-    has transactions relayed by txid, as in Core. Records the peer's own
-    address as reachable once promoted, for a peer this node dialled --
-    the comment below is where that recording is argued.
+    has transactions relayed by txid, as in Core.
     """
     if not conn.version_message:
         return
@@ -502,43 +527,23 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
     # dict every send iterates: btclib-org/btclib-node#131
     node.p2p_manager.promote_connection(conn.id)
 
-    # What a completed handshake is evidence this peer is reachable and
-    # listening at, recorded once, here, rather than at the point the
-    # connection ends -- so a peer this node refused earlier in the
-    # handshake, above, is never recorded at all. An outbound connection
-    # is its own evidence: conn.address is what this node dialled, and a
-    # socket connecting there already answered. An inbound one is not:
-    # its connection proves only that it can reach this node, not that
-    # this node can reach it back, and Core's own `m_addrman.Good` call
-    # (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-    # tag) is under `!pfrom.IsInboundConn()` alone, so an inbound peer is
-    # not recorded here either (btclib-org/btclib-node#1229). Its
-    # `conn.address` still moves to the port its own `version` names as
-    # `addr_from`, where it names one: sock_accept's own port is the
-    # peer's ephemeral one and nothing this node could ever dial back
-    # on, and manager.py's already_connected compares conn.address
-    # against a draw from the address table, so the ephemeral port would
-    # never match the peer's gossiped endpoint, inviting a second,
-    # redundant dial-out to a peer this node already holds a connection
-    # with. btclib-org/btclib-node#70
-    services = conn.version_message.services
+    # An inbound connection's own port is the peer's ephemeral one, so
+    # `conn.address` moves to the port its `version` names as
+    # `addr_from`, where it names one: manager.py's `already_connected`
+    # compares `conn.address` against a draw from the address table, and
+    # the ephemeral port would never match the peer's gossiped endpoint,
+    # inviting a second, redundant dial-out to a peer this node already
+    # holds. The endpoint is not recorded as answered: `version` records
+    # a peer this node dialled, at Core's own point in the handler, and
+    # an inbound peer is not recorded at all (btclib-org/btclib-node#70,
+    # btclib-org/btclib-node#1229).
     if conn.inbound:
-        port = conn.version_message.addr_from.port
+        version_msg = conn.version_message
+        port = version_msg.addr_from.port
         if port:
-            address = replace(conn.address, port=port, services=services)
-            conn.address = address
-    else:
-        address = replace(conn.address, services=services)
-        conn.address = address
-        # Not a block-relay-only peer's: the table is what `getaddr`
-        # answers from, so recording one would advertise the link, which
-        # Core avoids by never calling `AddrMan::Connected` for it
-        # (`FinalizeNode`, `net_processing.cpp`, at
-        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Its `AddrMan::Good`,
-        # which this table cannot record apart from that, is not
-        # reproduced (btclib-org/btclib-node#1226).
-        if not conn.block_relay:
-            node.p2p_manager.peer_db.add_active_address(address)
+            conn.address = replace(
+                conn.address, port=port, services=version_msg.services
+            )
 
     # `sendheaders` is `DownloadManager`'s to send, once this peer's best
     # known block has the minimum chain work, as Core's
