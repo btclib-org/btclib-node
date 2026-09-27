@@ -998,7 +998,9 @@ def _check_fee_rate(node: Node, vsize: int, fee: int) -> None:
     `vsize` as `CFeeRate::GetFee` rounds it and each refused with Core's
     own reason and "<fee> < <floor>". Core also asks whether the rolling
     minimum is positive, which a fee never negative here makes
-    redundant: `verify_amounts` has already refused one.
+    redundant: `verify_amounts` has already refused one. `vsize` is
+    `tx.vsize`, where Core's `GetTxSize` is the sigop-adjusted
+    `GetVirtualTransactionSize`: btclib-org/btclib-node#1357.
     """
     mempool_reject_fee = fee_from_vsize(vsize, node.mempool.get_min_fee_rate())
     if fee < mempool_reject_fee:

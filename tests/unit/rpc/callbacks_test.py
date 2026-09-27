@@ -27,6 +27,7 @@ from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.p2p.limits import PROTOCOL_VERSION
 from btclib.script import script
 from btclib.script.witness import Witness
+from btclib.tx.limits import COINBASE_MATURITY
 from btclib.tx.out_point import OutPoint
 from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
@@ -51,6 +52,7 @@ from btclib_node.exceptions import (
     TxRejectedError,
 )
 from btclib_node.log import Logger
+from btclib_node.main import verify_mempool_acceptance
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.banman import BanEntry, BanMan, lookup_subnet
@@ -88,11 +90,16 @@ from btclib_node.rpc.callbacks import (
 from btclib_node.rpc.callbacks import test_mempool_accept as mempool_accept
 from btclib_node.rpc.connection import RawJSON
 from btclib_node.rpc.errors import RpcError
-from tests import generate_coinbase, generate_random_chain, generate_random_header_chain
+from tests import (
+    generate_coinbase,
+    generate_random_chain,
+    generate_random_header_chain,
+    generate_random_transaction,
+)
 from tests.unit.main_test import connect
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
     from btclib_node import Node
     from btclib_node.rpc.connection import RpcConnection
@@ -204,6 +211,8 @@ def a_peer(
         tx_announce_queue=[],
         download_queue=[],
         feefilter=0,
+        # what `Connection` starts every connection at
+        addr_relay_enabled=False,
     )
 
 
@@ -506,6 +515,7 @@ def test_the_fields_this_node_keeps_state_for_read_that_state() -> None:
     peer.tx_announce_queue = [b"\x01" * 32, b"\x02" * 32]
     peer.download_queue = [b"\x0b" * 32, b"\x0a" * 32]
     peer.feefilter = 1234
+    peer.addr_relay_enabled = True
     node = a_node({7: peer}, heights={b"\x0a" * 32: 10, b"\x0b" * 32: 11})
     (info,) = get_peer_info(node, _CONN, [])
     assert info["relaytxes"] is True
@@ -619,29 +629,24 @@ def test_a_connection_removed_mid_loop_does_not_raise() -> None:
     """
     connections: dict[int, Any] = {}
 
-    class PoppingOnCompare:
-        """`p2p_conn.status == P2pConnStatus.Connected`'s own left side.
+    class PoppingOnIter(list[bytes]):
+        """`p2p_conn.download_queue`, which `inflight` iterates.
 
         Standing in for whatever this node's loop is doing when
         `remove_connection` reaches in: the pop happens as a side
-        effect of evaluating peer 7's status, between the iterator's
+        effect of building peer 7's entry, between the iterator's
         own `next()` for peer 7 and its `next()` for peer 8 -- mid-loop
         on a live dict, and not reachable at all from a loop over a list
         built before it started.
         """
 
         @override
-        def __eq__(self, other: object) -> bool:
+        def __iter__(self) -> Iterator[bytes]:
             connections.pop(8, None)
-            return False
+            return super().__iter__()
 
-        # never put in a dict or a set, only compared -- explicit
-        # rather than the implicit None a bare `__eq__` override
-        # already gets, which the object being unhashable does not
-        # itself demonstrate
-        __hash__ = None  # type: ignore[assignment]
-
-    connections[7] = a_peer(status=cast("P2pConnStatus", PoppingOnCompare()))
+    connections[7] = a_peer()
+    connections[7].download_queue = PoppingOnIter()
     connections[8] = a_peer()
     node = a_node(connections)
     # peer 8 is popped from the live `connections` above, not from the
@@ -2624,6 +2629,62 @@ def test_a_fee_refusal_is_reported_with_core_s_reason_and_details(
     assert result["reject-details"] == "min relay fee not met, 0 < 11"
 
 
+def a_node_holding(
+    regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch, fee: int
+) -> tuple[Node, Tx, list[tuple[bytes, int]]]:
+    """Return a node holding a spend paying `fee`, and what it announces."""
+    node = regtest_node()
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, chain)
+    funding = chain[0].transactions[0]
+    held = generate_random_transaction(funding.id, value=funding.vout[0].value - fee)
+    # `bypass_limits`, as a reorg re-adds a transaction: no floor at all
+    assert node.mempool.add_tx(
+        held, verify_mempool_acceptance(node, held, bypass_limits=True)
+    )
+    announced: list[tuple[bytes, int]] = []
+    monkeypatch.setattr(
+        node.p2p_manager,
+        "broadcast_raw_transaction",
+        lambda tx, fee: announced.append((tx.hash, fee)),
+    )
+    return node, held, announced
+
+
+def test_a_held_transaction_is_reannounced_not_judged_again(
+    regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A txid already held answers its txid, the real verifier never asked.
+
+    Core's `BroadcastTransaction` returns early for a txid its mempool
+    holds, before any acceptance check: a fee-free transaction a reorg
+    re-added, resubmitted, is not "min relay fee not met"
+    (btclib-org/btclib-node#1245). The same txid under another witness
+    reannounces the mempool's copy.
+    """
+    node, held, announced = a_node_holding(regtest_node, monkeypatch, 0)
+    twin = Tx.parse(held.serialize(include_witness=True))
+    twin.vin[0].script_witness = Witness([b"\x01"])
+    assert twin.id == held.id
+    assert twin.hash != held.hash
+    for resubmitted in (held, twin):
+        raw = resubmitted.serialize(include_witness=True).hex()
+        assert send_raw_transaction(node, _CONN, [raw]) == held.id.hex()
+    assert announced == [(held.hash, 0), (held.hash, 0)]
+
+
+def test_a_held_transaction_under_a_risen_minimum_is_reannounced(
+    regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rolling minimum risen past what a held tx pays is no refusal."""
+    node, held, announced = a_node_holding(regtest_node, monkeypatch, 1_000)
+    node.mempool._rolling_min_fee_rate = 1_000_000.0
+    node.mempool._block_since_last_rolling_fee_bump = False
+    raw = held.serialize(include_witness=True).hex()
+    assert send_raw_transaction(node, _CONN, [raw]) == held.id.hex()
+    assert announced == [(held.hash, 1_000)]
+
+
 def test_a_corrupted_stored_record_is_not_answered_as_the_tx_s_own_refusal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3359,3 +3420,35 @@ def test_submit_block_invalidates_a_block_whose_body_mismatches_its_header(
     block_info = node.chainstate.block_index.get_block_info(mismatched.header.hash)
     assert not block_info.downloaded
     assert node.block_db.get_block(mismatched.header.hash) is None
+
+
+# A regtest header at height 1 of version -1, as a bitcoind v31.1.0 run with
+# `-testactivationheight=bip34@100` (and `dersig`, `cltv` at 100) took it
+# through `submitblock` and answered it back through `getblockheader false`.
+_A_VERSION_MINUS_ONE_HEADER = (
+    "ffffffff06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f"
+    "a7c0dbac4920cf8d62f0cb6d2efaa0105c5d6bbd3552da2c805dc60856589631dfefb76a"
+    "ffff7f2001000000"
+)
+
+
+def test_a_stored_version_minus_one_header_is_answered_as_bitcoind_answers() -> None:
+    """ISS 1262: the index stores it below BIP34's height, as Core does.
+
+    bitcoind answered the raw header with these same octets, `version`
+    -1 and `versionHex` "ffffffff", Core's `%08x` of its `int32_t`.
+    """
+    header = BlockHeader.parse(
+        bytes.fromhex(_A_VERSION_MINUS_ONE_HEADER), check_validity=False
+    )
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chainstate=SimpleNamespace(block_index=a_block_index([header]))
+        ),
+    )
+    raw = get_block_header(node, _CONN, [header.hash.hex(), False])
+    assert raw == _A_VERSION_MINUS_ONE_HEADER
+    verbose = get_block_header(node, _CONN, [header.hash.hex()])
+    assert isinstance(verbose, dict)
+    assert (verbose["version"], verbose["versionHex"]) == (-1, "ffffffff")

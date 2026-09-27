@@ -15,7 +15,7 @@ call every entry, `stop` included, unless `-rpcwhitelistdefault` holds.
 
 import math
 import time
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import RPCErrorCode, chain_from_network
 from btclib.block import Block, median_time_past
@@ -26,7 +26,7 @@ from btclib.tx import Tx
 
 from btclib_node.chainstate.block_index import block_time
 from btclib_node.config import split_host_port
-from btclib_node.constants import MIN_BLOCKS_TO_KEEP, USER_AGENT, P2pConnStatus
+from btclib_node.constants import MIN_BLOCKS_TO_KEEP, USER_AGENT
 from btclib_node.exceptions import MissingPrevoutError, TxRejectedError
 from btclib_node.main import (
     parent_lookup,
@@ -463,8 +463,11 @@ def get_block_header(
 
     if not verbose:
         # src/rpc/blockchain.cpp:668-673: the same eighty bytes a peer
-        # is sent on the wire, hex-encoded rather than the JSON object
-        return header.serialize().hex()
+        # is sent on the wire, hex-encoded rather than the JSON object.
+        # Unchecked, as the index stores it: a version of zero or below,
+        # which Core takes below BIP34's height, is one btclib's own
+        # check refuses (btclib-org/btclib#2309)
+        return header.serialize(check_validity=False).hex()
 
     # the blocks this node has validated and connected, which is what
     # Core hands blockheaderToJSON: `ActiveChain().Tip()`, at
@@ -493,11 +496,10 @@ def get_block_header(
         # src/rpc/blockchain.cpp:175
         "version": header.version,
         # strprintf("%08x", nVersion), src/rpc/blockchain.cpp:176 --
-        # btclib bounds `version` to `0 < version <= 0x7FFFFFFF`
-        # (block_header.py's own `assert_valid`), so the top bit is
-        # never set and a plain positive format matches what Core's
-        # signed `%x` prints
-        "versionHex": f"{header.version:08x}",
+        # Core's int32_t printed as its 32 bits, so a negative version,
+        # which the index stores below BIP34's height, is `ffffffff` for
+        # -1 rather than Python's signed `-0000001`
+        "versionHex": f"{header.version & 0xFFFFFFFF:08x}",
         # src/rpc/blockchain.cpp:177 -- Core's own name, not btclib's
         # `to_dict`'s `merkle_root`
         "merkleroot": header.merkle_root,
@@ -617,15 +619,18 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     bitcoin/bitcoin@bb529657) decodes, indexes the header if it is new,
     and hands the block to `ProcessNewBlock`: `None` for one accepted,
     `"duplicate"` for one already held, and a reject reason for one
-    refused -- `BlockValidationResult::BLOCK_MISSING_PREV`'s own
-    `"prev-blk-not-found"` (`validation.cpp:4225`, same sha) is the one
-    reason this tree reproduces literally, being the one this node's own
-    `block_index.add_headers` answers the identical way `p2p.callbacks
-    .block` already reads it (missing rather than invalid). A
-    structurally invalid block is answered with btclib's own exception
-    message instead of one of Core's: `BlockValidationResult` names
-    dozens of distinct single-word reasons across `validation.cpp`, and
-    this tree does not reproduce that vocabulary.
+    refused. Two reasons are Core's literally:
+    `BlockValidationResult::BLOCK_MISSING_PREV`'s own
+    `"prev-blk-not-found"` (`validation.cpp:4225`, same sha), which this
+    node's own `block_index.add_headers` answers the identical way
+    `p2p.callbacks.block` already reads it (missing rather than invalid),
+    and `ContextualCheckBlockHeader`'s `"bad-version(0x%08x)"`, which
+    `add_headers` raises in Core's words (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Any other invalid block
+    is answered with btclib's own exception message instead of one of
+    Core's: `BlockValidationResult` names dozens of distinct single-word
+    reasons across `validation.cpp`, and this tree does not reproduce
+    that vocabulary.
 
     Stores through the same `block_index`/`block_db` calls
     `p2p.callbacks.block` makes for a block delivered over the wire,
@@ -817,10 +822,9 @@ def _peer_entry(
         block_index.get_block_info(block_hash).index
         for block_hash in p2p_conn.download_queue
     ]
-    # True for every handshake-complete peer, where Core waits on an
-    # inbound one's first `addr`, `addrv2` or `getaddr`
-    # (btclib-org/btclib-node#1178).
-    entry["addr_relay_enabled"] = p2p_conn.status == P2pConnStatus.Connected
+    # Core's `m_addr_relay_enabled`: false for an inbound peer until its
+    # first `addr`, `addrv2` or `getaddr` (btclib-org/btclib-node#1178).
+    entry["addr_relay_enabled"] = p2p_conn.addr_relay_enabled
     entry["addr_processed"] = p2p_conn.stats.addr_processed
     entry["addr_rate_limited"] = p2p_conn.stats.addr_rate_limited
     # No `-whitelist`/`-whitebind`: no peer holds a permission.
@@ -1609,7 +1613,8 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
     refuses, or that `Mempool.add_tx` evicts right back out under its
     own size limit is each refused with the reject reason and code
     cited beside its own raise, below; one kept is broadcast to peers
-    and its txid answered.
+    and its txid answered, and so is one whose txid is already held,
+    without being verified again.
     """
     if not params:
         # the same mechanism get_block_hash's own missing-argument case
@@ -1649,6 +1654,22 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
             RPCErrorCode.DESERIALIZATION_ERROR,
             "TX decode failed. Make sure the tx has at least one input.",
         ) from error
+    held = node.mempool.get_tx(tx.id)
+    if held is not None:
+        # This txid is already held, possibly under a different witness
+        # -- and therefore a different wtxid -- than what was just
+        # resubmitted. Core's `BroadcastTransaction` (`node/transaction.cpp`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) does not submit it
+        # to the mempool again, where it would now be judged afresh -- a
+        # feerate floor risen since, or a transaction a reorg re-added under
+        # no floor at all (btclib-org/btclib-node#1245) -- and reannounces
+        # the mempool's own copy: "Use the mempool's wtxid for
+        # reannouncement". Announcing the resubmitted object's own wtxid
+        # would queue a wtxid nothing holds: `Mempool.add_tx`'s own comment
+        # on #277 is that defect, one call site over.
+        # btclib-org/btclib-node#293
+        node.p2p_manager.broadcast_raw_transaction(held, node.mempool.fees[held.hash])
+        return tx.id.hex()
     try:
         fee = verify_mempool_acceptance(node, tx)
     except MissingPrevoutError as exc:
@@ -1675,35 +1696,14 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
     # `tx.id.hex()` regardless of that boolean would tell the caller
     # this transaction was kept when it was not -- the same defect #277
     # fixed on the peer-to-peer path, `p2p/callbacks.py`'s `tx` handler.
-    kept = node.mempool.add_tx(tx, fee)
-    if kept:
-        to_announce = tx
-    elif tx.id in node.mempool.txid_index:
-        # `add_tx` declined for the other reason it can: this txid is
-        # already held, possibly under a different witness -- and
-        # therefore a different wtxid -- than what was just resubmitted.
-        # Announcing the resubmitted object's own wtxid here, rather
-        # than the mempool's, would queue a wtxid nothing holds:
-        # `Mempool.add_tx`'s own comment on #277 is the defect this
-        # substitution avoids, one call site over. `BroadcastTransaction`
-        # (`node/transaction.cpp`, at bitcoin/bitcoin@58a7869f86) makes the
-        # identical substitution for the identical reason -- "Use the
-        # mempool's wtxid for reannouncement" -- rather than
-        # reannouncing what was just submitted. The type is wider than
-        # the invariant: `get_tx` cannot answer `None` once `txid_index`
-        # holds `tx.id`, checked on this very branch, so this is a cast
-        # rather than a check dead on every path that reaches it,
-        # matching `Connection.own_version`'s own `self.manager.port`.
-        # btclib-org/btclib-node#293
-        to_announce = cast("Tx", node.mempool.get_tx(tx.id))
-    else:
-        # Neither already held nor kept: `Mempool._evict_to_limit` ran
+    if not node.mempool.add_tx(tx, fee):
+        # Not kept: `Mempool._evict_to_limit` ran
         # and took this transaction right back out for being the worst
         # one held once `Mempool.bytesize_limit` was restored -- exactly
         # the case `_MEMPOOL_FULL_REASON`'s own comment names, Core's
         # `TX_RECONSIDERABLE` "mempool full". btclib-org/btclib-node#294
         raise RpcError(RPCErrorCode.VERIFY_REJECTED, _MEMPOOL_FULL_REASON)
-    node.p2p_manager.broadcast_raw_transaction(to_announce, fee)
+    node.p2p_manager.broadcast_raw_transaction(tx, fee)
     return tx.id.hex()
 
 
