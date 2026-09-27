@@ -630,7 +630,7 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 ### A block under a header already marked invalid is refused, as in Core
 
-- **A body passing `CheckBlock` under a header marked invalid is answered
+- **A body passing `CheckBlock` under a header marked invalid is refused
   `duplicate-invalid`, on the wire and by `submitblock`, and no longer stored,
   from an outbound peer as misbehaviour** (closes #1344).
 
