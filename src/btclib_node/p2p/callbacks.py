@@ -93,6 +93,7 @@ from btclib_node.exceptions import (
 from btclib_node.main import (
     is_block_failed,
     is_block_mutated,
+    is_cached_invalid,
     verify_mempool_acceptance,
 )
 from btclib_node.p2p.address import ip_and_port
@@ -1026,8 +1027,10 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
 
     A body its header does not commit to (`main.is_block_mutated`), on
     a parent this node knows, is refused first, whatever is already
-    stored under that hash: it says nothing about the header. Past
-    that, a no-op if this block is already marked downloaded. A body
+    stored under that hash: it says nothing about the header. A body
+    under a header marked invalid is refused next, `duplicate-invalid`
+    (`main.is_cached_invalid`). Past that, a no-op if this block is
+    already marked downloaded. A body
     failing a check is refused, and the block asked of another peer,
     with the index left alone except where Core marks the block failed
     (`main.is_block_failed`).
@@ -1093,6 +1096,14 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
     )
     if parent is not None and is_block_mutated(block, check_witness_root=segwit):
         err_msg = f"mutated block {block_hash.hex()}"
+        raise MisbehavingError(err_msg)
+    # Core's `duplicate-invalid`, before the stored block is looked at:
+    # `MaybePunishNodeForBlock` punishes `BLOCK_CACHED_INVALID` from an
+    # outbound peer alone, so an inbound one is refused and kept
+    if is_cached_invalid(block_index, block):
+        err_msg = f"duplicate-invalid: {block_hash.hex()}"
+        if conn.inbound:
+            raise BTClibValueError(err_msg)
         raise MisbehavingError(err_msg)
     if (
         block_hash not in block_index.header_dict
