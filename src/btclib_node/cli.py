@@ -121,12 +121,10 @@ reach it, and a negation in the default section still does. The
 `network_only` column of `_OPTIONS` is where that is written down.
 
 `includeconf=<file>`, resolved relative to the data directory the way
-Core resolves it, is read only from the root file's own default
-section: Core additionally honours one named inside the active chain's
-own section, which is not replicated here, the common shape being one
-`includeconf=` naming a secrets file from the top of an otherwise
-ordinary `bitcoin.conf`. One inside an included file is warned about and
-ignored, as Core warns (`ReadConfigFiles`, same file). On the command
+Core resolves it, is read from the root file's section for the chain it
+selects, then from its default section, as Core reads it. One inside
+an included file is warned about and ignored, as Core warns
+(`ReadConfigFiles`, same file). On the command
 line `-includeconf` is refused unless negated, and `-noincludeconf`
 reads no included file, both as `ParseParameters` and `ReadConfigFiles`
 have it; `-noconf` reads no file at all. `conf=` inside a file is
@@ -146,8 +144,8 @@ naming another file, is refused as `InitConfig` (`src/common/init.cpp`,
 same sha) refuses it, and `-allowignoredconf` makes that a warning:
 `_check_ignored_conf` below.
 
-An unrecognised key in the file is warned about, on stderr, and
-ignored -- Core's own default (`ReadConfigFiles(error,
+An unrecognised key in the file is warned about, in the log alone as
+Core logs it, and ignored -- Core's own default (`ReadConfigFiles(error,
 /*ignore_invalid_keys=*/true)`, called this way from `bitcoin.cpp`,
 `common/init.cpp` and `bitcoin-cli.cpp` alike, same sha) rather than
 the fatal alternative that flag also allows. An unrecognised option on
@@ -209,6 +207,15 @@ _CHAIN_SECTION = {
 # same file), which is not this node's internal one: `main`/`test`
 # rather than `mainnet`/`testnet`, predating this module and not
 # renamed for it.
+# `LocaleIndependentAtoi`: what `TrimStringView` trims by default, and
+# the integer `std::from_chars` reads at the start of what is left
+_TRIMMED = " \f\n\r\t\v"
+_LEADING_INTEGER = re.compile(r"-?[0-9]+")
+_INT64_MIN, _INT64_MAX = -(2**63), 2**63 - 1
+_INT_MIN = -(2**31)
+# the MiB a `uint64_t` byte count wraps at
+_PRUNE_MIB_WRAP = 2**64 // 2**20
+
 _CHAIN_ALIASES = {
     "main": "mainnet",
     "test": "testnet",
@@ -521,6 +528,11 @@ class _Settings:
     network: str = ""
     # Core's `m_config_sections`: every section the files read named
     config_sections: list[_SectionInfo] = field(default_factory=list)
+    # what Core logs of its settings: the warnings it buffers while
+    # reading them, then the unrecognised-section warning, which it logs
+    # after its version line (a line history.log does not have, #1309).
+    # `Node` logs them in that order once its own log is open
+    log_warnings: list[str] = field(default_factory=list)
 
 
 def _interpret_key(key: str) -> _KeyInfo:
@@ -532,12 +544,18 @@ def _interpret_key(key: str) -> _KeyInfo:
     return _KeyInfo(name[2:] if negated else name, section, negated)
 
 
-def _interpret_value(info: _KeyInfo, value: str | None, option: _Option) -> _Value:
+def _interpret_value(
+    info: _KeyInfo,
+    value: str | None,
+    option: _Option,
+    warnings: list[str],
+) -> _Value:
     """Return Core's `InterpretValue`: `False` negated, `True` doubly so.
 
     Raises `ValueError` on a negation `option` forbids. A double
-    negative, `-nofoo=0`, is warned about on stderr as Core warns about
-    it, and is `True`.
+    negative, `-nofoo=0`, is `True`, and its warning is appended to
+    `warnings`, for the log alone, as Core's `LogWarning`
+    (`src/common/args.cpp`, at bitcoin/bitcoin@9be056a8a7).
     """
     if info.negated:
         if option.disallow_negation:
@@ -547,9 +565,8 @@ def _interpret_value(info: _KeyInfo, value: str | None, option: _Option) -> _Val
             # Core's warning writes a `SENSITIVE` option's value in clear:
             # this one writes the `****` Core's `LogArgs` writes instead.
             shown = "****" if option.sensitive else value
-            sys.stderr.write(
-                "warning: parsed potentially confusing double-negative "
-                f"-{info.name}={shown}\n"
+            warnings.append(
+                f"Parsed potentially confusing double-negative -{info.name}={shown}"
             )
             return True
         return False
@@ -565,9 +582,11 @@ def _negated(values: list[_Value]) -> int:
 
 
 def _parse_parameters(
-    argv: Sequence[str],
+    argv: Sequence[str], warnings: list[str]
 ) -> tuple[dict[str, list[_Value]], str | None]:
     """Return the options `argv` sets, and its first argument not an option.
+
+    `warnings` is `_interpret_value`'s.
 
     `ArgsManager::ParseParameters` (`src/common/args.cpp`, at
     bitcoin/bitcoin@9be056a8a7): a lone `-` or the first argument not
@@ -594,7 +613,7 @@ def _parse_parameters(
             err_msg = f"{_PARSE_ERROR}Invalid parameter {arg}"
             raise ValueError(err_msg)
         try:
-            value = _interpret_value(info, text if equals else None, option)
+            value = _interpret_value(info, text if equals else None, option, warnings)
         except ValueError as error:
             err_msg = f"{_PARSE_ERROR}{error}"
             raise ValueError(err_msg) from None
@@ -675,19 +694,25 @@ def _config_options(
 
 
 def _parse_conf_text(
-    text: str, sections: list[_SectionInfo] | None = None, filepath: str = ""
+    text: str,
+    sections: list[_SectionInfo] | None = None,
+    filepath: str = "",
+    *,
+    warnings: list[str],
 ) -> _RoConfig:
     """Parse `text` into `{section: {name: [values]}}`, in file order.
 
-    `sections` and `filepath` are `_config_options`'.
+    `sections` and `filepath` are `_config_options`', `warnings`
+    `_interpret_value`'s.
 
     `ReadConfigStream` (`src/common/config.cpp`, at
     bitcoin/bitcoin@9be056a8a7) over `_config_options`: `InterpretKey`
     and `InterpretValue` on each key. Raises `ValueError` where
     `_config_options` does, on a `conf=` key, and on a negation an
     option forbids, each in `IsConfSupported`'s and `InterpretValue`'s
-    words, which name no line. An unknown key, and `datadir`, are warned
-    about on stderr and left out.
+    words, which name no line. An unknown key is left out, and its
+    warning appended to `warnings` for the log alone, as Core's
+    `LogWarning` there; `datadir` is left out, and warned about on stderr.
     """
     config: _RoConfig = {}
     for name, value in _config_options(text, sections, filepath):
@@ -700,9 +725,9 @@ def _parse_conf_text(
             raise ValueError(err_msg)
         option = _OPTIONS.get(info.name)
         if option is None:
-            sys.stderr.write(f"warning: ignoring unknown configuration value {name}\n")
+            warnings.append(f"Ignoring unknown configuration value {name}")
             continue
-        setting = _interpret_value(info, value, option)
+        setting = _interpret_value(info, value, option, warnings)
         if info.name == "datadir":
             sys.stderr.write(
                 "warning: -datadir cannot be set in a configuration file, "
@@ -713,18 +738,20 @@ def _parse_conf_text(
     return config
 
 
-def _read_conf_file(
+def _read_conf_file(  # noqa: PLR0913
     path: Path,
     *,
     required: bool,
     include: str | None = None,
     sections: list[_SectionInfo] | None = None,
     filepath: str = "",
+    warnings: list[str],
 ) -> _RoConfig:
     """Read and parse `path`; `{}` if it cannot be read and is not `required`.
 
     `sections` and `filepath` are `_config_options`', `filepath` being
-    the name `path` is given in a warning.
+    the name `path` is given in a warning, and `warnings`
+    `_interpret_value`'s.
 
     Core's own "ok to not have a config file" (`ReadConfigFiles`,
     `src/common/config.cpp`) for the default filename, which is what
@@ -767,40 +794,66 @@ def _read_conf_file(
             err_msg = f'specified config file "{path}" could not be opened.'
             raise ValueError(err_msg) from None
         return {}
-    return _parse_conf_text(text, sections, filepath)
+    return _parse_conf_text(text, sections, filepath, warnings=warnings)
 
 
-def _load_conf_tree(
+def _load_conf_tree(  # noqa: PLR0913
     conf_path: Path,
     *,
     conf_explicit: bool,
     base_dir: Path,
     use_includes: bool,
     sections: list[_SectionInfo] | None = None,
+    command_line: dict[str, list[_Value]] | None = None,
+    warnings: list[str],
 ) -> _RoConfig:
-    """Read `conf_path`, then every `includeconf` its default section names.
+    """Read `conf_path`, then every `includeconf` it names for its chain.
+
+    `ReadConfigFiles` (`src/common/config.cpp`, at bitcoin/bitcoin@9be056a8a7)
+    in its order: the root file, then the `includeconf` values of the
+    section of the chain `command_line` and the root file select, then
+    those of the default section. A negated `includeconf` discards the
+    names before it, as that function's own `SettingsSpan` does, and
+    `use_includes=False`, for `-noincludeconf`, reads none. The chain is
+    resolved before any included file is read, so a conflicting one is
+    refused first, as Core refuses it.
 
     Each included file's own sections are merged into the same tree,
-    appended after the root file's own values for that section --
-    `ReadConfigStream` appends into one shared `ro_config[section][key]`
-    list regardless of which file contributed a value, root first
-    (`ReadConfigFiles`, `src/common/config.cpp`, at
-    bitcoin/bitcoin@9be056a8a7). A negated `includeconf` discards the
-    names before it, as that function's own `SettingsSpan` does, and
-    `use_includes=False`, for `-noincludeconf`, reads none.
+    appended after the values already there -- `ReadConfigStream`
+    appends into one shared `ro_config[section][key]` list regardless of
+    which file contributed a value. An `includeconf` an included file
+    adds to either section is warned about and not read, and so is every
+    one of the chain an included file switched to.
 
     Every section named is appended to `sections`, where given: the root
     file under its path, an included one under its name as written, as
-    `ReadConfigFiles` passes each to `ReadConfigStream`.
+    `ReadConfigFiles` passes each to `ReadConfigStream`. `warnings` is
+    `_interpret_value`'s.
     """
     tree = _read_conf_file(
-        conf_path, required=conf_explicit, sections=sections, filepath=str(conf_path)
+        conf_path,
+        required=conf_explicit,
+        sections=sections,
+        filepath=str(conf_path),
+        warnings=warnings,
     )
     if not use_includes:
         return tree
-    includes = tree.get("", {}).get("includeconf", [])
-    for name in includes[_negated(includes) :]:
-        include = _setting_to_str(name)
+    settings = _Settings(command_line or {}, tree)
+
+    def add_includes(network: str, names: list[str], skip: int = 0) -> int:
+        """Append `network`'s names past `skip` to `names`: Core's lambda."""
+        values = tree.get(network, {}).get("includeconf", [])
+        names.extend(
+            _setting_to_str(value) for value in values[max(skip, _negated(values)) :]
+        )
+        return len(values)
+
+    chain_id = _chain_section(settings)
+    names: list[str] = []
+    chain_includes = add_includes(chain_id, names)
+    default_includes = add_includes("", names)
+    for include in names:
         include_path = Path(include)
         if not include_path.is_absolute():
             include_path = base_dir / include_path
@@ -810,18 +863,23 @@ def _load_conf_tree(
             include=include,
             sections=sections,
             filepath=include,
+            warnings=warnings,
         )
         for section, keys in included.items():
             dest = tree.setdefault(section, {})
             for key, values in keys.items():
-                if key == "includeconf":
-                    for value in values:
-                        sys.stderr.write(
-                            "warning: -includeconf cannot be used from included "
-                            f"files; ignoring -includeconf={_setting_to_str(value)}\n"
-                        )
-                    continue
                 dest.setdefault(key, []).extend(values)
+    names = []
+    add_includes(chain_id, names, chain_includes)
+    add_includes("", names, default_includes)
+    chain_id_final = _chain_section(settings)
+    if chain_id_final != chain_id:
+        add_includes(chain_id_final, names)
+    for name in names:
+        sys.stderr.write(
+            "warning: -includeconf cannot be used from included files; "
+            f"ignoring -includeconf={name}\n"
+        )
     return tree
 
 
@@ -927,21 +985,47 @@ def _get_bool(settings: _Settings, name: str) -> bool | None:
     return _interpret_bool(value)
 
 
-def _get_int(settings: _Settings, name: str) -> int | None:
-    """Return `name` as an integer, `None` where nothing sets it.
+def _atoi64(text: str) -> int:
+    """Return Core's `LocaleIndependentAtoi<int64_t>` of `text`.
 
-    `0` negated and `1` doubly so, as Core's `GetIntArg` has them. A
-    string that is not an integer is refused, where Core's
-    `LocaleIndependentAtoi` would read what digits it starts with.
+    `src/util/strencodings.h`, at bitcoin/bitcoin@9be056a8a7: the
+    whitespace `TrimStringView` trims is dropped, then one leading `+`
+    (and `+-` is `0`), then `std::from_chars` reads the ASCII digits it
+    starts with, an optional `-` ahead of them, ignoring whatever
+    follows. No digit is `0`, and a value past the `int64_t` range is
+    that range's end on its side.
+    """
+    trimmed = text.strip(_TRIMMED)
+    if trimmed.startswith("+"):
+        if trimmed[1:2] == "-":
+            return 0
+        trimmed = trimmed[1:]
+    match = _LEADING_INTEGER.match(trimmed)
+    if match is None:
+        return 0
+    return max(_INT64_MIN, min(_INT64_MAX, int(match.group())))
+
+
+def _get_int(settings: _Settings, name: str) -> int | None:
+    """Return `name` as Core's `GetIntArg` does, `None` where nothing sets it.
+
+    `0` negated and `1` doubly so, and a string `_atoi64`, as
+    `SettingTo<int64_t>` reads it (`src/common/args.cpp`, at
+    bitcoin/bitcoin@9be056a8a7).
     """
     value = _get_setting(settings, name)
     if value is None or isinstance(value, bool):
         return None if value is None else int(value)
-    try:
-        return int(value)
-    except ValueError:
-        err_msg = f"{name}={value!r} is not an integer"
-        raise ValueError(err_msg) from None
+    return _atoi64(value)
+
+
+def _to_int(value: int) -> int:
+    """Return C++'s conversion of the `int64_t` `value` to a 32-bit `int`.
+
+    Modular since C++20, which is how `AppInitParameterInteraction` reads
+    `-maxconnections` into its `int user_max_connection`.
+    """
+    return (value - _INT_MIN) % 2**32 + _INT_MIN
 
 
 def _get_port(settings: _Settings, name: str) -> int | None:
@@ -973,21 +1057,28 @@ def _is_set(settings: _Settings, name: str) -> bool:
 def _interpret_bool(value: str) -> bool:
     """Return Core's `InterpretBool` of `value`.
 
-    `""` is true, and anything else is true where `LocaleIndependentAtoi`
-    reads a non-zero integer off its front, once the whitespace Core
-    trims and a leading `+` are gone: `false`, `no`, `yes` and `00` are
-    false.
+    `""` is true, and anything else is true where `_atoi64` reads a
+    non-zero integer: `false`, `no`, `yes` and `00` are false.
     """
-    if not value:
-        return True
-    text = value.strip(" \f\n\r\t\v")
-    if text.startswith("+-"):
-        return False
-    digits = re.match(r"-?[0-9]+", text.removeprefix("+"))
-    return digits is not None and int(digits.group()) != 0
+    return not value or _atoi64(value) != 0
 
 
-def _resolve_chain_name(settings: _Settings) -> str:
+class _ChainError(ValueError):
+    """The combination of chain selectors `GetChainArg` refuses.
+
+    Thrown rather than returned in Core (`src/common/args.cpp`, at
+    bitcoin/bitcoin@9be056a8a7), so `InitConfig` shows it without the
+    prefix it puts on a `ReadConfigFiles` refusal, even where
+    `ReadConfigFiles` asks first, through `GetChainTypeString`.
+    """
+
+
+# what `_chain_arg` puts ahead of a `-chain` Core does not know, which
+# no chain this node knows starts with
+_UNKNOWN_CHAIN = "\0"
+
+
+def _chain_arg(settings: _Settings) -> str:
     """Resolve `-chain`/`-testnet`/`-signet`/`-regtest`: `GetChainArg`.
 
     `chain`/`testnet`/`signet`/`regtest` are read from the file's
@@ -998,7 +1089,8 @@ def _resolve_chain_name(settings: _Settings) -> str:
     the default one can mean anything; and a negated selector on the
     command line is skipped there, as Core skips it. At most one of the
     four may resolve true; more is the same "Invalid combination" Core
-    refuses.
+    refuses. A `-chain` Core does not know is returned as given, behind
+    `_UNKNOWN_CHAIN`, as `GetChainArg` returns it.
     """
 
     def get_net(name: str) -> bool:
@@ -1013,12 +1105,9 @@ def _resolve_chain_name(settings: _Settings) -> str:
     regtest = get_net("regtest")
     if sum([chain_alias is not None, testnet, signet, regtest]) > 1:
         err_msg = "invalid combination of -regtest, -signet, -testnet and -chain: use at most one"
-        raise ValueError(err_msg)
+        raise _ChainError(err_msg)
     if chain_alias is not None:
-        if chain_alias not in _CHAIN_ALIASES:
-            err_msg = f"unknown chain {chain_alias!r}"
-            raise ValueError(err_msg)
-        return _CHAIN_ALIASES[chain_alias]
+        return _CHAIN_ALIASES.get(chain_alias, _UNKNOWN_CHAIN + chain_alias)
     if regtest:
         return "regtest"
     if signet:
@@ -1026,6 +1115,34 @@ def _resolve_chain_name(settings: _Settings) -> str:
     if testnet:
         return "testnet"
     return "mainnet"
+
+
+def _resolve_chain_name(settings: _Settings) -> str:
+    """Return `_chain_arg`'s chain, refusing one Core does not know.
+
+    `GetChainType`'s refusal (`src/common/args.cpp`, at
+    bitcoin/bitcoin@9be056a8a7), asked once the files are read.
+    """
+    chain_name = _chain_arg(settings)
+    if chain_name.startswith(_UNKNOWN_CHAIN):
+        err_msg = f"unknown chain {chain_name.removeprefix(_UNKNOWN_CHAIN)!r}"
+        raise ValueError(err_msg)
+    return chain_name
+
+
+def _chain_section(settings: _Settings) -> str:
+    """Return Core's `GetChainTypeString`: the section of `_chain_arg`'s chain.
+
+    A `-chain` Core does not know is its own section name, as that
+    function returns it, so that `ReadConfigFiles` reads the
+    `includeconf` of a `[bogus]` section for `-chain=bogus`.
+    """
+    chain_name = _chain_arg(settings)
+    return (
+        chain_name.removeprefix(_UNKNOWN_CHAIN)
+        if chain_name.startswith(_UNKNOWN_CHAIN)
+        else _CHAIN_SECTION[chain_name]
+    )
 
 
 def _resolve_debug(settings: _Settings) -> bool:
@@ -1118,8 +1235,8 @@ def _check_ignored_conf(
     Core's: `-datadir` and `-conf` lexically normal (`GetPathArg`), the
     first made absolute and a relative `-conf` joined to it
     (`AbsPathForConfigVal`), as `_read_settings` reads them.
-    `-allowignoredconf` makes the refusal a warning on stderr, as this
-    module's other warnings are, where Core logs it. Core's other source,
+    `-allowignoredconf` makes the refusal a warning for the log alone,
+    appended to `settings.log_warnings`, as Core logs it. Core's other source,
     "data directory", is a `datadir=` line that moved the data directory,
     which `_parse_conf_text` drops; and the line Core logs under `-noconf`
     is not written.
@@ -1154,7 +1271,7 @@ def _check_ignored_conf(
         "two, and use includeconf= to include any other configuration files."
     )
     if _get_bool(settings, "allowignoredconf"):
-        sys.stderr.write(f"warning: {error}\n")
+        settings.log_warnings.append(error)
         return
     error += (
         "\n- Set allowignoredconf=1 option to treat this condition as a warning, "
@@ -1163,8 +1280,14 @@ def _check_ignored_conf(
     raise ValueError(error)
 
 
-def _check_prune(prune: int) -> None:
-    """Refuse a `-prune` Core refuses (`node/blockmanager_args.cpp`)."""
+def _prune_target_mib(prune: int) -> int:
+    """Return the MiB `-prune` asks for, refusing what Core refuses.
+
+    `ApplyArgsManOptions` (`node/blockmanager_args.cpp`, at
+    bitcoin/bitcoin@9be056a8a7) multiplies it by a MiB into a `uint64_t`,
+    which wraps: the target is `prune` modulo `_PRUNE_MIB_WRAP` MiB, `0`
+    being no pruning. `1` is manual pruning, and returned as it is.
+    """
     if prune < 0:
         # Core's own wording, node::ApplyArgsManOptions
         # (node/blockmanager_args.cpp:23-25, at bitcoin/bitcoin@ca7162cde5):
@@ -1173,7 +1296,10 @@ def _check_prune(prune: int) -> None:
         # start rather than treating a negative value as "pruning is on".
         err_msg = "Prune cannot be configured with a negative value."
         raise ValueError(err_msg)
-    if 1 < prune < MIN_PRUNE_TARGET_MIB:
+    if prune == 1:
+        return 1
+    target_mib = prune % _PRUNE_MIB_WRAP
+    if 0 < target_mib < MIN_PRUNE_TARGET_MIB:
         # Core's own wording, node::ApplyArgsManOptions
         # (node/blockmanager_args.cpp:31-33, at bitcoin/bitcoin@ca7162cde5):
         # `return util::Error{strprintf(_("Prune configured below the
@@ -1186,6 +1312,7 @@ def _check_prune(prune: int) -> None:
             "Please use a higher number."
         )
         raise ValueError(err_msg)
+    return target_mib
 
 
 def _read_settings(argv: Sequence[str]) -> tuple[_Settings, Path, str]:
@@ -1196,8 +1323,9 @@ def _read_settings(argv: Sequence[str]) -> tuple[_Settings, Path, str]:
     then the refusal of an argument that is not an option; and after it
     `ProcessInitCommands`'s help, printed to stdout with exit `0`.
     """
-    options, token = _parse_parameters(argv)
-    settings = _Settings(options)
+    warnings: list[str] = []
+    options, token = _parse_parameters(argv, warnings)
+    settings = _Settings(options, log_warnings=warnings)
 
     # `-datadir` and `-conf` are read by `get_path_arg`, lexically normal
     # before the file system is asked anything: `missing/..` and
@@ -1226,7 +1354,11 @@ def _read_settings(argv: Sequence[str]) -> tuple[_Settings, Path, str]:
                 base_dir=base_dir,
                 use_includes="includeconf" not in settings.command_line,
                 sections=settings.config_sections,
+                command_line=settings.command_line,
+                warnings=settings.log_warnings,
             )
+        except _ChainError:
+            raise
         except ValueError as error:
             # `InitConfig`'s own prefix on a `ReadConfigFiles` refusal
             err_msg = f"Error reading configuration file: {error}"
@@ -1253,38 +1385,44 @@ def _read_settings(argv: Sequence[str]) -> tuple[_Settings, Path, str]:
 class _BeforeLock:
     """What `_before_lock` read, for `_after_lock` to finish the `Config`.
 
-    `directories` is a `Config` of the chain, the data directory and
-    `-blocksdir`, the fields that name the directories `Node.__init__`
-    locks, and of `-maxconnections`, which `Config.__init__` refuses just
-    after a missing blocks directory, as Core does.
+    `prune` is `_prune_target_mib`'s. `directories` is a `Config` of the
+    chain, the data directory and `-blocksdir`, the fields that name the
+    directories `Node.__init__` locks, and of `-maxconnections`, which
+    `Config.__init__` refuses just after a missing blocks directory, as
+    Core does.
     """
 
     settings: _Settings
     base_dir: Path
     chain_name: str
     blocksdir: str | None
+    # `-maxconnections` as `GetIntArg` reads it, which the soft-set of
+    # `-listen` compares with zero, and as the `int` the limit is
+    max_connections_arg: int
     max_connections: int
     debug: bool
     prune: int
     directories: Config
 
 
-def _warn_unrecognized_sections(sections: Sequence[_SectionInfo]) -> None:
-    """Warn on stderr of every section that names no chain, as Core does.
+def _warn_unrecognized_sections(settings: _Settings) -> None:
+    """Warn of every section that names no chain, as Core does.
 
     `AppInitParameterInteraction`'s one `InitWarning` over
     `GetUnrecognizedSections` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7):
     a line per section, each ending in a newline, printed after
     `Warning: ` with a newline of its own, as `noui_ThreadSafeMessageBox`
-    prints it.
+    prints it, and appended to `settings.log_warnings` too, that
+    function logging it as well.
     """
     lines = "".join(
         f"{filepath}:{lineno} Section [{name}] is not recognized.\n"
-        for name, filepath, lineno in sections
+        for name, filepath, lineno in settings.config_sections
         if name not in _RECOGNIZED_SECTIONS
     )
     if lines:
         sys.stderr.write(f"Warning: {lines}\n")
+        settings.log_warnings.append(lines)
 
 
 def _before_lock(argv: Sequence[str]) -> _BeforeLock:
@@ -1296,15 +1434,16 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     `-maxconnections`, `-debug`'s categories, `-prune`.
     """
     settings, base_dir, chain_name = _read_settings(argv)
-    _warn_unrecognized_sections(settings.config_sections)
+    _warn_unrecognized_sections(settings)
     # `GetBlocksDirPath`: a negated `-blocksdir` is an empty path, which
     # `fs::absolute` reads as the working directory
     blocksdir = _get_arg(settings, "blocksdir")
     if _is_negated(settings, "blocksdir"):
         blocksdir = ""
-    max_connections = _get_int(settings, "maxconnections")
-    if max_connections is None:
-        max_connections = DEFAULT_MAX_PEER_CONNECTIONS
+    max_connections_arg = _get_int(settings, "maxconnections")
+    if max_connections_arg is None:
+        max_connections_arg = DEFAULT_MAX_PEER_CONNECTIONS
+    max_connections = _to_int(max_connections_arg)
     directories = Config(
         chain=chain_name,
         data_dir=base_dir,
@@ -1312,13 +1451,13 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
         max_connections=max_connections,
     )
     debug = _resolve_debug(settings)
-    prune = _get_int(settings, "prune") or 0
-    _check_prune(prune)
+    prune = _prune_target_mib(_get_int(settings, "prune") or 0)
     return _BeforeLock(
         settings,
         base_dir,
         chain_name,
         blocksdir,
+        max_connections_arg,
         max_connections,
         debug,
         prune,
@@ -1373,7 +1512,10 @@ def _after_lock(before: _BeforeLock) -> Config:
     # over (`src/init.cpp`, same sha)
     listen = _get_bool(settings, "listen")
     if listen is None:
-        listen = not connect and not connect_negated and before.max_connections > 0
+        listen = not connect and not connect_negated and before.max_connections_arg > 0
+    # the same `if` soft-sets `-dnsseed`, reading the same `int64_t`, which
+    # `max_connections` has been narrowed from
+    dnsseed = not connect and not connect_negated and before.max_connections_arg > 0
     # `GetAuthCookieFile` (`src/rpc/request.cpp`, same sha): negated, no cookie
     rpccookiefile = (
         None
@@ -1403,6 +1545,7 @@ def _after_lock(before: _BeforeLock) -> Config:
         addnode=_get_args(settings, "addnode"),
         listen=listen,
         max_connections=before.max_connections,
+        dnsseed=dnsseed,
         ban_time=ban_time,
         rpcauth=_get_args(settings, "rpcauth"),
         rpcuser=_get_arg(settings, "rpcuser") or "",
@@ -1411,6 +1554,7 @@ def _after_lock(before: _BeforeLock) -> Config:
         rpccookieperms=_get_arg(settings, "rpccookieperms"),
         rpcwhitelist=_get_args(settings, "rpcwhitelist"),
         rpcwhitelistdefault=_get_bool(settings, "rpcwhitelistdefault"),
+        log_warnings=settings.log_warnings,
     )
 
 

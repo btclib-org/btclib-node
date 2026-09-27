@@ -325,6 +325,21 @@ def maybe_send_getheaders(node: Node, conn: Connection, locator: list[bytes]) ->
 _FINAL_ALERT_VERSION = 70012
 
 
+def _expects_services(conn: Connection) -> bool:
+    """Answer Core's `ExpectServicesFromConn` for `conn`'s own kind.
+
+    False for `INBOUND`, `MANUAL` and `FEELER`; true for
+    `OUTBOUND_FULL_RELAY`, `BLOCK_RELAY`, `ADDR_FETCH` and
+    `PRIVATE_BROADCAST` (`src/net.h:838-848`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Of this node's own
+    connections that is `conn.automatic` -- what `_maybe_dial_more_peers`
+    dials, a feeler excepted below, and never a `-connect` or `-addnode`
+    peer (btclib-org/btclib-node#725) -- or `conn.addr_fetch`, this tree
+    having no `PRIVATE_BROADCAST` counterpart.
+    """
+    return (conn.automatic or conn.addr_fetch) and not conn.feeler
+
+
 def _refuses(node: Node, conn: Connection, version_msg: Version) -> bool:
     """Answer whether `version` drops the peer, and discourages nobody.
 
@@ -348,16 +363,20 @@ def _refuses(node: Node, conn: Connection, version_msg: Version) -> bool:
     # `common_version` (`p2p/protocol_version.py`)
     if version_msg.version < MIN_PEER_PROTO_VERSION:
         return True
-    # we only connect to witness nodes
-    if not version_msg.services & ServiceFlags.NODE_WITNESS:
+    # `NODE_WITNESS` is in every set `GetDesirableServiceFlags` answers,
+    # so Core requires it of every connection `_expects_services` covers
+    # -- an automatic outbound peer or an addr-fetch one, whatever this
+    # node's own sync state -- and of no other: an inbound peer, a
+    # manual one, or a feeler is kept without it. `DownloadManager` asks
+    # such a peer for `MSG_BLOCK` rather than `MSG_WITNESS_BLOCK`, and
+    # stops its walk over the peer's chain at SegWit's own activation
+    # height (btclib-org/btclib-node#1208).
+    if _expects_services(conn) and not version_msg.services & ServiceFlags.NODE_WITNESS:
         return True
     # Core disconnects for missing services only where
-    # `ExpectServicesFromConn` (`src/net.h`, at bitcoin/bitcoin@9be056a8a7,
-    # the v31.1 tag) holds, which is `false` for `INBOUND`, `MANUAL` and
-    # `FEELER` connections and `true` for every other outbound kind. Of
-    # this node's connections that is `conn.automatic`, what
-    # `_maybe_dial_more_peers` dials, but a feeler, and not a `-connect`
-    # or `-addnode` peer (btclib-org/btclib-node#725).
+    # `_expects_services` holds -- an automatic outbound connection or an
+    # addr-fetch one, never a feeler, and not a `-connect` or `-addnode`
+    # peer (btclib-org/btclib-node#725, btclib-org/btclib-node#1284).
     #
     # `has_all_desirable_services`' own `desirable` (above) is
     # `GetDesirableServiceFlags`'s shape
@@ -379,9 +398,10 @@ def _refuses(node: Node, conn: Connection, version_msg: Version) -> bool:
     # computing a new one. The comparison itself is
     # `HasAllDesirableServiceFlags`'s own shape (`net_processing.cpp:3850`,
     # `!(desirable & ~services)`): `NODE_WITNESS` is already required of
-    # every connection above, so it is never the bit that trips this
-    # once reached, but it is kept in `desirable` for the same shape
-    # Core's own check has rather than a narrower one this tree invented.
+    # every connection the check below covers, so it is never the bit
+    # that trips this once reached, but it is kept in `desirable` for
+    # the same shape Core's own check has rather than a narrower one
+    # this tree invented.
     #
     # The same answer is what Core records as `m_has_all_wanted_services`
     # for every connection, inbound included, and reads when choosing an
@@ -390,18 +410,14 @@ def _refuses(node: Node, conn: Connection, version_msg: Version) -> bool:
         node, version_msg.services
     )
     # `ExpectServicesFromConn` also holds for `ADDR_FETCH` (`src/net.h`,
-    # same sha), which this gate does not reach: `conn.automatic` is
-    # false for it (`p2p/manager.py`'s `create_connection`), so an
-    # addr-fetch peer short of `NODE_NETWORK` is kept rather than
-    # dropped here -- it is still refused above for missing
-    # `NODE_WITNESS`, and dropped on its own short life by
-    # `_ADDR_FETCH_TIMEOUT` regardless. btclib-org/btclib-node#1138 is
-    # this file's other services gate already needing the same
-    # connection-kind awareness this one is missing for `ADDR_FETCH`
-    # (btclib-org/btclib-node#1284).
+    # same sha), covered by `_expects_services` along with every
+    # automatic outbound connection: an addr-fetch peer short of
+    # `NODE_NETWORK` is dropped here rather than kept, on top of being
+    # refused above for missing `NODE_WITNESS`, and dropped on its own
+    # short life by `_ADDR_FETCH_TIMEOUT` regardless
+    # (btclib-org/btclib-node#1284, btclib-org/btclib-node#1138).
     return (
-        conn.automatic
-        and not conn.feeler
+        _expects_services(conn)
         and node.status >= NodeStatus.BlockSynced
         and not conn.has_all_wanted_services
     )

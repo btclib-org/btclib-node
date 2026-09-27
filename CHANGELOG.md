@@ -764,6 +764,29 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `duplicate-invalid`, on the wire and by `submitblock`, and no longer stored,
   from an outbound peer as misbehaviour** (closes #1344).
 
+### An inbound, manual or feeler peer is kept without `NODE_WITNESS`, as in Core
+
+- **`NODE_WITNESS` is required only where Core's `ExpectServicesFromConn`
+  holds** (closes #1138).
+
+### The configuration's warnings are logged, as `bitcoind` logs them
+
+- **An unknown key, a double negative and `-allowignoredconf`'s warning reach
+  `history.log` alone, and an unrecognised section's reaches it too**
+  (closes #1295), ahead of anything else the node logs.
+
+### An `includeconf` in the chain's own section is read, as `bitcoind` reads it
+
+- **The chain's section is read for `includeconf` before the default one**
+  (closes #1302), the chain resolved first and a conflicting one refused
+  before any include, as `ReadConfigFiles` does.
+
+### An integer option is read as `bitcoind` reads it
+
+- **The digits a value starts with, saturated at the `int64_t` range** (closes
+  #1313, closes #1324), where a value that is not an integer was refused;
+  `-maxconnections` and `-prune` then narrow and wrap as they do in Core.
+
 ### DNS seeding asks each seed's `x9.` subdomain, and addr-fetches the rest
 
 - **A seed answers only for `NODE_NETWORK | NODE_WITNESS`, at most 32 answers
