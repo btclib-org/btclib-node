@@ -92,6 +92,7 @@ from btclib_node.exceptions import (
 from btclib_node.main import (
     is_block_failed,
     is_block_mutated,
+    new_pow_valid_block,
     verify_mempool_acceptance,
 )
 from btclib_node.p2p.address import ip_and_port
@@ -1160,6 +1161,11 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
         conn.last_novel_block_time = int(time.time())
         node.logger.info("Received new block with hash:%s", block_hash.hex())
         block_index.set_downloaded(block_hash)
+        # Core's `AcceptBlock` calls `NewPoWValidBlock` from inside
+        # `ProcessNewBlock`, ahead of `ProcessBlock`'s own
+        # `RemoveBlockRequest` below (`net_processing.cpp`, at
+        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+        new_pow_valid_block(node, block)
         # stored, so awaited from nobody: Core's `ProcessBlock`
         remove_block_request(connections, block_hash, time.time())
 
@@ -1306,6 +1312,8 @@ def _block_answer(node: Node, item: Inventory, block: Block) -> BlockMsg | Cmpct
         height = block_index.header_dict[item.hash].index
         tip_height = len(block_index.active_chain) - 1
         if _can_direct_fetch(node) and height >= tip_height - MAX_CMPCTBLOCK_DEPTH:
+            # a fresh nonce, where Core answers the most recent block with
+            # the one it announced (btclib-org/btclib-node#1336)
             return compact_block(block, secrets.randbits(64))
         include_witness = True
     else:

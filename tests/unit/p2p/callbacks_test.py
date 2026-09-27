@@ -2251,6 +2251,9 @@ class FakeBlockIndex:
         """
         self.infos = infos
         self.header_dict = infos
+        # a tip no block built here extends, so `new_pow_valid_block`
+        # stops at it and announces nothing
+        self.active_chain = [b"\xee" * 32]
         self.marked: list[bytes] = []
         self.accepts_headers = accepts_headers
         self.added_headers: list[BlockHeader] = []
@@ -2319,6 +2322,30 @@ def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded() -> None:
     assert peer.last_novel_block_time > 0
     assert added == [block]
     assert index.marked == [block.header.hash]
+
+
+@pytest.mark.parametrize("downloaded", [False, True])
+def test_a_new_block_stored_is_offered_to_new_pow_valid_block(
+    monkeypatch: pytest.MonkeyPatch,
+    downloaded: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1315: Core's `AcceptBlock` calls `NewPoWValidBlock` for a new block.
+
+    One already held returns before it, as Core's `fAlreadyHave` does.
+    """
+    offered: list[Block] = []
+    monkeypatch.setattr(cb, "new_pow_valid_block", lambda _, b: offered.append(b))
+    block = a_block()
+    index = FakeBlockIndex({block.header.hash: SimpleNamespace(downloaded=downloaded)})
+    node = a_data_node(block_index=index, block_db=SimpleNamespace(add_block=id))
+    block_callback(
+        node,
+        BlockMsg(block, include_witness=True, check_validity=False).serialize(
+            check_validity=False
+        ),
+        a_peer(),
+    )
+    assert offered == ([] if downloaded else [block])
 
 
 def test_a_block_already_stored_is_not_stored_again() -> None:

@@ -30,6 +30,7 @@ from btclib_node.constants import MIN_BLOCKS_TO_KEEP, USER_AGENT
 from btclib_node.exceptions import MissingPrevoutError, TxRejectedError
 from btclib_node.main import (
     is_block_failed,
+    new_pow_valid_block,
     parent_lookup,
     prune_up_to_height,
     verify_mempool_acceptance,
@@ -686,6 +687,7 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
 
     node.block_db.add_block(block)
     block_index.set_downloaded(block_hash)
+    new_pow_valid_block(node, block)
     return None
 
 
