@@ -1196,13 +1196,15 @@ def test_a_dialled_peer_refused_in_version_is_not_recorded(refused: bytes) -> No
     both disconnect and return before `ProcessMessage`'s own `VERSION`
     handling reaches `m_addrman.Good` (`net_processing.cpp:3790`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag); this tree's own two
-    matching refusals, above, return before the same point.
+    matching refusals, above, return before the same point. The peer is
+    one this node drew itself, the only kind Core's
+    `ExpectServicesFromConn` refuses for a missing service.
     """
     dialled = peer_address("1.2.3.4", 18444)
     peer_db = PeerDB(cast("Chain", None), cast("Path", None))
     # known, so that it would be recorded if this refusal did not stop it
     peer_db.add_addresses([dialled])
-    peer = a_peer(inbound=False, address=dialled)
+    peer = a_peer(inbound=False, automatic=True, address=dialled)
     version(a_handshake_node(peer_db=peer_db), refused, peer)
     assert peer_db.active_addresses == []
 
