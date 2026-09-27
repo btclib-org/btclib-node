@@ -706,6 +706,17 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   is not configured here**, pre-commit.ci's weekly autoupdate moving `rev:`
   instead (issue btclib-org/.github#1391).
 
+### `bitcoin.conf` is read as bytes, as `bitcoind` reads it
+
+- **A byte that is not UTF-8 no longer stops the node** (closes #1290): it is
+  kept, and written back as that byte in stderr, the log and the credentials.
+
+### `REPOSITORY.md` reads the organization's SHA pinning back
+
+- **The organization's `allowed_actions` and `sha_pinning_required` stand
+  beside the repository's**, the latter set at that level (issue
+  btclib-org/.github#1409).
+
 ### The mempool refuses a fee under its floor, as Core
 
 - **A fee under the rolling minimum or `min_relay_feerate` for the vsize is
