@@ -26,7 +26,7 @@ from btclib.hashes import hash256
 from btclib.p2p.address import ServiceFlags
 from btclib.p2p.block_filters import BlockFilterType, CFilter
 from btclib.p2p.handshake import Verack, Version
-from btclib.p2p.inventory import GetData, Inventory, InventoryType
+from btclib.p2p.inventory import GetData, Inv, Inventory, InventoryType
 from btclib.p2p.keepalive import Ping, Pong
 from btclib.p2p.limits import MAX_INV_SZ, MAX_PROTOCOL_MESSAGE_LENGTH, PROTOCOL_VERSION
 from btclib.p2p.message import Message
@@ -230,6 +230,36 @@ def test_own_version_carries_this_nodes_own_best_height() -> None:
     (framed,) = sent
     start_height = Version.parse(Message.parse(framed).payload).start_height
     assert start_height == 741
+
+
+@pytest.mark.parametrize(("block_relay", "relay"), [(True, False), (False, True)])
+def test_own_version_asks_a_block_relay_only_peer_for_no_transactions(
+    *, block_relay: bool, relay: bool
+) -> None:
+    """ISS 1095: `fRelay` is `!RejectIncomingTxs`, false for `BLOCK_RELAY`.
+
+    Written on the wire as the octet, not left out: Core always sends it.
+    """
+    connection, _ = a_connection()
+    connection.block_relay = block_relay
+    manager = cast("Any", connection.manager)
+    manager.pending_outbound_nonces = set()
+    manager.add_pending_outbound_nonce = manager.pending_outbound_nonces.add
+    manager.port = 18444
+    sent: list[bytes] = []
+
+    async def _send(data: bytes) -> None:
+        sent.append(data)
+
+    connection._send = _send  # type: ignore[method-assign]
+
+    with connection.client:
+        asyncio.run(connection.async_send(connection.own_version()))
+
+    (framed,) = sent
+    payload = Message.parse(framed).payload
+    assert Version.parse(payload).relay is relay
+    assert payload[-1:] == (b"\x01" if relay else b"\x00")
 
 
 def test_own_version_advertises_node_network_when_not_pruned() -> None:
@@ -1739,3 +1769,64 @@ def test_send_ping_racing_pong_does_not_tear_the_ping_pair(
     # sentinel pong's own second write would otherwise have left behind
     assert connection.ping_sent != 0
     assert connection.ping_nonce not in (0, original_nonce)
+
+
+def test_own_version_asks_a_feeler_for_no_transactions() -> None:
+    """ISS 1096: `RejectIncomingTxs` holds for `FEELER`, so `fRelay` is 0."""
+    connection, _ = a_connection()
+    connection.feeler = True
+    manager = cast("Any", connection.manager)
+    manager.pending_outbound_nonces = set()
+    manager.add_pending_outbound_nonce = manager.pending_outbound_nonces.add
+    manager.port = 18444
+    sent: list[bytes] = []
+
+    async def _send(data: bytes) -> None:
+        sent.append(data)
+
+    connection._send = _send  # type: ignore[method-assign]
+
+    with connection.client:
+        asyncio.run(connection.async_send(connection.own_version()))
+
+    (framed,) = sent
+    assert Version.parse(Message.parse(framed).payload).relay is False
+
+
+def test_stop_when_sent_writes_what_was_sent_first() -> None:
+    """ISS 1096: the messages handed to `send` reach the peer, then the close.
+
+    What a feeler is dropped with, where a bare `stop` would close the
+    socket ahead of them. The `inv` is larger than a socket pair's
+    buffer, so its write is still waiting on the reader when the stop
+    is reached.
+    """
+
+    async def main() -> tuple[list[str], bool]:
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        theirs.setblocking(False)
+        loop = asyncio.get_running_loop()
+        connection, _ = a_connection(ours)
+        connection.loop = loop
+        items = [Inventory(InventoryType.MSG_BLOCK, bytes(32))] * MAX_INV_SZ
+        connection.send(Inv(items))
+        connection.send(Verack())
+        connection.stop_when_sent()
+        received = b""
+        async with asyncio.timeout(5):
+            while chunk := await loop.sock_recv(theirs, 4096):
+                received += chunk
+        theirs.close()
+        commands = []
+        while received:
+            message = Message.parse(
+                received[: 24 + int.from_bytes(received[16:20], "little")]
+            )
+            commands.append(message.command)
+            received = received[24 + len(message.payload) :]
+        return commands, ours.fileno() == -1
+
+    commands, closed = asyncio.run(main())
+    assert commands == ["inv", "verack"]
+    assert closed

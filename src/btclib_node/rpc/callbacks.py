@@ -29,6 +29,7 @@ from btclib_node.config import split_host_port
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, USER_AGENT
 from btclib_node.exceptions import MissingPrevoutError
 from btclib_node.main import (
+    is_block_failed,
     parent_lookup,
     prune_up_to_height,
     verify_mempool_acceptance,
@@ -37,7 +38,7 @@ from btclib_node.p2p.address import ip_and_port, peer_address
 from btclib_node.p2p.banman import Subnet, is_valid_host, lookup_host, lookup_subnet
 from btclib_node.p2p.eviction import Network, is_valid, net_class
 from btclib_node.rpc.connection import RawJSON
-from btclib_node.rpc.errors import RpcError, bool_param, type_error
+from btclib_node.rpc.errors import RpcError, bool_param, json_type_name, type_error
 
 if TYPE_CHECKING:
     from btclib_node import Node
@@ -677,7 +678,10 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     try:
         block.assert_valid(node.chain.pow_limit_bits)
     except BTClibException as error:
-        block_index.invalidate(block_hash)
+        parent = block_index.get_block_info(block.header.previous_block_hash)
+        segwit = parent.index + 1 >= node.chain.consensus.segwit_height
+        if is_block_failed(block, check_witness_root=segwit):
+            block_index.invalidate(block_hash)
         return str(error)
 
     node.block_db.add_block(block)
@@ -719,13 +723,17 @@ def _network_name(network: Network) -> str:
 
 
 def _connection_type(p2p_conn: Connection) -> str:
-    """Core's `ConnectionTypeAsString` for the three types this node opens.
+    """Core's `ConnectionTypeAsString` for the five types this node opens.
 
     An outbound connection `P2pManager` did not draw itself is a
     `-connect`, `-addnode` or `addnode` peer, Core's `MANUAL`.
     """
     if p2p_conn.inbound:
         return "inbound"
+    if p2p_conn.block_relay:
+        return "block-relay-only"
+    if p2p_conn.feeler:
+        return "feeler"
     return "outbound-full-relay" if p2p_conn.automatic else "manual"
 
 
@@ -740,9 +748,15 @@ def _peer_entry(
     """
     version_message = p2p_conn.version_message
     # Core's `TxRelay` exists only once the peer's `version` asked for
-    # relay, this node offering no `NODE_BLOOM`, and the fields read off
-    # it answer 0 or false where it does not.
-    relays = version_message is not None and version_message.is_relay_requested
+    # relay, this node offering no `NODE_BLOOM`, and never for a
+    # block-relay-only peer or a feeler; the fields read off it answer 0
+    # or false where it does not.
+    relays = (
+        version_message is not None
+        and version_message.is_relay_requested
+        and not p2p_conn.block_relay
+        and not p2p_conn.feeler
+    )
     services = 0 if version_message is None else version_message.services
 
     entry: dict[str, Any] = {"id": connection_id, "addr": addr, "addrbind": addrbind}
@@ -1523,6 +1537,10 @@ _INVALID_SCRIPT_REASON = "Invalid signatures or script"
 # `RPCErrorCode.VERIFY_REJECTED` (`bitcoin_core_rpc`) already answers a
 # transaction the mempool refused with, above. btclib-org/btclib-node#293
 _MEMPOOL_FULL_REASON = "Mempool is full"
+# Core's own `MAX_PACKAGE_COUNT` (`src/policy/packages.h`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): how many `rawtx` one
+# `testmempoolaccept` takes. btclib-org/btclib-node#1329
+_MAX_PACKAGE_COUNT = 25
 
 
 def test_mempool_accept(
@@ -1562,14 +1580,37 @@ def test_mempool_accept(
         # handler body runs, the same as blockhash and txid elsewhere in
         # this file
         raise type_error(1, "rawtxs", rawtxs, "array")
-    out: list[dict[str, Any]] = []
+    # Core's own handler (`src/rpc/mempool.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    # the v31.1 tag) bounds the array by `MAX_PACKAGE_COUNT` and then reads
+    # every `rawtx` in order, through `UniValue::get_str` and `DecodeHexTx`,
+    # before it validates any: the first element of the wrong type or that
+    # does not decode ends the whole call. btclib-org/btclib-node#1253,
+    # btclib-org/btclib-node#1329
+    if not 1 <= len(rawtxs) <= _MAX_PACKAGE_COUNT:
+        err_msg = f"Array must contain between 1 and {_MAX_PACKAGE_COUNT} transactions."
+        raise RpcError(RPCErrorCode.INVALID_PARAMETER, err_msg)
+    txs: list[Tx] = []
     for rawtx in rawtxs:
+        if not isinstance(rawtx, str):
+            # the accessor's own message, unwrapped: an array's elements
+            # are not among what the argument type check reads
+            message = (
+                f"JSON value of type {json_type_name(rawtx)} is not of expected "
+                "type string"
+            )
+            raise RpcError(RPCErrorCode.TYPE_ERROR, message)
         try:
-            tx = Tx.parse(rawtx)
-        except BTClibValueError:
-            out.append({"allowed": False, "reject-reason": "Invalid serialization"})
-            continue
-
+            txs.append(Tx.parse(rawtx))
+        except BTClibException as error:
+            # `BTClibException`, `send_raw_transaction`'s own clause below:
+            # a script shorter than its declared length raises
+            # `BTClibRuntimeError`, not `BTClibValueError`
+            err_msg = (
+                f"TX decode failed: {rawtx} Make sure the tx has at least one input."
+            )
+            raise RpcError(RPCErrorCode.DESERIALIZATION_ERROR, err_msg) from error
+    out: list[dict[str, Any]] = []
+    for tx in txs:
         tx_res: dict[str, Any] = {
             "txid": tx.id,
             "wtxid": tx.hash,

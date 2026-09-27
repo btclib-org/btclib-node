@@ -5,7 +5,10 @@
 """`Logger` picks the right handler and drops it cleanly on `close`."""
 
 import logging
+import time
 from typing import TYPE_CHECKING
+
+import pytest
 
 from btclib_node.log import Logger
 
@@ -25,6 +28,25 @@ def test_a_log_path_is_a_file_the_lines_end_up_in(tmp_path: Path) -> None:
     logger.info("a line")
     logger.close()
     assert "a line" in path.read_text(encoding="utf-8")
+
+
+def test_a_byte_utf8_refuses_is_logged_as_that_byte(tmp_path: Path) -> None:
+    """ISS 1290: a setting's byte reaches the file as Core writes it.
+
+    The lone surrogate `surrogateescape` read `0xe9` into, written back
+    as `0xe9`, where UTF-8 alone would refuse to write it.
+    """
+    path = tmp_path / "history.log"
+    logger = Logger(path)
+    logger.warning("Invalid -rpccookieperms=o\udce9")
+    logger.close()
+    # the line's own end left out: a text-mode file ends it in `\r\n` on
+    # Windows, which is not what this test is about
+    line = path.read_bytes().rstrip(b"\r\n")
+    # the time, one space, then `GetLogPrefix`'s level, as ISS 1280 and
+    # ISS 1297 have every line
+    _, message = line.split(b" ", 1)
+    assert message == b"[warning] Invalid -rpccookieperms=o\xe9"
 
 
 def test_no_log_path_is_the_stream_and_not_a_file() -> None:
@@ -62,7 +84,33 @@ def test_a_line_carries_its_level_as_core_s_log_does(tmp_path: Path) -> None:
     logger.critical("c")
     logger.close()
     messages = [
-        line.split(" - ", 1)[1]
-        for line in path.read_text(encoding="utf-8").splitlines()
+        line.split(" ", 1)[1] for line in path.read_text(encoding="utf-8").splitlines()
     ]
     assert messages == ["[debug] d", "i", "[warning] w", "[error] e", "[error] c"]
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="no time.tzset on Windows")
+def test_a_line_opens_with_core_s_utc_second_and_a_space(tmp_path: Path) -> None:
+    """ISS 1297: `LogTimestampStr`, as `bitcoind` v31.1.0's `debug.log` has it.
+
+    `2026-09-26T09:42:51Z [error] Unable to start HTTP server. See debug
+    log for details.`: ISO 8601 in UTC, whatever the machine's zone, the
+    fraction of the second dropped, then one space. The zone is pinned
+    to one five and a half hours off UTC with no daylight saving, so a
+    local time cannot pass for UTC on a machine that runs in UTC; and
+    reset once the variable is, for the tests the same worker runs next.
+    """
+    logger = Logger(tmp_path / "history.log")
+    (handler,) = logger.handlers
+    record = logging.makeLogRecord(
+        {"msg": "a line", "levelno": logging.ERROR, "created": 86399.9}
+    )
+    try:
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setenv("TZ", "Asia/Kolkata")
+            time.tzset()
+            assert time.localtime(0).tm_gmtoff == 5 * 3600 + 30 * 60
+            assert handler.format(record) == "1970-01-01T23:59:59Z [error] a line"
+    finally:
+        time.tzset()
+        logger.close()
