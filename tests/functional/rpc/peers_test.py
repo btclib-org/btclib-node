@@ -2,7 +2,7 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""getconnectioncount, getpeerinfo, addnode and getnetworkinfo, two nodes.
+"""getconnectioncount, getpeerinfo, addnode, disconnectnode, getnetworkinfo.
 
 Each test connects two live nodes over p2p and asks one of them, over
 its own RPC socket, what its p2p side reports about the other.
@@ -164,6 +164,47 @@ def test_addnode_onetry_dials_and_connects_the_other_node(tmp_path: Path) -> Non
         wait_until(
             lambda: node2.p2p_manager.connections[0].status == P2pConnStatus.Connected
         )
+
+
+def test_disconnectnode_drops_a_live_connection_by_address(tmp_path: Path) -> None:
+    """`disconnectnode "address"`, live, closes the real socket both sides.
+
+    ISS 1193: `remove_connection` (`p2p/manager.py`) calls `conn.stop()`,
+    which closes the underlying socket, so the dialling side notices the
+    drop independently, the same way it would notice any other peer
+    going away.
+    """
+    with (
+        node_context(tmp_path / "node1") as node1,
+        node_context(tmp_path / "node2") as node2,
+    ):
+        wait_until_listening(node1.rpc_manager)
+        wait_until_listening(node2.rpc_manager)
+        wait_until_listening(node1.p2p_manager)
+        wait_until_listening(node2.p2p_manager)
+
+        node2.p2p_manager.connect(local_addr(node1.p2p_port))
+        wait_until(lambda: len(node1.p2p_manager.connections))
+        wait_until(
+            lambda: node1.p2p_manager.connections[0].status == P2pConnStatus.Connected
+        )
+        wait_until(lambda: len(node2.p2p_manager.connections))
+        wait_until(
+            lambda: node2.p2p_manager.connections[0].status == P2pConnStatus.Connected
+        )
+
+        _, peer_info = rpc_client(node1).call_raw(
+            "getpeerinfo", jsonrpc="1.0", request_timeout=2
+        )
+        address = peer_info["result"][0]["addr"]
+
+        _, body = rpc_client(node1).call_raw(
+            "disconnectnode", [address], jsonrpc="1.0", request_timeout=2
+        )
+        assert body["result"] is None
+
+        wait_until(lambda: len(node1.p2p_manager.connections) == 0)
+        wait_until(lambda: len(node2.p2p_manager.connections) == 0)
 
 
 def test_get_network_info_s_subversion_matches_what_a_peer_sees(
