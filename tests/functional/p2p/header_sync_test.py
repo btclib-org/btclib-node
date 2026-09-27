@@ -44,6 +44,7 @@ def test_peers_at_the_same_tip_both_reach_header_synced(tmp_path: Path) -> None:
                 allow_rpc=False,
             )
         )
+        node.load()
         block_index = node.chainstate.block_index
         block_index.add_headers([block.header for block in chain])
         for block in chain:
