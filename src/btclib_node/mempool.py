@@ -47,14 +47,9 @@ _RECENT_REJECTS_CAPACITY = 120_000
 # at bitcoin/bitcoin@58a7869f86): what an eviction round bumps the rolling
 # minimum to, above the feerate of whatever it just evicted, so a
 # transaction does not requalify at the exact rate something was just
-# evicted for. A constant of this module and not `Config.min_relay_feerate`
-# -- that field is BIP133's own floor, documented in `config.py` as "not
-# enforced anywhere else" than the `feefilter` this node sends, and
-# reading it here for a second purpose would make that comment false for
-# a reason nobody asked for. Core keeps the two as separate knobs,
-# `-minrelaytxfee` and `-incrementalrelayfee`, that merely share a
-# default; this module does the same rather than coupling to a field
-# whose own documentation disclaims the coupling.
+# evicted for. A constant of this module and not `Config.min_relay_feerate`:
+# Core keeps the two as separate knobs, `-minrelaytxfee` and
+# `-incrementalrelayfee`, that merely share a default.
 _INCREMENTAL_RELAY_FEE_RATE = FeeRate(sats_per_kvbyte=100)
 
 # Core's own `ROLLING_FEE_HALFLIFE` (`src/txmempool.h:212`, same commit):
