@@ -949,7 +949,7 @@ def _unrequested_block_refused(node: Node, block_hash: bytes) -> bool:
 
 
 def _refuse_before_indexing(node: Node, block: Block, conn: Connection) -> bool:
-    """Refuse what Core refuses of a `block` before `AcceptBlockHeader`.
+    """Refuse what Core refuses of a `block` before its header is indexed.
 
     Answer whether its witness is read against a commitment, segwit
     binding after its parent, for `main.is_block_failed` to ask later.
@@ -1000,33 +1000,34 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
     the block asked of another peer, with the index left alone except
     where Core marks the block failed (`main.is_block_failed`).
 
-    An unsolicited block whose own header this node has never indexed
-    is not read as though `getdata` or `headers` already vouched for
-    it: `PeerManagerImpl::ProcessMessage`'s own `NetMsgType::BLOCK` arm
-    (`net_processing.cpp`, at bitcoin/bitcoin@ca7162cde5) runs every
-    block through `ChainstateManager::AcceptBlock`, which calls
-    `AcceptBlockHeader` (`validation.cpp`, same sha) on the block's own
-    header before the body's own checks -- a header already known is accepted
-    outright, and one that is not has its own parent looked up, refused
-    with `BLOCK_MISSING_PREV` where that parent is unknown too. Core
-    punishes that refusal: `MaybePunishNodeForBlock`'s own switch
+    An unsolicited block whose own header this node has never indexed is not
+    read as though `getdata` or `headers` already vouched for it:
+    `PeerManagerImpl::ProcessMessage`'s own `NetMsgType::BLOCK` arm
+    (`net_processing.cpp`, at bitcoin/bitcoin@ca7162cde5) runs every block
+    through `ChainstateManager::AcceptBlock` once `ProcessNewBlock`'s
+    `CheckBlock` has passed -- which this function asks first too, in
+    `_refuse_before_indexing` -- and `AcceptBlock` calls `AcceptBlockHeader`
+    (`validation.cpp`, same sha) on the block's own header before the body's
+    remaining checks -- a header already known is accepted outright, and one
+    that is not has its own parent looked up, refused with
+    `BLOCK_MISSING_PREV` where that parent is unknown too. Core punishes
+    that refusal: `MaybePunishNodeForBlock`'s own switch
     (`net_processing.cpp`, same sha) calls `Misbehaving` for
     `BLOCK_MISSING_PREV`, unlike an unconnecting *headers* batch, which
     `ProcessHeadersMessage`'s own `HandleUnconnectingHeaders` answers by
-    asking for more rather than by punishing -- the same asymmetry this
-    file already carries between `headers` below, which never
-    discourages a batch connecting to nothing this node knows
-    (btclib-org/btclib-node#233), and this function, which does.
-    `block_index.add_headers([block.header])` is `AcceptBlockHeader`'s
-    own shape: it indexes the header where the parent is known, raises
-    where the header itself is invalid -- a `MisbehavingError` where
-    Core's `MaybePunishNodeForBlock` punishes, which `main.handle_p2p`'s
-    own `except` answers by dropping and discouraging the peer, as it
-    does for a block failing its own checks below -- and, for a single
-    header whose parent is missing, returns `None` rather than raising,
-    which is `headers`'s own "ask again" case and not this one's: a
-    `MisbehavingError` is raised here instead, matching `Misbehaving`.
-    btclib-org/btclib-node#711
+    asking for more rather than by punishing -- the same asymmetry this file
+    already carries between `headers` below, which never discourages a batch
+    connecting to nothing this node knows (btclib-org/btclib-node#233), and
+    this function, which does. `block_index.add_headers([block.header])` is
+    `AcceptBlockHeader`'s own shape: it indexes the header where the parent
+    is known, raises where the header itself is invalid -- a
+    `MisbehavingError` where Core's `MaybePunishNodeForBlock` punishes,
+    which `main.handle_p2p`'s own `except` answers by dropping and
+    discouraging the peer, as it does for a block failing its own checks
+    below -- and, for a single header whose parent is missing, returns
+    `None` rather than raising, which is `headers`'s own "ask again" case
+    and not this one's: a `MisbehavingError` is raised here instead,
+    matching `Misbehaving`. btclib-org/btclib-node#711
     """
     # btclib's BlockPayload validates against mainnet's pow limit by
     # default, which no regtest or signet block meets. Its own docstring
