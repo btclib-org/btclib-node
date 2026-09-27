@@ -752,6 +752,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   refused in Core's words, which both RPCs report** (closes #1245); a reorg's
   re-added transactions are exempt.
 
+### A block asked of a peer without `NODE_WITNESS` carries no witness flag
+
+- **`DownloadManager` asks such a peer for `MSG_BLOCK` rather than
+  `MSG_WITNESS_BLOCK`, and its walk over the peer's chain ends at the first
+  block where SegWit is active** (closes #1208).
+
 ### An inbound, manual or feeler peer is kept without `NODE_WITNESS`, as in Core
 
 - **`NODE_WITNESS` is required only where Core's `ExpectServicesFromConn`

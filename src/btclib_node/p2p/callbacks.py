@@ -350,8 +350,10 @@ def _refuses(node: Node, conn: Connection, version_msg: Version) -> bool:
     # `NODE_WITNESS` is in every set `GetDesirableServiceFlags` answers,
     # so Core requires it of every connection the check below covers,
     # whatever this node's own sync state, and of no other: an inbound
-    # peer, a manual one, or a feeler is kept without it. Block download
-    # still asks such a peer for witness blocks: btclib-org/btclib-node#1208
+    # peer, a manual one, or a feeler is kept without it. `DownloadManager`
+    # asks such a peer for `MSG_BLOCK` rather than `MSG_WITNESS_BLOCK`, and
+    # stops its walk over the peer's chain at SegWit's own activation
+    # height (btclib-org/btclib-node#1208).
     if (
         conn.automatic
         and not conn.feeler

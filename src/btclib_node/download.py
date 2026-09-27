@@ -261,6 +261,19 @@ def _is_limited_peer(conn: Connection) -> bool:
     )
 
 
+def _can_serve_witnesses(conn: Connection) -> bool:
+    """Whether `conn` can serve this node witness data.
+
+    Core's own `CanServeWitnesses` (`net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `NODE_WITNESS`
+    advertised. `False` for a connection with no `version_message`,
+    which `callbacks.verack` never promotes, the same direction
+    `_is_limited_peer` reads that absence in.
+    """
+    version_msg = conn.version_message
+    return bool(version_msg and version_msg.services & ServiceFlags.NODE_WITNESS)
+
+
 def _is_preferred_download(conn: Connection) -> bool:
     """Whether `conn` is a peer headers and blocks are preferably synced from.
 
@@ -1149,9 +1162,11 @@ class DownloadManager:
                 conn.block_availability,
                 MAX_BLOCKS_IN_TRANSIT_PER_PEER - len(conn.download_queue),
                 node.chain.consensus.minimum_chain_work,
+                node.chain.consensus.segwit_height,
                 in_flight=in_flight,
                 peer_id=conn.id,
                 limited=_is_limited_peer(conn),
+                can_serve_witnesses=_can_serve_witnesses(conn),
             )
             if blocks:
                 downloading_from += not conn.download_queue
@@ -1194,7 +1209,8 @@ class DownloadManager:
     ) -> None:
         """Ask `conn` for `blocks`, queued as Core's `BlockRequested` queues.
 
-        The front of an empty queue is awaited from `now`.
+        The front of an empty queue is awaited from `now`. `GetFetchFlags`'
+        witness flag is set only where `conn` can serve witnesses.
         """
         if not conn.download_queue:
             conn.block_availability.downloading_since = now
@@ -1203,11 +1219,9 @@ class DownloadManager:
         # validate, the earliest point the worker pool is certain to be
         # wanted: btclib-org/btclib-node#262
         self.node.warm_worker_pool()
-        conn.send(
-            GetData(
-                [
-                    Inventory(InventoryType.MSG_WITNESS_BLOCK, block_hash)
-                    for block_hash in blocks
-                ]
-            )
+        fetch_type = (
+            InventoryType.MSG_WITNESS_BLOCK
+            if _can_serve_witnesses(conn)
+            else InventoryType.MSG_BLOCK
         )
+        conn.send(GetData([Inventory(fetch_type, block_hash) for block_hash in blocks]))
