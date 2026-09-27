@@ -94,6 +94,7 @@ from btclib_node.main import (
     is_block_failed,
     is_block_mutated,
     is_cached_invalid,
+    passes_check_block,
     verify_mempool_acceptance,
 )
 from btclib_node.p2p.address import ip_and_port
@@ -1022,46 +1023,86 @@ def _unrequested_block_refused(node: Node, block_hash: bytes) -> bool:
     )
 
 
+def _refuse_before_indexing(node: Node, block: Block, conn: Connection) -> bool:
+    """Refuse what Core refuses of a `block` before its header is indexed.
+
+    Answer whether its witness is read against a commitment, segwit
+    binding after its parent, for `main.is_block_failed` to ask later.
+    """
+    block_hash = block.header.hash
+    block_index = node.chainstate.block_index
+    # Core's `BLOCK` arm refuses a mutated body before the header is
+    # looked at, once the parent is known, and punishes the peer without
+    # touching the index (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7)
+    parent = block_index.header_dict.get(block.header.previous_block_hash)
+    segwit = parent is not None and (
+        parent.index + 1 >= node.chain.consensus.segwit_height
+    )
+    if parent is not None and is_block_mutated(block, check_witness_root=segwit):
+        err_msg = f"mutated block {block_hash.hex()}"
+        raise MisbehavingError(err_msg)
+    # Core's `ProcessNewBlock` asks `CheckBlock` before `AcceptBlock`, so a
+    # body failing it is refused, and its peer punished, before its header
+    # is indexed or its being unrequested is looked at; Core never marks
+    # such a block failed (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7)
+    if not passes_check_block(block):
+        try:
+            block.assert_valid(node.chain.pow_limit_bits)
+        except BTClibException as e:
+            raise MisbehavingError(str(e)) from e
+    # Core's `duplicate-invalid`, before the stored block is looked at:
+    # `MaybePunishNodeForBlock` punishes `BLOCK_CACHED_INVALID` from an
+    # outbound peer alone, so an inbound one is refused and kept
+    if is_cached_invalid(block_index, block):
+        err_msg = f"duplicate-invalid: {block_hash.hex()}"
+        if conn.inbound:
+            raise BTClibValueError(err_msg)
+        raise MisbehavingError(err_msg)
+    return segwit
+
+
 def block(node: Node, msg: bytes, conn: Connection) -> None:
     """Store a requested block once its proof of work checks out.
 
     A body its header does not commit to (`main.is_block_mutated`), on
     a parent this node knows, is refused first, whatever is already
     stored under that hash: it says nothing about the header. A body
-    under a header marked invalid is refused next, `duplicate-invalid`
+    failing `CheckBlock` (`main.passes_check_block`) is refused next,
+    requested or not, with its header left unindexed; then a body under
+    a header marked invalid, `duplicate-invalid`
     (`main.is_cached_invalid`). Past that, a no-op if this block is
-    already marked downloaded. A body
-    failing a check is refused, and the block asked of another peer,
-    with the index left alone except where Core marks the block failed
-    (`main.is_block_failed`).
+    already marked downloaded. A body failing a check is refused, and
+    the block asked of another peer, with the index left alone except
+    where Core marks the block failed (`main.is_block_failed`).
 
-    An unsolicited block whose own header this node has never indexed
-    is not read as though `getdata` or `headers` already vouched for
-    it: `PeerManagerImpl::ProcessMessage`'s own `NetMsgType::BLOCK` arm
-    (`net_processing.cpp`, at bitcoin/bitcoin@ca7162cde5) runs every
-    block through `ChainstateManager::AcceptBlock`, which calls
-    `AcceptBlockHeader` (`validation.cpp`, same sha) on the block's own
-    header before the body's own checks -- a header already known is accepted
-    outright, and one that is not has its own parent looked up, refused
-    with `BLOCK_MISSING_PREV` where that parent is unknown too. Core
-    punishes that refusal: `MaybePunishNodeForBlock`'s own switch
+    An unsolicited block whose own header this node has never indexed is not
+    read as though `getdata` or `headers` already vouched for it:
+    `PeerManagerImpl::ProcessMessage`'s own `NetMsgType::BLOCK` arm
+    (`net_processing.cpp`, at bitcoin/bitcoin@ca7162cde5) runs every block
+    through `ChainstateManager::AcceptBlock` once `ProcessNewBlock`'s
+    `CheckBlock` has passed -- which this function asks first too, in
+    `_refuse_before_indexing` -- and `AcceptBlock` calls `AcceptBlockHeader`
+    (`validation.cpp`, same sha) on the block's own header before the body's
+    remaining checks -- a header already known is accepted outright, and one
+    that is not has its own parent looked up, refused with
+    `BLOCK_MISSING_PREV` where that parent is unknown too. Core punishes
+    that refusal: `MaybePunishNodeForBlock`'s own switch
     (`net_processing.cpp`, same sha) calls `Misbehaving` for
     `BLOCK_MISSING_PREV`, unlike an unconnecting *headers* batch, which
     `ProcessHeadersMessage`'s own `HandleUnconnectingHeaders` answers by
-    asking for more rather than by punishing -- the same asymmetry this
-    file already carries between `headers` below, which never
-    discourages a batch connecting to nothing this node knows
-    (btclib-org/btclib-node#233), and this function, which does.
-    `block_index.add_headers([block.header])` is `AcceptBlockHeader`'s
-    own shape: it indexes the header where the parent is known, raises
-    where the header itself is invalid -- a `MisbehavingError` where
-    Core's `MaybePunishNodeForBlock` punishes, which `main.handle_p2p`'s
-    own `except` answers by dropping and discouraging the peer, as it
-    does for a block failing its own checks below -- and, for a single
-    header whose parent is missing, returns `None` rather than raising,
-    which is `headers`'s own "ask again" case and not this one's: a
-    `MisbehavingError` is raised here instead, matching `Misbehaving`.
-    btclib-org/btclib-node#711
+    asking for more rather than by punishing -- the same asymmetry this file
+    already carries between `headers` below, which never discourages a batch
+    connecting to nothing this node knows (btclib-org/btclib-node#233), and
+    this function, which does. `block_index.add_headers([block.header])` is
+    `AcceptBlockHeader`'s own shape: it indexes the header where the parent
+    is known, raises where the header itself is invalid -- a
+    `MisbehavingError` where Core's `MaybePunishNodeForBlock` punishes,
+    which `main.handle_p2p`'s own `except` answers by dropping and
+    discouraging the peer, as it does for a block failing its own checks
+    below -- and, for a single header whose parent is missing, returns
+    `None` rather than raising, which is `headers`'s own "ask again" case
+    and not this one's: a `MisbehavingError` is raised here instead,
+    matching `Misbehaving`. btclib-org/btclib-node#711
     """
     # btclib's BlockPayload validates against mainnet's pow limit by
     # default, which no regtest or signet block meets. Its own docstring
@@ -1087,24 +1128,7 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
     remove_block_request(connections, block_hash, time.time(), conn.id)
 
     block_index = node.chainstate.block_index
-    # Core's `BLOCK` arm refuses a mutated body before the header is
-    # looked at, once the parent is known, and punishes the peer without
-    # touching the index (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7)
-    parent = block_index.header_dict.get(block.header.previous_block_hash)
-    segwit = parent is not None and (
-        parent.index + 1 >= node.chain.consensus.segwit_height
-    )
-    if parent is not None and is_block_mutated(block, check_witness_root=segwit):
-        err_msg = f"mutated block {block_hash.hex()}"
-        raise MisbehavingError(err_msg)
-    # Core's `duplicate-invalid`, before the stored block is looked at:
-    # `MaybePunishNodeForBlock` punishes `BLOCK_CACHED_INVALID` from an
-    # outbound peer alone, so an inbound one is refused and kept
-    if is_cached_invalid(block_index, block):
-        err_msg = f"duplicate-invalid: {block_hash.hex()}"
-        if conn.inbound:
-            raise BTClibValueError(err_msg)
-        raise MisbehavingError(err_msg)
+    segwit = _refuse_before_indexing(node, block, conn)
     if (
         block_hash not in block_index.header_dict
         and block_index.add_headers([block.header]) is None
@@ -1124,8 +1148,8 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
         # main.handle_p2p, which drops the peer that sent it. Invalidated
         # first where Core marks it failed (`main.is_block_failed`), so the
         # next peer offering it is refused before it is asked to send it.
-        # A `MisbehavingError`: this is Core's `CheckBlock` and
-        # `ContextualCheckBlock`'s `bad-blk-weight`, whose
+        # A `MisbehavingError`: the body having passed `CheckBlock` above,
+        # this is `ContextualCheckBlock`'s `bad-blk-weight`, whose
         # `BLOCK_CONSENSUS` `MaybePunishNodeForBlock` punishes
         # (btclib-org/btclib-node#1170). One refusal here is
         # btclib's and not Core's: its header check refuses a version of

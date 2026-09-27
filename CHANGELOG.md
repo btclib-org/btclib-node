@@ -770,6 +770,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   its body passes `CheckBlock`, and the body's reason otherwise, the stored
   block left as it was** (closes #1346), as Core's `ProcessNewBlock` orders it.
 
+### A block failing `CheckBlock` costs its peer, asked for or not, as in Core
+
+- **A body failing `CheckBlock` is refused before its header is indexed and
+  before an unrequested block is set aside, so its peer is punished either
+  way** (closes #1363), as Core's `ProcessNewBlock` orders it.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

@@ -2582,13 +2582,43 @@ def test_a_body_failing_check_block_under_an_invalid_header_says_why(
 def test_a_committed_body_failing_check_block_leaves_the_header_valid(
     tmp_path: Path,
 ) -> None:
-    """ISS 1242: Core's `ProcessNewBlock` never marks a `CheckBlock` failure."""
+    """ISS 1242: Core's `ProcessNewBlock` never marks a `CheckBlock` failure.
+
+    Nor does it index the header, `CheckBlock` coming before `AcceptBlock`
+    (ISS 1363), so the header is not there to be marked at all.
+    """
     node = a_chainstate_node(tmp_path)
     twice = generate_segwit_block(generate_coinbase(height=1))
     with pytest.raises(MisbehavingError, match="more than one coinbase"):
         block_callback(node, a_block_payload(twice), a_peer())
-    block_info = node.chainstate.block_index.get_block_info(twice.header.hash)
-    assert block_info.status != BlockStatus.invalid
+    assert twice.header.hash not in node.chainstate.block_index.header_dict
+    assert node.added == []
+    node.chainstate.close()
+
+
+@pytest.mark.parametrize("inbound", [True, False])
+def test_an_unrequested_low_work_block_failing_check_block_costs_its_peer(
+    tmp_path: Path,
+    inbound: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1363: Core's `CheckBlock` runs before `AcceptBlock`'s early returns.
+
+    Measured against bitcoind v31.1: an unrequested block at height 1 on a
+    fork below a tip at height 2, carrying two coinbases, logs
+    `Misbehaving` and disconnects the peer, the header left unindexed;
+    the same block with one coinbase is taken quietly. From an inbound
+    peer or an outbound one alike.
+    """
+    node = an_unrequested_block_node(tmp_path, 2)
+    twice = a_block_at(node, 1, fork=0)
+    twice = build_block(
+        twice.header.previous_block_hash,
+        [*twice.transactions, generate_coinbase(value=1, height=1)],
+        1,
+    )
+    with pytest.raises(MisbehavingError, match="more than one coinbase"):
+        deliver(node, twice, a_peer(inbound=inbound))
+    assert twice.header.hash not in node.chainstate.block_index.header_dict
     assert node.added == []
     node.chainstate.close()
 

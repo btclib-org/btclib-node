@@ -622,8 +622,9 @@ def passes_check_block(block: Block) -> bool:
     The merkle root, `bad-blk-length`, `bad-cb-missing`,
     `bad-cb-multiple`, each transaction's `CheckTransaction` and
     `bad-blk-sigops`, in Core's order (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The header is asked
-    elsewhere: it is indexed before its body is read.
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The header is checked
+    elsewhere: by `add_headers` if it is new, or when it was first
+    indexed.
     """
     transactions = block.transactions
     try:
