@@ -1,8 +1,10 @@
 ---
 # Two of the three things this repository pins, and the third is
-# somebody else's job: the pre-commit hook revisions have no dependabot
-# ecosystem, and the `ci:` block of .pre-commit-config.yaml has
-# pre-commit.ci bumping them weekly instead.
+# somebody else's job: Dependabot has a pre-commit ecosystem too, and the
+# maintainer decided to keep pre-commit.ci for the hook revisions instead
+# (btclib-org/.github#1391). The `ci:` block of .pre-commit-config.yaml
+# has its weekly autoupdate rewriting rev: for every repo: but local and
+# meta, so a second bot on the same pin would only compete with it.
 #
 # Grouped, one pull request per ecosystem: every one of them runs the
 # gate, and the gate here is the whole suite. Paying that once a week
