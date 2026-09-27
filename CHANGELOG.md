@@ -735,6 +735,17 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   and one at 70012 or below the final `alert`, as in Core** (closes #1204,
   closes #1205).
 
+### `codeql.yml`'s aggregate reads a lagging row again
+
+- **An unfinished `analyze` row is read again before it is accepted, and a
+  `needs.analyze.result` neither `success` nor `skipped` fails the step**
+  (issue btclib-org/.github#1416) (issue btclib-org/.github#1424).
+
+### `integration-bitcoind.yml` names `skip-reason-prefix`
+
+- **Its comments name `skip-reason-prefix`, left empty, in place of
+  `exclude-classname`** (issue btclib-org/.github#1419).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
