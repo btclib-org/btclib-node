@@ -599,16 +599,17 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   reindexes only where it pruned a row** (closes #1217, closes #1283), where
   each pass serialized every answered row and every dialable gossiped one.
 
-### The suite's ports come from the range Core's tests use
-
-- **`get_random_port` hands each xdist worker ports of its own from 11000 to
-  25999, as Core's tests take theirs**, not a port the kernel picked for a
-  bind to 0, which anything could take before bitcoind bound it (closes #1340).
 ### A gossip adds services to an address, and a dialled peer's own replace them
 
 - **`add_addresses` ORs gossiped services into both rows of an endpoint, and
   an outbound peer's `version` overwrites them** (closes #1276), as Core's
   `AddSingle` and `SetServices` do, where a gossip replaced a known row's.
+
+### The suite's ports come from the range Core's tests use
+
+- **`get_random_port` hands each xdist worker, and each of the first as many
+  replacements, ports of its own from 11000 to 25999, as Core's tests do**,
+  not a port a bind to 0 picked, which anything could take first (closes #1340).
 
 ## v2026.9.24
 
