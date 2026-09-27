@@ -576,13 +576,19 @@ def wait_until_listening(manager: _ListensOnAPort, timeout: float = 20) -> None:
 def _ended_without_listening(manager: _ListensOnAPort) -> bool:
     """Whether `manager`'s thread was started and has ended, not listening.
 
-    `ident` is None until `start()`, and a node starts its managers from
-    its own thread, so a caller may reach this before that has happened.
-    A stand-in that is not a thread never ends.
+    `ident` is None until the new thread sets it, and a node starts its
+    managers from its own thread, so a caller may reach this first.
+    `is_alive()` is not the test once `ident` is set: the new thread sets
+    `ident` before it counts as started, so `is_alive()` is False for a
+    thread that has not run yet. `threading.enumerate()` lists a thread
+    from `start()` until its `run` has returned. A stand-in that is not a
+    thread never ends.
     """
     if not isinstance(manager, threading.Thread) or manager.ident is None:
         return False
-    return not manager.is_alive() and not manager.listening.is_set()
+    if manager in threading.enumerate():
+        return False
+    return not manager.listening.is_set()
 
 
 # One `-rpcauth` user, for a test building an `RpcManager` or an

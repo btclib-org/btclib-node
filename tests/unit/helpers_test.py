@@ -191,6 +191,42 @@ def test_a_manager_not_yet_started_is_waited_for() -> None:
         wait_until_listening(manager, timeout=0.2)
 
 
+class _AManagerHeldBeforeItStarts(_AManagerThatGivesUp):
+    """A stand-in held where the new thread has set `ident`, not started.
+
+    CPython's `Thread._bootstrap_inner` calls `_set_os_name` between
+    `_set_ident` and `_started.set`: holding it there opens the window a
+    busy machine opens for an instant.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(None)
+        self.held = threading.Event()
+        self.release = threading.Event()
+
+    def _set_os_name(self) -> None:
+        self.held.set()
+        self.release.wait()
+
+
+def test_a_manager_whose_thread_has_not_run_yet_is_waited_for() -> None:
+    """ISS 1361: a thread with an `ident`, not yet alive, has not ended."""
+    manager = _AManagerHeldBeforeItStarts()
+    # a node starts its managers from its own thread
+    starter = threading.Thread(target=manager.start)
+    starter.start()
+    try:
+        assert manager.held.wait(timeout=10)
+        assert manager.ident is not None
+        assert not manager.is_alive()
+        with pytest.raises(WaitTimeoutError, match=r"within 0\.2 seconds"):
+            wait_until_listening(manager, timeout=0.2)
+    finally:
+        manager.release.set()
+        starter.join()
+        manager.join()
+
+
 def test_a_bounded_call_hands_back_what_it_returned() -> None:
     """`call_within` returns the wrapped call's own result."""
     assert call_within(lambda: "answer") == "answer"
