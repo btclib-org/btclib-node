@@ -758,11 +758,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `MSG_WITNESS_BLOCK`, and its walk over the peer's chain ends at the first
   block where SegWit is active** (closes #1208).
 
-### A listener that cannot bind is reported as one, not as a slow one
-
-- **`wait_until_listening` raises `ListenerEndedError` as soon as a manager's
-  thread ends without listening, naming its `bind_error` where it has one**,
-  where it waited out its timeout and reported one (closes #1361).
 ### A block under a header already marked invalid is refused, as in Core
 
 - **A body passing `CheckBlock` under a header marked invalid is refused
@@ -773,6 +768,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 - **`NODE_WITNESS` is required only where Core's `ExpectServicesFromConn`
   holds** (closes #1138).
+
+### A listener that cannot bind is reported as one, not as a slow one
+
+- **`wait_until_listening` raises `ListenerEndedError` as soon as a manager's
+  thread ends without listening, naming its `bind_error` where it has one**,
+  where it waited out its timeout and reported one (closes #1361).
 
 ## v2026.9.24
 
