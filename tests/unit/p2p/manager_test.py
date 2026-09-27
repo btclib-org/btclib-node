@@ -13,6 +13,7 @@ messages addressed to a connection that is no longer there.
 import asyncio
 import errno
 import logging
+import math
 import re
 import secrets
 import socket
@@ -46,12 +47,14 @@ from btclib_node.p2p.address import (
     fixed_seed_addresses,
     peer_address,
 )
+from btclib_node.p2p.anchors import dump_anchors, read_anchors
 from btclib_node.p2p.banman import DUMP_BANS_INTERVAL, BanMan, Subnet, lookup_subnet
+from btclib_node.p2p.eviction import Network, net_group
 from btclib_node.p2p.main import handle_p2p_handshake
 from btclib_node.p2p.manager import P2pManager
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator, Sequence
+    from collections.abc import Callable, Iterable, Iterator, Sequence
     from pathlib import Path
 
     from btclib.p2p.payload import Payload
@@ -74,6 +77,7 @@ def a_conn(
     *,
     status: P2pConnStatus = P2pConnStatus.Connected,
     last_receive: float | None = None,
+    ping_start: float = 0,
     connected_time: int | None = None,
     address: NetworkAddressV2 | None = None,
     relay_tx: bool = True,
@@ -82,6 +86,8 @@ def a_conn(
     inbound: bool = False,
     automatic: bool = False,
     protocol: int = PROTOCOL_VERSION,
+    block_relay: bool = False,
+    feeler: bool = False,
 ) -> Any:
     """Build a `Connection` double: no socket, its own `sent`/`stopped` logs.
 
@@ -97,6 +103,7 @@ def a_conn(
         status=status,
         address=address or peer_address("1.2.3.4", 18444),
         last_receive=time.time() if last_receive is None else last_receive,
+        ping_start=ping_start,
         connected_time=int(time.time()) if connected_time is None else connected_time,
         ping_sent=0,
         relay_tx=relay_tx,
@@ -105,6 +112,8 @@ def a_conn(
         inbound=inbound,
         automatic=automatic,
         version_message=SimpleNamespace(version=protocol),
+        block_relay=block_relay,
+        feeler=feeler,
         sent=[],
         stopped=[],
     )
@@ -115,6 +124,7 @@ def a_conn(
         # a ping already answered by nothing: the manager reads the time
         # it was sent to decide the peer is gone
         conn.ping_sent = time.time() - 200
+        conn.ping_start = time.time()
         conn.sent.append("ping")
 
     conn.send_ping = send_ping
@@ -136,15 +146,28 @@ def a_peer_db_stub(**attributes: Any) -> Any:
     about. `holds_network` is too, answering that every network is
     held, so that no fixed seed is added where a test is not about them.
     A `random_address` given is the draw `address_sampler` hands back,
-    so each call of it is one draw of the pass.
+    so each call of it is one draw of the pass, and a `random_new_address`
+    the draw it hands back for `new_only`, a feeler's; the one not given
+    refuses to be asked. `attempt` records every try in `tries`, by
+    `endpoint_key`, which `last_try` reads: whether the table holds the
+    endpoint is `PeerDB`'s own test.
     """
+    tries: dict[bytes, float] = {}
     defaults: dict[str, Any] = {
         "get_active_addresses": list,
         "holds_network": lambda network_id: True,
+        "tries": tries,
+        "attempt": lambda address: tries.__setitem__(
+            endpoint_key(address), time.time()
+        ),
+        "last_try": lambda address: tries.get(endpoint_key(address), 0.0),
     }
-    if "random_address" in attributes:
-        draw = attributes.pop("random_address")
-        defaults["address_sampler"] = lambda: draw
+    if "random_address" in attributes or "random_new_address" in attributes:
+        draw = attributes.pop("random_address", refuses_to_be_asked)
+        new_draw = attributes.pop("random_new_address", refuses_to_be_asked)
+        defaults["address_sampler"] = lambda *, new_only=False, network=None: (
+            new_draw if new_only else draw
+        )
     defaults.update(attributes)
     return SimpleNamespace(**defaults)
 
@@ -170,9 +193,15 @@ class AManagerFactory(Protocol):
 
 
 @pytest.fixture
-def a_manager() -> Iterator[AManagerFactory]:
-    """Build managers, and close their event loops however the test ends."""
+def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
+    """Build managers, and close their event loops however the test ends.
+
+    Their data directory is one of the test's own, where `anchors.dat` is
+    read and written.
+    """
     made: list[P2pManager] = []
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
 
     def make(
         conns: Sequence[Any] = (),
@@ -229,6 +258,7 @@ def a_manager() -> Iterator[AManagerFactory]:
             # (btclib-org/btclib-node#722), 0 matching a fresh `Node`'s
             # own initial value (`__init__.py`).
             best_height=0,
+            data_dir=data_dir,
         )
         # a peer db that refuses to be asked by default: a test that
         # should not reach for a peer proves it by the log staying quiet
@@ -645,21 +675,26 @@ def test_a_peer_that_has_gone_quiet_is_pinged_and_then_dropped(
     assert not manager.connections
 
 
-def test_a_quiet_peer_at_bip31_or_below_is_dropped_unpinged(
+def test_a_quiet_peer_at_bip31_or_below_is_pinged_and_dropped_on_quiet(
     a_manager: AManagerFactory,
 ) -> None:
-    """ISS 1180: no `ping` to wait on, so twice the idle bound is waited.
+    """ISS 1180: no `pong` to wait on, so twice the idle bound is waited.
 
-    `Connection.send_ping` sends it none, as btclib has no `ping` without
-    a nonce; the same quiet span a pinged peer gets drops it.
+    ISS 1204: meanwhile it is sent a `ping`, with no nonce, where none
+    has been queued to it for the idle bound, and a second pass queues
+    no second one; the same quiet span a pinged peer gets drops it.
     """
     bound = manager_module._IDLE_TIMEOUT
-    quiet = a_conn(1, last_receive=time.time() - bound - 10, protocol=60000)
-    quieter = a_conn(2, last_receive=time.time() - 2 * bound - 10, protocol=60000)
-    manager = a_manager([quiet, quieter])
+    long_ago = time.time() - bound - 10
+    quiet = a_conn(1, last_receive=long_ago, protocol=60000)
+    pinged = a_conn(2, last_receive=long_ago, ping_start=time.time(), protocol=60000)
+    quieter = a_conn(3, last_receive=time.time() - 2 * bound - 10, protocol=60000)
+    manager = a_manager([quiet, pinged, quieter])
     asyncio.run(one_pass(manager))
-    assert quiet.sent == quieter.sent == []
-    assert list(manager.connections) == [1]
+    asyncio.run(one_pass(manager))
+    assert quiet.sent == ["ping"]
+    assert pinged.sent == quieter.sent == []
+    assert list(manager.connections) == [1, 2]
 
 
 def test_a_peer_that_answered_recently_is_left_alone(
@@ -1313,18 +1348,21 @@ def test_the_fixed_seeds_are_added_at_once_without_dns_seeding(
     assert bool(added) is adds
 
 
-@pytest.mark.parametrize(("live", "adds"), [(8, True), (11, False)])
-def test_fixed_seeds_wait_on_the_outbound_grant_not_the_full_relay_target(
-    a_manager: AManagerFactory, live: int, *, adds: bool
+@pytest.mark.parametrize(
+    ("full_relay", "block_relay", "adds"),
+    [(8, 0, True), (8, 2, True), (8, 3, False), (11, 0, False)],
+)
+def test_fixed_seeds_wait_on_the_outbound_grant_not_the_targets(
+    a_manager: AManagerFactory, full_relay: int, block_relay: int, *, adds: bool
 ) -> None:
-    """ISS 1099: Core's `semOutbound` holds eleven, not the eight full-relay.
+    """ISS 1099, 1095: Core's `semOutbound` holds eleven, not the two targets.
 
-    `ThreadOpenConnections` takes a grant before its fixed-seed step,
-    and the grant counts block-relay and feeler slots too, so eight
-    full-relay peers still leave it to seed; eleven automatic peers
-    fill it, and the step is not reached.
+    `ThreadOpenConnections` takes a grant before its fixed-seed step and
+    counts peers of either kind after it, so eight full-relay and two
+    block-relay-only peers, both targets met, still leave it to seed;
+    eleven automatic peers fill the grant, and the step is not reached.
     """
-    conns = [a_conn(i, automatic=True) for i in range(live)]
+    conns = automatic_conns(full_relay, block_relay)
     manager, added = a_seeding_manager(a_manager, elapsed=61, conns=conns)
     asyncio.run(manager._maybe_dial_more_peers())
     assert bool(added) is adds
@@ -1841,23 +1879,159 @@ def test_a_peer_db_that_raises_does_not_stop_the_housekeeping(
     assert logged
 
 
-@pytest.mark.parametrize("status", list(NodeStatus))
-@pytest.mark.parametrize(("automatic", "dials"), [(7, True), (8, False)])
-def test_eight_automatic_peers_are_the_target_however_far_the_sync_is(
-    a_manager: AManagerFactory, status: NodeStatus, automatic: int, *, dials: bool
-) -> None:
-    """ISS 1073: `m_max_outbound_full_relay`, eight, from the first pass on.
+def automatic_conns(full_relay: int, block_relay: int) -> list[Any]:
+    """Build that many full-relay and block-relay-only automatic peers."""
+    return [a_conn(i, automatic=True) for i in range(full_relay)] + [
+        a_conn(full_relay + i, automatic=True, block_relay=True)
+        for i in range(block_relay)
+    ]
 
-    Seven dialled automatically leave room for an eighth whatever
-    `node.status` says, headers unsynced included, and eight fill it:
-    the draw being asked for, or not, is the assertion.
+
+@pytest.mark.parametrize("status", list(NodeStatus))
+@pytest.mark.parametrize(
+    ("full_relay", "block_relay", "dials"), [(7, 2, True), (8, 1, True), (8, 2, False)]
+)
+def test_eight_and_two_automatic_peers_are_the_target_however_far_the_sync_is(
+    a_manager: AManagerFactory,
+    status: NodeStatus,
+    full_relay: int,
+    block_relay: int,
+    *,
+    dials: bool,
+) -> None:
+    """ISS 1073, 1095: Core's two targets, eight and two, from the first pass.
+
+    `m_max_outbound_full_relay` and `m_max_outbound_block_relay`: one
+    short of either leaves room whatever `node.status` says, headers
+    unsynced included, and both met fill it. The draw being asked for,
+    or not, is the assertion.
     """
     drawn: list[None] = []
     peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: drawn.append(None))
-    conns = [a_conn(i, automatic=True) for i in range(automatic)]
+    conns = automatic_conns(full_relay, block_relay)
     manager = a_manager(conns, peer_db=peer_db, status=status)
     asyncio.run(manager._maybe_dial_more_peers())
     assert bool(drawn) is dials
+
+
+@pytest.mark.parametrize(
+    ("full_relay", "block_relay", "kind"),
+    [(0, 0, False), (7, 0, False), (7, 2, False), (8, 0, True), (8, 1, True)],
+)
+def test_block_relay_only_peers_are_dialled_once_full_relay_ones_are_met(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    full_relay: int,
+    block_relay: int,
+    *,
+    kind: bool,
+) -> None:
+    """ISS 1095: `ThreadOpenConnections`' order, full-relay first.
+
+    The dial is block-relay-only once eight full-relay peers are held,
+    pending or not, and full-relay until then, whatever is held of the
+    other kind. What `create_connection` is handed is the assertion.
+    """
+    ours, theirs = socket.socketpair()
+
+    async def answers(address: NetworkAddressV2) -> socket.socket:
+        return ours
+
+    made: list[dict[str, Any]] = []
+    monkeypatch.setattr(manager_module, "dial", answers)
+    peer_db = a_peer_db_stub(
+        is_empty=False, random_address=lambda: a_full_node("5.6.7.8", 18444)
+    )
+    conns = automatic_conns(full_relay, block_relay)
+    manager = a_manager(peer_db=peer_db)
+    for conn in conns:
+        # distinct groups, so that the draw is refused for nothing else
+        conn.address = peer_address(f"10.{conn.id}.0.1", 18444)
+        manager.pending_connections[conn.id] = conn
+    monkeypatch.setattr(
+        manager, "create_connection", lambda *args, **kwargs: made.append(kwargs)
+    )
+    with ours, theirs:
+        asyncio.run(manager._maybe_dial_more_peers())
+    assert made == [
+        {"inbound": False, "automatic": True, "block_relay": kind, "feeler": False}
+    ]
+
+
+@pytest.mark.parametrize(
+    ("started", "due", "dials"),
+    [(True, True, True), (True, False, False), (False, True, False)],
+)
+def test_an_extra_block_relay_only_peer_waits_for_the_start_and_the_timer(
+    a_manager: AManagerFactory, *, started: bool, due: bool, dials: bool
+) -> None:
+    """ISS 1095: past both targets, one more once the timer comes due.
+
+    Core's `m_start_extra_block_relay_peers` and `next_extra_block_relay`
+    both have to allow it, and picking it draws the timer again, so a
+    second pass straight after dials nothing.
+    """
+    drawn: list[None] = []
+    peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: drawn.append(None))
+    manager = a_manager(automatic_conns(8, 2), peer_db=peer_db)
+    manager.start_extra_block_relay_peers = started
+    manager._next_extra_block_relay = time.time() + (-1 if due else 60)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert bool(drawn) is dials
+    drawn.clear()
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert not drawn
+
+
+def test_the_extra_block_relay_only_timer_is_drawn_as_the_manager_runs(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`run` draws Core's `next_extra_block_relay` off its own start."""
+    monkeypatch.setattr(manager_module, "_exponential_delay", lambda mean: mean)
+    manager = a_manager(listen=False, max_connections=0)
+    assert manager._next_extra_block_relay == math.inf
+    before = time.time()
+    manager.start()
+    wait_until(manager.loop.is_running)
+    assert before + 300 <= manager._next_extra_block_relay <= time.time() + 300
+
+
+@pytest.mark.parametrize(
+    ("max_connections", "full_relay", "block_relay", "dials"),
+    [(8, 7, 0, True), (8, 8, 0, False), (9, 8, 0, True), (9, 8, 1, False)],
+)
+def test_the_outbound_grants_are_core_s_semaphore(
+    a_manager: AManagerFactory,
+    max_connections: int,
+    full_relay: int,
+    block_relay: int,
+    *,
+    dials: bool,
+) -> None:
+    """ISS 1095: `semOutbound`, `min(automatic outbound, -maxconnections)`.
+
+    At `-maxconnections=8` the eight full-relay peers take every grant
+    and no block-relay-only peer is dialled; at nine one is, and then
+    nothing more, not even the extra one.
+    """
+    drawn: list[None] = []
+    peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: drawn.append(None))
+    manager = a_manager(
+        automatic_conns(full_relay, block_relay),
+        peer_db=peer_db,
+        max_connections=max_connections,
+    )
+    manager.start_extra_block_relay_peers = True
+    manager._next_extra_block_relay = 0
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert bool(drawn) is dials
+
+
+def test_an_exponential_delay_has_the_mean_it_is_given() -> None:
+    """Core's `rand_exp_duration`: positive draws, averaging the mean."""
+    draws = [manager_module._exponential_delay(300) for _ in range(20_000)]
+    assert min(draws) > 0
+    assert 280 < sum(draws) / len(draws) < 320
 
 
 def test_no_automatic_outbound_slot_means_no_dial(
@@ -1914,11 +2088,13 @@ def test_a_connection_not_dialled_automatically_leaves_the_target_open(
     assert drawn
 
 
-def test_eight_automatic_peers_fill_the_target(a_manager: AManagerFactory) -> None:
-    """The control for the test above: eight dialled automatically fill it."""
+def test_eight_and_two_automatic_peers_fill_the_target(
+    a_manager: AManagerFactory,
+) -> None:
+    """The control for the test above: ten dialled automatically fill it."""
     drawn: list[None] = []
     peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: drawn.append(None))
-    conns = [a_conn(i, automatic=True) for i in range(8)]
+    conns = automatic_conns(8, 2)
     manager = a_manager(conns, peer_db=peer_db)
     asyncio.run(manager._maybe_dial_more_peers())
     assert not drawn
@@ -2100,6 +2276,34 @@ def test_a_peer_that_answers_the_dial_becomes_a_connection(
         manager.loop.run_until_complete(dial())
 
 
+@pytest.mark.parametrize("block_relay", [True, False])
+def test_create_connection_marks_a_block_relay_only_connection(
+    a_manager: AManagerFactory, *, block_relay: bool
+) -> None:
+    """ISS 1095: the kind is on the connection before its task first runs.
+
+    `own_version` reads it for the relay flag, so it is set before the
+    task is scheduled.
+    """
+    manager = a_manager()
+    ours, theirs = socket.socketpair()
+    address = peer_address("1.2.3.4", 18444)
+
+    async def create() -> None:
+        manager.create_connection(
+            ours, address, inbound=False, automatic=True, block_relay=block_relay
+        )
+        (conn,) = manager.pending_connections.values()
+        assert conn.block_relay is block_relay
+        assert conn.automatic
+        assert conn.task is not None
+        conn.task.cancel()
+        await asyncio.sleep(0)
+
+    with ours, theirs:
+        manager.loop.run_until_complete(create())
+
+
 @pytest.mark.parametrize(("inbound", "verb"), [(True, "Accepted"), (False, "Dialled")])
 def test_create_connection_logs_the_id_beside_the_address(
     a_manager: AManagerFactory,
@@ -2245,30 +2449,41 @@ def test_a_manager_accepts_an_ipv6_peer_too(a_manager: AManagerFactory) -> None:
 
 
 @pytest.mark.parametrize(
-    ("max_connections", "max_inbound", "max_outbound_full_relay", "grant"),
+    (
+        "max_connections",
+        "max_inbound",
+        "max_outbound_full_relay",
+        "max_outbound_block_relay",
+        "grant",
+    ),
     [
         # Core's own default: eleven outbound slots reserved, the rest
-        # inbound, eight of the eleven full-relay
-        (DEFAULT_MAX_PEER_CONNECTIONS, 114, 8, 11),
+        # inbound, eight of the eleven full-relay and two block-relay-only
+        (DEFAULT_MAX_PEER_CONNECTIONS, 114, 8, 2, 11),
         # one past the reservation: a single inbound slot
-        (12, 1, 8, 11),
+        (12, 1, 8, 2, 11),
+        # one block-relay-only slot left over by the full-relay eight
+        (9, 0, 8, 1, 9),
         # under the reservation: no inbound slot, and the full-relay
         # target and the grant are the total itself
-        (5, 0, 5, 5),
-        (0, 0, 0, 0),
+        (5, 0, 5, 0, 5),
+        (0, 0, 0, 0, 0),
     ],
 )
 def test_max_connections_is_divided_the_way_core_divides_it(
     a_manager: AManagerFactory,
+    *,
     max_connections: int,
     max_inbound: int,
     max_outbound_full_relay: int,
+    max_outbound_block_relay: int,
     grant: int,
 ) -> None:
     """`CConnman::Init`'s division, and the size of `semOutbound`."""
     manager = a_manager(max_connections=max_connections)
     assert manager.max_inbound == max_inbound
     assert manager.max_outbound_full_relay == max_outbound_full_relay
+    assert manager.max_outbound_block_relay == max_outbound_block_relay
     assert manager.max_automatic_outbound == grant
 
 
@@ -2914,6 +3129,29 @@ def test_stop_closes_a_connection_accepted_in_its_own_race_window(
     assert ours.fileno() == -1
 
 
+def test_the_listening_sockets_are_kept_before_listening_is_set(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1325: a thread `listening` wakes finds `_server_sockets` filled."""
+    manager = a_manager(port=get_random_port())
+    seen: list[list[socket.socket]] = []
+
+    class Recording(threading.Event):
+        @override
+        def set(self) -> None:
+            seen.append(list(manager._server_sockets))
+            super().set()
+
+    manager.listening = Recording()
+    try:
+        assert manager.start_listener()
+        assert seen
+        assert seen[0]
+    finally:
+        manager.stop()
+        manager.join(timeout=10)
+
+
 def test_stop_closes_the_listening_socket_even_if_the_accept_task_does_not(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3520,6 +3758,736 @@ def test_report_server_failure_does_not_log_a_returned_cancelled_error(
     assert logged == []
 
 
+FULL_NODE = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
+
+
+def a_feeler_manager(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    new: NetworkAddressV2 | None,
+    conns: Sequence[Any] = (),
+) -> tuple[P2pManager, list[dict[str, Any]]]:
+    """Build a manager whose next dial is a feeler to `new`, recording it.
+
+    Both targets are met by `conns`, or by eight and two peers where none
+    are given, and the feeler timer is due. The draw without `new_only`
+    refuses to be asked: a feeler draws from the new table alone.
+    """
+    ours, theirs = socket.socketpair()
+    ours.close()
+    theirs.close()
+
+    async def answers(address: NetworkAddressV2) -> socket.socket:
+        return ours
+
+    made: list[dict[str, Any]] = []
+    monkeypatch.setattr(manager_module, "dial", answers)
+    monkeypatch.setattr(manager_module, "_FEELER_SLEEP_WINDOW", 0)
+    peer_db = a_peer_db_stub(is_empty=False, random_new_address=lambda: new)
+    manager = a_manager(peer_db=peer_db)
+    for conn in conns or automatic_conns(8, 2):
+        conn.address = conn.address if conns else peer_address(f"10.{conn.id}.0.1", 1)
+        manager.connections[conn.id] = conn
+    manager._next_feeler = 0
+    monkeypatch.setattr(
+        manager, "create_connection", lambda *args, **kwargs: made.append(kwargs)
+    )
+    return manager, made
+
+
+def test_a_feeler_is_dialled_once_both_targets_are_met(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1096: `ConnectionType::FEELER`, off the new table, on its timer.
+
+    Picking it draws the timer again, so a second pass dials nothing.
+    """
+    new = peer_address("5.6.7.8", 18444, services=FULL_NODE)
+    manager, made = a_feeler_manager(a_manager, monkeypatch, new)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert made == [
+        {"inbound": False, "automatic": True, "block_relay": False, "feeler": True}
+    ]
+    assert manager._next_feeler > time.time()
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert len(made) == 1
+
+
+@pytest.mark.parametrize(
+    ("services", "dials"),
+    [
+        (FULL_NODE, True),
+        (ServiceFlags.NODE_NETWORK_LIMITED, True),
+        (ServiceFlags.NODE_WITNESS, False),
+        (0, False),
+    ],
+)
+def test_a_feeler_wants_only_an_address_db(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    services: int,
+    *,
+    dials: bool,
+) -> None:
+    """Core's `MayHaveUsefulAddressDB`, not `HasAllDesirableServiceFlags`."""
+    new = peer_address("5.6.7.8", 18444, services=services)
+    manager, made = a_feeler_manager(a_manager, monkeypatch, new)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert bool(made) is dials
+
+
+def test_a_feeler_draws_again_past_an_address_with_no_address_db(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's `continue` on `MayHaveUsefulAddressDB`, inside the 100 tries.
+
+    The first draw fails it and the second is dialled, in the same pass;
+    a pass whose every draw fails it stops at `_MAX_DRAWS_PER_PASS`.
+    """
+    useless = peer_address("5.6.7.8", 18444, services=ServiceFlags.NODE_WITNESS)
+    useful = peer_address("9.9.9.9", 18444, services=FULL_NODE)
+    draws = iter([useless, useful])
+    manager, _ = a_feeler_manager(a_manager, monkeypatch, None)
+    manager.peer_db = a_peer_db_stub(
+        is_empty=False, random_new_address=lambda: next(draws)
+    )
+    dialled: list[NetworkAddressV2] = []
+
+    async def dial(address: NetworkAddressV2) -> None:
+        dialled.append(address)
+
+    monkeypatch.setattr(manager_module, "dial", dial)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert dialled == [useful]
+    counted: list[NetworkAddressV2] = []
+
+    def count() -> NetworkAddressV2:
+        counted.append(useless)
+        return useless
+
+    manager.peer_db = a_peer_db_stub(is_empty=False, random_new_address=count)
+    manager._next_feeler = 0
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert len(counted) == manager_module._MAX_DRAWS_PER_PASS
+    assert dialled == [useful]
+
+
+def test_a_feeler_is_held_to_no_network_group(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's `!fFeeler &&` ahead of its network-group refusal."""
+    conns = automatic_conns(8, 2)
+    for conn in conns:
+        conn.address = peer_address(f"5.6.{conn.id}.1", 1)
+    new = peer_address("5.6.7.8", 18444, services=FULL_NODE)
+    manager, made = a_feeler_manager(a_manager, monkeypatch, new, conns)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert made
+
+
+@pytest.mark.parametrize("discouraged", [False, True])
+def test_a_feeler_waits_a_uniform_second_before_its_dial(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, *, discouraged: bool
+) -> None:
+    """Core's `FEELER_SLEEP_WINDOW`: up to a second, drawn ahead of the dial.
+
+    Ahead of `OpenNetworkConnection`'s refusals too, which Core asks once
+    the wait is over: a discouraged address is refused after it.
+    """
+    window = manager_module._FEELER_SLEEP_WINDOW
+    new = peer_address("5.6.7.8", 18444, services=FULL_NODE)
+    manager, _ = a_feeler_manager(a_manager, monkeypatch, new)
+    monkeypatch.setattr(manager_module, "_FEELER_SLEEP_WINDOW", window)
+    events: list[object] = []
+
+    class Draws:
+        def uniform(self, low: float, high: float) -> float:
+            events.append((low, high))
+            return 0.0
+
+        def expovariate(self, rate: float) -> float:
+            return 1 / rate
+
+    async def dial(address: NetworkAddressV2) -> None:
+        events.append(address)
+
+    def is_discouraged(address: NetworkAddressV2) -> bool:
+        events.append("asked")
+        return discouraged
+
+    monkeypatch.setattr(secrets, "SystemRandom", Draws)
+    monkeypatch.setattr(manager_module, "dial", dial)
+    monkeypatch.setattr(manager, "is_discouraged", is_discouraged)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert events == [(0, 1.0), "asked", *([] if discouraged else [new])]
+
+
+def test_a_feeler_to_nothing_new_dials_nothing(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty new table is Core's invalid address: the pass ends."""
+    manager, made = a_feeler_manager(a_manager, monkeypatch, None)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert not made
+
+
+def test_a_feeler_waits_behind_both_targets_and_the_extra_peer(
+    a_manager: AManagerFactory,
+) -> None:
+    """`ThreadOpenConnections`' order: a feeler comes after the other three."""
+    manager = a_manager()
+    manager._next_feeler = 0
+    manager.start_extra_block_relay_peers = True
+    manager._next_extra_block_relay = 0
+    outbound = manager_module._Outbound
+    assert manager._next_outbound(7, 2) is outbound.FULL_RELAY
+    assert manager._next_outbound(8, 1) is outbound.BLOCK_RELAY
+    assert manager._next_outbound(8, 2) is outbound.BLOCK_RELAY
+    assert manager._next_outbound(8, 2) is outbound.FEELER
+    assert manager._next_outbound(8, 2) is None
+
+
+def test_a_feeler_counts_against_the_grants_and_no_target(
+    a_manager: AManagerFactory,
+) -> None:
+    """A feeler holds a `semOutbound` grant, and is no full-relay peer.
+
+    Seven full-relay peers and a feeler leave the full-relay target
+    unmet; eight, two and a feeler take every grant at the default.
+    """
+    drawn: list[None] = []
+    peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: drawn.append(None))
+    feeler = a_conn(20, automatic=True, feeler=True)
+    manager = a_manager([*automatic_conns(7, 2), feeler], peer_db=peer_db)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert drawn
+    drawn.clear()
+    manager = a_manager([*automatic_conns(8, 2), feeler], peer_db=peer_db)
+    manager._next_feeler = 0
+    manager.start_extra_block_relay_peers = True
+    manager._next_extra_block_relay = 0
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert not drawn
+
+
+def test_a_feeler_leaves_its_network_group_to_other_peers(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's `case ConnectionType::FEELER: break`: a feeler adds no group."""
+    dialled: list[NetworkAddressV2] = []
+
+    async def records(address: NetworkAddressV2) -> None:
+        dialled.append(address)
+
+    monkeypatch.setattr(manager_module, "dial", records)
+    drawn = a_full_node("5.6.7.8", 18444)
+    peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: drawn)
+    feeler = a_conn(
+        1, automatic=True, feeler=True, address=peer_address("5.6.1.1", 18444)
+    )
+    manager = a_manager([feeler], peer_db=peer_db)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert dialled == [drawn]
+
+
+def test_the_feeler_timer_is_drawn_as_the_manager_runs(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`run` draws Core's `next_feeler` off its own start, `FEELER_INTERVAL`."""
+    monkeypatch.setattr(manager_module, "_exponential_delay", lambda mean: mean)
+    manager = a_manager(listen=False, max_connections=0)
+    assert manager._next_feeler == math.inf
+    before = time.time()
+    manager.start()
+    wait_until(manager.loop.is_running)
+    assert before + 120 <= manager._next_feeler <= time.time() + 120
+
+
+def test_create_connection_marks_a_feeler(a_manager: AManagerFactory) -> None:
+    """ISS 1096: the kind is on the connection before its task first runs."""
+    manager = a_manager()
+    ours, theirs = socket.socketpair()
+    address = peer_address("1.2.3.4", 18444)
+
+    async def create() -> None:
+        manager.create_connection(
+            ours, address, inbound=False, automatic=True, feeler=True
+        )
+        (conn,) = manager.pending_connections.values()
+        assert conn.feeler
+        assert not conn.block_relay
+        assert conn.task is not None
+        conn.task.cancel()
+        await asyncio.sleep(0)
+
+    with ours, theirs:
+        manager.loop.run_until_complete(create())
+
+
+ANCHOR = peer_address("5.6.7.8", 18444, services=FULL_NODE)
+
+
+def test_an_anchor_comes_first_while_the_block_relay_only_target_is_unmet(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1097: Core's `anchor` arm, ahead of the full-relay target."""
+    manager = a_manager()
+    outbound = manager_module._Outbound
+    manager.anchors = [ANCHOR]
+    assert manager._next_outbound(0, 1) is outbound.ANCHOR
+    assert manager._next_outbound(0, 2) is outbound.FULL_RELAY
+    manager.anchors = []
+    assert manager._next_outbound(8, 1) is outbound.BLOCK_RELAY
+
+
+@pytest.mark.parametrize(
+    "refused",
+    [
+        peer_address("5.6.7.9", 18444, services=ServiceFlags.NODE_NETWORK),
+        peer_address("7.7.1.1", 18444, services=FULL_NODE),
+        NetworkAddressV2(0, FULL_NODE, BIP155Network.TORV3, bytes(32), 8333),
+        peer_address("0.0.0.0", 18444, services=FULL_NODE),  # noqa: S104
+        peer_address("255.255.255.255", 18444, services=FULL_NODE),
+        peer_address("::", 18444, services=FULL_NODE),
+        peer_address("2001:db8::1", 18444, services=FULL_NODE),
+    ],
+    ids=[
+        "services",
+        "network-group",
+        "undialable",
+        "unspecified",
+        "broadcast",
+        "unspecified-ipv6",
+        "documentation",
+    ],
+)
+def test_an_anchor_is_popped_off_the_back_past_those_refused(
+    a_manager: AManagerFactory, refused: NetworkAddressV2
+) -> None:
+    """Core's anchor loop: the back first, each refusal dropped for good.
+
+    Short of `HasAllDesirableServiceFlags`, in a network group an outbound
+    peer holds, on a network this node cannot dial, or refused by
+    `CNetAddr::IsValid`: the unspecified and broadcast addresses and
+    RFC3849's documentation range.
+    """
+    manager = a_manager()
+    manager.anchors = [ANCHOR, refused]
+    assert manager._pop_anchor({net_group(peer_address("7.7.2.2", 1))}) == ANCHOR
+    assert manager.anchors == []
+
+
+def test_an_anchor_short_of_any_left_draws_from_the_table(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's loop goes on to `addrman` with the anchors spent.
+
+    The dial is still block-relay-only, and the refused anchor is gone.
+    """
+    drawn = a_full_node("9.9.9.9", 18444)
+    manager = a_manager(peer_db=a_peer_db_stub(random_address=lambda: drawn))
+    refused = peer_address("5.6.7.9", 18444)
+    manager.anchors = [refused]
+    made: list[tuple[NetworkAddressV2, dict[str, Any]]] = []
+
+    async def answers(address: NetworkAddressV2) -> bool:
+        return True
+
+    monkeypatch.setattr(manager_module, "dial", answers)
+    monkeypatch.setattr(
+        manager,
+        "create_connection",
+        lambda sock, address, **kwargs: made.append((address, kwargs)),
+    )
+    asyncio.run(manager._dial_one_draw(set(), set(), manager_module._Outbound.ANCHOR))
+    assert made == [
+        (
+            drawn,
+            {"inbound": False, "automatic": True, "block_relay": True, "feeler": False},
+        )
+    ]
+    assert manager.anchors == []
+
+
+def test_an_anchor_is_dialled_block_relay_only_with_the_table_empty(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core tries its anchors ahead of `addrman`, whatever that holds."""
+    ours, theirs = socket.socketpair()
+    ours.close()
+    theirs.close()
+
+    async def answers(address: NetworkAddressV2) -> socket.socket:
+        return ours
+
+    made: list[tuple[NetworkAddressV2, dict[str, Any]]] = []
+    monkeypatch.setattr(manager_module, "dial", answers)
+    manager = a_manager()
+    manager.anchors = [ANCHOR]
+    monkeypatch.setattr(
+        manager,
+        "create_connection",
+        lambda sock, address, **kwargs: made.append((address, kwargs)),
+    )
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert made == [
+        (
+            ANCHOR,
+            {"inbound": False, "automatic": True, "block_relay": True, "feeler": False},
+        )
+    ]
+
+
+def test_an_anchor_dial_records_its_try(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's `ConnectNode` calls `Attempt` for an anchor's dial too.
+
+    Recorded whether or not the connect answered, as for any other dial.
+    """
+
+    async def refuses(address: NetworkAddressV2) -> None:
+        return None
+
+    monkeypatch.setattr(manager_module, "dial", refuses)
+    manager = a_manager(peer_db=a_peer_db_stub())
+    manager.anchors = [ANCHOR]
+    asyncio.run(manager._dial_one_draw(set(), set(), manager_module._Outbound.ANCHOR))
+    assert list(tries_of(manager)) == [endpoint_key(ANCHOR)]
+
+
+def an_anchors_file(manager: P2pManager, anchors: list[NetworkAddressV2]) -> Path:
+    """Write `anchors` where `manager` reads them, and return the path."""
+    path = manager._anchors_path
+    dump_anchors(path, RegTest().magic, anchors)
+    return path
+
+
+@pytest.mark.parametrize("connect", [(), (("1.2.3.4", 18444),)])
+def test_the_anchors_are_read_as_the_manager_runs_and_the_file_goes(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    connect: Sequence[tuple[str, int]],
+) -> None:
+    """`CConnman::Start` reads two at most, and none under `-connect`.
+
+    The read logs `ReadAnchors`' line, of the three the file holds.
+    """
+    anchors = [peer_address(f"5.6.{i}.1", 18444, services=FULL_NODE) for i in range(3)]
+    manager = a_manager(listen=False, max_connections=0, connect=connect)
+    logged: list[str] = []
+    monkeypatch.setattr(
+        manager,
+        "logger",
+        SimpleNamespace(
+            info=lambda fmt, *args: logged.append(fmt % args),
+            debug=lambda *a: None,
+            exception=lambda *a: None,
+        ),
+    )
+    path = an_anchors_file(manager, anchors)
+    manager.start()
+    wait_until(manager.loop.is_running)
+    assert manager.anchors == ([] if connect else anchors[:2])
+    assert path.exists() is bool(connect)
+    loaded = 'Loaded 3 addresses from "anchors.dat"'
+    assert (loaded in logged) is not bool(connect)
+
+
+def test_the_block_relay_only_peers_are_the_anchors_written_at_stop(
+    a_manager: AManagerFactory,
+) -> None:
+    """`StopNodes`: the first two opened, pending ones included, as dialled."""
+    conns = [
+        a_conn(3, block_relay=True, address=peer_address("5.6.3.1", 1)),
+        a_conn(1, address=peer_address("5.6.1.1", 1)),
+        a_conn(2, block_relay=True, address=peer_address("5.6.2.1", 1)),
+        a_conn(4, block_relay=True, address=peer_address("5.6.4.1", 1)),
+    ]
+    manager = a_manager(conns[:2], listen=False, max_connections=0)
+    for conn in conns[2:]:
+        manager.pending_connections[conn.id] = conn
+    manager.start()
+    wait_until(manager.loop.is_running)
+    manager.stop()
+    path = manager._anchors_path
+    assert read_anchors(path, RegTest().magic) == [
+        conns[2].address,
+        conns[0].address,
+    ]
+    # once, as `StopNodes` clears `fAddressesInitialized` as it dumps
+    manager._dump_anchors()
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("started", [True, False])
+def test_no_anchor_is_written_under_connect_or_short_of_the_start(
+    a_manager: AManagerFactory, *, started: bool
+) -> None:
+    """`fAddressesInitialized` and `m_use_addrman_outgoing` both guard it."""
+    conn = a_conn(1, block_relay=True, address=peer_address("5.6.1.1", 1))
+    connect = (("1.2.3.4", 18444),) if started else ()
+    manager = a_manager([conn], listen=False, max_connections=0, connect=connect)
+    if started:
+        manager.start()
+        wait_until(manager.loop.is_running)
+    manager.stop()
+    assert not manager._anchors_path.exists()
+
+
+def test_an_anchors_file_that_cannot_be_written_is_logged(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`SerializeFileDB` logs its failure, and the stop goes on."""
+    logged: list[object] = []
+    manager = a_manager(listen=False, max_connections=0)
+    monkeypatch.setattr(
+        manager,
+        "logger",
+        SimpleNamespace(
+            info=lambda *a: None,
+            debug=lambda *a: None,
+            exception=lambda *a: logged.append(a),
+        ),
+    )
+
+    def fails(*args: object) -> NoReturn:
+        raise OSError
+
+    monkeypatch.setattr(manager_module, "dump_anchors", fails)
+    manager.start()
+    wait_until(manager.loop.is_running)
+    manager.stop()
+    assert logged == [("Failed to write %s", "anchors.dat")]
+
+
+def test_a_stale_tip_opens_one_full_relay_peer_past_the_target(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1100: `GetTryNewOutboundPeer()`, past both targets, then the rest."""
+    manager = a_manager()
+    outbound = manager_module._Outbound
+    manager.try_new_outbound_peer = True
+    manager._next_feeler = 0
+    manager.start_extra_block_relay_peers = True
+    manager._next_extra_block_relay = 0
+    assert manager._next_outbound(8, 1) is outbound.BLOCK_RELAY
+    assert manager._next_outbound(8, 2) is outbound.FULL_RELAY
+    assert manager._next_outbound(9, 2) is outbound.FULL_RELAY
+    manager.try_new_outbound_peer = False
+    assert manager._next_outbound(9, 2) is outbound.BLOCK_RELAY
+
+
+def a_network_manager(
+    a_manager: AManagerFactory,
+    conns: Sequence[Any],
+    on: dict[Network, NetworkAddressV2],
+    max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
+) -> P2pManager:
+    """Build a manager whose table holds `on`, one address per network.
+
+    `address_sampler` draws `on`'s address for the network it is given,
+    and refuses to be asked for none.
+    """
+
+    def address_sampler(
+        *, new_only: bool = False, network: Network | None = None
+    ) -> Callable[[], NetworkAddressV2 | None]:
+        assert network is not None
+        assert not new_only
+        return lambda: on.get(network)
+
+    peer_db = a_peer_db_stub(
+        is_empty=False,
+        holds_network=lambda network_id: any(
+            address.network_id == network_id for address in on.values()
+        ),
+        address_sampler=address_sampler,
+    )
+    manager = a_manager(conns, peer_db=peer_db, max_connections=max_connections)
+    manager._next_extra_network_peer = 0
+    return manager
+
+
+V6 = a_full_node("2a00::1", 18444)
+
+
+@pytest.mark.parametrize(
+    ("full_relay", "max_connections", "dials"),
+    [(8, DEFAULT_MAX_PEER_CONNECTIONS, True), (9, DEFAULT_MAX_PEER_CONNECTIONS, False)],
+)
+def test_an_extra_peer_is_dialled_for_a_network_no_peer_is_on(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    full_relay: int,
+    max_connections: int,
+    *,
+    dials: bool,
+) -> None:
+    """ISS 1100: Core's `MaybePickPreferredNetwork`, at exactly eight peers.
+
+    The eight are on IPv4 and the table holds IPv6: the timer is drawn
+    again where the network is picked, and the dial is a full-relay one
+    to the IPv6 address.
+    """
+    conns = [
+        a_conn(i, automatic=True, address=peer_address(f"5.{i}.0.1", 1))
+        for i in range(full_relay)
+    ]
+    manager = a_network_manager(a_manager, conns, {Network.IPV6: V6}, max_connections)
+    expected = manager_module._Outbound.NETWORK if dials else None
+    assert manager._next_outbound(full_relay, 2) is expected
+    assert (manager._next_extra_network_peer > time.time()) is dials
+    if dials:
+        assert network_dials(manager, monkeypatch, set()) == [(V6, FULL_RELAY)]
+
+
+FULL_RELAY = {
+    "inbound": False,
+    "automatic": True,
+    "block_relay": False,
+    "feeler": False,
+}
+
+
+def network_dials(
+    manager: P2pManager, monkeypatch: pytest.MonkeyPatch, groups: set[bytes]
+) -> list[tuple[NetworkAddressV2, dict[str, Any]]]:
+    """Run one `NETWORK` pass of `_dial_one_draw`, answering what it made."""
+    made: list[tuple[NetworkAddressV2, dict[str, Any]]] = []
+
+    async def answers(address: NetworkAddressV2) -> bool:
+        return True
+
+    monkeypatch.setattr(manager_module, "dial", answers)
+    monkeypatch.setattr(
+        manager,
+        "create_connection",
+        lambda sock, address, **kwargs: made.append((address, kwargs)),
+    )
+    asyncio.run(manager._dial_one_draw(set(), groups, manager_module._Outbound.NETWORK))
+    return made
+
+
+def test_an_extra_network_peer_draws_again_past_a_held_group(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1100: the `preferred_net` draw runs in Core's loop of 100 tries.
+
+    A draw in a group an outbound peer holds is followed by another, on
+    the same network.
+    """
+    held = a_full_node("2a01::1", 18444)
+    draws = iter([held, V6])
+    manager = a_network_manager(a_manager, [], {})
+    monkeypatch.setattr(
+        manager.peer_db,
+        "address_sampler",
+        lambda *, new_only, network: (
+            lambda: next(draws) if network is Network.IPV6 else None
+        ),
+    )
+    manager._preferred_network = Network.IPV6
+    made = network_dials(manager, monkeypatch, {net_group(held)})
+    assert made == [(V6, FULL_RELAY)]
+
+
+def test_an_extra_network_peer_is_held_to_the_loop_s_other_skips(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1100: the `preferred_net` draw is passed over as any other is.
+
+    Short of `HasAllDesirableServiceFlags`, one of the skips past the
+    network-group one, it is followed by another draw on the same network.
+    """
+    short = peer_address("2a01::1", 18444, services=ServiceFlags.NODE_NETWORK)
+    draws = iter([short, V6])
+    manager = a_network_manager(a_manager, [], {})
+    monkeypatch.setattr(
+        manager.peer_db,
+        "address_sampler",
+        lambda *, new_only, network: (
+            lambda: next(draws) if network is Network.IPV6 else None
+        ),
+    )
+    manager._preferred_network = Network.IPV6
+    assert network_dials(manager, monkeypatch, set()) == [(V6, FULL_RELAY)]
+
+
+def test_no_extra_network_peer_below_core_s_eight_full_relay_peers(
+    a_manager: AManagerFactory,
+) -> None:
+    """`m_max_outbound_full_relay == MAX_OUTBOUND_FULL_RELAY_CONNECTIONS`.
+
+    At `-maxconnections=7` seven full-relay peers meet the target, and no
+    network peer is added to them.
+    """
+    manager = a_network_manager(a_manager, [], {Network.IPV6: V6}, 7)
+    assert manager.max_outbound_full_relay == 7
+    assert manager._next_outbound(7, 0) is None
+
+
+@pytest.mark.parametrize(
+    "on", [{}, {Network.IPV4: peer_address("5.9.0.1", 1)}], ids=["empty", "held"]
+)
+def test_no_network_to_prefer_draws_no_timer(
+    a_manager: AManagerFactory, on: dict[Network, NetworkAddressV2]
+) -> None:
+    """A network with a peer on it, or none in the table, is no network.
+
+    The timer stays due, as Core draws it only in the arm it enters.
+    """
+    conns = [
+        a_conn(i, automatic=True, address=peer_address(f"5.{i}.0.1", 1))
+        for i in range(8)
+    ]
+    manager = a_network_manager(a_manager, conns, on)
+    assert manager._next_outbound(8, 2) is None
+    assert manager._next_extra_network_peer == 0
+
+
+def test_the_network_peer_waits_for_its_timer(a_manager: AManagerFactory) -> None:
+    """`now > next_extra_network_peer`, drawn as the manager runs."""
+    manager = a_network_manager(a_manager, [], {Network.IPV6: V6})
+    manager._next_extra_network_peer = math.inf
+    assert manager._next_outbound(8, 2) is None
+
+
+def test_the_network_peer_timer_is_drawn_as_the_manager_runs(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`run` draws Core's `next_extra_network_peer`, five minutes on average."""
+    monkeypatch.setattr(manager_module, "_exponential_delay", lambda mean: mean)
+    manager = a_manager(listen=False, max_connections=0)
+    before = time.time()
+    manager.start()
+    wait_until(manager.loop.is_running)
+    assert before + 300 <= manager._next_extra_network_peer <= time.time() + 300
+
+
+def test_the_network_counts_are_core_s_manual_and_full_relay_peers(
+    a_manager: AManagerFactory,
+) -> None:
+    """`m_network_conn_counts`: `IsManualOrFullOutboundConn`, by `GetNetwork`.
+
+    A pending peer counts; an inbound, block-relay-only or feeler peer
+    does not. A 6to4 address is IPv6 here, where `net_class` says IPv4.
+    """
+    manager = a_manager(
+        [
+            a_conn(1, automatic=True, address=peer_address("5.1.0.1", 1)),
+            a_conn(2, address=peer_address("2002:0102:0304::1", 1)),
+            a_conn(3, inbound=True, address=peer_address("5.3.0.1", 1)),
+            a_conn(4, automatic=True, block_relay=True),
+            a_conn(5, automatic=True, feeler=True),
+        ]
+    )
+    manager.pending_connections[6] = a_conn(
+        6, automatic=True, address=peer_address("5.6.0.1", 1)
+    )
+    assert manager.network_conn_counts() == {Network.IPV4: 2, Network.IPV6: 1}
+
+
 # `ThreadOpenConnections`' `nTries > 100`
 _MAX_DRAWS = 100
 
@@ -3540,6 +4508,11 @@ def a_dialling_manager(
     drawn, draw = draws_of(*draws)
     peer_db = a_peer_db_stub(is_empty=False, random_address=draw)
     return a_manager(peer_db=peer_db, **kwargs), drawn, dialled
+
+
+def tries_of(manager: P2pManager) -> dict[bytes, float]:
+    """Return the tries `a_peer_db_stub`'s `attempt` recorded."""
+    return cast("dict[bytes, float]", cast("Any", manager.peer_db).tries)
 
 
 @pytest.mark.parametrize(
@@ -3576,8 +4549,7 @@ def test_a_recently_tried_draw_is_followed_by_another(
     manager, drawn, dialled = a_dialling_manager(
         a_manager, monkeypatch, [tried, tried, other]
     )
-    manager._record_attempt(tried)
-    manager._last_try[endpoint_key(tried)] -= 10 * 60 - 5
+    tries_of(manager)[endpoint_key(tried)] = time.time() - (10 * 60 - 5)
     asyncio.run(manager._maybe_dial_more_peers())
     assert len(drawn) == 3
     assert dialled == [other]
@@ -3592,7 +4564,7 @@ def test_a_try_ten_minutes_old_is_not_recent(
     now = time.time()
     # one clock for the record and the pass, so ten minutes is exact
     monkeypatch.setattr(time, "time", lambda: now)
-    manager._last_try[endpoint_key(tried)] = now - 10 * 60
+    tries_of(manager)[endpoint_key(tried)] = now - 10 * 60
     asyncio.run(manager._maybe_dial_more_peers())
     assert dialled == [tried]
 
@@ -3619,7 +4591,7 @@ def test_a_skip_core_bounds_by_draws_gives_way_at_its_bound(
         a_manager, monkeypatch, [address] * _MAX_DRAWS
     )
     if recent:
-        manager._record_attempt(address)
+        manager.peer_db.attempt(address)
     asyncio.run(manager._maybe_dial_more_peers())
     assert len(drawn) == draws
     assert dialled == [address]
@@ -3674,20 +4646,26 @@ def test_an_addnode_value_names_a_draw_as_added_nodes_contain_does(
     assert manager._added_node(address) is named
 
 
-def test_a_dial_records_its_try_and_forgets_one_too_old_to_read(
-    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("dialler", ["automatic", "connect"])
+def test_every_dial_records_its_try(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, dialler: str
 ) -> None:
-    """ISS 1224: Core's `Attempt_` sets `m_last_try` when a dial is made."""
-    drawn_address = a_full_node("5.6.7.8", 8333)
-    old = a_full_node("9.9.9.9", 8333)
-    manager, _, dialled = a_dialling_manager(a_manager, monkeypatch, [drawn_address])
+    """ISS 1277: Core's `ConnectNode` calls `Attempt` for every dial.
+
+    The automatic dial's and `async_connect`'s alike, the latter being
+    the `-connect`/`-addnode` redial's and the `addnode` RPC's, whether
+    or not the dial comes up.
+    """
+    address = a_full_node("5.6.7.8", 8333)
+    manager, _, dialled = a_dialling_manager(a_manager, monkeypatch, [address])
     now = time.time()
-    # one clock, so the old entry is exactly ten minutes old
     monkeypatch.setattr(time, "time", lambda: now)
-    manager._last_try[endpoint_key(old)] = now - 10 * 60
-    asyncio.run(manager._maybe_dial_more_peers())
-    assert dialled == [drawn_address]
-    assert manager._last_try == {endpoint_key(drawn_address): now}
+    if dialler == "automatic":
+        asyncio.run(manager._maybe_dial_more_peers())
+    else:
+        asyncio.run(manager.async_connect(address))
+    assert dialled == [address]
+    assert tries_of(manager) == {endpoint_key(address): now}
 
 
 def a_subnet(text: str) -> Subnet:
@@ -3793,3 +4771,29 @@ def test_the_ban_list_is_written_once_every_interval(
     assert "1.2.3.4/32" in path.read_text(encoding="utf-8")
     manager._maybe_dump_banlist(now)
     assert "1.2.3.4/32" not in path.read_text(encoding="utf-8")
+
+
+def test_a_feeler_passes_over_an_address_tried_recently_and_records_its_own(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1096: Core's recent-try `continue` holds of a feeler's draw too.
+
+    The address tried a second ago is drawn until the 30th try, where the
+    `continue` stops applying, and dialled then; the dial's own attempt
+    is what the table keeps for it afterwards.
+    """
+    new = peer_address("5.6.7.8", 18444, services=FULL_NODE)
+    counted: list[None] = []
+
+    def count() -> NetworkAddressV2:
+        counted.append(None)
+        return new
+
+    manager, made = a_feeler_manager(a_manager, monkeypatch, None)
+    manager.peer_db = a_peer_db_stub(is_empty=False, random_new_address=count)
+    before = time.time()
+    tries_of(manager)[endpoint_key(new)] = before - 1
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert len(counted) == manager_module._RECENT_TRY_DRAWS
+    assert made
+    assert tries_of(manager)[endpoint_key(new)] >= before
