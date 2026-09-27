@@ -763,6 +763,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **An inbound peer's endpoint no longer enters the answered table, and a
   dialled one enters it at its own `version`, as Core's `AddrMan::Good`
   does** (closes #1229, closes #1140).
+### A block under a header already marked invalid is refused, as in Core
+
+- **A body passing `CheckBlock` under a header marked invalid is refused
+  `duplicate-invalid`, on the wire and by `submitblock`, and no longer stored,
+  from an outbound peer as misbehaviour** (closes #1344).
 
 ## v2026.9.24
 
