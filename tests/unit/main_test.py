@@ -4,6 +4,7 @@
 
 """`update_chain`/`verify_mempool_acceptance`: connect, reorg, reject."""
 
+import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -1356,6 +1357,17 @@ def test_a_connected_block_restarts_the_mempool_s_decay_clock(node: Node) -> Non
     assert node.mempool._last_rolling_fee_update > 0.0
 
 
+def test_each_connected_block_brings_the_stalling_timeout_down(node: Node) -> None:
+    """`DownloadManager.block_connected` runs once per block connected.
+
+    Core's `PeerManagerImpl::BlockConnected`. btclib-org/btclib-node#1179
+    """
+    node.download_manager.block_stalling_timeout = 64
+    connect(node, generate_random_chain(2, RegTest().genesis.hash))
+    # 64 * 0.85 is 54, and 54 * 0.85 is 45, in whole seconds
+    assert node.download_manager.block_stalling_timeout == 45
+
+
 def _extend(previous_hash: bytes, start_height: int, count: int) -> list[Block]:
     # generate_random_chain restarts its own height at 0 for any start,
     # which is a timestamp that has to beat the median of *these*
@@ -1564,7 +1576,8 @@ def test_a_peer_is_sent_the_headers_from_the_first_one_it_lacks(
     chain = generate_random_chain(3, RegTest().genesis.hash, tip_time=datetime.now(UTC))
     node.chainstate.block_index.add_headers([block.header for block in chain])
     sent: list[Any] = []
-    availability = BlockAvailability(**{field: chain[0].header.hash})
+    availability = BlockAvailability()
+    setattr(availability, field, chain[0].header.hash)
     node.p2p_manager.connections[1] = a_peer(sent, availability)
 
     connect(node, chain)
@@ -2050,6 +2063,7 @@ def test_a_store_closed_without_a_flush_redoes_only_what_was_never_flushed(
         chain="regtest", data_dir=tmp_path, allow_p2p=False, allow_rpc=False, debug=True
     )
     first = Node(config)
+    first.load()
     first.status = NodeStatus.HeaderSynced
 
     chain = generate_random_chain(3, RegTest().genesis.hash)
@@ -2079,6 +2093,7 @@ def test_a_store_closed_without_a_flush_redoes_only_what_was_never_flushed(
     first.logger.close()
 
     reopened = Node(config)
+    reopened.load()
     reopened.status = NodeStatus.HeaderSynced
     # the store opens without error, and reflects only the one flush
     # that actually happened: fewer than all three blocks are durable
@@ -2475,6 +2490,18 @@ def test_a_fork_longer_than_the_retained_depth_prunes_correctly_on_disk(
     for block_hash in kept_hashes:
         assert reopened.block_index.get_block_info(block_hash).downloaded is True
     reopened.close()
+
+
+def test_a_block_connected_stamps_the_last_tip_update(node: Node) -> None:
+    """ISS 1100: Core's `BlockConnected` stamps `m_last_tip_update`.
+
+    What `DownloadManager` reads a stale tip off: zero until a block
+    connects, the time it did after.
+    """
+    assert node.download_manager.last_tip_update == 0
+    before = time.time()
+    connect(node, generate_random_chain(1, RegTest().genesis.hash))
+    assert before <= node.download_manager.last_tip_update <= time.time()
 
 
 def a_block_over(transactions: list[Tx], committed: list[Tx] | None = None) -> Block:

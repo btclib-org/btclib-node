@@ -14,6 +14,7 @@ entered from a single transaction instead, for the RPC and p2p callbacks
 that relay one.
 """
 
+import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
@@ -299,11 +300,15 @@ def _reconcile_mempool_for_reorg(
 # `PeerManagerImpl::UpdatedBlockTip` then reads that latch: "Don't relay
 # inventory during initial block download." (`src/validation.cpp`,
 # `src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-# tag). btclib-org/btclib-node#1144, btclib-org/btclib-node#1148
+# tag). `PeerManagerImpl::BlockConnected`, once per block connected,
+# decays the block stalling timeout. btclib-org/btclib-node#1144,
+# btclib-org/btclib-node#1148, btclib-org/btclib-node#1179
 def _after_tip_change(
     node: Node, to_remove: list[RevBlock], to_add: list[Block]
 ) -> None:
     update_ibd_status(node)
+    for _ in to_add:
+        node.download_manager.block_connected()
     _reconcile_mempool_for_reorg(node, to_remove, to_add)
     if not node.is_initial_block_download:
         _announce_added_blocks(node, to_add)
@@ -342,6 +347,8 @@ def _finalize_fork(node: Node, to_add: list[Block], to_remove: list[RevBlock]) -
         block_index.add_to_active_chain(block_hash)
         block_index.stage_status(block_hash, BlockStatus.in_active_chain)
         node.logger.info("Added block %s", block_hash.hex())
+        # Core's `BlockConnected` stamping `m_last_tip_update`
+        node.download_manager.last_tip_update = time.time()
     # `Node.best_height`'s own comment (`__init__.py`) is where reading
     # this cross-thread, off `active_chain` rather than off a lock, is
     # argued -- this call is the "tip changed" moment that comment cites.
@@ -372,7 +379,7 @@ def prune_up_to_height(node: Node, target_height: int) -> None:
     data was pruned would be silently discarded rather than re-stored.
 
     Height 0 included: genesis is in `block_db` like any other block
-    (`Node.__init__`), and Core's own `GetPruneRange`
+    (`Node.load`), and Core's own `GetPruneRange`
     (`src/validation.cpp:6382`, at bitcoin/bitcoin@9be056a8a7, the v31.1
     tag) starts the prunable range at height 0 on a chain not built from
     a snapshot.
@@ -727,7 +734,7 @@ def _validate_block(
 def _record_rejection(node: Node, failed_hash: bytes, exc: BaseException) -> None:
     """Record the block `failed_hash` names as refused, and why.
 
-    `Node.__init__`'s own comment beside `last_rejected_block` says who
+    `Node.load`'s own comment beside `last_rejected_block` says who
     reads it: a rejection test, asserting the rule that refused a block
     rather than only that one did. `_resolve_trial_exception`'s own
     call below is this function's only caller, and reaches it only once
@@ -981,6 +988,7 @@ def verify_mempool_acceptance(
     `PreChecks` does ahead of its conflict checks, and one spending an
     outpoint a mempool transaction already spends,
     `Mempool.check_replacement` saying in whose words.
+
     Refuses a fee below the mempool's own rolling minimum or
     `Config.min_relay_feerate` for the transaction's vsize, Core's own
     `CheckFeeRate`, unless `bypass_limits` -- Core's own flag, set where

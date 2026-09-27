@@ -26,14 +26,14 @@ from btclib.hashes import hash256
 from btclib.p2p.address import ServiceFlags
 from btclib.p2p.block_filters import BlockFilterType, CFilter
 from btclib.p2p.handshake import Verack, Version
-from btclib.p2p.inventory import GetData, Inventory, InventoryType
+from btclib.p2p.inventory import GetData, Inv, Inventory, InventoryType
 from btclib.p2p.keepalive import Ping, Pong
 from btclib.p2p.limits import MAX_INV_SZ, MAX_PROTOCOL_MESSAGE_LENGTH, PROTOCOL_VERSION
 from btclib.p2p.message import Message
 
 from btclib_node.chains import RegTest
 from btclib_node.constants import NodeStatus, P2pConnStatus
-from btclib_node.download import MAX_BLOCKS_PER_GETDATA_BURST
+from btclib_node.download import MAX_BLOCKS_IN_TRANSIT_PER_PEER
 from btclib_node.p2p import connection as connection_module
 from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.callbacks import (
@@ -44,6 +44,7 @@ from btclib_node.p2p.callbacks import (
 )
 from btclib_node.p2p.connection import Connection
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
+from btclib_node.p2p.messages import NoncelessPing
 from tests import discourage_recorder, log_recorder, wait_until
 
 if TYPE_CHECKING:
@@ -229,6 +230,36 @@ def test_own_version_carries_this_nodes_own_best_height() -> None:
     (framed,) = sent
     start_height = Version.parse(Message.parse(framed).payload).start_height
     assert start_height == 741
+
+
+@pytest.mark.parametrize(("block_relay", "relay"), [(True, False), (False, True)])
+def test_own_version_asks_a_block_relay_only_peer_for_no_transactions(
+    *, block_relay: bool, relay: bool
+) -> None:
+    """ISS 1095: `fRelay` is `!RejectIncomingTxs`, false for `BLOCK_RELAY`.
+
+    Written on the wire as the octet, not left out: Core always sends it.
+    """
+    connection, _ = a_connection()
+    connection.block_relay = block_relay
+    manager = cast("Any", connection.manager)
+    manager.pending_outbound_nonces = set()
+    manager.add_pending_outbound_nonce = manager.pending_outbound_nonces.add
+    manager.port = 18444
+    sent: list[bytes] = []
+
+    async def _send(data: bytes) -> None:
+        sent.append(data)
+
+    connection._send = _send  # type: ignore[method-assign]
+
+    with connection.client:
+        asyncio.run(connection.async_send(connection.own_version()))
+
+    (framed,) = sent
+    payload = Message.parse(framed).payload
+    assert Version.parse(payload).relay is relay
+    assert payload[-1:] == (b"\x01" if relay else b"\x00")
 
 
 def test_own_version_advertises_node_network_when_not_pruned() -> None:
@@ -1528,7 +1559,7 @@ def test_send_counts_a_message_before_the_loop_has_written_it() -> None:
 def test_a_getdata_answer_paces_on_what_it_has_already_handed_over() -> None:
     """A `getdata` for more blocks than fit is paced, not dropped.
 
-    A whole `MAX_BLOCKS_PER_GETDATA_BURST` (`btclib_node/download.py`)
+    A whole `MAX_BLOCKS_IN_TRANSIT_PER_PEER` (`btclib_node/download.py`)
     of megabyte blocks, which is the request this node makes of its own
     peers and so an ordinary one to answer. The peer drains nothing, so
     `advance_getdata` stops within one block of
@@ -1541,7 +1572,7 @@ def test_a_getdata_answer_paces_on_what_it_has_already_handed_over() -> None:
     size = 1_000_000
     blocks = {
         bytes([i]) + b"\x00" * 31: _FakeBigBlock(size)
-        for i in range(MAX_BLOCKS_PER_GETDATA_BURST)
+        for i in range(MAX_BLOCKS_IN_TRANSIT_PER_PEER)
     }
     items = [Inventory(InventoryType.MSG_BLOCK, h) for h in blocks]
 
@@ -1633,22 +1664,29 @@ def test_a_getdata_of_mostly_misses_does_not_drop_the_connection() -> None:
 
 
 @pytest.mark.parametrize(
-    ("protocol", "pinged"), [(None, False), (60000, False), (60001, True)]
+    ("protocol", "nonce"), [(None, False), (60000, False), (60001, True)]
 )
-def test_a_ping_goes_only_above_bip31(*, protocol: int | None, pinged: bool) -> None:
+def test_a_ping_carries_a_nonce_only_above_bip31(
+    *, protocol: int | None, nonce: bool
+) -> None:
     """ISS 1180: Core's nonce-bearing `ping` goes above `BIP0031_VERSION`.
 
-    Nothing goes at or below it, nor before the peer's `version` is read.
+    ISS 1204: at or below it, and before the peer's `version` is read,
+    a `ping` goes with no nonce and nothing is left outstanding.
     """
     connection, _ = a_connection()
     sent: list[Any] = []
     connection.send = sent.append  # type: ignore[method-assign,assignment]
     if protocol is not None:
         connection.version_message = cast("Any", SimpleNamespace(version=protocol))
+    before = time.time()
     connection.send_ping()
     connection.client.close()
-    assert bool(sent) is pinged
-    assert bool(connection.ping_sent) is pinged
+    assert connection.ping_start >= before
+    (ping,) = sent
+    assert isinstance(ping, Ping if nonce else NoncelessPing)
+    assert bool(connection.ping_sent) is nonce
+    assert bool(connection.ping_nonce) is nonce
 
 
 def test_send_ping_racing_pong_does_not_tear_the_ping_pair(
@@ -1731,3 +1769,64 @@ def test_send_ping_racing_pong_does_not_tear_the_ping_pair(
     # sentinel pong's own second write would otherwise have left behind
     assert connection.ping_sent != 0
     assert connection.ping_nonce not in (0, original_nonce)
+
+
+def test_own_version_asks_a_feeler_for_no_transactions() -> None:
+    """ISS 1096: `RejectIncomingTxs` holds for `FEELER`, so `fRelay` is 0."""
+    connection, _ = a_connection()
+    connection.feeler = True
+    manager = cast("Any", connection.manager)
+    manager.pending_outbound_nonces = set()
+    manager.add_pending_outbound_nonce = manager.pending_outbound_nonces.add
+    manager.port = 18444
+    sent: list[bytes] = []
+
+    async def _send(data: bytes) -> None:
+        sent.append(data)
+
+    connection._send = _send  # type: ignore[method-assign]
+
+    with connection.client:
+        asyncio.run(connection.async_send(connection.own_version()))
+
+    (framed,) = sent
+    assert Version.parse(Message.parse(framed).payload).relay is False
+
+
+def test_stop_when_sent_writes_what_was_sent_first() -> None:
+    """ISS 1096: the messages handed to `send` reach the peer, then the close.
+
+    What a feeler is dropped with, where a bare `stop` would close the
+    socket ahead of them. The `inv` is larger than a socket pair's
+    buffer, so its write is still waiting on the reader when the stop
+    is reached.
+    """
+
+    async def main() -> tuple[list[str], bool]:
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        theirs.setblocking(False)
+        loop = asyncio.get_running_loop()
+        connection, _ = a_connection(ours)
+        connection.loop = loop
+        items = [Inventory(InventoryType.MSG_BLOCK, bytes(32))] * MAX_INV_SZ
+        connection.send(Inv(items))
+        connection.send(Verack())
+        connection.stop_when_sent()
+        received = b""
+        async with asyncio.timeout(5):
+            while chunk := await loop.sock_recv(theirs, 4096):
+                received += chunk
+        theirs.close()
+        commands = []
+        while received:
+            message = Message.parse(
+                received[: 24 + int.from_bytes(received[16:20], "little")]
+            )
+            commands.append(message.command)
+            received = received[24 + len(message.payload) :]
+        return commands, ours.fileno() == -1
+
+    commands, closed = asyncio.run(main())
+    assert commands == ["inv", "verack"]
+    assert closed
