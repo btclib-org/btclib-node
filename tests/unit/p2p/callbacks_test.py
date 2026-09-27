@@ -2998,7 +2998,9 @@ def test_a_peer_that_declined_relay_is_still_served_a_block() -> None:
     mempool = Mempool(Logger(debug=True))
     mempool.add_tx(transaction)
     node = a_data_node(
-        mempool=mempool, block_db=SimpleNamespace(get_block=lambda h: block)
+        mempool=mempool,
+        block_index=a_tall_block_index(0, block.header.hash),
+        block_db=SimpleNamespace(get_block=lambda h: block),
     )
     peer = a_peer(relay_tx=False)
     items = [
@@ -3014,7 +3016,10 @@ def test_a_peer_that_declined_relay_is_still_served_a_block() -> None:
 def test_a_block_this_node_holds_is_served() -> None:
     """A `getdata` for a held block is served, witness included when asked."""
     block = a_block()
-    node = a_data_node(block_db=SimpleNamespace(get_block=lambda h: block))
+    node = a_data_node(
+        block_index=a_tall_block_index(0, block.header.hash),
+        block_db=SimpleNamespace(get_block=lambda h: block),
+    )
     for type_code, with_witness in (
         (InventoryType.MSG_BLOCK, False),
         (InventoryType.MSG_WITNESS_BLOCK, True),
@@ -3029,22 +3034,34 @@ def test_a_block_this_node_holds_is_served() -> None:
 
 
 def test_a_block_this_node_does_not_hold_is_not_answered() -> None:
-    """A `getdata` for a block this node lacks gets silence, matching Core."""
-    node = a_data_node(block_db=SimpleNamespace(get_block=lambda h: None))
+    """A `getdata` for a block indexed and not held gets silence, as in Core."""
+    node = a_data_node(
+        block_index=a_tall_block_index(0, b"\x11" * 32),
+        block_db=SimpleNamespace(get_block=lambda h: None),
+    )
     peer = a_peer()
     items = [Inventory(InventoryType.MSG_BLOCK, b"\x11" * 32)]
     getdata(node, GetData(items).serialize(), peer)
     assert not peer.sent
 
 
-def a_tall_block_index(length: int) -> Any:
-    """Build a `block_index` double `length` blocks tall, height by hash."""
+def a_tall_block_index(length: int, *held: bytes) -> Any:
+    """Build a `block_index` double `length` blocks tall, then `held` on top.
+
+    Every block is on the active chain, height by hash, so that a `getdata`
+    for any of them passes `_block_request_allowed`.
+    """
     active_chain = [height.to_bytes(32, "big") for height in range(length)]
+    active_chain.extend(held)
     header_dict = {
         block_hash: SimpleNamespace(index=height)
         for height, block_hash in enumerate(active_chain)
     }
-    return SimpleNamespace(active_chain=active_chain, header_dict=header_dict)
+    return SimpleNamespace(
+        active_chain=active_chain,
+        header_dict=header_dict,
+        get_block_info=header_dict.__getitem__,
+    )
 
 
 def test_a_pruned_node_disconnects_a_getdata_below_its_own_retained_depth() -> None:
@@ -3094,7 +3111,10 @@ def test_a_fresh_node_serves_its_genesis_block(tmp_path: Path) -> None:
     """
     genesis = RegTest().genesis_block
     with unstarted_node_context(tmp_path) as real:
-        node = a_data_node(block_db=real.block_db)
+        node = a_data_node(
+            block_index=a_tall_block_index(0, genesis.header.hash),
+            block_db=real.block_db,
+        )
         peer = a_peer()
         items = [Inventory(InventoryType.MSG_BLOCK, genesis.header.hash)]
         getdata(node, GetData(items).serialize(), peer)
@@ -3466,7 +3486,10 @@ def test_getdata_stops_sending_once_the_connection_closes_mid_answer() -> None:
     """
     blocks = [a_block() for _ in range(4)]
     lookup = {b.header.hash: b for b in blocks}
-    node = a_data_node(block_db=SimpleNamespace(get_block=lookup.get))
+    node = a_data_node(
+        block_index=a_tall_block_index(0, *lookup),
+        block_db=SimpleNamespace(get_block=lookup.get),
+    )
     peer = a_peer()
     sent = peer.sent
 
@@ -4033,6 +4056,62 @@ def test_a_validated_block_off_the_chain_is_served_while_little_work_behind(
 
     hashes, _ = answer(an_index, [], side[0].hash)
     assert hashes == ([side[0].hash] if allowed else None)
+
+
+def a_block_getdata(
+    block_index: BlockIndex, block_hash: bytes, *, pruned: bool = False
+) -> Any:
+    """Ask a node over `block_index` for `block_hash`, held; return the peer."""
+    block = a_block()
+    node = a_data_node(
+        block_index=block_index, block_db=SimpleNamespace(get_block=lambda h: block)
+    )
+    node.config.pruned = pruned
+    peer = a_peer()
+    items = [Inventory(InventoryType.MSG_WITNESS_BLOCK, block_hash)]
+    getdata(node, GetData(items).serialize(), peer)
+    return peer
+
+
+def test_a_stored_block_marked_invalid_is_not_served(an_index: BlockIndex) -> None:
+    """ISS 1254: Core's `BlockRequestAllowed`, off the chain and not valid."""
+    (header,) = generate_random_header_chain(1, _GENESIS)
+    an_index.add_headers([header])
+    an_index.invalidate(header.hash)
+    peer = a_block_getdata(an_index, header.hash)
+    assert not peer.sent
+    assert not peer.stopped
+
+
+@pytest.mark.parametrize(
+    ("status", "served"),
+    [(BlockStatus.valid, True), (BlockStatus.valid_header, False)],
+    ids=["validated", "header-only"],
+)
+def test_a_block_off_the_chain_is_served_only_where_validated(
+    an_index: BlockIndex,
+    status: BlockStatus,
+    served: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1254: a recent side block is served once it passed validation."""
+    (side,) = generate_random_header_chain(1, _GENESIS)
+    an_index.add_headers([side])
+    an_index.set_status(side.hash, status)
+    activated(an_index, generate_random_header_chain(2, _GENESIS))
+    peer = a_block_getdata(an_index, side.hash)
+    assert bool(peer.sent) is served
+
+
+def test_a_pruned_node_ignores_a_deep_side_block_rather_than_disconnecting(
+    an_index: BlockIndex,
+) -> None:
+    """ISS 1254: `BlockRequestAllowed` is asked ahead of the prune threshold."""
+    (side,) = generate_random_header_chain(1, _GENESIS)
+    an_index.add_headers([side])
+    activated(an_index, generate_random_header_chain(MIN_BLOCKS_TO_KEEP + 10, _GENESIS))
+    peer = a_block_getdata(an_index, side.hash, pruned=True)
+    assert not peer.sent
+    assert not peer.stopped
 
 
 def test_an_empty_headers_batch_asks_for_nothing_more() -> None:

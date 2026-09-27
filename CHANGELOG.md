@@ -739,6 +739,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 - **A rate outside `MoneyRange` is ignored rather than clearing the filter the
   peer sent before** (closes #1256).
+### `getdata` serves a block only where Core's `BlockRequestAllowed` would
+
+- **A block off the active chain is served only once validated and recent, and
+  an unknown or refused one is ignored before the prune threshold is read**
+  (closes #1254).
 
 ## v2026.9.24
 

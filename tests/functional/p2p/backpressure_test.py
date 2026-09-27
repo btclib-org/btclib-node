@@ -276,6 +276,14 @@ def test_a_getdata_answer_pauses_rather_than_filling_the_send_queue(
     and dropping one.
     """
     node, peer, chain = deaf_peer
+    # connected, as a block off the active chain and not validated is
+    # ignored (`_block_request_allowed`)
+    block_index = node.chainstate.block_index
+    block_index.add_headers([block.header for block in chain])
+    node.status = NodeStatus.HeaderSynced
+    for block in chain:
+        block_index.set_downloaded(block.header.hash)
+    wait_until(lambda: len(block_index.active_chain) == len(chain) + 1)
     peer.send(
         GetData(
             [Inventory(InventoryType.MSG_BLOCK, block.header.hash) for block in chain]

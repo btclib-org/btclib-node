@@ -49,6 +49,7 @@ from tests import discourage_recorder, log_recorder, wait_until
 
 if TYPE_CHECKING:
     import concurrent.futures
+    from collections.abc import Iterable
 
     from btclib.p2p.payload import Payload
 
@@ -1367,6 +1368,24 @@ class _FakeBigBlock:
         return b"\x00" * self.size
 
 
+def a_chainstate_holding(block_hashes: Iterable[bytes]) -> Any:
+    """Build a `chainstate` double whose active chain is `block_hashes`.
+
+    So that a `getdata` for any of them passes `_block_request_allowed`.
+    """
+    active_chain = list(block_hashes)
+    header_dict = {
+        block_hash: SimpleNamespace(index=height)
+        for height, block_hash in enumerate(active_chain)
+    }
+    block_index = SimpleNamespace(
+        active_chain=active_chain,
+        header_dict=header_dict,
+        get_block_info=header_dict.__getitem__,
+    )
+    return SimpleNamespace(block_index=block_index)
+
+
 def test_a_realistic_getdata_burst_and_cfilters_headroom_are_not_dropped() -> None:
     """`getdata`'s own real schedule and `get_cfilters`'s own headroom survive.
 
@@ -1397,6 +1416,7 @@ def test_a_realistic_getdata_burst_and_cfilters_headroom_are_not_dropped() -> No
         loop = asyncio.get_running_loop()
         connection = a_running_connection(loop, socket.socket())
         connection.node.block_db = SimpleNamespace(get_block=blocks.get)  # type: ignore[assignment]
+        connection.node.chainstate = a_chainstate_holding(blocks)
         connection.node.mempool = SimpleNamespace(get_tx=lambda *a, **k: None)  # type: ignore[assignment]
         connection.node.pending_getdata = {}
         release = asyncio.Event()
@@ -1455,6 +1475,7 @@ def _blocks_served_behind(in_flight_bytes: int) -> tuple[int, int]:
         loop = asyncio.get_running_loop()
         connection = a_running_connection(loop, socket.socket())
         connection.node.block_db = SimpleNamespace(get_block=blocks.get)  # type: ignore[assignment]
+        connection.node.chainstate = a_chainstate_holding(blocks)
         connection.node.mempool = SimpleNamespace(get_tx=lambda *a, **k: None)  # type: ignore[assignment]
         connection.node.pending_getdata = {}
         release = asyncio.Event()
@@ -1580,6 +1601,7 @@ def test_a_getdata_answer_paces_on_what_it_has_already_handed_over() -> None:
         loop = asyncio.get_running_loop()
         connection = a_running_connection(loop, socket.socket())
         connection.node.block_db = SimpleNamespace(get_block=blocks.get)  # type: ignore[assignment]
+        connection.node.chainstate = a_chainstate_holding(blocks)
         connection.node.mempool = SimpleNamespace(get_tx=lambda *a, **k: None)  # type: ignore[assignment]
         connection.node.pending_getdata = {}
         release = asyncio.Event()
@@ -1637,6 +1659,7 @@ def test_a_getdata_of_mostly_misses_does_not_drop_the_connection() -> None:
         loop = asyncio.get_running_loop()
         connection = a_running_connection(loop, socket.socket())
         connection.node.block_db = SimpleNamespace(get_block=blocks.get)  # type: ignore[assignment]
+        connection.node.chainstate = a_chainstate_holding(blocks)
         connection.node.mempool = SimpleNamespace(get_tx=lambda *a, **k: None)  # type: ignore[assignment]
         connection.node.pending_getdata = {}
         release = asyncio.Event()

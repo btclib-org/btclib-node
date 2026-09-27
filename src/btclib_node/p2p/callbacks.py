@@ -1395,14 +1395,12 @@ def _below_prune_threshold(node: Node, block_hash: bytes) -> bool:
     (`connection.py`'s own `own_version`, gated on `Config.pruned`
     the identical way), so this reads `node.config.pruned` directly
     rather than a per-connection record of what was sent. `+ 2` is
-    Core's own buffer, "for possible races". Answers `False` for a hash
-    this index has never indexed, matching Core's own `if (!pindex)
-    return;` immediately above the check this mirrors.
+    Core's own buffer, "for possible races". `block_hash` is indexed:
+    `_serve_getdata_item` has already answered Core's own `if (!pindex)
+    return;`.
     """
     block_index = node.chainstate.block_index
-    block_info = block_index.header_dict.get(block_hash)
-    if block_info is None:
-        return False
+    block_info = block_index.get_block_info(block_hash)
     tip_height = len(block_index.active_chain) - 1
     return tip_height - block_info.index > MIN_BLOCKS_TO_KEEP + 2
 
@@ -1442,6 +1440,14 @@ def _serve_getdata_item(
             not_found.append(item)
             not_found_bytes += _NOTFOUND_ITEM_BYTES
     elif item.type_code in _GETDATA_BLOCK_TYPES:
+        # Core's `ProcessGetBlockData` (`net_processing.cpp`, at
+        # bitcoin/bitcoin@9be056a8a7) ignores a block it has no index entry
+        # for, then one `BlockRequestAllowed` refuses -- off the active
+        # chain and not recently valid -- before the prune threshold
+        if item.hash not in node.chainstate.block_index.header_dict:
+            return not_found_bytes
+        if not _block_request_allowed(node, item.hash):
+            return not_found_bytes
         if node.config.pruned and _below_prune_threshold(node, item.hash):
             conn.stop()
             return not_found_bytes
