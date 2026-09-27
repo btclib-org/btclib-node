@@ -10,8 +10,9 @@ checked, answers a request line, a request-target, a header field or
 a `Content-Length` Core's listener cannot frame, and a chunked body it
 cannot read, with 400 or 413 (`_HeadReader`, `_ChunkedReader`), answers
 an `Expect` it does not meet with 417 and `100-continue` with an interim
-`100 Continue`, refuses a method or a path Core's listener refuses
-before Core checks a credential (`_refusal`), answers a request whose
+`100 Continue`, answers a source `-rpcallowip` does not name with a
+bare 403, refuses a method or a path Core's listener refuses before
+Core checks a credential (`_refusal`), answers a request whose
 `Authorization` header `rpc.auth.RpcAuth` does not accept with 401, and
 decodes the body of one it does accept, which
 `rpc.manager.RpcManager.messages` queues for `rpc.main.handle_rpc`.
@@ -48,7 +49,12 @@ from btclib_node.exceptions import (
     UnmetExpectationError,
 )
 from btclib_node.p2p.address import ip_and_port
-from btclib_node.rpc.auth import FAILED_ATTEMPT_DELAY, WWW_AUTHENTICATE, Refusal
+from btclib_node.rpc.auth import (
+    FAILED_ATTEMPT_DELAY,
+    FORBIDDEN,
+    WWW_AUTHENTICATE,
+    Refusal,
+)
 from btclib_node.rpc.jsonrpc import NO_CONTENT, HttpReply, decode, error_reply
 
 if TYPE_CHECKING:
@@ -1048,9 +1054,10 @@ class RpcConnection:
         header section `_HeadReader` refuses, an `Expect` it does not
         meet, or a chunked body `_ChunkedReader` refuses, is answered
         400, 417 or 413 by `_send_framing_error`, as soon as it is
-        refused; a
-        method or a target `_refusal` refuses is answered by
-        `_send_refusal`, whatever the credential; a request whose
+        refused; a method outside `_LIBEVENT_METHODS` is answered 501,
+        from any source; a source `manager.client_allowed` refuses is
+        answered a bare 403; a method or a target `_refusal` refuses is
+        answered by `_send_refusal`, whatever the credential; a request whose
         `Authorization` header `manager.auth` does not accept is
         answered 401 by `_send_unauthorized`, its body read off the
         socket and never decoded; and one whose decoded body
@@ -1080,14 +1087,7 @@ class RpcConnection:
             # Ahead of the credential check below, as in Core, and once
             # the body is read, so that a connection `_frame` keeps goes
             # on to its next request after the refusal.
-            refusal = _refusal(head.method, head.target)
-            if refusal is not None:
-                status, refusal_body = refusal
-                self._refusal_reply = self.loop.create_task(
-                    self._send_refusal(
-                        status, refusal_body, page=status == _NOT_IMPLEMENTED
-                    )
-                )
+            if self._refused_early(head):
                 return
             # Core's `HTTPReq_JSONRPC`: no `Authorization` at all is a
             # 401 at once, one it does not accept a 401 after
@@ -1215,6 +1215,37 @@ class RpcConnection:
         except Exception:  # noqa: BLE001
             self.client.close()
             self.manager.connections.pop(self.id, None)
+
+    def _refused_early(self, head: RequestHead) -> bool:
+        """Schedule the reply to what Core refuses ahead of the credential.
+
+        A method outside `_LIBEVENT_METHODS` is libevent's 501, answered
+        before Core's `http_request_cb` runs; then, in that callback's
+        order (`src/httpserver.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+        v31.1 tag), a source `ClientAllowed` refuses is a bare 403, and
+        a method or a target `_refusal` refuses is answered as it says.
+        Answers whether a reply was scheduled.
+        """
+        if head.method in _LIBEVENT_METHODS and not self.manager.client_allowed(
+            self.client
+        ):
+            self.manager.logger.debug(
+                "HTTP request from %s rejected: Client network is not "
+                "allowed RPC access",
+                self._peer_address(),
+            )
+            self._refusal_reply = self.loop.create_task(
+                self._send_refusal(FORBIDDEN, "")
+            )
+            return True
+        refusal = _refusal(head.method, head.target)
+        if refusal is None:
+            return False
+        status, refusal_body = refusal
+        self._refusal_reply = self.loop.create_task(
+            self._send_refusal(status, refusal_body, page=status == _NOT_IMPLEMENTED)
+        )
+        return True
 
     def _frame(
         self,

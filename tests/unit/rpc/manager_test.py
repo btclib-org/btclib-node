@@ -59,6 +59,7 @@ class AManagerFactory(Protocol):
         port: int | None,
         rpc_host: str | None = None,
         rpcbind: tuple[str, ...] = (),
+        rpcallowip: tuple[str, ...] = (),
     ) -> RpcManager:
         """Build an `RpcManager` bound to `port` and `rpc_host` once started."""
         ...
@@ -77,12 +78,14 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
         port: int | None,
         rpc_host: str | None = None,
         rpcbind: tuple[str, ...] = (),
+        rpcallowip: tuple[str, ...] = (),
     ) -> RpcManager:
         config = Config(
             chain="regtest",
             data_dir=tmp_path,
             rpc_host=rpc_host,
             rpcbind=rpcbind,
+            rpcallowip=rpcallowip,
             rpcauth=[RPCAUTH],
         )
         config.data_dir.mkdir(exist_ok=True)
@@ -466,6 +469,142 @@ def test_bind_warns_as_cores_http_bind_addresses(
     assert infos == [
         ("Binding RPC on address %s port %s", host, manager.port) for host in hosts
     ]
+
+
+_ALLOW_ALONE = (
+    "Option -rpcallowip was specified without -rpcbind; this doesn't usually make sense"
+)
+
+
+def test_rpcallowip_without_rpcbind_is_warned_over_and_loopback_bound(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1268: measured on bitcoind v31.1.0, which binds both loopbacks."""
+    manager = a_manager(get_random_port(), rpcallowip=("10.0.0.0/8",))
+    warnings: list[tuple[object, ...]] = []
+    debugs: list[tuple[object, ...]] = []
+    monkeypatch.setattr(manager.logger, "warning", warnings_into(warnings))
+    monkeypatch.setattr(manager.logger, "debug", lambda *args: debugs.append(args))
+    assert manager.start_listener()
+    try:
+        assert bound_hosts(list(manager._server_sockets)) == LOOPBACKS
+    finally:
+        manager.stop()
+    assert warnings == [(_ALLOW_ALONE,)]
+    # measured with `-debug=http`: every subnet, a space after each
+    assert (
+        "Allowing HTTP connections from: %s",
+        "127.0.0.0/8 ::1/128 10.0.0.0/8 ",
+    ) in debugs
+
+
+def test_rpcbind_beside_rpcallowip_binds_each_endpoint(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1268: `HTTPBindAddresses`'s other branch, one socket an endpoint.
+
+    Measured on bitcoind v31.1.0: `-rpcbind=127.0.0.1 -rpcallowip=127.0.0.1`
+    listens on `127.0.0.1` at `-rpcport`, and a port given overrides it.
+    """
+    port, other = get_random_port(), get_random_port()
+    manager = a_manager(
+        port,
+        rpcbind=("127.0.0.1", f"127.0.0.1:{other}"),
+        rpcallowip=("127.0.0.1",),
+    )
+    infos: list[tuple[object, ...]] = []
+    monkeypatch.setattr(manager.logger, "info", lambda *args: infos.append(args))
+    server_sockets = manager._bind()
+    ports = [server_socket.getsockname()[1] for server_socket in server_sockets]
+    assert bound_hosts(server_sockets) == ["127.0.0.1", "127.0.0.1"]
+    assert ports == [port, other]
+    assert infos == [
+        ("Binding RPC on address %s port %s", "127.0.0.1", port),
+        ("Binding RPC on address %s port %s", "127.0.0.1", other),
+    ]
+
+
+def test_an_rpcbind_idna_would_refuse_is_warned_over_beside_a_good_one(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1268: `a..b` fails as a bind, and `127.0.0.1` still listens.
+
+    Measured on bitcoind v31.1.0 with `-rpcbind=127.0.0.1 -rpcbind=a..b
+    -rpcallowip=127.0.0.1`: it starts, and warns "Binding RPC on address
+    a..b port <port> failed.".
+    """
+    port = get_random_port()
+    manager = a_manager(port, rpcbind=("127.0.0.1", "a..b"), rpcallowip=("127.0.0.1",))
+    warnings: list[tuple[object, ...]] = []
+    # every warning, `warnings_into` passing over a host it cannot bind
+    monkeypatch.setattr(manager.logger, "warning", lambda *args: warnings.append(args))
+    server_sockets = manager._bind()
+    assert bound_hosts(server_sockets) == ["127.0.0.1"]
+    assert ("Binding RPC on address %s port %s failed.", "a..b", port) in warnings
+
+
+def test_an_rpcbind_port_core_refuses_binds_nothing(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1268: `HTTPBindAddresses` logs `InvalidPortErrMsg` and binds nothing.
+
+    `cli` refuses such a value first; a `Config` built in Python reaches
+    this, and the listener does not start.
+    """
+    manager = a_manager(
+        get_random_port(),
+        rpcbind=("127.0.0.1", "127.0.0.1:0"),
+        rpcallowip=("127.0.0.1",),
+    )
+    errors: list[tuple[object, ...]] = []
+    monkeypatch.setattr(manager.logger, "error", lambda *args: errors.append(args))
+    assert not manager.start_listener()
+    wait_until(lambda: not manager.is_alive())
+    assert errors == [
+        ("Invalid port specified in -rpcbind: '%s'", "127.0.0.1:0"),
+        ("Unable to bind any endpoint for RPC server",),
+    ]
+
+
+def test_an_rpcallowip_value_naming_no_subnet_stops_the_listener(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1268: refused before any bind, as `InitHTTPServer` refuses it.
+
+    Measured on bitcoind v31.1.0: `-rpcallowip=bogus` exits 1 with the
+    message naming the value, and then "Unable to start HTTP server". The
+    first is `init_error`, which `Node` shows ahead of the second.
+    """
+    port = get_random_port()
+    manager = a_manager(port, rpcallowip=("bogus",))
+    assert not manager.start_listener()
+    wait_until(lambda: not manager.is_alive())
+    assert manager.init_error is not None
+    assert manager.init_error.startswith(
+        "Invalid -rpcallowip subnet specification: bogus. "
+    )
+    assert manager._server_sockets == []
+    assert not cookie_path(manager.node.config.data_dir).exists()
+
+
+@pytest.mark.parametrize(
+    ("peer", "allowed"),
+    [(("127.0.0.1", 1), True), (("10.0.0.1", 1), False), (OSError(), False)],
+    ids=["loopback", "elsewhere", "gone"],
+)
+def test_client_allowed_reads_the_peer_the_socket_names(
+    a_manager: AManagerFactory, peer: tuple[str, int] | OSError, *, allowed: bool
+) -> None:
+    """ISS 1268: `getpeername`'s host, and a socket with no peer refused."""
+
+    def getpeername() -> tuple[str, int]:
+        if isinstance(peer, OSError):
+            raise peer
+        return peer
+
+    manager = a_manager(get_random_port())
+    client = cast("socket.socket", SimpleNamespace(getpeername=getpeername))
+    assert manager.client_allowed(client) is allowed
 
 
 def test_a_body_that_is_not_json_answers_parse_error_and_forgets_the_client(
