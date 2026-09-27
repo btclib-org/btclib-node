@@ -214,6 +214,22 @@ def test_bind_uses_both_loopbacks_not_every_interface(
     assert bound_hosts(manager._bind()) == LOOPBACKS
 
 
+def test_the_two_loopbacks_bind_in_cores_own_order(a_manager: AManagerFactory) -> None:
+    """ISS 1269: `::1` before `127.0.0.1`, `HTTPBindAddresses`'s own order.
+
+    Independent of `LOOPBACKS` and of `_LOOPBACK_HOSTS`: the expected
+    order is this test's own literal, Core's (`src/httpserver.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and only which of the two
+    a host without IPv6 answers -- never their order -- comes from
+    `resolvable`. Reordering `_LOOPBACK_HOSTS` moves nothing `LOOPBACKS`
+    itself would catch, both sides of that assertion reading the same
+    constant; this one reads the sockets `_bind` actually returned.
+    """
+    manager = a_manager(get_random_port())
+    expected = [host for host in ("::1", "127.0.0.1") if resolvable(host)]
+    assert bound_hosts(manager._bind()) == expected
+
+
 @pytest.mark.parametrize("taken", LOOPBACKS)
 def test_a_loopback_that_cannot_be_bound_is_warned_over_and_passed(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, taken: str

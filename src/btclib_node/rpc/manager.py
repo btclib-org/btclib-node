@@ -48,8 +48,8 @@ if TYPE_CHECKING:
 __all__ = ["RpcManager"]
 
 # What `HTTPBindAddresses` binds without `-rpcbind` and `-rpcallowip`
-# both given, in its order (`src/httpserver.cpp`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+# both given, in its order (`src/httpserver.cpp`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
 _LOOPBACK_HOSTS = ("::1", "127.0.0.1")
 
 
