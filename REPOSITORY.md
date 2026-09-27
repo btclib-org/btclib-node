@@ -150,14 +150,19 @@ gh api repos/btclib-org/btclib-node/branches/main/protection \
     conversations: .required_conversation_resolution.enabled,
     reviews: .required_pull_request_reviews.required_approving_review_count,
     dismiss: .required_pull_request_reviews.dismiss_stale_reviews,
+    signatures: .required_signatures.enabled,
     admins: .enforce_admins.enabled}'
 # {"admins":false,"conversations":true,"deletions":false,"dismiss":true,
-#  "force":false,"linear":true,"reviews":1}
+#  "force":false,"linear":true,"reviews":1,"signatures":false}
 ```
 
 `enforce_admins: false` is not a relaxation but what makes a solo merge
 possible at all: the ruleset bypass below reaches the ruleset's own rule
 and nothing else.
+
+`signatures: false` is classic protection's own copy of the rule
+`main-integrity` below carries: [section 11 states that value for every
+repository](https://github.com/btclib-org/.github#branch-protection-and-rulesets).
 
 ```shell
 gh api repos/btclib-org/btclib-node/rulesets --jq '.[].id' \
@@ -324,7 +329,7 @@ gh api repos/btclib-org/btclib-node/actions/permissions/workflow
 # {"default_workflow_permissions":"read",
 #  "can_approve_pull_request_reviews":false}
 gh api repos/btclib-org/btclib-node/actions/permissions
-# {"enabled":true,"allowed_actions":"all","sha_pinning_required":false}
+# {"enabled":true,"allowed_actions":"all","sha_pinning_required":true}
 ```
 
 `read` is what every workflow here starts from, and a job elevates
@@ -383,10 +388,10 @@ the two need not behave alike (btclib-org/.github#912).
 token: a workflow that could approve would satisfy `main-self-merge`
 without a person.
 
-`sha_pinning_required` is false at the repository, and every action in
-these workflows is pinned to a commit SHA anyway — the rule is in the
-files rather than in the setting, and turning the setting on would make
-it enforced rather than conventional.
+`allowed_actions: all` and `sha_pinning_required: true` are what
+[section 11 states for every
+repository](https://github.com/btclib-org/.github#tokens-publishing-scanning),
+with the reason for each.
 
 **What this call cannot say is whether a value is this repository's own
 or the organization's**, there being no endpoint that answers. Whoever
