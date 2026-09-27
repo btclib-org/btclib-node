@@ -798,13 +798,34 @@ def test_a_peer_at_or_above_the_floor_is_kept_without_wtxid_relay(
     assert commands(peer) == sent
 
 
-def test_a_peer_without_the_witness_service_is_let_go() -> None:
-    """A peer never advertising `NODE_WITNESS` is refused, not discouraged."""
+def test_a_peer_drawn_without_the_witness_service_is_let_go() -> None:
+    """A drawn peer without `NODE_WITNESS` is refused, not discouraged.
+
+    ISS 1138: before this node wants blocks too, `NODE_WITNESS` being in
+    every set Core's `GetDesirableServiceFlags` answers.
+    """
     node = a_handshake_node()
-    peer = a_peer()
+    assert node.status < NodeStatus.BlockSynced
+    peer = a_peer(automatic=True)
     version(node, a_version(services=ServiceFlags.NODE_NETWORK), peer)
     assert peer.stopped == [True]
     assert not node.p2p_manager.discouraged  # ISS 1090
+
+
+@pytest.mark.parametrize("inbound", [True, False], ids=["inbound", "manual"])
+def test_a_peer_not_drawn_is_kept_without_the_witness_service(*, inbound: bool) -> None:
+    """ISS 1138: Core's `ExpectServicesFromConn` is false for either kind.
+
+    A manual peer is outbound and not block-relay-only, so `version`
+    sends it a `getaddr` (ISS 1178) whichever service it lacks; an
+    inbound one gets none.
+    """
+    node = a_handshake_node()
+    peer = a_peer(inbound=inbound)
+    version(node, a_version(services=ServiceFlags.NODE_NETWORK), peer)
+    assert not peer.stopped
+    assert commands(peer)[-1] == ("Verack" if inbound else "GetAddr")
+    assert not peer.has_all_wanted_services
 
 
 def test_a_pruned_peer_is_let_go_only_once_the_blocks_are_synced() -> None:
@@ -2176,6 +2197,13 @@ def test_a_transaction_a_full_mempool_declined_is_not_reported_either(
     assert node.download_manager.received_txs == []
 
 
+def an_info(*, downloaded: bool, index: int = 0) -> SimpleNamespace:
+    """Build a block info stand-in: `downloaded` and `index` as given, valid."""
+    return SimpleNamespace(
+        downloaded=downloaded, index=index, status=BlockStatus.valid_header
+    )
+
+
 class FakeBlockIndex:
     """A block index stand-in with fixed answers and recorded calls.
 
@@ -2230,7 +2258,7 @@ class FakeBlockIndex:
         (header,) = headers
         if not self.accepts_headers:
             return None
-        self.infos[header.hash] = SimpleNamespace(downloaded=False, index=1)
+        self.infos[header.hash] = an_info(downloaded=False, index=1)
         self.chainwork[header.hash] = 2
         return header.hash
 
@@ -2248,7 +2276,7 @@ def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded() -> None:
     every peer it was asked of, which stop stalling.
     """
     block = a_block()
-    index = FakeBlockIndex({block.header.hash: SimpleNamespace(downloaded=False)})
+    index = FakeBlockIndex({block.header.hash: an_info(downloaded=False)})
     added: list[Block] = []
     node = a_data_node(
         block_index=index, block_db=SimpleNamespace(add_block=added.append)
@@ -2279,7 +2307,7 @@ def test_a_block_already_stored_is_not_stored_again() -> None:
     Only the peer that sent it stops being asked for it.
     """
     block = a_block()
-    index = FakeBlockIndex({block.header.hash: SimpleNamespace(downloaded=True)})
+    index = FakeBlockIndex({block.header.hash: an_info(downloaded=True)})
     added: list[Block] = []
     node = a_data_node(
         block_index=index, block_db=SimpleNamespace(add_block=added.append)
@@ -2330,7 +2358,7 @@ def test_a_block_whose_proof_of_work_does_not_hold_up_is_refused() -> None:
     """
     added: list[Block] = []
     broken = a_block_claiming_an_easier_target_than_the_chain_allows(a_block())
-    index = FakeBlockIndex({broken.header.hash: SimpleNamespace(downloaded=False)})
+    index = FakeBlockIndex({broken.header.hash: an_info(downloaded=False)})
     node = a_data_node(
         block_index=index, block_db=SimpleNamespace(add_block=added.append)
     )
@@ -2516,6 +2544,59 @@ def test_a_mutated_body_of_a_downloaded_block_is_refused_all_the_same(
     assert block_info.downloaded
     assert block_info.status != BlockStatus.invalid
     assert node.added == [honest]
+    node.chainstate.close()
+
+
+@pytest.mark.parametrize("inbound", [True, False])
+def test_a_block_whose_header_is_marked_invalid_is_refused_duplicate_invalid(
+    tmp_path: Path,
+    inbound: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1344: Core's `BLOCK_CACHED_INVALID`, punished from an outbound peer.
+
+    Measured against bitcoind v31.1: not stored, an inbound peer kept, an
+    outbound one `Misbehaving`.
+    """
+    node = a_chainstate_node(tmp_path)
+    block_index = node.chainstate.block_index
+    (block,) = generate_random_chain(1, RegTest().genesis.hash)
+    block_index.add_headers([block.header])
+    block_index.invalidate(block.header.hash)
+    with pytest.raises(BTClibValueError, match="duplicate-invalid") as refused:
+        block_callback(node, a_block_payload(block), a_peer(inbound=inbound))
+    assert isinstance(refused.value, MisbehavingError) is not inbound
+    assert node.added == []
+    assert not block_index.get_block_info(block.header.hash).downloaded
+    node.chainstate.close()
+
+
+def test_a_stored_block_marked_invalid_since_is_refused_duplicate_invalid(
+    tmp_path: Path,
+) -> None:
+    """ISS 1344: Core's `AcceptBlockHeader` asks before `BLOCK_HAVE_DATA`."""
+    node = a_chainstate_node(tmp_path)
+    block_index = node.chainstate.block_index
+    (block,) = generate_random_chain(1, RegTest().genesis.hash)
+    block_callback(node, a_block_payload(block), a_peer())
+    block_index.invalidate(block.header.hash)
+    with pytest.raises(MisbehavingError, match="duplicate-invalid"):
+        block_callback(node, a_block_payload(block), a_peer())
+    assert node.added == [block]
+    node.chainstate.close()
+
+
+def test_a_body_failing_check_block_under_an_invalid_header_says_why(
+    tmp_path: Path,
+) -> None:
+    """ISS 1344: Core's `CheckBlock` runs first, measured `bad-cb-multiple`."""
+    node = a_chainstate_node(tmp_path)
+    block_index = node.chainstate.block_index
+    twice = generate_segwit_block(generate_coinbase(height=1))
+    block_index.add_headers([twice.header])
+    block_index.invalidate(twice.header.hash)
+    with pytest.raises(MisbehavingError, match="more than one coinbase"):
+        block_callback(node, a_block_payload(twice), a_peer(inbound=True))
+    assert node.added == []
     node.chainstate.close()
 
 
@@ -5186,6 +5267,21 @@ def test_a_feeler_short_of_desirable_services_is_not_let_go_for_it() -> None:
     )
     peer = a_peer(inbound=False, automatic=True, feeler=True)
     version(node, a_version(services=ServiceFlags.NODE_WITNESS), peer)
+    assert not peer.stopped
+    assert commands(peer)[-1] == "stop_when_sent"
+
+
+def test_a_feeler_without_the_witness_service_is_kept_through_its_version() -> None:
+    """ISS 1138: `ExpectServicesFromConn` is false for `FEELER` too.
+
+    A feeler is `conn.automatic`, so the `NODE_WITNESS` check above the
+    desirable-services one has to exempt it by name, as that one already
+    does, or it drops the feeler before Core's own `VERSION` handler ends
+    it (btclib-org/btclib-node#1138, comment).
+    """
+    node = a_handshake_node(peer_db=PeerDB(cast("Chain", None), cast("Path", None)))
+    peer = a_peer(inbound=False, automatic=True, feeler=True)
+    version(node, a_version(services=ServiceFlags.NODE_NETWORK), peer)
     assert not peer.stopped
     assert commands(peer)[-1] == "stop_when_sent"
 

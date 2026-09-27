@@ -763,6 +763,16 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`wait_until_listening` raises `ListenerEndedError` as soon as a manager's
   thread ends without listening, naming its `bind_error` where it has one**,
   where it waited out its timeout and reported one (closes #1361).
+### A block under a header already marked invalid is refused, as in Core
+
+- **A body passing `CheckBlock` under a header marked invalid is refused
+  `duplicate-invalid`, on the wire and by `submitblock`, and no longer stored,
+  from an outbound peer as misbehaviour** (closes #1344).
+
+### An inbound, manual or feeler peer is kept without `NODE_WITNESS`, as in Core
+
+- **`NODE_WITNESS` is required only where Core's `ExpectServicesFromConn`
+  holds** (closes #1138).
 
 ## v2026.9.24
 

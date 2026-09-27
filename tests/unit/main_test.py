@@ -2646,3 +2646,45 @@ def test_a_body_over_the_weight_with_no_coinbase_is_not_failed() -> None:
     assert block.weight > MAX_BLOCK_WEIGHT
     assert not main.is_block_mutated(block, check_witness_root=True)
     assert not main.is_block_failed(block, check_witness_root=True)
+
+
+def test_a_block_whose_header_is_unknown_or_valid_is_not_cached_invalid(
+    node: Node,
+) -> None:
+    """ISS 1344: `duplicate-invalid` asks for a header indexed and invalid."""
+    (block,) = generate_random_chain(1, RegTest().genesis.hash)
+    block_index = node.chainstate.block_index
+    assert not main.is_cached_invalid(block_index, block)
+    block_index.add_headers([block.header])
+    assert not main.is_cached_invalid(block_index, block)
+
+
+def test_a_body_passing_check_block_under_an_invalid_header_is_cached_invalid(
+    node: Node,
+) -> None:
+    """ISS 1344: Core's `AcceptBlockHeader` answers it `duplicate-invalid`.
+
+    Over the weight too: Core asks the weight after the header.
+    """
+    over = a_block_of_weight(MAX_BLOCK_WEIGHT + 1)
+    block_index = node.chainstate.block_index
+    block_index.add_headers([over.header])
+    block_index.invalidate(over.header.hash)
+    assert main.is_cached_invalid(block_index, over)
+
+
+@pytest.mark.parametrize("failure", ["merkle-root", "bad-cb-multiple"])
+def test_a_body_failing_check_block_under_an_invalid_header_is_not_cached_invalid(
+    node: Node, failure: str
+) -> None:
+    """ISS 1344: Core's `CheckBlock` comes first, and answers for itself."""
+    honest = generate_segwit_block(generate_coinbase(height=1))
+    block = (
+        a_block_over([generate_coinbase(value=1, height=1)], honest.transactions)
+        if failure == "merkle-root"
+        else honest
+    )
+    block_index = node.chainstate.block_index
+    block_index.add_headers([block.header])
+    block_index.invalidate(block.header.hash)
+    assert not main.is_cached_invalid(block_index, block)
