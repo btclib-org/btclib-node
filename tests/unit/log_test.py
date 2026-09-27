@@ -43,3 +43,26 @@ def test_closing_leaves_no_handler_a_late_record_could_reach() -> None:
     logger = Logger(debug=True)
     logger.close()
     assert not logger.handlers
+
+
+def test_a_line_carries_its_level_as_core_s_log_does(tmp_path: Path) -> None:
+    """ISS 1280: `GetLogPrefix`'s `[warning] ` and `[error] `, none at info.
+
+    As `bitcoind` v31.1.0's `debug.log` has them for a line with no
+    category: `[error] Unable to start HTTP server. See debug log for
+    details.` over a taken RPC port. `debug` is `[debug] `, and
+    `critical`, which Core has no level for, is `[error] `.
+    """
+    path = tmp_path / "history.log"
+    logger = Logger(path, debug=True)
+    logger.debug("d")
+    logger.info("i")
+    logger.warning("w")
+    logger.error("e")
+    logger.critical("c")
+    logger.close()
+    messages = [
+        line.split(" - ", 1)[1]
+        for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert messages == ["[debug] d", "i", "[warning] w", "[error] e", "[error] c"]
