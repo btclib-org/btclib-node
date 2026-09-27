@@ -832,7 +832,7 @@ def test_a_conflict_paying_less_than_what_it_replaces_is_insufficient() -> None:
     mempool, coin, _, _ = a_mempool_with_a_conflict()
     candidate = a_spend_of([coin])
     with pytest.raises(TxRejectedError) as refused:
-        mempool.check_replacement(candidate, 11_999)
+        mempool.check_replacement(candidate, 11_999, candidate.vsize)
     assert refused.value.reason == "insufficient fee"
     assert str(refused.value) == (
         f"insufficient fee, rejecting replacement {candidate.id.hex()}, less fees "
@@ -848,13 +848,27 @@ def test_a_conflict_not_paying_its_own_relay_is_insufficient() -> None:
     assert relay > 0
     for fee in (12_000, 12_000 + relay - 1):
         with pytest.raises(TxRejectedError) as refused:
-            mempool.check_replacement(candidate, fee)
+            mempool.check_replacement(candidate, fee, candidate.vsize)
         increase = mempool_module._format_money(fee - 12_000)
         assert str(refused.value) == (
             f"insufficient fee, rejecting replacement {candidate.id.hex()}, not "
             f"enough additional fees to relay; {increase} < "
             f"{mempool_module._format_money(relay)}"
         )
+
+
+def test_the_relay_increase_is_priced_by_the_vsize_given() -> None:
+    """Rule 4 prices the candidate's sigop-adjusted size, as Core's does.
+
+    An increase covering the relay fee at the weight's size falls short at
+    ten times it (btclib-org/btclib-node#1357).
+    """
+    mempool, coin, _, _ = a_mempool_with_a_conflict()
+    candidate = a_spend_of([coin])
+    rate = mempool_module._INCREMENTAL_RELAY_FEE_RATE
+    enough = 12_000 + fee_from_vsize(candidate.vsize, rate)
+    with pytest.raises(TxRejectedError, match="not enough additional fees"):
+        mempool.check_replacement(candidate, enough, 10 * candidate.vsize)
 
 
 def test_a_conflict_paying_for_what_it_replaces_is_still_refused() -> None:
@@ -867,7 +881,7 @@ def test_a_conflict_paying_for_what_it_replaces_is_still_refused() -> None:
     candidate = a_spend_of([coin])
     relay = fee_from_vsize(candidate.vsize, mempool_module._INCREMENTAL_RELAY_FEE_RATE)
     with pytest.raises(TxRejectedError) as refused:
-        mempool.check_replacement(candidate, 12_000 + relay)
+        mempool.check_replacement(candidate, 12_000 + relay, candidate.vsize)
     assert refused.value.reason == "bip125-replacement-disallowed"
     assert str(refused.value) == "bip125-replacement-disallowed"
     assert mempool.contains_tx(held)
@@ -877,7 +891,8 @@ def test_a_conflict_paying_for_what_it_replaces_is_still_refused() -> None:
 def test_a_candidate_with_no_conflict_passes_the_replacement_check() -> None:
     """Spending another output of a held transaction is no conflict."""
     mempool, _, held, _ = a_mempool_with_a_conflict()
-    mempool.check_replacement(a_spend_of([(held.id, 1)]), 0)
+    candidate = a_spend_of([(held.id, 1)])
+    mempool.check_replacement(candidate, 0, candidate.vsize)
 
 
 def test_a_confirmed_spend_evicts_its_conflicts_and_their_descendants() -> None:
@@ -892,3 +907,46 @@ def test_a_confirmed_spend_evicts_its_conflicts_and_their_descendants() -> None:
     assert not mempool.contains_tx(child)
     assert mempool.contains_tx(unrelated)
     assert set(mempool.outpoint_spender) == {(unrelated.vin[0].prev_out.tx_id, 0)}
+
+
+def test_an_entry_is_counted_and_priced_by_the_vsize_it_came_with() -> None:
+    """The sigop-adjusted vsize, not the weight's, is the entry's size.
+
+    Core's `CTxMemPoolEntry::GetTxSize` is what its mempool sums against
+    its limit and prices every feerate by (btclib-org/btclib-node#1357).
+    """
+    mempool = Mempool(Logger(debug=True))
+    tx = generate_random_transaction()
+    vsize = 10 * tx.vsize
+    rate = FeeRate(sats_per_kvbyte=1000)
+    fee = fee_from_vsize(tx.vsize, rate)
+    mempool.add_tx(tx, fee, vsize)
+    assert mempool.bytesize == vsize
+    assert mempool.vsizes == {tx.hash: vsize}
+    # clears the rate at the weight's size, not at the one it came with
+    assert not mempool.meets_fee_rate(tx.hash, 1000)
+    mempool.remove_tx(tx)
+    assert mempool.bytesize == 0
+    assert mempool.vsizes == {}
+
+
+@pytest.mark.parametrize("heap", ["pushed", "rebuilt"])
+def test_eviction_ranks_by_the_vsize_an_entry_came_with(heap: str) -> None:
+    """Two entries paying alike: the one priced larger is the worse rate.
+
+    Whether the heap is the one `add_tx` pushed to or the one
+    `_rebuild_feerate_heap` made. The rolling minimum it leaves is the
+    evicted fee over that size (btclib-org/btclib-node#1357).
+    """
+    mempool = Mempool(Logger(debug=True))
+    dense, plain, rich = (generate_random_transaction() for _ in range(3))
+    mempool.add_tx(dense, 1_000, 10 * dense.vsize)
+    mempool.add_tx(plain, 1_000)
+    if heap == "rebuilt":
+        mempool._rebuild_feerate_heap()
+    mempool.bytesize_limit = mempool.bytesize + rich.vsize - 1
+    mempool.add_tx(rich, 100_000)
+    assert not mempool.contains_tx(dense)
+    assert mempool.contains_tx(plain)
+    evicted_rate = Fraction(1_000, 10 * dense.vsize) * 1000
+    assert mempool._rolling_min_fee_rate == float(evicted_rate + 100)

@@ -871,7 +871,7 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
     if node.mempool.contains_tx(tx) or node.mempool.was_recently_rejected(tx.hash):
         return
     try:
-        fee = verify_mempool_acceptance(node, tx)
+        fee, vsize = verify_mempool_acceptance(node, tx)
     except MissingPrevoutError:
         # We don't have the parents in the mempool. Not recorded in
         # `Mempool`'s own reject cache below: a missing parent can
@@ -914,7 +914,7 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
     # declined to keep is not one to tell every other peer about, a peer
     # that then asks for it getting `notfound` for its trouble.
     # btclib-org/btclib-node#277
-    if node.mempool.add_tx(tx, fee):
+    if node.mempool.add_tx(tx, fee, vsize):
         # novel and accepted into the mempool: what Core's own
         # `m_last_tx_time` records for eviction (`net_processing.cpp`'s
         # `ProcessMessage`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)

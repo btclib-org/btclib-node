@@ -52,7 +52,7 @@ from btclib_node.exceptions import (
     TxRejectedError,
 )
 from btclib_node.log import Logger
-from btclib_node.main import verify_mempool_acceptance
+from btclib_node.main import MempoolAcceptance, verify_mempool_acceptance
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.banman import BanEntry, BanMan, lookup_subnet
@@ -758,18 +758,20 @@ def test_the_raw_mempool_is_a_plain_list_of_txids_by_default() -> None:
 def test_the_raw_mempool_verbose_table_names_each_transaction() -> None:
     """`getrawmempool` verbose answers an object keyed by txid.
 
-    Each entry names its own wtxid, vsize and weight.
+    Each entry names its own wtxid, vsize and weight; the vsize is the one
+    the entry was added with, Core's sigop-adjusted `GetTxSize`
+    (btclib-org/btclib-node#1357).
     """
     mempool = Mempool(Logger(debug=True))
     tx = a_tx()
-    mempool.add_tx(tx)
+    mempool.add_tx(tx, 0, tx.vsize + 7)
     node = a_node(mempool=mempool)
 
     verbose = get_raw_mempool(node, _CONN, [True])
     assert isinstance(verbose, dict)
     assert list(verbose) == [tx.id.hex()]
     assert verbose[tx.id.hex()]["wtxid"] == tx.hash.hex()
-    assert verbose[tx.id.hex()]["vsize"] == tx.vsize
+    assert verbose[tx.id.hex()]["vsize"] == tx.vsize + 7
     assert verbose[tx.id.hex()]["weight"] == tx.weight
 
 
@@ -1299,18 +1301,25 @@ def test_mempool_acceptance_reports_a_reason_for_each_refusal(
     }
     for reason, error in outcomes.items():
 
-        def verify(node: Any, tx: Any, error: Exception | None = error) -> None:
+        def verify(
+            node: Any, tx: Any, error: Exception | None = error
+        ) -> MempoolAcceptance:
             if error is not None:
                 raise error
+            return MempoolAcceptance(0, 81)
 
         monkeypatch.setattr(cb, "verify_mempool_acceptance", verify)
         (result,) = mempool_accept(a_node(), _CONN, [[raw]])
         if reason == "accepted":
             assert result["allowed"] is True
+            # the size verification answered, and only for an accepted
+            # one, as Core answers it (btclib-org/btclib-node#1357)
+            assert result["vsize"] == 81
             assert "reject-reason" not in result
         else:
             assert result["allowed"] is False
             assert result["reject-reason"] == reason
+            assert "vsize" not in result
 
 
 def test_mempool_acceptance_propagates_a_store_error_rather_than_reporting_it(
@@ -1389,9 +1398,12 @@ def test_a_relayed_transaction_is_answered_with_its_txid(
     """`sendrawtransaction` adds an accepted transaction and broadcasts it.
 
     Answers its own txid, adds it to the mempool, and announces it to
-    peers.
+    peers, at the vsize verification answered
+    (btclib-org/btclib-node#1357).
     """
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 1000)
+    monkeypatch.setattr(
+        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(1000, 999)
+    )
     tx = a_tx()
     mempool = Mempool(Logger(debug=True))
     broadcast: list[Tx] = []
@@ -1404,6 +1416,7 @@ def test_a_relayed_transaction_is_answered_with_its_txid(
     )
     assert mempool.contains_tx(tx)
     assert mempool.fees[tx.hash] == 1000
+    assert mempool.vsizes[tx.hash] == 999
     assert broadcast == [tx]
 
 
@@ -1511,7 +1524,11 @@ def test_a_transaction_a_full_mempool_cannot_keep_is_refused_not_relayed(
     # Answering with tx.id.hex() regardless would tell the caller this
     # transaction was kept when it was not, the same defect #277 fixed on
     # the peer-to-peer path. btclib-org/btclib-node#293
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 1000)
+    monkeypatch.setattr(
+        cb,
+        "verify_mempool_acceptance",
+        lambda node, tx: MempoolAcceptance(1000, tx.vsize),
+    )
     tx = a_tx()
     mempool = Mempool(Logger(debug=True))
     mempool.bytesize_limit = 0
@@ -1539,7 +1556,11 @@ def test_resubmitting_a_transaction_already_held_is_tolerated_even_when_the_memp
     # mempool (node/transaction.cpp, at bitcoin/bitcoin@58a7869f86):
     # resubmission is reannounced rather than refused for a fullness
     # this particular submission did not cause
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 1000)
+    monkeypatch.setattr(
+        cb,
+        "verify_mempool_acceptance",
+        lambda node, tx: MempoolAcceptance(1000, tx.vsize),
+    )
     tx = a_tx()
     mempool = Mempool(Logger(debug=True))
     mempool.add_tx(tx, 1000)
@@ -1574,7 +1595,11 @@ def test_a_resubmission_under_a_different_witness_is_also_tolerated_when_full(
     # this transaction." The guard has to be txid-keyed
     # (Mempool.txid_index) to reannounce here instead of refusing a
     # fullness this resubmission did not cause.
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 1000)
+    monkeypatch.setattr(
+        cb,
+        "verify_mempool_acceptance",
+        lambda node, tx: MempoolAcceptance(1000, tx.vsize),
+    )
     held = a_tx()
     resubmitted = replace(
         held, vin=[replace(held.vin[0], script_witness=Witness([b"\x22" * 8]))]
@@ -1615,7 +1640,11 @@ def test_a_resubmission_under_a_different_witness_is_reannounced_by_wtxid_even_w
     # the same substitution, off the full-mempool guard entirely: a
     # resubmission's own wtxid is never what add_tx stored, whether or
     # not the mempool happens to be full
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 1000)
+    monkeypatch.setattr(
+        cb,
+        "verify_mempool_acceptance",
+        lambda node, tx: MempoolAcceptance(1000, tx.vsize),
+    )
     held = a_tx()
     resubmitted = replace(
         held, vin=[replace(held.vin[0], script_witness=Witness([b"\x22" * 8]))]
@@ -2640,7 +2669,7 @@ def a_node_holding(
     held = generate_random_transaction(funding.id, value=funding.vout[0].value - fee)
     # `bypass_limits`, as a reorg re-adds a transaction: no floor at all
     assert node.mempool.add_tx(
-        held, verify_mempool_acceptance(node, held, bypass_limits=True)
+        held, *verify_mempool_acceptance(node, held, bypass_limits=True)
     )
     announced: list[tuple[bytes, int]] = []
     monkeypatch.setattr(
