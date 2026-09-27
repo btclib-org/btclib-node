@@ -638,12 +638,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A `-connect` or `-addnode` dial counts as a recent try too, for an address
   a table holds** (closes #1277); as in Core, a restart forgets every try.
 
-### Two outbound peers are block-relay-only, as in Core
-
-- **Past eight full-relay outbound peers, two more are dialled that relay
-  blocks alone** (closes #1095), as `CConnman::ThreadOpenConnections` opens
-  `BLOCK_RELAY`, and a third on its five-minute timer once the tip is recent.
-
 ### `testmempoolaccept` refuses the call for a `rawtx` that does not decode
 
 - **`-22` for the first one, its message naming the `rawtx`, and `-8` for an
@@ -664,6 +658,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 - **An issue filed from a review may say the fix where one is known**,
   the filing bar standing as it was (issue btclib-org/.github#1378).
+
+### Two outbound peers are block-relay-only, as in Core
+
+- **Past eight full-relay outbound peers, two more are dialled that relay
+  blocks alone** (closes #1095), as `CConnman::ThreadOpenConnections` opens
+  `BLOCK_RELAY`, and a third on its five-minute timer once the tip is recent.
 
 ## v2026.9.24
 
