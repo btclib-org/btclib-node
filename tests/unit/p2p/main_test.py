@@ -79,6 +79,7 @@ def make_node(
         address=_AN_ADDRESS,
         block_relay=False,
         feeler=False,
+        addr_fetch=False,
         stop=lambda: stopped.append(True),
         queued_recv_bytes=queued_recv_bytes,
         _recv_lock=threading.Lock(),

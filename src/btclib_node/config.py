@@ -131,10 +131,12 @@ def _resolve_peers(
     the one ISS 573 (btclib-org/btclib-node#573) asks these two fields
     to use -- takes a `NetworkAddressV2` built straight off a parsed IP
     (`p2p/address.py`'s `peer_address`), and nothing in this node's
-    synchronous startup path resolves a name into one: the only DNS
-    lookup here is `PeerDB.get_addr_from_dns`'s own coroutine, on
-    `P2pManager`'s asyncio loop, which is not reachable before that
-    manager's thread exists. Widening `peer_address` or plumbing an
+    synchronous startup path resolves a name into one: DNS is asked
+    only through `PeerDB.get_addr_from_dns`'s own coroutine and
+    `P2pManager._process_addr_fetch`'s resolution of an addr-fetch
+    seed (btclib-org/btclib-node#1284), both on `P2pManager`'s asyncio
+    loop, neither reachable before that manager's thread exists.
+    Widening `peer_address` or plumbing an
     async resolve into `Node.run` for two config fields is a larger
     change than this branch's scope; a hostname is refused up front,
     at `Config` construction, rather than dialled wrong or silently

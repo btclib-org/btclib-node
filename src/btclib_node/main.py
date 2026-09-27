@@ -71,6 +71,7 @@ __all__ = [
     "is_block_mutated",
     "is_cached_invalid",
     "parent_lookup",
+    "passes_check_block",
     "prune_up_to_height",
     "update_chain",
     "verify_mempool_acceptance",
@@ -615,14 +616,15 @@ def is_block_mutated(block: Block, *, check_witness_root: bool) -> bool:
     return coinbase_witness_commitment(transactions, stack[0]) != commitment
 
 
-def _passes_check_block(block: Block) -> bool:
+def passes_check_block(block: Block) -> bool:
     """Whether `block` passes what Core's `CheckBlock` asks of a body.
 
     The merkle root, `bad-blk-length`, `bad-cb-missing`,
     `bad-cb-multiple`, each transaction's `CheckTransaction` and
     `bad-blk-sigops`, in Core's order (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The header is asked
-    elsewhere: it is indexed before its body is read.
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The header is checked
+    elsewhere: by `add_headers` if it is new, or when it was first
+    indexed.
     """
     transactions = block.transactions
     try:
@@ -654,7 +656,7 @@ def is_block_failed(block: Block, *, check_witness_root: bool) -> bool:
     """
     return (
         not is_block_mutated(block, check_witness_root=check_witness_root)
-        and _passes_check_block(block)
+        and passes_check_block(block)
         and block.weight > MAX_BLOCK_WEIGHT
     )
 
@@ -672,7 +674,7 @@ def is_cached_invalid(block_index: BlockIndex, block: Block) -> bool:
     return (
         known is not None
         and known.status == BlockStatus.invalid
-        and _passes_check_block(block)
+        and passes_check_block(block)
     )
 
 

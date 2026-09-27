@@ -805,6 +805,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   before an unrequested block is set aside, so its peer is punished either
   way** (closes #1363), as Core's `ProcessNewBlock` orders it.
 
+### DNS seeding asks each seed's `x9.` subdomain, and addr-fetches the rest
+
+- **A seed answers only for `NODE_NETWORK | NODE_WITNESS`, at most 32 answers
+  kept**, in place of resolving its bare name (closes #1284). A seed whose
+  subdomain answers nothing is dialled instead, for its own `addr` alone.
+
 ### The automatic dial passes over a connected host, as in Core
 
 - **A host held on any port is not dialled again** (closes #1304), and an
