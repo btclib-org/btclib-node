@@ -814,7 +814,7 @@ def test_a_spend_of_an_output_a_mempool_parent_lacks_is_a_missing_prevout(
     chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
     connect(node, chain)
     funding = chain[0].transactions[0]
-    parent = generate_random_transaction(funding.id, value=funding.vout[0].value)
+    parent = generate_random_transaction(funding.id, value=funding.vout[0].value - FEE)
     node.mempool.add_tx(parent, *verify_mempool_acceptance(node, parent))
     assert len(parent.vout) == 1
 

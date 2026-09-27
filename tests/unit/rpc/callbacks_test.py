@@ -1436,7 +1436,9 @@ def test_an_array_outside_one_to_twenty_five_is_refused(count: int) -> None:
 
 def test_twenty_five_rawtxs_are_each_answered(monkeypatch: pytest.MonkeyPatch) -> None:
     """The bound's own edge is inside it."""
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
+    monkeypatch.setattr(
+        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, 0)
+    )
     raw = a_tx().serialize(include_witness=True).hex()
     assert len(mempool_accept(a_node(), _CONN, [[raw] * 25])) == 25
 
