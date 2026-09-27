@@ -316,68 +316,32 @@ def maybe_send_getheaders(node: Node, conn: Connection, locator: list[bytes]) ->
 _FINAL_ALERT_VERSION = 70012
 
 
-def version(node: Node, msg: bytes, conn: Connection) -> None:
-    """Handle a peer's `version`: refuse an incompatible peer, else continue.
+def _refuses(node: Node, conn: Connection, version_msg: Version) -> bool:
+    """Answer whether `version` drops the peer, and discourages nobody.
 
-    A second `version` ahead of this connection's own `verack` is
-    ignored outright -- Core's own guard, `pfrom.nVersion != 0`
-    (`net_processing.cpp:3823`, at bitcoin/bitcoin@5f45583e43), which
-    logs and returns before doing anything else. `conn.status` stays
-    `Open` until `verack` promotes it, so a repeat sent before that
-    point reaches this callback, and unguarded would resend
-    `WtxidRelay`, `SendAddrV2` and `Verack` in answer.
-    btclib-org/btclib-node#482
-
-    Continuing means answering `verack`, with `wtxidrelay` and
-    `sendaddrv2` ahead of it where the common version reaches
-    `WTXID_RELAY_VERSION` and, to an inbound peer, this node's own
-    `version` ahead of all three; setting up address relay with a peer
-    this node dialled, and asking it for addresses; and recording whether
-    the peer asked to have transactions relayed.
+    The refusals of Core's `VERSION` handling, which answers a
+    self-connect, an obsolete version and missing services with
+    `fDisconnect` alone (`src/net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Records whether the peer
+    has every service this node wants, once the refusals ahead of that
+    check have kept it.
     """
-    if conn.version_message is not None:
-        return
-    version_msg = Version.parse(msg)
-
-    conn.version_message = version_msg
-    # `Connection.best_known_height`'s own docstring (connection.py) is
-    # where reading `start_height` here is argued: `own_version`
-    # (connection.py) carries this node's own real tip as of
-    # btclib-org/btclib-node#722, so between two btclib-node peers this
-    # already seeds at the peer's own real height, and a taller value
-    # off headers this peer actually sends (below) only ever raises it
-    # further. btclib-org/btclib-node#706
-    conn.best_known_height = version_msg.start_height
-    # Core's `SetServices` of an outbound peer's own services, ahead of
-    # every refusal below (`src/net_processing.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a table row gossip
-    # mislabelled is corrected here, the peer dropped or not
-    if not conn.inbound:
-        node.p2p_manager.peer_db.set_services(conn.address, version_msg.services)
-    # Every refusal below drops the peer and discourages nobody. Core's
-    # `VERSION` handling answers a self-connect, an obsolete version and
-    # missing services with `fDisconnect` alone (`src/net_processing.cpp`,
-    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
-    #
     # `is_self_connect_nonce` replaces a fixed-size ring of recently
     # sent nonces, which a burst of outbound connects could evict a
     # still-outstanding attempt's own nonce from before its `version`
     # came back (btclib-org/btclib-node#448) -- its own docstring is
     # where the search it runs is argued against Core's.
     if node.p2p_manager.is_self_connect_nonce(version_msg.nonce):
-        conn.stop()
-        return
+        return True
 
     # Core's floor: a peer older than `MIN_PEER_PROTO_VERSION` is
     # dropped, and every feature newer than that is gated per peer on
     # `common_version` (`p2p/protocol_version.py`)
     if version_msg.version < MIN_PEER_PROTO_VERSION:
-        conn.stop()
-        return
+        return True
     # we only connect to witness nodes
     if not version_msg.services & ServiceFlags.NODE_WITNESS:
-        conn.stop()
-        return
+        return True
     # Core disconnects for missing services only where
     # `ExpectServicesFromConn` (`src/net.h`, at bitcoin/bitcoin@9be056a8a7,
     # the v31.1 tag) holds, which is `false` for `INBOUND`, `MANUAL` and
@@ -421,6 +385,49 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
         and node.status >= NodeStatus.BlockSynced
         and not conn.has_all_wanted_services
     ):
+        return True
+    return False
+
+
+def version(node: Node, msg: bytes, conn: Connection) -> None:
+    """Handle a peer's `version`: refuse an incompatible peer, else continue.
+
+    A second `version` ahead of this connection's own `verack` is
+    ignored outright -- Core's own guard, `pfrom.nVersion != 0`
+    (`net_processing.cpp:3823`, at bitcoin/bitcoin@5f45583e43), which
+    logs and returns before doing anything else. `conn.status` stays
+    `Open` until `verack` promotes it, so a repeat sent before that
+    point reaches this callback, and unguarded would resend
+    `WtxidRelay`, `SendAddrV2` and `Verack` in answer.
+    btclib-org/btclib-node#482
+
+    Continuing means answering `verack`, with `wtxidrelay` and
+    `sendaddrv2` ahead of it where the common version reaches
+    `WTXID_RELAY_VERSION` and, to an inbound peer, this node's own
+    `version` ahead of all three; setting up address relay with a peer
+    this node dialled, and asking it for addresses; and recording whether
+    the peer asked to have transactions relayed.
+    """
+    if conn.version_message is not None:
+        return
+    version_msg = Version.parse(msg)
+
+    conn.version_message = version_msg
+    # `Connection.best_known_height`'s own docstring (connection.py) is
+    # where reading `start_height` here is argued: `own_version`
+    # (connection.py) carries this node's own real tip as of
+    # btclib-org/btclib-node#722, so between two btclib-node peers this
+    # already seeds at the peer's own real height, and a taller value
+    # off headers this peer actually sends (below) only ever raises it
+    # further. btclib-org/btclib-node#706
+    conn.best_known_height = version_msg.start_height
+    # Core's `SetServices` of an outbound peer's own services, ahead of
+    # every refusal below (`src/net_processing.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a table row gossip
+    # mislabelled is corrected here, the peer dropped or not
+    if not conn.inbound:
+        node.p2p_manager.peer_db.set_services(conn.address, version_msg.services)
+    if _refuses(node, conn, version_msg):
         conn.stop()
         return
 
