@@ -617,21 +617,22 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     """Answer `submitblock`, Core's own two arguments, the second ignored.
 
     Core's own `submitblock` (`rpc/mining.cpp:1089-1136`, at
-    bitcoin/bitcoin@bb529657) decodes, indexes the header if it is new,
-    and hands the block to `ProcessNewBlock`: `None` for one accepted,
-    `"duplicate"` for one already held, and a reject reason for one
-    refused. Two reasons are Core's literally:
-    `BlockValidationResult::BLOCK_MISSING_PREV`'s own
-    `"prev-blk-not-found"` (`validation.cpp:4225`, same sha), which this
-    node's own `block_index.add_headers` answers the identical way
+    bitcoin/bitcoin@bb529657) decodes, indexes the header if it is new, and
+    hands the block to `ProcessNewBlock`: `None` for one accepted,
+    `"duplicate"` for one already held, and a reject reason for one refused.
+    Some reasons are Core's literally:
+    `BlockValidationResult::BLOCK_MISSING_PREV`'s own `"prev-blk-not-found"`
+    (`validation.cpp:4225`, same sha), which this node's own
+    `block_index.add_headers` answers the identical way
     `p2p.callbacks.block` already reads it (missing rather than invalid),
-    and `ContextualCheckBlockHeader`'s `"bad-version(0x%08x)"`, which
+    `AcceptBlockHeader`'s `"bad-prevblk"` for a parent marked invalid, and
+    `ContextualCheckBlockHeader`'s `"bad-version(0x%08x)"`, which
     `add_headers` raises in Core's words (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Any other invalid block
-    is answered with btclib's own exception message instead of one of
-    Core's: `BlockValidationResult` names dozens of distinct single-word
-    reasons across `validation.cpp`, and this tree does not reproduce
-    that vocabulary.
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Any other invalid block is
+    answered with btclib's own exception message instead of one of Core's:
+    `BlockValidationResult` names dozens of distinct single-word reasons
+    across `validation.cpp`, and this tree does not reproduce that
+    vocabulary.
 
     Stores through the same `block_index`/`block_db` calls
     `p2p.callbacks.block` makes for a block delivered over the wire,
@@ -667,9 +668,10 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
             if block_index.add_headers([block.header]) is None:
                 return "prev-blk-not-found"
         except BTClibException as error:
-            # the header itself fails a range/proof-of-work check
-            # `_validate_header_batch` makes before anything is indexed
-            # -- caught here rather than left to propagate the way
+            # the header fails a check `_validate_header_batch` makes
+            # before anything is indexed -- its own proof of work or
+            # context, or its parent marked invalid, `bad-prevblk` --
+            # caught here rather than left to propagate the way
             # `p2p.callbacks.block` lets it, because that callback's own
             # caller punishes the peer for it and `submitblock` has no
             # peer to punish, only a reason to answer

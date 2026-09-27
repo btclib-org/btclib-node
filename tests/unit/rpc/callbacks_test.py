@@ -3453,6 +3453,28 @@ def test_submit_block_answers_a_reason_for_a_header_that_never_gets_indexed(
     assert node.block_db.get_block(broken.header.hash) is None
 
 
+def test_submit_block_answers_bad_prevblk_for_a_block_on_an_invalid_parent(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """ISS 1233: `add_headers` refuses the header, `bad-prevblk`.
+
+    Measured against bitcoind v31.1, a block on a header `invalidateblock`
+    marked: `bad-prevblk`.
+    Neither the header nor the block is kept.
+    """
+    node = regtest_node()
+    parent, child = generate_random_chain(2, node.chain.genesis.hash)
+    block_index = node.chainstate.block_index
+    block_index.add_headers([parent.header])
+    block_index.invalidate(parent.header.hash)
+
+    result = submit_block(node, _CONN, [child.serialize(check_validity=False).hex()])
+
+    assert result == "bad-prevblk"
+    assert child.header.hash not in block_index.header_dict
+    assert node.block_db.get_block(child.header.hash) is None
+
+
 def test_submit_block_leaves_valid_a_header_its_body_does_not_match(
     regtest_node: Callable[..., Node],
 ) -> None:

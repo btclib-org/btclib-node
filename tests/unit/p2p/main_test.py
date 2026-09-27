@@ -194,14 +194,13 @@ def test_a_handshake_message_on_a_connected_one_discourages_nobody(
     assert not node.p2p_manager.discouraged
 
 
-def test_a_handshake_callback_that_raises_drops_the_peer(
+def test_a_handshake_callback_that_raises_keeps_the_peer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A handshake callback's own bare exception drops the peer, undiscouraged.
+    """A handshake callback's own bare exception keeps the peer, undiscouraged.
 
-    #283: not every exception is the peer's fault, and a bare `RuntimeError` is
-    not one btclib raised over the peer's own content, so the connection is
-    dropped but the peer is not discouraged for it.
+    ISS 1233: Core's `ProcessMessages` catches every exception out of
+    `ProcessMessage`, `catch (...)` included, logs it and keeps the peer.
     """
 
     def boom(node: Node, msg: bytes, conn: Connection) -> None:
@@ -212,9 +211,7 @@ def test_a_handshake_callback_that_raises_drops_the_peer(
         "handshake_messages", ("verack", b"", 0, 1), status=P2pConnStatus.Open
     )
     handle_p2p_handshake(node)
-    assert stopped == [True]
-    # #283: not every exception is the peer's fault, and a bare
-    # RuntimeError is not one btclib raised over the peer's own content
+    assert stopped == []
     assert not node.p2p_manager.discouraged
 
 
@@ -224,7 +221,7 @@ def test_a_handshake_callback_that_raises_a_btclib_exception_costs_the_peer(
     """A handshake callback raising `MisbehavingError` drops and discourages.
 
     Unlike the bare `RuntimeError` above, it is raised where Core calls
-    `Misbehaving`, so #283 counts this one against the peer.
+    `Misbehaving`, so this one counts against the peer.
     """
 
     def boom(node: Node, msg: bytes, conn: Connection) -> None:
@@ -486,11 +483,11 @@ def test_a_reject_is_ignored_as_core_ignores_it() -> None:
     assert not stopped
 
 
-def test_a_callback_that_raises_drops_the_peer(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A callback raising a bare exception drops the peer, undiscouraged.
+def test_a_callback_that_raises_keeps_the_peer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A callback raising a bare exception keeps the peer, undiscouraged.
 
-    #283: an internal failure on content that was fine is this node's
-    own bug, not cause to discourage the peer that triggered it.
+    ISS 1233: Core's `ProcessMessages` catches every exception out of
+    `ProcessMessage`, `catch (...)` included, logs it and keeps the peer.
     """
 
     def boom(node: Node, msg: bytes, conn: Connection) -> None:
@@ -501,9 +498,7 @@ def test_a_callback_that_raises_drops_the_peer(monkeypatch: pytest.MonkeyPatch) 
         "messages", ("ping", b"", 0, 1, 0.0), status=P2pConnStatus.Connected
     )
     handle_p2p(node)
-    assert stopped == [True]
-    # #283: an internal failure on content that was fine is this node's
-    # own bug, not cause to discourage the peer that triggered it
+    assert stopped == []
     assert not node.p2p_manager.discouraged
 
 
@@ -832,13 +827,13 @@ def test_resume_cfilters_drops_an_already_closed_connection_without_advancing(
     assert not logged
 
 
-def test_resume_cfilters_stops_the_peer_on_a_bare_exception(
+def test_resume_cfilters_keeps_the_peer_on_a_bare_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A bare exception out of `advance_cfilters` drops the peer, undiscouraged.
+    """A bare exception out of `advance_cfilters` keeps the peer, undiscouraged.
 
-    Mirrors `handle_p2p`'s own split (#283): a bug in this node's own
-    code, not the peer's doing.
+    ISS 1233: `handle_p2p`'s own answer, Core's `catch (...)`; the paused
+    entry is dropped, so nothing raises it again.
     """
     stopped: list[Any] = []
     conn = SimpleNamespace(
@@ -852,7 +847,7 @@ def test_resume_cfilters_stops_the_peer_on_a_bare_exception(
 
     monkeypatch.setattr(main_module, "advance_cfilters", boom)
     assert resume_cfilters(node) is True
-    assert stopped == [True]
+    assert stopped == []
     assert node.pending_cfilters == {}
     assert not discouraged
     assert logged
@@ -986,13 +981,13 @@ def test_resume_getdata_drops_an_already_closed_connection_without_advancing(
     assert not logged
 
 
-def test_resume_getdata_stops_the_peer_on_a_bare_exception(
+def test_resume_getdata_keeps_the_peer_on_a_bare_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A bare exception out of `advance_getdata` drops the peer, undiscouraged.
+    """A bare exception out of `advance_getdata` keeps the peer, undiscouraged.
 
-    Mirrors `handle_p2p`'s own split (#283): a bug in this node's own
-    code, not the peer's doing.
+    ISS 1233: `handle_p2p`'s own answer, Core's `catch (...)`; the paused
+    entry is dropped, so nothing raises it again.
     """
     stopped: list[Any] = []
     conn = SimpleNamespace(
@@ -1006,7 +1001,7 @@ def test_resume_getdata_stops_the_peer_on_a_bare_exception(
 
     monkeypatch.setattr(main_module, "advance_getdata", boom)
     assert resume_getdata(node) is True
-    assert stopped == [True]
+    assert stopped == []
     assert node.pending_getdata == {}
     assert not discouraged
     assert logged

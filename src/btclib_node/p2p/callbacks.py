@@ -81,7 +81,12 @@ from btclib.p2p.limits import (
 )
 from btclib.p2p.negotiation import FeeFilter, GetAddr, WtxidRelay
 
-from btclib_node.chainstate.block_index import BlockStatus, block_time, calculate_work
+from btclib_node.chainstate.block_index import (
+    BlockStatus,
+    block_time,
+    calculate_work,
+    check_headers_pow,
+)
 from btclib_node.chainstate.filter_index import NO_PREVIOUS_FILTER_HEADER
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, NodeStatus, P2pConnStatus
 from btclib_node.exceptions import (
@@ -1678,13 +1683,15 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
         # again, from this node's own tip, would draw the same empty answer.
         node.download_manager.last_getheaders_timestamps.pop(conn.id, None)
         return
-    # add_headers raises on a batch it refuses -- a header failing its
-    # own proof of work or context check -- and the raise is left to
-    # reach handle_p2p, which drops and discourages the peer for a
-    # `MisbehavingError` the same way block's own does: a peer that sent
-    # it is not one telling us it has nothing left, and this is not the
-    # ordinary end of a sync. btclib-org/btclib-node#75
     block_index = node.chainstate.block_index
+    # Core's `CheckHeadersPoW`, then the getheaders in flight answered once
+    # the batch's first header connects, before any header is accepted, so
+    # a batch refused past this point still answers it
+    # (`ProcessHeadersMessage`, `net_processing.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+    check_headers_pow(headers, node.chain.pow_limit_bits)
+    if headers[0].previous_block_hash in block_index.header_dict:
+        node.download_manager.last_getheaders_timestamps.pop(conn.id, None)
     # Core's `IsAncestorOfBestHeaderOrTip`, asked of the last header before
     # the batch is indexed: its `ProcessHeadersMessage` hands any other
     # batch whose chain has less than `minimum_chain_work` to
@@ -1698,7 +1705,14 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
         or _height_on_the_active_chain(node, last) is not None
     )
     received_new_header = last not in block_index.header_dict
-    tip = block_index.add_headers(headers)
+    # add_headers raises on a batch it refuses, and the raise is left to
+    # reach handle_p2p, which discourages the peer for a
+    # `MisbehavingError` the same way block's own does: a peer that sent
+    # it is not one telling us it has nothing left, and this is not the
+    # ordinary end of a sync. btclib-org/btclib-node#75
+    # A header already marked invalid costs an outbound peer alone, as
+    # Core's `MaybePunishNodeForBlock` has it for `BLOCK_CACHED_INVALID`.
+    tip = block_index.add_headers(headers, punish_cached_invalid=not conn.inbound)
     # Core's `m_last_block_announcement`, stamped where the batch
     # connected, its last header was new and it has more work than the
     # active tip
@@ -1744,16 +1758,10 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
         # or beating its chainwork, and a locator built from it would
         # ask for this same batch again and stall short of the fork's
         # own tip. An ordinary batch extending header_index already gets
-        # header_index's own richer, multi-entry locator, unchanged; a
-        # batch built on a parent this node already proved invalid does
-        # too, rather than this node asking the same peer for more of a
-        # branch it has already proved bad, with no misbehaviour scoring
-        # anywhere in this tree to ever stop it otherwise.
-        # btclib-org/btclib-node#122
-        if (
-            tip != block_index.header_index[-1]
-            and block_index.get_block_info(tip).status != BlockStatus.invalid
-        ):
+        # header_index's own richer, multi-entry locator, unchanged. A
+        # batch on a branch this node proved invalid never gets here:
+        # add_headers refuses it. btclib-org/btclib-node#122
+        if tip != block_index.header_index[-1]:
             block_locators = [tip]
         else:
             block_locators = block_index.get_block_locator_hashes()

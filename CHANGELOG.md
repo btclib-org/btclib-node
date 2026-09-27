@@ -749,6 +749,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **Neither puts what the peer wrote into the log** (closes #1255): `notfound`
   logs how many items it names, and `reject` reaches no handler, as Core's
   `ProcessMessage` has none.
+### Three peer refusals are answered as Core answers them
+
+- **A header on an invalid parent (`bad-prevblk`, in `submitblock` too) and a
+  non-continuous batch cost the sender, as does one already invalid from an
+  outbound peer; other exceptions keep the peer** (closes #1233).
 
 ## v2026.9.24
 
