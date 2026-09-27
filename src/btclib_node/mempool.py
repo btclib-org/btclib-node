@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
     from btclib_node.log import Logger
 
-__all__ = ["Mempool"]
+__all__ = ["Mempool", "format_money"]
 
 # Core's own `CRollingBloomFilter(120'000, 0.000'001)`
 # (`src/node/txdownloadman_impl.h`, at bitcoin/bitcoin@4519933391): "a
