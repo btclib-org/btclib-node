@@ -999,8 +999,8 @@ class P2pManager(threading.Thread):
         # `-connect`'s own other half: `peer_db`'s table is never drawn
         # from at all, on top of `run` below not scheduling the DNS
         # lookup that would otherwise fill it unless `-dnsseed` is
-        # given. `Node.run` dials `node.config.connect` directly through
-        # `connect_host()`, which does not pass through here.
+        # given. `_open_connect_peers` dials `node.config.connect`, and
+        # does not pass through here.
         if not self.use_addrman_outgoing:
             return
         # `ThreadOpenConnections`'s own order: a `-seednode` is queued
@@ -1178,7 +1178,10 @@ class P2pManager(threading.Thread):
         `GetAddedNodeInfo(include_connected=false)`. A grant is free
         while fewer than `_MAX_ADDNODE_CONNECTIONS` added peers are
         held, and a dial that connects keeps its grant, as the grant
-        moves into the connection there.
+        moves into the connection there. With every grant held a round
+        dials nothing and sleeps `_ADDNODE_RETRY_IDLE`, where Core blocks
+        on `semAddnode` and dials once a grant is released: up to that
+        long later than Core.
         """
         if not self._added_peers:
             return
@@ -1615,7 +1618,7 @@ class P2pManager(threading.Thread):
         loop = self.loop
         # Core's own `-listen=0`: no bind, no accept, outbound dialling
         # untouched -- `_bind`'s own listener socket is the only thing
-        # this skips, `manage_connections` and the dial loop below both
+        # this skips, `manage_connections` and the two manual loops below
         # running on this same loop regardless of whether `_bind` below
         # ever ran.
         server_sockets: list[socket.socket] = []

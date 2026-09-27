@@ -1424,10 +1424,10 @@ def test_build_config_seednode_is_a_list_from_every_level(tmp_path: Path) -> Non
 def test_build_config_connect_alone_defaults_listen_to_false() -> None:
     """`-connect` alone: not listening, `config.connect` still carries the peer.
 
-    `Node.run`'s own dial loop reads `config.connect`/`config.addnode`
-    unconditionally, regardless of `config.listen` -- this is the "still
-    dials" half; `P2pManager`'s own bind gate (`p2p/manager.py`) is the
-    "not listening" half, `manager_test.py`'s own concern.
+    `P2pManager.run` starts the loop that dials `config.connect`
+    whatever `config.listen` is -- this is the "still dials" half;
+    `P2pManager`'s own bind gate (`p2p/manager.py`) is the "not
+    listening" half, `manager_test.py`'s own concern.
     """
     config = cli.build_config(["-regtest", "-connect=10.0.0.1"])
     assert config.listen is False

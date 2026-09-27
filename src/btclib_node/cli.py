@@ -56,8 +56,9 @@ matching Core's "Specified blocks directory ... does not exist"
 Reading Core's own `blk*.dat` is not implemented, and is not started
 here either: the files are Core's format and the validation order is
 this node's own, and `-connect`/`-addnode` below already deliver the
-same blocks over loopback p2p with no new parser -- `Node.run`'s own
-comment on dialling them is where that route is wired in.
+same blocks over loopback p2p with no new parser --
+`P2pManager._open_connect_peers` and `_open_added_peers` are where that
+route is wired in.
 btclib-org/btclib-node#573 is the issue this records the decision
 against.
 

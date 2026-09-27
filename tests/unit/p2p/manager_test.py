@@ -2497,15 +2497,13 @@ def test_run_skips_the_dns_lookup_at_zero_max_connections(
 
 
 def test_listen_false_binds_nothing_but_still_dials(a_manager: AManagerFactory) -> None:
-    """`listen=False`: no bound socket, and the explicit dial still works.
+    """`listen=False`: no bound socket, and the `-connect` loop still dials.
 
     `-connect` alone resolves to exactly this combination
-    (`cli.py`'s own `build_config`): `Node.run`'s dial loop calls
-    `P2pManager.connect` for every `config.connect`/`config.addnode`
-    peer regardless of `listen`, so a manager with `listen=False` has to
-    still be able to reach one -- dialled here at a second, ordinary
-    manager that is listening, since one with `listen=False` has
-    nothing of its own to dial back into.
+    (`cli.py`'s own `build_config`): `run` starts `_open_connect_peers`
+    whatever `listen` is, and nothing here dials but that loop -- at a
+    second, ordinary manager that is listening, since one with
+    `listen=False` has nothing of its own to dial back into.
     """
     target_port = get_random_port()
     target = a_running_manager(a_manager, target_port)
@@ -2516,7 +2514,6 @@ def test_listen_false_binds_nothing_but_still_dials(a_manager: AManagerFactory) 
         assert dialer.start_listener()
         wait_until(dialer.loop.is_running)
         assert not dialer.listening.is_set()
-        dialer.connect(peer_address("127.0.0.1", target_port))
         wait_until(lambda: dialer.pending_connections)
         wait_until(lambda: target.pending_connections)
     finally:
@@ -2533,7 +2530,7 @@ def test_connect_and_explicit_listen_binds_and_dials(
 
     The explicit override case: `connect` set and `listen` left at its
     own default `True` rather than the `False` `-connect` alone would
-    resolve to.
+    resolve to. Nothing here dials but `_open_connect_peers`.
     """
     target_port = get_random_port()
     target = a_running_manager(a_manager, target_port)
@@ -2543,7 +2540,6 @@ def test_connect_and_explicit_listen_binds_and_dials(
         # returns once bound, with nothing left to wait for
         assert dialer.start_listener()
         assert dialer.listening.is_set()
-        dialer.connect(peer_address("127.0.0.1", target_port))
         wait_until(lambda: dialer.pending_connections)
         wait_until(lambda: target.pending_connections)
     finally:
@@ -2729,6 +2725,30 @@ def test_run_dials_an_added_peer_without_an_explicit_dial(
         dialer.join(timeout=10)
         target.stop()
         target.join(timeout=10)
+
+
+def test_run_starts_the_added_loop_before_the_connect_loop(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1316: `CConnman::Start`'s order, `addcon` and then `opencon`."""
+    started: list[str] = []
+    manager = a_manager()
+
+    async def added() -> None:
+        started.append("added")
+
+    async def connect() -> None:
+        started.append("connect")
+
+    monkeypatch.setattr(manager, "_open_added_peers", added)
+    monkeypatch.setattr(manager, "_open_connect_peers", connect)
+    try:
+        assert manager.start_listener()
+        wait_until(lambda: len(started) == 2)
+    finally:
+        manager.stop()
+        manager.join(timeout=10)
+    assert started == ["added", "connect"]
 
 
 def test_a_peer_db_that_raises_does_not_stop_the_housekeeping(
