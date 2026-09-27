@@ -706,6 +706,35 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   is not configured here**, pre-commit.ci's weekly autoupdate moving `rev:`
   instead (issue btclib-org/.github#1391).
 
+### `bitcoin.conf` is read as bytes, as `bitcoind` reads it
+
+- **A byte that is not UTF-8 no longer stops the node** (closes #1290): it is
+  kept, and written back as that byte in stderr, the log and the credentials.
+
+### `REPOSITORY.md` reads the organization's SHA pinning back
+
+- **The organization's `allowed_actions` and `sha_pinning_required` stand
+  beside the repository's**, the latter set at that level (issue
+  btclib-org/.github#1409).
+
+### Each peer is asked for blocks of its own best chain, as in Core
+
+- **A peer is asked only for blocks of its best known chain, within Core's
+  window and in-flight limit, and dropped after Core's timeouts** (closes
+  #1179).
+
+### `setban` takes an onion or I2P host, and each address `getaddrinfo` reads
+
+- **An onion or I2P host is banned as itself** (closes #1218), and an
+  address is what `getaddrinfo` reads, `1.2.3` among them, with an IPv6
+  scope written and no part of the ban's key (closes #1220).
+
+### An old peer is sent Core's nonceless ping and its final alert
+
+- **A peer at protocol version 60000 or below is sent a `ping` with no nonce,
+  and one at 70012 or below the final `alert`, as in Core** (closes #1204,
+  closes #1205).
+
 ### An inbound, manual or feeler peer is kept without `NODE_WITNESS`, as in Core
 
 - **`NODE_WITNESS` is required only where Core's `ExpectServicesFromConn`

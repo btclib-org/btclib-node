@@ -30,6 +30,25 @@ def test_a_log_path_is_a_file_the_lines_end_up_in(tmp_path: Path) -> None:
     assert "a line" in path.read_text(encoding="utf-8")
 
 
+def test_a_byte_utf8_refuses_is_logged_as_that_byte(tmp_path: Path) -> None:
+    """ISS 1290: a setting's byte reaches the file as Core writes it.
+
+    The lone surrogate `surrogateescape` read `0xe9` into, written back
+    as `0xe9`, where UTF-8 alone would refuse to write it.
+    """
+    path = tmp_path / "history.log"
+    logger = Logger(path)
+    logger.warning("Invalid -rpccookieperms=o\udce9")
+    logger.close()
+    # the line's own end left out: a text-mode file ends it in `\r\n` on
+    # Windows, which is not what this test is about
+    line = path.read_bytes().rstrip(b"\r\n")
+    # the time, one space, then `GetLogPrefix`'s level, as ISS 1280 and
+    # ISS 1297 have every line
+    _, message = line.split(b" ", 1)
+    assert message == b"[warning] Invalid -rpccookieperms=o\xe9"
+
+
 def test_no_log_path_is_the_stream_and_not_a_file() -> None:
     """A `Logger` built with no path attaches a `StreamHandler`, not a file."""
     logger = Logger(debug=True)

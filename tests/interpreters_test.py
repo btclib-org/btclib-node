@@ -207,9 +207,8 @@ _NAME = re.compile(r'^    name: "?(?P<name>[^"\n]*)"?', re.MULTILINE)
 # repository's own file and no network fetch, the same way `_CI` above
 # reads every composite action. Issue #757 is what closes that gap.
 # **No job the gate waits on is shaped that way today** -- the gate's
-# only local-action call is the conditioned step above, and the tree's
-# other one is `integration-bitcoind.yml`'s, which no gate job reaches
-# -- so the follow is held by a unit test on job text of its own rather
+# only local-action call is the conditioned step above, and the tree has
+# no other -- so the follow is held by a unit test on job text of its own rather
 # than by the real workflow, which is what a walk that currently finds
 # nothing has to be. A `uses:` pinned to a third party's own commit is
 # not read this way at all: fetching it would be the network call this

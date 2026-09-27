@@ -33,7 +33,7 @@ from btclib.p2p.message import Message
 
 from btclib_node.chains import RegTest
 from btclib_node.constants import NodeStatus, P2pConnStatus
-from btclib_node.download import MAX_BLOCKS_PER_GETDATA_BURST
+from btclib_node.download import MAX_BLOCKS_IN_TRANSIT_PER_PEER
 from btclib_node.p2p import connection as connection_module
 from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.callbacks import (
@@ -44,6 +44,7 @@ from btclib_node.p2p.callbacks import (
 )
 from btclib_node.p2p.connection import Connection
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
+from btclib_node.p2p.messages import NoncelessPing
 from tests import discourage_recorder, log_recorder, wait_until
 
 if TYPE_CHECKING:
@@ -1558,7 +1559,7 @@ def test_send_counts_a_message_before_the_loop_has_written_it() -> None:
 def test_a_getdata_answer_paces_on_what_it_has_already_handed_over() -> None:
     """A `getdata` for more blocks than fit is paced, not dropped.
 
-    A whole `MAX_BLOCKS_PER_GETDATA_BURST` (`btclib_node/download.py`)
+    A whole `MAX_BLOCKS_IN_TRANSIT_PER_PEER` (`btclib_node/download.py`)
     of megabyte blocks, which is the request this node makes of its own
     peers and so an ordinary one to answer. The peer drains nothing, so
     `advance_getdata` stops within one block of
@@ -1571,7 +1572,7 @@ def test_a_getdata_answer_paces_on_what_it_has_already_handed_over() -> None:
     size = 1_000_000
     blocks = {
         bytes([i]) + b"\x00" * 31: _FakeBigBlock(size)
-        for i in range(MAX_BLOCKS_PER_GETDATA_BURST)
+        for i in range(MAX_BLOCKS_IN_TRANSIT_PER_PEER)
     }
     items = [Inventory(InventoryType.MSG_BLOCK, h) for h in blocks]
 
@@ -1663,22 +1664,29 @@ def test_a_getdata_of_mostly_misses_does_not_drop_the_connection() -> None:
 
 
 @pytest.mark.parametrize(
-    ("protocol", "pinged"), [(None, False), (60000, False), (60001, True)]
+    ("protocol", "nonce"), [(None, False), (60000, False), (60001, True)]
 )
-def test_a_ping_goes_only_above_bip31(*, protocol: int | None, pinged: bool) -> None:
+def test_a_ping_carries_a_nonce_only_above_bip31(
+    *, protocol: int | None, nonce: bool
+) -> None:
     """ISS 1180: Core's nonce-bearing `ping` goes above `BIP0031_VERSION`.
 
-    Nothing goes at or below it, nor before the peer's `version` is read.
+    ISS 1204: at or below it, and before the peer's `version` is read,
+    a `ping` goes with no nonce and nothing is left outstanding.
     """
     connection, _ = a_connection()
     sent: list[Any] = []
     connection.send = sent.append  # type: ignore[method-assign,assignment]
     if protocol is not None:
         connection.version_message = cast("Any", SimpleNamespace(version=protocol))
+    before = time.time()
     connection.send_ping()
     connection.client.close()
-    assert bool(sent) is pinged
-    assert bool(connection.ping_sent) is pinged
+    assert connection.ping_start >= before
+    (ping,) = sent
+    assert isinstance(ping, Ping if nonce else NoncelessPing)
+    assert bool(connection.ping_sent) is nonce
+    assert bool(connection.ping_nonce) is nonce
 
 
 def test_send_ping_racing_pong_does_not_tear_the_ping_pair(

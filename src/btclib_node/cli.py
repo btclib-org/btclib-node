@@ -160,6 +160,7 @@ A boolean, wherever it is read from, is Core's `InterpretBool`
 (`src/common/args.cpp`, same sha): `_interpret_bool` below.
 """
 
+import io
 import json
 import os
 import re
@@ -753,8 +754,12 @@ def _read_conf_file(
         raise ValueError(err_msg)
     try:
         # `newline=""`: universal newlines would end a line at a lone
-        # `\r` too, where `std::getline` ends one at `\n` alone
-        text = path.read_text(encoding="utf-8", newline="")
+        # `\r` too, where `std::getline` ends one at `\n` alone.
+        # `surrogateescape`: Core reads the file as bytes and decodes
+        # nothing, so a byte UTF-8 does not accept is kept, as a lone
+        # surrogate `rpc.auth.to_bytes` and the streams `main` writes turn
+        # back into that byte
+        text = path.read_text(encoding="utf-8", errors="surrogateescape", newline="")
     except OSError:
         if include is not None:
             err_msg = f"Failed to include configuration file {include}"
@@ -1457,6 +1462,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     bitcoin/bitcoin@9be056a8a7), and `bitcoind` exits `EXIT_FAILURE`.
     """
     _setup_environment()
+    # a byte of `bitcoin.conf` or of `argv` that is not UTF-8 reaches a
+    # message as a lone surrogate; written back as that byte, as Core
+    # writes the bytes it read
+    if isinstance(sys.stderr, io.TextIOWrapper):
+        sys.stderr.reconfigure(errors="surrogateescape")
     try:
         before = _before_lock(sys.argv[1:] if argv is None else argv)
         locks = _lock(before.directories)
