@@ -1473,3 +1473,23 @@ def test_worker_count_falls_back_to_eight_split_if_the_core_count_is_unknown(
     monkeypatch.setattr(os, "cpu_count", lambda: None)
     monkeypatch.setenv("PYTEST_XDIST_WORKER_COUNT", "4")
     assert btclib_node._default_worker_count() == 2
+
+
+def test_a_nodes_ban_list_takes_its_default_length_from_the_config(
+    tmp_path: Path,
+) -> None:
+    """ISS 1219: `Config.ban_time` reaches `BanMan`, as `-bantime` does."""
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path,
+            allow_p2p=False,
+            allow_rpc=False,
+            ban_time=100,
+        )
+    )
+    try:
+        node.start()
+        assert node.p2p_manager.ban_man.default_ban_time == 100
+    finally:
+        node.stop()

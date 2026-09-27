@@ -1010,12 +1010,12 @@ class P2pManager(threading.Thread):
         if live >= self.max_outbound_full_relay or self.peer_db.is_empty:
             return
         # By endpoint_key, not raw equality: a drawn address
-        # carries whatever timestamp and services callbacks.verack
-        # or a gossiping peer last recorded it with, which is
-        # never the pair an existing Connection's own address was
-        # constructed with, so comparing the dataclasses
-        # themselves never matches the peer this node is already
-        # holding a connection with and dials it a second time.
+        # carries the timestamp and services its rows were last
+        # given, by `callbacks.verack`, a peer's own `version` or a
+        # gossip, which is never the pair an existing Connection's
+        # own address was constructed with, so comparing the
+        # dataclasses themselves never matches the peer this node is
+        # already holding a connection with and dials it a second time.
         #
         # Locked for the same reason the count above is
         # (btclib-org/btclib-node#355).
