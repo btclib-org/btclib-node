@@ -1657,6 +1657,8 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     An empty batch, or one that connects, answers the `getheaders` in
     flight to this peer, as Core's `ProcessHeadersMessage` takes it: one
     connecting to nothing may be an announcement, and answers nothing.
+    A batch that connects is then handed to
+    `DownloadManager.headers_direct_fetch`.
     """
     # Core reads the count alone before it compares, so no entry is
     # needed in the payload for it to call `Misbehaving`
@@ -1757,6 +1759,11 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
         maybe_send_getheaders(node, conn, block_locators)
     elif node.status == NodeStatus.SyncingHeaders:
         node.status = NodeStatus.HeaderSynced
+    if tip is not None:
+        # Core's `ProcessHeadersMessage` (`src/net_processing.cpp`, at
+        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) ends by considering
+        # "immediately downloading blocks", `HeadersDirectFetchBlocks`
+        node.download_manager.headers_direct_fetch(conn, tip)
 
 
 # Core's `STALE_RELAY_AGE_LIMIT` (`src/net_processing.cpp`, at
