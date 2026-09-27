@@ -633,11 +633,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`_bind` records them ahead of setting `listening`** (closes #1325), so
   a thread woken by it no longer reads an empty list.
 
-### `setban` takes an onion or I2P host, and each address `getaddrinfo` reads
-
-- **An onion or I2P host is banned as itself** (closes #1218), and an
-  address is what `getaddrinfo` reads, `1.2.3` among them, with an IPv6
-  scope written and no part of the ban's key (closes #1220).
 ### Every dial records its try, as Core's `Attempt` does
 
 - **A `-connect` or `-addnode` dial counts as a recent try too, for an address
@@ -687,6 +682,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **One more full-relay peer is dialled for a stale tip, and one on a
   network none of the eight is on** (closes #1100), each followed by the
   eviction of a full-relay peer past the target by `EvictExtraOutboundPeers`.
+
+### `setban` takes an onion or I2P host, and each address `getaddrinfo` reads
+
+- **An onion or I2P host is banned as itself** (closes #1218), and an
+  address is what `getaddrinfo` reads, `1.2.3` among them, with an IPv6
+  scope written and no part of the ban's key (closes #1220).
 
 ## v2026.9.24
 
