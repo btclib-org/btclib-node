@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, NoReturn, cast, override
 import pytest
 from bitcoin_core_rpc import RPCErrorCode
 from btclib.block import Block, BlockHeader
+from btclib.consensus import MAX_BLOCK_WEIGHT
 from btclib.exceptions import BTClibValueError
 from btclib.fee import FeeRate
 from btclib.p2p.address import NetworkAddress, ServiceFlags
@@ -36,7 +37,7 @@ import btclib_node.p2p.banman as banman_module
 import btclib_node.rpc.callbacks as cb
 from btclib_node.block_db import Coin
 from btclib_node.chains import Chain, Main, RegTest
-from btclib_node.chainstate.block_index import block_time, calculate_work
+from btclib_node.chainstate.block_index import BlockStatus, block_time, calculate_work
 from btclib_node.chainstate.muhash import CoinStats
 from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
 from btclib_node.constants import (
@@ -84,7 +85,12 @@ from btclib_node.rpc.callbacks import (
 from btclib_node.rpc.callbacks import test_mempool_accept as mempool_accept
 from btclib_node.rpc.connection import RawJSON
 from btclib_node.rpc.errors import RpcError
-from tests import generate_coinbase, generate_random_chain, generate_random_header_chain
+from tests import (
+    generate_coinbase,
+    generate_random_chain,
+    generate_random_header_chain,
+    generate_segwit_block,
+)
 from tests.unit.main_test import connect
 
 if TYPE_CHECKING:
@@ -3371,17 +3377,13 @@ def test_submit_block_answers_a_reason_for_a_header_that_never_gets_indexed(
     assert node.block_db.get_block(broken.header.hash) is None
 
 
-def test_submit_block_invalidates_a_block_whose_body_mismatches_its_header(
+def test_submit_block_leaves_valid_a_header_its_body_does_not_match(
     regtest_node: Callable[..., Node],
 ) -> None:
-    """A block whose merkle root the transactions do not match is invalidated.
+    """ISS 1242: a body the merkle root does not match says nothing of it.
 
-    The header alone is unimpeachable -- valid proof of work, a known
-    parent -- so `add_headers` indexes it; only `block.assert_valid`'s
-    own `assert_valid_merkle_root` (below `assert_valid_structure`) can
-    catch what is wrong with this one, and does, matching
-    `p2p.callbacks.block`'s identical `invalidate`-then-answer shape
-    except for answering rather than raising.
+    Core's `AcceptBlock` marks a block failed unless the failure is
+    `BLOCK_MUTATED`, so the honest body is still accepted afterwards.
     """
     node = regtest_node()
     chain = generate_random_chain(1, node.chain.genesis.hash)
@@ -3400,8 +3402,60 @@ def test_submit_block_invalidates_a_block_whose_body_mismatches_its_header(
     assert isinstance(result, str)
     assert result not in (None, "duplicate", "prev-blk-not-found")
     block_info = node.chainstate.block_index.get_block_info(mismatched.header.hash)
+    assert block_info.status != BlockStatus.invalid
     assert not block_info.downloaded
     assert node.block_db.get_block(mismatched.header.hash) is None
+    honest = chain[0].serialize(check_validity=False).hex()
+    assert submit_block(node, _CONN, [honest]) is None
+
+
+def test_submit_block_leaves_valid_a_committed_body_failing_check_block(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """ISS 1242: Core's `ProcessNewBlock` never marks a `CheckBlock` failure.
+
+    Measured against bitcoind v31.1: `bad-cb-multiple`, and the header
+    absent from `getchaintips`; `headers-only` there where `submitheader`
+    indexed it first. This node indexes the header before `assert_valid`
+    (btclib-org/btclib-node#1339), so the status is what is asserted.
+    """
+    node = regtest_node()
+    twice = generate_segwit_block(generate_coinbase(height=1))
+
+    result = submit_block(node, _CONN, [twice.serialize(check_validity=False).hex()])
+
+    assert result == "more than one coinbase"
+    block_info = node.chainstate.block_index.get_block_info(twice.header.hash)
+    assert block_info.status != BlockStatus.invalid
+
+
+@pytest.mark.parametrize(("segwit_height", "invalid"), [(1, True), (2, False)])
+def test_submit_block_invalidates_a_committed_body_over_the_weight(
+    regtest_node: Callable[..., Node],
+    monkeypatch: pytest.MonkeyPatch,
+    segwit_height: int,
+    invalid: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1242: `bad-blk-weight` marks the block, its witness committed to.
+
+    Where segwit binds only after the block's own height, its witness makes
+    the body mutated and the header is left alone.
+    """
+    node = regtest_node()
+    consensus = replace(node.chain.consensus, segwit_height=segwit_height)
+    monkeypatch.setattr(
+        node,
+        "chain",
+        SimpleNamespace(pow_limit_bits=node.chain.pow_limit_bits, consensus=consensus),
+    )
+    over = generate_segwit_block(witness=bytes(MAX_BLOCK_WEIGHT))
+
+    result = submit_block(node, _CONN, [over.serialize(check_validity=False).hex()])
+
+    assert isinstance(result, str)
+    assert result.startswith("invalid weight")
+    block_info = node.chainstate.block_index.get_block_info(over.header.hash)
+    assert (block_info.status == BlockStatus.invalid) is invalid
 
 
 # A regtest header at height 1 of version -1, as a bitcoind v31.1.0 run with

@@ -611,6 +611,33 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   any entry is validated** (closes #1253); a script shorter than its declared
   length is an invalid serialization.
 
+### A `history.log` line is stamped as `debug.log` stamps it
+
+- **The time is UTC ISO 8601 to the second, then one space** (closes #1297),
+  where it was local time with milliseconds and ` - `.
+
+### The suite's ports come from the range Core's tests use
+
+- **`get_random_port` hands each xdist worker, and each of the first as many
+  replacements, ports of its own from 11000 to 25999, as Core's tests do**,
+  not a port a bind to 0 picked, which anything could take first (closes #1340).
+
+### A body its header does not commit to leaves the header valid, as in Core
+
+- **A mutated body, Core's `IsBlockMutated`, is refused before its header is
+  read, and a failing block is marked invalid only where Core marks it, over
+  the weight, on the wire and in `submitblock`** (closes #1242, closes #1333).
+
+### The P2P listener's sockets are kept before it says it is listening
+
+- **`_bind` records them ahead of setting `listening`** (closes #1325), so
+  a thread woken by it no longer reads an empty list.
+
+### Every dial records its try, as Core's `Attempt` does
+
+- **A `-connect` or `-addnode` dial counts as a recent try too, for an address
+  a table holds** (closes #1277); as in Core, a restart forgets every try.
+
 ### `testmempoolaccept` refuses the call for a `rawtx` that does not decode
 
 - **`-22` for the first one, its message naming the `rawtx`, and `-8` for an
