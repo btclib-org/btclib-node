@@ -25,6 +25,7 @@ from btclib.fee import FeeRate
 
 from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet
 from btclib_node.exceptions import InvalidChainTypeError, UnknownChainError
+from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME
 from btclib_node.rpc.auth import (
     COOKIE_FILE,
     RpcAuthEntry,
@@ -350,6 +351,9 @@ class Config:
     # connection outside it too. `P2pManager.__init__` divides it into
     # inbound and outbound slots.
     max_connections: int
+    # Core's own `-bantime`: how long a `setban` ban lasts, in seconds,
+    # where the call names no length. `Node` hands it to its `BanMan`.
+    ban_time: int
 
     # every parameter here is one independent setting, not a group of
     # related ones this signature happens to expose together: `chain` is
@@ -389,6 +393,7 @@ class Config:
         addnode: Sequence[str] = (),
         listen: bool = True,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
+        ban_time: int = DEFAULT_MISBEHAVING_BANTIME,
         rpcauth: Sequence[str] = (),
         rpcuser: str = "",
         rpcpassword: str = "",
@@ -439,6 +444,7 @@ class Config:
             err_msg = "-maxconnections must be greater or equal than zero"
             raise ValueError(err_msg)
         self.max_connections = max_connections
+        self.ban_time = ban_time
 
         self.p2p_port = None
         if allow_p2p:

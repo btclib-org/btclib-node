@@ -490,6 +490,26 @@ def test_build_config_refuses_an_argument_that_is_not_an_option(
         _build(tmp_path, *argv)
 
 
+@pytest.mark.parametrize(
+    ("argv", "conf", "ban_time"),
+    [([], "", 86400), (["-bantime=100"], "", 100), ([], "bantime=5\n", 5)],
+    ids=["Core's default", "command line", "file"],
+)
+def test_build_config_reads_bantime(
+    tmp_path: Path, argv: list[str], conf: str, ban_time: int
+) -> None:
+    """ISS 1219: `-bantime` is a `setban` ban's default length, as in Core."""
+    assert _build(tmp_path, *argv, conf=conf).ban_time == ban_time
+
+
+def test_help_names_bantime() -> None:
+    """ISS 1219: in Core's words, among the connection options."""
+    assert (
+        "Default duration (in seconds) of manually configured bans (default: 86400)"
+        in " ".join(cli._help_message(show_debug=False).split())
+    )
+
+
 def test_build_config_reads_a_double_dash_option(tmp_path: Path) -> None:
     """`--name=value` is `-name=value`."""
     assert _build(tmp_path, "--maxconnections=7").max_connections == 7
