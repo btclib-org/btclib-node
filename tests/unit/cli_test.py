@@ -50,36 +50,36 @@ def caller_umask() -> Iterator[None]:
 
 def test_parse_conf_text_reads_a_key_value_pair_in_the_default_section() -> None:
     """A bare `key=value` line lands in the `""` (default) section."""
-    assert cli._parse_conf_text("port=9000\n") == {"": {"port": ["9000"]}}
+    assert cli._parse_conf_text("port=9000\n", warnings=[]) == {"": {"port": ["9000"]}}
 
 
 def test_parse_conf_text_reads_a_section() -> None:
     """A `[section]` line switches which section later lines belong to."""
-    tree = cli._parse_conf_text("[regtest]\nport=9000\n")
+    tree = cli._parse_conf_text("[regtest]\nport=9000\n", warnings=[])
     assert tree == {"regtest": {"port": ["9000"]}}
 
 
 def test_parse_conf_text_reads_a_section_prefix_in_the_key() -> None:
     """`regtest.port=` in the default section is `port=` in `[regtest]`."""
-    tree = cli._parse_conf_text("regtest.port=9000\n")
+    tree = cli._parse_conf_text("regtest.port=9000\n", warnings=[])
     assert tree == {"regtest": {"port": ["9000"]}}
 
 
 def test_parse_conf_text_strips_a_trailing_comment() -> None:
     """`#` starts a comment that runs to the end of the line."""
-    tree = cli._parse_conf_text("port=9000 # the p2p port\n")
+    tree = cli._parse_conf_text("port=9000 # the p2p port\n", warnings=[])
     assert tree == {"": {"port": ["9000"]}}
 
 
 def test_parse_conf_text_skips_blank_and_comment_only_lines() -> None:
     """A blank line and a comment-only line contribute nothing."""
-    tree = cli._parse_conf_text("\n# a comment\n   \nport=9000\n")
+    tree = cli._parse_conf_text("\n# a comment\n   \nport=9000\n", warnings=[])
     assert tree == {"": {"port": ["9000"]}}
 
 
 def test_parse_conf_text_collects_repeated_keys_in_order() -> None:
     """Every occurrence of one key is kept, in the order it was read."""
-    tree = cli._parse_conf_text("addnode=1.2.3.4\naddnode=5.6.7.8\n")
+    tree = cli._parse_conf_text("addnode=1.2.3.4\naddnode=5.6.7.8\n", warnings=[])
     assert tree[""]["addnode"] == ["1.2.3.4", "5.6.7.8"]
 
 
@@ -91,7 +91,7 @@ def test_parse_conf_text_reads_a_no_prefix_as_a_negation(
     text: str, *, value: bool
 ) -> None:
     """`no<key>` is `<key>` negated, `False`; a double negative is `True`."""
-    assert cli._parse_conf_text(text) == {"": {"listen": [value]}}
+    assert cli._parse_conf_text(text, warnings=[]) == {"": {"listen": [value]}}
 
 
 # `GetConfigOptions`, `IsConfSupported` and `InterpretValue`'s words
@@ -152,7 +152,7 @@ def test_parse_conf_text_refuses_a_line_in_core_s_words(
 ) -> None:
     """ISS 1267: Core's message, numbered as Core numbers it, naming no path."""
     with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$"):
-        cli._parse_conf_text(f"regtest=1\n{line}\n")
+        cli._parse_conf_text(f"regtest=1\n{line}\n", warnings=[])
 
 
 def test_parse_conf_text_ends_a_line_at_a_newline_alone() -> None:
@@ -162,7 +162,7 @@ def test_parse_conf_text_ends_a_line_at_a_newline_alone() -> None:
     line 2 are one line, and `bad` below it is refused as line 3.
     """
     with pytest.raises(ValueError, match=r"^parse error on line 3: bad$"):
-        cli._parse_conf_text("regtest=1\nfoo\fbar=1\nbad\n")
+        cli._parse_conf_text("regtest=1\nfoo\fbar=1\nbad\n", warnings=[])
 
 
 @pytest.mark.parametrize(
@@ -187,7 +187,7 @@ def test_read_conf_file_reads_a_byte_utf8_refuses(
     path = tmp_path / "bitcoin.conf"
     path.write_bytes(content)
     with pytest.raises(ValueError, match="parse error") as raised:
-        cli._read_conf_file(path, required=True)
+        cli._read_conf_file(path, required=True, warnings=[])
     assert to_bytes(str(raised.value)) == refusal
 
 
@@ -239,17 +239,22 @@ def test_read_conf_file_ends_a_line_at_a_newline_alone(
     path = tmp_path / "bitcoin.conf"
     path.write_bytes(content)
     with pytest.raises(ValueError, match=f"^parse error on {line}$"):
-        cli._read_conf_file(path, required=True)
+        cli._read_conf_file(path, required=True, warnings=[])
 
 
 def test_parse_conf_text_warns_about_an_unknown_key_with_its_section(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """An unknown key is warned about, as written, and dropped."""
-    assert cli._parse_conf_text("[regtest]\nwalletnotify=x\n") == {}
-    assert capsys.readouterr().err == (
-        "warning: ignoring unknown configuration value regtest.walletnotify\n"
-    )
+    """ISS 1295: an unknown key is dropped, and warned about for the log alone.
+
+    As written, section and all: `bitcoind` v31.1.0 logs `[y]`'s `bar=2`
+    as "Ignoring unknown configuration value y.bar", and writes nothing
+    on stderr.
+    """
+    warnings: list[str] = []
+    assert cli._parse_conf_text("[regtest]\nwalletnotify=x\n", warnings=warnings) == {}
+    assert warnings == ["Ignoring unknown configuration value regtest.walletnotify"]
+    assert capsys.readouterr().err == ""
 
 
 def test_parse_conf_text_warns_specifically_about_datadir(
@@ -262,7 +267,7 @@ def test_parse_conf_text_warns_specifically_about_datadir(
     it gets says why it is never read from a file rather than implying
     it is a typo.
     """
-    assert cli._parse_conf_text("datadir=/x\n") == {}
+    assert cli._parse_conf_text("datadir=/x\n", warnings=[]) == {}
     err = capsys.readouterr().err
     assert "cannot be set in a configuration file" in err
     assert "unknown configuration value" not in err
@@ -270,32 +275,41 @@ def test_parse_conf_text_warns_specifically_about_datadir(
 
 def test_read_conf_file_missing_and_not_required_is_empty(tmp_path: Path) -> None:
     """A missing default-named file is not an error: an empty tree."""
-    assert cli._read_conf_file(tmp_path / "bitcoin.conf", required=False) == {}
+    assert (
+        cli._read_conf_file(tmp_path / "bitcoin.conf", required=False, warnings=[])
+        == {}
+    )
 
 
 def test_read_conf_file_missing_and_required_raises(tmp_path: Path) -> None:
     """A missing file explicitly named by `-conf` is fatal."""
     with pytest.raises(ValueError, match="could not be opened"):
-        cli._read_conf_file(tmp_path / "nope.conf", required=True)
+        cli._read_conf_file(tmp_path / "nope.conf", required=True, warnings=[])
 
 
 def test_read_conf_file_a_directory_raises(tmp_path: Path) -> None:
     """`-conf` naming a directory is refused rather than read."""
     with pytest.raises(ValueError, match="is a directory"):
-        cli._read_conf_file(tmp_path, required=False)
+        cli._read_conf_file(tmp_path, required=False, warnings=[])
 
 
 def test_read_conf_file_parses_an_existing_file(tmp_path: Path) -> None:
     """An existing file is read and parsed."""
     conf = tmp_path / "bitcoin.conf"
     conf.write_text("port=9000\n", encoding="utf-8")
-    assert cli._read_conf_file(conf, required=False) == {"": {"port": ["9000"]}}
+    assert cli._read_conf_file(conf, required=False, warnings=[]) == {
+        "": {"port": ["9000"]}
+    }
 
 
 def _load(conf: Path, *, use_includes: bool = True) -> cli._RoConfig:
     """Call `_load_conf_tree` on `conf`, not explicit, beside `conf` itself."""
     return cli._load_conf_tree(
-        conf, conf_explicit=False, base_dir=conf.parent, use_includes=use_includes
+        conf,
+        conf_explicit=False,
+        base_dir=conf.parent,
+        use_includes=use_includes,
+        warnings=[],
     )
 
 
@@ -346,11 +360,90 @@ def test_load_conf_tree_warns_about_and_ignores_a_nested_includeconf(
     conf.write_text("includeconf=secrets.conf\n", encoding="utf-8")
     tree = _load(conf)
     assert tree[""]["rpcport"] == ["9001"]
-    assert tree[""]["includeconf"] == ["secrets.conf"]
+    # kept, as `ReadConfigStream` keeps it, and read by nothing
+    assert tree[""]["includeconf"] == ["secrets.conf", "third.conf"]
     assert capsys.readouterr().err == (
         "warning: -includeconf cannot be used from included files; "
         "ignoring -includeconf=third.conf\n"
     )
+
+
+_NESTED = (
+    "warning: -includeconf cannot be used from included files; ignoring -includeconf="
+)
+
+
+def test_load_conf_tree_reads_the_chain_sections_includes_first(tmp_path: Path) -> None:
+    """ISS 1302: the chain's own section's `includeconf`, then the default's.
+
+    As `ReadConfigFiles`'s `add_includes(chain_id)` before
+    `add_includes({})`: `bitcoind` v31.1.0 warns of `a.conf`'s section
+    before `b.conf`'s with this root file.
+    """
+    (tmp_path / "a.conf").write_text("port=1\n", encoding="utf-8")
+    (tmp_path / "b.conf").write_text("port=2\n", encoding="utf-8")
+    conf = tmp_path / "bitcoin.conf"
+    conf.write_text(
+        "regtest=1\nincludeconf=b.conf\n[regtest]\nincludeconf=a.conf\n",
+        encoding="utf-8",
+    )
+    assert _load(conf)[""]["port"] == ["1", "2"]
+
+
+def test_load_conf_tree_reads_the_section_of_the_command_lines_chain(
+    tmp_path: Path,
+) -> None:
+    """ISS 1302: the chain is the command line's and the root file's both."""
+    (tmp_path / "a.conf").write_text("port=1\n", encoding="utf-8")
+    conf = tmp_path / "bitcoin.conf"
+    conf.write_text("[regtest]\nincludeconf=a.conf\n", encoding="utf-8")
+    assert "port" not in _load(conf).get("", {})
+    command_line, _ = cli._parse_parameters(["-regtest"], [])
+    tree = cli._load_conf_tree(
+        conf,
+        conf_explicit=False,
+        base_dir=tmp_path,
+        use_includes=True,
+        command_line=command_line,
+        warnings=[],
+    )
+    assert tree[""]["port"] == ["1"]
+
+
+def test_load_conf_tree_warns_of_the_includes_of_either_section_it_read(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 1302: the chain's section's first, and never another chain's.
+
+    Measured on `bitcoind` v31.1.0 with these files: it warns of `y.conf`,
+    then `x.conf`, and says nothing of `z.conf`.
+    """
+    (tmp_path / "inc.conf").write_text(
+        "includeconf=x.conf\n[regtest]\nincludeconf=y.conf\n[main]\nincludeconf=z.conf\n",
+        encoding="utf-8",
+    )
+    conf = tmp_path / "bitcoin.conf"
+    conf.write_text("regtest=1\n[regtest]\nincludeconf=inc.conf\n", encoding="utf-8")
+    _load(conf)
+    assert capsys.readouterr().err == f"{_NESTED}y.conf\n{_NESTED}x.conf\n"
+
+
+def test_load_conf_tree_warns_of_the_includes_of_a_chain_an_include_chose(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 1302: `chain_id_final`'s every `includeconf`, the root file's too.
+
+    Measured on `bitcoind` v31.1.0 with these files: `r.conf` is warned
+    about and not read.
+    """
+    (tmp_path / "inc.conf").write_text("regtest=1\n", encoding="utf-8")
+    (tmp_path / "r.conf").write_text("port=1\n", encoding="utf-8")
+    conf = tmp_path / "bitcoin.conf"
+    conf.write_text(
+        "includeconf=inc.conf\n[regtest]\nincludeconf=r.conf\n", encoding="utf-8"
+    )
+    assert "port" not in _load(conf)[""]
+    assert capsys.readouterr().err == f"{_NESTED}r.conf\n"
 
 
 @pytest.mark.parametrize(
@@ -488,7 +581,7 @@ def test_parse_parameters_takes_a_value_only_after_the_equals_sign(
     argv: list[str], options: dict[str, list[object]], token: str | None
 ) -> None:
     """`ParseParameters`: after `=` only; the first non-option ends them."""
-    assert cli._parse_parameters(argv) == (options, token)
+    assert cli._parse_parameters(argv, []) == (options, token)
 
 
 @pytest.mark.parametrize(
@@ -525,7 +618,7 @@ def test_parse_parameters_refuses_as_core_does(argv: list[str], message: str) ->
     """Each message as `bitcoind` v31.1.0 printed it for the same argument."""
     full = f"Error parsing command line arguments: {message}"
     with pytest.raises(ValueError, match=f"^{re.escape(full)}$"):
-        cli._parse_parameters(argv)
+        cli._parse_parameters(argv, [])
 
 
 @pytest.mark.parametrize(
@@ -548,8 +641,14 @@ def test_build_config_refuses_an_argument_that_is_not_an_option(
 
 @pytest.mark.parametrize(
     ("argv", "conf", "ban_time"),
-    [([], "", 86400), (["-bantime=100"], "", 100), ([], "bantime=5\n", 5)],
-    ids=["Core's default", "command line", "file"],
+    [
+        ([], "", 86400),
+        (["-bantime=100"], "", 100),
+        ([], "bantime=5\n", 5),
+        # ISS 1324: `GetIntArg` saturates at the `int64_t` end
+        (["-bantime=99999999999999999999"], "", 2**63 - 1),
+    ],
+    ids=["Core's default", "command line", "file", "past int64"],
 )
 def test_build_config_reads_bantime(
     tmp_path: Path, argv: list[str], conf: str, ban_time: int
@@ -574,33 +673,64 @@ def test_build_config_reads_a_double_dash_option(tmp_path: Path) -> None:
 def test_build_config_warns_about_a_double_negative(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """`-nolisten=0` is `-listen=1`, warned about as Core warns about it."""
-    assert _build(tmp_path, "-connect=0", "-nolisten=0").listen is True
-    assert capsys.readouterr().err == (
-        "warning: parsed potentially confusing double-negative -listen=0\n"
+    """`-nolisten=0` is `-listen=1`, warned about in the log alone, as in Core.
+
+    ISS 1295.
+    """
+    config = _build(tmp_path, "-connect=0", "-nolisten=0")
+    assert config.listen is True
+    assert config.log_warnings == (
+        "Parsed potentially confusing double-negative -listen=0",
     )
+    assert capsys.readouterr().err == ""
 
 
 def test_build_config_echoes_a_double_negative_value(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The warning echoes the value of an option that is not `SENSITIVE`."""
-    assert _build(tmp_path, "-connect=0", "-nolisten=garbage").listen is True
-    assert capsys.readouterr().err == (
-        "warning: parsed potentially confusing double-negative -listen=garbage\n"
+    config = _build(tmp_path, "-connect=0", "-nolisten=garbage")
+    assert config.listen is True
+    assert config.log_warnings == (
+        "Parsed potentially confusing double-negative -listen=garbage",
     )
+    assert capsys.readouterr().err == ""
+
+
+def test_build_config_orders_the_log_warnings_as_bitcoind_logs_them(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 1295: the command line's, the file's in its order, then the sections.
+
+    Measured on `bitcoind` v31.1.0 with this file and `-nolisten=0`: its
+    `debug.log` opens, after five blank lines, on the first four, then
+    its version line, then the section warning, which its stderr holds
+    alone. The version line is one history.log does not have (#1309).
+    """
+    conf = "regtest=1\nfoo=1\nnoserver=0\n[x]\n[y]\nbar=2\n"
+    config = _build(tmp_path, "-nolisten=0", conf=conf)
+    path = tmp_path / "bitcoin.conf"
+    sections = (
+        f"{path}:4 Section [x] is not recognized.\n"
+        f"{path}:5 Section [y] is not recognized.\n"
+    )
+    assert config.log_warnings == (
+        "Parsed potentially confusing double-negative -listen=0",
+        "Ignoring unknown configuration value foo",
+        "Parsed potentially confusing double-negative -server=0",
+        "Ignoring unknown configuration value y.bar",
+        sections,
+    )
+    assert capsys.readouterr().err == f"Warning: {sections}\n"
 
 
 @pytest.mark.parametrize("name", ["rpcauth", "rpcpassword", "rpcuser"])
-def test_interpret_value_masks_a_sensitive_double_negative(
-    name: str, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_interpret_value_masks_a_sensitive_double_negative(name: str) -> None:
     """A `SENSITIVE` option's value is `****` in the warning, unlike Core."""
     info = cli._interpret_key(f"no{name}")
-    assert cli._interpret_value(info, "hunter2", cli._OPTIONS[name]) is True
-    assert capsys.readouterr().err == (
-        f"warning: parsed potentially confusing double-negative -{name}=****\n"
-    )
+    warnings: list[str] = []
+    assert cli._interpret_value(info, "hunter2", cli._OPTIONS[name], warnings) is True
+    assert warnings == [f"Parsed potentially confusing double-negative -{name}=****"]
 
 
 @pytest.mark.parametrize(
@@ -614,10 +744,10 @@ def test_build_config_masks_a_double_negative_password(
     conf: str,
 ) -> None:
     """`-norpcpassword=hunter2` never writes `hunter2`, on either path."""
-    _build(tmp_path, "-connect=0", *argv, conf=conf)
-    err = capsys.readouterr().err
-    assert "hunter2" not in err
-    assert "-rpcpassword=****" in err
+    config = _build(tmp_path, "-connect=0", *argv, conf=conf)
+    written = capsys.readouterr().err + "".join(config.log_warnings)
+    assert "hunter2" not in written
+    assert "-rpcpassword=****" in written
 
 
 @pytest.mark.parametrize(
@@ -948,10 +1078,145 @@ def test_build_config_reads_prune_from_the_file(tmp_path: Path) -> None:
     assert config.prune_target_mib == MIN_PRUNE_TARGET_MIB
 
 
-def test_build_config_refuses_a_non_integer(tmp_path: Path) -> None:
-    """A value that is not an integer is refused where an integer is read."""
-    with pytest.raises(ValueError, match=r"^prune='x' is not an integer$"):
-        _build(tmp_path, "-prune=x")
+@pytest.mark.parametrize(
+    ("value", "read"),
+    [
+        ("7x", 7),
+        (" 12", 12),
+        ("12 x", 12),
+        ("+5", 5),
+        ("-7x", -7),
+        ("+-5", 0),
+        ("x", 0),
+        ("", 0),
+        ("0x10", 0),
+        ("99999999999999999999", 2**63 - 1),
+        ("-99999999999999999999", -(2**63)),
+    ],
+)
+def test_an_integer_is_read_as_core_s_atoi64_reads_it(value: str, read: int) -> None:
+    """ISS 1313, ISS 1324: the leading integer, saturated to `int64_t`."""
+    assert cli._atoi64(value) == read
+
+
+# measured on `bitcoind` v31.1.0 with `-regtest -listen=0`: the limit its
+# "Using at most <n> automatic connections" line gives, `None` where
+# it refuses "-maxconnections must be greater or equal than zero"
+@pytest.mark.parametrize(
+    ("value", "limit"),
+    [
+        ("7x", 7),
+        (" 12", 12),
+        ("12 x", 12),
+        ("+5", 5),
+        ("+-5", 0),
+        ("x", 0),
+        ("", 0),
+        ("0x10", 0),
+        ("99999999999999999999", None),
+        ("-99999999999999999999", 0),
+        ("4294967296", 0),
+        ("4294967297", 1),
+        ("-4294967295", 1),
+        ("2147483648", None),
+        ("-7x", None),
+    ],
+)
+def test_maxconnections_is_the_int_bitcoind_reads(
+    tmp_path: Path, value: str, limit: int | None
+) -> None:
+    """ISS 1313, ISS 1324: `GetIntArg`, then C++'s conversion to `int`."""
+    if limit is None:
+        with pytest.raises(
+            ValueError, match=r"^-maxconnections must be greater or equal than zero$"
+        ):
+            _build(tmp_path, f"-maxconnections={value}")
+    else:
+        assert _build(tmp_path, f"-maxconnections={value}").max_connections == limit
+
+
+@pytest.mark.parametrize(
+    ("value", "listen"),
+    [("4294967296", True), ("-4294967295", False)],
+)
+def test_the_listen_soft_set_reads_maxconnections_before_the_int(
+    tmp_path: Path, value: str, *, listen: bool
+) -> None:
+    """ISS 1324: `InitParameterInteraction` compares the `int64_t` with zero.
+
+    Measured on `bitcoind` v31.1.0: `-maxconnections=4294967296` logs no
+    "setting -listen=0" though its limit is 0, and `-4294967295` logs
+    it though its limit is 1.
+    """
+    assert _build(tmp_path, f"-maxconnections={value}").listen is listen
+
+
+@pytest.mark.parametrize(
+    ("value", "dnsseed"),
+    [("4294967296", True), ("-4294967295", False)],
+)
+def test_the_dnsseed_soft_set_reads_maxconnections_before_the_int(
+    tmp_path: Path, value: str, *, dnsseed: bool
+) -> None:
+    """ISS 1324: the same `if` as `-listen`'s, over the same `int64_t`.
+
+    Measured on `bitcoind` v31.1.0: `-maxconnections=4294967296` logs
+    "dnsseed thread start", and `-4294967295` logs "setting -dnsseed=0".
+    """
+    assert _build(tmp_path, f"-maxconnections={value}").dnsseed is dnsseed
+
+
+# measured on `bitcoind` v31.1.0 with `-regtest -listen=0`:
+# `getblockchaininfo`'s `pruned` and `prune_target_size`, the target in
+# MiB here, and `None` for a start it refuses as below the minimum
+@pytest.mark.parametrize(
+    ("value", "pruned", "target_mib"),
+    [
+        ("+-5", False, None),
+        ("x", False, None),
+        ("", False, None),
+        ("0x10", False, None),
+        ("1", True, None),
+        ("99999999999999999999", True, 2**44 - 1),
+        ("4294967296", True, 2**32),
+        ("17592186044416", False, None),
+        ("17592186044966", True, 550),
+    ],
+)
+def test_prune_is_the_target_bitcoind_reads(
+    tmp_path: Path, value: str, *, pruned: bool, target_mib: int | None
+) -> None:
+    """ISS 1313, ISS 1324: `GetIntArg`, then a wrapped `uint64_t` count."""
+    config = _build(tmp_path, f"-prune={value}")
+    assert config.pruned is pruned
+    assert config.prune_target_mib == target_mib
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        (
+            "7x",
+            "Prune configured below the minimum of 550 MiB.  Please use a higher number.",
+        ),
+        (
+            " 12",
+            "Prune configured below the minimum of 550 MiB.  Please use a higher number.",
+        ),
+        (
+            "17592186044417",
+            "Prune configured below the minimum of 550 MiB.  Please use a higher number.",
+        ),
+        ("-7x", "Prune cannot be configured with a negative value."),
+        ("-99999999999999999999", "Prune cannot be configured with a negative value."),
+    ],
+)
+def test_prune_is_refused_as_bitcoind_refuses_it(
+    tmp_path: Path, value: str, message: str
+) -> None:
+    """ISS 1313, ISS 1324: measured on `bitcoind` v31.1.0, the same words."""
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        _build(tmp_path, f"-prune={value}")
 
 
 @pytest.mark.parametrize("flag", ["-h", "-?", "-help", "-h=0"])
@@ -1328,8 +1593,9 @@ def test_build_config_allowignoredconf_warns_instead(
     assert config.p2p_port == 9123
     other_conf = str(tmp_path / "other.conf")
     expected = _ignored_conf(str(tmp_path), other_conf, "other.conf")
-    warning = expected.rpartition("\n")[0]
-    assert capsys.readouterr().err == f"warning: {warning}\n"
+    # ISS 1295: for the log alone, as Core's `LogWarning` there
+    assert config.log_warnings == (expected.rpartition("\n")[0],)
+    assert capsys.readouterr().err == ""
 
 
 @pytest.mark.parametrize("argv", [["-allowignoredconf=0"], ["-noallowignoredconf"]])
@@ -2089,6 +2355,81 @@ def no_node(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delattr(cli, "Node")
 
 
+@pytest.mark.usefixtures("no_node")
+def test_main_reads_an_include_of_the_chains_own_section(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 1302: what it names is read, and refused as `bitcoind` refuses it."""
+    (tmp_path / "bitcoin.conf").write_text(
+        "regtest=1\n[regtest]\nincludeconf=inc.conf\n", encoding="utf-8"
+    )
+    (tmp_path / "inc.conf").write_text("maxconnections=-1\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        cli.main([f"-datadir={tmp_path}"])
+    assert capsys.readouterr().err == (
+        "Error: -maxconnections must be greater or equal than zero\n"
+    )
+
+
+@pytest.mark.usefixtures("no_node")
+@pytest.mark.parametrize(
+    ("argv", "conf", "refusal"),
+    [
+        (
+            ["-chain=bogus"],
+            "includeconf=nosuch.conf\n",
+            "Failed to include configuration file nosuch.conf",
+        ),
+        ([], "chain=bogus\nincludeconf=inc.conf\n", "parse error on line 1: bad"),
+        (
+            ["-chain=bogus"],
+            "[bogus]\nincludeconf=inc.conf\n",
+            "parse error on line 1: bad",
+        ),
+    ],
+    ids=["missing include", "the file's chain", "the unknown chain's section"],
+)
+def test_main_reads_the_includes_of_a_chain_core_does_not_know(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    conf: str,
+    refusal: str,
+) -> None:
+    """ISS 1302: `GetChainTypeString` names it; `GetChainType` refuses later.
+
+    Measured on `bitcoind` v31.1.0 with these files: the include's own
+    refusal, and not "Unknown chain bogus.", which it gives with no
+    include at all.
+    """
+    (tmp_path / "bitcoin.conf").write_text(conf, encoding="utf-8")
+    (tmp_path / "inc.conf").write_text("bad\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        cli.main([f"-datadir={tmp_path}", *argv])
+    assert capsys.readouterr().err == (
+        f"Error: Error reading configuration file: {refusal}\n"
+    )
+
+
+@pytest.mark.usefixtures("no_node")
+def test_main_refuses_a_conflicting_chain_before_any_include(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 1302: the chain `ReadConfigFiles` resolves first, with no prefix.
+
+    `bitcoind` v31.1.0 refuses the combination, not the missing file,
+    and without `InitConfig`'s "Error reading configuration file: ",
+    the refusal being thrown rather than returned; its words are its
+    own (btclib-org/btclib-node#1311).
+    """
+    (tmp_path / "bitcoin.conf").write_text(
+        "regtest=1\nincludeconf=nosuch.conf\n", encoding="utf-8"
+    )
+    with pytest.raises(SystemExit):
+        cli.main([f"-datadir={tmp_path}", "-testnet"])
+    assert capsys.readouterr().err.startswith("Error: invalid combination of ")
+
+
 def test_config_options_records_every_section_as_core_does() -> None:
     """ISS 1271: `GetConfigOptions`' `sections`, a dotted key's included.
 
@@ -2117,14 +2458,24 @@ def test_warn_unrecognized_sections_is_one_core_warning(
 
     `testnet4` is one of Core's chains, and so is not warned about.
     """
-    sections = [("x", "a.conf", 2), ("testnet4", "a.conf", 3), ("y", "b", 1)]
-    cli._warn_unrecognized_sections(sections)
-    assert capsys.readouterr().err == (
-        "Warning: a.conf:2 Section [x] is not recognized.\n"
-        "b:1 Section [y] is not recognized.\n\n"
+    settings = cli._Settings({})
+    settings.config_sections = [
+        ("x", "a.conf", 2),
+        ("testnet4", "a.conf", 3),
+        ("y", "b", 1),
+    ]
+    cli._warn_unrecognized_sections(settings)
+    lines = (
+        "a.conf:2 Section [x] is not recognized.\nb:1 Section [y] is not recognized.\n"
     )
-    cli._warn_unrecognized_sections([("main", "a.conf", 1)])
+    assert capsys.readouterr().err == f"Warning: {lines}\n"
+    # ISS 1295: logged too, as `noui_ThreadSafeMessageBox` logs a warning
+    assert settings.log_warnings == [lines]
+    settings = cli._Settings({})
+    settings.config_sections = [("main", "a.conf", 1)]
+    cli._warn_unrecognized_sections(settings)
     assert capsys.readouterr().err == ""
+    assert settings.log_warnings == []
 
 
 @pytest.mark.usefixtures("no_node")

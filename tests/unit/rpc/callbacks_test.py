@@ -176,6 +176,7 @@ def a_peer(
     automatic: bool = False,
     block_relay: bool = False,
     feeler: bool = False,
+    addr_fetch: bool = False,
     versioned: bool = True,
 ) -> Any:
     """Build a `P2pManager.connections` entry `get_peer_info` can read.
@@ -211,6 +212,7 @@ def a_peer(
         automatic=automatic,
         block_relay=block_relay,
         feeler=feeler,
+        addr_fetch=addr_fetch,
         stats=PeerStats(),
         block_availability=BlockAvailability(),
         tx_announce_queue=[],
@@ -554,25 +556,31 @@ def test_a_peer_that_asked_for_no_relay_has_no_tx_relay() -> None:
 
 
 @pytest.mark.parametrize(
-    ("inbound", "automatic", "block_relay", "feeler", "connection_type"),
+    ("inbound", "automatic", "block_relay", "feeler", "addr_fetch", "connection_type"),
     [
-        (True, False, False, False, "inbound"),
-        (False, True, False, False, "outbound-full-relay"),
-        (False, True, True, False, "block-relay-only"),
-        (False, True, False, True, "feeler"),
-        (False, False, False, False, "manual"),
+        (True, False, False, False, False, "inbound"),
+        (False, True, False, False, False, "outbound-full-relay"),
+        (False, True, True, False, False, "block-relay-only"),
+        (False, True, False, True, False, "feeler"),
+        (False, False, False, False, True, "addr-fetch"),
+        (False, False, False, False, False, "manual"),
     ],
 )
-def test_the_connection_type_is_core_s(
+def test_the_connection_type_is_core_s(  # noqa: PLR0917
     inbound: bool,  # noqa: FBT001
     automatic: bool,  # noqa: FBT001
     block_relay: bool,  # noqa: FBT001
     feeler: bool,  # noqa: FBT001
+    addr_fetch: bool,  # noqa: FBT001
     connection_type: str,
 ) -> None:
     """Inbound, drawn by this node as any kind, or named by an operator."""
     peer = a_peer(
-        inbound=inbound, automatic=automatic, block_relay=block_relay, feeler=feeler
+        inbound=inbound,
+        automatic=automatic,
+        block_relay=block_relay,
+        feeler=feeler,
+        addr_fetch=addr_fetch,
     )
     (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
     assert info["connection_type"] == connection_type
@@ -3464,6 +3472,38 @@ def test_submit_block_answers_duplicate_for_a_block_already_downloaded(
     assert result == "duplicate"
 
 
+@pytest.mark.parametrize("body", ["another-coinbase", "coinbase-twice"])
+def test_submit_block_refuses_a_body_its_stored_header_does_not_commit_to(
+    regtest_node: Callable[..., Node], body: str
+) -> None:
+    """ISS 1346: Core's `CheckBlock` runs before the block is found stored.
+
+    Measured against bitcoind v31.1: `bad-txnmrklroot` for both bodies,
+    where this node answers btclib's own reason. The stored block and its
+    header are left as they were.
+    """
+    node = regtest_node()
+    (block,) = generate_random_chain(1, node.chain.genesis.hash)
+    raw = block.serialize(check_validity=False).hex()
+    assert submit_block(node, _CONN, [raw]) is None
+    transactions = (
+        [generate_coinbase(value=1, height=1)]
+        if body == "another-coinbase"
+        else [*block.transactions, *block.transactions]
+    )
+    other = Block(block.header, transactions, check_validity=False)
+
+    result = submit_block(node, _CONN, [other.serialize(check_validity=False).hex()])
+
+    assert isinstance(result, str)
+    assert result not in (None, "duplicate")
+    assert node.block_db.get_block(block.header.hash) == block
+    block_info = node.chainstate.block_index.get_block_info(block.header.hash)
+    assert block_info.downloaded
+    assert block_info.status != BlockStatus.invalid
+    assert submit_block(node, _CONN, [raw]) == "duplicate"
+
+
 def test_submit_block_answers_prev_blk_not_found_for_an_orphan(
     regtest_node: Callable[..., Node],
 ) -> None:
@@ -3588,6 +3628,55 @@ def test_submit_block_leaves_valid_a_header_its_body_does_not_match(
     assert node.block_db.get_block(mismatched.header.hash) is None
     honest = chain[0].serialize(check_validity=False).hex()
     assert submit_block(node, _CONN, [honest]) is None
+
+
+def a_block_marked_invalid(node: Node, block: Block) -> str:
+    """Index `block`'s header, mark it invalid, and return the block's hex."""
+    block_index = node.chainstate.block_index
+    block_index.add_headers([block.header])
+    block_index.invalidate(block.header.hash)
+    return block.serialize(check_validity=False).hex()
+
+
+@pytest.mark.parametrize(
+    ("body", "answer"),
+    [
+        ("valid", "duplicate-invalid"),
+        ("over-the-weight", "duplicate-invalid"),
+        ("bad-cb-multiple", "more than one coinbase"),
+    ],
+)
+def test_submit_block_answers_duplicate_invalid_where_check_block_passes(
+    regtest_node: Callable[..., Node], body: str, answer: str
+) -> None:
+    """ISS 1344: Core's `CheckBlock`, then `AcceptBlockHeader`'s cached state.
+
+    Measured against bitcoind v31.1, each body under a header
+    `invalidateblock` marked: `duplicate-invalid`, `duplicate-invalid`,
+    `bad-cb-multiple`. Nothing is stored.
+    """
+    node = regtest_node()
+    block = {
+        "valid": lambda: generate_random_chain(1, RegTest().genesis.hash)[0],
+        "over-the-weight": lambda: generate_segwit_block(
+            witness=bytes(MAX_BLOCK_WEIGHT)
+        ),
+        "bad-cb-multiple": lambda: generate_segwit_block(generate_coinbase(height=1)),
+    }[body]()
+    assert submit_block(node, _CONN, [a_block_marked_invalid(node, block)]) == answer
+    assert node.block_db.get_block(block.header.hash) is None
+
+
+def test_submit_block_answers_duplicate_invalid_for_a_stored_block_marked_since(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """ISS 1344: not `duplicate`, Core's header state being asked first."""
+    node = regtest_node()
+    (block,) = generate_random_chain(1, RegTest().genesis.hash)
+    raw = block.serialize(check_validity=False).hex()
+    assert submit_block(node, _CONN, [raw]) is None
+    node.chainstate.block_index.invalidate(block.header.hash)
+    assert submit_block(node, _CONN, [raw]) == "duplicate-invalid"
 
 
 def test_submit_block_leaves_valid_a_committed_body_failing_check_block(

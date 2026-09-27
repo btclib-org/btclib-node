@@ -93,6 +93,8 @@ from btclib_node.exceptions import (
 from btclib_node.main import (
     is_block_failed,
     is_block_mutated,
+    is_cached_invalid,
+    passes_check_block,
     verify_mempool_acceptance,
 )
 from btclib_node.p2p.address import ip_and_port
@@ -324,6 +326,21 @@ def maybe_send_getheaders(node: Node, conn: Connection, locator: list[bytes]) ->
 _FINAL_ALERT_VERSION = 70012
 
 
+def _expects_services(conn: Connection) -> bool:
+    """Answer Core's `ExpectServicesFromConn` for `conn`'s own kind.
+
+    False for `INBOUND`, `MANUAL` and `FEELER`; true for
+    `OUTBOUND_FULL_RELAY`, `BLOCK_RELAY`, `ADDR_FETCH` and
+    `PRIVATE_BROADCAST` (`src/net.h:838-848`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Of this node's own
+    connections that is `conn.automatic` -- what `_maybe_dial_more_peers`
+    dials, a feeler excepted below, and never a `-connect` or `-addnode`
+    peer (btclib-org/btclib-node#725) -- or `conn.addr_fetch`, this tree
+    having no `PRIVATE_BROADCAST` counterpart.
+    """
+    return (conn.automatic or conn.addr_fetch) and not conn.feeler
+
+
 def _refuses(node: Node, conn: Connection, version_msg: Version) -> bool:
     """Answer whether `version` drops the peer, and discourages nobody.
 
@@ -347,16 +364,20 @@ def _refuses(node: Node, conn: Connection, version_msg: Version) -> bool:
     # `common_version` (`p2p/protocol_version.py`)
     if version_msg.version < MIN_PEER_PROTO_VERSION:
         return True
-    # we only connect to witness nodes
-    if not version_msg.services & ServiceFlags.NODE_WITNESS:
+    # `NODE_WITNESS` is in every set `GetDesirableServiceFlags` answers,
+    # so Core requires it of every connection `_expects_services` covers
+    # -- an automatic outbound peer or an addr-fetch one, whatever this
+    # node's own sync state -- and of no other: an inbound peer, a
+    # manual one, or a feeler is kept without it. `DownloadManager` asks
+    # such a peer for `MSG_BLOCK` rather than `MSG_WITNESS_BLOCK`, and
+    # stops its walk over the peer's chain at SegWit's own activation
+    # height (btclib-org/btclib-node#1208).
+    if _expects_services(conn) and not version_msg.services & ServiceFlags.NODE_WITNESS:
         return True
     # Core disconnects for missing services only where
-    # `ExpectServicesFromConn` (`src/net.h`, at bitcoin/bitcoin@9be056a8a7,
-    # the v31.1 tag) holds, which is `false` for `INBOUND`, `MANUAL` and
-    # `FEELER` connections and `true` for every other outbound kind. Of
-    # this node's connections that is `conn.automatic`, what
-    # `_maybe_dial_more_peers` dials, but a feeler, and not a `-connect`
-    # or `-addnode` peer (btclib-org/btclib-node#725).
+    # `_expects_services` holds -- an automatic outbound connection or an
+    # addr-fetch one, never a feeler, and not a `-connect` or `-addnode`
+    # peer (btclib-org/btclib-node#725, btclib-org/btclib-node#1284).
     #
     # `has_all_desirable_services`' own `desirable` (above) is
     # `GetDesirableServiceFlags`'s shape
@@ -378,9 +399,10 @@ def _refuses(node: Node, conn: Connection, version_msg: Version) -> bool:
     # computing a new one. The comparison itself is
     # `HasAllDesirableServiceFlags`'s own shape (`net_processing.cpp:3850`,
     # `!(desirable & ~services)`): `NODE_WITNESS` is already required of
-    # every connection above, so it is never the bit that trips this
-    # once reached, but it is kept in `desirable` for the same shape
-    # Core's own check has rather than a narrower one this tree invented.
+    # every connection the check below covers, so it is never the bit
+    # that trips this once reached, but it is kept in `desirable` for
+    # the same shape Core's own check has rather than a narrower one
+    # this tree invented.
     #
     # The same answer is what Core records as `m_has_all_wanted_services`
     # for every connection, inbound included, and reads when choosing an
@@ -388,9 +410,15 @@ def _refuses(node: Node, conn: Connection, version_msg: Version) -> bool:
     conn.has_all_wanted_services = has_all_desirable_services(
         node, version_msg.services
     )
+    # `ExpectServicesFromConn` also holds for `ADDR_FETCH` (`src/net.h`,
+    # same sha), covered by `_expects_services` along with every
+    # automatic outbound connection: an addr-fetch peer short of
+    # `NODE_NETWORK` is dropped here rather than kept, on top of being
+    # refused above for missing `NODE_WITNESS`, and dropped on its own
+    # short life by `_ADDR_FETCH_TIMEOUT` regardless
+    # (btclib-org/btclib-node#1284, btclib-org/btclib-node#1138).
     return (
-        conn.automatic
-        and not conn.feeler
+        _expects_services(conn)
         and node.status >= NodeStatus.BlockSynced
         and not conn.has_all_wanted_services
     )
@@ -412,10 +440,13 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     `sendaddrv2` ahead of it where the common version reaches
     `WTXID_RELAY_VERSION` and, to an inbound peer, this node's own
     `version` ahead of all three; setting up address relay with a peer
-    this node dialled, and asking it for addresses; and recording whether
-    the peer asked to have transactions relayed. A feeler then has its
-    address recorded as answered, and is dropped once those are written,
-    as Core's `VERSION` handler ends one (`net_processing.cpp`, at
+    this node dialled, and asking it for addresses; recording a peer
+    this node dialled as answered, right where Core calls
+    `AddrMan::Good` -- not waiting for its own `verack`, which may never
+    come (#1169); and recording whether the peer asked to have
+    transactions relayed. A feeler then has its address recorded as
+    answered, and is dropped once those are written, as Core's
+    `VERSION` handler ends one (`net_processing.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
     """
     if conn.version_message is not None:
@@ -457,6 +488,30 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
         conn.addr_relay_enabled = True
         conn.send(GetAddr())
         conn.addr_token_bucket += MAX_ADDR_TO_SEND
+
+    # Right after that `getaddr`, Core calls `m_addrman.Good(pfrom.addr)`
+    # for a peer this node dialled (`net_processing.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag), under
+    # `!pfrom.IsInboundConn()` alone -- not waiting for this connection's
+    # own `verack`, which a peer that answers `version` and then stalls
+    # never sends, and which `manager.py`'s own 60-second drop of a
+    # pending connection (btclib-org/btclib-node#1169) makes a real,
+    # reachable case here. `conn.address` is what this node dialled, and
+    # the socket connecting there already answered.
+    # Not a block-relay-only peer's, and not a feeler's, which `version`
+    # records below, once, at the point Core drops it: the table this
+    # writes into is what `getaddr` answers from, so recording a
+    # block-relay-only peer there would advertise the link, which Core
+    # avoids by never calling `AddrMan::Connected` for one
+    # (`FinalizeNode`); its own `AddrMan::Good`, which this table cannot
+    # record apart from that, is not reproduced (btclib-org/btclib-node#1226).
+    # An inbound peer is not recorded here or anywhere: its connection
+    # proves only that it can reach this node, not that this node can
+    # reach it back. btclib-org/btclib-node#1229
+    if not conn.inbound and not conn.block_relay and not conn.feeler:
+        address = replace(conn.address, services=version_msg.services)
+        conn.address = address
+        node.p2p_manager.peer_db.add_active_address(address)
 
     # relay_tx, which is the attribute Connection defines: the name this
     # wrote before was one letter different, so what the peer asked for
@@ -506,9 +561,7 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
     ignores any message there (`src/net_processing.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag). A peer that sent no
     `wtxidrelay` ahead of it completes its handshake all the same, and
-    has transactions relayed by txid, as in Core. Records the peer's own
-    address as reachable once promoted -- the comment below is where
-    that recording is argued.
+    has transactions relayed by txid, as in Core.
     """
     if not conn.version_message:
         return
@@ -517,43 +570,23 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
     # dict every send iterates: btclib-org/btclib-node#131
     node.p2p_manager.promote_connection(conn.id)
 
-    # What a completed handshake is evidence this peer is reachable and
-    # listening at, recorded once, here, rather than at the point the
-    # connection ends -- so a peer this node refused earlier in the
-    # handshake, above, is never recorded at all. An outbound connection
-    # is its own evidence: conn.address is what this node dialled, and a
-    # socket connecting there already answered. An inbound one only
-    # proves the IP; sock_accept's own port is the peer's ephemeral one
-    # and nothing this node could ever dial back on, so the port instead
-    # is the one the peer's own version names as addr_from, or nothing
-    # where addr_from names none. btclib-org/btclib-node#70
-    services = conn.version_message.services
+    # An inbound connection's own port is the peer's ephemeral one, so
+    # `conn.address` moves to the port its `version` names as
+    # `addr_from`, where it names one: manager.py's `already_connected`
+    # compares `conn.address` against a draw from the address table, and
+    # the ephemeral port would never match the peer's gossiped endpoint,
+    # inviting a second, redundant dial-out to a peer this node already
+    # holds. The endpoint is not recorded as answered: `version` records
+    # a peer this node dialled, at Core's own point in the handler, and
+    # an inbound peer is not recorded at all (btclib-org/btclib-node#70,
+    # btclib-org/btclib-node#1229).
     if conn.inbound:
-        port = conn.version_message.addr_from.port
+        version_msg = conn.version_message
+        port = version_msg.addr_from.port
         if port:
-            address = replace(conn.address, port=port, services=services)
-            # conn.address itself moves to the resolved endpoint, and not
-            # only the row add_active_address stores it under: manager.py's
-            # already_connected still compares conn.address against a
-            # draw from this same table, and an inbound connection's own
-            # copy would otherwise keep the ephemeral port forever, never
-            # matching its own gossiped address and inviting a second,
-            # redundant dial-out to a peer this node already holds a
-            # connection with.
-            conn.address = address
-            node.p2p_manager.peer_db.add_active_address(address)
-    else:
-        address = replace(conn.address, services=services)
-        conn.address = address
-        # Not a block-relay-only peer's: the table is what `getaddr`
-        # answers from, so recording one would advertise the link, which
-        # Core avoids by never calling `AddrMan::Connected` for it
-        # (`FinalizeNode`, `net_processing.cpp`, at
-        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Its `AddrMan::Good`,
-        # which this table cannot record apart from that, is not
-        # reproduced (btclib-org/btclib-node#1226).
-        if not conn.block_relay:
-            node.p2p_manager.peer_db.add_active_address(address)
+            conn.address = replace(
+                conn.address, port=port, services=version_msg.services
+            )
 
     # `sendheaders` is `DownloadManager`'s to send, once this peer's best
     # known block has the minimum chain work, as Core's
@@ -851,7 +884,11 @@ def _store_gossip(
     skipped if its services carry neither `NODE_NETWORK` nor
     `NODE_NETWORK_LIMITED`, skipped if `IsDiscouraged` answers for it,
     and otherwise counted in `m_addr_processed` before `AddrMan` refuses
-    any of it.
+    any of it. An addr-fetch connection is dropped once this answers
+    with more than one address, "to avoid disconnecting on
+    self-announcements" (same loop, same sha) -- of `addresses` as
+    received, ahead of every filter above, matching Core's own
+    `vAddr.size()` (btclib-org/btclib-node#1284).
     """
     now = time.time()
     if conn.addr_token_bucket < _MAX_ADDR_PROCESSING_TOKEN_BUCKET:
@@ -886,6 +923,9 @@ def _store_gossip(
     conn.stats.addr_processed += len(kept)
     conn.stats.addr_rate_limited += rate_limited
     manager.peer_db.add_addresses(kept)
+    if conn.addr_fetch and len(received) > 1:
+        node.logger.debug("addrfetch connection completed, peer=%s", conn.id)
+        conn.stop()
 
 
 def feefilter(node: Node, msg: bytes, conn: Connection) -> None:
@@ -1021,44 +1061,86 @@ def _unrequested_block_refused(node: Node, block_hash: bytes) -> bool:
     )
 
 
+def _refuse_before_indexing(node: Node, block: Block, conn: Connection) -> bool:
+    """Refuse what Core refuses of a `block` before its header is indexed.
+
+    Answer whether its witness is read against a commitment, segwit
+    binding after its parent, for `main.is_block_failed` to ask later.
+    """
+    block_hash = block.header.hash
+    block_index = node.chainstate.block_index
+    # Core's `BLOCK` arm refuses a mutated body before the header is
+    # looked at, once the parent is known, and punishes the peer without
+    # touching the index (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7)
+    parent = block_index.header_dict.get(block.header.previous_block_hash)
+    segwit = parent is not None and (
+        parent.index + 1 >= node.chain.consensus.segwit_height
+    )
+    if parent is not None and is_block_mutated(block, check_witness_root=segwit):
+        err_msg = f"mutated block {block_hash.hex()}"
+        raise MisbehavingError(err_msg)
+    # Core's `ProcessNewBlock` asks `CheckBlock` before `AcceptBlock`, so a
+    # body failing it is refused, and its peer punished, before its header
+    # is indexed or its being unrequested is looked at; Core never marks
+    # such a block failed (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7)
+    if not passes_check_block(block):
+        try:
+            block.assert_valid(node.chain.pow_limit_bits)
+        except BTClibException as e:
+            raise MisbehavingError(str(e)) from e
+    # Core's `duplicate-invalid`, before the stored block is looked at:
+    # `MaybePunishNodeForBlock` punishes `BLOCK_CACHED_INVALID` from an
+    # outbound peer alone, so an inbound one is refused and kept
+    if is_cached_invalid(block_index, block):
+        err_msg = f"duplicate-invalid: {block_hash.hex()}"
+        if conn.inbound:
+            raise BTClibValueError(err_msg)
+        raise MisbehavingError(err_msg)
+    return segwit
+
+
 def block(node: Node, msg: bytes, conn: Connection) -> None:
     """Store a requested block once its proof of work checks out.
 
     A body its header does not commit to (`main.is_block_mutated`), on
     a parent this node knows, is refused first, whatever is already
-    stored under that hash: it says nothing about the header. Past
-    that, a no-op if this block is already marked downloaded. A body
-    failing a check is refused, and the block asked of another peer,
-    with the index left alone except where Core marks the block failed
-    (`main.is_block_failed`).
+    stored under that hash: it says nothing about the header. A body
+    failing `CheckBlock` (`main.passes_check_block`) is refused next,
+    requested or not, with its header left unindexed; then a body under
+    a header marked invalid, `duplicate-invalid`
+    (`main.is_cached_invalid`). Past that, a no-op if this block is
+    already marked downloaded. A body failing a check is refused, and
+    the block asked of another peer, with the index left alone except
+    where Core marks the block failed (`main.is_block_failed`).
 
-    An unsolicited block whose own header this node has never indexed
-    is not read as though `getdata` or `headers` already vouched for
-    it: `PeerManagerImpl::ProcessMessage`'s own `NetMsgType::BLOCK` arm
-    (`net_processing.cpp`, at bitcoin/bitcoin@ca7162cde5) runs every
-    block through `ChainstateManager::AcceptBlock`, which calls
-    `AcceptBlockHeader` (`validation.cpp`, same sha) on the block's own
-    header before the body's own checks -- a header already known is accepted
-    outright, and one that is not has its own parent looked up, refused
-    with `BLOCK_MISSING_PREV` where that parent is unknown too. Core
-    punishes that refusal: `MaybePunishNodeForBlock`'s own switch
+    An unsolicited block whose own header this node has never indexed is not
+    read as though `getdata` or `headers` already vouched for it:
+    `PeerManagerImpl::ProcessMessage`'s own `NetMsgType::BLOCK` arm
+    (`net_processing.cpp`, at bitcoin/bitcoin@ca7162cde5) runs every block
+    through `ChainstateManager::AcceptBlock` once `ProcessNewBlock`'s
+    `CheckBlock` has passed -- which this function asks first too, in
+    `_refuse_before_indexing` -- and `AcceptBlock` calls `AcceptBlockHeader`
+    (`validation.cpp`, same sha) on the block's own header before the body's
+    remaining checks -- a header already known is accepted outright, and one
+    that is not has its own parent looked up, refused with
+    `BLOCK_MISSING_PREV` where that parent is unknown too. Core punishes
+    that refusal: `MaybePunishNodeForBlock`'s own switch
     (`net_processing.cpp`, same sha) calls `Misbehaving` for
     `BLOCK_MISSING_PREV`, unlike an unconnecting *headers* batch, which
     `ProcessHeadersMessage`'s own `HandleUnconnectingHeaders` answers by
-    asking for more rather than by punishing -- the same asymmetry this
-    file already carries between `headers` below, which never
-    discourages a batch connecting to nothing this node knows
-    (btclib-org/btclib-node#233), and this function, which does.
-    `block_index.add_headers([block.header])` is `AcceptBlockHeader`'s
-    own shape: it indexes the header where the parent is known, raises
-    where the header itself is invalid -- a `MisbehavingError` where
-    Core's `MaybePunishNodeForBlock` punishes, which `main.handle_p2p`'s
-    own `except` answers by dropping and discouraging the peer, as it
-    does for a block failing its own checks below -- and, for a single
-    header whose parent is missing, returns `None` rather than raising,
-    which is `headers`'s own "ask again" case and not this one's: a
-    `MisbehavingError` is raised here instead, matching `Misbehaving`.
-    btclib-org/btclib-node#711
+    asking for more rather than by punishing -- the same asymmetry this file
+    already carries between `headers` below, which never discourages a batch
+    connecting to nothing this node knows (btclib-org/btclib-node#233), and
+    this function, which does. `block_index.add_headers([block.header])` is
+    `AcceptBlockHeader`'s own shape: it indexes the header where the parent
+    is known, raises where the header itself is invalid -- a
+    `MisbehavingError` where Core's `MaybePunishNodeForBlock` punishes,
+    which `main.handle_p2p`'s own `except` answers by dropping and
+    discouraging the peer, as it does for a block failing its own checks
+    below -- and, for a single header whose parent is missing, returns
+    `None` rather than raising, which is `headers`'s own "ask again" case
+    and not this one's: a `MisbehavingError` is raised here instead,
+    matching `Misbehaving`. btclib-org/btclib-node#711
     """
     # btclib's BlockPayload validates against mainnet's pow limit by
     # default, which no regtest or signet block meets. Its own docstring
@@ -1084,16 +1166,7 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
     remove_block_request(connections, block_hash, time.time(), conn.id)
 
     block_index = node.chainstate.block_index
-    # Core's `BLOCK` arm refuses a mutated body before the header is
-    # looked at, once the parent is known, and punishes the peer without
-    # touching the index (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7)
-    parent = block_index.header_dict.get(block.header.previous_block_hash)
-    segwit = parent is not None and (
-        parent.index + 1 >= node.chain.consensus.segwit_height
-    )
-    if parent is not None and is_block_mutated(block, check_witness_root=segwit):
-        err_msg = f"mutated block {block_hash.hex()}"
-        raise MisbehavingError(err_msg)
+    segwit = _refuse_before_indexing(node, block, conn)
     if (
         block_hash not in block_index.header_dict
         and block_index.add_headers([block.header]) is None
@@ -1113,8 +1186,8 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
         # main.handle_p2p, which drops the peer that sent it. Invalidated
         # first where Core marks it failed (`main.is_block_failed`), so the
         # next peer offering it is refused before it is asked to send it.
-        # A `MisbehavingError`: this is Core's `CheckBlock` and
-        # `ContextualCheckBlock`'s `bad-blk-weight`, whose
+        # A `MisbehavingError`: the body having passed `CheckBlock` above,
+        # this is `ContextualCheckBlock`'s `bad-blk-weight`, whose
         # `BLOCK_CONSENSUS` `MaybePunishNodeForBlock` punishes
         # (btclib-org/btclib-node#1170). One refusal here is
         # btclib's and not Core's: its header check refuses a version of
