@@ -744,6 +744,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A block off the active chain is served only once validated and recent, and
   an unknown or refused one is ignored before the prune threshold is read**
   (closes #1254).
+### A `notfound` is logged at debug as a count, and a `reject` is ignored
+
+- **Neither puts what the peer wrote into the log** (closes #1255): `notfound`
+  logs how many items it names, and `reject` reaches no handler, as Core's
+  `ProcessMessage` has none.
 
 ## v2026.9.24
 

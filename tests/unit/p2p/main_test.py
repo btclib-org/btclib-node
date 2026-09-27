@@ -19,6 +19,7 @@ from btclib.exceptions import BTClibValueError
 from btclib.p2p.addrv2 import NetworkAddressV2
 from btclib.p2p.data import TxPayload as TxMsg
 from btclib.p2p.limits import MAX_INV_SZ
+from btclib.p2p.reject import Reject, RejectCode
 
 import btclib_node.p2p.callbacks as cb
 from btclib_node.constants import NodeStatus, P2pConnStatus
@@ -454,6 +455,34 @@ def test_a_command_nothing_dispatches_is_ignored() -> None:
         "messages", ("nosuchcommand", b"", 0, 1, 0.0), status=P2pConnStatus.Connected
     )
     handle_p2p(node)
+    assert not stopped
+
+
+def test_a_reject_is_ignored_as_core_ignores_it() -> None:
+    """A BIP61 `reject` reaches no handler: Core's `ProcessMessage` has none.
+
+    So nothing the peer wrote in its reason reaches the log, a line break
+    included.
+    """
+    warned, warning = log_recorder()
+    failed, exception = log_recorder()
+    logger = SimpleNamespace(
+        info=lambda *a: None,
+        debug=lambda *a: None,
+        warning=warning,
+        exception=exception,
+    )
+    forged = "line one\nFAKE - Connected to 1.2.3.4:8333, connection 9"
+    msg = Reject("tx", RejectCode.invalid, forged, b"\x11" * 32).serialize()
+    node, stopped = make_node(
+        "messages",
+        ("reject", msg, 0, 1, 0.0),
+        status=P2pConnStatus.Connected,
+        logger=logger,
+    )
+    handle_p2p(node)
+    assert not warned
+    assert not failed
     assert not stopped
 
 
