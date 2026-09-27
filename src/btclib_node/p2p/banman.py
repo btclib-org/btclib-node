@@ -74,8 +74,8 @@ _WARNING = (
 # Core's base32 alphabet (`src/util/strencodings.cpp`), which
 # `DecodeBase32` also reads in upper case
 _BASE32 = "abcdefghijklmnopqrstuvwxyz234567"
-# `CNetAddr::SetTor` and `SetI2P` (`src/netaddress.cpp`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+# `CNetAddr::SetTor` and `SetI2P` (`src/netaddress.cpp`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
 _ONION = ".onion"
 _I2P = ".b32.i2p"
 _I2P_CHARS = 52
