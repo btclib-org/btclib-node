@@ -775,6 +775,30 @@ def test_add_tx(node: Node) -> None:
     verify_mempool_acceptance(node, tx2)
 
 
+@pytest.mark.parametrize("vout", [1, 5])
+def test_a_spend_of_an_output_a_mempool_parent_lacks_is_a_missing_prevout(
+    node: Node, vout: int
+) -> None:
+    """An index past a mempool parent's outputs is a missing input.
+
+    It raised `IndexError`, which the `tx` callback drops the peer for
+    and the RPC answers `-32603` with; `bitcoind` v31.1 answers
+    `missing-inputs` (btclib-org/btclib-node#1252). `1` is the first
+    index the one-output parent lacks.
+    """
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, chain)
+    funding = chain[0].transactions[0]
+    parent = generate_random_transaction(funding.id, value=funding.vout[0].value)
+    node.mempool.add_tx(parent, verify_mempool_acceptance(node, parent))
+    assert len(parent.vout) == 1
+
+    child = generate_random_transaction(parent.id, value=1)
+    child.vin[0] = replace(child.vin[0], prev_out=OutPoint(parent.id, vout))
+    with pytest.raises(MissingPrevoutError):
+        verify_mempool_acceptance(node, child)
+
+
 def test_a_mempool_candidate_is_read_against_relay_policy(node: Node) -> None:
     """`verify_mempool_acceptance` refuses a spend only standardness refuses.
 
