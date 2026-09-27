@@ -25,6 +25,7 @@ from concurrent.futures import Future
 from contextlib import ExitStack, closing, suppress
 from dataclasses import replace
 from functools import partial
+from ipaddress import ip_address
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast, override
 from unittest.mock import AsyncMock
@@ -45,6 +46,7 @@ from btclib_node.p2p.address import (
     PeerDB,
     endpoint_key,
     fixed_seed_addresses,
+    host_key,
     peer_address,
 )
 from btclib_node.p2p.anchors import dump_anchors, read_anchors
@@ -1527,6 +1529,61 @@ def test_a_draw_refused_otherwise_ends_the_pass(
     asyncio.run(manager._maybe_dial_more_peers())
     assert len(drawn) == 1
     assert dial.await_count == 0
+
+
+@pytest.mark.parametrize("port", [8333, 18444])
+def test_a_local_address_drawn_ends_the_pass(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, port: int
+) -> None:
+    """ISS 1238: "if we selected an invalid or local address, restart".
+
+    `IsLocal` compares the host alone, `mapLocalHost` being keyed by
+    `CNetAddr`: this node's own address on another port ends the pass
+    too. The draw has no services, so it would be passed over, not end
+    the pass, were `_passed_over` asked first.
+    """
+    dial = AsyncMock(return_value=None)
+    monkeypatch.setattr(manager_module, "dial", dial)
+    drawn, draw = draws_of(peer_address("1.2.3.4", port), a_full_node("5.6.7.8", 8333))
+    manager = a_manager(peer_db=a_peer_db_stub(is_empty=False, random_address=draw))
+    manager.local_addresses = frozenset({host_key(peer_address("1.2.3.4", 8333))})
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert len(drawn) == 1
+    assert dial.await_count == 0
+
+
+def test_discover_keeps_each_routable_interface_address_by_host(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1238: Core's `Discover`, each address through `AddLocal`.
+
+    A private address is not routable, and `AddLocal` refuses it.
+    """
+    interfaces = [ip_address("1.2.3.4"), ip_address("192.168.1.2")]
+    monkeypatch.setattr(manager_module, "local_addresses", lambda: interfaces)
+    manager = a_manager()
+    manager._discover()
+    assert manager.local_addresses == {host_key(peer_address("1.2.3.4", 0))}
+
+
+@pytest.mark.parametrize("listen", [True, False])
+def test_run_discovers_where_it_listens_and_nowhere_else(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, *, listen: bool
+) -> None:
+    """ISS 1238: `Discover` at start-up, and `-listen=0` turns it off."""
+    monkeypatch.setattr(
+        manager_module, "local_addresses", lambda: [ip_address("1.2.3.4")]
+    )
+    port = get_random_port()
+    manager = a_manager(port=port, listen=listen)
+    try:
+        assert manager.start_listener()
+        wait_until(manager.loop.is_running)
+        expected = {host_key(peer_address("1.2.3.4", port))} if listen else set()
+        assert manager.local_addresses == expected
+    finally:
+        manager.stop()
+        manager.join(timeout=10)
 
 
 def test_a_pass_draws_a_hundred_times_at_most(a_manager: AManagerFactory) -> None:
@@ -4395,6 +4452,23 @@ def test_an_anchor_is_popped_off_the_back_past_those_refused(
     """
     manager = a_manager()
     manager.anchors = [ANCHOR, refused]
+    assert manager._pop_anchor({net_group(peer_address("7.7.2.2", 1))}) == ANCHOR
+    assert manager.anchors == []
+
+
+@pytest.mark.parametrize("port", [8333, 18444])
+def test_an_anchor_that_is_this_node_s_own_is_passed_over(
+    a_manager: AManagerFactory, port: int
+) -> None:
+    """ISS 1238: Core's anchor loop refuses `IsLocal(addr)` too.
+
+    `IsLocal` compares the host alone, so an anchor at this node's own
+    host on another port is refused the same way as any other.
+    """
+    manager = a_manager()
+    own = peer_address("9.9.9.9", port, services=FULL_NODE)
+    manager.local_addresses = frozenset({host_key(peer_address("9.9.9.9", 1))})
+    manager.anchors = [ANCHOR, own]
     assert manager._pop_anchor({net_group(peer_address("7.7.2.2", 1))}) == ANCHOR
     assert manager.anchors == []
 

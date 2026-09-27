@@ -758,16 +758,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `MSG_WITNESS_BLOCK`, and its walk over the peer's chain ends at the first
   block where SegWit is active** (closes #1208).
 
-### An ancestor is found through skip pointers, as Core's `GetAncestor`
-
-- **Block download and `getheaders` reach a block's fork point or ancestor in
-  steps that grow with the logarithm of the distance, not with the distance**
-  (closes #1200).
-
-### A block announced by `headers` near the tip is asked for at once, as in Core
-
-- **`headers` asks the announcing peer for the blocks up to a header it just
-  sent, as Core's `HeadersDirectFetchBlocks` does** (closes #1199).
 ### A block under a header already marked invalid is refused, as in Core
 
 - **A body passing `CheckBlock` under a header marked invalid is refused
@@ -838,6 +828,23 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **One parser, the ban list's, reads both** (closes #1291), so an onion or
   I2P host is a `-rpcallowip` subnet, as in `bitcoind` (closes #1288), though
   it matches no JSON-RPC client.
+
+### The automatic dial passes over this node's own address, as in Core
+
+- **A listening node records its routable interface addresses, and a draw or
+  an anchor at one, on any port, ends the pass** (closes #1238); on Windows
+  none is found (#1310).
+
+### An ancestor is found through skip pointers, as Core's `GetAncestor`
+
+- **Block download and `getheaders` reach a block's fork point or ancestor in
+  steps that grow with the logarithm of the distance, not with the distance**
+  (closes #1200).
+
+### A block announced by `headers` near the tip is asked for at once, as in Core
+
+- **`headers` asks the announcing peer for the blocks up to a header it just
+  sent, as Core's `HeadersDirectFetchBlocks` does** (closes #1199).
 
 ## v2026.9.24
 
