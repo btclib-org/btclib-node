@@ -617,6 +617,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   refuse it too, and a connected block evicts what spends its inputs**
   (closes #1244); replacing is not ported (issue #1334).
 
+### `sendrawtransaction` and `testmempoolaccept` refuse in Core's words
+
+- **Each mempool refusal answers Core's reject reason and details, in the
+  order Core checks them** (closes #1328); a failing script's message inside
+  the parentheses is btclib's (issue #1362).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

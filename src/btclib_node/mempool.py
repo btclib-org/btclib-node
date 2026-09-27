@@ -62,7 +62,7 @@ _ROLLING_FEE_HALFLIFE = 60 * 60 * 12
 _COIN = 100_000_000
 
 
-def _format_money(amount: int) -> str:
+def format_money(amount: int) -> str:
     """Core's own `FormatMoney` for an amount never negative here.
 
     Eight decimals, right-trimmed of zeros down to two
@@ -407,7 +407,7 @@ class Mempool:
         if fee < original:
             details = (
                 f"rejecting replacement {txid}, less fees than conflicting txs; "
-                f"{_format_money(fee)} < {_format_money(original)}"
+                f"{format_money(fee)} < {format_money(original)}"
             )
             reason = "insufficient fee"
             raise TxRejectedError(reason, details)
@@ -415,7 +415,7 @@ class Mempool:
         if fee - original < relay_fee:
             details = (
                 f"rejecting replacement {txid}, not enough additional fees to "
-                f"relay; {_format_money(fee - original)} < {_format_money(relay_fee)}"
+                f"relay; {format_money(fee - original)} < {format_money(relay_fee)}"
             )
             reason = "insufficient fee"
             raise TxRejectedError(reason, details)

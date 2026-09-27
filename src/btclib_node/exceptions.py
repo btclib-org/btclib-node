@@ -83,31 +83,6 @@ class MissingPrevoutError(ValueError):
     """
 
 
-class NonStandardTxError(BTClibValueError):
-    """A mempool candidate the relay rules refuse and the consensus rules take.
-
-    Raised only by `interpreter.check_transaction`, for a candidate that
-    fails `interpreter.STANDARD_FLAGS` and passes
-    `btclib.script.engine.flags.ALL_FLAGS`: the scripts are ones a block
-    may carry, so the refusal is this node's own relay policy rather
-    than anything the peer that relayed it did wrong. Core says so where
-    it defines the same set -- "we do not ban/disconnect nodes that
-    forward txs violating the additional (non-mandatory) rules here, to
-    improve forwards and backwards compatibility"
-    (`src/policy/policy.h:112-117`, at bitcoin/bitcoin@4519933391) --
-    and `p2p.callbacks.tx` is what honours it, catching this and
-    dropping the transaction alone.
-
-    `BTClibValueError`, so that both RPC paths answer this through the
-    clause they already answer a refused candidate with:
-    `rpc.callbacks.test_mempool_accept` reports the entry not allowed
-    and `send_raw_transaction` answers `VERIFY_REJECTED`. Not a
-    `MisbehavingError`, so `p2p.main.handle_p2p` would not discourage
-    the peer for it either, and `tx`'s catch is what records the
-    refusal.
-    """
-
-
 class TxRejectedError(BTClibValueError):
     """A mempool candidate refused with one of Core's own reject reasons.
 
@@ -129,6 +104,28 @@ class TxRejectedError(BTClibValueError):
         super().__init__(f"{reason}, {details}" if details else reason)
         self.reason = reason
         self.details = details
+
+
+class NonStandardTxError(TxRejectedError):
+    """A mempool candidate the relay rules refuse and the consensus rules take.
+
+    Raised only by `interpreter.check_transaction`, for a candidate that
+    fails `interpreter.STANDARD_FLAGS` and passes
+    `btclib.script.engine.flags.ALL_FLAGS`: the scripts are ones a block
+    may carry, so the refusal is this node's own relay policy rather
+    than anything the peer that relayed it did wrong. Core says so where
+    it defines the same set -- "we do not ban/disconnect nodes that
+    forward txs violating the additional (non-mandatory) rules here, to
+    improve forwards and backwards compatibility"
+    (`src/policy/policy.h:112-117`, at bitcoin/bitcoin@4519933391) --
+    and `p2p.callbacks.tx` is what honours it, catching this and
+    dropping the transaction alone.
+
+    A `TxRejectedError`, so both RPC paths answer it in Core's words,
+    as they answer any other refusal. Not a `MisbehavingError`, so
+    `p2p.main.handle_p2p` would not discourage the peer for it either,
+    and `tx`'s catch is what records the refusal.
+    """
 
 
 class ChainstateInconsistencyError(RuntimeError):

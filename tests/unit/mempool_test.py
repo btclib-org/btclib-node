@@ -799,9 +799,9 @@ def test_a_second_spend_of_one_outpoint_is_not_added() -> None:
     assert mempool.add_tx(second, 5000)
 
 
-def test_format_money_is_core_s_own() -> None:
+def testformat_money_is_core_s_own() -> None:
     """Eight decimals, right-trimmed to no fewer than two."""
-    fmt = mempool_module._format_money
+    fmt = mempool_module.format_money
     assert fmt(0) == "0.00"
     assert fmt(5000) == "0.00005"
     assert fmt(10000) == "0.0001"
@@ -849,11 +849,11 @@ def test_a_conflict_not_paying_its_own_relay_is_insufficient() -> None:
     for fee in (12_000, 12_000 + relay - 1):
         with pytest.raises(TxRejectedError) as refused:
             mempool.check_replacement(candidate, fee)
-        increase = mempool_module._format_money(fee - 12_000)
+        increase = mempool_module.format_money(fee - 12_000)
         assert str(refused.value) == (
             f"insufficient fee, rejecting replacement {candidate.id.hex()}, not "
             f"enough additional fees to relay; {increase} < "
-            f"{mempool_module._format_money(relay)}"
+            f"{mempool_module.format_money(relay)}"
         )
 
 

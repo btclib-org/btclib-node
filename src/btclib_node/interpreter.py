@@ -23,7 +23,11 @@ from btclib.script.engine import verify_amounts, verify_input, verify_transactio
 from btclib.script.engine.flags import ALL_FLAGS, ScriptFlag
 from btclib.script.sig_hash import PrecomputedTxData
 
-from btclib_node.exceptions import NonStandardTxError, PrevoutCountMismatchError
+from btclib_node.exceptions import (
+    NonStandardTxError,
+    PrevoutCountMismatchError,
+    TxRejectedError,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -269,20 +273,37 @@ def check_transaction(prevouts: list[TxOut], tx: Tx) -> None:
     on.
 
     A refusal the consensus set would not have made raises
-    `NonStandardTxError` rather than reaching the caller as the engine
-    gave it, which is what lets `p2p.callbacks.tx` keep the peer that
-    relayed the transaction. Core's own comment above the set this one
-    copies asks for that: a node forwarding a transaction which breaks
-    one of the non-mandatory rules is neither banned nor disconnected
+    `NonStandardTxError`, and one it would have made `TxRejectedError`.
+    Core's own comment above the set this one copies asks for the
+    distinction: a node forwarding a transaction which breaks one of the
+    non-mandatory rules is neither banned nor disconnected
     (`src/policy/policy.h:112-117`, same commit).
+
+    Both are in the shape of Core's `CheckInputScripts` refusal under
+    `STANDARD_SCRIPT_VERIFY_FLAGS` (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the reason
+    "mempool-script-verify-flag-failed (...)" and the details naming the
+    input, its transaction and the outpoint it spends. Inside the
+    parentheses is btclib's message, where Core's is `ScriptErrorString`:
+    btclib-org/btclib-node#1362. Each input is verified in turn, as
+    Core's own loop does, to name the first that fails; the amounts are
+    `main.verify_mempool_acceptance`'s to check, before this.
     """
     # No copy: btclib's engine leaves the transaction alone -- sig_hash
     # builds the blanked transaction each preimage commits to rather
     # than editing the one it was handed. What the copy paid for was a
     # defect that is not there, once per mempool acceptance.
-    try:
-        verify_transaction(prevouts, tx, STANDARD_FLAGS)
-    except BTClibValueError as refusal:
-        if _consensus_accepts(prevouts, tx):
-            raise NonStandardTxError(str(refusal)) from refusal
-        raise
+    precomputed = PrecomputedTxData(tx, prevouts)
+    for i, tx_in in enumerate(tx.vin):
+        try:
+            verify_input(prevouts, tx, i, STANDARD_FLAGS, precomputed)
+        except BTClibValueError as refusal:
+            reason = f"mempool-script-verify-flag-failed ({refusal})"
+            prev_out = tx_in.prev_out
+            details = (
+                f"input {i} of {tx.id.hex()} (wtxid {tx.hash.hex()}), "
+                f"spending {prev_out.tx_id.hex()}:{prev_out.vout}"
+            )
+            if _consensus_accepts(prevouts, tx):
+                raise NonStandardTxError(reason, details) from refusal
+            raise TxRejectedError(reason, details) from refusal

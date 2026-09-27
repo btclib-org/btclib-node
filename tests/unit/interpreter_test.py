@@ -34,7 +34,7 @@ from btclib.tx.tx_out import TxOut
 
 from btclib_node.block_db import Coin
 from btclib_node.chains import RegTest
-from btclib_node.exceptions import NonStandardTxError
+from btclib_node.exceptions import NonStandardTxError, TxRejectedError
 from btclib_node.interpreter import (
     STANDARD_FLAGS,
     check_transaction,
@@ -653,3 +653,37 @@ def test_a_spend_no_block_could_carry_is_refused_as_itself() -> None:
     with pytest.raises(BTClibValueError) as refusal:
         check_transaction(prevouts, tx)
     assert not isinstance(refusal.value, NonStandardTxError)
+
+
+def test_a_script_refusal_is_in_core_s_words_and_names_its_input() -> None:
+    """The first input that fails is named, as Core's `CheckInputScripts`.
+
+    `bitcoind` v31.1 on regtest answers a bad signature
+    "mempool-script-verify-flag-failed (Signature must be zero for failed
+    CHECK(MULTI)SIG operation), input 0 of <txid> (wtxid <wtxid>),
+    spending <txid>:<n>"; inside the parentheses here is btclib's own
+    message (btclib-org/btclib-node#1328). The first input passes, so the
+    one named is the second.
+    """
+    passes, fails = script.serialize(["OP_1"]), script.serialize(["OP_0"])
+    prevouts = [TxOut(50 * 10**8, passes), TxOut(50 * 10**8, fails)]
+    tx = Tx(
+        version=1,
+        lock_time=0,
+        vin=[
+            TxIn(OutPoint(bytes(range(32)), 7), b"", 0xFFFFFFFF),
+            TxIn(OutPoint(bytes(range(32, 64)), 3), b"", 0xFFFFFFFF),
+        ],
+        vout=[TxOut(99 * 10**8, passes)],
+    )
+    with pytest.raises(BTClibValueError) as engine:
+        btclib_verify_input(prevouts, tx, 1, STANDARD_FLAGS)
+    with pytest.raises(TxRejectedError) as refusal:
+        check_transaction(prevouts, tx)
+    assert refusal.value.reason == (
+        f"mempool-script-verify-flag-failed ({engine.value})"
+    )
+    assert refusal.value.details == (
+        f"input 1 of {tx.id.hex()} (wtxid {tx.hash.hex()}), "
+        f"spending {bytes(range(32, 64)).hex()}:3"
+    )

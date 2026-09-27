@@ -9,7 +9,6 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
-from btclib.exceptions import BTClibValueError
 from btclib.fee import FeeRate, fee_from_vsize
 from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
 from btclib.script import script
@@ -40,6 +39,7 @@ from btclib_node.exceptions import (
 )
 from btclib_node.interpreter import check_transactions, get_flags
 from btclib_node.main import update_chain, verify_mempool_acceptance
+from btclib_node.mempool import format_money
 from btclib_node.p2p.block_availability import BlockAvailability
 from tests import (
     build_block,
@@ -310,8 +310,16 @@ def test_reject_a_mempool_spend_of_an_immature_coinbase(node: Node) -> None:
 
     funding = chain[0].transactions[0]
     premature = generate_random_transaction(funding.id, value=funding.vout[0].value)
-    with pytest.raises(BTClibValueError, match="bad-txns-premature-spend-of-coinbase"):
+    with pytest.raises(TxRejectedError) as refused:
         verify_mempool_acceptance(node, premature)
+    # `bitcoind` v31.1 on regtest: "bad-txns-premature-spend-of-coinbase,
+    # tried to spend coinbase at depth 1" for a coinbase one block deep.
+    # This one is at height 1 and the spend at the next block's height,
+    # one short of maturity (btclib-org/btclib-node#1328).
+    assert str(refused.value) == (
+        "bad-txns-premature-spend-of-coinbase, "
+        f"tried to spend coinbase at depth {COINBASE_MATURITY - 1}"
+    )
 
 
 def locked_spend(
@@ -584,7 +592,21 @@ def test_reject_a_mempool_spend_that_is_not_final(node: Node) -> None:
     nonfinal = locked_spend(
         funding, funding.vout[0].value, lock_time=2_000_000_000, sequence=0
     )
-    with pytest.raises(BTClibValueError, match="bad-txns-nonfinal"):
+    with pytest.raises(TxRejectedError, match=r"^non-final$"):
+        verify_mempool_acceptance(node, nonfinal)
+
+
+def test_a_nonfinal_spend_of_nothing_is_refused_as_nonfinal(node: Node) -> None:
+    """Finality is checked ahead of the inputs, as in Core's `PreChecks`.
+
+    A non-final candidate whose input is nowhere is "non-final", not a
+    missing input (btclib-org/btclib-node#1328).
+    """
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, chain)
+    nowhere = generate_random_transaction()
+    nonfinal = locked_spend(nowhere, 1_000, lock_time=2_000_000_000, sequence=0)
+    with pytest.raises(TxRejectedError, match=r"^non-final$"):
         verify_mempool_acceptance(node, nonfinal)
 
 
@@ -609,7 +631,7 @@ def test_a_nonfinal_unverifiable_mempool_spend_is_refused_as_nonfinal(
         sequence=0,
         script_sig=script.serialize(["OP_RETURN"]),
     )
-    with pytest.raises(BTClibValueError, match="bad-txns-nonfinal"):
+    with pytest.raises(TxRejectedError, match=r"^non-final$"):
         verify_mempool_acceptance(node, nonfinal_and_unverifiable)
 
 
@@ -637,7 +659,7 @@ def test_reject_a_mempool_spend_whose_relative_lock_is_not_satisfied(
     unmet = relative_locked_spend(
         funding, funding.vout[0].value, sequence=COINBASE_MATURITY + 50
     )
-    with pytest.raises(BTClibValueError, match="bad-txns-nonfinal"):
+    with pytest.raises(TxRejectedError, match=r"^non-BIP68-final$"):
         verify_mempool_acceptance(node, unmet)
 
 
@@ -670,7 +692,7 @@ def test_reject_a_mempool_spend_whose_time_based_relative_lock_is_not_satisfied(
     unmet = relative_locked_spend(
         funding, funding.vout[0].value, sequence=type_flag | 1000
     )
-    with pytest.raises(BTClibValueError, match="bad-txns-nonfinal"):
+    with pytest.raises(TxRejectedError, match=r"^non-BIP68-final$"):
         verify_mempool_acceptance(node, unmet)
 
 
@@ -731,7 +753,7 @@ def test_a_mempool_chained_spend_s_relative_lock_cannot_yet_be_met(
     node.mempool.add_tx(parent)
 
     child = relative_locked_spend(parent, parent.vout[0].value - FEE, sequence=1)
-    with pytest.raises(BTClibValueError, match="bad-txns-nonfinal"):
+    with pytest.raises(TxRejectedError, match=r"^non-BIP68-final$"):
         verify_mempool_acceptance(node, child)
 
 
@@ -880,13 +902,18 @@ def test_a_spend_of_more_than_its_inputs_is_refused_for_that_not_its_fee(
     """Outputs over inputs is refused as such, ahead of the feerate floor.
 
     Core's `CheckTxInputs` runs before `CheckFeeRate`; the negative fee
-    would otherwise read as one under the floor.
+    would otherwise read as one under the floor. `bitcoind` v31.1 on
+    regtest answers a 50-BTC input paying out 51 "bad-txns-in-belowout,
+    value in (50.00) < value out (51.00)" (btclib-org/btclib-node#1328).
     """
-    with pytest.raises(
-        BTClibValueError, match="Invalid transaction amounts"
-    ) as refused:
-        verify_mempool_acceptance(node, a_funded_spend(node, -1))
-    assert not isinstance(refused.value, TxRejectedError)
+    spend = a_funded_spend(node, -1)
+    value_out = sum(tx_out.value for tx_out in spend.vout)
+    with pytest.raises(TxRejectedError) as refused:
+        verify_mempool_acceptance(node, spend)
+    assert str(refused.value) == (
+        f"bad-txns-in-belowout, value in ({format_money(value_out - 1)}) "
+        f"< value out ({format_money(value_out)})"
+    )
 
 
 def test_a_second_spend_of_a_held_outpoint_is_refused_as_core_refuses_it(

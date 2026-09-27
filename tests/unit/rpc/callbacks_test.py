@@ -21,7 +21,6 @@ from typing import TYPE_CHECKING, Any, NoReturn, cast, override
 import pytest
 from bitcoin_core_rpc import RPCErrorCode
 from btclib.block import Block, BlockHeader
-from btclib.exceptions import BTClibValueError
 from btclib.fee import FeeRate
 from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.p2p.limits import PROTOCOL_VERSION
@@ -1284,20 +1283,32 @@ def test_mempool_acceptance_reports_a_reason_for_each_refusal(
 
     Runs the same transaction against every outcome
     `verify_mempool_acceptance` can produce as a verdict on `tx` itself
-    -- accepted, an invalid script, missing prevouts -- and checks each
-    is reported as its own entry rather than raising. A fault that is
-    neither of those two is a different test, below
-    (btclib-org/btclib-node#668): it is not one of `tx`'s own verdicts.
+    -- accepted, a refusal in Core's words, a missing input -- and checks
+    each is reported as its own entry rather than raising, as Core
+    reports it: a reason and its details, but "missing-inputs" alone
+    (btclib-org/btclib-node#1328). A fault that is none of those is a
+    different test, below (btclib-org/btclib-node#668): it is not one of
+    `tx`'s own verdicts.
     """
     tx = a_tx()
     raw = tx.serialize(include_witness=True).hex()
 
-    outcomes: dict[str, Exception | None] = {
-        "accepted": None,
-        "Invalid signatures or script": BTClibValueError("no"),
-        "Missing prevouts": MissingPrevoutError(),
+    outcomes: dict[str, tuple[Exception | None, dict[str, Any]]] = {
+        "accepted": (None, {"allowed": True}),
+        "refused": (
+            TxRejectedError("non-final"),
+            {
+                "allowed": False,
+                "reject-reason": "non-final",
+                "reject-details": "non-final",
+            },
+        ),
+        "missing": (
+            MissingPrevoutError(),
+            {"allowed": False, "reject-reason": "missing-inputs"},
+        ),
     }
-    for reason, error in outcomes.items():
+    for error, expected in outcomes.values():
 
         def verify(node: Any, tx: Any, error: Exception | None = error) -> None:
             if error is not None:
@@ -1305,12 +1316,10 @@ def test_mempool_acceptance_reports_a_reason_for_each_refusal(
 
         monkeypatch.setattr(cb, "verify_mempool_acceptance", verify)
         (result,) = mempool_accept(a_node(), _CONN, [[raw]])
-        if reason == "accepted":
-            assert result["allowed"] is True
-            assert "reject-reason" not in result
-        else:
-            assert result["allowed"] is False
-            assert result["reject-reason"] == reason
+        verdict = {
+            k: v for k, v in result.items() if k not in {"txid", "wtxid", "vsize"}
+        }
+        assert verdict == expected
 
 
 def test_mempool_acceptance_propagates_a_store_error_rather_than_reporting_it(
@@ -1475,7 +1484,9 @@ def test_a_transaction_the_mempool_will_not_have_is_not_reported_relayed(
     """`sendrawtransaction` does not report or broadcast a missing-prevouts tx.
 
     A refusal is not answered with the txid of a transaction this node
-    has neither kept nor sent (issue #83).
+    has neither kept nor sent (issue #83). `bitcoind` v31.1 on regtest
+    answers a spend of an unknown txid `-25`
+    "bad-txns-inputs-missingorspent" (btclib-org/btclib-node#1328).
     """
 
     def missing(node: Any, transaction: Any) -> NoReturn:
@@ -1491,7 +1502,7 @@ def test_a_transaction_the_mempool_will_not_have_is_not_reported_relayed(
     with pytest.raises(RpcError) as raised:
         send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
     assert raised.value.code == RPCErrorCode.VERIFY_ERROR
-    assert raised.value.message == "Missing prevouts"
+    assert raised.value.message == "bad-txns-inputs-missingorspent"
     assert not mempool.contains_tx(tx)
     assert broadcast == []
 
@@ -2566,11 +2577,14 @@ def test_a_transaction_whose_scripts_do_not_verify_is_answered_with_the_refusal(
 ) -> None:
     """`sendrawtransaction` answers VERIFY_REJECTED for a bad-script tx.
 
-    Does not add it to the mempool or broadcast it.
+    Does not add it to the mempool or broadcast it, and answers Core's
+    reason and details (btclib-org/btclib-node#1328).
     """
+    reason = "mempool-script-verify-flag-failed (no)"
+    details = "input 0 of 00 (wtxid 00), spending 00:0"
 
     def invalid(node: Any, transaction: Any) -> NoReturn:
-        raise BTClibValueError("no")
+        raise TxRejectedError(reason, details)
 
     monkeypatch.setattr(cb, "verify_mempool_acceptance", invalid)
     tx = a_tx()
@@ -2582,7 +2596,7 @@ def test_a_transaction_whose_scripts_do_not_verify_is_answered_with_the_refusal(
     with pytest.raises(RpcError) as raised:
         send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
     assert raised.value.code == RPCErrorCode.VERIFY_REJECTED
-    assert raised.value.message == "Invalid signatures or script"
+    assert raised.value.message == f"{reason}, {details}"
     assert not mempool.contains_tx(tx)
     assert broadcast == []
 
