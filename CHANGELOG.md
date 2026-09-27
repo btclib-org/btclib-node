@@ -775,6 +775,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   transaction over 16000 sigops is refused** (closes #1357), as `bitcoind`
   answers both.
 
+### `-minrelaytxfee` sets the relay floor, in BTC/kvB, as in Core
+
+- **Read as Core's `ParseMoney` reads it, and a value that is no amount
+  refused in Core's words** (closes #1332).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
