@@ -287,6 +287,10 @@ _MAX_PORT = 0xFFFF
 # an amount against
 _COIN = 100_000_000
 _MAX_MONEY = 21_000_000 * _COIN
+# the digits `ParseMoney` reads after the point, and before it: its own
+# "guard against 63 bit overflow"
+_MONEY_DECIMALS = 8
+_MONEY_WHOLE_DIGITS = 10
 
 
 def _format_money(amount: int) -> str:
@@ -1141,12 +1145,12 @@ def _parse_money(value: str) -> int | None:
     digits = "0123456789"
     if (
         not text
-        or len(whole) > 10
-        or len(fraction) > 8
+        or len(whole) > _MONEY_WHOLE_DIGITS
+        or len(fraction) > _MONEY_DECIMALS
         or not all(c in digits for c in whole + fraction)
     ):
         return None
-    amount = int(whole or "0") * _COIN + int(fraction.ljust(8, "0") or "0")
+    amount = int(whole or "0") * _COIN + int(fraction.ljust(_MONEY_DECIMALS, "0"))
     return amount if amount <= _MAX_MONEY else None
 
 

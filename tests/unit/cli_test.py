@@ -1012,7 +1012,7 @@ def test_build_config_maxconnections_from_the_file_on_any_chain(
 def test_build_config_minrelaytxfee_is_read_in_btc_per_kvb(
     tmp_path: Path, value: str, sats_per_kvbyte: int
 ) -> None:
-    """`-minrelaytxfee` sets `Config.min_relay_feerate`, as `ParseMoney` reads it.
+    """`-minrelaytxfee` sets `min_relay_feerate`, as `ParseMoney` reads it.
 
     `bitcoind` v31.1.0 starts with each of these, and answers
     `-minrelaytxfee=0.00002` with a `getmempoolinfo` `minrelaytxfee` of
@@ -1025,8 +1025,10 @@ def test_build_config_minrelaytxfee_is_read_in_btc_per_kvb(
 def test_build_config_minrelaytxfee_defaults_negates_and_reads_the_file(
     tmp_path: Path,
 ) -> None:
-    """Unset, Core's default; negated, `0`, as `bitcoind` answers it; read
-    from `bitcoin.conf` like any other option."""
+    """Unset, Core's default; negated, `0`; read from `bitcoin.conf`.
+
+    `0` for the negation is what `bitcoind` answers.
+    """
     assert _build(tmp_path, "-regtest").min_relay_feerate.sats_per_kvbyte == 100
     negated = _build(tmp_path, "-regtest", "-nominrelaytxfee")
     assert negated.min_relay_feerate.sats_per_kvbyte == 0
