@@ -634,6 +634,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `duplicate-invalid`, on the wire and by `submitblock`, and no longer stored,
   from an outbound peer as misbehaviour** (closes #1344).
 
+### `submitblock` refuses a body its stored header does not commit to
+
+- **A block whose hash names one already stored answers `duplicate` only where
+  its body passes `CheckBlock`, and the body's reason otherwise, the stored
+  block left as it was** (closes #1346), as Core's `ProcessNewBlock` orders it.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

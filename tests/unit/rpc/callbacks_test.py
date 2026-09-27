@@ -3241,6 +3241,38 @@ def test_submit_block_answers_duplicate_for_a_block_already_downloaded(
     assert result == "duplicate"
 
 
+@pytest.mark.parametrize("body", ["another-coinbase", "coinbase-twice"])
+def test_submit_block_refuses_a_body_its_stored_header_does_not_commit_to(
+    regtest_node: Callable[..., Node], body: str
+) -> None:
+    """ISS 1346: Core's `CheckBlock` runs before the block is found stored.
+
+    Measured against bitcoind v31.1: `bad-txnmrklroot` for both bodies,
+    where this node answers btclib's own reason. The stored block and its
+    header are left as they were.
+    """
+    node = regtest_node()
+    (block,) = generate_random_chain(1, node.chain.genesis.hash)
+    raw = block.serialize(check_validity=False).hex()
+    assert submit_block(node, _CONN, [raw]) is None
+    transactions = (
+        [generate_coinbase(value=1, height=1)]
+        if body == "another-coinbase"
+        else [*block.transactions, *block.transactions]
+    )
+    other = Block(block.header, transactions, check_validity=False)
+
+    result = submit_block(node, _CONN, [other.serialize(check_validity=False).hex()])
+
+    assert isinstance(result, str)
+    assert result not in (None, "duplicate")
+    assert node.block_db.get_block(block.header.hash) == block
+    block_info = node.chainstate.block_index.get_block_info(block.header.hash)
+    assert block_info.downloaded
+    assert block_info.status != BlockStatus.invalid
+    assert submit_block(node, _CONN, [raw]) == "duplicate"
+
+
 def test_submit_block_answers_prev_blk_not_found_for_an_orphan(
     regtest_node: Callable[..., Node],
 ) -> None:
