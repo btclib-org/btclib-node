@@ -763,6 +763,7 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`DownloadManager` asks such a peer for `MSG_BLOCK` rather than
   `MSG_WITNESS_BLOCK`, and its walk over the peer's chain ends at the first
   block where SegWit is active** (closes #1208).
+
 ### A spend of an output a mempool parent lacks is a missing input, as in Core
 
 - **It raised `IndexError`: the relaying peer was dropped and the RPC answered
