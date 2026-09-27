@@ -628,12 +628,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   read, and a failing block is marked invalid only where Core marks it, over
   the weight, on the wire and in `submitblock`** (closes #1242, closes #1333).
 
-### Only a peer this node dialled is recorded as answered, as in Core
-
-- **An inbound peer's endpoint no longer enters the answered table**,
-  matching Core's own `AddrMan::Good`, called under `!pfrom.IsInboundConn()`
-  alone (closes #1229, closes #1140).
-
 ### The P2P listener's sockets are kept before it says it is listening
 
 - **`_bind` records them ahead of setting `listening`** (closes #1325), so
@@ -722,6 +716,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **The organization's `allowed_actions` and `sha_pinning_required` stand
   beside the repository's**, the latter set at that level (issue
   btclib-org/.github#1409).
+
+### Only a peer this node dialled is recorded as answered, as in Core
+
+- **An inbound peer's endpoint no longer enters the answered table**,
+  matching Core's own `AddrMan::Good`, called under `!pfrom.IsInboundConn()`
+  alone (closes #1229, closes #1140).
 
 ## v2026.9.24
 
