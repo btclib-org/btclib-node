@@ -96,6 +96,7 @@ from btclib_node.exceptions import (
     TxRejectedError,
 )
 from btclib_node.log import Logger
+from btclib_node.main import verify_mempool_acceptance
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import PeerDB, endpoint_key, host_key, peer_address
 from btclib_node.p2p.banman import BanMan, lookup_subnet
@@ -151,14 +152,16 @@ from tests import (
     log_recorder,
 )
 from tests.conftest import unstarted_node_context
+from tests.unit.rpc.callbacks_test import a_node_holding, a_twin
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
     from pathlib import Path
 
     from btclib.fee import FeeRate
     from btclib.tx.tx import Tx
 
+    from btclib_node import Node
     from btclib_node.chains import Chain
     from btclib_node.chainstate.block_index import BlockIndex
     from btclib_node.p2p.manager import P2pManager
@@ -1979,6 +1982,35 @@ def test_a_refused_transaction_is_not_reverified_on_resubmission(
     tx(node, payload, a_peer(id=4))
     assert calls == [transaction.hash]
     assert not node.mempool.contains_tx(transaction)
+
+
+def test_a_held_txid_under_another_witness_is_refused_as_held(
+    regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real verifier refuses a held txid as held, not as a conflict.
+
+    Core's `PreChecks` answers "txn-same-nonwitness-data-in-mempool"
+    ahead of its conflict checks; the held copy stays and the peer's
+    is recorded as refused. btclib-org/btclib-node#1244
+    """
+    node, held, _ = a_node_holding(regtest_node, monkeypatch, 1_000)
+    node.is_initial_block_download = False
+    reasons: list[str] = []
+
+    def recording(node: Node, transaction: Tx) -> int:
+        try:
+            return verify_mempool_acceptance(node, transaction)
+        except TxRejectedError as exc:
+            reasons.append(exc.reason)
+            raise
+
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", recording)
+    twin = a_twin(held)
+    tx(node, TxMsg(twin, include_witness=True).serialize(), a_peer(id=3))
+    assert reasons == ["txn-same-nonwitness-data-in-mempool"]
+    assert node.mempool.was_recently_rejected(twin.hash)
+    assert node.mempool.contains_tx(held)
+    assert node.download_manager.received_txs == []
 
 
 def test_a_fee_refusal_is_recorded_and_the_peer_kept(

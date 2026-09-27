@@ -317,8 +317,9 @@ class Mempool:
         # "Mempool is full" answers that case whether it is reached this
         # way or the old way. A transaction already held under this
         # txid, same witness or not, is still a no-op that never touches
-        # bytesize at all: btclib-org/btclib-node#293's own resubmission
-        # handling reads unchanged. btclib-org/btclib-node#294
+        # bytesize at all, for a caller that skipped
+        # `main.verify_mempool_acceptance`, which refuses it first.
+        # btclib-org/btclib-node#294
         wtxid, txid = tx.hash, tx.id
         if txid in self.txid_index:
             return False
@@ -390,7 +391,9 @@ class Mempool:
         Core's `PaysForRBF` (`src/policy/rbf.cpp`, same commit) would
         refuse it too, it is refused in the same words: "insufficient
         fee", with a fee under the conflicts' and their descendants', or
-        an increase under the incremental relay fee for its vsize. A
+        an increase under the incremental relay fee for its vsize,
+        `tx.vsize` where Core prices the sigop-adjusted size
+        (btclib-org/btclib-node#1357). A
         candidate that pays for them, which Core may accept, is refused
         "bip125-replacement-disallowed", Core's reason where it allows no
         replacement; replacing is btclib-org/btclib-node#1334.

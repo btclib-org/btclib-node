@@ -2673,6 +2673,36 @@ def test_a_held_transaction_is_reannounced_not_judged_again(
     assert announced == [(held.hash, 0), (held.hash, 0)]
 
 
+def a_twin(held: Tx) -> Tx:
+    """Return `held` under another witness: its txid, another wtxid."""
+    twin = Tx.parse(held.serialize(include_witness=True))
+    twin.vin[0].script_witness = Witness([b"\x01"])
+    assert twin.id == held.id
+    assert twin.hash != held.hash
+    return twin
+
+
+def test_testmempoolaccept_refuses_a_held_txid_in_core_s_words(
+    regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A txid already held is refused as held, not as its own conflict.
+
+    Core's `PreChecks` refuses it ahead of the conflict checks, as
+    bitcoind v31.1 answers on regtest: "txn-already-in-mempool" for the
+    same wtxid, "txn-same-nonwitness-data-in-mempool" for another
+    witness, each its own reject-details. btclib-org/btclib-node#1244
+    """
+    node, held, _ = a_node_holding(regtest_node, monkeypatch, 1_000)
+    answers = [
+        mempool_accept(node, _CONN, [[t.serialize(include_witness=True).hex()]])[0]
+        for t in (held, a_twin(held))
+    ]
+    assert [(a["reject-reason"], a["reject-details"]) for a in answers] == [
+        ("txn-already-in-mempool",) * 2,
+        ("txn-same-nonwitness-data-in-mempool",) * 2,
+    ]
+
+
 def test_a_held_transaction_under_a_risen_minimum_is_reannounced(
     regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch
 ) -> None:

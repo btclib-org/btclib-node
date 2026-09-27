@@ -883,8 +883,10 @@ def verify_mempool_acceptance(
     does not ask either. `interpreter.check_transaction` reads the
     scripts the same way, against a flag set that consults no height.
 
-    Refuses a candidate spending an outpoint a mempool transaction
-    already spends, `Mempool.check_replacement` saying in whose words.
+    Refuses a candidate whose txid the mempool already holds, as Core's
+    `PreChecks` does ahead of its conflict checks, and one spending an
+    outpoint a mempool transaction already spends,
+    `Mempool.check_replacement` saying in whose words.
     Refuses a fee below the mempool's own rolling minimum or
     `Config.min_relay_feerate` for the transaction's vsize, Core's own
     `CheckFeeRate`, unless `bypass_limits` -- Core's own flag, set where
@@ -959,6 +961,17 @@ def verify_mempool_acceptance(
     if not is_final(tx, spend_height, tip_mtp):
         err_msg = "bad-txns-nonfinal"
         raise BTClibValueError(err_msg)
+
+    # Core's own `PreChecks` order, after finality and ahead of its
+    # conflict checks (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    # the v31.1 tag): the held copy of this very transaction, same witness
+    # or not, is no conflict of it. btclib-org/btclib-node#1244
+    if mempool.contains_tx(tx):
+        reason = "txn-already-in-mempool"
+        raise TxRejectedError(reason)
+    if tx.id in mempool.txid_index:
+        reason = "txn-same-nonwitness-data-in-mempool"
+        raise TxRejectedError(reason)
 
     def ancestor_median_time_past(height: int) -> int:
         header = header_at_height(tip_header, tip_height, height, parent_of)
