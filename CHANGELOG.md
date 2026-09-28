@@ -841,6 +841,21 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   it terrible: its handshake stamp over 30 days old or 10 minutes ahead**
   (closes #1318), where it left three hours after its last handshake.
 
+### A conflicting or unknown `-chain` is refused in `bitcoind`'s own words
+
+- **`-testnet4` is named among the selectors, and the refusal ends in a full
+  stop, as `bitcoind` writes it** (closes #1311).
+
+### A `-datadir` or `-conf` value that normalises to `.` keeps it in a refusal
+
+- **The `.` is joined onto a refusal's path as `AbsPathForConfigVal` joins
+  it, not dropped as `pathlib.Path` drops it** (closes #1273).
+
+### A `NETWORK_ONLY` option set only in the default section refuses to start
+
+- **Off `main`, as `bitcoind` refuses it, rather than being silently
+  dropped** (closes #1327).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

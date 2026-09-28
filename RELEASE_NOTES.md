@@ -95,6 +95,13 @@ on release day.
   unless `init_errors` says start-up failed, or once `load()` has run for
   a node driven without its thread. A caller
   reading them off a node it never started calls `node.load()` first.
+- **`-port`, `-rpcport`, `-rpcbind`, `-connect` or `-addnode` set only in
+  `bitcoin.conf`'s default section, off `main`, refuses to start, as
+  `bitcoind` refuses it** (closes #1327). The node used to start anyway
+  with the option dropped; it now prints which option and which chain,
+  `Error: Config setting for -<option> only applied on <chain> network
+  when in [<chain>] section.`, and exits 1. Move the line into that
+  chain's own section, e.g. `[regtest]`, or set it on the command line.
 
 ## v2026.9.24
 
