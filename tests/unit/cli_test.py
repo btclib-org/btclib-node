@@ -2678,6 +2678,22 @@ def test_check_network_only_args_joins_one_line_per_option() -> None:
         cli._check_network_only_args(settings)
 
 
+def test_get_setting_skips_a_network_only_default_section_value() -> None:
+    """`GetSetting`'s own `ignore_default`, called directly for it.
+
+    Core keeps this skip in `GetSetting` itself, independent of
+    `GetUnsuitableSectionOnlyArgs`, and so does `_get_setting`: reached
+    through `build_config`'s own pipeline, this exact input -- a
+    single-valued `network_only` option set only in the default
+    section, off `main` -- is always refused first by
+    `_check_network_only_args`, which is what makes this line
+    unreachable from there and worth calling directly
+    (btclib-org/btclib-node#1327).
+    """
+    settings = cli._Settings({}, ro_config={"": {"port": ["1"]}}, network="regtest")
+    assert cli._get_setting(settings, "port") is None
+
+
 @pytest.mark.usefixtures("no_node")
 def test_main_warns_of_an_unrecognized_section_before_refusing(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
