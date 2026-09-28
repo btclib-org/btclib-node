@@ -850,6 +850,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 - **A host held on any port is not dialled again** (closes #1304), and an
   inbound peer's address keeps the port it connected from.
+### `address_sampler`'s tried side draws an aged-out row, as `Select_` does
+
+- **The tried side reads `active_addresses` unfiltered by `_aged_out`,
+  matching Core's `Select_`** (closes #1434), where an aged-out answered
+  endpoint was never drawn again.
 
 ## v2026.9.24
 

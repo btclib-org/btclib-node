@@ -1094,6 +1094,22 @@ def test_an_answered_endpoint_is_drawn_from_the_answered_table_alone() -> None:
     assert [a.address for a in new] == [gossiped.address]
 
 
+def test_the_tried_side_draws_a_row_terrible_by_age_as_select_does() -> None:
+    """ISS 1434: Core's `Select_` never calls `IsTerrible`, unlike `GetAddr_`.
+
+    `terrible`'s stamp is 31 days old, past `_ADDRMAN_HORIZON`: excluded
+    from `get_active_addresses`'s own pruned answer, as `getaddr` would
+    see it, but still drawable from the tried side of `address_sampler`.
+    """
+    peer_db = a_peer_db()
+    now = int(time.time())
+    terrible = peer_address("1.2.3.4", 8333, timestamp=now - 31 * 24 * 3600)
+    peer_db.active_addresses.append(terrible)
+    tried, _ = cast("Any", peer_db.address_sampler()).args
+    assert [a.address for a in tried] == [terrible.address]
+    assert peer_db.get_active_addresses() == []
+
+
 @pytest.mark.parametrize(
     "other",
     [peer_address("1.2.3.4", 8334), peer_address("1.2.3.5", 8333)],

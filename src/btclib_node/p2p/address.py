@@ -650,10 +650,25 @@ class PeerDB:
         that a feeler makes, and with `network` from both sides kept to
         the one network, as `CNetAddr::GetNetwork` names it: Core's
         `Select(false, {network})`, which an extra network peer makes.
+
+        The answered side reads `active_addresses` as it stands, not
+        `get_active_addresses`'s pruned view: Core's `Select_`
+        (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+        never calls `IsTerrible` -- only `GetAddr_`'s serving and
+        `AddSingle`'s duplicate-overwrite check do -- so a terrible entry
+        stays eligible for a draw here as it does there
+        (btclib-org/btclib-node#1434). A row this draws can still be
+        pruned from the table, and from the store, by
+        `get_active_addresses`'s own periodic sweep before the next
+        call; that remaining divergence from Core's tried table, which
+        keeps the entry until another address takes its slot, is argued
+        at `get_active_addresses`'s own docstring (#253).
         """
+        with self._active_lock:
+            raw_active = list(self.active_addresses)
         answered = [
             addr
-            for addr in self.get_active_addresses()
+            for addr in raw_active
             if can_connect(addr) and (network is None or get_network(addr) == network)
         ]
         tried = {_endpoint(addr) for addr in answered}
