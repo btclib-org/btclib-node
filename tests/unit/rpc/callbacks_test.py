@@ -77,6 +77,7 @@ from btclib_node.rpc.callbacks import (
     get_raw_mempool,
     get_raw_transaction,
     get_tx_out_set_info,
+    help_rpc,
     list_banned,
     ping,
     prune_blockchain,
@@ -92,7 +93,7 @@ from btclib_node.rpc.callbacks import (
 from btclib_node.rpc.callbacks import test_mempool_accept as mempool_accept
 from btclib_node.rpc.connection import RawJSON
 from btclib_node.rpc.errors import RpcError
-from btclib_node.rpc.help import HELP_TEXT
+from btclib_node.rpc.help import HELP_TEXT, answer_help
 from tests import (
     generate_coinbase,
     generate_random_chain,
@@ -3131,6 +3132,39 @@ def test_addnode_names_both_wrongly_typed_arguments_at_once() -> None:
     )
 
 
+def test_addnode_names_all_three_wrongly_typed_arguments_at_once() -> None:
+    """ISS 1293: a wrongly typed `v2transport` is named alongside the rest.
+
+    `add_node`'s own `v2transport_mismatch` -- built by `bool_mismatch`
+    rather than by `bool_param`'s own raise, for exactly this reason --
+    is otherwise never exercised: neither
+    `test_addnode_type_checks_node_and_command` above nor
+    `test_addnode_names_both_wrongly_typed_arguments_at_once` above it
+    ever passes a third argument at all.
+    """
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chain=SimpleNamespace(port=18444),
+            p2p_manager=SimpleNamespace(connect=lambda _address: None),
+        ),
+    )
+    with pytest.raises(RpcError) as raised:
+        add_node(node, _CONN, [1, 2, "not a bool"])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert raised.value.message == (
+        "Wrong type passed:\n"
+        "{\n"
+        '    "Position 1 (node)": "JSON value of type number is not of'
+        ' expected type string",\n'
+        '    "Position 2 (command)": "JSON value of type number is not'
+        ' of expected type string",\n'
+        '    "Position 3 (v2transport)": "JSON value of type string is'
+        ' not of expected type bool"\n'
+        "}"
+    )
+
+
 _BAN_NOW = 1_700_000_000
 
 
@@ -4024,3 +4058,18 @@ def test_a_feeler_has_no_tx_relay() -> None:
     peer = a_peer(inbound=False, automatic=True, feeler=True, relay=True)
     (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
     assert info["relaytxes"] is False
+
+
+def test_help_rpc_answers_through_answer_help() -> None:
+    """ISS 1405: `callbacks["help"]` is `help_rpc`, and defers to `rpc.help`.
+
+    `help_test.py` covers `answer_help` itself, never through the
+    dispatch table; this is the one place `help_rpc`'s own wrapper --
+    node-free, unlike every other entry in `callbacks` -- is ever
+    called at all, so what it checks is the delegation rather than
+    `answer_help`'s own content.
+    """
+    assert callbacks["help"] is help_rpc
+    node = cast("Node", SimpleNamespace())
+    for params in ([], ["stop"]):
+        assert help_rpc(node, _CONN, params) == answer_help(params)

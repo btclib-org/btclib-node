@@ -150,7 +150,11 @@ def bool_param(params: list[Any], position: int, *, name: str, default: bool) ->
     """
     mismatch = bool_mismatch(params, position, name=name)
     if mismatch is not None:
-        raise type_errors(mismatch)
+        # every current caller in rpc.callbacks already collects this
+        # same position's own bool_mismatch into a combined refusal
+        # before ever calling this function -- kept raising for a
+        # caller that has not done that check itself
+        raise type_errors(mismatch)  # pragma: no cover -- already checked
     if len(params) <= position or params[position] is None:
         return default
     value = params[position]

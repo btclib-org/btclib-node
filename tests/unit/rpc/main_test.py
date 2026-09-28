@@ -515,12 +515,14 @@ def test_more_positional_arguments_than_declared_is_refused_with_help(
     `wait`, hidden from its own help text (Core's own `RPCArgOptions
     {.hidden=true}`, `src/rpc/server.cpp:166`) but still counted;
     `disconnectnode` declares two. Each method's own real callback is
-    replaced with one that raises, so a silent pass proves the
-    callback ran rather than this refusing it first.
+    replaced with one that raises: reaching it would answer Internal
+    Error rather than the expected help refusal, so the assertion
+    below passing is what proves `_execute` refused the call before
+    ever dispatching to it, `boom` itself never running.
     """
 
     def boom(node: Any, conn: Any, params: Any) -> NoReturn:
-        raise RuntimeError("ran")
+        raise RuntimeError("ran")  # pragma: no cover -- must never run
 
     monkeypatch.setitem(callbacks, method, boom)
     node, sent, waited, stopped = make_node(
