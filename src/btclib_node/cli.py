@@ -364,6 +364,11 @@ _OPTIONS: dict[str, _Option] = {
         + ". This option can be specified multiple times.",
         _DEBUG_TEST_TITLE,
     ),
+    "forcednsseed": _Option(
+        "",
+        "Always query for peer addresses via DNS lookup (default: 0)",
+        _CONNECTION_TITLE,
+    ),
     "h": _Option("", "", None),
     "help": _Option(
         "", "Print this help message and exit (also -h or -?)", _OPTIONS_TITLE
@@ -1397,8 +1402,9 @@ class _BeforeLock:
 
     `prune` is `_prune_target_mib`'s. `directories` is a `Config` of the
     chain, the data directory and `-blocksdir`, the fields that name the
-    directories `Node.__init__` locks, and of `-maxconnections`, which
-    `Config.__init__` refuses just after a missing blocks directory, as
+    directories `Node.__init__` locks, and of `-dnsseed`'s soft-set,
+    `-forcednsseed` and `-maxconnections`, which `Config.__init__`
+    refuses in that order just after a missing blocks directory, as
     Core does.
     """
 
@@ -1440,8 +1446,9 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
 
     `InitConfig`, then `AppInitParameterInteraction` (`src/init.cpp`, at
     bitcoin/bitcoin@9be056a8a7) in its order: the warning about a section
-    naming no chain, a missing blocks directory, a negative
-    `-maxconnections`, `-debug`'s categories, `-prune`.
+    naming no chain, a missing blocks directory, `-forcednsseed` beside
+    a `-dnsseed` that is off, a negative `-maxconnections`, `-debug`'s
+    categories, `-prune`.
     """
     settings, base_dir, chain_name = _read_settings(argv)
     _warn_unrecognized_sections(settings)
@@ -1454,11 +1461,20 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     if max_connections_arg is None:
         max_connections_arg = DEFAULT_MAX_PEER_CONNECTIONS
     max_connections = _to_int(max_connections_arg)
+    connect = _get_args(settings, "connect")
+    connect_negated = _is_negated(settings, "connect")
+    # `InitParameterInteraction`'s own soft-set (`src/init.cpp`, same
+    # sha), over the `int64_t` `-maxconnections` arg itself, as Core's
+    # own soft-set does; `_after_lock` recomputes the identical value
+    # from `max_connections_arg` below, once this returns it.
+    dnsseed = not connect and not connect_negated and max_connections_arg > 0
     directories = Config(
         chain=chain_name,
         data_dir=base_dir,
         blocks_dir=blocksdir,
         max_connections=max_connections,
+        dnsseed=dnsseed,
+        forcednsseed=bool(_get_bool(settings, "forcednsseed")),
     )
     debug = _resolve_debug(settings)
     prune = _prune_target_mib(_get_int(settings, "prune") or 0)
@@ -1555,6 +1571,7 @@ def _after_lock(before: _BeforeLock) -> Config:
         listen=listen,
         max_connections=before.max_connections,
         dnsseed=dnsseed,
+        forcednsseed=bool(_get_bool(settings, "forcednsseed")),
         ban_time=ban_time,
         rpcauth=_get_args(settings, "rpcauth"),
         rpcuser=_get_arg(settings, "rpcuser") or "",

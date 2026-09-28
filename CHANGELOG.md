@@ -851,6 +851,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A host held on any port is not dialled again** (closes #1304), and an
   inbound peer's address keeps the port it connected from.
 
+### DNS seeding waits, batches by three, and reads `-forcednsseed`
+
+- **A wait, then three seeds at a time, ends early at two full-relay
+  peers** (closes #1265); **`-forcednsseed` asks every seed at once**,
+  refused with `-dnsseed` off, both as in `bitcoind`.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

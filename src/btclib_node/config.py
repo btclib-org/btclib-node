@@ -132,7 +132,7 @@ def _resolve_peers(
     to use -- takes a `NetworkAddressV2` built straight off a parsed IP
     (`p2p/address.py`'s `peer_address`), and nothing in this node's
     synchronous startup path resolves a name into one: DNS is asked
-    only through `PeerDB.get_addr_from_dns`'s own coroutine and
+    only through `P2pManager._dns_address_seed`'s own coroutine and
     `P2pManager._process_addr_fetch`'s resolution of an addr-fetch
     seed (btclib-org/btclib-node#1284), both on `P2pManager`'s asyncio
     loop, neither reachable before that manager's thread exists.
@@ -211,6 +211,29 @@ def _resolve_chain(chain: Chain | str) -> Chain:
     if chain == "regtest":
         return RegTest()
     raise UnknownChainError(chain)
+
+
+def _dnsseed(
+    *,
+    dnsseed: bool | None,
+    forcednsseed: bool,
+    connect_given: bool,
+    max_connections: int,
+) -> bool:
+    """Return `-dnsseed` after its soft-set; refused off with `-forcednsseed`.
+
+    `AppInitParameterInteraction`'s own order (`src/init.cpp`, at
+    bitcoin/bitcoin@9be056a8a7): the soft-set runs first -- off under
+    `-connect` or a non-positive `-maxconnections`, an explicit
+    `dnsseed` winning over it -- and only then is `-forcednsseed`
+    refused against the result, in Core's own wording.
+    """
+    if dnsseed is None:
+        dnsseed = not connect_given and max_connections > 0
+    if forcednsseed and not dnsseed:
+        err_msg = "Cannot set -forcednsseed to true when setting -dnsseed to false."
+        raise ValueError(err_msg)
+    return dnsseed
 
 
 @dataclass
@@ -371,6 +394,12 @@ class Config:
     # positive; `__init__` computes that from `max_connections` where it
     # is given `None`, and `cli` passes it from the `int64_t` itself.
     dnsseed: bool
+    # Core's own `-forcednsseed`, `DEFAULT_FORCEDNSSEED` (`src/net.h`,
+    # same sha) false: whether `P2pManager._dns_address_seed` skips its
+    # wait and asks every DNS seed at once regardless of what `PeerDB`
+    # already holds. Refused alongside a `dnsseed` that is false
+    # (`AppInitParameterInteraction`, `src/init.cpp`, same sha).
+    forcednsseed: bool
     # Core's own `-bantime`: how long a `setban` ban lasts, in seconds,
     # where the call names no length. `Node` hands it to its `BanMan`.
     ban_time: int
@@ -418,6 +447,7 @@ class Config:
         listen: bool = True,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
         dnsseed: bool | None = None,
+        forcednsseed: bool = False,
         ban_time: int = DEFAULT_MISBEHAVING_BANTIME,
         rpcauth: Sequence[str] = (),
         rpcuser: str = "",
@@ -463,18 +493,22 @@ class Config:
         self.addnode_args = tuple(addnode)
         self.listen = listen
 
+        # `_dnsseed`'s own docstring has `AppInitParameterInteraction`'s
+        # order, ahead of the `-maxconnections` refusal below.
+        self.dnsseed = _dnsseed(
+            dnsseed=dnsseed,
+            forcednsseed=forcednsseed,
+            connect_given=self.connect_given,
+            max_connections=max_connections,
+        )
+        self.forcednsseed = forcednsseed
+
         if max_connections < 0:
-            # Core's own wording (`AppInitParameterInteraction`,
-            # `src/init.cpp`, at bitcoin/bitcoin@9be056a8a7), fatal
-            # there too
+            # Core's own wording (`AppInitParameterInteraction`, same
+            # sha), fatal there too
             err_msg = "-maxconnections must be greater or equal than zero"
             raise ValueError(err_msg)
         self.max_connections = max_connections
-        self.dnsseed = (
-            not self.connect_given and max_connections > 0
-            if dnsseed is None
-            else dnsseed
-        )
         self.ban_time = ban_time
 
         self.p2p_port = None

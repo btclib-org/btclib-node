@@ -154,12 +154,15 @@ def a_peer_db_stub(**attributes: Any) -> Any:
     the draw it hands back for `new_only`, a feeler's; the one not given
     refuses to be asked. `attempt` records every try in `tries`, by
     `endpoint_key`, which `last_try` reads: whether the table holds the
-    endpoint is `PeerDB`'s own test.
+    endpoint is `PeerDB`'s own test. `size` defaults to `0`, an empty
+    table, so `_dns_address_seed` asks every seed at once with no wait
+    unless a test overrides it.
     """
     tries: dict[bytes, float] = {}
     defaults: dict[str, Any] = {
         "get_active_addresses": list,
         "holds_network": lambda network_id: True,
+        "size": 0,
         "tries": tries,
         "attempt": lambda address: tries.__setitem__(
             endpoint_key(address), time.time()
@@ -191,6 +194,7 @@ class AManagerFactory(Protocol):
         addnode_args: Sequence[str] = (),
         listen: bool = True,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
+        forcednsseed: bool = False,
     ) -> P2pManager:
         """Build a `P2pManager` seeded with `conns`, `peer_db` and `status`."""
         ...
@@ -218,6 +222,7 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
         addnode_args: Sequence[str] = (),
         listen: bool = True,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
+        forcednsseed: bool = False,
     ) -> P2pManager:
         # `18444` is regtest's own well-known port -- binding it for
         # real, as a plain default would, collides with a second suite
@@ -257,6 +262,7 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
                 listen=listen,
                 max_connections=max_connections,
                 dnsseed=not connect and max_connections > 0,
+                forcednsseed=forcednsseed,
                 pruned=False,
             ),
             # `Connection.own_version`'s own `start_height`
@@ -276,7 +282,7 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
                 or a_peer_db_stub(
                     is_empty=True,
                     random_address=refuses_to_be_asked,
-                    get_addr_from_dns=asks_no_dns_server,
+                    query_dns_seed=asks_no_dns_server,
                 ),
             ),
         )
@@ -1665,9 +1671,9 @@ def refuses_to_be_asked() -> NoReturn:
     raise RuntimeError("no")
 
 
-async def asks_no_dns_server() -> list[str]:
-    """Stand in for a `get_addr_from_dns` that never touches a real server."""
-    return []
+async def asks_no_dns_server(seed: str) -> None:
+    """Stand in for a `query_dns_seed` that never touches a real server."""
+    return
 
 
 def test_connect_turns_off_addrman_outgoing(a_manager: AManagerFactory) -> None:
@@ -1699,8 +1705,8 @@ def test_maybe_dial_more_peers_is_a_noop_under_connect(
     assert not manager.pending_connections
 
 
-async def _record_dns_lookup(calls: list[int]) -> list[str]:
-    """Stand in for `get_addr_from_dns`, recording that it was awaited.
+async def _record_dns_lookup(calls: list[int], seed: str) -> None:
+    """Stand in for `query_dns_seed`, recording that it was awaited.
 
     One shared function rather than a `spy` nested in each of the two
     tests below: the "never called" half of that pair would otherwise
@@ -1708,8 +1714,8 @@ async def _record_dns_lookup(calls: list[int]) -> list[str]:
     forgive. Sharing this one lets the positive control below cover it
     while the skip test's own `calls` stays empty.
     """
+    del seed
     calls.append(1)
-    return []
 
 
 def _let_runs_own_coroutines_start(manager: P2pManager) -> None:
@@ -1717,7 +1723,7 @@ def _let_runs_own_coroutines_start(manager: P2pManager) -> None:
 
     `run` schedules them before `run_forever`, so one scheduled from here
     once the loop is running is queued behind them, and its own result
-    arriving means theirs have started: a `get_addr_from_dns` stand-in
+    arriving means theirs have started: a `query_dns_seed` stand-in
     `run` scheduled has recorded its call by then. Without this, `calls`
     read the moment the loop runs can be empty where the lookup was
     scheduled and has not started yet.
@@ -1726,7 +1732,7 @@ def _let_runs_own_coroutines_start(manager: P2pManager) -> None:
 
 
 def test_run_skips_the_dns_lookup_under_connect(a_manager: AManagerFactory) -> None:
-    """`-connect` also stops `run` from ever scheduling `get_addr_from_dns`.
+    """`-connect` also stops `run` from ever scheduling `_dns_address_seed`.
 
     `listen=False` alongside `connect`, matching what `-connect` alone
     resolves to without an explicit `-listen=1` (`cli.py`'s own
@@ -1739,7 +1745,7 @@ def test_run_skips_the_dns_lookup_under_connect(a_manager: AManagerFactory) -> N
     peer_db = a_peer_db_stub(
         is_empty=True,
         random_address=refuses_to_be_asked,
-        get_addr_from_dns=partial(_record_dns_lookup, calls),
+        query_dns_seed=partial(_record_dns_lookup, calls),
     )
     manager = a_manager(
         peer_db=peer_db,
@@ -1769,7 +1775,7 @@ def test_run_schedules_the_dns_lookup_without_connect(
     peer_db = a_peer_db_stub(
         is_empty=True,
         random_address=refuses_to_be_asked,
-        get_addr_from_dns=partial(_record_dns_lookup, calls),
+        query_dns_seed=partial(_record_dns_lookup, calls),
     )
     manager = a_manager(peer_db=peer_db, port=get_random_port())
     manager.start()
@@ -1777,28 +1783,399 @@ def test_run_schedules_the_dns_lookup_without_connect(
     wait_until(lambda: calls)
 
 
-def test_dns_address_seed_queues_every_unanswered_seed_on_the_chains_port(
+def test_full_outbound_count_excludes_pending_block_relay_feeler_and_addr_fetch(
     a_manager: AManagerFactory,
 ) -> None:
-    """ISS 1284: a seed `get_addr_from_dns` could not answer is addr-fetched.
+    """Core's own `GetFullOutboundConnCount`: handshaken, automatic, full relay.
+
+    Six connections: two count, and one each of the four ways to be
+    excluded -- pending (not `fSuccessfullyConnected`), block-relay,
+    feeler, and addr-fetch. An inbound one is excluded through
+    `automatic` alone, `create_connection` never setting that for one.
+    """
+    manager = a_manager(
+        conns=[
+            a_conn(1, automatic=True),
+            a_conn(2, automatic=True),
+            a_conn(3, automatic=True, block_relay=True),
+            a_conn(4, automatic=True, feeler=True),
+            a_conn(5, automatic=True, addr_fetch=True),
+        ],
+    )
+    manager.pending_connections[6] = a_conn(6, automatic=True)
+    assert manager._full_outbound_count() == 2
+
+
+def test_dns_address_seed_queues_the_seed_query_dns_seed_returns(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1284: a seed `query_dns_seed` could not answer is addr-fetched.
 
     `_dns_address_seed` is what `run` schedules in place of
-    `get_addr_from_dns` directly: it is this wrapper's own job to take
-    that coroutine's return value and turn it into `_addr_fetches`
-    entries, on the chain's own port -- regtest's `18444` here, and not
-    `8333`.
+    `query_dns_seed` directly: it is this wrapper's own job to queue
+    what that coroutine returns into `_addr_fetches`, on the chain's own
+    port -- regtest's `18444` here, and not `8333`. `RegTest`'s own one
+    seed, `dummySeed.invalid.`, is what `node.chain.addresses` gives it
+    to ask (`chains.py`).
     """
 
-    async def answers_nothing_for() -> list[str]:
-        return ["down.example", "quiet.example"]
+    async def answers_nothing_for(seed: str) -> str:
+        return seed
 
-    peer_db = a_peer_db_stub(get_addr_from_dns=answers_nothing_for)
+    peer_db = a_peer_db_stub(query_dns_seed=answers_nothing_for)
     manager = a_manager(peer_db=peer_db)
     asyncio.run(manager._dns_address_seed())
-    assert list(manager._addr_fetches) == [
-        ("down.example", 18444),
-        ("quiet.example", 18444),
+    assert list(manager._addr_fetches) == [("dummySeed.invalid.", 18444)]
+
+
+def test_dns_address_seed_shuffles_the_chains_seeds(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1265: Core's own `std::shuffle(seeds.begin(), seeds.end(), rng)`.
+
+    A chain double with two seeds, `secrets.SystemRandom.shuffle`
+    patched to reverse rather than to leave its argument alone: the
+    query order this records is the reversed one, not the chain's own,
+    which a shuffle that ran on a copy rather than on this list itself
+    would leave undetected.
+    """
+    asked: list[str] = []
+
+    async def records(seed: str) -> None:
+        asked.append(seed)
+
+    def reverse(self: object, values: list[str]) -> None:
+        del self
+        values.reverse()
+
+    monkeypatch.setattr(secrets.SystemRandom, "shuffle", reverse)
+    peer_db = a_peer_db_stub(query_dns_seed=records)
+    manager = a_manager(peer_db=peer_db)
+    manager.node.chain.addresses = ["one.example", "two.example"]
+    asyncio.run(manager._dns_address_seed())
+    assert asked == ["two.example", "one.example"]
+
+
+async def _fails_to_sleep(delay: float) -> None:
+    """Stand in for `asyncio.sleep`, refusing to be awaited at all.
+
+    Shared by the two "asks at once" tests below, each of which patches
+    `asyncio.sleep` to this and expects it never to be reached: a `fails`
+    nested in each of them would otherwise pin a line the suite can
+    never reach and the 100% floor can never forgive, the same shape
+    `_record_dns_lookup`'s own docstring already argues. The proof this
+    is not vacuous is `test_fails_to_sleep_raises_if_awaited` below.
+    """
+    del delay
+    pytest.fail("asyncio.sleep was awaited where nothing here should wait")
+
+
+def test_fails_to_sleep_raises_if_awaited() -> None:
+    """The positive control: `_fails_to_sleep` actually raises, awaited."""
+    with pytest.raises(pytest.fail.Exception, match=r"asyncio\.sleep was awaited"):
+        asyncio.run(_fails_to_sleep(0))
+
+
+async def _fails_to_query_seed(seed: str) -> None:
+    """Stand in for `query_dns_seed`, refusing to be awaited at all.
+
+    Used below where `_dns_address_seed` returns before ever asking a
+    seed: a `records` appending to a list nobody then inspects except
+    via `== []` would otherwise pin a body the suite can never reach,
+    the same shape `_fails_to_sleep` above already argues. The proof
+    this is not vacuous is `test_fails_to_query_seed_raises_if_awaited`.
+    """
+    pytest.fail(f"query_dns_seed was awaited with {seed!r} where nothing should ask")
+
+
+def test_fails_to_query_seed_raises_if_awaited() -> None:
+    """The positive control: `_fails_to_query_seed` actually raises, awaited."""
+    with pytest.raises(pytest.fail.Exception, match=r"query_dns_seed was awaited"):
+        asyncio.run(_fails_to_query_seed("one.example"))
+
+
+def test_dns_address_seed_asks_every_seed_at_once_under_an_empty_table(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1265: `peer_db.size` zero skips the wait, as Core's own does.
+
+    `asyncio.sleep` patched to `_fails_to_sleep`: an empty table is
+    Core's own "query all" case (`seeds_right_now = seeds.size()`), so
+    nothing here waits at all, over four seeds and three batches' worth
+    of boundaries.
+    """
+    asked: list[str] = []
+
+    async def records(seed: str) -> None:
+        asked.append(seed)
+
+    monkeypatch.setattr(asyncio, "sleep", _fails_to_sleep)
+    monkeypatch.setattr(secrets.SystemRandom, "shuffle", lambda self, values: None)
+    peer_db = a_peer_db_stub(query_dns_seed=records, size=0)
+    manager = a_manager(peer_db=peer_db)
+    manager.node.chain.addresses = [
+        "one.example",
+        "two.example",
+        "three.example",
+        "four.example",
     ]
+    asyncio.run(manager._dns_address_seed())
+    assert asked == ["one.example", "two.example", "three.example", "four.example"]
+
+
+def test_dns_address_seed_asks_every_seed_at_once_under_forcednsseed(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1265: `-forcednsseed` skips the wait even with a non-empty table."""
+    asked: list[str] = []
+
+    async def records(seed: str) -> None:
+        asked.append(seed)
+
+    monkeypatch.setattr(asyncio, "sleep", _fails_to_sleep)
+    monkeypatch.setattr(secrets.SystemRandom, "shuffle", lambda self, values: None)
+    peer_db = a_peer_db_stub(query_dns_seed=records, size=1)
+    manager = a_manager(peer_db=peer_db, forcednsseed=True)
+    manager.node.chain.addresses = ["one.example", "two.example"]
+    asyncio.run(manager._dns_address_seed())
+    assert asked == ["one.example", "two.example"]
+
+
+def test_dns_address_seed_waits_between_batches_of_three(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1265: a non-empty table waits `_DNS_SEEDS_DELAY_FEW_PEERS` a batch.
+
+    Five seeds, `_DNS_SEEDS_TO_QUERY_AT_ONCE` (3) of them asked before
+    the first wait: the wait itself is recorded rather than really
+    slept, and `_full_outbound_count` stubbed at 0 so neither wait ends
+    early.
+    """
+    asked: list[str] = []
+    waited: list[float] = []
+
+    async def records(seed: str) -> None:
+        asked.append(seed)
+
+    async def records_sleep(delay: float) -> None:
+        waited.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", records_sleep)
+    monkeypatch.setattr(secrets.SystemRandom, "shuffle", lambda self, values: None)
+    peer_db = a_peer_db_stub(query_dns_seed=records, size=1)
+    manager = a_manager(peer_db=peer_db)
+    monkeypatch.setattr(manager, "_full_outbound_count", lambda: 0)
+    manager.node.chain.addresses = [
+        "one.example",
+        "two.example",
+        "three.example",
+        "four.example",
+        "five.example",
+    ]
+    asyncio.run(manager._dns_address_seed())
+    assert asked == [
+        "one.example",
+        "two.example",
+        "three.example",
+        "four.example",
+        "five.example",
+    ]
+    assert waited == [manager_module._DNS_SEEDS_DELAY_FEW_PEERS] * 2
+
+
+def test_dns_address_seed_uses_the_longer_wait_past_the_peer_threshold(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1265: `_DNS_SEEDS_DELAY_PEER_THRESHOLD` addresses up waits 5 minutes.
+
+    Slept in `_DNS_SEEDS_DELAY_FEW_PEERS`-second steps, so the total
+    across every step is what is checked, rather than one sleep of the
+    whole length.
+    """
+    waited: list[float] = []
+
+    async def answers_nothing(seed: str) -> str:
+        return seed
+
+    async def records_sleep(delay: float) -> None:
+        waited.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", records_sleep)
+    monkeypatch.setattr(secrets.SystemRandom, "shuffle", lambda self, values: None)
+    peer_db = a_peer_db_stub(
+        query_dns_seed=answers_nothing,
+        size=manager_module._DNS_SEEDS_DELAY_PEER_THRESHOLD,
+    )
+    manager = a_manager(peer_db=peer_db)
+    monkeypatch.setattr(manager, "_full_outbound_count", lambda: 0)
+    manager.node.chain.addresses = ["one.example"]
+    asyncio.run(manager._dns_address_seed())
+    assert sum(waited) == manager_module._DNS_SEEDS_DELAY_MANY_PEERS
+
+
+def test_dns_address_seed_ends_early_once_enough_outbound_peers_answer(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1265: `_SEED_OUTBOUND_CONNECTION_THRESHOLD` peers end a wait early.
+
+    A single seed with the table past `_DNS_SEEDS_DELAY_PEER_THRESHOLD`,
+    so its one wait is `_DNS_SEEDS_DELAY_MANY_PEERS` long, slept in
+    several `_DNS_SEEDS_DELAY_FEW_PEERS`-second steps: the second of
+    them reports enough peers, so this returns without ever asking the
+    seed -- `query_dns_seed` patched to `_fails_to_query_seed`, which
+    would fail loudly if it ever ran.
+    """
+    calls: list[float] = []
+
+    async def records_sleep(delay: float) -> None:
+        calls.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", records_sleep)
+    monkeypatch.setattr(secrets.SystemRandom, "shuffle", lambda self, values: None)
+    peer_db = a_peer_db_stub(
+        query_dns_seed=_fails_to_query_seed,
+        size=manager_module._DNS_SEEDS_DELAY_PEER_THRESHOLD,
+    )
+    manager = a_manager(peer_db=peer_db)
+    counts = iter([0, 2])
+    monkeypatch.setattr(manager, "_full_outbound_count", lambda: next(counts))
+    manager.node.chain.addresses = ["one.example"]
+    asyncio.run(manager._dns_address_seed())
+    assert len(calls) == 2
+
+
+class _PeerDbSizeDrops:
+    """A `peer_db` double whose `size` answers the next of `sizes` each read.
+
+    A real `PeerDB.size` is not cached: `_dns_address_seed` reads it
+    fresh at every batch boundary, so a value that drops between two of
+    those reads -- `_maybe_prune_active_addresses` aging out the last
+    active row while this coroutine's own wait sleeps, on the same
+    event loop -- answers `0` where the boundary before it answered
+    more, without the table ever having started empty (ISS 1265).
+    """
+
+    def __init__(self, sizes: list[int], query_dns_seed: object) -> None:
+        self._sizes = sizes
+        self.query_dns_seed = query_dns_seed
+
+    @property
+    def size(self) -> int:
+        return self._sizes.pop(0)
+
+
+def test_dns_address_seed_skips_a_later_waits_size_check_dropping_to_zero(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1265: `peer_db.size` read fresh at each boundary's wait-or-not check.
+
+    Four seeds, batches of three: `_dns_address_seed`'s own two upfront
+    reads (`ask_all_at_once`, then the wait's length, computed once)
+    account for the first two of `sizes`; the third is the first
+    batch's boundary's own `size > 0` check, non-zero, waiting
+    `_DNS_SEEDS_DELAY_FEW_PEERS` once; the fourth is the second batch's
+    boundary's own `size > 0` check, finding `0` and skipping the wait
+    -- still querying that batch's own seed -- rather than raising or
+    waiting on a table it never started at.
+    """
+    asked: list[str] = []
+
+    async def records(seed: str) -> None:
+        asked.append(seed)
+
+    waited: list[float] = []
+
+    async def records_sleep(delay: float) -> None:
+        waited.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", records_sleep)
+    monkeypatch.setattr(secrets.SystemRandom, "shuffle", lambda self, values: None)
+    peer_db = _PeerDbSizeDrops([1, 1, 1, 0], records)
+    manager = a_manager(peer_db=peer_db)
+    monkeypatch.setattr(manager, "_full_outbound_count", lambda: 0)
+    manager.node.chain.addresses = [
+        "one.example",
+        "two.example",
+        "three.example",
+        "four.example",
+    ]
+    asyncio.run(manager._dns_address_seed())
+    assert asked == ["one.example", "two.example", "three.example", "four.example"]
+    assert waited == [manager_module._DNS_SEEDS_DELAY_FEW_PEERS]
+
+
+class _PeerDbSizeSequence:
+    """A `peer_db` double whose `size` walks `sizes`, clamped at the end.
+
+    Unlike `_PeerDbSizeDrops` above, a read past the end of `sizes`
+    repeats its last entry rather than raising: this stands in for a
+    table that keeps growing past `_DNS_SEEDS_DELAY_PEER_THRESHOLD`
+    once seeds start answering, and stays meaningful however many times
+    a given revision of `_dns_address_seed` happens to read `size`.
+    """
+
+    def __init__(self, sizes: list[int], query_dns_seed: object) -> None:
+        self._sizes = sizes
+        self._read = -1
+        self.query_dns_seed = query_dns_seed
+
+    @property
+    def size(self) -> int:
+        self._read = min(self._read + 1, len(self._sizes) - 1)
+        return self._sizes[self._read]
+
+
+def test_dns_address_seed_wait_length_is_fixed_once_at_entry(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1265: crossing the peer threshold mid-run keeps the short wait.
+
+    Six seeds, two batch boundaries: `peer_db.size` starts under
+    `_DNS_SEEDS_DELAY_PEER_THRESHOLD` and is past it by the second
+    boundary, as a real answered seed growing the table during the
+    first wait would leave it. Core's own `seeds_wait_time` is a
+    `const std::chrono::seconds` read once before its loop
+    (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so
+    both waits recorded here are `_DNS_SEEDS_DELAY_FEW_PEERS` -- a
+    recomputation at the second boundary would answer
+    `_DNS_SEEDS_DELAY_MANY_PEERS` instead.
+    """
+    asked: list[str] = []
+
+    async def records(seed: str) -> None:
+        asked.append(seed)
+
+    waited: list[float] = []
+
+    async def records_sleep(delay: float) -> None:
+        waited.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", records_sleep)
+    monkeypatch.setattr(secrets.SystemRandom, "shuffle", lambda self, values: None)
+    peer_db = _PeerDbSizeSequence(
+        [1, 1, manager_module._DNS_SEEDS_DELAY_PEER_THRESHOLD],
+        records,
+    )
+    manager = a_manager(peer_db=peer_db)
+    monkeypatch.setattr(manager, "_full_outbound_count", lambda: 0)
+    manager.node.chain.addresses = [
+        "one.example",
+        "two.example",
+        "three.example",
+        "four.example",
+        "five.example",
+        "six.example",
+    ]
+    asyncio.run(manager._dns_address_seed())
+    assert asked == [
+        "one.example",
+        "two.example",
+        "three.example",
+        "four.example",
+        "five.example",
+        "six.example",
+    ]
+    assert waited == [manager_module._DNS_SEEDS_DELAY_FEW_PEERS] * 2
 
 
 def test_process_addr_fetch_is_a_noop_on_an_empty_queue(
@@ -2057,7 +2434,7 @@ def test_zero_max_connections_turns_off_the_dns_lookup(
 def test_run_skips_the_dns_lookup_at_zero_max_connections(
     a_manager: AManagerFactory,
 ) -> None:
-    """ISS 1066: `run` never schedules `get_addr_from_dns` at zero.
+    """ISS 1066: `run` never schedules `_dns_address_seed` at zero.
 
     `listen=False` beside it, what `-maxconnections=0` alone resolves to
     (`cli.py`'s own `build_config`);
@@ -2068,7 +2445,7 @@ def test_run_skips_the_dns_lookup_at_zero_max_connections(
     peer_db = a_peer_db_stub(
         is_empty=True,
         random_address=refuses_to_be_asked,
-        get_addr_from_dns=partial(_record_dns_lookup, calls),
+        query_dns_seed=partial(_record_dns_lookup, calls),
     )
     manager = a_manager(
         peer_db=peer_db, port=get_random_port(), listen=False, max_connections=0
