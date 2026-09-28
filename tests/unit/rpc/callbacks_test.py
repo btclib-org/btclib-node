@@ -63,6 +63,7 @@ from btclib_node.rpc.callbacks import (
     add_node,
     callbacks,
     clear_banned,
+    disconnect_node,
     get_best_block_hash,
     get_block,
     get_block_count,
@@ -176,6 +177,7 @@ def a_peer(
     automatic: bool = False,
     block_relay: bool = False,
     feeler: bool = False,
+    addr_fetch: bool = False,
     versioned: bool = True,
 ) -> Any:
     """Build a `P2pManager.connections` entry `get_peer_info` can read.
@@ -211,6 +213,7 @@ def a_peer(
         automatic=automatic,
         block_relay=block_relay,
         feeler=feeler,
+        addr_fetch=addr_fetch,
         stats=PeerStats(),
         block_availability=BlockAvailability(),
         tx_announce_queue=[],
@@ -554,25 +557,31 @@ def test_a_peer_that_asked_for_no_relay_has_no_tx_relay() -> None:
 
 
 @pytest.mark.parametrize(
-    ("inbound", "automatic", "block_relay", "feeler", "connection_type"),
+    ("inbound", "automatic", "block_relay", "feeler", "addr_fetch", "connection_type"),
     [
-        (True, False, False, False, "inbound"),
-        (False, True, False, False, "outbound-full-relay"),
-        (False, True, True, False, "block-relay-only"),
-        (False, True, False, True, "feeler"),
-        (False, False, False, False, "manual"),
+        (True, False, False, False, False, "inbound"),
+        (False, True, False, False, False, "outbound-full-relay"),
+        (False, True, True, False, False, "block-relay-only"),
+        (False, True, False, True, False, "feeler"),
+        (False, False, False, False, True, "addr-fetch"),
+        (False, False, False, False, False, "manual"),
     ],
 )
-def test_the_connection_type_is_core_s(
+def test_the_connection_type_is_core_s(  # noqa: PLR0917
     inbound: bool,  # noqa: FBT001
     automatic: bool,  # noqa: FBT001
     block_relay: bool,  # noqa: FBT001
     feeler: bool,  # noqa: FBT001
+    addr_fetch: bool,  # noqa: FBT001
     connection_type: str,
 ) -> None:
     """Inbound, drawn by this node as any kind, or named by an operator."""
     peer = a_peer(
-        inbound=inbound, automatic=automatic, block_relay=block_relay, feeler=feeler
+        inbound=inbound,
+        automatic=automatic,
+        block_relay=block_relay,
+        feeler=feeler,
+        addr_fetch=addr_fetch,
     )
     (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
     assert info["connection_type"] == connection_type
@@ -3464,6 +3473,38 @@ def test_submit_block_answers_duplicate_for_a_block_already_downloaded(
     assert result == "duplicate"
 
 
+@pytest.mark.parametrize("body", ["another-coinbase", "coinbase-twice"])
+def test_submit_block_refuses_a_body_its_stored_header_does_not_commit_to(
+    regtest_node: Callable[..., Node], body: str
+) -> None:
+    """ISS 1346: Core's `CheckBlock` runs before the block is found stored.
+
+    Measured against bitcoind v31.1: `bad-txnmrklroot` for both bodies,
+    where this node answers btclib's own reason. The stored block and its
+    header are left as they were.
+    """
+    node = regtest_node()
+    (block,) = generate_random_chain(1, node.chain.genesis.hash)
+    raw = block.serialize(check_validity=False).hex()
+    assert submit_block(node, _CONN, [raw]) is None
+    transactions = (
+        [generate_coinbase(value=1, height=1)]
+        if body == "another-coinbase"
+        else [*block.transactions, *block.transactions]
+    )
+    other = Block(block.header, transactions, check_validity=False)
+
+    result = submit_block(node, _CONN, [other.serialize(check_validity=False).hex()])
+
+    assert isinstance(result, str)
+    assert result not in (None, "duplicate")
+    assert node.block_db.get_block(block.header.hash) == block
+    block_info = node.chainstate.block_index.get_block_info(block.header.hash)
+    assert block_info.downloaded
+    assert block_info.status != BlockStatus.invalid
+    assert submit_block(node, _CONN, [raw]) == "duplicate"
+
+
 def test_submit_block_answers_prev_blk_not_found_for_an_orphan(
     regtest_node: Callable[..., Node],
 ) -> None:
@@ -3610,6 +3651,179 @@ def test_submit_block_leaves_valid_a_header_its_body_does_not_match(
     assert node.block_db.get_block(mismatched.header.hash) is None
     honest = chain[0].serialize(check_validity=False).hex()
     assert submit_block(node, _CONN, [honest]) is None
+
+
+def a_disconnecting_node(
+    peers: dict[int, Any], pending: dict[int, Any] | None = None
+) -> tuple[Any, list[int]]:
+    """Build a node double whose `remove_connection` records what it drops."""
+    node = a_node(peers, pending=pending)
+    removed: list[int] = []
+    node.p2p_manager.remove_connection = removed.append
+    return node, removed
+
+
+def test_disconnectnode_drops_the_peer_getpeerinfo_names_by_that_address() -> None:
+    """ISS 1193: Core's `address`, matched against `getpeerinfo`'s `addr`.
+
+    A peer whose socket is gone is passed over, and the first match is
+    the one dropped.
+    """
+    peers = {
+        1: a_peer(peer="1.2.3.4"),
+        2: a_peer(gone=True),
+        3: a_peer(peer="5.5.5.5"),
+        4: a_peer(peer="5.5.5.5"),
+    }
+    node, removed = a_disconnecting_node(peers)
+    (info,) = [info for info in get_peer_info(node, _CONN, []) if info["id"] == 3]
+    disconnect_node(node, _CONN, [info["addr"]])
+    assert removed == [3]
+
+
+@pytest.mark.parametrize("address", ["", None])
+def test_disconnectnode_drops_a_pending_peer_by_its_id(address: str | None) -> None:
+    """ISS 1193: Core's `nodeid`, with `address` empty or null.
+
+    A connection short of `verack` is found, as it is in Core's `m_nodes`.
+    """
+    node, removed = a_disconnecting_node({1: a_peer()}, {2: a_peer()})
+    disconnect_node(node, _CONN, [address, 2])
+    assert removed == [2]
+
+
+_DISCONNECT_ONE_OF = (
+    RPCErrorCode.INVALID_PARAMS,
+    "Only one of address and nodeid should be provided.",
+)
+_DISCONNECT_NOT_FOUND = (
+    RPCErrorCode.CLIENT_NODE_NOT_CONNECTED,
+    "Node not found in connected nodes",
+)
+
+
+def _wrong_type(*entries: str) -> tuple[RPCErrorCode, str]:
+    return (
+        RPCErrorCode.TYPE_ERROR,
+        "Wrong type passed:\n{\n" + ",\n".join(entries) + "\n}",
+    )
+
+
+@pytest.mark.parametrize(
+    ("params", "expected"),
+    [
+        ([], _DISCONNECT_ONE_OF),
+        ([None], _DISCONNECT_ONE_OF),
+        ([None, None], _DISCONNECT_ONE_OF),
+        (["1.2.3.4:8333", 1], _DISCONNECT_ONE_OF),
+        ([""], _DISCONNECT_NOT_FOUND),
+        (["", None], _DISCONNECT_NOT_FOUND),
+        (["1.2.3.4"], _DISCONNECT_NOT_FOUND),
+        (["", 99], _DISCONNECT_NOT_FOUND),
+        (["", -1], _DISCONNECT_NOT_FOUND),
+        (
+            [1],
+            _wrong_type(
+                '    "Position 1 (address)": "JSON value of type number is not'
+                ' of expected type string"'
+            ),
+        ),
+        (
+            ["", True],
+            _wrong_type(
+                '    "Position 2 (nodeid)": "JSON value of type bool is not of'
+                ' expected type number"'
+            ),
+        ),
+        (
+            [1, "x"],
+            _wrong_type(
+                '    "Position 1 (address)": "JSON value of type number is not'
+                ' of expected type string"',
+                '    "Position 2 (nodeid)": "JSON value of type string is not'
+                ' of expected type number"',
+            ),
+        ),
+        (["", 1.5], (RPCErrorCode.MISC_ERROR, "JSON integer out of range")),
+        (["", 2**63], (RPCErrorCode.MISC_ERROR, "JSON integer out of range")),
+        (["", -(2**63) - 1], (RPCErrorCode.MISC_ERROR, "JSON integer out of range")),
+    ],
+)
+def test_disconnectnode_answers_what_bitcoind_answers(
+    params: list[Any], expected: tuple[RPCErrorCode, str]
+) -> None:
+    """ISS 1193: each code and message as a regtest bitcoind v31.1.0 gave it.
+
+    Nothing is dropped. The integer bounds are `int64_t`'s, one past
+    either end.
+    """
+    node, removed = a_disconnecting_node({1: a_peer()})
+    with pytest.raises(RpcError) as refused:
+        disconnect_node(node, _CONN, params)
+    assert (refused.value.code, refused.value.message) == expected
+    assert removed == []
+
+
+def test_disconnectnode_answers_more_arguments_with_its_help() -> None:
+    """ISS 1193: `RPCHelpMan::ToString`, as bitcoind v31.1.0 answers it."""
+    node, removed = a_disconnecting_node({1: a_peer()})
+    with pytest.raises(RpcError) as refused:
+        disconnect_node(node, _CONN, ["", 1, None])
+    assert refused.value.code == RPCErrorCode.MISC_ERROR
+    assert refused.value.message.startswith(
+        'disconnectnode ( "address" nodeid )\n\nImmediately disconnects'
+    )
+    assert refused.value.message.endswith("http://127.0.0.1:8332/\n")
+    assert removed == []
+
+
+def a_block_marked_invalid(node: Node, block: Block) -> str:
+    """Index `block`'s header, mark it invalid, and return the block's hex."""
+    block_index = node.chainstate.block_index
+    block_index.add_headers([block.header])
+    block_index.invalidate(block.header.hash)
+    return block.serialize(check_validity=False).hex()
+
+
+@pytest.mark.parametrize(
+    ("body", "answer"),
+    [
+        ("valid", "duplicate-invalid"),
+        ("over-the-weight", "duplicate-invalid"),
+        ("bad-cb-multiple", "more than one coinbase"),
+    ],
+)
+def test_submit_block_answers_duplicate_invalid_where_check_block_passes(
+    regtest_node: Callable[..., Node], body: str, answer: str
+) -> None:
+    """ISS 1344: Core's `CheckBlock`, then `AcceptBlockHeader`'s cached state.
+
+    Measured against bitcoind v31.1, each body under a header
+    `invalidateblock` marked: `duplicate-invalid`, `duplicate-invalid`,
+    `bad-cb-multiple`. Nothing is stored.
+    """
+    node = regtest_node()
+    block = {
+        "valid": lambda: generate_random_chain(1, RegTest().genesis.hash)[0],
+        "over-the-weight": lambda: generate_segwit_block(
+            witness=bytes(MAX_BLOCK_WEIGHT)
+        ),
+        "bad-cb-multiple": lambda: generate_segwit_block(generate_coinbase(height=1)),
+    }[body]()
+    assert submit_block(node, _CONN, [a_block_marked_invalid(node, block)]) == answer
+    assert node.block_db.get_block(block.header.hash) is None
+
+
+def test_submit_block_answers_duplicate_invalid_for_a_stored_block_marked_since(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """ISS 1344: not `duplicate`, Core's header state being asked first."""
+    node = regtest_node()
+    (block,) = generate_random_chain(1, RegTest().genesis.hash)
+    raw = block.serialize(check_validity=False).hex()
+    assert submit_block(node, _CONN, [raw]) is None
+    node.chainstate.block_index.invalidate(block.header.hash)
+    assert submit_block(node, _CONN, [raw]) == "duplicate-invalid"
 
 
 def test_submit_block_leaves_valid_a_committed_body_failing_check_block(
