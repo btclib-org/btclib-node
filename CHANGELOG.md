@@ -851,6 +851,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A host held on any port is not dialled again** (closes #1304), and an
   inbound peer's address keeps the port it connected from.
 
+### An addr-fetch dial checks the name it was queued under first
+
+- **A queued host already held by name is skipped before it is ever
+  resolved** (closes #1432), as Core's `AlreadyConnectedToHost` checks it
+  ahead of `ConnectNode`'s own resolve.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
