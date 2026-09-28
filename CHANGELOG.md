@@ -758,6 +758,99 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `MSG_WITNESS_BLOCK`, and its walk over the peer's chain ends at the first
   block where SegWit is active** (closes #1208).
 
+### A block under a header already marked invalid is refused, as in Core
+
+- **A body passing `CheckBlock` under a header marked invalid is refused
+  `duplicate-invalid`, on the wire and by `submitblock`, and no longer stored,
+  from an outbound peer as misbehaviour** (closes #1344).
+
+### An inbound, manual or feeler peer is kept without `NODE_WITNESS`, as in Core
+
+- **`NODE_WITNESS` is required only where Core's `ExpectServicesFromConn`
+  holds** (closes #1138).
+
+### The configuration's warnings are logged, as `bitcoind` logs them
+
+- **An unknown key, a double negative and `-allowignoredconf`'s warning reach
+  `history.log` alone, and an unrecognised section's reaches it too**
+  (closes #1295), ahead of anything else the node logs.
+
+### An `includeconf` in the chain's own section is read, as `bitcoind` reads it
+
+- **The chain's section is read for `includeconf` before the default one**
+  (closes #1302), the chain resolved first and a conflicting one refused
+  before any include, as `ReadConfigFiles` does.
+
+### An integer option is read as `bitcoind` reads it
+
+- **The digits a value starts with, saturated at the `int64_t` range** (closes
+  #1313, closes #1324), where a value that is not an integer was refused;
+  `-maxconnections` and `-prune` then narrow and wrap as they do in Core.
+
+### Only a peer this node dialled is recorded as answered, as in Core
+
+- **An inbound peer's endpoint no longer enters the answered table, and a
+  dialled one enters it at its own `version`, as Core's `AddrMan::Good`
+  does** (closes #1229, closes #1140).
+
+### `submitblock` refuses a body its stored header does not commit to
+
+- **A block whose hash names one already stored answers `duplicate` only where
+  its body passes `CheckBlock`, and the body's reason otherwise, the stored
+  block left as it was** (closes #1346), as Core's `ProcessNewBlock` orders it.
+
+### A block failing `CheckBlock` costs its peer, asked for or not, as in Core
+
+- **A body failing `CheckBlock` is refused before its header is indexed and
+  before an unrequested block is set aside, so its peer is punished either
+  way** (closes #1363), as Core's `ProcessNewBlock` orders it.
+
+### DNS seeding asks each seed's `x9.` subdomain, and addr-fetches the rest
+
+- **A seed answers only for `NODE_NETWORK | NODE_WITNESS`, at most 32 answers
+  kept**, in place of resolving its bare name (closes #1284). A seed whose
+  subdomain answers nothing is dialled instead, for its own `addr` alone.
+
+### The JSON-RPC listener binds `::1` and `127.0.0.1`, as `bitcoind` does
+
+- **Each loopback is bound and logged in turn, one that fails is warned
+  over and passed** (closes #1269, closes #1281), and only a node that binds
+  neither refuses to start, with Core's message.
+
+### `-rpcallowip` decides which sources the JSON-RPC listener answers
+
+- **A source no `-rpcallowip` subnet or loopback names gets a bare 403,
+  and `-rpcbind` binds beside it** (closes #1268), as in `bitcoind`, a value
+  naming no subnet refusing to start with Core's message.
+
+### `-rpcallowip` reads a value as `setban` reads one
+
+- **One parser, the ban list's, reads both** (closes #1291), so an onion or
+  I2P host is a `-rpcallowip` subnet, as in `bitcoind` (closes #1288), though
+  it matches no JSON-RPC client.
+
+### The automatic dial passes over this node's own address, as in Core
+
+- **A listening node records its routable interface addresses, and a draw or
+  an anchor at one, on any port, ends the pass** (closes #1238); on Windows
+  none is found (#1310).
+
+### An answered address is kept for Core's 30-day horizon
+
+- **An answered row leaves the table only when `IsTerrible`'s time tests call
+  it terrible: its handshake stamp over 30 days old or 10 minutes ahead**
+  (closes #1318), where it left three hours after its last handshake.
+
+### `disconnectnode` drops a connection, as Core's does
+
+- **`disconnectnode` drops a connection by `getpeerinfo`'s address or id, with
+  Core's errors** (closes #1193).
+
+### The automatic dial passes over a connected host, as in Core
+
+- **A host held on any port is not dialled again** (closes #1304), and an
+  inbound peer's address keeps the port it connected from.
+
 ### A high-bandwidth peer is announced a new block as `cmpctblock`, as in Core
 
 - **A peer's `sendcmpct` of version 2 is recorded, and a peer that chose this

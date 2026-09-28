@@ -57,7 +57,7 @@ and `## Pruning` below is what any nonzero value actually does.
 `-conf=<file>` naming another file while the data directory still holds
 a `bitcoin.conf` refuses to start, as `bitcoind` refuses, that file's
 settings going unread; `-allowignoredconf` starts it anyway, the refusal
-written to stderr as a warning.
+written to the log as a warning.
 
 On POSIX, `btclib-node` sets its umask to 0077 before it reads its
 options, as `bitcoind` does. Every directory it creates is then 0700 and
@@ -168,11 +168,11 @@ without a whitelist even where none is set.
 Each mirrors the Core method of the same name: `getbestblockhash`,
 `getblockcount`, `getblockchaininfo`, `pruneblockchain`, `getblockhash`,
 `getblockheader`, `getblock`, `submitblock`, `getpeerinfo`,
-`getconnectioncount`, `getnetworkinfo`, `addnode`, `setban`, `listbanned`,
-`clearbanned`, `getmempoolinfo`, `getrawmempool`, `getrawtransaction`,
-`gettxoutsetinfo`, `testmempoolaccept`, `sendrawtransaction`, `ping`,
-`stop`. The `callbacks` table in `src/btclib_node/rpc/callbacks.py` is
-the list the node serves.
+`getconnectioncount`, `getnetworkinfo`, `addnode`, `disconnectnode`,
+`setban`, `listbanned`, `clearbanned`, `getmempoolinfo`, `getrawmempool`,
+`getrawtransaction`, `gettxoutsetinfo`, `testmempoolaccept`,
+`sendrawtransaction`, `ping`, `stop`. The `callbacks` table in
+`src/btclib_node/rpc/callbacks.py` is the list the node serves.
 
 ## What is validated, and what is not
 

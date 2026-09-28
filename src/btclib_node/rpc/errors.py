@@ -8,7 +8,7 @@ from typing import Any
 
 from bitcoin_core_rpc import RPCErrorCode
 
-__all__ = ["RpcError", "bool_param", "type_error"]
+__all__ = ["RpcError", "bool_param", "type_error", "type_errors"]
 
 
 class RpcError(Exception):
@@ -69,12 +69,11 @@ def type_error(position: int, name: str, value: object, expected: str) -> RpcErr
     `strprintf("Wrong type passed:\n%s", arg_mismatch.write(4))` --
     `UniValue::write`'s own four-space indent and lack of a trailing
     newline after the closing brace
-    (`src/univalue/lib/univalue_write.cpp`), reproduced literally below
-    rather than through a JSON encoder, because every caller here checks
-    exactly one declared argument and raises before a second could ever
-    join it in the same object -- there is never a second key to encode.
-    Measured against a real `bitcoind` (v31.1.0, `-regtest`) answering a
-    raw `testmempoolaccept`, `getblockheader`, `getblockhash`,
+    (`src/univalue/lib/univalue_write.cpp`), reproduced literally in
+    `type_errors` rather than through a JSON encoder: every key and
+    value is text this tree writes itself, with nothing to escape. Measured
+    against a real `bitcoind` (v31.1.0, `-regtest`) answering a raw
+    `testmempoolaccept`, `getblockheader`, `getblockhash`,
     `getrawtransaction` and `sendrawtransaction` call each with one
     argument of the wrong JSON type.
 
@@ -92,14 +91,23 @@ def type_error(position: int, name: str, value: object, expected: str) -> RpcErr
     form, for the reason `_parse_txid`'s own usage-string comment
     argues.
     """
-    return RpcError(
-        RPCErrorCode.TYPE_ERROR,
-        "Wrong type passed:\n{\n"
+    return type_errors((position, name, value, expected))
+
+
+def type_errors(*mismatches: tuple[int, str, object, str]) -> RpcError:
+    """Refuse every mismatched argument at once, in one object.
+
+    Each mismatch is `type_error`'s own four arguments, in the order
+    Core checks the arguments, first to last: its object holds one key
+    per argument that failed, as the one `type_error` builds holds one.
+    """
+    entries = ",\n".join(
         f'    "Position {position} ({name})": '
         f'"JSON value of type {json_type_name(value)} is '
         f'not of expected type {expected}"'
-        "\n}",
+        for position, name, value, expected in mismatches
     )
+    return RpcError(RPCErrorCode.TYPE_ERROR, f"Wrong type passed:\n{{\n{entries}\n}}")
 
 
 def bool_param(params: list[Any], position: int, *, name: str, default: bool) -> bool:

@@ -82,8 +82,10 @@ __all__ = [
     "contextual_check_block",
     "is_block_failed",
     "is_block_mutated",
+    "is_cached_invalid",
     "new_pow_valid_block",
     "parent_lookup",
+    "passes_check_block",
     "prune_up_to_height",
     "update_chain",
     "verify_mempool_acceptance",
@@ -698,18 +700,19 @@ def is_block_mutated(block: Block, *, check_witness_root: bool) -> bool:
     return coinbase_witness_commitment(transactions, stack[0]) != commitment
 
 
-def _passes_check_block(block: Block) -> bool:
+def passes_check_block(block: Block) -> bool:
     """Whether `block` passes what Core's `CheckBlock` asks of a body.
 
-    `bad-blk-length`, `bad-cb-missing`, `bad-cb-multiple`, each
-    transaction's `CheckTransaction` and `bad-blk-sigops`, in Core's
-    order (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag). The header and the merkle root are asked elsewhere:
-    the header is indexed before its body is read, and the root is
-    `is_block_mutated`'s.
+    The merkle root, `bad-blk-length`, `bad-cb-missing`,
+    `bad-cb-multiple`, each transaction's `CheckTransaction` and
+    `bad-blk-sigops`, in Core's order (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The header is checked
+    elsewhere: by `add_headers` if it is new, or when it was first
+    indexed.
     """
     transactions = block.transactions
     try:
+        block.assert_valid_merkle_root()
         block.assert_valid_length()
         if not transactions or not transactions[0].is_coinbase:
             return False
@@ -737,8 +740,25 @@ def is_block_failed(block: Block, *, check_witness_root: bool) -> bool:
     """
     return (
         not is_block_mutated(block, check_witness_root=check_witness_root)
-        and _passes_check_block(block)
+        and passes_check_block(block)
         and block.weight > MAX_BLOCK_WEIGHT
+    )
+
+
+def is_cached_invalid(block_index: BlockIndex, block: Block) -> bool:
+    """Whether `block` is Core's `duplicate-invalid`, `BLOCK_CACHED_INVALID`.
+
+    Its header indexed and marked invalid already, and its body passing
+    `CheckBlock`, which Core's `ProcessNewBlock` asks before
+    `AcceptBlock` reaches `AcceptBlockHeader` (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a body failing it is
+    refused for that reason instead.
+    """
+    known = block_index.header_dict.get(block.header.hash)
+    return (
+        known is not None
+        and known.status == BlockStatus.invalid
+        and passes_check_block(block)
     )
 
 
