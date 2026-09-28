@@ -846,6 +846,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`disconnectnode` drops a connection by `getpeerinfo`'s address or id, with
   Core's errors** (closes #1193).
 
+### The automatic dial passes over a connected host, as in Core
+
+- **A host held on any port is not dialled again** (closes #1304), and an
+  inbound peer's address keeps the port it connected from.
+
 ### An RPC call's arguments are checked and refused as `RPCHelpMan` does
 
 - **A call carrying more positional arguments than a method declares is

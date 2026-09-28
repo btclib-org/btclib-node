@@ -999,11 +999,11 @@ def test_a_connected_peer_drawn_with_a_different_timestamp_is_not_redialled(
 ) -> None:
     """A peer drawn back with a different timestamp is still not redialled.
 
-    #70/#71: callbacks.version records the peer at a live timestamp and
-    # with its handshake's own services, so the row PeerDB.random_address
-    # can draw back is never equal, field for field, to the Connection's
-    # own address -- endpoint_key is what the manager has to compare on
-    # instead, or a peer already connected to is dialled a second time.
+    #70/#71: `callbacks.version` records the peer at a live timestamp and
+    with its handshake's own services, so the row `PeerDB.random_address`
+    can draw back is never equal, field for field, to the Connection's
+    own address: the manager compares by `host_key`, or a peer already
+    connected to is dialled a second time.
     An onion address the same way the sibling tests above use one: `not
     in already_connected` regressing to raw equality would reach the
     real `dial`, which raises on a network this node cannot open a
@@ -1502,6 +1502,38 @@ def test_a_draw_in_a_held_group_draws_again(
     asyncio.run(manager._maybe_dial_more_peers())
     assert len(drawn) == 2
     assert dialled == [other]
+
+
+@pytest.mark.parametrize(
+    ("held_host", "dials"), [("1.2.3.4", False), ("5.6.7.8", True)]
+)
+def test_a_host_held_on_any_port_is_not_dialled_again(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    held_host: str,
+    *,
+    dials: bool,
+) -> None:
+    """ISS 1304: Core's `AlreadyConnectedToAddress` compares no port.
+
+    An inbound peer on its ephemeral port holds its host: a draw of the
+    same host on its listening port is not dialled, and one of another
+    host is. Inbound, so no network group is in the way.
+    """
+    dialled: list[NetworkAddressV2] = []
+
+    async def records(address: NetworkAddressV2) -> None:
+        dialled.append(address)
+
+    monkeypatch.setattr(manager_module, "dial", records)
+    # the services `_passed_over` asks of a draw
+    drawn_address = a_full_node("1.2.3.4", 8333)
+    _, draw = draws_of(drawn_address)
+    peer_db = a_peer_db_stub(is_empty=False, random_address=draw)
+    held = a_conn(1, address=peer_address(held_host, 55555), inbound=True)
+    manager = a_manager([held], peer_db=peer_db)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert dialled == ([drawn_address] if dials else [])
 
 
 @pytest.mark.parametrize("refusal", ["connected", "discouraged"])

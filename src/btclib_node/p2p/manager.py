@@ -1169,15 +1169,11 @@ class P2pManager(threading.Thread):
         # ahead of `addrman`
         if kind is None or (kind is not _Outbound.ANCHOR and self.peer_db.is_empty):
             return
-        # By endpoint_key, not raw equality: a drawn address
-        # carries the timestamp and services its rows were last
-        # given, by `callbacks.version`'s own recording of a peer it
-        # dialled, its `set_services` for any peer's own word on its
-        # services, or a gossip, which is never the pair an existing
-        # Connection's own address was constructed with, so comparing
-        # the dataclasses themselves never matches the peer this node
-        # is already holding a connection with and dials it a second
-        # time.
+        # By host, as Core's `AlreadyConnectedToAddress(const CNetAddr&)`
+        # compares each node's address with no port (`src/net.cpp`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a host this node
+        # holds any connection with, an inbound one on its ephemeral port
+        # included, is not dialled again on another port.
         #
         # Locked for the same reason the count above is
         # (btclib-org/btclib-node#355).
@@ -1186,7 +1182,7 @@ class P2pManager(threading.Thread):
                 *self.connections.values(),
                 *self.pending_connections.values(),
             )
-        already_connected = {endpoint_key(conn.address) for conn in connected}
+        already_connected = {host_key(conn.address) for conn in connected}
         # One outbound peer per network group, as
         # `CConnman::ThreadOpenConnections` keeps them: the groups of
         # its `MANUAL`, `OUTBOUND_FULL_RELAY` and `BLOCK_RELAY` peers,
@@ -1239,9 +1235,10 @@ class P2pManager(threading.Thread):
         # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) returns without
         # dialling a peer already connected, discouraged or banned, a
         # discouraged one being one this node dropped for cause
-        # (btclib-org/btclib-node#283).
+        # (btclib-org/btclib-node#283). `already_connected` is by host,
+        # as `_maybe_dial_more_peers` above builds it.
         if (
-            endpoint_key(address) in already_connected
+            host_key(address) in already_connected
             or self.is_discouraged(address)
             or self.ban_man.is_peer_banned(address)
         ):
