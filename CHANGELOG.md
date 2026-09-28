@@ -846,6 +846,20 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`disconnectnode` drops a connection by `getpeerinfo`'s address or id, with
   Core's errors** (closes #1193).
 
+### An RPC call's arguments are checked and refused as `RPCHelpMan` does
+
+- **A call carrying more positional arguments than a method declares is
+  refused with that method's own full help text, rather than answered with
+  the extra ones silently ignored** (closes #1424).
+- **Two or more declared arguments of the wrong JSON type are all named in
+  one refusal, rather than the first alone** (closes #1293).
+- **A call short of a required argument, or carrying a value a callback
+  refuses outright, is answered with the method's own full help text rather
+  than the one-line usage string it used to be** (closes #1294).
+- **`help` is served: the commands this node serves, grouped by category,
+  with no argument, and a served command's own full help text with one**
+  (closes #1405).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

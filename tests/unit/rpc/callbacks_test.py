@@ -92,6 +92,7 @@ from btclib_node.rpc.callbacks import (
 from btclib_node.rpc.callbacks import test_mempool_accept as mempool_accept
 from btclib_node.rpc.connection import RawJSON
 from btclib_node.rpc.errors import RpcError
+from btclib_node.rpc.help import HELP_TEXT
 from tests import (
     generate_coinbase,
     generate_random_chain,
@@ -886,6 +887,20 @@ def test_a_raw_mempool_parameter_of_the_wrong_json_type_is_named() -> None:
         'value of type number is not of expected type bool"\n}'
     )
 
+    # ISS 1293: both wrong at once are both named, not the first alone
+    with pytest.raises(RpcError) as raised:
+        get_raw_mempool(node, _CONN, ["true", 1])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert raised.value.message == (
+        "Wrong type passed:\n"
+        "{\n"
+        '    "Position 1 (verbose)": "JSON value of type string is not'
+        ' of expected type bool",\n'
+        '    "Position 2 (mempool_sequence)": "JSON value of type number'
+        ' is not of expected type bool"\n'
+        "}"
+    )
+
 
 def _a_coin_stats_coin(value: int = 1000) -> tuple[bytes, Coin]:
     out_point_bytes = OutPoint(b"\x33" * 32, 0, check_validity=False).serialize(
@@ -974,6 +989,23 @@ def test_tx_out_set_info_hash_type_of_the_wrong_json_type_is_named() -> None:
     assert raised.value.message == (
         'Wrong type passed:\n{\n    "Position 1 (hash_type)": "JSON value '
         'of type number is not of expected type string"\n}'
+    )
+
+
+def test_tx_out_set_info_names_both_wrongly_typed_arguments_at_once() -> None:
+    """ISS 1293: a wrong `hash_type` and a wrong `use_index` are both named."""
+    node = a_coin_stats_node(CoinStats(), [b"\x11" * 32])
+    with pytest.raises(RpcError) as raised:
+        get_tx_out_set_info(node, _CONN, [1, None, "yes"])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert raised.value.message == (
+        "Wrong type passed:\n"
+        "{\n"
+        '    "Position 1 (hash_type)": "JSON value of type number is not'
+        ' of expected type string",\n'
+        '    "Position 3 (use_index)": "JSON value of type string is not'
+        ' of expected type bool"\n'
+        "}"
     )
 
 
@@ -1229,12 +1261,12 @@ def test_a_block_below_the_stores_own_pruned_height_is_pruned_data() -> None:
 
 
 def test_no_txid_at_all_is_answered_with_the_usage() -> None:
-    """`getrawtransaction` with no arguments is refused with its own usage."""
+    """`getrawtransaction` with no arguments is refused with its own help."""
     node = a_tx_lookup_node()
     with pytest.raises(RpcError) as raised:
         get_raw_transaction(node, _CONN, [])
     assert raised.value.code == RPCErrorCode.MISC_ERROR
-    assert raised.value.message == 'getrawtransaction "txid" ( verbose "blockhash" )'
+    assert raised.value.message == HELP_TEXT["getrawtransaction"]
 
 
 def test_a_txid_of_the_wrong_json_type_is_named() -> None:
@@ -1298,6 +1330,32 @@ def test_a_verbose_of_the_wrong_json_type_is_named() -> None:
     assert raised.value.message == (
         'Wrong type passed:\n{\n    "Position 2 (verbose)": "JSON value of '
         'type string is not of expected type bool"\n}'
+    )
+
+
+def test_getrawtransaction_names_every_wrongly_typed_argument_at_once() -> None:
+    """ISS 1293: txid, verbose and blockhash wrong at once are all named.
+
+    Also proves the value-level checks -- the genesis exception, the
+    two hex decodes -- do not run ahead of this: a wrong-typed txid
+    would otherwise never reach `bytes.fromhex` for the genesis
+    comparison to run at all, so reaching one `TYPE_ERROR` naming all
+    three shows every declared argument's type is checked first.
+    """
+    node = a_tx_lookup_node()
+    with pytest.raises(RpcError) as raised:
+        get_raw_transaction(node, _CONN, [5, "true", 5])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert raised.value.message == (
+        "Wrong type passed:\n"
+        "{\n"
+        '    "Position 1 (txid)": "JSON value of type number is not of'
+        ' expected type string",\n'
+        '    "Position 2 (verbose)": "JSON value of type string is not'
+        ' of expected type bool",\n'
+        '    "Position 3 (blockhash)": "JSON value of type number is not'
+        ' of expected type string"\n'
+        "}"
     )
 
 
@@ -1441,7 +1499,7 @@ def test_test_mempool_accept_with_no_params_is_answered_the_usage() -> None:
     with pytest.raises(RpcError) as raised:
         mempool_accept(a_node(), _CONN, [])
     assert raised.value.code == RPCErrorCode.MISC_ERROR
-    assert raised.value.message == 'testmempoolaccept ["rawtx",...] ( maxfeerate )'
+    assert raised.value.message == HELP_TEXT["testmempoolaccept"]
 
 
 def test_test_mempool_accept_rawtxs_of_the_wrong_json_type_is_named() -> None:
@@ -1592,10 +1650,7 @@ def test_send_raw_transaction_with_no_params_is_answered_the_usage() -> None:
     with pytest.raises(RpcError) as raised:
         send_raw_transaction(a_node(), _CONN, [])
     assert raised.value.code == RPCErrorCode.MISC_ERROR
-    assert (
-        raised.value.message
-        == 'sendrawtransaction "hexstring" ( maxfeerate maxburnamount )'
-    )
+    assert raised.value.message == HELP_TEXT["sendrawtransaction"]
 
 
 def test_a_transaction_the_mempool_will_not_have_is_not_reported_relayed(
@@ -2120,6 +2175,33 @@ def test_a_null_block_hash_is_the_same_wrong_type_as_any_other() -> None:
     )
 
 
+def test_two_wrongly_typed_arguments_are_both_named_at_once() -> None:
+    """ISS 1293: `getblockheader [1, "x"]` names both, as a real bitcoind does.
+
+    Measured against a regtest bitcoind v31.1.0: `getblockheader`
+    called with a number `blockhash` and a string `verbose` answers
+    `"Position 1 (blockhash)"` and `"Position 2 (verbose)"` in one
+    `Wrong type passed` object, not the first alone.
+    """
+    chain = generate_random_header_chain(1, RegTest().genesis.hash)
+    node = cast(
+        "Node",
+        SimpleNamespace(chainstate=SimpleNamespace(block_index=a_block_index(chain))),
+    )
+    with pytest.raises(RpcError) as raised:
+        get_block_header(node, _CONN, [1, "x"])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert raised.value.message == (
+        "Wrong type passed:\n"
+        "{\n"
+        '    "Position 1 (blockhash)": "JSON value of type number is not'
+        ' of expected type string",\n'
+        '    "Position 2 (verbose)": "JSON value of type string is not'
+        ' of expected type bool"\n'
+        "}"
+    )
+
+
 def test_no_block_hash_at_all_is_answered_with_the_usage() -> None:
     """`getblockheader` with no arguments is refused with its own usage."""
     chain = generate_random_header_chain(1, RegTest().genesis.hash)
@@ -2130,7 +2212,7 @@ def test_no_block_hash_at_all_is_answered_with_the_usage() -> None:
     with pytest.raises(RpcError) as raised:
         get_block_header(node, _CONN, [])
     assert raised.value.code == RPCErrorCode.MISC_ERROR
-    assert raised.value.message == 'getblockheader "blockhash" ( verbose )'
+    assert raised.value.message == HELP_TEXT["getblockheader"]
 
 
 def test_the_tip_and_the_block_at_a_height_are_read_off_the_active_chain() -> None:
@@ -2397,12 +2479,12 @@ def test_prune_blockchain_refuses_when_not_in_prune_mode(
 def test_prune_blockchain_refuses_a_missing_height(
     regtest_node: Callable[..., Node],
 ) -> None:
-    """A call with no argument names the usage string, unquoted like Core's."""
+    """A call with no argument is refused with the method's own full help."""
     node = regtest_node(pruned=True, prune_target_mib=None)
     with pytest.raises(RpcError) as raised:
         prune_blockchain(node, _CONN, [])
     assert raised.value.code == RPCErrorCode.MISC_ERROR
-    assert raised.value.message == "pruneblockchain height"
+    assert raised.value.message == HELP_TEXT["pruneblockchain"]
 
 
 def test_prune_blockchain_refuses_a_height_of_the_wrong_json_type(
@@ -2677,17 +2759,12 @@ def test_a_fractional_height_is_refused_the_way_core_s_own_parse_refuses_it() ->
 
 
 def test_no_height_at_all_is_answered_with_the_usage() -> None:
-    """`getblockhash` with no arguments at all is refused with its own usage.
-
-    Unquoted: `RPCArg::ToString(oneline=true)` quotes an argument's name
-    only for `Type::STR`/`STR_HEX`, and height is `Type::NUM` -- unlike
-    blockhash's own quoted usage string, which is `STR_HEX`.
-    """
+    """`getblockhash` with no arguments at all is refused with its own help."""
     node = a_chain_index_node([b"\x11" * 32])
     with pytest.raises(RpcError) as raised:
         get_block_hash(node, _CONN, [])
     assert raised.value.code == RPCErrorCode.MISC_ERROR
-    assert raised.value.message == "getblockhash height"
+    assert raised.value.message == HELP_TEXT["getblockhash"]
 
 
 def test_a_transaction_whose_scripts_do_not_verify_is_answered_with_the_refusal(
@@ -2945,7 +3022,7 @@ def test_addnode_refuses_an_empty_node_address() -> None:
 
 
 def test_addnode_refuses_an_unknown_command() -> None:
-    """A `command` outside `add`/`remove`/`onetry` is refused with the usage."""
+    """A `command` outside `add`/`remove`/`onetry` is refused with the help."""
     node = cast(
         "Node",
         SimpleNamespace(
@@ -2956,11 +3033,11 @@ def test_addnode_refuses_an_unknown_command() -> None:
     with pytest.raises(RpcError) as raised:
         add_node(node, _CONN, ["127.0.0.1:9999", "bogus"])
     assert raised.value.code == RPCErrorCode.MISC_ERROR
-    assert raised.value.message == 'addnode "node" "command" ( v2transport )'
+    assert raised.value.message == HELP_TEXT["addnode"]
 
 
 def test_addnode_with_no_arguments_is_answered_with_the_usage() -> None:
-    """Fewer than the two required arguments is refused with the usage."""
+    """Fewer than the two required arguments is refused with the help."""
     node = cast(
         "Node",
         SimpleNamespace(
@@ -2971,7 +3048,7 @@ def test_addnode_with_no_arguments_is_answered_with_the_usage() -> None:
     with pytest.raises(RpcError) as raised:
         add_node(node, _CONN, [])
     assert raised.value.code == RPCErrorCode.MISC_ERROR
-    assert raised.value.message == 'addnode "node" "command" ( v2transport )'
+    assert raised.value.message == HELP_TEXT["addnode"]
 
 
 def test_addnode_refuses_a_hostname() -> None:
@@ -3025,8 +3102,36 @@ def test_addnode_type_checks_node_and_command() -> None:
     assert raised2.value.code == RPCErrorCode.TYPE_ERROR
 
 
+def test_addnode_names_both_wrongly_typed_arguments_at_once() -> None:
+    """ISS 1293: `addnode [1, 2]` names both, as a real bitcoind does.
+
+    Measured against a regtest bitcoind v31.1.0: `addnode` called with
+    a number `node` and a number `command` answers `"Position 1 (node)"`
+    and `"Position 2 (command)"` in one `Wrong type passed` object, not
+    the first alone.
+    """
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chain=SimpleNamespace(port=18444),
+            p2p_manager=SimpleNamespace(connect=lambda _address: None),
+        ),
+    )
+    with pytest.raises(RpcError) as raised:
+        add_node(node, _CONN, [1, 2])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert raised.value.message == (
+        "Wrong type passed:\n"
+        "{\n"
+        '    "Position 1 (node)": "JSON value of type number is not of'
+        ' expected type string",\n'
+        '    "Position 2 (command)": "JSON value of type number is not'
+        ' of expected type string"\n'
+        "}"
+    )
+
+
 _BAN_NOW = 1_700_000_000
-_SETBAN_USAGE = 'setban "subnet" "command" ( bantime absolute )'
 
 
 def a_banning_node(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, list[str]]:
@@ -3229,18 +3334,20 @@ def test_setban_add_past_int64_succeeds_and_bans_nothing(
     assert dropped == ["11.0.0.1/32"]
 
 
-@pytest.mark.parametrize(
-    "params",
-    [[], ["1.2.3.4"], ["1.2.3.4", "ban"], ["1.2.3.4", "add", 1, True, None]],
-)
+@pytest.mark.parametrize("params", [[], ["1.2.3.4"], ["1.2.3.4", "ban"]])
 def test_setban_answers_the_usage(
     monkeypatch: pytest.MonkeyPatch, params: list[Any]
 ) -> None:
-    """Too few or too many arguments, or a command Core has no case for."""
+    """Too few arguments, or a command Core has no case for, is refused with help.
+
+    A call carrying too many is `rpc.main._execute`'s own refusal now,
+    generic across every method (`main_test.py`'s own coverage of it),
+    not `set_ban`'s -- this direct call bypasses that layer entirely.
+    """
     node, _ = a_banning_node(monkeypatch)
     error = refusal(node, params)
     assert error.code == RPCErrorCode.MISC_ERROR
-    assert error.message == _SETBAN_USAGE
+    assert error.message == HELP_TEXT["setban"]
 
 
 @pytest.mark.parametrize(
@@ -3263,6 +3370,28 @@ def test_setban_type_checks_every_argument(
     error = refusal(node, params)
     assert error.code == RPCErrorCode.TYPE_ERROR
     assert expected in error.message
+
+
+def test_setban_names_every_wrongly_typed_argument_at_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1293: all four wrong at once are all named, not the first alone."""
+    node, _ = a_banning_node(monkeypatch)
+    error = refusal(node, [1, 2, "x", "y"])
+    assert error.code == RPCErrorCode.TYPE_ERROR
+    assert error.message == (
+        "Wrong type passed:\n"
+        "{\n"
+        '    "Position 1 (subnet)": "JSON value of type number is not'
+        ' of expected type string",\n'
+        '    "Position 2 (command)": "JSON value of type number is not'
+        ' of expected type string",\n'
+        '    "Position 3 (bantime)": "JSON value of type string is not'
+        ' of expected type number",\n'
+        '    "Position 4 (absolute)": "JSON value of type string is not'
+        ' of expected type bool"\n'
+        "}"
+    )
 
 
 @pytest.mark.parametrize("bantime", [1.5, 1 << 63])
@@ -3365,12 +3494,12 @@ def test_get_block_refuses_a_block_this_node_has_pruned(
 def test_get_block_with_no_arguments_is_answered_with_the_usage(
     regtest_node: Callable[..., Node],
 ) -> None:
-    """`getblock` with no arguments at all is refused with its own usage."""
+    """`getblock` with no arguments at all is refused with its own help."""
     node = regtest_node()
     with pytest.raises(RpcError) as raised:
         get_block(node, _CONN, [])
     assert raised.value.code == RPCErrorCode.MISC_ERROR
-    assert raised.value.message == 'getblock "blockhash" ( verbosity )'
+    assert raised.value.message == HELP_TEXT["getblock"]
 
 
 def test_get_block_refuses_a_blockhash_of_the_wrong_json_type(
@@ -3537,12 +3666,12 @@ def test_submit_block_answers_decode_failed_for_unparsable_hex(
 def test_submit_block_with_no_arguments_is_answered_with_the_usage(
     regtest_node: Callable[..., Node],
 ) -> None:
-    """`submitblock` with no arguments at all is refused with its own usage."""
+    """`submitblock` with no arguments at all is refused with its own help."""
     node = regtest_node()
     with pytest.raises(RpcError) as raised:
         submit_block(node, _CONN, [])
     assert raised.value.code == RPCErrorCode.MISC_ERROR
-    assert raised.value.message == 'submitblock "hexdata" ( "dummy" )'
+    assert raised.value.message == HELP_TEXT["submitblock"]
 
 
 def test_submit_block_refuses_a_hexdata_of_the_wrong_json_type(
@@ -3742,17 +3871,22 @@ def test_disconnectnode_answers_what_bitcoind_answers(
     assert removed == []
 
 
-def test_disconnectnode_answers_more_arguments_with_its_help() -> None:
-    """ISS 1193: `RPCHelpMan::ToString`, as bitcoind v31.1.0 answers it."""
+def test_disconnectnode_no_longer_checks_its_own_upper_bound() -> None:
+    """`rpc.main._execute` refuses a call over the count now, generically.
+
+    ISS 1424 moved the check every other callback lacked into `_execute`,
+    for every method `arg_names` declares -- `disconnect_node` dropped
+    the one it used to be the only callback here to carry, so calling it
+    directly, bypassing that layer, no longer refuses a third positional
+    argument on its own: the third position here is read by nothing,
+    and the call runs to completion on its first two, dropping the peer
+    `nodeid` names -- proving the callback's own body runs rather than
+    refusing on a count it no longer checks. `main_test.py`'s own
+    coverage of `_execute` is where that refusal is tested now.
+    """
     node, removed = a_disconnecting_node({1: a_peer()})
-    with pytest.raises(RpcError) as refused:
-        disconnect_node(node, _CONN, ["", 1, None])
-    assert refused.value.code == RPCErrorCode.MISC_ERROR
-    assert refused.value.message.startswith(
-        'disconnectnode ( "address" nodeid )\n\nImmediately disconnects'
-    )
-    assert refused.value.message.endswith("http://127.0.0.1:8332/\n")
-    assert removed == []
+    disconnect_node(node, _CONN, ["", 1, None])
+    assert removed == [1]
 
 
 def a_block_marked_invalid(node: Node, block: Block) -> str:
