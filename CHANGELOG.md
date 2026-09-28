@@ -758,28 +758,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `MSG_WITNESS_BLOCK`, and its walk over the peer's chain ends at the first
   block where SegWit is active** (closes #1208).
 
-### An out-of-range `feefilter` leaves the peer's filter in place, as in Core
-
-- **A rate outside `MoneyRange` is ignored rather than clearing the filter the
-  peer sent before** (closes #1256).
-
-### `getdata` serves a block only where Core's `BlockRequestAllowed` would
-
-- **A block off the active chain is served only once validated and recent, and
-  an unknown or refused one is ignored before the prune threshold is read**
-  (closes #1254).
-
-### A `notfound` is logged at debug as a count, and a `reject` is ignored
-
-- **Neither puts what the peer wrote into the log** (closes #1255): `notfound`
-  logs how many items it names, and `reject` reaches no handler, as Core's
-  `ProcessMessage` has none.
-
-### Three peer refusals are answered as Core answers them
-
-- **A header on an invalid parent (`bad-prevblk`, in `submitblock` too) and a
-  non-continuous batch cost the sender, as does one already invalid from an
-  outbound peer; other exceptions keep the peer** (closes #1233).
 ### A block under a header already marked invalid is refused, as in Core
 
 - **A body passing `CheckBlock` under a header marked invalid is refused
@@ -872,6 +850,29 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 - **A host held on any port is not dialled again** (closes #1304), and an
   inbound peer's address keeps the port it connected from.
+
+### An out-of-range `feefilter` leaves the peer's filter in place, as in Core
+
+- **A rate outside `MoneyRange` is ignored rather than clearing the filter the
+  peer sent before** (closes #1256).
+
+### `getdata` serves a block only where Core's `BlockRequestAllowed` would
+
+- **A block off the active chain is served only once validated and recent, and
+  an unknown or refused one is ignored before the prune threshold is read**
+  (closes #1254).
+
+### A `notfound` is logged at debug as a count, and a `reject` is ignored
+
+- **Neither puts what the peer wrote into the log** (closes #1255): `notfound`
+  logs how many items it names, and `reject` reaches no handler, as Core's
+  `ProcessMessage` has none.
+
+### Three peer refusals are answered as Core answers them
+
+- **A header on an invalid parent (`bad-prevblk`, in `submitblock` too) and a
+  non-continuous batch cost the sender, as does one already invalid from an
+  outbound peer; other exceptions keep the peer** (closes #1233).
 
 ## v2026.9.24
 

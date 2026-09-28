@@ -189,8 +189,8 @@ def handle_p2p(node: Node) -> None:
             # own code failing on content that was fine, is logged and the
             # peer kept: Core's `ProcessMessages` catches every exception
             # out of `ProcessMessage`, `catch (...)` included, logs it and
-            # keeps the peer (`src/net_processing.cpp`, at
-            # bitcoin/bitcoin@9be056a8a7, the v31.1 tag;
+            # keeps the peer (`src/net_processing.cpp`,
+            # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag;
             # btclib-org/btclib-node#1170, btclib-org/btclib-node#1233).
             discourage = _drop(manager, conn, e)
             # `conn_id`, not `conn.address`: same reasoning as

@@ -1499,10 +1499,10 @@ def _serve_getdata_item(
             not_found.append(item)
             not_found_bytes += _NOTFOUND_ITEM_BYTES
     elif item.type_code in _GETDATA_BLOCK_TYPES:
-        # Core's `ProcessGetBlockData` (`net_processing.cpp`, at
-        # bitcoin/bitcoin@9be056a8a7) ignores a block it has no index entry
-        # for, then one `BlockRequestAllowed` refuses -- off the active
-        # chain and not recently valid -- before the prune threshold
+        # Core's `ProcessGetBlockData` (`net_processing.cpp`,
+        # at bitcoin/bitcoin@9be056a8a7) ignores a block it has no index
+        # entry for, then one `BlockRequestAllowed` refuses -- off the
+        # active chain and not recently valid -- before the prune threshold
         if item.hash not in node.chainstate.block_index.header_dict:
             return not_found_bytes
         if not _block_request_allowed(node, item.hash):
@@ -1743,8 +1743,8 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     # Core's `CheckHeadersPoW`, then the getheaders in flight answered once
     # the batch's first header connects, before any header is accepted, so
     # a batch refused past this point still answers it
-    # (`ProcessHeadersMessage`, `net_processing.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+    # (`ProcessHeadersMessage`, `net_processing.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
     check_headers_pow(headers, node.chain.pow_limit_bits)
     if headers[0].previous_block_hash in block_index.header_dict:
         node.download_manager.last_getheaders_timestamps.pop(conn.id, None)
