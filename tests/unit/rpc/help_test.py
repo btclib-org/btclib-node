@@ -55,6 +55,90 @@ _EXPECTED_BARE_LISTING = (
 )
 
 
+# `HELP_TEXT["disconnectnode"]` and `HELP_TEXT["addnode"]`, read back
+# from a real regtest bitcoind v31.1.0's own `help disconnectnode` and
+# `help addnode`, kept here as a literal independent of `HELP_TEXT`
+# itself: every other test in this module and in `callbacks_test.py`
+# compares a callback's own refusal against `HELP_TEXT[name]`, which
+# proves the two agree and nothing about whether either is what Core
+# actually answers. Only a copy that does not read `rpc.help` at all
+# can catch its own content going stale or truncated.
+_DISCONNECTNODE_HELP = (
+    'disconnectnode ( "address" nodeid )\n'
+    "\n"
+    "Immediately disconnects from the specified peer node.\n"
+    "\n"
+    "Strictly one out of 'address' and 'nodeid' can be provided to identify"
+    " the node.\n"
+    "\n"
+    "To disconnect by nodeid, either set 'address' to the empty string, or"
+    " call using the named 'nodeid' argument only.\n"
+    "\n"
+    "Arguments:\n"
+    "1. address    (string, optional, default=fallback to nodeid) The IP"
+    " address/port of the node\n"
+    "2. nodeid     (numeric, optional, default=fallback to address) The node"
+    " ID (see getpeerinfo for node IDs)\n"
+    "\n"
+    "Result:\n"
+    "null    (json null)\n"
+    "\n"
+    "Examples:\n"
+    '> bitcoin-cli disconnectnode "192.168.0.6:8333"\n'
+    '> bitcoin-cli disconnectnode "" 1\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0",'
+    ' "id": "curltest", "method": "disconnectnode", "params":'
+    " [\"192.168.0.6:8333\"]}' -H 'content-type: application/json'"
+    " http://127.0.0.1:8332/\n"
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0",'
+    ' "id": "curltest", "method": "disconnectnode", "params": ["", 1]}\''
+    " -H 'content-type: application/json' http://127.0.0.1:8332/\n"
+)
+
+_ADDNODE_HELP = (
+    'addnode "node" "command" ( v2transport )\n'
+    "\n"
+    "Attempts to add or remove a node from the addnode list.\n"
+    "Or try a connection to a node once.\n"
+    "Nodes added using addnode (or -connect) are protected from DoS"
+    " disconnection and are not required to be\n"
+    "full nodes/support SegWit as other outbound peers are (though such"
+    " peers will not be synced from).\n"
+    "Addnode connections are limited to 8 at a time and are counted"
+    " separately from the -maxconnections limit.\n"
+    "\n"
+    "Arguments:\n"
+    "1. node           (string, required) The IP address/hostname"
+    " optionally followed by :port of the peer to connect to\n"
+    "2. command        (string, required) 'add' to add a node to the"
+    " list, 'remove' to remove a node from the list, 'onetry' to try a"
+    " connection to the node once\n"
+    "3. v2transport    (boolean, optional, default=set by -v2transport)"
+    " Attempt to connect using BIP324 v2 transport protocol (ignored for"
+    " 'remove' command)\n"
+    "\n"
+    "Result:\n"
+    "null    (json null)\n"
+    "\n"
+    "Examples:\n"
+    '> bitcoin-cli addnode "192.168.0.6:8333" "onetry" true\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0",'
+    ' "id": "curltest", "method": "addnode", "params":'
+    ' ["192.168.0.6:8333", "onetry" true]}\' -H'
+    " 'content-type: application/json' http://127.0.0.1:8332/\n"
+)
+
+
+def test_disconnectnode_and_addnode_help_match_a_real_bitcoind() -> None:
+    """`HELP_TEXT`'s own content, not merely its agreement with itself.
+
+    Read back from a regtest bitcoind v31.1.0's own `help disconnectnode`
+    and `help addnode`, byte for byte.
+    """
+    assert HELP_TEXT["disconnectnode"] == _DISCONNECTNODE_HELP
+    assert HELP_TEXT["addnode"] == _ADDNODE_HELP
+
+
 def test_every_method_has_help_text() -> None:
     """`HELP_TEXT` has an entry for each method `callbacks` dispatches.
 
