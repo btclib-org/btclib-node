@@ -153,4 +153,9 @@ def bool_param(params: list[Any], position: int, *, name: str, default: bool) ->
         raise type_errors(mismatch)
     if len(params) <= position or params[position] is None:
         return default
-    return params[position]
+    value = params[position]
+    # `bool_mismatch` above already confirmed this is a bool wherever it
+    # returned `None` past the two checks just above -- re-checked here
+    # only to narrow the type for mypy, which does not see across the
+    # call
+    return value if isinstance(value, bool) else default

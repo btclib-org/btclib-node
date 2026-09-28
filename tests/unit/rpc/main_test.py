@@ -439,7 +439,9 @@ def test_an_args_array_past_the_declared_count_is_refused_with_help(
     `params`, not on the shape the request arrived in.
     """
     monkeypatch.setitem(HELP_TEXT, "named", "named ( a b c )\n\nfake help\n")
-    seen, answer = _named(monkeypatch, b'{"id":1,"method":"named","params":{"args":[1,2,3,4]}}')
+    seen, answer = _named(
+        monkeypatch, b'{"id":1,"method":"named","params":{"args":[1,2,3,4]}}'
+    )
     assert not seen
     assert answer.body["error"] == error(
         RPCErrorCode.MISC_ERROR, "named ( a b c )\n\nfake help\n"

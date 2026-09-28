@@ -3338,7 +3338,7 @@ def test_setban_add_past_int64_succeeds_and_bans_nothing(
 def test_setban_answers_the_usage(
     monkeypatch: pytest.MonkeyPatch, params: list[Any]
 ) -> None:
-    """Too few arguments, or a command Core has no case for, is refused with help.
+    """Too few arguments, or a command Core has no case for, is refused.
 
     A call carrying too many is `rpc.main._execute`'s own refusal now,
     generic across every method (`main_test.py`'s own coverage of it),
