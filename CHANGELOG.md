@@ -851,6 +851,22 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A host held on any port is not dialled again** (closes #1304), and an
   inbound peer's address keeps the port it connected from.
 
+### A raw transaction's hex is decoded as Core's `DecodeHexTx` decodes it
+
+- **A `rawtx` with whitespace in it is refused rather than decoded**, as
+  Core's `IsHex` refuses it (closes #1372).
+
+### A transaction Core decodes and refuses in `CheckTransaction`'s own words
+
+- **`sendrawtransaction` and `testmempoolaccept` answer that refusal too**,
+  rather than reporting the transaction as one that failed to decode
+  (closes #1375).
+
+### `decoderawtransaction` is served
+
+- **It answers Core's JSON shape for a hex-decoded transaction**, with no
+  chain or mempool lookup (closes #1398).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

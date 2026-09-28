@@ -1763,6 +1763,253 @@ def test_a_resubmission_under_a_different_witness_is_reannounced_by_wtxid_even_w
     assert broadcast == [held]
 
 
+@pytest.mark.parametrize("callback", [send_raw_transaction, mempool_accept])
+def test_hex_with_whitespace_is_refused_like_core(
+    callback: Callable[[Any, Any, list[Any]], Any],
+) -> None:
+    """A rawtx with whitespace is a decode failure, where it used to decode.
+
+    `bitcoind` v31.1 on regtest refuses a rawtx with an embedded space
+    or a leading/trailing one with `-22` "TX decode failed"; this used
+    to decode it, `bytes.fromhex` tolerating exactly the whitespace
+    `IsHex` refuses. btclib-org/btclib-node#1372
+    """
+    raw = a_tx().serialize(include_witness=True).hex()
+    with_space = raw[:8] + " " + raw[8:]
+    params = [with_space] if callback is send_raw_transaction else [[with_space]]
+    with pytest.raises(RpcError) as raised:
+        callback(a_node(), _CONN, params)
+    assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
+
+
+def a_malformed_tx(
+    vin: list[TxIn] | None = None, vout: list[TxOut] | None = None
+) -> Tx:
+    """Build a structurally invalid `Tx`, `a_tx`'s own fields as the base.
+
+    `check_validity=False` throughout: the whole point of each caller
+    is a shape `Tx`'s own constructor would otherwise refuse to build
+    at all, one `CheckTransaction` rule broken at a time.
+    """
+    base = a_tx()
+    return Tx(
+        version=base.version,
+        lock_time=base.lock_time,
+        vin=base.vin if vin is None else vin,
+        vout=base.vout if vout is None else vout,
+        check_validity=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "reason"),
+    [
+        (
+            {"vin": [a_malformed_tx().vin[0], a_malformed_tx().vin[0]]},
+            "bad-txns-inputs-duplicate",
+        ),
+        ({"vout": []}, "bad-txns-vout-empty"),
+        (
+            {
+                "vout": [
+                    # a clean output first, so the reason has to keep
+                    # looking rather than answering on the first one
+                    TxOut(value=1, script_pub_key=b"\x51"),
+                    TxOut(
+                        value=21_000_001 * 100_000_000,
+                        script_pub_key=b"\x51",
+                        check_validity=False,
+                    ),
+                ]
+            },
+            "bad-txns-vout-toolarge",
+        ),
+        (
+            {"vout": [TxOut(value=-1, script_pub_key=b"\x51", check_validity=False)]},
+            "bad-txns-vout-negative",
+        ),
+        (
+            {
+                "vout": [
+                    TxOut(value=15_000_000 * 100_000_000, script_pub_key=b"\x51"),
+                    TxOut(value=10_000_000 * 100_000_000, script_pub_key=b"\x51"),
+                ]
+            },
+            "bad-txns-txouttotal-toolarge",
+        ),
+        (
+            {
+                "vin": [
+                    TxIn(
+                        prev_out=OutPoint(b"\x00" * 32, 0xFFFFFFFF),
+                        script_sig=b"",
+                        sequence=0xFFFFFFFF,
+                    )
+                ]
+            },
+            "bad-cb-length",
+        ),
+        (
+            {
+                "vin": [
+                    TxIn(
+                        prev_out=OutPoint(b"\x00" * 32, 0xFFFFFFFF),
+                        script_sig=b"",
+                        sequence=0xFFFFFFFF,
+                    ),
+                    TxIn(
+                        prev_out=OutPoint(b"\x33" * 32, 0),
+                        script_sig=b"",
+                        sequence=0xFFFFFFFF,
+                    ),
+                ]
+            },
+            "bad-txns-prevout-null",
+        ),
+    ],
+)
+def test_a_structurally_invalid_tx_decodes_and_is_refused_by_reason(
+    overrides: dict[str, Any], reason: str
+) -> None:
+    """Each of Core's own `CheckTransaction` reasons, one violation at a time.
+
+    `bitcoind` v31.1 on regtest, per btclib-org/btclib-node#1375's own
+    table: a version-2 transaction with exactly one of these shapes
+    decodes and is refused with exactly this reason, by both
+    `sendrawtransaction` and `testmempoolaccept`.
+    """
+    tx = a_malformed_tx(**overrides)
+    raw = tx.serialize(include_witness=False, check_validity=False).hex()
+
+    with pytest.raises(RpcError) as raised:
+        send_raw_transaction(a_node(), _CONN, [raw])
+    assert raised.value.code == RPCErrorCode.VERIFY_REJECTED
+    assert raised.value.message == reason
+
+    (verdict,) = mempool_accept(a_node(), _CONN, [[raw]])
+    assert verdict["allowed"] is False
+    assert verdict["reject-reason"] == reason
+    assert verdict["reject-details"] == reason
+
+
+def test_an_unrecognized_assert_valid_message_is_not_swallowed() -> None:
+    """`_reject_reason` re-raises what it does not recognize.
+
+    Defensive: every message `Tx.assert_valid` can actually raise for a
+    parsed `Tx` is named, so this exercises the fallback with a message
+    that is not one of them, standing in for a rule this mapping has
+    not been taught yet.
+    """
+    tx = a_tx()
+    error = BTClibValueError("a rule this mapping does not know about")
+    with pytest.raises(BTClibValueError):
+        cb._reject_reason(tx, error)
+
+
+def test_amount_reject_reason_answers_none_when_nothing_violates() -> None:
+    """`_amount_reject_reason` falls through its own loop to `None`.
+
+    Defensive, the same reason as the test above: `Tx.assert_valid` only
+    ever raises this message when some output really is out of range,
+    so this reaches the loop's fall-through directly rather than through
+    a real refusal that could not carry it.
+    """
+    tx = a_tx()
+    assert cb._amount_reject_reason(tx, "invalid satoshi amount: 5") is None
+
+
+def test_decoderawtransaction_answers_the_dict_shape_and_no_more() -> None:
+    """`decoderawtransaction` answers `to_dict()`, no `hex` and no `blockhash`.
+
+    Unlike `getrawtransaction`'s own verbose answer, which adds both.
+    """
+    tx = a_tx()
+    raw = tx.serialize(include_witness=True).hex()
+    out = cb.decode_raw_transaction(a_node(), _CONN, [raw])
+    assert out == tx.to_dict()
+    assert "hex" not in out
+    assert "blockhash" not in out
+
+
+def test_decoderawtransaction_decodes_what_it_would_later_refuse() -> None:
+    """`decoderawtransaction` runs no `CheckTransaction`, unlike the other two.
+
+    A structurally invalid transaction -- duplicate inputs, here --
+    still decodes and answers its JSON, the same as Core's own
+    `decoderawtransaction`, which calls `DecodeHexTx` and `TxToUniv`
+    alone. btclib-org/btclib-node#1398
+    """
+    tx_in = a_malformed_tx().vin[0]
+    tx = a_malformed_tx(vin=[tx_in, tx_in])
+    raw = tx.serialize(include_witness=True, check_validity=False).hex()
+    out = cb.decode_raw_transaction(a_node(), _CONN, [raw])
+    assert out["txid"] == tx.id.hex()
+    assert len(out["vin"]) == 2
+
+
+def test_decoderawtransaction_is_served() -> None:
+    """`decoderawtransaction` dispatches, once `Method not found`.
+
+    btclib-org/btclib-node#1398: the RPC answered `-32601` for want of
+    an entry in `callbacks`, so this is the entry itself, and not merely
+    a function this file happens to define.
+    """
+    assert cb.callbacks["decoderawtransaction"] is cb.decode_raw_transaction
+
+
+def test_decoderawtransaction_with_no_params_is_answered_the_usage() -> None:
+    """`decoderawtransaction` with no arguments is refused with its usage."""
+    with pytest.raises(RpcError) as raised:
+        cb.decode_raw_transaction(a_node(), _CONN, [])
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
+    assert raised.value.message == 'decoderawtransaction "hexstring" ( iswitness )'
+
+
+def test_decoderawtransaction_hexstring_of_the_wrong_json_type_is_named() -> None:
+    """`decoderawtransaction`'s `hexstring` of the wrong JSON type is named."""
+    with pytest.raises(RpcError) as raised:
+        cb.decode_raw_transaction(a_node(), _CONN, [5])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert raised.value.message == (
+        'Wrong type passed:\n{\n    "Position 1 (hexstring)": "JSON value '
+        'of type number is not of expected type string"\n}'
+    )
+
+
+def test_decoderawtransaction_iswitness_of_the_wrong_json_type_is_named() -> None:
+    """`decoderawtransaction`'s `iswitness` of the wrong JSON type is named."""
+    raw = a_tx().serialize(include_witness=True).hex()
+    with pytest.raises(RpcError) as raised:
+        cb.decode_raw_transaction(a_node(), _CONN, [raw, "true"])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert raised.value.message == (
+        'Wrong type passed:\n{\n    "Position 2 (iswitness)": "JSON value '
+        'of type string is not of expected type bool"\n}'
+    )
+
+
+def test_decoderawtransaction_that_does_not_decode_is_core_s_bare_message() -> None:
+    """`decoderawtransaction` answers Core's own message, with no addition.
+
+    `bitcoind` v31.1 on regtest answers `-22` "TX decode failed" alone,
+    where `sendrawtransaction` and `testmempoolaccept` append "Make sure
+    the tx has at least one input.".
+    """
+    with pytest.raises(RpcError) as raised:
+        cb.decode_raw_transaction(a_node(), _CONN, ["zz"])
+    assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
+    assert raised.value.message == "TX decode failed"
+
+
+def test_decoderawtransaction_refuses_whitespace_like_core() -> None:
+    """`decoderawtransaction` refuses whitespace too, `IsHex`'s own rule."""
+    raw = a_tx().serialize(include_witness=True).hex()
+    with pytest.raises(RpcError) as raised:
+        cb.decode_raw_transaction(a_node(), _CONN, [" " + raw])
+    assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
+    assert raised.value.message == "TX decode failed"
+
+
 def a_block_index(
     chain: list[BlockHeader],
     off_chain: list[BlockHeader] | None = None,
