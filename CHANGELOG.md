@@ -841,6 +841,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   it terrible: its handshake stamp over 30 days old or 10 minutes ahead**
   (closes #1318), where it left three hours after its last handshake.
 
+### `history.log` opens the way `bitcoind`'s `debug.log` does
+
+- **The file opens on five blank lines and a version line, logs every setting
+  read with a sensitive one masked, and takes a refusal after the lock too**
+  (closes #1305, closes #1306, closes #1309).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
