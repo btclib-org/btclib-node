@@ -417,6 +417,10 @@ class P2pManager(threading.Thread):
         # rather than reread from a `Config` a caller could still
         # mutate underneath `run`.
         self.listen = node.config.listen
+        # Core's own `-discover`, read the same way and for the same
+        # reason: whether `_discover` below runs at all, independent of
+        # `self.listen` (btclib-org/btclib-node#1330's own "Expected").
+        self.discover = node.config.discover
         # Core's own division of `-maxconnections`, `CConnman::Init`
         # (`src/net.h`, at bitcoin/bitcoin@9be056a8a7): the outbound
         # slots above come off the top, capped by the total itself, and
@@ -1713,17 +1717,20 @@ class P2pManager(threading.Thread):
     def _discover(self) -> None:
         """Record this machine's routable addresses, as Core's `Discover` does.
 
-        `AppInitMain` calls `Discover` (`src/net.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag) ahead of the bind,
-        where the listener is to bind every interface, as `_bind`'s
-        does, and `-discover` is on. Core's parameter interaction turns
-        `-discover` off under `-listen=0`, `-proxy` or `-externalip`, and
-        this node has neither of the last two, so `run` calls this
-        wherever it is about to bind. This node has no `-discover` of its
-        own to override that either way (btclib-org/btclib-node#1330).
-        Each address goes to `AddLocal` at
-        the listening port, which keeps a routable one on a reachable
-        network; IPv4 and IPv6 are both reachable here.
+        `AppInitMain` calls `Discover` (`src/net.cpp:3376-3384`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag) off `bind_on_any`
+        (`src/init.cpp:2163`, `:2193-2196`, same sha) -- whether the
+        node would bind every interface, which is unconditional here,
+        this node having no `-bind` -- never off `fListen`, which is
+        why `run` below calls this off `self.discover` rather than off
+        `self.listen`: an explicit `-discover=1` still records these
+        addresses under `-listen=0` (btclib-org/btclib-node#1330).
+        `self.discover` is itself Core's own soft `-discover=0` under
+        `-listen=0`, `-proxy` or `-externalip` (`Config.discover`'s own
+        comment; this node has neither of the last two). Each address
+        goes to `AddLocal` at the listening port, which keeps a
+        routable one on a reachable network; IPv4 and IPv6 are both
+        reachable here.
         """
         # set wherever `run` binds, which is where it calls this
         port = cast("int", self.port)
@@ -2023,13 +2030,16 @@ class P2pManager(threading.Thread):
         # untouched -- `_bind`'s own listener socket is the only thing
         # this skips, `manage_connections` and the dial loop below both
         # running on this same loop regardless of whether `_bind` below
-        # ever ran.
+        # ever ran. `_discover` is gated on `self.discover` alone, not
+        # on `self.listen`: Core calls `Discover()` off `bind_on_any`,
+        # never off `fListen` (`_discover`'s own docstring).
         server_sockets: list[socket.socket] = []
         try:
             self.logger.info("Starting P2P manager")
             asyncio.set_event_loop(loop)
-            if self.listen:
+            if self.discover:
                 self._discover()
+            if self.listen:
                 server_sockets = self._bind()
         except OSError as error:
             # `start_listener` reads the failure off `listening`, so it

@@ -190,6 +190,7 @@ class AManagerFactory(Protocol):
         addnode: Sequence[tuple[str, int]] = (),
         addnode_args: Sequence[str] = (),
         listen: bool = True,
+        discover: bool | None = None,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
     ) -> P2pManager:
         """Build a `P2pManager` seeded with `conns`, `peer_db` and `status`."""
@@ -217,6 +218,7 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
         addnode: Sequence[tuple[str, int]] = (),
         addnode_args: Sequence[str] = (),
         listen: bool = True,
+        discover: bool | None = None,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
     ) -> P2pManager:
         # `18444` is regtest's own well-known port -- binding it for
@@ -255,6 +257,10 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
                 addnode=addnode,
                 addnode_args=tuple(addnode_args),
                 listen=listen,
+                # `Config.__init__`'s own sentinel: `discover=None`
+                # follows `listen`, an explicit value winning over it,
+                # exactly as `Config.discover` itself resolves.
+                discover=listen if discover is None else discover,
                 max_connections=max_connections,
                 dnsseed=not connect and max_connections > 0,
                 pruned=False,
@@ -1602,7 +1608,11 @@ def test_discover_keeps_each_routable_interface_address_by_host(
 def test_run_discovers_where_it_listens_and_nowhere_else(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, *, listen: bool
 ) -> None:
-    """ISS 1238: `Discover` at start-up, and `-listen=0` turns it off."""
+    """ISS 1238: `Discover` at start-up, `-listen=0` soft-sets it off.
+
+    No `discover=` is given, so `a_manager`'s own sentinel ties it to
+    `listen`, `Config.discover`'s default (ISS 1330).
+    """
     monkeypatch.setattr(
         manager_module, "local_addresses", lambda: [ip_address("1.2.3.4")]
     )
@@ -1613,6 +1623,32 @@ def test_run_discovers_where_it_listens_and_nowhere_else(
         wait_until(manager.loop.is_running)
         expected = {host_key(peer_address("1.2.3.4", port))} if listen else set()
         assert manager.local_addresses == expected
+    finally:
+        manager.stop()
+        manager.join(timeout=10)
+
+
+def test_run_discovers_under_listen_0_discover_1(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1330: an explicit `-discover=1` records addresses under `-listen=0`.
+
+    Core calls `Discover()` off `bind_on_any`, never off `fListen`
+    (`P2pManager._discover`'s own docstring), which is exactly what
+    `-listen=0 -discover=1` could not do before this: `_bind` never
+    runs, so `manager.listening` stays clear, but `local_addresses` is
+    filled all the same.
+    """
+    monkeypatch.setattr(
+        manager_module, "local_addresses", lambda: [ip_address("1.2.3.4")]
+    )
+    port = get_random_port()
+    manager = a_manager(port=port, listen=False, discover=True)
+    try:
+        assert manager.start_listener()
+        wait_until(manager.loop.is_running)
+        assert not manager.listening.is_set()
+        assert manager.local_addresses == {host_key(peer_address("1.2.3.4", port))}
     finally:
         manager.stop()
         manager.join(timeout=10)

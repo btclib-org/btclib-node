@@ -364,6 +364,11 @@ _OPTIONS: dict[str, _Option] = {
         + ". This option can be specified multiple times.",
         _DEBUG_TEST_TITLE,
     ),
+    "discover": _Option(
+        "",
+        "Discover own IP addresses (default: 1 when listening)",
+        _CONNECTION_TITLE,
+    ),
     "h": _Option("", "", None),
     "help": _Option(
         "", "Print this help message and exit (also -h or -?)", _OPTIONS_TITLE
@@ -390,6 +395,11 @@ _OPTIONS: dict[str, _Option] = {
         "Maintain at most <n> automatic connections to peers (default: "
         f"{DEFAULT_MAX_PEER_CONNECTIONS}); does not limit a peer dialled through "
         "-connect or -addnode",
+        _CONNECTION_TITLE,
+    ),
+    "peerblockfilters": _Option(
+        "",
+        "Serve compact block filters to peers per BIP 157 (default: 0)",
         _CONNECTION_TITLE,
     ),
     "port": _Option(
@@ -1524,6 +1534,11 @@ def _after_lock(before: _BeforeLock) -> Config:
     # the same `if` soft-sets `-dnsseed`, reading the same `int64_t`, which
     # `max_connections` has been narrowed from
     dnsseed = not connect and not connect_negated and before.max_connections_arg > 0
+    # `Config.__init__`'s own soft-set reads `listen` above, already
+    # resolved, rather than repeating `InitParameterInteraction`'s
+    # `-listen=0` condition here
+    discover = _get_bool(settings, "discover")
+    peerblockfilters = bool(_get_bool(settings, "peerblockfilters"))
     # `GetAuthCookieFile` (`src/rpc/request.cpp`, same sha): negated, no cookie
     rpccookiefile = (
         None
@@ -1553,6 +1568,8 @@ def _after_lock(before: _BeforeLock) -> Config:
         connect=connect or (["0"] if connect_negated else []),
         addnode=_get_args(settings, "addnode"),
         listen=listen,
+        discover=discover,
+        peerblockfilters=peerblockfilters,
         max_connections=before.max_connections,
         dnsseed=dnsseed,
         ban_time=ban_time,

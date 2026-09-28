@@ -95,6 +95,10 @@ on release day.
   unless `init_errors` says start-up failed, or once `load()` has run for
   a node driven without its thread. A caller
   reading them off a node it never started calls `node.load()` first.
+- **`version` signals `NODE_COMPACT_FILTERS`, and BIP157 requests are
+  answered, only under `-peerblockfilters`** (closes #1395), off by
+  default as in Core. A client relying on this node's own BIP157 filter
+  service starts it with `-peerblockfilters=1`.
 
 ## v2026.9.24
 

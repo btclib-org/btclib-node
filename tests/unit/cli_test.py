@@ -2159,6 +2159,36 @@ def test_build_config_connect_zero_dials_nobody() -> None:
     assert config.connect_given is True
 
 
+def test_build_config_discover_defaults_to_listen() -> None:
+    """ISS 1330: no explicit `-discover` follows the resolved `-listen`."""
+    assert cli.build_config(["-regtest", "-listen=1"]).discover is True
+    assert cli.build_config(["-regtest", "-connect=10.0.0.1"]).discover is False
+
+
+def test_build_config_nodiscover_forces_discover_false_under_listen() -> None:
+    """`-nodiscover` wins over a `-listen=1` that would default it on."""
+    config = cli.build_config(["-regtest", "-listen=1", "-nodiscover"])
+    assert config.listen is True
+    assert config.discover is False
+
+
+def test_build_config_discover_wins_over_listen_0() -> None:
+    """`-discover=1` under `-listen=0`: Core's own explicit-wins-soft-set."""
+    config = cli.build_config(["-regtest", "-connect=10.0.0.1", "-discover=1"])
+    assert config.listen is False
+    assert config.discover is True
+
+
+def test_build_config_peerblockfilters_defaults_to_false() -> None:
+    """Core's own `DEFAULT_PEERBLOCKFILTERS`."""
+    assert cli.build_config(["-regtest"]).peerblockfilters is False
+
+
+def test_build_config_peerblockfilters_reads_the_flag() -> None:
+    """`-peerblockfilters` given bare is Core's own bare boolean flag."""
+    assert cli.build_config(["-regtest", "-peerblockfilters"]).peerblockfilters is True
+
+
 def test_main_builds_a_node_and_starts_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

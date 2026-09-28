@@ -851,6 +851,23 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A host held on any port is not dialled again** (closes #1304), and an
   inbound peer's address keeps the port it connected from.
 
+### `version` signals `NODE_COMPACT_FILTERS` only under `-peerblockfilters`
+
+- **Off by default, as in Core; a `getcfilters`, `getcfheaders` or
+  `getcfcheckpt` this node never advertised is refused the same silent way
+  as a filter type BIP157 has no name for** (closes #1395).
+
+### `getnetworkinfo` answers `localservices` and `localservicesnames`
+
+- **The same services `version` sends, one function answering both**
+  (closes #1394).
+
+### `-discover` decides whether this node records its own addresses
+
+- **Independently of `-listen`, defaulting to it and overridable either
+  way, as Core's `Discover` runs off whether it would bind every interface
+  rather than off `-listen`** (closes #1330).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
