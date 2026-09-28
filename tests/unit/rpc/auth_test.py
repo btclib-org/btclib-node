@@ -241,7 +241,7 @@ def test_a_path_holding_a_nul_byte_cannot_be_opened(tmp_path: Path) -> None:
 
 @pytest.mark.skipif(
     os.name == "nt" or os.geteuid() == 0, reason="`/` writable by the user"
-)
+)  # pragma: no cover -- skipped where / is writable
 def test_the_root_directory_cannot_be_a_cookie() -> None:
     """`/` is written as `/.tmp`, which `bitcoind` v31.1.0 cannot open."""
     auth = RpcAuth()

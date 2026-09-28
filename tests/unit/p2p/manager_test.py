@@ -2819,16 +2819,24 @@ def test_a_manager_says_when_it_is_listening_and_not_before(
     assert not manager.is_alive()
 
 
-def test_a_manager_accepts_an_ipv6_peer_too(a_manager: AManagerFactory) -> None:
+def test_a_manager_accepts_an_ipv6_peer_too(  # pragma: no cover -- the body needs IPv6
+    a_manager: AManagerFactory,
+) -> None:
     """A manager also binds IPv6, accepting a peer that dials it over `::1`."""
     port = get_random_port()
     manager = a_running_manager(a_manager, port)
     wait_until_listening(manager)
+    try:
+        peer = socket.create_connection(("::1", port), timeout=20)
+    except OSError as refused:
+        manager.stop()
+        manager.join(timeout=10)
+        pytest.skip(f"this host has no IPv6: {refused}")
     # held open across the stop rather than closed by a `with`, on
     # `test_stopping_a_running_manager_stops_the_connections_it_holds`'s
     # own reasoning: closing it here races the still-running
     # `Connection`'s own read against the `stop` below
-    with closing(socket.create_connection(("::1", port), timeout=20)) as peer:
+    with closing(peer):
         wait_until(lambda: manager.pending_connections)
         (conn,) = manager.pending_connections.values()
         assert conn.address.network_id == BIP155Network.IPV6

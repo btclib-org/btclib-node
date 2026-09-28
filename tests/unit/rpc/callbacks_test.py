@@ -22,7 +22,6 @@ import pytest
 from bitcoin_core_rpc import RPCErrorCode
 from btclib.block import Block, BlockHeader
 from btclib.consensus import MAX_BLOCK_WEIGHT
-from btclib.exceptions import BTClibValueError
 from btclib.fee import FeeRate
 from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.p2p.limits import PROTOCOL_VERSION
@@ -53,7 +52,7 @@ from btclib_node.exceptions import (
     TxRejectedError,
 )
 from btclib_node.log import Logger
-from btclib_node.main import verify_mempool_acceptance
+from btclib_node.main import MempoolAcceptance, verify_mempool_acceptance
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.banman import BanEntry, BanMan, lookup_subnet
@@ -796,18 +795,20 @@ def test_the_raw_mempool_is_a_plain_list_of_txids_by_default() -> None:
 def test_the_raw_mempool_verbose_table_names_each_transaction() -> None:
     """`getrawmempool` verbose answers an object keyed by txid.
 
-    Each entry names its own wtxid, vsize and weight.
+    Each entry names its own wtxid, vsize and weight; the vsize is the one
+    the entry was added with, Core's sigop-adjusted `GetTxSize`
+    (btclib-org/btclib-node#1357).
     """
     mempool = Mempool(Logger(debug=True))
     tx = a_tx()
-    mempool.add_tx(tx)
+    mempool.add_tx(tx, 0, tx.vsize + 7)
     node = a_node(mempool=mempool)
 
     verbose = get_raw_mempool(node, _CONN, [True])
     assert isinstance(verbose, dict)
     assert list(verbose) == [tx.id.hex()]
     assert verbose[tx.id.hex()]["wtxid"] == tx.hash.hex()
-    assert verbose[tx.id.hex()]["vsize"] == tx.vsize
+    assert verbose[tx.id.hex()]["vsize"] == tx.vsize + 7
     assert verbose[tx.id.hex()]["weight"] == tx.weight
 
 
@@ -1322,33 +1323,52 @@ def test_mempool_acceptance_reports_a_reason_for_each_refusal(
 
     Runs the same transaction against every outcome
     `verify_mempool_acceptance` can produce as a verdict on `tx` itself
-    -- accepted, an invalid script, missing prevouts -- and checks each
-    is reported as its own entry rather than raising. A fault that is
-    neither of those two is a different test, below
-    (btclib-org/btclib-node#668): it is not one of `tx`'s own verdicts.
+    -- accepted, a refusal in Core's words, a missing input -- and checks
+    each is reported as its own entry rather than raising, as Core
+    reports it: a reason and its details, but "missing-inputs" alone
+    (btclib-org/btclib-node#1328). A fault that is none of those is a
+    different test, below (btclib-org/btclib-node#668): it is not one of
+    `tx`'s own verdicts.
     """
     tx = a_tx()
     raw = tx.serialize(include_witness=True).hex()
 
-    outcomes: dict[str, Exception | None] = {
-        "accepted": None,
-        "Invalid signatures or script": BTClibValueError("no"),
-        "Missing prevouts": MissingPrevoutError(),
+    outcomes: dict[str, tuple[Exception | None, dict[str, Any]]] = {
+        "accepted": (None, {"allowed": True}),
+        "refused": (
+            TxRejectedError("non-final"),
+            {
+                "allowed": False,
+                "reject-reason": "non-final",
+                "reject-details": "non-final",
+            },
+        ),
+        "missing": (
+            MissingPrevoutError(),
+            {"allowed": False, "reject-reason": "missing-inputs"},
+        ),
     }
-    for reason, error in outcomes.items():
+    for name, (error, expected) in outcomes.items():
 
-        def verify(node: Any, tx: Any, error: Exception | None = error) -> None:
+        def verify(
+            node: Any, tx: Any, error: Exception | None = error
+        ) -> MempoolAcceptance:
             if error is not None:
                 raise error
+            return MempoolAcceptance(0, 81)
 
         monkeypatch.setattr(cb, "verify_mempool_acceptance", verify)
         (result,) = mempool_accept(a_node(), _CONN, [[raw]])
-        if reason == "accepted":
-            assert result["allowed"] is True
-            assert "reject-reason" not in result
+        verdict = {
+            k: v for k, v in result.items() if k not in {"txid", "wtxid", "vsize"}
+        }
+        assert verdict == expected
+        # the size verification answered, and only for an accepted one,
+        # as Core answers it (btclib-org/btclib-node#1357)
+        if name == "accepted":
+            assert result["vsize"] == 81
         else:
-            assert result["allowed"] is False
-            assert result["reject-reason"] == reason
+            assert "vsize" not in result
 
 
 def test_mempool_acceptance_propagates_a_store_error_rather_than_reporting_it(
@@ -1425,7 +1445,9 @@ def test_an_array_outside_one_to_twenty_five_is_refused(count: int) -> None:
 
 def test_twenty_five_rawtxs_are_each_answered(monkeypatch: pytest.MonkeyPatch) -> None:
     """The bound's own edge is inside it."""
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
+    monkeypatch.setattr(
+        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, 0)
+    )
     raw = a_tx().serialize(include_witness=True).hex()
     assert len(mempool_accept(a_node(), _CONN, [[raw] * 25])) == 25
 
@@ -1518,9 +1540,12 @@ def test_a_relayed_transaction_is_answered_with_its_txid(
     """`sendrawtransaction` adds an accepted transaction and broadcasts it.
 
     Answers its own txid, adds it to the mempool, and announces it to
-    peers.
+    peers, at the vsize verification answered
+    (btclib-org/btclib-node#1357).
     """
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 1000)
+    monkeypatch.setattr(
+        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(1000, 999)
+    )
     tx = a_tx()
     mempool = Mempool(Logger(debug=True))
     broadcast: list[Tx] = []
@@ -1533,6 +1558,7 @@ def test_a_relayed_transaction_is_answered_with_its_txid(
     )
     assert mempool.contains_tx(tx)
     assert mempool.fees[tx.hash] == 1000
+    assert mempool.vsizes[tx.hash] == 999
     assert broadcast == [tx]
 
 
@@ -1604,7 +1630,9 @@ def test_a_transaction_the_mempool_will_not_have_is_not_reported_relayed(
     """`sendrawtransaction` does not report or broadcast a missing-prevouts tx.
 
     A refusal is not answered with the txid of a transaction this node
-    has neither kept nor sent (issue #83).
+    has neither kept nor sent (issue #83). `bitcoind` v31.1 on regtest
+    answers a spend of an unknown txid `-25`
+    "bad-txns-inputs-missingorspent" (btclib-org/btclib-node#1328).
     """
 
     def missing(node: Any, transaction: Any) -> NoReturn:
@@ -1620,7 +1648,7 @@ def test_a_transaction_the_mempool_will_not_have_is_not_reported_relayed(
     with pytest.raises(RpcError) as raised:
         send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
     assert raised.value.code == RPCErrorCode.VERIFY_ERROR
-    assert raised.value.message == "Missing prevouts"
+    assert raised.value.message == "bad-txns-inputs-missingorspent"
     assert not mempool.contains_tx(tx)
     assert broadcast == []
 
@@ -1640,7 +1668,11 @@ def test_a_transaction_a_full_mempool_cannot_keep_is_refused_not_relayed(
     # Answering with tx.id.hex() regardless would tell the caller this
     # transaction was kept when it was not, the same defect #277 fixed on
     # the peer-to-peer path. btclib-org/btclib-node#293
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 1000)
+    monkeypatch.setattr(
+        cb,
+        "verify_mempool_acceptance",
+        lambda node, tx: MempoolAcceptance(1000, tx.vsize),
+    )
     tx = a_tx()
     mempool = Mempool(Logger(debug=True))
     mempool.bytesize_limit = 0
@@ -1651,7 +1683,7 @@ def test_a_transaction_a_full_mempool_cannot_keep_is_refused_not_relayed(
     with pytest.raises(RpcError) as raised:
         send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
     assert raised.value.code == RPCErrorCode.VERIFY_REJECTED
-    assert raised.value.message == "Mempool is full"
+    assert raised.value.message == "mempool full"
     assert not mempool.contains_tx(tx)
     assert broadcast == []
 
@@ -1668,7 +1700,11 @@ def test_resubmitting_a_transaction_already_held_is_tolerated_even_when_the_memp
     # mempool (node/transaction.cpp, at bitcoin/bitcoin@58a7869f86):
     # resubmission is reannounced rather than refused for a fullness
     # this particular submission did not cause
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 1000)
+    monkeypatch.setattr(
+        cb,
+        "verify_mempool_acceptance",
+        lambda node, tx: MempoolAcceptance(1000, tx.vsize),
+    )
     tx = a_tx()
     mempool = Mempool(Logger(debug=True))
     mempool.add_tx(tx, 1000)
@@ -1703,7 +1739,11 @@ def test_a_resubmission_under_a_different_witness_is_also_tolerated_when_full(
     # this transaction." The guard has to be txid-keyed
     # (Mempool.txid_index) to reannounce here instead of refusing a
     # fullness this resubmission did not cause.
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 1000)
+    monkeypatch.setattr(
+        cb,
+        "verify_mempool_acceptance",
+        lambda node, tx: MempoolAcceptance(1000, tx.vsize),
+    )
     held = a_tx()
     resubmitted = replace(
         held, vin=[replace(held.vin[0], script_witness=Witness([b"\x22" * 8]))]
@@ -1744,7 +1784,11 @@ def test_a_resubmission_under_a_different_witness_is_reannounced_by_wtxid_even_w
     # the same substitution, off the full-mempool guard entirely: a
     # resubmission's own wtxid is never what add_tx stored, whether or
     # not the mempool happens to be full
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 1000)
+    monkeypatch.setattr(
+        cb,
+        "verify_mempool_acceptance",
+        lambda node, tx: MempoolAcceptance(1000, tx.vsize),
+    )
     held = a_tx()
     resubmitted = replace(
         held, vin=[replace(held.vin[0], script_witness=Witness([b"\x22" * 8]))]
@@ -2695,11 +2739,14 @@ def test_a_transaction_whose_scripts_do_not_verify_is_answered_with_the_refusal(
 ) -> None:
     """`sendrawtransaction` answers VERIFY_REJECTED for a bad-script tx.
 
-    Does not add it to the mempool or broadcast it.
+    Does not add it to the mempool or broadcast it, and answers Core's
+    reason and details (btclib-org/btclib-node#1328).
     """
+    reason = "mempool-script-verify-flag-failed (no)"
+    details = "input 0 of 00 (wtxid 00), spending 00:0"
 
     def invalid(node: Any, transaction: Any) -> NoReturn:
-        raise BTClibValueError("no")
+        raise TxRejectedError(reason, details)
 
     monkeypatch.setattr(cb, "verify_mempool_acceptance", invalid)
     tx = a_tx()
@@ -2711,7 +2758,7 @@ def test_a_transaction_whose_scripts_do_not_verify_is_answered_with_the_refusal(
     with pytest.raises(RpcError) as raised:
         send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
     assert raised.value.code == RPCErrorCode.VERIFY_REJECTED
-    assert raised.value.message == "Invalid signatures or script"
+    assert raised.value.message == f"{reason}, {details}"
     assert not mempool.contains_tx(tx)
     assert broadcast == []
 
@@ -2769,7 +2816,7 @@ def a_node_holding(
     held = generate_random_transaction(funding.id, value=funding.vout[0].value - fee)
     # `bypass_limits`, as a reorg re-adds a transaction: no floor at all
     assert node.mempool.add_tx(
-        held, verify_mempool_acceptance(node, held, bypass_limits=True)
+        held, *verify_mempool_acceptance(node, held, bypass_limits=True)
     )
     announced: list[tuple[bytes, int]] = []
     monkeypatch.setattr(
@@ -2800,6 +2847,51 @@ def test_a_held_transaction_is_reannounced_not_judged_again(
         raw = resubmitted.serialize(include_witness=True).hex()
         assert send_raw_transaction(node, _CONN, [raw]) == held.id.hex()
     assert announced == [(held.hash, 0), (held.hash, 0)]
+
+
+def a_twin(held: Tx) -> Tx:
+    """Return `held` under another witness: its txid, another wtxid."""
+    twin = Tx.parse(held.serialize(include_witness=True))
+    twin.vin[0].script_witness = Witness([b"\x01"])
+    assert twin.id == held.id
+    assert twin.hash != held.hash
+    return twin
+
+
+def test_testmempoolaccept_refuses_a_held_txid_in_core_s_words(
+    regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A txid already held is refused as held, not as its own conflict.
+
+    Core's `PreChecks` refuses it ahead of the conflict checks, as
+    bitcoind v31.1 answers on regtest: "txn-already-in-mempool" for the
+    same wtxid, "txn-same-nonwitness-data-in-mempool" for another
+    witness, each its own reject-details. btclib-org/btclib-node#1244
+    """
+    node, held, _ = a_node_holding(regtest_node, monkeypatch, 1_000)
+    answers = [
+        mempool_accept(node, _CONN, [[t.serialize(include_witness=True).hex()]])[0]
+        for t in (held, a_twin(held))
+    ]
+    assert [(a["reject-reason"], a["reject-details"]) for a in answers] == [
+        ("txn-already-in-mempool",) * 2,
+        ("txn-same-nonwitness-data-in-mempool",) * 2,
+    ]
+
+
+def test_a_held_fee_free_transaction_is_refused_as_held_not_for_its_fee(
+    regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The held check comes before the fee floor, as in Core's `PreChecks`.
+
+    A fee-free transaction a reorg re-added, put to `testmempoolaccept`,
+    is "txn-already-in-mempool" and not "min relay fee not met".
+    btclib-org/btclib-node#1244
+    """
+    node, held, _ = a_node_holding(regtest_node, monkeypatch, 0)
+    raw = held.serialize(include_witness=True).hex()
+    (answer,) = mempool_accept(node, _CONN, [[raw]])
+    assert answer["reject-reason"] == "txn-already-in-mempool"
 
 
 def test_a_held_transaction_under_a_risen_minimum_is_reannounced(

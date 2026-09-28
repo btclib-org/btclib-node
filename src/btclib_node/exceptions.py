@@ -83,7 +83,37 @@ class MissingPrevoutError(ValueError):
     """
 
 
-class NonStandardTxError(BTClibValueError):
+class TxRejectedError(BTClibValueError):
+    """A mempool candidate refused with one of Core's own reject reasons.
+
+    `reason` is `ValidationState::GetRejectReason` and `details` its
+    debug message; `str()` is `ToString`, the two joined by ", ", or the
+    reason alone where there is no debug message
+    (`src/consensus/validation.h`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag). `rpc.callbacks` answers `testmempoolaccept`'s
+    `reject-reason` and `reject-details` with them, and
+    `sendrawtransaction`'s `-26` with `str()`. `BTClibValueError`, so
+    `p2p.callbacks.tx` records it as it records any other refusal, a fee
+    floor's included, until the next block. Core returns a fee floor's
+    as `TX_RECONSIDERABLE` and keeps it in a filter of its own,
+    `RecentRejectsReconsiderableFilter`, and `ReceivedTx`
+    (`src/node/txdownloadman_impl.cpp`, same tag) does consult it -- but
+    only to refuse resubmitting that tx by itself again while it looks
+    for a 1p1c package through `Find1P1CPackage`. This tree has no
+    package path for that filter to serve, so one reject cache covers
+    both. `details` defaults to empty for a reason Core's own checks
+    never attach a debug message to (`non-final`,
+    `txn-already-in-mempool`), matching `ToString`'s own fallback
+    rather than printing a trailing ", ".
+    """
+
+    def __init__(self, reason: str, details: str = "") -> None:
+        super().__init__(f"{reason}, {details}" if details else reason)
+        self.reason = reason
+        self.details = details
+
+
+class NonStandardTxError(TxRejectedError):
     """A mempool candidate the relay rules refuse and the consensus rules take.
 
     Raised only by `interpreter.check_transaction`, for a candidate that
@@ -98,40 +128,11 @@ class NonStandardTxError(BTClibValueError):
     and `p2p.callbacks.tx` is what honours it, catching this and
     dropping the transaction alone.
 
-    `BTClibValueError`, so that both RPC paths answer this through the
-    clause they already answer a refused candidate with:
-    `rpc.callbacks.test_mempool_accept` reports the entry not allowed
-    and `send_raw_transaction` answers `VERIFY_REJECTED`. Not a
-    `MisbehavingError`, so `p2p.main.handle_p2p` would not discourage
-    the peer for it either, and `tx`'s catch is what records the
-    refusal.
+    A `TxRejectedError`, so both RPC paths answer it in Core's words,
+    as they answer any other refusal. Not a `MisbehavingError`, so
+    `p2p.main.handle_p2p` would not discourage the peer for it either,
+    and `tx`'s catch is what records the refusal.
     """
-
-
-class TxRejectedError(BTClibValueError):
-    """A mempool candidate refused with one of Core's own reject reasons.
-
-    `reason` is `ValidationState::GetRejectReason` and `details` its
-    debug message; `str()` is `ToString`, the two joined by ", "
-    (`src/consensus/validation.h`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag). `rpc.callbacks` answers `testmempoolaccept`'s
-    `reject-reason` and `reject-details` with them, and
-    `sendrawtransaction`'s `-26` with `str()`. `BTClibValueError`, so
-    `p2p.callbacks.tx` records it as it records any other refusal, a fee
-    floor's included, until the next block. Core returns a fee floor's
-    as `TX_RECONSIDERABLE` and keeps it in a filter of its own,
-    `RecentRejectsReconsiderableFilter`, and `ReceivedTx`
-    (`src/node/txdownloadman_impl.cpp`, same tag) does consult it -- but
-    only to refuse resubmitting that tx by itself again while it looks
-    for a 1p1c package through `Find1P1CPackage`. This tree has no
-    package path for that filter to serve, so one reject cache covers
-    both.
-    """
-
-    def __init__(self, reason: str, details: str) -> None:
-        super().__init__(f"{reason}, {details}")
-        self.reason = reason
-        self.details = details
 
 
 class ChainstateInconsistencyError(RuntimeError):
