@@ -118,12 +118,12 @@ def test_redialling_the_same_endpoint_settles_onto_its_one_row() -> None:
 
     #270: `add_active_address` used to run once per handshake with no
     check for an endpoint already held, so a peer redialled inside the
-    three-hour active window grew one row per handshake instead of
+    active window grew one row per handshake instead of
     settling on the latest, the way `add_addresses`'s own `by_endpoint`
     already did for the known-address table.
     """
     # #270: add_active_address ran once per handshake, with no check for
-    # an endpoint already held, so a peer redialled inside the three-hour
+    # an endpoint already held, so a peer redialled inside the active
     # window grew one row per handshake instead of settling on the
     # latest the way add_addresses's own by_endpoint already does
     peer_db = a_peer_db()
@@ -168,7 +168,7 @@ def test_add_active_address_waits_out_a_prune_already_in_progress(
     `_active_index` and then writes into `active_addresses` at the
     position found, and `get_active_addresses` reassigns the list and
     then rebuilds the index against it -- both two statements, not one,
-    reachable respectively from `callbacks.verack` on `Node`'s thread
+    reachable respectively from `callbacks.version` on `Node`'s thread
     and `manage_connections` on `P2pManager`'s. `_reindex_active` is
     paused here, after the list has already been reassigned but before
     the index is rebuilt, which is the exact gap the finding traced --
@@ -178,14 +178,14 @@ def test_add_active_address_waits_out_a_prune_already_in_progress(
     # _active_index and then writes into active_addresses at the
     # position found, and get_active_addresses reassigns the list and
     # then rebuilds the index -- both two statements, not one, and
-    # reachable from two different threads (callbacks.verack on Node's,
+    # reachable from two different threads (callbacks.version on Node's,
     # manage_connections on P2pManager's). Paused mid-prune here rather
     # than raced on timing: `_reindex_active` is where the pause is
     # forced, after the list has already been reassigned but before the
     # index is rebuilt against it, which is the exact gap the finding
     # traced.
     peer_db = a_peer_db()
-    stale = peer_address("9.9.9.9", 1, timestamp=int(time.time()) - 3600 * 4)
+    stale = peer_address("9.9.9.9", 1, timestamp=int(time.time()) - 31 * 24 * 3600)
     peer_db.active_addresses.append(stale)
 
     entered_prune = threading.Event()
@@ -285,20 +285,34 @@ def test_add_addresses_and_random_address_do_not_interleave(
     assert known.port == 8333
 
 
-def test_an_address_not_seen_for_three_hours_stops_being_active() -> None:
-    """A stale active address is dropped by `get_active_addresses`.
+@pytest.mark.parametrize(
+    ("age", "kept"),
+    [
+        pytest.param(3600 * 4, True, id="four-hours"),
+        pytest.param(30 * 24 * 3600 - 60, True, id="inside-the-horizon"),
+        pytest.param(30 * 24 * 3600 + 60, False, id="past-the-horizon"),
+        pytest.param(-9 * 60, True, id="nine-minutes-ahead"),
+        pytest.param(-11 * 60, False, id="eleven-minutes-ahead"),
+    ],
+)
+def test_an_answered_address_is_kept_until_is_terrible_ages_it_out(
+    *, age: int, kept: bool
+) -> None:
+    """ISS 1318: `IsTerrible`'s horizon and its future bound.
 
-    Not merely hidden: checked twice, the answer excludes it and the
-    table itself no longer holds it -- a read that filtered it out
-    without pruning would pass the first assertion and fail the second.
+    Not merely hidden: checked twice, the answer excludes an aged-out
+    row and the table itself no longer holds it -- a read that filtered
+    it out without pruning would pass the first assertion and fail the
+    second.
     """
     peer_db = a_peer_db()
-    fresh = peer_address("1.2.3.4", 18444, timestamp=int(time.time()) - 3600)
-    stale = peer_address("5.6.7.8", 18444, timestamp=int(time.time()) - 3600 * 4)
-    peer_db.active_addresses += [fresh, stale]
-    assert peer_db.get_active_addresses() == [fresh]
-    # and it is dropped, not merely left out of the answer
-    assert peer_db.active_addresses == [fresh]
+    now = int(time.time())
+    fresh = peer_address("1.2.3.4", 18444, timestamp=now - 3600)
+    other = peer_address("5.6.7.8", 18444, timestamp=now - age)
+    peer_db.active_addresses += [fresh, other]
+    expected = [fresh, other] if kept else [fresh]
+    assert peer_db.get_active_addresses() == expected
+    assert peer_db.active_addresses == expected
 
 
 def test_the_two_ip_networks_are_told_apart_by_the_text_of_the_address() -> None:
@@ -535,17 +549,28 @@ def test_a_refused_dial_does_not_cost_the_full_timeout() -> None:
     assert time.monotonic() - start < address_module._DIAL_TIMEOUT - 1.0
 
 
+def a_seed_host(name: str) -> str:
+    """Return the `x9.` subdomain `get_addr_from_dns` asks of seed `name`.
+
+    `int(SEEDS_SERVICE_FLAGS)` is 9, `NODE_NETWORK | NODE_WITNESS`.
+    """
+    return f"x{int(SEEDS_SERVICE_FLAGS):x}.{name}"
+
+
 class FakeLoop:
     """A `getaddrinfo` stand-in answering fixed hosts, no real DNS query."""
 
     def __init__(self, answers: dict[str, Exception | list[str]]) -> None:
         """Record what each host name should answer with, or raise."""
         self.answers = answers
+        self.requested: list[str] = []
 
     async def getaddrinfo(
-        self, host: str, port: int
+        self, host: str, port: int, **kwargs: object
     ) -> list[tuple[None, None, None, None, tuple[str, int]]]:
         """Answer `host` from `self.answers`, in `getaddrinfo`'s own shape."""
+        assert kwargs.get("type") == socket.SOCK_STREAM
+        self.requested.append(host)
         answer = self.answers[host]
         if isinstance(answer, Exception):
             raise answer
@@ -569,28 +594,45 @@ def a_seed_answer(ip: str) -> NetworkAddressV2:
     return peer_address(ip, 18444, services=SEEDS_SERVICE_FLAGS)
 
 
-def test_the_seeds_that_answer_fill_the_table_and_the_rest_are_passed_over(
+def test_the_seeds_that_answer_fill_the_table_and_the_rest_are_returned(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A seed lookup that fails is skipped; one that answers fills the table.
+    """A seed's `x9.` that fails is returned; a winner fills the table.
 
-    `down.example` raises `gaierror` and contributes nothing; every
-    address `up.example` answers with lands in `peer_db.addresses`, on
-    the chain's own port, `18444`, and not `8333`.
+    `down.example`'s subdomain raises `gaierror` and contributes nothing
+    to the table, but is named in the returned list, for
+    `P2pManager` to queue as an addr-fetch; every address
+    `up.example`'s subdomain answers with lands in `peer_db.addresses`,
+    on the chain's own port, `18444`, and not `8333`.
     """
     peer_db = a_peer_db(a_chain(["down.example", "up.example"]))
     loop = FakeLoop(
         {
-            "down.example": socket.gaierror("no such host"),
-            "up.example": ["1.2.3.4", "5.6.7.8"],
+            a_seed_host("down.example"): socket.gaierror("no such host"),
+            a_seed_host("up.example"): ["1.2.3.4", "5.6.7.8"],
         }
     )
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
-    asyncio.run(peer_db.get_addr_from_dns())
+    unanswered = asyncio.run(peer_db.get_addr_from_dns())
+    assert unanswered == ["down.example"]
     assert peer_db.addresses == {
         a_seed_answer("1.2.3.4"),
         a_seed_answer("5.6.7.8"),
     }
+    # the bare name is never asked: only the `x9.` subdomain is
+    assert loop.requested == [a_seed_host("down.example"), a_seed_host("up.example")]
+
+
+def test_a_seed_answering_nothing_is_returned_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty answer, not only a `gaierror`, is "answered nothing"."""
+    peer_db = a_peer_db(a_chain(["empty.example"]))
+    loop = FakeLoop({a_seed_host("empty.example"): []})
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
+    unanswered = asyncio.run(peer_db.get_addr_from_dns())
+    assert unanswered == ["empty.example"]
+    assert peer_db.addresses == set()
 
 
 def test_every_seed_that_answers_is_taken_and_a_host_two_of_them_share_is_one(
@@ -609,12 +651,13 @@ def test_every_seed_that_answers_is_taken_and_a_host_two_of_them_share_is_one(
     peer_db = a_peer_db(a_chain(["one.example", "two.example"]))
     loop = FakeLoop(
         {
-            "one.example": ["1.2.3.4", "5.6.7.8"],
-            "two.example": ["5.6.7.8", "9.10.11.12"],
+            a_seed_host("one.example"): ["1.2.3.4", "5.6.7.8"],
+            a_seed_host("two.example"): ["5.6.7.8", "9.10.11.12"],
         }
     )
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
-    asyncio.run(peer_db.get_addr_from_dns())
+    unanswered = asyncio.run(peer_db.get_addr_from_dns())
+    assert unanswered == []
     assert peer_db.addresses == {
         a_seed_answer("1.2.3.4"),
         a_seed_answer("5.6.7.8"),
@@ -622,13 +665,27 @@ def test_every_seed_that_answers_is_taken_and_a_host_two_of_them_share_is_one(
     }
 
 
+def test_a_seed_answering_past_the_cap_is_taken_only_up_to_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """At most 32 of a seed's answers are kept, Core's own `nMaxIPs`."""
+    peer_db = a_peer_db(a_chain(["many.example"]))
+    ips = [f"1.2.{i}.4" for i in range(40)]
+    loop = FakeLoop({a_seed_host("many.example"): ips})
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
+    unanswered = asyncio.run(peer_db.get_addr_from_dns())
+    assert unanswered == []
+    assert len(peer_db.addresses) == 32
+
+
 class FakeIpv6Loop:
     """A `getaddrinfo` stand-in answering the real shape a AAAA record gives."""
 
     async def getaddrinfo(
-        self, host: str, port: int
+        self, host: str, port: int, **kwargs: object
     ) -> list[tuple[int, int, int, str, tuple[str, int, int, int]]]:
         """Answer with a sockaddr of four fields, as a real AAAA lookup does."""
+        assert kwargs.get("type") == socket.SOCK_STREAM
         # what a AAAA record resolves to: a sockaddr of four fields
         # rather than two, the flow info and the scope id being the two
         # a peer table has nowhere to put
@@ -649,7 +706,7 @@ def test_a_seed_answering_with_ipv6_gives_up_its_host_and_its_port(
     """
     peer_db = a_peer_db(a_chain(["v6.example"]))
     monkeypatch.setattr(asyncio, "get_running_loop", FakeIpv6Loop)
-    asyncio.run(peer_db.get_addr_from_dns())
+    assert asyncio.run(peer_db.get_addr_from_dns()) == []
     assert peer_db.addresses == {a_seed_answer("2a01:4f8::1")}
 
 
@@ -676,7 +733,7 @@ def test_a_node_that_already_knows_peers_does_not_ask_the_seeds(
     monkeypatch.setattr(
         asyncio, "get_running_loop", lambda: pytest.fail("asked the seeds")
     )
-    asyncio.run(peer_db.get_addr_from_dns())
+    assert asyncio.run(peer_db.get_addr_from_dns()) == []
 
 
 def test_an_address_is_drawn_from_the_ones_that_can_be_dialled() -> None:
@@ -1223,24 +1280,47 @@ def test_a_store_with_a_recently_answered_address_skips_the_seeds(
 def test_a_stale_answered_address_no_longer_holds_off_the_seeds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An active address recorded four hours ago no longer skips the seeds.
+    """An active address recorded past the horizon no longer skips the seeds.
 
-    `time.time` is patched to four hours in the past only for the
+    `time.time` is patched to 31 days in the past only for the
     `add_active_address` call, so the row is written stale rather than
     aged after the fact; a fresh `PeerDB` on the same store reads it
-    back past the three-hour active window and asks the seeds anyway.
+    back past `_ADDRMAN_HORIZON` and asks the seeds anyway.
     """
     first = a_peer_db(data_dir=tmp_path)
     stale = peer_address("1.2.3.4", 8333)
-    four_hours_ago = time.time() - 3600 * 4
+    past_the_horizon = time.time() - 31 * 24 * 3600
     with monkeypatch.context() as patch:
-        patch.setattr(time, "time", lambda: four_hours_ago)
+        patch.setattr(time, "time", lambda: past_the_horizon)
         first.add_addresses([stale])
         first.add_active_address(stale)
     first.close()
 
     second = a_peer_db(data_dir=tmp_path)
     assert second.ask_dns_nodes
+    second.close()
+
+
+def test_a_store_answered_a_day_ago_still_skips_the_seeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1318: a node down for a day restarts with its answered rows.
+
+    Core's tried table survives a restart of any length under
+    `ADDRMAN_HORIZON`, so the store is not treated as empty.
+    """
+    first = a_peer_db(data_dir=tmp_path)
+    answered = peer_address("1.2.3.4", 8333)
+    a_day_ago = time.time() - 24 * 3600
+    with monkeypatch.context() as patch:
+        patch.setattr(time, "time", lambda: a_day_ago)
+        first.add_addresses([answered])
+        first.add_active_address(answered)
+    first.close()
+
+    second = a_peer_db(data_dir=tmp_path)
+    assert not second.ask_dns_nodes
+    assert [a.address for a in second.get_active_addresses()] == [answered.address]
     second.close()
 
 
@@ -1260,9 +1340,9 @@ def test_get_active_addresses_deletes_a_stale_row_from_the_store(
     # `known-` ones
     peer_db = a_peer_db(data_dir=tmp_path)
     stale = peer_address("1.2.3.4", 8333)
-    four_hours_ago = time.time() - 3600 * 4
+    past_the_horizon = time.time() - 31 * 24 * 3600
     with monkeypatch.context() as patch:
-        patch.setattr(time, "time", lambda: four_hours_ago)
+        patch.setattr(time, "time", lambda: past_the_horizon)
         peer_db.add_addresses([stale])
         peer_db.add_active_address(stale)
     assert peer_db.db is not None
@@ -1286,9 +1366,9 @@ def test_a_stale_answered_row_does_not_survive_a_restart(
     """
     first = a_peer_db(data_dir=tmp_path)
     stale = peer_address("1.2.3.4", 8333)
-    four_hours_ago = time.time() - 3600 * 4
+    past_the_horizon = time.time() - 31 * 24 * 3600
     with monkeypatch.context() as patch:
-        patch.setattr(time, "time", lambda: four_hours_ago)
+        patch.setattr(time, "time", lambda: past_the_horizon)
         first.add_addresses([stale])
         first.add_active_address(stale)
     first.close()
@@ -1572,7 +1652,7 @@ def test_a_read_that_prunes_nothing_does_not_rebuild_the_index(
     with the kept endpoint still settles onto its own row.
     """
     peer_db = a_peer_db()
-    stale = peer_address("9.9.9.9", 1, timestamp=int(time.time()) - 3600 * 4)
+    stale = peer_address("9.9.9.9", 1, timestamp=int(time.time()) - 31 * 24 * 3600)
     kept = peer_address("1.2.3.4", 18444)
     rebuilt: list[None] = []
     real_reindex = peer_db._reindex_active

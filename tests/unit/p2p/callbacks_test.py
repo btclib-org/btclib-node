@@ -499,9 +499,6 @@ def a_parsed_version(
     services: ServiceFlags = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS,
     nonce: int = 7,
     relay: bool | None = True,
-    # a different host than "1.2.3.4", a_peer()'s own address: proof
-    # that verack takes only the port from here, for an inbound peer,
-    # and not the address -- btclib-org/btclib-node#70
     addr_from_port: int = 18444,
 ) -> Version:
     """Return the parsed `Version` `a_version` serializes, for field reads."""
@@ -573,10 +570,11 @@ def a_peer(**attributes: Any) -> Any:
         # `P2pManager.create_connection` sets for a peer it drew itself
         automatic=False,
         # what `Connection` starts every connection at, and what
-        # `P2pManager.create_connection` sets for a block-relay-only one
-        # or a feeler
+        # `P2pManager.create_connection` sets for a block-relay-only one,
+        # a feeler or an addr-fetch connection
         block_relay=False,
         feeler=False,
+        addr_fetch=False,
         address=peer_address("1.2.3.4", 18444),
         stats=PeerStats(),
         # what `Connection` starts every connection at, and what
@@ -801,13 +799,66 @@ def test_a_peer_at_or_above_the_floor_is_kept_without_wtxid_relay(
     assert commands(peer) == sent
 
 
-def test_a_peer_without_the_witness_service_is_let_go() -> None:
-    """A peer never advertising `NODE_WITNESS` is refused, not discouraged."""
+def test_a_peer_drawn_without_the_witness_service_is_let_go() -> None:
+    """A drawn peer without `NODE_WITNESS` is refused, not discouraged.
+
+    ISS 1138: before this node wants blocks too, `NODE_WITNESS` being in
+    every set Core's `GetDesirableServiceFlags` answers.
+    """
     node = a_handshake_node()
-    peer = a_peer()
+    assert node.status < NodeStatus.BlockSynced
+    peer = a_peer(automatic=True)
     version(node, a_version(services=ServiceFlags.NODE_NETWORK), peer)
     assert peer.stopped == [True]
     assert not node.p2p_manager.discouraged  # ISS 1090
+
+
+def test_an_addr_fetch_peer_without_the_witness_service_is_let_go() -> None:
+    """An addr-fetch peer is `_expects_services` too, `automatic` or not.
+
+    `ExpectServicesFromConn` (`src/net.h:838-848`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) is `true` for `ADDR_FETCH`,
+    and `P2pManager.create_connection` gives such a peer `automatic=False`
+    (btclib-org/btclib-node#1284) -- so this refusal would miss it
+    entirely without `_expects_services` covering `conn.addr_fetch` too.
+    """
+    node = a_handshake_node()
+    assert node.status < NodeStatus.BlockSynced
+    peer = a_peer(addr_fetch=True)
+    version(node, a_version(services=ServiceFlags.NODE_NETWORK), peer)
+    assert peer.stopped == [True]
+    assert not node.p2p_manager.discouraged  # ISS 1090
+
+
+def test_an_addr_fetch_peer_with_neither_service_is_dropped_once_synced() -> None:
+    """An addr-fetch peer missing every wanted service is refused too.
+
+    The `has_all_desirable_services` half of the same gap: `_refuses`'s
+    second services check reaches an addr-fetch connection exactly as
+    the first one above does.
+    """
+    pruned = ServiceFlags.NODE_WITNESS
+    node = a_handshake_node(status=NodeStatus.BlockSynced)
+    peer = a_peer(addr_fetch=True)
+    version(node, a_version(services=pruned), peer)
+    assert peer.stopped == [True]
+    assert not node.p2p_manager.discouraged
+
+
+@pytest.mark.parametrize("inbound", [True, False], ids=["inbound", "manual"])
+def test_a_peer_not_drawn_is_kept_without_the_witness_service(*, inbound: bool) -> None:
+    """ISS 1138: Core's `ExpectServicesFromConn` is false for either kind.
+
+    A manual peer is outbound and not block-relay-only, so `version`
+    sends it a `getaddr` (ISS 1178) whichever service it lacks; an
+    inbound one gets none.
+    """
+    node = a_handshake_node()
+    peer = a_peer(inbound=inbound)
+    version(node, a_version(services=ServiceFlags.NODE_NETWORK), peer)
+    assert not peer.stopped
+    assert commands(peer)[-1] == ("Verack" if inbound else "GetAddr")
+    assert not peer.has_all_wanted_services
 
 
 def test_a_pruned_peer_is_let_go_only_once_the_blocks_are_synced() -> None:
@@ -1129,81 +1180,111 @@ def test_a_verack_below_short_ids_blocks_version_sends_no_sendcmpct() -> None:
 # btclib-org/btclib-node#275
 
 
-def test_an_outbound_handshake_records_the_address_dialled() -> None:
-    """A completed outbound handshake records the address this node dialled.
+def test_a_dialled_peer_is_recorded_as_answered_at_its_own_version() -> None:
+    """ISS 1229: Core's `AddrMan::Good` runs in the `VERSION` handler.
 
-    #70: evidence this node dialled it and a socket answered, not the
-    peer's own unauthenticated word for its address, and the live
-    handshake's own services rather than whatever an earlier gossip of
-    the same peer happened to carry.
+    Not at this connection's own `verack`, which nothing here calls: a
+    peer this node dialled is recorded once its `version` is kept, the
+    same point Core's `net_processing.cpp` calls `Good` at (right after
+    the `verack` this node just pushed, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag). #70: evidence this node dialled it and a socket
+    answered, not the peer's own unauthenticated word for its address,
+    and the live handshake's own services rather than whatever an
+    earlier gossip of the same peer happened to carry.
     """
     # #70: evidence this node dialled it and a socket answered, not the
     # peer's own unauthenticated word for its address
     dialled = peer_address("1.2.3.4", 18444)
-    peer = a_peer(
-        version_message=a_parsed_version(services=ServiceFlags.NODE_NETWORK),
-        wtxidrelay_received=True,
-        inbound=False,
-        address=dialled,
-    )
     peer_db = PeerDB(cast("Chain", None), cast("Path", None))
     # gossiped first: `add_active_address` records a known endpoint alone
     peer_db.add_addresses([dialled])
-    verack(a_handshake_node(peer_db=peer_db), b"", peer)
+    peer = a_peer(inbound=False, address=dialled)
+    services = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
+    version(a_handshake_node(peer_db=peer_db), a_version(services=services), peer)
     (recorded,) = peer_db.active_addresses
     assert recorded.address == dialled.address
     assert recorded.port == dialled.port
     # the live handshake's own services, not whatever the address was
     # last recorded with
-    assert recorded.services == ServiceFlags.NODE_NETWORK
-    # and the connection's own idea of its peer moves to the same
-    # endpoint, or manager.py's already-connected check keeps comparing
-    # against the address dialled with -- never what a later gossip of
-    # this same peer draws back
+    assert recorded.services == services
+    # and the connection's own address takes the same services, at the
+    # endpoint it was dialled at, or manager.py's already-connected
+    # check keeps comparing against a stale services value -- never
+    # what a later gossip of this same peer draws back
+    assert peer.address.services == services
     assert endpoint_key(peer.address) == endpoint_key(recorded)
 
 
-def test_an_inbound_handshake_records_the_peers_announced_port() -> None:
-    """An inbound handshake records the port the peer's own `version` names.
+@pytest.mark.parametrize(
+    "refused",
+    [
+        a_version(protocol=MIN_PEER_PROTO_VERSION - 1),
+        a_version(services=ServiceFlags.NODE_NETWORK),
+    ],
+    ids=["too old", "no witness"],
+)
+def test_a_dialled_peer_refused_in_version_is_not_recorded(refused: bytes) -> None:
+    """ISS 1229: Core's own refusals return ahead of `AddrMan::Good`.
 
-    #70: `sock_accept`'s own port is the peer's ephemeral one, never one
-    anything could dial back on -- only the peer's own `addr_from` names
-    a listening port, and it is that port, not the ephemeral one, that
-    is recorded.
+    `nVersion < MIN_PEER_PROTO_VERSION` and a missing desired service
+    both disconnect and return before `ProcessMessage`'s own `VERSION`
+    handling reaches `m_addrman.Good` (`net_processing.cpp:3790`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag); this tree's own two
+    matching refusals, above, return before the same point. The peer is
+    one this node drew itself, the only kind Core's
+    `ExpectServicesFromConn` refuses for a missing service.
     """
-    # #70: sock_accept's own port is the peer's ephemeral one, never one
-    # anything could dial back on -- only the peer's own version names a
-    # listening port
+    dialled = peer_address("1.2.3.4", 18444)
+    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+    # known, so that it would be recorded if this refusal did not stop it
+    peer_db.add_addresses([dialled])
+    peer = a_peer(inbound=False, automatic=True, address=dialled)
+    version(a_handshake_node(peer_db=peer_db), refused, peer)
+    assert peer_db.active_addresses == []
+
+
+def test_an_inbound_peer_completing_version_is_not_recorded() -> None:
+    """ISS 1229: `version`'s own recording is `not conn.inbound`-gated too.
+
+    `AddrMan::Good` runs under `!pfrom.IsInboundConn()` alone
+    (`net_processing.cpp:3790`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag); an inbound peer reaches the same point in this callback --
+    none of `_refuses`'s checks single it out -- and must still not be
+    recorded, which nothing calling `verack` on an inbound peer alone
+    can show, since this callback never reaches that point for one.
+    """
+    accepted = peer_address("1.2.3.4", 18444)
+    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+    # known, so that it would be recorded if the inbound exclusion did not
+    peer_db.add_addresses([accepted])
+    peer = a_peer(inbound=True, address=accepted)
+    version(a_handshake_node(peer_db=peer_db), a_version(), peer)
+    assert peer_db.active_addresses == []
+
+
+def test_an_inbound_handshake_keeps_its_own_address_and_is_not_recorded() -> None:
+    """ISS 1229: Core calls `AddrMan::Good` for a peer it dialled alone.
+
+    An inbound connection proves only that the peer reaches this node,
+    not that this node can reach it back, so its endpoint stays out of
+    the answered table even where the gossiped table already holds it.
+    `conn.address` stays the socket's, the ephemeral port included, as
+    Core's `CNode::addr` does -- `verack` no longer moves it to the
+    port the peer's `version` names, `manager.py`'s `already_connected`
+    now comparing by host and not needing it (ISS 1304).
+    """
     accepted = peer_address("1.2.3.4", 55555)
+    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+    # both endpoints known, so that either would be recorded if asked
+    peer_db.add_addresses([accepted, replace(accepted, port=8333)])
     peer = a_peer(
         version_message=a_parsed_version(addr_from_port=8333),
         wtxidrelay_received=True,
         inbound=True,
         address=accepted,
     )
-    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
-    # gossiped first: `add_active_address` records a known endpoint alone
-    peer_db.add_addresses([replace(accepted, port=8333)])
     verack(a_handshake_node(peer_db=peer_db), b"", peer)
-    (recorded,) = peer_db.active_addresses
-    # the accepted connection's own address, proven reachable by the TCP
-    # handshake -- and not addr_from's own "5.6.7.8", which nothing here
-    # ever connected to
-    assert recorded.address == accepted.address
-    assert recorded.port == 8333
-    assert endpoint_key(peer.address) == endpoint_key(recorded)
-
-
-def test_an_inbound_peer_naming_no_port_is_not_recorded() -> None:
-    """#70: a `version` naming port zero is not evidence of a listening one."""
-    # #70: a port of zero is not evidence of a listening one
-    peer = a_peer(
-        version_message=a_parsed_version(addr_from_port=0),
-        wtxidrelay_received=True,
-        inbound=True,
-    )
-    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
-    verack(a_handshake_node(peer_db=peer_db), b"", peer)
+    assert peer.address == accepted
     assert peer_db.active_addresses == []
 
 
@@ -1501,6 +1582,53 @@ def test_the_addresses_a_peer_sends_are_kept() -> None:
         # translated back into one; and without the timestamp the peer
         # quoted, which is PeerDB.add_addresses' doing
         assert peer_db.addresses == {replace(address, timestamp=0) for address in given}
+
+
+def test_an_addr_fetch_peer_is_stopped_once_it_answers_with_more_than_one() -> None:
+    """ISS 1284: "to avoid disconnecting on self-announcements", Core's line.
+
+    Both addresses still land in the table -- Core's own `m_addrman.Add`
+    runs before the disconnect check -- through `addr` and `addrv2` alike.
+    """
+    given = [a_gossiped_address("1.2.3.4"), a_gossiped_address("1.2.3.5")]
+    for callback, message in (
+        (addr, Addr([addr_entry(address) for address in given])),
+        (addrv2, AddrV2(given)),
+    ):
+        peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+        node = a_handshake_node(peer_db=peer_db)
+        peer = a_gossiping_peer(addr_fetch=True)
+        callback(node, message.serialize(), peer)
+        assert peer.stopped
+        assert peer_db.addresses == {replace(address, timestamp=0) for address in given}
+
+
+def test_an_addr_fetch_peer_answering_with_one_address_is_kept() -> None:
+    """The negative half: "self-announcements" are exactly one address."""
+    given = [a_gossiped_address("1.2.3.4")]
+    for callback, message in (
+        (addr, Addr([addr_entry(address) for address in given])),
+        (addrv2, AddrV2(given)),
+    ):
+        peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+        node = a_handshake_node(peer_db=peer_db)
+        peer = a_gossiping_peer(addr_fetch=True)
+        callback(node, message.serialize(), peer)
+        assert not peer.stopped
+
+
+def test_an_ordinary_peer_answering_with_more_than_one_is_not_stopped() -> None:
+    """The other negative half: only an addr-fetch connection drops this way."""
+    given = [a_gossiped_address("1.2.3.4"), a_gossiped_address("1.2.3.5")]
+    for callback, message in (
+        (addr, Addr([addr_entry(address) for address in given])),
+        (addrv2, AddrV2(given)),
+    ):
+        peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+        node = a_handshake_node(peer_db=peer_db)
+        peer = a_gossiping_peer()
+        callback(node, message.serialize(), peer)
+        assert not peer.stopped
 
 
 def test_a_discouraged_host_gossiped_is_not_stored() -> None:
@@ -2624,13 +2752,43 @@ def test_a_body_failing_check_block_under_an_invalid_header_says_why(
 def test_a_committed_body_failing_check_block_leaves_the_header_valid(
     tmp_path: Path,
 ) -> None:
-    """ISS 1242: Core's `ProcessNewBlock` never marks a `CheckBlock` failure."""
+    """ISS 1242: Core's `ProcessNewBlock` never marks a `CheckBlock` failure.
+
+    Nor does it index the header, `CheckBlock` coming before `AcceptBlock`
+    (ISS 1363), so the header is not there to be marked at all.
+    """
     node = a_chainstate_node(tmp_path)
     twice = generate_segwit_block(generate_coinbase(height=1))
     with pytest.raises(MisbehavingError, match="more than one coinbase"):
         block_callback(node, a_block_payload(twice), a_peer())
-    block_info = node.chainstate.block_index.get_block_info(twice.header.hash)
-    assert block_info.status != BlockStatus.invalid
+    assert twice.header.hash not in node.chainstate.block_index.header_dict
+    assert node.added == []
+    node.chainstate.close()
+
+
+@pytest.mark.parametrize("inbound", [True, False])
+def test_an_unrequested_low_work_block_failing_check_block_costs_its_peer(
+    tmp_path: Path,
+    inbound: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1363: Core's `CheckBlock` runs before `AcceptBlock`'s early returns.
+
+    Measured against bitcoind v31.1: an unrequested block at height 1 on a
+    fork below a tip at height 2, carrying two coinbases, logs
+    `Misbehaving` and disconnects the peer, the header left unindexed;
+    the same block with one coinbase is taken quietly. From an inbound
+    peer or an outbound one alike.
+    """
+    node = an_unrequested_block_node(tmp_path, 2)
+    twice = a_block_at(node, 1, fork=0)
+    twice = build_block(
+        twice.header.previous_block_hash,
+        [*twice.transactions, generate_coinbase(value=1, height=1)],
+        1,
+    )
+    with pytest.raises(MisbehavingError, match="more than one coinbase"):
+        deliver(node, twice, a_peer(inbound=inbound))
+    assert twice.header.hash not in node.chainstate.block_index.header_dict
     assert node.added == []
     node.chainstate.close()
 
@@ -5253,8 +5411,8 @@ def test_a_feeler_is_asked_for_addresses_recorded_and_dropped_at_its_version(
 
     `getaddr` after the three answers, as to a full-relay peer, then the
     address recorded as answered with the services the `version` names,
-    then the drop, after what was sent. A full-relay peer, the control,
-    waits for its `verack`.
+    same as a full-relay peer, the control, and only then the drop,
+    after what was sent.
     """
     dialled = peer_address("1.2.3.4", 18444)
     peer_db = PeerDB(cast("Chain", None), cast("Path", None))
@@ -5264,6 +5422,9 @@ def test_a_feeler_is_asked_for_addresses_recorded_and_dropped_at_its_version(
     version(a_handshake_node(peer_db=peer_db), a_version(), peer)
     assert not peer.stopped
     assert peer.relay_tx is not feeler
+    (recorded,) = peer_db.active_addresses
+    assert endpoint_key(recorded) == endpoint_key(dialled)
+    assert recorded.services == ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
     if feeler:
         assert commands(peer) == [
             "WtxidRelay",
@@ -5272,14 +5433,8 @@ def test_a_feeler_is_asked_for_addresses_recorded_and_dropped_at_its_version(
             "GetAddr",
             "stop_when_sent",
         ]
-        (recorded,) = peer_db.active_addresses
-        assert endpoint_key(recorded) == endpoint_key(dialled)
-        assert (
-            recorded.services == ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
-        )
     else:
         assert commands(peer) == ["WtxidRelay", "SendAddrV2", "Verack", "GetAddr"]
-        assert not peer_db.active_addresses
 
 
 def test_a_feeler_short_of_desirable_services_is_not_let_go_for_it() -> None:
@@ -5290,6 +5445,21 @@ def test_a_feeler_short_of_desirable_services_is_not_let_go_for_it() -> None:
     )
     peer = a_peer(inbound=False, automatic=True, feeler=True)
     version(node, a_version(services=ServiceFlags.NODE_WITNESS), peer)
+    assert not peer.stopped
+    assert commands(peer)[-1] == "stop_when_sent"
+
+
+def test_a_feeler_without_the_witness_service_is_kept_through_its_version() -> None:
+    """ISS 1138: `ExpectServicesFromConn` is false for `FEELER` too.
+
+    A feeler is `conn.automatic`, so the `NODE_WITNESS` check above the
+    desirable-services one has to exempt it by name, as that one already
+    does, or it drops the feeler before Core's own `VERSION` handler ends
+    it (btclib-org/btclib-node#1138, comment).
+    """
+    node = a_handshake_node(peer_db=PeerDB(cast("Chain", None), cast("Path", None)))
+    peer = a_peer(inbound=False, automatic=True, feeler=True)
+    version(node, a_version(services=ServiceFlags.NODE_NETWORK), peer)
     assert not peer.stopped
     assert commands(peer)[-1] == "stop_when_sent"
 

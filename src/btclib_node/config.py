@@ -131,10 +131,12 @@ def _resolve_peers(
     the one ISS 573 (btclib-org/btclib-node#573) asks these two fields
     to use -- takes a `NetworkAddressV2` built straight off a parsed IP
     (`p2p/address.py`'s `peer_address`), and nothing in this node's
-    synchronous startup path resolves a name into one: the only DNS
-    lookup here is `PeerDB.get_addr_from_dns`'s own coroutine, on
-    `P2pManager`'s asyncio loop, which is not reachable before that
-    manager's thread exists. Widening `peer_address` or plumbing an
+    synchronous startup path resolves a name into one: DNS is asked
+    only through `PeerDB.get_addr_from_dns`'s own coroutine and
+    `P2pManager._process_addr_fetch`'s resolution of an addr-fetch
+    seed (btclib-org/btclib-node#1284), both on `P2pManager`'s asyncio
+    loop, neither reachable before that manager's thread exists.
+    Widening `peer_address` or plumbing an
     async resolve into `Node.run` for two config fields is a larger
     change than this branch's scope; a hostname is refused up front,
     at `Config` construction, rather than dialled wrong or silently
@@ -248,15 +250,22 @@ class Config:
     # what RpcManager binds instead of every interface: an RPC server is
     # this node's control plane, not a peer-to-peer listener, so a
     # caller holding a credential still has to reach it from an
-    # interface this names. Bitcoin Core's own `rpcbind`/`rpcallowip`
-    # default to localhost for the same reason; P2pManager.server binds
-    # every interface unconditionally, and is right to, since a peer
-    # listener is supposed to accept a stranger.
-    rpc_host: str
-    # Core's `-rpcbind` values, checked by `cli` and bound nowhere: Core
-    # binds them only beside `-rpcallowip`, which this node does not
-    # have, and `RpcManager` logs the warning Core logs over them.
+    # interface this names. `None` is Core's own default, `::1` and
+    # `127.0.0.1` both (`HTTPBindAddresses`, `src/httpserver.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag); a host a Python
+    # caller names is bound alone, where `-rpcbind` and `-rpcallowip`
+    # are not both given. P2pManager.server binds every interface
+    # unconditionally, and is right to, since a peer listener is
+    # supposed to accept a stranger.
+    rpc_host: str | None
+    # Core's `-rpcbind` values, checked by `cli`: `RpcManager` binds
+    # them where `rpcallowip` below names something, and warns over them
+    # where it does not, as `HTTPBindAddresses` does.
     rpcbind: tuple[str, ...]
+    # Core's `-rpcallowip` values, which `RpcManager` parses when it
+    # starts, as `InitHTTPServer` parses them, and answers a request
+    # from no source they or loopback name with a 403.
+    rpcallowip: tuple[str, ...]
     # Core's own `-rpcauth`, one entry per value: users the RPC listener
     # accepts beside the cookie and `rpc_password_entry`. Where a value
     # is malformed, the values ahead of it, and `rpc_auth_invalid` set.
@@ -308,6 +317,11 @@ class Config:
     # and `rpc.callbacks.get_blockchain_info` both check `pruned` first.
     prune_target_mib: int | None
     debug: bool
+    # what Core logs of its settings: the warnings it buffers while
+    # reading them, then the unrecognised-section warning, which it logs
+    # after its version line (a line history.log does not have, #1309).
+    # `Node` logs them in that order once its own log is open
+    log_warnings: tuple[str, ...]
     min_relay_feerate: FeeRate
     # (ip, port) pairs, resolved by `_resolve_peers` above: Core's own
     # `-connect`, which dials these alone and turns off DNS seeding and
@@ -350,6 +364,13 @@ class Config:
     # connection outside it too. `P2pManager.__init__` divides it into
     # inbound and outbound slots.
     max_connections: int
+    # Core's own `-dnsseed`, which this node has no option for: whether
+    # `P2pManager` asks the DNS seeds. `InitParameterInteraction`
+    # (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7) soft-sets it off
+    # under `-connect` or a `-maxconnections` whose `int64_t` is not
+    # positive; `__init__` computes that from `max_connections` where it
+    # is given `None`, and `cli` passes it from the `int64_t` itself.
+    dnsseed: bool
     # Core's own `-bantime`: how long a `setban` ban lasts, in seconds,
     # where the call names no length. `Node` hands it to its `BanMan`.
     ban_time: int
@@ -370,8 +391,11 @@ class Config:
     # constructor answering `Config("regtest")` for one parameter and
     # refusing it for the next -- which also drops PLR0917 (too many
     # positional arguments) below to zero, keyword-only meaning there
-    # is no longer a positional count to measure.
-    def __init__(  # noqa: PLR0913
+    # is no longer a positional count to measure. PLR0915 (too many
+    # statements) measures the same flatness from the body's side: one
+    # assignment per independent setting, which is what grows with every
+    # field this object carries rather than a body that wants splitting.
+    def __init__(  # noqa: PLR0913, PLR0915
         self,
         *,
         chain: Chain | str = DEFAULT_CHAIN,
@@ -379,8 +403,9 @@ class Config:
         blocks_dir: str | Path | None = None,
         p2p_port: int | None = None,
         rpc_port: int | None = None,
-        rpc_host: str = "127.0.0.1",
+        rpc_host: str | None = None,
         rpcbind: Sequence[str] = (),
+        rpcallowip: Sequence[str] = (),
         allow_p2p: bool = True,
         allow_rpc: bool = True,
         pruned: bool = False,
@@ -392,6 +417,7 @@ class Config:
         addnode: Sequence[str] = (),
         listen: bool = True,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
+        dnsseed: bool | None = None,
         ban_time: int = DEFAULT_MISBEHAVING_BANTIME,
         rpcauth: Sequence[str] = (),
         rpcuser: str = "",
@@ -400,6 +426,7 @@ class Config:
         rpccookieperms: str | None = None,
         rpcwhitelist: Sequence[str] = (),
         rpcwhitelistdefault: bool | None = None,
+        log_warnings: Sequence[str] = (),
     ) -> None:
         """Resolve `chain` and ports."""
         self.chain = _resolve_chain(chain)
@@ -443,6 +470,11 @@ class Config:
             err_msg = "-maxconnections must be greater or equal than zero"
             raise ValueError(err_msg)
         self.max_connections = max_connections
+        self.dnsseed = (
+            not self.connect_given and max_connections > 0
+            if dnsseed is None
+            else dnsseed
+        )
         self.ban_time = ban_time
 
         self.p2p_port = None
@@ -459,6 +491,7 @@ class Config:
 
         self.rpc_host = rpc_host
         self.rpcbind = tuple(rpcbind)
+        self.rpcallowip = tuple(rpcallowip)
         # Core reads the RPC options below in `StartHTTPRPC` and its
         # `InitRPCAuthentication` (`src/httprpc.cpp`), which `AppInitMain`
         # runs under `-server` alone (`src/init.cpp`, both at
@@ -495,4 +528,5 @@ class Config:
 
         self.debug = debug
         self.log_path = log_path
+        self.log_warnings = tuple(log_warnings)
         self.min_relay_feerate = min_relay_feerate

@@ -4,6 +4,13 @@ btclib\_node.rpc package
 Submodules
 ----------
 
+btclib\_node.rpc.allow module
+---------------------------------
+
+.. automodule:: btclib_node.rpc.allow
+   :members:
+   :show-inheritance:
+
 btclib\_node.rpc.auth module
 --------------------------------
 
