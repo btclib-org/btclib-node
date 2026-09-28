@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import RPCErrorCode, chain_from_network
 from btclib.block import Block, median_time_past
-from btclib.exceptions import BTClibException, BTClibValueError
+from btclib.exceptions import BTClibException
 from btclib.p2p.address import ServiceFlags
 from btclib.p2p.limits import PROTOCOL_VERSION
 from btclib.tx import Tx
@@ -1491,11 +1491,13 @@ def get_raw_mempool(
         return {
             tx.id.hex(): {
                 "size": tx.size,
-                "vsize": tx.vsize,
+                # Core's `GetTxSize`, the sigop-adjusted one.
+                # btclib-org/btclib-node#1357
+                "vsize": node.mempool.vsizes[wtxid],
                 "weight": tx.weight,
                 "wtxid": tx.hash.hex(),
             }
-            for tx in node.mempool.transactions.values()
+            for wtxid, tx in node.mempool.transactions.items()
         }
 
     txids = [txid.hex() for txid in node.mempool.txid_index]
@@ -1664,12 +1666,11 @@ def get_raw_transaction(
     return out
 
 
-# the two reject reasons `verify_mempool_acceptance` can fail with,
-# named once so that `test_mempool_accept` and `send_raw_transaction`
-# answer the same verdict about the same transaction rather than
-# drifting apart the way btclib-org/btclib-node#83 found them
-_MISSING_PREVOUTS_REASON = "Missing prevouts"
-_INVALID_SCRIPT_REASON = "Invalid signatures or script"
+# Core's own reason for a missing input, the one `PreChecks` gives
+# (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
+# which `sendrawtransaction` answers and `testmempoolaccept` replaces
+# with "missing-inputs". btclib-org/btclib-node#1328
+_MISSING_INPUTS_REASON = "bad-txns-inputs-missingorspent"
 # Core's own reject reason for the same refusal, `TxValidationResult::
 # TX_RECONSIDERABLE`/`TX_MEMPOOL_POLICY` invalidated with "mempool
 # full" (`validation.cpp`, at bitcoin/bitcoin@58a7869f86) once
@@ -1681,7 +1682,7 @@ _INVALID_SCRIPT_REASON = "Invalid signatures or script"
 # alias of `RPC_VERIFY_REJECTED` (`-26`) -- the same code
 # `RPCErrorCode.VERIFY_REJECTED` (`bitcoin_core_rpc`) already answers a
 # transaction the mempool refused with, above. btclib-org/btclib-node#293
-_MEMPOOL_FULL_REASON = "Mempool is full"
+_MEMPOOL_FULL_REASON = "mempool full"
 # Core's own `MAX_PACKAGE_COUNT` (`src/policy/packages.h`,
 # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): how many `rawtx` one
 # `testmempoolaccept` takes. btclib-org/btclib-node#1329
@@ -1777,21 +1778,22 @@ def _mempool_accept_verdict(node: Node, tx: Tx) -> dict[str, Any]:
         "txid": tx.id,
         "wtxid": tx.hash,
         "allowed": False,
-        "vsize": tx.vsize,
     }
     try:
-        verify_mempool_acceptance(node, tx)
+        # `vsize` for an accepted one alone, as Core answers it: the
+        # sigop-adjusted size, known once the prevouts are read.
+        # btclib-org/btclib-node#1357
+        tx_res["vsize"] = verify_mempool_acceptance(node, tx).vsize
         tx_res["allowed"] = True
     except TxRejectedError as exc:
         # Core's own pair for every reason but `missing-inputs`
         # (`src/rpc/mempool.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-        # v31.1 tag). btclib-org/btclib-node#1245
+        # v31.1 tag). btclib-org/btclib-node#1245, btclib-org/btclib-node#1328
         tx_res["reject-reason"] = exc.reason
         tx_res["reject-details"] = str(exc)
-    except BTClibValueError:
-        tx_res["reject-reason"] = _INVALID_SCRIPT_REASON
     except MissingPrevoutError:
-        tx_res["reject-reason"] = _MISSING_PREVOUTS_REASON
+        # and that one alone, with no details. btclib-org/btclib-node#1328
+        tx_res["reject-reason"] = "missing-inputs"
     return tx_res
 
 
@@ -1860,20 +1862,18 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
         node.p2p_manager.broadcast_raw_transaction(held, node.mempool.fees[held.hash])
         return tx.id.hex()
     try:
-        fee = verify_mempool_acceptance(node, tx)
+        fee, vsize = verify_mempool_acceptance(node, tx)
     except MissingPrevoutError as exc:
         # Core's own missing-inputs code, RPC_VERIFY_ERROR
         # (src/rpc/protocol.h): a transaction this node cannot verify
         # for want of what it spends, not one it refuses
-        raise RpcError(RPCErrorCode.VERIFY_ERROR, _MISSING_PREVOUTS_REASON) from exc
+        raise RpcError(RPCErrorCode.VERIFY_ERROR, _MISSING_INPUTS_REASON) from exc
     except TxRejectedError as exc:
-        # the same code, with Core's own reason and details as the
-        # message, `state.ToString()`. btclib-org/btclib-node#1245
+        # Core's own RPC_VERIFY_REJECTED, with Core's own reason and
+        # details as the message, `state.ToString()`: every refusal
+        # `verify_mempool_acceptance` makes but a missing input.
+        # btclib-org/btclib-node#1245, btclib-org/btclib-node#1328
         raise RpcError(RPCErrorCode.VERIFY_REJECTED, str(exc)) from exc
-    except BTClibValueError as exc:
-        # Core's own RPC_VERIFY_REJECTED: the mempool looked at the
-        # transaction and refused it
-        raise RpcError(RPCErrorCode.VERIFY_REJECTED, _INVALID_SCRIPT_REASON) from exc
     # `Mempool.add_tx` now evicts to make room rather than refusing
     # outright past its old `is_full()` gate (btclib-org/btclib-node#294),
     # so whether this call is answered with the refusal below is no
@@ -1885,7 +1885,7 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
     # `tx.id.hex()` regardless of that boolean would tell the caller
     # this transaction was kept when it was not -- the same defect #277
     # fixed on the peer-to-peer path, `p2p/callbacks.py`'s `tx` handler.
-    if not node.mempool.add_tx(tx, fee):
+    if not node.mempool.add_tx(tx, fee, vsize):
         # Not kept: `Mempool._evict_to_limit` ran
         # and took this transaction right back out for being the worst
         # one held once `Mempool.bytesize_limit` was restored -- exactly

@@ -1318,6 +1318,88 @@ def test_build_config_maxconnections_from_the_file_on_any_chain(
     assert config.max_connections == 7
 
 
+@pytest.mark.parametrize(
+    ("value", "sats_per_kvbyte"),
+    [
+        ("0.00002", 2000),
+        (" 0.00001", 1000),
+        ("0.00001 ", 1000),
+        (".", 0),
+        ("1.", 100_000_000),
+        (".5", 50_000_000),
+        ("21000000", 21_000_000 * 100_000_000),
+    ],
+)
+def test_build_config_minrelaytxfee_is_read_in_btc_per_kvb(
+    tmp_path: Path, value: str, sats_per_kvbyte: int
+) -> None:
+    """`-minrelaytxfee` sets `min_relay_feerate`, as `ParseMoney` reads it.
+
+    `bitcoind` v31.1.0 starts with each of these, and answers
+    `-minrelaytxfee=0.00002` with a `getmempoolinfo` `minrelaytxfee` of
+    0.00002000 (btclib-org/btclib-node#1332).
+    """
+    config = _build(tmp_path, "-regtest", f"-minrelaytxfee={value}")
+    assert config.min_relay_feerate.sats_per_kvbyte == sats_per_kvbyte
+
+
+def test_build_config_minrelaytxfee_defaults_negates_and_reads_the_file(
+    tmp_path: Path,
+) -> None:
+    """Unset, Core's default; negated, `0`; read from `bitcoin.conf`.
+
+    `0` for the negation is what `bitcoind` answers.
+    """
+    assert _build(tmp_path, "-regtest").min_relay_feerate.sats_per_kvbyte == 100
+    negated = _build(tmp_path, "-regtest", "-nominrelaytxfee")
+    assert negated.min_relay_feerate.sats_per_kvbyte == 0
+    from_file = _build(tmp_path, conf="regtest=1\nminrelaytxfee=0.00003\n")
+    assert from_file.min_relay_feerate.sats_per_kvbyte == 3000
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "abc",
+        "-1",
+        "+1",
+        "0.000000001",
+        "1e-5",
+        "21000001",
+        "00000000001",
+        "12345678901",
+        "",
+        "1.5.3",
+        "1\x000",
+    ],
+)
+def test_build_config_minrelaytxfee_that_is_no_amount_is_refused(
+    tmp_path: Path, value: str
+) -> None:
+    """`AmountErrMsg`'s words, as `bitcoind` v31.1.0 refuses each at start.
+
+    `1.5.3` and a NUL were not run against `bitcoind`, whose `ParseMoney`
+    stops at the second `.` and refuses a string holding a NUL.
+    """
+    expected = re.escape(f"Invalid amount for -minrelaytxfee=<amount>: '{value}'")
+    with pytest.raises(ValueError, match=f"^{expected}$"):
+        _build(tmp_path, "-regtest", f"-minrelaytxfee={value}")
+
+
+def test_build_config_help_lists_minrelaytxfee_under_node_relay(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Under Core's own title and in Core's words, `-help`'s layout."""
+    with pytest.raises(SystemExit):
+        _build(tmp_path, "-help")
+    out = capsys.readouterr().out
+    assert (
+        "Node relay options:\n\n  -minrelaytxfee=<amt>\n       Fees (in BTC/kvB) "
+        "smaller than this are considered zero fee for\n       relaying, mining "
+        "and transaction creation (default: 0.000001)\n\nRPC server options:"
+    ) in out
+
+
 def test_build_config_rpcauth_from_the_command_line_and_the_file(
     tmp_path: Path,
 ) -> None:
