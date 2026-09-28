@@ -841,6 +841,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   it terrible: its handshake stamp over 30 days old or 10 minutes ahead**
   (closes #1318), where it left three hours after its last handshake.
 
+### `submitblock` answers Core's own reasons where it used to answer `null`
+
+- **A block extending the tip answers `bad-cb-height`, `bad-txns-nonfinal`, or
+  `block-script-verify-flag-failed (...)`, and a body failing `CheckBlock`
+  leaves its header unindexed** (closes #1335, closes #1390, closes #1339).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
