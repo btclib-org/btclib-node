@@ -841,6 +841,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   it terrible: its handshake stamp over 30 days old or 10 minutes ahead**
   (closes #1318), where it left three hours after its last handshake.
 
+### The dialler and the suite stop assuming a host has IPv6, or is not root
+
+- **`dial` answers `None` where the socket layer refuses the family**
+  (closes #1249). A test needing IPv6 skips rather than fails the suite
+  (closes #1250); the root-skipped one carries its pragma (closes #1251).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
