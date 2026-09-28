@@ -496,9 +496,6 @@ def a_parsed_version(
     services: ServiceFlags = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS,
     nonce: int = 7,
     relay: bool | None = True,
-    # a different host than "1.2.3.4", a_peer()'s own address: proof
-    # that verack takes only the port from here, for an inbound peer,
-    # and not the address -- btclib-org/btclib-node#70
     addr_from_port: int = 18444,
 ) -> Version:
     """Return the parsed `Version` `a_version` serializes, for field reads."""
@@ -1207,10 +1204,11 @@ def test_a_dialled_peer_is_recorded_as_answered_at_its_own_version() -> None:
     # the live handshake's own services, not whatever the address was
     # last recorded with
     assert recorded.services == services
-    # and the connection's own idea of its peer moves to the same
-    # endpoint, or manager.py's already-connected check keeps comparing
-    # against the address dialled with -- never what a later gossip of
-    # this same peer draws back
+    # and the connection's own address takes the same services, at the
+    # endpoint it was dialled at, or manager.py's already-connected
+    # check keeps comparing against a stale services value -- never
+    # what a later gossip of this same peer draws back
+    assert peer.address.services == services
     assert endpoint_key(peer.address) == endpoint_key(recorded)
 
 
@@ -1261,42 +1259,30 @@ def test_an_inbound_peer_completing_version_is_not_recorded() -> None:
     assert peer_db.active_addresses == []
 
 
-def test_an_inbound_handshake_moves_its_port_and_is_not_recorded() -> None:
+def test_an_inbound_handshake_keeps_its_own_address_and_is_not_recorded() -> None:
     """ISS 1229: Core calls `AddrMan::Good` for a peer it dialled alone.
 
     An inbound connection proves only that the peer reaches this node,
     not that this node can reach it back, so its endpoint stays out of
     the answered table even where the gossiped table already holds it.
-    `conn.address` still moves to the port the peer's `version` names,
-    which manager.py's `already_connected` compares a draw against.
+    `conn.address` stays the socket's, the ephemeral port included, as
+    Core's `CNode::addr` does -- `verack` no longer moves it to the
+    port the peer's `version` names, `manager.py`'s `already_connected`
+    now comparing by host and not needing it (ISS 1304).
     """
     accepted = peer_address("1.2.3.4", 55555)
+    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+    # both endpoints known, so that either would be recorded if asked
+    peer_db.add_addresses([accepted, replace(accepted, port=8333)])
     peer = a_peer(
         version_message=a_parsed_version(addr_from_port=8333),
         wtxidrelay_received=True,
         inbound=True,
         address=accepted,
     )
-    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
-    # both endpoints known, so that either would be recorded if asked
-    peer_db.add_addresses([accepted, replace(accepted, port=8333)])
     verack(a_handshake_node(peer_db=peer_db), b"", peer)
-    assert peer.address.address == accepted.address
-    assert peer.address.port == 8333
-    assert peer_db.active_addresses == []
-
-
-def test_an_inbound_peer_naming_no_port_keeps_its_own() -> None:
-    """#70: a `version` naming port zero leaves `conn.address` as accepted."""
-    accepted = peer_address("1.2.3.4", 55555)
-    peer = a_peer(
-        version_message=a_parsed_version(addr_from_port=0),
-        wtxidrelay_received=True,
-        inbound=True,
-        address=accepted,
-    )
-    verack(a_handshake_node(), b"", peer)
     assert peer.address == accepted
+    assert peer_db.active_addresses == []
 
 
 @pytest.mark.parametrize(

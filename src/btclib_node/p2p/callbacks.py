@@ -570,24 +570,6 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
     # dict every send iterates: btclib-org/btclib-node#131
     node.p2p_manager.promote_connection(conn.id)
 
-    # An inbound connection's own port is the peer's ephemeral one, so
-    # `conn.address` moves to the port its `version` names as
-    # `addr_from`, where it names one: manager.py's `already_connected`
-    # compares `conn.address` against a draw from the address table, and
-    # the ephemeral port would never match the peer's gossiped endpoint,
-    # inviting a second, redundant dial-out to a peer this node already
-    # holds. The endpoint is not recorded as answered: `version` records
-    # a peer this node dialled, at Core's own point in the handler, and
-    # an inbound peer is not recorded at all (btclib-org/btclib-node#70,
-    # btclib-org/btclib-node#1229).
-    if conn.inbound:
-        version_msg = conn.version_message
-        port = version_msg.addr_from.port
-        if port:
-            conn.address = replace(
-                conn.address, port=port, services=version_msg.services
-            )
-
     # `sendheaders` is `DownloadManager`'s to send, once this peer's best
     # known block has the minimum chain work, as Core's
     # `MaybeSendSendHeaders` does
