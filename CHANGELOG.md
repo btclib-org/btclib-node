@@ -850,11 +850,18 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 - **A host held on any port is not dialled again** (closes #1304), and an
   inbound peer's address keeps the port it connected from.
+
 ### `address_sampler`'s tried side draws an aged-out row, as `Select_` does
 
 - **The tried side reads `active_addresses` unfiltered by `_aged_out`,
   matching Core's `Select_`** (closes #1434), where an aged-out answered
   endpoint was never drawn again.
+
+### `_aged_out` grants `IsTerrible`'s one-minute grace to a row just tried
+
+- **A row tried within the last minute is never aged out, whatever its
+  timestamp says** (closes #1435), matching `IsTerrible`'s own `m_last_try`
+  guard.
 
 ## v2026.9.24
 
