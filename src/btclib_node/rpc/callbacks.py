@@ -42,11 +42,13 @@ from btclib_node.p2p.eviction import Network, is_valid, net_class
 from btclib_node.rpc.connection import RawJSON
 from btclib_node.rpc.errors import (
     RpcError,
+    bool_mismatch,
     bool_param,
     json_type_name,
     type_error,
     type_errors,
 )
+from btclib_node.rpc.help import HELP_TEXT, answer_help
 
 if TYPE_CHECKING:
     from btclib_node import Node
@@ -74,6 +76,7 @@ __all__ = [
     "get_raw_mempool",
     "get_raw_transaction",
     "get_tx_out_set_info",
+    "help_rpc",
     "list_banned",
     "ping",
     "prune_blockchain",
@@ -249,7 +252,12 @@ def _height_param(params: list[Any]) -> int:
     repeated in this docstring.
     """
     if not params:
-        raise RpcError(RPCErrorCode.MISC_ERROR, "pruneblockchain height")
+        # a call short of a required argument is `HelpResult{ToString()}`
+        # too, the method's own full help text under `RPC_MISC_ERROR`
+        # rather than the one-line usage string this used to raise --
+        # `rpc.main._execute`'s own docstring is where the sibling case,
+        # a call carrying too many, is argued the identical way
+        raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["pruneblockchain"])
     height_param = params[0]
     if isinstance(height_param, bool) or not isinstance(height_param, (int, float)):
         raise type_error(1, "height", height_param, "number")
@@ -365,12 +373,10 @@ def get_block_hash(node: Node, conn: RpcConnection, params: list[Any]) -> bytes:
         # JSONRPCError call, cited below for the shape rather than left
         # commented out -- ERA001 reads it as Python and is wrong.
         # JSONRPCError(RPC_MISC_ERROR, e.what()), src/rpc/server.cpp  # noqa: ERA001
-        # :887. Unquoted, unlike blockhash's own usage string:
-        # RPCArg::ToString(oneline=true) quotes an argument's name only
-        # for Type::STR/STR_HEX, and height is Type::NUM
-        # (src/rpc/blockchain.cpp:585), which formats bare
-        # (src/rpc/util.cpp:1265-1286)
-        raise RpcError(RPCErrorCode.MISC_ERROR, "getblockhash height")
+        # :887, carrying the method's own full help text rather than
+        # its bare usage line, `rpc.help.HELP_TEXT`'s own module
+        # docstring is where that text is read back from
+        raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["getblockhash"])
 
     height = params[0]
     if isinstance(height, bool) or not isinstance(height, (int, float)):
@@ -430,27 +436,29 @@ def get_block_header(
         # text under RPC_MISC_ERROR: RPCMethod::HandleRequest throws
         # HelpResult for a call short of its required arguments, and
         # ExecuteCommand's `catch (const std::exception& e)` is what
-        # turns that into JSONRPCError(RPC_MISC_ERROR, e.what()). Both
-        # arguments render the way RPCArg::ToString(oneline=true) does:
-        # blockhash quoted for being STR_HEX, verbose bare and grouped
-        # in its own trailing `( ... )` for being optional --
-        # read at bitcoin/bitcoin@b91d983f66, src/rpc/blockchain.cpp:614-617
-        raise RpcError(
-            RPCErrorCode.MISC_ERROR, 'getblockheader "blockhash" ( verbose )'
-        )
-    if not isinstance(params[0], str):
-        # RPCMethod::HandleRequest checks a declared argument's JSON
-        # type before the handler body runs at all, src/rpc/util.cpp
-        # :653-661 -- blockhash is declared RPCArg::Type::STR_HEX, so a
-        # blockhash of any other JSON type never reaches ParseHashV and
-        # is refused here the same way, before bytes.fromhex sees it
-        raise type_error(1, "blockhash", params[0], "string")
+        # turns that into JSONRPCError(RPC_MISC_ERROR, e.what()) --
+        # read at bitcoin/bitcoin@b91d983f66, src/rpc/server.cpp
+        # :874-887
+        raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["getblockheader"])
 
-    # verbose, src/rpc/blockchain.cpp:617: RPCArg::Type::BOOL,
-    # RPCArg::Default{true}. Read and type-checked up front, the same
-    # as blockhash above and for the same reason: HandleRequest checks
-    # every declared argument's type before any of the handler's own
-    # work runs, not only the first one
+    # RPCMethod::HandleRequest checks every declared argument's JSON
+    # type before the handler body runs at all, src/rpc/util.cpp
+    # :653-661 -- both are checked, and every mismatch named, before
+    # either is raised on, the way `disconnect_node` above already
+    # does for its own two arguments (`type_errors`' own docstring).
+    # blockhash is declared RPCArg::Type::STR_HEX, so one of any other
+    # JSON type never reaches ParseHashV, refused here before
+    # bytes.fromhex sees it; verbose is RPCArg::Type::BOOL,
+    # RPCArg::Default{true} (src/rpc/blockchain.cpp:617)
+    mismatches: list[tuple[int, str, object, str]] = []
+    if not isinstance(params[0], str):
+        mismatches.append((1, "blockhash", params[0], "string"))
+    verbose_mismatch = bool_mismatch(params, 1, name="verbose")
+    if verbose_mismatch is not None:
+        mismatches.append(verbose_mismatch)
+    if mismatches:
+        raise type_errors(*mismatches)
+
     verbose = bool_param(params, 1, name="verbose", default=True)
 
     try:
@@ -465,7 +473,8 @@ def get_block_header(
         block_info = block_index.get_block_info(block_hash)
     except KeyError as error:
         # a hash nothing indexed is a question about a block, not a
-        # fault of this node: src/rpc/blockchain.cpp:695
+        # fault of this node: src/rpc/blockchain.cpp:664-665, at
+        # bitcoin/bitcoin@ca7162cde5
         raise RpcError(
             RPCErrorCode.INVALID_ADDRESS_OR_KEY, "Block not found"
         ) from error
@@ -571,7 +580,7 @@ def get_block(node: Node, conn: RpcConnection, params: list[Any]) -> str:
     silently answering hex for it.
     """
     if not params:
-        raise RpcError(RPCErrorCode.MISC_ERROR, 'getblock "blockhash" ( verbosity )')
+        raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["getblock"])
     if not isinstance(params[0], str):
         raise type_error(1, "blockhash", params[0], "string")
     try:
@@ -688,7 +697,7 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     unconditionally.
     """
     if not params:
-        raise RpcError(RPCErrorCode.MISC_ERROR, 'submitblock "hexdata" ( "dummy" )')
+        raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["submitblock"])
     if not isinstance(params[0], str):
         raise type_error(1, "hexdata", params[0], "string")
     try:
@@ -1059,18 +1068,30 @@ def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
     transport this node speaks yet.
     """
     if len(params) < 2:  # noqa: PLR2004
-        raise RpcError(
-            RPCErrorCode.MISC_ERROR, 'addnode "node" "command" ( v2transport )'
-        )
+        raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["addnode"])
+    # every declared argument's type is checked, and every mismatch
+    # named, before any of the three is raised on -- `disconnect_node`
+    # above already does this for its own two arguments, `type_errors`'
+    # own docstring argues the shape
+    mismatches: list[tuple[int, str, object, str]] = []
     if not isinstance(params[0], str):
-        raise type_error(1, "node", params[0], "string")
+        mismatches.append((1, "node", params[0], "string"))
     if not isinstance(params[1], str):
-        raise type_error(2, "command", params[1], "string")
+        mismatches.append((2, "command", params[1], "string"))
+    v2transport_mismatch = bool_mismatch(params, 2, name="v2transport")
+    if v2transport_mismatch is not None:
+        mismatches.append(v2transport_mismatch)
+    if mismatches:
+        raise type_errors(*mismatches)
     node_arg, command = params[0], params[1]
     if command not in _ADDNODE_COMMANDS:
-        raise RpcError(
-            RPCErrorCode.MISC_ERROR, 'addnode "node" "command" ( v2transport )'
-        )
+        # Core's own `command`-validity refusal is the identical
+        # `std::runtime_error(self.ToString())` shape as a wrong
+        # argument count, `self.ToString()` being this same full help
+        # text (measured against a real bitcoind v31.1.0: `addnode
+        # "1.2.3.4" "bogus"` answers it byte for byte) rather than the
+        # one-line usage string this used to raise
+        raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["addnode"])
     bool_param(params, 2, name="v2transport", default=False)
 
     if not node_arg.strip():
@@ -1097,43 +1118,6 @@ def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
     node.p2p_manager.connect(address)
 
 
-# Core's own `disconnectnode` help (`src/rpc/net.cpp`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag), what `RPCHelpMan::ToString`
-# answers a call with more arguments than it declares -- read back from a
-# regtest bitcoind v31.1.0, whose examples name mainnet's port whatever
-# the chain.
-_DISCONNECTNODE_HELP = (
-    'disconnectnode ( "address" nodeid )\n'
-    "\n"
-    "Immediately disconnects from the specified peer node.\n"
-    "\n"
-    "Strictly one out of 'address' and 'nodeid' can be provided to identify"
-    " the node.\n"
-    "\n"
-    "To disconnect by nodeid, either set 'address' to the empty string, or"
-    " call using the named 'nodeid' argument only.\n"
-    "\n"
-    "Arguments:\n"
-    "1. address    (string, optional, default=fallback to nodeid) The IP"
-    " address/port of the node\n"
-    "2. nodeid     (numeric, optional, default=fallback to address) The node"
-    " ID (see getpeerinfo for node IDs)\n"
-    "\n"
-    "Result:\n"
-    "null    (json null)\n"
-    "\n"
-    "Examples:\n"
-    '> bitcoin-cli disconnectnode "192.168.0.6:8333"\n'
-    '> bitcoin-cli disconnectnode "" 1\n'
-    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0",'
-    ' "id": "curltest", "method": "disconnectnode", "params":'
-    " [\"192.168.0.6:8333\"]}' -H 'content-type: application/json'"
-    " http://127.0.0.1:8332/\n"
-    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0",'
-    ' "id": "curltest", "method": "disconnectnode", "params": ["", 1]}\''
-    " -H 'content-type: application/json' http://127.0.0.1:8332/\n"
-)
-
 # `UniValue::getInt<int64_t>`'s own range, past which it throws "JSON
 # integer out of range"
 _INT64_BOUND = 2**63
@@ -1149,9 +1133,14 @@ def disconnect_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
     address is matched against `getpeerinfo`'s own `addr`, the id against
     its `id`, and neither found is `RPC_CLIENT_NODE_NOT_CONNECTED`. Named
     arguments reach it mapped onto these two positions by `arg_names`.
+
+    A call carrying more than two positional arguments never reaches
+    this function's own body at all: `rpc.main._execute` refuses it
+    generically now, for every method `arg_names` declares, rather than
+    this function checking its own upper bound the way it used to be
+    the only callback here to (`rpc.main._execute`'s own docstring
+    argues the generalization, btclib-org/btclib-node#1424).
     """
-    if len(params) > 2:  # noqa: PLR2004
-        raise RpcError(RPCErrorCode.MISC_ERROR, _DISCONNECTNODE_HELP)
     address = params[0] if params else None
     node_id = params[1] if len(params) > 1 else None
     # both arguments' types are checked before either is read, and every
@@ -1203,25 +1192,42 @@ def disconnect_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
     manager.remove_connection(found[0])
 
 
-_SETBAN_USAGE = 'setban "subnet" "command" ( bantime absolute )'
-
-
 def _setban_params(params: list[Any]) -> tuple[str, str, int | float | None, bool]:
-    """Check `setban`'s arguments as `HandleRequest` does, then `command`."""
-    if not 2 <= len(params) <= 4:  # noqa: PLR2004
-        raise RpcError(RPCErrorCode.MISC_ERROR, _SETBAN_USAGE)
+    """Check `setban`'s arguments as `HandleRequest` does, then `command`.
+
+    The upper bound on `len(params)` is `rpc.main._execute`'s own now,
+    checked generically against `arg_names["setban"]` before this
+    function ever runs; only the lower bound -- `subnet` and `command`
+    both required -- is this function's own to check. Every declared
+    argument's type is checked, and every mismatch named, before any of
+    them is raised on, the way `disconnect_node` above already does for
+    its own two (`type_errors`' own docstring).
+    """
+    if len(params) < 2:  # noqa: PLR2004
+        raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["setban"])
+    mismatches: list[tuple[int, str, object, str]] = []
     if not isinstance(params[0], str):
-        raise type_error(1, "subnet", params[0], "string")
+        mismatches.append((1, "subnet", params[0], "string"))
     if not isinstance(params[1], str):
-        raise type_error(2, "command", params[1], "string")
+        mismatches.append((2, "command", params[1], "string"))
     bantime = params[2] if len(params) > 2 else None  # noqa: PLR2004
     if bantime is not None and (
         isinstance(bantime, bool) or not isinstance(bantime, (int, float))
     ):
-        raise type_error(3, "bantime", bantime, "number")
+        mismatches.append((3, "bantime", bantime, "number"))
+    absolute_mismatch = bool_mismatch(params, 3, name="absolute")
+    if absolute_mismatch is not None:
+        mismatches.append(absolute_mismatch)
+    if mismatches:
+        raise type_errors(*mismatches)
     absolute = bool_param(params, 3, name="absolute", default=False)
     if params[1] not in ("add", "remove"):
-        raise RpcError(RPCErrorCode.MISC_ERROR, _SETBAN_USAGE)
+        # Core's own `command`-validity refusal is the identical
+        # `std::runtime_error(help.ToString())` shape as a wrong
+        # argument count, `help.ToString()` being this same full help
+        # text (measured against a real bitcoind v31.1.0: `setban
+        # "1.2.3.4" "bogus"` answers it byte for byte)
+        raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["setban"])
     return params[0], params[1], bantime, absolute
 
 
@@ -1435,8 +1441,20 @@ def get_tx_out_set_info(
     not add, and issue #639's own "Not in scope" does not ask for them.
     """
     hash_type = params[0] if params and params[0] is not None else "hash_serialized_3"
+    # hash_type and use_index are checked, and every mismatch named,
+    # before either is raised on or any value-level check below runs,
+    # the way `disconnect_node` above already does for its own two
+    # declared arguments (`type_errors`' own docstring); hash_or_height
+    # carries no single declared JSON type of its own to check here
+    # (this method's own docstring, on `use_index` beside it, argues why)
+    mismatches: list[tuple[int, str, object, str]] = []
     if not isinstance(hash_type, str):
-        raise type_error(1, "hash_type", hash_type, "string")
+        mismatches.append((1, "hash_type", hash_type, "string"))
+    use_index_mismatch = bool_mismatch(params, 2, name="use_index")
+    if use_index_mismatch is not None:
+        mismatches.append(use_index_mismatch)
+    if mismatches:
+        raise type_errors(*mismatches)
     if hash_type not in _TX_OUT_SET_HASH_TYPES:
         err_msg = f"'{hash_type}' is not a valid hash_type"
         raise RpcError(RPCErrorCode.INVALID_PARAMETER, err_msg)
@@ -1445,8 +1463,8 @@ def get_tx_out_set_info(
         err_msg = "Querying specific block heights requires coinstatsindex"
         raise RpcError(RPCErrorCode.INVALID_PARAMETER, err_msg)
 
-    # type-checked and otherwise unused -- this method's own docstring
-    # argues why
+    # type-checked above and otherwise unused -- this method's own
+    # docstring argues why
     bool_param(params, 2, name="use_index", default=True)
 
     active_chain = node.chainstate.block_index.active_chain
@@ -1474,7 +1492,20 @@ def get_raw_mempool(
     refused outright, matching `MempoolToJSON`'s own combination check.
     """
     # verbose and mempool_sequence, both RPCArg::Type::BOOL,
-    # RPCArg::Default{false}: src/rpc/mempool.cpp:694-695
+    # RPCArg::Default{false}: src/rpc/mempool.cpp:659-660, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag. Both are
+    # checked, and every mismatch named, before either is raised on,
+    # the way `disconnect_node` above already does for its own two
+    # (`type_errors`' own docstring).
+    mismatches: list[tuple[int, str, object, str]] = []
+    verbose_mismatch = bool_mismatch(params, 0, name="verbose")
+    if verbose_mismatch is not None:
+        mismatches.append(verbose_mismatch)
+    sequence_mismatch = bool_mismatch(params, 1, name="mempool_sequence")
+    if sequence_mismatch is not None:
+        mismatches.append(sequence_mismatch)
+    if mismatches:
+        raise type_errors(*mismatches)
     verbose = bool_param(params, 0, name="verbose", default=False)
     include_sequence = bool_param(params, 1, name="mempool_sequence", default=False)
 
@@ -1508,47 +1539,27 @@ def get_raw_mempool(
     return {"txids": txids, "mempool_sequence": node.mempool.sequence}
 
 
-def _parse_txid(params: list[Any]) -> bytes:
-    if not params:
-        # the same shape as getblockheader's own missing-argument case:
-        # RPCMethod::HandleRequest's HelpResult, RPC_MISC_ERROR
-        # (src/rpc/server.cpp:887). RPCMethod::ToString opens a `( ` on
-        # the first optional argument and closes it once, after the
-        # loop (src/rpc/util.cpp:775-798), so verbose and blockhash --
-        # both optional here -- render inside one group, not two.
-        # Core's own first name for this argument is "verbosity"
-        # (declared "verbosity|verbose", src/rpc/rawtransaction.cpp
-        # :246); this node keeps its own "verbose" instead, because
-        # `verbose` below reads only the boolean shape Core's
-        # `RPCArg::Default{0}` degrades to under `allow_bool=true`, not
-        # the full 0/1/2 verbosity Core's name is for --
-        # read at bitcoin/bitcoin@b91d983f66
-        raise RpcError(
-            RPCErrorCode.MISC_ERROR,
-            'getrawtransaction "txid" ( verbose "blockhash" )',
-        )
-    if not isinstance(params[0], str):
-        # txid is declared RPCArg::Type::STR_HEX, type-checked before
-        # the handler body runs, same as blockhash below
-        raise type_error(1, "txid", params[0], "string")
+def _decode_txid(txid_arg: str) -> bytes:
+    """Hex-decode `getrawtransaction`'s own `txid`, already type-checked."""
     try:
-        return bytes.fromhex(params[0])
+        return bytes.fromhex(txid_arg)
     except ValueError as error:
         raise RpcError(
             RPCErrorCode.INVALID_PARAMETER,
-            f"parameter 1 must be hexadecimal string (not '{params[0]}')",
+            f"parameter 1 must be hexadecimal string (not '{txid_arg}')",
         ) from error
 
 
-def _parse_optional_block_hash(params: list[Any]) -> bytes | None:
-    # index 2 is this RPC's own third positional, "blockhash" in
-    # get_raw_transaction's own help string -- naming it would give a
-    # second name to what that string already names, tied to this one
-    # method's own argument list and not reusable past it
+def _decode_optional_block_hash(params: list[Any]) -> bytes | None:
+    """Hex-decode `getrawtransaction`'s own `blockhash`, already type-checked.
+
+    index 2 is this RPC's own third positional, "blockhash" in
+    get_raw_transaction's own help string -- naming it would give a
+    second name to what that string already names, tied to this one
+    method's own argument list and not reusable past it
+    """
     if len(params) <= 2 or params[2] is None:  # noqa: PLR2004
         return None
-    if not isinstance(params[2], str):
-        raise type_error(3, "blockhash", params[2], "string")
     try:
         return bytes.fromhex(params[2])
     except ValueError as error:
@@ -1623,7 +1634,36 @@ def get_raw_transaction(
     alone, verbosity 0 being its `_call`'s implicit default -- the
     shape it always gets, unconditionally, below.
     """
-    txid = _parse_txid(params)
+    if not params:
+        # the same shape as getblockheader's own missing-argument case:
+        # RPCMethod::HandleRequest's HelpResult, RPC_MISC_ERROR
+        # (src/rpc/server.cpp:887). Core's own first name for this
+        # argument is "verbosity" (declared "verbosity|verbose",
+        # src/rpc/rawtransaction.cpp:247); this node keeps its own
+        # "verbose" instead, because `verbose` below reads only the
+        # boolean shape Core's `RPCArg::Default{0}` degrades to under
+        # `allow_bool=true`, not the full 0/1/2 verbosity Core's name
+        # is for -- read at bitcoin/bitcoin@b91d983f66
+        raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["getrawtransaction"])
+    # txid, verbose and blockhash are checked, and every mismatch
+    # named, before any of them is raised on or any value-level check
+    # below runs (the genesis exception, the two hex decodes), the way
+    # `disconnect_node` above already does for its own two declared
+    # arguments (`type_errors`' own docstring). txid and blockhash are
+    # each declared RPCArg::Type::STR_HEX, type-checked before the
+    # handler body runs
+    mismatches: list[tuple[int, str, object, str]] = []
+    if not isinstance(params[0], str):
+        mismatches.append((1, "txid", params[0], "string"))
+    verbose_mismatch = bool_mismatch(params, 1, name="verbose")
+    if verbose_mismatch is not None:
+        mismatches.append(verbose_mismatch)
+    if len(params) > 2 and params[2] is not None and not isinstance(params[2], str):  # noqa: PLR2004
+        mismatches.append((3, "blockhash", params[2], "string"))
+    if mismatches:
+        raise type_errors(*mismatches)
+
+    txid = _decode_txid(params[0])
     # Core's own exception, ahead of every other argument
     # (`src/rpc/rawtransaction.cpp:290-293`, at bitcoin/bitcoin@9be056a8a7,
     # the v31.1 tag), compared there against the genesis merkle root:
@@ -1640,7 +1680,7 @@ def get_raw_transaction(
     # already takes, and not Core's 2 -- fee and prevout data come from
     # undo data this node does not keep alongside a block
     verbose = bool_param(params, 1, name="verbose", default=False)
-    block_hash = _parse_optional_block_hash(params)
+    block_hash = _decode_optional_block_hash(params)
     tx, block_height = _find_transaction(node, txid, block_hash)
 
     if not verbose:
@@ -1710,16 +1750,8 @@ def test_mempool_accept(
         # JSONRPCError call, cited below for the shape rather than left
         # commented out -- ERA001 reads it as Python and is wrong.
         # JSONRPCError(RPC_MISC_ERROR, e.what()), src/rpc/server.cpp  # noqa: ERA001
-        # :887. `rawtxs` is declared RPCArg::Type::ARR of one
-        # STR_HEX `rawtx`, which RPCArg::ToString(oneline=true) renders
-        # `["rawtx",...]` (src/rpc/util.cpp:1265-1301); `maxfeerate` is
-        # RPCArg::Type::AMOUNT, formatted bare and grouped in its own
-        # `( ... )` for being optional --
-        # read at bitcoin/bitcoin@b91d983f66, src/rpc/mempool.cpp:291-298
-        raise RpcError(
-            RPCErrorCode.MISC_ERROR,
-            'testmempoolaccept ["rawtx",...] ( maxfeerate )',
-        )
+        # :887, carrying the method's own full help text
+        raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["testmempoolaccept"])
     rawtxs = params[0]
     if not isinstance(rawtxs, list):
         # rawtxs is declared RPCArg::Type::ARR, type-checked before the
@@ -1815,16 +1847,8 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
         # JSONRPCError call, cited below for the shape rather than left
         # commented out -- ERA001 reads it as Python and is wrong.
         # JSONRPCError(RPC_MISC_ERROR, e.what()), src/rpc/server.cpp  # noqa: ERA001
-        # :887. `hexstring` is declared RPCArg::Type::STR_HEX,
-        # quoted the way blockhash's own usage string already is;
-        # `maxfeerate` and `maxburnamount` are both RPCArg::Type::AMOUNT
-        # with a Default, formatted bare and grouped in one `( ... )`
-        # for being consecutively optional --
-        # read at bitcoin/bitcoin@b91d983f66, src/rpc/mempool.cpp:72-77
-        raise RpcError(
-            RPCErrorCode.MISC_ERROR,
-            'sendrawtransaction "hexstring" ( maxfeerate maxburnamount )',
-        )
+        # :887, carrying the method's own full help text
+        raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["sendrawtransaction"])
     rawtx = params[0]
     if not isinstance(rawtx, str):
         # hexstring is declared RPCArg::Type::STR_HEX
@@ -1915,6 +1939,17 @@ def stop(node: Node, conn: RpcConnection, _: list[Any]) -> str:
     return "Btclib node stopping"
 
 
+def help_rpc(node: Node, conn: RpcConnection, params: list[Any]) -> str:
+    """Answer `help`; `rpc.help.answer_help` is the actual answer, node-free.
+
+    Every handler here shares this module's own `(node, conn, params)`
+    signature (this module's own docstring); `answer_help` needs none of
+    it, reading only `params` and the two tables `rpc.help` builds from
+    `HELP_TEXT` and `CATEGORY`.
+    """
+    return answer_help(params)
+
+
 callbacks = {
     "getbestblockhash": get_best_block_hash,
     "getblockcount": get_block_count,
@@ -1940,6 +1975,7 @@ callbacks = {
     "sendrawtransaction": send_raw_transaction,
     "ping": ping,
     "stop": stop,
+    "help": help_rpc,
 }
 
 # Each method's parameter names, in the order of its positions, as its
@@ -1975,4 +2011,5 @@ arg_names: dict[str, tuple[str, ...]] = {
     "sendrawtransaction": ("hexstring", "maxfeerate", "maxburnamount"),
     "ping": (),
     "stop": ("wait",),
+    "help": ("command",),
 }
