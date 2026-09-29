@@ -1917,11 +1917,13 @@ class P2pManager(threading.Thread):
         its own (btclib-org/btclib-node#1284).
 
         Wrapped in its own `try`, for the reason
-        `_maybe_prune_active_addresses` already gives for its own: this
-        coroutine's future is never awaited (`manage_connections`,
-        below), so an unguarded raise here would end this loop's
-        pinging, eviction and dialling for the rest of this node's life
-        rather than only this one addr-fetch pass.
+        `_maybe_prune_active_addresses` already gives for its own:
+        `_open_addr_fetches`' own future, the caller below, is never
+        awaited by anything (`run`, below), so an unguarded raise here
+        would end that standing loop for the rest of this node's life
+        rather than only this one addr-fetch pass -- `manage_connections`'s
+        own pinging and eviction run on a loop of their own since
+        #1366 and are no longer at stake here.
         """
         if not self._addr_fetches:
             return
@@ -1937,13 +1939,17 @@ class P2pManager(threading.Thread):
         `_prune_stale_connections` pings or drops an idle peer every
         pass; `_maybe_prune_active_addresses` and `_maybe_dump_banlist`
         run far less often; `_maybe_dial_more_peers` dials one more only
-        if this node still has room for it; `_process_addr_fetch` is
-        `ProcessAddrFetch`'s own standing call inside
-        `ThreadOpenConnections`'s loop (btclib-org/btclib-node#1284).
-        `-connect` and `-addnode` peers are dialled by loops of their
-        own, `_open_connect_peers` and `_open_added_peers` (`run`,
-        below), issue #651's own redial and #1316's replacement of the
-        backoff it first shipped with.
+        if this node still has room for it. `-connect` and `-addnode`
+        peers are dialled by loops of their own, `_open_connect_peers`
+        and `_open_added_peers` (`run`, below), issue #651's own redial
+        and #1316's replacement of the backoff it first shipped with;
+        `_process_addr_fetch` is `_open_addr_fetches`' own standing
+        loop, for the same reason (btclib-org/btclib-node#1366): an
+        addr-fetch dial can resolve a hostname (a DNS seed subdomain or
+        a `-seednode` value) before it ever reaches `dial`, and
+        `getaddrinfo` and `dial` both run on this same loop, so a step
+        here that awaited one directly would hold up every pass'
+        `_prune_stale_connections` for as long as either took.
         """
         self._arm_dial_loop()
         while True:
@@ -1952,8 +1958,23 @@ class P2pManager(threading.Thread):
             self._maybe_prune_active_addresses(now)
             self._maybe_dump_banlist(now)
             await self._maybe_dial_more_peers()
-            await self._process_addr_fetch()
             await asyncio.sleep(0.1)
+
+    async def _open_addr_fetches(self) -> None:
+        """Dial the addr-fetch queue, one entry a pass, forever.
+
+        `ProcessAddrFetch`'s own place in `ThreadOpenConnections`
+        (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
+        called once a pass, followed by the same 500ms
+        (`_MANUAL_STEP`) sleep the constant is already named for. Its
+        own standing task, scheduled from `run` beside
+        `_open_connect_peers`/`_open_added_peers`, rather than a step
+        inside `manage_connections`'s own loop -- `manage_connections`'s
+        own docstring above argues why (btclib-org/btclib-node#1366).
+        """
+        while True:
+            await self._process_addr_fetch()
+            await asyncio.sleep(_MANUAL_STEP)
 
     def _bind_one(self, family: socket.AddressFamily, host: str) -> socket.socket:
         """Bind and listen on one family, synchronously.
@@ -2402,6 +2423,7 @@ class P2pManager(threading.Thread):
         # `asyncio.all_tasks` is what ends them.
         asyncio.run_coroutine_threadsafe(self._open_added_peers(), loop)
         asyncio.run_coroutine_threadsafe(self._open_connect_peers(), loop)
+        asyncio.run_coroutine_threadsafe(self._open_addr_fetches(), loop)
         loop.run_forever()
 
     def stop(self) -> None:

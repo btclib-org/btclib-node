@@ -2257,7 +2257,7 @@ def test_process_addr_fetch_logs_and_continues_on_a_dial_that_raises(
 ) -> None:
     """A dial that raises is logged, like every other housekeeping step.
 
-    `manage_connections` never awaits this coroutine's own future, the
+    `_open_addr_fetches` never awaits this coroutine's own future, the
     same reason `_maybe_prune_active_addresses` guards its own call.
     """
     logged: list[str] = []
@@ -2268,6 +2268,31 @@ def test_process_addr_fetch_logs_and_continues_on_a_dial_that_raises(
     manager._addr_fetches.append(("seed.example", 18444))
     asyncio.run(manager._process_addr_fetch())
     assert logged
+
+
+def test_manage_connections_does_not_touch_the_addr_fetch_queue(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1366: a pass of `manage_connections` never reaches `_addr_fetches`.
+
+    `async_connect_host` hangs on an `Event` nothing ever sets, standing
+    in for a slow `getaddrinfo` or a slow `dial`; `_process_addr_fetch`
+    pops its entry before ever reaching that await, so a `manage_connections`
+    pass that still called it, as it did before #1366, would drain the
+    queue even while stuck. Nothing here ever runs `_open_addr_fetches`,
+    the loop that does own the queue since #1366 -- `one_pass` alone,
+    on `manage_connections`, is the whole scenario.
+    """
+    manager = a_manager()
+    manager._addr_fetches.append(("seed.example", 18444))
+    gate = asyncio.Event()
+
+    async def hangs(host: str, port: int, *, addr_fetch: bool = False) -> None:
+        await gate.wait()
+
+    monkeypatch.setattr(manager, "async_connect_host", hangs)
+    assert asyncio.run(one_pass(manager)) is True
+    assert list(manager._addr_fetches) == [("seed.example", 18444)]
 
 
 def test_zero_max_connections_turns_off_the_dns_lookup(
@@ -2684,6 +2709,30 @@ def test_run_dials_an_added_peer_without_an_explicit_dial(
     target_port = get_random_port()
     target = a_running_manager(a_manager, target_port)
     dialer = a_manager(addnode_args=[f"127.0.0.1:{target_port}"])
+    try:
+        wait_until_listening(target)
+        dialer.start()
+        wait_until(lambda: dialer.pending_connections)
+        wait_until(lambda: target.pending_connections)
+    finally:
+        dialer.stop()
+        dialer.join(timeout=10)
+        target.stop()
+        target.join(timeout=10)
+
+
+def test_run_dials_an_addr_fetch_peer_without_manage_connections(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1366: `run` starts `_open_addr_fetches`, not `manage_connections`.
+
+    Queued before `start()`, since nothing else feeds `_addr_fetches`
+    here -- no DNS seed, no `-seednode`.
+    """
+    target_port = get_random_port()
+    target = a_running_manager(a_manager, target_port)
+    dialer = a_manager()
+    dialer._addr_fetches.append(("127.0.0.1", target_port))
     try:
         wait_until_listening(target)
         dialer.start()
