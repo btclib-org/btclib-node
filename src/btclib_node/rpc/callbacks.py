@@ -422,8 +422,12 @@ def _parse_hash_v(name: str, value: str) -> bytes:
     that still fails to decode reaches the second message, `"<name>
     must be hexadecimal string (not '<value>')"`, `bytes.fromhex`'s own
     `ValueError` standing in for `FromHex`'s own failure at that point.
-    `name` is each call site's own choice, matching Core's -- `"txid"`
-    for `gettxout` (`src/rpc/blockchain.cpp:1258`, same sha).
+    `name` is each call site's own choice, matching Core's: `"hash"` for
+    `getblockheader`, `"blockhash"` for `getblock`, `"txid"` for
+    `gettxout` (`src/rpc/blockchain.cpp:678,828,1258`, same sha), and
+    `"parameter 1"`/`"parameter 3"` for `getrawtransaction`'s own two
+    hash arguments, Core's own names for them
+    (`src/rpc/rawtransaction.cpp:304,317`, same sha).
     """
     if len(value) != 64:  # noqa: PLR2004
         raise RpcError(
@@ -491,14 +495,9 @@ def get_block_header(
     # work runs, not only the first one
     verbose = bool_param(params, 1, name="verbose", default=True)
 
-    try:
-        block_hash = bytes.fromhex(params[0])
-    except ValueError as error:
-        # ParseHashV, src/rpc/util.cpp:125, down to the sentence
-        raise RpcError(
-            RPCErrorCode.INVALID_PARAMETER,
-            f"hash must be hexadecimal string (not '{params[0]}')",
-        ) from error
+    # ParseHashV, src/rpc/util.cpp:116-124, "hash" -- getblockheader's own
+    # label, not getblock's "blockhash"
+    block_hash = _parse_hash_v("hash", params[0])
     try:
         block_info = block_index.get_block_info(block_hash)
     except KeyError as error:
@@ -748,17 +747,10 @@ def _parse_get_block_params(params: list[Any]) -> tuple[bytes, int]:
         raise RpcError(RPCErrorCode.MISC_ERROR, 'getblock "blockhash" ( verbosity )')
     if not isinstance(params[0], str):
         raise type_error(1, "blockhash", params[0], "string")
-    try:
-        block_hash = bytes.fromhex(params[0])
-    except ValueError as error:
-        # `ParseHashV(request.params[0], "blockhash")` (`rpc/blockchain.cpp
-        # :828`, same sha) -- `getblock`'s own label, not
-        # `get_block_header`'s "hash", the two RPCs naming the same
-        # positional argument differently.
-        raise RpcError(
-            RPCErrorCode.INVALID_PARAMETER,
-            f"blockhash must be hexadecimal string (not '{params[0]}')",
-        ) from error
+    # `ParseHashV(request.params[0], "blockhash")` (`rpc/blockchain.cpp
+    # :828`, same sha) -- `getblock`'s own label, not `get_block_header`'s
+    # "hash", the two RPCs naming the same positional argument differently.
+    block_hash = _parse_hash_v("blockhash", params[0])
 
     has_verbosity = len(params) > 1 and params[1] is not None
     verbosity_param: Any = params[1] if has_verbosity else 1
@@ -2059,13 +2051,9 @@ def _parse_txid(params: list[Any]) -> bytes:
         # txid is declared RPCArg::Type::STR_HEX, type-checked before
         # the handler body runs, same as blockhash below
         raise type_error(1, "txid", params[0], "string")
-    try:
-        return bytes.fromhex(params[0])
-    except ValueError as error:
-        raise RpcError(
-            RPCErrorCode.INVALID_PARAMETER,
-            f"parameter 1 must be hexadecimal string (not '{params[0]}')",
-        ) from error
+    # `ParseHashV(request.params[0], "parameter 1")` (`rpc/rawtransaction.cpp
+    # :304`, same sha) -- Core's own name for this argument here, not "txid".
+    return _parse_hash_v("parameter 1", params[0])
 
 
 def _parse_optional_block_hash(params: list[Any]) -> bytes | None:
@@ -2077,13 +2065,9 @@ def _parse_optional_block_hash(params: list[Any]) -> bytes | None:
         return None
     if not isinstance(params[2], str):
         raise type_error(3, "blockhash", params[2], "string")
-    try:
-        return bytes.fromhex(params[2])
-    except ValueError as error:
-        raise RpcError(
-            RPCErrorCode.INVALID_PARAMETER,
-            f"parameter 3 must be hexadecimal string (not '{params[2]}')",
-        ) from error
+    # `ParseHashV(request.params[2], "parameter 3")` (`rpc/rawtransaction.cpp
+    # :317`, at bitcoin/bitcoin@9be056a8a7) -- Core's own name here too.
+    return _parse_hash_v("parameter 3", params[2])
 
 
 def _find_transaction(

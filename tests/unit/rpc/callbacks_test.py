@@ -1603,6 +1603,22 @@ def test_a_txid_that_is_not_hex_is_named_back_to_the_client() -> None:
     assert "zz" in raised.value.message
 
 
+def test_a_txid_of_the_wrong_length_is_refused_before_it_is_decoded() -> None:
+    """A valid-hex, wrong-length `txid` names "parameter 1", Core's own label.
+
+    `ParseHashV` checks the string's own length before it ever tries to
+    decode it (`src/rpc/util.cpp:117-124`, at
+    bitcoin/bitcoin@9be056a8a7).
+    """
+    node = a_tx_lookup_node()
+    with pytest.raises(RpcError) as raised:
+        get_raw_transaction(node, _CONN, ["aabb"])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert (
+        raised.value.message == "parameter 1 must be of length 64 (not 4, for 'aabb')"
+    )
+
+
 def test_a_blockhash_of_the_wrong_json_type_is_named() -> None:
     """`getrawtransaction`'s blockhash of the wrong JSON type is named."""
     node = a_tx_lookup_node()
@@ -1622,6 +1638,17 @@ def test_a_blockhash_that_is_not_hex_is_named_back_to_the_client() -> None:
         get_raw_transaction(node, _CONN, ["11" * 32, False, "zz"])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
     assert "zz" in raised.value.message
+
+
+def test_a_blockhash_of_the_wrong_length_is_refused_before_it_is_decoded() -> None:
+    """A valid-hex, wrong-length `blockhash` names "parameter 3", Core's own."""
+    node = a_tx_lookup_node()
+    with pytest.raises(RpcError) as raised:
+        get_raw_transaction(node, _CONN, ["11" * 32, False, "aabb"])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert (
+        raised.value.message == "parameter 3 must be of length 64 (not 4, for 'aabb')"
+    )
 
 
 def test_a_null_blockhash_is_the_same_as_none_given() -> None:
@@ -2463,6 +2490,38 @@ def test_a_null_block_hash_is_the_same_wrong_type_as_any_other() -> None:
         'Wrong type passed:\n{\n    "Position 1 (blockhash)": "JSON value '
         'of type null is not of expected type string"\n}'
     )
+
+
+def test_get_block_header_refuses_a_hash_that_is_not_hexadecimal() -> None:
+    """A right-length, non-hex `hash` is Core's own `ParseHashV` text."""
+    chain = generate_random_header_chain(1, RegTest().genesis.hash)
+    node = cast(
+        "Node",
+        SimpleNamespace(chainstate=SimpleNamespace(block_index=a_block_index(chain))),
+    )
+    not_hex = "z" * 64
+    with pytest.raises(RpcError) as raised:
+        get_block_header(node, _CONN, [not_hex])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert raised.value.message == f"hash must be hexadecimal string (not '{not_hex}')"
+
+
+def test_get_block_header_refuses_a_hash_of_the_wrong_length() -> None:
+    """A valid-hex, wrong-length `hash` is refused before it is decoded.
+
+    `ParseHashV` checks the string's own length before it ever tries to
+    decode it (`src/rpc/util.cpp:117-124`, at
+    bitcoin/bitcoin@9be056a8a7).
+    """
+    chain = generate_random_header_chain(1, RegTest().genesis.hash)
+    node = cast(
+        "Node",
+        SimpleNamespace(chainstate=SimpleNamespace(block_index=a_block_index(chain))),
+    )
+    with pytest.raises(RpcError) as raised:
+        get_block_header(node, _CONN, ["aabb"])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert raised.value.message == "hash must be of length 64 (not 4, for 'aabb')"
 
 
 def test_no_block_hash_at_all_is_answered_with_the_usage() -> None:
@@ -3859,14 +3918,27 @@ def test_get_block_refuses_a_blockhash_of_the_wrong_json_type(
 def test_get_block_refuses_a_blockhash_that_is_not_hexadecimal(
     regtest_node: Callable[..., Node],
 ) -> None:
-    """A non-hex `blockhash` is Core's own `ParseHashV` text."""
+    """A right-length, non-hex `blockhash` is Core's own `ParseHashV` text."""
     node = regtest_node()
+    not_hex = "z" * 64
     with pytest.raises(RpcError) as raised:
-        get_block(node, _CONN, ["not hex", 0])
+        get_block(node, _CONN, [not_hex, 0])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
     assert (
-        raised.value.message == "blockhash must be hexadecimal string (not 'not hex')"
+        raised.value.message
+        == f"blockhash must be hexadecimal string (not '{not_hex}')"
     )
+
+
+def test_get_block_refuses_a_blockhash_of_the_wrong_length(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A valid-hex, wrong-length `blockhash` is refused before it is decoded."""
+    node = regtest_node()
+    with pytest.raises(RpcError) as raised:
+        get_block(node, _CONN, ["aabb", 0])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert raised.value.message == "blockhash must be of length 64 (not 4, for 'aabb')"
 
 
 def test_get_block_refuses_a_header_only_block_as_not_fully_downloaded(

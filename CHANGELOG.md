@@ -874,6 +874,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   tree keeps running, rather than refusing outright on Core's own
   default (closes #1387).
 
+### RPC hash arguments refuse the wrong length, Core's own `ParseHashV` check
+
+- **A hex `txid` or `blockhash` of the wrong length is refused**, rather
+  than silently decoding to a hash nothing then finds (closes #1457).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
