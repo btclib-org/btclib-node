@@ -851,6 +851,46 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A host held on any port is not dialled again** (closes #1304), and an
   inbound peer's address keeps the port it connected from.
 
+### The mempool refuses a second spend of one outpoint, and a block evicts it
+
+- **A conflicting candidate is refused, in Core's words where its fee rules
+  refuse it too, and a connected block evicts what spends its inputs**
+  (closes #1244); replacing is not ported (issue #1334).
+
+### A spend of an output a mempool parent lacks is a missing input, as in Core
+
+- **It raised `IndexError`: the relaying peer was dropped and the RPC answered
+  `-32603`** (closes #1252).
+
+### The mempool sizes a transaction by its sigops too, as Core
+
+- **Every feerate and the size limit read Core's sigop-adjusted vsize, and a
+  transaction over 16000 sigops is refused** (closes #1357), as `bitcoind`
+  answers both.
+
+### `-minrelaytxfee` sets the relay floor, in BTC/kvB, as in Core
+
+- **Read as Core's `ParseMoney` reads it, and a value that is no amount
+  refused in Core's words** (closes #1332).
+
+### `sendrawtransaction` and `testmempoolaccept` refuse in Core's words
+
+- **Each mempool refusal answers Core's reject reason and details, in the
+  order Core checks them** (closes #1328); a failing script's message inside
+  the parentheses is btclib's (issue #1362).
+
+### The dialler and the suite stop assuming a host has IPv6, or is not root
+
+- **`dial` answers `None` where the socket layer refuses the family**
+  (closes #1249). A test needing IPv6 skips rather than fails the suite
+  (closes #1250); the root-skipped one carries its pragma (closes #1251).
+
+### `[tool.uv]`'s floor rises to the `uv` `dependabot-core` bundles
+
+- **`required-version` reads `>=0.12.19`, the pin in `dependabot-core`'s
+  `uv/Dockerfile`**: the old floor admitted a `uv` older than the one the
+  updater writes `uv.lock` with (issue btclib-org/.github#1438).
+
 ### `version` signals `NODE_COMPACT_FILTERS` only under `-peerblockfilters`
 
 - **Off by default, as in Core; a `getcfilters`, `getcfheaders` or
