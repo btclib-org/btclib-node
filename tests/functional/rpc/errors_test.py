@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import http_request
 
+from btclib_node.rpc.help import HELP_TEXT
 from tests import authorization, post, rpc_client, wait_until_listening
 
 if TYPE_CHECKING:
@@ -198,7 +199,7 @@ def test_a_missing_argument_is_not_answered_internal_error(rpc_node: Node) -> No
 
     assert refusal("testmempoolaccept", []) == {
         "code": -1,
-        "message": 'testmempoolaccept ["rawtx",...] ( maxfeerate )',
+        "message": HELP_TEXT["testmempoolaccept"],
     }
     assert refusal("testmempoolaccept", ["not an array"]) == {
         "code": -3,
@@ -209,7 +210,7 @@ def test_a_missing_argument_is_not_answered_internal_error(rpc_node: Node) -> No
     }
     assert refusal("sendrawtransaction", []) == {
         "code": -1,
-        "message": 'sendrawtransaction "hexstring" ( maxfeerate maxburnamount )',
+        "message": HELP_TEXT["sendrawtransaction"],
     }
 
     assert node.is_alive()
