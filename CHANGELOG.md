@@ -835,6 +835,62 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   an anchor at one, on any port, ends the pass** (closes #1238); on Windows
   none is found (#1310).
 
+### An answered address is kept for Core's 30-day horizon
+
+- **An answered row leaves the table only when `IsTerrible`'s time tests call
+  it terrible: its handshake stamp over 30 days old or 10 minutes ahead**
+  (closes #1318), where it left three hours after its last handshake.
+
+### `disconnectnode` drops a connection, as Core's does
+
+- **`disconnectnode` drops a connection by `getpeerinfo`'s address or id, with
+  Core's errors** (closes #1193).
+
+### The automatic dial passes over a connected host, as in Core
+
+- **A host held on any port is not dialled again** (closes #1304), and an
+  inbound peer's address keeps the port it connected from.
+
+### The mempool refuses a second spend of one outpoint, and a block evicts it
+
+- **A conflicting candidate is refused, in Core's words where its fee rules
+  refuse it too, and a connected block evicts what spends its inputs**
+  (closes #1244); replacing is not ported (issue #1334).
+
+### A spend of an output a mempool parent lacks is a missing input, as in Core
+
+- **It raised `IndexError`: the relaying peer was dropped and the RPC answered
+  `-32603`** (closes #1252).
+
+### The mempool sizes a transaction by its sigops too, as Core
+
+- **Every feerate and the size limit read Core's sigop-adjusted vsize, and a
+  transaction over 16000 sigops is refused** (closes #1357), as `bitcoind`
+  answers both.
+
+### `-minrelaytxfee` sets the relay floor, in BTC/kvB, as in Core
+
+- **Read as Core's `ParseMoney` reads it, and a value that is no amount
+  refused in Core's words** (closes #1332).
+
+### `sendrawtransaction` and `testmempoolaccept` refuse in Core's words
+
+- **Each mempool refusal answers Core's reject reason and details, in the
+  order Core checks them** (closes #1328); a failing script's message inside
+  the parentheses is btclib's (issue #1362).
+
+### The dialler and the suite stop assuming a host has IPv6, or is not root
+
+- **`dial` answers `None` where the socket layer refuses the family**
+  (closes #1249). A test needing IPv6 skips rather than fails the suite
+  (closes #1250); the root-skipped one carries its pragma (closes #1251).
+
+### `[tool.uv]`'s floor rises to the `uv` `dependabot-core` bundles
+
+- **`required-version` reads `>=0.12.19`, the pin in `dependabot-core`'s
+  `uv/Dockerfile`**: the old floor admitted a `uv` older than the one the
+  updater writes `uv.lock` with (issue btclib-org/.github#1438).
+
 ### An ancestor is found through skip pointers, as Core's `GetAncestor`
 
 - **Block download and `getheaders` reach a block's fork point or ancestor in

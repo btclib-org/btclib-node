@@ -98,6 +98,7 @@ from btclib_node.exceptions import (
     TxRejectedError,
 )
 from btclib_node.log import Logger
+from btclib_node.main import MempoolAcceptance, verify_mempool_acceptance
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import PeerDB, endpoint_key, host_key, peer_address
 from btclib_node.p2p.banman import BanMan, lookup_subnet
@@ -154,14 +155,16 @@ from tests import (
     log_recorder,
 )
 from tests.conftest import unstarted_node_context
+from tests.unit.rpc.callbacks_test import a_node_holding, a_twin
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
     from pathlib import Path
 
     from btclib.fee import FeeRate
     from btclib.tx.tx import Tx
 
+    from btclib_node import Node
     from btclib_node.chains import Chain
     from btclib_node.chainstate.block_index import BlockIndex
     from btclib_node.p2p.manager import P2pManager
@@ -496,9 +499,6 @@ def a_parsed_version(
     services: ServiceFlags = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS,
     nonce: int = 7,
     relay: bool | None = True,
-    # a different host than "1.2.3.4", a_peer()'s own address: proof
-    # that verack takes only the port from here, for an inbound peer,
-    # and not the address -- btclib-org/btclib-node#70
     addr_from_port: int = 18444,
 ) -> Version:
     """Return the parsed `Version` `a_version` serializes, for field reads."""
@@ -1207,10 +1207,11 @@ def test_a_dialled_peer_is_recorded_as_answered_at_its_own_version() -> None:
     # the live handshake's own services, not whatever the address was
     # last recorded with
     assert recorded.services == services
-    # and the connection's own idea of its peer moves to the same
-    # endpoint, or manager.py's already-connected check keeps comparing
-    # against the address dialled with -- never what a later gossip of
-    # this same peer draws back
+    # and the connection's own address takes the same services, at the
+    # endpoint it was dialled at, or manager.py's already-connected
+    # check keeps comparing against a stale services value -- never
+    # what a later gossip of this same peer draws back
+    assert peer.address.services == services
     assert endpoint_key(peer.address) == endpoint_key(recorded)
 
 
@@ -1261,42 +1262,30 @@ def test_an_inbound_peer_completing_version_is_not_recorded() -> None:
     assert peer_db.active_addresses == []
 
 
-def test_an_inbound_handshake_moves_its_port_and_is_not_recorded() -> None:
+def test_an_inbound_handshake_keeps_its_own_address_and_is_not_recorded() -> None:
     """ISS 1229: Core calls `AddrMan::Good` for a peer it dialled alone.
 
     An inbound connection proves only that the peer reaches this node,
     not that this node can reach it back, so its endpoint stays out of
     the answered table even where the gossiped table already holds it.
-    `conn.address` still moves to the port the peer's `version` names,
-    which manager.py's `already_connected` compares a draw against.
+    `conn.address` stays the socket's, the ephemeral port included, as
+    Core's `CNode::addr` does -- `verack` no longer moves it to the
+    port the peer's `version` names, `manager.py`'s `already_connected`
+    now comparing by host and not needing it (ISS 1304).
     """
     accepted = peer_address("1.2.3.4", 55555)
+    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+    # both endpoints known, so that either would be recorded if asked
+    peer_db.add_addresses([accepted, replace(accepted, port=8333)])
     peer = a_peer(
         version_message=a_parsed_version(addr_from_port=8333),
         wtxidrelay_received=True,
         inbound=True,
         address=accepted,
     )
-    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
-    # both endpoints known, so that either would be recorded if asked
-    peer_db.add_addresses([accepted, replace(accepted, port=8333)])
     verack(a_handshake_node(peer_db=peer_db), b"", peer)
-    assert peer.address.address == accepted.address
-    assert peer.address.port == 8333
-    assert peer_db.active_addresses == []
-
-
-def test_an_inbound_peer_naming_no_port_keeps_its_own() -> None:
-    """#70: a `version` naming port zero leaves `conn.address` as accepted."""
-    accepted = peer_address("1.2.3.4", 55555)
-    peer = a_peer(
-        version_message=a_parsed_version(addr_from_port=0),
-        wtxidrelay_received=True,
-        inbound=True,
-        address=accepted,
-    )
-    verack(a_handshake_node(), b"", peer)
     assert peer.address == accepted
+    assert peer_db.active_addresses == []
 
 
 @pytest.mark.parametrize(
@@ -2016,14 +2005,18 @@ def test_a_transaction_that_verifies_is_kept_and_reported(
 
     Kept in the mempool, and reported to `download_manager.received_txs`
     keyed on the sending peer's id, for the download manager's own
-    announce-to-others bookkeeping.
+    announce-to-others bookkeeping. Kept at the vsize verification
+    answered (btclib-org/btclib-node#1357).
     """
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
+    monkeypatch.setattr(
+        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, 999)
+    )
     transaction = a_transaction()
     node = a_data_node()
     peer = a_peer(id=3)
     tx(node, TxMsg(transaction, include_witness=True).serialize(), peer)
     assert node.mempool.contains_tx(transaction)
+    assert node.mempool.vsizes[transaction.hash] == 999
     assert node.download_manager.received_txs == [(3, transaction.hash)]
     # a novel transaction the mempool took: what eviction reads (ISS 1064)
     assert peer.last_novel_tx_time > 0
@@ -2138,6 +2131,35 @@ def test_a_refused_transaction_is_not_reverified_on_resubmission(
     tx(node, payload, a_peer(id=4))
     assert calls == [transaction.hash]
     assert not node.mempool.contains_tx(transaction)
+
+
+def test_a_held_txid_under_another_witness_is_refused_as_held(
+    regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real verifier refuses a held txid as held, not as a conflict.
+
+    Core's `PreChecks` answers "txn-same-nonwitness-data-in-mempool"
+    ahead of its conflict checks; the held copy stays and the peer's
+    is recorded as refused. btclib-org/btclib-node#1244
+    """
+    node, held, _ = a_node_holding(regtest_node, monkeypatch, 1_000)
+    node.is_initial_block_download = False
+    reasons: list[str] = []
+
+    def recording(node: Node, transaction: Tx) -> MempoolAcceptance:
+        try:
+            return verify_mempool_acceptance(node, transaction)
+        except TxRejectedError as exc:
+            reasons.append(exc.reason)
+            raise
+
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", recording)
+    twin = a_twin(held)
+    tx(node, TxMsg(twin, include_witness=True).serialize(), a_peer(id=3))
+    assert reasons == ["txn-same-nonwitness-data-in-mempool"]
+    assert node.mempool.was_recently_rejected(twin.hash)
+    assert node.mempool.contains_tx(held)
+    assert node.download_manager.received_txs == []
 
 
 def test_a_fee_refusal_is_recorded_and_the_peer_kept(
@@ -2265,7 +2287,9 @@ def test_a_transaction_received_in_initial_block_download_is_dropped(
     # verify_mempool_acceptance is patched to accept unconditionally,
     # so the mempool staying empty is the gate firing rather than a
     # coincidental rejection
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
+    monkeypatch.setattr(
+        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, tx.vsize)
+    )
     transaction = a_transaction()
     node = a_data_node(is_initial_block_download=True)
     tx(node, TxMsg(transaction, include_witness=True).serialize(), a_peer(id=3))
@@ -2282,7 +2306,9 @@ def test_a_transaction_already_held_is_not_reported_twice(
     never reaches `download_manager.received_txs` even though
     `add_tx` itself would be a harmless no-op for it.
     """
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
+    monkeypatch.setattr(
+        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, tx.vsize)
+    )
     transaction = a_transaction()
     node = a_data_node()
     node.mempool.add_tx(transaction)
@@ -2314,7 +2340,9 @@ def test_a_transaction_a_full_mempool_declined_is_not_reported_either(
     # every other peer, and one that then asks for it gets `notfound`
     # for a transaction this node never actually kept.
     # btclib-org/btclib-node#277
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
+    monkeypatch.setattr(
+        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, tx.vsize)
+    )
     transaction = a_transaction()
     node = a_data_node()
     node.mempool.bytesize_limit = 0
@@ -2936,7 +2964,9 @@ def test_a_transaction_is_taken_in_out_of_ibd_below_block_synced(
     blocks by `submitblock`, say -- keeps the transaction and queues the
     announcement.
     """
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
+    monkeypatch.setattr(
+        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, tx.vsize)
+    )
     transaction, announced = a_transaction(), a_transaction()
     node = a_data_node(status=NodeStatus.SyncingHeaders)
     peer = a_peer(id=3, wtxidrelay_received=True)

@@ -81,9 +81,9 @@ __all__ = ["P2pManager"]
 # table on its own rather than only as a side effect of something asking
 # for it. Not tied to the loop's own sleep below -- an O(n) walk of
 # `active_addresses` every pass buys nothing a run every few minutes
-# does not -- but to `get_active_addresses`'s own three-hour staleness
-# window: far enough under it that a stale row does not linger long past
-# it, however rarely this node is asked for its table.
+# does not -- but far enough under `get_active_addresses`'s own horizon
+# that an aged-out row does not linger long past it, however rarely this
+# node is asked for its table.
 # btclib-org/btclib-node#71
 _ACTIVE_PRUNE_INTERVAL = 300
 
@@ -514,7 +514,8 @@ class P2pManager(threading.Thread):
         # that missed, from `pending_connections` -- two statements
         # again. `promote_connection` runs on `Node`'s own loop, off
         # `callbacks.verack`; `remove_connection` runs on this
-        # manager's own loop, off `_prune_stale_connections`. Unlocked,
+        # manager's own loop, off `_prune_stale_connections`, and on
+        # `Node`'s, off the `disconnectnode` RPC. Unlocked,
         # a `remove_connection` whose first pop misses because the
         # connection is still pending can run its second pop after
         # `promote_connection` has already moved it, missing it there
@@ -772,8 +773,8 @@ class P2pManager(threading.Thread):
         calls only because the status belongs to the connection and the
         dict it lives in belongs to the manager. `_connections_lock`
         (`__init__`) is what makes the pop and the write one step too,
-        against `remove_connection`'s own two pops below, on the other
-        thread.
+        against `remove_connection`'s own two pops below, which this
+        manager's own thread also runs.
 
         Successfully connected is exactly the state
         `pending_outbound_nonces` (`__init__`) has to stop answering
@@ -1168,15 +1169,11 @@ class P2pManager(threading.Thread):
         # ahead of `addrman`
         if kind is None or (kind is not _Outbound.ANCHOR and self.peer_db.is_empty):
             return
-        # By endpoint_key, not raw equality: a drawn address
-        # carries the timestamp and services its rows were last
-        # given, by `callbacks.version`'s own recording of a peer it
-        # dialled, its `set_services` for any peer's own word on its
-        # services, or a gossip, which is never the pair an existing
-        # Connection's own address was constructed with, so comparing
-        # the dataclasses themselves never matches the peer this node
-        # is already holding a connection with and dials it a second
-        # time.
+        # By host, as Core's `AlreadyConnectedToAddress(const CNetAddr&)`
+        # compares each node's address with no port (`src/net.cpp`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a host this node
+        # holds any connection with, an inbound one on its ephemeral port
+        # included, is not dialled again on another port.
         #
         # Locked for the same reason the count above is
         # (btclib-org/btclib-node#355).
@@ -1185,7 +1182,7 @@ class P2pManager(threading.Thread):
                 *self.connections.values(),
                 *self.pending_connections.values(),
             )
-        already_connected = {endpoint_key(conn.address) for conn in connected}
+        already_connected = {host_key(conn.address) for conn in connected}
         # One outbound peer per network group, as
         # `CConnman::ThreadOpenConnections` keeps them: the groups of
         # its `MANUAL`, `OUTBOUND_FULL_RELAY` and `BLOCK_RELAY` peers,
@@ -1238,9 +1235,10 @@ class P2pManager(threading.Thread):
         # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) returns without
         # dialling a peer already connected, discouraged or banned, a
         # discouraged one being one this node dropped for cause
-        # (btclib-org/btclib-node#283).
+        # (btclib-org/btclib-node#283). `already_connected` is by host,
+        # as `_maybe_dial_more_peers` above builds it.
         if (
-            endpoint_key(address) in already_connected
+            host_key(address) in already_connected
             or self.is_discouraged(address)
             or self.ban_man.is_peer_banned(address)
         ):
@@ -2149,10 +2147,11 @@ class P2pManager(threading.Thread):
         # Only after join(), not before: `run()` above has now returned,
         # so nothing but this thread can still be adding to
         # `self.connections`/`self.pending_connections` -- `create_connection`
-        # and `remove_connection` are only ever reached from a coroutine
-        # on this manager's own loop, and `promote_connection`, `Node`'s
-        # thread's own exception, cannot race a `stop()` that same
-        # thread is itself blocked inside. A sweep taken before join()
+        # is only ever reached from a coroutine on this manager's own
+        # loop, and `promote_connection` and `remove_connection`, which
+        # `Node`'s thread also reaches (the latter through the
+        # `disconnectnode` RPC), cannot race a `stop()` that same thread
+        # is itself blocked inside. A sweep taken before join()
         # closed whatever it snapshotted correctly but could still miss
         # a connection `server()`'s own accept loop created in the
         # window between `loop.stop` merely being scheduled above and
