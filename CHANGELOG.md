@@ -897,6 +897,14 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   alone as untyped**: the harness itself now gets the same check as
   `src/btclib_node`, and its own two errors are fixed (closes #1259).
 
+### `scripts/` drops two stale hand-run templates
+
+- **`test_errors.py` replayed a directory nothing under `src/` writes, and
+  is deleted; `prune.py` now builds the `Node` its own `main.
+  prune_up_to_height` takes, in place of a docstring claiming neither
+  `BlockDB` nor `Chainstate` has a prune method of its own** (closes
+  #1260).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

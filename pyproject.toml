@@ -1038,13 +1038,9 @@ ignore = [
 # from ERA001's usual leftover.
 "scripts/reset_chainstate.py" = ["ERA001"]
 "scripts/reset_download.py" = ["ERA001"]
-# a manual diagnostic run over local error test vectors: the `print`s
-# are its progress and its result, not debug residue left behind.
-"scripts/test_errors.py" = ["T20"]
-# the same reason, for a script a workflow runs rather than a person: a
-# GitHub Actions step reads its result from stdout, not from a return
+# a GitHub Actions step reads its result from stdout, not from a return
 # value, so `check_vendored_pin.py`'s prints are its report and not
-# debug residue either.
+# debug residue.
 ".github/scripts/check_vendored_pin.py" = ["T20"]
 # and the same for the citation pin check: the pre-commit hook that
 # runs it reads a failing developer's terminal, not a return value
