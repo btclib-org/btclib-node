@@ -11,7 +11,7 @@ import pytest
 from bitcoin_core_rpc import rpc_port_from_chain
 from btclib.fee import FeeRate
 
-from btclib_node.chains import Main, RegTest, SigNet, TestNet
+from btclib_node.chains import Main, RegTest, SigNet, TestNet, TestNet4
 from btclib_node.config import (
     DEFAULT_MAX_PEER_CONNECTIONS,
     DEFAULT_MIN_RELAY_FEERATE,
@@ -29,6 +29,7 @@ def test_chain_selection() -> None:
     assert Config(chain="testnet") == Config(chain=TestNet())
     assert Config(chain="signet") == Config(chain=SigNet())
     assert Config(chain="regtest") == Config(chain=RegTest())
+    assert Config(chain="testnet4") == Config(chain=TestNet4())
     with pytest.raises(TypeError, match="chain must be a Chain or str"):
         Config(chain=None)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="unknown chain"):
@@ -75,6 +76,7 @@ def test_port() -> None:
         ("testnet", "test"),
         ("signet", "signet"),
         ("regtest", "regtest"),
+        ("testnet4", "testnet4"),
     ],
 )
 def test_default_rpc_port_is_cores_own(chain_name: str, core_chain_name: str) -> None:

@@ -938,6 +938,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   and a served command's own full help text with one, or Core's own
   "unknown command" for one it does not serve** (closes #1405).
 
+### Testnet4 is a chain this node can join, `-testnet4` included
+
+- **`TestNet4` joins this node's chains, selected by `-testnet4` or
+  `-chain=testnet4` as Core's own `-testnet4` does, and a header failing
+  BIP94's timewarp bound is a `MisbehavingError`** (closes #1442).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

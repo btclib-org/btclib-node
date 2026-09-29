@@ -770,6 +770,8 @@ def test_build_config_masks_a_double_negative_password(
         ([], "testnet=1\nnotestnet=1\n", "mainnet"),
         (["-chain=test"], "chain=regtest\n", "testnet"),
         ([], "chain=regtest\nchain=test\n", "regtest"),
+        (["-testnet4=0"], "", "mainnet"),
+        (["-notestnet4"], "testnet4=1\n", "testnet4"),
     ],
     ids=[
         "-testnet=0",
@@ -781,6 +783,8 @@ def test_build_config_masks_a_double_negative_password(
         "negated after set",
         "-chain over the file",
         "the file's first chain",
+        "-testnet4=0",
+        "-notestnet4 skipped",
     ],
 )
 def test_build_config_reads_a_chain_selector_as_get_chain_arg(
@@ -1258,10 +1262,12 @@ def test_build_config_help_debug_shows_a_debug_only_option(
         (["-testnet"], "testnet"),
         (["-signet"], "signet"),
         (["-regtest"], "regtest"),
+        (["-testnet4"], "testnet4"),
         (["-chain=main"], "mainnet"),
         (["-chain=test"], "testnet"),
         (["-chain=signet"], "signet"),
         (["-chain=regtest"], "regtest"),
+        (["-chain=testnet4"], "testnet4"),
     ],
 )
 def test_build_config_selects_the_chain(
@@ -1273,8 +1279,12 @@ def test_build_config_selects_the_chain(
 
 @pytest.mark.parametrize(
     ("argv", "conf"),
-    [(["-testnet", "-signet"], ""), (["-testnet"], "signet=1\n")],
-    ids=["two on the command line", "one each side"],
+    [
+        (["-testnet", "-signet"], ""),
+        (["-testnet"], "signet=1\n"),
+        (["-testnet4", "-testnet"], ""),
+    ],
+    ids=["two on the command line", "one each side", "-testnet4 and -testnet"],
 )
 def test_build_config_refuses_two_chain_selectors(
     tmp_path: Path, argv: list[str], conf: str
@@ -1291,7 +1301,7 @@ def test_build_config_refuses_two_chain_selectors(
 def test_build_config_refuses_an_unknown_chain(
     tmp_path: Path, argv: list[str], conf: str, alias: str
 ) -> None:
-    """An alias outside Core's four, `-nochain`'s `0` among them."""
+    """An alias outside Core's five, `-nochain`'s `0` among them."""
     with pytest.raises(ValueError, match=f"^unknown chain '{alias}'$"):
         _build(tmp_path, *argv, conf=conf)
 
