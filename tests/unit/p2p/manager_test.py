@@ -91,6 +91,7 @@ def a_conn(
     block_relay: bool = False,
     feeler: bool = False,
     addr_fetch: bool = False,
+    addr_name: str | None = None,
 ) -> Any:
     """Build a `Connection` double: no socket, its own `sent`/`stopped` logs.
 
@@ -118,6 +119,7 @@ def a_conn(
         block_relay=block_relay,
         feeler=feeler,
         addr_fetch=addr_fetch,
+        addr_name=addr_name,
         sent=[],
         stopped=[],
     )
@@ -999,11 +1001,11 @@ def test_a_connected_peer_drawn_with_a_different_timestamp_is_not_redialled(
 ) -> None:
     """A peer drawn back with a different timestamp is still not redialled.
 
-    #70/#71: callbacks.version records the peer at a live timestamp and
-    # with its handshake's own services, so the row PeerDB.random_address
-    # can draw back is never equal, field for field, to the Connection's
-    # own address -- endpoint_key is what the manager has to compare on
-    # instead, or a peer already connected to is dialled a second time.
+    #70/#71: `callbacks.version` records the peer at a live timestamp and
+    with its handshake's own services, so the row `PeerDB.random_address`
+    can draw back is never equal, field for field, to the Connection's
+    own address: the manager compares by `host_key`, or a peer already
+    connected to is dialled a second time.
     An onion address the same way the sibling tests above use one: `not
     in already_connected` regressing to raw equality would reach the
     real `dial`, which raises on a network this node cannot open a
@@ -1504,6 +1506,38 @@ def test_a_draw_in_a_held_group_draws_again(
     assert dialled == [other]
 
 
+@pytest.mark.parametrize(
+    ("held_host", "dials"), [("1.2.3.4", False), ("5.6.7.8", True)]
+)
+def test_a_host_held_on_any_port_is_not_dialled_again(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    held_host: str,
+    *,
+    dials: bool,
+) -> None:
+    """ISS 1304: Core's `AlreadyConnectedToAddress` compares no port.
+
+    An inbound peer on its ephemeral port holds its host: a draw of the
+    same host on its listening port is not dialled, and one of another
+    host is. Inbound, so no network group is in the way.
+    """
+    dialled: list[NetworkAddressV2] = []
+
+    async def records(address: NetworkAddressV2) -> None:
+        dialled.append(address)
+
+    monkeypatch.setattr(manager_module, "dial", records)
+    # the services `_passed_over` asks of a draw
+    drawn_address = a_full_node("1.2.3.4", 8333)
+    _, draw = draws_of(drawn_address)
+    peer_db = a_peer_db_stub(is_empty=False, random_address=draw)
+    held = a_conn(1, address=peer_address(held_host, 55555), inbound=True)
+    manager = a_manager([held], peer_db=peer_db)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert dialled == ([drawn_address] if dials else [])
+
+
 @pytest.mark.parametrize("refusal", ["connected", "discouraged"])
 def test_a_draw_refused_otherwise_ends_the_pass(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, refusal: str
@@ -1780,6 +1814,59 @@ def test_process_addr_fetch_is_a_noop_on_an_empty_queue(
     assert not manager.pending_connections
 
 
+def test_process_addr_fetch_skips_a_queued_host_already_held_by_name(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`AlreadyConnectedToHost(pszDest)`: refused before any resolve.
+
+    Core's own check runs on the unresolved string alone
+    (`OpenNetworkConnection`, `src/net.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so a queued host already
+    held by name never reaches the resolver at all -- unlike the two
+    post-resolve checks below, which see every candidate an already-held
+    endpoint could still hide behind.
+    """
+
+    class _FailsIfResolved:
+        async def getaddrinfo(self, host: str, port: int, **kwargs: object) -> NoReturn:
+            # unreached unless the pre-resolve name check above is skipped
+            pytest.fail("resolved a name already held")  # pragma: no cover -- see above
+
+    held = a_conn(1, addr_name="seed.example")
+    monkeypatch.setattr(asyncio, "get_running_loop", _FailsIfResolved)
+    monkeypatch.setattr(manager_module, "dial", refuses_to_be_asked)
+    manager = a_manager([held])
+    manager._addr_fetches.append(("seed.example", 18444))
+    asyncio.run(manager._process_addr_fetch())
+    assert not manager._addr_fetches
+    assert list(manager.connections) == [1]
+    assert not manager.pending_connections
+
+
+def test_process_addr_fetch_resolves_a_queued_host_held_by_no_connection(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A connection held by a different name does not block the resolve."""
+    ours, theirs = socket.socketpair()
+
+    async def connects(address: NetworkAddressV2) -> socket.socket:
+        return ours
+
+    held = a_conn(1, addr_name="other.example")
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: _NamedLoop(["5.6.7.8"]))
+    monkeypatch.setattr(manager_module, "dial", connects)
+    made: list[dict[str, Any]] = []
+    manager = a_manager([held])
+    monkeypatch.setattr(
+        manager, "create_connection", lambda *args, **kwargs: made.append(kwargs)
+    )
+    manager._addr_fetches.append(("seed.example", 18444))
+    asyncio.run(manager._process_addr_fetch())
+    assert not manager._addr_fetches
+    assert made == [{"inbound": False, "addr_fetch": True, "addr_name": "seed.example"}]
+    theirs.close()
+
+
 def test_process_addr_fetch_drops_the_entry_when_the_name_resolves_to_nothing(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1935,7 +2022,7 @@ def test_process_addr_fetch_dials_and_marks_the_connection_addr_fetch(
     manager._addr_fetches.append(("seed.example", 18444))
     asyncio.run(manager._process_addr_fetch())
     assert not manager._addr_fetches
-    assert made == [{"inbound": False, "addr_fetch": True}]
+    assert made == [{"inbound": False, "addr_fetch": True, "addr_name": "seed.example"}]
     theirs.close()
 
 
@@ -1964,7 +2051,7 @@ def test_process_addr_fetch_tries_the_next_candidate_when_the_first_never_connec
     manager._addr_fetches.append(("seed.example", 18444))
     asyncio.run(manager._process_addr_fetch())
     assert len(tried) == 2
-    assert made == [{"inbound": False, "addr_fetch": True}]
+    assert made == [{"inbound": False, "addr_fetch": True, "addr_name": "seed.example"}]
     theirs.close()
 
 
@@ -2787,16 +2874,24 @@ def test_a_manager_says_when_it_is_listening_and_not_before(
     assert not manager.is_alive()
 
 
-def test_a_manager_accepts_an_ipv6_peer_too(a_manager: AManagerFactory) -> None:
+def test_a_manager_accepts_an_ipv6_peer_too(  # pragma: no cover -- the body needs IPv6
+    a_manager: AManagerFactory,
+) -> None:
     """A manager also binds IPv6, accepting a peer that dials it over `::1`."""
     port = get_random_port()
     manager = a_running_manager(a_manager, port)
     wait_until_listening(manager)
+    try:
+        peer = socket.create_connection(("::1", port), timeout=20)
+    except OSError as refused:
+        manager.stop()
+        manager.join(timeout=10)
+        pytest.skip(f"this host has no IPv6: {refused}")
     # held open across the stop rather than closed by a `with`, on
     # `test_stopping_a_running_manager_stops_the_connections_it_holds`'s
     # own reasoning: closing it here races the still-running
     # `Connection`'s own read against the `stop` below
-    with closing(socket.create_connection(("::1", port), timeout=20)) as peer:
+    with closing(peer):
         wait_until(lambda: manager.pending_connections)
         (conn,) = manager.pending_connections.values()
         assert conn.address.network_id == BIP155Network.IPV6
