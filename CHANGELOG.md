@@ -944,6 +944,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   challenge is refused, `bad-signet-blksig`, as Core's
   `CheckSignetBlockSolution` refuses it** (closes #1342).
 
+### A headers batch indexes its valid prefix through a contextual failure
+
+- **A header failing only its contextual check no longer discards the
+  valid headers ahead of it, matching Core's two-stage
+  `CheckHeadersPoW` then `AcceptBlockHeader`** (closes #1348).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
