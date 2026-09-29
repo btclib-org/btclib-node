@@ -368,8 +368,9 @@ server answered, and
 `bootstrap-dns.yml` asks the same question of the DNS seeds
 `src/btclib_node/chains.py` names. `claude-review.yml` writes the review
 and its own header says it must not become a required check.
-`vendored-vectors.yml` re-checks `tests/_data/README.md`'s pins against
-upstream, `deps-latest.yml` upgrades every dependency and runs the suite,
+`vendored-vectors.yml` re-checks `tests/_data/README.md`'s and
+`scripts/seeds/README.md`'s pins against upstream, `deps-latest.yml`
+upgrades every dependency and runs the suite,
 the lint gate and the packaging checks against the result,
 `deps-oldest.yml` is that sentinel's mirror and takes the registry
 specifiers down to their oldest allowed release instead, its own header

@@ -905,6 +905,16 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `BlockDB` nor `Chainstate` has a prune method of its own** (closes
   #1260).
 
+### `scripts/seeds/README.md`'s pins are re-checked against their own tag
+
+- **Each of the three fixed-seed lists carries a `ref` field, and
+  `check_vendored_pin.py` reads a `ref`-pinned entry's blob against that
+  tag's own tree rather than upstream's default branch**, and skips the
+  "newest commit" check a tag cannot fail: these lists already move ahead
+  of the v31.1 tag on Core's master, which used to make every one of them
+  read as drift before `vendored-vectors.yml` had a way to say the pin was
+  deliberate (closes #1227).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
