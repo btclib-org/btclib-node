@@ -91,6 +91,7 @@ from btclib_node.exceptions import (
     MissingPrevoutError,
 )
 from btclib_node.main import (
+    assert_valid_block,
     is_block_failed,
     is_block_mutated,
     is_cached_invalid,
@@ -1065,10 +1066,14 @@ def _refuse_before_indexing(node: Node, block: Block, conn: Connection) -> bool:
     # Core's `ProcessNewBlock` asks `CheckBlock` before `AcceptBlock`, so a
     # body failing it is refused, and its peer punished, before its header
     # is indexed or its being unrequested is looked at; Core never marks
-    # such a block failed (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7)
+    # such a block failed (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7).
+    # `assert_valid_block`, not `passes_check_block`'s own `Block.assert_valid`,
+    # so a signet block failing both this and the signet solution answers
+    # `bad-signet-blksig` first, `CheckSignetBlockSolution` running ahead of
+    # the merkle root in Core's own `CheckBlock` too.
     if not passes_check_block(block):
         try:
-            block.assert_valid(node.chain.pow_limit_bits)
+            assert_valid_block(block, node.chain)
         except BTClibException as e:
             raise MisbehavingError(str(e)) from e
     # Core's `duplicate-invalid`, before the stored block is looked at:
@@ -1177,7 +1182,7 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
         # zero or below as "invalid version", where Core accepts such a
         # block below BIP34's height (btclib-org/btclib#2309).
         try:
-            block.assert_valid(node.chain.pow_limit_bits)
+            assert_valid_block(block, node.chain)
         except BTClibException as e:
             if is_block_failed(block, check_witness_root=segwit):
                 block_index.invalidate(block_hash)

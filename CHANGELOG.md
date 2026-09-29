@@ -938,6 +938,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   and a served command's own full help text with one, or Core's own
   "unknown command" for one it does not serve** (closes #1405).
 
+### A signet block needs a real BIP325 solution
+
+- **A signet block without a valid solution for the chain's own
+  challenge is refused, `bad-signet-blksig`, as Core's
+  `CheckSignetBlockSolution` refuses it** (closes #1342).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

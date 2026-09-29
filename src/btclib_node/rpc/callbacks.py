@@ -29,6 +29,7 @@ from btclib_node.config import split_host_port
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, USER_AGENT
 from btclib_node.exceptions import MissingPrevoutError, TxRejectedError
 from btclib_node.main import (
+    assert_valid_block,
     is_block_failed,
     is_cached_invalid,
     parent_lookup,
@@ -718,7 +719,7 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
         return refusal
 
     try:
-        block.assert_valid(node.chain.pow_limit_bits)
+        assert_valid_block(block, node.chain)
     except BTClibException as error:
         parent = block_index.get_block_info(block.header.previous_block_hash)
         segwit = parent.index + 1 >= node.chain.consensus.segwit_height

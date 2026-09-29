@@ -2771,6 +2771,33 @@ def test_a_committed_body_failing_check_block_leaves_the_header_valid(
     node.chainstate.close()
 
 
+def test_check_block_failure_asks_assert_valid_block_not_plain_assert_valid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_refuse_before_indexing` asks `main.assert_valid_block`, isolated.
+
+    So a signet block failing both its own BIP325 solution and
+    `passes_check_block`'s other rules answers `bad-signet-blksig`
+    first, matching `CheckSignetBlockSolution` running ahead of the
+    merkle root in Core's own `CheckBlock` (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) -- proven here, as
+    `main_test.py`'s own isolated gating test is, by a stub standing in
+    for `assert_valid_block` rather than a real signet-difficulty block,
+    which this test's chain (regtest) could not mine in reasonable time.
+    """
+    node = a_chainstate_node(tmp_path)
+    twice = generate_segwit_block(generate_coinbase(height=1))
+
+    def stub(*_args: object, **_kwargs: object) -> None:
+        err_msg = "bad-signet-blksig: stub"
+        raise MisbehavingError(err_msg)
+
+    monkeypatch.setattr(cb, "assert_valid_block", stub)
+    with pytest.raises(MisbehavingError, match="bad-signet-blksig"):
+        cb._refuse_before_indexing(node, twice, a_peer())
+    node.chainstate.close()
+
+
 @pytest.mark.parametrize("inbound", [True, False])
 def test_an_unrequested_low_work_block_failing_check_block_costs_its_peer(
     tmp_path: Path,

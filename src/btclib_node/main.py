@@ -39,6 +39,7 @@ from btclib.tx.tx_context import (
 )
 
 from btclib_node.block_db import Coin
+from btclib_node.chains import SigNet
 from btclib_node.chainstate.block_index import BlockIndex, BlockStatus, block_time
 from btclib_node.constants import MAX_TIP_AGE, MIN_BLOCKS_TO_KEEP, NodeStatus
 from btclib_node.exceptions import (
@@ -59,6 +60,7 @@ from btclib_node.p2p.block_availability import (
     peer_has_header,
     process_block_availability,
 )
+from btclib_node.signet import assert_valid_solution
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -69,12 +71,14 @@ if TYPE_CHECKING:
 
     from btclib_node import Node
     from btclib_node.block_db import RevBlock
+    from btclib_node.chains import Chain
     from btclib_node.chainstate.filter_index import FilterIndex
     from btclib_node.chainstate.utxo_index import UtxoIndex
     from btclib_node.p2p.block_availability import BlockAvailability
 
 __all__ = [
     "MempoolAcceptance",
+    "assert_valid_block",
     "is_block_failed",
     "is_block_mutated",
     "is_cached_invalid",
@@ -649,6 +653,28 @@ def passes_check_block(block: Block) -> bool:
     except BTClibException:
         return False
     return True
+
+
+def assert_valid_block(block: Block, chain: Chain) -> None:
+    """Assert what `Block.assert_valid` asks, the signet solution spliced in.
+
+    `Block.assert_valid`'s own three steps -- the header, its proof of
+    work, then every other rule `passes_check_block` above already
+    names -- with `signet.assert_valid_solution` run between the second
+    and the third, on a signet chain only: Core's own `CheckBlock` asks
+    it there too, gated on `consensusParams.signet_blocks`
+    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag), right after the header's proof of work and before the merkle
+    root. btclib carries no signet concept to splice this into
+    `Block.assert_valid` itself, hence the decomposition here instead
+    of a fourth argument to it -- the same three calls that function
+    already makes, in the same order, for every chain but this one.
+    """
+    block.header.assert_valid()
+    block.header.assert_valid_pow(chain.pow_limit_bits)
+    if isinstance(chain, SigNet):
+        assert_valid_solution(block, chain)
+    block.assert_valid_structure()
 
 
 def is_block_failed(block: Block, *, check_witness_root: bool) -> bool:

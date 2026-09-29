@@ -27,7 +27,7 @@ from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
 from btclib_node import Node, main
-from btclib_node.chains import RegTest
+from btclib_node.chains import RegTest, SigNet
 from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate import utxo_index as utxo_index_module
 from btclib_node.chainstate.block_index import BlockIndex, BlockInfo, BlockStatus
@@ -40,6 +40,7 @@ from btclib_node.constants import (
 )
 from btclib_node.exceptions import (
     ChainstateInconsistencyError,
+    MisbehavingError,
     MissingPrevoutError,
     NonStandardTxError,
     TxRejectedError,
@@ -153,6 +154,29 @@ def spend(prevout_tx: Tx, value: int, script_sig: bytes | None = None) -> Tx:
             TxOut(value=value, script_pub_key=script.serialize([b"\x22" * 32])),
         ],
     )
+
+
+def test_assert_valid_block_asks_the_signet_solution_on_a_signet_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`assert_valid_block`'s own `isinstance(chain, SigNet)` gate, isolated.
+
+    `signet.assert_valid_solution` itself is `tests/unit/signet_test.py`'s;
+    what is main's own to answer for is whether `assert_valid_block` calls
+    it at all, and only for a signet chain -- proven here by a stub that
+    always raises, so a genesis block (which the real function would wave
+    through on its own) still shows whether the call happened.
+    """
+
+    def always_raises(*_args: object, **_kwargs: object) -> None:
+        err_msg = "stub"
+        raise MisbehavingError(err_msg)
+
+    monkeypatch.setattr(main, "assert_valid_solution", always_raises)
+
+    with pytest.raises(MisbehavingError):
+        main.assert_valid_block(SigNet().genesis_block, SigNet())
+    main.assert_valid_block(RegTest().genesis_block, RegTest())  # no raise
 
 
 def test_reject_block_that_prints_money(node: Node) -> None:
