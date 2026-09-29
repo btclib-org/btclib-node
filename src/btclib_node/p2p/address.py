@@ -607,15 +607,39 @@ class PeerDB:
 
     @property
     def size(self) -> int:
-        """Return Core's `addrman.Size()`: every endpoint either table holds.
+        """Return Core's `addrman.Size()`: every distinct endpoint known.
 
-        Unlocked, like `is_empty` below: two `len`s, neither a walk of
-        its collection, so there is nothing here for another thread's
-        own write to catch mid-stride -- the answer is at worst one
-        mutation stale, which is exactly what `is_empty` already reads
-        `addresses` through.
+        Core's `vRandom.size()` (`AddrManImpl::Size_`, `src/addrman.cpp`,
+        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) counts one entry
+        per address, new or tried, because `Good_` *moves* an entry from
+        the new table to the tried one rather than copying it -- the two
+        never hold the one address at once there. This table's own
+        `active_addresses` is not `addresses` with one row moved out: an
+        answered endpoint is left in `addresses` too (`address_sampler`'s
+        own comment above says so, and is what lets a repeat gossip for
+        an already-answered endpoint still update its known row). A bare
+        `len(self.addresses) + len(self.active_addresses)` therefore
+        counted every answered endpoint twice.
+        The honest count is `addresses`' own size plus whatever
+        `active_addresses` holds that `addresses` does not -- read as
+        `_known_keys`, kept in step with `addresses` by `add_addresses`
+        (never shrunk: nothing in this class discards a known key), and
+        `_active_index`, kept in step with `active_addresses` the same
+        way, so counting keys rather than walking either table answers
+        without a stale-row's own fields mattering. Locked, unlike
+        `is_empty` below: `_known_keys` is snapshotted under
+        `_addresses_lock` first, into a local `set` this thread alone
+        holds, so the walk of `_active_index` under `_active_lock` next
+        reads no collection a third thread could still be mutating --
+        `add_addresses`'s own two-lock methods take the two the same
+        way, never nested.
         """
-        return len(self.addresses) + len(self.active_addresses)
+        with self._addresses_lock:
+            known_count = len(self.addresses)
+            known_keys = set(self._known_keys)
+        with self._active_lock:
+            unmatched = sum(1 for key in self._active_index if key not in known_keys)
+        return known_count + unmatched
 
     @property
     def is_empty(self) -> bool:

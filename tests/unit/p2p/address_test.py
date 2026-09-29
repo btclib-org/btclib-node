@@ -1256,13 +1256,20 @@ def test_size_counts_unconfirmed_gossip_too(tmp_path: Path) -> None:
 def test_size_counts_a_gossiped_and_answered_address_once_each(
     tmp_path: Path,
 ) -> None:
-    """One endpoint, gossiped and confirmed, is a known row and an answered one.
+    """One endpoint, gossiped and confirmed, is one row of `size`, not two.
 
-    Both are read back after a restart, so `size` counts it twice, as
-    Core's `addrman.Size()` counts a tried entry once and never as a
-    new one too (`AddrManImpl::Good_` moves it rather than duplicating
-    it) -- this tree's own two-table split is what makes the count two
-    rather than one for the one endpoint.
+    Both the known row and the answered row are read back after a
+    restart, and `size` counts the endpoint once, as Core's
+    `addrman.Size()` counts a tried entry once and never as a new one
+    too (`AddrManImpl::Good_` moves it rather than duplicating it,
+    `src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    This tree's own two-table split leaves the row in both `addresses`
+    and `active_addresses` (`address_sampler`'s own docstring says so),
+    so counting the union of their keys, not the sum of their lengths,
+    is what keeps this test's name true (ISS 1265: a `bitcoind` this
+    node has actually handshaken with, previously double-counted here,
+    is what pushed `PeerDB.size` past `_DNS_SEEDS_DELAY_PEER_THRESHOLD`
+    twice as fast as Core's own table would).
     """
     first = a_peer_db(data_dir=tmp_path)
     answered = peer_address("1.2.3.4", 8333)
@@ -1271,8 +1278,29 @@ def test_size_counts_a_gossiped_and_answered_address_once_each(
     first.close()
 
     second = a_peer_db(data_dir=tmp_path)
-    assert second.size == 2
+    assert second.size == 1
     second.close()
+
+
+def test_size_stays_put_across_a_handshake_with_a_gossiped_endpoint(
+    tmp_path: Path,
+) -> None:
+    """A handshake with an already-gossiped endpoint does not grow `size`.
+
+    One `PeerDB`, no restart: gossip through `add_addresses`, read
+    `size`, then a handshake through `add_active_address` for the same
+    endpoint, read `size` again. Core's `addrman.Size()` does not grow
+    across `Good_` either -- it moves the entry from the new table to
+    the tried one rather than adding a second (`AddrManImpl::Good_`,
+    `src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    """
+    peer_db = a_peer_db(data_dir=tmp_path)
+    address = peer_address("1.2.3.4", 8333)
+    peer_db.add_addresses([address])
+    assert peer_db.size == 1
+    peer_db.add_active_address(address)
+    assert peer_db.size == 1
+    peer_db.close()
 
 
 def test_a_stale_answered_address_no_longer_counts_towards_size(
@@ -1318,7 +1346,7 @@ def test_a_store_answered_a_day_ago_keeps_its_size(
     first.close()
 
     second = a_peer_db(data_dir=tmp_path)
-    assert second.size == 2
+    assert second.size == 1
     assert [a.address for a in second.get_active_addresses()] == [answered.address]
     second.close()
 
