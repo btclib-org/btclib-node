@@ -891,6 +891,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `uv/Dockerfile`**: the old floor admitted a `uv` older than the one the
   updater writes `uv.lock` with (issue btclib-org/.github#1438).
 
+### An addr-fetch dial checks the name it was queued under first
+
+- **A queued host already held by name is skipped before it is ever
+  resolved** (closes #1432), as Core's `AlreadyConnectedToHost` checks it
+  ahead of `ConnectNode`'s own resolve.
+
 ### `version` signals `NODE_COMPACT_FILTERS` only under `-peerblockfilters`
 
 - **Off by default, as in Core; a `getcfilters`, `getcfheaders` or
