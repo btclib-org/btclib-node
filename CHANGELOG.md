@@ -943,6 +943,24 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`rpc.main` calls `node.stop()` only where the `stop` reply carries
   no error**, as Core's own `stop()` handler does (closes #1441).
 
+### `submitblock` answers Core's own reasons where it used to answer `null`
+
+- **A tip block answers `bad-cb-height` or `bad-txns-nonfinal`** (closes #1335).
+- **Failing scripts answer `block-script-verify-flag-failed`** (closes #1390).
+- **A body failing `CheckBlock` leaves no header indexed** (closes #1339).
+
+### `address_sampler`'s tried side draws an aged-out row, as `Select_` does
+
+- **The tried side reads `active_addresses` unfiltered by `_aged_out`,
+  matching Core's `Select_`** (closes #1434), where an aged-out answered
+  endpoint was never drawn again.
+
+### `_aged_out` grants `IsTerrible`'s one-minute grace to a row just tried
+
+- **A row tried within the last minute is never aged out, whatever its
+  timestamp says** (closes #1435), matching `IsTerrible`'s own `m_last_try`
+  guard.
+
 ### `stop`'s hidden `wait` argument is honoured
 
 - **A `stop` call carrying `wait` sleeps that many milliseconds before

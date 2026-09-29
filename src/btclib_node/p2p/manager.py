@@ -1048,12 +1048,12 @@ class P2pManager(threading.Thread):
     def _maybe_prune_active_addresses(self, now: float) -> None:
         if now - self._last_active_prune < _ACTIVE_PRUNE_INTERVAL:
             return
-        # The only other callers of `get_active_addresses` are
-        # `address_sampler`, which this loop stops reaching for
-        # once it has enough connections, and `getaddr`, answered
-        # once per connection and never again -- so a node with
-        # enough peers that nobody asks a `getaddr` would
-        # otherwise never prune a stale row. btclib-org/btclib-node#71
+        # The only other caller of `get_active_addresses` is `getaddr`,
+        # answered once per connection and never again -- `address_sampler`
+        # reads `active_addresses` unfiltered instead
+        # (btclib-org/btclib-node#1434) -- so a node with enough peers
+        # that nobody asks a `getaddr` would otherwise never prune a
+        # stale row. btclib-org/btclib-node#71
         self._last_active_prune = now
         try:
             # get_active_addresses deletes every aged-out row
@@ -1394,8 +1394,8 @@ class P2pManager(threading.Thread):
         `Select(false, {preferred_net})`.
 
         A feeler draws from the gossiped addresses not in the answered
-        table, which `get_active_addresses` prunes by age
-        (btclib-org/btclib-node#1318), standing in for Core's
+        table, which `address_sampler` reads unfiltered by age
+        (btclib-org/btclib-node#1434), standing in for Core's
         `Select(true, ...)` of the new table. It is held to no network
         group, and wants only `MayHaveUsefulAddressDB` of what it draws.
         Core's `SelectTriedCollision`, asked first, has nothing to answer
