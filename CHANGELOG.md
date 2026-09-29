@@ -885,6 +885,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   (closes #1249). A test needing IPv6 skips rather than fails the suite
   (closes #1250); the root-skipped one carries its pragma (closes #1251).
 
+### `[tool.uv]`'s floor rises to the `uv` `dependabot-core` bundles
+
+- **`required-version` reads `>=0.12.19`, the pin in `dependabot-core`'s
+  `uv/Dockerfile`**: the old floor admitted a `uv` older than the one the
+  updater writes `uv.lock` with (issue btclib-org/.github#1438).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
