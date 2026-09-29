@@ -25,7 +25,7 @@ from collections import Counter, deque
 from concurrent.futures import CancelledError
 from contextlib import suppress
 from ipaddress import IPv6Address, ip_address
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, cast, override
 
 from btclib.p2p.address import ServiceFlags
 from btclib.p2p.addrv2 import BIP155Network, can_addrv1, network_address
@@ -56,12 +56,14 @@ from btclib_node.p2p.eviction import (
     Network,
     get_network,
     is_local,
+    is_routable,
     is_valid,
     keyed_net_group,
     net_class,
     net_group,
     select_node_to_evict,
 )
+from btclib_node.p2p.netif import local_addresses
 from btclib_node.p2p.protocol_version import BIP0031_VERSION, common_version
 
 if TYPE_CHECKING:
@@ -79,9 +81,9 @@ __all__ = ["P2pManager"]
 # table on its own rather than only as a side effect of something asking
 # for it. Not tied to the loop's own sleep below -- an O(n) walk of
 # `active_addresses` every pass buys nothing a run every few minutes
-# does not -- but to `get_active_addresses`'s own three-hour staleness
-# window: far enough under it that a stale row does not linger long past
-# it, however rarely this node is asked for its table.
+# does not -- but far enough under `get_active_addresses`'s own horizon
+# that an aged-out row does not linger long past it, however rarely this
+# node is asked for its table.
 # btclib-org/btclib-node#71
 _ACTIVE_PRUNE_INTERVAL = 300
 
@@ -372,7 +374,12 @@ class P2pManager(threading.Thread):
     a connection between them are this class's own state for that.
     """
 
-    def __init__(
+    # PLR0915 (too many statements) counts one assignment per piece of
+    # this manager's own state, each set once here and argued beside it;
+    # that grows with every table the manager keeps, as `Config.__init__`'s
+    # own exemption argues for its fields, not with a body that wants
+    # splitting.
+    def __init__(  # noqa: PLR0915
         self,
         node: Node,
         port: int | None,
@@ -507,7 +514,8 @@ class P2pManager(threading.Thread):
         # that missed, from `pending_connections` -- two statements
         # again. `promote_connection` runs on `Node`'s own loop, off
         # `callbacks.verack`; `remove_connection` runs on this
-        # manager's own loop, off `_prune_stale_connections`. Unlocked,
+        # manager's own loop, off `_prune_stale_connections`, and on
+        # `Node`'s, off the `disconnectnode` RPC. Unlocked,
         # a `remove_connection` whose first pop misses because the
         # connection is still pending can run its second pop after
         # `promote_connection` has already moved it, missing it there
@@ -616,14 +624,21 @@ class P2pManager(threading.Thread):
         # thread was started, which is true before `run` below has
         # scheduled anything, so a peer that dials on the strength of it
         # is refused -- and `dial` answers a refusal with None, which
-        # `async_connect` drops. Nothing retries. `ever_listened` is set
-        # beside it, in `_bind`, and never cleared: `stop` clears
-        # `listening` once this thread has already ended, which on its
-        # own reads exactly like a bind that never came up at all --
+        # `async_connect` drops. Nothing retries.
+        self.listening = threading.Event()
+        # set beside `listening`, in `_bind`, and never cleared: `stop`
+        # clears `listening` once this thread has already ended, which on
+        # its own reads exactly like a bind that never came up at all --
         # what `wait_until_listening` reads to tell the two apart
-        # (btclib-org/btclib-node#1361). Assigned together: two
-        # statements here push `__init__` past ruff's statement limit.
-        self.listening, self.ever_listened = threading.Event(), threading.Event()
+        # (btclib-org/btclib-node#1361)
+        self.ever_listened = threading.Event()
+        # Core's `mapLocalHost` as `IsLocal` reads it: this node's own
+        # addresses, by `host_key`, the map being keyed by `CNetAddr`,
+        # so `IsLocal` compares no port (`src/net.h`, `src/net.cpp`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `_discover`
+        # fills it ahead of the bind. Written before `manage_connections`
+        # is scheduled and read only by it, on this thread.
+        self.local_addresses: frozenset[bytes] = frozenset()
         # set by `run` once it has bound, given up on binding, or been
         # told not to bind by `-listen=0`, which is what
         # `start_listener` waits on
@@ -697,6 +712,7 @@ class P2pManager(threading.Thread):
         feeler: bool = False,
         prefer_evict: bool = False,
         addr_fetch: bool = False,
+        addr_name: str | None = None,
     ) -> None:
         """Build a `Connection` for `client`, hold it pending, and start it.
 
@@ -751,6 +767,7 @@ class P2pManager(threading.Thread):
         conn.feeler = feeler
         conn.prefer_evict = prefer_evict
         conn.addr_fetch = addr_fetch
+        conn.addr_name = addr_name
         conn.keyed_net_group = keyed_net_group(self._net_group_key, address)
         self.pending_connections[self.last_connection_id] = conn
         task = asyncio.run_coroutine_threadsafe(conn.run(), self.loop)
@@ -764,8 +781,8 @@ class P2pManager(threading.Thread):
         calls only because the status belongs to the connection and the
         dict it lives in belongs to the manager. `_connections_lock`
         (`__init__`) is what makes the pop and the write one step too,
-        against `remove_connection`'s own two pops below, on the other
-        thread.
+        against `remove_connection`'s own two pops below, which this
+        manager's own thread also runs.
 
         Successfully connected is exactly the state
         `pending_outbound_nonces` (`__init__`) has to stop answering
@@ -1160,15 +1177,11 @@ class P2pManager(threading.Thread):
         # ahead of `addrman`
         if kind is None or (kind is not _Outbound.ANCHOR and self.peer_db.is_empty):
             return
-        # By endpoint_key, not raw equality: a drawn address
-        # carries the timestamp and services its rows were last
-        # given, by `callbacks.version`'s own recording of a peer it
-        # dialled, its `set_services` for any peer's own word on its
-        # services, or a gossip, which is never the pair an existing
-        # Connection's own address was constructed with, so comparing
-        # the dataclasses themselves never matches the peer this node
-        # is already holding a connection with and dials it a second
-        # time.
+        # By host, as Core's `AlreadyConnectedToAddress(const CNetAddr&)`
+        # compares each node's address with no port (`src/net.cpp`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a host this node
+        # holds any connection with, an inbound one on its ephemeral port
+        # included, is not dialled again on another port.
         #
         # Locked for the same reason the count above is
         # (btclib-org/btclib-node#355).
@@ -1177,7 +1190,7 @@ class P2pManager(threading.Thread):
                 *self.connections.values(),
                 *self.pending_connections.values(),
             )
-        already_connected = {endpoint_key(conn.address) for conn in connected}
+        already_connected = {host_key(conn.address) for conn in connected}
         # One outbound peer per network group, as
         # `CConnman::ThreadOpenConnections` keeps them: the groups of
         # its `MANUAL`, `OUTBOUND_FULL_RELAY` and `BLOCK_RELAY` peers,
@@ -1230,9 +1243,10 @@ class P2pManager(threading.Thread):
         # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) returns without
         # dialling a peer already connected, discouraged or banned, a
         # discouraged one being one this node dropped for cause
-        # (btclib-org/btclib-node#283).
+        # (btclib-org/btclib-node#283). `already_connected` is by host,
+        # as `_maybe_dial_more_peers` above builds it.
         if (
-            endpoint_key(address) in already_connected
+            host_key(address) in already_connected
             or self.is_discouraged(address)
             or self.ban_man.is_peer_banned(address)
         ):
@@ -1255,16 +1269,16 @@ class P2pManager(threading.Thread):
 
         Passed over, as Core's loop `continue`s ahead of counting a try:
         one this node cannot dial, one `CNetAddr::IsValid` refuses, one
-        short of the desirable services, and one in a network group an
-        outbound peer already holds. Core's `IsLocal` refusal has no
-        table of local addresses here to ask
-        (btclib-org/btclib-node#1238).
+        this node's own by `local_addresses`, one short of the desirable
+        services, and one in a network group an outbound peer already
+        holds.
         """
         while self.anchors:
             anchor = self.anchors.pop()
             if (
                 can_connect(anchor)
                 and is_valid(network_address(anchor).ip)
+                and host_key(anchor) not in self.local_addresses
                 and has_all_desirable_services(self.node, anchor.services)
                 and not (
                     can_addrv1(anchor) and net_group(anchor) in outbound_net_groups
@@ -1323,6 +1337,11 @@ class P2pManager(threading.Thread):
                 and net_group(address) in outbound_net_groups
             ):
                 continue
+            # "if we selected an invalid or local address, restart": an
+            # address `_discover` found to be this node's own ends the
+            # pass, on any port, as `IsLocal` compares the host alone
+            if host_key(address) in self.local_addresses:
+                return None
             if self._passed_over(address, tries, now, feeler=feeler):
                 continue
             # any other draw ends the pass, as Core's loop breaks with it
@@ -1427,12 +1446,11 @@ class P2pManager(threading.Thread):
         other is held to `HasAllDesirableServiceFlags`, as in Core's loop.
         Its four `continue`s after the network-group one, in its order
         (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
-        Its invalid-or-local `break` and its unreachable-network
-        `continue`, between the two, are not here. `address_sampler`
-        draws IPv4 and IPv6 addresses alone, and `_storable` keeps out
-        of the table every address `IsRoutable` refuses, an invalid one
-        among them. `IsLocal` reads `mapLocalHost`, this node's own
-        addresses, and this tree keeps no such table.
+        Its invalid-or-local `break`, between the two, is the caller's,
+        which reads `local_addresses`; an invalid address never reaches
+        it, `_storable` keeping out of the table every address
+        `IsRoutable` refuses. Its unreachable-network `continue` is not
+        here: `address_sampler` draws IPv4 and IPv6 addresses alone.
         """
         last_try = self.peer_db.last_try(address)
         if now - last_try < RECENT_TRY_SECONDS and tries < _RECENT_TRY_DRAWS:
@@ -1534,6 +1552,16 @@ class P2pManager(threading.Thread):
         cleared both checks does a second pass dial each in turn, the
         first that connects kept (btclib-org/btclib-node#1284).
 
+        Ahead of any of that, `AlreadyConnectedToHost(pszDest)`
+        (`src/net.cpp`, same sha) refuses the whole attempt on the
+        unresolved name alone, before `ConnectNode` ever resolves it --
+        compared against `m_addr_name`, not an address, because no
+        address exists yet to key on. `addr_name` (`p2p/connection.py`)
+        is this tree's own record of that string, held only by a
+        connection dialled by one; the entry is dropped exactly as the
+        two post-resolve checks below drop it, never resolved
+        (btclib-org/btclib-node#1432).
+
         The dial and everything past the resolve is inside its own
         `try`, for the reason `_maybe_prune_active_addresses` already
         gives for its own: this coroutine's future is never awaited
@@ -1545,6 +1573,21 @@ class P2pManager(threading.Thread):
             return
         host, port = self._addr_fetches.popleft()
         try:
+            with self._connections_lock:
+                held_names = {
+                    conn.addr_name
+                    for conn in (
+                        *self.connections.values(),
+                        *self.pending_connections.values(),
+                    )
+                    if conn.addr_name is not None
+                }
+            if host in held_names:
+                self.logger.info(
+                    "Not opening a connection to %s, already connected to it by name",
+                    host,
+                )
+                return
             loop = asyncio.get_running_loop()
             try:
                 answers = await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM)
@@ -1600,7 +1643,11 @@ class P2pManager(threading.Thread):
                 sock = await dial(address)
                 if sock:
                     self.create_connection(
-                        sock, address, inbound=False, addr_fetch=True
+                        sock,
+                        address,
+                        inbound=False,
+                        addr_fetch=True,
+                        addr_name=host,
                     )
                     return
         except Exception:
@@ -1699,6 +1746,31 @@ class P2pManager(threading.Thread):
             server_socket.close()
             raise
         return server_socket
+
+    def _discover(self) -> None:
+        """Record this machine's routable addresses, as Core's `Discover` does.
+
+        `AppInitMain` calls `Discover` (`src/net.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag) ahead of the bind,
+        where the listener is to bind every interface, as `_bind`'s
+        does, and `-discover` is on. Core's parameter interaction turns
+        `-discover` off under `-listen=0`, `-proxy` or `-externalip`, and
+        this node has neither of the last two, so `run` calls this
+        wherever it is about to bind. This node has no `-discover` of its
+        own to override that either way (btclib-org/btclib-node#1330).
+        Each address goes to `AddLocal` at
+        the listening port, which keeps a routable one on a reachable
+        network; IPv4 and IPv6 are both reachable here.
+        """
+        # set wherever `run` binds, which is where it calls this
+        port = cast("int", self.port)
+        local = set()
+        for ip in local_addresses():
+            address = peer_address(str(ip), port)
+            if is_routable(address):
+                self.logger.info("Discover: %s", ip)
+                local.add(host_key(address))
+        self.local_addresses = frozenset(local)
 
     def _bind(self) -> list[socket.socket]:
         """Bind every listener this node has, the IPv4 one required.
@@ -1995,6 +2067,7 @@ class P2pManager(threading.Thread):
             self.logger.info("Starting P2P manager")
             asyncio.set_event_loop(loop)
             if self.listen:
+                self._discover()
                 server_sockets = self._bind()
         except OSError as error:
             # `start_listener` reads the failure off `listening`, so it
@@ -2112,10 +2185,11 @@ class P2pManager(threading.Thread):
         # Only after join(), not before: `run()` above has now returned,
         # so nothing but this thread can still be adding to
         # `self.connections`/`self.pending_connections` -- `create_connection`
-        # and `remove_connection` are only ever reached from a coroutine
-        # on this manager's own loop, and `promote_connection`, `Node`'s
-        # thread's own exception, cannot race a `stop()` that same
-        # thread is itself blocked inside. A sweep taken before join()
+        # is only ever reached from a coroutine on this manager's own
+        # loop, and `promote_connection` and `remove_connection`, which
+        # `Node`'s thread also reaches (the latter through the
+        # `disconnectnode` RPC), cannot race a `stop()` that same thread
+        # is itself blocked inside. A sweep taken before join()
         # closed whatever it snapshotted correctly but could still miss
         # a connection `server()`'s own accept loop created in the
         # window between `loop.stop` merely being scheduled above and
