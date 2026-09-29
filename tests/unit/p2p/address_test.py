@@ -394,9 +394,14 @@ def test_a_peer_that_is_listening_is_connected_to() -> None:
         listener.close()
 
 
-def test_a_v6_peer_that_is_listening_is_connected_to() -> None:
+def test_a_v6_peer_that_is_listening_is_connected_to() -> (
+    None
+):  # pragma: no cover -- the body needs IPv6
     """`dial` connects to a real IPv6 listener and hands back that socket."""
-    listener = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    try:
+        listener = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    except OSError as refused:
+        pytest.skip(f"this host has no IPv6: {refused}")
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind(("::1", 0))
     listener.listen(1)
@@ -410,6 +415,33 @@ def test_a_v6_peer_that_is_listening_is_connected_to() -> None:
             assert client.getpeername()[:2] == ("::1", port)
     finally:
         listener.close()
+
+
+def test_a_dial_of_a_family_the_socket_layer_refuses_answers_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1249: a family the socket layer refuses lands `dial` on `None`.
+
+    A host missing the family entirely gets the same `None` a refused
+    connect already gets, not the `OSError` `socket.socket` itself
+    raises. A real host missing IPv6 support answers this way too, but
+    nothing here depends on the host running this test lacking it: the
+    failure `socket.socket` itself would raise -- `OSError: [Errno 97]
+    Address family not supported by protocol` on Linux -- is reproduced
+    directly rather than assumed. Only `AF_INET6` is refused, so the
+    event loop's own sockets -- its self-pipe among them -- are
+    unaffected.
+    """
+    real_socket = socket.socket
+
+    def refuses_v6(family: int, *args: Any, **kwargs: Any) -> socket.socket:
+        if family == socket.AF_INET6:
+            raise OSError(97, "Address family not supported by protocol")
+        return real_socket(family, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "socket", refuses_v6)
+    address = peer_address("2001:db8::1", 8333)
+    assert asyncio.run(dial(address)) is None
 
 
 def test_a_dial_that_is_given_up_on_closes_the_socket_it_opened(

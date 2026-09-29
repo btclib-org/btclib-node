@@ -195,13 +195,20 @@ async def dial(address: NetworkAddressV2) -> socket.socket | None:
 
     No separate check for a host with no route to the family being
     dialled: `_DIAL_TIMEOUT` already bounds every attempt, and an
-    unreachable family fails the same `sock_connect` a slow or refusing
-    peer does, landing on the same `None` `P2pManager` already treats as
-    "try someone else". Bitcoin Core's own default (`ReachableNets`,
-    src/netbase.h at 58a7869f86: "Everything is reachable by default")
-    is the same bet -- reachability is what a dial's outcome says it is,
-    not a property guessed at beforehand -- so there is nothing here for
-    a heavier check to buy.
+    unreachable family fails either the socket creation itself -- a host
+    with no IPv6 support at all, `socket.socket(AF_INET6, ...)` raising
+    `OSError` before there is anything to connect -- or the same
+    `sock_connect` a slow or refusing peer does, landing on the same
+    `None` `P2pManager` already treats as "try someone else" either way.
+    Core's `ConnectDirectly` (`src/netbase.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) answers the same way: a
+    `CreateSock` that comes back null is logged and returned as the same
+    `{}` a failed `Connect` answers with, one `nullptr` for both. Core's
+    own default reachability check (`ReachableNets`, src/netbase.h at
+    58a7869f86: "Everything is reachable by default") is the same bet --
+    reachability is what a dial's outcome says it is, not a property
+    guessed at beforehand -- so there is nothing here for a heavier check
+    to buy.
     """
     if address.network_id not in _IP_NETWORKS:
         raise UnsupportedAddressTypeError
@@ -228,7 +235,15 @@ async def dial(address: NetworkAddressV2) -> socket.socket | None:
         # form names the family explicitly and is accepted on every
         # platform this node runs on, POSIX included.
         peer = (host, address.port, 0, 0)
-    client = socket.socket(family, socket.SOCK_STREAM)
+    try:
+        client = socket.socket(family, socket.SOCK_STREAM)
+    except OSError:
+        # ISS 1249: a host with no support at all for `family` -- no
+        # IPv6 stack -- fails here rather than at `sock_connect`, and
+        # gets the same "try someone else" `None` Core's own
+        # `ConnectDirectly` answers with when its `CreateSock` comes
+        # back null.
+        return None
     client.settimeout(0)
     loop = asyncio.get_running_loop()
     try:
