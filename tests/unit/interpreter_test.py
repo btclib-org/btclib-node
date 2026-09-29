@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from btclib.consensus import CONSENSUS_PARAMS
-from btclib.ecc import dsa, ssa
 from btclib.exceptions import BTClibValueError, ScriptError
 from btclib.hashes import hash160, sha256
 from btclib.key import PrvKeyData
@@ -31,6 +30,7 @@ from btclib.tx.out_point import OutPoint
 from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
+from btclib_ecc.ecc import dsa, ssa
 
 from btclib_node.block_db import Coin
 from btclib_node.chains import RegTest

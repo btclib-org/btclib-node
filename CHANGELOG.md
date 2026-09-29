@@ -915,6 +915,15 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   read as drift before `vendored-vectors.yml` had a way to say the pin was
   deliberate (closes #1227).
 
+### `interpreter_test.py` builds signatures through `btclib_ecc`, not `btclib.ecc`
+
+- **`dsa` and `ssa` are imported from `btclib_ecc.ecc`**, ahead of btclib
+  dropping its own re-export of them (btclib-org/btclib#2404); `src/`
+  imports neither and stays declared against btclib alone. The `test`
+  group gains `btclib-ecc` and, for its bindings import to resolve
+  against the `btclib-secp256k1` `btclib[secp256k1]`'s own floor already
+  installs, `btclib-secp256k1` as well (closes #1431).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

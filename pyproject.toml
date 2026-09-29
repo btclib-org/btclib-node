@@ -281,6 +281,23 @@ test = [
     # dependency and not a runtime one, nothing under `src/` importing it.
     # Its own btclib requirement is what sets btclib's floor above.
     "btclib-wallet>=2026.9.24",
+    # tests/unit/interpreter_test.py builds signatures through
+    # `btclib_ecc.ecc.dsa`/`ssa` directly rather than through btclib's own
+    # re-export, ahead of btclib dropping that re-export
+    # (btclib-org/btclib#2404, decided 2026-09-28): `src/` imports
+    # nothing from it, and stays declared against btclib alone, so this
+    # is a test dependency landing before the re-export it replaces is
+    # gone rather than a runtime one (btclib-org/btclib-node#1431).
+    "btclib-ecc>=2026.9.26",
+    # btclib-ecc's own bindings import (`_libsecp256k1.py`) reaches
+    # `btclib_secp256k1.ecdh.shared_point`, absent below 0.8.0.8 --
+    # measured directly, an older install answers plain `ImportError`
+    # there rather than the `ModuleNotFoundError` that import is guarded
+    # against, so the bindings-missing fallback never catches it. `btclib
+    # [secp256k1]`'s own floor above resolves 0.8.0.6 on its own; this
+    # raises what the two together resolve rather than what either
+    # alone asks for.
+    "btclib-secp256k1>=0.8.0.8",
 ]
 # mypy runs from this environment rather than from a hook's own --
 # .pre-commit-config.yaml's mypy hook is where that decision is argued
