@@ -13,7 +13,8 @@ help text already was before this module existed
 (btclib-org/btclib-node#1193). `rpc.main._execute` raises this same text
 under `RPC_MISC_ERROR` for a call outside its method's declared argument
 count -- `RPCMethod::HandleRequest`'s own `HelpResult`, caught by
-`ExecuteCommand` (`src/rpc/server.cpp:879-892`, same tag) -- and every
+`ExecuteCommand` (`src/rpc/server.cpp:874-887`, at
+bitcoin/bitcoin@b91d983f66) -- and every
 callback in `rpc.callbacks` raises it in place of its own former one-line
 usage string for a call short of a required argument or carrying a value
 `self.ToString()` refuses in Core, both being the identical
@@ -23,8 +24,9 @@ below answers it for a command named explicitly, and un-truncated, where
 Core's own bare listing keeps only each entry's first line.
 
 `CATEGORY` is each command's own heading in Core's `help`'s bare
-listing (`CRPCTable::help`, `src/rpc/server.cpp:75-124`, same tag),
-sorted the way that function sorts `vCommands`: by category, and by
+listing (`CRPCTable::help`, `src/rpc/server.cpp:69-117`, at
+bitcoin/bitcoin@9be056a8a7, the v31.1 tag), sorted the way that
+function sorts `vCommands`: by category, and by
 name within it. `help_rpc` groups this node's own served commands
 under those same headings and in that same order, the way Core's own
 bare listing would if run against a `bitcoind` serving only this
@@ -426,13 +428,23 @@ _HELP_HELP = (
     '"str"    (string) The help text\n'
 )
 
+# Core's own `stop()` builds both lines from one `CLIENT_NAME` --
+# `static const std::string RESULT{CLIENT_NAME " stopping"}` and
+# `"Request a graceful shutdown of " CLIENT_NAME "."`
+# (`src/rpc/server.cpp:145-170`, `bitcoin/bitcoin@9be056a8a7`, the
+# v31.1 tag). A real bitcoind's own `help stop` therefore answers with
+# *its* `CLIENT_NAME`, "Bitcoin Core" -- copying that reading verbatim
+# here would describe a string this node's own `stop` never returns.
+# `callbacks.stop`'s own literal `"Btclib node stopping"` is what
+# stands in its place, `help_test.py`'s own
+# `test_stop_help_names_what_stop_actually_returns` tying the two.
 _HELP_STOP = (
     "stop\n"
     "\n"
-    "Request a graceful shutdown of Bitcoin Core.\n"
+    "Request a graceful shutdown of Btclib node.\n"
     "\n"
     "Result:\n"
-    "\"str\"    (string) A string with the content 'Bitcoin Core stopping'\n"
+    "\"str\"    (string) A string with the content 'Btclib node stopping'\n"
 )
 
 _HELP_SUBMITBLOCK = (
@@ -1015,7 +1027,8 @@ CATEGORY: dict[str, str] = {
 }
 
 # `CRPCTable::help`'s own sort key, `category + name`
-# (`src/rpc/server.cpp:81-83`) -- category first, alphabetically, and
+# (`src/rpc/server.cpp:78-79`, at bitcoin/bitcoin@9be056a8a7, the
+# v31.1 tag) -- category first, alphabetically, and
 # name within it -- rebuilt here from `CATEGORY` and `HELP_TEXT` rather
 # than written out by hand a second time, which is what would go stale
 # the day a served method's category changes and this list does not.
@@ -1046,7 +1059,7 @@ def answer_help(params: list[Any]) -> str:
     carries is nothing to reproduce here (`CATEGORY`'s own module
     docstring). With a command's name, that command's own untruncated
     help, or, for a name nothing here serves, Core's own literal
-    `"help: unknown command: %s"` (`src/rpc/server.cpp:122`) -- a
+    `"help: unknown command: %s"` (`src/rpc/server.cpp:114`) -- a
     successful reply, not a refusal, matching Core answering it as
     `RPCResult::Type::STR` rather than raising. `rpc.callbacks.help_rpc`
     is the shared-signature wrapper `handle_rpc` actually dispatches to,

@@ -437,8 +437,8 @@ def get_block_header(
         # HelpResult for a call short of its required arguments, and
         # ExecuteCommand's `catch (const std::exception& e)` is what
         # turns that into JSONRPCError(RPC_MISC_ERROR, e.what()) --
-        # read at bitcoin/bitcoin@b91d983f66, src/rpc/blockchain.cpp
-        # :614-617
+        # read at bitcoin/bitcoin@b91d983f66, src/rpc/server.cpp
+        # :874-887
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["getblockheader"])
 
     # RPCMethod::HandleRequest checks every declared argument's JSON
@@ -473,7 +473,8 @@ def get_block_header(
         block_info = block_index.get_block_info(block_hash)
     except KeyError as error:
         # a hash nothing indexed is a question about a block, not a
-        # fault of this node: src/rpc/blockchain.cpp:695
+        # fault of this node: src/rpc/blockchain.cpp:664-665, at
+        # bitcoin/bitcoin@ca7162cde5
         raise RpcError(
             RPCErrorCode.INVALID_ADDRESS_OR_KEY, "Block not found"
         ) from error
@@ -1491,7 +1492,8 @@ def get_raw_mempool(
     refused outright, matching `MempoolToJSON`'s own combination check.
     """
     # verbose and mempool_sequence, both RPCArg::Type::BOOL,
-    # RPCArg::Default{false}: src/rpc/mempool.cpp:694-695. Both are
+    # RPCArg::Default{false}: src/rpc/mempool.cpp:659-660, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag. Both are
     # checked, and every mismatch named, before either is raised on,
     # the way `disconnect_node` above already does for its own two
     # (`type_errors`' own docstring).
@@ -1635,7 +1637,7 @@ def get_raw_transaction(
         # RPCMethod::HandleRequest's HelpResult, RPC_MISC_ERROR
         # (src/rpc/server.cpp:887). Core's own first name for this
         # argument is "verbosity" (declared "verbosity|verbose",
-        # src/rpc/rawtransaction.cpp:246); this node keeps its own
+        # src/rpc/rawtransaction.cpp:247); this node keeps its own
         # "verbose" instead, because `verbose` below reads only the
         # boolean shape Core's `RPCArg::Default{0}` degrades to under
         # `allow_bool=true`, not the full 0/1/2 verbosity Core's name

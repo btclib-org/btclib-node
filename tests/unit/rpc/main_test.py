@@ -513,7 +513,8 @@ def test_more_positional_arguments_than_declared_is_refused_with_help(
 
     `ping` and `getbestblockhash` declare none; `stop` declares one,
     `wait`, hidden from its own help text (Core's own `RPCArgOptions
-    {.hidden=true}`, `src/rpc/server.cpp:166`) but still counted;
+    {.hidden=true}`, `src/rpc/server.cpp:155`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) but still counted;
     `disconnectnode` declares two. Each method's own real callback is
     replaced with one that raises: reaching it would answer Internal
     Error rather than the expected help refusal, so the assertion

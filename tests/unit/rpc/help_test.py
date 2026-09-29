@@ -4,11 +4,18 @@
 
 """Tests for `btclib_node.rpc.help`: `HELP_TEXT`, `CATEGORY`, `answer_help`."""
 
+import re
+from typing import TYPE_CHECKING, cast
+
 import pytest
 
-from btclib_node.rpc.callbacks import callbacks
+from btclib_node.rpc.callbacks import callbacks, stop
 from btclib_node.rpc.errors import RpcError
 from btclib_node.rpc.help import CATEGORY, HELP_TEXT, answer_help
+
+if TYPE_CHECKING:
+    from btclib_node import Node
+    from btclib_node.rpc.connection import RpcConnection
 
 # The bare listing a real regtest bitcoind v31.1.0's own `help` answers,
 # cut down to exactly the commands this node serves -- read back the same
@@ -178,7 +185,7 @@ def test_a_known_command_answers_its_own_untruncated_help(name: str) -> None:
 
     `CRPCTable::help`'s own `strRet.substr(0, strRet.size()-1)` drops
     exactly the one trailing newline `help <command>` would otherwise
-    carry (`src/rpc/server.cpp:123`, at bitcoin/bitcoin@9be056a8a7).
+    carry (`src/rpc/server.cpp:115`, at bitcoin/bitcoin@9be056a8a7).
     """
     assert answer_help([name]) == HELP_TEXT[name].rstrip("\n")
 
@@ -199,3 +206,19 @@ def test_a_non_string_command_is_a_type_error() -> None:
         ' expected type string"\n'
         "}"
     )
+
+
+def test_stop_help_names_what_stop_actually_returns() -> None:
+    """`HELP_TEXT["stop"]`'s own quoted result is `stop`'s own return value.
+
+    Core builds both `stop`'s description and its `RPCResult` from one
+    `CLIENT_NAME` (`_HELP_STOP`'s own comment in `rpc.help`); this reads
+    the quoted content back out of `HELP_TEXT["stop"]` and ties it to
+    `callbacks.stop`'s own literal, rather than repeating either as a
+    second hardcoded copy, so the two cannot drift apart unnoticed.
+    """
+    match = re.search(r"with the content '([^']*)'", HELP_TEXT["stop"])
+    assert match is not None
+    node = cast("Node", None)
+    conn = cast("RpcConnection", None)
+    assert match.group(1) == stop(node, conn, [])

@@ -70,10 +70,10 @@ def _execute(node: Node, conn: RpcConnection, request: JsonRpcRequest) -> object
     declared count, named positions and positional-only alike, which is
     what `IsValidNumArgs` compares `num_args` against. The refusal
     itself is `HelpResult{ToString()}`, caught by `ExecuteCommand`
-    (`src/rpc/server.cpp:879-892`, same tag) and turned into
-    `RPC_MISC_ERROR` carrying the method's own full help text, matching
-    `disconnect_node`'s own such check before this function carried it
-    for every method (btclib-org/btclib-node#1424).
+    (`src/rpc/server.cpp:874-887`, at bitcoin/bitcoin@b91d983f66) and
+    turned into `RPC_MISC_ERROR` carrying the method's own full help
+    text, matching `disconnect_node`'s own such check before this
+    function carried it for every method (btclib-org/btclib-node#1424).
     """
     callback = callbacks.get(request.method)
     if callback is None:
