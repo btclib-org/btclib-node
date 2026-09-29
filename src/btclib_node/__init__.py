@@ -758,7 +758,7 @@ class Node(threading.Thread):
             # `_step_chain`'s own `update_chain` once that has happened:
             # the flag is the store's own word that it is unsafe to touch
             # again this pass, not only next time the condition above is
-            # read. ISS 1335's own review is where this was found live.
+            # read.
             if self.terminate_flag.is_set() or self._step_chain():
                 break
         self._stop_managers_and_close_stores()
