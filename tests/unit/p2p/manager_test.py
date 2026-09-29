@@ -1882,6 +1882,104 @@ def test_full_outbound_count_excludes_pending_block_relay_feeler_and_addr_fetch(
     assert manager._full_outbound_count() == 2
 
 
+def test_wait_for_seednode_peers_is_a_noop_without_seednode(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1461: nothing given, `use_seednodes` false, no wait at all."""
+    monkeypatch.setattr(asyncio, "sleep", _fails_to_sleep)
+    manager = a_manager()
+    asyncio.run(manager._wait_for_seednode_peers())
+
+
+def test_wait_for_seednode_peers_ends_early_once_enough_peers_answer(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1461: `_SEED_OUTBOUND_CONNECTION_THRESHOLD` peers end the wait.
+
+    Polled every `_SEEDNODE_POLL_INTERVAL`; the third poll reports
+    enough peers, so this returns after three sleeps, well under
+    `_SEEDNODE_TIMEOUT`.
+    """
+    waited: list[float] = []
+
+    async def records_sleep(delay: float) -> None:
+        waited.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", records_sleep)
+    manager = a_manager(seednode=[("1.2.3.4", 8333)])
+    counts = iter([0, 0, 2])
+    monkeypatch.setattr(manager, "_full_outbound_count", lambda: next(counts))
+    asyncio.run(manager._wait_for_seednode_peers())
+    assert waited == [manager_module._SEEDNODE_POLL_INTERVAL] * 3
+
+
+def test_wait_for_seednode_peers_times_out_after_thirty_seconds(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1461: `_SEEDNODE_TIMEOUT` ends the wait, no peer ever enough.
+
+    `_full_outbound_count` stubbed at 0 throughout: the wait ends on
+    its own elapsed time, `_SEEDNODE_TIMEOUT` divided by
+    `_SEEDNODE_POLL_INTERVAL` polls plus the one that crosses it.
+    """
+    waited: list[float] = []
+
+    async def records_sleep(delay: float) -> None:
+        waited.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", records_sleep)
+    manager = a_manager(seednode=[("1.2.3.4", 8333)])
+    monkeypatch.setattr(manager, "_full_outbound_count", lambda: 0)
+    asyncio.run(manager._wait_for_seednode_peers())
+    expected_polls = (
+        int(manager_module._SEEDNODE_TIMEOUT / manager_module._SEEDNODE_POLL_INTERVAL)
+        + 1
+    )
+    assert waited == [manager_module._SEEDNODE_POLL_INTERVAL] * expected_polls
+
+
+async def _fails_past_seednode_poll(delay: float) -> None:
+    """Stand in for `asyncio.sleep`: raise past the seednode wait's own step.
+
+    A correct `delay` (`_SEEDNODE_POLL_INTERVAL`) raises `TimeoutError`,
+    aborting `_dns_address_seed` right where `_wait_for_seednode_peers`
+    calls it -- proof the seednode wait ran, and ran first, is that
+    exception reaching the caller rather than the DNS-seed logic past
+    it ever starting. Any other `delay` is a sleep this wait would never
+    ask for, so it fails loudly instead: the proof that branch is not
+    vacuous is `test_fails_past_seednode_poll_fails_on_an_unexpected_delay`
+    below.
+    """
+    if delay != manager_module._SEEDNODE_POLL_INTERVAL:
+        pytest.fail(f"asyncio.sleep awaited with an unexpected delay {delay!r}")
+    raise TimeoutError
+
+
+def test_fails_past_seednode_poll_fails_on_an_unexpected_delay() -> None:
+    """The positive control: a wrong delay raises through `pytest.fail`."""
+    with pytest.raises(pytest.fail.Exception, match="unexpected delay"):
+        asyncio.run(
+            _fails_past_seednode_poll(manager_module._DNS_SEEDS_DELAY_FEW_PEERS)
+        )
+
+
+def test_dns_address_seed_waits_for_seednode_peers_first(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1461: `_dns_address_seed` calls the seednode wait before anything.
+
+    `use_seednodes` true and `_full_outbound_count` always under the
+    threshold: `asyncio.sleep` patched to `_fails_past_seednode_poll`,
+    since only the seednode wait (above) is meant to run before this
+    returns.
+    """
+    monkeypatch.setattr(asyncio, "sleep", _fails_past_seednode_poll)
+    manager = a_manager(seednode=[("1.2.3.4", 8333)])
+    monkeypatch.setattr(manager, "_full_outbound_count", lambda: 0)
+    with pytest.raises(TimeoutError):
+        asyncio.run(manager._dns_address_seed())
+
+
 def test_dns_address_seed_queues_the_seed_query_dns_seed_returns(
     a_manager: AManagerFactory,
 ) -> None:

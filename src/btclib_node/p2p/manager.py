@@ -154,13 +154,23 @@ _FIXED_SEEDS_CHECK_INTERVAL = 0.5
 # Core's `SEED_OUTBOUND_CONNECTION_THRESHOLD`
 # (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
 # `_maybe_add_seednode` keeps queuing `-seednode` values while fewer
-# full-relay peers than this are held.
+# full-relay peers than this are held, and `_wait_for_seednode_peers`
+# and `_dns_address_seed` below each end a wait of their own early once
+# this many are.
 _SEED_OUTBOUND_CONNECTION_THRESHOLD = 2
 
 # Core's `ADD_NEXT_SEEDNODE` (`src/net.cpp`, same sha): how long
 # `_maybe_add_seednode` waits between two `-seednode` values, in
 # seconds.
 _ADD_SEEDNODE_INTERVAL = 10
+
+# `ThreadDNSAddressSeed`'s own wait for `-seednode`, ahead of the DNS
+# seeds (`src/net.cpp`, same sha, btclib-org/btclib-node#1461): thirty
+# seconds, "so this does not become a race against fixedseeds (which
+# triggers after 1 min)", Core's own comment there, polled every half
+# second (`sleep_for(500ms)`).
+_SEEDNODE_TIMEOUT = 30
+_SEEDNODE_POLL_INTERVAL = 0.5
 
 # The networks Core reaches by default, which are this node's two:
 # `g_reachable_nets` loses Tor, I2P and CJDNS in `AppInitMain` where no
@@ -300,13 +310,14 @@ _FEELER_SLEEP_WINDOW = 1.0
 # `_prune_stale_connections` drops it whether or not it ever answered.
 _ADDR_FETCH_TIMEOUT = 10 * 30
 
-# `ThreadDNSAddressSeed`'s own schedule (`src/net.cpp`,
-# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), the `-seednode` branch
-# aside (btclib-org/btclib-node#1192's own gate): a batch of this many
-# seeds is asked before the next wait, and a wait ends early once
-# `_SEED_OUTBOUND_CONNECTION_THRESHOLD` above (Core's own constant of
-# that name, shared with `_maybe_add_seednode`) full-relay outbound
-# peers are past the handshake.
+# `ThreadDNSAddressSeed`'s own DNS-seed schedule (`src/net.cpp`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), past
+# `_wait_for_seednode_peers`'s own `-seednode` wait above: a batch of
+# this many seeds is asked before the next wait, and a wait ends early
+# once `_SEED_OUTBOUND_CONNECTION_THRESHOLD` above (Core's own constant
+# of that name, shared with `_maybe_add_seednode` and
+# `_wait_for_seednode_peers`) full-relay outbound peers are past the
+# handshake.
 _DNS_SEEDS_TO_QUERY_AT_ONCE = 3
 # `DNSSEEDS_DELAY_FEW_PEERS`, `DNSSEEDS_DELAY_MANY_PEERS` and
 # `DNSSEEDS_DELAY_PEER_THRESHOLD`, same sha: the wait between two
@@ -1657,14 +1668,41 @@ class P2pManager(threading.Thread):
             except Exception:
                 self.logger.exception("Exception occurred")
 
+    async def _wait_for_seednode_peers(self) -> None:
+        """Give `-seednode` up to `_SEEDNODE_TIMEOUT` before the DNS seeds.
+
+        `ThreadDNSAddressSeed`'s own wait, ahead of its DNS-seed loop
+        (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a
+        no-op where `-seednode` was never given (`use_seednodes`, fixed
+        for this manager's life once set at construction), otherwise
+        polled every `_SEEDNODE_POLL_INTERVAL` until either
+        `_SEED_OUTBOUND_CONNECTION_THRESHOLD` full-relay outbound peers
+        are past their handshake or `_SEEDNODE_TIMEOUT` seconds have
+        passed since this was entered -- Core's own two `break`s, timeout
+        checked first each step, both read every poll rather than the
+        wait being scheduled once for the full length
+        (btclib-org/btclib-node#1461).
+        """
+        if not self.use_seednodes:
+            return
+        elapsed = 0.0
+        while True:
+            await asyncio.sleep(_SEEDNODE_POLL_INTERVAL)
+            elapsed += _SEEDNODE_POLL_INTERVAL
+            if elapsed > _SEEDNODE_TIMEOUT:
+                return
+            if self._full_outbound_count() >= _SEED_OUTBOUND_CONNECTION_THRESHOLD:
+                return
+
     async def _dns_address_seed(self) -> None:
-        """Ask the chain's DNS seeds on Core's own schedule, `-seednode` aside.
+        """Ask the chain's DNS seeds on Core's own schedule, `-seednode` first.
 
         Ports `ThreadDNSAddressSeed` (`src/net.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), its `-seednode`
-        branch left to whatever schedules this coroutine in the first
-        place (btclib-org/btclib-node#1192): the chain's seeds are
-        shuffled, then asked through `peer_db.query_dns_seed`, one
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `_wait_for_seednode_peers`
+        above is this coroutine's own first step, Core's own `-seednode`
+        wait sitting ahead of the DNS-seed loop in the one function.
+        Once it returns, the chain's seeds are shuffled, then asked
+        through `peer_db.query_dns_seed`, one
         seed at a time so this can wait between batches of
         `_DNS_SEEDS_TO_QUERY_AT_ONCE`. Every seed is asked at once under
         `-forcednsseed` or where `peer_db.size` starts at zero; otherwise
@@ -1686,6 +1724,7 @@ class P2pManager(threading.Thread):
         queues it the same way (`AddAddrFetch(seed)`) rather than
         resolving the bare name here.
         """
+        await self._wait_for_seednode_peers()
         seeds = list(self.node.chain.addresses)
         secrets.SystemRandom().shuffle(seeds)
         port = self.node.chain.port
