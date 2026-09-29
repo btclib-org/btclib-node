@@ -938,6 +938,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   and a served command's own full help text with one, or Core's own
   "unknown command" for one it does not serve** (closes #1405).
 
+### `getpeerinfo`'s `addr` is the name a peer was dialled by, where one was given
+
+- **`addr` and `disconnectnode`'s `address` match answer the string a peer
+  was dialled by once held, the formatted socket address otherwise**, as
+  Core's `m_addr_name` does (closes #1301).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

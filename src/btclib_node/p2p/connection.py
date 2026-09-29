@@ -494,8 +494,8 @@ class Connection:
     # being the only path that currently sets it, to the seed name it
     # resolved (btclib-org/btclib-node#1432). Core's own field falls back
     # to the formatted socket address for a connection dialled by
-    # address, which `getpeerinfo`'s own `addr` still answers here
-    # unconditionally (btclib-org/btclib-node#1301). Set by
+    # address, which `_socket_addresses` (`rpc/callbacks.py`) does the
+    # same way for `getpeerinfo`'s own `addr`. Set by
     # `P2pManager.create_connection` before this connection's task is
     # scheduled, and never changed after; a class default for the same
     # reason as `time_received`.

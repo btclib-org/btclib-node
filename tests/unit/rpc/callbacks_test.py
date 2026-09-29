@@ -169,6 +169,7 @@ def a_peer(
     peer: str = "1.2.3.4",
     bind: str = "5.6.7.8",
     local: str = "9.10.11.12",
+    addr_name: str | None = None,
     user_agent: bytes = b"/btclib:test/",
     latency: float = 0.5,
     min_ping_time: float = 0.25,
@@ -199,6 +200,7 @@ def a_peer(
         client=FakeSocket(gone=gone, peer=peer, bind=bind),
         version_message=version_message if versioned else None,
         address=peer_address(peer, 8333),
+        addr_name=addr_name,
         # fractional where the connection keeps them so, and each a
         # different value, so that an answer naming the wrong source or
         # left unrounded cannot pass
@@ -288,6 +290,30 @@ def test_the_peer_table_names_a_connected_peer() -> None:
     assert info["addrlocal"] == "9.10.11.12:8333"
     assert info["servicesnames"] == ["NETWORK", "WITNESS"]
     assert info["inbound"] is True
+
+
+def test_a_peer_dialled_by_name_answers_that_name_as_addr() -> None:
+    """ISS 1301: `addr` is `m_addr_name`, not the socket, once one is held.
+
+    Core's `getpeerinfo` pushes `stats.m_addr_name`
+    (`src/rpc/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
+    which is the destination string a peer was dialled by rather than a
+    reformatting of the socket's own address -- a portless IP among
+    them, the ordinary case a client dialling by name produces.
+    `addrbind` is unaffected, being the bind address rather than the
+    peer's.
+    """
+    peer = a_peer(peer="1.2.3.4", bind="5.6.7.8", addr_name="203.0.113.5")
+    (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
+    assert info["addr"] == "203.0.113.5"
+    assert info["addrbind"] == "5.6.7.8:18444"
+
+
+def test_a_peer_dialled_by_address_still_answers_the_formatted_socket() -> None:
+    """No `addr_name` held: `addr` is the formatted socket address."""
+    peer = a_peer(peer="1.2.3.4", addr_name=None)
+    (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
+    assert info["addr"] == "1.2.3.4:8333"
 
 
 def test_a_peer_s_subver_is_its_own_announced_user_agent() -> None:
@@ -3911,6 +3937,24 @@ def test_disconnectnode_drops_the_peer_getpeerinfo_names_by_that_address() -> No
     node, removed = a_disconnecting_node(peers)
     (info,) = [info for info in get_peer_info(node, _CONN, []) if info["id"] == 3]
     disconnect_node(node, _CONN, [info["addr"]])
+    assert removed == [3]
+
+
+def test_disconnectnode_matches_the_name_a_peer_was_dialled_by() -> None:
+    """ISS 1301: `address` matches `m_addr_name`, a portless IP included.
+
+    Core's `CConnman::DisconnectNode(std::string_view)` matches
+    `node->m_addr_name` (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag); the socket's own `getpeername`, `"1.2.3.4:8333"`
+    here, does not match once a name is held.
+    """
+    peers = {3: a_peer(peer="1.2.3.4", addr_name="1.2.3.4")}
+    node, removed = a_disconnecting_node(peers)
+    with pytest.raises(RpcError) as raised:
+        disconnect_node(node, _CONN, ["1.2.3.4:8333"])
+    assert (raised.value.code, raised.value.message) == _DISCONNECT_NOT_FOUND
+    assert removed == []
+    disconnect_node(node, _CONN, ["1.2.3.4"])
     assert removed == [3]
 
 
