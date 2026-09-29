@@ -897,6 +897,47 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   resolved** (closes #1432), as Core's `AlreadyConnectedToHost` checks it
   ahead of `ConnectNode`'s own resolve.
 
+### An ancestor is found through skip pointers, as Core's `GetAncestor`
+
+- **Block download and `getheaders` reach a block's fork point or ancestor in
+  steps that grow with the logarithm of the distance, not with the distance**
+  (closes #1200).
+
+### A block announced by `headers` near the tip is asked for at once, as in Core
+
+- **`headers` asks the announcing peer for the blocks up to a header it just
+  sent, as Core's `HeadersDirectFetchBlocks` does** (closes #1199).
+
+### `-dnsseed`, `-fixedseeds` and `-seednode` steer the bootstrap
+
+- **`-dnsseed` and `-fixedseeds` turn DNS seeding and the chain's fixed
+  seeds off, and `-seednode` addr-fetches a peer ahead of the DNS seeds,
+  one at a time** (closes #1192), as Core's `ThreadOpenConnections` does.
+
+### A call past its own declared argument count is refused with help
+
+- **`rpc.main._execute` refuses a call carrying more positional arguments
+  than its method declares, with that method's own full help text**
+  (closes #1424).
+
+### Two or more wrongly typed arguments are all named in one refusal
+
+- **Every declared argument's type is checked before any is raised on, so a
+  call with two or more wrong ones names every one, not the first alone**
+  (closes #1293).
+
+### A short or refused call is answered with the method's own full help
+
+- **The one-line usage string a callback raised for a missing argument, or a
+  value it refuses outright, is now that method's own full help text**
+  (closes #1294).
+
+### `help` is served, as Core's `help` RPC serves it
+
+- **The commands this node serves, grouped by category, with no argument,
+  and a served command's own full help text with one, or Core's own
+  "unknown command" for one it does not serve** (closes #1405).
+
 ### `address_sampler`'s tried side draws an aged-out row, as `Select_` does
 
 - **The tried side reads `active_addresses` unfiltered by `_aged_out`,

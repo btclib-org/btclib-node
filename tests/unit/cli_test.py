@@ -665,6 +665,14 @@ def test_help_names_bantime() -> None:
     )
 
 
+def test_help_names_dnsseed_fixedseeds_and_seednode() -> None:
+    """ISS 1192: `-dnsseed`, `-fixedseeds` and `-seednode`, in Core's words."""
+    message = " ".join(cli._help_message(show_debug=False).split())
+    assert "Query for peer addresses via DNS lookup, if low on addresses" in message
+    assert "Allow fixed seeds if DNS seeds don't provide peers" in message
+    assert "Connect to a node to retrieve peer addresses, and disconnect" in message
+
+
 def test_build_config_reads_a_double_dash_option(tmp_path: Path) -> None:
     """`--name=value` is `-name=value`."""
     assert _build(tmp_path, "--maxconnections=7").max_connections == 7
@@ -2239,6 +2247,38 @@ def test_build_config_connect_zero_dials_nobody() -> None:
     assert config.listen is False
     assert config.connect == ()
     assert config.connect_given is True
+
+
+def test_build_config_seednode_reaches_config() -> None:
+    """`-seednode` on the command line resolves through to `Config`."""
+    config = cli.build_config(
+        ["-regtest", "-seednode=10.0.0.1", "-seednode=10.0.0.2:2"]
+    )
+    assert config.seednode == (("10.0.0.1", RegTest().port), ("10.0.0.2", 2))
+
+
+def test_build_config_dnsseed_explicit_wins_over_connect(tmp_path: Path) -> None:
+    """`-connect` soft-sets `-dnsseed=0`; an explicit `-dnsseed=1` wins."""
+    off = _build(tmp_path, "-connect=10.0.0.1")
+    assert off.dnsseed is False
+    on = _build(tmp_path, "-connect=10.0.0.1", "-dnsseed=1")
+    assert on.dnsseed is True
+
+
+def test_build_config_nodnsseed_wins_with_no_connect(tmp_path: Path) -> None:
+    """No `-connect`: `-dnsseed` defaults true, `-nodnsseed` overrides it."""
+    assert _build(tmp_path).dnsseed is True
+    assert _build(tmp_path, "-nodnsseed").dnsseed is False
+
+
+def test_build_config_fixedseeds_defaults_to_true(tmp_path: Path) -> None:
+    """Not given: `Config.fixed_seeds` is Core's own `DEFAULT_FIXEDSEEDS`."""
+    assert _build(tmp_path).fixed_seeds is True
+
+
+def test_build_config_fixedseeds_zero_reaches_config(tmp_path: Path) -> None:
+    """`-fixedseeds=0` turns fixed seeds off."""
+    assert _build(tmp_path, "-fixedseeds=0").fixed_seeds is False
 
 
 def test_main_builds_a_node_and_starts_it(
