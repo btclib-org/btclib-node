@@ -1016,7 +1016,8 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
     # declined to keep is not one to tell every other peer about, a peer
     # that then asks for it getting `notfound` for its trouble.
     # btclib-org/btclib-node#277
-    if node.mempool.add_tx(tx, fee, vsize):
+    tip_height = len(node.chainstate.block_index.active_chain) - 1
+    if node.mempool.add_tx(tx, fee, vsize, height=tip_height):
         # novel and accepted into the mempool: what Core's own
         # `m_last_tx_time` records for eviction (`net_processing.cpp`'s
         # `ProcessMessage`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
@@ -1497,6 +1498,15 @@ def _serve_getdata_item(
                 InventoryType.MSG_WTX,
             )
             conn.send(TxMsg(tx, include_witness=include_witness))
+            # Core's own `m_mempool.RemoveUnbroadcastTx(tx->GetHash())`
+            # (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7,
+            # the v31.1 tag): this peer's own `getdata` is the
+            # acknowledgment `getmempoolinfo`'s own `unbroadcastcount`
+            # waits for. `tx->GetHash()` is a txid, matching what
+            # `mark_broadcast` reads `tx.id` by, not `item.hash`, which
+            # is a wtxid for a `MSG_WTX` request.
+            # btclib-org/btclib-node#1421
+            node.mempool.mark_broadcast(tx.id)
         else:
             not_found.append(item)
             not_found_bytes += _NOTFOUND_ITEM_BYTES

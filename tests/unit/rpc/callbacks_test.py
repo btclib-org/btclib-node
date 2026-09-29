@@ -70,6 +70,7 @@ from btclib_node.rpc.callbacks import (
     get_block_header,
     get_blockchain_info,
     get_connection_count,
+    get_mempool_entry,
     get_mempool_info,
     get_network_info,
     get_peer_info,
@@ -231,21 +232,35 @@ def a_node(
     min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
     *,
     heights: dict[bytes, int] | None = None,
+    confirmed_outpoints: frozenset[bytes] | None = None,
 ) -> Any:
     """Build a `Node` double carrying only what these callbacks read.
 
     A peer table, a mempool, the configured minimum relay feerate, and a
     block index answering the height of each hash in `heights` --
-    nothing else these tests' own callbacks look at.
+    nothing else these tests' own callbacks look at. `confirmed_outpoints`
+    names the serialized outpoints (`OutPoint.serialize(check_validity=
+    False)`) `send_raw_transaction`'s own `_already_confirmed` reads as
+    already in the UTXO set; empty by default, so nothing here answers
+    already confirmed. btclib-org/btclib-node#1373
     """
     known = heights if heights is not None else {}
+    confirmed = confirmed_outpoints if confirmed_outpoints is not None else frozenset()
     return SimpleNamespace(
         chainstate=SimpleNamespace(
             block_index=SimpleNamespace(
                 get_block_info=lambda block_hash: SimpleNamespace(
                     index=known[block_hash]
-                )
-            )
+                ),
+                # a one-block chain, tip height 0: `send_raw_transaction`
+                # and `p2p.callbacks.tx` both read `len(active_chain) - 1`
+                # for `Mempool.add_tx`'s own `height`, and no test here
+                # asserts on the value it stores.
+                active_chain=[b"\x00" * 32],
+            ),
+            utxo_index=SimpleNamespace(
+                get_coin=lambda prevout: object() if prevout in confirmed else None
+            ),
         ),
         p2p_manager=SimpleNamespace(
             connections=peers if peers is not None else {},
@@ -3982,3 +3997,340 @@ def test_a_feeler_has_no_tx_relay() -> None:
     peer = a_peer(inbound=False, automatic=True, feeler=True, relay=True)
     (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
     assert info["relaytxes"] is False
+
+
+def a_high_fee_acceptance(node: Any, transaction: Any) -> MempoolAcceptance:
+    """Answer a tiny, cheap transaction paying far above the default cap.
+
+    `vsize=200`: the default `maxfeerate`, 0.1 BTC/kvB
+    (`cb._DEFAULT_MAX_RAW_TX_FEE_RATE`, 10_000_000 sat/kvB), caps a
+    200-vbyte transaction's fee at 2_000_000 sat -- `fee=3_000_000` is
+    comfortably over it.
+    """
+    return MempoolAcceptance(fee=3_000_000, vsize=200)
+
+
+def test_test_mempool_accept_default_maxfeerate_refuses_a_high_fee(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`testmempoolaccept` answers `max-fee-exceeded`, no `maxfeerate` given.
+
+    bitcoind v31.1's own default `maxfeerate` is 0.1 BTC/kvB
+    (`DEFAULT_MAX_RAW_TX_FEE_RATE`). btclib-org/btclib-node#1371
+    """
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", a_high_fee_acceptance)
+    (result,) = mempool_accept(
+        a_node(), _CONN, [[a_tx().serialize(include_witness=True).hex()]]
+    )
+    assert result["allowed"] is False
+    assert result["reject-reason"] == "max-fee-exceeded"
+    assert "vsize" not in result
+    assert "reject-details" not in result
+
+
+def test_test_mempool_accept_maxfeerate_zero_accepts_any_fee(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`maxfeerate: 0` is Core's own "accept any fee rate", not a zero cap."""
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", a_high_fee_acceptance)
+    (result,) = mempool_accept(
+        a_node(), _CONN, [[a_tx().serialize(include_witness=True).hex()], 0]
+    )
+    assert result["allowed"] is True
+    assert result["vsize"] == 200
+
+
+def test_test_mempool_accept_a_lower_maxfeerate_still_refuses_a_cheaper_fee(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lower `maxfeerate` catches a fee the default would have cleared."""
+
+    def cheap(node: Any, transaction: Any) -> MempoolAcceptance:
+        return MempoolAcceptance(fee=500_000, vsize=200)
+
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", cheap)
+    # 500_000 sat / 200 vbyte * 1000 = 2_500_000 sat/kvB: under the
+    # default cap (10_000_000 sat/kvB) and over a maxfeerate of
+    # 0.00001 BTC/kvB (1_000 sat/kvB)
+    (result,) = mempool_accept(
+        a_node(), _CONN, [[a_tx().serialize(include_witness=True).hex()], "0.00001"]
+    )
+    assert result["allowed"] is False
+    assert result["reject-reason"] == "max-fee-exceeded"
+
+
+def test_test_mempool_accept_maxfeerate_at_1btc_is_refused() -> None:
+    """`maxfeerate` of 1 BTC/kvB or more is refused, Core's own words."""
+    with pytest.raises(RpcError) as raised:
+        mempool_accept(
+            a_node(), _CONN, [[a_tx().serialize(include_witness=True).hex()], 1]
+        )
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert raised.value.message == (
+        "Fee rates larger than or equal to 1BTC/kvB are not accepted"
+    )
+
+
+def test_test_mempool_accept_maxfeerate_of_the_wrong_json_type_is_refused() -> None:
+    """`maxfeerate` neither a number nor a string is Core's own `TYPE_ERROR`."""
+    with pytest.raises(RpcError) as raised:
+        mempool_accept(
+            a_node(), _CONN, [[a_tx().serialize(include_witness=True).hex()], [5]]
+        )
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert raised.value.message == "Amount is not a number or string"
+
+
+def test_send_raw_transaction_default_maxfeerate_refuses_a_high_fee(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`sendrawtransaction` answers Core's own `MAX_FEE_EXCEEDED` message."""
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", a_high_fee_acceptance)
+    mempool = Mempool(Logger(debug=True))
+    broadcast: list[Tx] = []
+    node = a_node(mempool=mempool)
+    node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: broadcast.append(tx)
+    tx = a_tx()
+
+    with pytest.raises(RpcError) as raised:
+        send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
+    assert raised.value.code == RPCErrorCode.VERIFY_ERROR
+    assert raised.value.message == (
+        "Fee exceeds maximum configured by user (e.g. -maxtxfee, maxfeerate)"
+    )
+    assert not mempool.contains_tx(tx)
+    assert broadcast == []
+
+
+def test_send_raw_transaction_a_maxfeerate_param_allows_a_higher_default_fee(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A higher `maxfeerate` clears a fee the default would have refused."""
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", a_high_fee_acceptance)
+    mempool = Mempool(Logger(debug=True))
+    broadcast: list[Tx] = []
+    node = a_node(mempool=mempool)
+    node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: broadcast.append(tx)
+    tx = a_tx()
+
+    # 3_000_000 sat / 200 vbyte * 1000 = 15_000_000 sat/kvB: a maxfeerate
+    # of 0.16 BTC/kvB (16_000_000 sat/kvB) clears it
+    txid = send_raw_transaction(
+        node, _CONN, [tx.serialize(include_witness=True).hex(), "0.16"]
+    )
+    assert txid == tx.id.hex()
+    assert mempool.contains_tx(tx)
+    assert broadcast == [tx]
+
+
+def a_burn_tx(tag: bytes = b"\x33", value: int = 1_000) -> Tx:
+    """Build a transaction paying one `OP_RETURN` output of `value` satoshi."""
+    return Tx(
+        version=1,
+        lock_time=0,
+        vin=[
+            TxIn(
+                prev_out=OutPoint(tag * 32, 0),
+                script_sig=script.serialize([tag * 8]),
+                sequence=0xFFFFFFFF,
+            )
+        ],
+        vout=[TxOut(value=value, script_pub_key=script.serialize(["OP_RETURN"]))],
+    )
+
+
+def test_send_raw_transaction_default_maxburnamount_refuses_an_op_return_value() -> (
+    None
+):
+    """`sendrawtransaction` refuses a burn, Core's own default cap being 0."""
+    tx = a_burn_tx()
+    node = a_node()
+    with pytest.raises(RpcError) as raised:
+        send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
+    assert raised.value.code == RPCErrorCode.VERIFY_ERROR
+    assert raised.value.message == (
+        "Unspendable output exceeds maximum configured by user (maxburnamount)"
+    )
+
+
+def test_send_raw_transaction_a_maxburnamount_param_allows_a_smaller_burn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `maxburnamount` at or above the burned value clears the refusal."""
+    monkeypatch.setattr(
+        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, 100)
+    )
+    mempool = Mempool(Logger(debug=True))
+    broadcast: list[Tx] = []
+    node = a_node(mempool=mempool)
+    node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: broadcast.append(tx)
+    tx = a_burn_tx(value=1_000)
+
+    txid = send_raw_transaction(
+        node, _CONN, [tx.serialize(include_witness=True).hex(), None, "0.00001000"]
+    )
+    assert txid == tx.id.hex()
+    assert mempool.contains_tx(tx)
+
+
+def test_send_raw_transaction_maxburnamount_not_a_decimal_is_invalid_amount() -> None:
+    """A `maxburnamount` `Decimal` can't parse is Core's "Invalid amount"."""
+    tx = a_tx()
+    with pytest.raises(RpcError) as raised:
+        send_raw_transaction(
+            a_node(), _CONN, [tx.serialize(include_witness=True).hex(), None, "abc"]
+        )
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert raised.value.message == "Invalid amount"
+
+
+def test_send_raw_transaction_maxburnamount_infinite_is_invalid_amount() -> None:
+    """A non-finite `maxburnamount` is Core's own "Invalid amount"."""
+    tx = a_tx()
+    with pytest.raises(RpcError) as raised:
+        send_raw_transaction(
+            a_node(),
+            _CONN,
+            [tx.serialize(include_witness=True).hex(), None, "Infinity"],
+        )
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert raised.value.message == "Invalid amount"
+
+
+def test_send_raw_transaction_maxburnamount_finer_than_a_satoshi_is_invalid() -> None:
+    """More than eight decimals leaves a remainder: Core's "Invalid amount"."""
+    tx = a_tx()
+    with pytest.raises(RpcError) as raised:
+        send_raw_transaction(
+            a_node(),
+            _CONN,
+            [tx.serialize(include_witness=True).hex(), None, "0.123456789"],
+        )
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert raised.value.message == "Invalid amount"
+
+
+def test_send_raw_transaction_maxburnamount_negative_is_out_of_range() -> None:
+    """A negative `maxburnamount` is Core's own `MoneyRange` refusal."""
+    tx = a_tx()
+    with pytest.raises(RpcError) as raised:
+        send_raw_transaction(
+            a_node(), _CONN, [tx.serialize(include_witness=True).hex(), None, "-1"]
+        )
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert raised.value.message == "Amount out of range"
+
+
+def test_send_raw_transaction_refuses_a_confirmed_transaction_in_core_s_words() -> None:
+    """A transaction whose own output is already in the UTXO set is `-27`.
+
+    bitcoind v31.1 answers a resubmitted, already-confirmed transaction
+    `RPC_VERIFY_ALREADY_IN_UTXO_SET` (-27), "Transaction outputs already
+    in utxo set" -- not `RPC_VERIFY_ERROR` (-25) "Missing prevouts", the
+    prevout-lookup failure a confirmed transaction's own *inputs*, spent
+    when it confirmed, would otherwise raise first. btclib-org/btclib-node#1373
+    """
+    tx = a_tx()
+    outpoint = OutPoint(tx.id, 0, check_validity=False).serialize(check_validity=False)
+    node = a_node(confirmed_outpoints=frozenset({outpoint}))
+    with pytest.raises(RpcError) as raised:
+        send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
+    assert raised.value.code == RPCErrorCode.VERIFY_ALREADY_IN_UTXO_SET
+    assert raised.value.message == "Transaction outputs already in utxo set"
+
+
+def test_send_raw_transaction_marks_a_kept_transaction_unbroadcast(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transaction `sendrawtransaction` keeps enters the unbroadcast set.
+
+    Core's own `AddUnbroadcastTx`, called only for a transaction
+    submitted this way -- never for one a peer handed this node over the
+    wire. btclib-org/btclib-node#1421
+    """
+    monkeypatch.setattr(
+        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, 100)
+    )
+    mempool = Mempool(Logger(debug=True))
+    node = a_node(mempool=mempool)
+    node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: None
+    tx = a_tx()
+
+    send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
+    assert mempool.unbroadcast == {tx.id}
+
+
+def test_get_mempool_info_answers_unbroadcastcount() -> None:
+    """`getmempoolinfo`'s `unbroadcastcount` is `Mempool.unbroadcast`'s size."""
+    mempool = Mempool(Logger(debug=True))
+    held = a_tx()
+    mempool.add_tx(held, 0)
+    mempool.mark_broadcast_locally(held.id)
+    other = a_tx(b"\x44")
+    mempool.add_tx(other, 0)
+    node = a_node(mempool=mempool)
+    assert get_mempool_info(node, _CONN, [])["unbroadcastcount"] == 1
+
+
+def test_get_mempool_entry_refuses_a_txid_not_held() -> None:
+    """`getmempoolentry` for a txid this mempool lacks is Core's own `-5`."""
+    node = a_node(mempool=Mempool(Logger(debug=True)))
+    with pytest.raises(RpcError) as raised:
+        get_mempool_entry(node, _CONN, [("00" * 32)])
+    assert raised.value.code == RPCErrorCode.INVALID_ADDRESS_OR_KEY
+    assert raised.value.message == "Transaction not in mempool"
+
+
+def test_get_mempool_entry_with_no_params_is_core_s_own_help_shape() -> None:
+    """No `txid` at all answers `RPC_MISC_ERROR` with the usage string."""
+    with pytest.raises(RpcError) as raised:
+        get_mempool_entry(a_node(), _CONN, [])
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
+    assert raised.value.message == 'getmempoolentry "txid"'
+
+
+def test_get_mempool_entry_a_non_string_txid_is_a_type_error() -> None:
+    """A `txid` that is not a JSON string is named as `type_error` names it."""
+    with pytest.raises(RpcError) as raised:
+        get_mempool_entry(a_node(), _CONN, [5])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+
+
+def test_get_mempool_entry_a_non_hex_txid_is_invalid_parameter() -> None:
+    """A `txid` that is not valid hex is `ParseHashV`'s own refusal."""
+    with pytest.raises(RpcError) as raised:
+        get_mempool_entry(a_node(), _CONN, ["not-hex"])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert raised.value.message == "txid must be hexadecimal string (not 'not-hex')"
+
+
+def test_get_mempool_entry_answers_core_s_own_shape() -> None:
+    """`getmempoolentry` answers vsize, weight, fees, ancestors and descendants.
+
+    `parent` <- `tx` <- `child`, one held entry each, `tx` in the middle
+    read back. btclib-org/btclib-node#1397
+    """
+    mempool = Mempool(Logger(debug=True))
+    parent = generate_random_transaction()
+    tx = generate_random_transaction(parent.id)
+    child = generate_random_transaction(tx.id)
+    mempool.add_tx(parent, 1_000, height=100)
+    mempool.add_tx(tx, 2_000, height=100)
+    mempool.add_tx(child, 3_000, height=100)
+    node = a_node(mempool=mempool)
+
+    entry = get_mempool_entry(node, _CONN, [tx.id.hex()])
+    assert entry["vsize"] == mempool.vsizes[tx.hash]
+    assert entry["weight"] == tx.weight
+    assert entry["height"] == 100
+    assert entry["wtxid"] == tx.hash
+    assert entry["ancestorcount"] == 2
+    assert entry["descendantcount"] == 2
+    assert entry["fees"]["base"].text == "0.00002000"
+    assert entry["fees"]["modified"].text == "0.00002000"
+    assert entry["fees"]["ancestor"].text == "0.00003000"
+    assert entry["fees"]["descendant"].text == "0.00005000"
+    assert entry["depends"] == [parent.id]
+    assert entry["spentby"] == [child.id]
+    assert entry["bip125-replaceable"] is False
+    assert entry["unbroadcast"] is False

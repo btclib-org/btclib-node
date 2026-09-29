@@ -638,7 +638,14 @@ def a_handshake_node(
             ban_man=a_ban_man(*banned),
         ),
         chainstate=SimpleNamespace(
-            block_index=SimpleNamespace(get_block_locator_hashes=lambda: [b"\x00" * 32])
+            block_index=SimpleNamespace(
+                get_block_locator_hashes=lambda: [b"\x00" * 32],
+                # a one-block chain, tip height 0: `tx`'s own `add_tx`
+                # call reads `len(active_chain) - 1` for `Mempool.add_tx`'s
+                # own `height`, and no test here asserts on the value it
+                # stores. btclib-org/btclib-node#1397
+                active_chain=[b"\x00" * 32],
+            )
         ),
         logger=SimpleNamespace(
             info=lambda *a: None, warning=lambda *a: None, debug=lambda *a: None
@@ -3191,6 +3198,29 @@ def test_a_transaction_this_node_holds_is_served() -> None:
         assert isinstance(answer, TxMsg)
         assert answer.tx == transaction
         assert answer.include_witness is with_witness
+
+
+def test_serving_a_getdata_for_a_transaction_clears_it_unbroadcast() -> None:
+    """A peer's `getdata` is the acknowledgment `unbroadcastcount` waits for.
+
+    `Mempool.mark_broadcast`, Core's own `RemoveUnbroadcastTx` call site
+    in `net_processing.cpp` -- by txid, the way `AddUnbroadcastTx` marked
+    it, not by whichever identifier this particular peer asked by.
+    btclib-org/btclib-node#1421
+    """
+    transaction = a_transaction()
+    mempool = Mempool(Logger(debug=True))
+    mempool.add_tx(transaction)
+    mempool.mark_broadcast_locally(transaction.id)
+    assert mempool.unbroadcast == {transaction.id}
+    node = a_data_node(mempool=mempool)
+    peer = a_peer()
+    getdata(
+        node,
+        GetData([Inventory(InventoryType.MSG_WTX, transaction.hash)]).serialize(),
+        peer,
+    )
+    assert mempool.unbroadcast == set()
 
 
 def test_a_transaction_is_not_found_under_the_other_identifier() -> None:

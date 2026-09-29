@@ -891,6 +891,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `uv/Dockerfile`**: the old floor admitted a `uv` older than the one the
   updater writes `uv.lock` with (issue btclib-org/.github#1438).
 
+### The mempool RPCs, matched to Core's `rpc/mempool.cpp` field by field
+
+- **Each now applies `maxfeerate`/`maxburnamount` (closes #1371), answers `-27`
+  not `-25` for a confirmed resubmission (closes #1373) and `unbroadcastcount`
+  (closes #1421), and serves `getmempoolentry` (closes #1397).**
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

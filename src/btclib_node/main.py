@@ -283,7 +283,14 @@ def _reconcile_mempool_for_reorg(
                 fee, vsize = verify_mempool_acceptance(node, tx, bypass_limits=True)
             except MissingPrevoutError, BTClibValueError:
                 continue
-            node.mempool.add_tx(tx, fee, vsize)
+            # Core's own `nHeight`, the active chain's own tip height at
+            # acceptance (`Mempool.heights`' own docstring,
+            # btclib-org/btclib-node#1397): read again here rather than
+            # carried from `verify_mempool_acceptance`'s own
+            # `spend_height`, one past it, because this loop moves the
+            # active chain one block at a time as it re-adds.
+            tip_height = len(node.chainstate.block_index.active_chain) - 1
+            node.mempool.add_tx(tx, fee, vsize, height=tip_height)
     for block in to_add:
         # an empty mempool holds none of them, and `remove_tx` hashes
         # each transaction to ask, which a block connected during
