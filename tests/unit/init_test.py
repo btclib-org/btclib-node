@@ -1276,19 +1276,18 @@ def test_a_submitblock_storage_fault_stops_the_loop_before_the_next_step(
 
     monkeypatch.setattr(node.chainstate.utxo_index, "add_block", boom)
 
-    step_chain_update_chain_calls: list[None] = []
-
-    def counting_update_chain(n: Node) -> None:
-        step_chain_update_chain_calls.append(None)
-        update_chain(n)
-
+    # a recorder and nothing else: any call at all is the failure under
+    # test, so nothing past the record ever needs to run
+    step_chain_update_chain_calls: list[Node] = []
     # the string form: `btclib_node.update_chain` is `_step_chain`'s own
     # name for it, imported there rather than re-exported, so reading it
     # as an attribute of the `btclib_node` package from outside is the
     # implicit reexport `[tool.mypy]`'s own `no_implicit_reexport` refuses
     # -- `update_chain` above is this module's own explicit import from
     # its true home, `btclib_node.main`
-    monkeypatch.setattr("btclib_node.update_chain", counting_update_chain)
+    monkeypatch.setattr(
+        "btclib_node.update_chain", step_chain_update_chain_calls.append
+    )
 
     (new_block,) = generate_random_chain(1, node.chain.genesis.hash)
     rpc_manager.messages.append(
