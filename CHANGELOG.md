@@ -926,6 +926,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   loop of its own, on Core's own cadence, in place of one shared,
   capped, doubling backoff** (closes #1316).
 
+### The `addnode` RPC's `add` and `remove` grow and shrink the `-addnode` list
+
+- **`add` and `remove` now mutate the list `-addnode`'s own dial loop
+  reads, as Core's `AddNode`/`RemoveAddedNode` do, in place of `add`
+  dialling once unpersisted and `remove` always refusing** (closes #1350).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

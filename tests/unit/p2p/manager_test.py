@@ -189,7 +189,6 @@ class AManagerFactory(Protocol):
         status: NodeStatus = NodeStatus.BlockSynced,
         port: int | None = None,
         connect: Sequence[tuple[str, int]] = (),
-        addnode: Sequence[tuple[str, int]] = (),
         addnode_args: Sequence[str] = (),
         seednode: Sequence[tuple[str, int]] = (),
         listen: bool = True,
@@ -218,7 +217,6 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
         status: NodeStatus = NodeStatus.BlockSynced,
         port: int | None = None,
         connect: Sequence[tuple[str, int]] = (),
-        addnode: Sequence[tuple[str, int]] = (),
         addnode_args: Sequence[str] = (),
         seednode: Sequence[tuple[str, int]] = (),
         listen: bool = True,
@@ -258,7 +256,6 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
             config=SimpleNamespace(
                 connect=connect,
                 connect_given=bool(connect),
-                addnode=addnode,
                 addnode_args=tuple(addnode_args),
                 seednode=seednode,
                 listen=listen,
@@ -1299,7 +1296,7 @@ def a_seeding_manager(
     held: Sequence[BIP155Network] = (),
     elapsed: float = 0.0,
     use_dns_seed: bool = True,
-    addnode: Sequence[tuple[str, int]] = (),
+    addnode_args: Sequence[str] = (),
     seednode: Sequence[tuple[str, int]] = (),
     conns: Sequence[Any] = (),
 ) -> tuple[P2pManager, list[list[NetworkAddressV2]]]:
@@ -1314,7 +1311,9 @@ def a_seeding_manager(
         holds_network=lambda network_id: network_id in held,
         add_addresses=lambda addresses: added.append(list(addresses)),
     )
-    manager = a_manager(conns, peer_db=peer_db, addnode=addnode, seednode=seednode)
+    manager = a_manager(
+        conns, peer_db=peer_db, addnode_args=addnode_args, seednode=seednode
+    )
     manager.node.chain = Main()
     manager.use_dns_seed = use_dns_seed
     manager._dial_start = time.time() - elapsed
@@ -1412,17 +1411,19 @@ def test_a_seednode_makes_fixed_seeds_wait_the_same_as_an_addnode(
 
 
 @pytest.mark.parametrize(
-    ("addnode", "adds"),
+    ("addnode_args", "adds"),
     [
         pytest.param((), True, id="no-addnode"),
-        pytest.param([("1.2.3.4", 8333)], False, id="addnode"),
+        pytest.param(["1.2.3.4:8333"], False, id="addnode"),
     ],
 )
 def test_the_fixed_seeds_are_added_at_once_without_dns_seeding(
-    a_manager: AManagerFactory, addnode: Sequence[tuple[str, int]], *, adds: bool
+    a_manager: AManagerFactory, addnode_args: Sequence[str], *, adds: bool
 ) -> None:
     """ISS 1099: with DNS seeding off and no `-addnode`, Core does not wait."""
-    manager, added = a_seeding_manager(a_manager, use_dns_seed=False, addnode=addnode)
+    manager, added = a_seeding_manager(
+        a_manager, use_dns_seed=False, addnode_args=addnode_args
+    )
     asyncio.run(manager._maybe_dial_more_peers())
     assert bool(added) is adds
 
@@ -2364,6 +2365,17 @@ class _LoopStoppedError(Exception):
     """Raised by `run_a_manual_loop`'s sleep to end a loop that never ends."""
 
 
+def _addnode_args(peers: Sequence[tuple[str, int]]) -> list[str]:
+    """Render `(host, port)` pairs the way `-addnode` itself takes them.
+
+    `P2pManager` now reads `config.addnode_args` -- raw strings, Core's
+    own `m_added_node_params` shape -- rather than a pre-split tuple,
+    since `add_added_peer`/`remove_added_peer` mutate that same list at
+    runtime (btclib-org/btclib-node#1350).
+    """
+    return [f"{host}:{port}" for host, port in peers]
+
+
 def run_a_manual_loop(
     loop: Callable[[], Coroutine[Any, Any, None]],
     manager: P2pManager,
@@ -2411,6 +2423,83 @@ def test_the_connect_loop_dials_each_peer_every_pass(
     assert slept == [x for step in steps for x in (step, step, 0.5)]
 
 
+def test_add_added_peer_grows_the_list_once(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1350: `add_added_peer` appends, and refuses the same string twice."""
+    manager = a_manager()
+    assert manager.add_added_peer("1.2.3.4:9999") is True
+    assert manager._added_peers == {"1.2.3.4:9999": None}
+    assert manager.add_added_peer("1.2.3.4:9999") is False
+    assert manager._added_peers == {"1.2.3.4:9999": None}
+
+
+def test_add_added_peer_refuses_the_same_resolved_literal(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1350: two literal spellings of one endpoint are one entry.
+
+    Core's own `AddNode` refuses a second literal address that resolves
+    (`LookupNumeric`) to the one an existing entry already does; a name
+    is compared as text alone, `_resolved_literal` answering `None` for
+    one.
+    """
+    manager = a_manager()
+    assert manager.add_added_peer("1.2.3.4") is True
+    assert manager.add_added_peer(f"1.2.3.4:{RegTest().port}") is False
+    assert manager.add_added_peer("1.2.3.4:9999") is True
+    assert manager.add_added_peer("example.com") is True
+    assert manager.add_added_peer("example.com:9999") is True
+    assert set(manager._added_peers) == {
+        "1.2.3.4",
+        "1.2.3.4:9999",
+        "example.com",
+        "example.com:9999",
+    }
+
+
+def test_remove_added_peer_matches_the_exact_string_alone(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1350: `remove_added_peer` is Core's `RemoveAddedNode`, by text."""
+    manager = a_manager(addnode_args=["1.2.3.4:9999"])
+    assert manager.remove_added_peer("1.2.3.4") is False
+    assert manager._added_peers == {"1.2.3.4:9999": None}
+    assert manager.remove_added_peer("1.2.3.4:9999") is True
+    assert manager._added_peers == {}
+    assert manager.remove_added_peer("1.2.3.4:9999") is False
+
+
+def test_add_added_peer_is_picked_up_by_the_dial_loop(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1350: a peer `add_added_peer` grows the list with gets dialled.
+
+    Built with no `-addnode` at all, so the only way `_open_added_peers`
+    ever sees this peer is through the mutation itself.
+    """
+    manager = a_manager()
+    manager.add_added_peer("1.2.3.4:9999")
+    dialled, slept = run_a_manual_loop(
+        manager._open_added_peers, manager, monkeypatch, 1
+    )
+    assert dialled == [("1.2.3.4", 9999)]
+    assert slept == [0.5]
+
+
+def test_remove_added_peer_stops_the_dial_loop_from_finding_it(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1350: a peer `remove_added_peer` drops is no longer dialled."""
+    manager = a_manager(addnode_args=["1.2.3.4:9999"])
+    manager.remove_added_peer("1.2.3.4:9999")
+    dialled, slept = run_a_manual_loop(
+        manager._open_added_peers, manager, monkeypatch, 1
+    )
+    assert dialled == []
+    assert slept == [2]
+
+
 def test_the_added_loop_dials_the_peers_not_held(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2423,7 +2512,7 @@ def test_the_added_loop_dials_the_peers_not_held(
     """
     held = a_conn(1, addr_name="1.2.3.4")
     peers = [("1.2.3.4", 8333), ("5.6.7.8", 8333), ("peer.example", 8333)]
-    manager = a_manager([held], addnode=peers)
+    manager = a_manager([held], addnode_args=_addnode_args(peers))
     dialled, slept = run_a_manual_loop(
         manager._open_added_peers, manager, monkeypatch, 6
     )
@@ -2436,7 +2525,25 @@ def test_the_added_loop_waits_two_seconds_with_nothing_to_dial(
 ) -> None:
     """ISS 1316: a round that tried nothing sleeps `2s`, not `60s`."""
     held = a_conn(1, addr_name="1.2.3.4")
-    manager = a_manager([held], addnode=[("1.2.3.4", 8333)])
+    manager = a_manager([held], addnode_args=["1.2.3.4:8333"])
+    dialled, slept = run_a_manual_loop(
+        manager._open_added_peers, manager, monkeypatch, 2
+    )
+    assert dialled == []
+    assert slept == [2, 2]
+
+
+def test_the_added_loop_with_no_addnode_still_loops_forever(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No `-addnode` at all: the loop still sleeps 2s rather than returning.
+
+    Core's own `ThreadOpenAddedConnections` never returns early on an
+    empty `GetAddedNodeInfo`, since `AddNode` can grow the list at any
+    later time; `add_added_peer` is this node's own equivalent
+    (btclib-org/btclib-node#1350).
+    """
+    manager = a_manager()
     dialled, slept = run_a_manual_loop(
         manager._open_added_peers, manager, monkeypatch, 2
     )
@@ -2450,7 +2557,7 @@ def test_the_added_loop_stops_where_no_addnode_grant_is_free(
     """ISS 1316: `MAX_ADDNODE_CONNECTIONS` added peers held take every grant."""
     peers = [(f"10.0.0.{i}", 8333) for i in range(1, 10)]
     conns = [a_conn(i, addr_name=host) for i, (host, _port) in enumerate(peers[:8])]
-    manager = a_manager(conns, addnode=peers)
+    manager = a_manager(conns, addnode_args=_addnode_args(peers))
     dialled, slept = run_a_manual_loop(
         manager._open_added_peers, manager, monkeypatch, 1
     )
@@ -2466,7 +2573,9 @@ def test_a_manual_dial_that_raises_is_logged_and_the_loop_goes_on(
     logged: list[str] = []
     peers = [("1.2.3.4", 8333)]
     manager = (
-        a_manager(connect=peers) if option == "connect" else a_manager(addnode=peers)
+        a_manager(connect=peers)
+        if option == "connect"
+        else a_manager(addnode_args=_addnode_args(peers))
     )
     monkeypatch.setattr(manager.logger, "exception", logged.append)
 
@@ -2492,14 +2601,22 @@ def test_a_manual_dial_that_raises_is_logged_and_the_loop_goes_on(
     assert len(logged) >= 2
 
 
-def test_with_no_manual_peers_neither_loop_dials(
+def test_with_no_connect_peers_the_connect_loop_returns_at_once(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """No `-connect` and no `-addnode`: both loops return at once."""
+    """No `-connect`: `_open_connect_peers` returns rather than sleeping.
+
+    `_open_added_peers` has no such early return -- Core's own
+    `ThreadOpenAddedConnections` loops forever regardless, since
+    `add_added_peer` can fill an initially empty list at any later time
+    (btclib-org/btclib-node#1350);
+    `test_the_added_loop_with_no_addnode_still_loops_forever` is that
+    loop's own empty-list case, run through `run_a_manual_loop` rather
+    than let run free.
+    """
     manager = a_manager()
     monkeypatch.setattr(manager, "async_connect_host", refuses_to_be_asked)
     asyncio.run(manager._open_connect_peers())
-    asyncio.run(manager._open_added_peers())
 
 
 def test_open_connect_peers_resolves_a_hostname(
@@ -2566,7 +2683,7 @@ def test_run_dials_an_added_peer_without_an_explicit_dial(
     """ISS 1316: the `-addnode` loop `run` starts reaches the peer."""
     target_port = get_random_port()
     target = a_running_manager(a_manager, target_port)
-    dialer = a_manager(addnode=[("127.0.0.1", target_port)])
+    dialer = a_manager(addnode_args=[f"127.0.0.1:{target_port}"])
     try:
         wait_until_listening(target)
         dialer.start()
@@ -5394,8 +5511,22 @@ def test_a_skip_core_does_not_bound_holds_for_every_draw(
         (("[2001:db8::1]:8333",), a_full_node("2001:db8::1", 18444), False),
         # compared as text, as Core compares it
         (("2001:db8:0::1",), a_full_node("2001:db8::1", 8333), False),
-        (("1.2.3.4",) * 23, a_full_node("1.2.3.4", 8333), True),
-        (("1.2.3.4",) * 24, a_full_node("1.2.3.4", 8333), False),
+        # 23 and 24 distinct values, "1.2.3.4" one of them: `_added_peers`
+        # is a `dict`, keyed on the value as given, so a repeated identical
+        # value would not reach the bound the way a repetition in Core's
+        # own `m_added_node_params` vector does -- distinct values are
+        # what actually drives `_added_node`'s own `len(...)` read
+        # (btclib-org/btclib-node#1350).
+        (
+            ("1.2.3.4", *(f"10.0.0.{i}" for i in range(22))),
+            a_full_node("1.2.3.4", 8333),
+            True,
+        ),
+        (
+            ("1.2.3.4", *(f"10.0.0.{i}" for i in range(23))),
+            a_full_node("1.2.3.4", 8333),
+            False,
+        ),
     ],
 )
 def test_an_addnode_value_names_a_draw_as_added_nodes_contain_does(

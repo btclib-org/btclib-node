@@ -2982,39 +2982,60 @@ def test_addnode_falls_back_to_the_chain_s_own_default_port() -> None:
     assert dialed == [("127.0.0.1", 18444)]
 
 
-def test_addnode_add_also_dials_once_rather_than_persisting() -> None:
-    """`addnode ... "add"` is accepted, and dialled the same as `onetry`.
+def test_addnode_add_persists_instead_of_dialling() -> None:
+    """`addnode ... "add"` grows the list `_open_added_peers` dials, ISS 1350.
 
-    This node keeps no added-node list distinct from `Config.addnode`'s
-    own startup tuple, so `add` does not persist across a later dial the
-    way Core's own `CConnman::AddNode` does -- the module-level comment
-    beside `_ADDNODE_COMMANDS` argues why dialling once and not raising
-    is the more faithful of the two shortfalls available.
+    `add` reaches `P2pManager.add_added_peer`, Core's own `AddNode`, and
+    schedules no dial of its own -- `_open_added_peers` is what picks a
+    newly-added peer up, on its own loop, the way Core's
+    `ThreadOpenAddedConnections` does.
     """
-    dialed: list[Any] = []
+    added: list[str] = []
+
+    def record_add(node_str: str) -> bool:
+        added.append(node_str)
+        return True
+
     node = cast(
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
             p2p_manager=SimpleNamespace(
-                connect_host=lambda h, p: dialed.append((h, p))
+                add_added_peer=record_add,
+                connect_host=lambda h, p: pytest.fail("add must not dial"),
             ),
         ),
     )
     add_node(node, _CONN, ["127.0.0.1:9999", "add"])
-    assert dialed == [("127.0.0.1", 9999)]
+    assert added == ["127.0.0.1:9999"]
+
+
+def test_addnode_add_refuses_a_duplicate() -> None:
+    """`add_added_peer` answering `False` is Core's own already-added error."""
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chain=SimpleNamespace(port=18444),
+            p2p_manager=SimpleNamespace(add_added_peer=lambda node_str: False),
+        ),
+    )
+    with pytest.raises(RpcError) as raised:
+        add_node(node, _CONN, ["127.0.0.1:9999", "add"])
+    assert raised.value.code == RPCErrorCode.CLIENT_NODE_ALREADY_ADDED
+    assert raised.value.message == "Error: Node already added"
 
 
 def test_addnode_remove_answers_not_added_every_time() -> None:
     """`addnode ... "remove"` is Core's own `RPC_CLIENT_NODE_NOT_ADDED`.
 
-    There is nothing this node ever added by RPC for it to find.
+    `remove_added_peer` answering `False`, there being nothing by that
+    name in the list.
     """
     node = cast(
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
-            p2p_manager=SimpleNamespace(connect_host=lambda host, port: None),
+            p2p_manager=SimpleNamespace(remove_added_peer=lambda node_str: False),
         ),
     )
     with pytest.raises(RpcError) as raised:
@@ -3023,6 +3044,25 @@ def test_addnode_remove_answers_not_added_every_time() -> None:
     assert raised.value.message == (
         "Error: Node could not be removed. It has not been added previously."
     )
+
+
+def test_addnode_remove_succeeds_once_added() -> None:
+    """`remove_added_peer` answering `True` raises nothing, ISS 1350."""
+    removed: list[str] = []
+
+    def record_remove(node_str: str) -> bool:
+        removed.append(node_str)
+        return True
+
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chain=SimpleNamespace(port=18444),
+            p2p_manager=SimpleNamespace(remove_added_peer=record_remove),
+        ),
+    )
+    add_node(node, _CONN, ["127.0.0.1:9999", "remove"])
+    assert removed == ["127.0.0.1:9999"]
 
 
 def test_addnode_refuses_an_empty_node_address() -> None:

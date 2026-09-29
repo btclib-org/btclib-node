@@ -1007,26 +1007,50 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
 
 
 # Core's own three `addnode` commands (`rpc/net.cpp:341-415`, at
-# bitcoin/bitcoin@bb529657); `add`/`remove` mutate `CConnman`'s own
-# persistent added-node list, which this node has no counterpart to --
-# `Config.addnode`, its own equivalent of `-addnode`, is a tuple split
-# once at startup (`config.py`'s `_split_peers`) and dialled through
-# `P2pManager`'s own redial set, never grown or shrunk at runtime.
+# bitcoin/bitcoin@bb529657): `add`/`remove` reach `P2pManager`'s own
+# `add_added_peer`/`remove_added_peer`, its counterpart to `CConnman`'s
+# `AddNode`/`RemoveAddedNode`, and `_open_added_peers`
+# (`p2p/manager.py`) is what actually dials whatever the list holds,
+# never this function (btclib-org/btclib-node#1350). `onetry` schedules
+# the identical one-shot dial Core's `OpenNetworkConnection` does
+# (`conn_type=MANUAL`, no persistence, no dedup) -- the one command
 # `connect_nodes`, the one caller this node's own tf2 census names for
-# this method (`test_framework.py:568-594`, same sha), only ever calls
-# `onetry`, which is the one command below with a real effect: it
-# schedules the identical one-shot dial `onetry` gets in Core
-# (`OpenNetworkConnection`, `conn_type=MANUAL`, no persistence, no
-# dedup). `add` is accepted and scheduled the same way rather than
-# raising, since refusing an otherwise-valid command would be less
-# faithful to Core than dialling once and not persisting; `remove`
-# answers Core's own `RPC_CLIENT_NODE_NOT_ADDED` every time, there being
-# no added-node list here for it to find an entry in.
+# this method (`test_framework.py:568-594`, same sha), ever calls.
 _ADDNODE_COMMANDS = ("add", "remove", "onetry")
 
 
+def _parsed_addnode_args(params: list[Any]) -> tuple[str, str]:
+    """Return `addnode`'s own `(node, command)`, or raise as Core's parser does.
+
+    Split out of `add_node` below so that function's own three-command
+    dispatch stays under `ruff`'s complexity floor; the checks
+    themselves are unchanged (`rpc/net.cpp:365-377`, at
+    bitcoin/bitcoin@bb529657).
+    """
+    if len(params) < 2:  # noqa: PLR2004
+        raise RpcError(
+            RPCErrorCode.MISC_ERROR, 'addnode "node" "command" ( v2transport )'
+        )
+    if not isinstance(params[0], str):
+        raise type_error(1, "node", params[0], "string")
+    if not isinstance(params[1], str):
+        raise type_error(2, "command", params[1], "string")
+    node_arg, command = params[0], params[1]
+    if command not in _ADDNODE_COMMANDS:
+        raise RpcError(
+            RPCErrorCode.MISC_ERROR, 'addnode "node" "command" ( v2transport )'
+        )
+    bool_param(params, 2, name="v2transport", default=False)
+
+    if not node_arg.strip():
+        raise RpcError(
+            RPCErrorCode.INVALID_PARAMETER, "Error: Node address cannot be empty"
+        )
+    return node_arg, command
+
+
 def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
-    """Answer `addnode`, `onetry` for real and the other two commands honestly.
+    """Answer `addnode`'s three commands for real, each against Core's own list.
 
     The module-level comment above argues the three commands; this
     function is Core's own argument parsing and its two literal error
@@ -1058,31 +1082,22 @@ def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
     own optional third argument, and otherwise unused: BIP324 is not a
     transport this node speaks yet.
     """
-    if len(params) < 2:  # noqa: PLR2004
-        raise RpcError(
-            RPCErrorCode.MISC_ERROR, 'addnode "node" "command" ( v2transport )'
-        )
-    if not isinstance(params[0], str):
-        raise type_error(1, "node", params[0], "string")
-    if not isinstance(params[1], str):
-        raise type_error(2, "command", params[1], "string")
-    node_arg, command = params[0], params[1]
-    if command not in _ADDNODE_COMMANDS:
-        raise RpcError(
-            RPCErrorCode.MISC_ERROR, 'addnode "node" "command" ( v2transport )'
-        )
-    bool_param(params, 2, name="v2transport", default=False)
+    node_arg, command = _parsed_addnode_args(params)
 
-    if not node_arg.strip():
-        raise RpcError(
-            RPCErrorCode.INVALID_PARAMETER, "Error: Node address cannot be empty"
-        )
+    if command == "add":
+        if not node.p2p_manager.add_added_peer(node_arg):
+            raise RpcError(
+                RPCErrorCode.CLIENT_NODE_ALREADY_ADDED, "Error: Node already added"
+            )
+        return
 
     if command == "remove":
-        raise RpcError(
-            RPCErrorCode.CLIENT_NODE_NOT_ADDED,
-            "Error: Node could not be removed. It has not been added previously.",
-        )
+        if not node.p2p_manager.remove_added_peer(node_arg):
+            raise RpcError(
+                RPCErrorCode.CLIENT_NODE_NOT_ADDED,
+                "Error: Node could not be removed. It has not been added previously.",
+            )
+        return
 
     try:
         host, port = split_host_port(node_arg, node.chain.port)

@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, cast, override
 from btclib.p2p.address import ServiceFlags
 from btclib.p2p.addrv2 import BIP155Network, can_addrv1, network_address
 
+from btclib_node.config import split_host_port
 from btclib_node.constants import CLIENT_NAME, P2pConnStatus
 from btclib_node.p2p.address import (
     RECENT_TRY_SECONDS,
@@ -487,13 +488,6 @@ class P2pManager(threading.Thread):
         self.anchors: list[NetworkAddressV2] = []
         self._anchors_path = node.data_dir / ANCHORS_DATABASE_FILENAME
         self._addresses_initialized = False
-        # Core's `m_added_node_params` as `AddedNodesContain` reads it:
-        # each `-addnode` value as given, compared with a drawn address's
-        # text, and nothing at all past `_ADDED_NODES_BOUND` values.
-        added = node.config.addnode_args
-        self._added_nodes = (
-            frozenset(added) if len(added) < _ADDED_NODES_BOUND else frozenset()
-        )
         # Core's own `-dnsseed`, `Config.dnsseed` having taken its
         # soft-set: whether `run` schedules the lookup.
         self.use_dns_seed = node.config.dnsseed
@@ -501,11 +495,6 @@ class P2pManager(threading.Thread):
         # once the seeds are added, as `ThreadOpenConnections` clears
         # `add_fixed_seeds`.
         self.add_fixed_seeds = node.config.fixed_seeds
-        # Core's `m_added_node_params` being non-empty, which only
-        # `-addnode` fills here: the `addnode` RPC's `add` dials once and
-        # keeps no list (`rpc.callbacks.add_node`), so it does not count
-        # as it does in Core.
-        self._addnode_given = bool(node.config.addnode)
         # Core's own `-seednode`, `ThreadOpenConnections`'s `seed_nodes`
         # (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
         # `_maybe_add_seednode` below pops from the back, as Core's own
@@ -528,18 +517,41 @@ class P2pManager(threading.Thread):
         self._dial_start = time.time()
         self._next_fixed_seeds_check = 0.0
 
-        # `-connect` and `-addnode`, each as given -- a hostname
-        # included, unresolved until `_open_connect_peers`/
-        # `_open_added_peers` below dial one: what those two loops dial,
-        # once `Node.run`'s own one-shot dial (`__init__.py`, issue #573)
-        # drops one of them. Built once, here, for the same "a caller
-        # cannot change it mid-flight" reason as the two fields above.
+        # `-connect`, each as given -- a hostname included, unresolved
+        # until `_open_connect_peers` below dials one: what that loop
+        # dials, once `Node.run`'s own one-shot dial (`__init__.py`,
+        # issue #573) drops it. Built once, here, for the same "a
+        # caller cannot change it mid-flight" reason as the two fields
+        # above. `-addnode` has no equivalent field: `_added_peers`
+        # below is grown and shrunk at runtime, which this one is not.
         self._connect_peers: tuple[tuple[str, int], ...] = tuple(
             dict.fromkeys(node.config.connect)
         )
-        self._added_peers: tuple[tuple[str, int], ...] = tuple(
-            dict.fromkeys(node.config.addnode)
-        )
+        # Core's `m_added_node_params`, `AddNode`/`RemoveAddedNode`'s
+        # own list (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+        # v31.1 tag): every `-addnode` value, as given, plus whatever
+        # the `addnode` RPC's own `add` (`add_added_peer`, reached from
+        # `rpc/callbacks.py`) has appended and `remove`
+        # (`remove_added_peer`) not yet taken back out. `dict[str,
+        # None]`, not a `set`, for the same insertion-order reason
+        # `_discouraged` (above) is one: `GetAddedNodeInfo` dials this
+        # list in the order `AddNode`'s own `push_back` built it,
+        # oldest first. Read by `_open_added_peers` (the dial loop) and
+        # by `_added_node` (`_should_pass_over_draw`'s own bound check),
+        # each on this manager's own thread; written by
+        # `add_added_peer`/`remove_added_peer`, reached from
+        # `RpcManager`'s. `_added_peers_lock` is what makes a read and a
+        # write one step (btclib-org/btclib-node#1350). A `dict` collapses
+        # an identical `-addnode` value repeated on the command line into
+        # one entry, where Core's own vector keeps both -- a divergence
+        # `AddedNodesContain`'s own bound (`_ADDED_NODES_BOUND` below)
+        # inherits: a repeated value here takes one of its 24 slots
+        # rather than one per repetition. Argued rather than fixed,
+        # since the dedup is also what gives `add_added_peer` its own
+        # O(1) "already added" check, string equality alone, the same
+        # one Core's `AddNode` makes with a linear scan.
+        self._added_peers: dict[str, None] = dict.fromkeys(node.config.addnode_args)
+        self._added_peers_lock = threading.Lock()
 
         self.connections: dict[int, Connection] = {}
         # A connection accepted or dialled but not yet past `verack`,
@@ -1218,7 +1230,9 @@ class P2pManager(threading.Thread):
                 "empty for at least one reachable network"
             )
         elif (
-            not self.use_dns_seed and not self.use_seednodes and not self._addnode_given
+            not self.use_dns_seed
+            and not self.use_seednodes
+            and not self._has_added_peers()
         ):
             self.logger.info(
                 "Adding fixed seeds as -dnsseed=0 (or IPv4/IPv6 connections are "
@@ -1701,13 +1715,19 @@ class P2pManager(threading.Thread):
         Compared as text, as Core compares `ToStringAddr` and
         `ToStringAddrPort`: a value without a port names the host on
         every port, and one with a port names that endpoint alone.
+        `_added_peers_lock` is taken for the one read, `_ADDED_NODES_BOUND`
+        applied to its current size rather than one fixed at startup,
+        since `add_added_peer`/`remove_added_peer` grow and shrink it at
+        runtime now (btclib-org/btclib-node#1350).
         """
-        if not self._added_nodes:
+        with self._added_peers_lock:
+            added = tuple(self._added_peers)
+        if not added or len(added) >= _ADDED_NODES_BOUND:
             return False
         endpoint = network_address(address)
         with_port = ip_and_port(str(endpoint.ip), endpoint.port)
         host = with_port.rsplit(":", 1)[0].removeprefix("[").removesuffix("]")
-        return host in self._added_nodes or with_port in self._added_nodes
+        return host in added or with_port in added
 
     async def _open_manual(self, host: str, port: int) -> None:
         """Dial a `-connect` or `-addnode` peer, logging what it raises.
@@ -1742,6 +1762,44 @@ class P2pManager(threading.Thread):
             await asyncio.sleep(_MANUAL_STEP)
             passes += 1
 
+    def _has_added_peers(self) -> bool:
+        """Answer whether the `-addnode` list holds anything right now.
+
+        `_maybe_add_fixed_seeds`'s own read of Core's live
+        `m_added_node_params.empty()` (`src/net.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), rather than a value
+        fixed at startup: `add_added_peer` can fill an initially empty
+        list at any later time (btclib-org/btclib-node#1350).
+        """
+        with self._added_peers_lock:
+            return bool(self._added_peers)
+
+    def _added_entries(self) -> list[tuple[str, int]]:
+        """Split every current `-addnode` value into `(host, port)`.
+
+        A fresh read of `_added_peers` (locked) each time, never cached
+        across a pass: `add_added_peer`/`remove_added_peer` can grow or
+        shrink it between two calls, unlike `_connect_peers`, which
+        `_open_connect_peers` reads as a fixed tuple. A value
+        `split_host_port` refuses -- reachable only through the
+        `addnode` RPC's `add`, `-addnode` itself being validated at
+        startup (`Config.addnode`) -- is skipped rather than raised:
+        Core's own dial of such a value (`ConnectNode`'s `pszDest` arm)
+        never connects either, so leaving it out of a pass changes
+        nothing it would have dialled, and it must not end the loop for
+        every other added peer the way an unguarded raise here would.
+        """
+        with self._added_peers_lock:
+            raw = tuple(self._added_peers)
+        port = self.node.chain.port
+        entries = []
+        for node_str in raw:
+            try:
+                entries.append(split_host_port(node_str, port))
+            except ValueError:
+                continue
+        return entries
+
     async def _open_added_peers(self) -> None:
         """Dial each `-addnode` peer not held, as Core's loop does.
 
@@ -1752,14 +1810,15 @@ class P2pManager(threading.Thread):
         peers are held, checked again before every dial in the pass so a
         peer that connects mid-pass counts at once, as Core's grant
         would; a dial that connects keeps its own grant, as Core moves
-        the grant into the connection it made.
+        the grant into the connection it made. No early return on an
+        empty list: Core's own loop runs forever regardless, since
+        `AddNode` can grow `m_added_node_params` at any later time, and
+        so can `add_added_peer` here (btclib-org/btclib-node#1350).
         """
-        if not self._added_peers:
-            return
         while True:
             held = self._held_addr_names()
             unheld = [
-                (host, port) for host, port in self._added_peers if host not in held
+                (host, port) for host, port in self._added_entries() if host not in held
             ]
             tried = False
             for host, port in unheld:
@@ -1773,7 +1832,61 @@ class P2pManager(threading.Thread):
     def _added_held(self) -> int:
         """Count the `-addnode` peers held, the `semAddnode` grants taken."""
         held = self._held_addr_names()
-        return sum(host in held for host, _port in self._added_peers)
+        return sum(host in held for host, _port in self._added_entries())
+
+    def _resolved_literal(self, node_str: str) -> str | None:
+        """`_host_and_port`'s text for `node_str`, `None` for a name.
+
+        Stands in for Core's own `LookupNumeric`: it never resolves a
+        name, only reformats a literal address, and never raises on an
+        unparsable spec, answering an invalid `CService` instead --
+        `split_host_port`'s own `ValueError`, on an out-of-range port,
+        is read the same way here rather than left to propagate out of
+        `add_added_peer`.
+        """
+        try:
+            host, port = split_host_port(node_str, self.node.chain.port)
+        except ValueError:
+            return None
+        return _host_and_port(host, port) if _is_ip(host) else None
+
+    def add_added_peer(self, node_str: str) -> bool:
+        """Add `node_str` to the `-addnode` list, Core's own `AddNode`.
+
+        `AddNode` (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+        v31.1 tag) refuses a duplicate two ways: the identical string
+        already held, or -- where both `node_str` and an existing entry
+        are literal addresses -- the same `LookupNumeric` resolution,
+        `_resolved_literal` above. A name only ever matches the
+        identical string already caught by the first check, since
+        `_resolved_literal` answers `None` for one, so the second check
+        only ever fires between two literal addresses, exactly where
+        Core's does. Returns whether `node_str` was added, `AddNode`'s
+        own bool.
+        """
+        resolved = self._resolved_literal(node_str)
+        with self._added_peers_lock:
+            if node_str in self._added_peers:
+                return False
+            if resolved is not None and any(
+                self._resolved_literal(other) == resolved for other in self._added_peers
+            ):
+                return False
+            self._added_peers[node_str] = None
+            return True
+
+    def remove_added_peer(self, node_str: str) -> bool:
+        """Remove `node_str` from the `-addnode` list, Core's `RemoveAddedNode`.
+
+        Matched by the exact string alone, as Core's own loop over
+        `m_added_node_params` is (`src/net.cpp`, same sha). Returns
+        whether an entry was removed, `RemoveAddedNode`'s own bool.
+        """
+        with self._added_peers_lock:
+            if node_str not in self._added_peers:
+                return False
+            del self._added_peers[node_str]
+            return True
 
     async def _dns_address_seed(self) -> None:
         """Ask every chain DNS seed, queuing an addr-fetch for each unanswered.
