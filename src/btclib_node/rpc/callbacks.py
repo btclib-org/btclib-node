@@ -36,7 +36,7 @@ from btclib_node.main import (
     prune_up_to_height,
     verify_mempool_acceptance,
 )
-from btclib_node.p2p.address import ip_and_port, peer_address
+from btclib_node.p2p.address import ip_and_port
 from btclib_node.p2p.banman import Subnet, is_valid_host, lookup_host, lookup_subnet
 from btclib_node.p2p.eviction import Network, is_valid, net_class
 from btclib_node.rpc.connection import RawJSON
@@ -1009,14 +1009,14 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
 # Core's own three `addnode` commands (`rpc/net.cpp:341-415`, at
 # bitcoin/bitcoin@bb529657); `add`/`remove` mutate `CConnman`'s own
 # persistent added-node list, which this node has no counterpart to --
-# `Config.addnode`, its own equivalent of `-addnode`, is a tuple
-# resolved once at startup (`config.py`'s `_resolve_peers`) and dialled
-# through `P2pManager`'s own redial set, never grown or shrunk at
-# runtime. `connect_nodes`, the one caller this node's own tf2 census
-# names for this method (`test_framework.py:568-594`, same sha), only
-# ever calls `onetry`, which is the one command below with a real
-# effect: it schedules the identical one-shot dial `onetry` gets in
-# Core (`OpenNetworkConnection`, `conn_type=MANUAL`, no persistence, no
+# `Config.addnode`, its own equivalent of `-addnode`, is a tuple split
+# once at startup (`config.py`'s `_split_peers`) and dialled through
+# `P2pManager`'s own redial set, never grown or shrunk at runtime.
+# `connect_nodes`, the one caller this node's own tf2 census names for
+# this method (`test_framework.py:568-594`, same sha), only ever calls
+# `onetry`, which is the one command below with a real effect: it
+# schedules the identical one-shot dial `onetry` gets in Core
+# (`OpenNetworkConnection`, `conn_type=MANUAL`, no persistence, no
 # dedup). `add` is accepted and scheduled the same way rather than
 # raising, since refusing an otherwise-valid command would be less
 # faithful to Core than dialling once and not persisting; `remove`
@@ -1086,15 +1086,13 @@ def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
 
     try:
         host, port = split_host_port(node_arg, node.chain.port)
-        address = peer_address(host, port)
     except ValueError as error:
-        # a hostname, or a malformed port: `_resolve_peers` (config.py)
-        # refuses `-addnode`'s own spec the identical way and for the
-        # identical reason -- this node's synchronous RPC path resolves
-        # no DNS
+        # a malformed port alone: a hostname is no longer refused here,
+        # `connect_host` resolving one the way `P2pManager`'s own
+        # redial and `Node.run`'s startup dial do (btclib-org/btclib-node#1264)
         raise RpcError(RPCErrorCode.INVALID_PARAMETER, str(error)) from error
 
-    node.p2p_manager.connect(address)
+    node.p2p_manager.connect_host(host, port)
 
 
 # Core's own `disconnectnode` help (`src/rpc/net.cpp`, at

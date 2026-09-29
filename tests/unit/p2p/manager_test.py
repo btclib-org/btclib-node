@@ -2367,7 +2367,7 @@ def test_maybe_redial_specified_is_a_noop_with_nothing_specified(
     """No `-connect`/`-addnode` given: nothing is ever redialled."""
     manager = a_manager()
     assert not manager._redial_peers
-    monkeypatch.setattr(manager, "async_connect", refuses_to_be_asked)
+    monkeypatch.setattr(manager, "async_connect_host", refuses_to_be_asked)
     asyncio.run(manager._maybe_redial_specified())
 
 
@@ -2378,7 +2378,7 @@ def test_maybe_redial_specified_skips_a_peer_not_yet_due(
     manager = a_manager(connect=[("1.2.3.4", 8333)])
     (key,) = manager._redial_peers
     manager._redial_next[key] = time.time() + 100
-    monkeypatch.setattr(manager, "async_connect", refuses_to_be_asked)
+    monkeypatch.setattr(manager, "async_connect_host", refuses_to_be_asked)
     asyncio.run(manager._maybe_redial_specified())
 
 
@@ -2392,13 +2392,13 @@ def test_maybe_redial_specified_dials_a_due_peer_and_doubles_the_backoff(
     the only place that seeds it forward (`run`'s own comment on the
     race that seeding avoids).
     """
-    dialled: list[Any] = []
+    dialled: list[tuple[str, int]] = []
 
-    async def record_dial(address: Any) -> None:
-        dialled.append(address)
+    async def record_dial(host: str, port: int) -> None:
+        dialled.append((host, port))
 
     manager = a_manager(connect=[("1.2.3.4", 8333)])
-    monkeypatch.setattr(manager, "async_connect", record_dial)
+    monkeypatch.setattr(manager, "async_connect_host", record_dial)
     (key,) = manager._redial_peers
     assert manager._redial_backoff[key] == manager_module._REDIAL_BASE_SECONDS
     asyncio.run(manager._maybe_redial_specified())
@@ -2416,11 +2416,11 @@ def test_maybe_redial_specified_caps_the_backoff(
 ) -> None:
     """The backoff never grows past `_REDIAL_MAX_SECONDS`."""
 
-    async def do_nothing(address: Any) -> None:
-        del address
+    async def do_nothing(host: str, port: int) -> None:
+        del host, port
 
     manager = a_manager(connect=[("1.2.3.4", 8333)])
-    monkeypatch.setattr(manager, "async_connect", do_nothing)
+    monkeypatch.setattr(manager, "async_connect_host", do_nothing)
     (key,) = manager._redial_peers
     manager._redial_backoff[key] = manager_module._REDIAL_MAX_SECONDS
     asyncio.run(manager._maybe_redial_specified())
@@ -2430,13 +2430,18 @@ def test_maybe_redial_specified_caps_the_backoff(
 def test_maybe_redial_specified_resets_the_backoff_once_connected(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A specified peer already connected is left alone, backoff reset."""
-    address = peer_address("1.2.3.4", 8333)
-    conn = a_conn(1, address=address)
+    """A specified peer already connected is left alone, backoff reset.
+
+    "Already connected" is read off `addr_name`, as `async_connect_host`'s
+    own `AlreadyConnectedToHost` check is, not off the address: a peer
+    given by name is not necessarily connected on the endpoint its name
+    last resolved to (btclib-org/btclib-node#1264).
+    """
+    conn = a_conn(1, addr_name="1.2.3.4")
     manager = a_manager([conn], connect=[("1.2.3.4", 8333)])
     (key,) = manager._redial_peers
     manager._redial_backoff[key] = manager_module._REDIAL_MAX_SECONDS
-    monkeypatch.setattr(manager, "async_connect", refuses_to_be_asked)
+    monkeypatch.setattr(manager, "async_connect_host", refuses_to_be_asked)
     asyncio.run(manager._maybe_redial_specified())
     assert manager._redial_backoff[key] == manager_module._REDIAL_BASE_SECONDS
 
@@ -2447,10 +2452,39 @@ def test_maybe_redial_specified_logs_and_continues_on_a_dial_that_raises(
     """A dial that raises is logged, like every other housekeeping step."""
     logged: list[str] = []
     manager = a_manager(connect=[("1.2.3.4", 8333)])
-    monkeypatch.setattr(manager, "async_connect", refuses_to_be_asked)
+    monkeypatch.setattr(manager, "async_connect_host", refuses_to_be_asked)
     monkeypatch.setattr(manager.logger, "exception", logged.append)
     asyncio.run(manager._maybe_redial_specified())
     assert logged
+
+
+def test_maybe_redial_specified_resolves_a_hostname(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1264: a `-connect`/`-addnode` peer given by name is resolved here.
+
+    Building the manager at all is already most of the regression test:
+    before this issue, `Config`, and then `_redial_peers`'s own
+    `peer_address` call, each raised on a hostname before a redial was
+    ever attempted.
+    """
+    ours, theirs = socket.socketpair()
+
+    async def connects(address: NetworkAddressV2) -> socket.socket:
+        return ours
+
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: _NamedLoop(["5.6.7.8"]))
+    monkeypatch.setattr(manager_module, "dial", connects)
+    made: list[dict[str, Any]] = []
+    manager = a_manager(connect=[("peer.example", 8333)])
+    monkeypatch.setattr(
+        manager, "create_connection", lambda *args, **kwargs: made.append(kwargs)
+    )
+    asyncio.run(manager._maybe_redial_specified())
+    assert made == [
+        {"inbound": False, "addr_fetch": False, "addr_name": "peer.example"}
+    ]
+    theirs.close()
 
 
 def test_redial_connects_a_specified_peer_without_an_explicit_dial(

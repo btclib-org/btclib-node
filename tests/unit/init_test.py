@@ -43,7 +43,6 @@ from btclib_node.exceptions import (
 )
 from btclib_node.interpreter import warm
 from btclib_node.main import prune_up_to_height, update_chain
-from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES
 from btclib_node.rpc.auth import COOKIE_FILE
 from tests import (
@@ -109,9 +108,9 @@ class AManager:
         self.ban_man = SimpleNamespace(dump=self._dump_ban_list)
         # what `run`'s own `config.connect`/`config.addnode` dial loop
         # calls, in order -- only P2pManager's own attribute has a real
-        # `connect`, and this stand-in is asked for both managers, so
-        # both carry it the same way `peer_db` above does
-        self.connect_calls: list[Any] = []
+        # `connect_host`, and this stand-in is asked for both managers,
+        # so both carry it the same way `peer_db` above does
+        self.connect_host_calls: list[tuple[str, int]] = []
 
     def _dump_ban_list(self) -> None:
         self.ban_list_dumps += 1
@@ -129,9 +128,9 @@ class AManager:
         """Record that `run`'s own teardown reached this stand-in."""
         self.stopped = True
 
-    def connect(self, address: Any) -> None:
-        """Record `address`, in the order `run` dialled it."""
-        self.connect_calls.append(address)
+    def connect_host(self, host: str, port: int) -> None:
+        """Record `(host, port)`, in the order `run` dialled it."""
+        self.connect_host_calls.append((host, port))
 
 
 @pytest.fixture
@@ -878,7 +877,13 @@ def test_a_port_configured_is_a_manager_started_and_stopped(
 
 
 def test_run_dials_every_connect_and_addnode_peer_at_startup(tmp_path: Path) -> None:
-    """`run` calls `p2p_manager.connect` once per `connect`/`addnode` peer.
+    """`run` calls `p2p_manager.connect_host` once per `connect`/`addnode` peer.
+
+    A hostname among them (ISS 1264) reaches this the same way a
+    literal IP does: `Config` no longer refuses to build with one, and
+    `connect_host` -- unlike `peer_address`, which `run` called before
+    this issue -- resolves no host itself, only schedules the resolve
+    onto `P2pManager`'s own loop.
 
     Built by hand rather than through `a_networked_node`, which carries
     no `connect`/`addnode` of its own: the real `P2pManager` this
@@ -893,7 +898,7 @@ def test_run_dials_every_connect_and_addnode_peer_at_startup(tmp_path: Path) -> 
             p2p_port=18444,
             allow_rpc=False,
             connect=["10.0.0.1:1"],
-            addnode=["10.0.0.2:2"],
+            addnode=["peer.example:2"],
             debug=True,
         )
     )
@@ -904,11 +909,8 @@ def test_run_dials_every_connect_and_addnode_peer_at_startup(tmp_path: Path) -> 
     p2p_manager = cast("AManager", node.p2p_manager)
     try:
         node.start()
-        wait_until(lambda: len(p2p_manager.connect_calls) == 2)
-        assert p2p_manager.connect_calls == [
-            peer_address("10.0.0.1", 1),
-            peer_address("10.0.0.2", 2),
-        ]
+        wait_until(lambda: len(p2p_manager.connect_host_calls) == 2)
+        assert p2p_manager.connect_host_calls == [("10.0.0.1", 1), ("peer.example", 2)]
     finally:
         node.stop()
 
@@ -916,13 +918,13 @@ def test_run_dials_every_connect_and_addnode_peer_at_startup(tmp_path: Path) -> 
 def test_run_dials_nothing_extra_without_connect_or_addnode(
     a_networked_node: Node,
 ) -> None:
-    """`connect`/`addnode` empty, the ordinary case: no `connect` call."""
+    """`connect`/`addnode` empty, the ordinary case: no `connect_host` call."""
     node = a_networked_node
     p2p_manager = cast("AManager", node.p2p_manager)
     node.start()
     wait_until(lambda: p2p_manager.started)
     node.stop()
-    assert p2p_manager.connect_calls == []
+    assert p2p_manager.connect_host_calls == []
 
 
 def test_a_node_whose_rpc_port_is_taken_stops_before_its_p2p_side_starts(

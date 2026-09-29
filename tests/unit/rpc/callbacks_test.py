@@ -2957,13 +2957,13 @@ def test_addnode_onetry_dials_the_given_address_once() -> None:
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
-            p2p_manager=SimpleNamespace(connect=dialed.append),
+            p2p_manager=SimpleNamespace(
+                connect_host=lambda h, p: dialed.append((h, p))
+            ),
         ),
     )
     add_node(node, _CONN, ["127.0.0.1:9999", "onetry"])
-    assert len(dialed) == 1
-    assert dialed[0].network_id.name == "IPV4"
-    assert dialed[0].port == 9999
+    assert dialed == [("127.0.0.1", 9999)]
 
 
 def test_addnode_falls_back_to_the_chain_s_own_default_port() -> None:
@@ -2973,11 +2973,13 @@ def test_addnode_falls_back_to_the_chain_s_own_default_port() -> None:
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
-            p2p_manager=SimpleNamespace(connect=dialed.append),
+            p2p_manager=SimpleNamespace(
+                connect_host=lambda h, p: dialed.append((h, p))
+            ),
         ),
     )
     add_node(node, _CONN, ["127.0.0.1", "onetry"])
-    assert dialed[0].port == 18444
+    assert dialed == [("127.0.0.1", 18444)]
 
 
 def test_addnode_add_also_dials_once_rather_than_persisting() -> None:
@@ -2994,11 +2996,13 @@ def test_addnode_add_also_dials_once_rather_than_persisting() -> None:
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
-            p2p_manager=SimpleNamespace(connect=dialed.append),
+            p2p_manager=SimpleNamespace(
+                connect_host=lambda h, p: dialed.append((h, p))
+            ),
         ),
     )
     add_node(node, _CONN, ["127.0.0.1:9999", "add"])
-    assert len(dialed) == 1
+    assert dialed == [("127.0.0.1", 9999)]
 
 
 def test_addnode_remove_answers_not_added_every_time() -> None:
@@ -3010,7 +3014,7 @@ def test_addnode_remove_answers_not_added_every_time() -> None:
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
-            p2p_manager=SimpleNamespace(connect=lambda _address: None),
+            p2p_manager=SimpleNamespace(connect_host=lambda host, port: None),
         ),
     )
     with pytest.raises(RpcError) as raised:
@@ -3027,7 +3031,7 @@ def test_addnode_refuses_an_empty_node_address() -> None:
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
-            p2p_manager=SimpleNamespace(connect=lambda _address: None),
+            p2p_manager=SimpleNamespace(connect_host=lambda host, port: None),
         ),
     )
     with pytest.raises(RpcError) as raised:
@@ -3042,7 +3046,7 @@ def test_addnode_refuses_an_unknown_command() -> None:
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
-            p2p_manager=SimpleNamespace(connect=lambda _address: None),
+            p2p_manager=SimpleNamespace(connect_host=lambda host, port: None),
         ),
     )
     with pytest.raises(RpcError) as raised:
@@ -3057,7 +3061,7 @@ def test_addnode_with_no_arguments_is_answered_with_the_usage() -> None:
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
-            p2p_manager=SimpleNamespace(connect=lambda _address: None),
+            p2p_manager=SimpleNamespace(connect_host=lambda host, port: None),
         ),
     )
     with pytest.raises(RpcError) as raised:
@@ -3066,22 +3070,24 @@ def test_addnode_with_no_arguments_is_answered_with_the_usage() -> None:
     assert raised.value.message == 'addnode "node" "command" ( v2transport )'
 
 
-def test_addnode_refuses_a_hostname() -> None:
-    """A hostname, rather than a literal IP, is refused: no DNS resolve here.
+def test_addnode_onetry_takes_a_hostname() -> None:
+    """A hostname, rather than a literal IP, is dialled too (ISS 1264).
 
-    The same refusal `Config.addnode`'s own `_resolve_peers` already
-    gives `-addnode`'s spec, and for the identical reason.
+    `connect_host` resolves it on `P2pManager`'s own loop; this node's
+    synchronous RPC path splits the host from the port and nothing else.
     """
+    dialed: list[Any] = []
     node = cast(
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
-            p2p_manager=SimpleNamespace(connect=lambda _address: None),
+            p2p_manager=SimpleNamespace(
+                connect_host=lambda h, p: dialed.append((h, p))
+            ),
         ),
     )
-    with pytest.raises(RpcError) as raised:
-        add_node(node, _CONN, ["example.com:9999", "onetry"])
-    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    add_node(node, _CONN, ["example.com:9999", "onetry"])
+    assert dialed == [("example.com", 9999)]
 
 
 def test_addnode_refuses_a_port_int_would_read() -> None:
@@ -3091,7 +3097,9 @@ def test_addnode_refuses_a_port_int_would_read() -> None:
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
-            p2p_manager=SimpleNamespace(connect=dialled.append),
+            p2p_manager=SimpleNamespace(
+                connect_host=lambda h, p: dialled.append((h, p))
+            ),
         ),
     )
     with pytest.raises(RpcError) as raised:
@@ -3106,7 +3114,7 @@ def test_addnode_type_checks_node_and_command() -> None:
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
-            p2p_manager=SimpleNamespace(connect=lambda _address: None),
+            p2p_manager=SimpleNamespace(connect_host=lambda host, port: None),
         ),
     )
     with pytest.raises(RpcError) as raised:

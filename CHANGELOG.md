@@ -914,6 +914,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   seeds off, and `-seednode` addr-fetches a peer ahead of the DNS seeds,
   one at a time** (closes #1192), as Core's `ThreadOpenConnections` does.
 
+### `-connect`, `-addnode` and `-seednode` take a hostname
+
+- **A hostname given to `-connect`, `-addnode`, `-seednode` or the
+  `addnode` RPC is resolved at dial time, not refused at startup**
+  (closes #1264), as Core's `ConnectNode` resolves a `pszDest`.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

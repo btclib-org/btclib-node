@@ -17,7 +17,6 @@ with a leading underscore.
 
 import os
 from dataclasses import dataclass
-from ipaddress import ip_address
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -119,36 +118,25 @@ def split_host_port(spec: str, default_port: int) -> tuple[str, int]:
     return host, port
 
 
-def _resolve_peers(
+def _split_peers(
     specs: Sequence[str], default_port: int
 ) -> tuple[tuple[str, int], ...]:
-    """Split every spec in `specs` and check its host is a literal IP.
+    """Split every spec in `specs` into its host and port, host unresolved.
 
-    A hostname is not resolved here, unlike Core's own `-connect`/
-    `-addnode`/`-seednode`, which dial through `CConnman::ConnectNode`
-    and resolve one via `Resolve` (`src/net.cpp`) same as any other
-    peer. This node's own dial route --
-    `p2p_manager.connect(peer_address(...))`, the one ISS 573
-    (btclib-org/btclib-node#573) asks `connect` and `addnode` to use --
-    takes a `NetworkAddressV2` built straight off a parsed IP
-    (`p2p/address.py`'s `peer_address`), and nothing in this node's
-    synchronous startup path resolves a name into one: DNS is asked
-    only through `PeerDB.get_addr_from_dns`'s own coroutine and
-    `P2pManager._process_addr_fetch`'s resolution of an addr-fetch
-    seed (btclib-org/btclib-node#1284), both on `P2pManager`'s asyncio
-    loop, neither reachable before that manager's thread exists.
-    Widening `peer_address` or plumbing an
-    async resolve into `Node.run` for these fields is a larger change
-    than this function's own scope; a hostname is refused up front, at
-    `Config` construction, rather than dialled wrong or silently
-    dropped later (btclib-org/btclib-node#1264).
+    Core's own `-connect`/`-addnode`/`-seednode` reach
+    `CConnman::ConnectNode` as a name and resolve it via `Resolve`
+    (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) at
+    every dial, same as any other peer -- so a hostname here is not an
+    error, only a value nothing resolves until then.
+    `P2pManager.async_connect_host` (`p2p/manager.py`) is this node's
+    own equivalent: it resolves a host on `P2pManager`'s asyncio loop
+    right before dialling, the way `_process_addr_fetch`'s resolve of a
+    DNS seed or a `-seednode` value already did before this function
+    stopped refusing the same shape of value for `connect` and
+    `addnode` (btclib-org/btclib-node#1264). A malformed port is still
+    refused here, by `split_host_port` itself.
     """
-    peers: list[tuple[str, int]] = []
-    for spec in specs:
-        host, port = split_host_port(spec, default_port)
-        ip_address(host)  # raises ValueError on a hostname or garbage
-        peers.append((host, port))
-    return tuple(peers)
+    return tuple(split_host_port(spec, default_port) for spec in specs)
 
 
 def _read_cookie_perms(value: str) -> tuple[int | None, str | None]:
@@ -324,8 +312,9 @@ class Config:
     # `Node` logs them in that order once its own log is open
     log_warnings: tuple[str, ...]
     min_relay_feerate: FeeRate
-    # (ip, port) pairs, resolved by `_resolve_peers` above: Core's own
-    # `-connect`, which dials these alone and turns off DNS seeding and
+    # (host, port) pairs, split by `_split_peers` above, host unresolved:
+    # Core's own `-connect`, which dials these alone and turns off DNS
+    # seeding and
     # every automatically-drawn outbound connection
     # (`InitParameterInteraction`, `src/init.cpp:814-819`, and
     # `connOptions.m_use_addrman_outgoing = false`, `src/init.cpp:2337`,
@@ -352,8 +341,8 @@ class Config:
     # connection to, one at a time, to draw a `getaddr` answer and
     # disconnect, ahead of the DNS seeds (`CConnman::ThreadOpenConnections`,
     # `src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
-    # Resolved by `_resolve_peers` the same as `connect` and `addnode`
-    # above.
+    # Split by `_split_peers` the same as `connect` and `addnode` above,
+    # host unresolved.
     seednode: tuple[tuple[str, int], ...]
     # Core's own `-listen`, `DEFAULT_LISTEN` (`src/net.h`) true unless
     # `-connect` or `-maxconnections=0` is given, in which case
@@ -471,15 +460,17 @@ class Config:
 
         self.connect_given = bool(connect)
         # Core's own "-connect=0": still the -connect arm above, but
-        # nobody named to dial -- `_resolve_peers` never sees the "0"
-        # itself, since `ip_address("0")` is not a valid literal and
-        # would raise where Core instead special-cases the value.
+        # nobody named to dial -- `_split_peers` never sees the "0"
+        # itself, checked here the same way Core's own options builder
+        # special-cases the value ahead of resolving anything
+        # (`connect.size() != 1 || connect[0] != "0"`, `src/init.cpp:2333`,
+        # at bitcoin/bitcoin@ca7162cde5).
         self.connect = (
-            () if list(connect) == ["0"] else _resolve_peers(connect, self.chain.port)
+            () if list(connect) == ["0"] else _split_peers(connect, self.chain.port)
         )
-        self.addnode = _resolve_peers(addnode, self.chain.port)
+        self.addnode = _split_peers(addnode, self.chain.port)
         self.addnode_args = tuple(addnode)
-        self.seednode = _resolve_peers(seednode, self.chain.port)
+        self.seednode = _split_peers(seednode, self.chain.port)
         self.listen = listen
 
         if max_connections < 0:

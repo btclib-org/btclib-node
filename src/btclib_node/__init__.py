@@ -37,7 +37,7 @@ from btclib_node.interpreter import warm
 from btclib_node.log import Logger
 from btclib_node.main import update_chain
 from btclib_node.mempool import Mempool
-from btclib_node.p2p.address import PeerDB, peer_address
+from btclib_node.p2p.address import PeerDB
 from btclib_node.p2p.banman import BanMan
 from btclib_node.p2p.main import (
     handle_p2p,
@@ -732,22 +732,15 @@ class Node(threading.Thread):
             )
         elif started and self.p2p_port:
             # `config.connect` and `config.addnode` together, once the
-            # listener is bound, or skipped under `-listen=0`.
-            #
-            # A one-shot dial, not the standing connection Core keeps:
-            # `CConnman::ThreadOpenConnections`'s own `-connect` arm
-            # loops forever, redialling with backoff
-            # (`for (int64_t nLoop = 0;; nLoop++)`, `src/net.cpp:2599`,
-            # at bitcoin/bitcoin@ca7162cde5), and
-            # `ThreadOpenAddedConnections` does the same for `-addnode`.
-            # `P2pManager._maybe_dial_more_peers` is this node's own
-            # equivalent of that loop and, under `-connect`, is exactly
-            # what `use_addrman_outgoing` above turns off -- so a peer
-            # named here that drops after the handshake is not redialled
-            # by anything. btclib-org/btclib-node#651 is the follow-up
-            # this leaves open, filed rather than solved in this branch.
+            # listener is bound, or skipped under `-listen=0`. A
+            # one-shot dial: `P2pManager._maybe_redial_specified` is
+            # what redials either past this, on its own backoff
+            # (issue #651), and `connect_host` resolves a hostname the
+            # same way that redial does rather than the parsed-IP-only
+            # `peer_address` a literal address alone could take
+            # (btclib-org/btclib-node#1264).
             for host, port in (*self.config.connect, *self.config.addnode):
-                self.p2p_manager.connect(peer_address(host, port))
+                self.p2p_manager.connect_host(host, port)
         while not self.terminate_flag.is_set():
             if self._drain_message_queues():
                 time.sleep(IDLE_SLEEP_SECONDS)
