@@ -50,6 +50,18 @@ def a_node(tip_height: int, *conns: Any, sync_started: bool = True) -> Any:
         header_dict=header_dict,
         chainwork={a_hash(h): h + 1 for h in range(tip_height + 1)},
     )
+
+    def get_ancestor(block: bytes, height: int) -> bytes:
+        """`BlockIndex.get_ancestor` at or below `block`'s own height.
+
+        Walked one parent at a time, where `BlockIndex` follows skip
+        pointers this fake does not hold.
+        """
+        for _ in range(block_index.header_dict[block].index - height):
+            block = block_index.header_dict[block].header.previous_block_hash
+        return block
+
+    block_index.get_ancestor = get_ancestor
     logged: list[str] = []
     return SimpleNamespace(
         chainstate=SimpleNamespace(block_index=block_index),

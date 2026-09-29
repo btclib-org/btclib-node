@@ -98,6 +98,7 @@ from btclib_node.exceptions import (
     TxRejectedError,
 )
 from btclib_node.log import Logger
+from btclib_node.main import MempoolAcceptance, verify_mempool_acceptance
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import PeerDB, endpoint_key, host_key, peer_address
 from btclib_node.p2p.banman import BanMan, lookup_subnet
@@ -154,14 +155,16 @@ from tests import (
     log_recorder,
 )
 from tests.conftest import unstarted_node_context
+from tests.unit.rpc.callbacks_test import a_node_holding, a_twin
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
     from pathlib import Path
 
     from btclib.fee import FeeRate
     from btclib.tx.tx import Tx
 
+    from btclib_node import Node
     from btclib_node.chains import Chain
     from btclib_node.chainstate.block_index import BlockIndex
     from btclib_node.p2p.manager import P2pManager
@@ -1981,6 +1984,11 @@ def a_data_node(
         inv_triggered_getheaders=set(),
         last_block_inv_triggering_headers_sync=None,
         last_getheaders_timestamps={},
+        # every (peer, header) `headers` asked to direct-fetch towards
+        direct_fetches=[],
+    )
+    node.download_manager.headers_direct_fetch = lambda conn, last_header: (
+        node.download_manager.direct_fetches.append((conn.id, last_header))
     )
     # written by `getdata` only where `advance_getdata` pauses; empty
     # here for every test that never trips that pacing bound
@@ -1997,14 +2005,18 @@ def test_a_transaction_that_verifies_is_kept_and_reported(
 
     Kept in the mempool, and reported to `download_manager.received_txs`
     keyed on the sending peer's id, for the download manager's own
-    announce-to-others bookkeeping.
+    announce-to-others bookkeeping. Kept at the vsize verification
+    answered (btclib-org/btclib-node#1357).
     """
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
+    monkeypatch.setattr(
+        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, 999)
+    )
     transaction = a_transaction()
     node = a_data_node()
     peer = a_peer(id=3)
     tx(node, TxMsg(transaction, include_witness=True).serialize(), peer)
     assert node.mempool.contains_tx(transaction)
+    assert node.mempool.vsizes[transaction.hash] == 999
     assert node.download_manager.received_txs == [(3, transaction.hash)]
     # a novel transaction the mempool took: what eviction reads (ISS 1064)
     assert peer.last_novel_tx_time > 0
@@ -2119,6 +2131,35 @@ def test_a_refused_transaction_is_not_reverified_on_resubmission(
     tx(node, payload, a_peer(id=4))
     assert calls == [transaction.hash]
     assert not node.mempool.contains_tx(transaction)
+
+
+def test_a_held_txid_under_another_witness_is_refused_as_held(
+    regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real verifier refuses a held txid as held, not as a conflict.
+
+    Core's `PreChecks` answers "txn-same-nonwitness-data-in-mempool"
+    ahead of its conflict checks; the held copy stays and the peer's
+    is recorded as refused. btclib-org/btclib-node#1244
+    """
+    node, held, _ = a_node_holding(regtest_node, monkeypatch, 1_000)
+    node.is_initial_block_download = False
+    reasons: list[str] = []
+
+    def recording(node: Node, transaction: Tx) -> MempoolAcceptance:
+        try:
+            return verify_mempool_acceptance(node, transaction)
+        except TxRejectedError as exc:
+            reasons.append(exc.reason)
+            raise
+
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", recording)
+    twin = a_twin(held)
+    tx(node, TxMsg(twin, include_witness=True).serialize(), a_peer(id=3))
+    assert reasons == ["txn-same-nonwitness-data-in-mempool"]
+    assert node.mempool.was_recently_rejected(twin.hash)
+    assert node.mempool.contains_tx(held)
+    assert node.download_manager.received_txs == []
 
 
 def test_a_fee_refusal_is_recorded_and_the_peer_kept(
@@ -2246,7 +2287,9 @@ def test_a_transaction_received_in_initial_block_download_is_dropped(
     # verify_mempool_acceptance is patched to accept unconditionally,
     # so the mempool staying empty is the gate firing rather than a
     # coincidental rejection
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
+    monkeypatch.setattr(
+        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, tx.vsize)
+    )
     transaction = a_transaction()
     node = a_data_node(is_initial_block_download=True)
     tx(node, TxMsg(transaction, include_witness=True).serialize(), a_peer(id=3))
@@ -2263,7 +2306,9 @@ def test_a_transaction_already_held_is_not_reported_twice(
     never reaches `download_manager.received_txs` even though
     `add_tx` itself would be a harmless no-op for it.
     """
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
+    monkeypatch.setattr(
+        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, tx.vsize)
+    )
     transaction = a_transaction()
     node = a_data_node()
     node.mempool.add_tx(transaction)
@@ -2295,7 +2340,9 @@ def test_a_transaction_a_full_mempool_declined_is_not_reported_either(
     # every other peer, and one that then asks for it gets `notfound`
     # for a transaction this node never actually kept.
     # btclib-org/btclib-node#277
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
+    monkeypatch.setattr(
+        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, tx.vsize)
+    )
     transaction = a_transaction()
     node = a_data_node()
     node.mempool.bytesize_limit = 0
@@ -2917,7 +2964,9 @@ def test_a_transaction_is_taken_in_out_of_ibd_below_block_synced(
     blocks by `submitblock`, say -- keeps the transaction and queues the
     announcement.
     """
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
+    monkeypatch.setattr(
+        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, tx.vsize)
+    )
     transaction, announced = a_transaction(), a_transaction()
     node = a_data_node(status=NodeStatus.SyncingHeaders)
     peer = a_peer(id=3, wtxidrelay_received=True)
@@ -4147,13 +4196,14 @@ class CountingDict(dict[bytes, Any]):
         return super().__getitem__(key)
 
 
-def test_a_locator_s_entries_walk_a_side_branch_once_between_them(
+def test_a_locator_s_entries_off_the_chain_are_placed_through_skip_pointers(
     an_index: BlockIndex,
 ) -> None:
-    """Every entry on one branch off the chain costs that branch once.
+    """Each entry off the active chain costs one `get_ancestor`, not a walk.
 
-    Entries repeated, or further down a branch already walked, stop
-    where the walk before them failed.
+    `BlockIndex.get_ancestor` at the tip's height follows skip pointers,
+    so a hundred entries up a side branch as long as the chain cost fewer
+    lookups between them than five walks of that branch would.
     """
     length = 60
     activated(an_index, generate_random_header_chain(1, _GENESIS))
@@ -4169,10 +4219,14 @@ def test_a_locator_s_entries_walk_a_side_branch_once_between_them(
     assert an_index.header_dict.reads <= 5 * length
 
 
-def test_a_locator_entry_on_header_index_is_placed_without_a_walk(
+def test_a_locator_entry_on_header_index_is_placed_through_skip_pointers(
     an_index: BlockIndex,
 ) -> None:
-    """Its ancestor at the tip's height is read off `header_index`."""
+    """Its ancestor at the tip's height comes from `BlockIndex.get_ancestor`.
+
+    Skip pointers take it there in a handful of lookups, where the walk
+    back through the parents would cost one per header in between.
+    """
     chain = generate_random_header_chain(60, _GENESIS)
     active = activated(an_index, chain[:1])
     an_index.add_headers(chain[1:])
@@ -4339,6 +4393,26 @@ def test_a_short_batch_that_connects_answers_the_getheaders_in_flight() -> None:
     node.download_manager.last_getheaders_timestamps[peer.id] = time.time()
     headers(node, Headers(chain).serialize(), peer)
     assert peer.id not in node.download_manager.last_getheaders_timestamps
+
+
+def test_a_batch_that_connects_is_direct_fetched_towards_its_tip() -> None:
+    """Core's `ProcessHeadersMessage` ends in `HeadersDirectFetchBlocks`.
+
+    For the highest header of a batch that connected, full or short, and
+    not for one that connected to nothing.
+    """
+    short = generate_random_header_chain(2, RegTest().genesis.hash)
+    full = generate_random_header_chain(MAX_HEADERS_RESULTS, RegTest().genesis.hash)
+    for chain in (short, full):
+        node = a_data_node(status=NodeStatus.SyncingHeaders)
+        node.chainstate.block_index = FakeHeaderIndex(tip=chain[-1].hash)
+        peer = a_peer()
+        headers(node, Headers(chain).serialize(), peer)
+        assert node.download_manager.direct_fetches == [(peer.id, chain[-1].hash)]
+    node = a_data_node(status=NodeStatus.SyncingHeaders)
+    node.chainstate.block_index = FakeHeaderIndex(tip=None)
+    headers(node, Headers(short).serialize(), a_peer())
+    assert node.download_manager.direct_fetches == []
 
 
 def test_a_batch_connecting_to_nothing_answers_nothing_in_flight() -> None:

@@ -34,13 +34,14 @@ from btclib.tx.tx_out import TxOut
 
 from btclib_node.block_db import Coin
 from btclib_node.chains import RegTest
-from btclib_node.exceptions import NonStandardTxError
+from btclib_node.exceptions import NonStandardTxError, TxRejectedError
 from btclib_node.interpreter import (
     STANDARD_FLAGS,
     check_transaction,
     check_transactions,
     f,
     get_flags,
+    sig_op_cost,
     warm,
 )
 
@@ -653,3 +654,149 @@ def test_a_spend_no_block_could_carry_is_refused_as_itself() -> None:
     with pytest.raises(BTClibValueError) as refusal:
         check_transaction(prevouts, tx)
     assert not isinstance(refusal.value, NonStandardTxError)
+
+
+def _push(data: bytes) -> bytes:
+    """Return one push of `data`, in the shortest form its length allows."""
+    return script.serialize([data])
+
+
+_CHECKSIG, _CHECKMULTISIG = b"\xac", b"\xae"
+_KEYHASH, _SCRIPTHASH = b"\x11" * 20, b"\x22" * 32
+_P2SH = b"\xa9\x14" + _KEYHASH + b"\x87"
+_P2WPKH, _P2WSH = b"\x00\x14" + _KEYHASH, b"\x00\x20" + _SCRIPTHASH
+_TWO_OF_TWO = b"\x52" + _push(b"\x02" * 33) * 2 + b"\x52" + _CHECKMULTISIG
+_NOPS = b"\x61"
+# (prevout script, script_sig, witness stack, output script, cost): each
+# answer is Core's `GetTransactionSigOpCost` read off its source, at
+# bitcoin/bitcoin@9be056a8a7 (btclib-org/btclib-node#1357)
+_SIG_OP_COSTS = {
+    "legacy, in the outputs, at four": (_P2WPKH, b"", (b"",), _CHECKSIG * 2, 4 * 2 + 1),
+    "legacy, in the script_sig": (b"\x51", _CHECKSIG, (), b"\x51", 4),
+    "the prevout script is not the spender's": (_CHECKSIG, b"", (), b"\x51", 0),
+    "p2sh, accurate multisig": (_P2SH, _push(_TWO_OF_TWO), (), b"\x51", 4 * 2),
+    "p2sh, OP_16 keys": (_P2SH, _push(b"\x60" + _CHECKMULTISIG), (), b"\x51", 4 * 16),
+    "p2sh, OP_1 key": (_P2SH, _push(b"\x51" + _CHECKMULTISIG), (), b"\x51", 4),
+    "p2sh, OP_0 keys": (_P2SH, _push(b"\x00" + _CHECKMULTISIG), (), b"\x51", 4 * 20),
+    "p2sh, above OP_16": (_P2SH, _push(b"\x61" + _CHECKMULTISIG), (), b"\x51", 4 * 20),
+    "p2sh, a verify": (_P2SH, _push(b"\xad\xaf"), (), b"\x51", 4 * 21),
+    "p2sh, pushdata1": (_P2SH, _push(_CHECKSIG + _NOPS * 79), (), b"\x51", 4),
+    "p2sh, pushdata2": (_P2SH, _push(_CHECKSIG + _NOPS * 299), (), b"\x51", 4),
+    "p2sh, pushdata4": (
+        _P2SH,
+        b"\x4e" + (2).to_bytes(4, "little") + _CHECKSIG * 2,
+        (),
+        b"\x51",
+        4 * 2,
+    ),
+    "p2sh, pushdata4 of 174": (
+        _P2SH,
+        b"\x4e" + (174).to_bytes(4, "little") + _NOPS * 174,
+        (),
+        b"\x51",
+        0,
+    ),
+    "p2sh, not push-only": (_P2SH, _push(_CHECKSIG) + b"\x76", (), b"\x51", 0),
+    "p2sh, not push-only first": (_P2SH, b"\x76" + _push(_CHECKSIG), (), b"\x51", 0),
+    "p2sh, a truncated push": (_P2SH, _push(_CHECKSIG) + b"\x4c", (), b"\x51", 0),
+    "p2sh, the last push": (_P2SH, _push(_CHECKSIG) + b"\x00", (), b"\x51", 0),
+    "p2sh, OP_1 last": (_P2SH, _push(_CHECKSIG) + b"\x51", (), b"\x51", 0),
+    "not p2sh, first byte": (b"\xa8" + _P2SH[1:], _push(_CHECKSIG), (), b"\x51", 0),
+    "not p2sh, second byte": (
+        b"\xa9\x13" + _P2SH[2:],
+        _push(_CHECKSIG),
+        (),
+        b"\x51",
+        0,
+    ),
+    "not p2sh, last byte": (_P2SH[:-1] + b"\x88", _push(_CHECKSIG), (), b"\x51", 0),
+    "not p2sh, length": (_P2SH + b"\x61", _push(_CHECKSIG), (), b"\x51", 0),
+    "p2wpkh": (_P2WPKH, b"", (b"",) * 2, b"\x51", 1),
+    "p2wsh, accurate": (_P2WSH, b"", (_TWO_OF_TWO,), b"\x51", 2),
+    "p2wsh, the last item": (_P2WSH, b"", (_CHECKSIG, b"\x51"), b"\x51", 0),
+    "p2wsh, no witness": (_P2WSH, b"", (), b"\x51", 0),
+    "p2sh-p2wpkh": (_P2SH, _push(_P2WPKH), (b"",) * 2, b"\x51", 1),
+    "not p2sh, a pushed v0 program": (b"\x51", _push(_P2WPKH), (b"",) * 2, b"\x51", 0),
+    "p2sh-p2wsh": (_P2SH, _push(_P2WSH), (_CHECKSIG * 3,), b"\x51", 3),
+    "p2sh, a v0 program not pushed last": (
+        _P2SH,
+        _push(_P2WPKH) + b"\x00",
+        (b"",) * 2,
+        b"\x51",
+        0,
+    ),
+    "witness v1 counts none": (
+        b"\x51\x20" + _SCRIPTHASH,
+        b"",
+        (_CHECKSIG,),
+        b"\x51",
+        0,
+    ),
+    "v0, another size": (
+        b"\x00\x15" + _KEYHASH + b"\x00",
+        b"",
+        (_CHECKSIG,),
+        b"\x51",
+        0,
+    ),
+    "not a program, its length byte": (
+        b"\x00\x13" + _KEYHASH,
+        b"",
+        (_CHECKSIG,),
+        b"\x51",
+        0,
+    ),
+    "not a program, its version": (b"\x50\x14" + _KEYHASH, b"", (b"",) * 2, b"\x51", 0),
+}
+
+
+@pytest.mark.parametrize(
+    ("prevout", "script_sig", "stack", "output", "cost"),
+    list(_SIG_OP_COSTS.values()),
+    ids=list(_SIG_OP_COSTS),
+)
+def test_sig_op_cost_is_core_s(
+    prevout: bytes,
+    script_sig: bytes,
+    stack: tuple[bytes, ...],
+    output: bytes,
+    cost: int,
+) -> None:
+    """`sig_op_cost` is Core's `GetTransactionSigOpCost`, term by term."""
+    tx_in = TxIn(OutPoint(b"\x33" * 32, 0), script_sig, 0xFFFFFFFF, Witness(stack))
+    tx = Tx(version=2, lock_time=0, vin=[tx_in], vout=[TxOut(1, output)])
+    assert sig_op_cost(tx, [TxOut(2, prevout)]) == cost
+
+
+def test_a_script_refusal_is_in_core_s_words_and_names_its_input() -> None:
+    """The first input that fails is named, as Core's `CheckInputScripts`.
+
+    `bitcoind` v31.1 on regtest answers a bad signature
+    "mempool-script-verify-flag-failed (Signature must be zero for failed
+    CHECK(MULTI)SIG operation), input 0 of <txid> (wtxid <wtxid>),
+    spending <txid>:<n>"; inside the parentheses here is btclib's own
+    message (btclib-org/btclib-node#1328). The first input passes, so the
+    one named is the second.
+    """
+    passes, fails = script.serialize(["OP_1"]), script.serialize(["OP_0"])
+    prevouts = [TxOut(50 * 10**8, passes), TxOut(50 * 10**8, fails)]
+    tx = Tx(
+        version=1,
+        lock_time=0,
+        vin=[
+            TxIn(OutPoint(bytes(range(32)), 7), b"", 0xFFFFFFFF),
+            TxIn(OutPoint(bytes(range(32, 64)), 3), b"", 0xFFFFFFFF),
+        ],
+        vout=[TxOut(99 * 10**8, passes)],
+    )
+    with pytest.raises(BTClibValueError) as engine:
+        btclib_verify_input(prevouts, tx, 1, STANDARD_FLAGS)
+    with pytest.raises(TxRejectedError) as refusal:
+        check_transaction(prevouts, tx)
+    assert refusal.value.reason == (
+        f"mempool-script-verify-flag-failed ({engine.value})"
+    )
+    assert refusal.value.details == (
+        f"input 1 of {tx.id.hex()} (wtxid {tx.hash.hex()}), "
+        f"spending {bytes(range(32, 64)).hex()}:3"
+    )

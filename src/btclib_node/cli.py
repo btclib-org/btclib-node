@@ -27,10 +27,9 @@ default is the pinned release's rather than Core `master`'s,
 `-server` is `Config.allow_rpc`, on unless negated or set false, as
 `bitcoind` soft-sets it on (`src/bitcoind.cpp`). An RPC or P2P listener
 that cannot start stops the node, `main` below exiting `1`, as Core's
-init aborts. Three `Config` fields have no option here: `min_relay_feerate`
-(Core's own `-minrelaytxfee` is BTC/kvB and this field is priced in
-sat/kvB already; the unit translation is deferred rather than done
-half-heartedly), `log_path` (this command always takes
+init aborts. `-minrelaytxfee` is BTC/kvB, as Core's, and
+`Config.min_relay_feerate` the same rate in sat/kvB. Two `Config` fields
+have no option here: `log_path` (this command always takes
 `Config`'s own default -- a file under the data directory -- an operator
 who wants console output can read it from there), and `allow_p2p` (the
 P2P listener is always requested; `-listen=0` is what keeps it from
@@ -166,10 +165,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from btclib.fee import FeeRate
+
 from btclib_node import Node, install_signal_handlers
 from btclib_node.block_db import blocks_directory
 from btclib_node.config import (
     DEFAULT_MAX_PEER_CONNECTIONS,
+    DEFAULT_MIN_RELAY_FEERATE,
     Config,
     get_path_arg,
     split_host_port,
@@ -271,12 +273,14 @@ _OPTIONS_TITLE = "Options:"
 _CONNECTION_TITLE = "Connection options:"
 _DEBUG_TEST_TITLE = "Debugging/Testing options:"
 _CHAINPARAMS_TITLE = "Chain selection options:"
+_NODE_RELAY_TITLE = "Node relay options:"
 _RPC_TITLE = "RPC server options:"
 _TITLES = (
     _OPTIONS_TITLE,
     _CONNECTION_TITLE,
     _DEBUG_TEST_TITLE,
     _CHAINPARAMS_TITLE,
+    _NODE_RELAY_TITLE,
     _RPC_TITLE,
 )
 
@@ -285,6 +289,21 @@ _PARSE_ERROR = "Error parsing command line arguments: "
 
 # `ToIntegral<uint16_t>`'s own bound on a port (`CheckHostPortOptions`).
 _MAX_PORT = 0xFFFF
+
+# `COIN` and `MAX_MONEY` (`src/consensus/amount.h`), what `ParseMoney` reads
+# an amount against
+_COIN = 100_000_000
+_MAX_MONEY = 21_000_000 * _COIN
+# the digits `ParseMoney` reads after the point, and before it: its own
+# "guard against 63 bit overflow"
+_MONEY_DECIMALS = 8
+_MONEY_WHOLE_DIGITS = 10
+
+
+def _format_money(amount: int) -> str:
+    """Return Core's `FormatMoney`: eight decimals, trimmed down to two."""
+    whole, fraction = divmod(amount, _COIN)
+    return f"{whole}.{f'{fraction:08d}'.rstrip('0').ljust(2, '0')}"
 
 
 @dataclass(frozen=True)
@@ -384,6 +403,13 @@ _OPTIONS: dict[str, _Option] = {
         "Accept connections from outside (default: 1 if no -connect or "
         "-maxconnections=0)",
         _CONNECTION_TITLE,
+    ),
+    "minrelaytxfee": _Option(
+        "=<amt>",
+        "Fees (in BTC/kvB) smaller than this are considered zero fee for "
+        "relaying, mining and transaction creation (default: "
+        f"{_format_money(DEFAULT_MIN_RELAY_FEERATE.sats_per_kvbyte)})",
+        _NODE_RELAY_TITLE,
     ),
     "maxconnections": _Option(
         "=<n>",
@@ -1290,6 +1316,47 @@ def _check_ignored_conf(
     raise ValueError(error)
 
 
+def _parse_money(value: str) -> int | None:
+    """Return Core's `ParseMoney` of `value` in satoshi, `None` where it fails.
+
+    `src/util/moneystr.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag: whitespace trimmed at either end, then ASCII digits with at
+    most one `.` and eight digits after it, at most ten before it, and a
+    total within `MAX_MONEY`. No sign and no exponent; `.` alone is `0`.
+    Core's own refusal of a NUL is the digit check's here.
+    """
+    text = value.strip(" \f\n\r\t\v")
+    whole, _, fraction = text.partition(".")
+    digits = "0123456789"
+    if (
+        not text
+        or len(whole) > _MONEY_WHOLE_DIGITS
+        or len(fraction) > _MONEY_DECIMALS
+        or not all(c in digits for c in whole + fraction)
+    ):
+        return None
+    amount = int(whole or "0") * _COIN + int(fraction.ljust(_MONEY_DECIMALS, "0"))
+    return amount if amount <= _MAX_MONEY else None
+
+
+def _get_min_relay_feerate(settings: _Settings) -> FeeRate:
+    """Return `-minrelaytxfee` as a rate, Core's `ApplyArgsManOptions`.
+
+    `src/node/mempool_args.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag: BTC/kvB through `ParseMoney`, refused with `AmountErrMsg`'s
+    words; a negation reads as `0`. Core's `-incrementalrelayfee` raising
+    this floor where it is not given has no option here to do so.
+    """
+    value = _get_arg(settings, "minrelaytxfee")
+    if value is None:
+        return DEFAULT_MIN_RELAY_FEERATE
+    amount = _parse_money(value)
+    if amount is None:
+        err_msg = f"Invalid amount for -minrelaytxfee=<amount>: '{value}'"
+        raise ValueError(err_msg)
+    return FeeRate(sats_per_kvbyte=amount)
+
+
 def _prune_target_mib(prune: int) -> int:
     """Return the MiB `-prune` asks for, refusing what Core refuses.
 
@@ -1412,6 +1479,7 @@ class _BeforeLock:
     max_connections: int
     debug: bool
     prune: int
+    min_relay_feerate: FeeRate
     directories: Config
 
 
@@ -1441,7 +1509,7 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     `InitConfig`, then `AppInitParameterInteraction` (`src/init.cpp`, at
     bitcoin/bitcoin@9be056a8a7) in its order: the warning about a section
     naming no chain, a missing blocks directory, a negative
-    `-maxconnections`, `-debug`'s categories, `-prune`.
+    `-maxconnections`, `-debug`'s categories, `-prune`, `-minrelaytxfee`.
     """
     settings, base_dir, chain_name = _read_settings(argv)
     _warn_unrecognized_sections(settings)
@@ -1462,6 +1530,9 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     )
     debug = _resolve_debug(settings)
     prune = _prune_target_mib(_get_int(settings, "prune") or 0)
+    # after `-debug`'s categories, where `AppInitParameterInteraction`
+    # applies the mempool's options (btclib-org/btclib-node#1332)
+    min_relay_feerate = _get_min_relay_feerate(settings)
     return _BeforeLock(
         settings,
         base_dir,
@@ -1471,6 +1542,7 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
         max_connections,
         debug,
         prune,
+        min_relay_feerate,
         directories,
     )
 
@@ -1556,6 +1628,7 @@ def _after_lock(before: _BeforeLock) -> Config:
         max_connections=before.max_connections,
         dnsseed=dnsseed,
         ban_time=ban_time,
+        min_relay_feerate=before.min_relay_feerate,
         rpcauth=_get_args(settings, "rpcauth"),
         rpcuser=_get_arg(settings, "rpcuser") or "",
         rpcpassword=_get_arg(settings, "rpcpassword") or "",
