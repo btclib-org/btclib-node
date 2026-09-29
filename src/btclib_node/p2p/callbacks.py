@@ -643,13 +643,20 @@ _SENDCMPCT_SIZE = 9
 def sendcmpct(node: Node, msg: bytes, conn: Connection) -> None:
     """Record whether the peer wants new blocks announced as `cmpctblock`.
 
-    Core's `SENDCMPCT` handler (`src/net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the announce octet is read
-    as a `uint8_t`, not a `bool`, so a value above one is refused as
+    Core's `SENDCMPCT` handler (`src/net_processing.cpp`) on master,
+    at bitcoin/bitcoin@ba8fdb9717: the announce octet is read as a
+    `uint8_t`, not a `bool`, so a value above one is refused as
     "invalid sendcmpct announce field" before a version other than
-    `CMPCTBLOCKS_VERSION` is ignored; otherwise the announce octet is the
-    peer's choice of this node as a BIP152 high-bandwidth peer, which a
-    later `sendcmpct` can take back.
+    `CMPCTBLOCKS_VERSION` is ignored; otherwise the announce octet is
+    the peer's choice of this node as a BIP152 high-bandwidth peer,
+    which a later `sendcmpct` can take back.
+
+    v31.1, at bitcoin/bitcoin@9be056a8a7, the release
+    `.github/workflows/integration-bitcoind.yml` pins and the
+    integration tests run against, still reads the octet as a plain
+    `bool` and never refuses one above one: the `uint8_t` read and the
+    `Misbehaving` call are Core commit 2d0dce0af5, on master and in
+    `v32.0rc1`, not yet in a release.
     """
     # read as Core's `vRecv >> sendcmpct_hb >> sendcmpct_version` reads
     # it, bytes past the ninth left unread; btclib's `SendCmpct.parse`
@@ -1224,8 +1231,8 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
         block_index.set_downloaded(block_hash)
         # Core's `AcceptBlock` calls `NewPoWValidBlock` from inside
         # `ProcessNewBlock`, ahead of `ProcessBlock`'s own
-        # `RemoveBlockRequest` below (`net_processing.cpp`, at
-        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+        # `RemoveBlockRequest` below, at bitcoin/bitcoin@9be056a8a7
+        # (`net_processing.cpp`, the v31.1 tag)
         new_pow_valid_block(node, block)
         # stored, so awaited from nobody: Core's `ProcessBlock`
         remove_block_request(connections, block_hash, time.time())

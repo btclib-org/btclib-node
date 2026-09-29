@@ -1413,8 +1413,10 @@ def test_a_sendcmpct_of_version_two_records_the_peer_s_choice(
 def test_a_sendcmpct_announce_octet_above_one_is_misbehaving() -> None:
     """Core's `sendcmpct_hb` is a `uint8_t`, not a `bool`: above one is refused.
 
-    Checked ahead of the version, as Core's own order is
-    (btclib-org/btclib-node#1223).
+    Checked ahead of the version, as Core's own order is, on master,
+    at bitcoin/bitcoin@ba8fdb9717 (btclib-org/btclib-node#1223). v31.1,
+    at bitcoin/bitcoin@9be056a8a7, still reads the octet as a plain
+    `bool` and never refuses one above one.
     """
     peer = a_peer(requested_hb_cmpctblocks=False)
     with pytest.raises(MisbehavingError, match="invalid sendcmpct announce field: 2"):
