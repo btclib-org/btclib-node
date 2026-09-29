@@ -916,9 +916,9 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 ### `submitblock` answers Core's own reasons where it used to answer `null`
 
-- **A block extending the tip answers `bad-cb-height`, `bad-txns-nonfinal`, or
-  `block-script-verify-flag-failed (...)`, and a body failing `CheckBlock`
-  leaves its header unindexed** (closes #1335, closes #1390, closes #1339).
+- **A tip block answers `bad-cb-height` or `bad-txns-nonfinal`** (closes #1335).
+- **Failing scripts answer `block-script-verify-flag-failed`** (closes #1390).
+- **A body failing `CheckBlock` leaves no header indexed** (closes #1339).
 
 ## v2026.9.24
 
