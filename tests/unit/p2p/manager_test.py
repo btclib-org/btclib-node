@@ -56,7 +56,7 @@ from btclib_node.p2p.main import handle_p2p_handshake
 from btclib_node.p2p.manager import P2pManager
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Iterator, Sequence
+    from collections.abc import Callable, Coroutine, Iterable, Iterator, Sequence
     from pathlib import Path
 
     from btclib.p2p.payload import Payload
@@ -2308,12 +2308,11 @@ def test_listen_false_binds_nothing_but_still_dials(a_manager: AManagerFactory) 
     """`listen=False`: no bound socket, and the explicit dial still works.
 
     `-connect` alone resolves to exactly this combination
-    (`cli.py`'s own `build_config`): `Node.run`'s dial loop calls
-    `P2pManager.connect` for every `config.connect`/`config.addnode`
-    peer regardless of `listen`, so a manager with `listen=False` has to
-    still be able to reach one -- dialled here at a second, ordinary
-    manager that is listening, since one with `listen=False` has
-    nothing of its own to dial back into.
+    (`cli.py`'s own `build_config`): `_open_connect_peers` (below)
+    dials every `config.connect` peer regardless of `listen`, so a
+    manager with `listen=False` has to still be able to reach one --
+    dialled here at a second, ordinary manager that is listening, since
+    one with `listen=False` has nothing of its own to dial back into.
     """
     target_port = get_random_port()
     target = a_running_manager(a_manager, target_port)
@@ -2361,111 +2360,156 @@ def test_connect_and_explicit_listen_binds_and_dials(
         target.join(timeout=10)
 
 
-def test_maybe_redial_specified_is_a_noop_with_nothing_specified(
-    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """No `-connect`/`-addnode` given: nothing is ever redialled."""
-    manager = a_manager()
-    assert not manager._redial_peers
-    monkeypatch.setattr(manager, "async_connect_host", refuses_to_be_asked)
-    asyncio.run(manager._maybe_redial_specified())
+class _LoopStoppedError(Exception):
+    """Raised by `run_a_manual_loop`'s sleep to end a loop that never ends."""
 
 
-def test_maybe_redial_specified_skips_a_peer_not_yet_due(
-    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A specified peer whose own backoff has not elapsed is left alone."""
-    manager = a_manager(connect=[("1.2.3.4", 8333)])
-    (key,) = manager._redial_peers
-    manager._redial_next[key] = time.time() + 100
-    monkeypatch.setattr(manager, "async_connect_host", refuses_to_be_asked)
-    asyncio.run(manager._maybe_redial_specified())
+def run_a_manual_loop(
+    loop: Callable[[], Coroutine[Any, Any, None]],
+    manager: P2pManager,
+    monkeypatch: pytest.MonkeyPatch,
+    sleeps: int,
+) -> tuple[list[tuple[str, int]], list[float]]:
+    """Run one of the manual-peer loops until its `sleeps`-th sleep.
 
-
-def test_maybe_redial_specified_dials_a_due_peer_and_doubles_the_backoff(
-    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A due, unconnected peer is dialled, and its own backoff doubles.
-
-    `_redial_next` defaults to `0.0` -- always due -- for a manager
-    built by `a_manager` directly rather than through `run`, which is
-    the only place that seeds it forward (`run`'s own comment on the
-    race that seeding avoids).
+    Answer what it dialled, through `async_connect_host`, and how long
+    each sleep was, in order.
     """
     dialled: list[tuple[str, int]] = []
+    slept: list[float] = []
 
     async def record_dial(host: str, port: int) -> None:
         dialled.append((host, port))
 
-    manager = a_manager(connect=[("1.2.3.4", 8333)])
+    async def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        if len(slept) == sleeps:
+            raise _LoopStoppedError
+
     monkeypatch.setattr(manager, "async_connect_host", record_dial)
-    (key,) = manager._redial_peers
-    assert manager._redial_backoff[key] == manager_module._REDIAL_BASE_SECONDS
-    asyncio.run(manager._maybe_redial_specified())
-    assert len(dialled) == 1
-    assert manager._redial_backoff[key] == manager_module._REDIAL_BASE_SECONDS * 2
-    # due again, forcing a second attempt without a real wait
-    manager._redial_next[key] = 0.0
-    asyncio.run(manager._maybe_redial_specified())
-    assert len(dialled) == 2
-    assert manager._redial_backoff[key] == manager_module._REDIAL_BASE_SECONDS * 4
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    with pytest.raises(_LoopStoppedError):
+        asyncio.run(loop())
+    return dialled, slept
 
 
-def test_maybe_redial_specified_caps_the_backoff(
+def test_the_connect_loop_dials_each_peer_every_pass(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The backoff never grows past `_REDIAL_MAX_SECONDS`."""
+    """ISS 1316: `ThreadOpenConnections`' `-connect` arm and its sleeps.
 
-    async def do_nothing(host: str, port: int) -> None:
-        del host, port
+    After the n-th pass each address is followed by `min(n, 10)` sleeps
+    of 500 ms, and the list by one more.
+    """
+    peers = [("1.2.3.4", 8333), ("peer.example", 8333)]
+    manager = a_manager(connect=peers)
+    dialled, slept = run_a_manual_loop(
+        manager._open_connect_peers, manager, monkeypatch, 3 * 12
+    )
+    assert dialled == peers * 12
+    steps = [0.5 * min(n, 10) for n in range(12)]
+    assert slept == [x for step in steps for x in (step, step, 0.5)]
 
-    manager = a_manager(connect=[("1.2.3.4", 8333)])
-    monkeypatch.setattr(manager, "async_connect_host", do_nothing)
-    (key,) = manager._redial_peers
-    manager._redial_backoff[key] = manager_module._REDIAL_MAX_SECONDS
-    asyncio.run(manager._maybe_redial_specified())
-    assert manager._redial_backoff[key] == manager_module._REDIAL_MAX_SECONDS
 
-
-def test_maybe_redial_specified_resets_the_backoff_once_connected(
+def test_the_added_loop_dials_the_peers_not_held(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A specified peer already connected is left alone, backoff reset.
+    """ISS 1316: `ThreadOpenAddedConnections`, 500 ms apart, then 60 s.
 
-    "Already connected" is read off `addr_name`, as `async_connect_host`'s
-    own `AlreadyConnectedToHost` check is, not off the address: a peer
+    "Held" is read off `addr_name`, as `async_connect_host`'s own
+    `AlreadyConnectedToHost` check is, not off the address: a peer
     given by name is not necessarily connected on the endpoint its name
     last resolved to (btclib-org/btclib-node#1264).
     """
-    conn = a_conn(1, addr_name="1.2.3.4")
-    manager = a_manager([conn], connect=[("1.2.3.4", 8333)])
-    (key,) = manager._redial_peers
-    manager._redial_backoff[key] = manager_module._REDIAL_MAX_SECONDS
-    monkeypatch.setattr(manager, "async_connect_host", refuses_to_be_asked)
-    asyncio.run(manager._maybe_redial_specified())
-    assert manager._redial_backoff[key] == manager_module._REDIAL_BASE_SECONDS
+    held = a_conn(1, addr_name="1.2.3.4")
+    peers = [("1.2.3.4", 8333), ("5.6.7.8", 8333), ("peer.example", 8333)]
+    manager = a_manager([held], addnode=peers)
+    dialled, slept = run_a_manual_loop(
+        manager._open_added_peers, manager, monkeypatch, 6
+    )
+    assert dialled == peers[1:] * 2
+    assert slept == [0.5, 0.5, 60] * 2
 
 
-def test_maybe_redial_specified_logs_and_continues_on_a_dial_that_raises(
+def test_the_added_loop_waits_two_seconds_with_nothing_to_dial(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A dial that raises is logged, like every other housekeeping step."""
+    """ISS 1316: a round that tried nothing sleeps `2s`, not `60s`."""
+    held = a_conn(1, addr_name="1.2.3.4")
+    manager = a_manager([held], addnode=[("1.2.3.4", 8333)])
+    dialled, slept = run_a_manual_loop(
+        manager._open_added_peers, manager, monkeypatch, 2
+    )
+    assert dialled == []
+    assert slept == [2, 2]
+
+
+def test_the_added_loop_stops_where_no_addnode_grant_is_free(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1316: `MAX_ADDNODE_CONNECTIONS` added peers held take every grant."""
+    peers = [(f"10.0.0.{i}", 8333) for i in range(1, 10)]
+    conns = [a_conn(i, addr_name=host) for i, (host, _port) in enumerate(peers[:8])]
+    manager = a_manager(conns, addnode=peers)
+    dialled, slept = run_a_manual_loop(
+        manager._open_added_peers, manager, monkeypatch, 1
+    )
+    assert dialled == []
+    assert slept == [2]
+
+
+@pytest.mark.parametrize("option", ["connect", "addnode"])
+def test_a_manual_dial_that_raises_is_logged_and_the_loop_goes_on(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, option: str
+) -> None:
+    """ISS 1316: an exception out of one dial is logged, not the loop's end."""
     logged: list[str] = []
-    manager = a_manager(connect=[("1.2.3.4", 8333)])
-    monkeypatch.setattr(manager, "async_connect_host", refuses_to_be_asked)
+    peers = [("1.2.3.4", 8333)]
+    manager = (
+        a_manager(connect=peers) if option == "connect" else a_manager(addnode=peers)
+    )
     monkeypatch.setattr(manager.logger, "exception", logged.append)
-    asyncio.run(manager._maybe_redial_specified())
-    assert logged
+
+    async def raises(host: str, port: int) -> NoReturn:
+        raise RuntimeError(host)
+
+    slept: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        if len(slept) == 3:
+            raise _LoopStoppedError
+
+    monkeypatch.setattr(manager, "async_connect_host", raises)
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    loop = (
+        manager._open_connect_peers
+        if option == "connect"
+        else manager._open_added_peers
+    )
+    with pytest.raises(_LoopStoppedError):
+        asyncio.run(loop())
+    assert len(logged) >= 2
 
 
-def test_maybe_redial_specified_resolves_a_hostname(
+def test_with_no_manual_peers_neither_loop_dials(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ISS 1264: a `-connect`/`-addnode` peer given by name is resolved here.
+    """No `-connect` and no `-addnode`: both loops return at once."""
+    manager = a_manager()
+    monkeypatch.setattr(manager, "async_connect_host", refuses_to_be_asked)
+    asyncio.run(manager._open_connect_peers())
+    asyncio.run(manager._open_added_peers())
+
+
+def test_open_connect_peers_resolves_a_hostname(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1264: a `-connect` peer given by name is resolved here too.
 
     Building the manager at all is already most of the regression test:
-    before this issue, `Config`, and then `_redial_peers`'s own
-    `peer_address` call, each raised on a hostname before a redial was
+    before that issue, `Config`, and then `_connect_peers`'s own
+    `peer_address` call, each raised on a hostname before a dial was
     ever attempted.
     """
     ours, theirs = socket.socketpair()
@@ -2480,26 +2524,49 @@ def test_maybe_redial_specified_resolves_a_hostname(
     monkeypatch.setattr(
         manager, "create_connection", lambda *args, **kwargs: made.append(kwargs)
     )
-    asyncio.run(manager._maybe_redial_specified())
+
+    async def stop_after_one_sleep(seconds: float) -> NoReturn:
+        raise _LoopStoppedError
+
+    monkeypatch.setattr(asyncio, "sleep", stop_after_one_sleep)
+    with pytest.raises(_LoopStoppedError):
+        asyncio.run(manager._open_connect_peers())
     assert made == [
         {"inbound": False, "addr_fetch": False, "addr_name": "peer.example"}
     ]
     theirs.close()
 
 
-def test_redial_connects_a_specified_peer_without_an_explicit_dial(
+def test_run_dials_a_connect_peer_without_an_explicit_dial(
     a_manager: AManagerFactory,
 ) -> None:
-    """The standing loop alone reconnects a `-connect` peer -- issue #651.
+    """The `-connect` loop `run` starts reaches the peer -- issues #651, #1316.
 
-    Nothing here ever calls `dialer.connect(...)`: `manage_connections`'
-    own `_maybe_redial_specified` is what has to reach `target` for this
-    to pass, the same route a `-connect` peer that dropped and needs
-    picking back up would go through.
+    Nothing here ever calls `dialer.connect(...)`: `_open_connect_peers`
+    is what has to reach `target` for this to pass.
     """
     target_port = get_random_port()
     target = a_running_manager(a_manager, target_port)
     dialer = a_manager(connect=[("127.0.0.1", target_port)])
+    try:
+        wait_until_listening(target)
+        dialer.start()
+        wait_until(lambda: dialer.pending_connections)
+        wait_until(lambda: target.pending_connections)
+    finally:
+        dialer.stop()
+        dialer.join(timeout=10)
+        target.stop()
+        target.join(timeout=10)
+
+
+def test_run_dials_an_added_peer_without_an_explicit_dial(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1316: the `-addnode` loop `run` starts reaches the peer."""
+    target_port = get_random_port()
+    target = a_running_manager(a_manager, target_port)
+    dialer = a_manager(addnode=[("127.0.0.1", target_port)])
     try:
         wait_until_listening(target)
         dialer.start()

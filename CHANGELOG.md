@@ -920,6 +920,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `addnode` RPC is resolved at dial time, not refused at startup**
   (closes #1264), as Core's `ConnectNode` resolves a `pszDest`.
 
+### `-connect` and `-addnode` are each dialled by a loop of their own
+
+- **A `-connect` or `-addnode` peer not held is redialled by a standing
+  loop of its own, on Core's own cadence, in place of one shared,
+  capped, doubling backoff** (closes #1316).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

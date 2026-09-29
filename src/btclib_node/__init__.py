@@ -730,17 +730,10 @@ class Node(threading.Thread):
             self._abort_start(
                 [P2P_INIT_ERROR] if bind_error is None else [bind_error, P2P_INIT_ERROR]
             )
-        elif started and self.p2p_port:
-            # `config.connect` and `config.addnode` together, once the
-            # listener is bound, or skipped under `-listen=0`. A
-            # one-shot dial: `P2pManager._maybe_redial_specified` is
-            # what redials either past this, on its own backoff
-            # (issue #651), and `connect_host` resolves a hostname the
-            # same way that redial does rather than the parsed-IP-only
-            # `peer_address` a literal address alone could take
-            # (btclib-org/btclib-node#1264).
-            for host, port in (*self.config.connect, *self.config.addnode):
-                self.p2p_manager.connect_host(host, port)
+        # `config.connect` and `config.addnode` are each dialled by a
+        # loop of `P2pManager`'s own, `_open_connect_peers` and
+        # `_open_added_peers`, started from `P2pManager.run` once the
+        # listener is bound; no dial happens here.
         while not self.terminate_flag.is_set():
             if self._drain_message_queues():
                 time.sleep(IDLE_SLEEP_SECONDS)

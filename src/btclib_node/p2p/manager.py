@@ -105,28 +105,32 @@ _PEER_CONNECT_TIMEOUT = 60
 # dropped once quiet twice this long.
 _IDLE_TIMEOUT = 120
 
-# `_maybe_redial_specified`'s own backoff for a `-connect`/`-addnode`
-# peer that is not currently connected: doubled on every attempt made,
-# reset to this floor the moment the peer is seen connected, capped at
-# `_REDIAL_MAX_SECONDS`. Core keeps a whole thread apiece for this --
-# `ThreadOpenConnections`'s own `-connect` arm, an uncapped
-# `for (int64_t nLoop = 0;; nLoop++)` loop redialling every named peer
-# with a per-peer sleep that grows to `10 * 500ms` and a flat `500ms`
-# after each full pass (`src/net.cpp:2592-2625`, at
-# bitcoin/bitcoin@ca7162cde5), and `ThreadOpenAddedConnections`, a
+# The two loops Core dials `-connect` and `-addnode` from, each its own
+# thread (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
+# and `_open_connect_peers`/`_open_added_peers` below each their own
+# task rather than the one shared, capped, doubling backoff this tree
+# used before #1316 replaced it. `ThreadOpenConnections`'s own
+# `-connect` arm is an uncapped `for (int64_t nLoop = 0;; nLoop++)`
+# loop redialling every named peer in turn, `_MANUAL_STEP` times
+# `min(nLoop, _CONNECT_MAX_STEPS)` after each address and one more
+# `_MANUAL_STEP` after the whole list (`src/net.cpp:2592-2625`, at
+# bitcoin/bitcoin@ca7162cde5). `ThreadOpenAddedConnections` is a
 # `while (true)` loop over `GetAddedNodeInfo(include_connected=false)`
-# -- the "already connected, skip it" filter `_maybe_redial_specified`
-# below reproduces with its own `held_names` set -- redialling every
-# not-yet-connected added peer with a `500ms` sleep between each and a
-# `60s` (something was tried) or `2s` (nothing was) sleep after the
-# pass (`src/net.cpp:3052-3082`, same sha). This node has one loop
-# already, `manage_connections`, running every 0.1s regardless of
-# either flag; reusing it for both rather than adding two more standing
-# coroutines is this tree's own Python-native shape of the same
-# requirement, at the cost of one shared, capped, doubling backoff in
-# place of replicating either of Core's own two cadences exactly.
-_REDIAL_BASE_SECONDS = 1.0
-_REDIAL_MAX_SECONDS = 60.0
+# -- the "already connected, skip it" filter `_open_added_peers` below
+# reproduces with `_held_addr_names` -- redialling every not-yet-connected
+# added peer `_MANUAL_STEP` apart while a `semAddnode` grant is free,
+# then sleeping `_ADDNODE_RETRY_TRIED` where it dialled any and
+# `_ADDNODE_RETRY_IDLE` where it dialled none (`src/net.cpp:3052-3082`,
+# same sha). `_MAX_ADDNODE_CONNECTIONS` is Core's own
+# `MAX_ADDNODE_CONNECTIONS` (`src/net.h`, same sha), the grants
+# `semAddnode` holds; an added peer counts as holding one for as long
+# as its own endpoint is held, where Core moves the grant into the
+# connection it made.
+_MANUAL_STEP = 0.5
+_CONNECT_MAX_STEPS = 10
+_ADDNODE_RETRY_TRIED = 60.0
+_ADDNODE_RETRY_IDLE = 2.0
+_MAX_ADDNODE_CONNECTIONS = 8
 
 # The outbound slots Core reserves out of `-maxconnections` before
 # inbound peers get the rest: `MAX_OUTBOUND_FULL_RELAY_CONNECTIONS`,
@@ -524,23 +528,17 @@ class P2pManager(threading.Thread):
         self._dial_start = time.time()
         self._next_fixed_seeds_check = 0.0
 
-        # `-connect` and `-addnode` together, as given -- a hostname
-        # included, unresolved until `_maybe_redial_specified` below
-        # dials one: what that redials once `Node.run`'s own one-shot
-        # dial (`__init__.py`, issue #573) drops one of them. Built
-        # once, here, for the same "a caller cannot change it
-        # mid-flight" reason as the two fields above.
-        self._redial_peers: tuple[tuple[str, int], ...] = tuple(
-            dict.fromkeys((*node.config.connect, *node.config.addnode))
+        # `-connect` and `-addnode`, each as given -- a hostname
+        # included, unresolved until `_open_connect_peers`/
+        # `_open_added_peers` below dial one: what those two loops dial,
+        # once `Node.run`'s own one-shot dial (`__init__.py`, issue #573)
+        # drops one of them. Built once, here, for the same "a caller
+        # cannot change it mid-flight" reason as the two fields above.
+        self._connect_peers: tuple[tuple[str, int], ...] = tuple(
+            dict.fromkeys(node.config.connect)
         )
-        # Backoff state for the tuple above, seeded in `run` rather than
-        # here -- `run`'s own comment on `_redial_next` is where the
-        # race this seeding avoids is argued.
-        self._redial_backoff: dict[tuple[str, int], float] = dict.fromkeys(
-            self._redial_peers, _REDIAL_BASE_SECONDS
-        )
-        self._redial_next: dict[tuple[str, int], float] = dict.fromkeys(
-            self._redial_peers, 0.0
+        self._added_peers: tuple[tuple[str, int], ...] = tuple(
+            dict.fromkeys(node.config.addnode)
         )
 
         self.connections: dict[int, Connection] = {}
@@ -1043,16 +1041,7 @@ class P2pManager(threading.Thread):
         `async_connect` logs it, since nothing else names the attempt
         (btclib-org/btclib-node#1264).
         """
-        with self._connections_lock:
-            held_names = {
-                conn.addr_name
-                for conn in (
-                    *self.connections.values(),
-                    *self.pending_connections.values(),
-                )
-                if conn.addr_name is not None
-            }
-        if host in held_names:
+        if host in self._held_addr_names():
             self.logger.info(
                 "Not opening a connection to %s, already connected to it by name",
                 host,
@@ -1263,6 +1252,26 @@ class P2pManager(threading.Thread):
                 )
                 if conn.automatic
             ]
+
+    def _held_addr_names(self) -> set[str]:
+        """Return the `addr_name` every held connection was dialled by.
+
+        `async_connect_host`'s own `AlreadyConnectedToHost` gate, and
+        `_open_added_peers`' own "not connected" filter, both key on
+        this rather than on an address: a connection dialled by name
+        (`create_connection`'s own `addr_name`) is the only kind that
+        carries one at all, `conn.addr_name` being `None` for every
+        other dial route.
+        """
+        with self._connections_lock:
+            return {
+                conn.addr_name
+                for conn in (
+                    *self.connections.values(),
+                    *self.pending_connections.values(),
+                )
+                if conn.addr_name is not None
+            }
 
     def _arm_dial_loop(self) -> None:
         """Anchor `_dial_start` and the seednode drip-feed's own timer.
@@ -1700,49 +1709,71 @@ class P2pManager(threading.Thread):
         host = with_port.rsplit(":", 1)[0].removeprefix("[").removesuffix("]")
         return host in self._added_nodes or with_port in self._added_nodes
 
-    async def _maybe_redial_specified(self) -> None:
-        """Redial a `-connect`/`-addnode` peer not connected, on backoff.
+    async def _open_manual(self, host: str, port: int) -> None:
+        """Dial a `-connect` or `-addnode` peer, logging what it raises.
 
-        `_redial_peers` above is empty unless `Config.connect`/`addnode`
-        named something, so this returns at once for every node that
-        did not ask for either -- the ordinary case. A peer already
-        held -- `async_connect_host`'s own `addr_name` check, read here
-        rather than duplicated, since a name and a literal IP are
-        redialled the identical way once #1264 stopped refusing the
-        first -- has its backoff reset to the floor and is left alone;
-        one that is not, and whose own `_redial_next` has passed, is
-        redialled and its backoff doubled (capped), the same as a peer
-        this pass could not reach at all -- distinguishing "reached but
-        the handshake never got anywhere" from "could not even be
-        dialled" is not something Core's own two loops above do either.
+        Both loops below run as their own standing task
+        (`run`, below), never awaited by anything else, so an unguarded
+        raise here would end whichever loop it reached rather than only
+        this one dial -- the same reasoning `_process_addr_fetch`
+        already gives for its own `try`.
         """
-        if not self._redial_peers:
+        try:
+            await self.async_connect_host(host, port)
+        except Exception:
+            self.logger.exception("Exception occurred")
+
+    async def _open_connect_peers(self) -> None:
+        """Dial every `-connect` peer in turn, forever, as Core's loop does.
+
+        `ThreadOpenConnections`'s own `-connect` arm (`src/net.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): one pass dials each
+        address in order -- `async_connect_host` passing over one
+        already held, by `addr_name` -- with the sleeps the constants
+        above name.
+        """
+        if not self._connect_peers:
             return
-        now = time.time()
-        with self._connections_lock:
-            held_names = {
-                conn.addr_name
-                for conn in (
-                    *self.connections.values(),
-                    *self.pending_connections.values(),
-                )
-                if conn.addr_name is not None
-            }
-        for key in self._redial_peers:
-            host, port = key
-            if host in held_names:
-                self._redial_backoff[key] = _REDIAL_BASE_SECONDS
-                continue
-            if now < self._redial_next[key]:
-                continue
-            self._redial_next[key] = now + self._redial_backoff[key]
-            self._redial_backoff[key] = min(
-                self._redial_backoff[key] * 2, _REDIAL_MAX_SECONDS
-            )
-            try:
-                await self.async_connect_host(host, port)
-            except Exception:
-                self.logger.exception("Exception occurred")
+        passes = 0
+        while True:
+            for host, port in self._connect_peers:
+                await self._open_manual(host, port)
+                await asyncio.sleep(_MANUAL_STEP * min(passes, _CONNECT_MAX_STEPS))
+            await asyncio.sleep(_MANUAL_STEP)
+            passes += 1
+
+    async def _open_added_peers(self) -> None:
+        """Dial each `-addnode` peer not held, as Core's loop does.
+
+        `ThreadOpenAddedConnections` (`src/net.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag) over
+        `GetAddedNodeInfo(include_connected=false)`: a `semAddnode`
+        grant is free while fewer than `_MAX_ADDNODE_CONNECTIONS` added
+        peers are held, checked again before every dial in the pass so a
+        peer that connects mid-pass counts at once, as Core's grant
+        would; a dial that connects keeps its own grant, as Core moves
+        the grant into the connection it made.
+        """
+        if not self._added_peers:
+            return
+        while True:
+            held = self._held_addr_names()
+            unheld = [
+                (host, port) for host, port in self._added_peers if host not in held
+            ]
+            tried = False
+            for host, port in unheld:
+                if self._added_held() >= _MAX_ADDNODE_CONNECTIONS:
+                    break
+                tried = True
+                await self._open_manual(host, port)
+                await asyncio.sleep(_MANUAL_STEP)
+            await asyncio.sleep(_ADDNODE_RETRY_TRIED if tried else _ADDNODE_RETRY_IDLE)
+
+    def _added_held(self) -> int:
+        """Count the `-addnode` peers held, the `semAddnode` grants taken."""
+        held = self._held_addr_names()
+        return sum(host in held for host, _port in self._added_peers)
 
     async def _dns_address_seed(self) -> None:
         """Ask every chain DNS seed, queuing an addr-fetch for each unanswered.
@@ -1792,12 +1823,14 @@ class P2pManager(threading.Thread):
 
         `_prune_stale_connections` pings or drops an idle peer every
         pass; `_maybe_prune_active_addresses` and `_maybe_dump_banlist`
-        run far less often;
-        `_maybe_dial_more_peers` dials one more only if this node still
-        has room for it; `_maybe_redial_specified` is the standing
-        redial issue #651 asked for, for `-connect`/`-addnode` alone;
-        `_process_addr_fetch` is `ProcessAddrFetch`'s own standing call
-        inside `ThreadOpenConnections`'s loop (btclib-org/btclib-node#1284).
+        run far less often; `_maybe_dial_more_peers` dials one more only
+        if this node still has room for it; `_process_addr_fetch` is
+        `ProcessAddrFetch`'s own standing call inside
+        `ThreadOpenConnections`'s loop (btclib-org/btclib-node#1284).
+        `-connect` and `-addnode` peers are dialled by loops of their
+        own, `_open_connect_peers` and `_open_added_peers` (`run`,
+        below), issue #651's own redial and #1316's replacement of the
+        backoff it first shipped with.
         """
         self._arm_dial_loop()
         while True:
@@ -1806,7 +1839,6 @@ class P2pManager(threading.Thread):
             self._maybe_prune_active_addresses(now)
             self._maybe_dump_banlist(now)
             await self._maybe_dial_more_peers()
-            await self._maybe_redial_specified()
             await self._process_addr_fetch()
             await asyncio.sleep(0.1)
 
@@ -2238,20 +2270,7 @@ class P2pManager(threading.Thread):
             asyncio.run_coroutine_threadsafe(
                 self.server(loop, server_socket), loop
             ).add_done_callback(self._report_server_failure)
-        # Seeded here, immediately before `manage_connections` is ever
-        # scheduled, rather than at `__init__` time: `Node.run`'s own
-        # one-shot dial for these same peers (`__init__.py`, issue
-        # #573) races this manager's first `manage_connections` pass,
-        # each reaching `async_connect` from a different thread, and a
-        # peer `_redial_next` already called overdue by the time this
-        # loop starts would sometimes win that race and dial a peer
-        # `Node.run` is dialling in the same instant. A `__init__`-time
-        # seed cannot answer that: an unknown, possibly long, gap sits
-        # between building this manager and `start()` ever being
-        # called on it.
         now = time.time()
-        for key in self._redial_next:
-            self._redial_next[key] = now + _REDIAL_BASE_SECONDS
         # Core's `start + rand_exp_duration(...)`, drawn as
         # `ThreadOpenConnections` starts.
         self._next_extra_block_relay = now + _exponential_delay(
@@ -2262,6 +2281,14 @@ class P2pManager(threading.Thread):
             _EXTRA_NETWORK_PEER_INTERVAL
         )
         asyncio.run_coroutine_threadsafe(self.manage_connections(), loop)
+        # Core's `CConnman::Start` starts `ThreadOpenAddedConnections`
+        # and then `ThreadOpenConnections` (`src/net.cpp`, at
+        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag); these are their
+        # standing tasks, each its own coroutine rather than a thread,
+        # never awaited by anything here -- `stop`'s own sweep of
+        # `asyncio.all_tasks` is what ends them.
+        asyncio.run_coroutine_threadsafe(self._open_added_peers(), loop)
+        asyncio.run_coroutine_threadsafe(self._open_connect_peers(), loop)
         loop.run_forever()
 
     def stop(self) -> None:
