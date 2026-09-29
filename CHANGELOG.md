@@ -885,12 +885,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   (closes #1249). A test needing IPv6 skips rather than fails the suite
   (closes #1250); the root-skipped one carries its pragma (closes #1251).
 
-### `-dnsseed`, `-fixedseeds` and `-seednode` steer the bootstrap
-
-- **`-dnsseed` and `-fixedseeds` turn DNS seeding and the chain's fixed
-  seeds off, and `-seednode` addr-fetches a peer ahead of the DNS seeds,
-  one at a time** (closes #1192), as Core's `ThreadOpenConnections` does.
-
 ### `[tool.uv]`'s floor rises to the `uv` `dependabot-core` bundles
 
 - **`required-version` reads `>=0.12.19`, the pin in `dependabot-core`'s
@@ -902,6 +896,23 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A queued host already held by name is skipped before it is ever
   resolved** (closes #1432), as Core's `AlreadyConnectedToHost` checks it
   ahead of `ConnectNode`'s own resolve.
+
+### An ancestor is found through skip pointers, as Core's `GetAncestor`
+
+- **Block download and `getheaders` reach a block's fork point or ancestor in
+  steps that grow with the logarithm of the distance, not with the distance**
+  (closes #1200).
+
+### A block announced by `headers` near the tip is asked for at once, as in Core
+
+- **`headers` asks the announcing peer for the blocks up to a header it just
+  sent, as Core's `HeadersDirectFetchBlocks` does** (closes #1199).
+
+### `-dnsseed`, `-fixedseeds` and `-seednode` steer the bootstrap
+
+- **`-dnsseed` and `-fixedseeds` turn DNS seeding and the chain's fixed
+  seeds off, and `-seednode` addr-fetches a peer ahead of the DNS seeds,
+  one at a time** (closes #1192), as Core's `ThreadOpenConnections` does.
 
 ## v2026.9.24
 
