@@ -16,7 +16,7 @@ that relay one.
 
 import time
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, NamedTuple, cast
 
 from btclib.block import (
     coinbase_witness_commitment,
@@ -24,12 +24,13 @@ from btclib.block import (
     median_time_past,
 )
 from btclib.block.block_context import BlockContext
-from btclib.consensus import MAX_BLOCK_WEIGHT, subsidy
+from btclib.block.limits import MAX_BLOCK_SIGOPS_COST
+from btclib.consensus import MAX_BLOCK_WEIGHT, WITNESS_SCALE_FACTOR, subsidy
 from btclib.exceptions import BTClibException, BTClibValueError
 from btclib.fee import fee_from_vsize
 from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
-from btclib.script.engine import verify_amounts
 from btclib.script.engine.flags import ScriptFlag
+from btclib.tx.limits import COINBASE_MATURITY
 from btclib.tx.tx_context import (
     assert_coinbase_maturity,
     assert_coinbase_value,
@@ -47,7 +48,13 @@ from btclib_node.exceptions import (
     PrevoutCountMismatchError,
     TxRejectedError,
 )
-from btclib_node.interpreter import check_transaction, check_transactions, get_flags
+from btclib_node.interpreter import (
+    check_transaction,
+    check_transactions,
+    get_flags,
+    sig_op_cost,
+)
+from btclib_node.mempool import format_money
 from btclib_node.p2p.block_availability import (
     peer_has_header,
     process_block_availability,
@@ -67,6 +74,7 @@ if TYPE_CHECKING:
     from btclib_node.p2p.block_availability import BlockAvailability
 
 __all__ = [
+    "MempoolAcceptance",
     "is_block_failed",
     "is_block_mutated",
     "is_cached_invalid",
@@ -272,10 +280,10 @@ def _reconcile_mempool_for_reorg(
                 # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a
                 # transaction a block already carried is not held to the
                 # feerate floor a newcomer is. btclib-org/btclib-node#1245
-                fee = verify_mempool_acceptance(node, tx, bypass_limits=True)
+                fee, vsize = verify_mempool_acceptance(node, tx, bypass_limits=True)
             except MissingPrevoutError, BTClibValueError:
                 continue
-            node.mempool.add_tx(tx, fee)
+            node.mempool.add_tx(tx, fee, vsize)
     for block in to_add:
         # an empty mempool holds none of them, and `remove_tx` hashes
         # each transaction to ask, which a block connected during
@@ -283,6 +291,7 @@ def _reconcile_mempool_for_reorg(
         if node.mempool.size:
             for tx in block.transactions[1:]:
                 node.mempool.remove_tx(tx)
+                node.mempool.remove_conflicts(tx)
         # Core's own `removeForBlock` (`src/txmempool.cpp:405-427`,
         # at bitcoin/bitcoin@58a7869f86): once per block connected,
         # whether or not it held anything this mempool was also
@@ -981,16 +990,33 @@ def update_chain(node: Node) -> None:
         settle_at_no_candidate(node)
 
 
+# Core's own `MAX_STANDARD_TX_SIGOPS_COST` and `DEFAULT_BYTES_PER_SIGOP`
+# (`src/policy/policy.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
+# the most sigop cost a standard transaction may carry, and the bytes each
+# unit of it weighs in the vsize. btclib-org/btclib-node#1357
+_MAX_STANDARD_TX_SIGOPS_COST = MAX_BLOCK_SIGOPS_COST // 5
+_BYTES_PER_SIGOP = 20
+
+
+class MempoolAcceptance(NamedTuple):
+    """What `verify_mempool_acceptance` answers for a candidate it accepts.
+
+    `fee` in satoshi, and `vsize` Core's `GetVirtualTransactionSize(weight,
+    sigop cost, DEFAULT_BYTES_PER_SIGOP)`, the size the mempool prices and
+    counts the transaction by. btclib-org/btclib-node#1357
+    """
+
+    fee: int
+    vsize: int
+
+
 def verify_mempool_acceptance(
     node: Node, tx: Tx, *, bypass_limits: bool = False
-) -> int:
-    """Verify a transaction against its prevouts and return its fee.
+) -> MempoolAcceptance:
+    """Verify a transaction against its prevouts, return its fee and vsize.
 
-    The fee is the same sum-of-inputs-less-sum-of-outputs
-    `btclib.script.engine.verify_amounts` already computes and discards
-    inside `check_transaction` below; recomputed here from the same
-    `prev_outputs` this function built for that call, rather than
-    threaded back out of btclib's engine, which returns nothing.
+    The fee is the sum of the inputs less the sum of the outputs, Core's
+    own `CheckTxInputs` tally, refused where it is negative.
     btclib-org/btclib-node#260
 
     Checks finality and BIP68 against the tip Core's own mempool policy
@@ -1003,6 +1029,17 @@ def verify_mempool_acceptance(
     does not ask either. `interpreter.check_transaction` reads the
     scripts the same way, against a flag set that consults no height.
 
+    Each refusal is a `TxRejectedError` in Core's words, in the order
+    Core's `MemPoolAccept` makes them (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), but for a missing input,
+    `MissingPrevoutError`, which each caller answers for itself.
+    btclib-org/btclib-node#1328
+
+    Refuses a candidate whose txid the mempool already holds, as Core's
+    `PreChecks` does ahead of its conflict checks, and one spending an
+    outpoint a mempool transaction already spends,
+    `Mempool.check_replacement` saying in whose words.
+
     Refuses a fee below the mempool's own rolling minimum or
     `Config.min_relay_feerate` for the transaction's vsize, Core's own
     `CheckFeeRate`, unless `bypass_limits` -- Core's own flag, set where
@@ -1010,15 +1047,8 @@ def verify_mempool_acceptance(
     btclib-org/btclib-node#1245
     """
     prev_outputs: list[TxOut] = []
-    # only the prevouts this reads off the UTXO set, since a mempool
-    # ancestor's own output can never be a coinbase's: a coinbase's
-    # null prevout resolves through neither branch below and so never
-    # reaches the mempool for assert_coinbase_maturity to skip
-    coins_from_utxo_set: list[Coin] = []
     # every prevout, coinbase or mempool-parented alike, aligned with
-    # tx.vin one for one -- what assert_sequence_locks below needs and
-    # coins_from_utxo_set above does not carry, since it drops a
-    # mempool-parented input rather than pairing it with a placeholder.
+    # tx.vin one for one -- what assert_sequence_locks below needs.
     # A mempool parent's own height is not yet real, so it is stood in
     # for with spend_height itself: Core's own MEMPOOL_HEIGHT convention
     # (CalculatePrevHeights, src/validation.cpp:203-206, same commit) --
@@ -1034,9 +1064,30 @@ def verify_mempool_acceptance(
     # seeds it with the genesis at index 0), so its own length already
     # is the tip's height plus one -- a further "+ 1" here would answer
     # one block past the real next height, and be wrong by exactly one
-    # block for assert_coinbase_maturity, which is what surfaced it
+    # block for the coinbase maturity check, which is what surfaced it
     # (btclib-org/btclib-node#569)
     spend_height = len(block_index.active_chain)
+
+    tip_hash = block_index.active_chain[-1]
+    tip_header = block_index.header_dict[tip_hash].header
+    tip_height = spend_height - 1
+    parent_of = parent_lookup(node)
+    tip_mtp = median_time_past(tip_header, tip_height, parent_of)
+
+    if not is_final(tx, spend_height, tip_mtp):
+        reason = "non-final"
+        raise TxRejectedError(reason)
+
+    # Core's own `PreChecks` order, after finality and ahead of its
+    # conflict checks (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    # the v31.1 tag): the held copy of this very transaction, same witness
+    # or not, is no conflict of it. btclib-org/btclib-node#1244
+    if mempool.contains_tx(tx):
+        reason = "txn-already-in-mempool"
+        raise TxRejectedError(reason)
+    if tx.id in mempool.txid_index:
+        reason = "txn-same-nonwitness-data-in-mempool"
+        raise TxRejectedError(reason)
 
     for tx_in in tx.vin:
         prevout_bytes = tx_in.prev_out.serialize(check_validity=False)
@@ -1054,45 +1105,41 @@ def verify_mempool_acceptance(
         # btclib-org/btclib-node#631, btclib-org/btclib-node#650).
         coin = utxo_index.get_coin(prevout_bytes)
         if coin:
-            coins_from_utxo_set.append(coin)
             prev_outputs.append(coin.tx_out)
             prevout_coins.append(coin)
         else:
             previous_tx = mempool.get_tx(tx_in.prev_out.tx_id)
-            if previous_tx:
+            # an output the parent does not have is a missing input, as
+            # Core's own `CCoinsViewMemPool::GetCoin` answers it
+            # (`src/txmempool.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+            # v31.1 tag), not an index error. btclib-org/btclib-node#1252
+            if previous_tx and tx_in.prev_out.vout < len(previous_tx.vout):
                 tx_out = previous_tx.vout[tx_in.prev_out.vout]
                 prev_outputs.append(tx_out)
                 prevout_coins.append(Coin(tx_out, spend_height, is_coinbase=False))
             else:
                 raise MissingPrevoutError
 
-    assert_coinbase_maturity(coins_from_utxo_set, spend_height)
-
-    tip_hash = block_index.active_chain[-1]
-    tip_header = block_index.header_dict[tip_hash].header
-    tip_height = spend_height - 1
-    parent_of = parent_lookup(node)
-    tip_mtp = median_time_past(tip_header, tip_height, parent_of)
-
-    if not is_final(tx, spend_height, tip_mtp):
-        err_msg = "bad-txns-nonfinal"
-        raise BTClibValueError(err_msg)
-
     def ancestor_median_time_past(height: int) -> int:
         header = header_at_height(tip_header, tip_height, height, parent_of)
         return median_time_past(header, height, parent_of)
 
-    assert_sequence_locks(
-        tx, prevout_coins, spend_height, tip_mtp, ancestor_median_time_past
-    )
+    try:
+        assert_sequence_locks(
+            tx, prevout_coins, spend_height, tip_mtp, ancestor_median_time_past
+        )
+    except BTClibValueError as refusal:
+        reason = "non-BIP68-final"
+        raise TxRejectedError(reason) from refusal
 
-    # Core's own `CheckTxInputs` sits here, ahead of the feerate floor,
-    # so a transaction spending more than it has is refused for that and
-    # not for its fee; `check_transaction` below asks it again
-    verify_amounts(prev_outputs, tx)
+    _check_tx_inputs(prevout_coins, tx, spend_height)
     fee = sum(x.value for x in prev_outputs) - sum(x.value for x in tx.vout)
+    vsize = _sigop_adjusted_vsize(tx, prev_outputs)
     if not bypass_limits:
-        _check_fee_rate(node, tx.vsize, fee)
+        _check_fee_rate(node, vsize, fee)
+    # Core's own `ReplacementChecks`, after `PreChecks` and before the
+    # scripts, `bypass_limits` or not. btclib-org/btclib-node#1244
+    mempool.check_replacement(tx, fee, vsize)
 
     # Checked last, after the cheap finality and sequence-lock checks
     # above: Core defers its own script checks the same way, to spend no
@@ -1101,7 +1148,49 @@ def verify_mempool_acceptance(
     # at bitcoin/bitcoin@4519933391).
     check_transaction(prev_outputs, tx)
 
-    return fee
+    return MempoolAcceptance(fee, vsize)
+
+
+def _sigop_adjusted_vsize(tx: Tx, prev_outputs: list[TxOut]) -> int:
+    """Return Core's vsize for `tx`, refusing one over the sigop ceiling.
+
+    `PreChecks` (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag), `bypass_limits` or not: `GetTransactionSigOpCost` under the
+    standard flags, the vsize `GetVirtualTransactionSize` adjusts by it,
+    and "bad-txns-too-many-sigops" past `MAX_STANDARD_TX_SIGOPS_COST`.
+    btclib-org/btclib-node#1357
+    """
+    cost = sig_op_cost(tx, prev_outputs)
+    if cost > _MAX_STANDARD_TX_SIGOPS_COST:
+        reason, details = "bad-txns-too-many-sigops", str(cost)
+        raise TxRejectedError(reason, details)
+    adjusted_weight = max(tx.weight, cost * _BYTES_PER_SIGOP)
+    return -(-adjusted_weight // WITNESS_SCALE_FACTOR)
+
+
+def _check_tx_inputs(prevout_coins: list[Coin], tx: Tx, spend_height: int) -> None:
+    """Refuse an immature coinbase spend or outputs over the inputs.
+
+    Core's own `Consensus::CheckTxInputs` (`src/consensus/tx_verify.cpp`,
+    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), in its order and its
+    words. A mempool parent's output is never a coinbase's: a coinbase
+    is never held. btclib-org/btclib-node#1328
+    """
+    for coin in prevout_coins:
+        depth = spend_height - coin.height
+        if coin.is_coinbase and depth < COINBASE_MATURITY:
+            reason = "bad-txns-premature-spend-of-coinbase"
+            details = f"tried to spend coinbase at depth {depth}"
+            raise TxRejectedError(reason, details)
+    value_in = sum(coin.tx_out.value for coin in prevout_coins)
+    value_out = sum(tx_out.value for tx_out in tx.vout)
+    if value_in < value_out:
+        reason = "bad-txns-in-belowout"
+        details = (
+            f"value in ({format_money(value_in)}) < "
+            f"value out ({format_money(value_out)})"
+        )
+        raise TxRejectedError(reason, details)
 
 
 def _check_fee_rate(node: Node, vsize: int, fee: int) -> None:
@@ -1113,9 +1202,8 @@ def _check_fee_rate(node: Node, vsize: int, fee: int) -> None:
     `vsize` as `CFeeRate::GetFee` rounds it and each refused with Core's
     own reason and "<fee> < <floor>". Core also asks whether the rolling
     minimum is positive, which a fee never negative here makes
-    redundant: `verify_amounts` has already refused one. `vsize` is
-    `tx.vsize`, where Core's `GetTxSize` is the sigop-adjusted
-    `GetVirtualTransactionSize`: btclib-org/btclib-node#1357.
+    redundant: `_check_tx_inputs` has already refused one. `vsize` is
+    the sigop-adjusted one, Core's `GetTxSize`: btclib-org/btclib-node#1357.
     """
     mempool_reject_fee = fee_from_vsize(vsize, node.mempool.get_min_fee_rate())
     if fee < mempool_reject_fee:

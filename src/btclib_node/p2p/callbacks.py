@@ -122,7 +122,6 @@ if TYPE_CHECKING:
     from btclib.block import Block
 
     from btclib_node import Node
-    from btclib_node.chainstate.block_index import BlockIndex
     from btclib_node.p2p.connection import Connection
 
 __all__ = [
@@ -971,25 +970,27 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
     if node.mempool.contains_tx(tx) or node.mempool.was_recently_rejected(tx.hash):
         return
     try:
-        fee = verify_mempool_acceptance(node, tx)
+        fee, vsize = verify_mempool_acceptance(node, tx)
     except MissingPrevoutError:
-        # We don't have the parents in the mempool. Not recorded in
-        # `Mempool`'s own reject cache below: a missing parent can
-        # arrive on its own, with no block having to connect first, so
-        # nothing here would tell this cache when to forget it -- Core's
-        # identical exemption is `TX_MISSING_INPUTS`, which
-        # `AlreadyHaveTx` (`src/node/txdownloadman_impl.cpp`, at
-        # bitcoin/bitcoin@4519933391) never adds to `m_recent_rejects`
-        # either.
+        # An input neither the UTXO set nor the mempool has: its parent
+        # is unknown, or held without that output
+        # (btclib-org/btclib-node#1252). Not recorded in `Mempool`'s own
+        # reject cache below, since Core records neither: both are
+        # `TX_MISSING_INPUTS`, `CCoinsViewMemPool::GetCoin` answering the
+        # same `nullopt` for each, and `MempoolRejectedTx`
+        # (`src/node/txdownloadman_impl.cpp`, at bitcoin/bitcoin@9be056a8a7,
+        # the v31.1 tag) adds that result to `m_recent_rejects` only where
+        # a parent was itself rejected. An unknown parent can still arrive
+        # with no block connecting first; a held one never gains the
+        # output, and Core leaves it out of the cache all the same.
         return
     except BTClibValueError:
-        # Every other refusal `verify_mempool_acceptance` can make --
-        # a relay-policy-only one (`NonStandardTxError`, or a fee below
-        # either floor, `TxRejectedError`, each a `BTClibValueError`)
-        # exactly as much as a genuine consensus one
+        # Every other refusal `verify_mempool_acceptance` can make, each
+        # a `TxRejectedError` and so a `BTClibValueError` -- a
+        # relay-policy-only one (`NonStandardTxError`, or a fee below
+        # either floor) exactly as much as a genuine consensus one
         # (non-final, a coinbase spent too soon, a bad sequence lock, or
-        # the underlying script failure `interpreter.check_transaction`
-        # re-raises once `_consensus_accepts` has also refused it). Core
+        # a script failure `_consensus_accepts` also refuses). Core
         # punishes neither: "Tx failures never trigger
         # disconnections/bans ... either due to non-consensus relay
         # policies ... or due to new consensus rules introduced in soft
@@ -1014,7 +1015,7 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
     # declined to keep is not one to tell every other peer about, a peer
     # that then asks for it getting `notfound` for its trouble.
     # btclib-org/btclib-node#277
-    if node.mempool.add_tx(tx, fee):
+    if node.mempool.add_tx(tx, fee, vsize):
         # novel and accepted into the mempool: what Core's own
         # `m_last_tx_time` records for eviction (`net_processing.cpp`'s
         # `ProcessMessage`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
@@ -1713,6 +1714,8 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     An empty batch, or one that connects, answers the `getheaders` in
     flight to this peer, as Core's `ProcessHeadersMessage` takes it: one
     connecting to nothing may be an announcement, and answers nothing.
+    A batch that connects is then handed to
+    `DownloadManager.headers_direct_fetch`.
     """
     # Core reads the count alone before it compares, so no entry is
     # needed in the payload for it to call `Misbehaving`
@@ -1813,6 +1816,11 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
         maybe_send_getheaders(node, conn, block_locators)
     elif node.status == NodeStatus.SyncingHeaders:
         node.status = NodeStatus.HeaderSynced
+    if tip is not None:
+        # Core's `ProcessHeadersMessage` (`src/net_processing.cpp`, at
+        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) ends by considering
+        # "immediately downloading blocks", `HeadersDirectFetchBlocks`
+        node.download_manager.headers_direct_fetch(conn, tip)
 
 
 # Core's `STALE_RELAY_AGE_LIMIT` (`src/net_processing.cpp`, at
@@ -1820,40 +1828,6 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
 # proof-equivalent time, a block off the active chain may be and still
 # be served.
 _STALE_RELAY_AGE_LIMIT = 30 * 24 * 60 * 60
-
-
-def _descends_from_the_tip(
-    block_index: BlockIndex, block_hash: bytes, not_descending: set[bytes]
-) -> bool:
-    """Whether the active tip is an ancestor of `block_hash`, or it.
-
-    Core's `GetAncestor` at the tip's height. Parents are walked down to
-    that height, stopping at a block `header_index` holds, whose
-    ancestor there is read off that list, and at one already in
-    `not_descending`. What a walk that fails passed through is added to
-    `not_descending`, so that the entries of one locator walk a branch
-    once between them.
-    """
-    active_chain = block_index.active_chain
-    tip_height = len(active_chain) - 1
-    header_dict = block_index.header_dict
-    header_index = block_index.header_index
-    walked: list[bytes] = []
-    current = block_hash
-    height = header_dict[current].index
-    while height > tip_height and current not in not_descending:
-        if current in block_index.header_index_pos:
-            # header_index holds `current` above the tip's height, so it
-            # reaches that height too
-            current = header_index[tip_height]
-            break
-        walked.append(current)
-        current = header_dict[current].header.previous_block_hash
-        height -= 1
-    if current == active_chain[-1]:
-        return True
-    not_descending.update(walked)
-    return False
 
 
 def _find_fork_in_global_index(node: Node, locator: Sequence[bytes]) -> bytes:
@@ -1866,12 +1840,13 @@ def _find_fork_in_global_index(node: Node, locator: Sequence[bytes]) -> bytes:
     """
     block_index = node.chainstate.block_index
     active_chain = block_index.active_chain
-    not_descending: set[bytes] = set()
+    tip_height = len(active_chain) - 1
     for block_hash in locator:
         if _height_on_the_active_chain(node, block_hash) is not None:
             return block_hash
-        if block_hash in block_index.header_dict and _descends_from_the_tip(
-            block_index, block_hash, not_descending
+        if (
+            block_hash in block_index.header_dict
+            and block_index.get_ancestor(block_hash, tip_height) == active_chain[-1]
         ):
             return active_chain[-1]
     return active_chain[0]
