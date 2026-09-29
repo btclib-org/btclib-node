@@ -191,8 +191,10 @@ class AManagerFactory(Protocol):
         connect: Sequence[tuple[str, int]] = (),
         addnode: Sequence[tuple[str, int]] = (),
         addnode_args: Sequence[str] = (),
+        seednode: Sequence[tuple[str, int]] = (),
         listen: bool = True,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
+        fixed_seeds: bool = True,
     ) -> P2pManager:
         """Build a `P2pManager` seeded with `conns`, `peer_db` and `status`."""
         ...
@@ -218,8 +220,10 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
         connect: Sequence[tuple[str, int]] = (),
         addnode: Sequence[tuple[str, int]] = (),
         addnode_args: Sequence[str] = (),
+        seednode: Sequence[tuple[str, int]] = (),
         listen: bool = True,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
+        fixed_seeds: bool = True,
     ) -> P2pManager:
         # `18444` is regtest's own well-known port -- binding it for
         # real, as a plain default would, collides with a second suite
@@ -256,9 +260,11 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
                 connect_given=bool(connect),
                 addnode=addnode,
                 addnode_args=tuple(addnode_args),
+                seednode=seednode,
                 listen=listen,
                 max_connections=max_connections,
                 dnsseed=not connect and max_connections > 0,
+                fixed_seeds=fixed_seeds,
                 pruned=False,
             ),
             # `Connection.own_version`'s own `start_height`
@@ -1294,6 +1300,7 @@ def a_seeding_manager(
     elapsed: float = 0.0,
     use_dns_seed: bool = True,
     addnode: Sequence[tuple[str, int]] = (),
+    seednode: Sequence[tuple[str, int]] = (),
     conns: Sequence[Any] = (),
 ) -> tuple[P2pManager, list[list[NetworkAddressV2]]]:
     """Build a mainnet manager whose peer db holds only the `held` networks.
@@ -1307,7 +1314,7 @@ def a_seeding_manager(
         holds_network=lambda network_id: network_id in held,
         add_addresses=lambda addresses: added.append(list(addresses)),
     )
-    manager = a_manager(conns, peer_db=peer_db, addnode=addnode)
+    manager = a_manager(conns, peer_db=peer_db, addnode=addnode, seednode=seednode)
     manager.node.chain = Main()
     manager.use_dns_seed = use_dns_seed
     manager._dial_start = time.time() - elapsed
@@ -1365,6 +1372,43 @@ def test_no_fixed_seed_is_added_where_every_reachable_network_is_held(
     asyncio.run(manager._maybe_dial_more_peers())
     assert added == []
     assert manager.add_fixed_seeds
+
+
+def test_fixed_seeds_off_by_config_is_set_at_construction(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1192: `Config.fixed_seeds=False` (`-fixedseeds=0`) reaches this.
+
+    Through construction, not poked onto the attribute afterward: the
+    fixture's own `fixed_seeds=False` is what `P2pManager.__init__`
+    reads `node.config.fixed_seeds` from.
+    """
+    manager = a_manager(fixed_seeds=False)
+    assert manager.add_fixed_seeds is False
+
+
+def test_fixed_seeds_off_by_config_adds_nothing(a_manager: AManagerFactory) -> None:
+    """ISS 1192: `Config.fixed_seeds=False` (`-fixedseeds=0`) reaches this."""
+    manager, added = a_seeding_manager(a_manager, use_dns_seed=False, elapsed=61)
+    manager.add_fixed_seeds = False
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert added == []
+
+
+def test_a_seednode_makes_fixed_seeds_wait_the_same_as_an_addnode(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1192: Core's own `!dnsseed && !use_seednodes` guards the arm.
+
+    A `-seednode` alone, DNS seeding off, is not "nothing else may fill
+    the table": fixed seeds wait the full minute the same as with an
+    `-addnode`.
+    """
+    manager, added = a_seeding_manager(
+        a_manager, use_dns_seed=False, seednode=[("1.2.3.4", 8333)]
+    )
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert added == []
 
 
 @pytest.mark.parametrize(
@@ -1759,6 +1803,36 @@ def test_run_skips_the_dns_lookup_under_connect(a_manager: AManagerFactory) -> N
     assert not calls
 
 
+def test_run_logs_when_a_seednode_is_ignored_under_connect(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1192: Core's own log line, `-seednode` given alongside `-connect`."""
+    logged: list[Any] = []
+    manager = a_manager(
+        connect=[("1.2.3.4", 8333)],
+        seednode=[("5.6.7.8", 8333)],
+        listen=False,
+    )
+    monkeypatch.setattr(manager.logger, "info", logged.append)
+    manager.start()
+    wait_until(manager.loop.is_running)
+    _let_runs_own_coroutines_start(manager)
+    assert "-seednode is ignored when -connect is used" in logged
+
+
+def test_run_does_not_log_it_without_a_seednode(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The positive control: `-connect` alone logs nothing about `-seednode`."""
+    logged: list[Any] = []
+    manager = a_manager(connect=[("1.2.3.4", 8333)], listen=False)
+    monkeypatch.setattr(manager.logger, "info", logged.append)
+    manager.start()
+    wait_until(manager.loop.is_running)
+    _let_runs_own_coroutines_start(manager)
+    assert "-seednode is ignored when -connect is used" not in logged
+
+
 def test_run_schedules_the_dns_lookup_without_connect(
     a_manager: AManagerFactory,
 ) -> None:
@@ -1801,6 +1875,101 @@ def test_dns_address_seed_queues_every_unanswered_seed_on_the_chains_port(
         ("down.example", 18444),
         ("quiet.example", 18444),
     ]
+
+
+def test_maybe_add_seednode_is_a_noop_without_seednodes(
+    a_manager: AManagerFactory,
+) -> None:
+    """Nothing given: nothing queued, whatever `peer_db` holds."""
+    manager = a_manager(peer_db=a_peer_db_stub(is_empty=True))
+    manager._maybe_add_seednode()
+    assert not manager._addr_fetches
+
+
+def test_maybe_add_seednode_queues_the_first_value_at_once_when_peer_db_is_empty(
+    a_manager: AManagerFactory,
+) -> None:
+    """Core's own `add_addr_fetch` initial value: `peer_db` empty, no wait."""
+    manager = a_manager(
+        peer_db=a_peer_db_stub(is_empty=True),
+        seednode=[("1.2.3.4", 8333), ("5.6.7.8", 8333)],
+    )
+    manager._arm_dial_loop()
+    manager._maybe_add_seednode()
+    assert list(manager._addr_fetches) == [("5.6.7.8", 8333)]
+    assert manager._seednodes == [("1.2.3.4", 8333)]
+
+
+def test_maybe_add_seednode_waits_when_peer_db_already_holds_something(
+    a_manager: AManagerFactory,
+) -> None:
+    """`peer_db` non-empty when the dial loop starts: the timer gates it."""
+    manager = a_manager(
+        peer_db=a_peer_db_stub(is_empty=False), seednode=[("1.2.3.4", 8333)]
+    )
+    manager._arm_dial_loop()
+    manager._maybe_add_seednode()
+    assert not manager._addr_fetches
+    assert manager._seednodes == [("1.2.3.4", 8333)]
+
+
+def test_maybe_add_seednode_waits_the_interval_between_two_values(
+    a_manager: AManagerFactory,
+) -> None:
+    """Core's own `ADD_NEXT_SEEDNODE`: one value per ten seconds, not sooner."""
+    manager = a_manager(
+        peer_db=a_peer_db_stub(is_empty=True),
+        seednode=[("1.2.3.4", 8333), ("5.6.7.8", 8333)],
+    )
+    manager._arm_dial_loop()
+    manager._maybe_add_seednode()
+    manager._maybe_add_seednode()
+    assert list(manager._addr_fetches) == [("5.6.7.8", 8333)]
+    manager._next_seednode_at = 0.0
+    manager._maybe_add_seednode()
+    assert list(manager._addr_fetches) == [("5.6.7.8", 8333), ("1.2.3.4", 8333)]
+    assert not manager._seednodes
+
+
+def test_maybe_add_seednode_does_not_fire_early_when_the_loop_starts_late(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1192 review round 2: a slow start must not pre-expire the timer.
+
+    The reviewer's own reproduction: build the manager, let real
+    wall-clock time pass before the dial loop's own `_arm_dial_loop`
+    ever runs -- as a slow `Node.__init__` would -- and only then call
+    `_maybe_add_seednode` for the first time. With `peer_db` already
+    holding something, the old code anchored `_next_seednode_at` to
+    construction time in `__init__`, so fifteen seconds of delay alone
+    was enough to let the ten-second `_ADD_SEEDNODE_INTERVAL` timer
+    expire before the loop's first pass, queuing a value immediately
+    where Core's own drip-feed would still wait.
+    """
+    manager = a_manager(
+        peer_db=a_peer_db_stub(is_empty=False),
+        seednode=[("1.2.3.4", 8333), ("5.6.7.8", 8333)],
+    )
+    time.sleep(15)
+    manager._arm_dial_loop()
+    manager._maybe_add_seednode()
+    assert not manager._addr_fetches
+    assert manager._seednodes == [("1.2.3.4", 8333), ("5.6.7.8", 8333)]
+
+
+def test_maybe_add_seednode_stops_once_full_relay_meets_the_threshold(
+    a_manager: AManagerFactory,
+) -> None:
+    """Core's own `SEED_OUTBOUND_CONNECTION_THRESHOLD`: two, and it stops."""
+    conns = automatic_conns(2, 0)
+    manager = a_manager(
+        conns, peer_db=a_peer_db_stub(is_empty=True), seednode=[("1.2.3.4", 8333)]
+    )
+    manager._seednode_addr_fetch_due = False
+    manager._next_seednode_at = 0.0
+    manager._maybe_add_seednode()
+    assert not manager._addr_fetches
+    assert manager._seednodes == [("1.2.3.4", 8333)]
 
 
 def test_process_addr_fetch_is_a_noop_on_an_empty_queue(
