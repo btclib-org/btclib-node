@@ -1800,6 +1800,23 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
             and disconnect_if_insufficient_work(node, conn)
         ):
             protect_if_caught_up(node, conn)
+    _ask_for_more_headers(node, conn, len(headers), tip)
+    if tip is not None:
+        # Core's `ProcessHeadersMessage` (`src/net_processing.cpp`, at
+        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) ends by considering
+        # "immediately downloading blocks", `HeadersDirectFetchBlocks`
+        node.download_manager.headers_direct_fetch(conn, tip)
+
+
+def _ask_for_more_headers(
+    node: Node, conn: Connection, batch_size: int, tip: bytes | None
+) -> None:
+    """Ask `conn` for the headers past a batch, or mark header sync finished.
+
+    `tip` is what `add_headers` answered for a batch of `batch_size`
+    headers: `None` where the batch connected to nothing this node knows.
+    """
+    block_index = node.chainstate.block_index
     if tip is None:
         # a batch connecting to nothing this node knows, whatever its
         # length: get_block_locator_hashes asks from what this node
@@ -1810,7 +1827,7 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
         # ancestors. btclib-org/btclib-node#233
         block_locators = block_index.get_block_locator_hashes()
         maybe_send_getheaders(node, conn, block_locators)
-    elif len(headers) == MAX_HEADERS_RESULTS:  # the peer may have more to give us
+    elif batch_size == MAX_HEADERS_RESULTS:  # the peer may have more to give us
         # [tip] only for a live fork below header_index's own tip: that
         # is the one case get_block_locator_hashes cannot reach on its
         # own, since header_index only moves for a header extending it
@@ -1827,11 +1844,6 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
         maybe_send_getheaders(node, conn, block_locators)
     elif node.status == NodeStatus.SyncingHeaders:
         node.status = NodeStatus.HeaderSynced
-    if tip is not None:
-        # Core's `ProcessHeadersMessage` (`src/net_processing.cpp`, at
-        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) ends by considering
-        # "immediately downloading blocks", `HeadersDirectFetchBlocks`
-        node.download_manager.headers_direct_fetch(conn, tip)
 
 
 # Core's `STALE_RELAY_AGE_LIMIT` (`src/net_processing.cpp`, at
