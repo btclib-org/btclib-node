@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING
 
 from btclib.fee import FeeRate, fee_from_vsize
 
+from btclib_node.exceptions import TxRejectedError
+
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
@@ -27,7 +29,7 @@ if TYPE_CHECKING:
 
     from btclib_node.log import Logger
 
-__all__ = ["Mempool"]
+__all__ = ["Mempool", "format_money"]
 
 # Core's own `CRollingBloomFilter(120'000, 0.000'001)`
 # (`src/node/txdownloadman_impl.h`, at bitcoin/bitcoin@4519933391): "a
@@ -57,12 +59,27 @@ _INCREMENTAL_RELAY_FEE_RATE = FeeRate(sats_per_kvbyte=100)
 # all, shortened as this mempool empties -- `get_min_fee_rate` below.
 _ROLLING_FEE_HALFLIFE = 60 * 60 * 12
 
+_COIN = 100_000_000
+
+
+def format_money(amount: int) -> str:
+    """Core's own `FormatMoney` for an amount never negative here.
+
+    Eight decimals, right-trimmed of zeros down to two
+    (`src/util/moneystr.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag): 5000 satoshi is "0.00005", one bitcoin "1.00".
+    """
+    whole, fraction = divmod(amount, _COIN)
+    decimals = f"{fraction:08d}".rstrip("0").ljust(2, "0")
+    return f"{whole}.{decimals}"
+
 
 class Mempool:
     """The node's set of transactions not yet in a block, keyed both ways.
 
     `transactions` is by wtxid, `txid_index` maps a txid to the wtxid
-    that holds it, and `fees` carries what each entry paid -- the module
+    that holds it, `fees` carries what each entry paid and `vsizes` the
+    size it is priced and counted by -- the module
     docstring above is where the single-thread invariant that lets this
     class carry no lock of its own is argued. `spent_by` is the fourth
     index, `_descendants` below is where it is read; `_feerate_heap` is
@@ -88,6 +105,10 @@ class Mempool:
         # main.verify_mempool_acceptance already computes and would
         # otherwise discard. btclib-org/btclib-node#260
         self.fees: dict[bytes, int] = {}
+        # wtxid -> Core's `CTxMemPoolEntry::GetTxSize`, the sigop-adjusted
+        # vsize `main.verify_mempool_acceptance` computes: what every
+        # feerate and the size limit here read. btclib-org/btclib-node#1357
+        self.vsizes: dict[bytes, int] = {}
         # txid -> the wtxids, held in this mempool, of whatever spends an
         # output of that txid -- kept up to date in `add_tx` and `_pop`
         # rather than rebuilt at eviction time, `_descendants` below being
@@ -97,6 +118,13 @@ class Mempool:
         # leaves rather than leaving an empty set behind for every
         # confirmed parent a mempool transaction ever spent.
         self.spent_by: dict[bytes, set[bytes]] = {}
+        # (txid, vout) -> the wtxid, held in this mempool, spending that
+        # outpoint: Core's own `mapNextTx` (`src/txmempool.h`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), what
+        # `check_replacement` and `remove_conflicts` below read. `add_tx`
+        # refusing a second spender is what keeps one wtxid per outpoint.
+        # btclib-org/btclib-node#1244
+        self.outpoint_spender: dict[tuple[bytes, int], bytes] = {}
         # (individual feerate, insertion order, wtxid), a min-heap
         # `add_tx` pushes one entry onto and `_pop_worst_wtxid` below
         # reads from instead of `_evict_to_limit` scanning `transactions`
@@ -260,10 +288,11 @@ class Mempool:
         self._recent_rejects.add(wtxid)
 
     # Don't need lock because handled in same thread
-    def add_tx(self, tx: Tx, fee: int = 0) -> bool:
+    def add_tx(self, tx: Tx, fee: int = 0, vsize: int | None = None) -> bool:
         """Add `tx`, evict past the limit, and say whether it stuck.
 
-        A no-op, returning `False`, for a txid already held. Otherwise
+        A no-op, returning `False`, for a txid already held or a
+        transaction spending an outpoint one held already spends. Otherwise
         added provisionally and run through `_evict_to_limit`, which
         takes it right back out if it is itself the worst entry left
         once trimming is done -- so the return value is `False` there
@@ -273,7 +302,9 @@ class Mempool:
         # callers -- mostly in tests -- that add a transaction without
         # ever asking what it pays; every production caller has just
         # computed the real one out of main.verify_mempool_acceptance
-        # and passes it explicitly.
+        # and passes it explicitly. `vsize` defaults to `tx.vsize` for
+        # the same callers: Core's size with no sigops counted, which
+        # needs the prevouts only verification reads.
         #
         # The return value is what a caller that also queues the
         # transaction for announcement -- p2p/callbacks.py's `tx`,
@@ -290,21 +321,30 @@ class Mempool:
         # worst one held once trimming is done, eviction takes it right
         # back out and the return value is `False` here exactly as it
         # was for the old outright refusal -- `rpc/callbacks.py`'s own
-        # "Mempool is full" answers that case whether it is reached this
+        # "mempool full", Core's, answers that case whether it is reached this
         # way or the old way. A transaction already held under this
         # txid, same witness or not, is still a no-op that never touches
-        # bytesize at all: btclib-org/btclib-node#293's own resubmission
-        # handling reads unchanged. btclib-org/btclib-node#294
+        # bytesize at all, for a caller that skipped
+        # `main.verify_mempool_acceptance`, which refuses it first.
+        # btclib-org/btclib-node#294
         wtxid, txid = tx.hash, tx.id
         if txid in self.txid_index:
             return False
+        outpoints = [(vin.prev_out.tx_id, vin.prev_out.vout) for vin in tx.vin]
+        if any(outpoint in self.outpoint_spender for outpoint in outpoints):
+            # a caller that skipped `main.verify_mempool_acceptance`, whose
+            # `check_replacement` call refuses this first
+            return False
+        for outpoint in outpoints:
+            self.outpoint_spender[outpoint] = wtxid
         self.transactions[wtxid] = tx
         self.txid_index[txid] = wtxid
         self.fees[wtxid] = fee
+        self.vsizes[wtxid] = tx.vsize if vsize is None else vsize
         for vin in tx.vin:
             self.spent_by.setdefault(vin.prev_out.tx_id, set()).add(wtxid)
         self.size += 1
-        self.bytesize += tx.vsize
+        self.bytesize += self.vsizes[wtxid]
         self.sequence += 1
         # `self.sequence`, already bumped once above and unique to this
         # call -- it never repeats and only ever grows -- is this heap's
@@ -318,7 +358,8 @@ class Mempool:
         # heap tuple from its first spell still carries stops matching.
         self._heap_current_seq[wtxid] = self.sequence
         heapq.heappush(
-            self._feerate_heap, (Fraction(fee, tx.vsize), self.sequence, wtxid)
+            self._feerate_heap,
+            (Fraction(fee, self.vsizes[wtxid]), self.sequence, wtxid),
         )
         self._evict_to_limit()
         return wtxid in self.transactions
@@ -332,6 +373,75 @@ class Mempool:
     def contains_tx(self, tx: Tx) -> bool:
         """Whether `tx`'s own wtxid is currently held."""
         return tx.hash in self.transactions
+
+    def _replaced(self, tx: Tx) -> set[bytes]:
+        """Return what spends an outpoint `tx` spends, with its descendants.
+
+        Core's own `all_conflicts`, `GetEntriesForConflicts`' union of
+        `CalculateDescendants` over the direct conflicts
+        (`src/policy/rbf.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        tag).
+        """
+        outpoints = ((vin.prev_out.tx_id, vin.prev_out.vout) for vin in tx.vin)
+        conflicts = {
+            self.outpoint_spender[outpoint]
+            for outpoint in outpoints
+            if outpoint in self.outpoint_spender
+        }
+        return set().union(*(self._descendants(wtxid) for wtxid in conflicts))
+
+    def check_replacement(self, tx: Tx, fee: int, vsize: int) -> None:
+        """Refuse `tx` if it spends an outpoint a held transaction spends.
+
+        Core replaces the held transactions where the candidate pays for
+        them (`ReplacementChecks`, `src/validation.cpp`,
+        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag); this mempool has
+        no replacement, so every conflicting candidate is refused. Where
+        Core's `PaysForRBF` (`src/policy/rbf.cpp`, same commit) would
+        refuse it too, it is refused in the same words: "insufficient
+        fee", with a fee under the conflicts' and their descendants', or
+        an increase under the incremental relay fee for `vsize`, the
+        candidate's sigop-adjusted size (btclib-org/btclib-node#1357). A
+        candidate that pays for them, which Core may accept, is refused
+        "bip125-replacement-disallowed", Core's reason where it allows no
+        replacement; replacing is btclib-org/btclib-node#1334.
+        btclib-org/btclib-node#1244
+        """
+        replaced = self._replaced(tx)
+        if not replaced:
+            return
+        original = sum(self.fees[wtxid] for wtxid in replaced)
+        txid = tx.id.hex()
+        if fee < original:
+            details = (
+                f"rejecting replacement {txid}, less fees than conflicting txs; "
+                f"{format_money(fee)} < {format_money(original)}"
+            )
+            reason = "insufficient fee"
+            raise TxRejectedError(reason, details)
+        relay_fee = fee_from_vsize(vsize, _INCREMENTAL_RELAY_FEE_RATE)
+        if fee - original < relay_fee:
+            details = (
+                f"rejecting replacement {txid}, not enough additional fees to "
+                f"relay; {format_money(fee - original)} < {format_money(relay_fee)}"
+            )
+            reason = "insufficient fee"
+            raise TxRejectedError(reason, details)
+        reason = "bip125-replacement-disallowed"
+        raise TxRejectedError(reason)
+
+    def remove_conflicts(self, tx: Tx) -> None:
+        """Remove what spends an outpoint `tx` spends, with its descendants.
+
+        Core's own `removeConflicts`, which `removeForBlock` calls for
+        every transaction of a connected block (`src/txmempool.cpp`,
+        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a held spend of a
+        coin the block spent can never confirm. Called after `remove_tx`
+        has taken `tx` itself out, so every spender left is a conflict.
+        btclib-org/btclib-node#1244
+        """
+        for victim in self._replaced(tx):
+            self._pop(victim)
 
     def meets_fee_rate(self, wtxid: bytes, min_fee_rate: int) -> bool:
         """Whether the entry's own fee clears a rate quoted in sat/kvB.
@@ -351,11 +461,11 @@ class Mempool:
         """
         if not min_fee_rate:
             return True
-        tx = self.transactions.get(wtxid)
         fee = self.fees.get(wtxid)
-        if tx is None or fee is None:
+        if fee is None:
             return True
-        return fee >= fee_from_vsize(tx.vsize, FeeRate(sats_per_kvbyte=min_fee_rate))
+        vsize = self.vsizes[wtxid]
+        return fee >= fee_from_vsize(vsize, FeeRate(sats_per_kvbyte=min_fee_rate))
 
     def _pop(self, wtxid: bytes) -> Tx:
         """Remove one entry by wtxid and return the transaction removed.
@@ -378,6 +488,7 @@ class Mempool:
         tx = self.transactions.pop(wtxid)
         self.txid_index.pop(tx.id, None)
         self.fees.pop(wtxid, None)
+        vsize = self.vsizes.pop(wtxid)
         self._heap_current_seq.pop(wtxid, None)
         # A set of the spent txids first, not a loop over `tx.vin` itself:
         # two inputs of one transaction spending two outputs of the same
@@ -386,13 +497,15 @@ class Mempool:
         # twice here would `del` an already-deleted `spent_by` entry on
         # the second `vin` and raise `KeyError` on a transaction that
         # never did anything wrong.
+        for vin in tx.vin:
+            del self.outpoint_spender[vin.prev_out.tx_id, vin.prev_out.vout]
         for spent_txid in {vin.prev_out.tx_id for vin in tx.vin}:
             spenders = self.spent_by[spent_txid]
             spenders.discard(wtxid)
             if not spenders:
                 del self.spent_by[spent_txid]
         self.size -= 1
-        self.bytesize -= tx.vsize
+        self.bytesize -= vsize
         self.sequence += 1
         # Bounds the heap at twice the size it would be with no stale
         # entries in it at all: a wtxid removed here without its own
@@ -507,9 +620,7 @@ class Mempool:
         self._feerate_heap = []
         for index, (wtxid, fee) in enumerate(self.fees.items()):
             self._heap_current_seq[wtxid] = index
-            self._feerate_heap.append(
-                (Fraction(fee, self.transactions[wtxid].vsize), index, wtxid)
-            )
+            self._feerate_heap.append((Fraction(fee, self.vsizes[wtxid]), index, wtxid))
         heapq.heapify(self._feerate_heap)
 
     def _evict_to_limit(self) -> None:
@@ -560,7 +671,7 @@ class Mempool:
             # module's own advisory, non-consensus use of the number
             # does not need to close.
             package_fee = sum(self.fees[w] for w in package)
-            package_vsize = sum(self.transactions[w].vsize for w in package)
+            package_vsize = sum(self.vsizes[w] for w in package)
             removed_rate = Fraction(package_fee, package_vsize) * 1000
             removed_rate += _INCREMENTAL_RELAY_FEE_RATE.sats_per_kvbyte
             for victim in package:

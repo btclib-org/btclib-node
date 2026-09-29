@@ -18,12 +18,19 @@ pay for.
 
 from typing import TYPE_CHECKING
 
+from btclib.consensus import WITNESS_SCALE_FACTOR
 from btclib.exceptions import BTClibValueError
 from btclib.script.engine import verify_amounts, verify_input, verify_transaction
 from btclib.script.engine.flags import ALL_FLAGS, ScriptFlag
+from btclib.script.limits import MAX_PUBKEYS_PER_MULTISIG
+from btclib.script.script import BYTE_FROM_OP_CODE_NAME, op_code_spans
 from btclib.script.sig_hash import PrecomputedTxData
 
-from btclib_node.exceptions import NonStandardTxError, PrevoutCountMismatchError
+from btclib_node.exceptions import (
+    NonStandardTxError,
+    PrevoutCountMismatchError,
+    TxRejectedError,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -42,6 +49,7 @@ __all__ = [
     "check_transactions",
     "f",
     "get_flags",
+    "sig_op_cost",
     "warm",
 ]
 
@@ -269,20 +277,153 @@ def check_transaction(prevouts: list[TxOut], tx: Tx) -> None:
     on.
 
     A refusal the consensus set would not have made raises
-    `NonStandardTxError` rather than reaching the caller as the engine
-    gave it, which is what lets `p2p.callbacks.tx` keep the peer that
-    relayed the transaction. Core's own comment above the set this one
-    copies asks for that: a node forwarding a transaction which breaks
-    one of the non-mandatory rules is neither banned nor disconnected
+    `NonStandardTxError`, and one it would have made `TxRejectedError`.
+    Core's own comment above the set this one copies asks for the
+    distinction: a node forwarding a transaction which breaks one of the
+    non-mandatory rules is neither banned nor disconnected
     (`src/policy/policy.h:112-117`, same commit).
+
+    Both are in the shape of Core's `CheckInputScripts` refusal under
+    `STANDARD_SCRIPT_VERIFY_FLAGS` (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the reason
+    "mempool-script-verify-flag-failed (...)" and the details naming the
+    input, its transaction and the outpoint it spends. Inside the
+    parentheses is btclib's message, where Core's is `ScriptErrorString`:
+    btclib-org/btclib-node#1362. Each input is verified in turn, as
+    Core's own loop does, to name the first that fails; the amounts are
+    `main.verify_mempool_acceptance`'s to check, before this.
     """
     # No copy: btclib's engine leaves the transaction alone -- sig_hash
     # builds the blanked transaction each preimage commits to rather
     # than editing the one it was handed. What the copy paid for was a
     # defect that is not there, once per mempool acceptance.
-    try:
-        verify_transaction(prevouts, tx, STANDARD_FLAGS)
-    except BTClibValueError as refusal:
-        if _consensus_accepts(prevouts, tx):
-            raise NonStandardTxError(str(refusal)) from refusal
-        raise
+    precomputed = PrecomputedTxData(tx, prevouts)
+    for i, tx_in in enumerate(tx.vin):
+        try:
+            verify_input(prevouts, tx, i, STANDARD_FLAGS, precomputed)
+        except BTClibValueError as refusal:
+            reason = f"mempool-script-verify-flag-failed ({refusal})"
+            prev_out = tx_in.prev_out
+            details = (
+                f"input {i} of {tx.id.hex()} (wtxid {tx.hash.hex()}), "
+                f"spending {prev_out.tx_id.hex()}:{prev_out.vout}"
+            )
+            if _consensus_accepts(prevouts, tx):
+                raise NonStandardTxError(reason, details) from refusal
+            raise TxRejectedError(reason, details) from refusal
+
+
+def _op(name: str) -> int:
+    """Return the op code a name stands for, read out of btclib's table."""
+    return BYTE_FROM_OP_CODE_NAME[name][0]
+
+
+_OP_0, _OP_1, _OP_16 = _op("OP_0"), _op("OP_1"), _op("OP_16")
+_OP_HASH160, _OP_EQUAL = _op("OP_HASH160"), _op("OP_EQUAL")
+_CHECKSIG = {_op("OP_CHECKSIG"), _op("OP_CHECKSIGVERIFY")}
+_CHECKMULTISIG = {_op("OP_CHECKMULTISIG"), _op("OP_CHECKMULTISIGVERIFY")}
+# Core's own `WITNESS_V0_KEYHASH_SIZE` and `WITNESS_V0_SCRIPTHASH_SIZE`
+_V0_KEYHASH_SIZE, _V0_SCRIPTHASH_SIZE = 20, 32
+
+
+def _ops(script: bytes) -> Iterator[tuple[int, bytes, int]]:
+    """Walk `script` as Core's `GetOp`: op code, push data, one past it.
+
+    The data is empty for an op code that pushes none, as `GetOp` clears
+    its `vchRet`; the walk stops where `GetOp` returns false.
+    """
+    for op_code, start, stop in op_code_spans(script):
+        header = 1 + (2 ** (op_code - 76) if 76 <= op_code <= 78 else 0)  # noqa: PLR2004
+        data = script[start + header : stop] if op_code <= 78 else b""  # noqa: PLR2004
+        yield op_code, data, stop
+
+
+def _accurate_sig_op_count(script: bytes) -> int:
+    """Core's `CScript::GetSigOpCount(true)`.
+
+    `btclib.script.sig_ops.sig_op_count` is the `false` half: here an
+    `OP_CHECKMULTISIG` right after `OP_1` to `OP_16` counts that many.
+    """
+    count, last = 0, None
+    for op_code, _, _ in _ops(script):
+        if op_code in _CHECKSIG:
+            count += 1
+        elif op_code in _CHECKMULTISIG:
+            if last is not None and _OP_1 <= last <= _OP_16:
+                count += last - _OP_1 + 1
+            else:
+                count += MAX_PUBKEYS_PER_MULTISIG
+        last = op_code
+    return count
+
+
+def _is_p2sh(script: bytes) -> bool:
+    """Core's `CScript::IsPayToScriptHash`."""
+    return (
+        len(script) == 23  # noqa: PLR2004
+        and script[0] == _OP_HASH160
+        and script[1] == 0x14  # noqa: PLR2004
+        and script[22] == _OP_EQUAL
+    )
+
+
+def _witness_program(script: bytes) -> tuple[int, bytes] | None:
+    """Core's `CScript::IsWitnessProgram`: the version and the program."""
+    if not 4 <= len(script) <= 42:  # noqa: PLR2004
+        return None
+    if script[0] != _OP_0 and not _OP_1 <= script[0] <= _OP_16:
+        return None
+    if script[1] + 2 != len(script):
+        return None
+    return (0 if script[0] == _OP_0 else script[0] - _OP_1 + 1), script[2:]
+
+
+def _last_push(script_sig: bytes) -> bytes | None:
+    """Return the data of the last op, `None` unless push-only.
+
+    Core's `IsPushOnly` and the loop both its callers run: an op code
+    above `OP_16`, or a push running past the end, is not push-only.
+    """
+    data, end = b"", 0
+    for op_code, push, stop in _ops(script_sig):
+        if op_code > _OP_16:
+            return None
+        data, end = push, stop
+    return data if end == len(script_sig) else None
+
+
+def _witness_sig_ops(program: tuple[int, bytes], stack: tuple[bytes, ...]) -> int:
+    """Core's `WitnessSigOps`: version 0 alone counts."""
+    version, witness_program = program
+    if version == 0:
+        if len(witness_program) == _V0_KEYHASH_SIZE:
+            return 1
+        if len(witness_program) == _V0_SCRIPTHASH_SIZE and stack:
+            return _accurate_sig_op_count(stack[-1])
+    return 0
+
+
+def sig_op_cost(tx: Tx, prevouts: list[TxOut]) -> int:
+    """Core's `GetTransactionSigOpCost` under the standard flags.
+
+    `src/consensus/tx_verify.cpp` and `CountWitnessSigOps` in
+    `src/script/interpreter.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag: the legacy count of every script of `tx` and the p2sh
+    count of every redeem script, each at `WITNESS_SCALE_FACTOR`, plus
+    the witness count at one. `prevouts` is aligned with `tx.vin`; a
+    coinbase never reaches the mempool, so its early return is not here.
+    btclib's `Tx.sig_op_count` is the legacy term, and it is all btclib
+    counts: btclib-org/btclib-node#1357.
+    """
+    cost = tx.sig_op_count * WITNESS_SCALE_FACTOR
+    for tx_in, prevout in zip(tx.vin, prevouts, strict=True):
+        script_pub_key = prevout.script_pub_key.script
+        redeem_script = _last_push(tx_in.script_sig)
+        if _is_p2sh(script_pub_key) and redeem_script is not None:
+            cost += _accurate_sig_op_count(redeem_script) * WITNESS_SCALE_FACTOR
+        program = _witness_program(script_pub_key)
+        if program is None and _is_p2sh(script_pub_key) and redeem_script is not None:
+            program = _witness_program(redeem_script)
+        if program is not None:
+            cost += _witness_sig_ops(program, tx_in.script_witness.stack)
+    return cost
