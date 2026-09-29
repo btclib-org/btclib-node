@@ -7,8 +7,8 @@
 import secrets
 import time
 from fractions import Fraction
-from typing import TYPE_CHECKING
 
+import pytest
 from btclib.fee import FeeRate, fee_from_vsize
 from btclib.script import script
 from btclib.script.witness import Witness
@@ -18,12 +18,10 @@ from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
 from btclib_node import mempool as mempool_module
+from btclib_node.exceptions import TxRejectedError
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from tests import generate_random_transaction
-
-if TYPE_CHECKING:
-    import pytest
 
 
 def a_witness_transaction() -> Tx:
@@ -321,13 +319,13 @@ def test_eviction_of_a_diamond_shaped_package_removes_every_descendant_once() ->
     mempool = Mempool(Logger(debug=True))
     parent = generate_random_transaction()
     child_a = generate_random_transaction(parent.id)
-    child_b = generate_random_transaction(parent.id)
+    # parent:1, not parent:0 again: a second spend of one outpoint is a
+    # conflict `add_tx` refuses (btclib-org/btclib-node#1244)
+    child_b = a_spend_of([(parent.id, 1)])
     grandchild = a_transaction_spending(child_a.id, child_b.id)
     keeper = generate_random_transaction()
-    mempool.add_tx(parent, 0)
-    mempool.add_tx(child_a, 0)
-    mempool.add_tx(child_b, 0)
-    mempool.add_tx(grandchild, 0)
+    for tx in (parent, child_a, child_b, grandchild):
+        assert mempool.add_tx(tx, 0)
     mempool.bytesize_limit = mempool.bytesize + keeper.vsize - 1
     assert mempool.add_tx(keeper, 10_000) is True
     assert not mempool.contains_tx(parent)
@@ -758,3 +756,199 @@ def test_get_min_fee_rate_zeroes_out_below_half_the_incremental_fee() -> None:
     mempool._last_rolling_fee_update = time.time() - 60 * 60 * 12 * 20  # 20 halvings
     assert mempool.get_min_fee_rate() == FeeRate(sats_per_kvbyte=0)
     assert mempool._rolling_min_fee_rate == 0.0
+
+
+def a_spend_of(outpoints: list[tuple[bytes, int]], value: int = 1) -> Tx:
+    """Return a transaction spending exactly `outpoints`."""
+    return Tx(
+        version=1,
+        lock_time=0,
+        vin=[
+            TxIn(
+                prev_out=OutPoint(txid, vout),
+                script_sig=script.serialize([secrets.token_bytes(32)]),
+                sequence=0xFFFFFFFF,
+            )
+            for txid, vout in outpoints
+        ],
+        vout=[
+            TxOut(
+                value=value, script_pub_key=script.serialize([secrets.token_bytes(32)])
+            )
+        ],
+    )
+
+
+def test_a_second_spend_of_one_outpoint_is_not_added() -> None:
+    """`add_tx` keeps one spender per outpoint, and forgets it once gone.
+
+    btclib-org/btclib-node#1244: two spends of one outpoint were both kept.
+    """
+    mempool = Mempool(Logger(debug=True))
+    coin = (secrets.token_bytes(32), 3)
+    first = a_spend_of([coin, (secrets.token_bytes(32), 0)])
+    second = a_spend_of([coin])
+    assert mempool.add_tx(first, 1000)
+    assert not mempool.add_tx(second, 5000)
+    assert mempool.outpoint_spender[coin] == first.hash
+    assert not mempool.contains_tx(second)
+    assert mempool.size == 1
+
+    mempool.remove_tx(first)
+    assert mempool.outpoint_spender == {}
+    assert mempool.add_tx(second, 5000)
+
+
+def test_format_money_is_core_s_own() -> None:
+    """Eight decimals, right-trimmed to no fewer than two."""
+    fmt = mempool_module.format_money
+    assert fmt(0) == "0.00"
+    assert fmt(5000) == "0.00005"
+    assert fmt(10000) == "0.0001"
+    assert fmt(10**8) == "1.00"
+    assert fmt(123_456_789) == "1.23456789"
+    assert fmt(2_150_000_000) == "21.50"
+
+
+def a_mempool_with_a_conflict() -> tuple[Mempool, tuple[bytes, int], Tx, Tx]:
+    """Hold a spend of one coin paying 10000, and its child paying 2000."""
+    mempool = Mempool(Logger(debug=True))
+    coin = (secrets.token_bytes(32), 0)
+    held = a_spend_of([coin])
+    child = a_spend_of([(held.id, 0)])
+    assert mempool.add_tx(held, 10_000)
+    assert mempool.add_tx(child, 2_000)
+    return mempool, coin, held, child
+
+
+def test_a_conflict_paying_less_than_what_it_replaces_is_insufficient() -> None:
+    """Core's rule 3, over the conflict and its descendants, in its words.
+
+    `bitcoind` v31.1 on regtest answers a 5000-sat conflict with a
+    10000-sat spend "insufficient fee, rejecting replacement <txid>, less
+    fees than conflicting txs; 0.00005 < 0.0001". Here the held spend's
+    child counts too, so 11999 is still short of 12000.
+    """
+    mempool, coin, _, _ = a_mempool_with_a_conflict()
+    candidate = a_spend_of([coin])
+    with pytest.raises(TxRejectedError) as refused:
+        mempool.check_replacement(candidate, 11_999, candidate.vsize)
+    assert refused.value.reason == "insufficient fee"
+    assert str(refused.value) == (
+        f"insufficient fee, rejecting replacement {candidate.id.hex()}, less fees "
+        "than conflicting txs; 0.00011999 < 0.00012"
+    )
+
+
+def test_a_conflict_not_paying_its_own_relay_is_insufficient() -> None:
+    """Core's rule 4: the increase has to cover the incremental relay fee."""
+    mempool, coin, _, _ = a_mempool_with_a_conflict()
+    candidate = a_spend_of([coin])
+    relay = fee_from_vsize(candidate.vsize, mempool_module._INCREMENTAL_RELAY_FEE_RATE)
+    assert relay > 0
+    for fee in (12_000, 12_000 + relay - 1):
+        with pytest.raises(TxRejectedError) as refused:
+            mempool.check_replacement(candidate, fee, candidate.vsize)
+        increase = mempool_module.format_money(fee - 12_000)
+        assert str(refused.value) == (
+            f"insufficient fee, rejecting replacement {candidate.id.hex()}, not "
+            f"enough additional fees to relay; {increase} < "
+            f"{mempool_module.format_money(relay)}"
+        )
+
+
+def test_the_relay_increase_is_priced_by_the_vsize_given() -> None:
+    """Rule 4 prices the candidate's sigop-adjusted size, as Core's does.
+
+    An increase covering the relay fee at the weight's size falls short at
+    ten times it (btclib-org/btclib-node#1357).
+    """
+    mempool, coin, _, _ = a_mempool_with_a_conflict()
+    candidate = a_spend_of([coin])
+    rate = mempool_module._INCREMENTAL_RELAY_FEE_RATE
+    enough = 12_000 + fee_from_vsize(candidate.vsize, rate)
+    with pytest.raises(TxRejectedError, match="not enough additional fees"):
+        mempool.check_replacement(candidate, enough, 10 * candidate.vsize)
+
+
+def test_a_conflict_paying_for_what_it_replaces_is_still_refused() -> None:
+    """This mempool replaces nothing: Core's reason where it allows none.
+
+    `bitcoind` v31.1 accepts this replacement; the divergence is argued
+    at `Mempool.check_replacement`.
+    """
+    mempool, coin, held, child = a_mempool_with_a_conflict()
+    candidate = a_spend_of([coin])
+    relay = fee_from_vsize(candidate.vsize, mempool_module._INCREMENTAL_RELAY_FEE_RATE)
+    with pytest.raises(TxRejectedError) as refused:
+        mempool.check_replacement(candidate, 12_000 + relay, candidate.vsize)
+    assert refused.value.reason == "bip125-replacement-disallowed"
+    assert str(refused.value) == "bip125-replacement-disallowed"
+    assert mempool.contains_tx(held)
+    assert mempool.contains_tx(child)
+
+
+def test_a_candidate_with_no_conflict_passes_the_replacement_check() -> None:
+    """Spending another output of a held transaction is no conflict."""
+    mempool, _, held, _ = a_mempool_with_a_conflict()
+    candidate = a_spend_of([(held.id, 1)])
+    mempool.check_replacement(candidate, 0, candidate.vsize)
+
+
+def test_a_confirmed_spend_evicts_its_conflicts_and_their_descendants() -> None:
+    """Core's `removeConflicts`: a spend of a spent coin goes, with children."""
+    mempool, coin, held, child = a_mempool_with_a_conflict()
+    unrelated = a_spend_of([(secrets.token_bytes(32), 0)])
+    assert mempool.add_tx(unrelated, 1000)
+    confirmed = a_spend_of([coin])
+    mempool.remove_tx(confirmed)
+    mempool.remove_conflicts(confirmed)
+    assert not mempool.contains_tx(held)
+    assert not mempool.contains_tx(child)
+    assert mempool.contains_tx(unrelated)
+    assert set(mempool.outpoint_spender) == {(unrelated.vin[0].prev_out.tx_id, 0)}
+
+
+def test_an_entry_is_counted_and_priced_by_the_vsize_it_came_with() -> None:
+    """The sigop-adjusted vsize, not the weight's, is the entry's size.
+
+    Core's `CTxMemPoolEntry::GetTxSize` is what its mempool sums against
+    its limit and prices every feerate by (btclib-org/btclib-node#1357).
+    """
+    mempool = Mempool(Logger(debug=True))
+    tx = generate_random_transaction()
+    vsize = 10 * tx.vsize
+    rate = FeeRate(sats_per_kvbyte=1000)
+    fee = fee_from_vsize(tx.vsize, rate)
+    mempool.add_tx(tx, fee, vsize)
+    assert mempool.bytesize == vsize
+    assert mempool.vsizes == {tx.hash: vsize}
+    # clears the rate at the weight's size, not at the one it came with
+    assert not mempool.meets_fee_rate(tx.hash, 1000)
+    mempool.remove_tx(tx)
+    assert mempool.bytesize == 0
+    assert mempool.vsizes == {}
+
+
+@pytest.mark.parametrize("heap", ["pushed", "rebuilt"])
+def test_eviction_ranks_by_the_vsize_an_entry_came_with(heap: str) -> None:
+    """Two entries paying alike: the one priced larger is the worse rate.
+
+    Whether the heap is the one `add_tx` pushed to or the one
+    `_rebuild_feerate_heap` made. The rolling minimum it leaves is the
+    evicted fee over that size (btclib-org/btclib-node#1357).
+    """
+    mempool = Mempool(Logger(debug=True))
+    dense, plain, rich = (generate_random_transaction() for _ in range(3))
+    # the older of two equal rates goes first, so a size misread would
+    # evict `plain`
+    mempool.add_tx(plain, 1_000)
+    mempool.add_tx(dense, 1_000, 10 * dense.vsize)
+    if heap == "rebuilt":
+        mempool._rebuild_feerate_heap()
+    mempool.bytesize_limit = mempool.bytesize + rich.vsize - 1
+    mempool.add_tx(rich, 100_000)
+    assert not mempool.contains_tx(dense)
+    assert mempool.contains_tx(plain)
+    evicted_rate = Fraction(1_000, 10 * dense.vsize) * 1000
+    assert mempool._rolling_min_fee_rate == float(evicted_rate + 100)
