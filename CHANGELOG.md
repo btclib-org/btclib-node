@@ -943,6 +943,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`rpc.main` calls `node.stop()` only where the `stop` reply carries
   no error**, as Core's own `stop()` handler does (closes #1441).
 
+### `stop`'s hidden `wait` argument is honoured
+
+- **A `stop` call carrying `wait` sleeps that many milliseconds before
+  answering**, as Core's own `stop <ms>` does (closes #1467).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

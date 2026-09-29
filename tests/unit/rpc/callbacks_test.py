@@ -1375,6 +1375,79 @@ def test_ping_and_stop_answer_without_a_connection() -> None:
     assert stop(node, _CONN, []) == "Btclib node stopping"
 
 
+def test_stop_sleeps_for_its_wait_argument_in_milliseconds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1467: `wait` is honoured, Core's own `stop <ms>` (v31.1 tag).
+
+    `src/rpc/server.cpp:155-166` sleeps `jsonRequest.params[0]`
+    milliseconds before returning the reply; the clock is patched so the
+    test does not really sleep.
+    """
+    slept: list[float] = []
+    monkeypatch.setattr(time, "sleep", slept.append)
+    node = a_node()
+    assert stop(node, _CONN, [5000]) == "Btclib node stopping"
+    assert slept == [5.0]
+
+
+@pytest.mark.parametrize("params", [[], [None]])
+def test_stop_does_not_sleep_for_an_absent_or_null_wait(
+    monkeypatch: pytest.MonkeyPatch, params: list[Any]
+) -> None:
+    """Omitted or explicit `null` reads as `isNum()` false in Core too."""
+    slept: list[float] = []
+    monkeypatch.setattr(time, "sleep", slept.append)
+    node = a_node()
+    assert stop(node, _CONN, params) == "Btclib node stopping"
+    assert not slept
+
+
+def test_stop_clamps_a_negative_wait_to_no_delay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`std::this_thread::sleep_for` returns at once for a negative duration.
+
+    `time.sleep` raises `ValueError` on a negative argument where Core's
+    own `UninterruptibleSleep` does not, so the negative is clamped here
+    rather than passed through.
+    """
+    slept: list[float] = []
+    monkeypatch.setattr(time, "sleep", slept.append)
+    node = a_node()
+    assert stop(node, _CONN, [-1000]) == "Btclib node stopping"
+    assert slept == [0.0]
+
+
+def test_stop_refuses_a_wait_of_the_wrong_json_type() -> None:
+    """A non-numeric `wait` is named the way `type_error` names it."""
+    node = a_node()
+    with pytest.raises(RpcError) as raised:
+        stop(node, _CONN, ["1000"])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert raised.value.message == (
+        'Wrong type passed:\n{\n    "Position 1 (wait)": "JSON value '
+        'of type string is not of expected type number"\n}'
+    )
+
+
+def test_stop_refuses_a_bool_wait() -> None:
+    """A JSON bool is its own VBOOL, not VNUM, refused the same as a string."""
+    node = a_node()
+    with pytest.raises(RpcError) as raised:
+        stop(node, _CONN, [True])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+
+
+def test_stop_refuses_a_fractional_wait() -> None:
+    """A JSON number with a decimal point fails `getInt<int>()`, Core's way."""
+    node = a_node()
+    with pytest.raises(RpcError) as raised:
+        stop(node, _CONN, [10.5])
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
+    assert raised.value.message == "JSON integer out of range"
+
+
 def test_mempool_acceptance_reports_a_reason_for_each_refusal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

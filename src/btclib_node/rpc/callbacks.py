@@ -1934,8 +1934,50 @@ def ping(node: Node, conn: RpcConnection, _: list[Any]) -> None:
     node.p2p_manager.ping_all()
 
 
-def stop(node: Node, conn: RpcConnection, _: list[Any]) -> str:
-    """Answer `stop`; `handle_rpc` waits for this reply before stopping."""
+def _stop_wait_param(params: list[Any]) -> int | None:
+    """Read `stop`'s own hidden `wait`, or `None` where none was given.
+
+    `RPCArg::Type::NUM`, `RPCArg::Optional::OMITTED`, hidden from help
+    (`src/rpc/server.cpp:155`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag): omitted or explicit `null` reads as `isNum()` false there, so
+    neither sleeps. Anything else that is not a JSON number is
+    `RPC_TYPE_ERROR`, the same check `RPCMethod::HandleRequest` makes
+    for every declared argument before the handler ever runs
+    (`src/rpc/util.cpp:653-661`); a JSON float is refused the way
+    `_height_param` above already refuses one, `UniValue::getInt`'s own
+    "JSON integer out of range" (`univalue.h`), thrown for a numeric
+    string `std::from_chars` cannot consume in full.
+    """
+    if not params or params[0] is None:
+        return None
+    value = params[0]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise type_error(1, "wait", value, "number")
+    if isinstance(value, float):
+        raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
+    return value
+
+
+def stop(node: Node, conn: RpcConnection, params: list[Any]) -> str:
+    """Answer `stop`; `handle_rpc` waits for this reply before stopping.
+
+    A `wait` in milliseconds holds this reply back that long, Core's own
+    hidden testing argument (`src/rpc/server.cpp:155-166`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): "'stop 1000' makes the
+    call wait 1 second before returning to the client". Core calls
+    `shutdown_request()` -- which wakes its main thread's own shutdown
+    wait, starting the rest of the process tearing down -- *before* that
+    sleep, while its RPC handler thread is the one still sleeping; this
+    node has no second thread to hand that teardown to, and
+    `handle_rpc`'s own `node.stop()` already cannot run until this reply
+    is on its way to the client (that function's own docstring, ISS
+    1441), so there is nothing here to signal any earlier than the
+    reply already is. The sleep still runs before this function returns,
+    matching where Core's own sits relative to the reply it delays.
+    """
+    wait_ms = _stop_wait_param(params)
+    if wait_ms is not None:
+        time.sleep(max(0, wait_ms) / 1000)
     return "Btclib node stopping"
 
 
