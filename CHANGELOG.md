@@ -891,6 +891,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `uv/Dockerfile`**: the old floor admitted a `uv` older than the one the
   updater writes `uv.lock` with (issue btclib-org/.github#1438).
 
+### `fuzz/` is under mypy, atheris excepted
+
+- **`[tool.mypy]`'s `files` carries `fuzz`, and an override reads `atheris`
+  alone as untyped**: the harness itself now gets the same check as
+  `src/btclib_node`, and its own two errors are fixed (closes #1259).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

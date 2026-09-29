@@ -1153,13 +1153,11 @@ extend-exclude = [
 # the list the lint gate runs on and not only the one a bare `mypy`
 # reads: the hook in .pre-commit-config.yaml passes no paths of its own,
 # for the reason given there. Section 6 of btclib-org/.github's README
-# states the scope as the package, the tests and .github/scripts.
-# fuzz/ is outside it because atheris is: the harnesses import a package
-# the `fuzz` dependency group installs and the lint environment does
-# not, so what mypy would report there is the import rather than the
-# harness. tests/fuzz_corpus_test.py is inside it, and reads a harness
-# without importing one.
-files = ["src/btclib_node", "tests", "scripts", ".github/scripts"]
+# states the scope as the package, the tests and .github/scripts. fuzz/
+# is here too, with the exception below covering only the one import
+# that reason ever justified skipping -- the harness itself is this
+# tree's own code and gets the same check as everything above.
+files = ["src/btclib_node", "tests", "scripts", ".github/scripts", "fuzz"]
 # the floor `project.requires-python` declares, and not the interpreter
 # that happens to be running: a name added to the standard library
 # later passes here and fails for whoever is on the oldest version this
@@ -1237,6 +1235,19 @@ enable_error_code = [
     "unimported-reveal",
     "unused-awaitable",
 ]
+
+[[tool.mypy.overrides]]
+# atheris is the one import `files` above's own fuzz/ entry does not
+# reach: `[dependency-groups].fuzz` marks it `sys_platform == 'linux'`,
+# so it is absent from every other platform's sync as well as from the
+# mypy hook's own `--group lint --group test` environment, which
+# installs neither group it is in. `ignore_missing_imports` covers both
+# gaps this tree ever hits it under -- the stub-less package the
+# comment above used to justify excluding the whole harness, and the
+# module missing outright -- rather than a narrower code list that
+# would need to change with whichever one a given run happens to meet.
+module = "atheris"
+ignore_missing_imports = true
 
 [tool.typos.default.extend-words]
 # ruff's copyright rule, not the misspelling of COPY or CPU that typos'
