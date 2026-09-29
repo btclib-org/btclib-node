@@ -1211,7 +1211,7 @@ class DownloadManager:
         tip = active_chain[-1]
         if (
             block_time(header_dict[tip].header)
-            <= time.time() - _POW_TARGET_SPACING * 20
+            <= time.time() - _POW_TARGET_SPACING * _DIRECT_FETCH_SPACINGS
             or header_dict[last_header].status == BlockStatus.invalid
             or chainwork[tip] > chainwork[last_header]
         ):
