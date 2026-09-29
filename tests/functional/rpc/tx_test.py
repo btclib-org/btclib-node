@@ -76,7 +76,7 @@ def test_add_tx(rpc_node: Node) -> None:
 
     result = accept(invalid_tx.serialize(include_witness=True).hex())
     assert not result["allowed"]
-    assert result["reject-reason"] == "Missing prevouts"
+    assert result["reject-reason"] == "missing-inputs"
 
     funding = chain[0].transactions[0]
     tx1 = generate_random_transaction(funding.id, value=funding.vout[0].value - 1000)
@@ -94,7 +94,7 @@ def test_add_tx(rpc_node: Node) -> None:
 
     result = accept(tx2.serialize(include_witness=True).hex())
     assert not result["allowed"]
-    assert result["reject-reason"] == "Missing prevouts"
+    assert result["reject-reason"] == "missing-inputs"
 
     _, body = client.call_raw(
         "sendrawtransaction",
@@ -117,7 +117,7 @@ def test_add_tx(rpc_node: Node) -> None:
     assert status == 500
     assert body["result"] is None
     assert body["error"]["code"] == -25
-    assert body["error"]["message"] == "Missing prevouts"
+    assert body["error"]["message"] == "bad-txns-inputs-missingorspent"
 
     _, body = client.call_raw("getmempoolinfo", jsonrpc="1.0", request_timeout=2)
     assert body["result"]["size"] == 1
