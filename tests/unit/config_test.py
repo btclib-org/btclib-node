@@ -231,6 +231,49 @@ def test_connect_and_addnode_both_take_several_entries() -> None:
     assert config.addnode == (("10.0.0.3", RegTest().port),)
 
 
+def test_seednode_is_the_same_shape_as_connect() -> None:
+    """`seednode` resolves the same way `connect`/`addnode` do."""
+    config = Config(chain="regtest", seednode=["10.0.0.1:1", "10.0.0.2"])
+    assert config.seednode == (("10.0.0.1", 1), ("10.0.0.2", RegTest().port))
+    assert config.connect == ()
+    assert config.addnode == ()
+
+
+def test_seednode_defaults_to_empty() -> None:
+    """Not given: an empty tuple, the same default `connect`/`addnode` take."""
+    assert Config(chain="regtest").seednode == ()
+
+
+def test_seednode_rejects_a_hostname() -> None:
+    """`_resolve_peers` refuses a hostname for `seednode` too (ISS 1264)."""
+    with pytest.raises(
+        ValueError, match="does not appear to be an IPv4 or IPv6 address"
+    ):
+        Config(chain="regtest", seednode=["example.com"])
+
+
+def test_fixed_seeds_defaults_to_true() -> None:
+    """Core's own `DEFAULT_FIXEDSEEDS`, unless a caller says otherwise."""
+    assert Config(chain="regtest").fixed_seeds is True
+
+
+def test_fixed_seeds_false_is_taken_as_given() -> None:
+    """`fixed_seeds=False` is stored as given, `-fixedseeds=0`'s reader."""
+    assert Config(chain="regtest", fixed_seeds=False).fixed_seeds is False
+
+
+def test_dnsseed_explicit_value_is_taken_as_given() -> None:
+    """An explicit `dnsseed` is stored, `-connect`'s own soft-set aside.
+
+    `cli.py`'s own `-dnsseed`/`-nodnsseed` reader is what actually wins
+    over `-connect`'s soft-set (ISS 1324's own `int64_t` reason); this
+    is `Config`'s own fallback, exercised by a direct caller that passes
+    neither.
+    """
+    config = Config(chain="regtest", connect=["10.0.0.1"], dnsseed=True)
+    assert config.dnsseed is True
+
+
 def test_connect_rejects_a_hostname() -> None:
     """A spec whose host is not an IP literal raises rather than dialling wrong.
 
@@ -357,6 +400,23 @@ def test_forcednsseed_true_alongside_the_dnsseed_soft_set_off_raises() -> None:
         match=r"^Cannot set -forcednsseed to true when setting -dnsseed to false\.$",
     ):
         Config(chain="regtest", connect=["1.2.3.4"], forcednsseed=True)
+
+
+def test_an_explicit_dnsseed_true_wins_over_connects_soft_set_off() -> None:
+    """`-dnsseed=1 -forcednsseed=1 -connect=x`: no refusal, both on.
+
+    `InitParameterInteraction`'s own `SoftSetBoolArg` (`src/init.cpp`,
+    at bitcoin/bitcoin@9be056a8a7) never overwrites an arg already set,
+    so `-connect`'s soft-set-off of `-dnsseed` never reaches an explicit
+    `-dnsseed=1` -- `AppInitParameterInteraction`'s own forcednsseed
+    check (same sha) then reads that explicit `True` back, past
+    btclib-org/btclib-node#1192's own `-dnsseed` soft-set order.
+    """
+    config = Config(
+        chain="regtest", dnsseed=True, forcednsseed=True, connect=["1.2.3.4"]
+    )
+    assert config.dnsseed is True
+    assert config.forcednsseed is True
 
 
 def test_rpcauth_is_parsed_into_rpc_auth() -> None:
