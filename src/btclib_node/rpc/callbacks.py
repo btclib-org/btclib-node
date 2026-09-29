@@ -34,6 +34,7 @@ from btclib_node.main import (
     parent_lookup,
     passes_check_block,
     prune_up_to_height,
+    update_chain,
     verify_mempool_acceptance,
 )
 from btclib_node.p2p.address import ip_and_port, peer_address
@@ -638,6 +639,15 @@ def _index_submitted_header(block_index: BlockIndex, block: Block) -> str | None
     `CheckBlock` (`main.passes_check_block`), `"prev-blk-not-found"` for
     a header whose parent is unknown, and btclib's own message for a
     header `add_headers` refuses; `submit_block` argues each.
+
+    A header this node has never indexed is indexed only once its own
+    body passes `CheckBlock`: Core's `ProcessNewBlock` asks `CheckBlock`
+    before `AcceptBlock`, so a body failing it never reaches
+    `AcceptBlockHeader` at all, and the header stays unindexed
+    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+    -- `p2p.callbacks.block`'s own `_refuse_before_indexing` already
+    asks the wire path's body in the same order, for the same reason
+    (btclib-org/btclib-node#1247). ISS 1339.
     """
     block_hash = block.header.hash
     if block_hash in block_index.header_dict:
@@ -649,7 +659,7 @@ def _index_submitted_header(block_index: BlockIndex, block: Block) -> str | None
             block
         ):
             return "duplicate"
-    else:
+    elif passes_check_block(block):
         try:
             if block_index.add_headers([block.header]) is None:
                 return "prev-blk-not-found"
@@ -661,6 +671,28 @@ def _index_submitted_header(block_index: BlockIndex, block: Block) -> str | None
             # caller punishes the peer for it and `submitblock` has no
             # peer to punish, only a reason to answer
             return str(error)
+    return None
+
+
+def _validate_extending_tip(node: Node, block_hash: bytes) -> str | None:
+    """Run `main.update_chain` here, and answer its verdict on `block_hash`.
+
+    Called only where the block just stored extends the active tip --
+    `submit_block`'s own docstring argues why, and is where the caller
+    already knows that. A failure the trial does not swallow into
+    `Node.last_rejected_block` is this node's own storage or bookkeeping
+    proving itself unsafe to keep running past, not this submission's
+    content, and is left to propagate, `Node.terminate_flag` set first
+    so a caller reached from here still stops `Node.run`'s loop for it.
+    """
+    try:
+        update_chain(node)
+    except Exception:
+        node.terminate_flag.set()
+        raise
+    failed = node.last_rejected_block
+    if failed is not None and failed[0] == block_hash:
+        return str(failed[1])
     return None
 
 
@@ -689,12 +721,41 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     `p2p.callbacks.block` makes for a block delivered over the wire,
     minus that callback's own `Connection`-specific bookkeeping
     (`remove_block_request`), which does not apply to a block submitted
-    out of band. Connecting
-    the block to the active chain, on either path, is `main.
-    update_chain`'s own job, run once every pass of `Node`'s loop
-    rather than inline here -- the same pass this callback's own return
-    runs in, `Node.run`'s `_step_chain` following `_drain_message_queues`
-    unconditionally.
+    out of band.
+
+    Where the stored block extends the active tip, `main.update_chain`
+    is run right here rather than waited for on `Node`'s next pass:
+    Core's own `ProcessNewBlock` calls `AcceptBlock` and then
+    `ActivateBestChain` -- contextual and connect validation both --
+    before it ever returns to `submitblock` (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so a caller is answered
+    only once that trial has actually run, and never told a block was
+    accepted that its own contextual or script check refuses a moment
+    later (ISS 1335, ISS 1390). `_ready_fork` is not gated on
+    `Node.status` for exactly this reason (its own comment,
+    btclib-org/btclib-node#1071): calling it here finds this same
+    submission ready, or finds nothing and costs nothing. A block that
+    does not extend the tip is stored and left for that later pass, as
+    before -- Core's own `ActivateBestChain` runs unconditionally too,
+    but a competing, lower branch is not what either issue measured,
+    and this tree does not chase it synchronously.
+
+    `main._validate_block`'s own `bad-txns-nonfinal` and `bad-cb-height`
+    are Core's literal reasons already; `interpreter.check_transactions`
+    wraps a script failure into `BlockScriptVerifyError`, whose own
+    `str()` is Core's `block-script-verify-flag-failed (%s)`
+    (`CheckInputScripts`, same file and sha) with btclib's own message
+    in place of `ScriptErrorString`. Anything else `update_chain`'s
+    trial raises for this exact hash is answered with btclib's own
+    text, the same divergence the paragraph above already argues for
+    every reason this function has no literal word for.
+
+    A failure `update_chain`'s own trial does not swallow into a
+    rejection -- this node's own storage or bookkeeping, not the
+    submission's content -- is not answered at all: it is left to
+    propagate, `Node.terminate_flag` set first, so a caller reached
+    from here instead of from `Node`'s own scheduled pass still stops
+    the loop rather than running on past it.
     """
     if not params:
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["submitblock"])
@@ -720,14 +781,22 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     try:
         block.assert_valid(node.chain.pow_limit_bits)
     except BTClibException as error:
-        parent = block_index.get_block_info(block.header.previous_block_hash)
-        segwit = parent.index + 1 >= node.chain.consensus.segwit_height
-        if is_block_failed(block, check_witness_root=segwit):
-            block_index.invalidate(block_hash)
+        # passes_check_block is what is_block_failed itself requires, so
+        # a body that never got this far indexed (ISS 1339) has nothing
+        # here to invalidate either -- checked before touching the
+        # parent, which such a body's own header may never have named
+        if passes_check_block(block):
+            parent = block_index.get_block_info(block.header.previous_block_hash)
+            segwit = parent.index + 1 >= node.chain.consensus.segwit_height
+            if is_block_failed(block, check_witness_root=segwit):
+                block_index.invalidate(block_hash)
         return str(error)
 
+    extends_tip = block.header.previous_block_hash == block_index.active_chain[-1]
     node.block_db.add_block(block)
     block_index.set_downloaded(block_hash)
+    if extends_tip:
+        return _validate_extending_tip(node, block_hash)
     return None
 
 

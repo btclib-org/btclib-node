@@ -31,6 +31,7 @@ bug.
 from btclib.exceptions import BTClibRuntimeError, BTClibValueError
 
 __all__ = [
+    "BlockScriptVerifyError",
     "ChainstateInconsistencyError",
     "DirectoryLockError",
     "IncompatibleStoreError",
@@ -55,6 +56,32 @@ __all__ = [
     "UnsupportedAddressTypeError",
     "WrongNetworkMagicError",
 ]
+
+
+class BlockScriptVerifyError(BTClibValueError):
+    """A candidate block's own script check failed while connecting it.
+
+    Raised only by `interpreter.check_transactions`, wrapping whatever
+    `Node.worker_pool.starmap` propagates out of `verify_input`
+    (`interpreter.f`) once a candidate's structure, its context and its
+    amounts have already passed -- `verify_amounts`'s own refusal,
+    checked separately and earlier in the same function, is not this.
+    Composed as Core's own wire format for it,
+    `block-script-verify-flag-failed (%s)` (`CheckInputScripts`,
+    `src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
+    with btclib's own message standing in for `ScriptErrorString`:
+    `BlockValidationResult` names dozens of distinct single-word script
+    errors this tree does not reproduce, the same divergence
+    `rpc.callbacks.submit_block`'s own docstring already argues for
+    every other reject reason it has no literal word for.
+
+    `BTClibValueError`, so `main._resolve_trial_exception`'s own
+    `_CONTENT_FAILURE` tuple keeps catching it as the fork's content
+    being bad rather than this node's own bookkeeping.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(f"block-script-verify-flag-failed ({message})")
 
 
 class MisbehavingError(BTClibValueError):
