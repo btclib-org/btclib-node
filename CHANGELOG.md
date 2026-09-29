@@ -891,6 +891,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `uv/Dockerfile`**: the old floor admitted a `uv` older than the one the
   updater writes `uv.lock` with (issue btclib-org/.github#1438).
 
+### An addr-fetch dial checks the name it was queued under first
+
+- **A queued host already held by name is skipped before it is ever
+  resolved** (closes #1432), as Core's `AlreadyConnectedToHost` checks it
+  ahead of `ConnectNode`'s own resolve.
+
 ### `fuzz/` is under mypy, atheris excepted
 
 - **`[tool.mypy]`'s `files` carries `fuzz`, and an override reads `atheris`
@@ -899,30 +905,21 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 ### `scripts/` drops two stale hand-run templates
 
-- **`test_errors.py` replayed a directory nothing under `src/` writes, and
-  is deleted; `prune.py` now builds the `Node` its own `main.
-  prune_up_to_height` takes, in place of a docstring claiming neither
-  `BlockDB` nor `Chainstate` has a prune method of its own** (closes
-  #1260).
+- **`test_errors.py` is deleted, and `prune.py` now calls
+  `main.prune_up_to_height` through a `Node` it builds, not the stale
+  `BlockDB`/`Chainstate` pair its docstring named** (closes #1260).
 
 ### `scripts/seeds/README.md`'s pins are re-checked against their own tag
 
-- **Each of the three fixed-seed lists carries a `ref` field, and
-  `check_vendored_pin.py` reads a `ref`-pinned entry's blob against that
-  tag's own tree rather than upstream's default branch**, and skips the
-  "newest commit" check a tag cannot fail: these lists already move ahead
-  of the v31.1 tag on Core's master, which used to make every one of them
-  read as drift before `vendored-vectors.yml` had a way to say the pin was
-  deliberate (closes #1227).
+- **Each fixed-seed list carries a `ref` field, and `check_vendored_pin.py`
+  reads a `ref`-pinned entry against that tag's own tree, skipping the
+  "newest commit" check a tag cannot fail** (closes #1227).
 
 ### `interpreter_test.py` builds signatures through `btclib_ecc`, not `btclib.ecc`
 
-- **`dsa` and `ssa` are imported from `btclib_ecc.ecc`**, ahead of btclib
-  dropping its own re-export of them (btclib-org/btclib#2404); `src/`
-  imports neither and stays declared against btclib alone. The `test`
-  group gains `btclib-ecc` and, for its bindings import to resolve
-  against the `btclib-secp256k1` `btclib[secp256k1]`'s own floor already
-  installs, `btclib-secp256k1` as well (closes #1431).
+- **`dsa`/`ssa` come from `btclib_ecc.ecc`, ahead of btclib dropping the
+  re-export (btclib-org/btclib#2404); `test` gains `btclib-ecc` and a
+  raised `btclib-secp256k1` floor for its bindings import** (closes #1431).
 
 ## v2026.9.24
 
