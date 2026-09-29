@@ -8,7 +8,7 @@ from typing import Any
 
 from bitcoin_core_rpc import RPCErrorCode
 
-__all__ = ["RpcError", "bool_param", "type_error", "type_errors"]
+__all__ = ["RpcError", "bool_mismatch", "bool_param", "type_error", "type_errors"]
 
 
 class RpcError(Exception):
@@ -110,6 +110,30 @@ def type_errors(*mismatches: tuple[int, str, object, str]) -> RpcError:
     return RpcError(RPCErrorCode.TYPE_ERROR, f"Wrong type passed:\n{{\n{entries}\n}}")
 
 
+def bool_mismatch(
+    params: list[Any], position: int, *, name: str
+) -> tuple[int, str, object, str] | None:
+    """Return `type_errors`' own mismatch tuple for a wrongly typed bool.
+
+    Omitted or explicit `null` is never a mismatch -- `bool_param` below
+    reads either as the argument's own declared default, the same
+    reading this function shares with it. Split out of `bool_param` so a
+    caller checking more than one declared argument's type can collect
+    every mismatch before raising, as `RPCMethod::HandleRequest` checks
+    every declared argument's type before any of them is raised on
+    (`type_errors`' own docstring), rather than stopping at the first
+    the way a caller with only one bool to check, below, still does.
+    `position` is the zero-based index into `params`; `type_errors`
+    wants Core's own one-based count, so the tuple carries `position + 1`.
+    """
+    if len(params) <= position or params[position] is None:
+        return None
+    value = params[position]
+    if isinstance(value, bool):
+        return None
+    return (position + 1, name, value, "bool")
+
+
 def bool_param(params: list[Any], position: int, *, name: str, default: bool) -> bool:
     """Read a declared `RPCArg::Type::BOOL` parameter, Core's own way.
 
@@ -120,12 +144,22 @@ def bool_param(params: list[Any], position: int, *, name: str, default: bool) ->
     before the handler body runs at all (`src/rpc/util.cpp:653-661`),
     applied here to the one JSON type this helper's every caller
     declares. `position` is the zero-based index into `params`, the way
-    every caller here already addresses it; `type_error` wants Core's
-    own one-based count, so it is passed `position + 1`.
+    every caller here already addresses it; `bool_mismatch` above is
+    this same check, split out for a caller checking more than one
+    declared argument's type at once.
     """
+    mismatch = bool_mismatch(params, position, name=name)
+    if mismatch is not None:
+        # every current caller in rpc.callbacks already collects this
+        # same position's own bool_mismatch into a combined refusal
+        # before ever calling this function -- kept raising for a
+        # caller that has not done that check itself
+        raise type_errors(mismatch)  # pragma: no cover -- already checked
     if len(params) <= position or params[position] is None:
         return default
     value = params[position]
-    if not isinstance(value, bool):
-        raise type_error(position + 1, name, value, "bool")
-    return value
+    # `bool_mismatch` above already confirmed this is a bool wherever it
+    # returned `None` past the two checks just above -- re-checked here
+    # only to narrow the type for mypy, which does not see across the
+    # call
+    return value if isinstance(value, bool) else default
