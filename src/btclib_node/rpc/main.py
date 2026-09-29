@@ -116,6 +116,16 @@ def _answer_one(
 
     Legacy errors are an HTTP error status; 2.0 errors are HTTP 200, and
     a 2.0 notification is 204 with no body, having run.
+
+    `stop` is true only where `reply` carries no error: a refused call
+    -- too many arguments, an unknown named one, any `RpcError` `_exec`
+    catches -- never reaches `stop`'s own handler, matching Core's
+    `stop()` (`src/rpc/server.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag), whose handler calls `shutdown_request` only once
+    `RPCMethod::HandleRequest`'s own argument checks have passed
+    (`src/rpc/util.cpp`, same tag): a throw from those checks propagates
+    out of `ExecuteCommand` before the handler lambda is ever entered
+    (btclib-org/btclib-node#1441).
     """
     request = JsonRpcRequest()
     try:
@@ -127,7 +137,7 @@ def _answer_one(
         # `parse` refuses reaches it: `bitcoind` v31.1.0 answers it in
         # the 2.0 envelope with the legacy status
         return HttpReply(error_status(error.code), request.reply(error=error)), False
-    stop = request.method == "stop"
+    stop = request.method == "stop" and reply.get("error") is None
     if request.is_notification:
         return HttpReply(NO_CONTENT, None), stop
     return HttpReply(OK, reply), stop
@@ -143,6 +153,12 @@ def _answer_batch(
     a member refused before its own `id` is read carries the previous
     member's `id` and version -- and is dropped where that previous
     member was a notification.
+
+    As in `_answer_one`, a member only sets `stop` where its own answer
+    carries no error (btclib-org/btclib-node#1441): a member whose
+    `request.parse` itself raises is answered from the previous member's
+    still-held method and version and never sets `stop`, since it is not
+    that method's own reply.
     """
     request = JsonRpcRequest()
     replies: list[dict[str, Any]] = []
@@ -150,10 +166,11 @@ def _answer_batch(
     for member in body:
         try:
             request.parse(member)
-            stop = stop or request.method == "stop"
             response = _exec(node, conn, request, catch_errors=True)
         except RpcError as error:
             response = request.reply(error=error)
+        else:
+            stop = stop or (request.method == "stop" and response.get("error") is None)
         if not request.is_notification:
             replies.append(response)
     if body and not replies:

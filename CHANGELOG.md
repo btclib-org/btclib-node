@@ -938,6 +938,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   and a served command's own full help text with one, or Core's own
   "unknown command" for one it does not serve** (closes #1405).
 
+### A refused `stop` no longer shuts the node down
+
+- **`rpc.main` calls `node.stop()` only where the `stop` reply carries
+  no error**, as Core's own `stop()` handler does (closes #1441).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
