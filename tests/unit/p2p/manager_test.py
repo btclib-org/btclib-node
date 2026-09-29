@@ -2288,7 +2288,7 @@ def test_manage_connections_does_not_touch_the_addr_fetch_queue(
     gate = asyncio.Event()
 
     async def hangs(host: str, port: int, *, addr_fetch: bool = False) -> None:
-        await gate.wait()
+        await gate.wait()  # pragma: no cover -- unreached, which is the assertion
 
     monkeypatch.setattr(manager, "async_connect_host", hangs)
     assert asyncio.run(one_pass(manager)) is True
