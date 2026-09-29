@@ -39,6 +39,13 @@ btclib\_node.rpc.errors module
    :members:
    :show-inheritance:
 
+btclib\_node.rpc.help module
+--------------------------------
+
+.. automodule:: btclib_node.rpc.help
+   :members:
+   :show-inheritance:
+
 btclib\_node.rpc.jsonrpc module
 -----------------------------------
 

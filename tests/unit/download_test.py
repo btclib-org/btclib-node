@@ -18,7 +18,7 @@ import time
 from datetime import UTC, datetime
 from functools import partial
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, cast, override
 
 import pytest
 from btclib.fee import FeeRate, fee_from_vsize
@@ -29,6 +29,7 @@ from btclib.p2p.negotiation import FeeFilter, SendHeaders
 
 import btclib_node.download as download_module
 from btclib_node.chains import RegTest
+from btclib_node.chainstate.block_index import block_time
 from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.download import MAX_BLOCKS_IN_TRANSIT_PER_PEER, DownloadManager
@@ -44,7 +45,7 @@ from btclib_node.p2p.protocol_version import FEEFILTER_VERSION, SENDHEADERS_VERS
 from tests import generate_random_header_chain, generate_random_transaction
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
     from btclib.p2p.addrv2 import NetworkAddressV2
 
@@ -2222,3 +2223,186 @@ def test_a_getdata_of_wanted_transactions_holds_at_most_core_s_batch() -> None:
     manager.inv_txs = [(1, a_hash(n)) for n in range(size + 1)]
     manager.tx_download()
     assert [len(g.items) for g in only(conn, GetData)] == [size, 1]
+
+
+def an_active_chain(block_index: BlockIndex, length: int) -> list[bytes]:
+    """Index `length` headers on genesis, held and connected as the chain."""
+    chain = extend(block_index, length)
+    for block_hash in chain:
+        block_index.set_downloaded(block_hash)
+        block_index.add_to_active_chain(block_hash)
+    return chain
+
+
+def a_clock_at(
+    monkeypatch: pytest.MonkeyPatch, block_index: BlockIndex, age: float
+) -> float:
+    """Stop `download`'s clock `age` seconds after the active tip's time."""
+    tip = block_index.get_block_info(block_index.active_chain[-1]).header
+    now = block_time(tip) + age
+    monkeypatch.setattr(download_module, "time", SimpleNamespace(time=lambda: now))
+    return now
+
+
+def test_headers_near_the_tip_are_fetched_at_once(
+    index: BlockIndex, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's `HeadersDirectFetchBlocks`: the blocks up to the header, in order.
+
+    What is asked for is in flight from the peer from now on.
+    """
+    an_active_chain(index, 2)
+    now = a_clock_at(monkeypatch, index, 60)
+    announced = extend(index, 3, index.active_chain[-1])
+    conn = a_conn(1)
+    manager = make_manager([conn], block_index=index)
+    manager.headers_direct_fetch(conn, announced[-1])
+    (getdata,) = only(conn, GetData)
+    assert hashes_of(getdata) == announced
+    assert {item.type_code for item in getdata.items} == {
+        InventoryType.MSG_WITNESS_BLOCK
+    }
+    assert conn.download_queue == announced
+    assert conn.block_availability.downloading_since == now
+
+
+def test_headers_are_not_fetched_at_once_behind_a_stale_tip(
+    index: BlockIndex, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's `CanDirectFetch`: the tip under twenty block intervals old."""
+    an_active_chain(index, 2)
+    a_clock_at(monkeypatch, index, 20 * 10 * 60)
+    announced = extend(index, 1, index.active_chain[-1])
+    conn = a_conn(1)
+    manager = make_manager([conn], block_index=index)
+    manager.headers_direct_fetch(conn, announced[-1])
+    assert not conn.sent
+    a_clock_at(monkeypatch, index, 20 * 10 * 60 - 1)
+    manager.headers_direct_fetch(conn, announced[-1])
+    assert conn.download_queue == announced
+
+
+def test_a_header_with_less_work_or_invalid_is_not_fetched_at_once(
+    index: BlockIndex, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The header has at least the tip's work, and is not invalid."""
+    an_active_chain(index, 3)
+    a_clock_at(monkeypatch, index, 60)
+    shorter = extend(index, 2)
+    invalid = extend(index, 4, index.active_chain[-1])
+    index.invalidate(invalid[-1])
+    conn = a_conn(1)
+    manager = make_manager([conn], block_index=index)
+    manager.headers_direct_fetch(conn, shorter[-1])
+    manager.headers_direct_fetch(conn, invalid[-1])
+    assert not conn.sent
+    # a sibling of the tip carries the same work, which is enough
+    sibling = extend(index, 1, index.active_chain[-2])
+    manager.headers_direct_fetch(conn, sibling[-1])
+    assert conn.download_queue == sibling
+
+
+def test_what_is_held_or_in_flight_is_not_fetched_at_once_again(
+    index: BlockIndex, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A block held, or asked of any peer, is passed over."""
+    an_active_chain(index, 1)
+    a_clock_at(monkeypatch, index, 60)
+    announced = extend(index, 4, index.active_chain[-1])
+    index.set_downloaded(announced[0])
+    other = a_conn(2, queue=[announced[2]])
+    conn = a_conn(1)
+    manager = make_manager([conn, other], block_index=index)
+    manager.headers_direct_fetch(conn, announced[-1])
+    assert conn.download_queue == [announced[1], announced[3]]
+
+
+def test_a_direct_fetch_stops_at_the_peer_s_room_in_flight(
+    index: BlockIndex, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Earliest first, up to `MAX_BLOCKS_IN_TRANSIT_PER_PEER` in flight."""
+    an_active_chain(index, 1)
+    a_clock_at(monkeypatch, index, 60)
+    announced = extend(index, 3, index.active_chain[-1])
+    queued = [a_hash(n) for n in range(MAX_BLOCKS_IN_TRANSIT_PER_PEER - 1)]
+    conn = a_conn(1, queue=list(queued))
+    manager = make_manager([conn], block_index=index)
+    manager.headers_direct_fetch(conn, announced[-1])
+    assert conn.download_queue == [*queued, announced[0]]
+    full = a_conn(3, queue=[a_hash(n) for n in range(MAX_BLOCKS_IN_TRANSIT_PER_PEER)])
+    manager = make_manager([full], block_index=index)
+    manager.headers_direct_fetch(full, announced[-1])
+    assert not full.sent
+
+
+def test_a_reorg_deeper_than_the_limit_is_left_to_block_download(
+    index: BlockIndex, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's "Large reorg, won't direct fetch", past the in-flight limit + 1.
+
+    A branch one block shorter than that is fetched.
+    """
+    an_active_chain(index, 1)
+    a_clock_at(monkeypatch, index, 60)
+    deep = extend(index, MAX_BLOCKS_IN_TRANSIT_PER_PEER + 2)
+    conn = a_conn(1)
+    manager = make_manager([conn], block_index=index)
+    manager.headers_direct_fetch(conn, deep[-1])
+    assert not conn.sent
+    shallow = extend(index, MAX_BLOCKS_IN_TRANSIT_PER_PEER + 1)
+    manager.headers_direct_fetch(conn, shallow[-1])
+    assert conn.download_queue == shallow[:MAX_BLOCKS_IN_TRANSIT_PER_PEER]
+
+
+def test_a_witnessless_peer_s_direct_fetch_stops_at_segwit(
+    index: BlockIndex, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's `CanServeWitnesses` test, run for each candidate.
+
+    A block at or past `segwit_height` is not fetched from a peer
+    without `NODE_WITNESS`, but the walk still passes through it to
+    reach an earlier one that qualifies.
+    """
+    an_active_chain(index, 1)
+    a_clock_at(monkeypatch, index, 60)
+    announced = extend(index, 3, index.active_chain[-1])
+    witnessless = a_conn(
+        1, version_message=a_version(_FULL & ~ServiceFlags.NODE_WITNESS)
+    )
+    manager = make_manager([witnessless], block_index=index)
+    cast("Any", manager.node).chain.consensus.segwit_height = index.header_dict[
+        announced[1]
+    ].index
+    manager.headers_direct_fetch(witnessless, announced[-1])
+    assert witnessless.download_queue == announced[:1]
+    (getdata,) = only(witnessless, GetData)
+    assert {item.type_code for item in getdata.items} == {InventoryType.MSG_BLOCK}
+
+
+def test_a_direct_fetch_reads_the_connections_through_a_snapshot(
+    index: BlockIndex, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A peer removed from `connections` mid-read is no error.
+
+    `P2pManager.remove_connection` changes `connections` from that
+    manager's own thread, stood in for here by a queue whose reading
+    removes a peer.
+    """
+    an_active_chain(index, 1)
+    a_clock_at(monkeypatch, index, 60)
+    announced = extend(index, 2, index.active_chain[-1])
+    conn = a_conn(1)
+    gone = a_conn(2)
+    leaving = a_conn(3)
+    manager = make_manager([leaving, gone, conn], block_index=index)
+    connections = manager.node.p2p_manager.connections
+
+    class RemovingQueue(list[bytes]):
+        @override
+        def __iter__(self) -> Iterator[bytes]:
+            connections.pop(gone.id, None)
+            return super().__iter__()
+
+    leaving.download_queue = RemovingQueue()
+    manager.headers_direct_fetch(conn, announced[-1])
+    assert conn.download_queue == announced
