@@ -2483,6 +2483,40 @@ def test_add_added_peer_refuses_the_same_resolved_literal(
     }
 
 
+def test_add_added_peer_accepts_a_value_with_an_out_of_range_port(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1350: `split_host_port`'s own refusal does not reach `AddNode`.
+
+    Core's `LookupNumeric` never raises on an unparsable spec, only
+    answers an invalid `CService`; `_resolved_literal` reads
+    `split_host_port`'s `ValueError` the same way, so `add_added_peer`
+    still adds the value, matching Core's own permissive `AddNode`.
+    """
+    manager = a_manager()
+    assert manager.add_added_peer("1.2.3.4:99999") is True
+    assert manager._added_peers == {"1.2.3.4:99999": None}
+
+
+def test_the_added_loop_skips_an_unparsable_entry_and_dials_the_rest(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1350: `_added_entries` drops a value `split_host_port` refuses.
+
+    Reachable only through `add_added_peer`, `-addnode` itself being
+    validated at startup; Core's own dial of such a value never
+    connects either, so leaving it out of a pass changes nothing it
+    would have dialled, and it must not end the loop for every other
+    added peer.
+    """
+    manager = a_manager(addnode_args=["1.2.3.4:99999", "5.6.7.8:8333"])
+    dialled, slept = run_a_manual_loop(
+        manager._open_added_peers, manager, monkeypatch, 1
+    )
+    assert dialled == [("5.6.7.8", 8333)]
+    assert slept == [0.5]
+
+
 def test_remove_added_peer_matches_the_exact_string_alone(
     a_manager: AManagerFactory,
 ) -> None:
@@ -2677,6 +2711,55 @@ def test_open_connect_peers_resolves_a_hostname(
         {"inbound": False, "addr_fetch": False, "addr_name": "peer.example"}
     ]
     theirs.close()
+
+
+def test_async_connect_host_logs_when_no_candidate_comes_up(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1264: a manual dial that resolves but never connects is logged.
+
+    `addr_fetch` defaults to `False`, so the log line runs -- unlike
+    every `_process_addr_fetch` test, which always passes `addr_fetch=True`
+    and so never reaches it (`ADDR_FETCH` giving up quietly, its own
+    docstring).
+    """
+    logged, info = log_recorder()
+
+    async def never_connects(address: NetworkAddressV2) -> None:
+        return None
+
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: _NamedLoop(["1.2.3.4"]))
+    monkeypatch.setattr(manager_module, "dial", never_connects)
+    manager = a_manager()
+    monkeypatch.setattr(manager.logger, "info", info)
+    asyncio.run(manager.async_connect_host("peer.example", 18444))
+    assert logged == ["Dial to peer.example:18444 did not come up"]
+
+
+def test_connect_host_schedules_a_dial_on_this_manager_s_own_loop(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1264: `connect_host`, the `addnode` RPC's own `onetry`/`add` route.
+
+    `run_coroutine_threadsafe(self.async_connect_host(host, port), ...)`,
+    the one path a stubbed `p2p_manager` in `rpc/callbacks_test.py` never
+    exercises for real.
+    """
+    target_port = get_random_port()
+    target = a_running_manager(a_manager, target_port)
+    dialer = a_manager()
+    try:
+        wait_until_listening(target)
+        dialer.start()
+        wait_until(dialer.loop.is_running)
+        dialer.connect_host("127.0.0.1", target_port)
+        wait_until(lambda: dialer.pending_connections)
+        wait_until(lambda: target.pending_connections)
+    finally:
+        dialer.stop()
+        dialer.join(timeout=10)
+        target.stop()
+        target.join(timeout=10)
 
 
 def test_run_dials_a_connect_peer_without_an_explicit_dial(
