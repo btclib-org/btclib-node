@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import RPCErrorCode, chain_from_network
 from btclib.block import Block, median_time_past
-from btclib.exceptions import BTClibException, BTClibValueError
+from btclib.exceptions import BTClibException
 from btclib.p2p.address import ServiceFlags
 from btclib.p2p.limits import PROTOCOL_VERSION
 from btclib.tx import Tx
@@ -40,7 +40,13 @@ from btclib_node.p2p.address import ip_and_port, peer_address
 from btclib_node.p2p.banman import Subnet, is_valid_host, lookup_host, lookup_subnet
 from btclib_node.p2p.eviction import Network, is_valid, net_class
 from btclib_node.rpc.connection import RawJSON
-from btclib_node.rpc.errors import RpcError, bool_param, json_type_name, type_error
+from btclib_node.rpc.errors import (
+    RpcError,
+    bool_param,
+    json_type_name,
+    type_error,
+    type_errors,
+)
 
 if TYPE_CHECKING:
     from btclib_node import Node
@@ -54,6 +60,7 @@ __all__ = [
     "arg_names",
     "callbacks",
     "clear_banned",
+    "disconnect_node",
     "get_best_block_hash",
     "get_block",
     "get_block_count",
@@ -928,31 +935,37 @@ def get_peer_info(
     peers = {**manager.pending_connections, **manager.connections}
     out: list[dict[str, Any]] = []
     for connection_id, p2p_conn in sorted(peers.items()):
-        try:
-            addr = p2p_conn.client.getpeername()
-            addrbind = p2p_conn.client.getsockname()
-        # A peer disconnecting mid-lookup is not worth logging a
-        # second time; its own connection state already reports it.
-        # Deliberately blind (BLE001) alongside S112: a disconnect
-        # racing this call can surface as more than one socket
-        # error depending on timing and platform, and every one of
-        # them means the same "skip this peer, ask the next".
-        except Exception:  # noqa: S112, BLE001
+        addresses = _socket_addresses(p2p_conn)
+        if addresses is None:
             continue
-        # Core writes addrbind with `CService::ToStringAddrPort`, and
-        # addrlocal from the string `CopyStats` builds with it; its addr
-        # is `m_addr_name`, which is that same string only where the peer
-        # was not dialled by name. Here addr is `getpeername`'s and never
-        # a name, so one formatter serves them all.
-        entry = _peer_entry(
-            node,
-            connection_id,
-            p2p_conn,
-            ip_and_port(addr[0], addr[1]),
-            ip_and_port(addrbind[0], addrbind[1]),
-        )
-        out.append(entry)
+        addr, addrbind = addresses
+        out.append(_peer_entry(node, connection_id, p2p_conn, addr, addrbind))
     return out
+
+
+def _socket_addresses(p2p_conn: Connection) -> tuple[str, str] | None:
+    """Return `getpeerinfo`'s `addr` and `addrbind`, or `None` for a gone peer.
+
+    Core writes addrbind with `CService::ToStringAddrPort`, and its addr
+    is `m_addr_name`, which is that same string only where the peer was
+    not dialled by name. Here addr is `getpeername`'s and never a name,
+    so one formatter serves both. `disconnectnode` matches its `address`
+    against the same `addr`, as Core's matches `m_addr_name`. For a
+    peer dialled by a destination string that is the string as given,
+    where this `addr` is formatted from the socket
+    (btclib-org/btclib-node#1301).
+    """
+    try:
+        addr = p2p_conn.client.getpeername()
+        addrbind = p2p_conn.client.getsockname()
+    # A peer disconnecting mid-lookup is not worth logging a second
+    # time; its own connection state already reports it. Deliberately
+    # blind (BLE001): a disconnect racing this call can surface as more
+    # than one socket error depending on timing and platform, and every
+    # one of them means the same "skip this peer, ask the next".
+    except Exception:  # noqa: BLE001
+        return None
+    return ip_and_port(addr[0], addr[1]), ip_and_port(addrbind[0], addrbind[1])
 
 
 def get_connection_count(node: Node, conn: RpcConnection, _: list[Any]) -> int:
@@ -1082,6 +1095,112 @@ def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
         raise RpcError(RPCErrorCode.INVALID_PARAMETER, str(error)) from error
 
     node.p2p_manager.connect(address)
+
+
+# Core's own `disconnectnode` help (`src/rpc/net.cpp`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag), what `RPCHelpMan::ToString`
+# answers a call with more arguments than it declares -- read back from a
+# regtest bitcoind v31.1.0, whose examples name mainnet's port whatever
+# the chain.
+_DISCONNECTNODE_HELP = (
+    'disconnectnode ( "address" nodeid )\n'
+    "\n"
+    "Immediately disconnects from the specified peer node.\n"
+    "\n"
+    "Strictly one out of 'address' and 'nodeid' can be provided to identify"
+    " the node.\n"
+    "\n"
+    "To disconnect by nodeid, either set 'address' to the empty string, or"
+    " call using the named 'nodeid' argument only.\n"
+    "\n"
+    "Arguments:\n"
+    "1. address    (string, optional, default=fallback to nodeid) The IP"
+    " address/port of the node\n"
+    "2. nodeid     (numeric, optional, default=fallback to address) The node"
+    " ID (see getpeerinfo for node IDs)\n"
+    "\n"
+    "Result:\n"
+    "null    (json null)\n"
+    "\n"
+    "Examples:\n"
+    '> bitcoin-cli disconnectnode "192.168.0.6:8333"\n'
+    '> bitcoin-cli disconnectnode "" 1\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0",'
+    ' "id": "curltest", "method": "disconnectnode", "params":'
+    " [\"192.168.0.6:8333\"]}' -H 'content-type: application/json'"
+    " http://127.0.0.1:8332/\n"
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0",'
+    ' "id": "curltest", "method": "disconnectnode", "params": ["", 1]}\''
+    " -H 'content-type: application/json' http://127.0.0.1:8332/\n"
+)
+
+# `UniValue::getInt<int64_t>`'s own range, past which it throws "JSON
+# integer out of range"
+_INT64_BOUND = 2**63
+
+
+def disconnect_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
+    """Answer `disconnectnode`: drop one connection, by address or by id.
+
+    Core's own (`src/rpc/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag): `address` alone, or an empty or null `address` with
+    `nodeid`, and anything else `RPC_INVALID_PARAMS`. A connection still
+    short of `verack` is found too, as Core's `m_nodes` holds it. The
+    address is matched against `getpeerinfo`'s own `addr`, the id against
+    its `id`, and neither found is `RPC_CLIENT_NODE_NOT_CONNECTED`. Named
+    arguments reach it mapped onto these two positions by `arg_names`.
+    """
+    if len(params) > 2:  # noqa: PLR2004
+        raise RpcError(RPCErrorCode.MISC_ERROR, _DISCONNECTNODE_HELP)
+    address = params[0] if params else None
+    node_id = params[1] if len(params) > 1 else None
+    # both arguments' types are checked before either is read, and every
+    # mismatch is named in one refusal, as `HandleRequest` does
+    mismatches: list[tuple[int, str, object, str]] = []
+    if address is not None and not isinstance(address, str):
+        mismatches.append((1, "address", address, "string"))
+    if node_id is not None and (
+        isinstance(node_id, bool) or not isinstance(node_id, int | float)
+    ):
+        mismatches.append((2, "nodeid", node_id, "number"))
+    if mismatches:
+        raise type_errors(*mismatches)
+    if node_id is not None and (
+        isinstance(node_id, float) or not -_INT64_BOUND <= node_id < _INT64_BOUND
+    ):
+        raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
+
+    manager = node.p2p_manager
+    # Unlocked, the same snapshot `get_peer_info` above takes and for the
+    # same reason (btclib-org/btclib-node#356): a connection
+    # `create_connection` adds after this read is simply not in it, and
+    # is answered `RPC_CLIENT_NODE_NOT_CONNECTED` below, which a retry
+    # settles once a later snapshot holds it. One `remove_connection`
+    # itself drops between this read and the call below is answered as
+    # it still was here, and costs nothing there either:
+    # `remove_connection`'s own `pop(..., None)` is already a no-op on
+    # an id that is gone.
+    peers = {**manager.pending_connections, **manager.connections}
+    if address is not None and node_id is None:
+        found = [
+            connection_id
+            for connection_id, p2p_conn in sorted(peers.items())
+            if (addresses := _socket_addresses(p2p_conn)) is not None
+            and addresses[0] == address
+        ][:1]
+    elif node_id is not None and not address:
+        found = [node_id] if node_id in peers else []
+    else:
+        raise RpcError(
+            RPCErrorCode.INVALID_PARAMS,
+            "Only one of address and nodeid should be provided.",
+        )
+    if not found:
+        raise RpcError(
+            RPCErrorCode.CLIENT_NODE_NOT_CONNECTED,
+            "Node not found in connected nodes",
+        )
+    manager.remove_connection(found[0])
 
 
 _SETBAN_USAGE = 'setban "subnet" "command" ( bantime absolute )'
@@ -1372,11 +1491,13 @@ def get_raw_mempool(
         return {
             tx.id.hex(): {
                 "size": tx.size,
-                "vsize": tx.vsize,
+                # Core's `GetTxSize`, the sigop-adjusted one.
+                # btclib-org/btclib-node#1357
+                "vsize": node.mempool.vsizes[wtxid],
                 "weight": tx.weight,
                 "wtxid": tx.hash.hex(),
             }
-            for tx in node.mempool.transactions.values()
+            for wtxid, tx in node.mempool.transactions.items()
         }
 
     txids = [txid.hex() for txid in node.mempool.txid_index]
@@ -1545,12 +1666,11 @@ def get_raw_transaction(
     return out
 
 
-# the two reject reasons `verify_mempool_acceptance` can fail with,
-# named once so that `test_mempool_accept` and `send_raw_transaction`
-# answer the same verdict about the same transaction rather than
-# drifting apart the way btclib-org/btclib-node#83 found them
-_MISSING_PREVOUTS_REASON = "Missing prevouts"
-_INVALID_SCRIPT_REASON = "Invalid signatures or script"
+# Core's own reason for a missing input, the one `PreChecks` gives
+# (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
+# which `sendrawtransaction` answers and `testmempoolaccept` replaces
+# with "missing-inputs". btclib-org/btclib-node#1328
+_MISSING_INPUTS_REASON = "bad-txns-inputs-missingorspent"
 # Core's own reject reason for the same refusal, `TxValidationResult::
 # TX_RECONSIDERABLE`/`TX_MEMPOOL_POLICY` invalidated with "mempool
 # full" (`validation.cpp`, at bitcoin/bitcoin@58a7869f86) once
@@ -1562,7 +1682,7 @@ _INVALID_SCRIPT_REASON = "Invalid signatures or script"
 # alias of `RPC_VERIFY_REJECTED` (`-26`) -- the same code
 # `RPCErrorCode.VERIFY_REJECTED` (`bitcoin_core_rpc`) already answers a
 # transaction the mempool refused with, above. btclib-org/btclib-node#293
-_MEMPOOL_FULL_REASON = "Mempool is full"
+_MEMPOOL_FULL_REASON = "mempool full"
 # Core's own `MAX_PACKAGE_COUNT` (`src/policy/packages.h`,
 # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): how many `rawtx` one
 # `testmempoolaccept` takes. btclib-org/btclib-node#1329
@@ -1658,21 +1778,22 @@ def _mempool_accept_verdict(node: Node, tx: Tx) -> dict[str, Any]:
         "txid": tx.id,
         "wtxid": tx.hash,
         "allowed": False,
-        "vsize": tx.vsize,
     }
     try:
-        verify_mempool_acceptance(node, tx)
+        # `vsize` for an accepted one alone, as Core answers it: the
+        # sigop-adjusted size, known once the prevouts are read.
+        # btclib-org/btclib-node#1357
+        tx_res["vsize"] = verify_mempool_acceptance(node, tx).vsize
         tx_res["allowed"] = True
     except TxRejectedError as exc:
         # Core's own pair for every reason but `missing-inputs`
         # (`src/rpc/mempool.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-        # v31.1 tag). btclib-org/btclib-node#1245
+        # v31.1 tag). btclib-org/btclib-node#1245, btclib-org/btclib-node#1328
         tx_res["reject-reason"] = exc.reason
         tx_res["reject-details"] = str(exc)
-    except BTClibValueError:
-        tx_res["reject-reason"] = _INVALID_SCRIPT_REASON
     except MissingPrevoutError:
-        tx_res["reject-reason"] = _MISSING_PREVOUTS_REASON
+        # and that one alone, with no details. btclib-org/btclib-node#1328
+        tx_res["reject-reason"] = "missing-inputs"
     return tx_res
 
 
@@ -1741,20 +1862,18 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
         node.p2p_manager.broadcast_raw_transaction(held, node.mempool.fees[held.hash])
         return tx.id.hex()
     try:
-        fee = verify_mempool_acceptance(node, tx)
+        fee, vsize = verify_mempool_acceptance(node, tx)
     except MissingPrevoutError as exc:
         # Core's own missing-inputs code, RPC_VERIFY_ERROR
         # (src/rpc/protocol.h): a transaction this node cannot verify
         # for want of what it spends, not one it refuses
-        raise RpcError(RPCErrorCode.VERIFY_ERROR, _MISSING_PREVOUTS_REASON) from exc
+        raise RpcError(RPCErrorCode.VERIFY_ERROR, _MISSING_INPUTS_REASON) from exc
     except TxRejectedError as exc:
-        # the same code, with Core's own reason and details as the
-        # message, `state.ToString()`. btclib-org/btclib-node#1245
+        # Core's own RPC_VERIFY_REJECTED, with Core's own reason and
+        # details as the message, `state.ToString()`: every refusal
+        # `verify_mempool_acceptance` makes but a missing input.
+        # btclib-org/btclib-node#1245, btclib-org/btclib-node#1328
         raise RpcError(RPCErrorCode.VERIFY_REJECTED, str(exc)) from exc
-    except BTClibValueError as exc:
-        # Core's own RPC_VERIFY_REJECTED: the mempool looked at the
-        # transaction and refused it
-        raise RpcError(RPCErrorCode.VERIFY_REJECTED, _INVALID_SCRIPT_REASON) from exc
     # `Mempool.add_tx` now evicts to make room rather than refusing
     # outright past its old `is_full()` gate (btclib-org/btclib-node#294),
     # so whether this call is answered with the refusal below is no
@@ -1766,7 +1885,7 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
     # `tx.id.hex()` regardless of that boolean would tell the caller
     # this transaction was kept when it was not -- the same defect #277
     # fixed on the peer-to-peer path, `p2p/callbacks.py`'s `tx` handler.
-    if not node.mempool.add_tx(tx, fee):
+    if not node.mempool.add_tx(tx, fee, vsize):
         # Not kept: `Mempool._evict_to_limit` ran
         # and took this transaction right back out for being the worst
         # one held once `Mempool.bytesize_limit` was restored -- exactly
@@ -1809,6 +1928,7 @@ callbacks = {
     "getconnectioncount": get_connection_count,
     "getnetworkinfo": get_network_info,
     "addnode": add_node,
+    "disconnectnode": disconnect_node,
     "setban": set_ban,
     "listbanned": list_banned,
     "clearbanned": clear_banned,
@@ -1843,6 +1963,7 @@ arg_names: dict[str, tuple[str, ...]] = {
     "getconnectioncount": (),
     "getnetworkinfo": (),
     "addnode": ("node", "command", "v2transport"),
+    "disconnectnode": ("address", "nodeid"),
     "setban": ("subnet", "command", "bantime", "absolute"),
     "listbanned": (),
     "clearbanned": (),
