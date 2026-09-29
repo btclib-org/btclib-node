@@ -891,6 +891,23 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `uv/Dockerfile`**: the old floor admitted a `uv` older than the one the
   updater writes `uv.lock` with (issue btclib-org/.github#1438).
 
+### An addr-fetch dial checks the name it was queued under first
+
+- **A queued host already held by name is skipped before it is ever
+  resolved** (closes #1432), as Core's `AlreadyConnectedToHost` checks it
+  ahead of `ConnectNode`'s own resolve.
+
+### An ancestor is found through skip pointers, as Core's `GetAncestor`
+
+- **Block download and `getheaders` reach a block's fork point or ancestor in
+  steps that grow with the logarithm of the distance, not with the distance**
+  (closes #1200).
+
+### A block announced by `headers` near the tip is asked for at once, as in Core
+
+- **`headers` asks the announcing peer for the blocks up to a header it just
+  sent, as Core's `HeadersDirectFetchBlocks` does** (closes #1199).
+
 ### An out-of-range `feefilter` leaves the peer's filter in place, as in Core
 
 - **A rate outside `MoneyRange` is ignored rather than clearing the filter the

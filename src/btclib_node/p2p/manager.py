@@ -706,6 +706,7 @@ class P2pManager(threading.Thread):
         feeler: bool = False,
         prefer_evict: bool = False,
         addr_fetch: bool = False,
+        addr_name: str | None = None,
     ) -> None:
         """Build a `Connection` for `client`, hold it pending, and start it.
 
@@ -760,6 +761,7 @@ class P2pManager(threading.Thread):
         conn.feeler = feeler
         conn.prefer_evict = prefer_evict
         conn.addr_fetch = addr_fetch
+        conn.addr_name = addr_name
         conn.keyed_net_group = keyed_net_group(self._net_group_key, address)
         self.pending_connections[self.last_connection_id] = conn
         task = asyncio.run_coroutine_threadsafe(conn.run(), self.loop)
@@ -1544,6 +1546,16 @@ class P2pManager(threading.Thread):
         cleared both checks does a second pass dial each in turn, the
         first that connects kept (btclib-org/btclib-node#1284).
 
+        Ahead of any of that, `AlreadyConnectedToHost(pszDest)`
+        (`src/net.cpp`, same sha) refuses the whole attempt on the
+        unresolved name alone, before `ConnectNode` ever resolves it --
+        compared against `m_addr_name`, not an address, because no
+        address exists yet to key on. `addr_name` (`p2p/connection.py`)
+        is this tree's own record of that string, held only by a
+        connection dialled by one; the entry is dropped exactly as the
+        two post-resolve checks below drop it, never resolved
+        (btclib-org/btclib-node#1432).
+
         The dial and everything past the resolve is inside its own
         `try`, for the reason `_maybe_prune_active_addresses` already
         gives for its own: this coroutine's future is never awaited
@@ -1555,6 +1567,21 @@ class P2pManager(threading.Thread):
             return
         host, port = self._addr_fetches.popleft()
         try:
+            with self._connections_lock:
+                held_names = {
+                    conn.addr_name
+                    for conn in (
+                        *self.connections.values(),
+                        *self.pending_connections.values(),
+                    )
+                    if conn.addr_name is not None
+                }
+            if host in held_names:
+                self.logger.info(
+                    "Not opening a connection to %s, already connected to it by name",
+                    host,
+                )
+                return
             loop = asyncio.get_running_loop()
             try:
                 answers = await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM)
@@ -1610,7 +1637,11 @@ class P2pManager(threading.Thread):
                 sock = await dial(address)
                 if sock:
                     self.create_connection(
-                        sock, address, inbound=False, addr_fetch=True
+                        sock,
+                        address,
+                        inbound=False,
+                        addr_fetch=True,
+                        addr_name=host,
                     )
                     return
         except Exception:
