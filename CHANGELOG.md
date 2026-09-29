@@ -961,6 +961,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   timestamp says** (closes #1435), matching `IsTerrible`'s own `m_last_try`
   guard.
 
+### `pypi-install.yml` installs the version the release published
+
+- **The install names `btclib-node==<version>` from the tag `release.yml`
+  passes** (issue btclib-org/.github#1456): a bare name let a lagging
+  index serve the release before it.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
