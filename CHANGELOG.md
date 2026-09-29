@@ -885,6 +885,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   (closes #1249). A test needing IPv6 skips rather than fails the suite
   (closes #1250); the root-skipped one carries its pragma (closes #1251).
 
+### `[tool.uv]`'s floor rises to the `uv` `dependabot-core` bundles
+
+- **`required-version` reads `>=0.12.19`, the pin in `dependabot-core`'s
+  `uv/Dockerfile`**: the old floor admitted a `uv` older than the one the
+  updater writes `uv.lock` with (issue btclib-org/.github#1438).
+
 ### An out-of-range `feefilter` leaves the peer's filter in place, as in Core
 
 - **A rate outside `MoneyRange` is ignored rather than clearing the filter the
