@@ -938,6 +938,17 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   and a served command's own full help text with one, or Core's own
   "unknown command" for one it does not serve** (closes #1405).
 
+### A refused `stop` no longer shuts the node down
+
+- **`rpc.main` calls `node.stop()` only where the `stop` reply carries
+  no error**, as Core's own `stop()` handler does (closes #1441).
+
+### `submitblock` answers Core's own reasons where it used to answer `null`
+
+- **A tip block answers `bad-cb-height` or `bad-txns-nonfinal`** (closes #1335).
+- **Failing scripts answer `block-script-verify-flag-failed`** (closes #1390).
+- **A body failing `CheckBlock` leaves no header indexed** (closes #1339).
+
 ### `address_sampler`'s tried side draws an aged-out row, as `Select_` does
 
 - **The tried side reads `active_addresses` unfiltered by `_aged_out`,

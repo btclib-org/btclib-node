@@ -19,7 +19,7 @@ pay for.
 from typing import TYPE_CHECKING
 
 from btclib.consensus import WITNESS_SCALE_FACTOR
-from btclib.exceptions import BTClibValueError
+from btclib.exceptions import BTClibException, BTClibValueError
 from btclib.script.engine import verify_amounts, verify_input, verify_transaction
 from btclib.script.engine.flags import ALL_FLAGS, ScriptFlag
 from btclib.script.limits import MAX_PUBKEYS_PER_MULTISIG
@@ -27,6 +27,7 @@ from btclib.script.script import BYTE_FROM_OP_CODE_NAME, op_code_spans
 from btclib.script.sig_hash import PrecomputedTxData
 
 from btclib_node.exceptions import (
+    BlockScriptVerifyError,
     NonStandardTxError,
     PrevoutCountMismatchError,
     TxRejectedError,
@@ -201,6 +202,11 @@ def check_transactions(
     `main._validate_block`'s caller already has it -- so `get_flags`
     below can answer for the handful of blocks the buried heights alone
     get wrong.
+
+    A failure the pool itself raises is re-raised as
+    `BlockScriptVerifyError`, Core's own wire format for a script
+    check failed while connecting; `verify_amounts`'s own refusal below
+    is not that -- it fails, unwrapped, before the pool ever runs.
     """
     if not transaction_data:
         return
@@ -219,7 +225,10 @@ def check_transactions(
     # Raising is the point: an input that does not verify has to reach
     # main.update_chain, which rolls the chainstate back and leaves the
     # block off the active chain.
-    node.worker_pool.starmap(f, _tasks(transaction_data, flags))
+    try:
+        node.worker_pool.starmap(f, _tasks(transaction_data, flags))
+    except BTClibException as error:
+        raise BlockScriptVerifyError(str(error)) from error
 
 
 def _consensus_accepts(prevouts: list[TxOut], tx: Tx) -> bool:

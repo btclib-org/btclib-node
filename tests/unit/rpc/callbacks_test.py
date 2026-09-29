@@ -47,6 +47,7 @@ from btclib_node.constants import (
     P2pConnStatus,
 )
 from btclib_node.exceptions import (
+    ChainstateInconsistencyError,
     MissingPrevoutError,
     StoreCorruptionError,
     TxRejectedError,
@@ -94,13 +95,14 @@ from btclib_node.rpc.connection import RawJSON
 from btclib_node.rpc.errors import RpcError
 from btclib_node.rpc.help import HELP_TEXT, answer_help
 from tests import (
+    build_block,
     generate_coinbase,
     generate_random_chain,
     generate_random_header_chain,
     generate_random_transaction,
     generate_segwit_block,
 )
-from tests.unit.main_test import connect
+from tests.unit.main_test import connect, locked_spend, spend
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -3715,6 +3717,30 @@ def test_submit_block_accepts_a_new_block_extending_the_tip(
     )
 
 
+def test_submit_block_stores_valid_a_block_off_a_known_non_tip_ancestor(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A valid block extending a known block that is not the tip answers `None`.
+
+    Its own parent is indexed already (genesis), so this never reaches
+    `prev-blk-not-found`; not extending the active chain's own tip, it
+    also never reaches `_validate_extending_tip`, and is merely stored --
+    the active chain itself does not move.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, chain)
+    fork = build_block(node.chain.genesis.hash, [generate_coinbase(height=1)], height=5)
+
+    result = submit_block(node, _CONN, [fork.serialize(check_validity=False).hex()])
+
+    assert result is None
+    block_info = node.chainstate.block_index.get_block_info(fork.header.hash)
+    assert block_info.downloaded
+    assert node.block_db.get_block(fork.header.hash) is not None
+    assert node.chainstate.block_index.active_chain[-1] == chain[1].header.hash
+
+
 def test_submit_block_answers_duplicate_for_a_block_already_downloaded(
     regtest_node: Callable[..., Node],
 ) -> None:
@@ -3861,9 +3887,14 @@ def test_submit_block_leaves_valid_a_header_its_body_does_not_match(
 
     Core's `AcceptBlock` marks a block failed unless the failure is
     `BLOCK_MUTATED`, so the honest body is still accepted afterwards.
+    The header is indexed first, through a `headers` announcement this
+    node has already accepted -- a mismatched body under a header this
+    node has never indexed leaves the header unindexed instead (ISS
+    1339), which is covered where that fix is.
     """
     node = regtest_node()
     chain = generate_random_chain(1, node.chain.genesis.hash)
+    node.chainstate.block_index.add_headers([chain[0].header])
     # a differently-valued coinbase: structurally valid on its own, and
     # not the one the header's own merkle root actually commits to
     mismatched = Block(
@@ -4070,9 +4101,9 @@ def test_submit_block_leaves_valid_a_committed_body_failing_check_block(
     """ISS 1242: Core's `ProcessNewBlock` never marks a `CheckBlock` failure.
 
     Measured against bitcoind v31.1: `bad-cb-multiple`, and the header
-    absent from `getchaintips`; `headers-only` there where `submitheader`
-    indexed it first. This node indexes the header before `assert_valid`
-    (btclib-org/btclib-node#1339), so the status is what is asserted.
+    absent from `getchaintips` -- `headers-only` there where
+    `submitheader` indexed it first. This node's own header is absent
+    from `block_index` too, its own equivalent read (ISS 1339).
     """
     node = regtest_node()
     twice = generate_segwit_block(generate_coinbase(height=1))
@@ -4080,8 +4111,142 @@ def test_submit_block_leaves_valid_a_committed_body_failing_check_block(
     result = submit_block(node, _CONN, [twice.serialize(check_validity=False).hex()])
 
     assert result == "more than one coinbase"
-    block_info = node.chainstate.block_index.get_block_info(twice.header.hash)
-    assert block_info.status != BlockStatus.invalid
+    assert twice.header.hash not in node.chainstate.block_index.header_dict
+
+
+def test_submit_block_answers_check_block_failure_over_prev_blk_not_found(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """ISS 1339: `CheckBlock` runs before the header is even looked up.
+
+    Core's `ProcessNewBlock` asks `CheckBlock` unconditionally, before
+    `AcceptBlock` ever reaches `AcceptBlockHeader`
+    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag), so a body failing it is refused for that reason even where
+    the header's own parent is unknown too -- `prev-blk-not-found` is
+    never reached, and nothing about the unknown parent is looked at.
+    """
+    node = regtest_node()
+    orphan = build_block(
+        b"\x22" * 32, [generate_coinbase(height=1), generate_coinbase(height=1)], 0
+    )
+
+    result = submit_block(node, _CONN, [orphan.serialize(check_validity=False).hex()])
+
+    assert result == "more than one coinbase"
+    assert orphan.header.hash not in node.chainstate.block_index.header_dict
+
+
+@pytest.mark.parametrize(
+    ("nonfinal_spend", "phrase"),
+    [(False, "bad-cb-height"), (True, "bad-txns-nonfinal")],
+)
+def test_submit_block_answers_a_contextual_failure_for_a_block_extending_the_tip(
+    regtest_node: Callable[..., Node],
+    nonfinal_spend: bool,  # noqa: FBT001
+    phrase: str,
+) -> None:
+    """ISS 1335: Core's own reasons, where btclib-node used to answer `None`.
+
+    Measured against bitcoind v31.1: `bad-cb-height` for a coinbase
+    committing to no height, and `bad-txns-nonfinal` where that same
+    coinbase sits beside a non-final transaction too -- Core checks
+    finality before the coinbase height commitment
+    (`ContextualCheckBlock`, `src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    """
+    node = regtest_node()
+    chain = generate_random_chain(COINBASE_MATURITY, node.chain.genesis.hash)
+    connect(node, chain)
+
+    # no height commitment at all: BIP34 refuses it regardless of the
+    # non-final spend the parametrized case adds beside it
+    transactions = [generate_coinbase()]
+    if nonfinal_spend:
+        funding = chain[0].transactions[0]
+        transactions.append(
+            locked_spend(
+                funding, funding.vout[0].value, lock_time=2_000_000_000, sequence=0
+            )
+        )
+    bad = build_block(
+        node.chainstate.block_index.active_chain[-1], transactions, len(chain)
+    )
+
+    result = submit_block(node, _CONN, [bad.serialize(check_validity=False).hex()])
+
+    assert result == phrase
+    assert bad.header.hash not in node.chainstate.block_index.active_chain
+    block_info = node.chainstate.block_index.get_block_info(bad.header.hash)
+    assert block_info.status == BlockStatus.invalid
+    assert node.block_db.get_block(bad.header.hash) is not None
+
+
+def test_submit_block_answers_a_script_failure_for_a_block_extending_the_tip(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """ISS 1390: Core's `ConnectBlock`, run synchronously where the tip moves.
+
+    Measured against bitcoind v31.1: `block-script-verify-flag-failed
+    (<reason>)`. This tree does not reproduce Core's own vocabulary for
+    the text inside the parentheses -- `submit_block`'s own docstring
+    argues the same divergence for every other reject reason it has no
+    literal word for.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(COINBASE_MATURITY, node.chain.genesis.hash)
+    connect(node, chain)
+
+    funding = chain[0].transactions[0]
+    unspendable = spend(
+        funding,
+        funding.vout[0].value,
+        script_sig=script.serialize(["OP_RETURN"]),
+    )
+    bad = build_block(
+        node.chainstate.block_index.active_chain[-1],
+        [generate_coinbase(height=len(chain) + 1), unspendable],
+        len(chain),
+    )
+
+    result = submit_block(node, _CONN, [bad.serialize(check_validity=False).hex()])
+
+    assert isinstance(result, str)
+    assert result.startswith("block-script-verify-flag-failed")
+    assert "OP_RETURN" in result
+    assert bad.header.hash not in node.chainstate.block_index.active_chain
+    block_info = node.chainstate.block_index.get_block_info(bad.header.hash)
+    assert block_info.status == BlockStatus.invalid
+    assert node.block_db.get_block(bad.header.hash) is not None
+
+
+def test_submit_block_stops_the_node_where_update_chain_finds_storage_unsafe(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure `update_chain` does not swallow propagates and stops `Node`.
+
+    `ChainstateInconsistencyError` is not one of `_CONTENT_FAILURE`'s
+    three types, so `main.update_chain` re-raises it rather than
+    recording a rejection -- `Node._step_chain`'s own scheduled call
+    catches that and stops `Node.run`'s loop for it; calling
+    `update_chain` here instead, ahead of that pass, must not let the
+    loop run on regardless.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, chain[:1])
+    new_block = chain[1]
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        err_msg = "boom"
+        raise ChainstateInconsistencyError(err_msg)
+
+    monkeypatch.setattr(node.chainstate.utxo_index, "add_block", boom)
+
+    assert not node.terminate_flag.is_set()
+    with pytest.raises(ChainstateInconsistencyError, match="boom"):
+        submit_block(node, _CONN, [new_block.serialize(check_validity=False).hex()])
+    assert node.terminate_flag.is_set()
 
 
 @pytest.mark.parametrize(("segwit_height", "invalid"), [(1, True), (2, False)])

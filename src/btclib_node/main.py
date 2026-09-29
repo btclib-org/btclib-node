@@ -688,20 +688,20 @@ def is_cached_invalid(block_index: BlockIndex, block: Block) -> bool:
 
 
 # update_chain's own per-block gate, once a candidate's spends and
-# creations are staged and its own height is known: script and amounts
-# (interpreter.check_transactions), a coinbase paying more than subsidy
-# plus fees (btclib.tx.tx_context.assert_coinbase_value), a spend of a
-# coinbase not yet COINBASE_MATURITY deep
-# (btclib.tx.tx_context.assert_coinbase_maturity), the two rules a
-# height and a clock decide on their own (Block.assert_valid_contextual)
-# -- time-too-new, already checked on the header path
-# (chainstate/block_index.py's own header validation), and
+# creations are staged and its own height is known: every transaction's
+# own finality via btclib.tx.tx_context.is_final (BIP113-aware) and its
+# BIP68 relative lock via btclib.tx.tx_context.assert_sequence_locks,
+# the two rules a height and a clock decide on their own through
+# Block.assert_valid_contextual -- time-too-new, already checked on the
+# header path (chainstate/block_index.py's own header validation), and
 # bad-cb-height, wherever BIP34 binds (Chain.consensus.bip34_height, per
-# network) -- and now every transaction's own finality
-# (btclib.tx.tx_context.is_final, BIP113-aware) and BIP68 relative lock
-# (btclib.tx.tx_context.assert_sequence_locks). BIP30 runs earlier
-# still, inside utxo_index.add_block, before this is ever called: its
-# own docstring is where that ordering and the two 2010 exceptions are
+# network) -- a spend of a coinbase not yet COINBASE_MATURITY deep via
+# btclib.tx.tx_context.assert_coinbase_maturity, this block's own
+# scripts and amounts via interpreter.check_transactions, and a
+# coinbase paying more than subsidy plus fees via
+# btclib.tx.tx_context.assert_coinbase_value. BIP30 runs earlier still,
+# inside utxo_index.add_block, before this is ever called: its own
+# docstring is where that ordering and the two 2010 exceptions are
 # argued. A function of its own rather than statements inline:
 # update_chain's own trial loop is already long enough that PLR0915
 # counts every statement gained here against it.
@@ -709,10 +709,6 @@ def _validate_block(
     node: Node, block: Block, transactions: list[tuple[list[Coin], Tx]], index: int
 ) -> None:
     block_hash = block.header.hash
-    block.assert_valid_contextual(
-        BlockContext(index, datetime.now(UTC), node.chain.consensus.bip34_height)
-    )
-
     block_index = node.chainstate.block_index
     parent_header = block_index.header_dict[block.header.previous_block_hash].header
     parent_height = index - 1
@@ -736,6 +732,29 @@ def _validate_block(
         if not is_final(tx, index, lock_time_cutoff):
             err_msg = "bad-txns-nonfinal"
             raise BTClibValueError(err_msg)
+
+    # Core's own ContextualCheckBlock checks finality before the
+    # coinbase height commitment (src/validation.cpp,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which is why this
+    # sits after the loop above rather than ahead of it. bad-cb-height is
+    # Core's own literal reason for the one failure this call can
+    # actually reach: bad-diffbits and time-too-old stay unchecked here
+    # (median_time_past and required_bits are never supplied), and
+    # time-too-new -- the one rule this call still asks unconditionally
+    # -- is already refused on the header path, so it cannot be why this
+    # ever raises; the message is checked before translating it rather
+    # than assumed, in case that invariant is ever wrong.
+    try:
+        block.assert_valid_contextual(
+            BlockContext(index, datetime.now(UTC), node.chain.consensus.bip34_height)
+        )
+    except BTClibValueError as error:
+        if index >= node.chain.consensus.bip34_height and "coinbase height" in str(
+            error
+        ):
+            err_msg = "bad-cb-height"
+            raise BTClibValueError(err_msg) from error
+        raise  # pragma: no cover -- unreachable per the comment above
 
     def ancestor_median_time_past(height: int) -> int:
         header = header_at_height(parent_header, parent_height, height, parent_of)
