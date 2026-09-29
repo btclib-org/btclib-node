@@ -851,30 +851,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A host held on any port is not dialled again** (closes #1304), and an
   inbound peer's address keeps the port it connected from.
 
-### A call past its own declared argument count is refused with help
-
-- **`rpc.main._execute` refuses a call carrying more positional arguments
-  than its method declares, with that method's own full help text**
-  (closes #1424).
-
-### Two or more wrongly typed arguments are all named in one refusal
-
-- **Every declared argument's type is checked before any is raised on, so a
-  call with two or more wrong ones names every one, not the first alone**
-  (closes #1293).
-
-### A short or refused call is answered with the method's own full help
-
-- **The one-line usage string a callback raised for a missing argument, or a
-  value it refuses outright, is now that method's own full help text**
-  (closes #1294).
-
-### `help` is served, as Core's `help` RPC serves it
-
-- **The commands this node serves, grouped by category, with no argument,
-  and a served command's own full help text with one, or Core's own
-  "unknown command" for one it does not serve** (closes #1405).
-
 ### The mempool refuses a second spend of one outpoint, and a block evicts it
 
 - **A conflicting candidate is refused, in Core's words where its fee rules
@@ -931,6 +907,36 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 - **`headers` asks the announcing peer for the blocks up to a header it just
   sent, as Core's `HeadersDirectFetchBlocks` does** (closes #1199).
+
+### `-dnsseed`, `-fixedseeds` and `-seednode` steer the bootstrap
+
+- **`-dnsseed` and `-fixedseeds` turn DNS seeding and the chain's fixed
+  seeds off, and `-seednode` addr-fetches a peer ahead of the DNS seeds,
+  one at a time** (closes #1192), as Core's `ThreadOpenConnections` does.
+
+### A call past its own declared argument count is refused with help
+
+- **`rpc.main._execute` refuses a call carrying more positional arguments
+  than its method declares, with that method's own full help text**
+  (closes #1424).
+
+### Two or more wrongly typed arguments are all named in one refusal
+
+- **Every declared argument's type is checked before any is raised on, so a
+  call with two or more wrong ones names every one, not the first alone**
+  (closes #1293).
+
+### A short or refused call is answered with the method's own full help
+
+- **The one-line usage string a callback raised for a missing argument, or a
+  value it refuses outright, is now that method's own full help text**
+  (closes #1294).
+
+### `help` is served, as Core's `help` RPC serves it
+
+- **The commands this node serves, grouped by category, with no argument,
+  and a served command's own full help text with one, or Core's own
+  "unknown command" for one it does not serve** (closes #1405).
 
 ## v2026.9.24
 

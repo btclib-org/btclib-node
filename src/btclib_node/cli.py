@@ -106,9 +106,9 @@ Precedence is Core's `GetSetting` and `GetSettingsList`
 section over the default section; within the command line the last
 value, within a file the first, the chain selectors aside; and a
 negation discarding every value named before it at its own level.
-`-connect`, `-addnode`, `-rpcauth`, `-rpcwhitelist`, `-rpcbind`,
-`-rpcallowip` and `-debug` are lists, every value from every level
-applying.
+`-connect`, `-addnode`, `-seednode`, `-rpcauth`, `-rpcwhitelist`,
+`-rpcbind`, `-rpcallowip` and `-debug` are lists, every value from
+every level applying.
 
 Not every option answers to the file the same way once the chain is
 not `main`: `-port`, `-rpcport`, `-rpcbind`, `-connect` and `-addnode`
@@ -383,6 +383,17 @@ _OPTIONS: dict[str, _Option] = {
         + ". This option can be specified multiple times.",
         _DEBUG_TEST_TITLE,
     ),
+    "dnsseed": _Option(
+        "",
+        "Query for peer addresses via DNS lookup, if low on addresses "
+        "(default: 1 unless -connect used or -maxconnections=0)",
+        _CONNECTION_TITLE,
+    ),
+    "fixedseeds": _Option(
+        "",
+        "Allow fixed seeds if DNS seeds don't provide peers (default: 1)",
+        _CONNECTION_TITLE,
+    ),
     "h": _Option("", "", None),
     "help": _Option(
         "", "Print this help message and exit (also -h or -?)", _OPTIONS_TITLE
@@ -512,6 +523,13 @@ _OPTIONS: dict[str, _Option] = {
         "If rpcwhitelistdefault is set to 1 and no -rpcwhitelist is set, rpc "
         "server acts as if all rpc users are subject to empty whitelists.",
         _RPC_TITLE,
+    ),
+    "seednode": _Option(
+        "=<ip>[:port]",
+        "Connect to a node to retrieve peer addresses, and disconnect. This "
+        "option can be specified multiple times to connect to multiple nodes. "
+        "During startup, seednodes will be tried before dnsseeds.",
+        _CONNECTION_TITLE,
     ),
     "server": _Option("", "Accept JSON-RPC commands", _RPC_TITLE),
     "signet": _Option(
@@ -1593,9 +1611,20 @@ def _after_lock(before: _BeforeLock) -> Config:
     listen = _get_bool(settings, "listen")
     if listen is None:
         listen = not connect and not connect_negated and before.max_connections_arg > 0
-    # the same `if` soft-sets `-dnsseed`, reading the same `int64_t`, which
-    # `max_connections` has been narrowed from
-    dnsseed = not connect and not connect_negated and before.max_connections_arg > 0
+    # The same `if` as `-listen`'s soft-set, over the same `int64_t`
+    # (ISS 1324: `before.max_connections_arg`, not the 32-bit-narrowed
+    # `before.max_connections` `Config`'s own fallback for a `None`
+    # `dnsseed` would read), which an explicit `-dnsseed`/`-nodnsseed`
+    # wins over.
+    dnsseed = _get_bool(settings, "dnsseed")
+    if dnsseed is None:
+        no_peers = not connect and not connect_negated
+        dnsseed = no_peers and before.max_connections_arg > 0
+    # `-fixedseeds`'s own explicit value; `DEFAULT_FIXEDSEEDS` (true)
+    # where it is not given.
+    fixedseeds = _get_bool(settings, "fixedseeds")
+    if fixedseeds is None:
+        fixedseeds = True
     # `GetAuthCookieFile` (`src/rpc/request.cpp`, same sha): negated, no cookie
     rpccookiefile = (
         None
@@ -1624,9 +1653,11 @@ def _after_lock(before: _BeforeLock) -> Config:
         debug=before.debug,
         connect=connect or (["0"] if connect_negated else []),
         addnode=_get_args(settings, "addnode"),
+        seednode=_get_args(settings, "seednode"),
         listen=listen,
         max_connections=before.max_connections,
         dnsseed=dnsseed,
+        fixed_seeds=fixedseeds,
         ban_time=ban_time,
         min_relay_feerate=before.min_relay_feerate,
         rpcauth=_get_args(settings, "rpcauth"),
