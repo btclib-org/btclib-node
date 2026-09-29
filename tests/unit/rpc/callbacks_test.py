@@ -1775,7 +1775,11 @@ def test_hex_with_whitespace_is_refused_like_core(
     `IsHex` refuses. btclib-org/btclib-node#1372
     """
     raw = a_tx().serialize(include_witness=True).hex()
-    with_space = raw[:8] + " " + raw[8:]
+    # two spaces, not one: an odd-length probe would already be refused
+    # by the length-parity half of the guard, telling this test nothing
+    # about the character-set half `_HEX_DIGITS` is
+    with_space = raw[:8] + "  " + raw[8:]
+    assert len(with_space) % 2 == 0
     params = [with_space] if callback is send_raw_transaction else [[with_space]]
     with pytest.raises(RpcError) as raised:
         callback(a_node(), _CONN, params)
@@ -1988,6 +1992,57 @@ def test_decoderawtransaction_iswitness_of_the_wrong_json_type_is_named() -> Non
     )
 
 
+def a_legacy_tx() -> Tx:
+    """`a_tx`, stripped of its own witness -- `is_segwit` false."""
+    tx = a_tx()
+    return replace(tx, vin=[replace(tx.vin[0], script_witness=Witness([]))])
+
+
+def test_decoderawtransaction_iswitness_false_refuses_a_witness_tx() -> None:
+    """`iswitness=false` refuses a witness-serialized tx, as Core's `DecodeTx`.
+
+    `bitcoind` v31.1 on regtest: the same rawtx decodes with `iswitness`
+    omitted or `true`, and answers `-22` "TX decode failed" with
+    `iswitness=false`. Not run end to end: read from `core_io.cpp`, the
+    same reasoning `decode_raw_transaction`'s own docstring gives.
+    """
+    tx = a_tx()
+    assert tx.is_segwit
+    raw = tx.serialize(include_witness=True).hex()
+    with pytest.raises(RpcError) as raised:
+        cb.decode_raw_transaction(a_node(), _CONN, [raw, False])
+    assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
+    assert raised.value.message == "TX decode failed"
+
+
+def test_decoderawtransaction_iswitness_true_still_decodes_a_legacy_tx() -> None:
+    """`iswitness=true` still decodes a transaction that carries no witness.
+
+    Core's own `DecodeTx` (`src/core_io.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag): the extended reading it tries alone under
+    `iswitness=true` auto-detects the marker the same way `Tx.parse`
+    does, so a legacy transaction -- no marker present -- decodes the
+    same as it does by default.
+    """
+    tx = a_legacy_tx()
+    assert not tx.is_segwit
+    raw = tx.serialize(include_witness=True).hex()
+    out = cb.decode_raw_transaction(a_node(), _CONN, [raw, True])
+    assert out == tx.to_dict()
+
+
+def test_decoderawtransaction_iswitness_false_still_decodes_a_legacy_tx() -> None:
+    """`iswitness=false` decodes a transaction that carries no witness too.
+
+    The guard `iswitness=false` adds is conditioned on `tx.is_segwit`,
+    so a legacy transaction is unaffected by it.
+    """
+    tx = a_legacy_tx()
+    raw = tx.serialize(include_witness=True).hex()
+    out = cb.decode_raw_transaction(a_node(), _CONN, [raw, False])
+    assert out == tx.to_dict()
+
+
 def test_decoderawtransaction_that_does_not_decode_is_core_s_bare_message() -> None:
     """`decoderawtransaction` answers Core's own message, with no addition.
 
@@ -2002,10 +2057,17 @@ def test_decoderawtransaction_that_does_not_decode_is_core_s_bare_message() -> N
 
 
 def test_decoderawtransaction_refuses_whitespace_like_core() -> None:
-    """`decoderawtransaction` refuses whitespace too, `IsHex`'s own rule."""
+    """`decoderawtransaction` refuses whitespace too, `IsHex`'s own rule.
+
+    Two leading spaces, not one: an odd-length probe is already refused
+    by the length-parity half of `_decode_hex_tx`'s own guard, telling
+    this test nothing about the character-set half, `_HEX_DIGITS`.
+    """
     raw = a_tx().serialize(include_witness=True).hex()
+    with_space = "  " + raw
+    assert len(with_space) % 2 == 0
     with pytest.raises(RpcError) as raised:
-        cb.decode_raw_transaction(a_node(), _CONN, [" " + raw])
+        cb.decode_raw_transaction(a_node(), _CONN, [with_space])
     assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
     assert raised.value.message == "TX decode failed"
 

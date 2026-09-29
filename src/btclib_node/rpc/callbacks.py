@@ -1665,8 +1665,8 @@ def get_raw_transaction(
     return out
 
 
-# Core's own `IsHex` (`src/util/strencodings.cpp`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): every character a hex
+# Core's own `IsHex` (`src/util/strencodings.cpp`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): every character a hex
 # digit. Named once so `_decode_hex_tx` reads the same set rather than
 # spelling `string.hexdigits` inline. btclib-org/btclib-node#1372
 _HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
@@ -1696,8 +1696,8 @@ def _decode_hex_tx(rawtx: str) -> Tx:
     return Tx.parse(bytes.fromhex(rawtx), check_validity=False)
 
 
-# Core's own `MAX_MONEY` (`src/consensus/amount.h`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): 21e6 BTC in satoshi, the
+# Core's own `MAX_MONEY` (`src/consensus/amount.h`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): 21e6 BTC in satoshi, the
 # same bound btclib's own `valid_sats_amount` enforces under a private
 # name (`btclib/amount.py`) -- read again here only to tell
 # `bad-txns-vout-negative` from `bad-txns-vout-toolarge` apart, one
@@ -1806,13 +1806,35 @@ def decode_raw_transaction(
     to serialize. `vin`/`vout`'s own nested fields are not Core's field
     by field -- btclib-org/btclib-node#1448.
 
-    `iswitness`, read and type-checked for the shape Core declares,
-    decides nothing here: Core's own `DecodeTx` tries a witness and a
-    legacy reading and picks between them where the encoding is
-    ambiguous, which is what the flag steers; `Tx.parse`
-    (`btclib/tx/tx.py`) instead reads the marker bytes once and commits
-    to whichever they say, deterministically, so there is no second
-    reading for a hint to choose between.
+    `iswitness=false` refuses a witness-serialized transaction Core's
+    own extended-only default would otherwise decode: Core's `DecodeTx`
+    (`src/core_io.cpp`, same tag) disables the extended (marker-aware)
+    reading for `iswitness=false` and tries the legacy one alone, which
+    reads the wire with no marker check at all, so the segwit marker
+    and flag are read as an input count and a following output count
+    instead -- the real input and output bytes that follow almost never
+    happen to leave the legacy reading having consumed exactly the
+    remaining bytes, `ssData.empty()`, so it fails and `DecodeHexTx`
+    answers `false`. `Tx.parse` (`btclib/tx/tx.py`) has no mode that
+    skips the marker check the way that legacy reading does, so this
+    reproduces the same practical outcome -- refusal, whenever the
+    decoded transaction turns out to carry a witness -- without
+    replaying Core's own byte-for-byte algorithm on the raw bytes; the
+    one case that could differ, a legacy reading of witness-serialized
+    bytes that coincidentally consumes them all and passes
+    `CheckTxScriptsSanity`, is not reproduced.
+    btclib-org/btclib-node#1458
+
+    `iswitness=true` disables only the legacy fallback and tries the
+    extended (marker-aware) reading alone -- exactly what `Tx.parse`
+    already and unconditionally does, witness-serialized or not, so
+    this changes nothing for it. `iswitness` omitted tries both, extended
+    preferred when it succeeds at all (`DecodeTx`'s own comment,
+    same file): the one case that additionally differs from a bare
+    `Tx.parse` is an ambiguous zero-input legacy encoding only the
+    legacy fallback can read, `Tx.parse` having none to fall back to
+    either -- the same gap `iswitness=false` above has, and not
+    reproduced for the same reason.
     """
     if not params:
         # Core's own usage string: `hexstring` is STR_HEX and required,
@@ -1829,10 +1851,14 @@ def decode_raw_transaction(
         # before the handler body runs, the same as blockhash and txid
         # elsewhere in this file
         raise type_error(1, "hexstring", hexstring, "string")
-    # iswitness decides nothing here, this function's own docstring;
-    # read anyway, for the type check and the null-default Core's own
-    # `request.params[1].isNull()` gives every caller that omits it
-    bool_param(params, 1, name="iswitness", default=True)
+    # Not bool_param: that helper folds "omitted" into its own default,
+    # and the three cases -- omitted, explicit true, explicit false --
+    # answer differently here, this function's own docstring
+    iswitness: bool | None = None
+    if len(params) > 1 and params[1] is not None:
+        if not isinstance(params[1], bool):
+            raise type_error(2, "iswitness", params[1], "bool")
+        iswitness = params[1]
     try:
         tx = _decode_hex_tx(hexstring)
     except BTClibException as error:
@@ -1844,6 +1870,9 @@ def decode_raw_transaction(
         raise RpcError(
             RPCErrorCode.DESERIALIZATION_ERROR, "TX decode failed"
         ) from error
+    if iswitness is False and tx.is_segwit:
+        # this function's own docstring, `iswitness=false`
+        raise RpcError(RPCErrorCode.DESERIALIZATION_ERROR, "TX decode failed")
     out: dict[str, Any] = tx.to_dict(check_validity=False)
     return out
 
@@ -1965,8 +1994,8 @@ def _mempool_accept_verdict(node: Node, tx: Tx) -> dict[str, Any]:
     }
     reason = _check_transaction(tx)
     if reason is not None:
-        # Core's own `PreChecks` (`src/validation.cpp`, at
-        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) calls
+        # Core's own `PreChecks` (`src/validation.cpp`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) calls
         # `CheckTransaction` first, ahead of everything
         # context-dependent below; `reject-details` is
         # `state.ToString()`, the same string as `reject-reason` where,
