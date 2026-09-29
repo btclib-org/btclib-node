@@ -841,12 +841,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   it terrible: its handshake stamp over 30 days old or 10 minutes ahead**
   (closes #1318), where it left three hours after its last handshake.
 
-### `submitblock` answers Core's own reasons where it used to answer `null`
-
-- **A block extending the tip answers `bad-cb-height`, `bad-txns-nonfinal`, or
-  `block-script-verify-flag-failed (...)`, and a body failing `CheckBlock`
-  leaves its header unindexed** (closes #1335, closes #1390, closes #1339).
-
 ### `disconnectnode` drops a connection, as Core's does
 
 - **`disconnectnode` drops a connection by `getpeerinfo`'s address or id, with
@@ -902,6 +896,29 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A queued host already held by name is skipped before it is ever
   resolved** (closes #1432), as Core's `AlreadyConnectedToHost` checks it
   ahead of `ConnectNode`'s own resolve.
+
+### An ancestor is found through skip pointers, as Core's `GetAncestor`
+
+- **Block download and `getheaders` reach a block's fork point or ancestor in
+  steps that grow with the logarithm of the distance, not with the distance**
+  (closes #1200).
+
+### A block announced by `headers` near the tip is asked for at once, as in Core
+
+- **`headers` asks the announcing peer for the blocks up to a header it just
+  sent, as Core's `HeadersDirectFetchBlocks` does** (closes #1199).
+
+### `-dnsseed`, `-fixedseeds` and `-seednode` steer the bootstrap
+
+- **`-dnsseed` and `-fixedseeds` turn DNS seeding and the chain's fixed
+  seeds off, and `-seednode` addr-fetches a peer ahead of the DNS seeds,
+  one at a time** (closes #1192), as Core's `ThreadOpenConnections` does.
+
+### `submitblock` answers Core's own reasons where it used to answer `null`
+
+- **A block extending the tip answers `bad-cb-height`, `bad-txns-nonfinal`, or
+  `block-script-verify-flag-failed (...)`, and a body failing `CheckBlock`
+  leaves its header unindexed** (closes #1335, closes #1390, closes #1339).
 
 ## v2026.9.24
 
