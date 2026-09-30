@@ -105,7 +105,7 @@ def test_an_empty_batch_answers_an_empty_array(rpc_node: Node) -> None:
     value" -- but Core's own `ExecuteHTTPRPC` does not read it that way,
     answering an empty client-sent array with an empty array instead
     (`src/httprpc.cpp:135-185`, at bitcoin/bitcoin@ca7162cde5), and
-    CLAUDE.md's Following Bitcoin Core section leaves no room for a
+    CONTRIBUTING.md's Following Bitcoin Core section leaves no room for a
     convention of this tree's own on an axis Core's own behaviour
     already decides (issue #669).
     """
