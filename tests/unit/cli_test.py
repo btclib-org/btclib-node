@@ -18,8 +18,8 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from btclib_node import Node, cli
-from btclib_node.chains import Main, RegTest
-from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS, Config
+from btclib_node.chains import Main, RegTest, SigNet, TestNet, TestNet4
+from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS, DEFAULT_MAX_TIP_AGE, Config
 from btclib_node.constants import MIN_PRUNE_TARGET_MIB
 from btclib_node.rpc.auth import COOKIE_FILE, RpcAuthEntry, password_hmac, to_bytes
 from tests import (
@@ -1663,6 +1663,117 @@ def test_build_config_help_lists_minrelaytxfee_under_node_relay(
         "smaller than this are considered zero fee for\n       relaying, mining "
         "and transaction creation (default: 0.000001)\n\nRPC server options:"
     ) in out
+
+
+def test_build_config_maxtipage_defaults_negates_and_reads_in_seconds(
+    tmp_path: Path,
+) -> None:
+    """ISS 1474: `-maxtipage` is `Config.max_tip_age`, in seconds.
+
+    Unset, `DEFAULT_MAX_TIP_AGE` (a day); negated, `0`, as a negated
+    `GetIntArg` reads; read from `bitcoin.conf` like any other option.
+    """
+    assert _build(tmp_path, "-regtest").max_tip_age == DEFAULT_MAX_TIP_AGE
+    assert _build(tmp_path, "-regtest", "-maxtipage=3600").max_tip_age == 3600
+    negated = _build(tmp_path, "-regtest", "-nomaxtipage")
+    assert negated.max_tip_age == 0
+    from_file = _build(tmp_path, conf="regtest=1\nmaxtipage=120\n")
+    assert from_file.max_tip_age == 120
+
+
+def test_build_config_maxtipage_is_debug_only(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`-maxtipage` is `DEBUG_ONLY`: listed under `-help-debug` alone."""
+    with pytest.raises(SystemExit):
+        _build(tmp_path, "-help")
+    assert "-maxtipage" not in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        _build(tmp_path, "-help-debug")
+    out = capsys.readouterr().out
+    assert (
+        "-maxtipage=<n>\n       Maximum tip age in seconds to consider node in "
+        f"initial block download\n       (default: {DEFAULT_MAX_TIP_AGE})"
+    ) in out
+
+
+@pytest.mark.parametrize(
+    ("chain_flag", "chain"),
+    [
+        ("-regtest", RegTest()),
+        ("-testnet", TestNet()),
+        ("-signet", SigNet()),
+        ("-testnet4", TestNet4()),
+    ],
+)
+def test_build_config_minimumchainwork_defaults_to_the_chain_s_own(
+    tmp_path: Path, chain_flag: str, chain: Any
+) -> None:
+    """ISS 1500: unset, `-minimumchainwork` defaults per chain."""
+    config = _build(tmp_path, chain_flag)
+    assert config.minimum_chain_work == chain.consensus.minimum_chain_work
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("10", 0x10),
+        ("0x10", 0x10),
+        ("", 0),
+        ("f" * 64, int("f" * 64, 16)),
+    ],
+)
+def test_build_config_minimumchainwork_reads_hex_and_an_optional_0x_prefix(
+    tmp_path: Path, value: str, expected: int
+) -> None:
+    """`uint256::FromUserHex`: an optional `0x`, short values padded."""
+    config = _build(tmp_path, "-regtest", f"-minimumchainwork={value}")
+    assert config.minimum_chain_work == expected
+
+
+def test_build_config_minimumchainwork_uppercase_0x_is_not_a_prefix(
+    tmp_path: Path,
+) -> None:
+    """`RemovePrefixView`'s own "0x" is a literal, lowercase match only.
+
+    `0X10` is refused rather than read as `0x10`: the `X` is not itself
+    a hex digit, and nothing strips it first.
+    """
+    expected = re.escape(
+        "Invalid minimum work specified (0X10), must be up to 64 hex digits"
+    )
+    with pytest.raises(ValueError, match=f"^{expected}$"):
+        _build(tmp_path, "-regtest", "-minimumchainwork=0X10")
+
+
+def test_build_config_minimumchainwork_negated_reads_as_zero(tmp_path: Path) -> None:
+    """A negation reads as `0`, the way every other `GetArg` string does."""
+    config = _build(tmp_path, "-regtest", "-nominimumchainwork")
+    assert config.minimum_chain_work == 0
+
+
+@pytest.mark.parametrize("value", ["z" * 10, "0xgg", "a" * 65, "0x" + "a" * 65])
+def test_build_config_minimumchainwork_that_is_not_valid_hex_is_refused(
+    tmp_path: Path, value: str
+) -> None:
+    """Core's own words: refused past 64 hex digits, or on a non-hex one."""
+    expected = re.escape(
+        f"Invalid minimum work specified ({value}), must be up to 64 hex digits"
+    )
+    with pytest.raises(ValueError, match=f"^{expected}$"):
+        _build(tmp_path, "-regtest", f"-minimumchainwork={value}")
+
+
+def test_build_config_minimumchainwork_is_debug_only(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`-minimumchainwork` is `DEBUG_ONLY` in Core too."""
+    with pytest.raises(SystemExit):
+        _build(tmp_path, "-help")
+    assert "-minimumchainwork" not in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        _build(tmp_path, "-help-debug")
+    assert "-minimumchainwork=<hex>" in capsys.readouterr().out
 
 
 def test_build_config_rpcauth_from_the_command_line_and_the_file(

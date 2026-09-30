@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 from btclib.fee import FeeRate
 
 from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet, TestNet4
+from btclib_node.constants import MAX_TIP_AGE
 from btclib_node.exceptions import InvalidChainTypeError, UnknownChainError
 from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME
 from btclib_node.rpc.auth import (
@@ -38,6 +39,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DEFAULT_MAX_PEER_CONNECTIONS",
+    "DEFAULT_MAX_TIP_AGE",
     "DEFAULT_MIN_RELAY_FEERATE",
     "Config",
     "get_path_arg",
@@ -65,6 +67,13 @@ DEFAULT_MAX_PEER_CONNECTIONS = 125
 # shape `DEFAULT_MIN_RELAY_FEERATE` above already uses for the same
 # reason.
 DEFAULT_CHAIN = Main()
+# Core's own `DEFAULT_MAX_TIP_AGE` (`src/kernel/chainstatemanager_opts.h`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) in seconds, which is what
+# `-maxtipage`'s own default is measured in: `constants.py`'s `MAX_TIP_AGE`
+# is the same span as a `timedelta`, for `update_ibd_status`'s own
+# unoverridden default before this option existed, and is read here
+# rather than restated.
+DEFAULT_MAX_TIP_AGE = int(MAX_TIP_AGE.total_seconds())
 
 
 def get_path_arg(value: str) -> str:
@@ -353,6 +362,27 @@ class Config:
     # `section_warning`
     config_args: tuple[str, ...]
     min_relay_feerate: FeeRate
+    # Core's own `-minimumchainwork`: the chain work below which
+    # `main.update_ibd_status` and the `getheaders` handler in
+    # `p2p.callbacks` treat the active tip as not caught up, and below
+    # which `p2p.chain_sync.disconnect_if_insufficient_work` drops an
+    # outbound peer. `None` given to `__init__` is the chain's own
+    # `minimum_chain_work` (`btclib.consensus`), resolved once `chain`
+    # above is; a value given is read exactly as given, an operator's
+    # override not being clamped to the chain's own floor or ceiling,
+    # matching `ChainstateManager::MinimumChainWork`'s own unconditional
+    # return (`src/validation.h`, at bitcoin/bitcoin@9be056a8a7, the
+    # v31.1 tag).
+    minimum_chain_work: int
+    # Core's own `-maxtipage`, in seconds rather than as a `timedelta`
+    # for the same reason `ban_time` above is an `int`: the value is an
+    # `int64_t` in Core (`ChainstateManagerOpts::max_tip_age`,
+    # `src/kernel/chainstatemanager_opts.h`, same sha) with no upper
+    # bound, and `timedelta` overflows past about 2.7 million years
+    # where Core's own type does not. `main.update_ibd_status` compares
+    # a tip's age against this, in seconds, rather than building a
+    # `timedelta` from it.
+    max_tip_age: int
     # (host, port) pairs, split by `_split_peers` above, host unresolved:
     # Core's own `-connect`, which dials these alone and turns off DNS
     # seeding and
@@ -518,6 +548,8 @@ class Config:
         debug: bool = False,
         log_path: str | None = "history.log",
         min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
+        minimum_chain_work: int | None = None,
+        max_tip_age: int = DEFAULT_MAX_TIP_AGE,
         connect: Sequence[str] = (),
         addnode: Sequence[str] = (),
         seednode: Sequence[str] = (),
@@ -540,8 +572,14 @@ class Config:
         section_warning: str = "",
         config_args: Sequence[str] = (),
     ) -> None:
-        """Resolve `chain` and ports."""
+        """Resolve `chain`, `minimum_chain_work`'s own default, and ports."""
         self.chain = _resolve_chain(chain)
+        self.minimum_chain_work = (
+            self.chain.consensus.minimum_chain_work
+            if minimum_chain_work is None
+            else minimum_chain_work
+        )
+        self.max_tip_age = max_tip_age
 
         data_dir = Path(data_dir) if data_dir else Path.home() / ".btclib"
         self.data_dir = data_dir.absolute() / self.chain.name

@@ -870,7 +870,7 @@ class DownloadManager:
         an initial header sync is not interleaved with announcements.
         """
         node = self.node
-        minimum_chain_work = node.chain.consensus.minimum_chain_work
+        minimum_chain_work = node.config.minimum_chain_work
         for conn in node.p2p_manager.connections.copy().values():
             if conn.status != P2pConnStatus.Connected or conn.sent_sendheaders:
                 continue
@@ -1165,7 +1165,7 @@ class DownloadManager:
                 node.chainstate.block_index,
                 conn.block_availability,
                 MAX_BLOCKS_IN_TRANSIT_PER_PEER - len(conn.download_queue),
-                node.chain.consensus.minimum_chain_work,
+                node.config.minimum_chain_work,
                 node.chain.consensus.segwit_height,
                 in_flight=in_flight,
                 peer_id=conn.id,

@@ -59,7 +59,7 @@ caller; and one datadir migration, the same shape #107 itself already
 cost once. None of that is a departure
 from *Following Bitcoin Core* -- it is Core's own choice, reached this
 time by measurement rather than assumed, and the packaging half of it
-is the "Python-native" axis `CLAUDE.md` already carves out for this
+is the "Python-native" axis `CONTRIBUTING.md` already carves out for this
 file, argued in the same terms `db.py` used against LevelDB in the
 first place. What was never available before now is: a wheel that
 carries LevelDB's own fork, typed, on the platforms this tree ships to.

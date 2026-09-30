@@ -192,9 +192,9 @@ def get_blockchain_info(
     `main.update_ibd_status`'s own latch, matching Core's own
     `IsInitialBlockDownload` (src/rpc/blockchain.cpp:1436, at
     bitcoin/bitcoin@ca7162cde5) field for field: chain work against
-    `Chain.consensus.minimum_chain_work` and tip age against
-    `MAX_TIP_AGE`, not merely whether this node has run out of
-    candidates to try.
+    `node.config.minimum_chain_work` and tip age against
+    `node.config.max_tip_age`, not merely whether this node has run out
+    of candidates to try.
     `size_on_disk` is `block_db.BlockDB.current_usage`, Core's own
     `CalculateCurrentUsage` (src/rpc/blockchain.cpp:1451, same commit).
     `pruned` is `Config.pruned` (src/rpc/blockchain.cpp:1452, same
@@ -1480,7 +1480,7 @@ def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
     `git merge-base --is-ancestor`.
 
     Matching master here rather than the release this tree tests
-    against is a decision, not an oversight: `CLAUDE.md`'s own
+    against is a decision, not an oversight: `CONTRIBUTING.md`'s own
     *Following Bitcoin Core* names matching Core's behaviour as the
     default, and reserves a release-pinned citation for a claim about
     the behaviour of the bitcoind this tree is tested against rather

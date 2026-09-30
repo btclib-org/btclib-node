@@ -1347,6 +1347,35 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   node is currently running, and `logpath`, the file this node logs to**
   (closes #1486).
 
+### `test_a_chunked_body_is_decoded_and_dispatched` stops flaking
+
+- **`drive`'s sender yields between chunks instead of sleeping 10ms**,
+  which cost the chunked-body cases over half of `drive`'s 1.0s budget
+  before any load; it also asserts `drive`'s own outcome (closes #1278).
+
+### `-maxtipage=<n>` sets the tip age initial block download ends at
+
+- **`Config.max_tip_age`, in seconds, is what `main.update_ibd_status` reads
+  as the bound**, `-maxtipage` unset defaulting to a day (closes #1474).
+
+### `-minimumchainwork=<hex>` sets the minimum chain work every check reads
+
+- **`Config.minimum_chain_work` defaults to the chain's own and refuses more
+  than 64 hex digits**, read wherever the minimum chain work is checked
+  (closes #1500).
+
+### A malformed `PYTEST_XDIST_WORKER_COUNT` leaves the worker count at eight
+
+- **`_default_worker_count` takes eight where `PYTEST_XDIST_WORKER_COUNT`
+  is not a positive integer**, a non-integer having raised `ValueError`
+  and `0` `ZeroDivisionError` at `import btclib_node` (closes #1555).
+
+### `CLAUDE.md` moves *Following Bitcoin Core* to `CONTRIBUTING.md`
+
+- **`CLAUDE.md` takes the organization's shared primary-checkout section,
+  and *Following Bitcoin Core* moves to `CONTRIBUTING.md`'s last
+  section** (issue btclib-org/.github#1494).
+
 ### `invalidateblock` and `reconsiderblock` are served
 
 - **`invalidateblock` marks a block invalid, forces the chain off it, and

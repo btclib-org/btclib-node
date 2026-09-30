@@ -625,7 +625,9 @@ def a_handshake_node(
     own_nonces = set(pending_outbound_nonces)
     return SimpleNamespace(
         status=status,
-        config=SimpleNamespace(min_relay_feerate=min_relay_feerate, pruned=False),
+        config=SimpleNamespace(
+            min_relay_feerate=min_relay_feerate, pruned=False, minimum_chain_work=0
+        ),
         p2p_manager=SimpleNamespace(
             connections={},
             pending_outbound_nonces=own_nonces,
@@ -2682,8 +2684,9 @@ def a_chainstate_node(tmp_path: Path, segwit_height: int = 0) -> Any:
 def an_unrequested_block_node(tmp_path: Path, active: int) -> Any:
     """Build a node over a real regtest index, `active` blocks tall.
 
-    What it stores is listed in `node.added`; `minimum_chain_work` is zero,
-    regtest's own, until a test replaces it.
+    What it stores is listed in `node.added`;
+    `node.config.minimum_chain_work` is zero, regtest's own, until a
+    test replaces it.
     """
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
@@ -2997,11 +3000,7 @@ def test_an_unrequested_block_below_the_minimum_chain_work_is_not_stored(
     block = a_block_at(node, 2)
     node.chainstate.block_index.add_headers([block.header])
     work = node.chainstate.block_index.chainwork[block.header.hash]
-    node.chain = SimpleNamespace(
-        pow_limit_bits=RegTest().pow_limit_bits,
-        consensus=replace(RegTest().consensus, minimum_chain_work=work + surplus),
-    )
-    node.config.chain = node.chain
+    node.config.minimum_chain_work = work + surplus
     deliver(node, block)
     assert (node.added == [block]) is stored
     node.chainstate.close()
@@ -4440,8 +4439,7 @@ def test_below_the_minimum_chain_work_the_answer_is_empty(
     node = a_data_node(block_index=an_index)
     tip = an_index.active_chain[-1]
     work = an_index.chainwork[tip] + 1
-    consensus = replace(node.chain.consensus, minimum_chain_work=work)
-    monkeypatch.setattr(node, "chain", SimpleNamespace(consensus=consensus))
+    monkeypatch.setattr(node.config, "minimum_chain_work", work)
     peer = a_peer()
     message = GetHeaders(PROTOCOL_VERSION, [_GENESIS], _NO_STOP).serialize()
     getheaders(node, message, peer)
@@ -5458,11 +5456,8 @@ def test_a_known_batch_off_the_best_header_chain_is_checked_on_the_active_one(
 
 
 def a_minimum_chain_work(node: Any, work: int) -> None:
-    """Give `node` a regtest whose `minimum_chain_work` is `work`, not 0."""
-    consensus = replace(node.chain.consensus, minimum_chain_work=work)
-    node.chain = SimpleNamespace(
-        consensus=consensus, pow_limit_bits=node.chain.pow_limit_bits
-    )
+    """Give `node` a `minimum_chain_work` of `work`, not 0."""
+    node.config.minimum_chain_work = work
 
 
 @pytest.mark.parametrize(

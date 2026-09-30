@@ -6,7 +6,7 @@
 
 `.github/workflows/integration-bitcoind.yml` pins the bitcoind release
 `tests/integration/reorg_test.py` runs its reorg module against, and
-`CLAUDE.md`'s *Following Bitcoin Core* is why a citation of Core's source
+`CONTRIBUTING.md`'s *Following Bitcoin Core* is why a citation of Core's source
 at that release carries the release's own tag name beside the sha: the
 tag is what tells such a citation from a stale read, because ancestry
 does not. Nothing ties the tag name written into the tree back to the
@@ -67,7 +67,7 @@ change touched. `CHANGELOG.md:2857`'s own entry is exactly this shape
 today, and reads as drift the moment the pin moves unless the file is
 out of scope. The release-annotated citation form, by contrast, exists
 specifically to describe what the tree is tested against *now*
-(`CLAUDE.md`'s *Following Bitcoin Core*), and neither file currently
+(`CONTRIBUTING.md`'s *Following Bitcoin Core*), and neither file currently
 carries one -- excluding both here is a decision about what kind of
 claim each file makes, not a measurement of what happens to be in them
 today.
@@ -172,7 +172,7 @@ def _sha_problems(pinned_version: str) -> list[str]:
     if annotated is None:
         problems.append(
             f"{_REORG_TEST}: no citation names the release its sha is pinned"
-            " to, as CLAUDE.md's Following Bitcoin Core asks of a"
+            " to, as CONTRIBUTING.md's Following Bitcoin Core asks of a"
             " release-pinned citation"
         )
     elif annotated.group(1) != pinned_version:
