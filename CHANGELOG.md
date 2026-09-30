@@ -1210,6 +1210,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   header they write out again**, no longer bypassing btclib's own
   check now that it refuses on version the way Core does (closes #1511).
 
+### CLAUDE.md says which behaviour a release and master disagreement follows
+
+- **Consensus and relay follow the pinned Core release where it and
+  master disagree; a peer-refusal rule may go stricter than the
+  release first, where the divergence is argued** (closes #1520).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
