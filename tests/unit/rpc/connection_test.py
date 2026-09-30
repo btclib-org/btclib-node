@@ -33,7 +33,12 @@ from btclib_node.exceptions import (
     UnmetExpectationError,
 )
 from btclib_node.log import Logger
-from btclib_node.rpc.auth import FAILED_ATTEMPT_DELAY, RpcAuth, RpcAuthEntry
+from btclib_node.rpc.auth import (
+    FAILED_ATTEMPT_DELAY,
+    RpcAuth,
+    RpcAuthEntry,
+    parse_whitelist,
+)
 from btclib_node.rpc.connection import (
     MAX_BODY_BYTES,
     MAX_HEADER_BYTES,
@@ -61,17 +66,24 @@ def fake_manager(connections: dict[int, Any]) -> SimpleNamespace:
     Every source is allowed: a socketpair's peer has no IP address for
     `RpcManager.client_allowed` to read.
     """
-    # what `send_and_close_after` hands `RpcManager.add_delayed_reply`,
-    # `(coroutine, deadline)` pairs in call order
-    delayed: list[tuple[Any, float]] = []
+    # what `RpcManager.track_reply` is handed, `(coroutine, due)` pairs
+    # in call order, and what `extend_reply_deadline` is
+    tracked: list[tuple[Any, float]] = []
+    deadlines: list[float] = []
     return SimpleNamespace(
         auth=RpcAuth((RpcAuthEntry.parse(RPCAUTH),)),
         client_allowed=lambda client: True,
         logger=Logger(debug=True),
         messages=[],
         connections=connections,
-        delayed=delayed,
-        add_delayed_reply=lambda reply, deadline: delayed.append((reply, deadline)),
+        # a node not shutting down; `refused`'s `prepare` is what sets
+        # the flag (btclib-org/btclib-node#1542)
+        node=SimpleNamespace(terminate_flag=threading.Event()),
+        tracked=tracked,
+        track_reply=lambda reply, due: tracked.append((reply, due)),
+        reply_ended=lambda reply: None,
+        deadlines=deadlines,
+        extend_reply_deadline=deadlines.append,
         # unset, as a manager that never called `interrupt` -- every
         # test built on this fixture reads a connection that is not
         # being shut down; `refused`'s own `interrupted` argument is
@@ -906,8 +918,8 @@ def test_send_and_close_after_returns_at_once_and_delays_the_write() -> None:
     `handle_rpc` calls it on `Node`'s thread, played here by this test's
     own, and stops the node right after (ISS 1467), so the wait runs on
     `loop`, a thread of its own here as `RpcManager`'s is. What it hands
-    `RpcManager.add_delayed_reply` is the coroutine `loop` then runs,
-    with the deadline `delay` sets.
+    `RpcManager.track_reply` is the coroutine `loop` then runs, due
+    when `delay` ends, which is the deadline it records too.
     """
     delay = 1.0
     ours, theirs = socket.socketpair()
@@ -937,8 +949,9 @@ def test_send_and_close_after_returns_at_once_and_delays_the_write() -> None:
         thread.join()
         loop.close()
         theirs.close()
-    [(delayed, deadline)] = manager.delayed
-    assert started + delay <= deadline <= returned + delay
+    [(delayed, due)] = manager.tracked
+    assert started + delay <= due <= returned + delay
+    assert manager.deadlines == [due]
     # run to completion by `loop`, which is what clears a coroutine's frame
     assert delayed.cr_frame is None
     assert received - started >= delay - _WINDOWS_TIMER_TICK
@@ -1016,6 +1029,116 @@ def refused(
 
     reply, elapsed, closed, messages = asyncio.run(main())
     return reply, elapsed, closed, messages, warnings
+
+
+def shutting_down(manager: SimpleNamespace) -> None:
+    """Set `terminate_flag` on `manager`'s node, as `Node.stop` sets it."""
+    manager.node.terminate_flag.set()
+
+
+def refusing_every_method(manager: SimpleNamespace) -> None:
+    """Set `terminate_flag`, and whitelist nothing for `RPCAUTH`'s user."""
+    shutting_down(manager)
+    manager.auth = RpcAuth(
+        (RpcAuthEntry.parse(RPCAUTH),),
+        whitelist=parse_whitelist(()),
+        whitelist_default=True,
+    )
+
+
+_WRONG_CREDENTIAL = (
+    b"Authorization: Basic " + base64.b64encode(b"pytest:wrong") + b"\r\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("data", "status", "allowed", "prepare"),
+    [
+        (request(b"Content-Length: 0\r\n", b"", auth=b""), b"401", True, None),
+        (
+            request(b"Content-Length: 0\r\n", b"", auth=_WRONG_CREDENTIAL),
+            b"401",
+            True,
+            None,
+        ),
+        (with_length(), b"403", False, None),
+        (
+            request(b"Content-Length: 0\r\n", b"", target=b"/rest/"),
+            b"404",
+            True,
+            None,
+        ),
+        (request(b"Content-Length: 0\r\n", b"", method=b"GET"), b"405", True, None),
+        (request(b"Content-Length: 3\r\n", b"bad"), b"500", True, None),
+        (with_length(), b"403", True, refusing_every_method),
+    ],
+    ids=[
+        "401-no-credential",
+        "401-wrong-credential",
+        "403-source",
+        "404-target",
+        "405-method",
+        "500-parse-error",
+        "403-whitelist",
+    ],
+)
+def test_a_refusal_written_once_shutdown_began_closes_its_connection(
+    data: bytes,
+    status: bytes,
+    *,
+    allowed: bool,
+    prepare: Callable[[SimpleNamespace], None] | None,
+) -> None:
+    """Once shutdown has begun, the loop's own refusal says it closes.
+
+    Core writes each of these through `HTTPRequest::WriteReply`, which
+    adds `Connection: close` once the node's shutdown signal is raised
+    (`src/httpserver.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag); a 401 for a wrong credential reads it after its
+    `FAILED_ATTEMPT_DELAY`. Every request here asks for keep-alive
+    (btclib-org/btclib-node#1542).
+    """
+    reply, _, closed, messages, _ = refused(
+        data, allowed=allowed, prepare=prepare or shutting_down
+    )
+    head = reply.partition(b"\r\n\r\n")[0].split(b"\r\n")
+    assert head[0].startswith(b"HTTP/1.1 " + status)
+    assert b"Connection: close" in head
+    assert closed
+    assert messages == []
+
+
+def test_a_401_reads_the_shutdown_flag_after_its_delay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A wrong credential's 401 reads `terminate_flag` once its delay ends.
+
+    `HTTPReq_JSONRPC` sleeps `FAILED_ATTEMPT_DELAY` before it calls
+    `HTTPRequest::WriteReply`, which reads the shutdown signal then
+    (`src/httprpc.cpp`, `src/httpserver.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The flag is set as that
+    delay begins, so a 401 that read it any earlier would still say the
+    connection stays alive (btclib-org/btclib-node#1542).
+    """
+    sleep = asyncio.sleep
+    delays: list[float] = []
+
+    def prepare(manager: SimpleNamespace) -> None:
+        async def flag_then_sleep(delay: float) -> None:
+            delays.append(delay)
+            manager.node.terminate_flag.set()
+            await sleep(delay)
+
+        monkeypatch.setattr(asyncio, "sleep", flag_then_sleep)
+
+    data = request(b"Content-Length: 0\r\n", b"", auth=_WRONG_CREDENTIAL)
+    reply, _, closed, _, _ = refused(data, prepare=prepare)
+    # the first sleep of the exchange is the 401's own delay
+    assert delays[0] == FAILED_ATTEMPT_DELAY
+    head = reply.partition(b"\r\n\r\n")[0].split(b"\r\n")
+    assert head[0] == b"HTTP/1.1 401 Unauthorized"
+    assert b"Connection: close" in head
+    assert closed
 
 
 UNAUTHORIZED = (
