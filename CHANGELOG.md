@@ -1306,6 +1306,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   Core's own `-rpcservertimeout` is, `0` and `-1` both arming no bound at
   all, as `evhttp_set_timeout` arms none for either** (closes #1548).
 
+### `getrpcinfo` is served
+
+- **`getrpcinfo` answers `active_commands`, one entry per RPC call this
+  node is currently running, and `logpath`, the file this node logs to**
+  (closes #1486).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
