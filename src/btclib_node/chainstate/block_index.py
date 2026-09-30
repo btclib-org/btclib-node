@@ -607,20 +607,21 @@ class BlockIndex:
         `setBlockIndexCandidates` -- ordered by `CBlockIndexWorkComparator`
         (`node/blockstorage.cpp:174-192`, same commit) -- admits a
         candidate of *equal* chainwork too, breaking the tie by
-        `nSequenceId`, assigned once per block the first time its
-        content is fully validated: "sort by most total work, ... then
-        by earliest activatable time", the earlier-received block
-        winning. This is not matched, and is not merely the `downloaded`
-        gate above: this index tracks no received-order state at all, so
-        a block a reorg displaced and that is then reduced back to
+        `nSequenceId`, assigned once the block's data, and every
+        ancestor's, has been received (`ReceivedBlockTransactions`,
+        `src/validation.cpp:3857`, same commit, where the block reaches
+        `BLOCK_VALID_TRANSACTIONS`): "sort by most total work, ... then
+        by earliest activatable time", the lower `nSequenceId` winning.
+        This is not matched, and is not merely the `downloaded` gate
+        above: this index tracks no received-order state at all, so a
+        block a reorg displaced and that is then reduced back to
         exactly the active tip's own work is never reoffered here,
-        where Core would reorg back to whichever of the two it saw
-        first. The effect is confined to which of two equal-work chains
-        *this node's own tip* sits on -- never a fact the network
-        disagrees about, since every honest node answers the identical
-        question against its own received order, not a shared one --
-        but it is a real behavioural gap from Core's own
-        `rpc_invalidateblock.py`, which exercises exactly this shape.
+        where Core would reorg back to whichever of the two completed
+        its data first. The effect is confined to which of two
+        equal-work chains *this node's own tip* sits on -- never a fact
+        the network disagrees about, since every honest node answers
+        the identical question against its own received order, not a
+        shared one -- but it is a real behavioural gap from Core.
         Reaching it needs a received-order counter this index does not
         keep, the same missing primitive #1534
         (`preciousblock`, a manual override of the identical tie) was

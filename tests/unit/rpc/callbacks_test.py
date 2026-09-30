@@ -5020,11 +5020,11 @@ def test_invalidate_block_does_not_reconnect_a_branch_of_equal_work(
     `first` (two blocks) connects, then `second` (three blocks, heavier)
     reorgs it off; invalidating `second`'s own tip reduces it to
     `second[1]`, exactly `first`'s own work -- and Core would reorg back
-    to `first` there, by `nSequenceId`'s own earliest-received tie-break
+    to `first` there, by `nSequenceId`'s own lower-id tie-break
     (`node/blockstorage.cpp:174-192`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag), `first` having connected first. This index tracks no
-    such order, and `work > current_work` is strict, so the tip simply
-    stays on `second[1]`: btclib-org/btclib-node#1579.
+    v31.1 tag), `first` having completed its data first. This index
+    tracks no such order, and `work > current_work` is strict, so the
+    tip simply stays on `second[1]`: btclib-org/btclib-node#1579.
     """
     node = regtest_node()
     first = generate_random_chain(2, node.chain.genesis.hash)
