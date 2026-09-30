@@ -2337,8 +2337,25 @@ def getblocktxn(node: Node, msg: bytes, conn: Connection) -> None:
     an older one the full block, queued as a `MSG_WITNESS_BLOCK` item of
     this connection's own `getdata`, whose serving pays for the disk
     read the request cost.
+
+    An empty `indexes` is dropped, undiscouraged, ahead of any lookup:
+    Core commit 28641fd195db2a175fd43fee2e32758aef9816a6 ("p2p: reject
+    empty getblocktxn requests"), on master and not yet in a release,
+    at bitcoin/bitcoin@28641fd195db -- "No legitimate reason to send
+    indexes empty" -- sets `fDisconnect` rather than calling
+    `Misbehaving`, so this raises no `MisbehavingError` and instead
+    drops the peer directly, matching `tx`'s own block-relay-only
+    refusal above. v31.1, at bitcoin/bitcoin@9be056a8a7, answers an
+    empty request the same as any other and keeps the peer, as this
+    node did before this check.
     """
     request = GetBlockTxn.parse(msg)
+    if not request.indexes:
+        node.logger.debug(
+            "getblocktxn received with no transaction indexes, peer=%s", conn.id
+        )
+        conn.stop()
+        return
     block_index = node.chainstate.block_index
     block_info = block_index.header_dict.get(request.block_hash)
     if block_info is None:
