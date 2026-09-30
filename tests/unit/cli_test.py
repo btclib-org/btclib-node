@@ -795,12 +795,14 @@ def test_log_args_escapes_a_backslash_in_datadir() -> None:
     `json_escape` (`src/univalue/lib/univalue_write.cpp`, at
     bitcoin/bitcoin@9be056a8a7, `escapes[0x5c] == "\\"`) without a
     Windows runner: a literal single backslash in `datadir` is doubled in
-    the logged line, exactly as any other string value is.
+    the logged line, exactly as any other string value is. The expected
+    value is a hand-written literal, not `_setting_to_write_str` again,
+    so the test cannot pass a change that stops escaping it.
     """
     windows_datadir = r"C:\Users\runneradmin\datadir"
     settings = cli._Settings(command_line={"datadir": [windows_datadir]}, ro_config={})
     assert cli._log_args(settings) == (
-        f"Command-line arg: datadir={cli._setting_to_write_str(windows_datadir)}",
+        'Command-line arg: datadir="C:\\\\Users\\\\runneradmin\\\\datadir"',
     )
 
 
