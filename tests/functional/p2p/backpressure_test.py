@@ -118,20 +118,44 @@ _SUBSIDY = 50 * 10**8
 _SERVED_BLOCK_BYTES = 999_000
 _BLOCKS_ASKED_FOR = 3 * MAX_QUEUED_SEND_BYTES // _SERVED_BLOCK_BYTES
 
+# What each end of the connection may hold in its kernel socket buffer,
+# set on both ends below. `queued_send_bytes` counts only what the socket
+# has not yet taken (`Connection._deliver` subtracts a message once
+# `sock_sendall` returns), so octets a buffer swallows never stand
+# against `MAX_GETDATA_INFLIGHT_BYTES`. Left to the kernel that is several
+# megabytes to a peer that never reads -- autotuned, and larger on some
+# runners -- which left the pause below unreached on CI. Fixed at this
+# size, the two ends together absorb well under
+# `_KERNEL_BUFFER_ALLOWANCE`, whatever the platform's default; the
+# kernel may round it up, Linux doubling it.
+_SOCKET_BUFFER_BYTES = 65_536
+
+# A generous bound on what the two buffers above can hold between them,
+# several times their own size, so the pause does not depend on the
+# rounding either.
+_KERNEL_BUFFER_ALLOWANCE = 4_000_000
+
 # How many of `chain`'s own blocks `test_a_getdata_answer_pauses_...`
-# below actually needs on the active chain, out of the `_BLOCKS_ASKED_FOR`
-# it asks about: `advance_getdata`'s own loop (`p2p/callbacks.py`) checks
-# its pause bound *before* popping the next item, so once that bound is
-# crossed the rest of `items` -- connected or not -- is left exactly
-# where it was, never reaching `_block_request_allowed`. Connecting every
-# one of `_BLOCKS_ASKED_FOR` here paid for `update_chain`'s own block
-# validation over blocks the pause never reaches, which is what made
-# `wait_until(lambda: len(block_index.active_chain) == ...)` below slow
-# enough to time out under load rather than the pause itself
-# (btclib-org/btclib-node#1518) -- the same cost `_FILTERED_BLOCKS` below
-# is already kept small to avoid. `+ 2` over the exact crossing point is
-# the margin `_BLOCKS_QUEUED_AHEAD` below gives its own bound.
-_BLOCKS_CONNECTED_BEFORE_PAUSE = MAX_GETDATA_INFLIGHT_BYTES // _SERVED_BLOCK_BYTES + 2
+# below needs on the active chain, out of the `_BLOCKS_ASKED_FOR` it asks
+# about. `advance_getdata`'s own loop (`p2p/callbacks.py`) checks its pause
+# bound *before* popping the next item, so once `queued_send_bytes` reaches
+# `MAX_GETDATA_INFLIGHT_BYTES` the rest of `items` -- connected or not --
+# is left where it was, never reaching `_block_request_allowed`. A block
+# not on the active chain is answered `notfound` and adds nothing, so the
+# bytes served are the connected blocks' own, and they must exceed that
+# bound plus whatever the buffers swallow. A block message is a little
+# over `_SERVED_BLOCK_BYTES`, so dividing by that size is the most
+# blocks the crossing can take, and the `+ 2` is two whole blocks of
+# margin above it. Connecting every one of `_BLOCKS_ASKED_FOR` paid for
+# `update_chain`'s own block validation over blocks the pause never
+# reaches, which is what made `wait_until(lambda:
+# len(block_index.active_chain) == ...)` below slow enough to time out
+# under load rather than the pause itself (btclib-org/btclib-node#1518).
+# Still below `_BLOCKS_ASKED_FOR`, and the queue it builds (a pause
+# bound plus one block) stays under `MAX_QUEUED_SEND_BYTES`.
+_BLOCKS_CONNECTED_BEFORE_PAUSE = (
+    MAX_GETDATA_INFLIGHT_BYTES + _KERNEL_BUFFER_ALLOWANCE
+) // _SERVED_BLOCK_BYTES + 2
 
 # What the filter test queues at the connection before it asks for a
 # filter at all, and how many blocks it then asks about. A filter's size
@@ -253,7 +277,14 @@ class DeafPeer:
     def __init__(self, node: Node) -> None:
         """Dial `node`'s own p2p port and hold the socket."""
         self.magic = node.chain.magic
-        self.socket = socket.create_connection(("127.0.0.1", node.p2p_port), timeout=30)
+        # the receive buffer is set ahead of the connect, where the
+        # window it advertises is fixed
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.setsockopt(
+            socket.SOL_SOCKET, socket.SO_RCVBUF, _SOCKET_BUFFER_BYTES
+        )
+        self.socket.settimeout(30)
+        self.socket.connect(("127.0.0.1", node.p2p_port))
 
     def send(self, payload: Payload) -> None:
         """Frame `payload` with this network's own magic and write it."""
@@ -296,6 +327,9 @@ def deaf_peer(tmp_path: Path) -> Iterator[tuple[Node, DeafPeer, list[Block]]]:
         try:
             peer.shake_hands()
             wait_until(lambda: len(node.p2p_manager.connections) == 1)
+            the_connection(node).client.setsockopt(
+                socket.SOL_SOCKET, socket.SO_SNDBUF, _SOCKET_BUFFER_BYTES
+            )
             yield node, peer, chain
         finally:
             peer.close()
