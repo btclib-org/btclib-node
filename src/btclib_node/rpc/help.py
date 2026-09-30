@@ -528,6 +528,28 @@ _HELP_PRUNEBLOCKCHAIN = (
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "pruneblockchain", "params": [1000]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
+_HELP_GETRPCINFO = (
+    "getrpcinfo\n"
+    "\n"
+    "Returns details of the RPC server.\n"
+    "\n"
+    "Result:\n"
+    "{                          (json object)\n"
+    '  "active_commands" : [    (json array) All active commands\n'
+    "    {                      (json object) Information about an active command\n"
+    '      "method" : "str",    (string) The name of the RPC command\n'
+    '      "duration" : n       (numeric) The running time in microseconds\n'
+    "    },\n"
+    "    ...\n"
+    "  ],\n"
+    '  "logpath" : "str"        (string) The complete file path to the debug log\n'
+    "}\n"
+    "\n"
+    "Examples:\n"
+    "> bitcoin-cli getrpcinfo \n"
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "getrpcinfo", "params": []}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
 _HELP_HELP = (
     'help ( "command" )\n'
     "\n"
@@ -1094,6 +1116,7 @@ HELP_TEXT: dict[str, str] = {
     "pruneblockchain": _HELP_PRUNEBLOCKCHAIN,
     "help": _HELP_HELP,
     "stop": _HELP_STOP,
+    "getrpcinfo": _HELP_GETRPCINFO,
     "submitblock": _HELP_SUBMITBLOCK,
     "addnode": _HELP_ADDNODE,
     "clearbanned": _HELP_CLEARBANNED,
@@ -1129,6 +1152,7 @@ CATEGORY: dict[str, str] = {
     "pruneblockchain": "Blockchain",
     "help": "Control",
     "stop": "Control",
+    "getrpcinfo": "Control",
     "submitblock": "Mining",
     "addnode": "Network",
     "clearbanned": "Network",

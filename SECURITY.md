@@ -16,6 +16,9 @@ If you have no GitHub account, or would rather not use it for this,
 responsible disclosure by email to *security at btclib dot org* is
 equally welcome.
 
+A report is acknowledged within 7 days, and a fix or a published advisory
+follows within 90 days.
+
 ## What belongs here, and what belongs upstream
 
 This is a whole node: `src/btclib_node/interpreter.py` validates a block
@@ -69,10 +72,10 @@ releases `signer` is `"$repo/.github/workflows/release.yml"`, and there
 the flag narrows what passes: without it an attestation from any
 workflow in this repository is accepted. Neither path verifies a
 release the other signed. The signed statement is attached to the
-release as well, as `<tag>.attestation.jsonl`, so
-`--bundle <tag>.attestation.jsonl` runs the same check reading it from
-disk instead of asking GitHub for it; one attestation covers the wheel,
-the sdist and the bill of materials.
+release as well, as `<tag>.intoto.jsonl`, or as `<tag>.attestation.jsonl` on a
+release that carries that name instead, so `--bundle <that file>` runs the
+same check reading it from disk instead of asking GitHub for it; one
+attestation covers the wheel, the sdist and the bill of materials.
 
 ## Limitations, not vulnerabilities
 

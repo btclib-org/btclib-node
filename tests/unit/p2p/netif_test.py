@@ -9,11 +9,13 @@ walk is reached whatever interfaces the machine running it has.
 """
 
 import ctypes
+import errno
+import os
 import socket
 import sys
 from ipaddress import IPv4Address, IPv6Address
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, cast, override
 
 import pytest
 
@@ -149,20 +151,86 @@ def test_a_c_library_without_getifaddrs_answers_nothing(
     assert local_addresses() == []
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="no getifaddrs (#1310)")
-def test_this_machine_s_addresses_hold_the_one_the_kernel_routes_from() -> None:
-    """The real `getifaddrs`: IP addresses, no loopback, the source kept.
+# TEST-NET-1, reserved by RFC 5737 for documentation
+_TEST_NET_1 = IPv4Address("192.0.2.1")
 
-    The source is what the kernel picks to reach TEST-NET-1: a UDP
-    `connect` sends nothing, and chooses a route and a source.
+
+def the_source_the_kernel_routes_from() -> IPv4Address | None:
+    """Return the source the kernel picks to reach TEST-NET-1, or `None`.
+
+    A UDP `connect` sends nothing, and chooses a route and a source;
+    `None` is a machine with no route off it.
     """
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
         try:
-            probe.connect(("192.0.2.1", 9))
-        except OSError:  # pragma: no cover -- a machine with no route off it
-            pytest.skip("no route off this machine")
-        source = IPv4Address(probe.getsockname()[0])
+            probe.connect((str(_TEST_NET_1), 9))
+        except OSError:
+            return None
+        return IPv4Address(probe.getsockname()[0])
+
+
+# asked at import, so that the skip below is decided before the test runs
+_SOURCE = the_source_the_kernel_routes_from()
+
+
+class _Unrouted(socket.socket):
+    """A socket whose `connect` finds no route, as a machine offline does."""
+
+    @override
+    def connect(self, address: object) -> None:
+        raise OSError(errno.ENETUNREACH, os.strerror(errno.ENETUNREACH))
+
+
+class _Routed(socket.socket):
+    """A socket whose `connect` routes from TEST-NET-2's first address."""
+
+    @override
+    def connect(self, address: object) -> None:
+        """Choose the route, and send nothing, as a UDP `connect` does."""
+
+    @override
+    def getsockname(self) -> tuple[str, int]:
+        return ("198.51.100.1", 49152)
+
+
+@pytest.mark.parametrize(
+    ("kind", "source"),
+    [(_Unrouted, None), (_Routed, IPv4Address("198.51.100.1"))],
+    ids=["no route", "a route"],
+)
+def test_the_probe_answers_the_source_or_none_without_a_route(
+    monkeypatch: pytest.MonkeyPatch, kind: type[socket.socket], source: object
+) -> None:
+    """Either answer, whatever route the machine running it has."""
+    monkeypatch.setattr(socket, "socket", kind)
+    assert the_source_the_kernel_routes_from() == source
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no getifaddrs (#1310)")
+@pytest.mark.parametrize(
+    ("source", "held"),
+    [
+        pytest.param(
+            _SOURCE,
+            True,
+            marks=pytest.mark.skipif(
+                _SOURCE is None, reason="no route off this machine"
+            ),
+            id="the kernel's source",
+        ),
+        pytest.param(_TEST_NET_1, False, id="TEST-NET-1"),
+    ],
+)
+def test_this_machine_s_addresses_hold_the_one_the_kernel_routes_from(
+    source: IPv4Address, *, held: bool
+) -> None:
+    """The real `getifaddrs`: IP addresses, no loopback, the source kept.
+
+    TEST-NET-1 is reserved for documentation, so no interface is meant to
+    hold it: it runs the same lines where there is no route, and shows
+    that the membership asked of the source can answer no.
+    """
     addresses = local_addresses()
     assert all(isinstance(ip, (IPv4Address, IPv6Address)) for ip in addresses)
     assert not any(ip.is_loopback for ip in addresses)
-    assert source in addresses
+    assert (source in addresses) is held

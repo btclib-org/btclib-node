@@ -28,11 +28,13 @@ __all__ = [
 ]
 
 # Core's own `DEFAULT_MAX_TIP_AGE` (`src/kernel/chainstatemanager_opts.h`
-# :24, at bitcoin/bitcoin@ca7162cde5): how old the active chain's own
-# tip may be and still count as recent, half of what
+# :24, at bitcoin/bitcoin@ca7162cde5): `config.Config.max_tip_age`'s own
+# default, in seconds, unless `-maxtipage` overrides it -- how old the
+# active chain's own tip may be and still count as recent, half of what
 # `main.update_ibd_status` reads to decide `IsInitialBlockDownload` --
-# the other half is `Chain.consensus.minimum_chain_work`
-# (`btclib.consensus`).
+# the other half is `config.Config.minimum_chain_work`, the chain's own
+# `minimum_chain_work` (`btclib.consensus`) unless `-minimumchainwork`
+# overrides it.
 MAX_TIP_AGE = timedelta(hours=24)
 
 # Core's own `MIN_BLOCKS_TO_KEEP` (`src/validation.h:76`,

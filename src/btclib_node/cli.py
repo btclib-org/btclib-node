@@ -174,8 +174,10 @@ from btclib.fee import FeeRate
 
 from btclib_node import Node, install_signal_handlers
 from btclib_node.block_db import blocks_directory
+from btclib_node.chains import Main, SigNet, TestNet, TestNet4
 from btclib_node.config import (
     DEFAULT_MAX_PEER_CONNECTIONS,
+    DEFAULT_MAX_TIP_AGE,
     DEFAULT_MIN_RELAY_FEERATE,
     Config,
     get_path_arg,
@@ -186,6 +188,7 @@ from btclib_node.dirlock import DirectoryLock, lock_directories
 from btclib_node.exceptions import DirectoryLockError
 from btclib_node.log import open_history_log
 from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME
+from btclib_node.rpc.connection import REQUEST_TIMEOUT
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -314,6 +317,40 @@ def _format_money(amount: int) -> str:
     return f"{whole}.{f'{fraction:08d}'.rstrip('0').ljust(2, '0')}"
 
 
+# `uint256::size() * 2` (`src/uint256.h`, at bitcoin/bitcoin@9be056a8a7,
+# the v31.1 tag): the most hex digits `-minimumchainwork` accepts, and
+# what Core's own refusal of a longer value names.
+_MIN_WORK_HEX_DIGITS = 64
+
+# Every chain's own `minimum_chain_work` (`btclib.consensus`), read once
+# at import for `-minimumchainwork`'s own help text, Core's `-help`
+# listing `defaultChainParams`, `testnetChainParams`, `testnet4ChainParams`
+# and `signetChainParams` the same way (`src/init.cpp`, same sha) --
+# `regtest`'s own is not among them there either.
+_MIN_CHAIN_WORK_MAIN = Main().consensus.minimum_chain_work
+_MIN_CHAIN_WORK_TESTNET = TestNet().consensus.minimum_chain_work
+_MIN_CHAIN_WORK_TESTNET4 = TestNet4().consensus.minimum_chain_work
+_MIN_CHAIN_WORK_SIGNET = SigNet().consensus.minimum_chain_work
+
+
+def _parse_hex_uint256(value: str) -> int | None:
+    """Return Core's `uint256::FromUserHex` of `value`, `None` where it fails.
+
+    `src/uint256.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag: an
+    optional literal `0x` prefix (lowercase only, `RemovePrefixView`
+    being a plain `starts_with`) is dropped, and what is left is refused
+    past `_MIN_WORK_HEX_DIGITS` hex digits or containing anything but
+    one -- `IsHex`'s own parity check never fires, since a value under
+    that length is read as though left-padded with zeroes to it, which
+    is always even. Empty is `0`, `int`'s own refusal of it taken here
+    rather than reached.
+    """
+    text = value.removeprefix("0x")
+    if len(text) > _MIN_WORK_HEX_DIGITS or not re.fullmatch("[0-9A-Fa-f]*", text):
+        return None
+    return int(text, 16) if text else 0
+
+
 @dataclass(frozen=True)
 class _Option:
     """One registered option: Core's `AddArg` arguments this module reads.
@@ -433,6 +470,15 @@ _OPTIONS: dict[str, _Option] = {
         "-maxconnections=0)",
         _CONNECTION_TITLE,
     ),
+    "minimumchainwork": _Option(
+        "=<hex>",
+        "Minimum work assumed to exist on a valid chain in hex (default: "
+        f"{_MIN_CHAIN_WORK_MAIN:064x}, testnet3: {_MIN_CHAIN_WORK_TESTNET:064x}, "
+        f"testnet4: {_MIN_CHAIN_WORK_TESTNET4:064x}, signet: "
+        f"{_MIN_CHAIN_WORK_SIGNET:064x})",
+        _OPTIONS_TITLE,
+        debug_only=True,
+    ),
     "minrelaytxfee": _Option(
         "=<amt>",
         "Fees (in BTC/kvB) smaller than this are considered zero fee for "
@@ -446,6 +492,13 @@ _OPTIONS: dict[str, _Option] = {
         f"{DEFAULT_MAX_PEER_CONNECTIONS}); does not limit a peer dialled through "
         "-connect or -addnode",
         _CONNECTION_TITLE,
+    ),
+    "maxtipage": _Option(
+        "=<n>",
+        "Maximum tip age in seconds to consider node in initial block "
+        f"download (default: {DEFAULT_MAX_TIP_AGE})",
+        _DEBUG_TEST_TITLE,
+        debug_only=True,
     ),
     "peerblockfilters": _Option(
         "",
@@ -525,6 +578,12 @@ _OPTIONS: dict[str, _Option] = {
         "Listen for JSON-RPC connections on <port>",
         _RPC_TITLE,
         network_only=True,
+    ),
+    "rpcservertimeout": _Option(
+        "=<n>",
+        f"Timeout during HTTP requests (default: {int(REQUEST_TIMEOUT)})",
+        _RPC_TITLE,
+        debug_only=True,
     ),
     "rpcuser": _Option(
         "=<user>", "Username for JSON-RPC connections", _RPC_TITLE, sensitive=True
@@ -1466,6 +1525,41 @@ def _parse_money(value: str) -> int | None:
     return amount if amount <= _MAX_MONEY else None
 
 
+def _get_minimum_chain_work(settings: _Settings) -> int | None:
+    """Return `-minimumchainwork` as an int, `None` where it is not given.
+
+    `node::ApplyArgsManOptions` (`src/node/chainstatemanager_args.cpp`,
+    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `uint256::FromUserHex`
+    through `_parse_hex_uint256`, refused in Core's own words. A `None`
+    return is `Config.__init__`'s own to default, to the chain's own
+    `minimum_chain_work` -- which chain that is is not decided until
+    then.
+    """
+    value = _get_arg(settings, "minimumchainwork")
+    if value is None:
+        return None
+    work = _parse_hex_uint256(value)
+    if work is None:
+        err_msg = (
+            f"Invalid minimum work specified ({value}), must be up to "
+            f"{_MIN_WORK_HEX_DIGITS} hex digits"
+        )
+        raise ValueError(err_msg)
+    return work
+
+
+def _get_max_tip_age(settings: _Settings) -> int:
+    """Return `-maxtipage` in seconds, Core's `ApplyArgsManOptions`.
+
+    `src/node/chainstatemanager_args.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag: `GetIntArg`, through `_get_int` above, which already
+    reads a negation as `0` and a double negation as `1` the way Core's
+    own `SettingToInt` does.
+    """
+    value = _get_int(settings, "maxtipage")
+    return DEFAULT_MAX_TIP_AGE if value is None else value
+
+
 def _get_min_relay_feerate(settings: _Settings) -> FeeRate:
     """Return `-minrelaytxfee` as a rate, Core's `ApplyArgsManOptions`.
 
@@ -1621,6 +1715,10 @@ class _BeforeLock:
     max_connections_arg: int
     max_connections: int
     debug: bool
+    # `-minimumchainwork`'s own `None` for "not given", `Config.__init__`
+    # left to default it once `chain_name` above resolves
+    minimum_chain_work: int | None
+    max_tip_age: int
     prune: int
     min_relay_feerate: FeeRate
     directories: Config
@@ -1719,7 +1817,10 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     only in the default section off `main`, the warning about a section
     naming no chain, a missing blocks directory, `-forcednsseed` beside
     a `-dnsseed` that is off, a negative `-maxconnections`, `-debug`'s
-    categories, `-prune`, `-minrelaytxfee`.
+    categories, `-minimumchainwork`, `-maxtipage` (the order
+    `node::ApplyArgsManOptions`'s own chainstate-manager options are
+    read in, `src/node/chainstatemanager_args.cpp`, same sha), `-prune`,
+    `-minrelaytxfee`.
     """
     settings, base_dir, chain_name = _read_settings(argv)
     _check_network_only_args(settings)
@@ -1756,9 +1857,13 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
         forcednsseed=bool(_get_bool(settings, "forcednsseed")),
     )
     debug = _resolve_debug(settings)
-    prune = _prune_target_mib(_get_int(settings, "prune") or 0)
     # after `-debug`'s categories, where `AppInitParameterInteraction`
-    # applies the mempool's options (btclib-org/btclib-node#1332)
+    # applies the chainstate manager's options, ahead of the blockmanager's
+    # (`-prune`, below) and the mempool's (`-minrelaytxfee`,
+    # btclib-org/btclib-node#1332)
+    minimum_chain_work = _get_minimum_chain_work(settings)
+    max_tip_age = _get_max_tip_age(settings)
+    prune = _prune_target_mib(_get_int(settings, "prune") or 0)
     min_relay_feerate = _get_min_relay_feerate(settings)
     return _BeforeLock(
         settings,
@@ -1768,6 +1873,8 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
         max_connections_arg,
         max_connections,
         debug,
+        minimum_chain_work,
+        max_tip_age,
         prune,
         min_relay_feerate,
         directories,
@@ -1852,6 +1959,15 @@ def _after_lock(before: _BeforeLock) -> Config:
     if ban_time is None:
         ban_time = DEFAULT_MISBEHAVING_BANTIME
     prune = before.prune
+    # `-rpcservertimeout`, which `InitHTTPServer` hands to libevent's
+    # `evhttp_set_timeout` as a 32-bit `int`
+    # (`src/httpserver.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    # tag): the same `int64_t`-to-`int` narrowing `-maxconnections`
+    # above takes through `_to_int`.
+    rpcservertimeout = _get_int(settings, "rpcservertimeout")
+    rpcservertimeout = (
+        int(REQUEST_TIMEOUT) if rpcservertimeout is None else _to_int(rpcservertimeout)
+    )
 
     return Config(
         chain=before.chain_name,
@@ -1861,6 +1977,7 @@ def _after_lock(before: _BeforeLock) -> Config:
         rpc_port=rpc_port,
         rpcbind=tuple(rpcbind),
         rpcallowip=_get_args(settings, "rpcallowip"),
+        rpcservertimeout=rpcservertimeout,
         allow_rpc=server is None or server,
         pruned=bool(prune),
         prune_target_mib=prune if prune >= MIN_PRUNE_TARGET_MIB else None,
@@ -1877,6 +1994,8 @@ def _after_lock(before: _BeforeLock) -> Config:
         fixed_seeds=fixedseeds,
         ban_time=ban_time,
         min_relay_feerate=before.min_relay_feerate,
+        minimum_chain_work=before.minimum_chain_work,
+        max_tip_age=before.max_tip_age,
         rpcauth=_get_args(settings, "rpcauth"),
         rpcuser=_get_arg(settings, "rpcuser") or "",
         rpcpassword=_get_arg(settings, "rpcpassword") or "",

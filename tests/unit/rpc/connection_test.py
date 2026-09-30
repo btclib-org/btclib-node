@@ -33,7 +33,12 @@ from btclib_node.exceptions import (
     UnmetExpectationError,
 )
 from btclib_node.log import Logger
-from btclib_node.rpc.auth import FAILED_ATTEMPT_DELAY, RpcAuth, RpcAuthEntry
+from btclib_node.rpc.auth import (
+    FAILED_ATTEMPT_DELAY,
+    RpcAuth,
+    RpcAuthEntry,
+    parse_whitelist,
+)
 from btclib_node.rpc.connection import (
     MAX_BODY_BYTES,
     MAX_HEADER_BYTES,
@@ -45,12 +50,12 @@ from btclib_node.rpc.connection import (
     parse_request_head,
 )
 from btclib_node.rpc.jsonrpc import NO_CONTENT, OK, HttpReply, decode
+from btclib_node.rpc.manager import RpcManager
 from tests import RPCAUTH, RPCAUTH_LINE
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from btclib_node.rpc.manager import RpcManager
 
 BODY = b'{"jsonrpc":"2.0","id":"x","method":"getbestblockhash"}'
 
@@ -61,17 +66,32 @@ def fake_manager(connections: dict[int, Any]) -> SimpleNamespace:
     Every source is allowed: a socketpair's peer has no IP address for
     `RpcManager.client_allowed` to read.
     """
-    # what `send_and_close_after` hands `RpcManager.add_delayed_reply`,
-    # `(coroutine, deadline)` pairs in call order
-    delayed: list[tuple[Any, float]] = []
+    # what `RpcManager.track_reply` is handed, `(coroutine, due)` pairs
+    # in call order, and what `extend_reply_deadline` is
+    tracked: list[tuple[Any, float]] = []
+    deadlines: list[float] = []
     return SimpleNamespace(
         auth=RpcAuth((RpcAuthEntry.parse(RPCAUTH),)),
         client_allowed=lambda client: True,
         logger=Logger(debug=True),
         messages=[],
         connections=connections,
-        delayed=delayed,
-        add_delayed_reply=lambda reply, deadline: delayed.append((reply, deadline)),
+        # a node not shutting down; `refused`'s `prepare` is what sets
+        # the flag (btclib-org/btclib-node#1542)
+        node=SimpleNamespace(terminate_flag=threading.Event()),
+        tracked=tracked,
+        track_reply=lambda reply, due: tracked.append((reply, due)),
+        reply_ended=lambda reply: None,
+        deadlines=deadlines,
+        extend_reply_deadline=deadlines.append,
+        # unset, as a manager that never called `interrupt` -- every
+        # test built on this fixture reads a connection that is not
+        # being shut down; `refused`'s own `interrupted` argument is
+        # what sets it (btclib-org/btclib-node#1515)
+        interrupted=threading.Event(),
+        # what `RpcConnection.run` holds from reading `interrupted` to
+        # queuing onto `messages`, as `RpcManager` builds it
+        queue_lock=threading.Lock(),
     )
 
 
@@ -148,7 +168,18 @@ def drive(
         async def send() -> None:
             for chunk in chunks:
                 await loop.sock_sendall(theirs, chunk)
-                await asyncio.sleep(0.01)
+                # A bare yield, not a wall-clock delay: it only has to
+                # give `conn.run()`'s pending `sock_recv` a loop turn
+                # before the next chunk lands, so a many-chunk sender
+                # (the chunked-body cases, up to 57 of them) is not
+                # racing `timeout` below on a busy machine. Measured at
+                # issue #1278: `sleep(0.01)` here cost 0.55-0.57s of
+                # real sleep against `timeout`'s 1.0s default, most of
+                # a loaded run's budget before any scheduling delay,
+                # where `sleep(0)` still forces multiple separate reads
+                # (37 of 55 chunks measured at idle, never one) and
+                # completes in under a millisecond.
+                await asyncio.sleep(0)
             if hang_up:
                 theirs.close()
 
@@ -898,8 +929,8 @@ def test_send_and_close_after_returns_at_once_and_delays_the_write() -> None:
     `handle_rpc` calls it on `Node`'s thread, played here by this test's
     own, and stops the node right after (ISS 1467), so the wait runs on
     `loop`, a thread of its own here as `RpcManager`'s is. What it hands
-    `RpcManager.add_delayed_reply` is the coroutine `loop` then runs,
-    with the deadline `delay` sets.
+    `RpcManager.track_reply` is the coroutine `loop` then runs, due
+    when `delay` ends, which is the deadline it records too.
     """
     delay = 1.0
     ours, theirs = socket.socketpair()
@@ -929,8 +960,9 @@ def test_send_and_close_after_returns_at_once_and_delays_the_write() -> None:
         thread.join()
         loop.close()
         theirs.close()
-    [(delayed, deadline)] = manager.delayed
-    assert started + delay <= deadline <= returned + delay
+    [(delayed, due)] = manager.tracked
+    assert started + delay <= due <= returned + delay
+    assert manager.deadlines == [due]
     # run to completion by `loop`, which is what clears a coroutine's frame
     assert delayed.cr_frame is None
     assert received - started >= delay - _WINDOWS_TIMER_TICK
@@ -945,6 +977,8 @@ def refused(
     *,
     allowed: bool = True,
     debugs: list[tuple[Any, ...]] | None = None,
+    interrupted: bool = False,
+    prepare: Callable[[SimpleNamespace], None] | None = None,
 ) -> tuple[bytes, float, bool, list[Any], list[tuple[Any, ...]]]:
     """Send `data` to a `RpcConnection.run` expecting a refusal, and read it.
 
@@ -952,7 +986,10 @@ def refused(
     `Content-Length` counts, the seconds from `run` starting to the
     reply arriving, whether the connection closed after it, what was
     queued for `handle_rpc`, and every warning logged. `allowed` is
-    what `client_allowed` answers, and `debugs` takes every debug line.
+    what `client_allowed` answers, `debugs` takes every debug line, and
+    `interrupted` sets `manager.interrupted` before `run` reads it
+    (btclib-org/btclib-node#1515), and `prepare` is handed the manager
+    last, before `run` starts.
     """
     warnings: list[tuple[Any, ...]] = []
     debug_lines: list[tuple[Any, ...]] = [] if debugs is None else debugs
@@ -975,6 +1012,10 @@ def refused(
             debug=lambda *args: debug_lines.append(args),
         )
         manager.client_allowed = lambda client: allowed
+        if interrupted:
+            manager.interrupted.set()
+        if prepare is not None:
+            prepare(manager)
         conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
         await loop.sock_sendall(theirs, data)
         # before `run`, so the delay it schedules is inside what is measured
@@ -999,6 +1040,116 @@ def refused(
 
     reply, elapsed, closed, messages = asyncio.run(main())
     return reply, elapsed, closed, messages, warnings
+
+
+def shutting_down(manager: SimpleNamespace) -> None:
+    """Set `terminate_flag` on `manager`'s node, as `Node.stop` sets it."""
+    manager.node.terminate_flag.set()
+
+
+def refusing_every_method(manager: SimpleNamespace) -> None:
+    """Set `terminate_flag`, and whitelist nothing for `RPCAUTH`'s user."""
+    shutting_down(manager)
+    manager.auth = RpcAuth(
+        (RpcAuthEntry.parse(RPCAUTH),),
+        whitelist=parse_whitelist(()),
+        whitelist_default=True,
+    )
+
+
+_WRONG_CREDENTIAL = (
+    b"Authorization: Basic " + base64.b64encode(b"pytest:wrong") + b"\r\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("data", "status", "allowed", "prepare"),
+    [
+        (request(b"Content-Length: 0\r\n", b"", auth=b""), b"401", True, None),
+        (
+            request(b"Content-Length: 0\r\n", b"", auth=_WRONG_CREDENTIAL),
+            b"401",
+            True,
+            None,
+        ),
+        (with_length(), b"403", False, None),
+        (
+            request(b"Content-Length: 0\r\n", b"", target=b"/rest/"),
+            b"404",
+            True,
+            None,
+        ),
+        (request(b"Content-Length: 0\r\n", b"", method=b"GET"), b"405", True, None),
+        (request(b"Content-Length: 3\r\n", b"bad"), b"500", True, None),
+        (with_length(), b"403", True, refusing_every_method),
+    ],
+    ids=[
+        "401-no-credential",
+        "401-wrong-credential",
+        "403-source",
+        "404-target",
+        "405-method",
+        "500-parse-error",
+        "403-whitelist",
+    ],
+)
+def test_a_refusal_written_once_shutdown_began_closes_its_connection(
+    data: bytes,
+    status: bytes,
+    *,
+    allowed: bool,
+    prepare: Callable[[SimpleNamespace], None] | None,
+) -> None:
+    """Once shutdown has begun, the loop's own refusal says it closes.
+
+    Core writes each of these through `HTTPRequest::WriteReply`, which
+    adds `Connection: close` once the node's shutdown signal is raised
+    (`src/httpserver.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag); a 401 for a wrong credential reads it after its
+    `FAILED_ATTEMPT_DELAY`. Every request here asks for keep-alive
+    (btclib-org/btclib-node#1542).
+    """
+    reply, _, closed, messages, _ = refused(
+        data, allowed=allowed, prepare=prepare or shutting_down
+    )
+    head = reply.partition(b"\r\n\r\n")[0].split(b"\r\n")
+    assert head[0].startswith(b"HTTP/1.1 " + status)
+    assert b"Connection: close" in head
+    assert closed
+    assert messages == []
+
+
+def test_a_401_reads_the_shutdown_flag_after_its_delay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A wrong credential's 401 reads `terminate_flag` once its delay ends.
+
+    `HTTPReq_JSONRPC` sleeps `FAILED_ATTEMPT_DELAY` before it calls
+    `HTTPRequest::WriteReply`, which reads the shutdown signal then
+    (`src/httprpc.cpp`, `src/httpserver.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The flag is set as that
+    delay begins, so a 401 that read it any earlier would still say the
+    connection stays alive (btclib-org/btclib-node#1542).
+    """
+    sleep = asyncio.sleep
+    delays: list[float] = []
+
+    def prepare(manager: SimpleNamespace) -> None:
+        async def flag_then_sleep(delay: float) -> None:
+            delays.append(delay)
+            manager.node.terminate_flag.set()
+            await sleep(delay)
+
+        monkeypatch.setattr(asyncio, "sleep", flag_then_sleep)
+
+    data = request(b"Content-Length: 0\r\n", b"", auth=_WRONG_CREDENTIAL)
+    reply, _, closed, _, _ = refused(data, prepare=prepare)
+    # the first sleep of the exchange is the 401's own delay
+    assert delays[0] == FAILED_ATTEMPT_DELAY
+    head = reply.partition(b"\r\n\r\n")[0].split(b"\r\n")
+    assert head[0] == b"HTTP/1.1 401 Unauthorized"
+    assert b"Connection: close" in head
+    assert closed
 
 
 UNAUTHORIZED = (
@@ -1151,6 +1302,129 @@ def test_a_method_libevent_refuses_is_501_from_a_refused_source_too(
     assert closed
     assert not messages
     assert not debugs
+
+
+@pytest.mark.parametrize(
+    ("method", "allowed", "status"),
+    [
+        (b"FOO", False, b"501 Not Implemented"),
+        (b"POST", False, b"503 Service Unavailable"),
+        (b"DELETE", True, b"503 Service Unavailable"),
+    ],
+)
+def test_manager_interrupted_is_503_behind_libevent_s_own_501(
+    method: bytes, *, allowed: bool, status: bytes
+) -> None:
+    """ISS 1515: `interrupted` is answered 503, ahead of 403 but not of 501.
+
+    `InterruptHTTPServer` swaps `http_request_cb` for
+    `http_reject_request_cb`, which answers `503` to every request that
+    reaches it (`src/httpserver.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag); libevent's own 501 comes before either callback. Measured
+    on `bitcoind` v31.1.0, a `stop` RPC asleep in its hidden `wait`:
+    `FOO` is 501 and `POST` 503 from a source `-rpcallowip` does not
+    name, and `DELETE` is 503 from one it does.
+    """
+    reply, _, closed, messages, _ = refused(
+        request(b"Content-Length: %d\r\n" % len(BODY), auth=b"", method=method),
+        allowed=allowed,
+        interrupted=True,
+    )
+    page = error_page(status)
+    assert reply == (
+        b"HTTP/1.1 " + status + b"\r\nConnection: close\r\n"
+        b"Content-Length: %d\r\n\r\n" % len(page) + page
+    )
+    assert closed
+    assert not messages
+
+
+def interrupt(manager: SimpleNamespace) -> None:
+    """Run `RpcManager.interrupt` on `manager`, a `fake_manager`."""
+    RpcManager.interrupt(cast("RpcManager", manager))
+
+
+def test_an_interrupt_past_the_early_checks_is_refused_as_submit_refuses() -> None:
+    """ISS 1515: interrupted after `_refused_early` let a request through.
+
+    `client_allowed`, the last check `_refused_early` makes of a `POST`,
+    interrupts the manager itself, so the request is past the 503
+    `http_reject_request_cb` stands for and not yet queued. Core's
+    `ThreadPool::Submit` refuses it there, reading `m_interrupt` under
+    the `m_mutex` it queues under, and `http_request_cb` answers the
+    refusal (`src/util/threadpool.h`, `src/httpserver.cpp`,
+    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    """
+
+    def interrupting(manager: SimpleNamespace) -> None:
+        def allowed(_client: socket.socket) -> bool:
+            interrupt(manager)
+            return True
+
+        manager.client_allowed = allowed
+
+    reply, _, closed, messages, warnings = refused(with_length(), prepare=interrupting)
+    body = b"Request rejected during server shutdown"
+    assert reply == (
+        b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n"
+        b"Content-Length: %d\r\n\r\n" % len(body) + body
+    )
+    assert closed
+    assert not messages
+    assert warnings == [
+        ("HTTP request rejected during server shutdown: '%s'", "Interrupted")
+    ]
+
+
+def test_an_interrupt_waits_for_a_request_being_queued() -> None:
+    """ISS 1515: `interrupt` cannot land between the check and the queue.
+
+    `authenticated_user`, which `run` calls between reading
+    `interrupted` and queuing the request, starts `RpcManager.interrupt`
+    on a thread of its own, as `Node._drain_rpc_queue` calls it from
+    `Node`'s, and gives it half a second to return before `run` goes on.
+    What that thread finds on `messages` once `interrupt` returns is
+    what the drain after it would answer: the request, rather than an
+    empty queue the request lands on afterwards with nothing left to
+    answer it.
+    """
+
+    async def main() -> tuple[list[list[Any]], list[Any]]:
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        theirs.setblocking(False)
+        loop = asyncio.get_running_loop()
+        manager = fake_manager(connections={0: None})
+        seen: list[list[Any]] = []
+        returned = threading.Event()
+
+        def interrupting() -> None:
+            interrupt(manager)
+            seen.append(list(manager.messages))
+            returned.set()
+
+        interrupter = threading.Thread(target=interrupting)
+        auth: RpcAuth = manager.auth
+
+        def authenticating(authorization: str) -> bytes | None:
+            interrupter.start()
+            returned.wait(0.5)
+            return auth.authenticated_user(authorization)
+
+        manager.auth = SimpleNamespace(
+            authenticated_user=authenticating, refusal=auth.refusal
+        )
+        conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
+        await loop.sock_sendall(theirs, with_length())
+        await conn.run()
+        interrupter.join(10)
+        theirs.close()
+        ours.close()
+        return seen, manager.messages
+
+    seen, messages = asyncio.run(main())
+    assert messages == [(json.loads(BODY), 0)]
+    assert seen == [messages]
 
 
 ONLY_POST = b"JSONRPC server handles only POST requests"
@@ -2350,9 +2624,15 @@ def test_a_chunked_body_is_decoded_and_dispatched(body: bytes) -> None:
     """The chunks' data, joined, is the body, as `bitcoind` v31.1.0 reads it.
 
     Sent three octets at a time, so each line is read across reads.
+    `outcome` is asserted on too (issue #1278): `drive`'s own
+    `wait_for` can in principle still time out on a starved machine,
+    and discarding it would then surface as this test's `messages`
+    assertion with nothing dispatched -- the same shape a real
+    decoding failure produces -- rather than naming the timeout.
     """
     data = request(CHUNKED_FIELD, body)
-    _, messages, _ = drive([data[i : i + 3] for i in range(0, len(data), 3)])
+    outcome, messages, _ = drive([data[i : i + 3] for i in range(0, len(data), 3)])
+    assert outcome == "returned"
     assert messages == [(json.loads(BODY), 0)]
 
 

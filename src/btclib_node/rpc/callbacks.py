@@ -14,6 +14,7 @@ call every entry, `stop` included, unless `-rpcwhitelistdefault` holds.
 """
 
 import math
+import string
 import time
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
@@ -91,6 +92,7 @@ __all__ = [
     "get_peer_info",
     "get_raw_mempool",
     "get_raw_transaction",
+    "get_rpc_info",
     "get_tx_out",
     "get_tx_out_set_info",
     "help_rpc",
@@ -186,9 +188,9 @@ def get_blockchain_info(
     `main.update_ibd_status`'s own latch, matching Core's own
     `IsInitialBlockDownload` (src/rpc/blockchain.cpp:1436, at
     bitcoin/bitcoin@ca7162cde5) field for field: chain work against
-    `Chain.consensus.minimum_chain_work` and tip age against
-    `MAX_TIP_AGE`, not merely whether this node has run out of
-    candidates to try.
+    `node.config.minimum_chain_work` and tip age against
+    `node.config.max_tip_age`, not merely whether this node has run out
+    of candidates to try.
     `size_on_disk` is `block_db.BlockDB.current_usage`, Core's own
     `CalculateCurrentUsage` (src/rpc/blockchain.cpp:1451, same commit).
     `pruned` is `Config.pruned` (src/rpc/blockchain.cpp:1452, same
@@ -2569,6 +2571,17 @@ def _exceeds_max_burn(tx: Tx, max_burn_amount: int) -> bool:
     )
 
 
+_HEX_DIGITS = frozenset(string.hexdigits)
+
+
+def _is_hex(s: str) -> bool:
+    """Core's `IsHex` (`src/util/strencodings.cpp`).
+
+    Requires non-empty, even-length hexadecimal string.
+    """
+    return bool(s) and len(s) % 2 == 0 and all(c in _HEX_DIGITS for c in s)
+
+
 def test_mempool_accept(
     node: Node, conn: RpcConnection, params: list[Any]
 ) -> list[dict[str, Any]]:
@@ -2622,6 +2635,15 @@ def test_mempool_accept(
                 "type string"
             )
             raise RpcError(RPCErrorCode.TYPE_ERROR, message)
+        if not _is_hex(rawtx):
+            # Core's `DecodeHexTx` (`src/core_io.cpp`, same tag) first
+            # requires `IsHex` (`src/util/strencodings.cpp`), which refuses
+            # whitespace and non-hex characters: bytes.fromhex accepts
+            # them, where Core answers `-22`. btclib-org/btclib-node#1372
+            err_msg = (
+                f"TX decode failed: {rawtx} Make sure the tx has at least one input."
+            )
+            raise RpcError(RPCErrorCode.DESERIALIZATION_ERROR, err_msg)
         try:
             txs.append(Tx.parse(rawtx))
         except BTClibException as error:
@@ -2771,6 +2793,15 @@ def _decode_and_precheck_raw_tx(node: Node, params: list[Any]) -> tuple[Tx, int]
     max_burn_amount = _amount_param(
         params, 2, name="maxburnamount", default=_DEFAULT_MAX_BURN_AMOUNT
     )
+    if not _is_hex(rawtx):
+        # Core's `DecodeHexTx` (`src/core_io.cpp`, same tag) first
+        # requires `IsHex` (`src/util/strencodings.cpp`), which refuses
+        # whitespace and non-hex characters: bytes.fromhex accepts
+        # them, where Core answers `-22`. btclib-org/btclib-node#1372
+        raise RpcError(
+            RPCErrorCode.DESERIALIZATION_ERROR,
+            "TX decode failed. Make sure the tx has at least one input.",
+        )
     try:
         tx = Tx.parse(rawtx)
     except BTClibException as error:
@@ -2893,6 +2924,36 @@ def ping(node: Node, conn: RpcConnection, _: list[Any]) -> None:
     node.p2p_manager.ping_all()
 
 
+def get_rpc_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str, Any]:
+    """Answer `getrpcinfo`: every RPC call in flight, and where this node logs.
+
+    Core's own `RPCServerInfo.active_commands`/`RPCCommandExecution`
+    (`src/rpc/server.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag): `rpc.main._execute` is this node's own `ExecuteCommand`, and
+    `node.active_rpc_commands` is its own `active_commands`, appended to
+    and popped there rather than guarded by a destructor -- this call's
+    own entry is already in it by the time this callback runs, exactly
+    as Core's own is by the time its lambda runs. `duration` is
+    microseconds, `Ticks<std::chrono::microseconds>` over Core's own
+    `SteadyClock::now() - info.start`; `time.monotonic()` is this
+    node's own steady clock, elapsed time only and never a wall-clock
+    reading, which is what `SteadyClock` is too.
+
+    `logpath` is `node.log_path`, `""` where this node logs to a stream
+    rather than a file, as `LogInstance().m_file_path.utf8string()`
+    answers for an unset path too.
+    """
+    now = time.monotonic()
+    active_commands = [
+        {"method": method, "duration": int((now - start) * 1_000_000)}
+        for method, start in node.active_rpc_commands
+    ]
+    return {
+        "active_commands": active_commands,
+        "logpath": str(node.log_path) if node.log_path else "",
+    }
+
+
 def stop_wait_param(params: list[Any]) -> int | None:
     """Read `stop`'s own hidden `wait`, or `None` where none was given.
 
@@ -2994,6 +3055,7 @@ callbacks = {
     "ping": ping,
     "stop": stop,
     "help": help_rpc,
+    "getrpcinfo": get_rpc_info,
 }
 
 # Each method's parameter names, in the order of its positions, as its
@@ -3033,4 +3095,5 @@ arg_names: dict[str, tuple[str, ...]] = {
     "ping": (),
     "stop": ("wait",),
     "help": ("command",),
+    "getrpcinfo": (),
 }

@@ -43,7 +43,6 @@ from btclib_node.block_db import Coin
 from btclib_node.chains import SigNet
 from btclib_node.chainstate.block_index import BlockIndex, BlockStatus, block_time
 from btclib_node.constants import (
-    MAX_TIP_AGE,
     MIN_BLOCKS_TO_KEEP,
     NodeStatus,
     P2pConnStatus,
@@ -262,13 +261,15 @@ def update_ibd_status(node: Node) -> None:
 
     Core's own `ChainstateManager::UpdateIBDStatus`
     (`src/validation.cpp:3302`, at bitcoin/bitcoin@ca7162cde5): once the
-    active chain's own tip carries at least `node.chain.consensus`'s own
-    `minimum_chain_work` (`btclib.consensus`) and is no older than
-    `MAX_TIP_AGE` (`constants.py`), this node counts as caught up --
-    `CChain::IsTipRecent`, `src/chain.h:431`, same commit. A no-op past
-    the first call for the same reason `finish_sync` above is one:
-    Core's function never sets its own cached flag back to `true`
-    either, `UpdateIBDStatus`'s own comment naming that explicitly.
+    active chain's own tip carries at least `node.config`'s own
+    `minimum_chain_work` (`-minimumchainwork`, the chain's own
+    `minimum_chain_work` in `btclib.consensus` where that is not given)
+    and is no older than `node.config.max_tip_age` (`-maxtipage`), this
+    node counts as caught up -- `CChain::IsTipRecent`, `src/chain.h:431`,
+    same commit. A no-op past the first call for the same reason
+    `finish_sync` above is one: Core's function never sets its own
+    cached flag back to `true` either, `UpdateIBDStatus`'s own comment
+    naming that explicitly.
 
     Called by `_after_tip_change` whenever a fork commits, where Core's
     `ConnectTip` and `DisconnectTip` call it, and by
@@ -280,10 +281,10 @@ def update_ibd_status(node: Node) -> None:
         return
     block_index = node.chainstate.block_index
     tip_hash = block_index.active_chain[-1]
-    if block_index.chainwork[tip_hash] < node.chain.consensus.minimum_chain_work:
+    if block_index.chainwork[tip_hash] < node.config.minimum_chain_work:
         return
     tip_header = block_index.header_dict[tip_hash].header
-    if datetime.now(UTC) - tip_header.time > MAX_TIP_AGE:
+    if (datetime.now(UTC) - tip_header.time).total_seconds() > node.config.max_tip_age:
         return
     node.is_initial_block_download = False
 

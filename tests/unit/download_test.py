@@ -166,10 +166,10 @@ def make_manager(
         chainstate=SimpleNamespace(block_index=block_index),
         mempool=mempool if mempool is not None else Mempool(Logger(debug=True)),
         warm_worker_pool=warm_worker_pool or (lambda: None),
-        config=SimpleNamespace(min_relay_feerate=min_relay_feerate),
-        chain=SimpleNamespace(
-            consensus=SimpleNamespace(minimum_chain_work=0, segwit_height=0)
+        config=SimpleNamespace(
+            min_relay_feerate=min_relay_feerate, minimum_chain_work=0
         ),
+        chain=SimpleNamespace(consensus=SimpleNamespace(segwit_height=0)),
     )
     manager = DownloadManager(cast("Node", node), Logger(debug=True))
     # `Node`'s own, which `callbacks.maybe_send_getheaders` reads its
@@ -898,7 +898,7 @@ def a_worked_manager(conn: Any, *, work: int) -> DownloadManager:
     manager = make_manager(
         [conn], block_index=SimpleNamespace(chainwork={a_hash(1): work})
     )
-    cast("Any", manager.node).chain.consensus.minimum_chain_work = 10
+    cast("Any", manager.node).config.minimum_chain_work = 10
     return manager
 
 
