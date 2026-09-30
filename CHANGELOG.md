@@ -1228,6 +1228,18 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `_setting_to_write_str`, or a hand-written literal, matching Core's own
   `json_escape`**, which doubles a backslash (closes #1509).
 
+### A high-bandwidth peer is announced a new block as `cmpctblock`, as in Core
+
+- **A peer's `sendcmpct` of version 2 is recorded, and a peer that chose this
+  node as high-bandwidth is sent a lone new block as a `cmpctblock` and reported
+  in `getpeerinfo`'s `bip152_hb_from`** (closes #1223).
+
+### A new block reaches a high-bandwidth peer before it is connected, as in Core
+
+- **A block past Core's `ContextualCheckBlock` that extends the tip is sent as a
+  `cmpctblock` to every high-bandwidth peer that has its parent, as
+  `NewPoWValidBlock` sends it** (closes #1315).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

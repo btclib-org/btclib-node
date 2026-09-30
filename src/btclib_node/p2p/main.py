@@ -48,10 +48,10 @@ __all__ = ["handle_p2p", "handle_p2p_handshake", "resume_cfilters", "resume_getd
 # Core's `ProcessMessage` handles `sendheaders`, `sendcmpct`, `wtxidrelay`,
 # `sendaddrv2` and `sendtxrcncl` after `version` and before `verack`
 # (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
-# `sendheaders` is the one of them `callbacks` holds: `wtxidrelay` and
-# `sendaddrv2` are `handshake_callbacks`', and the other two this node
-# does not handle.
-_BEFORE_VERACK = frozenset({"sendheaders"})
+# `sendheaders` and `sendcmpct` are the two of them `callbacks` holds:
+# `wtxidrelay` and `sendaddrv2` are `handshake_callbacks`', and this node
+# does not handle `sendtxrcncl`.
+_BEFORE_VERACK = frozenset({"sendheaders", "sendcmpct"})
 
 
 def _drop(manager: P2pManager, conn: Connection, e: Exception) -> bool:
@@ -140,9 +140,9 @@ def handle_p2p(node: Node) -> None:
 
     A message ahead of `verack` is ignored, as Core's `ProcessMessage`
     ignores it (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag), except a `sendheaders` after `version`, which Core
-    records there. A callback that raises is `_drop`'s, the comment
-    below arguing its split.
+    the v31.1 tag), except a `sendheaders` or a `sendcmpct` after
+    `version`, which Core records there. A callback that raises is
+    `_drop`'s, the comment below arguing its split.
 
     Weighs the item's own size back off the connection's
     `queued_recv_bytes` the moment it is popped, whatever happens to it

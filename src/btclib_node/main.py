@@ -14,6 +14,7 @@ entered from a single transaction instead, for the RPC and p2p callbacks
 that relay one.
 """
 
+import secrets
 import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, NamedTuple, cast
@@ -41,7 +42,12 @@ from btclib.tx.tx_context import (
 from btclib_node.block_db import Coin
 from btclib_node.chains import SigNet
 from btclib_node.chainstate.block_index import BlockIndex, BlockStatus, block_time
-from btclib_node.constants import MAX_TIP_AGE, MIN_BLOCKS_TO_KEEP, NodeStatus
+from btclib_node.constants import (
+    MAX_TIP_AGE,
+    MIN_BLOCKS_TO_KEEP,
+    NodeStatus,
+    P2pConnStatus,
+)
 from btclib_node.exceptions import (
     ChainstateInconsistencyError,
     InvalidBlockInputError,
@@ -60,12 +66,18 @@ from btclib_node.p2p.block_availability import (
     peer_has_header,
     process_block_availability,
 )
+from btclib_node.p2p.compact_block import compact_block
+from btclib_node.p2p.protocol_version import (
+    INVALID_CB_NO_BAN_VERSION,
+    common_version,
+)
 from btclib_node.signet import assert_valid_solution
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from btclib.block import Block, BlockHeader
+    from btclib.p2p.compact_blocks import CmpctBlock
     from btclib.tx.tx import Tx
     from btclib.tx.tx_out import TxOut
 
@@ -79,9 +91,11 @@ if TYPE_CHECKING:
 __all__ = [
     "MempoolAcceptance",
     "assert_valid_block",
+    "contextual_check_block",
     "is_block_failed",
     "is_block_mutated",
     "is_cached_invalid",
+    "new_pow_valid_block",
     "parent_lookup",
     "passes_check_block",
     "prune_up_to_height",
@@ -115,29 +129,99 @@ _MAX_BLOCKS_TO_ANNOUNCE = 8
 # asked for headers (callbacks.sendheaders), every header from the
 # first one it does not have, where that one's parent is a header it
 # has; to any other peer, or where nothing connects, an `inv` of the
-# tip, unless the peer has it. A peer that announced the blocks to this
-# node therefore hears nothing back. This node announces no block as a
-# `cmpctblock`, Core's way to a high-bandwidth peer, though it serves one
-# asked for. btclib-org/btclib-node#202, btclib-org/btclib-node#1160,
+# tip, unless the peer has it. To a peer that chose this node as a
+# high-bandwidth peer (callbacks.sendcmpct), a single header to send goes
+# as the tip's `cmpctblock` instead, and a single new block is sent that
+# way whether or not the peer asked for headers. A peer that announced
+# the blocks to this node therefore hears nothing back, and so does a
+# peer `new_pow_valid_block` below already sent the block to.
+# btclib-org/btclib-node#202, btclib-org/btclib-node#1160,
 # btclib-org/btclib-node#1223
 def _announce_added_blocks(node: Node, blocks: list[Block]) -> None:
     block_index = node.chainstate.block_index
     headers = [block.header for block in blocks[-_MAX_BLOCKS_TO_ANNOUNCE:]]
     tip_hash = headers[-1].hash
+    # one nonce for every peer, as Core's `m_most_recent_compact_block`
+    # gives where it holds the block; this node keeps none between calls
+    # (btclib-org/btclib-node#1336)
+    compact: CmpctBlock | None = None
     for conn in node.p2p_manager.connections.copy().values():
         state = conn.block_availability
         process_block_availability(block_index, state)
+        high_bandwidth = conn.requested_hb_cmpctblocks
         to_send = (
             _headers_to_announce(block_index, state, headers)
-            if conn.prefers_headers
+            if conn.prefers_headers or (high_bandwidth and len(headers) == 1)
             else None
         )
         if to_send is None:
             if not peer_has_header(block_index, state, tip_hash):
                 conn.send(Inv([Inventory(InventoryType.MSG_BLOCK, tip_hash)]))
+        elif len(to_send) == 1 and high_bandwidth:
+            if compact is None:
+                compact = compact_block(blocks[-1], secrets.randbits(64))
+            conn.send(compact)
+            state.best_header_sent = tip_hash
         elif to_send:
             conn.send(Headers(to_send))
             state.best_header_sent = to_send[-1].hash
+
+
+def new_pow_valid_block(node: Node, block: Block) -> None:
+    """Send a block just stored to every high-bandwidth peer, before connecting.
+
+    Core's `AcceptBlock` calls `NewPoWValidBlock` for a new block that
+    passed `CheckBlock` and `ContextualCheckBlock`, out of initial block
+    download and where the block extends the active tip
+    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    `NewPoWValidBlock` (`src/net_processing.cpp`, same tag) goes no lower
+    than the highest block it already announced this way, nor below
+    segwit's height. It sends the block's `cmpctblock` to every fully
+    connected peer from `INVALID_CB_NO_BAN_VERSION` up that asked for high
+    bandwidth, has the parent and lacks the block. That peer then counts
+    as having the block, so `_announce_added_blocks` does not send it
+    again once the block is connected.
+
+    `callbacks.block` and `submitblock` call this with a block that passed
+    `Block.assert_valid`. A block failing `contextual_check_block` is not
+    announced, and `update_chain` refuses it when it reaches it.
+    """
+    block_index = node.chainstate.block_index
+    previous_hash = block.header.previous_block_hash
+    if node.is_initial_block_download or previous_hash != block_index.active_chain[-1]:
+        return
+    block_hash = block.header.hash
+    height = block_index.get_block_info(block_hash).index
+    try:
+        contextual_check_block(node, block, height)
+    except BTClibException:
+        return
+    if height <= node.highest_fast_announce:
+        return
+    node.highest_fast_announce = height
+    if height < node.chain.consensus.segwit_height:
+        return
+    # one nonce for every peer, as Core's `pcmpctblock`, which Core also
+    # keeps for later requests and this node does not
+    # (btclib-org/btclib-node#1336)
+    compact: CmpctBlock | None = None
+    for conn in node.p2p_manager.connections.copy().values():
+        if (
+            conn.status != P2pConnStatus.Connected
+            or common_version(conn) < INVALID_CB_NO_BAN_VERSION
+        ):
+            continue
+        state = conn.block_availability
+        process_block_availability(block_index, state)
+        if (
+            conn.requested_hb_cmpctblocks
+            and not peer_has_header(block_index, state, block_hash)
+            and peer_has_header(block_index, state, previous_hash)
+        ):
+            if compact is None:
+                compact = compact_block(block, secrets.randbits(64))
+            conn.send(compact)
+            state.best_header_sent = block_hash
 
 
 def _headers_to_announce(
@@ -742,11 +826,56 @@ def _validate_block(
     node: Node, block: Block, transactions: list[tuple[list[Coin], Tx]], index: int
 ) -> None:
     block_hash = block.header.hash
+    parent_mtp, bip113_active = contextual_check_block(node, block, index)
+
     block_index = node.chainstate.block_index
     parent_header = block_index.header_dict[block.header.previous_block_hash].header
     parent_height = index - 1
     parent_of = parent_lookup(node)
-    parent_mtp = median_time_past(parent_header, parent_height, parent_of)
+
+    def ancestor_median_time_past(height: int) -> int:
+        header = header_at_height(parent_header, parent_height, height, parent_of)
+        return median_time_past(header, height, parent_of)
+
+    if bip113_active:
+        for prevouts, tx in transactions:
+            assert_sequence_locks(
+                tx, prevouts, index, parent_mtp, ancestor_median_time_past
+            )
+
+    for prevouts, _tx in transactions:
+        assert_coinbase_maturity(prevouts, index)
+    check_transactions(transactions, index, node, block_hash)
+
+    fees = sum(
+        sum(coin.tx_out.value for coin in prevouts) - sum(x.value for x in tx.vout)
+        for prevouts, tx in transactions
+    )
+    block_subsidy = subsidy(index, node.chain.consensus.subsidy_halving_interval)
+    assert_coinbase_value(block.transactions[0], block_subsidy, fees)
+
+
+def contextual_check_block(node: Node, block: Block, index: int) -> tuple[int, bool]:
+    """Refuse what Core's `ContextualCheckBlock` refuses of `block` at `index`.
+
+    `bad-txns-nonfinal`, then `bad-cb-height` wherever BIP34 binds, in
+    Core's order (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag). The witness commitment and the weight, the other two rules
+    there, are `Block.assert_valid`'s. `Block.assert_valid_contextual`,
+    which asks `bad-cb-height`, asks `time-too-new` first: Core asks that
+    one of the header, in `ContextualCheckBlockHeader`, which
+    `BlockIndex.add_headers` has already done here, so a block reaching
+    this passes it unless the clock went back. The block's parent is
+    indexed, and the block need not be on the active chain. Answers the
+    parent's median time past and whether BIP113 binds, which
+    `_validate_block`'s sequence locks read too. Every caller reaches
+    `bad-cb-height` through this one call: there is no second
+    `assert_valid_contextual` left in `_validate_block` to translate it.
+    """
+    block_hash = block.header.hash
+    block_index = node.chainstate.block_index
+    parent_header = block_index.header_dict[block.header.previous_block_hash].header
+    parent_mtp = median_time_past(parent_header, index - 1, parent_lookup(node))
 
     # Core deploys BIP68, BIP112 (the CHECKSEQUENCEVERIFY opcode) and
     # BIP113 (this cutoff) together, as one soft fork -- this tree has
@@ -754,9 +883,9 @@ def _validate_block(
     # already turns the opcode on at is read here too, rather than a
     # second activation table naming the same height for the same fork.
     # btclib.tx.tx_context's own module docstring argues this the same
-    # way, for why assert_sequence_locks below takes no enforce_bip68
-    # flag of its own: the caller skips the call entirely rather than
-    # passing one.
+    # way, for why assert_sequence_locks in _validate_block takes no
+    # enforce_bip68 flag of its own: the caller skips the call entirely
+    # rather than passing one.
     bip113_active = ScriptFlag.CHECKSEQUENCEVERIFY in get_flags(
         node.config, index, block_hash
     )
@@ -765,7 +894,6 @@ def _validate_block(
         if not is_final(tx, index, lock_time_cutoff):
             err_msg = "bad-txns-nonfinal"
             raise BTClibValueError(err_msg)
-
     # Core's own ContextualCheckBlock checks finality before the
     # coinbase height commitment (src/validation.cpp,
     # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which is why this
@@ -788,27 +916,7 @@ def _validate_block(
             err_msg = "bad-cb-height"
             raise BTClibValueError(err_msg) from error
         raise  # pragma: no cover -- unreachable per the comment above
-
-    def ancestor_median_time_past(height: int) -> int:
-        header = header_at_height(parent_header, parent_height, height, parent_of)
-        return median_time_past(header, height, parent_of)
-
-    if bip113_active:
-        for prevouts, tx in transactions:
-            assert_sequence_locks(
-                tx, prevouts, index, parent_mtp, ancestor_median_time_past
-            )
-
-    for prevouts, _tx in transactions:
-        assert_coinbase_maturity(prevouts, index)
-    check_transactions(transactions, index, node, block_hash)
-
-    fees = sum(
-        sum(coin.tx_out.value for coin in prevouts) - sum(x.value for x in tx.vout)
-        for prevouts, tx in transactions
-    )
-    block_subsidy = subsidy(index, node.chain.consensus.subsidy_halving_interval)
-    assert_coinbase_value(block.transactions[0], block_subsidy, fees)
+    return parent_mtp, bip113_active
 
 
 def _record_rejection(node: Node, failed_hash: bytes, exc: BaseException) -> None:

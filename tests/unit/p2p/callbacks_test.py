@@ -112,7 +112,6 @@ from btclib_node.p2p.callbacks import (
     addrv2,
     advance_cfilters,
     advance_getdata,
-    compact_block,
     feefilter,
     get_cfcheckpt,
     get_cfheaders,
@@ -127,6 +126,7 @@ from btclib_node.p2p.callbacks import (
     ping,
     pong,
     sendaddrv2,
+    sendcmpct,
     sendheaders,
     tx,
     verack,
@@ -135,6 +135,7 @@ from btclib_node.p2p.callbacks import (
 )
 from btclib_node.p2p.callbacks import block as block_callback
 from btclib_node.p2p.chain_sync import ChainSyncTimeoutState
+from btclib_node.p2p.compact_block import compact_block
 from btclib_node.p2p.connection import Connection, PeerStats
 from btclib_node.p2p.protocol_version import (
     BIP0031_VERSION,
@@ -541,6 +542,7 @@ def a_peer(**attributes: Any) -> Any:
         wtxidrelay_received=False,
         prefer_addressv2=False,
         prefers_headers=False,
+        requested_hb_cmpctblocks=False,
         # what Connection sets, and what the version callback overwrites
         relay_tx=True,
         download_queue=[],
@@ -1393,6 +1395,65 @@ def test_the_flags_a_peer_sets_on_this_connection() -> None:
     assert peer.prefers_headers
 
 
+@pytest.mark.parametrize(
+    ("payload", "requested"),
+    [
+        (SendCmpct(announce=True, version=2).serialize(), True),
+        (SendCmpct(announce=False, version=2).serialize(), False),
+        (SendCmpct(announce=True, version=2).serialize() + b"\x00", True),
+    ],
+    ids=["high", "low", "trailing"],
+)
+def test_a_sendcmpct_of_version_two_records_the_peer_s_choice(
+    payload: bytes,
+    requested: bool,  # noqa: FBT001
+) -> None:
+    """The announce octet is whether this node was chosen high-bandwidth.
+
+    Core's `SENDCMPCT` handler sets `m_requested_hb_cmpctblocks` from it
+    (btclib-org/btclib-node#1223).
+    """
+    peer = a_peer(requested_hb_cmpctblocks=not requested)
+    sendcmpct(a_handshake_node(), payload, peer)
+    assert peer.requested_hb_cmpctblocks is requested
+
+
+def test_a_sendcmpct_announce_octet_above_one_is_misbehaving() -> None:
+    """Core's `sendcmpct_hb` is a `uint8_t`, not a `bool`: above one is refused.
+
+    Checked ahead of the version, as Core's own order is, on master,
+    at bitcoin/bitcoin@ba8fdb9717 (btclib-org/btclib-node#1223). v31.1,
+    at bitcoin/bitcoin@9be056a8a7, still reads the octet as a plain
+    `bool` and never refuses one above one.
+    """
+    peer = a_peer(requested_hb_cmpctblocks=False)
+    with pytest.raises(MisbehavingError, match="invalid sendcmpct announce field: 2"):
+        sendcmpct(a_handshake_node(), b"\x02" + (2).to_bytes(8, "little"), peer)
+    assert not peer.requested_hb_cmpctblocks
+    with pytest.raises(MisbehavingError):
+        sendcmpct(a_handshake_node(), b"\x02" + (1).to_bytes(8, "little"), peer)
+
+
+def test_a_sendcmpct_of_another_version_is_ignored() -> None:
+    """Core returns before recording anything for a version other than 2."""
+    peer = a_peer(requested_hb_cmpctblocks=True)
+    sendcmpct(
+        a_handshake_node(), SendCmpct(announce=False, version=1).serialize(), peer
+    )
+    assert peer.requested_hb_cmpctblocks
+    peer = a_peer()
+    sendcmpct(a_handshake_node(), SendCmpct(announce=True, version=1).serialize(), peer)
+    assert not peer.requested_hb_cmpctblocks
+
+
+def test_a_short_sendcmpct_is_refused() -> None:
+    """A payload short of its nine octets raises, as Core's read throws."""
+    peer = a_peer()
+    with pytest.raises(BTClibValueError, match="sendcmpct payload of 8 bytes"):
+        sendcmpct(a_handshake_node(), b"\x01" + bytes(7), peer)
+    assert not peer.requested_hb_cmpctblocks
+
+
 def test_a_feefilter_lands_on_the_connection() -> None:
     """An ordinary `feefilter` sets `peer.feefilter` to the rate it carries."""
     peer = a_peer()
@@ -1936,12 +1997,18 @@ def a_data_node(
 
     Out of initial block download by default, since a transaction callback
     only accepts there; `is_initial_block_download` moves that to test the
-    gate.
+    gate. `config.chain` is `node.chain` itself, as `Node.__init__` keeps
+    them (`self.chain = config.chain`), which `new_pow_valid_block`'s own
+    `contextual_check_block` reads through `config` rather than `node`.
     """
     node = a_handshake_node(status=status)
     node.is_initial_block_download = is_initial_block_download
     node.mempool = mempool if mempool is not None else Mempool(Logger(debug=True))
     node.chain = RegTest()
+    node.config.chain = node.chain
+    # `new_pow_valid_block`'s own high-water mark, Core's
+    # `m_highest_fast_announce`, zero until a call moves it
+    node.highest_fast_announce = 0
     node.block_db = block_db
     node.download_manager = SimpleNamespace(
         received_txs=[],
@@ -2354,10 +2421,17 @@ class FakeBlockIndex:
         self.marked: list[bytes] = []
         self.accepts_headers = accepts_headers
         self.added_headers: list[BlockHeader] = []
-        # regtest's genesis alone is active, one unit of work
+        # regtest's genesis alone is active, one unit of work, and always
+        # indexed, as a real `BlockIndex` always has it: `contextual_check_
+        # block`'s own parent lookup reads it for any block built here,
+        # every one of them extending genesis directly
         genesis = RegTest().genesis.hash
         self.active_chain = [genesis]
         self.chainwork = {genesis: 1}
+        self.infos.setdefault(
+            genesis,
+            SimpleNamespace(header=RegTest().genesis, index=0, downloaded=True),
+        )
 
     def get_block_info(self, block_hash: bytes) -> Any:
         """Return the fixed info this block hash was constructed with."""
@@ -2396,7 +2470,7 @@ def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded() -> None:
     every peer it was asked of, which stop stalling.
     """
     block = a_block()
-    index = FakeBlockIndex({block.header.hash: an_info(downloaded=False)})
+    index = FakeBlockIndex({block.header.hash: an_info(downloaded=False, index=1)})
     added: list[Block] = []
     node = a_data_node(
         block_index=index, block_db=SimpleNamespace(add_block=added.append)
@@ -2419,6 +2493,30 @@ def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded() -> None:
     assert peer.last_novel_block_time > 0
     assert added == [block]
     assert index.marked == [block.header.hash]
+
+
+@pytest.mark.parametrize("downloaded", [False, True])
+def test_a_new_block_stored_is_offered_to_new_pow_valid_block(
+    monkeypatch: pytest.MonkeyPatch,
+    downloaded: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1315: Core's `AcceptBlock` calls `NewPoWValidBlock` for a new block.
+
+    One already held returns before it, as Core's `fAlreadyHave` does.
+    """
+    offered: list[Block] = []
+    monkeypatch.setattr(cb, "new_pow_valid_block", lambda _, b: offered.append(b))
+    block = a_block()
+    index = FakeBlockIndex({block.header.hash: an_info(downloaded=downloaded, index=1)})
+    node = a_data_node(block_index=index, block_db=SimpleNamespace(add_block=id))
+    block_callback(
+        node,
+        BlockMsg(block, include_witness=True, check_validity=False).serialize(
+            check_validity=False
+        ),
+        a_peer(download_queue=[block.header.hash]),
+    )
+    assert offered == ([] if downloaded else [block])
 
 
 def test_a_block_already_stored_is_not_stored_again() -> None:
@@ -2576,6 +2674,7 @@ def a_chainstate_node(tmp_path: Path, segwit_height: int = 0) -> Any:
         pow_limit_bits=RegTest().pow_limit_bits,
         consensus=replace(RegTest().consensus, segwit_height=segwit_height),
     )
+    node.config.chain = node.chain
     node.added = added
     return node
 
@@ -2902,6 +3001,7 @@ def test_an_unrequested_block_below_the_minimum_chain_work_is_not_stored(
         pow_limit_bits=RegTest().pow_limit_bits,
         consensus=replace(RegTest().consensus, minimum_chain_work=work + surplus),
     )
+    node.config.chain = node.chain
     deliver(node, block)
     assert (node.added == [block]) is stored
     node.chainstate.close()

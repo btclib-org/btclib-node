@@ -40,6 +40,7 @@ from btclib_node.main import (
     assert_valid_block,
     is_block_failed,
     is_cached_invalid,
+    new_pow_valid_block,
     parent_lookup,
     passes_check_block,
     prune_up_to_height,
@@ -1026,6 +1027,10 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     extends_tip = block.header.previous_block_hash == block_index.active_chain[-1]
     node.block_db.add_block(block)
     block_index.set_downloaded(block_hash)
+    # Core's `AcceptBlock` calls `NewPoWValidBlock` from inside
+    # `ProcessNewBlock`, ahead of `ActivateBestChain` (`src/validation.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+    new_pow_valid_block(node, block)
     if extends_tip:
         return _validate_extending_tip(node, block_hash)
     return None
@@ -1160,13 +1165,12 @@ def _peer_entry(
         else version_message.user_agent.decode("ascii", errors="replace")
     )
     entry["inbound"] = p2p_conn.inbound
-    # This node sends `sendcmpct` announcing low bandwidth and reads no
-    # `sendcmpct` a peer sends, so it neither selects nor takes up a
-    # high-bandwidth peer: false both ways, what Core answers where it
-    # sent none and where it ignored a `sendcmpct` of a version it does
-    # not speak.
+    # This node sends `sendcmpct` announcing low bandwidth, so it selects
+    # no high-bandwidth peer: false, what Core answers where it sent none.
+    # Whether the peer selected this node is what its own `sendcmpct`
+    # asked (p2p.callbacks.sendcmpct), Core's `m_bip152_highbandwidth_from`.
     entry["bip152_hb_to"] = False
-    entry["bip152_hb_from"] = False
+    entry["bip152_hb_from"] = p2p_conn.requested_hb_cmpctblocks
     # -1, Core's answer where no low-work headers presync runs, which
     # this node never runs.
     entry["presynced_headers"] = -1
