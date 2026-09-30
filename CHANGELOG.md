@@ -1140,9 +1140,9 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 ### `history.log` opens the way `bitcoind`'s `debug.log` does
 
-- **The file opens on five blank lines and a version line, logs every setting
-  read with a sensitive one masked, and takes a refusal after the lock too**
-  (closes #1305, closes #1306, closes #1309).
+- **Every setting read is logged, a sensitive one masked** (closes #1305).
+- **A refusal after the data directory's lock reaches the file** (closes #1306).
+- **The file opens on five blank lines and a version line** (closes #1309).
 
 ## v2026.9.24
 
