@@ -40,7 +40,12 @@ SERVER_ERROR = "500 Internal Server Error"
 
 
 def make_node(
-    body: object, conn_id: int = 0, *, callback: Any = None, logger: Any = None
+    body: object,
+    conn_id: int = 0,
+    *,
+    callback: Any = None,
+    logger: Any = None,
+    active_rpc_commands: list[tuple[str, float]] | None = None,
 ) -> tuple[Any, list[Any], list[Any], list[bool]]:
     """Build a node whose rpc_manager queues `body` for handle_rpc to pop.
 
@@ -53,7 +58,10 @@ def make_node(
     `p2p/main_test.py`'s own `make_node` already carries. What a delayed
     `stop` hands `send_and_close_after` lands in the connection's own
     `delayed`, `(reply, delay)` pairs, reached as
-    `node.rpc_manager.connections[0].delayed`.
+    `node.rpc_manager.connections[0].delayed`. `active_rpc_commands`
+    defaults to a fresh empty list, and is the caller's own object where
+    given, so a test can hold a reference to it before `handle_rpc` ever
+    populates it.
     """
     sent: list[Any] = []
     waited: list[Any] = []
@@ -74,6 +82,11 @@ def make_node(
         else SimpleNamespace(debug=lambda *a: None, exception=lambda *a: None),
         stop=lambda: stopped.append(True),
         p2p_manager=SimpleNamespace(ping_all=callback or (lambda: None)),
+        # `_execute`'s own `RPCCommandExecution` span, popped again
+        # before this function returns whatever it dispatched to
+        active_rpc_commands=(
+            active_rpc_commands if active_rpc_commands is not None else []
+        ),
     )
     return node, sent, waited, stopped
 
@@ -87,6 +100,31 @@ def test_a_request_is_answered() -> None:
     """A 2.0 request is answered 200 in the 2.0 envelope."""
     node, sent, _, _ = make_node(PING)
     handle_rpc(node)
+    assert sent == [HttpReply(OK, {"jsonrpc": "2.0", "result": None, "id": "a"})]
+
+
+def test_active_rpc_commands_holds_the_call_only_while_it_runs() -> None:
+    """`_execute` appends to `active_rpc_commands`, and pops once it returns.
+
+    `rpc.callbacks.get_rpc_info`'s own `active_commands`: the entry --
+    `ping`, a `time.monotonic()` start -- is there while `ping_all` runs,
+    and gone once `handle_rpc` has returned, matching Core's own
+    `RPCCommandExecution` living only for the length of `ExecuteCommand`
+    (`src/rpc/server.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    """
+    active: list[tuple[str, float]] = []
+    seen: list[list[tuple[str, float]]] = []
+    node, sent, _, _ = make_node(
+        PING,
+        callback=lambda: seen.append(list(active)),
+        active_rpc_commands=active,
+    )
+    handle_rpc(node)
+    assert len(seen) == 1
+    [(method, start)] = seen[0]
+    assert method == "ping"
+    assert isinstance(start, float)
+    assert node.active_rpc_commands == []
     assert sent == [HttpReply(OK, {"jsonrpc": "2.0", "result": None, "id": "a"})]
 
 
