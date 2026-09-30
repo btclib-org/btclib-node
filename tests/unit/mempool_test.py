@@ -7,6 +7,7 @@
 import secrets
 import time
 from fractions import Fraction
+from typing import Any, override
 
 import pytest
 from btclib.fee import FeeRate, fee_from_vsize
@@ -933,15 +934,19 @@ def test_remove_dependents_walks_a_chain_of_held_spenders() -> None:
 
 
 def test_remove_dependents_does_not_revisit_a_shared_descendant() -> None:
-    """A descendant reached through two parents is walked, and popped, once.
+    """A descendant reached through two parents is walked once, not twice.
 
     `dropped` has two outputs; `child_a` and `child_b` each spend one,
     and `grandchild` spends both of theirs in turn -- a diamond, not a
     chain, so the walk reaches `grandchild`'s own wtxid a second time
-    once both parents are processed. `dependents` is a `set`, so the
-    second arrival is the `if candidate_wtxid in dependents: continue`
-    branch `test_remove_dependents_walks_a_chain_of_held_spenders`
-    above, a single-parent chain, never reaches.
+    once both parents are processed. That second arrival is the
+    `if candidate_wtxid in dependents: continue` branch
+    `test_remove_dependents_walks_a_chain_of_held_spenders` above, a
+    single-parent chain, never reaches. The guard is a shortcut: the
+    removed set is the same without it, since `dependents` is a set. What
+    it saves is a second `spent_by` lookup for `grandchild`, so that is
+    what is counted: `dropped`, `child_a`, `child_b` and `grandchild`
+    once each.
     """
     mempool = Mempool(Logger(debug=True))
     dropped = Tx(
@@ -965,9 +970,19 @@ def test_remove_dependents_does_not_revisit_a_shared_descendant() -> None:
     assert mempool.add_tx(child_a, 1000)
     assert mempool.add_tx(child_b, 1000)
     assert mempool.add_tx(grandchild, 1000)
+    lookups: list[bytes] = []
+
+    class CountingSpentBy(dict[bytes, set[bytes]]):
+        @override
+        def get(self, key: bytes, default: object = None) -> Any:
+            lookups.append(key)
+            return super().get(key, default)
+
+    mempool.spent_by = CountingSpentBy(mempool.spent_by)
 
     mempool.remove_dependents(dropped)
 
+    assert len(lookups) == 4
     assert not mempool.contains_tx(child_a)
     assert not mempool.contains_tx(child_b)
     assert not mempool.contains_tx(grandchild)

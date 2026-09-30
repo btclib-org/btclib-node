@@ -1623,7 +1623,7 @@ def test_still_final_and_mature_accepts_an_ordinary_mature_spend(node: Node) -> 
 
 
 def test_evict_immature_or_nonfinal_skips_a_wtxid_a_cascade_already_took(
-    node: Node,
+    node: Node, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A descendant a cascading eviction already removed is not rechecked.
 
@@ -1631,9 +1631,11 @@ def test_evict_immature_or_nonfinal_skips_a_wtxid_a_cascade_already_took(
     `test_still_final_and_mature_refuses_a_transaction_past_its_own_
     locktime` above pins directly -- so evicting it takes `child` out
     too, through `Mempool.remove_with_descendants`. The loop's own
-    snapshot still names `child`'s wtxid; the guard above
-    `_still_final_and_mature` is what answers for it once reached,
-    rather than re-deriving an answer for an entry already gone.
+    snapshot still names `child`'s wtxid, and the guard above
+    `_still_final_and_mature` skips it. The guard is a shortcut: a
+    recheck of `child` would find its prevout gone, keep it, and leave the
+    outcome the same. What it saves is that call, so the calls are
+    counted: one, for `parent`.
     """
     chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
     connect(node, chain)
@@ -1645,9 +1647,18 @@ def test_evict_immature_or_nonfinal_skips_a_wtxid_a_cascade_already_took(
     assert node.mempool.add_tx(parent, 1000)
     child = generate_random_transaction(parent.id, value=parent.vout[0].value)
     assert node.mempool.add_tx(child, 1000)
+    checked: list[Tx] = []
+    real = main._still_final_and_mature
+
+    def counting(node: Node, tx: Tx) -> bool:
+        checked.append(tx)
+        return real(node, tx)
+
+    monkeypatch.setattr(main, "_still_final_and_mature", counting)
 
     main._evict_immature_or_nonfinal(node)
 
+    assert checked == [parent]
     assert not node.mempool.contains_tx(parent)
     assert not node.mempool.contains_tx(child)
 
