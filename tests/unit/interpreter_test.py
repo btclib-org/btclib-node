@@ -21,7 +21,7 @@ from btclib.hashes import hash160, sha256
 from btclib.key import PrvKeyData
 from btclib.script import script, sig_hash, taproot
 from btclib.script.engine import verify_input as btclib_verify_input
-from btclib.script.engine import verify_transaction
+from btclib.script.engine import sig_op_cost, verify_transaction
 from btclib.script.engine.flags import ALL_FLAGS, NO_FLAGS, ScriptFlag
 from btclib.script.script_pub_key import ScriptPubKey
 from btclib.script.taproot import output_prvkey
@@ -45,7 +45,6 @@ from btclib_node.interpreter import (
     check_transactions,
     f,
     get_flags,
-    sig_op_cost,
     warm,
 )
 
@@ -771,10 +770,14 @@ def test_sig_op_cost_is_core_s(
     output: bytes,
     cost: int,
 ) -> None:
-    """`sig_op_cost` is Core's `GetTransactionSigOpCost`, term by term."""
+    """btclib's `sig_op_cost` answers Core's `GetTransactionSigOpCost`, term by term.
+
+    What `main._sigop_adjusted_vsize` relies on, under `STANDARD_FLAGS`
+    (btclib-org/btclib-node#1586).
+    """
     tx_in = TxIn(OutPoint(b"\x33" * 32, 0), script_sig, 0xFFFFFFFF, Witness(stack))
     tx = Tx(version=2, lock_time=0, vin=[tx_in], vout=[TxOut(1, output)])
-    assert sig_op_cost(tx, [TxOut(2, prevout)]) == cost
+    assert sig_op_cost([TxOut(2, prevout)], tx, STANDARD_FLAGS) == cost
 
 
 def test_a_script_refusal_is_in_core_s_words_and_names_its_input() -> None:
