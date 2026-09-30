@@ -316,13 +316,17 @@ class Node(threading.Thread):
 
         # A `getcfilters` answer `p2p.callbacks.get_cfilters` could not
         # finish scheduling under its own pacing bound, keyed by
-        # connection id: the connection itself and the heights still
-        # owed. `p2p.callbacks.advance_cfilters` and
-        # `p2p.main.resume_cfilters` are the only two that read or write
-        # this, and both run on this thread -- `run`'s own loop below,
-        # under `handle_p2p` or under `resume_cfilters` directly -- so
-        # nothing here needs a lock. btclib-org/btclib-node#442
-        self.pending_cfilters: dict[int, tuple[Connection, deque[int]]] = {}
+        # connection id: the connection itself and the block hashes
+        # still owed, resolved along the request's own stop block
+        # ancestry (`p2p.callbacks._filter_range`) rather than active
+        # chain heights, so a reorg mid-pause cannot change what this
+        # entry finishes sending (btclib-org/btclib-node#1476).
+        # `p2p.callbacks.advance_cfilters` and `p2p.main.resume_cfilters`
+        # are the only two that read or write this, and both run on this
+        # thread -- `run`'s own loop below, under `handle_p2p` or under
+        # `resume_cfilters` directly -- so nothing here needs a lock.
+        # btclib-org/btclib-node#442
+        self.pending_cfilters: dict[int, tuple[Connection, deque[bytes]]] = {}
 
         # The same shape as `pending_cfilters` above, for a `getdata`
         # `p2p.callbacks.getdata` could not finish serving: the

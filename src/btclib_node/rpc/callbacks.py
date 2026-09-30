@@ -14,6 +14,7 @@ call every entry, `stop` included, unless `-rpcwhitelistdefault` holds.
 """
 
 import math
+import string
 import time
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
@@ -2567,6 +2568,17 @@ def _exceeds_max_burn(tx: Tx, max_burn_amount: int) -> bool:
     )
 
 
+_HEX_DIGITS = frozenset(string.hexdigits)
+
+
+def _is_hex(s: str) -> bool:
+    """Core's `IsHex` (`src/util/strencodings.cpp`).
+
+    Requires non-empty, even-length hexadecimal string.
+    """
+    return bool(s) and len(s) % 2 == 0 and all(c in _HEX_DIGITS for c in s)
+
+
 def test_mempool_accept(
     node: Node, conn: RpcConnection, params: list[Any]
 ) -> list[dict[str, Any]]:
@@ -2620,6 +2632,15 @@ def test_mempool_accept(
                 "type string"
             )
             raise RpcError(RPCErrorCode.TYPE_ERROR, message)
+        if not _is_hex(rawtx):
+            # Core's `DecodeHexTx` (`src/core_io.cpp`, same tag) first
+            # requires `IsHex` (`src/util/strencodings.cpp`), which refuses
+            # whitespace and non-hex characters: bytes.fromhex accepts
+            # them, where Core answers `-22`. btclib-org/btclib-node#1372
+            err_msg = (
+                f"TX decode failed: {rawtx} Make sure the tx has at least one input."
+            )
+            raise RpcError(RPCErrorCode.DESERIALIZATION_ERROR, err_msg)
         try:
             txs.append(Tx.parse(rawtx))
         except BTClibException as error:
@@ -2769,6 +2790,15 @@ def _decode_and_precheck_raw_tx(node: Node, params: list[Any]) -> tuple[Tx, int]
     max_burn_amount = _amount_param(
         params, 2, name="maxburnamount", default=_DEFAULT_MAX_BURN_AMOUNT
     )
+    if not _is_hex(rawtx):
+        # Core's `DecodeHexTx` (`src/core_io.cpp`, same tag) first
+        # requires `IsHex` (`src/util/strencodings.cpp`), which refuses
+        # whitespace and non-hex characters: bytes.fromhex accepts
+        # them, where Core answers `-22`. btclib-org/btclib-node#1372
+        raise RpcError(
+            RPCErrorCode.DESERIALIZATION_ERROR,
+            "TX decode failed. Make sure the tx has at least one input.",
+        )
     try:
         tx = Tx.parse(rawtx)
     except BTClibException as error:
