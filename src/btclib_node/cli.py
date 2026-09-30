@@ -232,8 +232,8 @@ _CHAIN_ALIASES = {
     "testnet4": "testnet4",
 }
 
-# `LOG_CATEGORIES_BY_STR` (`src/logging.cpp`, at
-# bitcoin/bitcoin@9be056a8a7), `lock` left out as a release build leaves
+# `LOG_CATEGORIES_BY_STR` (`src/logging.cpp`,
+# at bitcoin/bitcoin@9be056a8a7), `lock` left out as a release build leaves
 # it out, it being compiled in only under `DEBUG_LOCKCONTENTION`.
 _LOG_CATEGORIES = frozenset(
     {
@@ -1534,8 +1534,8 @@ def _read_settings(argv: Sequence[str]) -> tuple[_Settings, Path, str]:
     # `-datadir` and `-conf` are read by `get_path_arg`, lexically normal
     # before the file system is asked anything: `missing/..` and
     # `symlink/..` are the directory they are written in. `-datadir` is
-    # made absolute as `GetDataDir` makes it (`src/common/args.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7). A value that is `.` once normal is
+    # made absolute as `GetDataDir` makes it (`src/common/args.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7). A value that is `.` once normal is
     # where a path a refusal names still differed from Core's: Core joins
     # the `.` on (`fs::absolute`, `AbsPathForConfigVal`, both a literal
     # `operator/` with no lexical pass of their own) and `pathlib.Path`
@@ -1901,8 +1901,8 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
     return _after_lock(_before_lock(sys.argv[1:] if argv is None else argv))
 
 
-# Core's `SetupEnvironment` (`src/common/system.cpp`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which `bitcoind`'s own
+# Core's `SetupEnvironment` (`src/common/system.cpp`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which `bitcoind`'s own
 # `main` calls right after building its `interfaces::Init`
 # (`src/bitcoind.cpp`, same sha): the process umask becomes 0077
 # everywhere but Windows, so every directory and file it creates is its

@@ -22,7 +22,6 @@ import pytest
 from bitcoin_core_rpc import RPCErrorCode
 from btclib.block import Block, BlockHeader
 from btclib.consensus import MAX_BLOCK_WEIGHT
-from btclib.descriptors import add_checksum, from_address
 from btclib.fee import FeeRate
 from btclib.key import PrvKeyData
 from btclib.p2p.address import NetworkAddress, ServiceFlags
@@ -35,6 +34,7 @@ from btclib.tx.out_point import OutPoint
 from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
+from btclib_wallet.descriptors import add_checksum, from_address
 
 import btclib_node.p2p.banman as banman_module
 import btclib_node.rpc.callbacks as cb
@@ -236,6 +236,7 @@ def a_peer(
         tx_announce_queue=[],
         download_queue=[],
         feefilter=0,
+        requested_hb_cmpctblocks=False,
         # what `Connection` starts every connection at
         addr_relay_enabled=False,
     )
@@ -698,14 +699,28 @@ def test_the_synced_heights_are_the_peer_s_best_known_and_last_common_blocks(
 
 
 def test_the_fields_this_node_has_no_state_for_answer_core_s_value() -> None:
-    """No `cmpctblock` announcing, presync, permissions or BIP324 here."""
+    """No high-bandwidth peer chosen, presync, permissions or BIP324 here."""
     (info,) = get_peer_info(a_node({7: a_peer()}), _CONN, [])
     assert info["bip152_hb_to"] is False
-    assert info["bip152_hb_from"] is False
     assert info["presynced_headers"] == -1
     assert info["permissions"] == []
     assert info["transport_protocol_type"] == "v1"
     assert info["session_id"] == ""
+
+
+@pytest.mark.parametrize("requested", [True, False])
+def test_bip152_hb_from_is_what_the_peer_s_sendcmpct_asked(
+    requested: bool,  # noqa: FBT001
+) -> None:
+    """Whether the peer chose this node as a high-bandwidth peer.
+
+    Core's `m_bip152_highbandwidth_from`, which its `sendcmpct` sets
+    (btclib-org/btclib-node#1223).
+    """
+    peer = a_peer()
+    peer.requested_hb_cmpctblocks = requested
+    (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
+    assert info["bip152_hb_from"] is requested
 
 
 def test_a_peer_that_goes_away_mid_lookup_is_skipped() -> None:
@@ -2501,6 +2516,36 @@ def test_verbose_false_answers_the_serialized_header_hex_not_the_object() -> Non
     )
     answer = get_block_header(node, _CONN, [chain[1].hash.hex(), False])
     assert answer == chain[1].serialize().hex()
+
+
+@pytest.mark.parametrize("version", [0, -1])
+def test_verbose_false_answers_a_version_zero_or_negative_header(version: int) -> None:
+    """ISS 1262: `getblockheader false` answers such a header too.
+
+    Core takes a version of zero or below below BIP34's height; this
+    node's own index only ever stores one past `add_headers`'s
+    height-gated `bad-version` check, so `header.serialize()` here never
+    has cause to refuse one, and needs no bypass for it -- btclib's own
+    `BlockHeader.assert_valid` doesn't either, since btclib 2026.9.29
+    (btclib-org/btclib@bbb1ad71, closing btclib-org/btclib#2309;
+    btclib-org/btclib-node#1511).
+    """
+    header = BlockHeader(
+        version=version,
+        previous_block_hash=RegTest().genesis.hash,
+        merkle_root=b"\x07" * 32,
+        time=RegTest().genesis.time,
+        bits=RegTest().genesis.bits,
+        nonce=0,
+    )
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chainstate=SimpleNamespace(block_index=a_block_index([header]))
+        ),
+    )
+    answer = get_block_header(node, _CONN, [header.hash.hex(), False])
+    assert answer == header.serialize().hex()
 
 
 def test_verbose_true_and_the_default_answer_the_same_object() -> None:
@@ -4564,6 +4609,22 @@ def test_submit_block_accepts_a_new_block_extending_the_tip(
     assert stored.serialize(check_validity=False) == new_block.serialize(
         check_validity=False
     )
+
+
+def test_submit_block_offers_the_block_to_new_pow_valid_block(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1315: `submitblock` reaches Core's `NewPoWValidBlock`, once."""
+    offered: list[bytes] = []
+    monkeypatch.setattr(
+        cb, "new_pow_valid_block", lambda _, block: offered.append(block.header.hash)
+    )
+    node = regtest_node()
+    chain = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, chain[:1])
+    submit_block(node, _CONN, [chain[1].serialize(check_validity=False).hex()])
+    submit_block(node, _CONN, [chain[1].serialize(check_validity=False).hex()])
+    assert offered == [chain[1].header.hash]
 
 
 def test_submit_block_stores_valid_a_block_off_a_known_non_tip_ancestor(

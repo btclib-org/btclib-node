@@ -133,18 +133,18 @@ class Chain:
     # 8334/18334/38334/18445), a port this node does not listen on at
     # all.
     rpc_port: int
-    # Core's `vSeeds` (`src/kernel/chainparams.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag), the DNS seeds, in
+    # Core's `vSeeds` (`src/kernel/chainparams.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), the DNS seeds, in
     # Core's order and with its trailing dot, which makes each name
     # fully qualified for the resolver
     addresses: list[str]
-    # Core's `vFixedSeeds` (`src/kernel/chainparams.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): BIP155 serialized
+    # Core's `vFixedSeeds` (`src/kernel/chainparams.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): BIP155 serialized
     # endpoints, `p2p.address.fixed_seed_addresses`'s to decode.
     fixed_seeds: bytes
     genesis_block: Block
-    # Core's `nPruneAfterHeight` (`src/kernel/chainparams.cpp`, at
-    # bitcoin/bitcoin@ca7162cde5): `rpc.callbacks.prune_blockchain`'s own
+    # Core's `nPruneAfterHeight` (`src/kernel/chainparams.cpp`,
+    # at bitcoin/bitcoin@ca7162cde5): `rpc.callbacks.prune_blockchain`'s own
     # "Blockchain is too short for pruning." floor, below which Core
     # refuses `pruneblockchain` outright rather than merely clamping it.
     # Each leaf's own `__init__` below cites the line its value comes
