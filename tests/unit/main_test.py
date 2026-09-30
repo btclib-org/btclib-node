@@ -2237,12 +2237,13 @@ def test_a_stop_mid_reorg_rolls_the_trial_back_without_invalidating_it(
         index: int,
         node: Node,
         block_hash: bytes,
+        coinbase: Tx,
     ) -> None:
         nonlocal calls
         calls += 1
         if calls == 2:
             node.terminate_flag.set()
-        return check_transactions(transaction_data, index, node, block_hash)
+        return check_transactions(transaction_data, index, node, block_hash, coinbase)
 
     monkeypatch.setattr(main, "check_transactions", stop_after_the_second_block)
 

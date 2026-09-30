@@ -18,8 +18,10 @@ pay for.
 
 from typing import TYPE_CHECKING
 
+from btclib.block.limits import MAX_BLOCK_SIGOPS_COST
 from btclib.consensus import WITNESS_SCALE_FACTOR
 from btclib.exceptions import BTClibException, BTClibValueError
+from btclib.script import engine
 from btclib.script.engine import verify_amounts, verify_input, verify_transaction
 from btclib.script.engine.flags import ALL_FLAGS, ScriptFlag
 from btclib.script.limits import MAX_PUBKEYS_PER_MULTISIG
@@ -186,6 +188,7 @@ def check_transactions(
     index: int,
     node: Node,
     block_hash: bytes,
+    coinbase: Tx,
 ) -> None:
     """Verify a candidate block's own transactions, fanned out across the pool.
 
@@ -193,7 +196,8 @@ def check_transactions(
     `main.update_chain`'s own caller is what rolls the chainstate back
     and leaves the block off the active chain once this does. Amounts
     are checked here, per transaction and outside the pool, since
-    script validation alone never reads them. `transaction_data` carries
+    script validation alone never reads them, and so is the block's
+    sigop cost, `coinbase` included, which is refused `bad-blk-sigops`. `transaction_data` carries
     each prevout as a `Coin` -- what `main._validate_block`'s own
     `btclib.tx.tx_context.assert_coinbase_maturity` call needs of it --
     and every btclib call here wants a bare `TxOut`, so each is unwrapped
@@ -219,8 +223,20 @@ def check_transactions(
     # sig_hash, so a block's transactions have to be checked against
     # their prevouts separately or a block may print money. Per
     # transaction, and cheap, so it stays out of the worker pool.
+    #
+    # Core's ConnectBlock checks each transaction's amounts, then adds
+    # its sigop cost to the block's running total and refuses the block
+    # once that passes MAX_BLOCK_SIGOPS_COST, the coinbase counted
+    # first; the scripts come after (src/validation.cpp,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    cost = engine.sig_op_cost([], coinbase, flags)
     for prevouts, tx in transaction_data:
-        verify_amounts([coin.tx_out for coin in prevouts], tx)
+        tx_outs = [coin.tx_out for coin in prevouts]
+        verify_amounts(tx_outs, tx)
+        cost += engine.sig_op_cost(tx_outs, tx, flags)
+        if cost > MAX_BLOCK_SIGOPS_COST:
+            err_msg = "bad-blk-sigops"
+            raise BTClibValueError(err_msg)
 
     # Raising is the point: an input that does not verify has to reach
     # main.update_chain, which rolls the chainstate back and leaves the
