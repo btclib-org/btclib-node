@@ -14,6 +14,7 @@ import threading
 import time
 from itertools import pairwise
 from types import SimpleNamespace
+from typing import override
 
 import pytest
 from btclib.block import (
@@ -28,6 +29,7 @@ from btclib.tx.limits import COINBASE_MATURITY
 from btclib_node.chains import RegTest
 from tests import (
     TEST_PORTS,
+    ListenerEndedError,
     PortPool,
     WaitTimeoutError,
     brute_force_nonce,
@@ -151,6 +153,120 @@ def test_a_manager_that_never_binds_is_given_up_on() -> None:
     never = SimpleNamespace(listening=threading.Event(), port=18444)
     with pytest.raises(WaitTimeoutError, match=r"18444.* within 0\.2 seconds"):
         wait_until_listening(never, timeout=0.2)
+
+
+class _AManagerThatGivesUp(threading.Thread):
+    """A manager stand-in whose thread ends at once, never listening."""
+
+    def __init__(self, bind_error: str | None) -> None:
+        super().__init__()
+        self.listening = threading.Event()
+        self.port: int | None = 18444
+        self.bind_error = bind_error
+
+    @override
+    def run(self) -> None:
+        return
+
+
+@pytest.mark.parametrize("bind_error", [None, "port taken"])
+def test_a_manager_whose_thread_ended_is_not_waited_for(
+    bind_error: str | None,
+) -> None:
+    """ISS 1361: `wait_until_listening` raises at once, with its reason."""
+    manager = _AManagerThatGivesUp(bind_error)
+    manager.start()
+    manager.join()
+    reason = "see its log" if bind_error is None else bind_error
+    start = time.monotonic()
+    with pytest.raises(ListenerEndedError, match=f"18444 ended .*{reason}"):
+        wait_until_listening(manager, timeout=10)
+    assert time.monotonic() - start < 10
+
+
+def test_a_manager_not_yet_started_is_waited_for() -> None:
+    """ISS 1361: a thread not started yet has not ended, so the wait runs."""
+    manager = _AManagerThatGivesUp(None)
+    with pytest.raises(WaitTimeoutError, match=r"within 0\.2 seconds"):
+        wait_until_listening(manager, timeout=0.2)
+
+
+class _AManagerHeldBeforeItStarts(_AManagerThatGivesUp):
+    """A stand-in held where the new thread has set `ident`, not started.
+
+    CPython's `Thread._bootstrap_inner` calls `_set_os_name` between
+    `_set_ident` and `_started.set`: holding it there opens the window a
+    busy machine opens for an instant.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(None)
+        self.held = threading.Event()
+        self.release = threading.Event()
+
+    def _set_os_name(self) -> None:
+        self.held.set()
+        self.release.wait()
+
+
+def test_a_manager_whose_thread_has_not_run_yet_is_waited_for() -> None:
+    """ISS 1361: a thread with an `ident`, not yet alive, has not ended."""
+    manager = _AManagerHeldBeforeItStarts()
+    # a node starts its managers from its own thread
+    starter = threading.Thread(target=manager.start)
+    starter.start()
+    try:
+        assert manager.held.wait(timeout=10)
+        assert manager.ident is not None
+        assert not manager.is_alive()
+        with pytest.raises(WaitTimeoutError, match=r"within 0\.2 seconds"):
+            wait_until_listening(manager, timeout=0.2)
+    finally:
+        manager.release.set()
+        starter.join()
+        manager.join()
+
+
+class _AManagerThatWasStoppedCleanly(threading.Thread):
+    """A manager stand-in that listened, then was stopped, like a real one.
+
+    `RpcManager.stop`/`P2pManager.stop` clear `listening` only once the
+    thread has already ended, so a manager that came up and was then
+    stopped ends its thread with `listening` unset too -- the same state
+    `_AManagerThatGivesUp` reaches by never listening at all. Setting
+    `ever_listened` beside `listening` and never clearing it, exactly as
+    the real managers do, is what tells the two apart.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.listening = threading.Event()
+        self.ever_listened = threading.Event()
+        self.port: int | None = 18444
+
+    @override
+    def run(self) -> None:
+        self.listening.set()
+        self.ever_listened.set()
+        self.listening.clear()
+
+
+def test_a_manager_that_listened_and_was_stopped_is_not_misdiagnosed() -> None:
+    """ISS 1361: a manager that came up and stopped is not `ListenerEndedError`.
+
+    Without `ever_listened`, this reaches the exact state
+    `test_a_manager_whose_thread_ended_is_not_waited_for` raises on --
+    thread ended, `listening` unset -- and would be misdiagnosed as a
+    bind that never came up, when it is a manager that worked and was
+    then stopped.
+    """
+    manager = _AManagerThatWasStoppedCleanly()
+    manager.start()
+    manager.join()
+    start = time.monotonic()
+    with pytest.raises(WaitTimeoutError, match=r"within 0\.2 seconds"):
+        wait_until_listening(manager, timeout=0.2)
+    assert time.monotonic() - start >= 0.2
 
 
 def test_a_bounded_call_hands_back_what_it_returned() -> None:

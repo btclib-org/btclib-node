@@ -990,6 +990,118 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   non-continuous batch cost the sender, as does one already invalid from an
   outbound peer; other exceptions keep the peer** (closes #1233).
 
+### A conflicting or unknown `-chain` is refused in `bitcoind`'s own words
+
+- **`-testnet4` is named among the selectors, and the refusal ends in a full
+  stop, as `bitcoind` writes it** (closes #1311).
+
+### A `-datadir` or `-conf` value that normalises to `.` keeps it in a refusal
+
+- **The `.` is joined onto a refusal's path as `AbsPathForConfigVal` joins
+  it, not dropped as `pathlib.Path` drops it** (closes #1273).
+
+### A `NETWORK_ONLY` option set only in the default section refuses to start
+
+- **Off `main`, as `bitcoind` refuses it, rather than being silently
+  dropped** (closes #1327).
+
+### A listener that cannot bind is reported as one, not as a slow one
+
+- **`wait_until_listening` raises `ListenerEndedError` as soon as a manager's
+  thread ends without listening, naming its `bind_error` where it has one**,
+  where it waited out its timeout and reported one (closes #1361).
+
+### `version` signals `NODE_COMPACT_FILTERS` only under `-peerblockfilters`
+
+- **Off by default, as in Core; a `getcfilters`, `getcfheaders` or
+  `getcfcheckpt` this node never advertised is refused the same silent way
+  as a filter type BIP157 has no name for** (closes #1395).
+
+### `getnetworkinfo` answers `localservices` and `localservicesnames`
+
+- **The same services `version` sends, one function answering both**
+  (closes #1394).
+
+### `-discover` decides whether this node records its own addresses
+
+- **Independently of `-listen`, defaulting to it and overridable either
+  way, as Core's `Discover` runs off whether it would bind every interface
+  rather than off `-listen`** (closes #1330).
+
+### DNS seeding waits, batches by three, and reads `-forcednsseed`
+
+- **A wait, then three seeds at a time, ends early at two full-relay
+  peers** (closes #1265); **`-forcednsseed` asks every seed at once**,
+  refused with `-dnsseed` off, both as in `bitcoind`.
+
+### `-seednode` gets thirty seconds before the DNS seeds are asked
+
+- **DNS seeding waits for two full-relay peers or thirty seconds,
+  whichever is first, wherever `-seednode` is given** (closes #1461),
+  as Core's `ThreadDNSAddressSeed` does.
+
+### `fuzz/` is under mypy, atheris excepted
+
+- **`[tool.mypy]`'s `files` carries `fuzz`, and an override reads `atheris`
+  alone as untyped**: the harness itself now gets the same check as
+  `src/btclib_node`, and its own two errors are fixed (closes #1259).
+
+### `scripts/` drops two stale hand-run templates
+
+- **`test_errors.py` is deleted, and `prune.py` now calls
+  `main.prune_up_to_height` through a `Node` it builds, not the stale
+  `BlockDB`/`Chainstate` pair its docstring named** (closes #1260).
+
+### `scripts/seeds/README.md`'s pins are re-checked against their own tag
+
+- **Each fixed-seed list carries a `ref` field, and `check_vendored_pin.py`
+  reads a `ref`-pinned entry against that tag's own tree, skipping the
+  "newest commit" check a tag cannot fail** (closes #1227).
+
+### `interpreter_test.py` builds signatures through `btclib_ecc`, not `btclib.ecc`
+
+- **`dsa`/`ssa` come from `btclib_ecc.ecc`, ahead of btclib dropping the
+  re-export (btclib-org/btclib#2404); `test` gains `btclib-ecc` and a
+  raised `btclib-secp256k1` floor for its bindings import** (closes #1431).
+
+### `gettxoutsetinfo` defaults to `muhash`, not Core's `hash_serialized_3`
+
+- **A bare `gettxoutsetinfo` answers `muhash`**, the one hash type this
+  tree keeps running, rather than refusing outright on Core's own
+  default (closes #1387).
+
+### `gettxout` answers an outpoint's own unspent coin, or null
+
+- **`gettxout` reads the confirmed UTXO set, `include_mempool`'s mempool
+  overlay included, and answers Core's own shape** (closes #1388).
+
+### `getchaintips` answers every known tip, each with its status
+
+- **`getchaintips` answers every header this node has seen with no child
+  building on it, plus the active tip, each with its height, branch
+  length and Core's own status vocabulary** (closes #1393).
+
+### `getblock` answers its own default verbosity, and verbosity 2
+
+- **`getblock` answers verbosity 1 and 2 in Core's own shape**, refusing
+  only verbosity 3, which needs this node's own undo data threaded
+  through and is left to issue #1446 (closes #1428).
+
+### RPC hash arguments refuse the wrong length, Core's own `ParseHashV` check
+
+- **A hex `txid` or `blockhash` of the wrong length is refused**, rather
+  than silently decoding to a hash nothing then finds (closes #1457).
+
+### `testmempoolaccept` and `sendrawtransaction` follow Core's `rpc/mempool.cpp`
+
+- **Both apply `maxfeerate` and `maxburnamount`** (closes #1371).
+- **A confirmed resubmission answers `-27`, not `-25`** (closes #1373).
+
+### `getmempoolinfo` and `getmempoolentry` answer as Core's do
+
+- **`getmempoolinfo` answers `unbroadcastcount`** (closes #1421).
+- **`getmempoolentry` is served** (closes #1397).
+
 ### A signet block needs a real BIP325 solution
 
 - **A signet block without a valid solution for the chain's own

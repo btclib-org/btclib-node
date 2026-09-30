@@ -636,7 +636,14 @@ def a_handshake_node(
             ban_man=a_ban_man(*banned),
         ),
         chainstate=SimpleNamespace(
-            block_index=SimpleNamespace(get_block_locator_hashes=lambda: [b"\x00" * 32])
+            block_index=SimpleNamespace(
+                get_block_locator_hashes=lambda: [b"\x00" * 32],
+                # a one-block chain, tip height 0: `tx`'s own `add_tx`
+                # call reads `len(active_chain) - 1` for `Mempool.add_tx`'s
+                # own `height`, and no test here asserts on the value it
+                # stores. btclib-org/btclib-node#1397
+                active_chain=[b"\x00" * 32],
+            )
         ),
         logger=SimpleNamespace(
             info=lambda *a: None, warning=lambda *a: None, debug=lambda *a: None
@@ -3184,6 +3191,29 @@ def test_a_transaction_this_node_holds_is_served() -> None:
         assert answer.include_witness is with_witness
 
 
+def test_serving_a_getdata_for_a_transaction_clears_it_unbroadcast() -> None:
+    """A peer's `getdata` is the acknowledgment `unbroadcastcount` waits for.
+
+    `Mempool.mark_broadcast`, Core's own `RemoveUnbroadcastTx` call site
+    in `net_processing.cpp` -- by txid, the way `AddUnbroadcastTx` marked
+    it, not by whichever identifier this particular peer asked by.
+    btclib-org/btclib-node#1421
+    """
+    transaction = a_transaction()
+    mempool = Mempool(Logger(debug=True))
+    mempool.add_tx(transaction)
+    mempool.mark_broadcast_locally(transaction.id)
+    assert mempool.unbroadcast == {transaction.id}
+    node = a_data_node(mempool=mempool)
+    peer = a_peer()
+    getdata(
+        node,
+        GetData([Inventory(InventoryType.MSG_WTX, transaction.hash)]).serialize(),
+        peer,
+    )
+    assert mempool.unbroadcast == set()
+
+
 def test_a_transaction_is_not_found_under_the_other_identifier() -> None:
     """A `getdata` naming the wrong identifier for a held tx gets `notfound`.
 
@@ -4546,6 +4576,11 @@ def a_filters_node(
             ),
             filter_index=filter_index,
         ),
+        # on by default here: `-peerblockfilters` off is what
+        # `test_a_getcfilters_is_refused_without_peerblockfilters` and
+        # its `get_cfheaders`/`get_cfcheckpt` siblings turn off on
+        # purpose (ISS 1395's own "Background").
+        config=SimpleNamespace(peerblockfilters=True),
         logger=SimpleNamespace(
             info=lambda *a: None, warning=lambda *a: None, debug=lambda *a: None
         ),
@@ -4746,6 +4781,38 @@ def test_a_filter_type_this_node_does_not_serve_is_not_answered() -> None:
     node = a_filters_node()
     peer = a_peer()
     a_getcfilters(node, peer, 0, 1, filter_type=cast("BlockFilterType", 1))
+    assert not peer.sent
+
+
+def test_peerblockfilters_off_answers_none_of_the_three() -> None:
+    """ISS 1395: `-peerblockfilters` off answers none of the three requests.
+
+    Core's `PrepareBlockFilterRequest` folds `peer.m_our_services &
+    NODE_COMPACT_FILTERS` into the same `supported_filter_type` check as
+    the filter type itself (`_filter_range`'s own docstring), so a type
+    this node never advertised is refused the same silent way as one
+    BIP157 has no name for.
+    """
+    node = a_filters_node()
+    node.config.peerblockfilters = False
+    peer = a_peer()
+    a_getcfilters(node, peer, 0, 1)
+    assert not peer.sent
+
+    peer = a_peer()
+    get_cfheaders(
+        node,
+        GetCFHeaders(BlockFilterType.BASIC, 0, (1).to_bytes(32, "big")).serialize(),
+        peer,
+    )
+    assert not peer.sent
+
+    peer = a_peer()
+    get_cfcheckpt(
+        node,
+        GetCFCheckpt(BlockFilterType.BASIC, (1).to_bytes(32, "big")).serialize(),
+        peer,
+    )
     assert not peer.sent
 
 

@@ -159,7 +159,7 @@ import tempfile
 from itertools import count
 from pathlib import Path
 from socket import socket
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 from btclib.exceptions import BTClibException, BTClibValueError
 from btclib.p2p.address import NetworkAddress, ServiceFlags
@@ -237,6 +237,7 @@ class _CrashCapture(logging.Handler):
         self.escaped: list[BaseException] = []
         self.refused: list[BTClibException] = []
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         """Sort `record.exc_info`'s own exception onto `refused`/`escaped`."""
         exc = record.exc_info[1] if record.exc_info else None
@@ -320,7 +321,7 @@ def _connection_for(node: Node, command: str) -> Connection:
         next(_connection_ids),
         inbound=False,
     )
-    conn.send = lambda _msg: None  # type: ignore[method-assign]
+    conn.send = lambda msg: None  # type: ignore[method-assign]  # noqa: ARG005
     if command in handshake_callbacks:
         manager.pending_connections[conn.id] = conn
     else:

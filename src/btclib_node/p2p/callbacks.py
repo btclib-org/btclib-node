@@ -1018,7 +1018,8 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
     # declined to keep is not one to tell every other peer about, a peer
     # that then asks for it getting `notfound` for its trouble.
     # btclib-org/btclib-node#277
-    if node.mempool.add_tx(tx, fee, vsize):
+    tip_height = len(node.chainstate.block_index.active_chain) - 1
+    if node.mempool.add_tx(tx, fee, vsize, height=tip_height):
         # novel and accepted into the mempool: what Core's own
         # `m_last_tx_time` records for eviction (`net_processing.cpp`'s
         # `ProcessMessage`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
@@ -1501,6 +1502,15 @@ def _serve_getdata_item(
                 InventoryType.MSG_WTX,
             )
             conn.send(TxMsg(tx, include_witness=include_witness))
+            # Core's own `m_mempool.RemoveUnbroadcastTx(tx->GetHash())`
+            # (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7,
+            # the v31.1 tag): this peer's own `getdata` is the
+            # acknowledgment `getmempoolinfo`'s own `unbroadcastcount`
+            # waits for. `tx->GetHash()` is a txid, matching what
+            # `mark_broadcast` reads `tx.id` by, not `item.hash`, which
+            # is a wtxid for a `MSG_WTX` request.
+            # btclib-org/btclib-node#1421
+            node.mempool.mark_broadcast(tx.id)
         else:
             not_found.append(item)
             not_found_bytes += _NOTFOUND_ITEM_BYTES
@@ -2001,8 +2011,16 @@ def _filter_range(
     disconnects instead. Silence is a choice there rather than the
     letter of the specification, and it is the same answer as the other
     two because there is no message defined for saying why.
+
+    `not node.config.peerblockfilters` joins the first count rather than
+    opening a fourth: Core's own `PrepareBlockFilterRequest`
+    (`net_processing.cpp:3265-3273`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag) folds `filter_type == BASIC` and `peer.m_our_services &
+    NODE_COMPACT_FILTERS` into one `supported_filter_type`, and answers
+    a peer that asked for a type this node never advertised the same way
+    it answers one that asked for a type BIP157 has no other name for.
     """
-    if filter_type != BlockFilterType.BASIC:
+    if filter_type != BlockFilterType.BASIC or not node.config.peerblockfilters:
         return None
     stop_height = _height_on_the_active_chain(node, stop_hash)
     if stop_height is None:
@@ -2224,13 +2242,15 @@ def get_cfheaders(node: Node, msg: bytes, conn: Connection) -> None:
 def get_cfcheckpt(node: Node, msg: bytes, conn: Connection) -> None:
     """Answer a BIP157 `getcfcheckpt` with one filter header per checkpoint.
 
-    Silent for an unsupported filter type or an unknown stop hash.
+    Silent for an unsupported filter type, a type not advertised under
+    `-peerblockfilters` (`_filter_range`'s own docstring), or an unknown
+    stop hash.
     """
     request = GetCFCheckpt.parse(msg)
     # not _filter_range: this request carries no start height, a
     # checkpoint chain always beginning at the genesis block, so the two
     # refusals it shares are asked for directly and there is no third
-    if request.filter_type != BlockFilterType.BASIC:
+    if request.filter_type != BlockFilterType.BASIC or not node.config.peerblockfilters:
         return
     stop_height = _height_on_the_active_chain(node, request.stop_hash)
     if stop_height is None:
