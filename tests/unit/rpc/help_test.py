@@ -41,6 +41,7 @@ _EXPECTED_BARE_LISTING = (
     "pruneblockchain height\n"
     "\n"
     "== Control ==\n"
+    "getrpcinfo\n"
     'help ( "command" )\n'
     "stop\n"
     "\n"
@@ -139,14 +140,40 @@ _ADDNODE_HELP = (
 )
 
 
-def test_disconnectnode_and_addnode_help_match_a_real_bitcoind() -> None:
+_GETRPCINFO_HELP = (
+    "getrpcinfo\n"
+    "\n"
+    "Returns details of the RPC server.\n"
+    "\n"
+    "Result:\n"
+    "{                          (json object)\n"
+    '  "active_commands" : [    (json array) All active commands\n'
+    "    {                      (json object) Information about an active command\n"
+    '      "method" : "str",    (string) The name of the RPC command\n'
+    '      "duration" : n       (numeric) The running time in microseconds\n'
+    "    },\n"
+    "    ...\n"
+    "  ],\n"
+    '  "logpath" : "str"        (string) The complete file path to the debug log\n'
+    "}\n"
+    "\n"
+    "Examples:\n"
+    "> bitcoin-cli getrpcinfo \n"
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest",'
+    ' "method": "getrpcinfo", "params": []}\' -H \'content-type: application/json\''
+    " http://127.0.0.1:8332/\n"
+)
+
+
+def test_disconnectnode_addnode_and_getrpcinfo_help_match_a_real_bitcoind() -> None:
     """`HELP_TEXT`'s own content, not merely its agreement with itself.
 
-    Read back from a regtest bitcoind v31.1.0's own `help disconnectnode`
-    and `help addnode`, byte for byte.
+    Read back from a regtest bitcoind v31.1.0's own `help disconnectnode`,
+    `help addnode` and `help getrpcinfo`, byte for byte (ISS 1486).
     """
     assert HELP_TEXT["disconnectnode"] == _DISCONNECTNODE_HELP
     assert HELP_TEXT["addnode"] == _ADDNODE_HELP
+    assert HELP_TEXT["getrpcinfo"] == _GETRPCINFO_HELP
 
 
 def test_every_method_has_help_text() -> None:

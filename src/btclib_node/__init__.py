@@ -303,6 +303,12 @@ class Node(threading.Thread):
 
         self.terminate_flag = threading.Event()
         log_path = self.data_dir / config.log_path if config.log_path else None
+        # `rpc.callbacks.get_rpc_info`'s own `logpath`: Core's
+        # `LogInstance().m_file_path.utf8string()` (`src/rpc/server.cpp`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), `""` where there
+        # is none, as that call's own `.utf8string()` answers for an
+        # unset `fs::path` too
+        self.log_path = log_path
         # `open_history_log` writes what Core logs ahead of anything this
         # node logs: the settings' own warnings, its version line, the
         # section warning, then `LogArgs`'s lines, in that order
@@ -382,6 +388,17 @@ class Node(threading.Thread):
         else:
             self.rpc_port = None
         self.rpc_manager = RpcManager(self, self.rpc_port)
+        # `rpc.callbacks.get_rpc_info`'s own `active_commands`: the
+        # method and `time.monotonic()` start of every RPC call
+        # `rpc.main._execute` is currently running, in call order.
+        # Core's `RPCServerInfo.active_commands`/`RPCCommandExecution`
+        # (`src/rpc/server.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        # tag) guards the same list with a mutex because Core dispatches
+        # RPC calls from a worker pool; `_execute` runs only on this
+        # thread -- `handle_rpc`'s the same as every store and manager
+        # this node owns -- so nothing here needs a lock, the same
+        # reasoning `pending_cfilters` above is under.
+        self.active_rpc_commands: list[tuple[str, float]] = []
         # whether `load` has opened the stores `run`'s teardown closes
         self.loaded = False
         # the closes of what `load` opens, in order, which
