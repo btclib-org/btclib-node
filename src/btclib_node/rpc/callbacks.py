@@ -74,6 +74,7 @@ if TYPE_CHECKING:
     from btclib_node.rpc.connection import RpcConnection
 
 __all__ = [
+    "add_connection",
     "add_node",
     "arg_names",
     "callbacks",
@@ -104,6 +105,7 @@ __all__ = [
     "send_raw_transaction",
     "service_names",
     "set_ban",
+    "set_network_active",
     "stop",
     "stop_wait_param",
     "submit_block",
@@ -1322,6 +1324,25 @@ def get_connection_count(node: Node, conn: RpcConnection, _: list[Any]) -> int:
     return len(manager.connections) + len(manager.pending_connections)
 
 
+def set_network_active(node: Node, conn: RpcConnection, params: list[Any]) -> bool:
+    """Answer `setnetworkactive`: disable or enable all p2p activity.
+
+    Core's own (`src/rpc/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag): one required boolean, `state`, read by
+    `P2pManager.set_network_active` -- its own docstring argues the
+    effect, Core's `CConnman::SetNetworkActive` -- and answered straight
+    back, Core's own `connman.GetNetworkActive()` read right after the
+    call that set it.
+    """
+    if not params:
+        raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["setnetworkactive"])
+    state = params[0]
+    if not isinstance(state, bool):
+        raise type_error(1, "state", state, "bool")
+    node.p2p_manager.set_network_active(active=state)
+    return state
+
+
 def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str, Any]:
     """Answer `getnetworkinfo` with `connect_nodes`'s fields, plus `warnings`.
 
@@ -1561,6 +1582,106 @@ def disconnect_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
             "Node not found in connected nodes",
         )
     manager.remove_connection(found[0])
+
+
+# Core's own four names (`rpc/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
+# the v31.1 tag) -- `manual` is v31.1's own fifth `addconnection`
+# connection type, past this pinned release (issue #1465's own
+# citation), so it is not one of these.
+_ADDCONNECTION_TYPES = (
+    "outbound-full-relay",
+    "block-relay-only",
+    "addr-fetch",
+    "feeler",
+)
+
+
+def add_connection(
+    node: Node, conn: RpcConnection, params: list[Any]
+) -> dict[str, Any]:
+    """Answer `addconnection`: dial one peer of a chosen type, regtest only.
+
+    Core's own (`src/rpc/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag). The three declared arguments are all required, so the
+    generic checks `RPCHelpMan::HandleRequest` runs ahead of every
+    method's own lambda -- the missing-argument and wrong-JSON-type
+    refusals, `_height_param`'s own docstring arguing the shape -- come
+    first here too, ahead of the chain gate the real lambda opens on.
+
+    A `connection_type` outside `_ADDCONNECTION_TYPES` is
+    `RPC_INVALID_PARAMETER` carrying this method's own full help text,
+    `self.ToString()`'s shape (measured against a real bitcoind
+    v31.1.0). `v2transport` true is refused the same way Core refuses it
+    lacking `NODE_P2P_V2` (`connman.GetLocalServices() & NODE_P2P_V2`):
+    `local_services` (`p2p/connection.py`) never sets that bit, this
+    node speaking v1 only, so every `true` here is refused regardless of
+    chain or address.
+
+    Both of `CConnman::AddConnection`'s capacity checks, the per-type
+    cap and the shared `semOutbound` pool, are
+    `P2pManager.reserve_automatic_slot`'s, which takes the slot in the
+    same step. Its docstring says why the check and the reservation are
+    one step here, where Core's dial is synchronous. `connect_typed`
+    releases the slot once the dial concludes.
+
+    `automatic=True` for a `feeler` too, as `_dial_one_draw` sets it for
+    a drawn one: `maybe_discourage_and_disconnect` reads `automatic` as
+    "not `MANUAL`", and a feeler is not `MANUAL` in Core either.
+
+    The dial itself, `P2pManager.connect_typed`, runs fire-and-forget,
+    the same as `onetry`'s (`add_node` above, `connect_host`): this
+    answers once the dial is scheduled, not once it connects, which is
+    also why nothing here waits to learn whether it does.
+    """
+    if len(params) < 3:  # noqa: PLR2004
+        raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["addconnection"])
+    address, connection_type, v2transport = params[0], params[1], params[2]
+    mismatches: list[tuple[int, str, object, str]] = []
+    if not isinstance(address, str):
+        mismatches.append((1, "address", address, "string"))
+    if not isinstance(connection_type, str):
+        mismatches.append((2, "connection_type", connection_type, "string"))
+    if not isinstance(v2transport, bool):
+        mismatches.append((3, "v2transport", v2transport, "bool"))
+    if mismatches:
+        raise type_errors(*mismatches)
+    # Core's own `util::TrimStringView(..., " \f\n\r\t\v")`
+    # (`rpc/net.cpp:414`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
+    # ahead of the four-way match below and echoed back in the answer
+    # the same way: `str.strip` with no argument strips Unicode
+    # whitespace Core's own six-character pattern does not, so the
+    # characters are named explicitly rather than left to that default.
+    connection_type = connection_type.strip(" \f\n\r\t\v")
+    if node.chain.name != "regtest":
+        raise RpcError(
+            RPCErrorCode.MISC_ERROR,
+            "addconnection is for regression testing (-regtest mode) only.",
+        )
+    if connection_type not in _ADDCONNECTION_TYPES:
+        raise RpcError(RPCErrorCode.INVALID_PARAMETER, HELP_TEXT["addconnection"])
+    if v2transport and not (local_services(node.config) & ServiceFlags.NODE_P2P_V2):
+        raise RpcError(
+            RPCErrorCode.INVALID_PARAMETER,
+            "Error: Adding v2transport connections requires -v2transport "
+            "init flag to be set.",
+        )
+    manager = node.p2p_manager
+    if manager.reserve_automatic_slot(connection_type) is None:
+        raise RpcError(
+            RPCErrorCode.CLIENT_NODE_CAPACITY_REACHED,
+            "Error: Already at capacity for specified connection type.",
+        )
+    manager.connect_typed(
+        address,
+        node.chain.port,
+        automatic=connection_type
+        in {"outbound-full-relay", "block-relay-only", "feeler"},
+        block_relay=connection_type == "block-relay-only",
+        feeler=connection_type == "feeler",
+        addr_fetch=connection_type == "addr-fetch",
+        reserved=connection_type,
+    )
+    return {"address": address, "connection_type": connection_type}
 
 
 def _setban_params(params: list[Any]) -> tuple[str, str, int | float | None, bool]:
@@ -3318,6 +3439,8 @@ callbacks = {
     "getnetworkinfo": get_network_info,
     "addnode": add_node,
     "disconnectnode": disconnect_node,
+    "setnetworkactive": set_network_active,
+    "addconnection": add_connection,
     "setban": set_ban,
     "listbanned": list_banned,
     "clearbanned": clear_banned,
@@ -3359,6 +3482,8 @@ arg_names: dict[str, tuple[str, ...]] = {
     "getnetworkinfo": (),
     "addnode": ("node", "command", "v2transport"),
     "disconnectnode": ("address", "nodeid"),
+    "setnetworkactive": ("state",),
+    "addconnection": ("address", "connection_type", "v2transport"),
     "setban": ("subnet", "command", "bantime", "absolute"),
     "listbanned": (),
     "clearbanned": (),

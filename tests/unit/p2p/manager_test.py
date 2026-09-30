@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast, override
 from unittest.mock import AsyncMock
 
 import pytest
+from bitcoin_core_rpc import RPCErrorCode
 from btclib.p2p.address import ServiceFlags
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 from btclib.p2p.keepalive import Ping
@@ -55,6 +56,8 @@ from btclib_node.p2p.banman import DUMP_BANS_INTERVAL, BanMan, Subnet, lookup_su
 from btclib_node.p2p.eviction import Network, net_group
 from btclib_node.p2p.main import handle_p2p_handshake
 from btclib_node.p2p.manager import P2pManager
+from btclib_node.rpc.callbacks import add_connection
+from btclib_node.rpc.errors import RpcError
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine, Iterable, Iterator, Sequence
@@ -283,6 +286,12 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
                 forcednsseed=forcednsseed,
                 fixed_seeds=fixed_seeds,
                 pruned=False,
+                # `Connection.local_services` reads this too, off a real
+                # outbound connection's `own_version()`: without it that
+                # connection's `run()` raises an unlogged
+                # `AttributeError` and closes before its first
+                # `sock_recv`.
+                peerblockfilters=False,
             ),
             # `Connection.own_version`'s own `start_height`
             # (btclib-org/btclib-node#722), 0 matching a fresh `Node`'s
@@ -813,6 +822,10 @@ def test_a_pong_landing_between_the_idle_check_and_its_reread_does_not_drop_the_
         feefilter = 0
         automatic = False
         addr_fetch = False
+        # read by `_automatic_outbound_locked`'s own `not conn.inbound`
+        # guard, reached from `manage_connections`'s `_maybe_dial_more_peers`
+        # call in the same pass this test drives
+        inbound = False
         version_message = SimpleNamespace(version=PROTOCOL_VERSION)
 
         @property
@@ -2181,6 +2194,49 @@ def test_dns_address_seed_queues_the_seed_query_dns_seed_returns(
     assert list(manager._addr_fetches) == [("dummySeed.invalid.", 18444)]
 
 
+def test_dns_address_seed_waits_for_setnetworkactive_reactivation(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's wait ahead of every seed query while `!fNetworkActive`.
+
+    `ThreadDNSAddressSeed` logs once and polls once a second until the
+    network is active again, before it asks the seed
+    (`src/net.cpp:2357-2361`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag). `asyncio.sleep` is patched to that poll and reactivates the
+    network on its second call, so the log line is shown to come once
+    per wait rather than once per poll.
+
+    `query_dns_seed` asserts `network_active` rather than only being
+    reached: with the wait removed, the seed would still be asked once,
+    while inactive.
+    """
+    asked: list[str] = []
+    polls: list[float] = []
+
+    async def query_dns_seed(seed: str) -> None:
+        assert manager.network_active, "asked while still inactive"
+        asked.append(seed)
+
+    async def two_polls_then_reactivate(delay: float) -> None:
+        polls.append(delay)
+        if len(polls) == 2:
+            manager.network_active = True
+
+    peer_db = a_peer_db_stub(query_dns_seed=query_dns_seed)
+    manager = a_manager(peer_db=peer_db)
+    logged, record = log_recorder()
+    monkeypatch.setattr(manager.logger, "info", record)
+    manager.network_active = False
+    monkeypatch.setattr(asyncio, "sleep", two_polls_then_reactivate)
+    asyncio.run(manager._dns_address_seed())
+    assert asked == ["dummySeed.invalid."]
+    assert polls == [1, 1]
+    assert (
+        logged.count("Waiting for network to be reactivated before querying DNS seeds.")
+        == 1
+    )
+
+
 def test_dns_address_seed_shuffles_the_chains_seeds(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2641,6 +2697,50 @@ def test_process_addr_fetch_is_a_noop_on_an_empty_queue(
     assert not manager.pending_connections
 
 
+def test_process_addr_fetch_refuses_past_the_shared_pool(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`reserve_automatic_slot` is checked before the dial, past the pool.
+
+    Core's own `ProcessAddrFetch` takes the same `semOutbound` grant
+    every other automatic dial does (`CountingSemaphoreGrant<>
+    grant(*semOutbound, /*fTry=*/true)`, `src/net.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and gives up quietly
+    where none is free rather than dialling anyway. `dial` itself would
+    fail this test if reached, the same proof
+    `test_process_addr_fetch_is_a_noop_on_an_empty_queue` above uses;
+    the queue entry still leaves the queue, Core's own `pszDest` gone
+    whether or not it connects. `get_running_loop` is patched to a
+    `_NamedLoop` that resolves `seed.example` rather than leaving the
+    real resolver to fail it first: unpatched, `getaddrinfo` itself
+    refuses that reserved TLD, reaching `dial` exactly as little as the
+    reservation check would, so a `.example` host alone would pass this
+    test whether or not the check it is for still ran.
+
+    `dial` records the call rather than only raising: `_process_addr_fetch`
+    wraps its own dial in a blanket `except Exception`, so a `dial` that
+    only raised would have its own failure swallowed right there and
+    this test would pass exactly as wrongly as it would asserting
+    nothing at all -- `dialled` is read after, past that same `except`,
+    so nothing here depends on what it does with what `dial` raises.
+    """
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: _NamedLoop(["5.6.7.8"]))
+    dialled: list[str] = []
+
+    async def spy_dial(address: NetworkAddressV2) -> NoReturn:
+        dialled.append(str(address))  # pragma: no cover -- refused before any dial
+        raise AssertionError  # pragma: no cover -- refused before any dial
+
+    monkeypatch.setattr(manager_module, "dial", spy_dial)
+    full = [a_conn(i, automatic=True) for i in range(11)]
+    manager = a_manager(full)
+    manager._addr_fetches.append(("seed.example", 18444))
+    asyncio.run(manager._process_addr_fetch())
+    assert not manager._addr_fetches
+    assert dialled == []
+    assert not manager.pending_connections
+
+
 def test_process_addr_fetch_skips_a_queued_host_already_held_by_name(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2696,7 +2796,16 @@ def test_process_addr_fetch_resolves_a_queued_host_held_by_no_connection(
     manager._addr_fetches.append(("seed.example", 18444))
     asyncio.run(manager._process_addr_fetch())
     assert not manager._addr_fetches
-    assert made == [{"inbound": False, "addr_fetch": True, "addr_name": "seed.example"}]
+    assert made == [
+        {
+            "inbound": False,
+            "automatic": False,
+            "block_relay": False,
+            "feeler": False,
+            "addr_fetch": True,
+            "addr_name": "seed.example",
+        }
+    ]
     theirs.close()
 
 
@@ -2726,7 +2835,14 @@ def test_process_addr_fetch_keeps_a_port_when_the_dest_names_one(
     asyncio.run(manager._process_addr_fetch())
     assert not manager._addr_fetches
     assert made == [
-        {"inbound": False, "addr_fetch": True, "addr_name": "seed.example:9999"}
+        {
+            "inbound": False,
+            "automatic": False,
+            "block_relay": False,
+            "feeler": False,
+            "addr_fetch": True,
+            "addr_name": "seed.example:9999",
+        }
     ]
     theirs.close()
 
@@ -2893,7 +3009,16 @@ def test_process_addr_fetch_dials_and_marks_the_connection_addr_fetch(
     manager._addr_fetches.append(("seed.example", 18444))
     asyncio.run(manager._process_addr_fetch())
     assert not manager._addr_fetches
-    assert made == [{"inbound": False, "addr_fetch": True, "addr_name": "seed.example"}]
+    assert made == [
+        {
+            "inbound": False,
+            "automatic": False,
+            "block_relay": False,
+            "feeler": False,
+            "addr_fetch": True,
+            "addr_name": "seed.example",
+        }
+    ]
     theirs.close()
 
 
@@ -2922,7 +3047,16 @@ def test_process_addr_fetch_tries_the_next_candidate_when_the_first_never_connec
     manager._addr_fetches.append(("seed.example", 18444))
     asyncio.run(manager._process_addr_fetch())
     assert len(tried) == 2
-    assert made == [{"inbound": False, "addr_fetch": True, "addr_name": "seed.example"}]
+    assert made == [
+        {
+            "inbound": False,
+            "automatic": False,
+            "block_relay": False,
+            "feeler": False,
+            "addr_fetch": True,
+            "addr_name": "seed.example",
+        }
+    ]
     theirs.close()
 
 
@@ -3454,7 +3588,14 @@ def test_open_connect_peers_resolves_a_hostname(
     with pytest.raises(_LoopStoppedError):
         asyncio.run(manager._open_connect_peers())
     assert made == [
-        {"inbound": False, "addr_fetch": False, "addr_name": "peer.example:8333"}
+        {
+            "inbound": False,
+            "automatic": False,
+            "block_relay": False,
+            "feeler": False,
+            "addr_fetch": False,
+            "addr_name": "peer.example:8333",
+        }
     ]
     theirs.close()
 
@@ -3488,7 +3629,14 @@ def test_open_connect_peers_keeps_a_portless_hostname_without_one(
     with pytest.raises(_LoopStoppedError):
         asyncio.run(manager._open_connect_peers())
     assert made == [
-        {"inbound": False, "addr_fetch": False, "addr_name": "peer.example"}
+        {
+            "inbound": False,
+            "automatic": False,
+            "block_relay": False,
+            "feeler": False,
+            "addr_fetch": False,
+            "addr_name": "peer.example",
+        }
     ]
     theirs.close()
 
@@ -3531,7 +3679,14 @@ def test_open_added_peers_resolves_a_hostname(
     with pytest.raises(_LoopStoppedError):
         asyncio.run(manager._open_added_peers())
     assert made == [
-        {"inbound": False, "addr_fetch": False, "addr_name": "peer.example"}
+        {
+            "inbound": False,
+            "automatic": False,
+            "block_relay": False,
+            "feeler": False,
+            "addr_fetch": False,
+            "addr_name": "peer.example",
+        }
     ]
     theirs.close()
 
@@ -3564,7 +3719,14 @@ def test_open_added_peers_keeps_a_port_when_given(
     with pytest.raises(_LoopStoppedError):
         asyncio.run(manager._open_added_peers())
     assert made == [
-        {"inbound": False, "addr_fetch": False, "addr_name": "peer.example:9999"}
+        {
+            "inbound": False,
+            "automatic": False,
+            "block_relay": False,
+            "feeler": False,
+            "addr_fetch": False,
+            "addr_name": "peer.example:9999",
+        }
     ]
     theirs.close()
 
@@ -3773,6 +3935,9 @@ def test_async_connect_host_caps_the_resolved_list_at_256_before_dialling(
     assert made == [
         {
             "inbound": False,
+            "automatic": False,
+            "block_relay": False,
+            "feeler": False,
             "addr_fetch": False,
             "addr_name": "seed.example",
         }
@@ -3830,6 +3995,9 @@ def test_async_connect_host_drops_an_internal_answer_before_counting_to_256(
     assert made == [
         {
             "inbound": False,
+            "automatic": False,
+            "block_relay": False,
+            "feeler": False,
             "addr_fetch": False,
             "addr_name": "seed.example",
         }
@@ -3856,6 +4024,68 @@ def test_connect_host_schedules_a_dial_on_this_manager_s_own_loop(
         dialer.connect_host("127.0.0.1", target_port)
         wait_until(lambda: dialer.pending_connections)
         wait_until(lambda: target.pending_connections)
+    finally:
+        dialer.stop()
+        dialer.join(timeout=10)
+        target.stop()
+        target.join(timeout=10)
+
+
+def test_connect_typed_marks_the_dialled_connection_s_own_kind(
+    a_manager: AManagerFactory,
+) -> None:
+    """`addconnection`'s own dial: `connect_host`'s sibling, naming a kind.
+
+    Proven through a real dial rather than a stub, the same shape
+    `test_connect_host_schedules_a_dial_on_this_manager_s_own_loop`
+    above already argues for `connect_host` -- `create_connection`
+    reads the four flags straight off what this call is given, here a
+    block-relay-only connection's own combination.
+    """
+    target_port = get_random_port()
+    target = a_running_manager(a_manager, target_port)
+    dialer = a_manager()
+    try:
+        wait_until_listening(target)
+        dialer.start()
+        wait_until(dialer.loop.is_running)
+        dialer.connect_typed("127.0.0.1", target_port, automatic=True, block_relay=True)
+        wait_until(lambda: dialer.pending_connections)
+        (conn,) = dialer.pending_connections.values()
+        assert conn.automatic is True
+        assert conn.block_relay is True
+        assert conn.feeler is False
+        assert conn.addr_fetch is False
+    finally:
+        dialer.stop()
+        dialer.join(timeout=10)
+        target.stop()
+        target.join(timeout=10)
+
+
+def test_connect_typed_releases_its_reservation_once_the_dial_concludes(
+    a_manager: AManagerFactory,
+) -> None:
+    """`reserved` is released once the dial `connect_typed` schedules concludes.
+
+    `add_connection` (`rpc/callbacks.py`) reserves ahead of
+    `connect_typed`; the release is `_dial_and_release`'s `finally`, in
+    a coroutine nothing here awaits, so `wait_until` reads the count.
+    """
+    target_port = get_random_port()
+    target = a_running_manager(a_manager, target_port)
+    dialer = a_manager()
+    try:
+        wait_until_listening(target)
+        dialer.start()
+        wait_until(dialer.loop.is_running)
+        assert dialer.reserve_automatic_slot("feeler") is not None
+        assert dialer._reserved_outbound["feeler"] == 1
+        dialer.connect_typed(
+            "127.0.0.1", target_port, automatic=True, feeler=True, reserved="feeler"
+        )
+        wait_until(lambda: dialer.pending_connections)
+        wait_until(lambda: dialer._reserved_outbound["feeler"] == 0)
     finally:
         dialer.stop()
         dialer.join(timeout=10)
@@ -6860,6 +7090,36 @@ def test_every_dial_records_its_try(
     assert tries_of(manager) == {endpoint_key(address): now}
 
 
+@pytest.mark.parametrize("dialler", ["automatic", "connect", "connect_host"])
+def test_network_active_false_refuses_every_dial(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, dialler: str
+) -> None:
+    """`OpenNetworkConnection`'s own `!fNetworkActive` gate, every dial route.
+
+    The automatic dial's (`_maybe_dial_more_peers`), `async_connect`'s
+    (the `-connect`/`-addnode` redial) and `async_connect_host`'s
+    (`onetry`, the `addnode` RPC, `addconnection`) alike -- each refuses
+    before ever reaching `dial`. `dial` is left as `a_dialling_manager`'s
+    own recording stub, which returns no socket rather than raising:
+    `_maybe_dial_more_peers`'s own `_dial_one_draw` call is wrapped in a
+    `try/except Exception` that logs and swallows, so a stub that raises
+    instead -- `refuses_to_be_asked` -- would pass this same assertion
+    whether the gate ran or was bypassed, the exception never reaching
+    `dialled` either way.
+    """
+    address = a_full_node("5.6.7.8", 8333)
+    manager, _, dialled = a_dialling_manager(a_manager, monkeypatch, [address])
+    manager.network_active = False
+    if dialler == "automatic":
+        asyncio.run(manager._maybe_dial_more_peers())
+    elif dialler == "connect":
+        asyncio.run(manager.async_connect(address))
+    else:
+        asyncio.run(manager.async_connect_host("5.6.7.8", 18444))
+    assert dialled == []
+    assert tries_of(manager) == {}
+
+
 def a_subnet(text: str) -> Subnet:
     """Parse `text` as `setban` would, asserting it parses."""
     subnet = lookup_subnet(text)
@@ -6892,6 +7152,36 @@ def test_a_banned_host_is_refused_with_every_slot_free(
         _, accepted = land_an_inbound_peer(manager, "1.2.4.4", 50000)
         peers.enter_context(closing(accepted))
         wait_until(lambda: manager.last_connection_id == 0)
+        manager.stop()
+        manager.join(timeout=10)
+
+
+def test_network_active_false_refuses_every_accepted_socket(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`CreateNodeFromAcceptedSocket`'s own `!fNetworkActive` gate.
+
+    Ahead of the ban check even -- `1.2.3.4` is not banned here, and is
+    refused all the same, the same way `test_a_banned_host_is_refused_
+    with_every_slot_free` above proves the ban check runs with no slot
+    taken.
+    """
+    port = get_random_port()
+    manager = a_manager(port=port)
+    manager.network_active = False
+    logged, record = log_recorder()
+    monkeypatch.setattr(manager.logger, "debug", record)
+    manager.start()
+    wait_until_listening(manager)
+    with ExitStack() as peers:
+        _, refused = land_an_inbound_peer(manager, "1.2.3.4", 50000)
+        peers.enter_context(closing(refused))
+        assert refused.recv(4096) == b""
+        assert manager.last_connection_id == -1
+        assert (
+            "connection from 1.2.3.4:50000 dropped: not accepting new connections"
+            in logged
+        )
         manager.stop()
         manager.join(timeout=10)
 
@@ -6938,6 +7228,308 @@ def test_disconnecting_a_subnet_drops_every_connection_it_holds(
     assert not other.stopped
     assert not onion.stopped
     assert manager.disconnect_subnet(a_subnet("5.6.7.8")) is False
+
+
+def test_set_network_active_drops_every_held_connection(
+    a_manager: AManagerFactory,
+) -> None:
+    """Core's `DisconnectNodes` sweep once `fNetworkActive` reads false.
+
+    Inbound, manual and pending alike, a manual one included -- the
+    same unconditional `DisconnectNode(CSubNet)` shape
+    `test_disconnecting_a_subnet_drops_every_connection_it_holds` above
+    already argues, `set_network_active` running it at once rather than
+    waiting on the next `manage_connections` pass.
+    """
+    inbound = a_conn(0, inbound=True)
+    manual = a_conn(1)
+    pending = a_conn(2, automatic=True)
+    manager = a_manager([inbound, manual])
+    manager.pending_connections[2] = pending
+    manager.set_network_active(active=False)
+    for conn in (inbound, manual, pending):
+        assert conn.stopped == [True]
+    assert manager.network_active is False
+    assert manager.get_network_active() is False
+
+
+def test_set_network_active_is_a_no_op_once_already_set(
+    a_manager: AManagerFactory,
+) -> None:
+    """Core's own early `if (fNetworkActive == active) return;`.
+
+    This guards `set_network_active` itself against a redundant call,
+    not a claim that the whole node only ever sweeps once: past this,
+    `test_manage_connections_sweeps_a_dial_that_registers_after_the_flip`
+    below is where `manage_connections`'s own repeated sweep, every
+    pass while still inactive, is what actually answers a connection
+    that registers after this method's own one-shot call has already
+    run. A manager starts active, so setting it active again drops
+    nothing; setting it inactive twice in a row calls this method once,
+    `stop()` once with it -- the second call never reaches the sweep at
+    all.
+    """
+    conn = a_conn(0)
+    manager = a_manager([conn])
+    manager.set_network_active(active=True)
+    assert conn.stopped == []
+    manager.set_network_active(active=False)
+    manager.set_network_active(active=False)
+    assert conn.stopped == [True]
+
+
+def test_set_network_active_re_enabling_drops_nothing(
+    a_manager: AManagerFactory,
+) -> None:
+    """Flipping back to `true` touches no connection, past ones included.
+
+    The one shape the two tests above do not reach: `active=True` past
+    the early-return guard, once the manager already reads `false` --
+    `not active` false with the guard already behind it, where the
+    other two tests only ever see this line on `false` or on the guard
+    itself.
+    """
+    conn = a_conn(0)
+    manager = a_manager([conn])
+    manager.set_network_active(active=False)
+    assert conn.stopped == [True]
+    manager.set_network_active(active=True)
+    assert conn.stopped == [True]
+    assert manager.network_active is True
+    assert manager.get_network_active() is True
+
+
+def test_manage_connections_sweeps_a_dial_that_registers_after_the_flip(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dial that registers after the flip is still dropped.
+
+    `set_network_active`'s own sweep only stops what is already held
+    the instant it runs. A dial already past `async_connect`'s own
+    `if not self.network_active` gate when the flip happens, still
+    connecting, registers into `pending_connections` only once `dial`
+    itself returns -- after the flip, and after that one-shot sweep has
+    already run and found nothing. Core's own `DisconnectNodes` answers
+    this by running every pass of `ThreadSocketHandler` while
+    `!fNetworkActive` (`src/net.cpp:1931-1939`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) rather than once on the
+    flip; `manage_connections`'s own repeated sweep, once every 0.1s
+    pass, is this tree's match for it, and is what this test is for:
+    `connect` is called while still active, the flip follows at 0.1s,
+    and `dial` itself is delayed 0.5s past that, so the connection
+    registers a full four sweep passes after the flip already ran.
+    `connect` rather than `connect_host`: this is about the sweep, not
+    the resolve pipeline `async_connect_host` alone runs, and `connect`
+    takes an already-resolved address straight to `dial` the way
+    `async_connect`'s own docstring describes.
+
+    The final wait is bounded well under `_PEER_CONNECT_TIMEOUT`'s own
+    60s, deliberately: `_prune_stale_connections` drops any
+    `pending_connections` entry that old regardless of
+    `network_active`, so a bound left at `wait_until`'s own 60s default
+    would still pass with the per-pass sweep this test exists to cover
+    removed entirely, the generic handshake timeout closing the
+    connection instead and the assertion below never telling the two
+    apart -- measured by running this test with
+    `manage_connections`'s own `self._disconnect_if_inactive()` call
+    deleted, which still passed at the 60s default and only failed once
+    bounded here.
+    """
+    ours, theirs = socket.socketpair()
+
+    async def delayed_dial(address: NetworkAddressV2) -> socket.socket:
+        await asyncio.sleep(0.5)
+        return ours
+
+    monkeypatch.setattr(manager_module, "dial", delayed_dial)
+    manager = a_manager()
+    try:
+        manager.start()
+        wait_until(manager.loop.is_running)
+        manager.connect(a_full_node("1.2.3.4", 8333))
+        time.sleep(0.1)
+        manager.set_network_active(active=False)
+        wait_until(lambda: manager.pending_connections)
+        (conn,) = manager.pending_connections.values()
+        wait_until(lambda: conn.status == P2pConnStatus.Closed, timeout=5)
+    finally:
+        manager.stop()
+        manager.join(timeout=10)
+        theirs.close()
+
+
+def test_outbound_type_counts_splits_the_automatic_held_by_kind(
+    a_manager: AManagerFactory,
+) -> None:
+    """A feeler and an addr-fetch count toward neither full- nor block-relay."""
+    full = a_conn(0, automatic=True)
+    block = a_conn(1, automatic=True, block_relay=True)
+    feeler = a_conn(2, automatic=True, feeler=True)
+    fetched = a_conn(3, addr_fetch=True)
+    manager = a_manager([full, block, feeler, fetched])
+    automatic = manager._automatic_outbound()
+    assert manager_module._outbound_type_counts(automatic) == (1, 1)
+
+
+def test_automatic_outbound_gathers_every_kind_semoutbound_would_grant(
+    a_manager: AManagerFactory,
+) -> None:
+    """The connections the shared pool counts: automatic and addr-fetch ones.
+
+    `fetched` is dialled with `automatic` left `False`, as
+    `_process_addr_fetch` dials, and Core's `ProcessAddrFetch` still
+    takes a `semOutbound` grant for it. `inbound` and `manual` count
+    toward neither: an inbound connection takes no grant in Core, and a
+    manual one returns early from `AddConnection`'s switch.
+    """
+    full = a_conn(0, automatic=True)
+    block = a_conn(1, automatic=True, block_relay=True)
+    feeler = a_conn(2, automatic=True, feeler=True)
+    fetched = a_conn(3, addr_fetch=True)
+    # Never a real shape -- `INBOUND` and an automatic dial type are
+    # mutually exclusive in Core -- but it is what isolates the
+    # `not conn.inbound` guard.
+    inbound = a_conn(4, inbound=True, automatic=True)
+    manual = a_conn(5)
+    manager = a_manager([full, block, feeler, fetched, inbound, manual])
+    assert len(manager._automatic_outbound()) == 4
+
+
+def test_reserve_automatic_slot_counts_a_reservation_against_the_pool(
+    a_manager: AManagerFactory,
+) -> None:
+    """With one slot of the pool left, the second reservation is refused.
+
+    Ten held of a pool of eleven: the first reservation takes the last
+    slot, and the second is refused on the reservation alone, no
+    connection having registered in between. After the release, a
+    reservation is granted again.
+    """
+    manager = a_manager(automatic_conns(8, 2))
+    assert manager.max_automatic_outbound == 11
+    assert manager.reserve_automatic_slot() is not None
+    assert manager.reserve_automatic_slot() is None
+    assert manager.reserve_automatic_slot("feeler") is None
+    manager.release_automatic_slot()
+    assert manager.reserve_automatic_slot("feeler") is not None
+
+
+@pytest.mark.parametrize(
+    ("connection_type", "held"),
+    [
+        ("outbound-full-relay", automatic_conns(7, 0)),
+        ("block-relay-only", automatic_conns(0, 1)),
+    ],
+)
+def test_reserve_automatic_slot_counts_a_reservation_against_the_per_type_cap(
+    a_manager: AManagerFactory, connection_type: str, held: list[Any]
+) -> None:
+    """One below a per-type cap, a second reservation of that type is refused.
+
+    The pool has room for both, so only the per-type count, reservations
+    included, refuses the second. The other capped type is not affected,
+    and the release frees the slot for the same type.
+    """
+    manager = a_manager(held)
+    other = (
+        "block-relay-only"
+        if connection_type == "outbound-full-relay"
+        else "outbound-full-relay"
+    )
+    assert manager.reserve_automatic_slot(connection_type) is not None
+    assert manager.reserve_automatic_slot(connection_type) is None
+    assert manager.reserve_automatic_slot(other) is not None
+    manager.release_automatic_slot(connection_type)
+    assert manager.reserve_automatic_slot(connection_type) is not None
+
+
+@pytest.mark.parametrize("connection_type", ["addr-fetch", "feeler", None])
+def test_reserve_automatic_slot_sets_no_per_type_cap_for_the_others(
+    a_manager: AManagerFactory, connection_type: str | None
+) -> None:
+    """Core sets no per-type cap for `ADDR_FETCH` or `FEELER`: only the pool."""
+    manager = a_manager(automatic_conns(8, 2))
+    assert manager.reserve_automatic_slot("outbound-full-relay") is None
+    assert manager.reserve_automatic_slot("block-relay-only") is None
+    assert manager.reserve_automatic_slot(connection_type) is not None
+
+
+def test_addconnection_back_to_back_stops_at_the_per_type_cap(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One below the full-relay cap, a second `addconnection` is refused.
+
+    Core's `AddConnection` dials synchronously, so its second call counts
+    the first call's node. Here the dial is scheduled and has not
+    registered when the second call checks: the first call's
+    reservation is what refuses it. `connect_typed` is recorded and
+    never dials, so no connection registers in between.
+    """
+    dialled: list[str] = []
+    manager = a_manager(automatic_conns(7, 0))
+    monkeypatch.setattr(
+        manager, "connect_typed", lambda dest, *args, **kwargs: dialled.append(dest)
+    )
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chain=manager.node.chain, config=manager.node.config, p2p_manager=manager
+        ),
+    )
+    params = ["1.2.3.4:18444", "outbound-full-relay", False]
+    add_connection(node, cast("Any", None), params)
+    with pytest.raises(RpcError) as raised:
+        add_connection(node, cast("Any", None), ["5.6.7.8:18444", *params[1:]])
+    assert raised.value.code == RPCErrorCode.CLIENT_NODE_CAPACITY_REACHED
+    assert dialled == ["1.2.3.4:18444"]
+
+
+def test_process_addr_fetch_holds_a_slot_across_the_dial_and_releases_it(
+    a_manager: AManagerFactory,
+) -> None:
+    """A slot is held across the dial, and released on return and on raise."""
+    held_during: list[int] = []
+
+    async def dials(*args: object, **kwargs: object) -> None:
+        held_during.append(manager._reserved_outbound.total())
+
+    async def raises(*args: object, **kwargs: object) -> NoReturn:
+        held_during.append(manager._reserved_outbound.total())
+        raise OSError
+
+    manager = a_manager()
+    for connect_host in (dials, raises):
+        manager.async_connect_host = connect_host  # type: ignore[method-assign]
+        manager._addr_fetches.append(("seed.example", 18444))
+        asyncio.run(manager._process_addr_fetch())
+        assert manager._reserved_outbound.total() == 0
+    assert held_during == [1, 1]
+
+
+def test_an_inactive_network_still_seeds_and_releases_the_grant(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's `ThreadOpenConnections` seeds whatever `fNetworkActive` reads.
+
+    Only `OpenNetworkConnection` refuses while the network is inactive,
+    past the grant, the fixed seeds and the `-seednode` queue
+    (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Both
+    seeding steps run, nothing is dialled, and the grant is released.
+    """
+    address = a_full_node("5.6.7.8", 8333)
+    manager, _, dialled = a_dialling_manager(a_manager, monkeypatch, [address])
+    seeded: list[str] = []
+    monkeypatch.setattr(
+        manager, "_maybe_add_fixed_seeds", lambda: seeded.append("fixed")
+    )
+    monkeypatch.setattr(
+        manager, "_maybe_add_seednode", lambda: seeded.append("seednode")
+    )
+    manager.network_active = False
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert seeded == ["fixed", "seednode"]
+    assert dialled == []
+    assert manager._reserved_outbound.total() == 0
 
 
 def test_the_ban_list_is_written_once_every_interval(
