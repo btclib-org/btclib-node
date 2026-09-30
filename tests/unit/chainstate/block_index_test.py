@@ -165,14 +165,19 @@ def test_reject_header_with_zero_target(
     assert len(block_index.header_dict) == 1
 
 
-def test_one_bad_header_refuses_the_whole_batch(
+def test_a_header_failing_its_own_pow_refuses_the_whole_batch(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
-    """One bad header keeps the whole batch, valid prefix included, out.
+    """A header failing its own proof of work keeps the whole batch out.
 
-    Core takes a headers message as a unit, and so does this: the valid
-    prefix ahead of the bad header is not indexed either, though the
-    same headers sent again on their own are.
+    Core's `CheckHeadersPoW` checks every header's own proof of work
+    before any of the batch reaches `AcceptBlockHeader`
+    (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag), so a header failing it leaves the valid prefix ahead of it
+    unindexed too -- unlike a header failing only its contextual check,
+    `test_a_header_failing_only_its_contextual_check_leaves_the_prefix_indexed`
+    below. The same headers sent again on their own are taken.
+    btclib-org/btclib-node#1348
     """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
@@ -185,6 +190,44 @@ def test_one_bad_header_refuses_the_whole_batch(
     # and the same batch without it is taken
     assert block_index.add_headers(chain)
     assert len(block_index.header_dict) == 5 + 1
+
+
+def test_a_header_failing_only_its_contextual_check_leaves_the_prefix_indexed(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """A header failing only its contextual check leaves the prefix indexed.
+
+    Core's `ProcessNewBlockHeaders` calls `AcceptBlockHeader` once per
+    header and returns at the first one failing
+    `ContextualCheckBlockHeader`, so the headers already accepted ahead
+    of it stay indexed (`validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) -- unlike a header
+    failing its own proof of work, the previous test above.
+    btclib-org/btclib-node#1348
+    """
+    chainstate = a_chainstate(None)
+    block_index = chainstate.block_index
+    genesis = RegTest().genesis
+    chain = generate_random_header_chain(5, genesis.hash)
+    # not later than its own parent's median -- _assert_valid_in_context's
+    # own time-too-old check, never assert_valid_pow's
+    bad = BlockHeader(
+        version=70015,
+        previous_block_hash=chain[-1].hash,
+        merkle_root=secrets.token_bytes(32),
+        time=genesis.time,
+        bits=REGTEST_POW_LIMIT_BITS,
+        nonce=1,
+        check_validity=False,
+    )
+    brute_force_nonce(bad)
+
+    with pytest.raises(MisbehavingError):
+        block_index.add_headers([*chain, bad])
+    assert bad.hash not in block_index.header_dict
+    assert len(block_index.header_dict) == 5 + 1
+    assert all(header.hash in block_index.header_dict for header in chain)
+    assert block_index.get_block_info(chain[-1].hash).index == 5
 
 
 def test_a_header_with_valid_pow_but_the_wrong_required_target_is_refused(
