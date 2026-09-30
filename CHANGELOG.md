@@ -1282,6 +1282,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   is written rather than cancelled, as Core's `StopHTTPServer` waits for it;
   an idle kept-alive connection is not waited for** (closes #1539).
 
+### The RPC loop's own refusals say they close once shutdown has begun
+
+- **A 401, 403, 404, 405 or parse-error reply written once shutdown has begun
+  carries `Connection: close`, as Core's `HTTPRequest::WriteReply` adds it**
+  (closes #1542).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

@@ -1220,7 +1220,10 @@ class RpcConnection:
             # mypy's own `unused-awaitable` flags as a likely-missing
             # `await` when discarded outright.
             self._parse_error_reply = self._start_reply(
-                self.async_send(error_reply(RPCErrorCode.PARSE_ERROR, "Parse error"))
+                self.async_send(
+                    error_reply(RPCErrorCode.PARSE_ERROR, "Parse error"),
+                    close=self._shutting_down(),
+                )
             )
             return
 
@@ -1410,6 +1413,23 @@ class RpcConnection:
             self._send_refusal(status, _error_page(status), page=True)
         )
 
+    def _shutting_down(self) -> bool:
+        """Whether `Node.terminate_flag` is set: Core's `m_interrupt`.
+
+        `HTTPRequest::WriteReply` adds `Connection: close` to the reply it
+        writes once its `m_interrupt`, the `node.shutdown_signal`
+        `InitHTTPServer` hands every request, has been raised
+        (`src/httpserver.cpp`, `src/init.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Read where Core reads
+        it, as each reply is produced: after a 401's
+        `FAILED_ATTEMPT_DELAY`, not before (btclib-org/btclib-node#1542).
+        """
+        return self.manager.node.terminate_flag.is_set()
+
+    def _write_reply_fields(self) -> tuple[str, ...]:
+        """Return the header `WriteReply` adds once `_shutting_down`."""
+        return ("Connection: close",) if self._shutting_down() else ()
+
     async def _send_whitelist_refusal(self, refusal: Refusal) -> None:
         """Answer `refusal`, a request `-rpcwhitelist` refuses.
 
@@ -1425,6 +1445,7 @@ class RpcConnection:
             fields = ("Content-Type: application/json",)
             text = json.dumps(refusal.body, separators=(",", ":"), ensure_ascii=False)
             body = (text + "\n").encode()
+        fields += self._write_reply_fields()
         await self._write(self._frame(refusal.status, body, fields))
 
     async def _send_unauthorized(self, delay: float) -> None:
@@ -1437,7 +1458,7 @@ class RpcConnection:
         header libevent adds, which this does not write.
         """
         await asyncio.sleep(delay)
-        fields = (f"WWW-Authenticate: {WWW_AUTHENTICATE}",)
+        fields = (f"WWW-Authenticate: {WWW_AUTHENTICATE}", *self._write_reply_fields())
         await self._write(self._frame("401 Unauthorized", b"", fields))
 
     async def _send_refusal(
@@ -1450,7 +1471,8 @@ class RpcConnection:
         error page; the `Content-Type` header libevent adds is not
         written, as `_send_unauthorized` does not write it.
         """
-        await self._write(self._frame(status, body.encode(), page=page))
+        fields = self._write_reply_fields()
+        await self._write(self._frame(status, body.encode(), fields, page=page))
 
     async def _send_shutdown_refusal(self) -> None:
         """Answer a request `manager.interrupted` stopped from being queued.
@@ -1551,8 +1573,7 @@ class RpcConnection:
         shutdown has begun (`src/httpserver.cpp`, at
         bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
         """
-        close = self.manager.node.terminate_flag.is_set()
-        self._hand_reply(self.async_send(reply, close=close))
+        self._hand_reply(self.async_send(reply, close=self._shutting_down()))
 
     # Use with care
     def send_and_wait(self, reply: HttpReply) -> None:
