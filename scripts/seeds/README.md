@@ -60,6 +60,7 @@ behind  1 revision on master; the newest at the v31.1 tag
 ```text
 repo    bitcoin/bitcoin
 path    COPYING
+ref     v31.1
 commit  b23b901363c56043c536f32261ac8cb540624a84  2025-12-29
 blob    89960cbf2f221a29852ed162b25bda2afc0b2dd6
 pulled  2026-09-26

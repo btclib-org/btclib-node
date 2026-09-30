@@ -203,7 +203,16 @@ def main() -> int:
     for problem in problems:
         print(f"DRIFT: {problem}")
     if not problems:
-        print("Every vendored pin is still byte for byte, still at upstream's tip.")
+        # Two different claims, printed only for the entries each is true
+        # of: "at upstream's tip" is not what a `ref`-pinned entry (module
+        # docstring above) was checked against, and saying so for one
+        # would overstate what passing it means.
+        if any(entry.ref is None for entry in entries):
+            print(
+                "Every branch-tracked pin is still byte for byte, still at upstream's tip."
+            )
+        if any(entry.ref is not None for entry in entries):
+            print("Every ref-pinned pin is still byte for byte, still at its own tag.")
     return 1 if problems else 0
 
 
