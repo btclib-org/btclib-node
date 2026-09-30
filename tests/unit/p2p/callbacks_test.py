@@ -107,7 +107,7 @@ from btclib_node.p2p.callbacks import (
     MAX_CFILTERS_INFLIGHT_BYTES,
     MAX_CMPCTBLOCK_DEPTH,
     MAX_GETDATA_INFLIGHT_BYTES,
-    MAX_PENDING_CFILTERS_HEIGHTS,
+    MAX_PENDING_CFILTER_HASHES,
     addr,
     addrv2,
     advance_cfilters,
@@ -3945,7 +3945,7 @@ def test_a_getdata_past_the_pending_cap_is_silent(
     """A third request stacked past `MAX_PENDING_GETDATA_ITEMS` is silent.
 
     The same answer `get_cfilters` already gives a request past its own
-    `MAX_PENDING_CFILTERS_HEIGHTS`, and `getdata`'s own docstring is
+    `MAX_PENDING_CFILTER_HASHES`, and `getdata`'s own docstring is
     where the reasoning behind it, and Core's own different one, are
     argued.
 
@@ -4672,7 +4672,17 @@ def a_filters_node(
     is where the filters themselves are tested.
 
     `stale` is blocks the index knows and the active chain does not,
-    which is what a peer asking about an abandoned branch looks like.
+    which is what a peer asking about an abandoned branch looks like --
+    each carrying `status=BlockStatus.valid_header` by its own default,
+    a stop hash `_block_request_allowed` never serves, since this fake
+    models no ancestry for one. `an_index`'s own tests below (real
+    `BlockIndex` fixtures) are where a stale stop hash
+    `_block_request_allowed` does serve is exercised
+    (btclib-org/btclib-node#1476).
+
+    `get_ancestor` answers every height on the active chain by position,
+    which is the only ancestry this fake's own happy-path tests ever
+    walk: every stop hash they name is itself on `active_chain`.
     """
     active_chain = [(height).to_bytes(32, "big") for height in range(length)]
     header_dict = {
@@ -4680,6 +4690,13 @@ def a_filters_node(
         for height, block_hash in enumerate(active_chain)
     }
     header_dict.update(stale)
+
+    def get_ancestor(block_hash: bytes, height: int) -> bytes | None:
+        own_height = header_dict[block_hash].index
+        if height > own_height or height < 0:
+            return None
+        return active_chain[height]
+
     filter_index = SimpleNamespace(
         get_filter=lambda h: b"\x01" + h[-1:],
         get_header=lambda h: hash256(h)[::-1],
@@ -4691,6 +4708,7 @@ def a_filters_node(
                 active_chain=active_chain,
                 header_dict=header_dict,
                 get_block_info=header_dict.__getitem__,
+                get_ancestor=get_ancestor,
             ),
             filter_index=filter_index,
         ),
@@ -4706,6 +4724,25 @@ def a_filters_node(
         # empty here for every test that never trips that pacing bound
         pending_cfilters={},
     )
+
+
+def test_a_filters_node_s_get_ancestor_is_bounded_like_the_real_one() -> None:
+    """`None` past a block's own height and below zero, not an index error.
+
+    Mirrors `block_index_test.py`'s own
+    `test_get_ancestor_answers_what_the_parent_walk_answers`: no test
+    that drives `get_cfilters`/`get_cfheaders`/`get_cfcheckpt` ever asks
+    this fake for a height outside a block's own range, since
+    `_prepare_filter_request` refuses those before `_ancestor` is ever
+    called (btclib-org/btclib-node#1476) -- so the fake's own bound is
+    tested here directly instead.
+    """
+    node = a_filters_node(length=4)
+    get_ancestor = node.chainstate.block_index.get_ancestor
+    block_hash = node.chainstate.block_index.active_chain[2]
+    assert get_ancestor(block_hash, 2) == block_hash
+    assert get_ancestor(block_hash, 3) is None
+    assert get_ancestor(block_hash, -1) is None
 
 
 def a_getcfilters(
@@ -4754,17 +4791,17 @@ def test_get_cfilters_pauses_once_the_queue_is_full_and_registers_the_rest() -> 
     """`get_cfilters` stops scheduling once `conn` is at its pacing bound.
 
     Nothing is sent -- the peer was already at the bound before this
-    request arrived -- and every height is left on `node.pending_cfilters`,
-    keyed by the connection's own id, for `p2p.main.resume_cfilters` to
-    pick up later.
+    request arrived -- and every block hash is left on
+    `node.pending_cfilters`, keyed by the connection's own id, for
+    `p2p.main.resume_cfilters` to pick up later.
     """
     node = a_filters_node(length=8)
     peer = a_peer(queued_send_bytes=MAX_CFILTERS_INFLIGHT_BYTES)
     a_getcfilters(node, peer, 2, 5)
     assert not peer.sent
-    conn, heights = node.pending_cfilters[peer.id]
+    conn, block_hashes = node.pending_cfilters[peer.id]
     assert conn is peer
-    assert list(heights) == [2, 3, 4, 5]
+    assert list(block_hashes) == [h.to_bytes(32, "big") for h in (2, 3, 4, 5)]
 
 
 def test_a_paused_answer_resumes_once_the_queue_drains() -> None:
@@ -4779,11 +4816,11 @@ def test_a_paused_answer_resumes_once_the_queue_drains() -> None:
     peer = a_peer(queued_send_bytes=MAX_CFILTERS_INFLIGHT_BYTES)
     a_getcfilters(node, peer, 2, 5)
     assert not peer.sent
-    _conn, heights = node.pending_cfilters[peer.id]
+    _conn, block_hashes = node.pending_cfilters[peer.id]
 
     peer.queued_send_bytes = 0
-    assert advance_cfilters(node, peer, heights) is True
-    assert not heights
+    assert advance_cfilters(node, peer, block_hashes) is True
+    assert not block_hashes
     assert [msg.block_hash for msg in peer.sent] == [
         h.to_bytes(32, "big") for h in range(2, 6)
     ]
@@ -4796,53 +4833,58 @@ def test_a_second_getcfilters_while_the_first_is_still_paused_is_not_lost() -> N
     the two requests arrived, once the connection's own queue drains --
     rather than the second overwriting `node.pending_cfilters`'s entry
     for this connection and discarding the first range's own remaining
-    heights, which is what a plain assignment there used to do.
+    block hashes, which is what a plain assignment there used to do.
     """
     node = a_filters_node(length=20)
     peer = a_peer(queued_send_bytes=MAX_CFILTERS_INFLIGHT_BYTES)
     a_getcfilters(node, peer, 0, 5)
     assert not peer.sent
     a_getcfilters(node, peer, 10, 12)
-    _conn, heights = node.pending_cfilters[peer.id]
-    assert list(heights) == [0, 1, 2, 3, 4, 5, 10, 11, 12]
+    _conn, block_hashes = node.pending_cfilters[peer.id]
+    assert list(block_hashes) == [
+        h.to_bytes(32, "big") for h in (0, 1, 2, 3, 4, 5, 10, 11, 12)
+    ]
 
     peer.queued_send_bytes = 0
-    assert advance_cfilters(node, peer, heights) is True
+    assert advance_cfilters(node, peer, block_hashes) is True
     assert [msg.block_hash for msg in peer.sent] == [
         h.to_bytes(32, "big") for h in (0, 1, 2, 3, 4, 5, 10, 11, 12)
     ]
 
 
 def test_a_getcfilters_past_the_pending_cap_is_silent() -> None:
-    """A third request stacked past `MAX_PENDING_CFILTERS_HEIGHTS` is silent.
+    """A third request stacked past `MAX_PENDING_CFILTER_HASHES` is silent.
 
     Two requests of `MAX_GETCFILTERS_SIZE` heights apiece -- `_filter_range`'s
     own bound on any one of them -- already reach the cap between them; a
     third is refused whole rather than partially extending it.
 
-    `_filter_range` already answers a request it will not serve with
-    silence rather than an error -- an unknown filter type, an unknown
-    stop hash, a range too long -- and a peer pipelining past what this
-    connection still extends for is the same kind of request this node
-    will not serve, for lack of a defined refusal message BIP157 leaves
-    it to send instead.
+    `_prepare_filter_request` now disconnects a request it declines on
+    protocol-validity grounds -- an unsupported filter type, an invalid
+    stop hash, a range too long -- matching Core (ISS 1477). A peer
+    pipelining past what this connection still extends for is not one of
+    those: it is ordinary pipelining this node already tolerates
+    elsewhere, so this bound answers it with silence instead, for lack
+    of a defined refusal message BIP157 leaves it to send -- the same
+    reasoning `MAX_PENDING_CFILTER_HASHES`'s own comment argues.
     """
-    node = a_filters_node(length=MAX_PENDING_CFILTERS_HEIGHTS + 20)
+    node = a_filters_node(length=MAX_PENDING_CFILTER_HASHES + 20)
     peer = a_peer(queued_send_bytes=MAX_CFILTERS_INFLIGHT_BYTES)
     a_getcfilters(node, peer, 0, MAX_GETCFILTERS_SIZE - 1)
-    a_getcfilters(node, peer, MAX_GETCFILTERS_SIZE, MAX_PENDING_CFILTERS_HEIGHTS - 1)
-    _conn, heights = node.pending_cfilters[peer.id]
-    assert len(heights) == MAX_PENDING_CFILTERS_HEIGHTS
+    a_getcfilters(node, peer, MAX_GETCFILTERS_SIZE, MAX_PENDING_CFILTER_HASHES - 1)
+    _conn, block_hashes = node.pending_cfilters[peer.id]
+    assert len(block_hashes) == MAX_PENDING_CFILTER_HASHES
 
     a_getcfilters(
         node,
         peer,
-        MAX_PENDING_CFILTERS_HEIGHTS,
-        MAX_PENDING_CFILTERS_HEIGHTS,
+        MAX_PENDING_CFILTER_HASHES,
+        MAX_PENDING_CFILTER_HASHES,
     )
     assert not peer.sent
-    _conn, heights = node.pending_cfilters[peer.id]
-    assert len(heights) == MAX_PENDING_CFILTERS_HEIGHTS
+    assert not peer.stopped
+    _conn, block_hashes = node.pending_cfilters[peer.id]
+    assert len(block_hashes) == MAX_PENDING_CFILTER_HASHES
 
 
 def test_get_cfilters_stops_once_the_connection_closes_mid_answer() -> None:
@@ -4889,33 +4931,37 @@ def test_get_cfilters_refuses_a_gap_in_a_promised_index() -> None:
 
 
 def test_a_filter_type_this_node_does_not_serve_is_not_answered() -> None:
-    """A `getcfilters` naming an unserved filter type gets no answer.
+    """A `getcfilters` naming an unserved filter type disconnects the peer.
 
-    BIP158 defines the basic filter and nothing else, so any other code is a
-    type no node has; BIP157 says answer with nothing.
+    BIP158 defines the basic filter and nothing else, so any other code
+    is a type no node has; Core's `PrepareBlockFilterRequest`
+    disconnects rather than answering (ISS 1477).
     """
     # BIP158 defines the basic filter and nothing else, so any other
-    # code is a type no node has; BIP157 says answer with nothing
+    # code is a type no node has; Core's `PrepareBlockFilterRequest`
+    # disconnects rather than answering
     node = a_filters_node()
     peer = a_peer()
     a_getcfilters(node, peer, 0, 1, filter_type=cast("BlockFilterType", 1))
     assert not peer.sent
+    assert peer.stopped == [True]
 
 
-def test_peerblockfilters_off_answers_none_of_the_three() -> None:
-    """ISS 1395: `-peerblockfilters` off answers none of the three requests.
+def test_peerblockfilters_off_disconnects_for_all_three() -> None:
+    """ISS 1395, ISS 1477: `-peerblockfilters` off disconnects all three asks.
 
     Core's `PrepareBlockFilterRequest` folds `peer.m_our_services &
     NODE_COMPACT_FILTERS` into the same `supported_filter_type` check as
-    the filter type itself (`_filter_range`'s own docstring), so a type
-    this node never advertised is refused the same silent way as one
-    BIP157 has no name for.
+    the filter type itself (`_prepare_filter_request`'s own docstring),
+    so a type this node never advertised is refused the same way as one
+    BIP157 has no name for -- by disconnecting, matching Core.
     """
     node = a_filters_node()
     node.config.peerblockfilters = False
     peer = a_peer()
     a_getcfilters(node, peer, 0, 1)
     assert not peer.sent
+    assert peer.stopped == [True]
 
     peer = a_peer()
     get_cfheaders(
@@ -4924,6 +4970,7 @@ def test_peerblockfilters_off_answers_none_of_the_three() -> None:
         peer,
     )
     assert not peer.sent
+    assert peer.stopped == [True]
 
     peer = a_peer()
     get_cfcheckpt(
@@ -4932,62 +4979,181 @@ def test_peerblockfilters_off_answers_none_of_the_three() -> None:
         peer,
     )
     assert not peer.sent
+    assert peer.stopped == [True]
 
 
 def test_a_stop_hash_this_node_never_heard_of_is_not_answered() -> None:
-    """A `getcfilters` naming an unknown stop hash gets no answer."""
+    """A `getcfilters` naming an unknown stop hash disconnects the peer."""
     node = a_filters_node()
     peer = a_peer()
     get_cfilters(
         node, GetCFilters(BlockFilterType.BASIC, 0, b"\x11" * 32).serialize(), peer
     )
     assert not peer.sent
+    assert peer.stopped == [True]
 
 
 def test_a_stop_hash_off_the_active_chain_is_not_answered() -> None:
-    """A `getcfilters` naming a stop hash off the active chain gets no answer.
+    """A `getcfilters` naming a never-validated stop hash disconnects the peer.
 
-    A block this node knows and did not keep: its height is a height
-    on the branch it left, and answering would send the filters of
-    blocks the peer did not ask about.
+    A block this node knows and never validated: `_block_request_allowed`
+    refuses it the same way Core's `BlockRequestAllowed` does, disconnecting
+    as `_prepare_filter_request` does for any block it refuses (ISS 1477).
+    A block this node *did* validate and has since reorged away from is
+    answered instead, along its own chain rather than the active one --
+    `test_a_stale_stop_hash_is_served_from_its_own_chain_not_the_active_one`
+    below (ISS 1476).
     """
-    # a block this node knows and did not keep: its height is a height
-    # on the branch it left, and answering would send the filters of
-    # blocks the peer did not ask about
     stale_hash = b"\x22" * 32
-    node = a_filters_node(stale={stale_hash: SimpleNamespace(index=3)})
+    node = a_filters_node(
+        stale={stale_hash: SimpleNamespace(index=3, status=BlockStatus.valid_header)}
+    )
     peer = a_peer()
     get_cfilters(
         node, GetCFilters(BlockFilterType.BASIC, 0, stale_hash).serialize(), peer
     )
     assert not peer.sent
+    assert peer.stopped == [True]
 
 
 def test_a_stop_hash_at_a_height_the_chain_has_not_reached_is_not_answered() -> None:
-    """A `getcfilters` naming a stop past the chain's tip is not answered."""
-    node = a_filters_node(length=4, stale={b"\x33" * 32: SimpleNamespace(index=9)})
+    """A `getcfilters` naming a never-validated stop hash disconnects."""
+    node = a_filters_node(
+        length=4,
+        stale={b"\x33" * 32: SimpleNamespace(index=9, status=BlockStatus.valid_header)},
+    )
     peer = a_peer()
     get_cfilters(
         node, GetCFilters(BlockFilterType.BASIC, 0, b"\x33" * 32).serialize(), peer
     )
     assert not peer.sent
+    assert peer.stopped == [True]
+
+
+def a_cfilters_node(block_index: BlockIndex, *, peerblockfilters: bool = True) -> Any:
+    """Build a node over a real `block_index`, with a filter index stand-in.
+
+    The filter index answers deterministically from the block hash
+    alone -- what these tests are about is which block a request names,
+    never what its filter contains;
+    `tests/unit/chainstate/filter_index_test.py` is where the filters
+    themselves are tested.
+    """
+    node = a_data_node(block_index=block_index)
+    node.config.peerblockfilters = peerblockfilters
+    node.chainstate.filter_index = SimpleNamespace(
+        get_filter=lambda h: b"\x01" + h[:1],
+        get_header=lambda h: hash256(b"header" + h)[::-1],
+        get_filter_hash=lambda h: hash256(b"filterhash" + h),
+    )
+    node.pending_cfilters = {}
+    return node
+
+
+def test_a_stale_stop_hash_is_served_from_its_own_chain_not_the_active_one(
+    an_index: BlockIndex,
+) -> None:
+    """A `getcfilters` naming a validated, reorged-away stop hash is served.
+
+    Core's `BlockRequestAllowed` allows a block off the active chain once
+    it passed validation, and `ProcessGetCFilters` resolves the range
+    from the stop block's own ancestry rather than from `ActiveChain()`
+    -- so a block this node once connected and has since reorged away
+    from is answered from its own chain, not the one that replaced it
+    (ISS 1476).
+    """
+    stale = generate_random_header_chain(3, _GENESIS)
+    an_index.add_headers(stale)
+    for header in stale:
+        an_index.set_status(header.hash, BlockStatus.valid)
+    # an unrelated sibling chain, off genesis too, that becomes active:
+    # its own blocks at heights 1-2 are not `stale`'s, so an answer
+    # drawn from `active_chain` at those heights would be wrong, and
+    # height 3 does not exist on `active_chain` at all
+    activated(an_index, generate_random_header_chain(2, _GENESIS))
+
+    node = a_cfilters_node(an_index)
+    peer = a_peer()
+    get_cfilters(
+        node, GetCFilters(BlockFilterType.BASIC, 0, stale[-1].hash).serialize(), peer
+    )
+    assert not peer.stopped
+    assert [msg.block_hash for msg in peer.sent] == [
+        _GENESIS,
+        *[header.hash for header in stale],
+    ]
+
+
+def test_a_stale_getcfheaders_is_served_from_its_own_chain(
+    an_index: BlockIndex,
+) -> None:
+    """A `getcfheaders` naming a stale-but-allowed stop hash resolves too."""
+    stale = generate_random_header_chain(3, _GENESIS)
+    an_index.add_headers(stale)
+    for header in stale:
+        an_index.set_status(header.hash, BlockStatus.valid)
+    activated(an_index, generate_random_header_chain(2, _GENESIS))
+
+    node = a_cfilters_node(an_index)
+    peer = a_peer()
+    get_cfheaders(
+        node,
+        GetCFHeaders(BlockFilterType.BASIC, 1, stale[-1].hash).serialize(),
+        peer,
+    )
+    assert not peer.stopped
+    (msg,) = peer.sent
+    assert isinstance(msg, CFHeaders)
+    filter_index = node.chainstate.filter_index
+    assert msg.previous_filter_header == filter_index.get_header(_GENESIS)
+    assert list(msg.filter_hashes) == [
+        filter_index.get_filter_hash(header.hash) for header in stale
+    ]
+
+
+def test_a_stale_getcfcheckpt_is_served_from_its_own_chain(
+    an_index: BlockIndex, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `getcfcheckpt` naming a stale-but-allowed stop hash resolves too."""
+    monkeypatch.setattr(cb, "CFCHECKPT_INTERVAL", 2)
+    stale = generate_random_header_chain(4, _GENESIS)
+    an_index.add_headers(stale)
+    for header in stale:
+        an_index.set_status(header.hash, BlockStatus.valid)
+    activated(an_index, generate_random_header_chain(2, _GENESIS))
+
+    node = a_cfilters_node(an_index)
+    peer = a_peer()
+    get_cfcheckpt(
+        node, GetCFCheckpt(BlockFilterType.BASIC, stale[-1].hash).serialize(), peer
+    )
+    assert not peer.stopped
+    (msg,) = peer.sent
+    filter_index = node.chainstate.filter_index
+    assert list(msg.filter_headers) == [
+        filter_index.get_header(stale[1].hash),
+        filter_index.get_header(stale[3].hash),
+    ]
 
 
 def test_a_range_that_runs_backwards_is_not_answered() -> None:
-    """A range whose start is past its stop gets nothing, from either message.
+    """A range whose start is past its stop disconnects, from either message.
 
-    And the same range asked of getcfheaders, which is the half that can tell:
-    an empty range sends no cfilter either way, where a cfheaders of no hashes
-    is a message the peer would have to read.
+    And the same range asked of getcfheaders, which is the half that can
+    tell: an empty range would send no `cfilter` either way, where a
+    `cfheaders` of no hashes is a message the peer would have to read --
+    Core disconnects before either question is reached (ISS 1477).
     """
     node = a_filters_node()
     peer = a_peer()
     a_getcfilters(node, peer, 5, 2)
     assert not peer.sent
+    assert peer.stopped == [True]
 
     # and the same range asked of getcfheaders, which is the half that
-    # can tell: an empty range sends no cfilter either way, where a
-    # cfheaders of no hashes is a message the peer would have to read
+    # can tell: an empty range would send no cfilter either way, where a
+    # cfheaders of no hashes is a message the peer would have to read --
+    # Core disconnects before either question is reached
     peer = a_peer()
     get_cfheaders(
         node,
@@ -4995,6 +5161,7 @@ def test_a_range_that_runs_backwards_is_not_answered() -> None:
         peer,
     )
     assert not peer.sent
+    assert peer.stopped == [True]
 
 
 @pytest.mark.parametrize(
@@ -5003,10 +5170,11 @@ def test_a_range_that_runs_backwards_is_not_answered() -> None:
     ids=["getcfilters", "getcfheaders"],
 )
 def test_a_range_is_bounded_strictly_below_the_limit(ask: Any, limit: int) -> None:
-    """A range one block short of the limit is answered; exactly at it is not.
+    """A range short of the limit is answered; at the limit it disconnects.
 
     BIP157 bounds the difference and bounds it strictly, so a range
-    whose ends differ by exactly the limit is one block too many.
+    whose ends differ by exactly the limit is one block too many, and
+    Core disconnects the peer over it (ISS 1477).
     """
     # BIP157 bounds the difference and bounds it strictly, so a range
     # whose ends differ by exactly the limit is one block too many
@@ -5020,6 +5188,7 @@ def test_a_range_is_bounded_strictly_below_the_limit(ask: Any, limit: int) -> No
         peer,
     )
     assert peer.sent
+    assert not peer.stopped
 
     peer = a_peer()
     ask(
@@ -5028,6 +5197,7 @@ def test_a_range_is_bounded_strictly_below_the_limit(ask: Any, limit: int) -> No
         peer,
     )
     assert not peer.sent
+    assert peer.stopped == [True]
 
 
 def test_the_filter_hashes_of_a_range_are_answered_with_the_header_before_it() -> None:
@@ -5072,13 +5242,14 @@ def test_a_range_that_starts_at_the_genesis_block_has_no_header_before_it() -> N
 
 
 def test_a_getcfheaders_this_node_cannot_answer_is_not_answered() -> None:
-    """A `getcfheaders` naming an unknown stop hash gets no answer."""
+    """A `getcfheaders` naming an unknown stop hash disconnects the peer."""
     node = a_filters_node()
     peer = a_peer()
     get_cfheaders(
         node, GetCFHeaders(BlockFilterType.BASIC, 0, b"\x11" * 32).serialize(), peer
     )
     assert not peer.sent
+    assert peer.stopped == [True]
 
 
 def test_get_cfheaders_refuses_a_gap_in_the_header_before_the_range() -> None:
@@ -5189,20 +5360,25 @@ def test_get_cfcheckpt_refuses_a_gap_in_a_promised_index() -> None:
 
 
 def test_a_getcfcheckpt_this_node_cannot_answer_is_not_answered() -> None:
-    """A `getcfcheckpt` this node cannot answer for any reason gets no answer.
+    """A `getcfcheckpt` this node cannot answer for any reason disconnects.
 
     Three different reasons in one test: a stop hash never heard of, one
-    off the active chain, and a filter type nobody serves -- all silent.
+    never validated, and a filter type nobody serves -- Core disconnects
+    for each of them (ISS 1477).
     """
-    node = a_filters_node(length=4, stale={b"\x44" * 32: SimpleNamespace(index=2)})
+    node = a_filters_node(
+        length=4,
+        stale={b"\x44" * 32: SimpleNamespace(index=2, status=BlockStatus.valid_header)},
+    )
     for stop_hash, filter_type in (
         (b"\x11" * 32, BlockFilterType.BASIC),  # never heard of
-        (b"\x44" * 32, BlockFilterType.BASIC),  # off the active chain
+        (b"\x44" * 32, BlockFilterType.BASIC),  # never validated
         ((1).to_bytes(32, "big"), 1),  # a filter type nobody serves
     ):
         peer = a_peer()
         get_cfcheckpt(node, GetCFCheckpt(filter_type, stop_hash).serialize(), peer)
         assert not peer.sent, stop_hash.hex()
+        assert peer.stopped == [True], stop_hash.hex()
 
 
 def test_a_headers_batch_is_a_block_the_peer_has(tmp_path: Path) -> None:
