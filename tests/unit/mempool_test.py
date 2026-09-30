@@ -932,6 +932,48 @@ def test_remove_dependents_walks_a_chain_of_held_spenders() -> None:
     assert mempool.size == 0
 
 
+def test_remove_dependents_does_not_revisit_a_shared_descendant() -> None:
+    """A descendant reached through two parents is walked, and popped, once.
+
+    `dropped` has two outputs; `child_a` and `child_b` each spend one,
+    and `grandchild` spends both of theirs in turn -- a diamond, not a
+    chain, so the walk reaches `grandchild`'s own wtxid a second time
+    once both parents are processed. `dependents` is a `set`, so the
+    second arrival is the `if candidate_wtxid in dependents: continue`
+    branch `test_remove_dependents_walks_a_chain_of_held_spenders`
+    above, a single-parent chain, never reaches.
+    """
+    mempool = Mempool(Logger(debug=True))
+    dropped = Tx(
+        version=1,
+        lock_time=0,
+        vin=[
+            TxIn(
+                prev_out=OutPoint(secrets.token_bytes(32), 0),
+                script_sig=script.serialize([secrets.token_bytes(32)]),
+                sequence=0xFFFFFFFF,
+            )
+        ],
+        vout=[
+            TxOut(value=1, script_pub_key=script.serialize([secrets.token_bytes(32)])),
+            TxOut(value=1, script_pub_key=script.serialize([secrets.token_bytes(32)])),
+        ],
+    )
+    child_a = a_spend_of([(dropped.id, 0)])
+    child_b = a_spend_of([(dropped.id, 1)])
+    grandchild = a_spend_of([(child_a.id, 0), (child_b.id, 0)])
+    assert mempool.add_tx(child_a, 1000)
+    assert mempool.add_tx(child_b, 1000)
+    assert mempool.add_tx(grandchild, 1000)
+
+    mempool.remove_dependents(dropped)
+
+    assert not mempool.contains_tx(child_a)
+    assert not mempool.contains_tx(child_b)
+    assert not mempool.contains_tx(grandchild)
+    assert mempool.size == 0
+
+
 def test_remove_with_descendants_on_an_absent_wtxid_is_a_no_op() -> None:
     """`remove_with_descendants` of a wtxid never held changes nothing.
 

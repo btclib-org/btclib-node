@@ -1547,6 +1547,107 @@ def test_a_reorg_evicts_a_transaction_the_reorg_itself_invalidated(
     assert not node.mempool.contains_tx(orphaned)
 
 
+def test_still_final_and_mature_refuses_a_transaction_past_its_own_locktime(
+    node: Node,
+) -> None:
+    """`is_final`'s own height-based check can refuse a held transaction.
+
+    `_still_final_and_mature` re-runs finality against the tip as it
+    stands now, not only at acceptance; called directly, with
+    `lock_time` set to the tip's own height (not yet reached) and
+    `sequence` short of Core's own escape hatch, it is this branch
+    alone -- no reorg needed to move the tip backward under it.
+    """
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, chain)
+    funding = chain[0].transactions[0]
+    spend_height = len(node.chainstate.block_index.active_chain)
+    nonfinal = locked_spend(
+        funding, funding.vout[0].value, lock_time=spend_height, sequence=0
+    )
+
+    assert not main._still_final_and_mature(node, nonfinal)
+
+
+def test_still_final_and_mature_keeps_a_transaction_whose_prevout_is_gone(
+    node: Node,
+) -> None:
+    """An unresolvable prevout is kept here, not this function's own call.
+
+    Neither the UTXO set nor the mempool holds what `ghost` spends.
+    `_still_final_and_mature`'s own docstring argues why this is safe in
+    production -- `_reconcile_mempool_for_reorg`'s own two
+    `Mempool.remove_dependents` calls already take out whatever this
+    shape would otherwise leave behind, before this function is ever
+    reached for it; called directly, with neither of those having run,
+    it is this branch alone.
+    """
+    ghost = generate_random_transaction()
+
+    assert main._still_final_and_mature(node, ghost)
+
+
+def test_still_final_and_mature_refuses_an_unmet_time_based_relative_lock(
+    node: Node,
+) -> None:
+    """A BIP68 time-based relative lock unmet at re-check time refuses.
+
+    Exercises the `ancestor_median_time_past` closure --
+    `test_reject_block_whose_time_based_relative_lock_is_not_satisfied`
+    above's own docstring is where the identical closure, in
+    `_validate_block`, is argued a height-based lock never reaches.
+    """
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, chain)
+    funding = chain[0].transactions[0]
+    type_flag = 1 << 22
+    unmet = relative_locked_spend(
+        funding, funding.vout[0].value, sequence=type_flag | 1000
+    )
+
+    assert not main._still_final_and_mature(node, unmet)
+
+
+def test_still_final_and_mature_accepts_an_ordinary_mature_spend(node: Node) -> None:
+    """A final, mature, version-1 spend falls through every check kept."""
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, chain)
+    funding = chain[0].transactions[0]
+    healthy = generate_random_transaction(funding.id, value=funding.vout[0].value)
+
+    assert main._still_final_and_mature(node, healthy)
+
+
+def test_evict_immature_or_nonfinal_skips_a_wtxid_a_cascade_already_took(
+    node: Node,
+) -> None:
+    """A descendant a cascading eviction already removed is not rechecked.
+
+    `parent` is never final -- the same shape
+    `test_still_final_and_mature_refuses_a_transaction_past_its_own_
+    locktime` above pins directly -- so evicting it takes `child` out
+    too, through `Mempool.remove_with_descendants`. The loop's own
+    snapshot still names `child`'s wtxid; the guard above
+    `_still_final_and_mature` is what answers for it once reached,
+    rather than re-deriving an answer for an entry already gone.
+    """
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, chain)
+    funding = chain[0].transactions[0]
+    spend_height = len(node.chainstate.block_index.active_chain)
+    parent = locked_spend(
+        funding, funding.vout[0].value, lock_time=spend_height, sequence=0
+    )
+    assert node.mempool.add_tx(parent, 1000)
+    child = generate_random_transaction(parent.id, value=parent.vout[0].value)
+    assert node.mempool.add_tx(child, 1000)
+
+    main._evict_immature_or_nonfinal(node)
+
+    assert not node.mempool.contains_tx(parent)
+    assert not node.mempool.contains_tx(child)
+
+
 def test_a_connected_block_restarts_the_mempool_s_decay_clock(node: Node) -> None:
     """Connecting a block restarts the mempool's rolling-minimum decay clock."""
     # note_block_connected runs once per block update_chain connects to the
