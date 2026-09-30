@@ -1351,6 +1351,7 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **More than six blocks' worth raises it to the log, to `-alertnotify`, and
   to `getblockchaininfo`'s and `getnetworkinfo`'s own new `warnings` field**
   (closes #1522).
+
 ### `urllib3` moves to 2.8.0 in the lock
 
 - **`uv.lock` pins `urllib3` 2.8.0**, past GHSA-gh4c-6fx4-qh6g,
