@@ -369,15 +369,19 @@ def test_a_header_failing_bip94s_timewarp_bound_becomes_a_misbehaving_error(
 def _mine_in_place(header: BlockHeader, pow_limit_bits: bytes) -> BlockHeader:
     """Search `header.nonce` upward until it meets `pow_limit_bits`, in place.
 
-    The nonce is searched in place rather than by `brute_force_nonce`,
-    whose copy would refuse a version of zero or below, which a block's
-    own header reaches `add_headers` with unchecked. Shared rather than
-    inlined at each caller: a regtest target is met about every other
-    nonce, so the retry branch below is a coin flip on any one call, and
-    every caller of `a_mined_header` across this file already draws
-    enough of those flips between them to make the branch a certainty
-    over the whole suite -- the shape a lone caller's own coverage
-    cannot rely on for itself.
+    The nonce is searched in place rather than by `brute_force_nonce`.
+    Before btclib 2026.9.29 (btclib-org/btclib@bbb1ad71, closing
+    btclib-org/btclib#2309), `brute_force_nonce`'s own copy would refuse
+    a version of zero or below before ever searching, which a block's
+    own header reaches `add_headers` with unchecked; that refusal is
+    gone now (btclib-org/btclib-node#1511), but this helper's own
+    unbounded retry and in-place mutation are kept regardless of it.
+    Shared rather than inlined at each caller: a regtest target is met
+    about every other nonce, so the retry branch below is a coin flip on
+    any one call, and every caller of `a_mined_header` across this file
+    already draws enough of those flips between them to make the branch
+    a certainty over the whole suite -- the shape a lone caller's own
+    coverage cannot rely on for itself.
     """
     while True:
         with suppress(BTClibValueError):
@@ -454,8 +458,12 @@ def test_a_version_zero_header_below_bip34_is_indexed_and_reloaded(
 ) -> None:
     """ISS 1262: below BIP34's height Core takes a version of zero.
 
-    btclib's `BlockHeader.assert_valid` refuses one, so the index stores
-    and reads it back unchecked.
+    `BlockInfo.serialize` and `deserialize` round-trip this header with
+    no bypass needed for it: btclib's `BlockHeader.assert_valid` used to
+    refuse one on its own regardless of height, which is why the index
+    used to store and read it back unchecked, fixed at btclib 2026.9.29
+    (btclib-org/btclib@bbb1ad71, closing btclib-org/btclib#2309;
+    btclib-org/btclib-node#1511).
     """
     params = replace(
         RegTest().consensus, bip34_height=2, bip66_height=2, bip65_height=2
@@ -1047,19 +1055,86 @@ def test_long_init(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
     assert block_index.skip == new_block_index.skip
 
 
-def test_block_locators(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
-    """A 24-header chain's locator carries 14 entries.
+@pytest.mark.parametrize(
+    ("length", "heights"),
+    [
+        (0, [0]),
+        (1, [1, 0]),
+        (10, [10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0]),
+        (11, [11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0]),
+        (12, [12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0]),
+        (
+            100,
+            [
+                100,
+                99,
+                98,
+                97,
+                96,
+                95,
+                94,
+                93,
+                92,
+                91,
+                90,
+                89,
+                87,
+                83,
+                75,
+                59,
+                27,
+                0,
+            ],
+        ),
+        (
+            1000,
+            [
+                1000,
+                999,
+                998,
+                997,
+                996,
+                995,
+                994,
+                993,
+                992,
+                991,
+                990,
+                989,
+                987,
+                983,
+                975,
+                959,
+                927,
+                863,
+                735,
+                479,
+                0,
+            ],
+        ),
+    ],
+)
+def test_block_locators(
+    a_chainstate: Callable[[Path | None], Chainstate],
+    length: int,
+    heights: list[int],
+) -> None:
+    """The locator pins the exact heights Core's `LocatorEntries` visits.
 
-    Ten dense entries near the tip, then a step that doubles each time,
-    reaching back to the genesis in four more -- the shape
-    get_block_locator_hashes' own docstring names.
+    `heights` is worked out by hand from `LocatorEntries` (`src/chain.cpp`,
+    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the tip and the eleven
+    headers below it dense, every entry after the twelfth doubling the gap
+    to the one before it, until the walk overshoots genesis and clamps
+    there. `get_block_locator_hashes` is never consulted to derive them.
     """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
-    chain = generate_random_header_chain(24, RegTest().genesis.hash)
-    block_index.add_headers(chain)
-    locators = block_index.get_block_locator_hashes()
-    assert len(locators) == 14
+    genesis = RegTest().genesis
+    chain = generate_random_header_chain(length, genesis.hash)
+    if chain:
+        block_index.add_headers(chain)
+    expected = [genesis.hash if h == 0 else chain[h - 1].hash for h in heights]
+    assert block_index.get_block_locator_hashes() == expected
 
 
 def test_a_locator_from_a_start_header_is_that_header_s_own_tip_locator(

@@ -91,8 +91,8 @@ def peer_address(
     return NetworkAddressV2(timestamp, services, network_id, parsed.packed, port)
 
 
-# Core's `SeedsServiceFlags` (`src/protocol.h`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the services a fixed seed
+# Core's `SeedsServiceFlags` (`src/protocol.h`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the services a fixed seed
 # and a DNS seed's answer are recorded with, which the dial loop requires.
 SEEDS_SERVICE_FLAGS = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
 # `ThreadDNSAddressSeed`'s `nMaxIPs`: how many answers one seed's `x9.`
@@ -165,8 +165,8 @@ def ip_and_port(ip: str, port: int) -> str:
     return f"[{parsed}]:{port}"
 
 
-# Core's own default (`DEFAULT_CONNECT_TIMEOUT`, src/netbase.h at
-# bitcoin/bitcoin@ca7162cde5), not the old poll loop's ten-passes-at-0.1s
+# Core's own default (`DEFAULT_CONNECT_TIMEOUT`, src/netbase.h
+# at bitcoin/bitcoin@ca7162cde5), not the old poll loop's ten-passes-at-0.1s
 # budget this constant carried until ISS 681: that budget was never
 # itself checked against Core, and it was too tight for what
 # `loop.sock_connect` needs on Windows' Proactor loop to notice a
@@ -280,8 +280,8 @@ _ANSWERED = b"answered-"
 # does for `self.addresses`.
 _MAX_ADDRESSES = 10000
 
-# `ThreadOpenConnections`' own window (`src/net.cpp`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a draw tried less than
+# `ThreadOpenConnections`' own window (`src/net.cpp`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a draw tried less than
 # this long ago is passed over. The longest any reader of
 # `PeerDB.last_try` looks back, so it is also how long a try is kept.
 RECENT_TRY_SECONDS = 10 * 60
@@ -466,8 +466,8 @@ class PeerDB:
         # Core's `AddrInfo::m_last_try`, by `endpoint_key`: when this
         # node last tried to connect to an endpoint either table holds.
         # In memory only, as `AddrInfo`'s serialization leaves
-        # `m_last_try` out of `peers.dat` (`src/addrman_impl.h`, at
-        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `attempt` writes it
+        # `m_last_try` out of `peers.dat` (`src/addrman_impl.h`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `attempt` writes it
         # from `P2pManager`'s thread alone. `last_try` reads it from
         # there too, and from `get_active_addresses`'s own call into
         # `_aged_out`'s grace check, reachable from `Node`'s thread

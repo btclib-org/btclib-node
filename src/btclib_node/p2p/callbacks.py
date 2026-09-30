@@ -51,7 +51,6 @@ from btclib.p2p.compact_blocks import (
     BlockTxn,
     CmpctBlock,
     GetBlockTxn,
-    PrefilledTransaction,
     SendCmpct,
 )
 from btclib.p2p.data import BlockPayload as BlockMsg
@@ -99,6 +98,7 @@ from btclib_node.main import (
     is_block_failed,
     is_block_mutated,
     is_cached_invalid,
+    new_pow_valid_block,
     passes_check_block,
     verify_mempool_acceptance,
 )
@@ -111,6 +111,7 @@ from btclib_node.p2p.chain_sync import (
     disconnect_if_insufficient_work,
     protect_if_caught_up,
 )
+from btclib_node.p2p.compact_block import compact_block
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 from btclib_node.p2p.messages import FinalAlert
 from btclib_node.p2p.protocol_version import (
@@ -143,7 +144,6 @@ __all__ = [
     "advance_getdata",
     "block",
     "callbacks",
-    "compact_block",
     "feefilter",
     "get_cfcheckpt",
     "get_cfheaders",
@@ -161,6 +161,7 @@ __all__ = [
     "ping",
     "pong",
     "sendaddrv2",
+    "sendcmpct",
     "sendheaders",
     "tx",
     "verack",
@@ -299,8 +300,8 @@ def has_all_desirable_services(node: Node, services: int) -> bool:
     return not desirable & ~services
 
 
-# Core's `HEADERS_RESPONSE_TIME` (`net_processing.cpp`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag), in seconds: how long a
+# Core's `HEADERS_RESPONSE_TIME` (`net_processing.cpp`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), in seconds: how long a
 # `getheaders` a peer has not answered holds off the next one to it.
 _HEADERS_RESPONSE_TIME = 2 * 60
 
@@ -458,8 +459,8 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
 
     conn.version_message = version_msg
     # Core's `SetServices` of an outbound peer's own services, ahead of
-    # every refusal below (`src/net_processing.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a table row gossip
+    # every refusal below (`src/net_processing.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a table row gossip
     # mislabelled is corrected here, the peer dropped or not
     if not conn.inbound:
         node.p2p_manager.peer_db.set_services(conn.address, version_msg.services)
@@ -482,8 +483,8 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     # Core's `VERSION` handler, right after `VERACK`, calls
     # `SetupAddressRelay` for a peer this node dialled, and sends it a
     # `getaddr` with room for the answer past
-    # `_MAX_ADDR_PROCESSING_TOKEN_BUCKET` (`net_processing.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). An inbound peer keeps
+    # `_MAX_ADDR_PROCESSING_TOKEN_BUCKET` (`net_processing.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). An inbound peer keeps
     # the one token it started with, and waits for its own first `addr`,
     # `addrv2` or `getaddr`. `SetupAddressRelay` answers false, and so
     # sends no `getaddr`, for a block-relay-only peer.
@@ -493,8 +494,8 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
         conn.addr_token_bucket += MAX_ADDR_TO_SEND
 
     # Right after that `getaddr`, Core calls `m_addrman.Good(pfrom.addr)`
-    # for a peer this node dialled (`net_processing.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag), under
+    # for a peer this node dialled (`net_processing.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), under
     # `!pfrom.IsInboundConn()` alone -- not waiting for this connection's
     # own `verack`, which a peer that answers `version` and then stalls
     # never sends, and which `manager.py`'s own 60-second drop of a
@@ -523,8 +524,8 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     # because an absent flag means true, which is BIP37's default and
     # Core's. A block-relay-only connection or a feeler relays no
     # transaction whatever the peer asked for: Core's `VERSION` handler
-    # builds no `TxRelay` for either (`net_processing.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so nothing is announced
+    # builds no `TxRelay` for either (`net_processing.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so nothing is announced
     # to it and a `getdata` of its for a transaction goes unanswered.
     conn.relay_tx = (
         version_msg.is_relay_requested and not conn.block_relay and not conn.feeler
@@ -638,6 +639,45 @@ def sendheaders(node: Node, msg: bytes, conn: Connection) -> None:
     conn.prefers_headers = True
 
 
+# `sendcmpct`'s payload: the announce octet and the eight of the version
+_SENDCMPCT_SIZE = 9
+
+
+def sendcmpct(node: Node, msg: bytes, conn: Connection) -> None:
+    """Record whether the peer wants new blocks announced as `cmpctblock`.
+
+    Core's `SENDCMPCT` handler (`src/net_processing.cpp`) on master,
+    at bitcoin/bitcoin@ba8fdb9717: the announce octet is read as a
+    `uint8_t`, not a `bool`, so a value above one is refused as
+    "invalid sendcmpct announce field" before a version other than
+    `CMPCTBLOCKS_VERSION` is ignored; otherwise the announce octet is
+    the peer's choice of this node as a BIP152 high-bandwidth peer,
+    which a later `sendcmpct` can take back.
+
+    v31.1, at bitcoin/bitcoin@9be056a8a7, the release
+    `.github/workflows/integration-bitcoind.yml` pins and the
+    integration tests run against, still reads the octet as a plain
+    `bool` and never refuses one above one: the `uint8_t` read and the
+    `Misbehaving` call are Core commit 2d0dce0af5, on master and in
+    `v32.0rc1`, not yet in a release.
+    """
+    # read as Core's `vRecv >> sendcmpct_hb >> sendcmpct_version` reads
+    # it, bytes past the ninth left unread; btclib's `SendCmpct.parse`
+    # is not used here because BTClibValueError leaves the peer
+    # undiscouraged (`p2p.main._drop`), where Core's own refusal is a
+    # `Misbehaving` call
+    if len(msg) < _SENDCMPCT_SIZE:
+        err_msg = f"sendcmpct payload of {len(msg)} bytes"
+        raise BTClibValueError(err_msg)
+    announce = msg[0]
+    if announce > 1:
+        err_msg = f"invalid sendcmpct announce field: {announce}"
+        raise MisbehavingError(err_msg)
+    if int.from_bytes(msg[1:_SENDCMPCT_SIZE], "little") != CMPCTBLOCKS_VERSION:
+        return
+    conn.requested_hb_cmpctblocks = announce != 0
+
+
 def ping(node: Node, msg: bytes, conn: Connection) -> None:
     """Answer a `ping` with a `pong` carrying the same nonce.
 
@@ -681,8 +721,8 @@ def pong(node: Node, msg: bytes, conn: Connection) -> None:
         conn.ping_sent = 0
         conn.ping_nonce = 0
         if nonce:
-            # Core's `CNode::PongReceived` (`src/net.h`, at
-            # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) records the round
+            # Core's `CNode::PongReceived` (`src/net.h`,
+            # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) records the round
             # trip and keeps the lowest for eviction, and `ProcessMessage`
             # calls it only for a round trip that is not negative: a clock
             # stepped back between ping and pong finishes the ping and
@@ -737,8 +777,8 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
     The sample itself is a cache, shared and redrawn only once its own
     lifetime and jitter expire -- the comment below argues why.
     """
-    # Core's `GETADDR` handler (`src/net_processing.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) ignores one from a
+    # Core's `GETADDR` handler (`src/net_processing.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) ignores one from a
     # connection it opened itself: answering it would let a peer plant
     # addresses and read them back from a node that only dials out.
     if not conn.inbound:
@@ -997,14 +1037,14 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
         # punishes neither: "Tx failures never trigger
         # disconnections/bans ... either due to non-consensus relay
         # policies ... or due to new consensus rules introduced in soft
-        # forks" (`src/validation.cpp:2112-2117`, at
-        # bitcoin/bitcoin@4519933391), and `PeerManagerImpl::ProcessInvalidTx`
-        # (`src/net_processing.cpp`, same commit) calls nothing punitive
-        # for a transaction failure -- there is no `MaybePunishNodeForTx`,
-        # where `MaybePunishNodeForBlock` exists and is called. None of
-        # these is a `MisbehavingError`, so `p2p.main.handle_p2p` would
-        # not discourage the peer either; caught here for the record
-        # below. btclib-org/btclib-node#843
+        # forks" (`src/validation.cpp:2112-2117`,
+        # at bitcoin/bitcoin@4519933391), and
+        # `PeerManagerImpl::ProcessInvalidTx` (`src/net_processing.cpp`, same
+        # commit) calls nothing punitive for a transaction failure -- there is
+        # no `MaybePunishNodeForTx`, where `MaybePunishNodeForBlock` exists and
+        # is called. None of these is a `MisbehavingError`, so
+        # `p2p.main.handle_p2p` would not discourage the peer either; caught
+        # here for the record below. btclib-org/btclib-node#843
         #
         # Recorded in `Mempool`'s own reject cache, whose docstring
         # argues the resubmission cost this answers and the gap it
@@ -1180,10 +1220,14 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
         # A `MisbehavingError`: the body having passed `CheckBlock` above,
         # this is `ContextualCheckBlock`'s `bad-blk-weight`, whose
         # `BLOCK_CONSENSUS` `MaybePunishNodeForBlock` punishes
-        # (btclib-org/btclib-node#1170). One refusal here is
-        # btclib's and not Core's: its header check refuses a version of
-        # zero or below as "invalid version", where Core accepts such a
-        # block below BIP34's height (btclib-org/btclib#2309).
+        # (btclib-org/btclib-node#1170). btclib's own header check used
+        # to refuse a version of zero or below here on its own, where
+        # Core accepts such a block below BIP34's height -- fixed
+        # at btclib 2026.9.29 (btclib-org/btclib@bbb1ad71, closing
+        # btclib-org/btclib#2309): `assert_valid_block` refuses on
+        # version now only through the same height-gated `bad-version`
+        # `add_headers` already applied to this block's header, above
+        # (btclib-org/btclib-node#1511).
         try:
             assert_valid_block(block, node.chain)
         except BTClibException as e:
@@ -1193,11 +1237,16 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
         node.block_db.add_block(block)
         # novel, past its own checks and on disk: what Core's own
         # `m_last_block_time` records for eviction, whether or not the
-        # block later connects (`PeerManagerImpl::ProcessBlock`, at
-        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+        # block later connects (`PeerManagerImpl::ProcessBlock`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
         conn.last_novel_block_time = int(time.time())
         node.logger.info("Received new block with hash:%s", block_hash.hex())
         block_index.set_downloaded(block_hash)
+        # Core's `AcceptBlock` calls `NewPoWValidBlock` from inside
+        # `ProcessNewBlock`, ahead of `ProcessBlock`'s own
+        # `RemoveBlockRequest` below, at bitcoin/bitcoin@9be056a8a7
+        # (`net_processing.cpp`, the v31.1 tag)
+        new_pow_valid_block(node, block)
         # stored, so awaited from nobody: Core's `ProcessBlock`
         remove_block_request(connections, block_hash, time.time())
 
@@ -1310,29 +1359,17 @@ _GETDATA_BLOCK_TYPES = (
     InventoryType.MSG_CMPCT_BLOCK,
 )
 
-# BIP152's compact blocks as Core serves them (`net_processing.cpp`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the one version Core speaks,
+# BIP152's compact blocks as Core serves them (`net_processing.cpp`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the one version Core speaks,
 # the depth past which a `MSG_CMPCT_BLOCK` is answered with the full block
-# instead, and the depth past which a `getblocktxn` is
+# instead, and the depth past which a `getblocktxn` is answered with the
+# full block too
 CMPCTBLOCKS_VERSION = 2
 MAX_CMPCTBLOCK_DEPTH = 5
 MAX_BLOCKTXN_DEPTH = 10
 # Core's `CanDirectFetch`: the tip is within this many target spacings
 # of now
 _DIRECT_FETCH_SPACINGS = 20
-
-
-def compact_block(block: Block, nonce: int) -> CmpctBlock:
-    """Return `block` as a `cmpctblock`, the coinbase alone sent whole.
-
-    Core's `CBlockHeaderAndShortTxIDs` constructor: the coinbase
-    prefilled at index 0, and every other transaction by the short id of
-    its wtxid under the key `nonce` and the header give.
-    """
-    coinbase = PrefilledTransaction(0, block.transactions[0])
-    keyed = CmpctBlock(block.header, nonce, (), (coinbase,), check_validity=False)
-    short_ids = [keyed.short_id(tx.hash) for tx in block.transactions[1:]]
-    return CmpctBlock(block.header, nonce, short_ids, (coinbase,))
 
 
 def _can_direct_fetch(node: Node) -> bool:
@@ -1356,6 +1393,8 @@ def _block_answer(node: Node, item: Inventory, block: Block) -> BlockMsg | Cmpct
         height = block_index.header_dict[item.hash].index
         tip_height = len(block_index.active_chain) - 1
         if _can_direct_fetch(node) and height >= tip_height - MAX_CMPCTBLOCK_DEPTH:
+            # a fresh nonce, where Core answers the most recent block with
+            # the one it announced (btclib-org/btclib-node#1336)
             return compact_block(block, secrets.randbits(64))
         include_witness = True
     else:
@@ -1743,12 +1782,17 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     # Core reads the count alone before it compares, so no entry is
     # needed in the payload for it to call `Misbehaving`
     _refuse_past_bound("headers", _count_past(msg, MAX_HEADERS_RESULTS, 0))
-    # Unchecked, as Core's own `CBlockHeader` read checks nothing: btclib's
-    # `BlockHeader.assert_valid` would refuse a version of zero or below
-    # (btclib-org/btclib#2309) and a time before genesis, which Core
-    # leaves to `ContextualCheckBlockHeader`'s `bad-version` and
-    # `time-too-old`, both `Misbehaving`. The count and the transaction
-    # counts are bounded either way, and `add_headers` checks the work.
+    # Unchecked, as Core's own `CBlockHeader` read checks nothing:
+    # btclib's `BlockHeader.assert_valid` refuses a time before genesis,
+    # which Core leaves to `ContextualCheckBlockHeader`'s `time-too-old`,
+    # a `Misbehaving`, and that alone is reason enough to keep this
+    # unchecked. It used to also refuse a version of zero or below on
+    # its own, where Core leaves that to the same function's
+    # `bad-version` -- fixed at btclib 2026.9.29
+    # (btclib-org/btclib@bbb1ad71, closing btclib-org/btclib#2309;
+    # btclib-org/btclib-node#1511). The count and the transaction
+    # counts are bounded either way, and `add_headers` checks the work
+    # and both of Core's own contextual refusals.
     headers = Headers.parse(msg, check_validity=False).headers
     if not headers:
         # Core's own `ProcessHeadersMessage` returns on the same batch,
@@ -1861,8 +1905,8 @@ def _ask_for_more_headers(
         node.status = NodeStatus.HeaderSynced
 
 
-# Core's `STALE_RELAY_AGE_LIMIT` (`src/net_processing.cpp`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): how old, in time and in
+# Core's `STALE_RELAY_AGE_LIMIT` (`src/net_processing.cpp`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): how old, in time and in
 # proof-equivalent time, a block off the active chain may be and still
 # be served.
 _STALE_RELAY_AGE_LIMIT = 30 * 24 * 60 * 60
@@ -2372,6 +2416,7 @@ callbacks = {
     "addrv2": addrv2,
     "getaddr": getaddr,
     "sendheaders": sendheaders,
+    "sendcmpct": sendcmpct,
     "getcfilters": get_cfilters,
     "getcfheaders": get_cfheaders,
     "getcfcheckpt": get_cfcheckpt,

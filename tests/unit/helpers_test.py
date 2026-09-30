@@ -307,9 +307,17 @@ def test_a_bounded_call_that_does_not_return_is_given_up_on() -> None:
 
 
 def test_a_header_that_is_not_well_formed_is_refused() -> None:
-    """`brute_force_nonce` propagates btclib's own validation error."""
+    """`brute_force_nonce` propagates btclib's own validation error.
+
+    `version` past the four-byte signed range, one over `0x7FFFFFFF`, is
+    what btclib's own `BlockHeader.assert_valid` refuses since it started
+    matching Core's `CBlockHeader::nVersion`, an `int32_t` that accepts
+    zero and negative values as well formed (btclib 2026.9.29,
+    btclib-org/btclib-node#1508); `0` used to be the refused value here
+    and is not anymore.
+    """
     header = BlockHeader(
-        version=0,
+        version=0x80000000,
         previous_block_hash=RegTest().genesis.hash,
         merkle_root=b"\x11" * 32,
         time=RegTest().genesis.time,

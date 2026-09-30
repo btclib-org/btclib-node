@@ -20,7 +20,6 @@ from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import RPCErrorCode, chain_from_network
 from btclib.block import Block, median_time_past
-from btclib.descriptors import add_checksum, from_address
 from btclib.exceptions import BTClibException
 from btclib.fee import FeeRate, fee_from_vsize
 from btclib.p2p.address import ServiceFlags
@@ -30,6 +29,7 @@ from btclib.script.script_pub_key import ScriptPubKey, p2ms_m_and_keys, type_and
 from btclib.script.spendability import is_unspendable
 from btclib.tx import Tx
 from btclib.tx.out_point import OutPoint
+from btclib_wallet.descriptors import add_checksum, from_address
 
 from btclib_node.block_db import Coin
 from btclib_node.chainstate.block_index import BlockStatus, block_time
@@ -40,6 +40,7 @@ from btclib_node.main import (
     assert_valid_block,
     is_block_failed,
     is_cached_invalid,
+    new_pow_valid_block,
     parent_lookup,
     passes_check_block,
     prune_up_to_height,
@@ -518,8 +519,8 @@ def get_block_header(
         block_info = block_index.get_block_info(block_hash)
     except KeyError as error:
         # a hash nothing indexed is a question about a block, not a
-        # fault of this node: src/rpc/blockchain.cpp:664-665, at
-        # bitcoin/bitcoin@ca7162cde5
+        # fault of this node: src/rpc/blockchain.cpp:664-665,
+        # at bitcoin/bitcoin@ca7162cde5
         raise RpcError(
             RPCErrorCode.INVALID_ADDRESS_OR_KEY, "Block not found"
         ) from error
@@ -528,10 +529,15 @@ def get_block_header(
     if not verbose:
         # src/rpc/blockchain.cpp:668-673: the same eighty bytes a peer
         # is sent on the wire, hex-encoded rather than the JSON object.
-        # Unchecked, as the index stores it: a version of zero or below,
-        # which Core takes below BIP34's height, is one btclib's own
-        # check refuses (btclib-org/btclib#2309)
-        return header.serialize(check_validity=False).hex()
+        # Checked here now. It used to be serialized unchecked: a
+        # version of zero or below, which Core takes below BIP34's
+        # height, was one btclib's own check refused on its own -- fixed
+        # at btclib 2026.9.29 (btclib-org/btclib@bbb1ad71, closing
+        # btclib-org/btclib#2309; btclib-org/btclib-node#1511). The
+        # index only ever stores a header past `add_headers`'s own
+        # height-gated `bad-version` check, so nothing this validates
+        # can fail on one read back from here.
+        return header.serialize().hex()
 
     # the blocks this node has validated and connected, which is what
     # Core hands blockheaderToJSON: `ActiveChain().Tip()`, at
@@ -1021,6 +1027,10 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     extends_tip = block.header.previous_block_hash == block_index.active_chain[-1]
     node.block_db.add_block(block)
     block_index.set_downloaded(block_hash)
+    # Core's `AcceptBlock` calls `NewPoWValidBlock` from inside
+    # `ProcessNewBlock`, ahead of `ActivateBestChain` (`src/validation.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+    new_pow_valid_block(node, block)
     if extends_tip:
         return _validate_extending_tip(node, block_hash)
     return None
@@ -1139,8 +1149,8 @@ def _peer_entry(
         if ping_wait > 0:
             entry["pingwait"] = ping_wait
     entry["version"] = 0 if version_message is None else version_message.version
-    # `connect_nodes` (`test_framework.py:568-594`, at
-    # bitcoin/bitcoin@bb529657) matches this against the peer's own
+    # `connect_nodes` (`test_framework.py:568-594`,
+    # at bitcoin/bitcoin@bb529657) matches this against the peer's own
     # `getnetworkinfo`-reported `subversion` to find its own connection
     # in the other side's peer list. Core sanitizes the wire bytes
     # through `SanitizeString` before calling this `cleanSubVer`; this
@@ -1155,13 +1165,12 @@ def _peer_entry(
         else version_message.user_agent.decode("ascii", errors="replace")
     )
     entry["inbound"] = p2p_conn.inbound
-    # This node sends `sendcmpct` announcing low bandwidth and reads no
-    # `sendcmpct` a peer sends, so it neither selects nor takes up a
-    # high-bandwidth peer: false both ways, what Core answers where it
-    # sent none and where it ignored a `sendcmpct` of a version it does
-    # not speak.
+    # This node sends `sendcmpct` announcing low bandwidth, so it selects
+    # no high-bandwidth peer: false, what Core answers where it sent none.
+    # Whether the peer selected this node is what its own `sendcmpct`
+    # asked (p2p.callbacks.sendcmpct), Core's `m_bip152_highbandwidth_from`.
     entry["bip152_hb_to"] = False
-    entry["bip152_hb_from"] = False
+    entry["bip152_hb_from"] = p2p_conn.requested_hb_cmpctblocks
     # -1, Core's answer where no low-work headers presync runs, which
     # this node never runs.
     entry["presynced_headers"] = -1
@@ -1331,8 +1340,8 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     }
 
 
-# Core's own three `addnode` commands (`rpc/net.cpp:341-415`, at
-# bitcoin/bitcoin@bb529657): `add`/`remove` reach `P2pManager`'s own
+# Core's own three `addnode` commands (`rpc/net.cpp:341-415`,
+# at bitcoin/bitcoin@bb529657): `add`/`remove` reach `P2pManager`'s own
 # `add_added_peer`/`remove_added_peer`, its counterpart to `CConnman`'s
 # `AddNode`/`RemoveAddedNode`, and `_open_added_peers`
 # (`p2p/manager.py`) is what actually dials whatever the list holds,
@@ -1846,8 +1855,8 @@ def get_tx_out_set_info(
     return result
 
 
-# Core's own literal sentinel, `MEMPOOL_HEIGHT` (`src/txmempool.h:50`, at
-# bitcoin/bitcoin@9be056a8a7): a `Coin` built from a mempool transaction's
+# Core's own literal sentinel, `MEMPOOL_HEIGHT` (`src/txmempool.h:50`,
+# at bitcoin/bitcoin@9be056a8a7): a `Coin` built from a mempool transaction's
 # own output rather than from the confirmed set carries this height
 # instead of a real one, and `gettxout` reads it back to answer
 # `confirmations: 0` (`rpc/blockchain.cpp:1243-1247`). Not
@@ -1857,8 +1866,8 @@ def get_tx_out_set_info(
 # out rather than storing it.
 _MEMPOOL_HEIGHT = 0x7FFF_FFFF
 
-# GetTxnOutputType's own vocabulary (`src/script/solver.cpp:18-34`, at
-# bitcoin/bitcoin@9be056a8a7), keyed on this library's own
+# GetTxnOutputType's own vocabulary (`src/script/solver.cpp:18-34`,
+# at bitcoin/bitcoin@9be056a8a7), keyed on this library's own
 # `type_and_payload` names (`btclib.script.script_pub_key`) -- the two
 # agree in spelling for nothing, "nulldata" being the closest case and
 # still its own key below rather than assumed. `_script_pub_key_dict`
@@ -1880,8 +1889,8 @@ _CORE_SCRIPT_TYPES: dict[str, str] = {
     "unknown": "nonstandard",
 }
 
-# `CScript::IsPayToAnchor` (`src/script/script.cpp:207-213`, at
-# bitcoin/bitcoin@9be056a8a7): the literal four-byte P2A script, OP_1
+# `CScript::IsPayToAnchor` (`src/script/script.cpp:207-213`,
+# at bitcoin/bitcoin@9be056a8a7): the literal four-byte P2A script, OP_1
 # followed by its own fixed two-byte push. `Solver` carves this one
 # script out of what would otherwise be `TxoutType::WITNESS_UNKNOWN`
 # (`src/script/solver.cpp:167-171`, same sha) into its own
@@ -1923,8 +1932,9 @@ def _infer_descriptor(script_pub_key: ScriptPubKey) -> str:
       pubkey or the redeem script behind the hash and get nothing back,
       so `InferScript` falls through every one of its own `if`s to the
       top-level `ExtractDestination` case at the bottom of the function
-      -- `addr(...)`, `descriptors.from_address` already producing that
-      exact string. A witness program past version 0 that is not p2tr
+      -- `addr(...)`, `btclib_wallet.descriptors.from_address` already
+      producing that exact string. A witness program past version 0 that
+      is not p2tr
       -- this library's own "witness_unknown", the P2A anchor output
       among them -- reaches that identical fallback: Core's own
       `ExtractDestination` answers a destination for both
@@ -1947,7 +1957,7 @@ def _infer_descriptor(script_pub_key: ScriptPubKey) -> str:
 
     None of the five needs a key this node does not have; a checksum is
     added the way `Descriptor::ToString()`'s own default argument adds
-    one (`descriptors.add_checksum`).
+    one (`btclib_wallet.descriptors.add_checksum`).
     """
     script = script_pub_key.script
     script_type, payload = type_and_payload(script)
@@ -2128,8 +2138,8 @@ def get_raw_mempool(
     refused outright, matching `MempoolToJSON`'s own combination check.
     """
     # verbose and mempool_sequence, both RPCArg::Type::BOOL,
-    # RPCArg::Default{false}: src/rpc/mempool.cpp:659-660, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag. Both are
+    # RPCArg::Default{false}: src/rpc/mempool.cpp:659-660,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag. Both are
     # checked, and every mismatch named, before either is raised on,
     # the way `disconnect_node` above already does for its own two
     # (`type_errors`' own docstring).

@@ -599,7 +599,7 @@ this release included.
    `author` is the cheap second question: `github-actions` is the
    workflow having cut it, any other login a release recreated by hand.
    Its notes are the tag's section of `RELEASE_NOTES.md`, and the
-   distribution files are attached, `<tag>.attestation.jsonl` and the
+   distribution files are attached, `<tag>.intoto.jsonl` and the
    bill of materials beside them.
 
 1. Verify the provenance of an asset:
@@ -616,7 +616,7 @@ this release included.
    gh attestation verify "$wheel" --repo "$repo" \
      --signer-workflow "$signer" &&
    gh attestation verify "$wheel" --repo "$repo" \
-     --signer-workflow "$signer" --bundle "v${version:?}.attestation.jsonl"
+     --signer-workflow "$signer" --bundle "v${version:?}.intoto.jsonl"
    ```
 
    the first asks the attestations API for the signed statement, the
@@ -838,9 +838,9 @@ reading a mismatch as tampering:
         '.files[] | select(.filename==$n) | .hashes.sha256')
     echo "$sha  $f" | sha256sum -c -
   done &&
-  mv attestation/attestation.jsonl "${tag:?}.attestation.jsonl" &&
+  mv attestation/attestation.jsonl "${tag:?}.intoto.jsonl" &&
   gh release create "${tag:?}" dist/*.whl dist/*.tar.gz \
-    sbom/*.cdx.json "${tag:?}.attestation.jsonl" \
+    sbom/*.cdx.json "${tag:?}.intoto.jsonl" \
     --title "${tag:?}" --notes-file "${notes:?}"
   ```
 
