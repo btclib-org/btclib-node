@@ -965,6 +965,107 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 - **A hex `txid` or `blockhash` of the wrong length is refused**, rather
   than silently decoding to a hash nothing then finds (closes #1457).
+### A refused `stop` no longer shuts the node down
+
+- **`rpc.main` calls `node.stop()` only where the `stop` reply carries
+  no error**, as Core's own `stop()` handler does (closes #1441).
+
+### `submitblock` answers Core's own reasons where it used to answer `null`
+
+- **A tip block answers `bad-cb-height` or `bad-txns-nonfinal`** (closes #1335).
+- **Failing scripts answer `block-script-verify-flag-failed`** (closes #1390).
+- **A body failing `CheckBlock` leaves no header indexed** (closes #1339).
+
+### `address_sampler`'s tried side draws an aged-out row, as `Select_` does
+
+- **The tried side reads `active_addresses` unfiltered by `_aged_out`,
+  matching Core's `Select_`** (closes #1434), where an aged-out answered
+  endpoint was never drawn again.
+
+### `_aged_out` grants `IsTerrible`'s one-minute grace to a row just tried
+
+- **A row tried within the last minute is never aged out, whatever its
+  timestamp says** (closes #1435), matching `IsTerrible`'s own `m_last_try`
+  guard.
+
+### `pypi-install.yml` installs the version the release published
+
+- **The install names `btclib-node==<version>` from the tag `release.yml`
+  passes** (issue btclib-org/.github#1456): a bare name let a lagging
+  index serve the release before it.
+
+### An out-of-range `feefilter` leaves the peer's filter in place, as in Core
+
+- **A rate outside `MoneyRange` is ignored rather than clearing the filter the
+  peer sent before** (closes #1256).
+
+### `getdata` serves a block only where Core's `BlockRequestAllowed` would
+
+- **A block off the active chain is served only once validated and recent, and
+  an unknown or refused one is ignored before the prune threshold is read**
+  (closes #1254).
+
+### A `notfound` is logged at debug as a count, and a `reject` is ignored
+
+- **Neither puts what the peer wrote into the log** (closes #1255): `notfound`
+  logs how many items it names, and `reject` reaches no handler, as Core's
+  `ProcessMessage` has none.
+
+### Three peer refusals are answered as Core answers them
+
+- **A header on an invalid parent (`bad-prevblk`, in `submitblock` too) and a
+  non-continuous batch cost the sender, as does one already invalid from an
+  outbound peer; other exceptions keep the peer** (closes #1233).
+
+### A conflicting or unknown `-chain` is refused in `bitcoind`'s own words
+
+- **`-testnet4` is named among the selectors, and the refusal ends in a full
+  stop, as `bitcoind` writes it** (closes #1311).
+
+### A `-datadir` or `-conf` value that normalises to `.` keeps it in a refusal
+
+- **The `.` is joined onto a refusal's path as `AbsPathForConfigVal` joins
+  it, not dropped as `pathlib.Path` drops it** (closes #1273).
+
+### A `NETWORK_ONLY` option set only in the default section refuses to start
+
+- **Off `main`, as `bitcoind` refuses it, rather than being silently
+  dropped** (closes #1327).
+
+### A listener that cannot bind is reported as one, not as a slow one
+
+- **`wait_until_listening` raises `ListenerEndedError` as soon as a manager's
+  thread ends without listening, naming its `bind_error` where it has one**,
+  where it waited out its timeout and reported one (closes #1361).
+
+### `version` signals `NODE_COMPACT_FILTERS` only under `-peerblockfilters`
+
+- **Off by default, as in Core; a `getcfilters`, `getcfheaders` or
+  `getcfcheckpt` this node never advertised is refused the same silent way
+  as a filter type BIP157 has no name for** (closes #1395).
+
+### `getnetworkinfo` answers `localservices` and `localservicesnames`
+
+- **The same services `version` sends, one function answering both**
+  (closes #1394).
+
+### `-discover` decides whether this node records its own addresses
+
+- **Independently of `-listen`, defaulting to it and overridable either
+  way, as Core's `Discover` runs off whether it would bind every interface
+  rather than off `-listen`** (closes #1330).
+
+### DNS seeding waits, batches by three, and reads `-forcednsseed`
+
+- **A wait, then three seeds at a time, ends early at two full-relay
+  peers** (closes #1265); **`-forcednsseed` asks every seed at once**,
+  refused with `-dnsseed` off, both as in `bitcoind`.
+
+### `-seednode` gets thirty seconds before the DNS seeds are asked
+
+- **DNS seeding waits for two full-relay peers or thirty seconds,
+  whichever is first, wherever `-seednode` is given** (closes #1461),
+  as Core's `ThreadDNSAddressSeed` does.
 
 ## v2026.9.24
 

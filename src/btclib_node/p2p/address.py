@@ -292,21 +292,30 @@ _ADDRMAN_HORIZON = 30 * 24 * 3600
 # how far ahead of the clock a timestamp may be before it is terrible,
 # `IsTerrible`'s "flying DeLorean" (same file and sha)
 _ADDRMAN_FUTURE_SLACK = 10 * 60
+# `IsTerrible`'s own grace, ahead of both tests above (same file and
+# sha): "never remove things tried in the last minute". `PeerDB._last_try`
+# is `AddrInfo::m_last_try`; `RECENT_TRY_SECONDS` above is a different
+# Core window, `ThreadOpenConnections`'s, not this one.
+_ADDRMAN_RECENT_TRY_GRACE = 60
 
 
-def _aged_out(address: NetworkAddressV2, now: float) -> bool:
+def _aged_out(address: NetworkAddressV2, now: float, last_try: float) -> bool:
     """Whether `address`'s handshake stamp fails `IsTerrible`'s time tests.
 
-    The two time tests of `AddrInfo::IsTerrible` (`src/addrman.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): stamped more than ten
-    minutes ahead of `now`, or older than `_ADDRMAN_HORIZON`. Core
-    applies them to `nTime`, which `Good_` leaves alone at the handshake
-    and which gossip and `Connected_` move instead, the latter when a
-    full outbound peer disconnects. `PeerDB.add_addresses` stores a
-    gossiped address with timestamp 0, so there is no gossip time to
-    test, and the handshake's is tested instead
-    (btclib-org/btclib-node#1364).
+    `AddrInfo::IsTerrible` (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag) checks `last_try` first: tried within
+    `_ADDRMAN_RECENT_TRY_GRACE`, an address is never terrible, whatever
+    its timestamp says. Past that grace, its two time tests: stamped
+    more than ten minutes ahead of `now`, or older than
+    `_ADDRMAN_HORIZON`. Core applies them to `nTime`, which `Good_`
+    leaves alone at the handshake and which gossip and `Connected_` move
+    instead, the latter when a full outbound peer disconnects.
+    `PeerDB.add_addresses` stores a gossiped address with timestamp 0,
+    so there is no gossip time to test, and the handshake's is tested
+    instead (btclib-org/btclib-node#1364).
     """
+    if now - last_try <= _ADDRMAN_RECENT_TRY_GRACE:
+        return False
     age = now - address.timestamp
     return age < -_ADDRMAN_FUTURE_SLACK or age > _ADDRMAN_HORIZON
 
@@ -407,7 +416,7 @@ class PeerDB:
         # A lock of its own, not `_active_lock` below: `add_addresses`
         # reaches this set from both threads too (#298) -- gossip
         # through `callbacks.addr`/`addrv2` on `Node`'s, DNS seed
-        # answers through `get_addr_from_dns` on `P2pManager`'s, and
+        # answers through `query_dns_seed` on `P2pManager`'s, and
         # `address_sampler`'s own dialable-address comprehension on
         # `P2pManager`'s as well, racing against gossip on `Node`'s, and
         # `add_active_address` asks `_known_keys` under it on `Node`'s.
@@ -459,7 +468,15 @@ class PeerDB:
         # In memory only, as `AddrInfo`'s serialization leaves
         # `m_last_try` out of `peers.dat` (`src/addrman_impl.h`, at
         # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `attempt` writes it
-        # and `last_try` reads it, both on `P2pManager`'s thread alone.
+        # from `P2pManager`'s thread alone. `last_try` reads it from
+        # there too, and from `get_active_addresses`'s own call into
+        # `_aged_out`'s grace check, reachable from `Node`'s thread
+        # through `callbacks.getaddr` (btclib-org/btclib-node#1435).
+        # Unlocked on purpose: `attempt`'s reassignment of this dict is
+        # one step, not a read-modify-write of the attribute itself, so
+        # a concurrent `last_try` sees the whole old dict or the whole
+        # new one, never a partial one -- at worst one `attempt` stale,
+        # the same imprecision `is_empty` already accepts.
         self._last_try: dict[bytes, float] = {}
 
         # `None` is a table kept in memory only, which is what every
@@ -470,16 +487,11 @@ class PeerDB:
         self.db = KeyValueStore(data_dir / "peers") if data_dir is not None else None
 
         self.init_from_db()
-        # DNS is asked only where the durable table came back with
-        # nothing this node has itself confirmed working within
-        # `_ADDRMAN_HORIZON`, what `get_active_addresses` keeps, and
-        # `can_connect` is what catches a table `add_addresses` filled
-        # with tor, i2p or an ipv6-only answer from a seed -- #89, where
-        # a nonempty table was exactly the case DNS was skipped for and
-        # none of it was dialable.
-        self.ask_dns_nodes = not any(
-            can_connect(address) for address in self.get_active_addresses()
-        )
+        # `get_active_addresses` also deletes an `_aged_out` row from the
+        # durable store (#253); called here so a restart's store is
+        # already pruned by the time construction returns, rather than
+        # only once whatever reaches it first runs.
+        self.get_active_addresses()
 
     def init_from_db(self) -> None:
         """Load every stored address into `addresses` or `active_addresses`.
@@ -556,65 +568,95 @@ class PeerDB:
         if self.db is not None:
             self.db.close()
 
-    async def get_addr_from_dns(self) -> list[str]:
-        """Ask each chain DNS seed's `x9.` subdomain; return each unanswered.
+    async def query_dns_seed(self, seed: str) -> str | None:
+        """Ask one chain DNS seed's `x9.` subdomain; return it if unanswered.
 
         Core's `ThreadDNSAddressSeed` asks `x%x.<seed>` of
         `requiredServiceBits`, `SeedsServiceFlags()` (`x9.` for
         `NODE_NETWORK | NODE_WITNESS`), on which a seed answers only with
         peers it believes offer those services -- `src/net.cpp` and
         `src/protocol.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag --
-        and keeps at most `nMaxIPs`, 32, of the answers. A seed whose
-        subdomain answers nothing is returned here rather than resolved
-        by its bare name: Core makes an `ADDR_FETCH` connection to that
-        name instead (`AddAddrFetch(seed)`), which `P2pManager` queues
-        from this coroutine's return value.
-
-        A no-op unless `ask_dns_nodes` said, at construction time, that
-        the durable table came back with nothing dialable.
+        and keeps at most `nMaxIPs`, 32, of the answers. One seed at a
+        time, rather than every one of them in a single call, is what
+        lets `P2pManager._dns_address_seed` wait between batches of
+        `_DNS_SEEDS_TO_QUERY_AT_ONCE` (btclib-org/btclib-node#1265): that
+        coroutine is what shuffles the chain's seeds, decides how many
+        to ask before the next wait, and queues `seed` as its own
+        addr-fetch where this returns it rather than `None` -- Core
+        makes an `ADDR_FETCH` connection to the bare name instead
+        (`AddAddrFetch(seed)`).
         """
-        if not self.ask_dns_nodes:
-            return []
         chain = self.chain
         loop = asyncio.get_running_loop()
-        unanswered: list[str] = []
-        for seed in chain.addresses:
-            host = f"x{int(SEEDS_SERVICE_FLAGS):x}.{seed}"
-            # what the subdomain answers with, deduplicated: a name
-            # resolves once per socket type absent a `type` hint, and
-            # `SOCK_STREAM` is what a peer table wants of it.
-            endpoints: set[tuple[str, int]] = set()
-            try:
-                answers = await loop.getaddrinfo(
-                    host, chain.port, type=socket.SOCK_STREAM
-                )
-            except socket.gaierror:
-                answers = []
-            # (family, type, proto, canonname, sockaddr), and the
-            # sockaddr is the only part a peer table wants. It opens
-            # with the host and the port -- two fields for AF_INET,
-            # four for AF_INET6, whose flow info and scope id say
-            # nothing a BIP155 record holds. The stub also admits
-            # AF_PACKET's (protocol, address) pair, which resolving an
-            # internet host and a port cannot answer with, so the cast
-            # is what that fact is written as rather than a check no
-            # test could reach.
-            for *_, sockaddr in answers:
-                endpoints.add(cast("tuple[str, int]", sockaddr[:2]))
-                if len(endpoints) >= _MAX_SEED_ANSWERS:
-                    break
-            if not endpoints:
-                unanswered.append(seed)
-                continue
-            # through add_addresses, and not a bare add to the set: a
-            # seed is gossip like a peer's is, and belongs in the
-            # durable table the same way, so a later restart has it
-            # without asking again
-            self.add_addresses(
-                peer_address(ip, port, services=SEEDS_SERVICE_FLAGS)
-                for ip, port in endpoints
-            )
-        return unanswered
+        host = f"x{int(SEEDS_SERVICE_FLAGS):x}.{seed}"
+        # what the subdomain answers with, deduplicated: a name
+        # resolves once per socket type absent a `type` hint, and
+        # `SOCK_STREAM` is what a peer table wants of it.
+        endpoints: set[tuple[str, int]] = set()
+        try:
+            answers = await loop.getaddrinfo(host, chain.port, type=socket.SOCK_STREAM)
+        except socket.gaierror:
+            answers = []
+        # (family, type, proto, canonname, sockaddr), and the
+        # sockaddr is the only part a peer table wants. It opens
+        # with the host and the port -- two fields for AF_INET,
+        # four for AF_INET6, whose flow info and scope id say
+        # nothing a BIP155 record holds. The stub also admits
+        # AF_PACKET's (protocol, address) pair, which resolving an
+        # internet host and a port cannot answer with, so the cast
+        # is what that fact is written as rather than a check no
+        # test could reach.
+        for *_, sockaddr in answers:
+            endpoints.add(cast("tuple[str, int]", sockaddr[:2]))
+            if len(endpoints) >= _MAX_SEED_ANSWERS:
+                break
+        if not endpoints:
+            return seed
+        # through add_addresses, and not a bare add to the set: a
+        # seed is gossip like a peer's is, and belongs in the
+        # durable table the same way, so a later restart has it
+        # without asking again
+        self.add_addresses(
+            peer_address(ip, port, services=SEEDS_SERVICE_FLAGS)
+            for ip, port in endpoints
+        )
+        return None
+
+    @property
+    def size(self) -> int:
+        """Return Core's `addrman.Size()`: every distinct endpoint known.
+
+        Core's `vRandom.size()` (`AddrManImpl::Size_`, `src/addrman.cpp`,
+        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) counts one entry
+        per address, new or tried, because `Good_` *moves* an entry from
+        the new table to the tried one rather than copying it -- the two
+        never hold the one address at once there. This table's own
+        `active_addresses` is not `addresses` with one row moved out: an
+        answered endpoint is left in `addresses` too (`address_sampler`'s
+        own comment above says so, and is what lets a repeat gossip for
+        an already-answered endpoint still update its known row). A bare
+        `len(self.addresses) + len(self.active_addresses)` therefore
+        counted every answered endpoint twice.
+        The honest count is `addresses`' own size plus whatever
+        `active_addresses` holds that `addresses` does not -- read as
+        `_known_keys`, kept in step with `addresses` by `add_addresses`
+        (never shrunk: nothing in this class discards a known key), and
+        `_active_index`, kept in step with `active_addresses` the same
+        way, so counting keys rather than walking either table answers
+        without a stale-row's own fields mattering. Locked, unlike
+        `is_empty` below: `_known_keys` is snapshotted under
+        `_addresses_lock` first, into a local `set` this thread alone
+        holds, so the walk of `_active_index` under `_active_lock` next
+        reads no collection a third thread could still be mutating --
+        `add_addresses`'s own two-lock methods take the two the same
+        way, never nested.
+        """
+        with self._addresses_lock:
+            known_count = len(self.addresses)
+            known_keys = set(self._known_keys)
+        with self._active_lock:
+            unmatched = sum(1 for key in self._active_index if key not in known_keys)
+        return known_count + unmatched
 
     @property
     def is_empty(self) -> bool:
@@ -665,10 +707,25 @@ class PeerDB:
         that a feeler makes, and with `network` from both sides kept to
         the one network, as `CNetAddr::GetNetwork` names it: Core's
         `Select(false, {network})`, which an extra network peer makes.
+
+        The answered side reads `active_addresses` as it stands, not
+        `get_active_addresses`'s pruned view: Core's `Select_`
+        (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+        never calls `IsTerrible` -- only `GetAddr_`'s serving and
+        `AddSingle`'s duplicate-overwrite check do -- so a terrible entry
+        stays eligible for a draw here as it does there
+        (btclib-org/btclib-node#1434). A row this draws can still be
+        pruned from the table, and from the store, by
+        `get_active_addresses`'s own periodic sweep before the next
+        call; that remaining divergence from Core's tried table, which
+        keeps the entry until another address takes its slot, is argued
+        at `get_active_addresses`'s own docstring (#253).
         """
+        with self._active_lock:
+            raw_active = list(self.active_addresses)
         answered = [
             addr
-            for addr in self.get_active_addresses()
+            for addr in raw_active
             if can_connect(addr) and (network is None or get_network(addr) == network)
         ]
         tried = {_endpoint(addr) for addr in answered}
@@ -854,7 +911,7 @@ class PeerDB:
             # answered within the horizon (#253).
             active: list[NetworkAddressV2] = []
             for addr in self.active_addresses:
-                if not _aged_out(addr, now):
+                if not _aged_out(addr, now, self.last_try(addr)):
                     active.append(addr)
                 elif self.db is not None:
                     self.db.delete(_ANSWERED + endpoint_key(addr))
