@@ -110,6 +110,12 @@ _GOSSIP_TIME_PENALTY = 2 * 3600
 # uniform between three and seven days old (`src/net.cpp`, same sha).
 _DNS_SEED_MIN_AGE = 3 * 24 * 3600
 _DNS_SEED_MAX_AGE = 7 * 24 * 3600
+# `ConvertSeeds`'s own backdating of a fixed seed,
+# `rng.rand_uniform_delay(Now<NodeSeconds>() - one_week, -one_week)` with
+# `one_week = 7 * 24h` -- uniform between one and two weeks old
+# (`src/net.cpp`, same sha).
+_FIXED_SEED_MIN_AGE = 7 * 24 * 3600
+_FIXED_SEED_MAX_AGE = 14 * 24 * 3600
 
 
 def fixed_seed_addresses(seeds: bytes) -> list[NetworkAddressV2]:
@@ -118,14 +124,9 @@ def fixed_seed_addresses(seeds: bytes) -> list[NetworkAddressV2]:
     Each endpoint is a BIP155 network id, a compact-size length, the
     address and a big-endian port (`src/net.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and is given Core's
-    `SeedsServiceFlags`, `NODE_NETWORK | NODE_WITNESS`. Core also gives
-    each a random time one to two weeks past
-    (`rng.rand_uniform_delay(Now<NodeSeconds>() - one_week, -one_week)`,
-    same function and sha), which this leaves at 0: `add_addresses`
-    keeps a gossiped or DNS-seeded row's own time now
-    (btclib-org/btclib-node#1380), but a fixed seed still carries none
-    to keep, this function's own return never having set one --
-    btclib-org/btclib-node#1571 is where that gap is tracked.
+    `SeedsServiceFlags`, `NODE_NETWORK | NODE_WITNESS`, and
+    `_fixed_seed_timestamp`'s own draw for Core's random time one to two
+    weeks past (`ConvertSeeds`, same sha) -- btclib-org/btclib-node#1571.
     """
     services = SEEDS_SERVICE_FLAGS
     stream = BytesIO(seeds)
@@ -134,7 +135,11 @@ def fixed_seed_addresses(seeds: bytes) -> list[NetworkAddressV2]:
         network_id = stream.read(1)[0]
         address = stream.read(var_int.parse(stream))
         port = int.from_bytes(stream.read(2), "big")
-        addresses.append(NetworkAddressV2(0, services, network_id, address, port))
+        addresses.append(
+            NetworkAddressV2(
+                _fixed_seed_timestamp(), services, network_id, address, port
+            )
+        )
     return addresses
 
 
@@ -365,6 +370,24 @@ def _dns_seed_timestamp() -> int:
     """
     now = time.time()
     age = secrets.SystemRandom().uniform(_DNS_SEED_MIN_AGE, _DNS_SEED_MAX_AGE)
+    return int(now - age)
+
+
+def _fixed_seed_timestamp() -> int:
+    """Return a whole second, uniform between one and two weeks ago.
+
+    Core's `ConvertSeeds` (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag): `addr.nTime = rng.rand_uniform_delay(Now<NodeSeconds>()
+    - one_week, -one_week)` with `one_week = 7 * 24h`, a draw uniform
+    over `[now - 14d, now - 7d]` -- "It'll only connect to one or two
+    seed nodes because once it connects, it'll get a pile of addresses
+    with newer timestamps", that function's own comment for why a fixed
+    seed is backdated at all. `secrets.SystemRandom().uniform`, the same
+    draw `_dns_seed_timestamp` above already uses for the identical
+    reason.
+    """
+    now = time.time()
+    age = secrets.SystemRandom().uniform(_FIXED_SEED_MIN_AGE, _FIXED_SEED_MAX_AGE)
     return int(now - age)
 
 
@@ -843,9 +866,13 @@ class PeerDB:
         max(0, addr.nTime - time_penalty)`. `time_penalty` defaults to
         `_GOSSIP_TIME_PENALTY`, the flat two hours Core's own `ADDR`/
         `ADDRV2` handler passes `AddrMan::Add` for a whole gossiped batch
-        (`net_processing.cpp`, same sha); `query_dns_seed` below passes
-        `0`, `AddrMan::Add`'s own default, its answer already carrying a
-        timestamp Core backdates itself before it ever reaches here. An
+        (`net_processing.cpp`, same sha); `query_dns_seed` below and
+        `P2pManager._maybe_add_fixed_seeds` both pass `0`,
+        `AddrMan::Add`'s own default (`ThreadOpenConnections`'s
+        `addrman.get().Add(seed_addrs, local)` and `ThreadDNSAddressSeed`'s
+        `addrman.get().Add(vAdd, resolveSource)` alike pass no third
+        argument), each answer already carrying a timestamp Core backdates
+        itself before it ever reaches here. An
         address equal to `source` -- endpoint only, `_endpoint` rather
         than `==`, since two records differing in `timestamp` or
         `services` are still one self-announcement -- is exempted from

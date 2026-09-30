@@ -1726,7 +1726,9 @@ def test_a_fixed_seed_decodes_as_cores_convert_seeds_reads_it() -> None:
     The first line of Core's `nodes_main.txt` at
     bitcoin/bitcoin@9be056a8a7, a CJDNS address, then an IPv4 one on a
     port of its own, serialized as `generate_seeds.py` serializes them;
-    each gets Core's `SeedsServiceFlags`.
+    each gets Core's `SeedsServiceFlags`. The timestamp each is also
+    given (issue #1571) is asserted separately below, this one pinned at
+    0 first to isolate the rest of the decode from it.
     """
     seeds = bytes.fromhex(
         "0610fc11f76916e6361158ae1d4afcf757a4208d"  # [fc11:...:57a4]:8333
@@ -1736,8 +1738,31 @@ def test_a_fixed_seed_decodes_as_cores_convert_seeds_reads_it() -> None:
     assert cjdns.network_id == BIP155Network.CJDNS
     assert cjdns.address == bytes.fromhex("fc11f76916e6361158ae1d4afcf757a4")
     assert cjdns.port == 8333
-    assert ipv4 == peer_address(
+    assert replace(ipv4, timestamp=0) == peer_address(
         "1.2.3.4", 9090, services=ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
+    )
+
+
+def test_a_fixed_seed_is_backdated_one_to_two_weeks() -> None:
+    """#1571: Core's `ConvertSeeds` gives each seed a random past time.
+
+    `rng.rand_uniform_delay(Now<NodeSeconds>() - one_week, -one_week)`
+    (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) draws
+    uniform over `[now - 14d, now - 7d]`; measured around the call
+    rather than pinned, since the draw is a real one and not faked here.
+    """
+    seeds = bytes.fromhex("0104010203042382")  # 1.2.3.4:9090
+    before = time.time()
+    (ipv4,) = fixed_seed_addresses(seeds)
+    after = time.time()
+    age = after - ipv4.timestamp
+    # +1 for `int()`'s own truncation of the draw to a whole second, on
+    # top of the wall-clock slack between `before` and `after`.
+    slack = (after - before) + 1
+    assert (
+        address_module._FIXED_SEED_MIN_AGE
+        <= age
+        <= address_module._FIXED_SEED_MAX_AGE + slack
     )
 
 

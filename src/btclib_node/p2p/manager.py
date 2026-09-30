@@ -1366,7 +1366,17 @@ class P2pManager(threading.Thread):
             for address in fixed_seed_addresses(self.node.chain.fixed_seeds)
             if address.network_id in empty
         ]
-        self.peer_db.add_addresses(seeds)
+        # time_penalty=0, not `add_addresses`'s own gossip default:
+        # `ThreadOpenConnections` calls `addrman.get().Add(seed_addrs,
+        # local)` with no third argument (`src/net.cpp`, at
+        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and
+        # `AddrManImpl::Add`'s own default for that argument is `0s`
+        # (`src/addrman.h`, same sha) -- a fixed seed already carries
+        # `fixed_seed_addresses`'s own one-to-two-week backdating
+        # (btclib-org/btclib-node#1571); the flat 2h penalty is
+        # `net_processing.cpp`'s own explicit argument on the gossip
+        # path alone, not `Add`'s default.
+        self.peer_db.add_addresses(seeds, time_penalty=0)
         self.add_fixed_seeds = False
         self.logger.info("Added %s fixed seeds from reachable networks.", len(seeds))
 

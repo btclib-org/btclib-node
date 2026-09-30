@@ -40,6 +40,7 @@ from btclib_node.chains import Main, RegTest
 from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.log import Logger
+from btclib_node.p2p import address as address_module
 from btclib_node.p2p import manager as manager_module
 from btclib_node.p2p.address import (
     SEEDS_SERVICE_FLAGS,
@@ -1422,7 +1423,7 @@ def a_seeding_manager(
     peer_db = a_peer_db_stub(
         is_empty=True,
         holds_network=lambda network_id: network_id in held,
-        add_addresses=lambda addresses: added.append(list(addresses)),
+        add_addresses=lambda addresses, **_kwargs: added.append(list(addresses)),
     )
     manager = a_manager(
         conns, peer_db=peer_db, addnode_args=addnode_args, seednode=seednode
@@ -1454,12 +1455,20 @@ def test_the_fixed_seeds_of_every_empty_network_are_added_after_a_minute(
     a_manager: AManagerFactory,
     held: Sequence[BIP155Network],
     networks: set[BIP155Network],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """ISS 1099: past sixty seconds, the seeds of each empty reachable network.
 
     Core adds the seeds of the reachable networks `addrman` holds nothing
     for, and only once: a second pass adds nothing more.
+
+    `_fixed_seed_timestamp` pinned (issue #1571): it draws a fresh
+    random age each call, and the comparison below calls
+    `fixed_seed_addresses` a second time on its own -- unpinned, the two
+    calls would differ only on that draw and fail this equality for a
+    reason that has nothing to do with what this test is about.
     """
+    monkeypatch.setattr(address_module, "_fixed_seed_timestamp", lambda: 0)
     manager, added = a_seeding_manager(a_manager, held=held, elapsed=61)
     asyncio.run(manager._maybe_dial_more_peers())
     (seeds,) = added
@@ -1473,6 +1482,38 @@ def test_the_fixed_seeds_of_every_empty_network_are_added_after_a_minute(
     manager._next_fixed_seeds_check = 0.0
     asyncio.run(manager._maybe_dial_more_peers())
     assert len(added) == 1
+
+
+def test_a_fixed_seed_s_own_backdating_is_not_penalized_again(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1571: `_maybe_add_fixed_seeds` passes `AddrMan::Add`'s own 0s default.
+
+    `add_addresses`'s own default `time_penalty` is the flat 2h gossip
+    discount (`_GOSSIP_TIME_PENALTY`) -- right for `net_processing.cpp`'s
+    `ADDR`/`ADDRV2` handler, which is the only caller `AddrMan::Add`'s
+    default does not already suit. `ThreadOpenConnections`'s own
+    `addrman.get().Add(seed_addrs, local)` passes no third argument
+    (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so a
+    fixed seed's own one-to-two-week backdating must reach `peer_db`
+    whole. A real `PeerDB`, not the stub used elsewhere in this file: the
+    stub only records what it was handed and never runs the penalty
+    math, so it cannot tell a passed-through timestamp from a penalized
+    one.
+    """
+    stamp = int(time.time()) - 10 * 24 * 3600  # ten days old, past the 2h penalty
+    monkeypatch.setattr(address_module, "_fixed_seed_timestamp", lambda: stamp)
+    peer_db = PeerDB(cast("Any", None), None)
+    manager = a_manager(peer_db=peer_db)
+    manager.node.chain = Main()
+    manager._dial_start = time.time() - 61
+    # `_maybe_add_fixed_seeds` directly, not the full async
+    # `_maybe_dial_more_peers`: the latter draws and dials past it once
+    # the store holds something, which would leave a real `Connection`
+    # task behind for this synchronous call to never await.
+    manager._maybe_add_fixed_seeds()
+    assert peer_db.addresses
+    assert {address.timestamp for address in peer_db.addresses} == {stamp}
 
 
 def test_no_fixed_seed_is_added_where_every_reachable_network_is_held(
