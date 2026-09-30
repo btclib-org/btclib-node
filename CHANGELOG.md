@@ -1138,6 +1138,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   off `manage_connections`'s own step, so a slow resolve or connect no
   longer delays that loop's pruning and eviction** (closes #1366).
 
+### A manual dial's resolved answers are capped at 256
+
+- **`async_connect_host` no longer shuffles, validates or dials more
+  than 256 of a resolver's answers**, matching `Lookup`'s own
+  `nMaxSolutions` in Core's `ConnectNode` (closes #1466).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

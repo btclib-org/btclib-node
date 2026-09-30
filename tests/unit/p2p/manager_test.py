@@ -2583,11 +2583,14 @@ class _NamedLoop:
 def test_process_addr_fetch_refuses_an_invalid_resolved_address(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`CNetAddr::IsValid` refuses Core's own internal-marker prefix.
+    """A sole answer under Core's own internal-marker prefix dials nothing.
 
-    `_legacy_ipv6` reads the resolved answer as `CNetAddr` would; a
-    name resolving under it is dropped outright, as `ConnectNode` drops
-    the whole resolution on its own first invalid candidate.
+    ISS 1466: `is_internal` (`_legacy_ipv6` reading the answer as
+    `CNetAddr` would) drops it before the candidate list is even built,
+    matching `LookupIntern`'s own collection-time filter
+    (`src/netbase.cpp:144-168`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag) -- the later `is_valid` pass, which would refuse it too, never
+    gets the chance to.
     """
     monkeypatch.setattr(
         asyncio, "get_running_loop", lambda: _NamedLoop(["fd6b:88c0:8724::1"])
@@ -2618,7 +2621,11 @@ def test_process_addr_fetch_never_dials_a_valid_candidate_ahead_of_an_invalid_on
     returns on the first either check refuses -- so a dialable answer
     ahead of a bad one in that same order is never reached, exactly as
     one behind it never would be (`src/net.cpp:404-424`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The bad answer is a
+    documentation-range one (RFC3849, `2001:db8::/32`) rather than an
+    internal one: ISS 1466's `is_internal` filter drops an internal
+    answer before this pass ever runs, so it could no longer reach this
+    check at all, and this test wants an answer that still does.
     """
     dialled: list[NetworkAddressV2] = []
 
@@ -2629,7 +2636,7 @@ def test_process_addr_fetch_never_dials_a_valid_candidate_ahead_of_an_invalid_on
     monkeypatch.setattr(
         asyncio,
         "get_running_loop",
-        lambda: _NamedLoop(["1.2.3.4", "fd6b:88c0:8724::1"]),
+        lambda: _NamedLoop(["1.2.3.4", "2001:db8::1"]),
     )
     monkeypatch.setattr(manager_module, "dial", records)
     manager = a_manager()
@@ -3271,6 +3278,95 @@ def test_async_connect_host_logs_when_no_candidate_comes_up(
     monkeypatch.setattr(manager.logger, "info", info)
     asyncio.run(manager.async_connect_host("peer.example", 18444))
     assert logged == ["Dial to peer.example:18444 did not come up"]
+
+
+def test_async_connect_host_caps_the_resolved_list_at_256_before_dialling(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1466: an answer past `Lookup`'s own 256th is never even seen.
+
+    257 answers, the last one invalid (documentation-range, RFC3849 --
+    not internal, so the cap alone is what has to drop it, `is_internal`
+    having nothing to say about it), the first 256 valid: uncapped, the
+    first pass above would walk as far as that 257th, invalid one and
+    abort the whole attempt, dialling nothing, same as the
+    invalid-candidate test above. `_MAX_RESOLVED_ADDRESSES` drops it
+    before that pass ever runs, so the first pass sees only the 256
+    valid answers, clears them, and the second pass dials the first
+    (`src/net.cpp:413`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    """
+    ours, theirs = socket.socketpair()
+
+    async def connects(address: NetworkAddressV2) -> socket.socket:
+        return ours
+
+    valid_answers = [f"10.0.0.{i}" for i in range(256)]
+    monkeypatch.setattr(secrets, "SystemRandom", _NoShuffle)
+    monkeypatch.setattr(
+        asyncio,
+        "get_running_loop",
+        lambda: _NamedLoop([*valid_answers, "2001:db8::1"]),
+    )
+    monkeypatch.setattr(manager_module, "dial", connects)
+    made: list[dict[str, Any]] = []
+    manager = a_manager()
+    monkeypatch.setattr(
+        manager, "create_connection", lambda *args, **kwargs: made.append(kwargs)
+    )
+    asyncio.run(manager.async_connect_host("seed.example", 18444))
+    assert made == [
+        {
+            "inbound": False,
+            "addr_fetch": False,
+            "addr_name": "seed.example",
+        }
+    ]
+    theirs.close()
+
+
+def test_async_connect_host_drops_an_internal_answer_before_counting_to_256(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1466: an internal answer never takes one of the 256 slots.
+
+    `LookupIntern` drops an `IsInternal` answer at collection time and
+    never counts it toward `nMaxSolutions` (`src/netbase.cpp:144-168`,
+    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). An internal answer
+    ahead of 257 valid ones, capping at the raw list rather than
+    filtering first, would leave only 255 valid candidates behind it
+    inside the first 256 and an internal one at the front -- aborting
+    the whole attempt on the first pass's own `is_valid` check, the
+    same shape the invalid-candidate test above already proves aborts
+    everything. Filtering first instead leaves 256 valid candidates,
+    none of them ever reaching that check.
+    """
+    ours, theirs = socket.socketpair()
+
+    async def connects(address: NetworkAddressV2) -> socket.socket:
+        return ours
+
+    valid_answers = [f"10.0.{i // 256}.{i % 256}" for i in range(257)]
+    monkeypatch.setattr(secrets, "SystemRandom", _NoShuffle)
+    monkeypatch.setattr(
+        asyncio,
+        "get_running_loop",
+        lambda: _NamedLoop(["fd6b:88c0:8724::1", *valid_answers]),
+    )
+    monkeypatch.setattr(manager_module, "dial", connects)
+    made: list[dict[str, Any]] = []
+    manager = a_manager()
+    monkeypatch.setattr(
+        manager, "create_connection", lambda *args, **kwargs: made.append(kwargs)
+    )
+    asyncio.run(manager.async_connect_host("seed.example", 18444))
+    assert made == [
+        {
+            "inbound": False,
+            "addr_fetch": False,
+            "addr_name": "seed.example",
+        }
+    ]
+    theirs.close()
 
 
 def test_connect_host_schedules_a_dial_on_this_manager_s_own_loop(
