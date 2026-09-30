@@ -1276,6 +1276,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   stops** (closes #1506).
 - **A request after that drain begins gets `503` instead** (closes #1515).
 
+### `RpcManager.stop` finishes every reply its loop has begun
+
+- **A reply begun before shutdown, or by the RPC loop itself such as a `401`,
+  is written rather than cancelled, as Core's `StopHTTPServer` waits for it;
+  an idle kept-alive connection is not waited for** (closes #1539).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

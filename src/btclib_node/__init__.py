@@ -731,9 +731,9 @@ class Node(threading.Thread):
         answer raised: a failed answer still consumed one message and
         moved the drain on to the next.
 
-        Each reply is written by `RpcConnection.send`, which, the flag
-        being set, has `rpc_manager.stop` finish writing it rather than
-        cancel it (btclib-org/btclib-node#1506).
+        `rpc_manager.stop` finishes writing each reply rather than
+        cancel it, as it does every reply its loop has begun
+        (btclib-org/btclib-node#1539).
 
         `handle_rpc` pops one message per call and never raises in the
         ordinary case -- `rpc.main._execute` turns a callback's own
@@ -874,10 +874,10 @@ class Node(threading.Thread):
         - a deadline is recorded only on this node's thread: by
           `handle_rpc`, which sets `terminate_flag` itself right after,
           and, once the flag is set, by `_drain_rpc_queue` for each
-          request it answers and by `RpcConnection.send` for each reply
-          it writes (btclib-org/btclib-node#1506); so none predates the
-          shutdown it bounds, and one can be recorded after this
-          method's first read;
+          request it answers and by `rpc_manager.stop` before it waits
+          for the replies still being written
+          (btclib-org/btclib-node#1539); so none predates the shutdown it
+          bounds, and one can be recorded after this method's first read;
         - the value is never lowered, so a read sees every deadline
           recorded before it, a reply already sent included, while this
           thread still closes the stores behind it;
