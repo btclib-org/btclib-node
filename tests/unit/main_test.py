@@ -15,6 +15,7 @@ from btclib.block import Block
 from btclib.consensus import MAX_BLOCK_WEIGHT
 from btclib.exceptions import BTClibValueError
 from btclib.fee import FeeRate, fee_from_vsize
+from btclib.p2p.compact_blocks import CmpctBlock
 from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
 from btclib.script import script
 from btclib.script.engine.flags import ScriptFlag
@@ -37,6 +38,7 @@ from btclib_node.constants import (
     MIN_BLOCKS_TO_KEEP,
     MIN_PRUNE_TARGET_MIB,
     NodeStatus,
+    P2pConnStatus,
 )
 from btclib_node.exceptions import (
     ChainstateInconsistencyError,
@@ -49,6 +51,7 @@ from btclib_node.interpreter import check_transactions, get_flags
 from btclib_node.main import update_chain, verify_mempool_acceptance
 from btclib_node.mempool import format_money
 from btclib_node.p2p.block_availability import BlockAvailability
+from btclib_node.p2p.compact_block import compact_block
 from tests import (
     anyone_can_spend,
     build_block,
@@ -450,6 +453,27 @@ def test_reject_block_whose_coinbase_duplicates_an_unspent_txid(node: Node) -> N
     out_point = OutPoint(duplicate.id, 0)
     key = b"utxo-" + out_point.serialize(check_validity=False)
     assert node.chainstate.utxo_index.db.get(key) is not None
+
+
+def test_a_block_both_nonfinal_and_without_its_height_is_refused_nonfinal(
+    node: Node,
+) -> None:
+    """Core's `ContextualCheckBlock` asks `bad-txns-nonfinal` before BIP34's.
+
+    ISS 1315's review measured it on bitcoind: a block failing both is
+    refused `bad-txns-nonfinal`.
+    """
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, chain)
+    funding = chain[0].transactions[0]
+    nonfinal = locked_spend(
+        funding, funding.vout[0].value, lock_time=2_000_000_000, sequence=0
+    )
+    bad = build_block(
+        chain[-1].header.hash, [generate_coinbase(), nonfinal], len(chain)
+    )
+    connect(node, [bad])
+    rejected_because(node, bad, "bad-txns-nonfinal")
 
 
 def test_reject_block_with_a_transaction_locked_to_the_future(node: Node) -> None:
@@ -1710,12 +1734,14 @@ def a_peer(
     availability: BlockAvailability | None = None,
     *,
     prefers_headers: bool = True,
+    high_bandwidth: bool = False,
 ) -> Connection:
     """Build a connection double that records what it is sent."""
     return cast(
         "Connection",
         SimpleNamespace(
             prefers_headers=prefers_headers,
+            requested_hb_cmpctblocks=high_bandwidth,
             send=sent.append,
             block_availability=availability or BlockAvailability(),
         ),
@@ -1830,6 +1856,75 @@ def test_a_peer_that_has_no_header_to_connect_to_is_sent_the_tip_s_inv(
     assert message.items == (Inventory(InventoryType.MSG_BLOCK, chain[-1].header.hash),)
     peer = node.p2p_manager.connections[1]
     assert peer.block_availability.best_header_sent is None
+
+
+@pytest.mark.parametrize("prefers_headers", [True, False])
+def test_a_high_bandwidth_peer_is_sent_a_lone_new_block_as_a_cmpctblock(
+    node: Node, *, prefers_headers: bool
+) -> None:
+    """One new block whose parent the peer has goes as a `cmpctblock`.
+
+    Core's `SendMessages` sends a peer that asked for high bandwidth a
+    single header as the block's `cmpctblock`, whether or not it asked
+    for headers (btclib-org/btclib-node#1223). Every peer gets the same
+    one here, as in Core where `NewPoWValidBlock` left the block in
+    `m_most_recent_compact_block`; where it did not, Core builds one per
+    peer under a fresh nonce (`src/net_processing.cpp:5899-5913`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    """
+    chain = generate_random_chain(2, RegTest().genesis.hash, tip_time=datetime.now(UTC))
+    connect(node, chain[:1])
+    sent: dict[int, list[Any]] = {1: [], 2: []}
+    for conn_id, messages in sent.items():
+        node.p2p_manager.connections[conn_id] = a_peer(
+            messages,
+            BlockAvailability(best_known=chain[0].header.hash),
+            prefers_headers=prefers_headers,
+            high_bandwidth=True,
+        )
+
+    connect(node, chain[1:])
+    (first,) = sent[1]
+    assert isinstance(first, CmpctBlock)
+    # serialized: `tip_time` carries microseconds the stored header drops
+    assert first.serialize() == compact_block(chain[1], first.nonce).serialize()
+    assert sent[2] == [first]
+    peer = node.p2p_manager.connections[1]
+    assert peer.block_availability.best_header_sent == chain[1].header.hash
+
+
+@pytest.mark.parametrize(
+    ("prefers_headers", "known", "expected"),
+    [(False, None, Inv), (True, None, Headers), (True, 0, CmpctBlock)],
+    ids=["inv", "headers", "cmpctblock"],
+)
+def test_a_high_bandwidth_peer_announced_two_blocks_gets_a_cmpctblock_for_one(
+    node: Node, *, prefers_headers: bool, known: int | None, expected: type
+) -> None:
+    """Two new blocks go as a `cmpctblock` only where one header is to send.
+
+    Core's `SendMessages` reverts to an `inv` for more than one block to
+    a peer that did not ask for headers, and otherwise sends a
+    `cmpctblock` only where the peer lacks the tip alone. `known` is the
+    fork block the peer has, genesis where `None`.
+    """
+    connect(node, generate_random_chain(1, RegTest().genesis.hash))
+    fork = generate_random_chain(2, RegTest().genesis.hash, tip_time=datetime.now(UTC))
+    node.chainstate.block_index.add_headers([block.header for block in fork])
+    best_known = RegTest().genesis.hash if known is None else fork[known].header.hash
+    sent: list[Any] = []
+    node.p2p_manager.connections[1] = a_peer(
+        sent,
+        BlockAvailability(best_known=best_known),
+        prefers_headers=prefers_headers,
+        high_bandwidth=True,
+    )
+
+    connect(node, fork)
+    assert node.chainstate.block_index.active_chain[1:] == hashes(fork)
+
+    (message,) = sent
+    assert isinstance(message, expected)
 
 
 @pytest.mark.parametrize(
@@ -2911,6 +3006,148 @@ def test_a_body_over_the_weight_with_no_coinbase_is_not_failed() -> None:
     assert block.weight > MAX_BLOCK_WEIGHT
     assert not main.is_block_mutated(block, check_witness_root=True)
     assert not main.is_block_failed(block, check_witness_root=True)
+
+
+def a_fast_peer(
+    sent: list[Any],
+    availability: BlockAvailability,
+    *,
+    high_bandwidth: bool = True,
+    version: int = 70016,
+    status: P2pConnStatus = P2pConnStatus.Connected,
+) -> Connection:
+    """Build a connection double for `new_pow_valid_block`, recording sends."""
+    return cast(
+        "Connection",
+        SimpleNamespace(
+            status=status,
+            version_message=SimpleNamespace(version=version),
+            prefers_headers=True,
+            requested_hb_cmpctblocks=high_bandwidth,
+            send=sent.append,
+            block_availability=availability,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "announced",
+        "at-no-ban-version",
+        "at-segwit",
+        "ibd",
+        "not-on-tip",
+        "low-bandwidth",
+        "no-parent",
+        "has-it",
+        "old-version",
+        "closed",
+        "announced-before",
+        "pre-segwit",
+        "bad-cb-height",
+    ],
+)
+def test_a_new_block_is_sent_to_a_high_bandwidth_peer_before_connecting(
+    node: Node, case: str
+) -> None:
+    """ISS 1315: Core's `NewPoWValidBlock`, and each condition before it.
+
+    A new block extending the tip, out of initial block download and
+    past `ContextualCheckBlock`, goes as a `cmpctblock` to a fully
+    connected peer from `INVALID_CB_NO_BAN_VERSION` up that asked for
+    high bandwidth, has the parent and lacks the block. `NewPoWValidBlock`
+    goes no lower than the highest block it already sent this way, nor
+    below segwit's height, and records the height before the segwit check.
+    """
+    chain = generate_random_chain(2, RegTest().genesis.hash)
+    connect(node, chain[:1])
+    block_index = node.chainstate.block_index
+    node.is_initial_block_download = case == "ibd"
+    block = chain[1]
+    if case == "not-on-tip":
+        block = generate_random_chain(1, RegTest().genesis.hash)[0]
+    elif case == "bad-cb-height":
+        block = build_block(chain[0].header.hash, [generate_coinbase(height=5)], 2)
+    elif case == "announced-before":
+        node.highest_fast_announce = 2
+    elif case in ("pre-segwit", "at-segwit"):
+        segwit_height = 3 if case == "pre-segwit" else 2
+        consensus = replace(node.chain.consensus, segwit_height=segwit_height)
+        node.chain = cast("Any", SimpleNamespace(consensus=consensus))
+    block_index.add_headers([block.header])
+    best_known = {"no-parent": None, "has-it": block.header.hash}.get(
+        case, chain[0].header.hash
+    )
+    sent: list[Any] = []
+    node.p2p_manager.connections[1] = a_fast_peer(
+        sent,
+        BlockAvailability(best_known=best_known),
+        high_bandwidth=case != "low-bandwidth",
+        version={"old-version": 70014, "at-no-ban-version": 70015}.get(case, 70016),
+        status=P2pConnStatus.Closed if case == "closed" else P2pConnStatus.Connected,
+    )
+
+    main.new_pow_valid_block(node, block)
+
+    if case in ("announced", "at-no-ban-version", "at-segwit"):
+        (message,) = sent
+        assert isinstance(message, CmpctBlock)
+        assert message.serialize() == compact_block(block, message.nonce).serialize()
+        peer = node.p2p_manager.connections[1]
+        assert peer.block_availability.best_header_sent == block.header.hash
+    else:
+        assert not sent
+    recorded = case not in ("ibd", "not-on-tip", "bad-cb-height")
+    assert node.highest_fast_announce == (2 if recorded else 0)
+
+
+def test_a_block_sent_before_connecting_is_not_announced_again(node: Node) -> None:
+    """ISS 1315: the peer counts as having it, as `PeerHasHeader` answers.
+
+    A peer that did not ask for high bandwidth hears of the block once
+    it is connected, as before.
+    """
+    chain = generate_random_chain(2, RegTest().genesis.hash, tip_time=datetime.now(UTC))
+    connect(node, chain[:1])
+    node.is_initial_block_download = False
+    fast: list[Any] = []
+    slow: list[Any] = []
+    parent = chain[0].header.hash
+    node.p2p_manager.connections[1] = a_fast_peer(
+        fast, BlockAvailability(best_known=parent)
+    )
+    node.p2p_manager.connections[2] = a_fast_peer(
+        slow, BlockAvailability(best_known=parent), high_bandwidth=False
+    )
+    node.chainstate.block_index.add_headers([chain[1].header])
+    main.new_pow_valid_block(node, chain[1])
+    assert len(fast) == 1
+    assert not slow
+
+    connect(node, chain[1:])
+    assert node.chainstate.block_index.active_chain[-1] == chain[1].header.hash
+    assert len(fast) == 1
+    (message,) = slow
+    assert isinstance(message, Headers)
+
+
+def test_every_high_bandwidth_peer_is_sent_one_and_the_same_cmpctblock(
+    node: Node,
+) -> None:
+    """ISS 1315: Core's `NewPoWValidBlock` builds one `pcmpctblock` for all."""
+    chain = generate_random_chain(2, RegTest().genesis.hash)
+    connect(node, chain[:1])
+    node.is_initial_block_download = False
+    node.chainstate.block_index.add_headers([chain[1].header])
+    sent: dict[int, list[Any]] = {1: [], 2: []}
+    for conn_id, messages in sent.items():
+        node.p2p_manager.connections[conn_id] = a_fast_peer(
+            messages, BlockAvailability(best_known=chain[0].header.hash)
+        )
+    main.new_pow_valid_block(node, chain[1])
+    (first,) = sent[1]
+    assert sent[2] == [first]
 
 
 def test_a_block_whose_header_is_unknown_or_valid_is_not_cached_invalid(

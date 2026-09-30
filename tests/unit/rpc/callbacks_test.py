@@ -22,7 +22,6 @@ import pytest
 from bitcoin_core_rpc import RPCErrorCode
 from btclib.block import Block, BlockHeader
 from btclib.consensus import MAX_BLOCK_WEIGHT
-from btclib.descriptors import add_checksum, from_address
 from btclib.exceptions import BTClibValueError
 from btclib.fee import FeeRate
 from btclib.key import PrvKeyData
@@ -36,6 +35,7 @@ from btclib.tx.out_point import OutPoint
 from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
+from btclib_wallet.descriptors import add_checksum, from_address
 
 import btclib_node.p2p.banman as banman_module
 import btclib_node.rpc.callbacks as cb
@@ -82,6 +82,7 @@ from btclib_node.rpc.callbacks import (
     get_peer_info,
     get_raw_mempool,
     get_raw_transaction,
+    get_rpc_info,
     get_tx_out,
     get_tx_out_set_info,
     help_rpc,
@@ -184,6 +185,7 @@ def a_peer(
     peer: str = "1.2.3.4",
     bind: str = "5.6.7.8",
     local: str = "9.10.11.12",
+    addr_name: str | None = None,
     user_agent: bytes = b"/btclib:test/",
     latency: float = 0.5,
     min_ping_time: float = 0.25,
@@ -214,6 +216,7 @@ def a_peer(
         client=FakeSocket(gone=gone, peer=peer, bind=bind),
         version_message=version_message if versioned else None,
         address=peer_address(peer, 8333),
+        addr_name=addr_name,
         # fractional where the connection keeps them so, and each a
         # different value, so that an answer naming the wrong source or
         # left unrounded cannot pass
@@ -235,6 +238,7 @@ def a_peer(
         tx_announce_queue=[],
         download_queue=[],
         feefilter=0,
+        requested_hb_cmpctblocks=False,
         # what `Connection` starts every connection at
         addr_relay_enabled=False,
     )
@@ -251,6 +255,8 @@ def a_node(
     confirmed_outpoints: frozenset[bytes] | None = None,
     pruned: bool = False,
     peerblockfilters: bool = False,
+    active_rpc_commands: list[tuple[str, float]] | None = None,
+    log_path: str | None = None,
 ) -> Any:
     """Build a `Node` double carrying only what these callbacks read.
 
@@ -264,6 +270,8 @@ def a_node(
     `peerblockfilters` are `p2p.connection.local_services`'s own, off by
     default here as `Config`'s own defaults are, for
     `get_network_info`'s `localservices`/`localservicesnames`.
+    `active_rpc_commands` and `log_path` are `get_rpc_info`'s own, empty
+    and unset by default -- nothing else here reads either.
     """
     known = heights if heights is not None else {}
     confirmed = confirmed_outpoints if confirmed_outpoints is not None else frozenset()
@@ -294,6 +302,10 @@ def a_node(
             pruned=pruned,
             peerblockfilters=peerblockfilters,
         ),
+        active_rpc_commands=(
+            active_rpc_commands if active_rpc_commands is not None else []
+        ),
+        log_path=log_path,
         _accept=accept,
     )
 
@@ -326,6 +338,30 @@ def test_the_peer_table_names_a_connected_peer() -> None:
     assert info["addrlocal"] == "9.10.11.12:8333"
     assert info["servicesnames"] == ["NETWORK", "WITNESS"]
     assert info["inbound"] is True
+
+
+def test_a_peer_dialled_by_name_answers_that_name_as_addr() -> None:
+    """ISS 1301: `addr` is `m_addr_name`, not the socket, once one is held.
+
+    Core's `getpeerinfo` pushes `stats.m_addr_name`
+    (`src/rpc/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
+    which is the destination string a peer was dialled by rather than a
+    reformatting of the socket's own address -- a portless IP among
+    them, the ordinary case a client dialling by name produces.
+    `addrbind` is unaffected, being the bind address rather than the
+    peer's.
+    """
+    peer = a_peer(peer="1.2.3.4", bind="5.6.7.8", addr_name="203.0.113.5")
+    (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
+    assert info["addr"] == "203.0.113.5"
+    assert info["addrbind"] == "5.6.7.8:18444"
+
+
+def test_a_peer_dialled_by_address_still_answers_the_formatted_socket() -> None:
+    """No `addr_name` held: `addr` is the formatted socket address."""
+    peer = a_peer(peer="1.2.3.4", addr_name=None)
+    (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
+    assert info["addr"] == "1.2.3.4:8333"
 
 
 def test_a_peer_s_subver_is_its_own_announced_user_agent() -> None:
@@ -673,14 +709,28 @@ def test_the_synced_heights_are_the_peer_s_best_known_and_last_common_blocks(
 
 
 def test_the_fields_this_node_has_no_state_for_answer_core_s_value() -> None:
-    """No `cmpctblock` announcing, presync, permissions or BIP324 here."""
+    """No high-bandwidth peer chosen, presync, permissions or BIP324 here."""
     (info,) = get_peer_info(a_node({7: a_peer()}), _CONN, [])
     assert info["bip152_hb_to"] is False
-    assert info["bip152_hb_from"] is False
     assert info["presynced_headers"] == -1
     assert info["permissions"] == []
     assert info["transport_protocol_type"] == "v1"
     assert info["session_id"] == ""
+
+
+@pytest.mark.parametrize("requested", [True, False])
+def test_bip152_hb_from_is_what_the_peer_s_sendcmpct_asked(
+    requested: bool,  # noqa: FBT001
+) -> None:
+    """Whether the peer chose this node as a high-bandwidth peer.
+
+    Core's `m_bip152_highbandwidth_from`, which its `sendcmpct` sets
+    (btclib-org/btclib-node#1223).
+    """
+    peer = a_peer()
+    peer.requested_hb_cmpctblocks = requested
+    (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
+    assert info["bip152_hb_from"] is requested
 
 
 def test_a_peer_that_goes_away_mid_lookup_is_skipped() -> None:
@@ -1773,6 +1823,81 @@ def test_ping_and_stop_answer_without_a_connection() -> None:
     assert stop(node, _CONN, []) == "Btclib node stopping"
 
 
+def test_get_rpc_info_answers_active_commands_and_logpath() -> None:
+    """`getrpcinfo` reports `node.active_rpc_commands` and `node.log_path`.
+
+    `duration` is microseconds since each command's own recorded start,
+    `time.monotonic()` throughout -- Core's own `SteadyClock`
+    (`_HELP_GETRPCINFO`'s own citation in `rpc.help`).
+    """
+    now = time.monotonic()
+    node = a_node(
+        active_rpc_commands=[("getblockcount", now - 0.5), ("getrpcinfo", now)],
+        log_path="/data/regtest/history.log",
+    )
+    result = get_rpc_info(node, _CONN, [])
+    assert result["logpath"] == "/data/regtest/history.log"
+    methods = [entry["method"] for entry in result["active_commands"]]
+    assert methods == ["getblockcount", "getrpcinfo"]
+    durations = [entry["duration"] for entry in result["active_commands"]]
+    assert durations[0] >= 500_000 > durations[1]
+
+
+def test_get_rpc_info_answers_an_empty_logpath_with_no_log_file() -> None:
+    """`node.log_path` unset is Core's own `""`, not `None` or `null`."""
+    node = a_node(log_path=None)
+    assert get_rpc_info(node, _CONN, [])["logpath"] == ""
+
+
+@pytest.mark.parametrize(
+    "params", [[], [None], [5000], [-1000], [2**31 - 1], [-(2**31)]]
+)
+def test_stop_never_sleeps_here_whatever_wait_is(
+    monkeypatch: pytest.MonkeyPatch, params: list[Any]
+) -> None:
+    """ISS 1467/1441 review: `wait` is validated here, never slept on here.
+
+    `stop`'s own docstring is where the reason is argued: a `time.sleep`
+    in this callback would run on `Node`'s single thread before
+    `handle_rpc` requested the node's shutdown, where Core requests it
+    before sleeping. `main_test.py` and `connection_test.py` are where
+    the delay is proven, off this thread.
+    """
+    monkeypatch.setattr(time, "sleep", lambda _: pytest.fail("stop must not sleep"))
+    node = a_node()
+    assert stop(node, _CONN, params) == "Btclib node stopping"
+
+
+def test_stop_refuses_a_wait_of_the_wrong_json_type() -> None:
+    """A non-numeric `wait` is named the way `type_error` names it."""
+    node = a_node()
+    with pytest.raises(RpcError) as raised:
+        stop(node, _CONN, ["1000"])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert raised.value.message == (
+        'Wrong type passed:\n{\n    "Position 1 (wait)": "JSON value '
+        'of type string is not of expected type number"\n}'
+    )
+
+
+def test_stop_refuses_a_bool_wait() -> None:
+    """A JSON bool is its own VBOOL, not VNUM, refused the same as a string."""
+    node = a_node()
+    with pytest.raises(RpcError) as raised:
+        stop(node, _CONN, [True])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+
+
+@pytest.mark.parametrize("wait", [10.5, 2**31, -(2**31) - 1])
+def test_stop_refuses_a_wait_getint_int_refuses(wait: float) -> None:
+    """A fractional `wait`, or one past C `int`, fails `getInt<int>()`."""
+    node = a_node()
+    with pytest.raises(RpcError) as raised:
+        stop(node, _CONN, [wait])
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
+    assert raised.value.message == "JSON integer out of range"
+
+
 def test_mempool_acceptance_reports_a_reason_for_each_refusal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1991,6 +2116,26 @@ def test_a_rawtx_with_a_truncated_script_is_a_decode_failure() -> None:
     assert raised.value.message == decode_failure(truncated)
 
 
+def test_test_mempool_accept_refuses_rawtx_with_whitespace() -> None:
+    """Whitespace in a raw transaction hex is refused before decoding.
+
+    Core's `DecodeHexTx` requires `IsHex`, which rejects whitespace:
+    `bytes.fromhex` accepts it (btclib-org/btclib-node#1372).
+    """
+    valid_hex = a_tx().serialize(include_witness=True).hex()
+    for spaced in (
+        f" {valid_hex}",
+        f"{valid_hex} ",
+        f"{valid_hex[:8]} {valid_hex[8:]}",
+        f"{valid_hex[:8]}\t{valid_hex[8:]}",
+        f"{valid_hex[:8]}\n{valid_hex[8:]}",
+    ):
+        with pytest.raises(RpcError) as raised:
+            mempool_accept(a_node(), _CONN, [[spaced]])
+        assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
+        assert raised.value.message == decode_failure(spaced)
+
+
 def test_a_relayed_transaction_is_answered_with_its_txid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2051,6 +2196,28 @@ def test_a_transaction_truncated_inside_a_script_is_the_same_refusal() -> None:
     with pytest.raises(RpcError) as raised:
         send_raw_transaction(a_node(), _CONN, [truncated])
     assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
+
+
+def test_send_raw_transaction_refuses_rawtx_with_whitespace() -> None:
+    """Whitespace in a raw transaction hex is refused before decoding.
+
+    Core's `DecodeHexTx` requires `IsHex`, which rejects whitespace:
+    `bytes.fromhex` accepts it (btclib-org/btclib-node#1372).
+    """
+    valid_hex = a_tx().serialize(include_witness=True).hex()
+    for spaced in (
+        f" {valid_hex}",
+        f"{valid_hex} ",
+        f"{valid_hex[:8]} {valid_hex[8:]}",
+        f"{valid_hex[:8]}\t{valid_hex[8:]}",
+        f"{valid_hex[:8]}\n{valid_hex[8:]}",
+    ):
+        with pytest.raises(RpcError) as raised:
+            send_raw_transaction(a_node(), _CONN, [spaced])
+        assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
+        assert raised.value.message == (
+            "TX decode failed. Make sure the tx has at least one input."
+        )
 
 
 def test_a_rawtx_of_the_wrong_json_type_is_named() -> None:
@@ -2736,6 +2903,36 @@ def test_verbose_false_answers_the_serialized_header_hex_not_the_object() -> Non
     )
     answer = get_block_header(node, _CONN, [chain[1].hash.hex(), False])
     assert answer == chain[1].serialize().hex()
+
+
+@pytest.mark.parametrize("version", [0, -1])
+def test_verbose_false_answers_a_version_zero_or_negative_header(version: int) -> None:
+    """ISS 1262: `getblockheader false` answers such a header too.
+
+    Core takes a version of zero or below below BIP34's height; this
+    node's own index only ever stores one past `add_headers`'s
+    height-gated `bad-version` check, so `header.serialize()` here never
+    has cause to refuse one, and needs no bypass for it -- btclib's own
+    `BlockHeader.assert_valid` doesn't either, since btclib 2026.9.29
+    (btclib-org/btclib@bbb1ad71, closing btclib-org/btclib#2309;
+    btclib-org/btclib-node#1511).
+    """
+    header = BlockHeader(
+        version=version,
+        previous_block_hash=RegTest().genesis.hash,
+        merkle_root=b"\x07" * 32,
+        time=RegTest().genesis.time,
+        bits=RegTest().genesis.bits,
+        nonce=0,
+    )
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chainstate=SimpleNamespace(block_index=a_block_index([header]))
+        ),
+    )
+    answer = get_block_header(node, _CONN, [header.hash.hex(), False])
+    assert answer == header.serialize().hex()
 
 
 def test_verbose_true_and_the_default_answer_the_same_object() -> None:
@@ -3792,7 +3989,12 @@ def test_get_network_info_s_localservices_follows_pruned_and_peerblockfilters() 
 
 
 def test_addnode_onetry_dials_the_given_address_once() -> None:
-    """`addnode "host:port" "onetry"` schedules exactly one dial."""
+    """`addnode "host:port" "onetry"` schedules exactly one dial.
+
+    ISS 1493: `connect_host` is given `node_arg` whole, port included --
+    `split_host_port` above only validates it -- so `18444`, this
+    chain's own default, never reaches `connect_host` here at all.
+    """
     dialed: list[Any] = []
     node = cast(
         "Node",
@@ -3804,11 +4006,16 @@ def test_addnode_onetry_dials_the_given_address_once() -> None:
         ),
     )
     add_node(node, _CONN, ["127.0.0.1:9999", "onetry"])
-    assert dialed == [("127.0.0.1", 9999)]
+    assert dialed == [("127.0.0.1:9999", 18444)]
 
 
 def test_addnode_falls_back_to_the_chain_s_own_default_port() -> None:
-    """A `node` naming no port dials this chain's own default one."""
+    """A `node` naming no port dials this chain's own default one.
+
+    The negative half of ISS 1493's own positive above: `node_arg`
+    itself names no port, so it reaches `connect_host` unchanged and
+    `18444` is genuinely `default_port`, not a value already on `dest`.
+    """
     dialed: list[Any] = []
     node = cast(
         "Node",
@@ -3955,7 +4162,8 @@ def test_addnode_onetry_takes_a_hostname() -> None:
     """A hostname, rather than a literal IP, is dialled too (ISS 1264).
 
     `connect_host` resolves it on `P2pManager`'s own loop; this node's
-    synchronous RPC path splits the host from the port and nothing else.
+    synchronous RPC path only validates the port with `split_host_port`
+    (ISS 1493), passing `node_arg` itself on to `connect_host` whole.
     """
     dialed: list[Any] = []
     node = cast(
@@ -3968,7 +4176,7 @@ def test_addnode_onetry_takes_a_hostname() -> None:
         ),
     )
     add_node(node, _CONN, ["example.com:9999", "onetry"])
-    assert dialed == [("example.com", 9999)]
+    assert dialed == [("example.com:9999", 18444)]
 
 
 def test_addnode_refuses_a_port_int_would_read() -> None:
@@ -4790,6 +4998,22 @@ def test_submit_block_accepts_a_new_block_extending_the_tip(
     )
 
 
+def test_submit_block_offers_the_block_to_new_pow_valid_block(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1315: `submitblock` reaches Core's `NewPoWValidBlock`, once."""
+    offered: list[bytes] = []
+    monkeypatch.setattr(
+        cb, "new_pow_valid_block", lambda _, block: offered.append(block.header.hash)
+    )
+    node = regtest_node()
+    chain = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, chain[:1])
+    submit_block(node, _CONN, [chain[1].serialize(check_validity=False).hex()])
+    submit_block(node, _CONN, [chain[1].serialize(check_validity=False).hex()])
+    assert offered == [chain[1].header.hash]
+
+
 def test_submit_block_stores_valid_a_block_off_a_known_non_tip_ancestor(
     regtest_node: Callable[..., Node],
 ) -> None:
@@ -5037,6 +5261,24 @@ def test_disconnectnode_drops_the_peer_getpeerinfo_names_by_that_address() -> No
     node, removed = a_disconnecting_node(peers)
     (info,) = [info for info in get_peer_info(node, _CONN, []) if info["id"] == 3]
     disconnect_node(node, _CONN, [info["addr"]])
+    assert removed == [3]
+
+
+def test_disconnectnode_matches_the_name_a_peer_was_dialled_by() -> None:
+    """ISS 1301: `address` matches `m_addr_name`, a portless IP included.
+
+    Core's `CConnman::DisconnectNode(std::string_view)` matches
+    `node->m_addr_name` (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag); the socket's own `getpeername`, `"1.2.3.4:8333"`
+    here, does not match once a name is held.
+    """
+    peers = {3: a_peer(peer="1.2.3.4", addr_name="1.2.3.4")}
+    node, removed = a_disconnecting_node(peers)
+    with pytest.raises(RpcError) as raised:
+        disconnect_node(node, _CONN, ["1.2.3.4:8333"])
+    assert (raised.value.code, raised.value.message) == _DISCONNECT_NOT_FOUND
+    assert removed == []
+    disconnect_node(node, _CONN, ["1.2.3.4"])
     assert removed == [3]
 
 

@@ -677,8 +677,8 @@ _P2WPKH, _P2WSH = b"\x00\x14" + _KEYHASH, b"\x00\x20" + _SCRIPTHASH
 _TWO_OF_TWO = b"\x52" + _push(b"\x02" * 33) * 2 + b"\x52" + _CHECKMULTISIG
 _NOPS = b"\x61"
 # (prevout script, script_sig, witness stack, output script, cost): each
-# answer is Core's `GetTransactionSigOpCost` read off its source, at
-# bitcoin/bitcoin@9be056a8a7 (btclib-org/btclib-node#1357)
+# answer is Core's `GetTransactionSigOpCost` read off its source,
+# at bitcoin/bitcoin@9be056a8a7 (btclib-org/btclib-node#1357)
 _SIG_OP_COSTS = {
     "legacy, in the outputs, at four": (_P2WPKH, b"", (b"",), _CHECKSIG * 2, 4 * 2 + 1),
     "legacy, in the script_sig": (b"\x51", _CHECKSIG, (), b"\x51", 4),

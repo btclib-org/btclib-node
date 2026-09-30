@@ -186,6 +186,7 @@ from btclib_node.dirlock import DirectoryLock, lock_directories
 from btclib_node.exceptions import DirectoryLockError
 from btclib_node.log import open_history_log
 from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME
+from btclib_node.rpc.connection import REQUEST_TIMEOUT
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -208,6 +209,7 @@ _CHAIN_SECTION = {
     "testnet": "test",
     "signet": "signet",
     "regtest": "regtest",
+    "testnet4": "testnet4",
 }
 
 # Core's own external `-chain=` vocabulary (`ChainTypeFromString`,
@@ -228,10 +230,11 @@ _CHAIN_ALIASES = {
     "test": "testnet",
     "signet": "signet",
     "regtest": "regtest",
+    "testnet4": "testnet4",
 }
 
-# `LOG_CATEGORIES_BY_STR` (`src/logging.cpp`, at
-# bitcoin/bitcoin@9be056a8a7), `lock` left out as a release build leaves
+# `LOG_CATEGORIES_BY_STR` (`src/logging.cpp`,
+# at bitcoin/bitcoin@9be056a8a7), `lock` left out as a release build leaves
 # it out, it being compiled in only under `DEBUG_LOCKCONTENTION`.
 _LOG_CATEGORIES = frozenset(
     {
@@ -524,6 +527,12 @@ _OPTIONS: dict[str, _Option] = {
         _RPC_TITLE,
         network_only=True,
     ),
+    "rpcservertimeout": _Option(
+        "=<n>",
+        f"Timeout during HTTP requests (default: {int(REQUEST_TIMEOUT)})",
+        _RPC_TITLE,
+        debug_only=True,
+    ),
     "rpcuser": _Option(
         "=<user>", "Username for JSON-RPC connections", _RPC_TITLE, sensitive=True
     ),
@@ -558,14 +567,20 @@ _OPTIONS: dict[str, _Option] = {
     ),
     "testnet": _Option(
         "",
-        "Use the testnet3 chain. Equivalent to -chain=test.",
+        "Use the testnet3 chain. Equivalent to -chain=test. Support for "
+        "testnet3 is deprecated and will be removed in an upcoming release. "
+        "Consider moving to testnet4 now by using -testnet4.",
+        _CHAINPARAMS_TITLE,
+    ),
+    "testnet4": _Option(
+        "",
+        "Use the testnet4 chain. Equivalent to -chain=testnet4.",
         _CHAINPARAMS_TITLE,
     ),
 }
 
 # The sections `GetUnrecognizedSections` (`src/common/args.cpp`, same
-# sha) does not warn about: every `ChainTypeToString`, `testnet4`
-# included though this node runs no such chain.
+# sha) does not warn about: every `ChainTypeToString`.
 _RECOGNIZED_SECTIONS = frozenset({"main", "test", "testnet4", "signet", "regtest"})
 
 # Where a section of a file was named: Core's `SectionInfo`, its name,
@@ -1221,21 +1236,17 @@ _UNKNOWN_CHAIN = "\0"
 
 
 def _chain_arg(settings: _Settings) -> str:
-    """Resolve `-chain`/`-testnet`/`-signet`/`-regtest`: `GetChainArg`.
+    """Resolve the chain selectors, `-chain` among them: `GetChainArg`.
 
-    `chain`/`testnet`/`signet`/`regtest` are read from the file's
-    default section only, never a chain's own section -- Core's own
-    `get_net` lambda passes an empty section for exactly this lookup
+    `chain`/`testnet`/`signet`/`regtest`/`testnet4` are read from the
+    file's default section only, never a chain's own section -- Core's
+    own `get_net` lambda passes an empty section for exactly this lookup
     (`GetChainArg`, `src/common/args.cpp`, at bitcoin/bitcoin@9be056a8a7),
     which is what lets a file decide the chain before any section but
     the default one can mean anything; and a negated selector on the
     command line is skipped there, as Core skips it. At most one of the
     five may resolve true; more is the same "Invalid combination" Core
-    refuses, in Core's own words, `-testnet4` named among the five
-    selectors although this node reads no such option of its own --
-    `get_net` above never sees it, so a `-testnet4` given alone still
-    silently selects mainnet, a gap of its own and not what this fixes
-    (btclib-org/btclib-node#1311). A `-chain` Core does not know is
+    refuses, in Core's own words. A `-chain` Core does not know is
     returned as given, behind `_UNKNOWN_CHAIN`, as `GetChainArg` returns
     it.
     """
@@ -1250,10 +1261,9 @@ def _chain_arg(settings: _Settings) -> str:
     testnet = get_net("testnet")
     signet = get_net("signet")
     regtest = get_net("regtest")
-    if sum([chain_alias is not None, testnet, signet, regtest]) > 1:
-        # Core's own words (`GetChainArg`, same citation as above),
-        # `-testnet4` named among the selectors even though this node's
-        # `get_net` never reads one (btclib-org/btclib-node#1311)
+    testnet4 = get_net("testnet4")
+    if sum([chain_alias is not None, testnet, signet, regtest, testnet4]) > 1:
+        # Core's own words (`GetChainArg`, same citation as above)
         err_msg = (
             "Invalid combination of -regtest, -signet, -testnet, -testnet4 "
             "and -chain. Can use at most one."
@@ -1267,6 +1277,8 @@ def _chain_arg(settings: _Settings) -> str:
         return "signet"
     if testnet:
         return "testnet"
+    if testnet4:
+        return "testnet4"
     return "mainnet"
 
 
@@ -1529,8 +1541,8 @@ def _read_settings(argv: Sequence[str]) -> tuple[_Settings, Path, str]:
     # `-datadir` and `-conf` are read by `get_path_arg`, lexically normal
     # before the file system is asked anything: `missing/..` and
     # `symlink/..` are the directory they are written in. `-datadir` is
-    # made absolute as `GetDataDir` makes it (`src/common/args.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7). A value that is `.` once normal is
+    # made absolute as `GetDataDir` makes it (`src/common/args.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7). A value that is `.` once normal is
     # where a path a refusal names still differed from Core's: Core joins
     # the `.` on (`fs::absolute`, `AbsPathForConfigVal`, both a literal
     # `operator/` with no lexical pass of their own) and `pathlib.Path`
@@ -1847,6 +1859,15 @@ def _after_lock(before: _BeforeLock) -> Config:
     if ban_time is None:
         ban_time = DEFAULT_MISBEHAVING_BANTIME
     prune = before.prune
+    # `-rpcservertimeout`, which `InitHTTPServer` hands to libevent's
+    # `evhttp_set_timeout` as a 32-bit `int`
+    # (`src/httpserver.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    # tag): the same `int64_t`-to-`int` narrowing `-maxconnections`
+    # above takes through `_to_int`.
+    rpcservertimeout = _get_int(settings, "rpcservertimeout")
+    rpcservertimeout = (
+        int(REQUEST_TIMEOUT) if rpcservertimeout is None else _to_int(rpcservertimeout)
+    )
 
     return Config(
         chain=before.chain_name,
@@ -1856,6 +1877,7 @@ def _after_lock(before: _BeforeLock) -> Config:
         rpc_port=rpc_port,
         rpcbind=tuple(rpcbind),
         rpcallowip=_get_args(settings, "rpcallowip"),
+        rpcservertimeout=rpcservertimeout,
         allow_rpc=server is None or server,
         pruned=bool(prune),
         prune_target_mib=prune if prune >= MIN_PRUNE_TARGET_MIB else None,
@@ -1896,8 +1918,8 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
     return _after_lock(_before_lock(sys.argv[1:] if argv is None else argv))
 
 
-# Core's `SetupEnvironment` (`src/common/system.cpp`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which `bitcoind`'s own
+# Core's `SetupEnvironment` (`src/common/system.cpp`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which `bitcoind`'s own
 # `main` calls right after building its `interfaces::Init`
 # (`src/bitcoind.cpp`, same sha): the process umask becomes 0077
 # everywhere but Windows, so every directory and file it creates is its

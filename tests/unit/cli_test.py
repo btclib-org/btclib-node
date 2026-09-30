@@ -95,8 +95,8 @@ def test_parse_conf_text_reads_a_no_prefix_as_a_negation(
 
 
 # `GetConfigOptions`, `IsConfSupported` and `InterpretValue`'s words
-# (`src/common/config.cpp`, `src/common/args.cpp`, at
-# bitcoin/bitcoin@9be056a8a7), each measured on `bitcoind` v31.1.0 with
+# (`src/common/config.cpp`, `src/common/args.cpp`,
+# at bitcoin/bitcoin@9be056a8a7), each measured on `bitcoind` v31.1.0 with
 # the line below `regtest=1`, which is what numbers it 2
 @pytest.mark.parametrize(
     ("line", "refusal"),
@@ -665,6 +665,31 @@ def test_help_names_bantime() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("argv", "conf", "rpcservertimeout"),
+    [
+        ([], "", 30),
+        (["-rpcservertimeout=99000"], "", 99000),
+        ([], "rpcservertimeout=5\n", 5),
+        (["-rpcservertimeout=0"], "", 0),
+        (["-rpcservertimeout=-1"], "", -1),
+    ],
+    ids=["Core's default", "command line", "file", "zero", "negative one"],
+)
+def test_build_config_reads_rpcservertimeout(
+    tmp_path: Path, argv: list[str], conf: str, rpcservertimeout: int
+) -> None:
+    """ISS 1548: `-rpcservertimeout` reaches `Config`, as `-bantime` does."""
+    assert _build(tmp_path, *argv, conf=conf).rpcservertimeout == rpcservertimeout
+
+
+def test_help_names_rpcservertimeout_under_debug_alone() -> None:
+    """`-rpcservertimeout` is `DEBUG_ONLY` in Core, as `-regtest` is."""
+    message = " ".join(cli._help_message(show_debug=True).split())
+    assert "Timeout during HTTP requests (default: 30)" in message
+    assert "-rpcservertimeout" not in cli._help_message(show_debug=False)
+
+
 def test_help_names_dnsseed_fixedseeds_and_seednode() -> None:
     """ISS 1192: `-dnsseed`, `-fixedseeds` and `-seednode`, in Core's words."""
     message = " ".join(cli._help_message(show_debug=False).split())
@@ -743,13 +768,20 @@ def test_build_config_logs_its_config_file_and_command_line_args(
     bitcoin/bitcoin@9be056a8a7): the config file's args, then the command
     line's; a plain value quoted as `SettingsValue::write()` writes it, a
     negation's `true`, and `-rpcpassword`'s masked to `****` on either.
+    `SettingsValue::write()`'s own `json_escape`
+    (`src/univalue/lib/univalue_write.cpp`, same sha) doubles a backslash
+    like any other JSON string writer, so `datadir` is compared through
+    `cli._setting_to_write_str` rather than against the raw path: on
+    `windows-latest`, where `tmp_path` carries real backslashes, a plain
+    f-string would compare the doubled logged form against the
+    undoubled one (ISS 1509).
     """
     conf = "regtest=1\n[regtest]\nrpcbind=127.0.0.1:8332\n"
     config = _build(tmp_path, "-nolisten=0", "-rpcpassword=hunter2", conf=conf)
     assert config.config_args == (
         'Config file arg: regtest="1"',
         'Config file arg: [regtest] rpcbind="127.0.0.1:8332"',
-        f'Command-line arg: datadir="{tmp_path}"',
+        f"Command-line arg: datadir={cli._setting_to_write_str(str(tmp_path))}",
         "Command-line arg: listen=true",
         "Command-line arg: rpcpassword=****",
     )
@@ -761,6 +793,9 @@ def test_log_args_is_config_file_first_then_command_line(tmp_path: Path) -> None
     `m_settings.ro_config`/`command_line_options` (`src/common/settings.h`,
     same sha): the default section (`""`) sorts ahead of a named one, and
     a name sorts within its own section, whichever order they were set in.
+    `datadir` is compared through `cli._setting_to_write_str`, for the
+    same reason given in `test_build_config_logs_its_config_file_and_
+    command_line_args` above (ISS 1509).
     """
     settings = cli._Settings(
         command_line={"rpcpassword": ["hunter2"], "datadir": [str(tmp_path)]},
@@ -773,8 +808,26 @@ def test_log_args_is_config_file_first_then_command_line(tmp_path: Path) -> None
         "Config file arg: listen=true",
         'Config file arg: regtest="1"',
         'Config file arg: [regtest] rpcbind="127.0.0.1:8332"',
-        f'Command-line arg: datadir="{tmp_path}"',
+        f"Command-line arg: datadir={cli._setting_to_write_str(str(tmp_path))}",
         "Command-line arg: rpcpassword=****",
+    )
+
+
+def test_log_args_escapes_a_backslash_in_datadir() -> None:
+    r"""ISS 1509: `value.write()` JSON-escapes a backslash, doubling it.
+
+    A manufactured Windows-style path exercises `SettingsValue::write()`'s
+    `json_escape` (`src/univalue/lib/univalue_write.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, `escapes[0x5c] == "\\"`) without a
+    Windows runner: a literal single backslash in `datadir` is doubled in
+    the logged line, exactly as any other string value is. The expected
+    value is a hand-written literal, not `_setting_to_write_str` again,
+    so the test cannot pass a change that stops escaping it.
+    """
+    windows_datadir = r"C:\Users\runneradmin\datadir"
+    settings = cli._Settings(command_line={"datadir": [windows_datadir]}, ro_config={})
+    assert cli._log_args(settings) == (
+        'Command-line arg: datadir="C:\\\\Users\\\\runneradmin\\\\datadir"',
     )
 
 
@@ -816,6 +869,8 @@ def test_build_config_masks_a_double_negative_password(
         ([], "testnet=1\nnotestnet=1\n", "mainnet"),
         (["-chain=test"], "chain=regtest\n", "testnet"),
         ([], "chain=regtest\nchain=test\n", "regtest"),
+        (["-testnet4=0"], "", "mainnet"),
+        (["-notestnet4"], "testnet4=1\n", "testnet4"),
     ],
     ids=[
         "-testnet=0",
@@ -827,6 +882,8 @@ def test_build_config_masks_a_double_negative_password(
         "negated after set",
         "-chain over the file",
         "the file's first chain",
+        "-testnet4=0",
+        "-notestnet4 skipped",
     ],
 )
 def test_build_config_reads_a_chain_selector_as_get_chain_arg(
@@ -1438,10 +1495,12 @@ def test_build_config_help_debug_shows_a_debug_only_option(
         (["-testnet"], "testnet"),
         (["-signet"], "signet"),
         (["-regtest"], "regtest"),
+        (["-testnet4"], "testnet4"),
         (["-chain=main"], "mainnet"),
         (["-chain=test"], "testnet"),
         (["-chain=signet"], "signet"),
         (["-chain=regtest"], "regtest"),
+        (["-chain=testnet4"], "testnet4"),
     ],
 )
 def test_build_config_selects_the_chain(
@@ -1453,8 +1512,12 @@ def test_build_config_selects_the_chain(
 
 @pytest.mark.parametrize(
     ("argv", "conf"),
-    [(["-testnet", "-signet"], ""), (["-testnet"], "signet=1\n")],
-    ids=["two on the command line", "one each side"],
+    [
+        (["-testnet", "-signet"], ""),
+        (["-testnet"], "signet=1\n"),
+        (["-testnet4", "-testnet"], ""),
+    ],
+    ids=["two on the command line", "one each side", "-testnet4 and -testnet"],
 )
 def test_build_config_refuses_two_chain_selectors(
     tmp_path: Path, argv: list[str], conf: str
@@ -1462,8 +1525,7 @@ def test_build_config_refuses_two_chain_selectors(
     """More than one selector, counted over the command line and the file.
 
     `bitcoind` v31.1.0's own words, `-testnet4` named among the five
-    selectors even though this node reads no such option of its own
-    (btclib-org/btclib-node#1311).
+    selectors (btclib-org/btclib-node#1311).
     """
     with pytest.raises(
         ValueError,
@@ -1482,7 +1544,7 @@ def test_build_config_refuses_two_chain_selectors(
 def test_build_config_refuses_an_unknown_chain(
     tmp_path: Path, argv: list[str], conf: str, alias: str
 ) -> None:
-    """An alias outside Core's four, `-nochain`'s `0` among them.
+    """An alias outside Core's five, `-nochain`'s `0` among them.
 
     `bitcoind` v31.1.0's own words: "Unknown chain bogus.", not quoted
     and ending in a full stop (btclib-org/btclib-node#1311).

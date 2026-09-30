@@ -191,9 +191,9 @@ class AManagerFactory(Protocol):
         peer_db: Any = None,
         status: NodeStatus = NodeStatus.BlockSynced,
         port: int | None = None,
-        connect: Sequence[tuple[str, int]] = (),
+        connect: Sequence[str] = (),
         addnode_args: Sequence[str] = (),
-        seednode: Sequence[tuple[str, int]] = (),
+        seednode: Sequence[str] = (),
         listen: bool = True,
         discover: bool | None = None,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
@@ -221,9 +221,9 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
         peer_db: Any = None,
         status: NodeStatus = NodeStatus.BlockSynced,
         port: int | None = None,
-        connect: Sequence[tuple[str, int]] = (),
+        connect: Sequence[str] = (),
         addnode_args: Sequence[str] = (),
-        seednode: Sequence[tuple[str, int]] = (),
+        seednode: Sequence[str] = (),
         listen: bool = True,
         discover: bool | None = None,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
@@ -259,12 +259,19 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
             # here constructs -- and `listen` defaults to `True` so every
             # existing caller here keeps binding and accepting.
             # `max_connections` defaults to `Config`'s own default for
-            # the same reason.
+            # the same reason. `connect`/`seednode` here stand in for
+            # `Config`'s own parsed pairs, read only for their
+            # truthiness at `run`'s own `-seednode is ignored` check;
+            # `_connect_peers`/`_seednodes` themselves read
+            # `connect_args`/`seednode_args`, the raw specs kept whole
+            # end to end (btclib-org/btclib-node#1493).
             config=SimpleNamespace(
                 connect=connect,
                 connect_given=bool(connect),
+                connect_args=tuple(connect),
                 addnode_args=tuple(addnode_args),
                 seednode=seednode,
+                seednode_args=tuple(seednode),
                 listen=listen,
                 # `Config.__init__`'s own sentinel: `discover=None`
                 # follows `listen`, an explicit value winning over it,
@@ -1309,7 +1316,7 @@ def a_seeding_manager(
     elapsed: float = 0.0,
     use_dns_seed: bool = True,
     addnode_args: Sequence[str] = (),
-    seednode: Sequence[tuple[str, int]] = (),
+    seednode: Sequence[str] = (),
     conns: Sequence[Any] = (),
 ) -> tuple[P2pManager, list[list[NetworkAddressV2]]]:
     """Build a mainnet manager whose peer db holds only the `held` networks.
@@ -1416,7 +1423,7 @@ def test_a_seednode_makes_fixed_seeds_wait_the_same_as_an_addnode(
     `-addnode`.
     """
     manager, added = a_seeding_manager(
-        a_manager, use_dns_seed=False, seednode=[("1.2.3.4", 8333)]
+        a_manager, use_dns_seed=False, seednode=["1.2.3.4:8333"]
     )
     asyncio.run(manager._maybe_dial_more_peers())
     assert added == []
@@ -1761,7 +1768,7 @@ async def asks_no_dns_server(seed: str) -> None:
 
 def test_connect_turns_off_addrman_outgoing(a_manager: AManagerFactory) -> None:
     """`node.config.connect` non-empty: `use_addrman_outgoing` is `False`."""
-    manager = a_manager(connect=[("1.2.3.4", 8333)])
+    manager = a_manager(connect=["1.2.3.4:8333"])
     assert manager.use_addrman_outgoing is False
 
 
@@ -1782,7 +1789,7 @@ def test_maybe_dial_more_peers_is_a_noop_under_connect(
     returned before reaching for it.
     """
     peer_db = a_peer_db_stub(is_empty=False, random_address=refuses_to_be_asked)
-    manager = a_manager(peer_db=peer_db, connect=[("1.2.3.4", 8333)])
+    manager = a_manager(peer_db=peer_db, connect=["1.2.3.4:8333"])
     asyncio.run(manager._maybe_dial_more_peers())
     assert not manager.connections
     assert not manager.pending_connections
@@ -1833,7 +1840,7 @@ def test_run_skips_the_dns_lookup_under_connect(a_manager: AManagerFactory) -> N
     manager = a_manager(
         peer_db=peer_db,
         port=get_random_port(),
-        connect=[("1.2.3.4", 8333)],
+        connect=["1.2.3.4:8333"],
         listen=False,
     )
     manager.start()
@@ -1852,8 +1859,8 @@ def test_run_logs_when_a_seednode_is_ignored_under_connect(
     """ISS 1192: Core's own log line, `-seednode` given alongside `-connect`."""
     logged: list[Any] = []
     manager = a_manager(
-        connect=[("1.2.3.4", 8333)],
-        seednode=[("5.6.7.8", 8333)],
+        connect=["1.2.3.4:8333"],
+        seednode=["5.6.7.8:8333"],
         listen=False,
     )
     monkeypatch.setattr(manager.logger, "info", logged.append)
@@ -1868,7 +1875,7 @@ def test_run_does_not_log_it_without_a_seednode(
 ) -> None:
     """The positive control: `-connect` alone logs nothing about `-seednode`."""
     logged: list[Any] = []
-    manager = a_manager(connect=[("1.2.3.4", 8333)], listen=False)
+    manager = a_manager(connect=["1.2.3.4:8333"], listen=False)
     monkeypatch.setattr(manager.logger, "info", logged.append)
     manager.start()
     wait_until(manager.loop.is_running)
@@ -1943,7 +1950,7 @@ def test_wait_for_seednode_peers_ends_early_once_enough_peers_answer(
         waited.append(delay)
 
     monkeypatch.setattr(asyncio, "sleep", records_sleep)
-    manager = a_manager(seednode=[("1.2.3.4", 8333)])
+    manager = a_manager(seednode=["1.2.3.4:8333"])
     counts = iter([0, 0, 2])
     monkeypatch.setattr(manager, "_full_outbound_count", lambda: next(counts))
     asyncio.run(manager._wait_for_seednode_peers())
@@ -1965,7 +1972,7 @@ def test_wait_for_seednode_peers_times_out_after_thirty_seconds(
         waited.append(delay)
 
     monkeypatch.setattr(asyncio, "sleep", records_sleep)
-    manager = a_manager(seednode=[("1.2.3.4", 8333)])
+    manager = a_manager(seednode=["1.2.3.4:8333"])
     monkeypatch.setattr(manager, "_full_outbound_count", lambda: 0)
     asyncio.run(manager._wait_for_seednode_peers())
     expected_polls = (
@@ -2011,7 +2018,7 @@ def test_dns_address_seed_waits_for_seednode_peers_first(
     returns.
     """
     monkeypatch.setattr(asyncio, "sleep", _fails_past_seednode_poll)
-    manager = a_manager(seednode=[("1.2.3.4", 8333)])
+    manager = a_manager(seednode=["1.2.3.4:8333"])
     monkeypatch.setattr(manager, "_full_outbound_count", lambda: 0)
     with pytest.raises(TimeoutError):
         asyncio.run(manager._dns_address_seed())
@@ -2404,25 +2411,23 @@ def test_maybe_add_seednode_queues_the_first_value_at_once_when_peer_db_is_empty
     """Core's own `add_addr_fetch` initial value: `peer_db` empty, no wait."""
     manager = a_manager(
         peer_db=a_peer_db_stub(is_empty=True),
-        seednode=[("1.2.3.4", 8333), ("5.6.7.8", 8333)],
+        seednode=["1.2.3.4", "5.6.7.8"],
     )
     manager._arm_dial_loop()
     manager._maybe_add_seednode()
-    assert list(manager._addr_fetches) == [("5.6.7.8", 8333)]
-    assert manager._seednodes == [("1.2.3.4", 8333)]
+    assert list(manager._addr_fetches) == [("5.6.7.8", RegTest().port)]
+    assert manager._seednodes == [("1.2.3.4", RegTest().port)]
 
 
 def test_maybe_add_seednode_waits_when_peer_db_already_holds_something(
     a_manager: AManagerFactory,
 ) -> None:
     """`peer_db` non-empty when the dial loop starts: the timer gates it."""
-    manager = a_manager(
-        peer_db=a_peer_db_stub(is_empty=False), seednode=[("1.2.3.4", 8333)]
-    )
+    manager = a_manager(peer_db=a_peer_db_stub(is_empty=False), seednode=["1.2.3.4"])
     manager._arm_dial_loop()
     manager._maybe_add_seednode()
     assert not manager._addr_fetches
-    assert manager._seednodes == [("1.2.3.4", 8333)]
+    assert manager._seednodes == [("1.2.3.4", RegTest().port)]
 
 
 def test_maybe_add_seednode_waits_the_interval_between_two_values(
@@ -2431,15 +2436,18 @@ def test_maybe_add_seednode_waits_the_interval_between_two_values(
     """Core's own `ADD_NEXT_SEEDNODE`: one value per ten seconds, not sooner."""
     manager = a_manager(
         peer_db=a_peer_db_stub(is_empty=True),
-        seednode=[("1.2.3.4", 8333), ("5.6.7.8", 8333)],
+        seednode=["1.2.3.4", "5.6.7.8"],
     )
     manager._arm_dial_loop()
     manager._maybe_add_seednode()
     manager._maybe_add_seednode()
-    assert list(manager._addr_fetches) == [("5.6.7.8", 8333)]
+    assert list(manager._addr_fetches) == [("5.6.7.8", RegTest().port)]
     manager._next_seednode_at = 0.0
     manager._maybe_add_seednode()
-    assert list(manager._addr_fetches) == [("5.6.7.8", 8333), ("1.2.3.4", 8333)]
+    assert list(manager._addr_fetches) == [
+        ("5.6.7.8", RegTest().port),
+        ("1.2.3.4", RegTest().port),
+    ]
     assert not manager._seednodes
 
 
@@ -2460,13 +2468,16 @@ def test_maybe_add_seednode_does_not_fire_early_when_the_loop_starts_late(
     """
     manager = a_manager(
         peer_db=a_peer_db_stub(is_empty=False),
-        seednode=[("1.2.3.4", 8333), ("5.6.7.8", 8333)],
+        seednode=["1.2.3.4", "5.6.7.8"],
     )
     time.sleep(15)
     manager._arm_dial_loop()
     manager._maybe_add_seednode()
     assert not manager._addr_fetches
-    assert manager._seednodes == [("1.2.3.4", 8333), ("5.6.7.8", 8333)]
+    assert manager._seednodes == [
+        ("1.2.3.4", RegTest().port),
+        ("5.6.7.8", RegTest().port),
+    ]
 
 
 def test_maybe_add_seednode_stops_once_full_relay_meets_the_threshold(
@@ -2475,13 +2486,13 @@ def test_maybe_add_seednode_stops_once_full_relay_meets_the_threshold(
     """Core's own `SEED_OUTBOUND_CONNECTION_THRESHOLD`: two, and it stops."""
     conns = automatic_conns(2, 0)
     manager = a_manager(
-        conns, peer_db=a_peer_db_stub(is_empty=True), seednode=[("1.2.3.4", 8333)]
+        conns, peer_db=a_peer_db_stub(is_empty=True), seednode=["1.2.3.4"]
     )
     manager._seednode_addr_fetch_due = False
     manager._next_seednode_at = 0.0
     manager._maybe_add_seednode()
     assert not manager._addr_fetches
-    assert manager._seednodes == [("1.2.3.4", 8333)]
+    assert manager._seednodes == [("1.2.3.4", RegTest().port)]
 
 
 def test_process_addr_fetch_is_a_noop_on_an_empty_queue(
@@ -2527,7 +2538,13 @@ def test_process_addr_fetch_skips_a_queued_host_already_held_by_name(
 def test_process_addr_fetch_resolves_a_queued_host_held_by_no_connection(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A connection held by a different name does not block the resolve."""
+    """A connection held by a different name does not block the resolve.
+
+    ISS 1493: the queued `dest`, `"seed.example"`, names no port; `18444`
+    is only `default_port`, kept apart from `addr_name`, which
+    `test_process_addr_fetch_keeps_a_port_when_the_dest_names_one`
+    (below) is the positive of.
+    """
     ours, theirs = socket.socketpair()
 
     async def connects(address: NetworkAddressV2) -> socket.socket:
@@ -2545,6 +2562,37 @@ def test_process_addr_fetch_resolves_a_queued_host_held_by_no_connection(
     asyncio.run(manager._process_addr_fetch())
     assert not manager._addr_fetches
     assert made == [{"inbound": False, "addr_fetch": True, "addr_name": "seed.example"}]
+    theirs.close()
+
+
+def test_process_addr_fetch_keeps_a_port_when_the_dest_names_one(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1493: a `-seednode` spec naming its own port keeps it on `addr_name`.
+
+    `_seednodes` (`__init__`) queues `(spec, node.chain.port)` from
+    `config.seednode_args` -- the raw spec, `default_port` only a
+    fallback -- so a spec naming `9999` reaches `addr_name` with it,
+    `default_port` unused.
+    """
+    ours, theirs = socket.socketpair()
+
+    async def connects(address: NetworkAddressV2) -> socket.socket:
+        return ours
+
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: _NamedLoop(["5.6.7.8"]))
+    monkeypatch.setattr(manager_module, "dial", connects)
+    made: list[dict[str, Any]] = []
+    manager = a_manager()
+    monkeypatch.setattr(
+        manager, "create_connection", lambda *args, **kwargs: made.append(kwargs)
+    )
+    manager._addr_fetches.append(("seed.example:9999", 18444))
+    asyncio.run(manager._process_addr_fetch())
+    assert not manager._addr_fetches
+    assert made == [
+        {"inbound": False, "addr_fetch": True, "addr_name": "seed.example:9999"}
+    ]
     theirs.close()
 
 
@@ -2583,11 +2631,14 @@ class _NamedLoop:
 def test_process_addr_fetch_refuses_an_invalid_resolved_address(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`CNetAddr::IsValid` refuses Core's own internal-marker prefix.
+    """A sole answer under Core's own internal-marker prefix dials nothing.
 
-    `_legacy_ipv6` reads the resolved answer as `CNetAddr` would; a
-    name resolving under it is dropped outright, as `ConnectNode` drops
-    the whole resolution on its own first invalid candidate.
+    ISS 1466: `is_internal` (`_legacy_ipv6` reading the answer as
+    `CNetAddr` would) drops it before the candidate list is even built,
+    matching `LookupIntern`'s own collection-time filter
+    (`src/netbase.cpp:144-168`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag) -- the later `is_valid` pass, which would refuse it too, never
+    gets the chance to.
     """
     monkeypatch.setattr(
         asyncio, "get_running_loop", lambda: _NamedLoop(["fd6b:88c0:8724::1"])
@@ -2618,7 +2669,11 @@ def test_process_addr_fetch_never_dials_a_valid_candidate_ahead_of_an_invalid_on
     returns on the first either check refuses -- so a dialable answer
     ahead of a bad one in that same order is never reached, exactly as
     one behind it never would be (`src/net.cpp:404-424`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The bad answer is a
+    documentation-range one (RFC3849, `2001:db8::/32`) rather than an
+    internal one: ISS 1466's `is_internal` filter drops an internal
+    answer before this pass ever runs, so it could no longer reach this
+    check at all, and this test wants an answer that still does.
     """
     dialled: list[NetworkAddressV2] = []
 
@@ -2629,7 +2684,7 @@ def test_process_addr_fetch_never_dials_a_valid_candidate_ahead_of_an_invalid_on
     monkeypatch.setattr(
         asyncio,
         "get_running_loop",
-        lambda: _NamedLoop(["1.2.3.4", "fd6b:88c0:8724::1"]),
+        lambda: _NamedLoop(["1.2.3.4", "2001:db8::1"]),
     )
     monkeypatch.setattr(manager_module, "dial", records)
     manager = a_manager()
@@ -2812,7 +2867,7 @@ def test_zero_max_connections_turns_off_the_dns_lookup(
     """ISS 1066: `max_connections=0` seeds nothing, as `-connect` does not."""
     assert a_manager(max_connections=0).use_dns_seed is False
     assert a_manager().use_dns_seed is True
-    assert a_manager(connect=[("1.2.3.4", 8333)]).use_dns_seed is False
+    assert a_manager(connect=["1.2.3.4:8333"]).use_dns_seed is False
 
 
 def test_run_skips_the_dns_lookup_at_zero_max_connections(
@@ -2853,7 +2908,7 @@ def test_listen_false_binds_nothing_but_still_dials(a_manager: AManagerFactory) 
     """
     target_port = get_random_port()
     target = a_running_manager(a_manager, target_port)
-    dialer = a_manager(connect=[("127.0.0.1", target_port)], listen=False)
+    dialer = a_manager(connect=[f"127.0.0.1:{target_port}"], listen=False)
     try:
         wait_until_listening(target)
         # `-listen=0` is not a failure to listen: nothing to wait for
@@ -2881,7 +2936,7 @@ def test_connect_and_explicit_listen_binds_and_dials(
     """
     target_port = get_random_port()
     target = a_running_manager(a_manager, target_port)
-    dialer = a_manager(connect=[("127.0.0.1", target_port)])
+    dialer = a_manager(connect=[f"127.0.0.1:{target_port}"])
     try:
         wait_until_listening(target)
         # returns once bound, with nothing left to wait for
@@ -2899,17 +2954,6 @@ def test_connect_and_explicit_listen_binds_and_dials(
 
 class _LoopStoppedError(Exception):
     """Raised by `run_a_manual_loop`'s sleep to end a loop that never ends."""
-
-
-def _addnode_args(peers: Sequence[tuple[str, int]]) -> list[str]:
-    """Render `(host, port)` pairs the way `-addnode` itself takes them.
-
-    `P2pManager` now reads `config.addnode_args` -- raw strings, Core's
-    own `m_added_node_params` shape -- rather than a pre-split tuple,
-    since `add_added_peer`/`remove_added_peer` mutate that same list at
-    runtime (btclib-org/btclib-node#1350).
-    """
-    return [f"{host}:{port}" for host, port in peers]
 
 
 def run_a_manual_loop(
@@ -2947,14 +2991,18 @@ def test_the_connect_loop_dials_each_peer_every_pass(
     """ISS 1316: `ThreadOpenConnections`' `-connect` arm and its sleeps.
 
     After the n-th pass each address is followed by `min(n, 10)` sleeps
-    of 500 ms, and the list by one more.
+    of 500 ms, and the list by one more. Each spec names its own port,
+    `8333`, distinct from regtest's own -- `_open_connect_peers` still
+    dials with `node.chain.port` as `default_port` (ISS 1493: `dest`
+    alone, not a re-derived pair, is what carries a spec's own port
+    through to `addr_name`).
     """
-    peers = [("1.2.3.4", 8333), ("peer.example", 8333)]
+    peers = ["1.2.3.4:8333", "peer.example:8333"]
     manager = a_manager(connect=peers)
     dialled, slept = run_a_manual_loop(
         manager._open_connect_peers, manager, monkeypatch, 3 * 12
     )
-    assert dialled == peers * 12
+    assert dialled == [(spec, RegTest().port) for spec in peers] * 12
     steps = [0.5 * min(n, 10) for n in range(12)]
     assert slept == [x for step in steps for x in (step, step, 0.5)]
 
@@ -3031,7 +3079,7 @@ def test_the_added_loop_logs_an_unparsable_entry_and_dials_the_rest(
     dialled, slept = run_a_manual_loop(
         manager._open_added_peers, manager, monkeypatch, 2
     )
-    assert dialled == [("5.6.7.8", 8333)]
+    assert dialled == [("5.6.7.8:8333", RegTest().port)]
     assert slept == [0.5, 0.5]
     assert "Dial to 1.2.3.4:99999 did not come up" in logged
 
@@ -3072,14 +3120,15 @@ def test_add_added_peer_is_picked_up_by_the_dial_loop(
     """ISS 1350: a peer `add_added_peer` grows the list with gets dialled.
 
     Built with no `-addnode` at all, so the only way `_open_added_peers`
-    ever sees this peer is through the mutation itself.
+    ever sees this peer is through the mutation itself. ISS 1493: the
+    dial keeps the raw spec, port included, as `dest`.
     """
     manager = a_manager()
     manager.add_added_peer("1.2.3.4:9999")
     dialled, slept = run_a_manual_loop(
         manager._open_added_peers, manager, monkeypatch, 1
     )
-    assert dialled == [("1.2.3.4", 9999)]
+    assert dialled == [("1.2.3.4:9999", RegTest().port)]
     assert slept == [0.5]
 
 
@@ -3101,26 +3150,36 @@ def test_the_added_loop_dials_the_peers_not_held(
 ) -> None:
     """ISS 1316: `ThreadOpenAddedConnections`, 500 ms apart, then 60 s.
 
-    "Held" is read off `addr_name`, as `async_connect_host`'s own
-    `AlreadyConnectedToHost` check is, not off the address: a peer
+    "Held" is read off `addr_name` for a name, as `async_connect_host`'s
+    own `AlreadyConnectedToHost` check is, not off the address: a peer
     given by name is not necessarily connected on the endpoint its name
-    last resolved to (btclib-org/btclib-node#1264).
+    last resolved to (btclib-org/btclib-node#1264). `peers[0]` is a
+    literal IP, held by its own resolved `address` instead, Core's own
+    `mapConnected` arm (btclib-org/btclib-node#1498) -- `addr_name` is
+    set too, matching what a real dial through this same code would
+    leave, but is not what the match is against here.
     """
-    held = a_conn(1, addr_name="1.2.3.4")
-    peers = [("1.2.3.4", 8333), ("5.6.7.8", 8333), ("peer.example", 8333)]
-    manager = a_manager([held], addnode_args=_addnode_args(peers))
+    peers = ["1.2.3.4:8333", "5.6.7.8:8333", "peer.example:8333"]
+    held = a_conn(1, address=peer_address("1.2.3.4", 8333), addr_name=peers[0])
+    manager = a_manager([held], addnode_args=peers)
     dialled, slept = run_a_manual_loop(
         manager._open_added_peers, manager, monkeypatch, 6
     )
-    assert dialled == peers[1:] * 2
+    assert dialled == [(spec, RegTest().port) for spec in peers[1:]] * 2
     assert slept == [0.5, 0.5, 60] * 2
 
 
 def test_the_added_loop_waits_two_seconds_with_nothing_to_dial(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ISS 1316: a round that tried nothing sleeps `2s`, not `60s`."""
-    held = a_conn(1, addr_name="1.2.3.4")
+    """ISS 1316: a round that tried nothing sleeps `2s`, not `60s`.
+
+    `1.2.3.4:8333` is a literal IP, held by its own resolved `address`
+    (btclib-org/btclib-node#1498) -- `addr_name` is set too, matching
+    what a real dial through this same code would leave, but is not
+    what the match is against here.
+    """
+    held = a_conn(1, address=peer_address("1.2.3.4", 8333), addr_name="1.2.3.4:8333")
     manager = a_manager([held], addnode_args=["1.2.3.4:8333"])
     dialled, slept = run_a_manual_loop(
         manager._open_added_peers, manager, monkeypatch, 2
@@ -3150,10 +3209,20 @@ def test_the_added_loop_with_no_addnode_still_loops_forever(
 def test_the_added_loop_stops_where_no_addnode_grant_is_free(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ISS 1316: `MAX_ADDNODE_CONNECTIONS` added peers held take every grant."""
-    peers = [(f"10.0.0.{i}", 8333) for i in range(1, 10)]
-    conns = [a_conn(i, addr_name=host) for i, (host, _port) in enumerate(peers[:8])]
-    manager = a_manager(conns, addnode_args=_addnode_args(peers))
+    """ISS 1316: `MAX_ADDNODE_CONNECTIONS` added peers held take every grant.
+
+    Every spec here is a literal IP, so each is held by its own held
+    connection's resolved `address`, Core's own `mapConnected` arm
+    (btclib-org/btclib-node#1498) -- `addr_name` is set too, matching
+    what a real dial through this same code would leave, but is not
+    what the match is against here.
+    """
+    peers = [f"10.0.0.{i}:8333" for i in range(1, 10)]
+    conns = [
+        a_conn(i, address=peer_address(f"10.0.0.{i + 1}", 8333), addr_name=spec)
+        for i, spec in enumerate(peers[:8])
+    ]
+    manager = a_manager(conns, addnode_args=peers)
     dialled, slept = run_a_manual_loop(
         manager._open_added_peers, manager, monkeypatch, 1
     )
@@ -3167,11 +3236,11 @@ def test_a_manual_dial_that_raises_is_logged_and_the_loop_goes_on(
 ) -> None:
     """ISS 1316: an exception out of one dial is logged, not the loop's end."""
     logged: list[str] = []
-    peers = [("1.2.3.4", 8333)]
+    peers = ["1.2.3.4:8333"]
     manager = (
         a_manager(connect=peers)
         if option == "connect"
-        else a_manager(addnode_args=_addnode_args(peers))
+        else a_manager(addnode_args=peers)
     )
     monkeypatch.setattr(manager.logger, "exception", logged.append)
 
@@ -3224,6 +3293,11 @@ def test_open_connect_peers_resolves_a_hostname(
     before that issue, `Config`, and then `_connect_peers`'s own
     `peer_address` call, each raised on a hostname before a dial was
     ever attempted.
+
+    ISS 1493: the spec names a port, `8333`, distinct from regtest's own
+    -- `addr_name` keeps it, `dest` verbatim rather than the bare host
+    `test_open_connect_peers_keeps_a_portless_hostname_without_one`
+    (below) proves for a spec naming none.
     """
     ours, theirs = socket.socketpair()
 
@@ -3233,7 +3307,41 @@ def test_open_connect_peers_resolves_a_hostname(
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: _NamedLoop(["5.6.7.8"]))
     monkeypatch.setattr(manager_module, "dial", connects)
     made: list[dict[str, Any]] = []
-    manager = a_manager(connect=[("peer.example", 8333)])
+    manager = a_manager(connect=["peer.example:8333"])
+    monkeypatch.setattr(
+        manager, "create_connection", lambda *args, **kwargs: made.append(kwargs)
+    )
+
+    async def stop_after_one_sleep(seconds: float) -> NoReturn:
+        raise _LoopStoppedError
+
+    monkeypatch.setattr(asyncio, "sleep", stop_after_one_sleep)
+    with pytest.raises(_LoopStoppedError):
+        asyncio.run(manager._open_connect_peers())
+    assert made == [
+        {"inbound": False, "addr_fetch": False, "addr_name": "peer.example:8333"}
+    ]
+    theirs.close()
+
+
+def test_open_connect_peers_keeps_a_portless_hostname_without_one(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1493: a `-connect` spec naming no port has none on `addr_name`.
+
+    The negative half of `test_open_connect_peers_resolves_a_hostname`:
+    `dest` is `addr_name` verbatim either way, so a spec that never
+    named a port does not gain the chain's own default one.
+    """
+    ours, theirs = socket.socketpair()
+
+    async def connects(address: NetworkAddressV2) -> socket.socket:
+        return ours
+
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: _NamedLoop(["5.6.7.8"]))
+    monkeypatch.setattr(manager_module, "dial", connects)
+    made: list[dict[str, Any]] = []
+    manager = a_manager(connect=["peer.example"])
     monkeypatch.setattr(
         manager, "create_connection", lambda *args, **kwargs: made.append(kwargs)
     )
@@ -3250,6 +3358,205 @@ def test_open_connect_peers_resolves_a_hostname(
     theirs.close()
 
 
+def test_open_added_peers_resolves_a_hostname(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1301: an `-addnode` peer given by name names its connection too.
+
+    `run_a_manual_loop` (above) proves `_open_added_peers`' own dial
+    loop -- which `(host, port)` pairs it reaches and its retry timing
+    -- by mocking `async_connect_host` itself, so none of its own tests
+    exercise `async_connect_host`'s real body. This one does not mock
+    it, the way `test_open_connect_peers_resolves_a_hostname` already
+    does for `-connect`: `create_connection` is reached for real, so
+    the `addr_name` it is given -- `node_str`, unresolved -- is proved
+    to survive `_open_added_peers`' own `split_host_port` and
+    `_open_manual` in between, not only `async_connect_host`'s own.
+
+    This spec names no port; `test_open_added_peers_keeps_a_port_when_given`
+    (below) is ISS 1493's own positive, a spec that names one.
+    """
+    ours, theirs = socket.socketpair()
+
+    async def connects(address: NetworkAddressV2) -> socket.socket:
+        return ours
+
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: _NamedLoop(["5.6.7.8"]))
+    monkeypatch.setattr(manager_module, "dial", connects)
+    made: list[dict[str, Any]] = []
+    manager = a_manager(addnode_args=["peer.example"])
+    monkeypatch.setattr(
+        manager, "create_connection", lambda *args, **kwargs: made.append(kwargs)
+    )
+
+    async def stop_after_one_sleep(seconds: float) -> NoReturn:
+        raise _LoopStoppedError
+
+    monkeypatch.setattr(asyncio, "sleep", stop_after_one_sleep)
+    with pytest.raises(_LoopStoppedError):
+        asyncio.run(manager._open_added_peers())
+    assert made == [
+        {"inbound": False, "addr_fetch": False, "addr_name": "peer.example"}
+    ]
+    theirs.close()
+
+
+def test_open_added_peers_keeps_a_port_when_given(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1493: an `-addnode` spec naming a port keeps it on `addr_name`.
+
+    `addnode_args` already kept the raw spec before ISS 1493 (ISS 1224);
+    what is new is `addr_name` reflecting it end to end, port included.
+    """
+    ours, theirs = socket.socketpair()
+
+    async def connects(address: NetworkAddressV2) -> socket.socket:
+        return ours
+
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: _NamedLoop(["5.6.7.8"]))
+    monkeypatch.setattr(manager_module, "dial", connects)
+    made: list[dict[str, Any]] = []
+    manager = a_manager(addnode_args=["peer.example:9999"])
+    monkeypatch.setattr(
+        manager, "create_connection", lambda *args, **kwargs: made.append(kwargs)
+    )
+
+    async def stop_after_one_sleep(seconds: float) -> NoReturn:
+        raise _LoopStoppedError
+
+    monkeypatch.setattr(asyncio, "sleep", stop_after_one_sleep)
+    with pytest.raises(_LoopStoppedError):
+        asyncio.run(manager._open_added_peers())
+    assert made == [
+        {"inbound": False, "addr_fetch": False, "addr_name": "peer.example:9999"}
+    ]
+    theirs.close()
+
+
+def test_added_held_counts_a_literal_ip_by_its_resolved_address(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1498: `_added_held`'s own count uses the literal/name split too.
+
+    `held`'s `addr_name` is deliberately a different port than its own
+    `address`, so a match through `addr_name` alone would miss it --
+    `_added_held` still counts it, through `_held_resolved_addresses`.
+    """
+    port = RegTest().port
+    held = a_conn(
+        1, address=peer_address("1.2.3.4", port), addr_name=f"1.2.3.4:{port + 1}"
+    )
+    manager = a_manager([held], addnode_args=["1.2.3.4"])
+    assert manager._added_held() == 1
+
+
+def test_the_added_loop_skips_a_literal_ip_held_by_a_different_route(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1498: a literal-IP `-addnode` is held by its resolved address.
+
+    ISS 1493's own regression: `held` was dialled by name (a `-connect`
+    or `onetry` spec naming a port), so its own `addr_name` is
+    `"1.2.3.4:<port>"`, never equal to the bare `-addnode=1.2.3.4`
+    spec's own raw string -- the check that regressed. Core's own
+    `mapConnected` (`GetAddedNodeInfo`, `src/net.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) keys on the resolved
+    address instead, whatever route opened the connection, which is
+    what this is held by here.
+    """
+    port = RegTest().port
+    held = a_conn(1, address=peer_address("1.2.3.4", port), addr_name=f"1.2.3.4:{port}")
+    manager = a_manager([held], addnode_args=["1.2.3.4"])
+    dialled, slept = run_a_manual_loop(
+        manager._open_added_peers, manager, monkeypatch, 1
+    )
+    assert dialled == []
+    assert slept == [2]
+
+
+def test_the_added_loop_skips_a_literal_ip_with_its_own_port_held(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1498: a literal spec naming a port is held at that exact port.
+
+    `held`'s own `addr_name` names a different host entirely, proving
+    the match is against the resolved address and not a coincidence of
+    `addr_name` text.
+    """
+    held = a_conn(
+        1, address=peer_address("1.2.3.4", 9999), addr_name="unrelated.example"
+    )
+    manager = a_manager([held], addnode_args=["1.2.3.4:9999"])
+    dialled, slept = run_a_manual_loop(
+        manager._open_added_peers, manager, monkeypatch, 1
+    )
+    assert dialled == []
+    assert slept == [2]
+
+
+def test_the_added_loop_dials_a_literal_ip_held_at_a_different_port(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1498: the same IP held at a different port is not a match.
+
+    Core's own `mapConnected` keys on the whole resolved `CService`,
+    address and port together, not the address alone.
+    """
+    held = a_conn(1, address=peer_address("1.2.3.4", 9999), addr_name="1.2.3.4:9999")
+    manager = a_manager([held], addnode_args=["1.2.3.4:8888"])
+    dialled, slept = run_a_manual_loop(
+        manager._open_added_peers, manager, monkeypatch, 1
+    )
+    assert dialled == [("1.2.3.4:8888", RegTest().port)]
+    assert slept == [0.5]
+
+
+def test_the_added_loop_dials_a_name_not_matched_by_resolved_address(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1498: a name spec is held by `addr_name` alone, never by address.
+
+    `held`'s own resolved address coincides with where `peer.example`
+    would dial, and its `addr_name` does not match the spec: Core's own
+    `mapConnectedByName` arm never consults `mapConnected` for a name
+    (`GetAddedNodeInfo`, `src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag), so this is dialled rather than skipped.
+    """
+    held = a_conn(
+        1, address=peer_address("1.2.3.4", RegTest().port), addr_name="other.example"
+    )
+    manager = a_manager([held], addnode_args=["peer.example"])
+    dialled, slept = run_a_manual_loop(
+        manager._open_added_peers, manager, monkeypatch, 1
+    )
+    assert dialled == [("peer.example", RegTest().port)]
+    assert slept == [0.5]
+
+
+def test_async_connect_host_skips_a_resolved_address_already_held(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`AlreadyConnectedToAddressPort` still holds, ISS 1498 untouched.
+
+    `async_connect_host`'s own inner resolved-address check keys on
+    `endpoint_key`, `PeerDB`'s own address identity, regardless of
+    `addr_name` -- unlike `_added_held`/`_open_added_peers`'s own
+    literal/name split above, this one path is not changed by ISS 1498.
+    """
+    logged, info = log_recorder()
+
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: _NamedLoop(["5.6.7.8"]))
+    monkeypatch.setattr(manager_module, "dial", refuses_to_be_asked)
+    held = a_conn(1, address=peer_address("5.6.7.8", 18444))
+    manager = a_manager([held])
+    monkeypatch.setattr(manager.logger, "info", info)
+    asyncio.run(manager.async_connect_host("peer.example", 18444))
+    assert logged == [
+        "Not opening a connection to peer.example, already connected to 5.6.7.8:18444"
+    ]
+
+
 def test_async_connect_host_logs_when_no_candidate_comes_up(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3258,7 +3565,11 @@ def test_async_connect_host_logs_when_no_candidate_comes_up(
     `addr_fetch` defaults to `False`, so the log line runs -- unlike
     every `_process_addr_fetch` test, which always passes `addr_fetch=True`
     and so never reaches it (`ADDR_FETCH` giving up quietly, its own
-    docstring).
+    docstring). ISS 1493: `dest` names no port, so none is on the line
+    either -- `default_port` is a fallback for the resolve alone, never
+    printed on its own;
+    `test_async_connect_host_logs_the_port_when_dest_names_one` (below)
+    is the positive, a `dest` that names one.
     """
     logged, info = log_recorder()
 
@@ -3270,7 +3581,125 @@ def test_async_connect_host_logs_when_no_candidate_comes_up(
     manager = a_manager()
     monkeypatch.setattr(manager.logger, "info", info)
     asyncio.run(manager.async_connect_host("peer.example", 18444))
-    assert logged == ["Dial to peer.example:18444 did not come up"]
+    assert logged == ["Dial to peer.example did not come up"]
+
+
+def test_async_connect_host_logs_the_port_when_dest_names_one(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1493: a `dest` naming its own port keeps it on the give-up line."""
+    logged, info = log_recorder()
+
+    async def never_connects(address: NetworkAddressV2) -> None:
+        return None
+
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: _NamedLoop(["1.2.3.4"]))
+    monkeypatch.setattr(manager_module, "dial", never_connects)
+    manager = a_manager()
+    monkeypatch.setattr(manager.logger, "info", info)
+    asyncio.run(manager.async_connect_host("peer.example:9999", 18444))
+    assert logged == ["Dial to peer.example:9999 did not come up"]
+
+
+def test_async_connect_host_caps_the_resolved_list_at_256_before_dialling(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1466: an answer past `Lookup`'s own 256th is never even seen.
+
+    257 answers, the last one invalid (documentation-range, RFC3849 --
+    not internal, so the cap alone is what has to drop it, `is_internal`
+    having nothing to say about it), the first 256 valid: uncapped, the
+    first pass above would walk as far as that 257th, invalid one and
+    abort the whole attempt, dialling nothing, same as the
+    invalid-candidate test above. `_MAX_RESOLVED_ADDRESSES` drops it
+    before that pass ever runs, so the first pass sees only the 256
+    valid answers, clears them, and the second pass dials the first
+    (`src/net.cpp:413`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    """
+    ours, theirs = socket.socketpair()
+
+    async def connects(address: NetworkAddressV2) -> socket.socket:
+        return ours
+
+    valid_answers = [f"10.0.0.{i}" for i in range(256)]
+    monkeypatch.setattr(secrets, "SystemRandom", _NoShuffle)
+    monkeypatch.setattr(
+        asyncio,
+        "get_running_loop",
+        lambda: _NamedLoop([*valid_answers, "2001:db8::1"]),
+    )
+    monkeypatch.setattr(manager_module, "dial", connects)
+    made: list[dict[str, Any]] = []
+    manager = a_manager()
+    monkeypatch.setattr(
+        manager, "create_connection", lambda *args, **kwargs: made.append(kwargs)
+    )
+    asyncio.run(manager.async_connect_host("seed.example", 18444))
+    assert made == [
+        {
+            "inbound": False,
+            "addr_fetch": False,
+            "addr_name": "seed.example",
+        }
+    ]
+    theirs.close()
+
+
+def test_async_connect_host_drops_an_internal_answer_before_counting_to_256(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1466: an internal answer never takes one of the 256 slots.
+
+    `LookupIntern` drops an `IsInternal` answer at collection time and
+    never counts it toward `nMaxSolutions` (`src/netbase.cpp:144-168`,
+    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). 257 raw answers: one
+    internal, then 256 valid -- `dial` connects on the last of those 256
+    alone, refusing every one ahead of it, so a dial only ever reaches
+    it by trying every other valid candidate first and finding none of
+    them connect, the real loop below and not a shortcut through it.
+
+    Capping the raw list before filtering, rather than after, drops
+    that last valid answer instead of the internal one -- it is the
+    257th raw entry, one past a 256-wide cap taken before the internal
+    one is removed from the count -- leaving 255 valid candidates, all
+    of which `dial` refuses, so nothing connects. Filtering first
+    leaves the internal one out of the count instead, and all 256 valid
+    candidates, that last one included, get their turn.
+    """
+    ours, theirs = socket.socketpair()
+    port = 18444
+    valid_answers = [f"10.0.{i // 256}.{i % 256}" for i in range(256)]
+    survivor = peer_address(valid_answers[-1], port)
+    tried: list[NetworkAddressV2] = []
+
+    async def connects(address: NetworkAddressV2) -> socket.socket | None:
+        tried.append(address)
+        if address == survivor:
+            return ours
+        return None
+
+    monkeypatch.setattr(secrets, "SystemRandom", _NoShuffle)
+    monkeypatch.setattr(
+        asyncio,
+        "get_running_loop",
+        lambda: _NamedLoop(["fd6b:88c0:8724::1", *valid_answers]),
+    )
+    monkeypatch.setattr(manager_module, "dial", connects)
+    made: list[dict[str, Any]] = []
+    manager = a_manager()
+    monkeypatch.setattr(
+        manager, "create_connection", lambda *args, **kwargs: made.append(kwargs)
+    )
+    asyncio.run(manager.async_connect_host("seed.example", port))
+    assert tried == [peer_address(ip, port) for ip in valid_answers]
+    assert made == [
+        {
+            "inbound": False,
+            "addr_fetch": False,
+            "addr_name": "seed.example",
+        }
+    ]
+    theirs.close()
 
 
 def test_connect_host_schedules_a_dial_on_this_manager_s_own_loop(
@@ -3309,7 +3738,7 @@ def test_run_dials_a_connect_peer_without_an_explicit_dial(
     """
     target_port = get_random_port()
     target = a_running_manager(a_manager, target_port)
-    dialer = a_manager(connect=[("127.0.0.1", target_port)])
+    dialer = a_manager(connect=[f"127.0.0.1:{target_port}"])
     try:
         wait_until_listening(target)
         dialer.start()
@@ -4133,7 +4562,11 @@ def test_a_discouraged_host_is_refused_where_it_would_fill_the_last_slot(
         assert "connection from 1.2.3.4:50000 dropped (discouraged)" in logged
         _, accepted = land_an_inbound_peer(manager, "1.2.3.5", 50000)
         peers.enter_context(closing(accepted))
-        wait_until(lambda: manager.last_connection_id == 0)
+        # ISS 1504: `create_connection` increments `last_connection_id`
+        # before it stores the connection in `pending_connections` --
+        # waiting on the id alone races the store, on load, between
+        # this thread's read and the manager thread's write.
+        wait_until(lambda: 0 in manager.pending_connections)
         assert not manager.pending_connections[0].prefer_evict
         manager.stop()
         manager.join(timeout=10)
@@ -4158,7 +4591,10 @@ def test_a_discouraged_host_with_slots_to_spare_is_accepted_to_evict_first(
     with ExitStack() as peers:
         _, first = land_an_inbound_peer(manager, "1.2.3.4", 50000)
         peers.enter_context(closing(first))
-        wait_until(lambda: manager.last_connection_id == 0)
+        # ISS 1504: waits on the store itself, not the id alone --
+        # `create_connection` increments `last_connection_id` before it
+        # stores the connection.
+        wait_until(lambda: 0 in manager.pending_connections)
         conn = manager.pending_connections[0]
         assert conn.prefer_evict
         assert manager_module._eviction_candidate(conn).prefer_evict
@@ -5712,11 +6148,11 @@ def an_anchors_file(manager: P2pManager, anchors: list[NetworkAddressV2]) -> Pat
     return path
 
 
-@pytest.mark.parametrize("connect", [(), (("1.2.3.4", 18444),)])
+@pytest.mark.parametrize("connect", [(), ("1.2.3.4:18444",)])
 def test_the_anchors_are_read_as_the_manager_runs_and_the_file_goes(
     a_manager: AManagerFactory,
     monkeypatch: pytest.MonkeyPatch,
-    connect: Sequence[tuple[str, int]],
+    connect: Sequence[str],
 ) -> None:
     """`CConnman::Start` reads two at most, and none under `-connect`.
 
@@ -5775,7 +6211,7 @@ def test_no_anchor_is_written_under_connect_or_short_of_the_start(
 ) -> None:
     """`fAddressesInitialized` and `m_use_addrman_outgoing` both guard it."""
     conn = a_conn(1, block_relay=True, address=peer_address("5.6.1.1", 1))
-    connect = (("1.2.3.4", 18444),) if started else ()
+    connect = ("1.2.3.4:18444",) if started else ()
     manager = a_manager([conn], listen=False, max_connections=0, connect=connect)
     if started:
         manager.start()

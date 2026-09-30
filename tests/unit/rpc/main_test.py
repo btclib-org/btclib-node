@@ -40,7 +40,12 @@ SERVER_ERROR = "500 Internal Server Error"
 
 
 def make_node(
-    body: object, conn_id: int = 0, *, callback: Any = None, logger: Any = None
+    body: object,
+    conn_id: int = 0,
+    *,
+    callback: Any = None,
+    logger: Any = None,
+    active_rpc_commands: list[tuple[str, float]] | None = None,
 ) -> tuple[Any, list[Any], list[Any], list[bool]]:
     """Build a node whose rpc_manager queues `body` for handle_rpc to pop.
 
@@ -50,11 +55,23 @@ def make_node(
     real `Logger` is what a test proving a log line needs instead,
     `Node.logger` never reaching `caplog` for `log.py`'s own reason
     (CLAUDE.md, btclib-org/btclib-node#587) -- the same default
-    `p2p/main_test.py`'s own `make_node` already carries.
+    `p2p/main_test.py`'s own `make_node` already carries. What a delayed
+    `stop` hands `send_and_close_after` lands in the connection's own
+    `delayed`, `(reply, delay)` pairs, reached as
+    `node.rpc_manager.connections[0].delayed`. `active_rpc_commands`
+    defaults to a fresh empty list, and is the caller's own object where
+    given, so a test can hold a reference to it before `handle_rpc` ever
+    populates it.
     """
     sent: list[Any] = []
     waited: list[Any] = []
-    conn = SimpleNamespace(send=sent.append, send_and_wait=waited.append)
+    delayed: list[tuple[Any, float]] = []
+    conn = SimpleNamespace(
+        send=sent.append,
+        send_and_wait=waited.append,
+        send_and_close_after=lambda reply, delay: delayed.append((reply, delay)),
+        delayed=delayed,
+    )
     stopped: list[bool] = []
     node = SimpleNamespace(
         rpc_manager=SimpleNamespace(
@@ -65,6 +82,11 @@ def make_node(
         else SimpleNamespace(debug=lambda *a: None, exception=lambda *a: None),
         stop=lambda: stopped.append(True),
         p2p_manager=SimpleNamespace(ping_all=callback or (lambda: None)),
+        # `_execute`'s own `RPCCommandExecution` span, popped again
+        # before this function returns whatever it dispatched to
+        active_rpc_commands=(
+            active_rpc_commands if active_rpc_commands is not None else []
+        ),
     )
     return node, sent, waited, stopped
 
@@ -78,6 +100,31 @@ def test_a_request_is_answered() -> None:
     """A 2.0 request is answered 200 in the 2.0 envelope."""
     node, sent, _, _ = make_node(PING)
     handle_rpc(node)
+    assert sent == [HttpReply(OK, {"jsonrpc": "2.0", "result": None, "id": "a"})]
+
+
+def test_active_rpc_commands_holds_the_call_only_while_it_runs() -> None:
+    """`_execute` appends to `active_rpc_commands`, and pops once it returns.
+
+    `rpc.callbacks.get_rpc_info`'s own `active_commands`: the entry --
+    `ping`, a `time.monotonic()` start -- is there while `ping_all` runs,
+    and gone once `handle_rpc` has returned, matching Core's own
+    `RPCCommandExecution` living only for the length of `ExecuteCommand`
+    (`src/rpc/server.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    """
+    active: list[tuple[str, float]] = []
+    seen: list[list[tuple[str, float]]] = []
+    node, sent, _, _ = make_node(
+        PING,
+        callback=lambda: seen.append(list(active)),
+        active_rpc_commands=active,
+    )
+    handle_rpc(node)
+    assert len(seen) == 1
+    [(method, start)] = seen[0]
+    assert method == "ping"
+    assert isinstance(start, float)
+    assert node.active_rpc_commands == []
     assert sent == [HttpReply(OK, {"jsonrpc": "2.0", "result": None, "id": "a"})]
 
 
@@ -596,6 +643,74 @@ def test_a_genuine_stop_after_a_refused_one_still_stops_the_batch() -> None:
     assert stopped == [True]
     assert len(waited) == 1
     assert not sent
+
+
+def test_a_stop_with_a_positive_wait_schedules_the_reply_and_stops_at_once() -> None:
+    """ISS 1467: a positive `wait` delays the reply, never the stop itself.
+
+    `send_and_close_after`, not `send_and_wait`, is what it reaches, and
+    `node.stop()` runs straight after, as Core's own `stop` requests
+    shutdown before it sleeps. `connection_test.py`'s own
+    `test_send_and_close_after_returns_at_once_and_delays_the_write` is
+    where the delay itself, and the thread it runs on, are proven.
+    """
+    body = {"jsonrpc": "2.0", "id": "a", "method": "stop", "params": [5000]}
+    node, sent, waited, stopped = make_node(body)
+    handle_rpc(node)
+    assert not sent
+    assert not waited
+    assert stopped == [True]
+    [(reply, delay)] = node.rpc_manager.connections[0].delayed
+    assert delay == 5.0
+    assert reply == HttpReply(
+        OK, {"jsonrpc": "2.0", "result": "Btclib node stopping", "id": "a"}
+    )
+
+
+def test_a_stop_with_a_named_wait_schedules_the_same_delay() -> None:
+    """`_stop_delay_seconds` reads a named `wait` the way `_execute` does."""
+    body = {"jsonrpc": "2.0", "id": "a", "method": "stop", "params": {"wait": 2500}}
+    node, sent, waited, stopped = make_node(body)
+    handle_rpc(node)
+    assert not sent
+    assert not waited
+    assert stopped == [True]
+    [(_, delay)] = node.rpc_manager.connections[0].delayed
+    assert delay == 2.5
+
+
+@pytest.mark.parametrize("wait", [0, -1000])
+def test_a_stop_with_no_real_wait_takes_the_immediate_path(wait: int) -> None:
+    """A zero or negative `wait` clamps to no delay, and skips scheduling it.
+
+    `handle_rpc`'s own `if delay:` is false for `0.0`, so this goes
+    through `send_and_wait` as a lone `stop` carrying no `wait` at all
+    does, rather than a delay of zero scheduled for nothing.
+    """
+    body = {"jsonrpc": "2.0", "id": "a", "method": "stop", "params": [wait]}
+    node, sent, waited, stopped = make_node(body)
+    handle_rpc(node)
+    assert stopped == [True]
+    assert len(waited) == 1
+    assert not sent
+    assert not node.rpc_manager.connections[0].delayed
+
+
+def test_a_batch_stop_with_wait_schedules_a_delay_too() -> None:
+    """`_answer_batch` reads a winning member's own `wait` the same way."""
+    stop_with_wait = {
+        "jsonrpc": "2.0",
+        "id": "a",
+        "method": "stop",
+        "params": [1000],
+    }
+    node, sent, waited, stopped = make_node([stop_with_wait, PING])
+    handle_rpc(node)
+    assert not waited
+    assert stopped == [True]
+    assert not sent
+    [(_, delay)] = node.rpc_manager.connections[0].delayed
+    assert delay == 1.0
 
 
 def test_an_answered_connection_is_left_for_async_send_to_forget() -> None:

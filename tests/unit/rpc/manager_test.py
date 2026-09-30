@@ -12,10 +12,13 @@ go of both -- and until now only a functional test reached any of it.
 
 import asyncio
 import base64
+import inspect
 import json
 import os
+import select
 import socket
 import threading
+import time
 from concurrent.futures import Future
 from contextlib import suppress
 from types import SimpleNamespace
@@ -27,6 +30,7 @@ from btclib_node.chains import RegTest
 from btclib_node.config import Config
 from btclib_node.log import Logger
 from btclib_node.rpc import manager as manager_module
+from btclib_node.rpc.connection import REQUEST_TIMEOUT, parse_request_head
 from btclib_node.rpc.jsonrpc import OK, HttpReply
 from btclib_node.rpc.manager import RpcManager
 from tests import (
@@ -43,10 +47,11 @@ from tests import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping
+    from collections.abc import Buffer, Coroutine, Iterator, Mapping
     from pathlib import Path
 
     from btclib_node import Node
+    from btclib_node.rpc.connection import RpcConnection
 
 REQUEST = {"jsonrpc": "2.0", "id": "a", "method": "getbestblockhash"}
 
@@ -60,6 +65,7 @@ class AManagerFactory(Protocol):
         rpc_host: str | None = None,
         rpcbind: tuple[str, ...] = (),
         rpcallowip: tuple[str, ...] = (),
+        rpcservertimeout: int = int(REQUEST_TIMEOUT),
     ) -> RpcManager:
         """Build an `RpcManager` bound to `port` and `rpc_host` once started."""
         ...
@@ -79,6 +85,7 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
         rpc_host: str | None = None,
         rpcbind: tuple[str, ...] = (),
         rpcallowip: tuple[str, ...] = (),
+        rpcservertimeout: int = int(REQUEST_TIMEOUT),
     ) -> RpcManager:
         config = Config(
             chain="regtest",
@@ -87,13 +94,19 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
             rpcbind=rpcbind,
             rpcallowip=rpcallowip,
             rpcauth=[RPCAUTH],
+            rpcservertimeout=rpcservertimeout,
         )
         config.data_dir.mkdir(exist_ok=True)
         manager = RpcManager(
             cast(
                 "Node",
                 SimpleNamespace(
-                    logger=Logger(debug=True), chain=RegTest(), config=config
+                    logger=Logger(debug=True),
+                    chain=RegTest(),
+                    config=config,
+                    # what `RpcConnection.send` reads: unset until a
+                    # test says the node is shutting down
+                    terminate_flag=threading.Event(),
                 ),
             ),
             port,
@@ -654,32 +667,40 @@ def test_a_body_that_is_not_json_answers_parse_error_and_forgets_the_client(
         manager.join(timeout=10)
 
 
-def test_stop_still_closes_a_connection_mid_parse_error_reply(
+def read_to_the_end(sock: socket.socket) -> bytes:
+    """Read `sock` until the other end closes, within ten seconds a read."""
+    sock.settimeout(10)
+    chunks = []
+    while chunk := sock.recv(1 << 16):
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def test_stop_finishes_a_parse_error_reply_scheduled_right_before_it(
     a_manager: AManagerFactory,
 ) -> None:
-    """`stop`, right as a parse error's own reply is scheduled, still closes it.
+    """`stop`, right as a parse error's own reply is scheduled, finishes it.
 
     Nothing paces `stop` against `run`'s own parse-error branch the way
     `manager.messages` paces a well-formed request through `handle_rpc`:
     that branch answers on the spot, scheduling `async_send` as its own
     task rather than awaiting it inline (issue #640 review round 2).
-    `stop`'s own two sweeps -- `asyncio.all_tasks(self.loop)`, cancelled,
-    and `self.connections`, closed directly -- are read exactly once,
-    right after `run`'s own task has finished scheduling that reply and
-    before either of them has taken a single further step; this is that
-    exact instant, made deterministic by driving the loop by hand rather
-    than racing it from a second thread the way the real listener would.
+    This is `stop` arriving right after `run`'s own task has scheduled
+    that reply and before the reply has taken a single step, made
+    deterministic by driving the loop by hand rather than racing it from
+    a second thread the way the real listener would. Core waits for this
+    reply, `HTTPReq_JSONRPC`'s `RPC_PARSE_ERROR`, as for any other
+    (`StopHTTPServer`, `src/httpserver.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so it arrives whole,
+    and the connection it kept alive is closed after it
+    (btclib-org/btclib-node#1539).
 
-    `run_coroutine_threadsafe` -- what a fix that scheduled through the
-    wrong seam looks like here -- only queues the `Task`'s own creation
-    for a turn after this one, so it is neither in `all_tasks()` for
-    `stop`'s cancel sweep nor, if popped by `run` the way a dispatched
-    reply is, still in `self.connections` for its close sweep either:
-    the coroutine is torn down unawaited, with nothing to answer this
-    socket and nothing to close it, so the client sees neither a reply
-    nor a clean end-of-file, only a hang until its own timeout.
+    `client_allowed` answers yes: a socket pair's peer has no IP address
+    for it to read, and on macOS, whose socket pair is a Unix one, `run`
+    otherwise fails there, before the parse error.
     """
     manager = a_manager(get_random_port())
+    manager.client_allowed = lambda client: True  # type: ignore[method-assign]
     loop = manager.loop
     ours, theirs = socket.socketpair()
     try:
@@ -689,21 +710,97 @@ def test_stop_still_closes_a_connection_mid_parse_error_reply(
         head += b"Content-Length: %d\r\n\r\n" % len(body)
         theirs.sendall(head + body)
         run_task = loop.create_task(conn.run())
-        # One full batch of whatever is already ready, then stop --
-        # `run`'s own task, scheduled at creation, is the only thing
-        # ready the first time through, so this is that task's own
-        # first and only step, landing it on `except ValueError` and
-        # back out again without ever suspending a second time.
+        # One full batch of whatever is already ready, then stop, until
+        # `run`'s own task lands on `except ValueError` and returns: the
+        # reply it schedules there is queued for the batch after, which
+        # none of these runs reaches.
         while not run_task.done():
             loop.call_soon(loop.stop)
             loop.run_forever()
+        assert manager.replies
         manager.stop()
-        theirs.settimeout(5)
-        assert theirs.recv(4096) == b""
+        reply = read_to_the_end(theirs)
         # a closed socket's own fileno is -1; still >= 0 is still open
         assert ours.fileno() == -1
     finally:
         theirs.close()
+    assert reply.startswith(b"HTTP/1.1 500 Internal Server Error\r\n")
+    assert b'"code":-32700' in reply
+
+
+def test_stop_answers_a_request_on_an_idle_connection_while_it_waits(
+    a_manager: AManagerFactory,
+) -> None:
+    """A request arriving on an idle connection during `stop`'s wait: 503.
+
+    Core's event loop runs through `StopHTTPServer`'s
+    `g_requests.WaitUntilEmpty()`, so a request on a kept-alive
+    connection idle until then reaches `http_reject_request_cb`, which
+    `InterruptHTTPServer` set, and is answered 503 with `Connection:
+    close` (`src/httpserver.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag). One connection idles in `run`; another's reply is held
+    on the manager's loop, so `stop` is still waiting when the request
+    is sent, and released once the 503 is read. Nobody counts the idle
+    connection, so `stop` returns long before `request_timeout`
+    (btclib-org/btclib-node#1545).
+    """
+    manager = a_manager(get_random_port())
+    manager.start()
+    wait_until_listening(manager)
+    loop = manager.loop
+    idle, idle_peer = socket.socketpair()
+    busy, busy_peer = socket.socketpair()
+    released = asyncio.Event()
+    sock_sendall = loop.sock_sendall
+
+    async def held_sendall(sock: socket.socket, data: Buffer) -> None:
+        if sock is busy:
+            await released.wait()
+        await sock_sendall(sock, data)
+
+    waiting = threading.Event()
+    finish_replies = manager._finish_replies
+
+    def signal_then_finish() -> None:
+        waiting.set()
+        finish_replies()
+
+    def release() -> None:
+        with suppress(RuntimeError):
+            loop.call_soon_threadsafe(released.set)
+
+    stopping = threading.Thread(target=manager.stop)
+    try:
+        conn = manager.create_connection(loop, idle)
+        asyncio.run_coroutine_threadsafe(conn.run(), loop)
+        answering = a_connection_answering(manager, busy)
+        loop.sock_sendall = held_sendall  # type: ignore[method-assign]
+        manager._finish_replies = signal_then_finish  # type: ignore[method-assign]
+        answering.send(HttpReply(OK, {"result": None, "error": None, "id": 1}))
+        stopping.start()
+        assert waiting.wait(10)
+        body = json.dumps(REQUEST).encode()
+        idle_peer.sendall(
+            b"POST / HTTP/1.1\r\nHost: x\r\n"
+            + RPCAUTH_LINE
+            + b"Content-Length: %d\r\n\r\n" % len(body)
+            + body
+        )
+        reply = read_to_the_end(idle_peer)
+        release()
+        answered = read_to_the_end(busy_peer)
+        stopping.join(10)
+        stopped = not stopping.is_alive()
+    finally:
+        release()
+        idle_peer.close()
+        busy_peer.close()
+        stopping.join(60)
+    assert stopped
+    head = reply.partition(b"\r\n\r\n")[0].split(b"\r\n")
+    assert head[0] == b"HTTP/1.1 503 Service Unavailable"
+    assert b"Connection: close" in head
+    assert answered.startswith(b"HTTP/1.1 200 OK\r\n")
 
 
 def test_a_manager_that_cannot_bind_stops_being_alive(
@@ -1041,6 +1138,402 @@ def test_stop_drains_a_task_whose_own_cancellation_needs_a_second_step(
     assert not task.done()
 
     manager.stop()
+
+
+def a_connection_answering(manager: RpcManager, ours: socket.socket) -> RpcConnection:
+    """Wire `ours` through `manager.create_connection`, a request already read.
+
+    `create_connection` puts `ours` in non-blocking mode itself; `head`
+    stands in for `run` having parsed a request, which `async_send`
+    answers the version of.
+    """
+    conn = manager.create_connection(manager.loop, ours)
+    conn.head = parse_request_head(
+        b"POST / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+    )
+    return conn
+
+
+STOPPING = HttpReply(OK, {"result": "stopping", "error": None, "id": 1})
+
+
+def test_stop_lets_a_pending_delayed_reply_finish_rather_than_cancelling_it(
+    a_manager: AManagerFactory,
+) -> None:
+    """`stop` finishes a delayed reply asleep in its `wait` (ISS 1467).
+
+    Core's own `ThreadPool::Stop` joins its workers rather than
+    cancelling one mid-request, `stop`'s own comment has where; this is
+    the same reply cancelled with every other task otherwise, nothing
+    ever written. The deadline recorded for it outlives the reply.
+    """
+    manager = a_manager(get_random_port())
+    manager.start()
+    wait_until_listening(manager)
+    ours, theirs = socket.socketpair()
+    try:
+        conn = a_connection_answering(manager, ours)
+        conn.send_and_close_after(STOPPING, 0.3)
+        deadline = manager.latest_reply_deadline()
+        assert deadline is not None
+        [delayed] = manager.replies
+        assert inspect.iscoroutine(delayed)
+        # asleep in `asyncio.sleep(0.3)`: the window the race is about
+        wait_until(lambda: inspect.getcoroutinestate(delayed) == inspect.CORO_SUSPENDED)
+        manager.stop()
+        theirs.settimeout(5)
+        reply = theirs.recv(65536)
+    finally:
+        theirs.close()
+    assert b"200 OK" in reply
+    assert b"stopping" in reply
+    # `Node.stop` has why a reply already sent still bounds its wait
+    latest = manager.latest_reply_deadline()
+    assert latest is not None
+    assert latest >= deadline
+
+
+def test_a_deadline_due_sooner_leaves_the_latest_deadline_alone(
+    a_manager: AManagerFactory,
+) -> None:
+    """The latest deadline is the latest recorded, not the last (ISS 1467)."""
+    manager = a_manager(None)
+    manager.extend_reply_deadline(20.0)
+    manager.extend_reply_deadline(10.0)
+    assert manager.latest_reply_deadline() == 20.0
+
+
+def test_stop_finishes_a_delayed_reply_its_loop_never_stepped(
+    a_manager: AManagerFactory,
+) -> None:
+    """A delayed reply whose task exists, never stepped, is still finished.
+
+    Held busy on a callback of its own, the manager's loop runs the
+    task's creation in the same pass as `stop`'s own `loop.stop`, so the
+    task is in `asyncio.all_tasks` and has never run a line: what `stop`
+    reads to spare it has to have been recorded before it was handed to
+    the loop, not by its own first step (ISS 1467).
+    """
+    manager = a_manager(get_random_port())
+    manager.start()
+    wait_until_listening(manager)
+    holding = threading.Event()
+    release = threading.Event()
+
+    def hold() -> None:
+        holding.set()
+        release.wait(10)
+
+    join = manager.join
+
+    def release_then_join(timeout: float | None = None) -> None:
+        # reached by `stop` right after it queued `loop.stop`
+        release.set()
+        join(timeout)
+
+    ours, theirs = socket.socketpair()
+    try:
+        conn = a_connection_answering(manager, ours)
+        manager.loop.call_soon_threadsafe(hold)
+        assert holding.wait(10)
+        conn.send_and_close_after(STOPPING, 0.3)
+        manager.join = release_then_join  # type: ignore[method-assign]
+        manager.stop()
+        theirs.settimeout(5)
+        reply = theirs.recv(65536)
+    finally:
+        theirs.close()
+    assert b"200 OK" in reply
+    assert b"stopping" in reply
+
+
+def test_stop_finishes_a_reply_written_once_shutdown_began(
+    a_manager: AManagerFactory,
+) -> None:
+    """`stop` finishes a reply `send` wrote after `terminate_flag` (ISS 1506).
+
+    The reply is larger than the socket pair can buffer, so its write is
+    still waiting on the socket when `stop` sweeps the loop's tasks:
+    this side reads only once the manager's own thread has ended, when
+    `stop`'s sweep is the only thing left driving the loop. Core's
+    `StopHTTPServer` waits for every reply it tracks to be sent before
+    it frees the event base (`src/httpserver.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The request asked for
+    keep-alive, and the reply still carries the `Connection: close`
+    Core's `HTTPRequest::WriteReply` adds once shutdown has begun.
+    """
+    manager = a_manager(get_random_port())
+    manager.start()
+    wait_until_listening(manager)
+    result = "0" * (4 * 1024 * 1024)
+    ours, theirs = socket.socketpair()
+    try:
+        conn = manager.create_connection(manager.loop, ours)
+        conn.head = parse_request_head(b"POST / HTTP/1.1\r\nHost: x\r\n\r\n")
+        manager.node.terminate_flag.set()
+        conn.send(HttpReply(OK, {"result": result, "error": None, "id": 1}))
+        # the write has begun, and cannot finish until this side reads
+        wait_until(lambda: select.select([theirs], [], [], 0)[0])
+        stopping = threading.Thread(target=manager.stop)
+        stopping.start()
+        wait_until(lambda: not manager.is_alive())
+        theirs.settimeout(10)
+        reply = b""
+        while chunk := theirs.recv(1 << 16):
+            reply += chunk
+        stopping.join(10)
+    finally:
+        theirs.close()
+    assert not stopping.is_alive()
+    head, _, body = reply.partition(b"\r\n\r\n")
+    assert b"Connection: close" in head.split(b"\r\n")
+    assert json.loads(body)["result"] == result
+
+
+def test_stop_gives_up_a_reply_written_once_shutdown_began_after_its_timeout(
+    a_manager: AManagerFactory,
+) -> None:
+    """A reply nobody reads holds `stop` no longer than `request_timeout`.
+
+    `evhttp_set_timeout` bounds Core's own write with
+    `-rpcservertimeout` (`src/httpserver.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag); the reply `stop`
+    finishes rather than cancels is bounded the same way, and its
+    connection is closed once it gives up (ISS 1506).
+    """
+    manager = a_manager(get_random_port())
+    manager.request_timeout = 0.2
+    manager.start()
+    wait_until_listening(manager)
+    ours, theirs = socket.socketpair()
+    stopping = threading.Thread(target=manager.stop)
+    try:
+        conn = manager.create_connection(manager.loop, ours)
+        conn.head = parse_request_head(b"POST / HTTP/1.1\r\nHost: x\r\n\r\n")
+        manager.node.terminate_flag.set()
+        reply = {"result": "0" * (4 * 1024 * 1024), "error": None, "id": 1}
+        conn.send(HttpReply(OK, reply))
+        wait_until(lambda: select.select([theirs], [], [], 0)[0])
+        stopping.start()
+        stopping.join(10)
+        stopped = not stopping.is_alive()
+    finally:
+        # what lets `stop` return where the write is not bounded
+        theirs.close()
+        stopping.join(10)
+    assert stopped
+    assert ours.fileno() == -1
+
+
+def test_stop_waits_unbounded_for_a_reply_once_request_timeout_is_none(
+    a_manager: AManagerFactory,
+) -> None:
+    """`request_timeout=None` leaves `stop`'s own reply wait unbounded.
+
+    `-rpcservertimeout=0` or `=-1` is `_request_timeout`'s own `None`
+    (its docstring has why); Core's `WaitUntilEmpty` has no bound of its
+    own once `evhttp_set_timeout` has armed none either. The shape is
+    the sibling test above, its own `request_timeout=0.2` bound turned
+    off here instead of shortened -- but what holds the write open is
+    `release`, an event this test controls, rather than a socket pair's
+    own buffer: how much a write like this one can queue before it
+    blocks is the platform's own number, not this test's, and asserting
+    `stopping.is_alive()` after a fixed join on that assumption fails
+    on Windows, whose `socketpair` is emulated over loopback TCP.
+    `manager.loop.sock_sendall`
+    is what `RpcConnection._write` awaits to write the reply; patched
+    here, it blocks on `release` before doing the real write, so the
+    reply cannot finish, on any platform, until this test says so.
+    """
+    manager = a_manager(get_random_port())
+    manager.request_timeout = None
+    manager.start()
+    wait_until_listening(manager)
+    holding = threading.Event()
+    release = threading.Event()
+    real_sock_sendall = manager.loop.sock_sendall
+
+    async def held_sock_sendall(sock: socket.socket, data: Buffer) -> None:
+        holding.set()
+        await asyncio.to_thread(release.wait)
+        await real_sock_sendall(sock, data)
+
+    manager.loop.sock_sendall = held_sock_sendall  # type: ignore[method-assign]
+    ours, theirs = socket.socketpair()
+    stopping = threading.Thread(target=manager.stop)
+    try:
+        conn = manager.create_connection(manager.loop, ours)
+        conn.head = parse_request_head(b"POST / HTTP/1.1\r\nHost: x\r\n\r\n")
+        manager.node.terminate_flag.set()
+        reply = {"result": "stopping", "error": None, "id": 1}
+        conn.send(HttpReply(OK, reply))
+        # the write has begun, and cannot finish until `release` is set
+        assert holding.wait(10)
+        stopping.start()
+        # deterministic, not a wall-clock guess: `release` is unset, so
+        # the write this reply is stuck in cannot have ended, whatever
+        # this join's own timeout is
+        stopping.join(1.0)
+        assert stopping.is_alive()
+        release.set()
+        stopping.join(10)
+    finally:
+        release.set()
+        theirs.close()
+        stopping.join(10)
+    assert not stopping.is_alive()
+    assert ours.fileno() == -1
+
+
+def test_manager_takes_request_timeout_from_rpcservertimeout(
+    a_manager: AManagerFactory,
+) -> None:
+    """`RpcManager.__init__` reads `request_timeout` off `Config`.
+
+    `-rpcservertimeout=0` is one of Core's own two spellings for no
+    bound at all (`_request_timeout`'s own docstring has the other,
+    `-1`), which this manager carries as `None` from construction --
+    not only where a test lowers `request_timeout` directly afterward,
+    the seam `RpcManager.__init__`'s own comment names.
+    """
+    manager = a_manager(get_random_port(), rpcservertimeout=0)
+    assert manager.request_timeout is None
+    other = a_manager(get_random_port(), rpcservertimeout=45)
+    assert other.request_timeout == 45.0
+
+
+def test_stop_finishes_a_reply_scheduled_before_shutdown_began(
+    a_manager: AManagerFactory,
+) -> None:
+    """`stop` finishes a reply `send` scheduled before shutdown (ISS 1539).
+
+    `terminate_flag` is never set, so this is `handle_rpc`'s ordinary
+    reply. Its write is held on the manager's loop until `stop` has
+    swept the loop's tasks and begins to finish the replies it spared,
+    so it is still unwritten when that sweep runs, whatever the socket
+    pair buffers. Core's
+    `StopHTTPServer` waits for the reply to every request `g_requests`
+    tracks, whenever it arrived (`src/httpserver.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The request keeps its
+    connection alive, which goes back to reading once the reply is
+    written: idle, and not waited for, so `stop` returns long before
+    `request_timeout`. The deadline `stop` records covers its wait.
+    """
+    manager = a_manager(get_random_port())
+    manager.start()
+    wait_until_listening(manager)
+    loop = manager.loop
+    released = asyncio.Event()
+    sock_sendall = loop.sock_sendall
+
+    async def held_sendall(sock: socket.socket, data: Buffer) -> None:
+        await released.wait()
+        await sock_sendall(sock, data)
+
+    finish_replies = manager._finish_replies
+
+    def release_then_finish() -> None:
+        # set once the sweep is done; the loop, not running, wakes the
+        # write only once `_finish_replies` drives it
+        released.set()
+        finish_replies()
+
+    result = "0" * 1024
+    ours, theirs = socket.socketpair()
+    stopping = threading.Thread(target=manager.stop)
+    try:
+        conn = manager.create_connection(loop, ours)
+        conn.head = parse_request_head(b"POST / HTTP/1.1\r\nHost: x\r\n\r\n")
+        loop.sock_sendall = held_sendall  # type: ignore[method-assign]
+        manager._finish_replies = release_then_finish  # type: ignore[method-assign]
+        sent = time.monotonic()
+        conn.send(HttpReply(OK, {"result": result, "error": None, "id": 1}))
+        stopping.start()
+        reply = read_to_the_end(theirs)
+        stopping.join(10)
+        stopped = not stopping.is_alive()
+    finally:
+        # what lets `stop` return where it waits on the idle read
+        released.set()
+        theirs.close()
+        stopping.join(60)
+    assert stopped
+    head, _, body = reply.partition(b"\r\n\r\n")
+    assert b"Connection: close" not in head.split(b"\r\n")
+    assert json.loads(body)["result"] == result
+    deadline = manager.latest_reply_deadline()
+    assert deadline is not None
+    assert manager.request_timeout is not None
+    assert deadline >= sent + manager.request_timeout
+
+
+def test_stop_finishes_a_401_asleep_in_its_failed_attempt_delay(
+    a_manager: AManagerFactory,
+) -> None:
+    """`stop` finishes a refusal the manager's own loop scheduled (ISS 1539).
+
+    A wrong credential is answered 401 after `FAILED_ATTEMPT_DELAY`, by
+    a task `RpcConnection.run` schedules itself, never through
+    `handle_rpc`. Core registers the request with `g_requests` before
+    its first check and answers it on a worker `ThreadPool::Stop` joins,
+    so `StopHTTPServer` waits for that 401 too (`src/httpserver.cpp`,
+    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The manager's loop is
+    held from the 401's first step until `stop` joins it, so the 401 is
+    still unwritten when `stop` sweeps, however long the hold lasted.
+    """
+    manager = a_manager(get_random_port())
+    manager.start()
+    wait_until_listening(manager)
+    # a socket pair's peer has no IP address for `client_allowed` to read
+    manager.client_allowed = lambda client: True  # type: ignore[method-assign]
+    holding = threading.Event()
+    release = threading.Event()
+
+    def hold() -> None:
+        holding.set()
+        release.wait(10)
+
+    join = manager.join
+
+    def release_then_join(timeout: float | None = None) -> None:
+        # reached by `stop` right after it queued `loop.stop`
+        release.set()
+        join(timeout)
+
+    ours, theirs = socket.socketpair()
+    try:
+        conn = manager.create_connection(manager.loop, ours)
+        start_reply = conn._start_reply
+
+        def held(
+            reply: Coroutine[Any, Any, None], delay: float = 0.0
+        ) -> asyncio.Task[None]:
+            task = start_reply(reply, delay)
+            # behind the 401's first step, which `create_task` queued
+            manager.loop.call_soon(hold)
+            return task
+
+        conn._start_reply = held  # type: ignore[method-assign]
+        body = json.dumps(REQUEST).encode()
+        theirs.sendall(
+            b"POST / HTTP/1.1\r\nHost: x\r\nAuthorization: Basic "
+            + base64.b64encode(b"pytest:wrong")
+            + b"\r\nContent-Length: %d\r\n\r\n" % len(body)
+            + body
+        )
+        asyncio.run_coroutine_threadsafe(conn.run(), manager.loop)
+        assert holding.wait(10)
+        manager.join = release_then_join  # type: ignore[method-assign]
+        manager.stop()
+        reply = read_to_the_end(theirs)
+    finally:
+        release.set()
+        theirs.close()
+    assert reply == (
+        b"HTTP/1.1 401 Unauthorized\r\n"
+        b'WWW-Authenticate: Basic realm="jsonrpc"\r\n'
+        b"Content-Length: 0\r\n\r\n"
+    )
 
 
 def test_stop_does_not_raise_where_start_was_called_but_run_never_reached_run_forever(

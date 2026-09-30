@@ -191,18 +191,26 @@ def _assert_valid_in_context(  # noqa: PLR0913, PLR0917
     the header itself claims -- and `_validate_header_batch`'s own loop
     has already asked it of `header`, ahead of this.
 
-    The target, the median time and the version are Core's
-    `bad-diffbits`, `time-too-old` and `bad-version`,
-    `BLOCK_INVALID_HEADER`, which Core's `MaybePunishNodeForBlock`
-    answers with `Misbehaving`, so they raise `MisbehavingError`.
+    The target, the median time, the version and BIP94's own timewarp
+    bound are Core's `bad-diffbits`, `time-too-old`, `bad-version` and
+    `time-timewarp-attack`, every one of them `BLOCK_INVALID_HEADER`,
+    which Core's `MaybePunishNodeForBlock` answers with `Misbehaving`, so
+    they raise `MisbehavingError`. `next_bits_required` raises a bare
+    `BTClibValueError` for the timewarp bound, having no
+    `MisbehavingError` of its own to raise -- this tree's exception and
+    not btclib's -- so it is caught and re-raised as one here, the way
+    `_assert_valid_pow` already does for `assert_valid_pow`'s own.
     `time-too-new` is `BLOCK_TIME_FUTURE`, which it does not punish, so
     btclib's own refusal is left as it is
     (`src/validation.cpp` and `src/net_processing.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
     """
-    required = next_bits_required(
-        header, parent, parent_height, parent_of, chain.consensus
-    )
+    try:
+        required = next_bits_required(
+            header, parent, parent_height, parent_of, chain.consensus
+        )
+    except BTClibValueError as e:
+        raise MisbehavingError(str(e)) from e
     if header.bits != required:
         err_msg = f"proof-of-work target not the required one: {header.bits.hex()}"
         err_msg += f" instead of {required.hex()}"
@@ -284,11 +292,17 @@ class BlockInfo:
     def serialize(self) -> bytes:
         """Serialize this record to the bytes stored under `blkinfo-<hash>`.
 
-        The header unchecked, as `deserialize`'s caller reads it back: a
-        header of a version zero or below is Core's to take below BIP34's
-        height, and btclib's `BlockHeader.assert_valid` refuses it.
+        The header checked here now. It used to be serialized unchecked:
+        a header of a version zero or below is Core's to take below
+        BIP34's height, and btclib's `BlockHeader.assert_valid` refused
+        it on its own -- fixed at btclib 2026.9.29
+        (btclib-org/btclib@bbb1ad71, closing btclib-org/btclib#2309;
+        btclib-org/btclib-node#1511). A header reaches a `BlockInfo` only
+        past `add_headers`'s own height-gated `bad-version` check
+        (`_assert_valid_in_context`), so nothing `assert_valid` still
+        checks can refuse one that got here honestly.
         """
-        out = self.header.serialize(check_validity=False)
+        out = self.header.serialize()
         out += var_int.serialize(self.index)
         out += self.status.to_bytes(1, "little")
         out += int(self.downloaded).to_bytes(1, "little")
@@ -828,8 +842,8 @@ class BlockIndex:
     # `header_index` where the batch's own work actually beats what
     # each already holds -- before the next header of the batch is even
     # looked at. Core's own `AcceptBlockHeader`, called once per header
-    # from `ProcessNewBlockHeaders` (`validation.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): it stops at the first
+    # from `ProcessNewBlockHeaders` (`validation.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): it stops at the first
     # header failing `ContextualCheckBlockHeader` and returns, so the
     # headers already accepted ahead of it, indexed one at a time as
     # they were accepted, stay indexed. btclib-org/btclib-node#1348
@@ -1025,28 +1039,25 @@ class BlockIndex:
 
         Exponentially sparser going back from `start`, a header of
         `header_index` and its tip where none is given, always including
-        its genesis -- the shape Core's own `LocatorEntries` builds,
-        cited in the comment below.
+        its genesis -- the shape Core's own `LocatorEntries` (`src/chain.cpp`,
+        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) builds. `header_index`
+        is indexed by height, so a position in it doubles as the height Core
+        walks: `height` here is Core's `index->nHeight`, and `step` doubles
+        once `block_locators` holds more than ten entries, matched rather
+        than named, since naming it here would claim a meaning Core's own
+        algorithm never gave it.
         """
-        top = (
-            len(self.header_index)
+        height = (
+            len(self.header_index) - 1
             if start is None
-            else self.header_index_pos[start] + 1
+            else self.header_index_pos[start]
         )
-        i = 1
         step = 1
         block_locators: list[bytes] = []
         while True:
-            if i > top:
-                break
-            block_locators.append(self.header_index[top - i])
-            # Core's own LocatorEntries (src/chain.cpp, aed80c7395):
-            # `if (have.size() > 10) step *= 2`, a bare, unnamed 10 there
-            # too -- matched rather than named, since naming it here
-            # would claim a meaning Core's own algorithm never gave it
-            if i >= 10:  # noqa: PLR2004
+            block_locators.append(self.header_index[height])
+            if height == 0:
+                return block_locators
+            height = max(height - step, 0)
+            if len(block_locators) > 10:  # noqa: PLR2004
                 step *= 2
-            i += step
-        if self.header_index[0] not in block_locators:
-            block_locators.append(self.header_index[0])
-        return block_locators

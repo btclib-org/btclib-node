@@ -303,6 +303,12 @@ class Node(threading.Thread):
 
         self.terminate_flag = threading.Event()
         log_path = self.data_dir / config.log_path if config.log_path else None
+        # `rpc.callbacks.get_rpc_info`'s own `logpath`: Core's
+        # `LogInstance().m_file_path.utf8string()` (`src/rpc/server.cpp`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), `""` where there
+        # is none, as that call's own `.utf8string()` answers for an
+        # unset `fs::path` too
+        self.log_path = log_path
         # `open_history_log` writes what Core logs ahead of anything this
         # node logs: the settings' own warnings, its version line, the
         # section warning, then `LogArgs`'s lines, in that order
@@ -316,13 +322,17 @@ class Node(threading.Thread):
 
         # A `getcfilters` answer `p2p.callbacks.get_cfilters` could not
         # finish scheduling under its own pacing bound, keyed by
-        # connection id: the connection itself and the heights still
-        # owed. `p2p.callbacks.advance_cfilters` and
-        # `p2p.main.resume_cfilters` are the only two that read or write
-        # this, and both run on this thread -- `run`'s own loop below,
-        # under `handle_p2p` or under `resume_cfilters` directly -- so
-        # nothing here needs a lock. btclib-org/btclib-node#442
-        self.pending_cfilters: dict[int, tuple[Connection, deque[int]]] = {}
+        # connection id: the connection itself and the block hashes
+        # still owed, resolved along the request's own stop block
+        # ancestry (`p2p.callbacks._filter_range`) rather than active
+        # chain heights, so a reorg mid-pause cannot change what this
+        # entry finishes sending (btclib-org/btclib-node#1476).
+        # `p2p.callbacks.advance_cfilters` and `p2p.main.resume_cfilters`
+        # are the only two that read or write this, and both run on this
+        # thread -- `run`'s own loop below, under `handle_p2p` or under
+        # `resume_cfilters` directly -- so nothing here needs a lock.
+        # btclib-org/btclib-node#442
+        self.pending_cfilters: dict[int, tuple[Connection, deque[bytes]]] = {}
 
         # The same shape as `pending_cfilters` above, for a `getdata`
         # `p2p.callbacks.getdata` could not finish serving: the
@@ -357,9 +367,14 @@ class Node(threading.Thread):
         self.init_errors: list[str] = []
         # `main.update_ibd_status`'s own latch, read by
         # `rpc.callbacks.get_blockchain_info`: Core's own
-        # `m_cached_is_ibd{true}` (`src/validation.h:1054`, at
-        # bitcoin/bitcoin@ca7162cde5) starts true the same way.
+        # `m_cached_is_ibd{true}` (`src/validation.h:1054`,
+        # at bitcoin/bitcoin@ca7162cde5) starts true the same way.
         self.is_initial_block_download = True
+        # `main.new_pow_valid_block`'s height of the last block it sent to
+        # high-bandwidth peers: Core's `m_highest_fast_announce{0}`
+        # (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+        # v31.1 tag). btclib-org/btclib-node#1315
+        self.highest_fast_announce = 0
 
         self.p2p_port: int | None
         if config.p2p_port:
@@ -373,6 +388,17 @@ class Node(threading.Thread):
         else:
             self.rpc_port = None
         self.rpc_manager = RpcManager(self, self.rpc_port)
+        # `rpc.callbacks.get_rpc_info`'s own `active_commands`: the
+        # method and `time.monotonic()` start of every RPC call
+        # `rpc.main._execute` is currently running, in call order.
+        # Core's `RPCServerInfo.active_commands`/`RPCCommandExecution`
+        # (`src/rpc/server.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        # tag) guards the same list with a mutex because Core dispatches
+        # RPC calls from a worker pool; `_execute` runs only on this
+        # thread -- `handle_rpc`'s the same as every store and manager
+        # this node owns -- so nothing here needs a lock, the same
+        # reasoning `pending_cfilters` above is under.
+        self.active_rpc_commands: list[tuple[str, float]] = []
         # whether `load` has opened the stores `run`'s teardown closes
         self.loaded = False
         # the closes of what `load` opens, in order, which
@@ -442,8 +468,8 @@ class Node(threading.Thread):
         # `p2p.connection.Connection.own_version`, for an outbound
         # connection on `P2pManager`'s own asyncio loop rather than this
         # thread, the same way Core's own
-        # `PushNodeVersion` (`net_processing.cpp:1673`, at
-        # bitcoin/bitcoin@ca7162cde5) reads `m_best_height` from the net
+        # `PushNodeVersion` (`net_processing.cpp:1673`,
+        # at bitcoin/bitcoin@ca7162cde5) reads `m_best_height` from the net
         # processing thread rather than validation's. Core declares that
         # field `std::atomic<int>` (`net_processing.cpp:873`) rather than
         # guarding it with `cs_main`, and writes it from
@@ -687,8 +713,67 @@ class Node(threading.Thread):
         finally:
             self._load_attempted.set()
 
+    def _drain_rpc_queue(self) -> None:
+        """Interrupt new RPC work, then answer everything already queued.
+
+        `run`'s own loop below leaves as soon as `terminate_flag` is set,
+        which can happen mid-pass -- a `getblockcount` queued behind a
+        slow `getbestblockhash` handler, say -- so a request already
+        parsed onto `rpc_manager.messages` can still be sitting there
+        once the loop exits. `_stop_managers_and_close_stores` closes
+        every connection right after, which would otherwise answer that
+        request with a closed socket rather than a reply.
+
+        `rpc_manager.interrupt()` runs first, in the order Core's
+        `Interrupt(node)` -- which calls `InterruptHTTPServer` -- runs
+        ahead of `Shutdown(node)`'s own `StopHTTPServer` (`src/init.cpp`,
+        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Every
+        `RpcConnection.run` reads `rpc_manager.interrupted`, and queues
+        a request only while it is unset, holding the
+        `rpc_manager.queue_lock` `interrupt` sets it under, answering
+        `503` instead once it is set (btclib-org/btclib-node#1515), so
+        nothing reaches `messages` after this line runs -- what this loop
+        drains below is therefore bounded to what was already queued
+        when shutdown began, exactly as `ThreadPool::Stop`'s "Help
+        draining queue" loop (`while (ProcessTask()) {}`,
+        `src/util/threadpool.h`, same tag) is bounded by `Interrupt()`
+        having already stopped `Submit` from accepting more.
+
+        Each request answered pushes `rpc_manager`'s own reply deadline
+        forward (`extend_reply_deadline`), the same one `Node.stop`'s
+        wait loop reads to give a `stop` RPC's own hidden `wait` more
+        than `STOP_TIMEOUT` (#1467). Without this, a drain busy
+        answering several requests in a row is indistinguishable, to
+        that wait loop, from a wedge: `STOP_TIMEOUT` measured from the
+        call to `stop` alone would run out from ordinary drain work
+        rather than from the node failing to come back, and `stop` would
+        raise `NodeShutdownTimeoutError` on a node that was making
+        progress throughout. Pushed whether or not the request's own
+        answer raised: a failed answer still consumed one message and
+        moved the drain on to the next.
+
+        `rpc_manager.stop` finishes writing each reply rather than
+        cancel it, as it does every reply its loop has begun
+        (btclib-org/btclib-node#1539).
+
+        `handle_rpc` pops one message per call and never raises in the
+        ordinary case -- `rpc.main._execute` turns a callback's own
+        exception into `RpcError(INTERNAL_ERROR)` before it can
+        propagate -- but this still guards the drain the way
+        `_drain_message_queues` guards the loop it runs under: one bad
+        reply must not leave the rest of the queue unanswered.
+        """
+        self.rpc_manager.interrupt()
+        while self.rpc_manager.messages:
+            try:
+                handle_rpc(self)
+            except Exception:
+                self.logger.exception("Exception occurred answering a queued rpc")
+            self.rpc_manager.extend_reply_deadline(time.monotonic())
+
     def _stop_managers_and_close_stores(self) -> None:
         """Stop both managers and close the stores, those `load` opened."""
+        self._drain_rpc_queue()
         if self.loaded:
             self.p2p_manager.stop()
         self.rpc_manager.stop()
@@ -767,7 +852,7 @@ class Node(threading.Thread):
             lock.release()
 
     def stop(self) -> None:
-        """Ask the main loop to stop, and wait up to `STOP_TIMEOUT` for it.
+        """Ask the main loop to stop, and wait a bounded time for it.
 
         Raises if the loop has not come back by then, the node having
         no way to be sure of its chainstate or its databases while a
@@ -796,10 +881,42 @@ class Node(threading.Thread):
         handler is the other caller worth naming: this raising there
         makes an operator's interrupt loud, and it does not make the
         process able to exit, the wedged thread being non-daemon.
+
+        The bound is `STOP_TIMEOUT` past the later of this call and
+        `rpc_manager.latest_reply_deadline`: `rpc_manager.stop`, on this
+        node's thread, finishes a `stop` RPC's delayed reply before the
+        stores close (btclib-org/btclib-node#1467), so a hidden `wait`
+        longer than `STOP_TIMEOUT` keeps that thread alive past it
+        without its being wedged.
+
+        That deadline is read again each time the bound it gave runs
+        out, rather than once, and the last read is enough because:
+
+        - a deadline is recorded only on this node's thread: by
+          `handle_rpc`, which sets `terminate_flag` itself right after,
+          and, once the flag is set, by `_drain_rpc_queue` for each
+          request it answers and by `rpc_manager.stop` before it waits
+          for the replies still being written
+          (btclib-org/btclib-node#1539); so none predates the shutdown it
+          bounds, and one can be recorded after this method's first read;
+        - the value is never lowered, so a read sees every deadline
+          recorded before it, a reply already sent included, while this
+          thread still closes the stores behind it;
+        - the last read comes `STOP_TIMEOUT` or more after the later of
+          this call and the deadline it answers, so a deadline recorded
+          after it would mean this thread went that long without
+          recording one: the wedge this raises for.
         """
         self.terminate_flag.set()
         if self.is_alive() and threading.current_thread() is not self:
-            self.join(timeout=STOP_TIMEOUT)
+            called_at = time.monotonic()
+            while self.is_alive():
+                deadline = self.rpc_manager.latest_reply_deadline()
+                start = called_at if deadline is None else max(called_at, deadline)
+                remaining = start + STOP_TIMEOUT - time.monotonic()
+                if remaining <= 0:
+                    break
+                self.join(timeout=remaining)
             if self.is_alive():
                 # named by its data directory, which is what tells one
                 # node from another where several are running

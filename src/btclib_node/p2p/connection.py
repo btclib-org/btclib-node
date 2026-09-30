@@ -283,8 +283,8 @@ _HEADER_SIZE = 24
 _LENGTH_OFFSET = 16
 _LENGTH_SIZE = 4
 
-# Core's `ALL_NET_MESSAGE_TYPES` (`src/protocol.h`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the commands
+# Core's `ALL_NET_MESSAGE_TYPES` (`src/protocol.h`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the commands
 # `bytes_recv_per_msg` keys by name, every other one being counted under
 # `NET_MESSAGE_TYPE_OTHER`, so that a peer inventing commands cannot grow
 # the table.
@@ -496,8 +496,8 @@ class Connection:
     # node's cached sample itself changes. btclib-org/btclib-node#71
     # A class default for the same reason as `time_received`.
     answered_getaddr: bool = False
-    # Core's `Peer::m_addr_token_bucket` (`net_processing.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): how many gossiped
+    # Core's `Peer::m_addr_token_bucket` (`net_processing.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): how many gossiped
     # addresses this peer may still have taken in, one to start with so
     # that it can announce itself. Written and read on `Node`'s thread
     # alone, by `callbacks.version`, `addr` and `addrv2`; a class default
@@ -508,6 +508,13 @@ class Connection:
     # peer for headers announcements, which is asked once. A class
     # default for the same reason as `time_received`.
     sent_sendheaders: bool = False
+    # Set by callbacks.sendcmpct, the peer's own request to be announced
+    # a new block as a `cmpctblock`, BIP152's high-bandwidth mode: Core's
+    # `m_requested_hb_cmpctblocks`, false until asked. Read by `main`'s
+    # block announcement and by `getpeerinfo`'s `bip152_hb_from`, all on
+    # `Node`'s thread; a class default for the same reason as
+    # `time_received`. btclib-org/btclib-node#1223
+    requested_hb_cmpctblocks: bool = False
     # Core's `IsBlockOnlyConn()`: an automatic outbound connection this
     # node opened as `BLOCK_RELAY`, which relays blocks alone -- no
     # transaction and no address traffic either way. Set by
@@ -526,17 +533,20 @@ class Connection:
     addr_fetch: bool = False
     # Core's `CNode::m_addr_name`: the destination string this connection
     # was dialled by, where it was dialled by one rather than by a
-    # resolved address -- `pszDest` in `ConnectNode` (`src/net.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `None` for a connection
-    # dialled by address, `_process_addr_fetch`'s own addr-fetch dial
-    # being the only path that currently sets it, to the seed name it
-    # resolved (btclib-org/btclib-node#1432). Core's own field falls back
-    # to the formatted socket address for a connection dialled by
-    # address, which `getpeerinfo`'s own `addr` still answers here
-    # unconditionally (btclib-org/btclib-node#1301). Set by
-    # `P2pManager.create_connection` before this connection's task is
-    # scheduled, and never changed after; a class default for the same
-    # reason as `time_received`.
+    # resolved address -- `pszDest` in `ConnectNode` (`src/net.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `None` for a connection
+    # accepted or dialled straight to an address:
+    # `P2pManager.async_connect_host` is this tree's one setter, its own
+    # `dest` argument becoming this field verbatim -- port included
+    # where `dest` names one -- for every manual dial: `-connect`'s and
+    # `-addnode`'s own standing loops, the `addnode` RPC's `onetry`, and
+    # an addr-fetch dial alike (btclib-org/btclib-node#1264, #1432,
+    # #1493). Core's own field falls back to the formatted socket
+    # address for a connection dialled by address, which
+    # `_socket_addresses` (`rpc/callbacks.py`) does the same way for
+    # `getpeerinfo`'s own `addr`. Set by `P2pManager.create_connection`
+    # before this connection's task is scheduled, and never changed
+    # after; a class default for the same reason as `time_received`.
     addr_name: str | None = None
     # Core's `m_last_block_announcement`: when this peer last sent a
     # header new here and with more work than the active tip, which
@@ -544,8 +554,8 @@ class Connection:
     # full-relay peer by. A class default for the reason `time_received`
     # gives.
     last_block_announcement: int = 0
-    # Core's `Peer::m_addr_relay_enabled` (`net_processing.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7): whether this peer takes part in
+    # Core's `Peer::m_addr_relay_enabled` (`net_processing.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7): whether this peer takes part in
     # address relay. Set where Core calls `SetupAddressRelay`: by
     # `callbacks.version` for a peer this node dialled, and by `addr`,
     # `addrv2` and `getaddr` for one that dialled in. Read by
@@ -1046,8 +1056,8 @@ class Connection:
                     # network's magic, an oversized length -- or this
                     # node's own bug. Core's `ReceiveMsgBytes` answers
                     # the first by dropping the connection and
-                    # discourages nobody (`src/net.cpp`, at
-                    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+                    # discourages nobody (`src/net.cpp`,
+                    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
                     return self.stop(cancel_task=False)
         finally:
             self.stop(cancel_task=False)

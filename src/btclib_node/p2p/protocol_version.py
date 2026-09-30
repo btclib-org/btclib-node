@@ -8,8 +8,6 @@ Core's `src/node/protocol_version.h` (at bitcoin/bitcoin@9be056a8a7, the
 v31.1 tag), under Core's names; `PROTOCOL_VERSION` itself is
 `btclib.p2p.limits`'. `common_version` is Core's
 `CNode::GetCommonVersion`, which every feature gate reads.
-`INVALID_CB_NO_BAN_VERSION` is left out: this node relays no compact
-block for it to gate.
 """
 
 from typing import TYPE_CHECKING
@@ -23,6 +21,7 @@ __all__ = [
     "BIP0031_VERSION",
     "FEEFILTER_VERSION",
     "INIT_PROTO_VERSION",
+    "INVALID_CB_NO_BAN_VERSION",
     "MIN_PEER_PROTO_VERSION",
     "SENDHEADERS_VERSION",
     "SHORT_IDS_BLOCKS_VERSION",
@@ -37,6 +36,10 @@ BIP0031_VERSION = 60000
 SENDHEADERS_VERSION = 70012
 FEEFILTER_VERSION = 70013
 SHORT_IDS_BLOCKS_VERSION = 70014
+# a peer is not discouraged for an invalid `cmpctblock` from it up, and
+# `main.new_pow_valid_block` sends a block before connecting it only from
+# it up, as Core's `NewPoWValidBlock` does
+INVALID_CB_NO_BAN_VERSION = 70015
 WTXID_RELAY_VERSION = 70016
 
 

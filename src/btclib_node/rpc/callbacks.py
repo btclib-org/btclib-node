@@ -14,13 +14,13 @@ call every entry, `stop` included, unless `-rpcwhitelistdefault` holds.
 """
 
 import math
+import string
 import time
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import RPCErrorCode, chain_from_network
 from btclib.block import Block, median_time_past
-from btclib.descriptors import add_checksum, from_address
 from btclib.exceptions import BTClibException, BTClibTypeError, BTClibValueError
 from btclib.fee import FeeRate, fee_from_vsize
 from btclib.p2p.address import ServiceFlags
@@ -30,6 +30,7 @@ from btclib.script.script_pub_key import ScriptPubKey, p2ms_m_and_keys, type_and
 from btclib.script.spendability import is_unspendable
 from btclib.tx import Tx
 from btclib.tx.out_point import OutPoint
+from btclib_wallet.descriptors import add_checksum, from_address
 
 from btclib_node.block_db import Coin
 from btclib_node.chainstate.block_index import BlockStatus, block_time
@@ -40,6 +41,7 @@ from btclib_node.main import (
     assert_valid_block,
     is_block_failed,
     is_cached_invalid,
+    new_pow_valid_block,
     parent_lookup,
     passes_check_block,
     prune_up_to_height,
@@ -91,6 +93,7 @@ __all__ = [
     "get_peer_info",
     "get_raw_mempool",
     "get_raw_transaction",
+    "get_rpc_info",
     "get_tx_out",
     "get_tx_out_set_info",
     "help_rpc",
@@ -101,6 +104,7 @@ __all__ = [
     "service_names",
     "set_ban",
     "stop",
+    "stop_wait_param",
     "submit_block",
     "test_mempool_accept",
 ]
@@ -518,8 +522,8 @@ def get_block_header(
         block_info = block_index.get_block_info(block_hash)
     except KeyError as error:
         # a hash nothing indexed is a question about a block, not a
-        # fault of this node: src/rpc/blockchain.cpp:664-665, at
-        # bitcoin/bitcoin@ca7162cde5
+        # fault of this node: src/rpc/blockchain.cpp:664-665,
+        # at bitcoin/bitcoin@ca7162cde5
         raise RpcError(
             RPCErrorCode.INVALID_ADDRESS_OR_KEY, "Block not found"
         ) from error
@@ -528,10 +532,15 @@ def get_block_header(
     if not verbose:
         # src/rpc/blockchain.cpp:668-673: the same eighty bytes a peer
         # is sent on the wire, hex-encoded rather than the JSON object.
-        # Unchecked, as the index stores it: a version of zero or below,
-        # which Core takes below BIP34's height, is one btclib's own
-        # check refuses (btclib-org/btclib#2309)
-        return header.serialize(check_validity=False).hex()
+        # Checked here now. It used to be serialized unchecked: a
+        # version of zero or below, which Core takes below BIP34's
+        # height, was one btclib's own check refused on its own -- fixed
+        # at btclib 2026.9.29 (btclib-org/btclib@bbb1ad71, closing
+        # btclib-org/btclib#2309; btclib-org/btclib-node#1511). The
+        # index only ever stores a header past `add_headers`'s own
+        # height-gated `bad-version` check, so nothing this validates
+        # can fail on one read back from here.
+        return header.serialize().hex()
 
     # the blocks this node has validated and connected, which is what
     # Core hands blockheaderToJSON: `ActiveChain().Tip()`, at
@@ -1021,6 +1030,10 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     extends_tip = block.header.previous_block_hash == block_index.active_chain[-1]
     node.block_db.add_block(block)
     block_index.set_downloaded(block_hash)
+    # Core's `AcceptBlock` calls `NewPoWValidBlock` from inside
+    # `ProcessNewBlock`, ahead of `ActivateBestChain` (`src/validation.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+    new_pow_valid_block(node, block)
     if extends_tip:
         return _validate_extending_tip(node, block_hash)
     return None
@@ -1139,8 +1152,8 @@ def _peer_entry(
         if ping_wait > 0:
             entry["pingwait"] = ping_wait
     entry["version"] = 0 if version_message is None else version_message.version
-    # `connect_nodes` (`test_framework.py:568-594`, at
-    # bitcoin/bitcoin@bb529657) matches this against the peer's own
+    # `connect_nodes` (`test_framework.py:568-594`,
+    # at bitcoin/bitcoin@bb529657) matches this against the peer's own
     # `getnetworkinfo`-reported `subversion` to find its own connection
     # in the other side's peer list. Core sanitizes the wire bytes
     # through `SanitizeString` before calling this `cleanSubVer`; this
@@ -1155,13 +1168,12 @@ def _peer_entry(
         else version_message.user_agent.decode("ascii", errors="replace")
     )
     entry["inbound"] = p2p_conn.inbound
-    # This node sends `sendcmpct` announcing low bandwidth and reads no
-    # `sendcmpct` a peer sends, so it neither selects nor takes up a
-    # high-bandwidth peer: false both ways, what Core answers where it
-    # sent none and where it ignored a `sendcmpct` of a version it does
-    # not speak.
+    # This node sends `sendcmpct` announcing low bandwidth, so it selects
+    # no high-bandwidth peer: false, what Core answers where it sent none.
+    # Whether the peer selected this node is what its own `sendcmpct`
+    # asked (p2p.callbacks.sendcmpct), Core's `m_bip152_highbandwidth_from`.
     entry["bip152_hb_to"] = False
-    entry["bip152_hb_from"] = False
+    entry["bip152_hb_from"] = p2p_conn.requested_hb_cmpctblocks
     # -1, Core's answer where no low-work headers presync runs, which
     # this node never runs.
     entry["presynced_headers"] = -1
@@ -1250,13 +1262,18 @@ def get_peer_info(
 def _socket_addresses(p2p_conn: Connection) -> tuple[str, str] | None:
     """Return `getpeerinfo`'s `addr` and `addrbind`, or `None` for a gone peer.
 
-    Core writes addrbind with `CService::ToStringAddrPort`, and its addr
-    is `m_addr_name`, which is that same string only where the peer was
-    not dialled by name. Here addr is `getpeername`'s and never a name,
-    so one formatter serves both. `disconnectnode` matches its `address`
-    against the same `addr`, as Core's matches `m_addr_name`. For a
-    peer dialled by a destination string that is the string as given,
-    where this `addr` is formatted from the socket
+    Core writes addrbind with `CService::ToStringAddrPort`, unconditionally
+    -- `addrBind` is set once at construction and never the destination
+    string. addr is `m_addr_name`, which is `addrNameIn` where the peer was
+    dialled by one and the formatted socket address otherwise
+    (`CNode::CNode`, `src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag): `getpeerinfo` pushes `stats.m_addr_name` as `addr`
+    (`src/rpc/net.cpp`, same sha), never recomputing it from the socket.
+    `p2p_conn.addr_name` is this node's own `m_addr_name`, `None` where
+    Core's is the empty `addrNameIn` that falls back to the socket, so
+    addr takes it where set and the formatted `getpeername` otherwise.
+    `disconnectnode` matches its `address` against this same `addr`, as
+    Core's `CConnman::DisconnectNode` matches `m_addr_name`
     (btclib-org/btclib-node#1301).
     """
     try:
@@ -1269,7 +1286,12 @@ def _socket_addresses(p2p_conn: Connection) -> tuple[str, str] | None:
     # one of them means the same "skip this peer, ask the next".
     except Exception:  # noqa: BLE001
         return None
-    return ip_and_port(addr[0], addr[1]), ip_and_port(addrbind[0], addrbind[1])
+    return (
+        p2p_conn.addr_name
+        if p2p_conn.addr_name is not None
+        else ip_and_port(addr[0], addr[1]),
+        ip_and_port(addrbind[0], addrbind[1]),
+    )
 
 
 def get_connection_count(node: Node, conn: RpcConnection, _: list[Any]) -> int:
@@ -1321,8 +1343,8 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     }
 
 
-# Core's own three `addnode` commands (`rpc/net.cpp:341-415`, at
-# bitcoin/bitcoin@bb529657): `add`/`remove` reach `P2pManager`'s own
+# Core's own three `addnode` commands (`rpc/net.cpp:341-415`,
+# at bitcoin/bitcoin@bb529657): `add`/`remove` reach `P2pManager`'s own
 # `add_added_peer`/`remove_added_peer`, its counterpart to `CConnman`'s
 # `AddNode`/`RemoveAddedNode`, and `_open_added_peers`
 # (`p2p/manager.py`) is what actually dials whatever the list holds,
@@ -1427,14 +1449,19 @@ def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
         return
 
     try:
-        host, port = split_host_port(node_arg, node.chain.port)
+        split_host_port(node_arg, node.chain.port)
     except ValueError as error:
         # a malformed port alone: a hostname is no longer refused here,
         # `connect_host` resolving one the way `P2pManager`'s own
         # redial and `Node.run`'s startup dial do (btclib-org/btclib-node#1264)
         raise RpcError(RPCErrorCode.INVALID_PARAMETER, str(error)) from error
 
-    node.p2p_manager.connect_host(host, port)
+    # `node_arg` whole, not the `(host, port)` the check above only
+    # validated with: Core's own `onetry` passes `node_arg` itself as
+    # `pszDest` (`src/rpc/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    # v31.1 tag), so a port the caller gave reaches `addr_name` too
+    # (btclib-org/btclib-node#1493).
+    node.p2p_manager.connect_host(node_arg, node.chain.port)
 
 
 # `UniValue::getInt<int64_t>`'s own range, past which it throws "JSON
@@ -1831,8 +1858,8 @@ def get_tx_out_set_info(
     return result
 
 
-# Core's own literal sentinel, `MEMPOOL_HEIGHT` (`src/txmempool.h:50`, at
-# bitcoin/bitcoin@9be056a8a7): a `Coin` built from a mempool transaction's
+# Core's own literal sentinel, `MEMPOOL_HEIGHT` (`src/txmempool.h:50`,
+# at bitcoin/bitcoin@9be056a8a7): a `Coin` built from a mempool transaction's
 # own output rather than from the confirmed set carries this height
 # instead of a real one, and `gettxout` reads it back to answer
 # `confirmations: 0` (`rpc/blockchain.cpp:1243-1247`). Not
@@ -1842,8 +1869,8 @@ def get_tx_out_set_info(
 # out rather than storing it.
 _MEMPOOL_HEIGHT = 0x7FFF_FFFF
 
-# GetTxnOutputType's own vocabulary (`src/script/solver.cpp:18-34`, at
-# bitcoin/bitcoin@9be056a8a7), keyed on this library's own
+# GetTxnOutputType's own vocabulary (`src/script/solver.cpp:18-34`,
+# at bitcoin/bitcoin@9be056a8a7), keyed on this library's own
 # `type_and_payload` names (`btclib.script.script_pub_key`) -- the two
 # agree in spelling for nothing, "nulldata" being the closest case and
 # still its own key below rather than assumed. `_script_pub_key_dict`
@@ -1865,8 +1892,8 @@ _CORE_SCRIPT_TYPES: dict[str, str] = {
     "unknown": "nonstandard",
 }
 
-# `CScript::IsPayToAnchor` (`src/script/script.cpp:207-213`, at
-# bitcoin/bitcoin@9be056a8a7): the literal four-byte P2A script, OP_1
+# `CScript::IsPayToAnchor` (`src/script/script.cpp:207-213`,
+# at bitcoin/bitcoin@9be056a8a7): the literal four-byte P2A script, OP_1
 # followed by its own fixed two-byte push. `Solver` carves this one
 # script out of what would otherwise be `TxoutType::WITNESS_UNKNOWN`
 # (`src/script/solver.cpp:167-171`, same sha) into its own
@@ -1908,8 +1935,9 @@ def _infer_descriptor(script_pub_key: ScriptPubKey) -> str:
       pubkey or the redeem script behind the hash and get nothing back,
       so `InferScript` falls through every one of its own `if`s to the
       top-level `ExtractDestination` case at the bottom of the function
-      -- `addr(...)`, `descriptors.from_address` already producing that
-      exact string. A witness program past version 0 that is not p2tr
+      -- `addr(...)`, `btclib_wallet.descriptors.from_address` already
+      producing that exact string. A witness program past version 0 that
+      is not p2tr
       -- this library's own "witness_unknown", the P2A anchor output
       among them -- reaches that identical fallback: Core's own
       `ExtractDestination` answers a destination for both
@@ -1932,7 +1960,7 @@ def _infer_descriptor(script_pub_key: ScriptPubKey) -> str:
 
     None of the five needs a key this node does not have; a checksum is
     added the way `Descriptor::ToString()`'s own default argument adds
-    one (`descriptors.add_checksum`).
+    one (`btclib_wallet.descriptors.add_checksum`).
     """
     script = script_pub_key.script
     script_type, payload = type_and_payload(script)
@@ -2113,8 +2141,8 @@ def get_raw_mempool(
     refused outright, matching `MempoolToJSON`'s own combination check.
     """
     # verbose and mempool_sequence, both RPCArg::Type::BOOL,
-    # RPCArg::Default{false}: src/rpc/mempool.cpp:659-660, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag. Both are
+    # RPCArg::Default{false}: src/rpc/mempool.cpp:659-660,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag. Both are
     # checked, and every mismatch named, before either is raised on,
     # the way `disconnect_node` above already does for its own two
     # (`type_errors`' own docstring).
@@ -2387,20 +2415,28 @@ def get_raw_transaction(
 
 # Core's own `IsHex` (`src/util/strencodings.cpp`,
 # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): every character a hex
-# digit. Named once so `_decode_hex_tx` reads the same set rather than
-# spelling `string.hexdigits` inline. btclib-org/btclib-node#1372
-_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+# digit. btclib-org/btclib-node#1372
+_HEX_DIGITS = frozenset(string.hexdigits)
+
+
+def _is_hex(s: str) -> bool:
+    """Core's `IsHex` (`src/util/strencodings.cpp`, same tag).
+
+    Requires a non-empty, even-length hexadecimal string: Python's
+    `bytes.fromhex`, and so btclib's own `bytes_from_octets`
+    (`btclib/utils.py`), tolerates whitespace between and around bytes,
+    which is what let a `rawtx` Core refuses decode here instead.
+    btclib-org/btclib-node#1372
+    """
+    return bool(s) and len(s) % 2 == 0 and all(c in _HEX_DIGITS for c in s)
 
 
 def _decode_hex_tx(rawtx: str) -> Tx:
     """Decode `rawtx` as Core's `DecodeHexTx` does.
 
-    `IsHex` refuses any character outside `_HEX_DIGITS` -- a space
+    `_is_hex` refuses any character outside `_HEX_DIGITS` -- a space
     included -- and an odd or zero length, ahead of `ParseHex`
-    (`src/core_io.cpp`, same tag). Python's `bytes.fromhex`, and so
-    btclib's own `bytes_from_octets` (`btclib/utils.py`), tolerates
-    whitespace between and around bytes, which is what let a `rawtx`
-    Core refuses decode here instead. btclib-org/btclib-node#1372
+    (`src/core_io.cpp`, same tag).
 
     `check_validity=False`: `DecodeHexTx` decodes the wire encoding
     alone and never asks whether the transaction it decoded is one
@@ -2410,7 +2446,7 @@ def _decode_hex_tx(rawtx: str) -> Tx:
     it. Answering a well-formed but structurally invalid transaction
     with "TX decode failed" was btclib-org/btclib-node#1375.
     """
-    if not rawtx or len(rawtx) % 2 or not _HEX_DIGITS.issuperset(rawtx):
+    if not _is_hex(rawtx):
         err_msg = f"invalid hex string: {rawtx!r}"
         raise BTClibValueError(err_msg)
     return Tx.parse(bytes.fromhex(rawtx), check_validity=False)
@@ -2464,23 +2500,20 @@ def _reject_reason(tx: Tx, error: BTClibException) -> str:
     `Tx.assert_valid`'s own docstring already claims it checks what
     Core's `CheckTransaction` checks of a lone transaction
     (`src/consensus/tx_check.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag) -- the same *set* of rules, not the same *order*.
-    `CheckTransaction` checks vin-empty, vout-empty, the size, the
-    outputs, the duplicate inputs, and the coinbase/prevout-null rule
-    last; `assert_valid` checks the coinbase/prevout-null rule first,
-    ahead of its own vin/vout-empty checks. This does not run any rule
-    a second time -- `error` is already btclib's own verdict, whichever
-    rule `assert_valid` happened to raise first in its own order -- it
-    only answers which of Core's own reject reasons that message names.
-    A transaction that violates more than one rule at once can
-    therefore answer the wrong one of the two: two inputs, one of them
-    the null outpoint, and no outputs answers `bad-txns-prevout-null`
-    here, where Core answers `bad-txns-vout-empty` first. Filed as
-    btclib-org/btclib#2417 -- reordering `assert_valid` to match
-    `CheckTransaction`'s own order changes no verdict, only which
-    reason a multi-violation transaction is reported under -- and this
-    tree waits for that fix rather than reimplementing Core's order
-    here itself, on the maintainer's own decision.
+    v31.1 tag), and since btclib 2026.9.30 in the same order too:
+    vin-empty, vout-empty, the size, the outputs, the duplicate inputs,
+    the coinbase/prevout-null rule last (btclib-org/btclib#2417,
+    btclib-org/btclib#2422). This does not run any rule a second time
+    -- `error` is already btclib's own verdict, whichever rule
+    `assert_valid` raised first in its own order -- it only answers
+    which of Core's own reject reasons that message names, relying on
+    that order matching `CheckTransaction`'s for a transaction that
+    violates more than one rule at once to answer the same one of the
+    two Core would: two inputs, one of them the null outpoint, and no
+    outputs now answers `bad-txns-vout-empty` here, as it does in Core,
+    `Tx.assert_valid` having reached the empty `vout` before the
+    coinbase/prevout-null check reads either input
+    (btclib-org/btclib-node#1375).
 
     Every message `assert_valid` can raise for a `Tx` built by
     `_decode_hex_tx`'s own `check_validity=False` is named below,
@@ -2507,10 +2540,11 @@ def _check_transaction(tx: Tx) -> str | None:
     into the reason string Core's own JSON-RPC answers name -- it never
     decides validity on its own account, `ARCHITECTURE.md`'s own
     *What is delegated, and what is not*. `_reject_reason`'s own
-    docstring is where the one known gap in that translation is argued:
-    a transaction violating more than one of `CheckTransaction`'s rules
-    at once can answer `assert_valid`'s own first-failed rule rather
-    than Core's, pending btclib-org/btclib#2417.
+    docstring is where a transaction violating more than one of
+    `CheckTransaction`'s rules at once is argued: since btclib
+    2026.9.30, `assert_valid`'s own check order matches
+    `CheckTransaction`'s, so the rule it raises first is the one Core
+    would too (btclib-org/btclib#2417, btclib-org/btclib#2422).
 
     Core's `bad-txns-oversize` -- a transaction whose own non-witness
     size alone already exceeds a block's weight limit -- has no
@@ -3123,8 +3157,94 @@ def ping(node: Node, conn: RpcConnection, _: list[Any]) -> None:
     node.p2p_manager.ping_all()
 
 
-def stop(node: Node, conn: RpcConnection, _: list[Any]) -> str:
-    """Answer `stop`; `handle_rpc` waits for this reply before stopping."""
+def get_rpc_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str, Any]:
+    """Answer `getrpcinfo`: every RPC call in flight, and where this node logs.
+
+    Core's own `RPCServerInfo.active_commands`/`RPCCommandExecution`
+    (`src/rpc/server.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag): `rpc.main._execute` is this node's own `ExecuteCommand`, and
+    `node.active_rpc_commands` is its own `active_commands`, appended to
+    and popped there rather than guarded by a destructor -- this call's
+    own entry is already in it by the time this callback runs, exactly
+    as Core's own is by the time its lambda runs. `duration` is
+    microseconds, `Ticks<std::chrono::microseconds>` over Core's own
+    `SteadyClock::now() - info.start`; `time.monotonic()` is this
+    node's own steady clock, elapsed time only and never a wall-clock
+    reading, which is what `SteadyClock` is too.
+
+    `logpath` is `node.log_path`, `""` where this node logs to a stream
+    rather than a file, as `LogInstance().m_file_path.utf8string()`
+    answers for an unset path too.
+    """
+    now = time.monotonic()
+    active_commands = [
+        {"method": method, "duration": int((now - start) * 1_000_000)}
+        for method, start in node.active_rpc_commands
+    ]
+    return {
+        "active_commands": active_commands,
+        "logpath": str(node.log_path) if node.log_path else "",
+    }
+
+
+def stop_wait_param(params: list[Any]) -> int | None:
+    """Read `stop`'s own hidden `wait`, or `None` where none was given.
+
+    `RPCArg::Type::NUM`, `RPCArg::Optional::OMITTED`, hidden from help
+    (`src/rpc/server.cpp:155`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag): omitted or explicit `null` reads as `isNum()` false there, so
+    neither delays the reply. Anything else that is not a JSON number is
+    `RPC_TYPE_ERROR`, the same check `RPCMethod::HandleRequest` makes
+    for every declared argument before the handler ever runs
+    (`src/rpc/util.cpp:653-661`); a JSON float, or an integer outside
+    C `int`'s range, is refused the way `_height_param` above already
+    refuses a float, `UniValue::getInt<int>`'s own "JSON integer out of
+    range" (`univalue.h`), thrown where `std::from_chars` cannot consume
+    the number in full or reports it out of range.
+
+    Called twice for one request that reaches it: here, to decide
+    whether `stop` itself succeeds, and again by `rpc.main._answer_one`
+    once it has, to read the same already-valid `wait` back out and
+    schedule the delayed reply `stop`'s own docstring explains
+    (btclib-org/btclib-node#1467) -- this function's own return value is
+    not `stop`'s, which is the RPC's `result` field and cannot also
+    carry it.
+    """
+    if not params or params[0] is None:
+        return None
+    value = params[0]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise type_error(1, "wait", value, "number")
+    if isinstance(value, float) or not -(2**31) <= value < 2**31:
+        raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
+    return value
+
+
+def stop(node: Node, conn: RpcConnection, params: list[Any]) -> str:
+    """Answer `stop`; `handle_rpc` delays this reply by `wait`, then stops.
+
+    A `wait` in milliseconds holds the reply back that long, Core's own
+    hidden testing argument (`src/rpc/server.cpp:155-166`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): "'stop 1000' makes the
+    call wait 1 second before returning to the client". Read and
+    validated here, through `stop_wait_param`, exactly as every other
+    declared argument is validated by the callback that owns it; not
+    slept on here, unlike Core's own `UninterruptibleSleep`, which this
+    function has no equivalent of at all.
+
+    Core's sleep runs once `stop` has already requested shutdown, on
+    the request's own HTTP worker thread, which that shutdown joins
+    before it goes on (`StopHTTPServer`, `src/httpserver.cpp`, same
+    tag). A `time.sleep` here would run before `handle_rpc` requested
+    this node's shutdown at all, on the one thread that carries RPC, P2P
+    and chain work alike (`ARCHITECTURE.md`, "The loop").
+    `rpc.main._answer_one` reads this same `wait` again once this call
+    is known to have succeeded; `handle_rpc` hands the delayed reply to
+    `RpcConnection.send_and_close_after` and stops the node at once, and
+    `RpcManager.stop` finishes that reply the way Core's shutdown
+    finishes its worker.
+    """
+    stop_wait_param(params)
     return "Btclib node stopping"
 
 
@@ -3169,6 +3289,7 @@ callbacks = {
     "ping": ping,
     "stop": stop,
     "help": help_rpc,
+    "getrpcinfo": get_rpc_info,
 }
 
 # Each method's parameter names, in the order of its positions, as its
@@ -3209,4 +3330,5 @@ arg_names: dict[str, tuple[str, ...]] = {
     "ping": (),
     "stop": ("wait",),
     "help": ("command",),
+    "getrpcinfo": (),
 }

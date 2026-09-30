@@ -130,8 +130,8 @@ _STALE_CHECK_INTERVAL = 10 * 60
 _STALE_TIP_SPACINGS = 3
 
 # `sync_headers`'s own timing, in seconds: `HEADERS_DOWNLOAD_TIMEOUT_BASE`
-# and `HEADERS_DOWNLOAD_TIMEOUT_PER_HEADER` (`net_processing.cpp`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag), the second scaled by the
+# and `HEADERS_DOWNLOAD_TIMEOUT_PER_HEADER` (`net_processing.cpp`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), the second scaled by the
 # headers expected between the best header and now, one per
 # `_POW_TARGET_SPACING` -- `nPowTargetSpacing`, `10 * 60` on every chain
 # `kernel/chainparams.cpp` defines at the same sha. `_RECENT_BEST_HEADER`
@@ -143,8 +143,8 @@ _HEADERS_DOWNLOAD_TIMEOUT_PER_HEADER = 0.001
 _POW_TARGET_SPACING = 10 * 60
 _RECENT_BEST_HEADER = 24 * 60 * 60
 
-# Core's `MAX_BLOCKS_IN_TRANSIT_PER_PEER` (`net_processing.cpp`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): how many blocks one peer is
+# Core's `MAX_BLOCKS_IN_TRANSIT_PER_PEER` (`net_processing.cpp`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): how many blocks one peer is
 # asked for and has not yet sent. Public because the largest answer a
 # well-behaved peer owes this node is that many blocks, which the tests
 # of the receive-side bounds size against.
@@ -909,8 +909,8 @@ class DownloadManager:
         a peer that old is sent none.
         """
         now = time.time()
-        # Core's own `MaybeSendFeefilter` (`net_processing.cpp`, at
-        # bitcoin/bitcoin@ca7162cde5) gates this same decision on
+        # Core's own `MaybeSendFeefilter` (`net_processing.cpp`,
+        # at bitcoin/bitcoin@ca7162cde5) gates this same decision on
         # `m_chainman.IsInitialBlockDownload()`, which `main.
         # update_ibd_status`'s own `node.is_initial_block_download`
         # answers faithfully (btclib-org/btclib-node#575). An earlier

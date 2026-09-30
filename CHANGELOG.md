@@ -851,22 +851,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A host held on any port is not dialled again** (closes #1304), and an
   inbound peer's address keeps the port it connected from.
 
-### A raw transaction's hex is decoded as Core's `DecodeHexTx` decodes it
-
-- **A `rawtx` with whitespace in it is refused rather than decoded**, as
-  Core's `IsHex` refuses it (closes #1372).
-
-### A transaction Core decodes and refuses in `CheckTransaction`'s own words
-
-- **`sendrawtransaction` and `testmempoolaccept` answer that refusal too**,
-  rather than reporting the transaction as one that failed to decode
-  (closes #1375).
-
-### `decoderawtransaction` is served
-
-- **It answers Core's JSON shape for a hex-decoded transaction**, with no
-  chain or mempool lookup (closes #1398).
-
 ### The mempool refuses a second spend of one outpoint, and a block evicts it
 
 - **A conflicting candidate is refused, in Core's words where its fee rules
@@ -1165,6 +1149,214 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **An issue carrying the label is small and self-contained** (issue
   btclib-org/.github#1362): *The issue tracker* says so, and links the
   organization-wide search for the open ones.
+
+### Testnet4 is a chain this node can join, `-testnet4` included
+
+- **`TestNet4` joins this node's chains, selected by `-testnet4` or
+  `-chain=testnet4` as Core's own `-testnet4` does, and a header failing
+  BIP94's timewarp bound is a `MisbehavingError`** (closes #1442).
+
+### `getpeerinfo`'s `addr` is the name a peer was dialled by, where one was given
+
+- **`addr` and `disconnectnode`'s `address` match answer the string a peer
+  was dialled by once held, the formatted socket address otherwise**, as
+  Core's `m_addr_name` does (closes #1301).
+
+### A `-connect` or `-seednode` spec's own port now survives to `addr_name`
+
+- **`-connect` and `-seednode` keep the raw spec given, port included,
+  the way `-addnode` already did, so `addr_name` carries it too** (closes
+  #1493).
+
+### A literal-IP `-addnode` is held by its resolved address, not by name
+
+- **A `-addnode` spec that is a literal IP is now held by every
+  connection's own resolved address, whatever route opened it, matching
+  Core's `mapConnected`** (closes #1498).
+
+### A manual dial's resolved answers are capped at 256
+
+- **`async_connect_host` no longer shuffles, validates or dials more
+  than 256 of a resolver's answers**, matching `Lookup`'s own
+  `nMaxSolutions` in Core's `ConnectNode` (closes #1466).
+
+### Two manager tests wait for the store, not just the id that precedes it
+
+- **`create_connection` increments `last_connection_id` before it stores
+  the connection, so a test now waits on the store itself rather than
+  racing it by polling the id alone** (closes #1504).
+
+### `stop`'s hidden `wait` argument is honoured
+
+- **A `stop` call carrying `wait` delays its own reply by that many
+  milliseconds**, as Core's own `stop <ms>` does, while the node starts
+  shutting down at once (closes #1467).
+
+### The OpenSSF Baseline badge
+
+- **`README.md`'s badge row ends with the OpenSSF Baseline badge**,
+  beside the Best Practices badge, which section 2 of the organization
+  standard admits (issue btclib-org/.github#1460).
+
+### `btclib-wallet` is now a runtime dependency
+
+- **`rpc/callbacks.py` reads `add_checksum`/`from_address` from
+  `btclib_wallet.descriptors`**, following `descriptors` out of btclib
+  and into btclib-wallet, where btclib 2026.9.29 moved it (closes #1508).
+
+### A stored header's own version is checked again, matching Core
+
+- **`BlockInfo.serialize` and `getblockheader false` validate the
+  header they write out again**, no longer bypassing btclib's own
+  check now that it refuses on version the way Core does (closes #1511).
+
+### CLAUDE.md says which behaviour a release and master disagreement follows
+
+- **Consensus and relay follow the pinned Core release where it and
+  master disagree; a peer-refusal rule may go stricter than the
+  release first, where the divergence is argued** (closes #1520).
+
+### `cli_test.py`'s `datadir` log-line tests compare against the escaped form
+
+- **Three tests build the expected `datadir=` line through
+  `_setting_to_write_str`, or a hand-written literal, matching Core's own
+  `json_escape`**, which doubles a backslash (closes #1509).
+
+### A high-bandwidth peer is announced a new block as `cmpctblock`, as in Core
+
+- **A peer's `sendcmpct` of version 2 is recorded, and a peer that chose this
+  node as high-bandwidth is sent a lone new block as a `cmpctblock` and reported
+  in `getpeerinfo`'s `bip152_hb_from`** (closes #1223).
+
+### A new block reaches a high-bandwidth peer before it is connected, as in Core
+
+- **A block past Core's `ContextualCheckBlock` that extends the tip is sent as a
+  `cmpctblock` to every high-bandwidth peer that has its parent, as
+  `NewPoWValidBlock` sends it** (closes #1315).
+
+### `pypi-install.yml` retries the install of the version the release published
+
+- **Each install cell installs through btclib-org/.github's
+  `install_published_release.py`, which retries only while the installer says
+  the pin is not resolvable** (issue btclib-org/.github#1458).
+
+### Core citations keep `at` on the same line as the sha they cite
+
+- **Every `#` Core citation outside `p2p/callbacks.py`'s `headers()`
+  carries `at` on the sha's own line** (closes #1517).
+- **So does `block()`'s btclib citation** (closes #1528).
+
+### The backpressure pause test connects fewer blocks
+
+- **`test_a_getdata_answer_pauses_rather_than_filling_the_send_queue`
+  connects only as many blocks as `advance_getdata`'s own pause needs**,
+  cutting the wait that timed out under load (closes #1518).
+
+### `get_block_locator_hashes` doubles its step where Core's `LocatorEntries` does
+
+- **The locator's step doubles once it holds more than ten entries,
+  matching Core's own unnamed threshold, rather than as the tenth is
+  appended** (closes #1510).
+
+### The release's attestation bundle is attached as `*.intoto.jsonl`
+
+- **`RELEASING.md`'s commands and `SECURITY.md`'s verification name the bundle
+  `<tag>.intoto.jsonl`** (issue btclib-org/.github#1468):
+  `reusable-github-release.yml` attaches it under that name.
+
+### `codeql.yml`'s aggregate runs `check_run_jobs.py`
+
+- **The aggregate's step runs `check_run_jobs.py`, served from
+  `btclib-org/.github`,** which reads the jobs listing again up to a
+  deadline (issue btclib-org/.github#1463).
+
+### An RPC request queued when shutdown starts is answered, not closed
+
+- **`Node.run` drains what was already queued before either manager
+  stops** (closes #1506).
+- **A request after that drain begins gets `503` instead** (closes #1515).
+
+### `generate_sbom.py` carries a not-affected list into the bill of materials
+
+- **`generate_sbom.py` reads `.github/vex.toml`**, where the tree lists the
+  vulnerabilities its release is not affected by, into the document's
+  `vulnerabilities`; no list, no key (issue btclib-org/.github#1469).
+
+### `RpcManager.stop` finishes every reply its loop has begun
+
+- **A reply begun before shutdown, or by the RPC loop itself such as a `401`,
+  is written rather than cancelled, as Core's `StopHTTPServer` waits for it;
+  an idle kept-alive connection is not waited for** (closes #1539).
+
+### The RPC loop's own refusals say they close once shutdown has begun
+
+- **A 401, 403, 404, 405 or parse-error reply written once shutdown has begun
+  carries `Connection: close`, as Core's `HTTPRequest::WriteReply` adds it**
+  (closes #1542).
+
+### A request on an idle RPC connection during shutdown's wait is answered 503
+
+- **`RpcManager.stop` keeps every connection reading while it waits for the
+  replies it finishes, so a request arriving on one is answered `503` with
+  `Connection: close`, as Core's event loop answers it** (closes #1545).
+
+### `SECURITY.md` promises a response time
+
+- **`SECURITY.md` says a report is acknowledged within 7 days**, and a
+  fix or a published advisory within 90 (issue btclib-org/.github#1460).
+
+### The netif test decides its skip without a route before it runs
+
+- **`netif_test.py` probes the route at import and skips the kernel's-source
+  case on a machine without one, while a TEST-NET-1 case runs the same lines
+  there, so the coverage floor holds either way** (closes #1556).
+
+### A raw transaction's hex with whitespace in it is refused
+
+- **`sendrawtransaction` and `testmempoolaccept` refuse a `rawtx` that is
+  not all hex digits, of even length and non-empty, as Core's `IsHex` does
+  inside `DecodeHexTx`, with its own `TX decode failed` error** (closes #1372).
+
+### An empty `getblocktxn` drops the peer, undiscouraged
+
+- **A `getblocktxn` naming no transaction index is refused ahead of any
+  block lookup, dropping the peer without discouraging it**, matching
+  Core master's `fDisconnect` on an empty `indexes` (closes #1450).
+
+### `getcfilters`, `getcfheaders` and `getcfcheckpt` answer Core's way
+
+- **A stop hash still known and allowed is served from its own chain**,
+  not `active_chain` (closes #1476).
+- **An invalid request disconnects the peer**, as Core does (closes #1477).
+
+### `urllib3` moves to 2.8.0 in the lock
+
+- **`uv.lock` pins `urllib3` 2.8.0**, past GHSA-gh4c-6fx4-qh6g,
+  GHSA-vxq7-64xx-v4gw and GHSA-8988-9cw3-xx77; it reaches the dev group
+  alone, through `twine`, `sphinx` and `pyroma`, never the wheel.
+
+### `-rpcservertimeout` bounds an RPC connection's read and its idle gap
+
+- **`-rpcservertimeout=<n>` feeds `RpcManager.request_timeout`, seconds as
+  Core's own `-rpcservertimeout` is, `0` and `-1` both arming no bound at
+  all, as `evhttp_set_timeout` arms none for either** (closes #1548).
+
+### `getrpcinfo` is served
+
+- **`getrpcinfo` answers `active_commands`, one entry per RPC call this
+  node is currently running, and `logpath`, the file this node logs to**
+  (closes #1486).
+
+### A transaction Core decodes and refuses in `CheckTransaction`'s own words
+
+- **`sendrawtransaction` and `testmempoolaccept` answer that refusal too**,
+  rather than reporting the transaction as one that failed to decode
+  (closes #1375).
+
+### `decoderawtransaction` is served
+
+- **It answers Core's JSON shape for a hex-decoded transaction**, with no
+  chain or mempool lookup (closes #1398).
 
 ## v2026.9.24
 
