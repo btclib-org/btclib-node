@@ -37,6 +37,7 @@ from btclib_node.chainstate import Chainstate
 from btclib_node.config import Config
 from btclib_node.constants import NodeStatus
 from btclib_node.exceptions import (
+    ChainstateInconsistencyError,
     DirectoryLockError,
     NodeShutdownTimeoutError,
     ReimportedMainProcessError,
@@ -1233,6 +1234,80 @@ def test_a_message_the_handlers_did_not_expect_does_not_end_the_loop(
     node.stop()
     (answer,) = answered
     assert answer.body["id"] == "b"
+
+
+def test_a_submitblock_storage_fault_stops_the_loop_before_the_next_step(
+    a_networked_node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`run`'s loop must not reach `_step_chain` once a pass has set the flag.
+
+    `rpc.callbacks._validate_extending_tip` sets `terminate_flag` and
+    re-raises where `update_chain`'s own trial does not swallow the
+    exception -- but `rpc.main._execute` still turns that into
+    `INTERNAL_ERROR` before it ever reaches this loop, so the flag,
+    checked here, is the only signal left that the store just proved
+    itself unsafe to touch again this pass. `add_block` failing is what
+    `tests/unit/rpc/callbacks_test.py`'s own
+    `test_submit_block_stops_the_node_where_update_chain_finds_storage_unsafe`
+    already uses for the same kind of fault, one layer down.
+
+    What is counted is `_step_chain`'s own call to `update_chain`, patched
+    through the name `Node.run` actually reads
+    (`btclib_node.update_chain`, this module's own top-level import) --
+    not `add_block`'s own call count, which stays flat at one either way:
+    `update_chain`'s own mid-fork loop already refuses to touch a block
+    once `terminate_flag` reads set (`main.py`'s own comment above that
+    check), which is a second, narrower guard and not the one under test
+    here. `rpc.callbacks._validate_extending_tip` imports `update_chain`
+    under a name of its own, so patching this module's copy leaves the
+    first, fault-triggering call untouched and only counts a second one
+    reached through `_step_chain`.
+    """
+    node = a_networked_node
+    rpc_manager = cast("AManager", node.rpc_manager)
+    answered: list[Any] = []
+    rpc_manager.connections[0] = SimpleNamespace(
+        send=answered.append, send_and_wait=answered.append
+    )
+
+    def boom(*args: Any, **kwargs: Any) -> None:
+        msg = "boom"
+        raise ChainstateInconsistencyError(msg)
+
+    monkeypatch.setattr(node.chainstate.utxo_index, "add_block", boom)
+
+    # a recorder and nothing else: any call at all is the failure under
+    # test, so nothing past the record ever needs to run
+    step_chain_update_chain_calls: list[Node] = []
+    # the string form: `btclib_node.update_chain` is `_step_chain`'s own
+    # name for it, imported there rather than re-exported, so reading it
+    # as an attribute of the `btclib_node` package from outside is the
+    # implicit reexport `[tool.mypy]`'s own `no_implicit_reexport` refuses
+    # -- `update_chain` above is this module's own explicit import from
+    # its true home, `btclib_node.main`
+    monkeypatch.setattr(
+        "btclib_node.update_chain", step_chain_update_chain_calls.append
+    )
+
+    (new_block,) = generate_random_chain(1, node.chain.genesis.hash)
+    rpc_manager.messages.append(
+        (
+            {
+                "jsonrpc": "2.0",
+                "id": "s",
+                "method": "submitblock",
+                "params": [new_block.serialize(check_validity=False).hex()],
+            },
+            0,
+        )
+    )
+
+    node.start()
+    wait_until(lambda: answered)
+    wait_until(lambda: not node.is_alive())
+
+    assert node.terminate_flag.is_set()
+    assert step_chain_update_chain_calls == []
 
 
 class APool:

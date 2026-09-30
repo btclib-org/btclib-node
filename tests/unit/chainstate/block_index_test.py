@@ -165,19 +165,14 @@ def test_reject_header_with_zero_target(
     assert len(block_index.header_dict) == 1
 
 
-def test_a_header_failing_its_own_pow_refuses_the_whole_batch(
+def test_one_bad_header_refuses_the_whole_batch(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
-    """A header failing its own proof of work keeps the whole batch out.
+    """One bad header keeps the whole batch, valid prefix included, out.
 
-    Core's `CheckHeadersPoW` checks every header's own proof of work
-    before any of the batch reaches `AcceptBlockHeader`
-    (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-    tag), so a header failing it leaves the valid prefix ahead of it
-    unindexed too -- unlike a header failing only its contextual check,
-    `test_a_header_failing_only_its_contextual_check_leaves_the_prefix_indexed`
-    below. The same headers sent again on their own are taken.
-    btclib-org/btclib-node#1348
+    Core takes a headers message as a unit, and so does this: the valid
+    prefix ahead of the bad header is not indexed either, though the
+    same headers sent again on their own are.
     """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
@@ -190,44 +185,6 @@ def test_a_header_failing_its_own_pow_refuses_the_whole_batch(
     # and the same batch without it is taken
     assert block_index.add_headers(chain)
     assert len(block_index.header_dict) == 5 + 1
-
-
-def test_a_header_failing_only_its_contextual_check_leaves_the_prefix_indexed(
-    a_chainstate: Callable[[Path | None], Chainstate],
-) -> None:
-    """A header failing only its contextual check leaves the prefix indexed.
-
-    Core's `ProcessNewBlockHeaders` calls `AcceptBlockHeader` once per
-    header and returns at the first one failing
-    `ContextualCheckBlockHeader`, so the headers already accepted ahead
-    of it stay indexed (`validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) -- unlike a header
-    failing its own proof of work, the previous test above.
-    btclib-org/btclib-node#1348
-    """
-    chainstate = a_chainstate(None)
-    block_index = chainstate.block_index
-    genesis = RegTest().genesis
-    chain = generate_random_header_chain(5, genesis.hash)
-    # not later than its own parent's median -- _assert_valid_in_context's
-    # own time-too-old check, never assert_valid_pow's
-    bad = BlockHeader(
-        version=70015,
-        previous_block_hash=chain[-1].hash,
-        merkle_root=secrets.token_bytes(32),
-        time=genesis.time,
-        bits=REGTEST_POW_LIMIT_BITS,
-        nonce=1,
-        check_validity=False,
-    )
-    brute_force_nonce(bad)
-
-    with pytest.raises(MisbehavingError):
-        block_index.add_headers([*chain, bad])
-    assert bad.hash not in block_index.header_dict
-    assert len(block_index.header_dict) == 5 + 1
-    assert all(header.hash in block_index.header_dict for header in chain)
-    assert block_index.get_block_info(chain[-1].hash).index == 5
 
 
 def test_a_header_with_valid_pow_but_the_wrong_required_target_is_refused(
@@ -609,15 +566,13 @@ def test_invalidate_marks_every_header_indexed_on_it_not_only_candidates(
     chainstate.close()
 
 
-def test_a_header_built_on_an_invalid_parent_is_invalid_and_not_a_candidate(
+def test_a_header_built_on_an_invalid_parent_refuses_the_batch_misbehaving(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
-    """A header extending an invalidated parent is indexed invalid on arrival.
+    """ISS 1233: Core's `bad-prevblk`, `BLOCK_INVALID_PREV`, a `Misbehaving`.
 
     Invalidating a chain's first header, then sending a header that
-    extends its second, still succeeds -- add_headers takes the batch --
-    but the new header is filed `invalid` from the start and never
-    enters `block_candidates`.
+    extends its second: refused, and nothing of it indexed.
     """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
@@ -626,11 +581,9 @@ def test_a_header_built_on_an_invalid_parent_is_invalid_and_not_a_candidate(
     block_index.invalidate(chain[0].hash)
 
     extension = generate_random_header_chain(1, chain[1].hash, chain[1].time)
-    assert block_index.add_headers(extension)
-
-    info = block_index.get_block_info(extension[0].hash)
-    assert info.status == BlockStatus.invalid
-    assert extension[0].hash not in [h for h, _ in block_index.block_candidates]
+    with pytest.raises(MisbehavingError, match=r"^bad-prevblk$"):
+        block_index.add_headers(extension)
+    assert extension[0].hash not in block_index.header_dict
     chainstate.close()
 
 
@@ -691,10 +644,10 @@ def test_a_batch_extending_an_invalidated_chain_does_not_move_header_index(
 ) -> None:
     """More headers on an already-invalidated chain never move header_index.
 
-    add_headers' own header_index update has to read the same invalid
-    flag block_candidates already does, or a peer sending more of a
-    chain this node has already refused keeps growing what this index
-    reports as its best known header chain. btclib-org/btclib-node#218
+    The batch is refused (`bad-prevblk`, btclib-org/btclib-node#1233), so
+    a peer sending more of a chain this node has already refused cannot
+    grow what this index reports as its best known header chain.
+    btclib-org/btclib-node#218
     """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
@@ -704,8 +657,34 @@ def test_a_batch_extending_an_invalidated_chain_does_not_move_header_index(
     header_index_before = list(block_index.header_index)
 
     extension = generate_random_header_chain(10, chain[1].hash, chain[1].time)
-    assert block_index.add_headers(extension) == extension[-1].hash
+    with pytest.raises(MisbehavingError, match=r"^bad-prevblk$"):
+        block_index.add_headers(extension)
     assert block_index.header_index == header_index_before
+    chainstate.close()
+
+
+@pytest.mark.parametrize("punish", [True, False])
+def test_an_invalid_header_sent_again_refuses_the_batch(
+    a_chainstate: Callable[[Path | None], Chainstate],
+    punish: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1233: Core's `duplicate-invalid`, `BLOCK_CACHED_INVALID`.
+
+    A `MisbehavingError` where the caller asks for it, as Core punishes
+    an outbound peer alone; otherwise a refusal that costs nothing. The
+    header after it in the batch is not indexed either way.
+    """
+    chainstate = a_chainstate(None)
+    block_index = chainstate.block_index
+    chain = generate_random_header_chain(2, RegTest().genesis.hash)
+    block_index.add_headers(chain[:1])
+    block_index.invalidate(chain[0].hash)
+
+    with pytest.raises(BTClibValueError, match=r"^duplicate-invalid$") as refused:
+        block_index.add_headers(chain, punish_cached_invalid=punish)
+    assert isinstance(refused.value, MisbehavingError) is punish
+    assert chain[1].hash not in block_index.header_dict
+    assert block_index.get_block_info(chain[0].hash).status == BlockStatus.invalid
     chainstate.close()
 
 
@@ -837,20 +816,41 @@ def test_a_header_before_its_own_new_parent_in_the_batch_refuses_the_batch(
 ) -> None:
     """A batch carrying a child before its own new parent is refused whole.
 
-    A peer is not required to send a headers message in strict
-    parent-before-child order, and a compliant one reordering
-    internally produces exactly this: btclib-org/btclib-node#214. Both
-    headers stay out of `header_dict`.
+    Core's `CheckHeadersAreContinuous` asks each header to build on the
+    one before it, and this one does not: btclib-org/btclib-node#214.
+    Both headers stay out of `header_dict`.
     """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     parent, child = generate_random_header_chain(2, RegTest().genesis.hash)
 
-    with pytest.raises(MisbehavingError):
+    with pytest.raises(MisbehavingError, match="non-continuous headers sequence"):
         block_index.add_headers([child, parent])
     assert child.hash not in block_index.header_dict
     assert parent.hash not in block_index.header_dict
     assert len(block_index.header_dict) == 1
+
+
+def test_a_batch_jumping_to_a_known_header_s_child_is_refused(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """ISS 1233: Core's "non-continuous headers sequence", a `Misbehaving`.
+
+    Every header here connects to something indexed on its own: the
+    second builds on a header this node holds, not on the first.
+    """
+    chainstate = a_chainstate(None)
+    block_index = chainstate.block_index
+    chain = generate_random_header_chain(1, RegTest().genesis.hash)
+    block_index.add_headers(chain)
+    first = generate_random_header_chain(1, RegTest().genesis.hash)
+    jump = generate_random_header_chain(1, chain[0].hash, chain[0].time)
+
+    with pytest.raises(MisbehavingError, match="non-continuous headers sequence"):
+        block_index.add_headers([*first, *jump])
+    assert first[0].hash not in block_index.header_dict
+    assert jump[0].hash not in block_index.header_dict
+    chainstate.close()
 
 
 def test_add_headers_short(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
