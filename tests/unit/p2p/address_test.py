@@ -646,12 +646,26 @@ def a_chain(seeds: list[str]) -> Any:
     return SimpleNamespace(addresses=list(seeds), port=18444)
 
 
+# What every test below that checks the table's whole content, rather
+# than its timestamp specifically, patches `_dns_seed_timestamp` to
+# return -- so the table settles on exactly the row `a_seed_answer`
+# below builds, rather than one a real, uniform draw would make
+# different on every run.
+# `test_a_dns_seed_s_answer_is_backdated_with_no_extra_penalty` and
+# `test_the_dns_seed_timestamp_is_uniform_between_three_and_seven_days_old`
+# are what test the real draw itself.
+_A_FIXED_DNS_STAMP = 1_700_000_000
+
+
 def a_seed_answer(ip: str) -> NetworkAddressV2:
     """Build what a DNS seed's answer of `ip` is recorded as, on regtest's port.
 
-    With Core's `SeedsServiceFlags`, as `ThreadDNSAddressSeed` records it.
+    With Core's `SeedsServiceFlags`, as `ThreadDNSAddressSeed` records
+    it, and `_A_FIXED_DNS_STAMP` above for its timestamp.
     """
-    return peer_address(ip, 18444, services=SEEDS_SERVICE_FLAGS)
+    return peer_address(
+        ip, 18444, timestamp=_A_FIXED_DNS_STAMP, services=SEEDS_SERVICE_FLAGS
+    )
 
 
 def test_a_seed_that_fails_is_returned_and_a_winner_fills_the_table(
@@ -673,6 +687,9 @@ def test_a_seed_that_fails_is_returned_and_a_winner_fills_the_table(
         }
     )
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
+    monkeypatch.setattr(
+        address_module, "_dns_seed_timestamp", lambda: _A_FIXED_DNS_STAMP
+    )
     assert asyncio.run(peer_db.query_dns_seed("down.example")) == "down.example"
     assert asyncio.run(peer_db.query_dns_seed("up.example")) is None
     assert peer_db.addresses == {
@@ -712,6 +729,9 @@ def test_every_seed_queried_is_taken_and_a_host_two_of_them_share_is_one(
         }
     )
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
+    monkeypatch.setattr(
+        address_module, "_dns_seed_timestamp", lambda: _A_FIXED_DNS_STAMP
+    )
     assert asyncio.run(peer_db.query_dns_seed("one.example")) is None
     assert asyncio.run(peer_db.query_dns_seed("two.example")) is None
     assert peer_db.addresses == {
@@ -731,6 +751,45 @@ def test_a_seed_answering_past_the_cap_is_taken_only_up_to_it(
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
     assert asyncio.run(peer_db.query_dns_seed("many.example")) is None
     assert len(peer_db.addresses) == 32
+
+
+def test_a_dns_seed_s_answer_is_backdated_with_no_extra_penalty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`query_dns_seed`'s own stamp lands untouched: `time_penalty=0`.
+
+    `_dns_seed_timestamp` is patched to a fixed value so the assertion
+    is exact rather than a range: if `query_dns_seed` passed
+    `add_addresses`'s own gossip default instead of its explicit `0`,
+    this would land at `stamp - 2 * 3600` instead of `stamp`. Core's own
+    `addrman.get().Add(vAdd, resolveSource)` (`src/net.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) passes no `time_penalty`
+    of its own either, taking `AddrMan::Add`'s default, `0s`.
+    """
+    peer_db = a_peer_db(a_chain(["one.example"]))
+    loop = FakeLoop({a_seed_host("one.example"): ["1.2.3.4"]})
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
+    stamp = int(time.time()) - 5 * 24 * 3600
+    monkeypatch.setattr(address_module, "_dns_seed_timestamp", lambda: stamp)
+    assert asyncio.run(peer_db.query_dns_seed("one.example")) is None
+    (kept,) = peer_db.addresses
+    assert kept.timestamp == stamp
+
+
+def test_the_dns_seed_timestamp_is_uniform_between_three_and_seven_days_old() -> None:
+    """`_dns_seed_timestamp`'s own range, Core's `rand_uniform_delay`.
+
+    `ThreadDNSAddressSeed` (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag): `rng.rand_uniform_delay(Now<NodeSeconds>() - 3 * 24h,
+    -4 * 24h)`, uniform over `[now - 7d, now - 3d]`.
+    """
+    before = time.time()
+    draws = [address_module._dns_seed_timestamp() for _ in range(2000)]
+    after = time.time()
+    assert min(draws) >= before - address_module._DNS_SEED_MAX_AGE - 1
+    assert max(draws) <= after - address_module._DNS_SEED_MIN_AGE
+    # a real spread, not one fixed value landed on by chance
+    assert len(set(draws)) > 1
 
 
 class FakeIpv6Loop:
@@ -761,6 +820,9 @@ def test_a_seed_answering_with_ipv6_gives_up_its_host_and_its_port(
     """
     peer_db = a_peer_db(a_chain(["v6.example"]))
     monkeypatch.setattr(asyncio, "get_running_loop", FakeIpv6Loop)
+    monkeypatch.setattr(
+        address_module, "_dns_seed_timestamp", lambda: _A_FIXED_DNS_STAMP
+    )
     assert asyncio.run(peer_db.query_dns_seed("v6.example")) is None
     assert peer_db.addresses == {a_seed_answer("2a01:4f8::1")}
 
@@ -943,24 +1005,87 @@ def test_a_routable_address_of_every_network_core_decodes_is_kept(
     assert peer_db.addresses == {address}
 
 
-def test_an_address_a_peer_told_us_about_is_kept_without_its_timestamp() -> None:
-    """A gossiped address is kept, but its own reported timestamp is not.
+def test_a_second_gossip_of_one_endpoint_settles_on_the_last_one_processed() -> None:
+    """Two records for one endpoint are one member, not two.
 
-    A peer's word for when it last saw an address is not evidence, so
-    the entry kept has timestamp `0` rather than either gossiped value
-    -- and keeping the timestamp would also make an endpoint gossiped
-    twice into two different set members rather than one, since it is
-    part of the equality `add_addresses` deduplicates on.
+    #247: whichever of the two is processed last decides the row's own
+    fields other than services, which accumulate (the test beside this
+    one covers that); `endpoint_key`'s own equality is what settles
+    them onto one row rather than growing the table by one member per
+    gossip of the same endpoint.
     """
-    # a peer's word for when it last saw an address is not evidence, and
-    # keeping it would make the same address several entries
     peer_db = a_peer_db()
     early = peer_address("1.2.3.4", 8333, timestamp=1)
     late = peer_address("1.2.3.4", 8333, timestamp=2)
     peer_db.add_addresses([early, late, early])
     (kept,) = peer_db.addresses
-    assert kept.timestamp == 0
     assert kept.address == early.address
+
+
+def test_a_gossiped_address_is_kept_with_a_two_hour_penalty() -> None:
+    """Core's own flat discount for a whole gossiped batch.
+
+    `AddrManImpl::AddSingle` (`src/addrman.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `pinfo->nTime =
+    max(0, addr.nTime - time_penalty)`, `time_penalty` the two hours
+    `net_processing.cpp`'s `ADDR`/`ADDRV2` handler passes for the whole
+    batch, `add_addresses`'s own default. btclib-org/btclib-node#1380
+    """
+    peer_db = a_peer_db()
+    now = int(time.time())
+    address = peer_address("1.2.3.4", 8333, timestamp=now)
+    peer_db.add_addresses([address])
+    (kept,) = peer_db.addresses
+    assert kept.timestamp == now - 2 * 3600
+
+
+def test_a_gossiped_timestamp_under_the_penalty_floors_at_zero() -> None:
+    """The stored timestamp never goes negative.
+
+    `AddrManImpl::AddSingle`'s own `std::max(NodeSeconds{0s}, ...)`,
+    same sha as the test above.
+    """
+    peer_db = a_peer_db()
+    address = peer_address("1.2.3.4", 8333, timestamp=1)
+    peer_db.add_addresses([address])
+    (kept,) = peer_db.addresses
+    assert kept.timestamp == 0
+
+
+def test_a_self_announced_address_is_kept_with_no_penalty() -> None:
+    """A peer's own address, gossiped by itself, costs it no penalty.
+
+    `AddSingle`'s own `if (addr == source) { time_penalty = 0s; }`
+    (same sha as the test above): the exemption is `add_addresses`'
+    `source` argument, which `callbacks._store_gossip` passes as the
+    connection's own address. Compared by endpoint only -- `_endpoint`
+    rather than `==` -- since a self-announcement still carries its own
+    services and timestamp, which are no part of what names the peer.
+    """
+    peer_db = a_peer_db()
+    now = int(time.time())
+    source = peer_address("1.2.3.4", 8333, timestamp=1, services=ServiceFlags.NODE_NONE)
+    announced = peer_address("1.2.3.4", 8333, timestamp=now)
+    peer_db.add_addresses([announced], source=source)
+    (kept,) = peer_db.addresses
+    assert kept.timestamp == now
+
+
+def test_a_time_penalty_override_replaces_the_gossip_default() -> None:
+    """`time_penalty` is a caller's own choice, not only the gossip default.
+
+    `query_dns_seed` passes `0` -- `AddrMan::Add`'s own default, its
+    answer already backdated before it ever reaches `add_addresses`
+    (the test for that is `test_a_dns_seed_s_answer_is_backdated`
+    below) -- and this is the same knob exercised directly, for an
+    arbitrary penalty rather than either of the two production values.
+    """
+    peer_db = a_peer_db()
+    now = int(time.time())
+    address = peer_address("1.2.3.4", 8333, timestamp=now)
+    peer_db.add_addresses([address], time_penalty=10)
+    (kept,) = peer_db.addresses
+    assert kept.timestamp == now - 10
 
 
 _FULL = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS

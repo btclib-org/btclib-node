@@ -24,7 +24,7 @@ import socket
 import threading
 import time
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from functools import partial
 from io import BytesIO
 from ipaddress import IPv4Address, IPv6Address, ip_address
@@ -54,6 +54,7 @@ if TYPE_CHECKING:
 __all__ = [
     "RECENT_TRY_SECONDS",
     "SEEDS_SERVICE_FLAGS",
+    "AddrResponseCache",
     "PeerDB",
     "can_connect",
     "dial",
@@ -99,6 +100,17 @@ SEEDS_SERVICE_FLAGS = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
 # subdomain may add (`src/net.cpp`, same sha).
 _MAX_SEED_ANSWERS = 32
 
+# Core's own flat discount for a whole gossiped `ADDR`/`ADDRV2` batch
+# (`net_processing.cpp`'s `m_addrman.Add(vAddrOk, pfrom.addr,
+# /*time_penalty=*/2h)`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
+# `add_addresses`' own default `time_penalty`.
+_GOSSIP_TIME_PENALTY = 2 * 3600
+# `ThreadDNSAddressSeed`'s own backdating of a DNS seed's answer,
+# `rng.rand_uniform_delay(Now<NodeSeconds>() - 3 * 24h, -4 * 24h)` --
+# uniform between three and seven days old (`src/net.cpp`, same sha).
+_DNS_SEED_MIN_AGE = 3 * 24 * 3600
+_DNS_SEED_MAX_AGE = 7 * 24 * 3600
+
 
 def fixed_seed_addresses(seeds: bytes) -> list[NetworkAddressV2]:
     """Decode a chain's `fixed_seeds`, as Core's `ConvertSeeds` does.
@@ -107,8 +119,13 @@ def fixed_seed_addresses(seeds: bytes) -> list[NetworkAddressV2]:
     address and a big-endian port (`src/net.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and is given Core's
     `SeedsServiceFlags`, `NODE_NETWORK | NODE_WITNESS`. Core also gives
-    each a random time one to two weeks past, which is left at 0 here:
-    `PeerDB.add_addresses` keeps no address's time.
+    each a random time one to two weeks past
+    (`rng.rand_uniform_delay(Now<NodeSeconds>() - one_week, -one_week)`,
+    same function and sha), which this leaves at 0: `add_addresses`
+    keeps a gossiped or DNS-seeded row's own time now
+    (btclib-org/btclib-node#1380), but a fixed seed still carries none
+    to keep, this function's own return never having set one --
+    btclib-org/btclib-node#1571 is where that gap is tracked.
     """
     services = SEEDS_SERVICE_FLAGS
     stream = BytesIO(seeds)
@@ -332,6 +349,25 @@ def _storable(address: NetworkAddressV2) -> bool:
     return not is_embedded_ipv6(address) and is_routable(address)
 
 
+def _dns_seed_timestamp() -> int:
+    """Return a whole second, uniform between three and seven days ago.
+
+    Core's `ThreadDNSAddressSeed` (`src/net.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `addr.nTime =
+    rng.rand_uniform_delay(Now<NodeSeconds>() - 3 * 24h, -4 * 24h)`, a
+    draw uniform over `[now - 7d, now - 3d]`.
+    `secrets.SystemRandom().uniform`, the same draw
+    `callbacks.getaddr`'s own sample-cache jitter already uses for the
+    identical reason: the spread is a privacy property, not a
+    formality, an attacker scraping this node's answers over time being
+    what a predictable draw would let single out which entry came from
+    a seed rather than gossip.
+    """
+    now = time.time()
+    age = secrets.SystemRandom().uniform(_DNS_SEED_MIN_AGE, _DNS_SEED_MAX_AGE)
+    return int(now - age)
+
+
 def _select(
     answered: list[NetworkAddressV2], known: list[NetworkAddressV2]
 ) -> NetworkAddressV2 | None:
@@ -391,6 +427,24 @@ def host_key(address: NetworkAddressV2) -> bytes:
     if can_addrv1(address):
         return network_address(address).ip.packed
     return address.address
+
+
+@dataclass
+class AddrResponseCache:
+    """One `getaddr` cache entry: a sample, and until when it is good for.
+
+    Core's `CConnman::CachedAddrResponse` (`src/net.h`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `m_addrs_response_cache`
+    and `m_cache_entry_expiration`. `PeerDB.addr_response_caches` holds
+    one of these per key, in place of the one shared sample this table
+    used to hold -- `callbacks.getaddr`'s own docstring is where the key
+    itself, and the reason for more than one, is argued.
+    """
+
+    sample: list[NetworkAddressV2] = field(default_factory=list)
+    # `0.0` starts already expired, so the first `getaddr` on a key
+    # computes a sample rather than serving an empty one.
+    expiration: float = 0.0
 
 
 class PeerDB:
@@ -453,16 +507,19 @@ class PeerDB:
         # `IndexError`. `KeyValueStore` has its own lock for the store; this one
         # is for these two in-memory structures alone, and is not the same lock.
         self._active_lock = threading.Lock()
-        # What `callbacks.getaddr` last answered with, and until when it
-        # is still good for: a fresh `secrets.SystemRandom().sample` per
-        # connection would let two peers connecting close together
-        # compare answers and infer what changed between them, which
-        # "once per connection" alone does not stop -- a new connection
-        # still draws fresh. `0.0` starts already expired, so the first
-        # call computes a sample rather than serving an empty one.
-        # btclib-org/btclib-node#71
-        self.addr_sample: list[NetworkAddressV2] = []
-        self.addr_sample_expiration = 0.0
+        # What `callbacks.getaddr` last answered with, keyed the way
+        # Core's own `m_addr_response_caches` is: one cache per
+        # `Connection.addr_cache_key`, network and local socket, rather
+        # than one shared sample, so that two inbound connections
+        # cannot compare answers to link this node across networks or
+        # listeners (`AddrResponseCache`'s own docstring quotes Core's
+        # reasoning). A fresh `secrets.SystemRandom().sample` on every
+        # `getaddr` would let two peers connecting close together
+        # compare answers and infer what changed between them within
+        # one key too, which serving one cache per connection alone
+        # does not stop -- a new connection on the same key still draws
+        # fresh. btclib-org/btclib-node#71, btclib-org/btclib-node#1478
+        self.addr_response_caches: dict[tuple[int, str, int], AddrResponseCache] = {}
         # Core's `AddrInfo::m_last_try`, by `endpoint_key`: when this
         # node last tried to connect to an endpoint either table holds.
         # In memory only, as `AddrInfo`'s serialization leaves
@@ -615,10 +672,22 @@ class PeerDB:
         # through add_addresses, and not a bare add to the set: a
         # seed is gossip like a peer's is, and belongs in the
         # durable table the same way, so a later restart has it
-        # without asking again
+        # without asking again. `time_penalty=0`: `AddrMan::Add`'s own
+        # default, since `_dns_seed_timestamp` below already backdates
+        # the entry the way Core's own caller does before it ever
+        # reaches `Add` (`ThreadDNSAddressSeed`, `src/net.cpp`, at
+        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
         self.add_addresses(
-            peer_address(ip, port, services=SEEDS_SERVICE_FLAGS)
-            for ip, port in endpoints
+            (
+                peer_address(
+                    ip,
+                    port,
+                    timestamp=_dns_seed_timestamp(),
+                    services=SEEDS_SERVICE_FLAGS,
+                )
+                for ip, port in endpoints
+            ),
+            time_penalty=0,
         )
         return None
 
@@ -751,7 +820,13 @@ class PeerDB:
             ]
         return partial(_select, [] if new_only else answered, known)
 
-    def add_addresses(self, addresses: Iterable[NetworkAddressV2]) -> None:
+    def add_addresses(
+        self,
+        addresses: Iterable[NetworkAddressV2],
+        *,
+        source: NetworkAddressV2 | None = None,
+        time_penalty: float = _GOSSIP_TIME_PENALTY,
+    ) -> None:
         """Merge `addresses` into `self.addresses`, checked and deduplicated.
 
         An address `_storable` refuses is dropped. Every other address
@@ -761,11 +836,26 @@ class PeerDB:
         ORed into the endpoint's answered row as well, where it has one.
         Takes `_addresses_lock`, then `_active_lock`, the two never
         nested.
+
+        The row's own timestamp is kept, `time_penalty` seconds less,
+        floored at zero -- Core's `AddrManImpl::AddSingle` (`src/addrman.cpp`,
+        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `pinfo->nTime =
+        max(0, addr.nTime - time_penalty)`. `time_penalty` defaults to
+        `_GOSSIP_TIME_PENALTY`, the flat two hours Core's own `ADDR`/
+        `ADDRV2` handler passes `AddrMan::Add` for a whole gossiped batch
+        (`net_processing.cpp`, same sha); `query_dns_seed` below passes
+        `0`, `AddrMan::Add`'s own default, its answer already carrying a
+        timestamp Core backdates itself before it ever reaches here. An
+        address equal to `source` -- endpoint only, `_endpoint` rather
+        than `==`, since two records differing in `timestamp` or
+        `services` are still one self-announcement -- is exempted from
+        the penalty, as `AddSingle`'s own `if (addr == source) { time_penalty
+        = 0s; }` is: a peer's word for its own address costs it nothing,
+        where the same word for somebody else's does.
         """
         # what each endpoint kept was gossiped with, for its answered row
         gossiped: dict[bytes, ServiceFlags] = {}
-        # a peer's word for when it last saw an address is not evidence,
-        # and keeping it would make the one address several entries
+        source_endpoint = _endpoint(source) if source is not None else None
         with self._addresses_lock, self._write_batch() as wb:
             # `endpoint_key` is what the durable row is already keyed on --
             # network id, address and port, not `services` -- so a
@@ -794,7 +884,9 @@ class PeerDB:
                 services = address.services
                 if existing is not None:
                     services |= existing.services
-                known = replace(address, timestamp=0, services=services)
+                penalty = 0.0 if _endpoint(address) == source_endpoint else time_penalty
+                timestamp = max(0, int(address.timestamp - penalty))
+                known = replace(address, timestamp=timestamp, services=services)
                 # the cap is on distinct endpoints, so updating one
                 # already held does not spend it -- only a genuinely new
                 # endpoint can run the table out of room

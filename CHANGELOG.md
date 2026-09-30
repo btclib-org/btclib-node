@@ -1311,6 +1311,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   case on a machine without one, while a TEST-NET-1 case runs the same lines
   there, so the coverage floor holds either way** (closes #1556).
 
+### Address handling matches Core's own keys, timestamps and dial cadence
+
+- **`getaddr` is cached per network and local socket** (closes #1478).
+- **A gossiped or DNS-seeded address keeps a timestamp** (closes #1380).
+- **The automatic dial draws at most once every 500ms** (closes #1379).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
