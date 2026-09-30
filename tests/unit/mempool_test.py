@@ -952,3 +952,175 @@ def test_eviction_ranks_by_the_vsize_an_entry_came_with(heap: str) -> None:
     assert mempool.contains_tx(plain)
     evicted_rate = Fraction(1_000, 10 * dense.vsize) * 1000
     assert mempool._rolling_min_fee_rate == float(evicted_rate + 100)
+
+
+def test_add_tx_records_entry_time_and_height() -> None:
+    """`add_tx` stamps `entry_times` and `heights`, `_pop` discards both."""
+    mempool = Mempool(Logger(debug=True))
+    tx = generate_random_transaction()
+    before = time.time()
+    mempool.add_tx(tx, 0, height=712_345)
+    after = time.time()
+    assert before <= mempool.entry_times[tx.hash] <= after
+    assert mempool.heights[tx.hash] == 712_345
+    mempool.remove_tx(tx)
+    assert tx.hash not in mempool.entry_times
+    assert tx.hash not in mempool.heights
+
+
+def test_add_tx_height_defaults_to_zero() -> None:
+    """A caller that never names `height` gets 0, not a `KeyError`."""
+    mempool = Mempool(Logger(debug=True))
+    tx = generate_random_transaction()
+    mempool.add_tx(tx, 0)
+    assert mempool.heights[tx.hash] == 0
+
+
+def test_mark_broadcast_locally_only_a_held_txid() -> None:
+    """`mark_broadcast_locally` is a no-op for a txid this mempool lacks."""
+    mempool = Mempool(Logger(debug=True))
+    held = generate_random_transaction()
+    mempool.add_tx(held, 0)
+    absent_txid = secrets.token_bytes(32)
+    mempool.mark_broadcast_locally(absent_txid)
+    assert mempool.unbroadcast == set()
+    mempool.mark_broadcast_locally(held.id)
+    assert mempool.unbroadcast == {held.id}
+
+
+def test_mark_broadcast_discards_from_the_unbroadcast_set() -> None:
+    """`mark_broadcast` is `mark_broadcast_locally`'s own reverse."""
+    mempool = Mempool(Logger(debug=True))
+    tx = generate_random_transaction()
+    mempool.add_tx(tx, 0)
+    mempool.mark_broadcast_locally(tx.id)
+    assert mempool.unbroadcast == {tx.id}
+    mempool.mark_broadcast(tx.id)
+    assert mempool.unbroadcast == set()
+    # a second call, nothing left to discard, is not an error
+    mempool.mark_broadcast(tx.id)
+    assert mempool.unbroadcast == set()
+
+
+def test_pop_discards_a_locally_broadcast_txid_from_unbroadcast() -> None:
+    """Leaving the mempool for any reason clears the unbroadcast mark too.
+
+    Core's own `removeUnchecked` calls `RemoveUnbroadcastTx`
+    unconditionally on every removal, not only through an explicit
+    `RemoveUnbroadcastTx` call. btclib-org/btclib-node#1421
+    """
+    mempool = Mempool(Logger(debug=True))
+    tx = generate_random_transaction()
+    mempool.add_tx(tx, 0)
+    mempool.mark_broadcast_locally(tx.id)
+    assert mempool.unbroadcast == {tx.id}
+    mempool.remove_tx(tx)
+    assert mempool.unbroadcast == set()
+
+
+def test_entry_counts_ancestors_and_descendants_including_itself() -> None:
+    """`entry`'s own ancestor/descendant counts, sizes and fees, one chain.
+
+    `parent` <- `child` <- `grandchild`: `child`'s own ancestors are
+    itself and `parent`, its own descendants itself and `grandchild`
+    -- Core's own "including this one" convention for both counts.
+    """
+    mempool = Mempool(Logger(debug=True))
+    parent = generate_random_transaction()
+    child = generate_random_transaction(parent.id)
+    grandchild = generate_random_transaction(child.id)
+    mempool.add_tx(parent, 1_000)
+    mempool.add_tx(child, 2_000)
+    mempool.add_tx(grandchild, 3_000)
+    entry = mempool.entry(child.hash)
+    assert entry.ancestor_count == 2
+    assert (
+        entry.ancestor_size == mempool.vsizes[parent.hash] + mempool.vsizes[child.hash]
+    )
+    assert entry.ancestor_fees == 1_000 + 2_000
+    assert entry.descendant_count == 2
+    assert (
+        entry.descendant_size
+        == mempool.vsizes[child.hash] + mempool.vsizes[grandchild.hash]
+    )
+    assert entry.descendant_fees == 2_000 + 3_000
+    assert entry.depends == [parent.id]
+    assert entry.spent_by == [grandchild.id]
+    assert entry.fee == 2_000
+    assert entry.modified_fee == 2_000
+    assert entry.wtxid == child.hash
+    assert entry.vsize == mempool.vsizes[child.hash]
+    assert entry.weight == child.weight
+    assert entry.unbroadcast is False
+
+
+def test_entry_of_a_root_and_leaf_has_no_depends_or_spentby() -> None:
+    """A transaction with no mempool parent or child answers both empty."""
+    mempool = Mempool(Logger(debug=True))
+    tx = generate_random_transaction()
+    mempool.add_tx(tx, 0)
+    entry = mempool.entry(tx.hash)
+    assert entry.ancestor_count == 1
+    assert entry.descendant_count == 1
+    assert entry.depends == []
+    assert entry.spent_by == []
+
+
+def _a_signaling_transaction(prevouthash: bytes | None = None) -> Tx:
+    """Build a transaction whose own input signals BIP125 opt-in replacement.
+
+    `mempool_module._MAX_BIP125_RBF_SEQUENCE` (Core's own
+    `MAX_BIP125_RBF_SEQUENCE`) is the bound `SignalsOptInRBF` reads; any
+    sequence under it opts in, `0` here.
+    """
+    prevouthash = prevouthash or secrets.token_bytes(32)
+    return Tx(
+        version=1,
+        lock_time=0,
+        vin=[
+            TxIn(
+                prev_out=OutPoint(prevouthash, 0),
+                script_sig=script.serialize([secrets.token_bytes(32)]),
+                sequence=0,
+            )
+        ],
+        vout=[
+            TxOut(
+                value=50 * 10**8,
+                script_pub_key=script.serialize([secrets.token_bytes(32)]),
+            )
+        ],
+    )
+
+
+def test_entry_is_bip125_replaceable_when_its_own_sequence_signals() -> None:
+    """A transaction signaling in its own right is replaceable."""
+    mempool = Mempool(Logger(debug=True))
+    tx = _a_signaling_transaction()
+    mempool.add_tx(tx, 0)
+    assert mempool.entry(tx.hash).bip125_replaceable is True
+
+
+def test_entry_is_bip125_replaceable_when_an_ancestor_signals() -> None:
+    """A final child of a signaling, unconfirmed parent is replaceable too.
+
+    Core's own `IsRBFOptIn`: the parent is free to be replaced, and a
+    replacement conflicts with everything that spends it.
+    """
+    mempool = Mempool(Logger(debug=True))
+    parent = _a_signaling_transaction()
+    child = generate_random_transaction(parent.id)
+    assert child.vin[0].sequence == 0xFFFFFFFF
+    mempool.add_tx(parent, 0)
+    mempool.add_tx(child, 0)
+    assert mempool.entry(child.hash).bip125_replaceable is True
+
+
+def test_entry_is_not_bip125_replaceable_when_nothing_signals() -> None:
+    """`bip125_replaceable` is `False` where nothing in the chain signals."""
+    mempool = Mempool(Logger(debug=True))
+    parent = generate_random_transaction()
+    child = generate_random_transaction(parent.id)
+    mempool.add_tx(parent, 0)
+    mempool.add_tx(child, 0)
+    assert mempool.entry(child.hash).bip125_replaceable is False
