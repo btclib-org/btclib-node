@@ -1329,6 +1329,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   not `active_chain` (closes #1476).
 - **An invalid request disconnects the peer**, as Core does (closes #1477).
 
+### `urllib3` moves to 2.8.0 in the lock
+
+- **`uv.lock` pins `urllib3` 2.8.0**, past GHSA-gh4c-6fx4-qh6g,
+  GHSA-vxq7-64xx-v4gw and GHSA-8988-9cw3-xx77; it reaches the dev group
+  alone, through `twine`, `sphinx` and `pyroma`, never the wheel.
+
 ### `-maxtipage=<n>` sets the tip age initial block download ends at
 
 - **`Config.max_tip_age`, in seconds, is what `main.update_ibd_status` reads
