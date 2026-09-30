@@ -223,8 +223,8 @@ def test_connection_to_ourselves(tmp_path: Path) -> None:
         # that `tmp_path` has just created empty, `callbacks.addr` and
         # `callbacks.addrv2` need a peer to gossip and the one connection
         # attempted is the self-connect refused above, and
-        # `get_addr_from_dns` iterates `RegTest.addresses`, which names only
-        # Core's `dummySeed.invalid.`, a name that resolves to nothing
+        # `_dns_address_seed` iterates `RegTest.addresses`, which names
+        # only Core's `dummySeed.invalid.`, a name that resolves to nothing
         # (`chains.py`). A test that later gains a `connect=`, an `addnode`, a
         # gossiping peer or a seeded chain is standing on all of that and
         # has to re-establish it for itself.

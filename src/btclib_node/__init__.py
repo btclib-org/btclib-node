@@ -562,10 +562,10 @@ class Node(threading.Thread):
         """Handle whatever is waiting, and answer whether nothing was.
 
         One message must not end the node. `handle_p2p` and
-        `handle_p2p_handshake` already answer a bad message by dropping
-        the peer, but what reaches here is whatever they did not expect
-        -- and leaving `run`'s own loop by exception skips every close
-        below it, so the databases would stay open.
+        `handle_p2p_handshake` already answer a bad message, dropping the
+        peer for a `MisbehavingError`, but what reaches here is whatever
+        they did not expect -- and leaving `run`'s own loop by exception
+        skips every close below it, so the databases would stay open.
 
         `resume_cfilters` and `resume_getdata` are last and unconditional,
         not one more queue to size a share from: nothing is queued to

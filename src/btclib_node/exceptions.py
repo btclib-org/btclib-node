@@ -250,9 +250,8 @@ class ChainstateInconsistencyError(RuntimeError):
     on the active chain, and carry none of that risk -- nothing
     downstream of answering one peer's BIP157 request is mid-mutation
     of anything. `handle_p2p`'s own generic catch is what lets them
-    answer this without ending the node: it stops that one connection
-    without discouraging the peer, `isinstance(e, BTClibException)`
-    being false for it.
+    answer this without ending the node: it logs it and keeps the peer,
+    this not being a `MisbehavingError`.
     """
 
     def __init__(self, message: str) -> None:

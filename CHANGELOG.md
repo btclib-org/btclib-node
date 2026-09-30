@@ -961,6 +961,109 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   timestamp says** (closes #1435), matching `IsTerrible`'s own `m_last_try`
   guard.
 
+### `pypi-install.yml` installs the version the release published
+
+- **The install names `btclib-node==<version>` from the tag `release.yml`
+  passes** (issue btclib-org/.github#1456): a bare name let a lagging
+  index serve the release before it.
+
+### An out-of-range `feefilter` leaves the peer's filter in place, as in Core
+
+- **A rate outside `MoneyRange` is ignored rather than clearing the filter the
+  peer sent before** (closes #1256).
+
+### `getdata` serves a block only where Core's `BlockRequestAllowed` would
+
+- **A block off the active chain is served only once validated and recent, and
+  an unknown or refused one is ignored before the prune threshold is read**
+  (closes #1254).
+
+### A `notfound` is logged at debug as a count, and a `reject` is ignored
+
+- **Neither puts what the peer wrote into the log** (closes #1255): `notfound`
+  logs how many items it names, and `reject` reaches no handler, as Core's
+  `ProcessMessage` has none.
+
+### Three peer refusals are answered as Core answers them
+
+- **A header on an invalid parent (`bad-prevblk`, in `submitblock` too) and a
+  non-continuous batch cost the sender, as does one already invalid from an
+  outbound peer; other exceptions keep the peer** (closes #1233).
+
+### A conflicting or unknown `-chain` is refused in `bitcoind`'s own words
+
+- **`-testnet4` is named among the selectors, and the refusal ends in a full
+  stop, as `bitcoind` writes it** (closes #1311).
+
+### A `-datadir` or `-conf` value that normalises to `.` keeps it in a refusal
+
+- **The `.` is joined onto a refusal's path as `AbsPathForConfigVal` joins
+  it, not dropped as `pathlib.Path` drops it** (closes #1273).
+
+### A `NETWORK_ONLY` option set only in the default section refuses to start
+
+- **Off `main`, as `bitcoind` refuses it, rather than being silently
+  dropped** (closes #1327).
+
+### A listener that cannot bind is reported as one, not as a slow one
+
+- **`wait_until_listening` raises `ListenerEndedError` as soon as a manager's
+  thread ends without listening, naming its `bind_error` where it has one**,
+  where it waited out its timeout and reported one (closes #1361).
+
+### `version` signals `NODE_COMPACT_FILTERS` only under `-peerblockfilters`
+
+- **Off by default, as in Core; a `getcfilters`, `getcfheaders` or
+  `getcfcheckpt` this node never advertised is refused the same silent way
+  as a filter type BIP157 has no name for** (closes #1395).
+
+### `getnetworkinfo` answers `localservices` and `localservicesnames`
+
+- **The same services `version` sends, one function answering both**
+  (closes #1394).
+
+### `-discover` decides whether this node records its own addresses
+
+- **Independently of `-listen`, defaulting to it and overridable either
+  way, as Core's `Discover` runs off whether it would bind every interface
+  rather than off `-listen`** (closes #1330).
+
+### DNS seeding waits, batches by three, and reads `-forcednsseed`
+
+- **A wait, then three seeds at a time, ends early at two full-relay
+  peers** (closes #1265); **`-forcednsseed` asks every seed at once**,
+  refused with `-dnsseed` off, both as in `bitcoind`.
+
+### `-seednode` gets thirty seconds before the DNS seeds are asked
+
+- **DNS seeding waits for two full-relay peers or thirty seconds,
+  whichever is first, wherever `-seednode` is given** (closes #1461),
+  as Core's `ThreadDNSAddressSeed` does.
+
+### `fuzz/` is under mypy, atheris excepted
+
+- **`[tool.mypy]`'s `files` carries `fuzz`, and an override reads `atheris`
+  alone as untyped**: the harness itself now gets the same check as
+  `src/btclib_node`, and its own two errors are fixed (closes #1259).
+
+### `scripts/` drops two stale hand-run templates
+
+- **`test_errors.py` is deleted, and `prune.py` now calls
+  `main.prune_up_to_height` through a `Node` it builds, not the stale
+  `BlockDB`/`Chainstate` pair its docstring named** (closes #1260).
+
+### `scripts/seeds/README.md`'s pins are re-checked against their own tag
+
+- **Each fixed-seed list carries a `ref` field, and `check_vendored_pin.py`
+  reads a `ref`-pinned entry against that tag's own tree, skipping the
+  "newest commit" check a tag cannot fail** (closes #1227).
+
+### `interpreter_test.py` builds signatures through `btclib_ecc`, not `btclib.ecc`
+
+- **`dsa`/`ssa` come from `btclib_ecc.ecc`, ahead of btclib dropping the
+  re-export (btclib-org/btclib#2404); `test` gains `btclib-ecc` and a
+  raised `btclib-secp256k1` floor for its bindings import** (closes #1431).
+
 ### `stop`'s hidden `wait` argument is honoured
 
 - **A `stop` call carrying `wait` delays its own reply by that many

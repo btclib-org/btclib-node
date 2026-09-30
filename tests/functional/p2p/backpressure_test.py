@@ -179,7 +179,11 @@ def blocks_of(count: int, payload_bytes: int) -> list[Block]:
 
 @contextmanager
 def a_served_node(tmp_path: Path, chain: list[Block]) -> Iterator[Node]:
-    """Give a started node holding `chain` in its store, stopped on exit."""
+    """Give a started node holding `chain` in its store, stopped on exit.
+
+    `peerblockfilters=True`: `deaf_peer` below feeds a BIP157 test, and
+    `-peerblockfilters` is off by default (ISS 1395).
+    """
     node = Node(
         config=Config(
             chain="regtest",
@@ -187,6 +191,7 @@ def a_served_node(tmp_path: Path, chain: list[Block]) -> Iterator[Node]:
             p2p_port=get_random_port(),
             allow_rpc=False,
             debug=True,
+            peerblockfilters=True,
         )
     )
     node.start()
@@ -276,6 +281,14 @@ def test_a_getdata_answer_pauses_rather_than_filling_the_send_queue(
     and dropping one.
     """
     node, peer, chain = deaf_peer
+    # connected, as a block off the active chain and not validated is
+    # ignored (`_block_request_allowed`)
+    block_index = node.chainstate.block_index
+    block_index.add_headers([block.header for block in chain])
+    node.status = NodeStatus.HeaderSynced
+    for block in chain:
+        block_index.set_downloaded(block.header.hash)
+    wait_until(lambda: len(block_index.active_chain) == len(chain) + 1)
     peer.send(
         GetData(
             [Inventory(InventoryType.MSG_BLOCK, block.header.hash) for block in chain]

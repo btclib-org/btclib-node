@@ -115,11 +115,11 @@ def _stop_delay_seconds(request: JsonRpcRequest) -> float:
     Only ever called once `request.method == "stop"` has already been
     dispatched and answered without error, so the read below cannot
     raise: `stop`'s own callback already ran `stop_wait_param` on the
-    same value and would have refused the call otherwise. The named-
-    argument transform is repeated rather than read off `_execute`'s own
-    local variable, which reaches nowhere outside that function --
-    `request.params` itself is still whatever shape the request gave it
-    (btclib-org/btclib-node#1467).
+    same value and would have refused the call otherwise. The
+    named-argument transform is repeated rather than read off
+    `_execute`'s own local variable, which reaches nowhere outside that
+    function -- `request.params` itself is still whatever shape the
+    request gave it (btclib-org/btclib-node#1467).
     """
     params = request.params
     if isinstance(params, dict):

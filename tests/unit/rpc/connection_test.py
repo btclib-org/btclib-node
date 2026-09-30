@@ -928,7 +928,8 @@ def test_send_and_close_after_returns_at_once_and_delays_the_write() -> None:
         loop.close()
         theirs.close()
     assert returned_after < 0.1
-    assert fired and fired[0] - started >= 0.3 - _WINDOWS_TIMER_TICK
+    assert fired
+    assert fired[0] - started >= 0.3 - _WINDOWS_TIMER_TICK
     assert reply == framed(
         b"HTTP/1.1 200 OK", b"Connection: close", b"Content-Length: {length}"
     )
@@ -950,7 +951,9 @@ def test_send_and_close_after_writes_at_once_for_a_zero_delay() -> None:
             ),
             request(),
         )
-        conn.send_and_close_after(HttpReply(OK, ANSWER), 0.0, lambda: fired.append(True))
+        conn.send_and_close_after(
+            HttpReply(OK, ANSWER), 0.0, lambda: fired.append(True)
+        )
         theirs.settimeout(5)
         reply = b""
         while chunk := theirs.recv(4096):
