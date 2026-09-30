@@ -1317,6 +1317,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   not all hex digits, of even length and non-empty, as Core's `IsHex` does
   inside `DecodeHexTx`, with its own `TX decode failed` error** (closes #1372).
 
+### `urllib3` moves to 2.8.0 in the lock
+
+- **`uv.lock` pins `urllib3` 2.8.0**, past GHSA-gh4c-6fx4-qh6g,
+  GHSA-vxq7-64xx-v4gw and GHSA-8988-9cw3-xx77; it reaches the dev group
+  alone, through `twine`, `sphinx` and `pyroma`, never the wheel.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
