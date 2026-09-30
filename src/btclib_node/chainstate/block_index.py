@@ -858,7 +858,9 @@ class BlockIndex:
                     self.chain, header, parent, parent_height, parent_of, now
                 )
             except BTClibValueError as e:
-                self.logger.warning("Refused a header batch: %s", e)
+                self.logger.warning(
+                    "Refused a header, keeping the ones before it: %s", e
+                )
                 raise
 
             header_hash = header.hash
