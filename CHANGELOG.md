@@ -1174,6 +1174,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   connection's own resolved address, whatever route opened it, matching
   Core's `mapConnected`** (closes #1498).
 
+### A manual dial's resolved answers are capped at 256
+
+- **`async_connect_host` no longer shuffles, validates or dials more
+  than 256 of a resolver's answers**, matching `Lookup`'s own
+  `nMaxSolutions` in Core's `ConnectNode` (closes #1466).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

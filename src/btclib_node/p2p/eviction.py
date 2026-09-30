@@ -37,6 +37,7 @@ __all__ = [
     "EvictionCandidate",
     "Network",
     "get_network",
+    "is_internal",
     "is_local",
     "is_routable",
     "is_valid",
@@ -323,6 +324,20 @@ def _linked_ipv4(ip: _IP) -> IPv4Address | None:
     return None
 
 
+def is_internal(ip: IPv6Address) -> bool:
+    """Core's `CNetAddr::IsInternal`: whether `ip` is under the internal prefix.
+
+    `SetLegacyIPv6` reads an IPv6 address under `INTERNAL_IN_IPV6_PREFIX`
+    (`src/netaddress.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) as
+    `NET_INTERNAL`, whatever the peer or resolver meant by it.
+    `LookupIntern`'s own collection loop (`src/netbase.cpp:144-168`, same
+    sha) asks exactly this, and nothing more, of each answer before
+    counting it toward `Lookup`'s `nMaxSolutions` -- `is_valid` below
+    asks this and more, but only once collection is already done.
+    """
+    return ip in _INTERNAL
+
+
 def is_valid(ip: IPv6Address) -> bool:
     """Core's `CNetAddr::IsValid` of the sixteen octets of an `addr` v1 field.
 
@@ -331,7 +346,7 @@ def is_valid(ip: IPv6Address) -> bool:
     `NET_INTERNAL`, which is invalid, and one under the Tor v2 prefix as
     the unspecified address, which is invalid too.
     """
-    if ip in _INTERNAL or ip in _TORV2:
+    if is_internal(ip) or ip in _TORV2:
         return False
     return _is_valid(ip.ipv4_mapped or ip)
 
