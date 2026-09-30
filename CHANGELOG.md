@@ -1300,6 +1300,16 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   replies it finishes, so a request arriving on one is answered `503` with
   `Connection: close`, as Core's event loop answers it** (closes #1545).
 
+### `invalidateblock` and `reconsiderblock` are served
+
+- **`invalidateblock "blockhash"` marks a block and everything built on it
+  invalid, forces the active chain off it even where nothing yet outweighs
+  its own work, and returns what a disconnected block leaves back to the
+  mempool, as Core's `InvalidateBlock` does** (closes #1480).
+- **`reconsiderblock "blockhash"` clears that mark from the block, its
+  ancestors and its descendants, and retries the chain, as Core's
+  `ReconsiderBlock` does** (closes #1536).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
