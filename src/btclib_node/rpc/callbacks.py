@@ -38,12 +38,14 @@ from btclib_node.constants import MIN_BLOCKS_TO_KEEP, USER_AGENT
 from btclib_node.exceptions import MissingPrevoutError, TxRejectedError
 from btclib_node.main import (
     assert_valid_block,
+    invalidate_chain,
     is_block_failed,
     is_cached_invalid,
     new_pow_valid_block,
     parent_lookup,
     passes_check_block,
     prune_up_to_height,
+    reconsider_chain,
     update_chain,
     verify_mempool_acceptance,
 )
@@ -94,9 +96,11 @@ __all__ = [
     "get_tx_out",
     "get_tx_out_set_info",
     "help_rpc",
+    "invalidate_block",
     "list_banned",
     "ping",
     "prune_blockchain",
+    "reconsider_block",
     "send_raw_transaction",
     "service_names",
     "set_ban",
@@ -689,6 +693,68 @@ def get_chain_tips(
     # stable within one answer.
     out.sort(key=lambda entry: (-entry["height"], entry["hash"]))
     return out
+
+
+def _known_block_hash(node: Node, params: list[Any], method: str) -> bytes:
+    """Validate `invalidateblock`/`reconsiderblock`'s own single `blockhash`.
+
+    Both take Core's own one required `STR_HEX` argument and answer the
+    same two refusals in the same order: a missing one is `method`'s own
+    full help text under `RPC_MISC_ERROR`, the shape `get_block_hash`'s
+    own missing-argument comment already argues; a wrongly typed or
+    wrongly shaped one is `type_error`/`_parse_hash_v`, exactly as
+    `get_block_header`'s own `"hash"`-labelled argument is checked
+    (`ParseHashV`, same label this index's own callers use for it); and a
+    64-character hex string this index does not know is
+    `RPC_INVALID_ADDRESS_OR_KEY`, `"Block not found"` -- Core's own
+    `LookupBlockIndex` failure in both `InvalidateBlock` and
+    `ReconsiderBlock` (`rpc/blockchain.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag), matching `get_block`/`get_block_header`'s own
+    identical refusal for the identical failure above.
+    """
+    if not params:
+        raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT[method])
+    if not isinstance(params[0], str):
+        raise type_error(1, "blockhash", params[0], "string")
+    block_hash = _parse_hash_v("blockhash", params[0])
+    try:
+        node.chainstate.block_index.get_block_info(block_hash)
+    except KeyError as error:
+        raise RpcError(
+            RPCErrorCode.INVALID_ADDRESS_OR_KEY, "Block not found"
+        ) from error
+    return block_hash
+
+
+def invalidate_block(node: Node, conn: RpcConnection, params: list[Any]) -> None:
+    """Answer `invalidateblock`, Core's own single `blockhash` argument.
+
+    Core's own `invalidateblock` (`rpc/blockchain.cpp:1716-1737`, calling
+    the free `InvalidateBlock`, `:1694-1712`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `_known_block_hash` above
+    is this function's and `reconsider_block`'s own shared argument
+    check; `main.invalidate_chain`'s own docstring is where marking the
+    block, forcing the chain off it and what a storage failure on the
+    way down answers with are each argued -- `RPC_DATABASE_ERROR`, the
+    one answer Core gives a failed `ActivateBestChain` here, is not
+    reproduced, for the reason that docstring gives.
+    """
+    block_hash = _known_block_hash(node, params, "invalidateblock")
+    invalidate_chain(node, block_hash)
+
+
+def reconsider_block(node: Node, conn: RpcConnection, params: list[Any]) -> None:
+    """Answer `reconsiderblock`, Core's own single `blockhash` argument.
+
+    Core's own `reconsiderblock` (`rpc/blockchain.cpp:1761-1782`, calling
+    the free `ReconsiderBlock`, `:1738-1756`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `_known_block_hash` above
+    is this function's and `invalidate_block`'s own shared argument
+    check; `main.reconsider_chain`'s own docstring is where clearing the
+    mark and retrying the chain are argued.
+    """
+    block_hash = _known_block_hash(node, params, "reconsiderblock")
+    reconsider_chain(node, block_hash)
 
 
 def _coinbase_tx_dict(coinbase: Tx) -> dict[str, Any]:
@@ -2972,6 +3038,8 @@ callbacks = {
     "getblockheader": get_block_header,
     "getblock": get_block,
     "getchaintips": get_chain_tips,
+    "invalidateblock": invalidate_block,
+    "reconsiderblock": reconsider_block,
     "submitblock": submit_block,
     "getpeerinfo": get_peer_info,
     "getconnectioncount": get_connection_count,
@@ -3011,6 +3079,8 @@ arg_names: dict[str, tuple[str, ...]] = {
     "getblockheader": ("blockhash", "verbose"),
     "getblock": ("blockhash", "verbosity|verbose"),
     "getchaintips": (),
+    "invalidateblock": ("blockhash",),
+    "reconsiderblock": ("blockhash",),
     "submitblock": ("hexdata", "dummy"),
     "getpeerinfo": (),
     "getconnectioncount": (),

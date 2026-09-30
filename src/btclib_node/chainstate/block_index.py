@@ -542,10 +542,29 @@ class BlockIndex:
             self.active_chain.append(chain_dict[index])
 
     def generate_block_candidates(self) -> None:
-        """Rebuild `block_candidates` from every `valid_header` past the tip."""
+        """(Re)build `block_candidates` from every `valid_header` past the tip.
+
+        `init_from_db` calls this once at start-up, over every header the
+        store holds; `invalidate` and `reconsider` below call it again
+        once disconnecting or reconnecting has moved the active chain's
+        own tip work, since a candidate `get_first_candidate` already
+        evicted as stale against the old tip is gone from the deque for
+        good once popped -- reachable again only by rebuilding from
+        `header_dict` whole, the way this does. Sorts `header_dict`
+        itself rather than reading `sorted_header_dict`, the start-up-only
+        list `init_from_db` frees right after this call returns there, so
+        that a later caller finds the same list this one would have.
+        Always starts from an empty deque rather than appending onto
+        whatever is there, which only matters past start-up:
+        `block_candidates` is empty already the one time `init_from_db`
+        calls this.
+        """
+        self.block_candidates = deque()
         active_chain_set = set(self.active_chain)
         current_work = self.chainwork[self.active_chain[-1]]
-        for block_hash in self.sorted_header_dict:
+        for block_hash in sorted(
+            self.header_dict, key=lambda h: self.header_dict[h].index
+        ):
             if block_hash in active_chain_set:
                 continue
             block_info = self.get_block_info(block_hash)
@@ -765,6 +784,53 @@ class BlockIndex:
             self._extend_header_index(
                 sorted(self.header_dict, key=lambda h: self.header_dict[h].index)
             )
+
+    def _shares_lineage(self, other_hash: bytes, target: bytes, target_height: int) -> bool:
+        """Whether `other_hash` is `target`'s own ancestor, descendant or self.
+
+        Core's `ResetBlockFailureFlags` own condition
+        (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        tag): `other_hash` is a descendant where its ancestor at
+        `target`'s height is `target` itself, and an ancestor (`target`
+        is equal or below it) where `target`'s own ancestor at
+        `other_hash`'s height is `other_hash`. `other_hash == target` is
+        the first clause's own degenerate case -- a hash is its own
+        ancestor at its own height -- so nothing here special-cases it.
+        """
+        other_height = self.header_dict[other_hash].index
+        return (
+            self.get_ancestor(other_hash, target_height) == target
+            or self.get_ancestor(target, other_height) == other_hash
+        )
+
+    def reconsider(self, block_hash: bytes) -> None:
+        """Undo `invalidate`'s own mark on `block_hash`, its lineage, then rebuild.
+
+        Core's own `Chainstate::ResetBlockFailureFlags` (`src/validation
+        .cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): every header
+        this index holds that is `block_hash` itself, one of its
+        ancestors, or one of its descendants, and that `invalidate` above
+        marked, has that mark cleared -- not only `block_hash` itself,
+        since an ancestor `invalidate` reached through `block_hash` and a
+        descendant built on it are both still wrongly `invalid` once
+        `block_hash` no longer is. `block_candidates` and `header_index`
+        are rebuilt whole afterward rather than patched: a header this
+        clears may now be the best known header chain, or a legitimate
+        candidate `get_first_candidate` already evicted as permanently
+        stale against a tip the clearing has not yet moved.
+        """
+        target_height = self.get_block_info(block_hash).index
+        for other_hash, other_info in list(self.header_dict.items()):
+            if other_info.status == BlockStatus.invalid and self._shares_lineage(
+                other_hash, block_hash, target_height
+            ):
+                self.set_status(other_hash, BlockStatus.valid_header)
+        self.generate_block_candidates()
+        self.header_index = self.active_chain[:]
+        self.header_index_pos = {h: i for i, h in enumerate(self.header_index)}
+        self._extend_header_index(
+            sorted(self.header_dict, key=lambda h: self.header_dict[h].index)
+        )
 
     # returns the active chain and the forked chain from the common ancestor
     def get_fork_details(

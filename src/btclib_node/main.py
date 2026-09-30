@@ -92,6 +92,7 @@ __all__ = [
     "MempoolAcceptance",
     "assert_valid_block",
     "contextual_check_block",
+    "invalidate_chain",
     "is_block_failed",
     "is_block_mutated",
     "is_cached_invalid",
@@ -99,6 +100,7 @@ __all__ = [
     "parent_lookup",
     "passes_check_block",
     "prune_up_to_height",
+    "reconsider_chain",
     "update_chain",
     "verify_mempool_acceptance",
 ]
@@ -1148,6 +1150,161 @@ def update_chain(node: Node) -> None:
 
     if not block_index.get_first_candidate():
         settle_at_no_candidate(node)
+
+
+# invalidate_chain and reconsider_chain's own last step: Core's
+# `ActivateBestChain` (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7,
+# the v31.1 tag) loops internally until the active tip is the best one
+# `setBlockIndexCandidates` holds; this node's own `update_chain` only
+# ever takes one step -- one candidate, its whole fork -- per call, so an
+# operator command that means to settle the chain fully loops it here
+# rather than leaving a still-available better candidate for `Node`'s own
+# next pass to pick up. Bounded by the tip actually moving rather than by
+# a call count: each successful step strictly raises the active chain's
+# own chainwork (`_ready_fork`/`get_first_candidate` only ever offer a
+# candidate outweighing it), so there is no cycle to loop forever on, and
+# a step that finds nothing ready -- `_ready_fork` answering `None`, a
+# candidate not fully downloaded among them -- leaves the tip exactly
+# where it was, which is what ends the loop.
+def _activate_best_chain(node: Node) -> None:
+    block_index = node.chainstate.block_index
+    while True:
+        tip = block_index.active_chain[-1]
+        update_chain(node)
+        if block_index.active_chain[-1] == tip:
+            return
+
+
+def invalidate_chain(node: Node, block_hash: bytes) -> None:
+    """Mark `block_hash` invalid, forcing the chain off it, then retry.
+
+    Core's own `InvalidateBlock`, the free RPC-layer function
+    (`src/rpc/blockchain.cpp`) calling `Chainstate::InvalidateBlock`
+    (`src/validation.cpp`), both at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag. `rpc.callbacks.invalidate_block` is this function's only caller,
+    and has already refused a `block_hash` this index does not know
+    (Core's own `RPC_INVALID_ADDRESS_OR_KEY`) and answered Core's own
+    silent no-op for the genesis block (`if (pindex->nHeight == 0) return
+    false`, reached there rather than here since `BlockIndex.invalidate`
+    itself has no such floor and would mark the whole index invalid by
+    walking every block ever built on genesis).
+
+    `BlockIndex.invalidate` already marks `block_hash` and everything
+    indexed on top of it; what Core's own disconnect loop adds beyond
+    that, and this repeats, is forcing the active chain off that lineage
+    even where nothing yet outweighs its own work -- `_ready_fork` and
+    `update_chain` only ever connect a candidate that *beats* the active
+    chain, never disconnect one that is merely marked bad, so a block
+    invalidated deep in the active chain would otherwise sit there
+    invalid-on-disk and still active-in-memory forever.
+
+    The disconnect itself reuses `update_chain`'s own tip-first helpers
+    -- `_rev_blocks_to_remove`, `UtxoIndex.apply_rev_block`,
+    `_finalize_fork` -- run here directly rather than through that
+    function's own trial loop, since there is no new block content to
+    validate on the way down, only already-connected blocks to undo; a
+    failure partway through is this node's own storage proving itself
+    unsafe to keep running past, exactly as `_validate_extending_tip`
+    above already argues for `submit_block`'s own fatal case, and is
+    answered the same way: `node.terminate_flag` set, then left to
+    propagate rather than translated into an RPC error, since nothing in
+    this tree recovers from one of these to keep serving RPCs afterward
+    -- a narrower answer than Core's own `RPC_DATABASE_ERROR`, argued
+    here rather than reproduced, because Core's RPC layer survives a
+    failed `ActivateBestChain` to answer the next call and this tree's
+    does not.
+
+    `block_index.invalidate` runs only once the disconnect (if any) has
+    fully committed, and not before: `_finalize_fork`'s own to_remove
+    loop stages every disconnected hash back to `BlockStatus.valid`
+    through `stage_status`, which would silently undo a `set_status(...,
+    invalid)` written earlier over the same hash, for the identical
+    reason `block_index.py`'s own module docstring already argues for
+    `update_chain`'s ordinary tip flip-flop (btclib-org/btclib-node#586)
+    -- invalidating after is what lets `invalid` be the status that
+    actually survives the next flush.
+
+    `generate_block_candidates` rebuilds `block_candidates` whole after a
+    disconnect, and only after one: disconnecting lowers the active
+    chain's own chainwork, which can make a candidate `get_first_candidate`
+    already evicted as permanently stale against the old, higher tip
+    relevant again -- unreachable any other way once popped. Invalidating
+    a block that was never on the active chain changes nothing about the
+    tip's own work, so `BlockIndex.invalidate`'s own targeted removal
+    from `block_candidates` is already the whole of what is needed there.
+    """
+    block_index = node.chainstate.block_index
+    block_info = block_index.get_block_info(block_hash)
+    if block_info.index == 0:
+        # Core's own `InvalidateBlock`, `assert(pindex); if
+        # (pindex->nHeight == 0) return false;` -- genesis can never be
+        # invalidated, and BlockValidationState is never marked invalid
+        # on this path either, so the RPC answers null rather than an
+        # error (measured against a real v31.1.0 regtest node)
+        return
+
+    if block_info.status == BlockStatus.in_active_chain:
+        to_remove_hash = block_index.active_chain[block_info.index :]
+        to_remove = _rev_blocks_to_remove(node, to_remove_hash)
+        try:
+            for rev_block in to_remove:
+                node.chainstate.utxo_index.apply_rev_block(rev_block)
+            _finalize_fork(node, to_add=[], to_remove=to_remove)
+        except Exception:
+            node.terminate_flag.set()
+            raise
+        block_index.invalidate(block_hash)
+        block_index.generate_block_candidates()
+        update_ibd_status(node)
+        _reconcile_mempool_for_reorg(node, to_remove, [])
+    else:
+        block_index.invalidate(block_hash)
+
+    _activate_best_chain(node)
+
+
+def reconsider_chain(node: Node, block_hash: bytes) -> None:
+    """Undo `invalidate_chain`'s own mark on `block_hash`'s lineage, then retry.
+
+    Core's own `ReconsiderBlock`, the free RPC-layer function
+    (`src/rpc/blockchain.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag): `BlockIndex.reconsider` is this tree's own
+    `ResetBlockFailureFlags` plus the recompute
+    `ChainstateManager::RecalculateBestHeader` runs separately there --
+    folded into the one call here since this index carries no `m_best_header`
+    pointer apart from `header_index` itself, and `reconsider` already
+    rebuilds that the same way `invalidate` conditionally does.
+    `_activate_best_chain` is this tree's own `ActivateBestChain`, run
+    unconditionally the way Core's own `ReconsiderBlock` runs it.
+
+    `rpc.callbacks.reconsider_block` is this function's only caller, and
+    has already refused a `block_hash` this index does not know
+    (`RPC_INVALID_ADDRESS_OR_KEY`, Core's own answer for the identical
+    lookup failure). Reconsidering a `block_hash` this index knows but
+    never marked invalid is a no-op the way Core's own loop is: nothing
+    in `header_dict` carries the mark `reconsider`'s own filter looks
+    for, so nothing is cleared, and `_activate_best_chain` finds the tip
+    already best.
+
+    `BlockStatus` carries no counterpart to Core's own separate
+    `BLOCK_FAILED_VALID` bit: `invalid` is this tree's one terminal
+    status, so `reconsider` cannot hand a previously-connected block back
+    its old `valid`/`in_active_chain` status -- `valid_header` is what it
+    answers with instead, forcing `_validate_block`'s own content checks
+    to run again before such a block is trusted enough to reconnect,
+    where Core's own separate `BLOCK_VALID_TRANSACTIONS` bit survives the
+    round trip untouched and skips them. Stricter than Core in the
+    direction that costs a redundant revalidation rather than one that is
+    skipped, forced by this tree's own single-field `BlockStatus`
+    (`block_index.py`'s own class docstring) rather than chosen against
+    it.
+    """
+    # BlockIndex.reconsider's own first statement is get_block_info,
+    # raising KeyError for a hash this index does not know -- unreached
+    # in practice, rpc.callbacks.reconsider_block having already refused
+    # that call before this function is ever entered
+    node.chainstate.block_index.reconsider(block_hash)
+    _activate_best_chain(node)
 
 
 # Core's own `MAX_STANDARD_TX_SIGOPS_COST` and `DEFAULT_BYTES_PER_SIGOP`

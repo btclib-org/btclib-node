@@ -30,10 +30,14 @@ function sorts `vCommands`: by category, and by
 name within it. `help_rpc` groups this node's own served commands
 under those same headings and in that same order, the way Core's own
 bare listing would if run against a `bitcoind` serving only this
-node's own method table -- no method here is hidden, so none is left
-out of that listing the way Core leaves a `category == "hidden"` entry
-out of its own (`help_rpc`'s own docstring is where that check is
-argued absent rather than merely missing).
+node's own method table -- `"hidden"` is one of those headings rather
+than a fourth field of its own, matching Core's own `category ==
+"hidden"` naming it the same way (`CRPCCommand::category`,
+`src/rpc/server.h`, same tag): `invalidateblock` and `reconsiderblock`
+are the two entries this node carries under it, and `_BARE_LISTING`
+below leaves that one heading out of the bare listing entirely, the way
+Core's own loop skips it, while `help <command>` still answers either
+by name, same as any other served method.
 """
 
 from typing import Any
@@ -526,6 +530,39 @@ _HELP_PRUNEBLOCKCHAIN = (
     "Examples:\n"
     "> bitcoin-cli pruneblockchain 1000\n"
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "pruneblockchain", "params": [1000]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
+_HELP_INVALIDATEBLOCK = (
+    'invalidateblock "blockhash"\n'
+    "\n"
+    "Permanently marks a block as invalid, as if it violated a consensus rule.\n"
+    "\n"
+    "Arguments:\n"
+    "1. blockhash    (string, required) the hash of the block to mark as invalid\n"
+    "\n"
+    "Result:\n"
+    "null    (json null)\n"
+    "\n"
+    "Examples:\n"
+    '> bitcoin-cli invalidateblock "blockhash"\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "invalidateblock", "params": ["blockhash"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
+_HELP_RECONSIDERBLOCK = (
+    'reconsiderblock "blockhash"\n'
+    "\n"
+    "Removes invalidity status of a block, its ancestors and its descendants, reconsider them for activation.\n"
+    "This can be used to undo the effects of invalidateblock.\n"
+    "\n"
+    "Arguments:\n"
+    "1. blockhash    (string, required) the hash of the block to reconsider\n"
+    "\n"
+    "Result:\n"
+    "null    (json null)\n"
+    "\n"
+    "Examples:\n"
+    '> bitcoin-cli reconsiderblock "blockhash"\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "reconsiderblock", "params": ["blockhash"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
 _HELP_HELP = (
@@ -1086,6 +1123,8 @@ HELP_TEXT: dict[str, str] = {
     "getblockhash": _HELP_GETBLOCKHASH,
     "getblockheader": _HELP_GETBLOCKHEADER,
     "getchaintips": _HELP_GETCHAINTIPS,
+    "invalidateblock": _HELP_INVALIDATEBLOCK,
+    "reconsiderblock": _HELP_RECONSIDERBLOCK,
     "getmempoolentry": _HELP_GETMEMPOOLENTRY,
     "getmempoolinfo": _HELP_GETMEMPOOLINFO,
     "getrawmempool": _HELP_GETRAWMEMPOOL,
@@ -1121,6 +1160,8 @@ CATEGORY: dict[str, str] = {
     "getblockhash": "Blockchain",
     "getblockheader": "Blockchain",
     "getchaintips": "Blockchain",
+    "invalidateblock": "hidden",
+    "reconsiderblock": "hidden",
     "getmempoolentry": "Blockchain",
     "getmempoolinfo": "Blockchain",
     "getrawmempool": "Blockchain",
@@ -1150,6 +1191,12 @@ CATEGORY: dict[str, str] = {
 # name within it -- rebuilt here from `CATEGORY` and `HELP_TEXT` rather
 # than written out by hand a second time, which is what would go stale
 # the day a served method's category changes and this list does not.
+# `category == "hidden"` is skipped, Core's own `CRPCTable::help` loop
+# condition (`src/rpc/server.cpp:80`, same tag): `invalidateblock` and
+# `reconsiderblock` carry that category (`CATEGORY`'s own module
+# docstring), and `help <command>` still answers either by name --
+# `answer_help` below reads `HELP_TEXT` directly, never `_BARE_LISTING`,
+# for that path.
 _BARE_LISTING = "\n\n".join(
     "== {} ==\n{}".format(
         category,
@@ -1160,7 +1207,7 @@ _BARE_LISTING = "\n\n".join(
             )
         ),
     )
-    for category in sorted(set(CATEGORY.values()))
+    for category in sorted(set(CATEGORY.values()) - {"hidden"})
 )
 
 
@@ -1168,16 +1215,18 @@ def answer_help(params: list[Any]) -> str:
     r"""Answer `help`: every served command's usage, or one command's own.
 
     With no argument (or an empty string, its own declared default),
-    Core's own bare listing (`CRPCTable::help`, `src/rpc/server.cpp`,
-    same tag), grouped by category and truncated to each entry's own
-    usage line the way that function's own `strHelp.substr(0,
-    strHelp.find('\n'))` truncates it -- restricted to the commands
-    `rpc.callbacks.callbacks` actually serves, none of them hidden, so
-    the `category == "hidden"` skip that function's own loop condition
-    carries is nothing to reproduce here (`CATEGORY`'s own module
-    docstring). With a command's name, that command's own untruncated
-    help, or, for a name nothing here serves, Core's own literal
-    `"help: unknown command: %s"` (`src/rpc/server.cpp:114`) -- a
+    `_BARE_LISTING` above -- Core's own bare listing (`CRPCTable::help`,
+    `src/rpc/server.cpp`, same tag), grouped by category and truncated to
+    each entry's own usage line the way that function's own
+    `strHelp.substr(0, strHelp.find('\n'))` truncates it, `"hidden"`
+    already left out the way Core's own loop leaves it out
+    (`_BARE_LISTING`'s own comment). With a command's name, that
+    command's own untruncated help from `HELP_TEXT` directly --
+    `invalidateblock` and `reconsiderblock` included, same as any other
+    served command, since `category == "hidden"` only ever governs the
+    bare listing above and Core answers `help <command>` for a hidden one
+    exactly this way too -- or, for a name nothing here serves, Core's own
+    literal `"help: unknown command: %s"` (`src/rpc/server.cpp:114`) -- a
     successful reply, not a refusal, matching Core answering it as
     `RPCResult::Type::STR` rather than raising. `rpc.callbacks.help_rpc`
     is the shared-signature wrapper `handle_rpc` actually dispatches to,
