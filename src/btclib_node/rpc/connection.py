@@ -1496,13 +1496,30 @@ class RpcConnection:
         still holds -- the flag is what `handle_rpc`'s own `node.stop()`
         already set from `Node`'s thread, only ever reached here once
         this reply is already gone.
+
+        `_delayed_send` registers its own task into
+        `self.manager.pending_delayed_replies` for the length of its
+        wait, and removes it in `finally`, so `RpcManager.stop`
+        racing this delay finishes it rather than cancelling it
+        (btclib-org/btclib-node#1467 review): the registration itself
+        only ever runs on `loop`'s own thread, once this task is
+        actually stepped, never on the caller's -- the same thread
+        `stop`'s own cancel sweep runs on, so there is no race on the
+        set itself, only on whether the task is in it yet when that
+        sweep reads it.
         """
 
         async def _delayed_send() -> None:
-            if delay:
-                await asyncio.sleep(delay)
-            await self.async_send(reply, close=True)
-            on_sent()
+            task = asyncio.current_task()
+            assert task is not None
+            self.manager.pending_delayed_replies.add(task)
+            try:
+                if delay:
+                    await asyncio.sleep(delay)
+                await self.async_send(reply, close=True)
+                on_sent()
+            finally:
+                self.manager.pending_delayed_replies.discard(task)
 
         asyncio.run_coroutine_threadsafe(_delayed_send(), self.loop)
 

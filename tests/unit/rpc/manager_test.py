@@ -27,6 +27,7 @@ from btclib_node.chains import RegTest
 from btclib_node.config import Config
 from btclib_node.log import Logger
 from btclib_node.rpc import manager as manager_module
+from btclib_node.rpc.connection import parse_request_head
 from btclib_node.rpc.jsonrpc import OK, HttpReply
 from btclib_node.rpc.manager import RpcManager
 from tests import (
@@ -1041,6 +1042,66 @@ def test_stop_drains_a_task_whose_own_cancellation_needs_a_second_step(
     assert not task.done()
 
     manager.stop()
+
+
+def test_stop_lets_a_pending_delayed_reply_finish_rather_than_cancelling_it(
+    a_manager: AManagerFactory,
+) -> None:
+    """`stop` racing a pending `send_and_close_after` still delivers the reply.
+
+    The blanket cancel sweep above used to reach a still-sleeping
+    `send_and_close_after` task -- `stop`'s own hidden `wait`, mid-delay
+    -- exactly like any other pending task, discarding the reply before
+    it was ever written: nothing on the socket, `on_sent` never called.
+    That is a real gap, not a hypothetical one: `install_signal_handlers`
+    reaches this same `stop()` from a `SIGINT`/`SIGTERM`, and so does a
+    second plain `stop` call, either one able to land while a `stop
+    wait=N` from a moment earlier is still asleep
+    (btclib-org/btclib-node#1467 review). Core's own `ThreadPool::Stop`
+    (`util/threadpool.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+    joins its workers unconditionally instead of cancelling one mid-task,
+    which is the guarantee `pending_delayed_replies` now gives this
+    reply too.
+
+    A real manager, a real thread, and a real socketpair, as
+    `connection_test.py`'s own `send_and_close_after` tests use --
+    `RpcManager.stop()` is what is under test here, not `RpcConnection`
+    on its own, so the connection is wired through the manager's real
+    `create_connection` instead of built by hand.
+    """
+    manager = a_manager(get_random_port())
+    manager.start()
+    wait_until_listening(manager)
+    ours, theirs = socket.socketpair()
+    ours.setblocking(False)
+    fired: list[bool] = []
+    try:
+        conn = manager.create_connection(manager.loop, ours)
+        # `async_send` answers `conn.head`'s own version, which only a
+        # parsed request sets: stand in for `run` having already done
+        # that, as `connection_test.py`'s own `answering` helper does.
+        conn.head = parse_request_head(
+            b"POST / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+        )
+        conn.send_and_close_after(
+            HttpReply(OK, {"result": "stopping", "error": None, "id": 1}),
+            0.3,
+            lambda: fired.append(True),
+        )
+        # Waits for `_delayed_send` to have registered itself and be
+        # asleep in `asyncio.sleep(0.3)` -- the window the race is about
+        # -- before `stop()` below is allowed to run.
+        wait_until(lambda: bool(manager.pending_delayed_replies))
+
+        manager.stop()
+
+        assert fired == [True]
+        theirs.settimeout(5)
+        reply = theirs.recv(65536)
+    finally:
+        theirs.close()
+    assert b"200 OK" in reply
+    assert b"stopping" in reply
 
 
 def test_stop_does_not_raise_where_start_was_called_but_run_never_reached_run_forever(

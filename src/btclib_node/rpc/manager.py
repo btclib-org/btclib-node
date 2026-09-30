@@ -247,6 +247,16 @@ class RpcManager(threading.Thread):
         self._accept_queue: (
             asyncio.Queue[tuple[socket.socket, tuple[str, int]]] | None
         ) = None
+        # `RpcConnection.send_and_close_after`'s own `_delayed_send`
+        # registers itself here for the length of its own wait, so
+        # `stop` below can let it finish instead of cancelling it with
+        # every other pending task (btclib-org/btclib-node#1467 review):
+        # Core's own `ThreadPool::Stop` (`util/threadpool.h`, at
+        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) joins every worker
+        # unconditionally, finishing whatever RPC that thread is still
+        # answering -- including one asleep in `stop`'s own hidden
+        # `wait` -- rather than tearing it down mid-reply.
+        self.pending_delayed_replies: set[asyncio.Task[None]] = set()
 
     def create_connection(
         self, loop: asyncio.AbstractEventLoop, client: socket.socket
@@ -666,6 +676,17 @@ class RpcManager(threading.Thread):
         # `P2pManager`, whose own connections sweep runs *before* this
         # same loop and so cannot.
         pending = asyncio.all_tasks(self.loop)
+        # `send_and_close_after`'s own `_delayed_send`, mid-wait for a
+        # `stop`'s hidden `wait` to elapse, registers itself into
+        # `pending_delayed_replies` for exactly that long
+        # (btclib-org/btclib-node#1467 review): cancelling it here, the
+        # way every other task below is cancelled, would discard the
+        # reply it is about to write, with nothing left to answer the
+        # client that asked for `wait` at all. It is carved out of
+        # `pending` before the cancel sweep reaches it, and joined
+        # separately, uncancelled, further down.
+        protected = pending & self.pending_delayed_replies
+        pending -= protected
         # No step of the loop first here, unlike an earlier version of
         # this method: that step existed only to let a task sitting on
         # an already-resolved future -- `server`'s own former `accept`
@@ -695,6 +716,17 @@ class RpcManager(threading.Thread):
         for task in pending:
             with suppress(asyncio.CancelledError):
                 self.loop.run_until_complete(task)
+        # Uncancelled, and with no bound of its own beyond `wait` itself
+        # -- already validated finite by `stop_wait_param` before this
+        # task was ever scheduled. Core's own `ThreadPool::Stop`
+        # (`util/threadpool.h`, at bitcoin/bitcoin@9be056a8a7, the
+        # v31.1 tag) joins every worker thread with no timeout either,
+        # finishing whatever request that thread is mid-answer on --
+        # including one asleep in `stop`'s own hidden `wait` -- rather
+        # than abandoning it, so a bound here would itself be an
+        # unargued divergence from Core, not a match to it.
+        for task in protected:
+            self.loop.run_until_complete(task)
         for conn in self.connections.values():
             conn.close()
         # Closed explicitly and unconditionally, after the loop above

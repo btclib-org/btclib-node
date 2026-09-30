@@ -67,6 +67,11 @@ def fake_manager(connections: dict[int, Any]) -> SimpleNamespace:
         logger=Logger(debug=True),
         messages=[],
         connections=connections,
+        # `send_and_close_after`'s own `_delayed_send` registers into
+        # this real `RpcManager` attribute for the length of its wait
+        # (btclib-org/btclib-node#1467 review); a plain `set()` here is
+        # the same thing `RpcManager.__init__` builds, not a stub of it.
+        pending_delayed_replies=set(),
     )
 
 
