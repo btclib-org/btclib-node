@@ -248,7 +248,7 @@ class ChainstateInconsistencyError(RuntimeError):
     one read path that keeps every other cause of "missing" simple.
     This tree now pays the identical cost, for the identical reason:
     matching Core's behaviour end to end rather than only the half of
-    it that reads comfortably (CLAUDE.md's own *Following Bitcoin
+    it that reads comfortably (CONTRIBUTING.md's own *Following Bitcoin
     Core* argues the same trade for `CDBWrapper::Read` in general).
 
     `message` and not a structured payload per call site: what is
