@@ -71,7 +71,6 @@ if TYPE_CHECKING:
     from btclib_node.chainstate.block_index import BlockIndex
     from btclib_node.p2p.block_availability import BlockAvailability
     from btclib_node.p2p.connection import Connection
-    from btclib_node.p2p.manager import P2pManager
     from btclib_node.rpc.connection import RpcConnection
 
 __all__ = [
@@ -1594,34 +1593,6 @@ _ADDCONNECTION_TYPES = (
 )
 
 
-def _refuse_addconnection_past_capacity(
-    manager: P2pManager, connection_type: str
-) -> None:
-    """Raise `add_connection`'s own two capacity refusals, per-type then pool.
-
-    Split out of `add_connection` itself so that function stays under
-    ruff's own complexity bound -- `add_connection`'s own docstring
-    argues both checks this makes, in the same order.
-    """
-    full_relay, block_relay = manager.outbound_type_counts()
-    if (
-        connection_type == "outbound-full-relay"
-        and full_relay >= manager.max_outbound_full_relay
-    ) or (
-        connection_type == "block-relay-only"
-        and block_relay >= manager.max_outbound_block_relay
-    ):
-        raise RpcError(
-            RPCErrorCode.CLIENT_NODE_CAPACITY_REACHED,
-            "Error: Already at capacity for specified connection type.",
-        )
-    if manager.reserve_automatic_slot() is None:
-        raise RpcError(
-            RPCErrorCode.CLIENT_NODE_CAPACITY_REACHED,
-            "Error: Already at capacity for specified connection type.",
-        )
-
-
 def add_connection(
     node: Node, conn: RpcConnection, params: list[Any]
 ) -> dict[str, Any]:
@@ -1643,35 +1614,16 @@ def add_connection(
     node speaking v1 only, so every `true` here is refused regardless of
     chain or address.
 
-    `CConnman::AddConnection`'s own per-type cap -- `m_max_outbound_full_relay`
-    for `outbound-full-relay`, `m_max_outbound_block_relay` for
-    `block-relay-only`, neither for the other two -- is
-    `P2pManager.outbound_type_counts`. Past it, Core's own `switch` falls
-    every one of the four types through to a shared `semOutbound` grant,
-    `CountingSemaphoreGrant<> grant(*semOutbound, true)`, sized
-    `min(m_max_automatic_outbound, m_max_automatic_connections)`: a
-    held addr-fetch or feeler connection takes one of the same limited
-    permits a full-relay or block-relay one would, so past a per-type
-    pass a request can still be refused once none is free. This tree
-    keeps no literal semaphore, but the answer a `try_acquire` against
-    one would give is a fact about the connections already held rather
-    than about acquisition order or blocking, so it is exactly what
-    `P2pManager.reserve_automatic_slot` checks and reserves in one
-    step, rather than `automatic_pool_size` read here and the dial
-    scheduled after: that method's own docstring argues why the two
-    have to be one atomic operation, not a check followed by a
-    schedule, once the dial the schedule leads to is itself
-    asynchronous. `P2pManager.release_automatic_slot` releases the
-    reservation once `async_connect_host` concludes, `release_slot=True`
-    telling it this call is the one holding it.
+    Both of `CConnman::AddConnection`'s capacity checks, the per-type
+    cap and the shared `semOutbound` pool, are
+    `P2pManager.reserve_automatic_slot`'s, which takes the slot in the
+    same step. Its docstring says why the check and the reservation are
+    one step here, where Core's dial is synchronous. `connect_typed`
+    releases the slot once the dial concludes.
 
-    `automatic=True` for a `feeler` too, matching `_dial_one_draw`'s own
-    drawn one: `create_connection` reads every flag straight off what
-    it is given, and `maybe_discourage_and_disconnect` reads `automatic`
-    as its own proxy for "not `MANUAL`" (`p2p/manager.py`), which a
-    feeler never is in Core either (btclib-org/btclib-node#1580's own
-    review) -- leaving it `False` here exempted an addconnection-opened
-    feeler from that check the way only a manual peer should be.
+    `automatic=True` for a `feeler` too, as `_dial_one_draw` sets it for
+    a drawn one: `maybe_discourage_and_disconnect` reads `automatic` as
+    "not `MANUAL`", and a feeler is not `MANUAL` in Core either.
 
     The dial itself, `P2pManager.connect_typed`, runs fire-and-forget,
     the same as `onetry`'s (`add_node` above, `connect_host`): this
@@ -1711,7 +1663,11 @@ def add_connection(
             "init flag to be set.",
         )
     manager = node.p2p_manager
-    _refuse_addconnection_past_capacity(manager, connection_type)
+    if manager.reserve_automatic_slot(connection_type) is None:
+        raise RpcError(
+            RPCErrorCode.CLIENT_NODE_CAPACITY_REACHED,
+            "Error: Already at capacity for specified connection type.",
+        )
     manager.connect_typed(
         address,
         node.chain.port,
@@ -1720,7 +1676,7 @@ def add_connection(
         block_relay=connection_type == "block-relay-only",
         feeler=connection_type == "feeler",
         addr_fetch=connection_type == "addr-fetch",
-        release_slot=True,
+        reserved=connection_type,
     )
     return {"address": address, "connection_type": connection_type}
 

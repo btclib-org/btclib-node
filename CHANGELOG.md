@@ -1401,39 +1401,15 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 ### `setnetworkactive` disables and enables all p2p activity
 
-- **On `false` it drops every connection, inbound and pending, on
-  every pass while it stays inactive, and refuses every new dial and
-  accepted socket until it is re-enabled** (closes #1392).
+- **On `false` it drops every connection on every pass, and refuses
+  every dial, accepted socket and DNS seed query, until it is
+  re-enabled** (closes #1392).
 
 ### `addconnection` dials one outbound connection of a chosen type
 
-- **Regtest only, as Core's own RPC is: `outbound-full-relay`,
-  `block-relay-only`, `addr-fetch` or `feeler`, and `getpeerinfo`'s own
-  `connection_type` reports it** (closes #1465).
-
-### `addconnection` reserves its capacity slot before dialling, not after
-
-- **`reserve_automatic_slot`/`release_automatic_slot` hold the slot
-  across the dial, closing the window two back-to-back calls used to
-  race through** (issue #1465).
-
-### `addconnection`'s own feeler is discouraged like the tree's drawn one
-
-- **It sets `automatic=True`, the flag the periodic dial loop's own
-  feeler carries, instead of being exempted from discouragement like
-  a manual peer** (issue #1465).
-
-### `addconnection` trims `connection_type` like Core's RPC does
-
-- **Surrounding whitespace is stripped with `TrimStringView`'s own six
-  characters, and the trimmed type is what gets echoed back**
-  (issue #1465).
-
-### DNS seed queries wait for `setnetworkactive` reactivation
-
-- **`_dns_address_seed` pauses per seed while the network is inactive,
-  instead of continuing to query it, matching Core's own wait loop**
-  (issue #1392).
+- **Regtest only, as Core's: one of Core's four types, trimmed as Core
+  trims it; a dial still in flight counts against its caps, and its
+  feeler is discouraged like a drawn one** (closes #1465).
 
 ### The periodic dial loop counts a held addr-fetch connection too
 
