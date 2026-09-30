@@ -85,6 +85,7 @@ __all__ = [
     "service_names",
     "set_ban",
     "stop",
+    "stop_wait_param",
     "submit_block",
     "test_mempool_accept",
 ]
@@ -2003,19 +2004,27 @@ def ping(node: Node, conn: RpcConnection, _: list[Any]) -> None:
     node.p2p_manager.ping_all()
 
 
-def _stop_wait_param(params: list[Any]) -> int | None:
+def stop_wait_param(params: list[Any]) -> int | None:
     """Read `stop`'s own hidden `wait`, or `None` where none was given.
 
     `RPCArg::Type::NUM`, `RPCArg::Optional::OMITTED`, hidden from help
     (`src/rpc/server.cpp:155`, at bitcoin/bitcoin@9be056a8a7, the v31.1
     tag): omitted or explicit `null` reads as `isNum()` false there, so
-    neither sleeps. Anything else that is not a JSON number is
+    neither delays the reply. Anything else that is not a JSON number is
     `RPC_TYPE_ERROR`, the same check `RPCMethod::HandleRequest` makes
     for every declared argument before the handler ever runs
     (`src/rpc/util.cpp:653-661`); a JSON float is refused the way
     `_height_param` above already refuses one, `UniValue::getInt`'s own
     "JSON integer out of range" (`univalue.h`), thrown for a numeric
     string `std::from_chars` cannot consume in full.
+
+    Called twice for one request that reaches it: here, to decide
+    whether `stop` itself succeeds, and again by `rpc.main._answer_one`
+    once it has, to read the same already-valid `wait` back out and
+    schedule the delayed reply `stop`'s own docstring explains
+    (btclib-org/btclib-node#1467) -- this function's own return value is
+    not `stop`'s, which is the RPC's `result` field and cannot also
+    carry it.
     """
     if not params or params[0] is None:
         return None
@@ -2028,25 +2037,32 @@ def _stop_wait_param(params: list[Any]) -> int | None:
 
 
 def stop(node: Node, conn: RpcConnection, params: list[Any]) -> str:
-    """Answer `stop`; `handle_rpc` waits for this reply before stopping.
+    """Answer `stop`; `handle_rpc` delays this reply by `wait`, then stops.
 
-    A `wait` in milliseconds holds this reply back that long, Core's own
+    A `wait` in milliseconds holds the reply back that long, Core's own
     hidden testing argument (`src/rpc/server.cpp:155-166`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag): "'stop 1000' makes the
-    call wait 1 second before returning to the client". Core calls
-    `shutdown_request()` -- which wakes its main thread's own shutdown
-    wait, starting the rest of the process tearing down -- *before* that
-    sleep, while its RPC handler thread is the one still sleeping; this
-    node has no second thread to hand that teardown to, and
-    `handle_rpc`'s own `node.stop()` already cannot run until this reply
-    is on its way to the client (that function's own docstring, ISS
-    1441), so there is nothing here to signal any earlier than the
-    reply already is. The sleep still runs before this function returns,
-    matching where Core's own sits relative to the reply it delays.
+    call wait 1 second before returning to the client". Read and
+    validated here, through `stop_wait_param`, exactly as every other
+    declared argument is validated by the callback that owns it; not
+    slept on here, unlike Core's own `UninterruptibleSleep`, which this
+    function has no equivalent of at all.
+
+    Core's sleep runs on the RPC request's own worker thread, one among
+    several, while a separate thread answers every other request and
+    the rest of the process keeps running underneath it. This node is
+    one thread for RPC, P2P and chain work alike (`ARCHITECTURE.md`,
+    "The loop"): a `time.sleep` here would freeze all three for `wait`
+    milliseconds, which a caller who only asked to delay one reply has
+    no way to expect and no way to see coming. `rpc.main._answer_one`
+    reads this same `wait` again once this call is known to have
+    succeeded and hands the delay to `RpcConnection.send_and_close_after`
+    instead, which runs it on the RPC manager's own event-loop thread --
+    the one already carrying every reply this node ever sends -- so the
+    delay reaches the client exactly as Core's own does, without asking
+    `Node`'s single thread to sit idle for it.
     """
-    wait_ms = _stop_wait_param(params)
-    if wait_ms is not None:
-        time.sleep(max(0, wait_ms) / 1000)
+    stop_wait_param(params)
     return "Btclib node stopping"
 
 

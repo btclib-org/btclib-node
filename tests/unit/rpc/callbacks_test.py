@@ -1377,48 +1377,25 @@ def test_ping_and_stop_answer_without_a_connection() -> None:
     assert stop(node, _CONN, []) == "Btclib node stopping"
 
 
-def test_stop_sleeps_for_its_wait_argument_in_milliseconds(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """ISS 1467: `wait` is honoured, Core's own `stop <ms>` (v31.1 tag).
-
-    `src/rpc/server.cpp:155-166` sleeps `jsonRequest.params[0]`
-    milliseconds before returning the reply; the clock is patched so the
-    test does not really sleep.
-    """
-    slept: list[float] = []
-    monkeypatch.setattr(time, "sleep", slept.append)
-    node = a_node()
-    assert stop(node, _CONN, [5000]) == "Btclib node stopping"
-    assert slept == [5.0]
-
-
-@pytest.mark.parametrize("params", [[], [None]])
-def test_stop_does_not_sleep_for_an_absent_or_null_wait(
+@pytest.mark.parametrize("params", [[], [None], [5000], [-1000]])
+def test_stop_never_sleeps_here_whatever_wait_is(
     monkeypatch: pytest.MonkeyPatch, params: list[Any]
 ) -> None:
-    """Omitted or explicit `null` reads as `isNum()` false in Core too."""
-    slept: list[float] = []
-    monkeypatch.setattr(time, "sleep", slept.append)
+    """ISS 1467/1441 review: `wait` is validated here, never slept on here.
+
+    `stop`'s own docstring is where the reason is argued: a `time.sleep`
+    in this callback would run on `Node`'s single thread
+    (`ARCHITECTURE.md`, "The loop"), freezing P2P, every other RPC and
+    chain progress for as long as `wait` asks, unlike Core's own
+    per-connection wait. `rpc.main._answer_one` reads `wait` again, once
+    this call is known to have succeeded, and hands the delay to
+    `RpcConnection.send_and_close_after` instead -- `main_test.py` and
+    `connection_test.py` are where that delay is actually proven, off
+    this thread.
+    """
+    monkeypatch.setattr(time, "sleep", lambda _: pytest.fail("stop must not sleep"))
     node = a_node()
     assert stop(node, _CONN, params) == "Btclib node stopping"
-    assert not slept
-
-
-def test_stop_clamps_a_negative_wait_to_no_delay(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """`std::this_thread::sleep_for` returns at once for a negative duration.
-
-    `time.sleep` raises `ValueError` on a negative argument where Core's
-    own `UninterruptibleSleep` does not, so the negative is clamped here
-    rather than passed through.
-    """
-    slept: list[float] = []
-    monkeypatch.setattr(time, "sleep", slept.append)
-    node = a_node()
-    assert stop(node, _CONN, [-1000]) == "Btclib node stopping"
-    assert slept == [0.0]
 
 
 def test_stop_refuses_a_wait_of_the_wrong_json_type() -> None:

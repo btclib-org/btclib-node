@@ -1473,6 +1473,39 @@ class RpcConnection:
         with contextlib.suppress(TimeoutError):
             future.result(timeout=2)
 
+    def send_and_close_after(
+        self, reply: HttpReply, delay: float, on_sent: Callable[[], None]
+    ) -> None:
+        """Delay `reply` by `delay` seconds on this connection's own loop.
+
+        `rpc.callbacks.stop`'s own `wait` is the only caller, past
+        `handle_rpc`'s own `_answer_one` (btclib-org/btclib-node#1467):
+        `send_and_wait` above blocks the calling thread for its own
+        short, fixed wait, which is `Node`'s single thread for every
+        ordinary `stop`, and would freeze it -- P2P, every other RPC and
+        chain progress alike -- for as long as `wait` asks, unlike
+        Core's own per-connection wait, one thread among several. This
+        schedules the whole wait-then-write sequence on `loop`, this
+        connection's own thread, and returns to its caller at once
+        rather than making it wait; `on_sent` then runs on `loop`'s
+        thread, once the client has this reply, `close=True` as
+        `send_and_wait` already writes unconditionally. `on_sent` is
+        `node.terminate_flag.set` for `stop`, kept thread-safe by
+        `threading.Event` itself, so `Node`'s own rule that a reply is
+        never sent after that flag tears the loop it arrived on down
+        still holds -- the flag is what `handle_rpc`'s own `node.stop()`
+        already set from `Node`'s thread, only ever reached here once
+        this reply is already gone.
+        """
+
+        async def _delayed_send() -> None:
+            if delay:
+                await asyncio.sleep(delay)
+            await self.async_send(reply, close=True)
+            on_sent()
+
+        asyncio.run_coroutine_threadsafe(_delayed_send(), self.loop)
+
     def _peer_address(self) -> str:
         """Return the client's `ip:port`, for a log line naming who asked."""
         try:

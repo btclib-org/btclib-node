@@ -887,6 +887,85 @@ def test_send_and_wait_gives_up_rather_than_blocking_forever() -> None:
     theirs.close()
 
 
+def test_send_and_close_after_returns_at_once_and_delays_the_write() -> None:
+    """`send_and_close_after` does not block its caller for `delay` (ISS 1467).
+
+    `handle_rpc`'s own `stop` is the caller a positive `wait` reaches,
+    past `rpc.main._answer_one`: the review of #1441's own follow-up
+    found a `time.sleep` there froze `Node`'s single thread -- P2P,
+    every other RPC and chain progress alike (`ARCHITECTURE.md`, "The
+    loop") -- for as long as `wait` asked. This schedules the
+    wait-then-write on `loop`'s own thread, standing in for
+    `RpcManager`'s, and returns to its caller -- this test's own thread,
+    standing in for `Node`'s -- well before `delay` has elapsed; the
+    reply reaches the client, and `on_sent` fires, only once it has.
+    """
+    ours, theirs = socket.socketpair()
+    ours.setblocking(False)
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    fired: list[float] = []
+    try:
+        conn = answering(
+            RpcConnection(
+                loop, ours, cast("RpcManager", fake_manager(connections={})), 0
+            ),
+            request(),
+        )
+        started = time.monotonic()
+        conn.send_and_close_after(
+            HttpReply(OK, ANSWER), 0.3, lambda: fired.append(time.monotonic())
+        )
+        returned_after = time.monotonic() - started
+        theirs.settimeout(5)
+        reply = b""
+        while chunk := theirs.recv(4096):
+            reply += chunk
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join()
+        loop.close()
+        theirs.close()
+    assert returned_after < 0.1
+    assert fired and fired[0] - started >= 0.3 - _WINDOWS_TIMER_TICK
+    assert reply == framed(
+        b"HTTP/1.1 200 OK", b"Connection: close", b"Content-Length: {length}"
+    )
+    assert ours.fileno() == -1
+
+
+def test_send_and_close_after_writes_at_once_for_a_zero_delay() -> None:
+    """A `delay` of `0.0` skips the wait branch, and still writes and fires."""
+    ours, theirs = socket.socketpair()
+    ours.setblocking(False)
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    fired: list[bool] = []
+    try:
+        conn = answering(
+            RpcConnection(
+                loop, ours, cast("RpcManager", fake_manager(connections={})), 0
+            ),
+            request(),
+        )
+        conn.send_and_close_after(HttpReply(OK, ANSWER), 0.0, lambda: fired.append(True))
+        theirs.settimeout(5)
+        reply = b""
+        while chunk := theirs.recv(4096):
+            reply += chunk
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join()
+        loop.close()
+        theirs.close()
+    assert fired == [True]
+    assert reply == framed(
+        b"HTTP/1.1 200 OK", b"Connection: close", b"Content-Length: {length}"
+    )
+
+
 def refused(
     data: bytes,
     *,
