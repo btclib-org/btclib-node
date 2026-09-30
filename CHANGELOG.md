@@ -1335,6 +1335,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   GHSA-vxq7-64xx-v4gw and GHSA-8988-9cw3-xx77; it reaches the dev group
   alone, through `twine`, `sphinx` and `pyroma`, never the wheel.
 
+### `test_a_chunked_body_is_decoded_and_dispatched` stops flaking
+
+- **`drive`'s sender yields between chunks instead of sleeping 10ms**,
+  which cost the chunked-body cases over half of `drive`'s 1.0s budget
+  before any load; it also asserts `drive`'s own outcome (closes #1278).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
