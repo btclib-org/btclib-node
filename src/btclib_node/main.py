@@ -99,6 +99,7 @@ __all__ = [
     "assert_valid_block",
     "check_fork_warning_conditions",
     "contextual_check_block",
+    "invalidate_chain",
     "is_block_failed",
     "is_block_mutated",
     "is_cached_invalid",
@@ -106,6 +107,7 @@ __all__ = [
     "parent_lookup",
     "passes_check_block",
     "prune_up_to_height",
+    "reconsider_chain",
     "update_chain",
     "verify_mempool_acceptance",
 ]
@@ -166,12 +168,12 @@ def check_fork_warning_conditions(node: Node) -> None:
 
     Called wherever this tree calls `BlockIndex.invalidate` (through
     `update_header_index` in `_invalidate_failed_block`, and directly in
-    `p2p.callbacks` and `rpc.callbacks`), or commits a fork
-    (`_after_tip_change`), and once at `Node.load`, matching Core's own
+    `invalidate_chain`, `p2p.callbacks` and `rpc.callbacks`), or commits
+    a fork (`_after_tip_change`), and once at `Node.load`, matching Core's own
     three call sites (`src/validation.cpp`, same sha): `InvalidChainFound`
     itself (`:1987`) -- reached both from `InvalidateBlock`'s own direct
     call and, for a block that fails validation, from `InvalidBlockFound`
-    calling `InvalidChainFound` in turn, the same way this tree's three
+    calling `InvalidChainFound` in turn, the same way this tree's four
     `invalidate` call sites above all reach this one function --
     `ActivateBestChainStep` (`:3318`, not `ConnectTip`, which calls
     neither `InvalidChainFound` nor this function itself), and
@@ -421,14 +423,47 @@ def _rev_blocks_to_remove(node: Node, to_remove_hash: list[bytes]) -> list[RevBl
     return to_remove
 
 
+# Core's own literal, `Chainstate::InvalidateBlock`'s own per-block
+# counter (`int disconnected = 0; ... (++disconnected <= 10) && ret`,
+# `src/validation.cpp:3611` and `:3637`, at bitcoin/bitcoin@9be056a8a7,
+# the v31.1 tag), named here since `_reconcile_mempool_for_reorg` below
+# takes it as a parameter rather than as a literal a reader would have
+# to trace back to this same citation a second time.
+_INVALIDATE_MEMPOOL_READD_LIMIT = 10
+
+
 # _after_tip_change's own step, once a fork has actually connected:
 # every abandoned block's own transactions rejoin the mempool where they
 # still verify, and every newly-connected block's own transactions
 # leave it, mirroring what connecting them to the chain already made
 # true of the UTXO set they are checked against.
 def _reconcile_mempool_for_reorg(
-    node: Node, to_remove: list[RevBlock], to_add: list[Block]
+    node: Node,
+    to_remove: list[RevBlock],
+    to_add: list[Block],
+    *,
+    readd_limit: int | None = None,
 ) -> None:
+    """Re-add, drop or evict every transaction a disconnect or connect touches.
+
+    `readd_limit` is `None` for `_after_tip_change`'s own ordinary-reorg
+    call, and `_INVALIDATE_MEMPOOL_READD_LIMIT` for `invalidate_chain`'s
+    own deep-invalidation call below -- the one place Core's own
+    `(++disconnected <= 10) && ret` gate applies, since it counts
+    `Chainstate::InvalidateBlock`'s own per-block disconnect loop and
+    not `ActivateBestChainStep`'s ordinary one, which always passes
+    `true` for its own single end-of-reorg call
+    (`src/validation.cpp:3314`, same tag). `to_remove` already carries
+    Core's own disconnectpool order, tip-first -- the one
+    `_rev_blocks_to_remove` builds and `invalidate_chain` passes
+    straight through -- so `readd_ok` below counts against that order
+    directly, ahead of the `reversed` loop that walks it oldest-first
+    for re-add.
+    """
+    readd_ok = {
+        rev_block.hash: readd_limit is None or i < readd_limit
+        for i, rev_block in enumerate(to_remove)
+    }
     # oldest-abandoned-block first, the opposite of to_remove's own
     # tip-first order above: a transaction from a later abandoned
     # block may spend an output only an earlier abandoned block's
@@ -444,14 +479,28 @@ def _reconcile_mempool_for_reorg(
         if removed_block is None:
             err_msg = f"block just removed is missing: {rev_block.hash.hex()}"
             raise ChainstateInconsistencyError(err_msg)
-        for tx in removed_block.transactions[1:]:
-            # a coinbase is never a mempool entrant on any path
-            # into it, and one that is only valid on the branch
-            # just abandoned is never valid again: the output it
-            # spent no longer exists on any chain. Every other
-            # entrant is checked before it is trusted, and this is
-            # the one path into the mempool that skipped that.
-            # btclib-org/btclib-node#85
+        for tx in removed_block.transactions:
+            # Core's own disconnectpool holds the whole block,
+            # coinbase included (`AddTransactionsFromBlock(block.vtx)`),
+            # and `MaybeUpdateMempoolForReorg` never re-adds one
+            # (`(*it)->IsCoinBase() ||`, `src/validation.cpp`, at
+            # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the output it
+            # spent no longer exists on any chain, so it is never a
+            # mempool entrant on any path into it. What already spends
+            # one of its outputs is the orphan `removeRecursive` takes
+            # out. `verify_mempool_acceptance` would refuse a coinbase
+            # too, so the `is_coinbase` test states Core's rule rather
+            # than deciding the outcome. btclib-org/btclib-node#85
+            if tx.is_coinbase or not readd_ok[rev_block.hash]:
+                # A coinbase, or a transaction past Core's own 10-block
+                # cap -- `fAddToMempool=false` -- is not attempted at
+                # all, and whatever already depends on it in the mempool
+                # is now an orphan, exactly the case
+                # `MaybeUpdateMempoolForReorg`'s own `removeRecursive`
+                # answers for a transaction that "doesn't make it in to
+                # the mempool" (same citation as `bypass_limits` below).
+                node.mempool.remove_dependents(tx)
+                continue
             try:
                 # Core's own `bypass_limits=true` for this re-add
                 # (`MaybeUpdateMempoolForReorg`, `src/validation.cpp`,
@@ -460,6 +509,13 @@ def _reconcile_mempool_for_reorg(
                 # feerate floor a newcomer is. btclib-org/btclib-node#1245
                 fee, vsize = verify_mempool_acceptance(node, tx, bypass_limits=True)
             except MissingPrevoutError, BTClibValueError:
+                # Rejected on re-add, whether for a prevout this walk's
+                # own earlier iterations have not yet restored or for
+                # anything else `verify_mempool_acceptance` refuses: the
+                # identical "doesn't make it in to the mempool" shape the
+                # past-the-cap branch above answers, and the same
+                # `removeRecursive` citation answers it.
+                node.mempool.remove_dependents(tx)
                 continue
             # Core's own `nHeight`, the active chain's own tip height at
             # acceptance (`Mempool.heights`' own docstring,
@@ -485,6 +541,113 @@ def _reconcile_mempool_for_reorg(
         # runs once per transaction rather than once per block.
         # btclib-org/btclib-node#294
         node.mempool.note_block_connected()
+    if to_remove:
+        # Core's own `removeForReorg` runs every time
+        # `MaybeUpdateMempoolForReorg` does, whether or not
+        # `fAddToMempool` holds (same citation as `_still_final_and_mature`
+        # below) -- unlike the re-add above, gated on `to_remove` alone
+        # rather than on `readd_limit`. Not run on a pure extend
+        # (`to_remove` empty): the chain's own height and MTP only ever
+        # move forward there, so finality, sequence locks and coinbase
+        # maturity can only ever become easier to satisfy, never harder
+        # -- Core's own `ConnectTip` never calls this path either,
+        # running `removeForBlock` alone. btclib-org/btclib-node#1570
+        _evict_immature_or_nonfinal(node)
+
+
+def _still_final_and_mature(node: Node, tx: Tx) -> bool:
+    """Whether `tx`, already held, is still final and mature against the tip.
+
+    Core's own `filter_final_and_mature`, the predicate
+    `MaybeUpdateMempoolForReorg`'s own `removeForReorg` call filters the
+    whole mempool by, every time it runs (`src/validation.cpp:348-392`,
+    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): finality
+    (`CheckFinalTxAtTip`), BIP68 sequence locks
+    (`CheckSequenceLocksAtTip`) and, for a coinbase-spending input,
+    `COINBASE_MATURITY` -- all three re-checked against the chain's own
+    tip as it stands now, once a disconnect can have moved it backward
+    under a transaction that was already held. `verify_mempool_acceptance`
+    below checks the identical three things at acceptance time; this is
+    deliberately not folded into one helper with it, since a prevout
+    this cannot resolve is answered differently here than there --
+    kept (`return True` below) rather than raised on,
+    `verify_mempool_acceptance`'s own `MissingPrevoutError` being for a
+    transaction never yet accepted, not one already held.
+
+    Keeping it is not justified by `Mempool.remove_conflicts`, which
+    runs only from `_reconcile_mempool_for_reorg`'s own `to_add` loop:
+    `invalidate_chain`'s call passes `to_add=[]`, so it never runs there.
+    What keeps such an entry from reaching this function is the re-add
+    loop just above that one. An unresolvable prevout here is the output
+    of a disconnected transaction that did not make it back into the
+    mempool -- a coinbase, one past the 10-block cap, or one
+    `verify_mempool_acceptance` refused -- and each of those three
+    branches calls `Mempool.remove_dependents` on it first. The `True`
+    below is the fallback for a prevout none of them explains, which this
+    tree has no known way to produce.
+    """
+    block_index = node.chainstate.block_index
+    utxo_index = node.chainstate.utxo_index
+    mempool = node.mempool
+    spend_height = len(block_index.active_chain)
+    tip_hash = block_index.active_chain[-1]
+    tip_header = block_index.header_dict[tip_hash].header
+    tip_height = spend_height - 1
+    parent_of = parent_lookup(node)
+    tip_mtp = median_time_past(tip_header, tip_height, parent_of)
+
+    if not is_final(tx, spend_height, tip_mtp):
+        return False
+
+    prevout_coins: list[Coin] = []
+    for tx_in in tx.vin:
+        prevout_bytes = tx_in.prev_out.serialize(check_validity=False)
+        coin = utxo_index.get_coin(prevout_bytes)
+        if coin:
+            prevout_coins.append(coin)
+        else:
+            previous_tx = mempool.get_tx(tx_in.prev_out.tx_id)
+            if previous_tx and tx_in.prev_out.vout < len(previous_tx.vout):
+                tx_out = previous_tx.vout[tx_in.prev_out.vout]
+                prevout_coins.append(Coin(tx_out, spend_height, is_coinbase=False))
+            else:
+                return True
+
+    def ancestor_median_time_past(height: int) -> int:
+        header = header_at_height(tip_header, tip_height, height, parent_of)
+        return median_time_past(header, height, parent_of)
+
+    try:
+        assert_sequence_locks(
+            tx, prevout_coins, spend_height, tip_mtp, ancestor_median_time_past
+        )
+    except BTClibValueError:
+        return False
+
+    for coin in prevout_coins:
+        depth = spend_height - coin.height
+        if coin.is_coinbase and depth < COINBASE_MATURITY:
+            return False
+    return True
+
+
+def _evict_immature_or_nonfinal(node: Node) -> None:
+    """Evict every held transaction `_still_final_and_mature` now refuses.
+
+    Core's own `removeForReorg` (same citation as
+    `_still_final_and_mature` above): every remaining entry the
+    predicate flags is removed with its own descendants,
+    `CTxMemPool::RemoveStaged`'s own `CalculateDescendants` matched here
+    by `Mempool.remove_with_descendants`. Snapshots `node.mempool
+    .transactions` before the loop, since eviction mutates it, and skips
+    a wtxid a descendant's own removal already took out by the time
+    this reaches it.
+    """
+    for wtxid, tx in list(node.mempool.transactions.items()):
+        if wtxid not in node.mempool.transactions:
+            continue
+        if not _still_final_and_mature(node, tx):
+            node.mempool.remove_with_descendants(wtxid)
 
 
 # update_chain's own step once a fork has committed, whatever
@@ -1120,20 +1283,62 @@ def _resolve_trial_exception(
     raise exc
 
 
+def _heaviest_downloaded_descendant(
+    block_index: BlockIndex, block_hash: bytes
+) -> bytes:
+    """Return the most-work downloaded block built on `block_hash`.
+
+    `block_hash` itself where nothing downloaded is built on it: Core's
+    `setBlockIndexCandidates` holds only blocks whose data, and every
+    ancestor's, has arrived.
+    """
+    heaviest = block_hash
+    to_visit = [block_hash]
+    while to_visit:
+        current = to_visit.pop()
+        if block_index.chainwork[current] > block_index.chainwork[heaviest]:
+            heaviest = current
+        to_visit.extend(
+            child
+            for child in block_index.children.get(current, ())
+            if block_index.get_block_info(child).downloaded
+        )
+    return heaviest
+
+
 def _invalidate_failed_block(
     node: Node, block_index: BlockIndex, failed_hash: bytes
 ) -> None:
-    """Mark `failed_hash` invalid and raise the fork warning it may trigger.
+    """Mark `failed_hash` invalid, weigh its branch, and check the fork warning.
 
-    A function of its own and not the two lines inline in `update_chain`'s
-    own tail -- ruff's own `too-many-statements` already counts
-    `update_chain` at its ceiling without this pair. Core's own
-    `InvalidChainFound` calls `CheckForkWarningConditions` right after
-    marking a block invalid (`src/validation.cpp:1987`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag); `check_fork_warning_conditions`
-    below is that same call, for btclib-org/btclib-node#1522.
+    A function of its own and not inline in `update_chain`'s own tail --
+    ruff's own `too-many-statements` already counts `update_chain` at its
+    ceiling. Core, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, names
+    three blocks as `m_best_invalid` in turn (`src/validation.cpp`):
+
+    - `ConnectTip` calls `InvalidBlockFound` on the failed block (`:3090`),
+      which is `update_header_index` here;
+    - `ActivateBestChainStep` calls `InvalidChainFound` on the top of the
+      batch it was connecting towards its most-work candidate (`:3287`),
+      and checks the warning (`:1987`);
+    - the next `FindMostWorkChain` meets that candidate, finds its failed
+      ancestor, and names the candidate itself (`:3190-3191`).
+
+    The candidate here is the heaviest block built on `failed_hash` whose
+    branch is downloaded; it is weighed before the one check, and carries
+    at least the batch top's work.
+
+    Three differences remain. Core's candidate is its most-work one,
+    where this tree tries `get_first_candidate`'s. Core may name only its
+    batch top, 32 blocks above the fork, at the first check, and the
+    candidate itself at the next, so after a reorg 26 blocks deep or more
+    this tree can raise the warning one check earlier. And Core checks
+    against its tip part-way through the reorg, and again once it
+    reconnects; this tree's trial never moves `active_chain`, so the one
+    check here is against the tip before the trial.
     """
     update_header_index(block_index, failed_hash)
+    block_index.weigh_invalid(_heaviest_downloaded_descendant(block_index, failed_hash))
     check_fork_warning_conditions(node)
 
 
@@ -1273,6 +1478,200 @@ def update_chain(node: Node) -> None:
 
     if not block_index.get_first_candidate():
         settle_at_no_candidate(node)
+
+
+# invalidate_chain and reconsider_chain's own last step: Core's
+# `ActivateBestChain` (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7,
+# the v31.1 tag) loops internally until the active tip is the best one
+# `setBlockIndexCandidates` holds; this node's own `update_chain` only
+# ever takes one step -- one candidate, its whole fork -- per call, so an
+# operator command that means to settle the chain fully loops it here
+# rather than leaving a still-available better candidate for `Node`'s own
+# next pass to pick up. Bounded by the tip actually moving rather than by
+# a call count: each successful step strictly raises the active chain's
+# own chainwork (`_ready_fork`/`get_first_candidate` only ever offer a
+# candidate outweighing it), so there is no cycle to loop forever on, and
+# a step that finds nothing ready -- `_ready_fork` answering `None`, a
+# candidate not fully downloaded among them -- leaves the tip exactly
+# where it was, which is what ends the loop.
+def _activate_best_chain(node: Node) -> None:
+    block_index = node.chainstate.block_index
+    while True:
+        tip = block_index.active_chain[-1]
+        update_chain(node)
+        if block_index.active_chain[-1] == tip:
+            return
+
+
+def invalidate_chain(node: Node, block_hash: bytes) -> None:
+    """Mark `block_hash` invalid, forcing the chain off it, then retry.
+
+    Core's own `InvalidateBlock`, the free RPC-layer function
+    (`src/rpc/blockchain.cpp:1695-1714`) calling `Chainstate::InvalidateBlock`
+    (`src/validation.cpp`), both at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag. `rpc.callbacks.invalidate_block` is this function's only caller,
+    and has already refused a `block_hash` this index does not know
+    (Core's own `RPC_INVALID_ADDRESS_OR_KEY`); Core's own silent no-op
+    for the genesis block (`if (pindex->nHeight == 0) return false`) is
+    answered below, in this function, rather than there, since
+    `BlockIndex.invalidate` itself has no such floor and would mark the
+    whole index invalid by walking every block ever built on genesis.
+
+    `BlockIndex.invalidate` already marks `block_hash` and everything
+    indexed on top of it; what Core's own disconnect loop adds beyond
+    that, and this repeats, is forcing the active chain off that lineage
+    even where nothing yet outweighs its own work -- `_ready_fork` and
+    `update_chain` only ever connect a candidate that *beats* the active
+    chain, never disconnect one that is merely marked bad, so a block
+    invalidated deep in the active chain would otherwise sit there
+    invalid-on-disk and still active-in-memory forever.
+
+    The disconnect itself reuses `update_chain`'s own tip-first helpers
+    -- `_rev_blocks_to_remove`, `UtxoIndex.apply_rev_block`,
+    `_finalize_fork` -- run here directly rather than through that
+    function's own trial loop, since there is no new block content to
+    validate on the way down, only already-connected blocks to undo; a
+    failure partway through -- `_rev_blocks_to_remove`'s own
+    missing-patch `ChainstateInconsistencyError`, or one
+    `apply_rev_block` raises -- is answered the way
+    `rpc.callbacks._validate_extending_tip` already answers
+    `submit_block`'s own fatal case: `node.terminate_flag` set, then
+    left to propagate. What that propagation actually reaches is
+    `rpc.main`'s own dispatcher (`_execute`), which
+    catches any `Exception` a callback raises and answers
+    `INTERNAL_ERROR` with it -- not Core's own `RPC_DATABASE_ERROR`,
+    since this tree carries no per-failure vocabulary that specific,
+    and not left uncaught either.
+
+    Core does not treat every failure on this path as fatal the way
+    this does. `Chainstate::DisconnectTip`'s own `ReadBlock` or
+    `DisconnectBlock` failure (`src/validation.cpp:2952-2955` and
+    `:2961-2964`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) returns
+    `false` without touching `state` at all, so the free
+    `InvalidateBlock` above still finds `state.IsValid()` true, still
+    runs `ActivateBestChain`, and the RPC answers `null` -- the node
+    keeps running and serving the next call. Only a `FlushStateToDisk`
+    failure on the same path (`:2981-2983`) is fatal: it reaches
+    `FatalError` (`:2140-2144`, same tag), which is what marks `state`
+    invalid, `state.Error(...)` in its own body -- `AbortNode`
+    (`node/abort.cpp`, same tag) is a different function, reached only
+    through `notifications.fatalError`'s own callback, and only
+    requests the shutdown rather than marking `state` or aborting the
+    process itself. `RPC_DATABASE_ERROR` answers for `state` having
+    been marked, which is `FatalError`'s own doing. This
+    tree's own `apply_rev_block` and `_finalize_fork` give no way to
+    tell a merely-missing read back from real corruption --
+    `ChainstateInconsistencyError`'s own docstring in `db.py` is where
+    that is argued -- so both are answered here as Core's fatal case
+    alone is: stricter than Core in the direction of stopping rather
+    than silently continuing past unread data, not a divergence chosen
+    for its own sake.
+
+    `block_index.invalidate` runs only once the disconnect (if any) has
+    fully committed, and not before: `_finalize_fork`'s own to_remove
+    loop stages every disconnected hash back to `BlockStatus.valid`
+    through `stage_status`, which would silently undo a `set_status(...,
+    invalid)` written earlier over the same hash, for the identical
+    reason `block_index.py`'s own module docstring already argues for
+    `update_chain`'s ordinary tip flip-flop (btclib-org/btclib-node#586)
+    -- invalidating after is what lets `invalid` be the status that
+    actually survives the next flush.
+
+    `generate_block_candidates` rebuilds `block_candidates` whole after a
+    disconnect, and only after one: disconnecting lowers the active
+    chain's own chainwork, which can make a candidate `get_first_candidate`
+    already evicted as permanently stale against the old, higher tip
+    relevant again -- unreachable any other way once popped. Invalidating
+    a block that was never on the active chain changes nothing about the
+    tip's own work, so `BlockIndex.invalidate`'s own targeted removal
+    from `block_candidates` is already the whole of what is needed there.
+    """
+    block_index = node.chainstate.block_index
+    block_info = block_index.get_block_info(block_hash)
+    if block_info.index == 0:
+        # Core's own `InvalidateBlock`, `assert(pindex); if
+        # (pindex->nHeight == 0) return false;` -- genesis can never be
+        # invalidated, and BlockValidationState is never marked invalid
+        # on this path either, so the RPC answers null rather than an
+        # error (measured against a real v31.1.0 regtest node)
+        return
+
+    if block_info.status == BlockStatus.in_active_chain:
+        to_remove_hash = block_index.active_chain[block_info.index :]
+        to_remove = _rev_blocks_to_remove(node, to_remove_hash)
+        try:
+            for rev_block in to_remove:
+                node.chainstate.utxo_index.apply_rev_block(rev_block)
+            _finalize_fork(node, to_add=[], to_remove=to_remove)
+        except Exception:
+            node.terminate_flag.set()
+            raise
+        block_index.invalidate(block_hash)
+        block_index.generate_block_candidates()
+        update_ibd_status(node)
+        _reconcile_mempool_for_reorg(
+            node, to_remove, [], readd_limit=_INVALIDATE_MEMPOOL_READD_LIMIT
+        )
+    else:
+        block_index.invalidate(block_hash)
+    # Core's own `InvalidChainFound(to_mark_failed)`, which ends in
+    # `CheckForkWarningConditions()` (`src/validation.cpp:3721` and
+    # `:1987`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), run once
+    # the disconnect is done and before `ActivateBestChain`
+    check_fork_warning_conditions(node)
+
+    _activate_best_chain(node)
+
+
+def reconsider_chain(node: Node, block_hash: bytes) -> None:
+    """Undo `invalidate_chain`'s own mark on `block_hash`'s lineage, then retry.
+
+    Core's own `ReconsiderBlock`, the free RPC-layer function
+    (`src/rpc/blockchain.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag): `BlockIndex.reconsider` is this tree's own
+    `ResetBlockFailureFlags` plus the recompute
+    `ChainstateManager::RecalculateBestHeader` runs separately there --
+    folded into the one call here since this index carries no `m_best_header`
+    pointer apart from `header_index` itself, and `reconsider` already
+    rebuilds that the same way `invalidate` conditionally does.
+    `_activate_best_chain` is this tree's own `ActivateBestChain`, run
+    unconditionally the way Core's own `ReconsiderBlock` runs it.
+
+    A large-work-invalid-chain warning already raised is not cleared
+    here, only at the next `check_fork_warning_conditions` call. Core
+    behaves the same: `ActivateBestChain` reaches
+    `CheckForkWarningConditions` only through `ActivateBestChainStep`,
+    which runs only where a better chain is found
+    (`src/validation.cpp:3423-3424` and `:3318`, same sha).
+
+    `rpc.callbacks.reconsider_block` is this function's only caller, and
+    has already refused a `block_hash` this index does not know
+    (`RPC_INVALID_ADDRESS_OR_KEY`, Core's own answer for the identical
+    lookup failure). Reconsidering a `block_hash` this index knows but
+    never marked invalid is a no-op the way Core's own loop is: nothing
+    in `header_dict` carries the mark `reconsider`'s own filter looks
+    for, so nothing is cleared, and `_activate_best_chain` finds the tip
+    already best.
+
+    `BlockStatus` carries no counterpart to Core's own separate
+    `BLOCK_FAILED_VALID` bit: `valid` and `invalid` share the one field
+    `reconsider` clears, so `reconsider` cannot hand a previously-connected
+    block back its old `valid`/`in_active_chain` status -- `valid_header`
+    is what it answers with instead, forcing `_validate_block`'s own
+    content checks to run again before such a block is trusted enough to
+    reconnect, where Core's own separate `BLOCK_VALID_TRANSACTIONS` bit
+    survives the round trip untouched and skips them. Stricter than Core
+    in the direction that costs a redundant revalidation rather than one
+    that is skipped, forced by this tree's own single-field `BlockStatus`
+    (`block_index.py`'s own class docstring) rather than chosen against
+    it.
+    """
+    # BlockIndex.reconsider's own first statement is get_block_info,
+    # raising KeyError for a hash this index does not know -- unreached
+    # in practice, rpc.callbacks.reconsider_block having already refused
+    # that call before this function is ever entered
+    node.chainstate.block_index.reconsider(block_hash)
+    _activate_best_chain(node)
 
 
 # Core's own `MAX_STANDARD_TX_SIGOPS_COST` and `DEFAULT_BYTES_PER_SIGOP`

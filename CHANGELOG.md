@@ -1486,6 +1486,29 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   served from `main`, and names its properties `btclib:*`, where they were
   `btclib-node:*` (issue btclib-org/.github#1478).
 
+### `invalidateblock` and `reconsiderblock` are served
+
+- **`invalidateblock` marks a block invalid, forces the chain off it, and
+  checks the large-work-invalid-chain warning** (closes #1480).
+- **`reconsiderblock` undoes that mark and retries the chain** (closes #1536).
+
+### `invalidateblock` reconnects a branch it was previously on
+
+- **A branch a reorg displaced, still `downloaded`, is offered as a
+  block candidate again once what displaced it is invalidated, matching
+  Core's own `InvalidateBlock`** (closes #1561).
+
+### Deep invalidation matches Core's own mempool reconciliation
+
+- **A disconnected transaction re-enters the mempool only for the first
+  ten blocks a deep `invalidateblock` disconnects, and a held one a
+  disconnect leaves immature or non-final is evicted** (closes #1570).
+
+### `invalidateblock` weighs only the block it invalidates for the large-work warning
+
+- **A deep `invalidateblock` raises no large-work warning, as Core's
+  `InvalidChainFound` weighs only the block it is handed** (closes #1593).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

@@ -7,6 +7,7 @@
 import secrets
 import time
 from fractions import Fraction
+from typing import Any, override
 
 import pytest
 from btclib.fee import FeeRate, fee_from_vsize
@@ -907,6 +908,102 @@ def test_a_confirmed_spend_evicts_its_conflicts_and_their_descendants() -> None:
     assert not mempool.contains_tx(child)
     assert mempool.contains_tx(unrelated)
     assert set(mempool.outpoint_spender) == {(unrelated.vin[0].prev_out.tx_id, 0)}
+
+
+def test_remove_dependents_walks_a_chain_of_held_spenders() -> None:
+    """`remove_dependents` walks a chain, not only a spender directly held.
+
+    `tx` itself is never a member here -- the case
+    `main._reconcile_mempool_for_reorg` calls it for, a disconnected
+    transaction past the 10-block cap and never re-added -- so `child`
+    and `grandchild`, both already held, are what it has to find through
+    `spent_by` alone. btclib-org/btclib-node#1570
+    """
+    mempool = Mempool(Logger(debug=True))
+    dropped = a_spend_of([(secrets.token_bytes(32), 0)])
+    child = a_spend_of([(dropped.id, 0)])
+    grandchild = a_spend_of([(child.id, 0)])
+    assert mempool.add_tx(child, 1000)
+    assert mempool.add_tx(grandchild, 1000)
+
+    mempool.remove_dependents(dropped)
+
+    assert not mempool.contains_tx(child)
+    assert not mempool.contains_tx(grandchild)
+    assert mempool.size == 0
+
+
+def test_remove_dependents_does_not_revisit_a_shared_descendant() -> None:
+    """A descendant reached through two parents is walked once, not twice.
+
+    `dropped` has two outputs; `child_a` and `child_b` each spend one,
+    and `grandchild` spends both of theirs in turn -- a diamond, not a
+    chain, so the walk reaches `grandchild`'s own wtxid a second time
+    once both parents are processed. That second arrival is the
+    `if candidate_wtxid in dependents: continue` branch
+    `test_remove_dependents_walks_a_chain_of_held_spenders` above, a
+    single-parent chain, never reaches. The guard is a shortcut: the
+    removed set is the same without it, since `dependents` is a set. What
+    it saves is a second `spent_by` lookup for `grandchild`, so that is
+    what is counted: `dropped`, `child_a`, `child_b` and `grandchild`
+    once each.
+    """
+    mempool = Mempool(Logger(debug=True))
+    dropped = Tx(
+        version=1,
+        lock_time=0,
+        vin=[
+            TxIn(
+                prev_out=OutPoint(secrets.token_bytes(32), 0),
+                script_sig=script.serialize([secrets.token_bytes(32)]),
+                sequence=0xFFFFFFFF,
+            )
+        ],
+        vout=[
+            TxOut(value=1, script_pub_key=script.serialize([secrets.token_bytes(32)])),
+            TxOut(value=1, script_pub_key=script.serialize([secrets.token_bytes(32)])),
+        ],
+    )
+    child_a = a_spend_of([(dropped.id, 0)])
+    child_b = a_spend_of([(dropped.id, 1)])
+    grandchild = a_spend_of([(child_a.id, 0), (child_b.id, 0)])
+    assert mempool.add_tx(child_a, 1000)
+    assert mempool.add_tx(child_b, 1000)
+    assert mempool.add_tx(grandchild, 1000)
+    lookups: list[bytes] = []
+
+    class CountingSpentBy(dict[bytes, set[bytes]]):
+        @override
+        def get(self, key: bytes, default: object = None) -> Any:
+            lookups.append(key)
+            return super().get(key, default)
+
+    mempool.spent_by = CountingSpentBy(mempool.spent_by)
+
+    mempool.remove_dependents(dropped)
+
+    assert len(lookups) == 4
+    assert not mempool.contains_tx(child_a)
+    assert not mempool.contains_tx(child_b)
+    assert not mempool.contains_tx(grandchild)
+    assert mempool.size == 0
+
+
+def test_remove_with_descendants_on_an_absent_wtxid_is_a_no_op() -> None:
+    """`remove_with_descendants` of a wtxid never held changes nothing.
+
+    `main._evict_immature_or_nonfinal`'s own snapshot-then-skip guard
+    covers the case a descendant's own removal already popped a later
+    wtxid in the same pass; this is the same absence, reached directly.
+    """
+    mempool = Mempool(Logger(debug=True))
+    held = a_spend_of([(secrets.token_bytes(32), 0)])
+    assert mempool.add_tx(held, 1000)
+
+    mempool.remove_with_descendants(secrets.token_bytes(32))
+
+    assert mempool.contains_tx(held)
+    assert mempool.size == 1
 
 
 def test_an_entry_is_counted_and_priced_by_the_vsize_it_came_with() -> None:

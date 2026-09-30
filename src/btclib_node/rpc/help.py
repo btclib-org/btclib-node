@@ -30,10 +30,11 @@ function sorts `vCommands`: by category, and by
 name within it. `help_rpc` groups this node's own served commands
 under those same headings and in that same order, the way Core's own
 bare listing would if run against a `bitcoind` serving only this
-node's own method table -- `addconnection` being this table's first
-hidden entry, `category == "hidden"` is left out of that listing the
-same way Core's own bare listing leaves a `category == "hidden"` entry
-out of its (`answer_help`'s own docstring is where that check is
+node's own method table -- `addconnection`, `invalidateblock` and
+`reconsiderblock` being this table's hidden entries, `category ==
+"hidden"` is left out of that listing the same way Core's own bare
+listing leaves a `category == "hidden"` entry out of its
+(`answer_help`'s own docstring is where that check is
 argued, `_BARE_LISTING`'s own comment where it is made real). A hidden
 command's own help still answers in full for `help <command>` named
 explicitly -- `HELP_TEXT` carries every served method alike, hidden or
@@ -530,6 +531,39 @@ _HELP_PRUNEBLOCKCHAIN = (
     "Examples:\n"
     "> bitcoin-cli pruneblockchain 1000\n"
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "pruneblockchain", "params": [1000]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
+_HELP_INVALIDATEBLOCK = (
+    'invalidateblock "blockhash"\n'
+    "\n"
+    "Permanently marks a block as invalid, as if it violated a consensus rule.\n"
+    "\n"
+    "Arguments:\n"
+    "1. blockhash    (string, required) the hash of the block to mark as invalid\n"
+    "\n"
+    "Result:\n"
+    "null    (json null)\n"
+    "\n"
+    "Examples:\n"
+    '> bitcoin-cli invalidateblock "blockhash"\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "invalidateblock", "params": ["blockhash"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
+_HELP_RECONSIDERBLOCK = (
+    'reconsiderblock "blockhash"\n'
+    "\n"
+    "Removes invalidity status of a block, its ancestors and its descendants, reconsider them for activation.\n"
+    "This can be used to undo the effects of invalidateblock.\n"
+    "\n"
+    "Arguments:\n"
+    "1. blockhash    (string, required) the hash of the block to reconsider\n"
+    "\n"
+    "Result:\n"
+    "null    (json null)\n"
+    "\n"
+    "Examples:\n"
+    '> bitcoin-cli reconsiderblock "blockhash"\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "reconsiderblock", "params": ["blockhash"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
 _HELP_GETRPCINFO = (
@@ -1206,6 +1240,8 @@ HELP_TEXT: dict[str, str] = {
     "getblockhash": _HELP_GETBLOCKHASH,
     "getblockheader": _HELP_GETBLOCKHEADER,
     "getchaintips": _HELP_GETCHAINTIPS,
+    "invalidateblock": _HELP_INVALIDATEBLOCK,
+    "reconsiderblock": _HELP_RECONSIDERBLOCK,
     "getmempoolentry": _HELP_GETMEMPOOLENTRY,
     "getmempoolinfo": _HELP_GETMEMPOOLINFO,
     "getrawmempool": _HELP_GETRAWMEMPOOL,
@@ -1245,6 +1281,8 @@ CATEGORY: dict[str, str] = {
     "getblockhash": "Blockchain",
     "getblockheader": "Blockchain",
     "getchaintips": "Blockchain",
+    "invalidateblock": "hidden",
+    "reconsiderblock": "hidden",
     "getmempoolentry": "Blockchain",
     "getmempoolinfo": "Blockchain",
     "getrawmempool": "Blockchain",
@@ -1320,7 +1358,8 @@ def answer_help(params: list[Any]) -> str:
     `CRPCTable::help`'s own loop makes on `pcmd->category == "hidden"`
     for its `strCommand == ""` arm (`src/rpc/server.cpp:87`, same tag).
     With a command's name, that command's own untruncated help --
-    `addconnection` included, Core's own loop answering a named hidden
+    `addconnection`, `invalidateblock` and `reconsiderblock` included,
+    Core's own loop answering a named hidden
     command exactly as it answers any other, that same line's `||`
     never reached once `strMethod == strCommand` -- or, for a name
     nothing here serves, Core's own literal `"help: unknown command:

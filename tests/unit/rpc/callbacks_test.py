@@ -57,7 +57,11 @@ from btclib_node.exceptions import (
     TxRejectedError,
 )
 from btclib_node.log import Logger
-from btclib_node.main import MempoolAcceptance, verify_mempool_acceptance
+from btclib_node.main import (
+    MempoolAcceptance,
+    check_fork_warning_conditions,
+    verify_mempool_acceptance,
+)
 from btclib_node.mempool import Mempool
 from btclib_node.notify import Warnings
 from btclib_node.p2p.address import peer_address
@@ -89,9 +93,11 @@ from btclib_node.rpc.callbacks import (
     get_tx_out,
     get_tx_out_set_info,
     help_rpc,
+    invalidate_block,
     list_banned,
     ping,
     prune_blockchain,
+    reconsider_block,
     send_raw_transaction,
     service_names,
     set_ban,
@@ -5349,6 +5355,640 @@ def test_get_chain_tips_answers_an_invalid_fork(
 
     by_hash = {tip["hash"]: tip for tip in tips}
     assert by_hash[fork[0].hash]["status"] == "invalid"
+
+
+def test_invalidate_block_with_no_arguments_is_answered_with_the_usage() -> None:
+    """A missing `blockhash` is Core's own `HelpResult` shape, `MISC_ERROR`."""
+    with pytest.raises(RpcError) as raised:
+        invalidate_block(cast("Node", None), _CONN, [])
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
+    assert raised.value.message == HELP_TEXT["invalidateblock"]
+
+
+def test_invalidate_block_refuses_a_blockhash_of_the_wrong_json_type() -> None:
+    """A non-string `blockhash` is `TYPE_ERROR`, checked before any lookup."""
+    with pytest.raises(RpcError) as raised:
+        invalidate_block(cast("Node", None), _CONN, [1234])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+
+
+def test_invalidate_block_refuses_an_unknown_hash(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """An unindexed hash answers Core's own `"Block not found"`."""
+    node = regtest_node()
+    with pytest.raises(RpcError) as raised:
+        invalidate_block(node, _CONN, [(b"\x11" * 32).hex()])
+    assert raised.value.code == RPCErrorCode.INVALID_ADDRESS_OR_KEY
+    assert raised.value.message == "Block not found"
+
+
+def test_invalidate_block_on_genesis_is_a_silent_no_op(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Genesis can never be invalidated: Core's own `nHeight == 0` floor.
+
+    Measured against a real regtest bitcoind v31.1.0: `invalidateblock`
+    on the genesis hash answers `null` rather than an error, and changes
+    nothing.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, chain)
+    block_index = node.chainstate.block_index
+    tip_before = block_index.active_chain[-1]
+
+    invalidate_block(node, _CONN, [node.chain.genesis.hash.hex()])
+
+    assert block_index.active_chain[-1] == tip_before
+    assert block_index.get_block_info(node.chain.genesis.hash).status == (
+        BlockStatus.in_active_chain
+    )
+
+
+def test_invalidate_block_disconnects_the_tip(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Invalidating the active tip pops it off, and marks it invalid."""
+    node = regtest_node()
+    chain = generate_random_chain(3, node.chain.genesis.hash)
+    connect(node, chain)
+    block_index = node.chainstate.block_index
+    tip_hash = chain[-1].header.hash
+    assert block_index.active_chain[-1] == tip_hash
+
+    invalidate_block(node, _CONN, [tip_hash.hex()])
+
+    assert block_index.active_chain[-1] == chain[-2].header.hash
+    assert block_index.get_block_info(tip_hash).status == BlockStatus.invalid
+
+
+def test_invalidate_block_on_a_mid_chain_block_disconnects_down_to_its_parent(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Invalidating a deep ancestor disconnects everything above it.
+
+    Measured against a real regtest bitcoind v31.1.0 on a five-block
+    chain: invalidating the block at height 3 leaves the tip at height 2
+    -- this is that same shape, at the sizes this test builds.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(5, node.chain.genesis.hash)
+    connect(node, chain)
+    block_index = node.chainstate.block_index
+    # chain[2] is height 3: one-indexed, genesis is active_chain[0]
+    target = chain[2].header.hash
+
+    invalidate_block(node, _CONN, [target.hex()])
+
+    assert block_index.active_chain[-1] == chain[1].header.hash
+    assert len(block_index.active_chain) == 3
+    for block in chain[2:]:
+        assert block_index.get_block_info(block.header.hash).status == (
+            BlockStatus.invalid
+        )
+    for block in chain[:2]:
+        assert block_index.get_block_info(block.header.hash).status == (
+            BlockStatus.in_active_chain
+        )
+
+
+def test_invalidate_block_returns_a_disconnected_transaction_to_the_mempool(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A confirmed spend the invalidated block carried re-enters the mempool.
+
+    The same resurrection `test_a_reorg_still_resurrects_a_transaction_
+    its_prevout_survives` (`main_test.py`) already covers for an ordinary
+    reorg: `_reconcile_mempool_for_reorg` is the one function both this
+    and that call, through `main.invalidate_chain`.
+    """
+    node = regtest_node()
+    common = generate_random_chain(COINBASE_MATURITY, node.chain.genesis.hash)
+    resurrectable = generate_random_transaction(common[0].transactions[0].id)
+    tip = build_block(
+        common[-1].header.hash,
+        [generate_coinbase(height=len(common) + 1), resurrectable],
+        len(common),
+    )
+    connect(node, [*common, tip])
+    assert not node.mempool.contains_tx(resurrectable)
+
+    invalidate_block(node, _CONN, [tip.header.hash.hex()])
+
+    assert node.mempool.contains_tx(resurrectable)
+
+
+def test_invalidate_block_on_an_off_chain_candidate_leaves_the_active_chain_be(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Invalidating a header never on the active chain moves no block at all.
+
+    Core's own `pindex_was_in_chain` branch of `InvalidateBlock`: marking
+    an out-of-chain candidate bad still runs `ActivateBestChain`
+    afterward, but there is nothing to disconnect, and nothing here does.
+    """
+    node = regtest_node()
+    heavier = generate_random_chain(3, node.chain.genesis.hash)
+    connect(node, heavier)
+    lighter = generate_random_chain(1, node.chain.genesis.hash)
+    connect(node, lighter)
+    block_index = node.chainstate.block_index
+    tip_before = block_index.active_chain[:]
+    off_chain = lighter[0].header.hash
+    assert off_chain not in block_index.active_chain
+
+    invalidate_block(node, _CONN, [off_chain.hex()])
+
+    assert block_index.active_chain == tip_before
+    assert block_index.get_block_info(off_chain).status == BlockStatus.invalid
+
+
+def test_invalidate_block_stops_the_node_where_the_disconnect_finds_storage_unsafe(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure disconnecting the tip propagates and stops `Node`, unswallowed.
+
+    The same shape `test_submit_block_stops_the_node_where_update_chain_
+    finds_storage_unsafe` already covers for `update_chain`'s own trial:
+    `main.invalidate_chain`'s own disconnect is not inside that trial, so
+    it needs its own `except Exception: node.terminate_flag.set(); raise`,
+    argued in its own docstring, and proven here the same way.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, chain)
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        err_msg = "boom"
+        raise ChainstateInconsistencyError(err_msg)
+
+    monkeypatch.setattr(node.chainstate.utxo_index, "apply_rev_block", boom)
+
+    assert not node.terminate_flag.is_set()
+    with pytest.raises(ChainstateInconsistencyError, match="boom"):
+        invalidate_block(node, _CONN, [chain[-1].header.hash.hex()])
+    assert node.terminate_flag.is_set()
+
+
+def test_reconsider_block_with_no_arguments_is_answered_with_the_usage() -> None:
+    """A missing `blockhash` is Core's own `HelpResult` shape, `MISC_ERROR`."""
+    with pytest.raises(RpcError) as raised:
+        reconsider_block(cast("Node", None), _CONN, [])
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
+    assert raised.value.message == HELP_TEXT["reconsiderblock"]
+
+
+def test_reconsider_block_refuses_a_blockhash_of_the_wrong_json_type() -> None:
+    """A non-string `blockhash` is `TYPE_ERROR`, checked before any lookup."""
+    with pytest.raises(RpcError) as raised:
+        reconsider_block(cast("Node", None), _CONN, [1234])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+
+
+def test_reconsider_block_refuses_an_unknown_hash(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """An unindexed hash answers Core's own `"Block not found"`."""
+    node = regtest_node()
+    with pytest.raises(RpcError) as raised:
+        reconsider_block(node, _CONN, [(b"\x11" * 32).hex()])
+    assert raised.value.code == RPCErrorCode.INVALID_ADDRESS_OR_KEY
+    assert raised.value.message == "Block not found"
+
+
+def test_reconsider_block_on_a_block_never_invalidated_is_a_no_op(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Reconsidering a block nothing ever marked invalid changes nothing."""
+    node = regtest_node()
+    chain = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, chain)
+    block_index = node.chainstate.block_index
+    tip_before = block_index.active_chain[-1]
+
+    reconsider_block(node, _CONN, [chain[0].header.hash.hex()])
+
+    assert block_index.active_chain[-1] == tip_before
+
+
+def test_reconsider_block_undoes_invalidate_block(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Reconsidering an invalidated tip restores the chain and its status.
+
+    The round trip a real regtest bitcoind v31.1.0 answers too: mine
+    five, invalidate the tip, reconsider it, and the tip is back where
+    it started.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(5, node.chain.genesis.hash)
+    connect(node, chain)
+    block_index = node.chainstate.block_index
+    tip_hash = chain[-1].header.hash
+    invalidate_block(node, _CONN, [tip_hash.hex()])
+    assert block_index.active_chain[-1] != tip_hash
+
+    reconsider_block(node, _CONN, [tip_hash.hex()])
+
+    assert block_index.active_chain[-1] == tip_hash
+    assert block_index.get_block_info(tip_hash).status == BlockStatus.in_active_chain
+
+
+def test_reconsider_block_clears_an_invalidated_ancestor_s_whole_lineage(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Reconsidering a mid-chain ancestor clears its descendants too.
+
+    `BlockIndex.reconsider`'s own docstring: not only `block_hash`
+    itself, the way Core's `ResetBlockFailureFlags` walks the whole
+    lineage rather than one entry.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(5, node.chain.genesis.hash)
+    connect(node, chain)
+    block_index = node.chainstate.block_index
+    target = chain[2].header.hash
+    invalidate_block(node, _CONN, [target.hex()])
+    for block in chain[2:]:
+        assert block_index.get_block_info(block.header.hash).status == (
+            BlockStatus.invalid
+        )
+
+    reconsider_block(node, _CONN, [target.hex()])
+
+    assert block_index.active_chain[-1] == chain[-1].header.hash
+    for block in chain:
+        assert block_index.get_block_info(block.header.hash).status != (
+            BlockStatus.invalid
+        )
+
+
+# Core's own `LARGE_WORK_INVALID_CHAIN` text (`src/validation.cpp:1961`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+_LARGE_WORK_WARNING = (
+    "Warning: Found invalid chain more than 6 blocks longer than our best "
+    "chain. This could be due to database corruption or consensus "
+    "incompatibility with peers."
+)
+
+
+def test_invalidate_block_raises_the_fork_warning_its_disconnect_uncovers(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Invalidating an active block checks the fork warning, as Core does.
+
+    Core's own `InvalidateBlock` ends in `InvalidChainFound`, which calls
+    `CheckForkWarningConditions` (`src/validation.cpp:3721` and `:1987`,
+    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The invalid fork
+    carries 14 blocks' worth of work: less than the 10-block tip plus
+    six, more than the 5-block tip the disconnect leaves plus six.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(10, node.chain.genesis.hash)
+    connect(node, chain)
+    block_index = node.chainstate.block_index
+    fork = generate_random_header_chain(14, node.chain.genesis.hash)
+    block_index.add_headers(fork)
+    invalidate_block(node, _CONN, [fork[-1].hash.hex()])
+    assert node.warnings.get_messages() == []
+
+    invalidate_block(node, _CONN, [chain[5].header.hash.hex()])
+
+    assert block_index.active_chain[-1] == chain[4].header.hash
+    assert node.warnings.get_messages() == [_LARGE_WORK_WARNING]
+
+
+def test_reconsider_block_resets_best_invalid_it_clears(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Reconsidering the best invalid header resets `best_invalid`.
+
+    Core's own `ResetBlockFailureFlags` sets `m_best_invalid` to
+    `nullptr` (`src/validation.cpp:3772-3775`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The warning stays until
+    the next check, as in Core: no block is connected, so nothing runs
+    `CheckForkWarningConditions` in between.
+    """
+    node = regtest_node()
+    connect(node, generate_random_chain(10, node.chain.genesis.hash))
+    block_index = node.chainstate.block_index
+    fork = generate_random_header_chain(20, node.chain.genesis.hash)
+    block_index.add_headers(fork)
+    invalidate_block(node, _CONN, [fork[-1].hash.hex()])
+    assert node.warnings.get_messages() == [_LARGE_WORK_WARNING]
+
+    reconsider_block(node, _CONN, [fork[-1].hash.hex()])
+    assert node.warnings.get_messages() == [_LARGE_WORK_WARNING]
+    check_fork_warning_conditions(node)
+
+    assert block_index.best_invalid is None
+    assert node.warnings.get_messages() == []
+
+
+def test_a_deep_invalidate_block_names_the_block_itself_best_invalid(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A deep `invalidateblock` on one chain raises no warning.
+
+    Core's own `InvalidChainFound(to_mark_failed)` weighs only the
+    invalidated block against `m_best_invalid` (`src/validation.cpp:3721`
+    and `:1971-1974`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The
+    descendant `chain[9]` would carry ten blocks' worth of work, more than
+    the remaining tip plus six.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(10, node.chain.genesis.hash)
+    connect(node, chain)
+    block_index = node.chainstate.block_index
+
+    invalidate_block(node, _CONN, [chain[1].header.hash.hex()])
+
+    assert block_index.active_chain[-1] == chain[0].header.hash
+    assert block_index.best_invalid == chain[1].header.hash
+    assert node.warnings.get_messages() == []
+
+
+def test_invalidate_block_reconnects_a_header_only_branch_it_makes_competitive(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A branch never made a candidate for lack of work is found once one is.
+
+    `heavier` connects first, so `lighter`'s own headers -- added while
+    `heavier` is already ahead -- are indexed but never once appended to
+    `block_candidates`: `_insert_valid_headers` only appends a header
+    whose own chainwork beats the active chain's *at the moment it is
+    inserted*, and never re-checks a header already indexed once that
+    stops being true. Invalidating `heavier`'s own second block disconnects
+    down to its first, and `lighter`'s own second block -- never a
+    candidate at all, not merely a stale one -- now outweighs that
+    shortened chain: `block_index.generate_block_candidates`'s own
+    rebuild inside `main.invalidate_chain` is what finds it, over a walk
+    of `header_dict` rather than of the deque that never held it.
+    """
+    node = regtest_node()
+    heavier = generate_random_chain(4, node.chain.genesis.hash)
+    connect(node, heavier)
+    lighter = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, lighter)
+    block_index = node.chainstate.block_index
+    assert block_index.active_chain[-1] == heavier[-1].header.hash
+    assert not any(
+        h == lighter[-1].header.hash for h, _ in block_index.block_candidates
+    )
+
+    invalidate_block(node, _CONN, [heavier[1].header.hash.hex()])
+
+    assert block_index.active_chain[-1] == lighter[-1].header.hash
+    assert block_index.active_chain[1:] == [b.header.hash for b in lighter]
+
+
+def test_invalidate_block_reconnects_a_branch_it_was_previously_on(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A branch a reorg displaced is a candidate once its winner is invalidated.
+
+    Core's own `rpc_invalidateblock.py` functional test, its first case:
+    connect a two-block chain, then a four-block one from genesis, which
+    reorgs the first one off; invalidating the second chain's own first
+    block reorgs back to the first. `generate_block_candidates`'s own
+    docstring is where offering a `valid`-status block -- what the
+    displaced chain's own blocks become -- as a candidate again is
+    argued, matching Core's own `InvalidateBlock`
+    (`src/validation.cpp:3663-3684`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag). btclib-org/btclib-node#1561
+    """
+    node = regtest_node()
+    first = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, first)
+    second = generate_random_chain(4, node.chain.genesis.hash)
+    connect(node, second)
+    block_index = node.chainstate.block_index
+    assert block_index.active_chain[-1] == second[-1].header.hash
+    for block in first:
+        assert block_index.get_block_info(block.header.hash).status == (
+            BlockStatus.valid
+        )
+
+    invalidate_block(node, _CONN, [second[0].header.hash.hex()])
+
+    assert block_index.active_chain[-1] == first[-1].header.hash
+    assert block_index.active_chain[1:] == [b.header.hash for b in first]
+    for block in first:
+        assert block_index.get_block_info(block.header.hash).status == (
+            BlockStatus.in_active_chain
+        )
+    for block in second:
+        assert block_index.get_block_info(block.header.hash).status == (
+            BlockStatus.invalid
+        )
+
+
+def test_invalidate_block_does_not_reconnect_a_branch_of_equal_work(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Pins the divergence `generate_block_candidates`'s own docstring argues.
+
+    `first` (two blocks) connects, then `second` (three blocks, heavier)
+    reorgs it off; invalidating `second`'s own tip reduces it to
+    `second[1]`, exactly `first`'s own work -- and Core would reorg back
+    to `first` there, by `nSequenceId`'s own lower-id tie-break
+    (`node/blockstorage.cpp:174-192`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag), `first` having completed its data first. This index
+    tracks no such order, and `work > current_work` is strict, so the
+    tip simply stays on `second[1]`: btclib-org/btclib-node#1579.
+    """
+    node = regtest_node()
+    first = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, first)
+    second = generate_random_chain(3, node.chain.genesis.hash)
+    connect(node, second)
+    block_index = node.chainstate.block_index
+    assert block_index.active_chain[-1] == second[-1].header.hash
+
+    invalidate_block(node, _CONN, [second[-1].header.hash.hex()])
+
+    assert block_index.active_chain[-1] == second[1].header.hash
+    assert block_index.active_chain[-1] != first[-1].header.hash
+    assert not block_index.block_candidates
+
+
+def test_invalidate_block_drops_a_disconnected_transaction_past_the_ten_block_cap(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Past Core's own 10-block cap, a disconnected transaction is dropped.
+
+    `Chainstate::InvalidateBlock`'s own per-block counter
+    (`++disconnected <= 10`, `src/validation.cpp:3611` and `:3637`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) stops re-adding once the
+    eleventh block disconnects; `_reconcile_mempool_for_reorg`'s own
+    `readd_limit` is that same cap, counted tip-first the way Core's own
+    disconnect loop counts it. The dropped transaction's own mempool
+    child -- never confirmed, so the cap itself never touches it -- is
+    evicted with it, `Mempool.remove_dependents` answering Core's own
+    `removeRecursive` for a transaction that "doesn't make it in to the
+    mempool" (`MaybeUpdateMempoolForReorg`, same file).
+    btclib-org/btclib-node#1570
+    """
+    node = regtest_node()
+    common = generate_random_chain(COINBASE_MATURITY, node.chain.genesis.hash)
+    # Built by hand rather than through `generate_random_chain` past
+    # `COINBASE_MATURITY`: that helper's own daisy chain would have a
+    # later block spend `capped_tx`'s own output, leaving nothing here
+    # for `child` to spend. `capped` is the block the cap drops --
+    # eleven blocks disconnect above and including it, so tip-first it
+    # is the eleventh, past `_INVALIDATE_MEMPOOL_READD_LIMIT` -- and the
+    # ten blocks above it carry nothing but their own coinbase, so
+    # `capped_tx`'s own output stays unspent until `child` spends it.
+    capped_tx = generate_random_transaction(common[0].transactions[0].id)
+    prev_hash = common[-1].header.hash
+    extra_blocks = []
+    for offset in range(11):
+        height = len(common) + 1 + offset
+        txs = [generate_coinbase(height=height)]
+        if offset == 0:
+            txs.append(capped_tx)
+        block = build_block(prev_hash, txs, height - 1)
+        extra_blocks.append(block)
+        prev_hash = block.header.hash
+    chain = [*common, *extra_blocks]
+    connect(node, chain)
+    capped = extra_blocks[0]
+    child = generate_random_transaction(capped_tx.id, value=capped_tx.vout[0].value)
+    fee, vsize = verify_mempool_acceptance(node, child, bypass_limits=True)
+    node.mempool.add_tx(child, fee, vsize)
+    assert node.mempool.contains_tx(child)
+
+    invalidate_block(node, _CONN, [capped.header.hash.hex()])
+
+    assert not node.mempool.contains_tx(capped_tx)
+    assert not node.mempool.contains_tx(child)
+
+
+def test_invalidate_block_evicts_an_orphan_left_by_a_failed_readd(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A re-add that fails on its own prevout still evicts its mempool child.
+
+    `x` sits in the deepest of the eleven disconnected blocks -- past
+    `_INVALIDATE_MEMPOOL_READD_LIMIT`, so its own re-add is skipped
+    outright and `remove_dependents` already answers for it, the same
+    as `capped_tx` above. `t`, in the tip and well inside the cap, is
+    attempted: its own prevout is `x`'s output, gone from both the UTXO
+    set (`x`'s block disconnected) and the mempool (`x` never re-added),
+    so `verify_mempool_acceptance` raises `MissingPrevoutError` and the
+    re-add loop's `except` branch is reached instead. `c`, already
+    held and spending `t`'s own output, is what that branch's own
+    `Mempool.remove_dependents(tx)` call takes out -- Core's own
+    `removeRecursive` answering identically for a transaction that
+    "doesn't make it in to the mempool" whichever of the two reasons
+    stops it (`MaybeUpdateMempoolForReorg`, `src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): without that call, `c`
+    is left behind, spending an output that no longer exists anywhere.
+    btclib-org/btclib-node#1570
+    """
+    node = regtest_node()
+    common = generate_random_chain(COINBASE_MATURITY, node.chain.genesis.hash)
+    # Built by hand, the same reason `test_invalidate_block_drops_a_
+    # disconnected_transaction_past_the_ten_block_cap` above is: `x`
+    # sits in the eleventh-from-tip block, so eleven blocks disconnect
+    # above and including it, past the ten-block cap, and `t` sits in
+    # the tip, well inside it, spending `x`'s own output directly.
+    x = generate_random_transaction(common[0].transactions[0].id)
+    prev_hash = common[-1].header.hash
+    extra_blocks = []
+    t = None
+    for offset in range(11):
+        height = len(common) + 1 + offset
+        txs = [generate_coinbase(height=height)]
+        if offset == 0:
+            txs.append(x)
+        if offset == 10:
+            t = generate_random_transaction(x.id, value=x.vout[0].value)
+            txs.append(t)
+        block = build_block(prev_hash, txs, height - 1)
+        extra_blocks.append(block)
+        prev_hash = block.header.hash
+    assert t is not None
+    chain = [*common, *extra_blocks]
+    connect(node, chain)
+    deepest = extra_blocks[0]
+    c = generate_random_transaction(t.id, value=t.vout[0].value)
+    fee, vsize = verify_mempool_acceptance(node, c, bypass_limits=True)
+    node.mempool.add_tx(c, fee, vsize)
+    assert node.mempool.contains_tx(c)
+
+    invalidate_block(node, _CONN, [deepest.header.hash.hex()])
+
+    assert not node.mempool.contains_tx(x)
+    assert not node.mempool.contains_tx(t)
+    assert not node.mempool.contains_tx(c)
+
+
+def test_invalidate_block_evicts_a_spend_of_a_disconnected_coinbase(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A held spend of a disconnected block's own coinbase is evicted.
+
+    Core's disconnectpool takes the whole block, coinbase included
+    (`AddTransactionsFromBlock(block.vtx)`), and
+    `MaybeUpdateMempoolForReorg` calls `removeRecursive` for a coinbase
+    instead of re-adding it (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `common[0]`'s coinbase
+    is mature, so `spend` is admitted; once `common[0]` is invalidated
+    that output no longer exists, and `spend` must go with it.
+    btclib-org/btclib-node#1570
+    """
+    node = regtest_node()
+    common = generate_random_chain(COINBASE_MATURITY, node.chain.genesis.hash)
+    connect(node, common)
+    spend = generate_random_transaction(common[0].transactions[0].id)
+    fee, vsize = verify_mempool_acceptance(node, spend, bypass_limits=True)
+    node.mempool.add_tx(spend, fee, vsize)
+    assert node.mempool.contains_tx(spend)
+
+    invalidate_block(node, _CONN, [common[0].header.hash.hex()])
+
+    assert not node.mempool.contains_tx(spend)
+
+
+def test_invalidate_block_evicts_a_mempool_transaction_a_disconnect_makes_immature(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A disconnect shortening the chain can make a held spend immature again.
+
+    Core's own `removeForReorg`, run through `filter_final_and_mature`
+    every time `MaybeUpdateMempoolForReorg` is called
+    (`src/validation.cpp:348-392`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag): a coinbase spend mature against one tip can be immature
+    again against an earlier one a disconnect reveals.
+    `main._still_final_and_mature`'s own docstring is where this tree's
+    match is argued. btclib-org/btclib-node#1570
+    """
+    node = regtest_node()
+    # One short of COINBASE_MATURITY: with `extra` connected, the next
+    # spend_height is COINBASE_MATURITY + 2 and common[0]'s own coinbase
+    # (height 1) is exactly COINBASE_MATURITY deep -- mature, on the
+    # boundary `test_invalidate_block_returns_a_disconnected_transaction_
+    # to_the_mempool` above also measures. Once `extra` disconnects
+    # again, the next spend_height drops to COINBASE_MATURITY + 1 and
+    # the same coin is only COINBASE_MATURITY - 1 deep: immature.
+    common = generate_random_chain(COINBASE_MATURITY - 1, node.chain.genesis.hash)
+    connect(node, common)
+    extra = build_block(
+        common[-1].header.hash,
+        [generate_coinbase(height=len(common) + 1)],
+        len(common),
+    )
+    connect(node, [extra])
+    mature_spend = generate_random_transaction(common[0].transactions[0].id)
+    fee, vsize = verify_mempool_acceptance(node, mature_spend, bypass_limits=True)
+    node.mempool.add_tx(mature_spend, fee, vsize, height=len(common) + 1)
+    assert node.mempool.contains_tx(mature_spend)
+
+    invalidate_block(node, _CONN, [extra.header.hash.hex()])
+
+    assert not node.mempool.contains_tx(mature_spend)
 
 
 def a_block_claiming_an_easier_target_than_the_chain_allows(block: Block) -> Block:

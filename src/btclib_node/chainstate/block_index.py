@@ -284,8 +284,9 @@ class BlockStatus(enum.IntEnum):
     `in_active_chain` is on the active chain now; `valid` is a block
     whose content passed validation but that a reorg has since removed
     from the active chain (`_finalize_fork`'s own `to_remove` loop is
-    the only place that sets it). `invalid` is terminal, set on a block
-    itself or on any block built on one already marked `invalid`.
+    the only place that sets it). `invalid` is set on a block itself or
+    on any block built on one already marked `invalid` -- not terminal,
+    since `reconsider` below is exactly what clears it again.
     """
 
     valid_header = 1
@@ -439,17 +440,15 @@ class BlockIndex:
         # write together with UtxoIndex's own flush. btclib-org/btclib-node#586
         self.pending: dict[bytes, BlockInfo] = {}
 
-        # the invalid block with the most chainwork this index has ever
-        # indexed, Core's own `ChainstateManager::m_best_invalid`
-        # (`src/validation.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-        # tag): `calculate_chainwork` below sets it on load, the way
-        # Core's own `LoadBlockIndex` scan does
-        # (`src/validation.cpp:4964-4965`, same sha), and `invalidate`
-        # updates it at runtime, the way Core's `InvalidChainFound`/
-        # `InvalidBlockFound` and `InvalidateBlock` do. `None` where no
-        # block indexed so far is marked invalid.
-        # `main.check_fork_warning_conditions` is the only reader, for
-        # btclib-org/btclib-node#1522.
+        # Core's own `ChainstateManager::m_best_invalid` (`src/validation.h`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+        # `calculate_chainwork` below sets it on load to the invalid block
+        # with the most chainwork, as Core's `LoadBlockIndex` scan does
+        # (`src/validation.cpp:4964-4965`, same sha). At runtime
+        # `invalidate` weighs only the block it is handed, as Core's
+        # `InvalidChainFound` does, and `reconsider` resets it. `None`
+        # where nothing has been marked. `main.check_fork_warning_conditions`
+        # is the only reader, for btclib-org/btclib-node#1522.
         self.best_invalid: bytes | None = None
 
         self.init_from_db()
@@ -608,14 +607,80 @@ class BlockIndex:
             self.active_chain.append(chain_dict[index])
 
     def generate_block_candidates(self) -> None:
-        """Rebuild `block_candidates` from every `valid_header` past the tip."""
+        """Rebuild `block_candidates` over every `valid_header`/`valid` entry.
+
+        `init_from_db` calls this once at start-up, over every header the
+        store holds; `reconsider` above and `main.invalidate_chain` call
+        it again once disconnecting or reconnecting has moved the active
+        chain's own tip work, since a candidate `get_first_candidate`
+        already evicted as stale against the old tip is gone from the
+        deque for good once popped -- reachable again only by rebuilding
+        from `header_dict` whole, the way this does. Sorts `header_dict`
+        itself rather than reading `sorted_header_dict`, the start-up-only
+        list `init_from_db` frees right after this call returns there, so
+        that a later caller finds the same list this one would have.
+        Always starts from an empty deque rather than appending onto
+        whatever is there, which only matters past start-up:
+        `block_candidates` is empty already the one time `init_from_db`
+        calls this.
+
+        `valid` is offered alongside `valid_header` so that a branch a
+        reorg has since displaced -- `_finalize_fork`'s own `to_remove`
+        loop is what sets it -- becomes a candidate again once whatever
+        displaced it is itself invalidated. Core's own `InvalidateBlock`
+        (`src/validation.cpp:3663-3684`, at bitcoin/bitcoin@9be056a8a7,
+        the v31.1 tag) re-inserts such an out-of-chain header into
+        `setBlockIndexCandidates` only where
+        `candidate->IsValid(BLOCK_VALID_TRANSACTIONS) &&
+        candidate->HaveNumChainTxs()` both hold (`:3674-3677`) -- so a
+        `valid` block this index still holds the data for is offered,
+        matched here by requiring `downloaded` as well as the status,
+        and one a completed prune has since cleared `downloaded` on
+        (`main.prune_up_to_height`) is not, matching Core rather than
+        the un-downloaded `valid_header` candidates this deque already
+        carries for a different reason: a `valid_header` was never
+        `BLOCK_VALID_TRANSACTIONS` in the first place, so it is not
+        this same reinsertion Core's source is arguing, and changing
+        that pre-existing, separately-argued divergence is out of
+        scope here. btclib-org/btclib-node#1561
+
+        The work comparison below is `>`, strict, where Core's own
+        `setBlockIndexCandidates` -- ordered by `CBlockIndexWorkComparator`
+        (`node/blockstorage.cpp:174-192`, same commit) -- admits a
+        candidate of *equal* chainwork too, breaking the tie by
+        `nSequenceId`, assigned once the block's data, and every
+        ancestor's, has been received (`ReceivedBlockTransactions`,
+        `src/validation.cpp:3857`, same commit, where the block reaches
+        `BLOCK_VALID_TRANSACTIONS`): "sort by most total work, ... then
+        by earliest activatable time", the lower `nSequenceId` winning.
+        This is not matched, and is not merely the `downloaded` gate
+        above: this index tracks no received-order state at all, so a
+        block a reorg displaced and that is then reduced back to
+        exactly the active tip's own work is never reoffered here,
+        where Core would reorg back to whichever of the two completed
+        its data first. The effect is confined to which of two
+        equal-work chains *this node's own tip* sits on -- never a fact
+        the network disagrees about, since every honest node answers
+        the identical question against its own received order, not a
+        shared one -- but it is a real behavioural gap from Core.
+        Reaching it needs a received-order counter this index does not
+        keep, the same missing primitive #1534
+        (`preciousblock`, a manual override of the identical tie) was
+        dropped from this branch for; tracked on its own as
+        btclib-org/btclib-node#1579 rather than attempted here.
+        """
+        self.block_candidates = deque()
         active_chain_set = set(self.active_chain)
         current_work = self.chainwork[self.active_chain[-1]]
-        for block_hash in self.sorted_header_dict:
+        for block_hash in sorted(
+            self.header_dict, key=lambda h: self.header_dict[h].index
+        ):
             if block_hash in active_chain_set:
                 continue
             block_info = self.get_block_info(block_hash)
-            if block_info.status != BlockStatus.valid_header:
+            if block_info.status == BlockStatus.valid and not block_info.downloaded:
+                continue
+            if block_info.status not in (BlockStatus.valid_header, BlockStatus.valid):
                 continue
             work = self.chainwork[block_hash]
             if work > current_work:
@@ -806,23 +871,20 @@ class BlockIndex:
         invalidated hash is dropped from `block_candidates`; `header_index`
         is rebuilt from `active_chain` only if it held one of them.
 
-        Updates `best_invalid` along the same walk, Core's own
-        `InvalidChainFound` (`src/validation.cpp:1971-1972`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag) comparing every
-        newly-invalid descendant against `m_best_invalid` the same way --
-        reached from `InvalidateBlock`'s own call into it (`:3721`), not
-        `InvalidateBlock` updating `m_best_invalid` directly itself.
+        Compares `block_hash` alone against `best_invalid`, as Core's own
+        `InvalidChainFound` does (`src/validation.cpp:1971-1974`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): its
+        `SetBlockFailureFlags` marks the descendants without touching
+        `m_best_invalid`. `calculate_chainwork` is the load-time path,
+        which weighs every invalid block, descendants included.
         """
+        self.weigh_invalid(block_hash)
         to_invalidate = [block_hash]
         invalidated: set[bytes] = set()
         while to_invalidate:
             current = to_invalidate.pop()
             invalidated.add(current)
             self.set_status(current, BlockStatus.invalid)
-            if self.best_invalid is None or (
-                self.chainwork[current] > self.chainwork[self.best_invalid]
-            ):
-                self.best_invalid = current
             to_invalidate.extend(self.children.get(current, ()))
         self.block_candidates = deque(
             [h, w] for h, w in self.block_candidates if h not in invalidated
@@ -842,6 +904,74 @@ class BlockIndex:
             self._extend_header_index(
                 sorted(self.header_dict, key=lambda h: self.header_dict[h].index)
             )
+
+    def weigh_invalid(self, block_hash: bytes) -> None:
+        """Make `block_hash` the `best_invalid` if it carries more work.
+
+        Core's own comparison wherever it writes `m_best_invalid`
+        (`src/validation.cpp:1971-1973`, at bitcoin/bitcoin@9be056a8a7,
+        the v31.1 tag): strictly greater, so a tie keeps the first.
+        """
+        if self.best_invalid is None or (
+            self.chainwork[block_hash] > self.chainwork[self.best_invalid]
+        ):
+            self.best_invalid = block_hash
+
+    def _shares_lineage(
+        self, other_hash: bytes, target: bytes, target_height: int
+    ) -> bool:
+        """Whether `other_hash` is `target`'s own ancestor, descendant or self.
+
+        Core's `ResetBlockFailureFlags` own condition
+        (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        tag): `other_hash` is a descendant where its ancestor at
+        `target`'s height is `target` itself, and an ancestor (`other_hash`
+        is equal or below `target`'s own height) where `target`'s own
+        ancestor at `other_hash`'s height is `other_hash`. `other_hash ==
+        target` is the first clause's own degenerate case -- a hash is
+        its own ancestor at its own height -- so nothing here
+        special-cases it.
+        """
+        other_height = self.header_dict[other_hash].index
+        return (
+            self.get_ancestor(other_hash, target_height) == target
+            or self.get_ancestor(target, other_height) == other_hash
+        )
+
+    def reconsider(self, block_hash: bytes) -> None:
+        """Undo `invalidate`'s mark on `block_hash`'s own lineage, then rebuild.
+
+        Core's own `Chainstate::ResetBlockFailureFlags` (`src/validation
+        .cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): every header
+        this index holds that is `block_hash` itself, one of its
+        ancestors, or one of its descendants, and that `invalidate` above
+        marked, has that mark cleared -- not only `block_hash` itself,
+        since an ancestor `invalidate` reached through `block_hash` and a
+        descendant built on it are both still wrongly `invalid` once
+        `block_hash` no longer is. `block_candidates` and `header_index`
+        are rebuilt whole afterward rather than patched: a header this
+        clears may now be the best known header chain, or a legitimate
+        candidate `get_first_candidate` already evicted as permanently
+        stale against a tip the clearing has not yet moved.
+
+        `best_invalid` is reset to `None` where it names a header this
+        clears, as Core's own loop resets `m_best_invalid` to `nullptr`
+        (`:3772-3775`), without looking for the next-best invalid header.
+        """
+        target_height = self.get_block_info(block_hash).index
+        for other_hash, other_info in list(self.header_dict.items()):
+            if other_info.status == BlockStatus.invalid and self._shares_lineage(
+                other_hash, block_hash, target_height
+            ):
+                self.set_status(other_hash, BlockStatus.valid_header)
+                if other_hash == self.best_invalid:
+                    self.best_invalid = None
+        self.generate_block_candidates()
+        self.header_index = self.active_chain[:]
+        self.header_index_pos = {h: i for i, h in enumerate(self.header_index)}
+        self._extend_header_index(
+            sorted(self.header_dict, key=lambda h: self.header_dict[h].index)
+        )
 
     # returns the active chain and the forked chain from the common ancestor
     def get_fork_details(
