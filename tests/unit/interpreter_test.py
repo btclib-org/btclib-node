@@ -161,7 +161,11 @@ def test_a_prevout_count_that_exceeds_the_inputs_is_also_refused() -> None:
     # a surplus prevout list through to verify_amounts and the pool
     with pytest.raises(ValueError, match="prevout count does not match input count"):
         check_transactions(
-            [(coins([prevout(), prevout()]), spend(b""))], 1, make_node(), _A_BLOCK_HASH
+            [(coins([prevout(), prevout()]), spend(b""))],
+            1,
+            make_node(),
+            _A_BLOCK_HASH,
+            _COINBASE,
         )
 
 
@@ -169,7 +173,9 @@ def test_a_transaction_that_prints_money_is_refused() -> None:
     """An output worth more than its prevout raises before script checks run."""
     tx = spend(script.serialize([b"\x11" * 32]), value=51 * 10**8)
     with pytest.raises(BTClibValueError, match="Invalid transaction amounts"):
-        check_transactions([(coins([prevout()]), tx)], 1, make_node(), _A_BLOCK_HASH, _COINBASE)
+        check_transactions(
+            [(coins([prevout()]), tx)], 1, make_node(), _A_BLOCK_HASH, _COINBASE
+        )
 
 
 _PRV = 0x1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF
@@ -317,7 +323,9 @@ def _multi_input_p2wpkh_spend(n: int) -> tuple[list[TxOut], Tx]:
 def test_check_transactions_verifies_every_input_of_a_multi_input_transaction() -> None:
     """`check_transactions` raises nothing when every input verifies."""
     prevouts, tx = _multi_input_p2wpkh_spend(3)
-    check_transactions([(coins(prevouts), tx)], 1, make_node(), _A_BLOCK_HASH, _COINBASE)
+    check_transactions(
+        [(coins(prevouts), tx)], 1, make_node(), _A_BLOCK_HASH, _COINBASE
+    )
 
 
 def test_check_transactions_still_raises_when_one_input_does_not_verify() -> None:
@@ -333,7 +341,9 @@ def test_check_transactions_still_raises_when_one_input_does_not_verify() -> Non
     sig, pub = tx.vin[2].script_witness.stack
     tx.vin[2].script_witness = Witness([bytes([sig[0] ^ 1]) + sig[1:], pub])
     with pytest.raises(BlockScriptVerifyError, match="block-script-verify-flag-failed"):
-        check_transactions([(coins(prevouts), tx)], 1, make_node(), _A_BLOCK_HASH, _COINBASE)
+        check_transactions(
+            [(coins(prevouts), tx)], 1, make_node(), _A_BLOCK_HASH, _COINBASE
+        )
 
 
 def _count_transaction_wide_serializations(

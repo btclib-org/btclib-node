@@ -230,7 +230,8 @@ def check_transactions(
     # first; the scripts come after (src/validation.cpp,
     # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The checks
     # main._validate_block makes before this one each run over the whole
-    # block first, where Core's run per transaction: btclib-org/btclib-node#1587.
+    # block first, where Core's run per transaction:
+    # btclib-org/btclib-node#1587.
     # A block with no transaction but its coinbase returned above
     # uncounted: CheckBlock's legacy bound already holds its cost to the
     # limit.

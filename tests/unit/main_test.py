@@ -266,15 +266,15 @@ def test_reject_block_whose_coinbase_pays_more_than_subsidy_plus_fees(
     rejected_because(node, bad, "bad-cb-amount")
 
 
-# Core's MAX_BLOCK_SIGOPS_COST is reached below by five inputs of each
-# kind, every script counting 20 per bare OP_CHECKMULTISIG in a branch
-# it never runs (`_SIGOP_SCRIPT`), plus a legacy remainder the coinbase
-# carries: 4 p2sh inputs * 3_800 * 4 + 5 p2wsh inputs * 3_800 + 50 * 4.
+# MAX_BLOCK_SIGOPS_COST, 80_000, is reached below exactly: each
+# `_sigop_script` counts 3_800 sigops, 20 per bare OP_CHECKMULTISIG, so
+# 4 p2sh inputs * 3_800 * 4 + 5 p2wsh inputs * 3_800 + 50 coinbase
+# OP_CHECKSIGs * 4.
 _P2SH_INPUTS, _P2WSH_INPUTS, _MULTISIGS, _COINBASE_CHECKSIGS = 4, 5, 190, 50
 
 
 def _sigop_script(extra_checksigs: int = 0) -> bytes:
-    """Return a script true on an empty stack, counting `20 * _MULTISIGS` sigops.
+    """Return a script true on an empty stack, of `20 * _MULTISIGS` sigops.
 
     `extra_checksigs` more `OP_CHECKSIG`s add one sigop each, all of
     them in the branch `OP_0 OP_IF` never runs, so the scripts verify.
@@ -297,7 +297,7 @@ def _sigop_blocks(node: Node) -> tuple[BlockIndex, Callable[..., Block]]:
     The builder's block spends `_P2SH_INPUTS` p2sh and `_P2WSH_INPUTS`
     p2wsh outputs, each through `_sigop_script`, and its coinbase carries
     `_COINBASE_CHECKSIGS` legacy sigops: exactly `MAX_BLOCK_SIGOPS_COST`
-    with every `extra` left at zero.
+    with no `*_over` set, and one sigop more of that kind for each set.
     """
     chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
     funding = chain[0].transactions[0]
@@ -320,7 +320,12 @@ def _sigop_blocks(node: Node) -> tuple[BlockIndex, Callable[..., Block]]:
     block_index = connect(node, [*chain, fund_block])
     assert fund_block.header.hash in block_index.active_chain
 
-    def build(*, p2sh_over: bool = False, witness_over: bool = False, coinbase_over: bool = False) -> Block:
+    def build(
+        *,
+        p2sh_over: bool = False,
+        witness_over: bool = False,
+        coinbase_over: bool = False,
+    ) -> Block:
         # the outputs the block spends: the last p2sh one in place of the
         # first where `p2sh_over`, and likewise for p2wsh
         p2sh_vouts = list(range(_P2SH_INPUTS))
