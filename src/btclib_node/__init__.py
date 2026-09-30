@@ -533,9 +533,10 @@ class Node(threading.Thread):
         module nothing there -- and is still made, both arms being one
         call site and the warm-up being harmless where it is not needed.
 
-        `download_manager.block_download` is the only caller, right
-        before it sends the first real `GetData` for a block this node
-        does not have -- the earliest point a script is actually going
+        `download_manager._request_blocks` is the only caller, for
+        `block_download` and `headers_direct_fetch` alike, right before
+        it sends the first real `GetData` for a block this node does not
+        have -- the earliest point a script is actually going
         to be validated, with a peer's round trip ahead of it as extra
         runway, rather than the moment header sync merely completes.
         Reaching `HeaderSynced` is not enough on its own: the comment on
@@ -544,8 +545,8 @@ class Node(threading.Thread):
         synced but which never has a block to fetch -- a header-only
         peer under test, a peer whose counterpart stops serving blocks
         -- is exactly that. The guard below makes a second call a no-op,
-        since `block_download` runs on every pass of the loop below and
-        would otherwise ask for a second thread once the first has
+        since `_request_blocks` runs for every batch of blocks asked for
+        and would otherwise ask for a second thread once the first has
         already built the pool.
         """
         if self._worker_pool_warmup is not None:
@@ -561,10 +562,10 @@ class Node(threading.Thread):
         """Handle whatever is waiting, and answer whether nothing was.
 
         One message must not end the node. `handle_p2p` and
-        `handle_p2p_handshake` already answer a bad message by dropping
-        the peer, but what reaches here is whatever they did not expect
-        -- and leaving `run`'s own loop by exception skips every close
-        below it, so the databases would stay open.
+        `handle_p2p_handshake` already answer a bad message, dropping the
+        peer for a `MisbehavingError`, but what reaches here is whatever
+        they did not expect -- and leaving `run`'s own loop by exception
+        skips every close below it, so the databases would stay open.
 
         `resume_cfilters` and `resume_getdata` are last and unconditional,
         not one more queue to size a share from: nothing is queued to
@@ -750,7 +751,16 @@ class Node(threading.Thread):
         while not self.terminate_flag.is_set():
             if self._drain_message_queues():
                 time.sleep(IDLE_SLEEP_SECONDS)
-            if self._step_chain():
+            # `_drain_message_queues` can itself set `terminate_flag`
+            # mid-pass -- `rpc.callbacks._validate_extending_tip`, run from
+            # inside `handle_rpc`, does exactly that on an exception
+            # `rpc.main._execute` still turns into `INTERNAL_ERROR` rather
+            # than letting propagate -- and this loop must not run
+            # `_step_chain`'s own `update_chain` once that has happened:
+            # the flag is the store's own word that it is unsafe to touch
+            # again this pass, not only next time the condition above is
+            # read.
+            if self.terminate_flag.is_set() or self._step_chain():
                 break
         self._stop_managers_and_close_stores()
 

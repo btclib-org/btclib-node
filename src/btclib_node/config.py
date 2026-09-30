@@ -125,11 +125,12 @@ def _resolve_peers(
     """Split every spec in `specs` and check its host is a literal IP.
 
     A hostname is not resolved here, unlike Core's own `-connect`/
-    `-addnode`, which dial through `CConnman::ConnectNode` and resolve
-    one via `Resolve` (`src/net.cpp`) same as any other peer. This
-    node's own dial route -- `p2p_manager.connect(peer_address(...))`,
-    the one ISS 573 (btclib-org/btclib-node#573) asks these two fields
-    to use -- takes a `NetworkAddressV2` built straight off a parsed IP
+    `-addnode`/`-seednode`, which dial through `CConnman::ConnectNode`
+    and resolve one via `Resolve` (`src/net.cpp`) same as any other
+    peer. This node's own dial route --
+    `p2p_manager.connect(peer_address(...))`, the one ISS 573
+    (btclib-org/btclib-node#573) asks `connect` and `addnode` to use --
+    takes a `NetworkAddressV2` built straight off a parsed IP
     (`p2p/address.py`'s `peer_address`), and nothing in this node's
     synchronous startup path resolves a name into one: DNS is asked
     only through `PeerDB.get_addr_from_dns`'s own coroutine and
@@ -137,10 +138,10 @@ def _resolve_peers(
     seed (btclib-org/btclib-node#1284), both on `P2pManager`'s asyncio
     loop, neither reachable before that manager's thread exists.
     Widening `peer_address` or plumbing an
-    async resolve into `Node.run` for two config fields is a larger
-    change than this branch's scope; a hostname is refused up front,
-    at `Config` construction, rather than dialled wrong or silently
-    dropped later.
+    async resolve into `Node.run` for these fields is a larger change
+    than this function's own scope; a hostname is refused up front, at
+    `Config` construction, rather than dialled wrong or silently
+    dropped later (btclib-org/btclib-node#1264).
     """
     peers: list[tuple[str, int]] = []
     for spec in specs:
@@ -347,6 +348,13 @@ class Config:
     # (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
     # compares a drawn address's text with
     addnode_args: tuple[str, ...]
+    # Core's own `-seednode`: peers `P2pManager` opens an `ADDR_FETCH`
+    # connection to, one at a time, to draw a `getaddr` answer and
+    # disconnect, ahead of the DNS seeds (`CConnman::ThreadOpenConnections`,
+    # `src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    # Resolved by `_resolve_peers` the same as `connect` and `addnode`
+    # above.
+    seednode: tuple[tuple[str, int], ...]
     # Core's own `-listen`, `DEFAULT_LISTEN` (`src/net.h`) true unless
     # `-connect` or `-maxconnections=0` is given, in which case
     # `InitParameterInteraction` (`src/init.cpp`,
@@ -364,13 +372,21 @@ class Config:
     # connection outside it too. `P2pManager.__init__` divides it into
     # inbound and outbound slots.
     max_connections: int
-    # Core's own `-dnsseed`, which this node has no option for: whether
-    # `P2pManager` asks the DNS seeds. `InitParameterInteraction`
-    # (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7) soft-sets it off
-    # under `-connect` or a `-maxconnections` whose `int64_t` is not
-    # positive; `__init__` computes that from `max_connections` where it
-    # is given `None`, and `cli` passes it from the `int64_t` itself.
+    # Core's own `-dnsseed`: whether `P2pManager` asks the DNS seeds.
+    # `InitParameterInteraction` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7)
+    # soft-sets it off under `-connect` or a `-maxconnections` whose
+    # `int64_t` is not positive; `__init__` below computes that soft-set
+    # from `max_connections` where `dnsseed` is given `None`, and takes
+    # the explicit value otherwise. `cli`'s own `-listen` fallback
+    # pattern, over the un-narrowed `int64_t` `-maxconnections` reads as
+    # (ISS 1324), computes the soft-set itself and never leaves
+    # `dnsseed` `None`.
     dnsseed: bool
+    # Core's own `-fixedseeds`, `DEFAULT_FIXEDSEEDS` true: whether
+    # `P2pManager` may fall back on the chain's fixed seeds once DNS
+    # seeding, `-addnode` and `-seednode` have had their chance
+    # (`src/net.h`/`src/net.cpp`, same sha).
+    fixed_seeds: bool
     # Core's own `-bantime`: how long a `setban` ban lasts, in seconds,
     # where the call names no length. `Node` hands it to its `BanMan`.
     ban_time: int
@@ -415,9 +431,11 @@ class Config:
         min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
         connect: Sequence[str] = (),
         addnode: Sequence[str] = (),
+        seednode: Sequence[str] = (),
         listen: bool = True,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
         dnsseed: bool | None = None,
+        fixed_seeds: bool = True,
         ban_time: int = DEFAULT_MISBEHAVING_BANTIME,
         rpcauth: Sequence[str] = (),
         rpcuser: str = "",
@@ -461,6 +479,7 @@ class Config:
         )
         self.addnode = _resolve_peers(addnode, self.chain.port)
         self.addnode_args = tuple(addnode)
+        self.seednode = _resolve_peers(seednode, self.chain.port)
         self.listen = listen
 
         if max_connections < 0:
@@ -475,6 +494,7 @@ class Config:
             if dnsseed is None
             else dnsseed
         )
+        self.fixed_seeds = fixed_seeds
         self.ban_time = ban_time
 
         self.p2p_port = None

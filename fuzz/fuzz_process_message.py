@@ -12,10 +12,8 @@ function of octets for the same reason (`fuzz_framing.py`,
 which needs a `Node`, a `P2pManager` and a `Connection` rather than a
 bare buffer -- issue #698 is that third shape.
 
-The first shape is fuzzed where the codec lives, which for BIP61's
-`reject` is `btclib` and its own harness over `Reject.parse`. What this
-tree owns of that message is `p2p.callbacks.reject`, one of the
-handlers this harness drives (issue #827).
+BIP61's `reject` reaches no handler, as in Core (issue #1255), so this
+harness drives none of it.
 
 Core carries two fuzz targets over that same layer, one message
 (`process_message.cpp`) and a sequence of them fed to the same
@@ -102,13 +100,12 @@ at bitcoin/bitcoin@ca7162cde5) -- `handle_p2p_handshake` and
 table it dispatches through" Core folds into one function. Neither
 raises what a callback raises: each wraps its own dispatch in
 `except Exception as e`, discouraging the peer only for a
-`BTClibException` and otherwise just logging --
-`p2p/main.py`'s own comment there is why: a callback failing on content
-that was fine is this node's own bug, not cause to drop the peer that
-merely triggered it, and dropping the exception there in production
-keeps one bad message from taking the whole loop down over it. A
-harness that only calls `handle_p2p` and trusts what escapes it would
-therefore never see that bug either -- `main.py`'s own `except` is
+`MisbehavingError` and otherwise logging it and keeping the peer, as
+`p2p/main.py`'s own comment there argues from Core's `ProcessMessages`.
+Either way the exception stops there, so one bad message does not take
+the loop down. A harness
+that only calls `handle_p2p` and trusts what escapes it would therefore
+never see a callback's own bug either -- `main.py`'s own `except` is
 exactly the boundary this harness has to see past rather than trust,
 which is what `_CrashCapture` below is for: a `logging.Handler`
 attached directly to `node.logger` -- the one way `CLAUDE.md`'s own
@@ -117,16 +114,15 @@ attached directly to `node.logger` -- the one way `CLAUDE.md`'s own
 than through `logging.getLogger()`, so nothing propagates to a root
 handler such as `caplog`'s own -- reading `record.exc_info` off every
 `node.logger.exception(...)` call `handle_p2p`/`handle_p2p_handshake`
-themselves make, and sorting it onto the same two branches they
-themselves already chose between, `isinstance(exc, BTClibException)` --
-but keeping *both*, in `escaped` and `refused` rather than reading only
-the one `handle_p2p` itself does not discourage the peer for. What
+themselves make, and sorting it on this harness's own axis,
+`isinstance(exc, BTClibException)`: btclib refusing `data` into
+`refused`, anything else, a bug, into `escaped` -- `handle_p2p`
+returning nothing for either, neither shows in what it returns. What
 lands in `escaped` is re-raised by `dispatch` below exactly as before,
 so `handle_p2p` runs unmodified, exactly as `Node`'s own loop calls it,
 and what it would have hidden is still what makes this harness red; what
 lands in `refused` is raised too, once `escaped` is checked and found
-empty, so a callback's own refusal of `data` -- content `handle_p2p`
-itself does not discourage the peer over, and so a call this harness
+empty, so a callback's own refusal of `data` -- a call this harness
 would otherwise report exactly as it reports genuine acceptance -- is
 told apart from acceptance without being mistaken for a crash.
 
@@ -218,22 +214,22 @@ _node: Node | None = None
 
 
 class _CrashCapture(logging.Handler):
-    """Sort what `handle_p2p`'s own `except` logs the way it already did.
+    """Sort what `handle_p2p`'s own `except` logs, btclib's or a bug.
 
-    `handle_p2p`/`handle_p2p_handshake` classify a callback's raise on
-    one axis, `isinstance(e, BTClibException)`, to decide whether to
-    discourage the peer -- this reads the same record and sorts it onto
-    the same axis, into `refused` for a `BTClibException` and `escaped`
+    `handle_p2p`/`handle_p2p_handshake` log a callback's raise and
+    discourage the peer for a `MisbehavingError` alone -- this reads the
+    same record and sorts it on its own axis, `isinstance(e,
+    BTClibException)`, into `refused` for a `BTClibException` and `escaped`
     for anything else, so `dispatch` below can tell "this call's callback
     refused `data`" apart from "this call's callback raised a bug" apart
     from "nothing was logged, `data` was accepted" -- three outcomes a
     boolean discourage/don't-discourage decision does not itself need to
     keep apart, but a fuzzer classifying a run of inputs does. The module
     docstring above is where the whole of this is argued; both lists are
-    read and cleared by `dispatch` around every call, so neither ever
-    holds more than the one call just made -- `handle_p2p` and
-    `handle_p2p_handshake` each pop and dispatch exactly one message, so
-    at most one of the two ever gains an entry in one call.
+    read and cleared by `dispatch` around every call, so neither ever holds
+    more than the one call just made -- `handle_p2p` and
+    `handle_p2p_handshake` each pop and dispatch exactly one message, so at
+    most one of the two ever gains an entry in one call.
     """
 
     def __init__(self) -> None:

@@ -80,9 +80,13 @@ from btclib.p2p.limits import (
     PROTOCOL_VERSION,
 )
 from btclib.p2p.negotiation import FeeFilter, GetAddr, WtxidRelay
-from btclib.p2p.reject import Reject, RejectCode
 
-from btclib_node.chainstate.block_index import BlockStatus, block_time, calculate_work
+from btclib_node.chainstate.block_index import (
+    BlockStatus,
+    block_time,
+    calculate_work,
+    check_headers_pow,
+)
 from btclib_node.chainstate.filter_index import NO_PREVIOUS_FILTER_HEADER
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, NodeStatus, P2pConnStatus
 from btclib_node.exceptions import (
@@ -122,7 +126,6 @@ if TYPE_CHECKING:
     from btclib.block import Block
 
     from btclib_node import Node
-    from btclib_node.chainstate.block_index import BlockIndex
     from btclib_node.p2p.connection import Connection
 
 __all__ = [
@@ -156,7 +159,6 @@ __all__ = [
     "not_found",
     "ping",
     "pong",
-    "reject",
     "sendaddrv2",
     "sendheaders",
     "tx",
@@ -911,7 +913,7 @@ def _store_gossip(
 
 
 def feefilter(node: Node, msg: bytes, conn: Connection) -> None:
-    """Record the peer's own BIP133 minimum feerate, or none if invalid."""
+    """Record the peer's own BIP133 minimum feerate, ignoring an invalid one."""
     # BIP133: a peer asking not to be told about a transaction paying
     # less. Stored on the connection, the same shape relay_tx above
     # already is; read by DownloadManager.tx_download, through
@@ -919,18 +921,17 @@ def feefilter(node: Node, msg: bytes, conn: Connection) -> None:
     # main.verify_mempool_acceptance now hands back and Mempool keeps
     # per transaction. btclib-org/btclib-node#260
     #
-    # Core acts on a received rate only within MoneyRange -- 0 to
+    # Core assigns a received rate only within MoneyRange -- 0 to
     # MAX_MONEY inclusive (net_processing.cpp's NetMsgType::FEEFILTER,
-    # consensus/amount.h's MoneyRange) -- and leaves a rate outside it
-    # parsed but unused. valid_sats_amount is that same range with its
-    # upper bound un-exported by name (btclib.amount's own _MAX_SATOSHI),
-    # so it is what stands in for MoneyRange here; a rate it refuses
-    # is read as no filter, BIP133's and Core's own answer for one that
-    # would fail a comparison against any real, non-negative fee anyway.
+    # consensus/amount.h's MoneyRange, at bitcoin/bitcoin@9be056a8a7) --
+    # and leaves the filter it already holds in place for a rate outside
+    # it. valid_sats_amount is that same range with its upper bound
+    # un-exported by name (btclib.amount's own _MAX_SATOSHI), so it is
+    # what stands in for MoneyRange here.
     try:
         conn.feefilter = valid_sats_amount(FeeFilter.parse(msg).feerate)
     except BTClibValueError:
-        conn.feefilter = 0
+        return
 
 
 def tx(node: Node, msg: bytes, conn: Connection) -> None:
@@ -1454,14 +1455,12 @@ def _below_prune_threshold(node: Node, block_hash: bytes) -> bool:
     (`connection.py`'s own `own_version`, gated on `Config.pruned`
     the identical way), so this reads `node.config.pruned` directly
     rather than a per-connection record of what was sent. `+ 2` is
-    Core's own buffer, "for possible races". Answers `False` for a hash
-    this index has never indexed, matching Core's own `if (!pindex)
-    return;` immediately above the check this mirrors.
+    Core's own buffer, "for possible races". `block_hash` is indexed:
+    `_serve_getdata_item` has already answered Core's own `if (!pindex)
+    return;`.
     """
     block_index = node.chainstate.block_index
-    block_info = block_index.header_dict.get(block_hash)
-    if block_info is None:
-        return False
+    block_info = block_index.get_block_info(block_hash)
     tip_height = len(block_index.active_chain) - 1
     return tip_height - block_info.index > MIN_BLOCKS_TO_KEEP + 2
 
@@ -1501,6 +1500,14 @@ def _serve_getdata_item(
             not_found.append(item)
             not_found_bytes += _NOTFOUND_ITEM_BYTES
     elif item.type_code in _GETDATA_BLOCK_TYPES:
+        # Core's `ProcessGetBlockData` (`net_processing.cpp`,
+        # at bitcoin/bitcoin@9be056a8a7) ignores a block it has no index
+        # entry for, then one `BlockRequestAllowed` refuses -- off the
+        # active chain and not recently valid -- before the prune threshold
+        if item.hash not in node.chainstate.block_index.header_dict:
+            return not_found_bytes
+        if not _block_request_allowed(node, item.hash):
+            return not_found_bytes
         if node.config.pruned and _below_prune_threshold(node, item.hash):
             conn.stop()
             return not_found_bytes
@@ -1715,6 +1722,8 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     An empty batch, or one that connects, answers the `getheaders` in
     flight to this peer, as Core's `ProcessHeadersMessage` takes it: one
     connecting to nothing may be an announcement, and answers nothing.
+    A batch that connects is then handed to
+    `DownloadManager.headers_direct_fetch`.
     """
     # Core reads the count alone before it compares, so no entry is
     # needed in the payload for it to call `Misbehaving`
@@ -1733,13 +1742,15 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
         # again, from this node's own tip, would draw the same empty answer.
         node.download_manager.last_getheaders_timestamps.pop(conn.id, None)
         return
-    # add_headers raises on a batch it refuses -- a header failing its
-    # own proof of work or context check -- and the raise is left to
-    # reach handle_p2p, which drops and discourages the peer for a
-    # `MisbehavingError` the same way block's own does: a peer that sent
-    # it is not one telling us it has nothing left, and this is not the
-    # ordinary end of a sync. btclib-org/btclib-node#75
     block_index = node.chainstate.block_index
+    # Core's `CheckHeadersPoW`, then the getheaders in flight answered once
+    # the batch's first header connects, before any header is accepted, so
+    # a batch refused past this point still answers it
+    # (`ProcessHeadersMessage`, `net_processing.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+    check_headers_pow(headers, node.chain.pow_limit_bits)
+    if headers[0].previous_block_hash in block_index.header_dict:
+        node.download_manager.last_getheaders_timestamps.pop(conn.id, None)
     # Core's `IsAncestorOfBestHeaderOrTip`, asked of the last header before
     # the batch is indexed: its `ProcessHeadersMessage` hands any other
     # batch whose chain has less than `minimum_chain_work` to
@@ -1753,7 +1764,14 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
         or _height_on_the_active_chain(node, last) is not None
     )
     received_new_header = last not in block_index.header_dict
-    tip = block_index.add_headers(headers)
+    # add_headers raises on a batch it refuses, and the raise is left to
+    # reach handle_p2p, which discourages the peer for a
+    # `MisbehavingError` the same way block's own does: a peer that sent
+    # it is not one telling us it has nothing left, and this is not the
+    # ordinary end of a sync. btclib-org/btclib-node#75
+    # A header already marked invalid costs an outbound peer alone, as
+    # Core's `MaybePunishNodeForBlock` has it for `BLOCK_CACHED_INVALID`.
+    tip = block_index.add_headers(headers, punish_cached_invalid=not conn.inbound)
     # Core's `m_last_block_announcement`, stamped where the batch
     # connected, its last header was new and it has more work than the
     # active tip
@@ -1782,6 +1800,23 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
             and disconnect_if_insufficient_work(node, conn)
         ):
             protect_if_caught_up(node, conn)
+    _ask_for_more_headers(node, conn, len(headers), tip)
+    if tip is not None:
+        # Core's `ProcessHeadersMessage` (`src/net_processing.cpp`, at
+        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) ends by considering
+        # "immediately downloading blocks", `HeadersDirectFetchBlocks`
+        node.download_manager.headers_direct_fetch(conn, tip)
+
+
+def _ask_for_more_headers(
+    node: Node, conn: Connection, batch_size: int, tip: bytes | None
+) -> None:
+    """Ask `conn` for the headers past a batch, or mark header sync finished.
+
+    `tip` is what `add_headers` answered for a batch of `batch_size`
+    headers: `None` where the batch connected to nothing this node knows.
+    """
+    block_index = node.chainstate.block_index
     if tip is None:
         # a batch connecting to nothing this node knows, whatever its
         # length: get_block_locator_hashes asks from what this node
@@ -1792,23 +1827,17 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
         # ancestors. btclib-org/btclib-node#233
         block_locators = block_index.get_block_locator_hashes()
         maybe_send_getheaders(node, conn, block_locators)
-    elif len(headers) == MAX_HEADERS_RESULTS:  # the peer may have more to give us
+    elif batch_size == MAX_HEADERS_RESULTS:  # the peer may have more to give us
         # [tip] only for a live fork below header_index's own tip: that
         # is the one case get_block_locator_hashes cannot reach on its
         # own, since header_index only moves for a header extending it
         # or beating its chainwork, and a locator built from it would
         # ask for this same batch again and stall short of the fork's
         # own tip. An ordinary batch extending header_index already gets
-        # header_index's own richer, multi-entry locator, unchanged; a
-        # batch built on a parent this node already proved invalid does
-        # too, rather than this node asking the same peer for more of a
-        # branch it has already proved bad, with no misbehaviour scoring
-        # anywhere in this tree to ever stop it otherwise.
-        # btclib-org/btclib-node#122
-        if (
-            tip != block_index.header_index[-1]
-            and block_index.get_block_info(tip).status != BlockStatus.invalid
-        ):
+        # header_index's own richer, multi-entry locator, unchanged. A
+        # batch on a branch this node proved invalid never gets here:
+        # add_headers refuses it. btclib-org/btclib-node#122
+        if tip != block_index.header_index[-1]:
             block_locators = [tip]
         else:
             block_locators = block_index.get_block_locator_hashes()
@@ -1824,40 +1853,6 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
 _STALE_RELAY_AGE_LIMIT = 30 * 24 * 60 * 60
 
 
-def _descends_from_the_tip(
-    block_index: BlockIndex, block_hash: bytes, not_descending: set[bytes]
-) -> bool:
-    """Whether the active tip is an ancestor of `block_hash`, or it.
-
-    Core's `GetAncestor` at the tip's height. Parents are walked down to
-    that height, stopping at a block `header_index` holds, whose
-    ancestor there is read off that list, and at one already in
-    `not_descending`. What a walk that fails passed through is added to
-    `not_descending`, so that the entries of one locator walk a branch
-    once between them.
-    """
-    active_chain = block_index.active_chain
-    tip_height = len(active_chain) - 1
-    header_dict = block_index.header_dict
-    header_index = block_index.header_index
-    walked: list[bytes] = []
-    current = block_hash
-    height = header_dict[current].index
-    while height > tip_height and current not in not_descending:
-        if current in block_index.header_index_pos:
-            # header_index holds `current` above the tip's height, so it
-            # reaches that height too
-            current = header_index[tip_height]
-            break
-        walked.append(current)
-        current = header_dict[current].header.previous_block_hash
-        height -= 1
-    if current == active_chain[-1]:
-        return True
-    not_descending.update(walked)
-    return False
-
-
 def _find_fork_in_global_index(node: Node, locator: Sequence[bytes]) -> bytes:
     """Return the last block of the active chain the locator names.
 
@@ -1868,12 +1863,13 @@ def _find_fork_in_global_index(node: Node, locator: Sequence[bytes]) -> bytes:
     """
     block_index = node.chainstate.block_index
     active_chain = block_index.active_chain
-    not_descending: set[bytes] = set()
+    tip_height = len(active_chain) - 1
     for block_hash in locator:
         if _height_on_the_active_chain(node, block_hash) is not None:
             return block_hash
-        if block_hash in block_index.header_dict and _descends_from_the_tip(
-            block_index, block_hash, not_descending
+        if (
+            block_hash in block_index.header_dict
+            and block_index.get_ancestor(block_hash, tip_height) == active_chain[-1]
         ):
             return active_chain[-1]
     return active_chain[0]
@@ -2323,25 +2319,11 @@ def not_found(node: Node, msg: bytes, conn: Connection) -> None:
             InventoryType.MSG_WITNESS_TX,
         ):
             conn.tx_requested.pop(item.hash, None)
-    node.logger.warning("Missing objects:%s", missing)
-
-
-def reject(node: Node, msg: bytes, conn: Connection) -> None:
-    """Log a peer's `reject` message.
-
-    `reject.code` is a `RejectCode` where BIP61 names the value and a
-    plain `int` where it does not -- `btclib.p2p.reject`'s own module
-    docstring is why -- so the code logged is the member's name where
-    there is one and the bare number otherwise, rather than a `.name`
-    that only the named half of the range has.
-    """
-    reject = Reject.parse(msg)
-    if isinstance(reject.code, RejectCode):
-        code: str | int = reject.code.name
-    else:
-        code = reject.code
-    err_msg = f"Reject received: {code}, {reject.reason}, {reject.data.hex()}"
-    node.logger.warning(err_msg)
+    # A count at debug rather than the items: Core's one line for a
+    # `notfound` is ProcessMessage's own `received: notfound (N bytes)`,
+    # under `-debug=net` (net_processing.cpp, at bitcoin/bitcoin@9be056a8a7),
+    # and the items are the peer's to size.
+    node.logger.debug("notfound of %d items", len(missing.items))
 
 
 handshake_callbacks = {
@@ -2369,6 +2351,5 @@ callbacks = {
     "getcfheaders": get_cfheaders,
     "getcfcheckpt": get_cfcheckpt,
     "notfound": not_found,
-    "reject": reject,
     "feefilter": feefilter,
 }
