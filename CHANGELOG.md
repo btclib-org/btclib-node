@@ -1180,6 +1180,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   than 256 of a resolver's answers**, matching `Lookup`'s own
   `nMaxSolutions` in Core's `ConnectNode` (closes #1466).
 
+### Two manager tests wait for the store, not just the id that precedes it
+
+- **`create_connection` increments `last_connection_id` before it stores
+  the connection, so a test now waits on the store itself rather than
+  racing it by polling the id alone** (closes #1504).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
