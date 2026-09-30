@@ -1045,14 +1045,23 @@ def test_stop_widens_its_join_past_a_pending_delayed_reply(
     reply before the stores close (#1467), so a `wait` longer than
     `STOP_TIMEOUT` is the node stopping as asked, not a wedge. This
     test's own thread stands in for `install_signal_handlers`'s signal
-    handler, calling once the deadline is recorded.
+    handler, calling once the deadline is recorded. That deadline is the
+    first one recorded, the moment the `wait` ends: `RpcManager.stop`
+    records a later one before it waits for the reply's write (#1539).
     """
     monkeypatch.setattr(btclib_node, "STOP_TIMEOUT", 1.0)
     node = a_stopping_rpc_node(tmp_path)
+    recorded: list[float] = []
+    extend_reply_deadline = node.rpc_manager.extend_reply_deadline
+
+    def record(deadline: float) -> None:
+        recorded.append(deadline)
+        extend_reply_deadline(deadline)
+
+    monkeypatch.setattr(node.rpc_manager, "extend_reply_deadline", record)
     caller, reply = call_stop_with_wait(node, 3000)
-    wait_until(lambda: node.rpc_manager.latest_reply_deadline() is not None)
-    deadline = node.rpc_manager.latest_reply_deadline()
-    assert deadline is not None
+    wait_until(lambda: recorded)
+    deadline = recorded[0]
 
     node.stop()  # raises NodeShutdownTimeoutError here if this regresses
     stopped = time.monotonic()

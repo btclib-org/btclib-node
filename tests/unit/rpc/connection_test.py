@@ -61,17 +61,21 @@ def fake_manager(connections: dict[int, Any]) -> SimpleNamespace:
     Every source is allowed: a socketpair's peer has no IP address for
     `RpcManager.client_allowed` to read.
     """
-    # what `send_and_close_after` hands `RpcManager.add_delayed_reply`,
-    # `(coroutine, deadline)` pairs in call order
-    delayed: list[tuple[Any, float]] = []
+    # what `RpcManager.track_reply` is handed, `(coroutine, due)` pairs
+    # in call order, and what `extend_reply_deadline` is
+    tracked: list[tuple[Any, float]] = []
+    deadlines: list[float] = []
     return SimpleNamespace(
         auth=RpcAuth((RpcAuthEntry.parse(RPCAUTH),)),
         client_allowed=lambda client: True,
         logger=Logger(debug=True),
         messages=[],
         connections=connections,
-        delayed=delayed,
-        add_delayed_reply=lambda reply, deadline: delayed.append((reply, deadline)),
+        tracked=tracked,
+        track_reply=lambda reply, due: tracked.append((reply, due)),
+        reply_ended=lambda reply: None,
+        deadlines=deadlines,
+        extend_reply_deadline=deadlines.append,
         # unset, as a manager that never called `interrupt` -- every
         # test built on this fixture reads a connection that is not
         # being shut down; `refused`'s own `interrupted` argument is
@@ -906,8 +910,8 @@ def test_send_and_close_after_returns_at_once_and_delays_the_write() -> None:
     `handle_rpc` calls it on `Node`'s thread, played here by this test's
     own, and stops the node right after (ISS 1467), so the wait runs on
     `loop`, a thread of its own here as `RpcManager`'s is. What it hands
-    `RpcManager.add_delayed_reply` is the coroutine `loop` then runs,
-    with the deadline `delay` sets.
+    `RpcManager.track_reply` is the coroutine `loop` then runs, due
+    when `delay` ends, which is the deadline it records too.
     """
     delay = 1.0
     ours, theirs = socket.socketpair()
@@ -937,8 +941,9 @@ def test_send_and_close_after_returns_at_once_and_delays_the_write() -> None:
         thread.join()
         loop.close()
         theirs.close()
-    [(delayed, deadline)] = manager.delayed
-    assert started + delay <= deadline <= returned + delay
+    [(delayed, due)] = manager.tracked
+    assert started + delay <= due <= returned + delay
+    assert manager.deadlines == [due]
     # run to completion by `loop`, which is what clears a coroutine's frame
     assert delayed.cr_frame is None
     assert received - started >= delay - _WINDOWS_TIMER_TICK
