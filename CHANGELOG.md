@@ -1246,6 +1246,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   carries `at` on the sha's own line** (closes #1517).
 - **So does `block()`'s btclib citation** (closes #1528).
 
+### `get_block_locator_hashes` doubles its step where Core's `LocatorEntries` does
+
+- **The locator's step doubles once it holds more than ten entries,
+  matching Core's own unnamed threshold, rather than as the tenth is
+  appended** (closes #1510).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

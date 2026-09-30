@@ -1039,28 +1039,25 @@ class BlockIndex:
 
         Exponentially sparser going back from `start`, a header of
         `header_index` and its tip where none is given, always including
-        its genesis -- the shape Core's own `LocatorEntries` builds,
-        cited in the comment below.
+        its genesis -- the shape Core's own `LocatorEntries` (`src/chain.cpp`,
+        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) builds. `header_index`
+        is indexed by height, so a position in it doubles as the height Core
+        walks: `height` here is Core's `index->nHeight`, and `step` doubles
+        once `block_locators` holds more than ten entries, matched rather
+        than named, since naming it here would claim a meaning Core's own
+        algorithm never gave it.
         """
-        top = (
-            len(self.header_index)
+        height = (
+            len(self.header_index) - 1
             if start is None
-            else self.header_index_pos[start] + 1
+            else self.header_index_pos[start]
         )
-        i = 1
         step = 1
         block_locators: list[bytes] = []
         while True:
-            if i > top:
-                break
-            block_locators.append(self.header_index[top - i])
-            # Core's own LocatorEntries (src/chain.cpp, aed80c7395):
-            # `if (have.size() > 10) step *= 2`, a bare, unnamed 10 there
-            # too -- matched rather than named, since naming it here
-            # would claim a meaning Core's own algorithm never gave it
-            if i >= 10:  # noqa: PLR2004
+            block_locators.append(self.header_index[height])
+            if height == 0:
+                return block_locators
+            height = max(height - step, 0)
+            if len(block_locators) > 10:  # noqa: PLR2004
                 step *= 2
-            i += step
-        if self.header_index[0] not in block_locators:
-            block_locators.append(self.header_index[0])
-        return block_locators

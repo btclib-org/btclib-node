@@ -1055,19 +1055,86 @@ def test_long_init(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
     assert block_index.skip == new_block_index.skip
 
 
-def test_block_locators(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
-    """A 24-header chain's locator carries 14 entries.
+@pytest.mark.parametrize(
+    ("length", "heights"),
+    [
+        (0, [0]),
+        (1, [1, 0]),
+        (10, [10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0]),
+        (11, [11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0]),
+        (12, [12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0]),
+        (
+            100,
+            [
+                100,
+                99,
+                98,
+                97,
+                96,
+                95,
+                94,
+                93,
+                92,
+                91,
+                90,
+                89,
+                87,
+                83,
+                75,
+                59,
+                27,
+                0,
+            ],
+        ),
+        (
+            1000,
+            [
+                1000,
+                999,
+                998,
+                997,
+                996,
+                995,
+                994,
+                993,
+                992,
+                991,
+                990,
+                989,
+                987,
+                983,
+                975,
+                959,
+                927,
+                863,
+                735,
+                479,
+                0,
+            ],
+        ),
+    ],
+)
+def test_block_locators(
+    a_chainstate: Callable[[Path | None], Chainstate],
+    length: int,
+    heights: list[int],
+) -> None:
+    """The locator pins the exact heights Core's `LocatorEntries` visits.
 
-    Ten dense entries near the tip, then a step that doubles each time,
-    reaching back to the genesis in four more -- the shape
-    get_block_locator_hashes' own docstring names.
+    `heights` is worked out by hand from `LocatorEntries` (`src/chain.cpp`,
+    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the tip and the eleven
+    headers below it dense, every entry after the twelfth doubling the gap
+    to the one before it, until the walk overshoots genesis and clamps
+    there. `get_block_locator_hashes` is never consulted to derive them.
     """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
-    chain = generate_random_header_chain(24, RegTest().genesis.hash)
-    block_index.add_headers(chain)
-    locators = block_index.get_block_locator_hashes()
-    assert len(locators) == 14
+    genesis = RegTest().genesis
+    chain = generate_random_header_chain(length, genesis.hash)
+    if chain:
+        block_index.add_headers(chain)
+    expected = [genesis.hash if h == 0 else chain[h - 1].hash for h in heights]
+    assert block_index.get_block_locator_hashes() == expected
 
 
 def test_a_locator_from_a_start_header_is_that_header_s_own_tip_locator(
