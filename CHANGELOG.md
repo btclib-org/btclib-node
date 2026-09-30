@@ -1329,6 +1329,30 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   not `active_chain` (closes #1476).
 - **An invalid request disconnects the peer**, as Core does (closes #1477).
 
+### `urllib3` moves to 2.8.0 in the lock
+
+- **`uv.lock` pins `urllib3` 2.8.0**, past GHSA-gh4c-6fx4-qh6g,
+  GHSA-vxq7-64xx-v4gw and GHSA-8988-9cw3-xx77; it reaches the dev group
+  alone, through `twine`, `sphinx` and `pyroma`, never the wheel.
+
+### `-rpcservertimeout` bounds an RPC connection's read and its idle gap
+
+- **`-rpcservertimeout=<n>` feeds `RpcManager.request_timeout`, seconds as
+  Core's own `-rpcservertimeout` is, `0` and `-1` both arming no bound at
+  all, as `evhttp_set_timeout` arms none for either** (closes #1548).
+
+### `getrpcinfo` is served
+
+- **`getrpcinfo` answers `active_commands`, one entry per RPC call this
+  node is currently running, and `logpath`, the file this node logs to**
+  (closes #1486).
+
+### `test_a_chunked_body_is_decoded_and_dispatched` stops flaking
+
+- **`drive`'s sender yields between chunks instead of sleeping 10ms**,
+  which cost the chunked-body cases over half of `drive`'s 1.0s budget
+  before any load; it also asserts `drive`'s own outcome (closes #1278).
+
 ### `-blocknotify` and `-shutdownnotify` join the command line
 
 - **`-blocknotify=<cmd>` runs `%s` as the new tip's hash outside initial
@@ -1351,24 +1375,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **More than six blocks' worth raises it to the log, to `-alertnotify`, and
   to `getblockchaininfo`'s and `getnetworkinfo`'s own new `warnings` field**
   (closes #1522).
-
-### `urllib3` moves to 2.8.0 in the lock
-
-- **`uv.lock` pins `urllib3` 2.8.0**, past GHSA-gh4c-6fx4-qh6g,
-  GHSA-vxq7-64xx-v4gw and GHSA-8988-9cw3-xx77; it reaches the dev group
-  alone, through `twine`, `sphinx` and `pyroma`, never the wheel.
-
-### `-rpcservertimeout` bounds an RPC connection's read and its idle gap
-
-- **`-rpcservertimeout=<n>` feeds `RpcManager.request_timeout`, seconds as
-  Core's own `-rpcservertimeout` is, `0` and `-1` both arming no bound at
-  all, as `evhttp_set_timeout` arms none for either** (closes #1548).
-
-### `getrpcinfo` is served
-
-- **`getrpcinfo` answers `active_commands`, one entry per RPC call this
-  node is currently running, and `logpath`, the file this node logs to**
-  (closes #1486).
 
 ## v2026.9.24
 

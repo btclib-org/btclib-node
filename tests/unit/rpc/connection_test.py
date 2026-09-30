@@ -168,7 +168,18 @@ def drive(
         async def send() -> None:
             for chunk in chunks:
                 await loop.sock_sendall(theirs, chunk)
-                await asyncio.sleep(0.01)
+                # A bare yield, not a wall-clock delay: it only has to
+                # give `conn.run()`'s pending `sock_recv` a loop turn
+                # before the next chunk lands, so a many-chunk sender
+                # (the chunked-body cases, up to 57 of them) is not
+                # racing `timeout` below on a busy machine. Measured at
+                # issue #1278: `sleep(0.01)` here cost 0.55-0.57s of
+                # real sleep against `timeout`'s 1.0s default, most of
+                # a loaded run's budget before any scheduling delay,
+                # where `sleep(0)` still forces multiple separate reads
+                # (37 of 55 chunks measured at idle, never one) and
+                # completes in under a millisecond.
+                await asyncio.sleep(0)
             if hang_up:
                 theirs.close()
 
@@ -2613,9 +2624,15 @@ def test_a_chunked_body_is_decoded_and_dispatched(body: bytes) -> None:
     """The chunks' data, joined, is the body, as `bitcoind` v31.1.0 reads it.
 
     Sent three octets at a time, so each line is read across reads.
+    `outcome` is asserted on too (issue #1278): `drive`'s own
+    `wait_for` can in principle still time out on a starved machine,
+    and discarding it would then surface as this test's `messages`
+    assertion with nothing dispatched -- the same shape a real
+    decoding failure produces -- rather than naming the timeout.
     """
     data = request(CHUNKED_FIELD, body)
-    _, messages, _ = drive([data[i : i + 3] for i in range(0, len(data), 3)])
+    outcome, messages, _ = drive([data[i : i + 3] for i in range(0, len(data), 3)])
+    assert outcome == "returned"
     assert messages == [(json.loads(BODY), 0)]
 
 
