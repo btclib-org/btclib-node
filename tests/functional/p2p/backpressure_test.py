@@ -60,7 +60,10 @@ from btclib_node import Node
 from btclib_node.chains import RegTest
 from btclib_node.config import Config
 from btclib_node.constants import NodeStatus, P2pConnStatus
-from btclib_node.p2p.callbacks import MAX_CFILTERS_INFLIGHT_BYTES
+from btclib_node.p2p.callbacks import (
+    MAX_CFILTERS_INFLIGHT_BYTES,
+    MAX_GETDATA_INFLIGHT_BYTES,
+)
 from btclib_node.p2p.connection import MAX_QUEUED_SEND_BYTES
 from tests import (
     GENESIS_TIME,
@@ -102,6 +105,21 @@ _SUBSIDY = 50 * 10**8
 # what this node asks its own peers for.
 _SERVED_BLOCK_BYTES = 1_000_000
 _BLOCKS_ASKED_FOR = 3 * MAX_QUEUED_SEND_BYTES // _SERVED_BLOCK_BYTES
+
+# How many of `chain`'s own blocks `test_a_getdata_answer_pauses_...`
+# below actually needs on the active chain, out of the `_BLOCKS_ASKED_FOR`
+# it asks about: `advance_getdata`'s own loop (`p2p/callbacks.py`) checks
+# its pause bound *before* popping the next item, so once that bound is
+# crossed the rest of `items` -- connected or not -- is left exactly
+# where it was, never reaching `_block_request_allowed`. Connecting every
+# one of `_BLOCKS_ASKED_FOR` here paid for `update_chain`'s own block
+# validation over blocks the pause never reaches, which is what made
+# `wait_until(lambda: len(block_index.active_chain) == ...)` below slow
+# enough to time out under load rather than the pause itself
+# (btclib-org/btclib-node#1518) -- the same cost `_FILTERED_BLOCKS` below
+# is already kept small to avoid. `+ 2` over the exact crossing point is
+# the margin `_BLOCKS_QUEUED_AHEAD` below gives its own bound.
+_BLOCKS_CONNECTED_BEFORE_PAUSE = MAX_GETDATA_INFLIGHT_BYTES // _SERVED_BLOCK_BYTES + 2
 
 # What the filter test queues at the connection before it asks for a
 # filter at all, and how many blocks it then asks about. A filter's size
@@ -282,13 +300,16 @@ def test_a_getdata_answer_pauses_rather_than_filling_the_send_queue(
     """
     node, peer, chain = deaf_peer
     # connected, as a block off the active chain and not validated is
-    # ignored (`_block_request_allowed`)
+    # ignored (`_block_request_allowed`) -- only as many as
+    # `_BLOCKS_CONNECTED_BEFORE_PAUSE` names, `advance_getdata` never
+    # reaching the rest once it pauses on them
+    connected = chain[:_BLOCKS_CONNECTED_BEFORE_PAUSE]
     block_index = node.chainstate.block_index
-    block_index.add_headers([block.header for block in chain])
+    block_index.add_headers([block.header for block in connected])
     node.status = NodeStatus.HeaderSynced
-    for block in chain:
+    for block in connected:
         block_index.set_downloaded(block.header.hash)
-    wait_until(lambda: len(block_index.active_chain) == len(chain) + 1)
+    wait_until(lambda: len(block_index.active_chain) == len(connected) + 1)
     peer.send(
         GetData(
             [Inventory(InventoryType.MSG_BLOCK, block.header.hash) for block in chain]
