@@ -1311,6 +1311,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   case on a machine without one, while a TEST-NET-1 case runs the same lines
   there, so the coverage floor holds either way** (closes #1556).
 
+### An empty `getblocktxn` drops the peer, undiscouraged
+
+- **A `getblocktxn` naming no transaction index is refused ahead of any
+  block lookup, dropping the peer without discouraging it**, matching
+  Core master's `fDisconnect` on an empty `indexes` (closes #1450).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

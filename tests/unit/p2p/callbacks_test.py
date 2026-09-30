@@ -3697,6 +3697,24 @@ def test_getblocktxn_is_answered_with_the_transactions_asked_for() -> None:
     assert answer == BlockTxn(wanted, [block.transactions[1], block.transactions[3]])
 
 
+def test_getblocktxn_with_no_indexes_drops_the_peer_undiscouraged() -> None:
+    """ISS 1450: Core's "No legitimate reason to send indexes empty".
+
+    Core sets `fDisconnect` rather than calling `Misbehaving`, so this
+    is `conn.stop()` directly and not a `MisbehavingError` -- no answer
+    sent, and the peer dropped rather than discouraged.
+    """
+    length = MAX_BLOCKTXN_DEPTH + 10
+    block_index = a_tall_block_index(length)
+    block = a_block_with_transactions(3)
+    node = a_data_node(block_index=block_index, block_db=a_block_store(block))
+    peer = a_peer()
+    wanted = block_index.active_chain[length - 1 - MAX_BLOCKTXN_DEPTH]
+    getblocktxn(node, GetBlockTxn(wanted, []).serialize(), peer)
+    assert not peer.sent
+    assert peer.stopped == [True]
+
+
 def test_getblocktxn_past_the_last_transaction_is_misbehaviour() -> None:
     """ISS 1206: "getblocktxn with out-of-bounds tx indices".
 
