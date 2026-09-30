@@ -74,10 +74,15 @@ def test_run_command_warns_cores_own_way_on_a_nonzero_exit() -> None:
 def test_run_command_runs_through_the_shell(tmp_path: Path) -> None:
     """`shell=True` is Core's own `::system()`.
 
-    A pipe reaches a second command.
+    A pipe reaches a second command. No space sits before `|` or `>`:
+    cmd.exe's own `echo` keeps a space that directly precedes either as
+    part of what it echoes, where a POSIX shell discards it either way
+    -- asserting the platform's own difference is the point of the test
+    below, not of this one, so this command carries none for either
+    shell to keep.
     """
     marker = tmp_path / "marker"
-    run_command(Logger(), f"echo hi | cat > {marker}")
+    run_command(Logger(), f"echo hi|cat>{marker}")
     assert marker.read_text() == "hi\n"
 
 
@@ -138,9 +143,18 @@ def test_alert_notify_does_nothing_for_an_empty_command() -> None:
 def test_alert_notify_substitutes_percent_s_with_the_quoted_message(
     tmp_path: Path,
 ) -> None:
-    """`%s` in the command becomes the message, single-quoted."""
+    """`%s` in the command becomes the message, single-quoted.
+
+    No space sits before `>`, here and in the two tests below that
+    share this same command shape: cmd.exe's own `echo` keeps a space
+    that directly precedes a redirection operator as part of what it
+    echoes -- a trailing space before the newline the content otherwise
+    ends on -- where a POSIX shell discards it either way, so asserting
+    one fixed answer across platforms needs the command to carry no
+    such space for either shell to treat differently.
+    """
     marker = tmp_path / "marker"
-    alert_notify(Logger(), f"echo %s > {marker}", "hello")
+    alert_notify(Logger(), f"echo %s>{marker}", "hello")
     wait_until(marker.exists)
     assert marker.read_text() == "hello\n"
 
@@ -158,7 +172,7 @@ def test_alert_notify_drops_a_single_quote_before_wrapping_the_message(
     marker = tmp_path / "marker"
     injected = tmp_path / "injected"
     message = f"x'; touch {injected}; echo 'y"
-    alert_notify(Logger(), f"echo %s > {marker}", message)
+    alert_notify(Logger(), f"echo %s>{marker}", message)
     wait_until(marker.exists)
     assert not injected.exists()
     assert marker.read_text() == f"x; touch {injected}; echo y\n"
@@ -169,7 +183,7 @@ def test_alert_notify_drops_a_character_outside_cores_safe_set(
 ) -> None:
     """`$` and `` ` ``, among `SanitizeString`'s own excluded characters."""
     marker = tmp_path / "marker"
-    alert_notify(Logger(), f"echo %s > {marker}", "a$b`c")
+    alert_notify(Logger(), f"echo %s>{marker}", "a$b`c")
     wait_until(marker.exists)
     assert marker.read_text() == "abc\n"
 

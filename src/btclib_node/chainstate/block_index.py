@@ -764,9 +764,11 @@ class BlockIndex:
         is rebuilt from `active_chain` only if it held one of them.
 
         Updates `best_invalid` along the same walk, Core's own
-        `InvalidateBlock` (`src/validation.cpp:4964-4965`, at
+        `InvalidChainFound` (`src/validation.cpp:1971-1972`, at
         bitcoin/bitcoin@9be056a8a7, the v31.1 tag) comparing every
-        newly-invalid descendant against `m_best_invalid` the same way.
+        newly-invalid descendant against `m_best_invalid` the same way --
+        reached from `InvalidateBlock`'s own call into it (`:3721`), not
+        `InvalidateBlock` updating `m_best_invalid` directly itself.
         """
         to_invalidate = [block_hash]
         invalidated: set[bytes] = set()

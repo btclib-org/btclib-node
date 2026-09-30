@@ -1349,7 +1349,9 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     `warnings` is `node.warnings.get_messages()`, the same array
     `get_blockchain_info`'s own `warnings` answers -- Core's own
     `getnetworkinfo` reads the identical `node.warnings` `rpc/net.cpp`
-    does (`:740`, same tag), so the two RPCs never disagree here either.
+    does (`:740`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag -- not
+    `bb529657` above, this paragraph's own citation), so the two RPCs
+    never disagree here either.
     """
     services = local_services(node.config)
     return {

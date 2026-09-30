@@ -164,11 +164,20 @@ def check_fork_warning_conditions(node: Node) -> None:
     assumeutxo snapshot): this tree keeps exactly one chainstate, so
     that check has no counterpart here to make.
 
-    Called wherever `main.py` calls `BlockIndex.invalidate` (through
-    `update_header_index`) or commits a fork (`_after_tip_change`), and
-    once at `Node.load`, matching Core's own three call sites --
-    `InvalidChainFound`/`InvalidBlockFound`, `ConnectTip`'s own
-    failed-chain branch, and `LoadBlockIndex`.
+    Called wherever this tree calls `BlockIndex.invalidate` (through
+    `update_header_index` in `_invalidate_failed_block`, and directly in
+    `p2p.callbacks` and `rpc.callbacks`), or commits a fork
+    (`_after_tip_change`), and once at `Node.load`, matching Core's own
+    three call sites (`src/validation.cpp`, same sha): `InvalidChainFound`
+    itself (`:1987`) -- reached both from `InvalidateBlock`'s own direct
+    call and, for a block that fails validation, from `InvalidBlockFound`
+    calling `InvalidChainFound` in turn, the same way this tree's three
+    `invalidate` call sites above all reach this one function --
+    `ActivateBestChainStep` (`:3318`, not `ConnectTip`, which calls
+    neither `InvalidChainFound` nor this function itself), and
+    `LoadChainTip` (`:4643`, not `LoadBlockIndex`, which is `best_invalid`'s
+    own load-time rescan in `BlockIndex.calculate_chainwork`, argued
+    there rather than here).
     """
     block_index = node.chainstate.block_index
     best_invalid = block_index.best_invalid
