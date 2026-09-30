@@ -1005,6 +1005,41 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **Off `main`, as `bitcoind` refuses it, rather than being silently
   dropped** (closes #1327).
 
+### A listener that cannot bind is reported as one, not as a slow one
+
+- **`wait_until_listening` raises `ListenerEndedError` as soon as a manager's
+  thread ends without listening, naming its `bind_error` where it has one**,
+  where it waited out its timeout and reported one (closes #1361).
+
+### `version` signals `NODE_COMPACT_FILTERS` only under `-peerblockfilters`
+
+- **Off by default, as in Core; a `getcfilters`, `getcfheaders` or
+  `getcfcheckpt` this node never advertised is refused the same silent way
+  as a filter type BIP157 has no name for** (closes #1395).
+
+### `getnetworkinfo` answers `localservices` and `localservicesnames`
+
+- **The same services `version` sends, one function answering both**
+  (closes #1394).
+
+### `-discover` decides whether this node records its own addresses
+
+- **Independently of `-listen`, defaulting to it and overridable either
+  way, as Core's `Discover` runs off whether it would bind every interface
+  rather than off `-listen`** (closes #1330).
+
+### DNS seeding waits, batches by three, and reads `-forcednsseed`
+
+- **A wait, then three seeds at a time, ends early at two full-relay
+  peers** (closes #1265); **`-forcednsseed` asks every seed at once**,
+  refused with `-dnsseed` off, both as in `bitcoind`.
+
+### `-seednode` gets thirty seconds before the DNS seeds are asked
+
+- **DNS seeding waits for two full-relay peers or thirty seconds,
+  whichever is first, wherever `-seednode` is given** (closes #1461),
+  as Core's `ThreadDNSAddressSeed` does.
+
 ### `fuzz/` is under mypy, atheris excepted
 
 - **`[tool.mypy]`'s `files` carries `fuzz`, and an override reads `atheris`

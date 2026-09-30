@@ -2,9 +2,9 @@
 name: bootstrap-dns
 
 # Whether a fresh node still has a way onto the network. `PeerDB.
-# get_addr_from_dns` (src/btclib_node/p2p/address.py) is what a node
-# with an empty table calls, and `src/btclib_node/chains.py`'s `Main`,
-# `TestNet` and `SigNet` are what it calls it with: a DNS seed going
+# query_dns_seed` (src/btclib_node/p2p/address.py) is what this asks of
+# every seed a chain names, and `src/btclib_node/chains.py`'s `Main`,
+# `TestNet` and `SigNet` are what it names them with: a DNS seed going
 # away, or the resolver on this runner failing, is the kind of thing
 # that happens to seeds and to networks, on nobody's schedule and for
 # no reason this tree's own commits control.
@@ -15,7 +15,7 @@ name: bootstrap-dns
 # `pyproject.toml`'s `addopts` used to force the three tests that made
 # this same call live into every coverage run, and moved them here.
 # What replaced them in tests/unit/p2p/address_test.py stubs the resolver and
-# still covers `get_addr_from_dns`'s own logic -- the union over seeds,
+# still covers `query_dns_seed`'s own logic -- the union over seeds,
 # the dedup, the `gaierror` skip, the IPv6 answer -- deterministically
 # and on every run. What is left for this file is the one thing a stub
 # cannot stand in for: whether the seeds this tree ships still answer.
@@ -85,8 +85,8 @@ jobs:
 
           async def answered(chain: object) -> bool:
               peer_db = PeerDB(chain, None)  # type: ignore[arg-type]
-              peer_db.ask_dns_nodes = True
-              await peer_db.get_addr_from_dns()
+              for seed in chain.addresses:  # type: ignore[attr-defined]
+                  await peer_db.query_dns_seed(seed)
               return not peer_db.is_empty
 
 

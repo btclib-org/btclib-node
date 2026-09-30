@@ -39,6 +39,7 @@ from btclib_node.main import (
 )
 from btclib_node.p2p.address import ip_and_port, peer_address
 from btclib_node.p2p.banman import Subnet, is_valid_host, lookup_host, lookup_subnet
+from btclib_node.p2p.connection import local_services
 from btclib_node.p2p.eviction import Network, is_valid, net_class
 from btclib_node.rpc.connection import RawJSON
 from btclib_node.rpc.errors import (
@@ -1078,10 +1079,21 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     `protocolversion` is `PROTOCOL_VERSION` (`btclib.p2p.limits`), the
     same constant every `version` this node sends and every
     `getheaders` it builds already carries.
+
+    `localservices` and `localservicesnames` are `p2p.connection.local_services`
+    (`rpc/net.cpp:706-708`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag) -- the services this node's own `version` advertises on every
+    connection, one function answering both rather than each computing
+    its own (btclib-org/btclib-node#1394), `service_names` above turning
+    the same bits into the strings `getpeerinfo`'s own `servicesnames`
+    already uses for a peer's.
     """
+    services = local_services(node.config)
     return {
         "subversion": USER_AGENT,
         "protocolversion": PROTOCOL_VERSION,
+        "localservices": f"{services:016x}",
+        "localservicesnames": service_names(services),
     }
 
 

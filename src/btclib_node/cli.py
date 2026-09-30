@@ -388,6 +388,11 @@ _OPTIONS: dict[str, _Option] = {
         + ". This option can be specified multiple times.",
         _DEBUG_TEST_TITLE,
     ),
+    "discover": _Option(
+        "",
+        "Discover own IP addresses (default: 1 when listening)",
+        _CONNECTION_TITLE,
+    ),
     "dnsseed": _Option(
         "",
         "Query for peer addresses via DNS lookup, if low on addresses "
@@ -397,6 +402,11 @@ _OPTIONS: dict[str, _Option] = {
     "fixedseeds": _Option(
         "",
         "Allow fixed seeds if DNS seeds don't provide peers (default: 1)",
+        _CONNECTION_TITLE,
+    ),
+    "forcednsseed": _Option(
+        "",
+        "Always query for peer addresses via DNS lookup (default: 0)",
         _CONNECTION_TITLE,
     ),
     "h": _Option("", "", None),
@@ -432,6 +442,11 @@ _OPTIONS: dict[str, _Option] = {
         "Maintain at most <n> automatic connections to peers (default: "
         f"{DEFAULT_MAX_PEER_CONNECTIONS}); does not limit a peer dialled through "
         "-connect or -addnode",
+        _CONNECTION_TITLE,
+    ),
+    "peerblockfilters": _Option(
+        "",
+        "Serve compact block filters to peers per BIP 157 (default: 0)",
         _CONNECTION_TITLE,
     ),
     "port": _Option(
@@ -1538,8 +1553,9 @@ class _BeforeLock:
 
     `prune` is `_prune_target_mib`'s. `directories` is a `Config` of the
     chain, the data directory and `-blocksdir`, the fields that name the
-    directories `Node.__init__` locks, and of `-maxconnections`, which
-    `Config.__init__` refuses just after a missing blocks directory, as
+    directories `Node.__init__` locks, and of `-dnsseed`'s soft-set,
+    `-forcednsseed` and `-maxconnections`, which `Config.__init__`
+    refuses in that order just after a missing blocks directory, as
     Core does.
     """
 
@@ -1647,8 +1663,9 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     `InitConfig`, then `AppInitParameterInteraction` (`src/init.cpp`, at
     bitcoin/bitcoin@9be056a8a7) in its order: a `NETWORK_ONLY` option set
     only in the default section off `main`, the warning about a section
-    naming no chain, a missing blocks directory, a negative
-    `-maxconnections`, `-debug`'s categories, `-prune`, `-minrelaytxfee`.
+    naming no chain, a missing blocks directory, `-forcednsseed` beside
+    a `-dnsseed` that is off, a negative `-maxconnections`, `-debug`'s
+    categories, `-prune`, `-minrelaytxfee`.
     """
     settings, base_dir, chain_name = _read_settings(argv)
     _check_network_only_args(settings)
@@ -1662,11 +1679,27 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     if max_connections_arg is None:
         max_connections_arg = DEFAULT_MAX_PEER_CONNECTIONS
     max_connections = _to_int(max_connections_arg)
+    connect = _get_args(settings, "connect")
+    connect_negated = _is_negated(settings, "connect")
+    # `InitParameterInteraction`'s own soft-set (`src/init.cpp`, same
+    # sha), over the `int64_t` `-maxconnections` arg itself, as Core's
+    # own soft-set does -- but only where `-dnsseed` was not given a
+    # value of its own: `SoftSetBoolArg` never overwrites an arg already
+    # set, so an explicit `-dnsseed=1` reaches `Config.__init__`'s own
+    # `-forcednsseed` refusal as `True` even under `-connect`
+    # (btclib-org/btclib-node#1265, review round 3). `_after_lock`
+    # recomputes the identical value from `max_connections_arg` below,
+    # once this returns it.
+    dnsseed = _get_bool(settings, "dnsseed")
+    if dnsseed is None:
+        dnsseed = not connect and not connect_negated and max_connections_arg > 0
     directories = Config(
         chain=chain_name,
         data_dir=base_dir,
         blocks_dir=blocksdir,
         max_connections=max_connections,
+        dnsseed=dnsseed,
+        forcednsseed=bool(_get_bool(settings, "forcednsseed")),
     )
     debug = _resolve_debug(settings)
     prune = _prune_target_mib(_get_int(settings, "prune") or 0)
@@ -1747,6 +1780,11 @@ def _after_lock(before: _BeforeLock) -> Config:
     fixedseeds = _get_bool(settings, "fixedseeds")
     if fixedseeds is None:
         fixedseeds = True
+    # `Config.__init__`'s own soft-set reads `listen` above, already
+    # resolved, rather than repeating `InitParameterInteraction`'s
+    # `-listen=0` condition here
+    discover = _get_bool(settings, "discover")
+    peerblockfilters = bool(_get_bool(settings, "peerblockfilters"))
     # `GetAuthCookieFile` (`src/rpc/request.cpp`, same sha): negated, no cookie
     rpccookiefile = (
         None
@@ -1777,8 +1815,11 @@ def _after_lock(before: _BeforeLock) -> Config:
         addnode=_get_args(settings, "addnode"),
         seednode=_get_args(settings, "seednode"),
         listen=listen,
+        discover=discover,
+        peerblockfilters=peerblockfilters,
         max_connections=before.max_connections,
         dnsseed=dnsseed,
+        forcednsseed=bool(_get_bool(settings, "forcednsseed")),
         fixed_seeds=fixedseeds,
         ban_time=ban_time,
         min_relay_feerate=before.min_relay_feerate,

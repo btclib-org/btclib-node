@@ -102,6 +102,10 @@ on release day.
   `Error: Config setting for -<option> only applied on <chain> network
   when in [<chain>] section.`, and exits 1. Move the line into that
   chain's own section, e.g. `[regtest]`, or set it on the command line.
+- **`version` signals `NODE_COMPACT_FILTERS`, and BIP157 requests are
+  answered, only under `-peerblockfilters`** (closes #1395), off by
+  default as in Core. A client relying on this node's own BIP157 filter
+  service starts it with `-peerblockfilters=1`.
 
 ## v2026.9.24
 
