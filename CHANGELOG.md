@@ -1305,6 +1305,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`SECURITY.md` says a report is acknowledged within 7 days**, and a
   fix or a published advisory within 90 (issue btclib-org/.github#1460).
 
+### The netif test decides its skip without a route before it runs
+
+- **`netif_test.py` probes the route at import and skips the kernel's-source
+  case on a machine without one, while a TEST-NET-1 case runs the same lines
+  there, so the coverage floor holds either way** (closes #1556).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
