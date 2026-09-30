@@ -869,7 +869,7 @@ def a_stopping_rpc_node(tmp_path: Path) -> Node:
 def call_stop_with_wait(
     node: Node, wait_ms: int
 ) -> tuple[threading.Thread, dict[str, Any]]:
-    """Call `stop` with `wait_ms` on another thread; its reply lands in the dict."""
+    """Call `stop` with `wait_ms` on a thread; the dict gets its reply."""
     client = rpc_client(node, timeout=wait_ms / 1000 + 10)
     reply: dict[str, Any] = {}
 
@@ -891,7 +891,7 @@ _TIMER_SLACK = time.get_clock_info("monotonic").resolution
 def test_stop_widens_its_join_past_a_pending_delayed_reply(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`stop` from another thread outwaits a `stop wait=N` longer than its bound.
+    """`stop` from another thread outwaits a `stop wait=N` past its bound.
 
     `RpcManager.stop`, on the node's own thread, finishes the delayed
     reply before the stores close (#1467), so a `wait` longer than
@@ -955,24 +955,15 @@ def test_stop_rereads_a_deadline_recorded_after_its_first_read(
     monkeypatch.setattr(node.rpc_manager, "latest_reply_deadline", read)
     caller, reply = call_stop_with_wait(node, 3000)
     assert handling.wait(10)
-    raised: list[NodeShutdownTimeoutError] = []
-
-    def stop() -> None:
-        try:
-            node.stop()
-        except NodeShutdownTimeoutError as error:
-            raised.append(error)
-
-    stopper = threading.Thread(target=stop)
-    stopper.start()
-    assert first_read.wait(10)
-    assert latest_reply_deadline() is None
-    release.set()
-    stopper.join(timeout=20)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        stopping = pool.submit(node.stop)
+        assert first_read.wait(10)
+        assert latest_reply_deadline() is None
+        release.set()
+        # re-raises `NodeShutdownTimeoutError` here if this regresses
+        stopping.result(timeout=20)
     caller.join(timeout=10)
 
-    assert not raised
-    assert not stopper.is_alive()
     assert not node.is_alive()
     assert reply["status"] == 200
     assert reply["envelope"]["result"] == "Btclib node stopping"

@@ -1813,7 +1813,7 @@ def test_stop_refuses_a_bool_wait() -> None:
 
 @pytest.mark.parametrize("wait", [10.5, 2**31, -(2**31) - 1])
 def test_stop_refuses_a_wait_getint_int_refuses(wait: float) -> None:
-    """A fractional `wait`, or one past C `int`, fails `getInt<int>()` as in Core."""
+    """A fractional `wait`, or one past C `int`, fails `getInt<int>()`."""
     node = a_node()
     with pytest.raises(RpcError) as raised:
         stop(node, _CONN, [wait])

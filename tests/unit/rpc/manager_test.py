@@ -1083,9 +1083,7 @@ def test_stop_lets_a_pending_delayed_reply_finish_rather_than_cancelling_it(
         deadline = manager.latest_reply_deadline()
         [delayed] = manager.delayed_replies
         # asleep in `asyncio.sleep(0.3)`: the window the race is about
-        wait_until(
-            lambda: inspect.getcoroutinestate(delayed) == inspect.CORO_SUSPENDED
-        )
+        wait_until(lambda: inspect.getcoroutinestate(delayed) == inspect.CORO_SUSPENDED)
         manager.stop()
         theirs.settimeout(5)
         reply = theirs.recv(65536)
@@ -1095,6 +1093,24 @@ def test_stop_lets_a_pending_delayed_reply_finish_rather_than_cancelling_it(
     assert b"stopping" in reply
     # `Node.stop` has why a reply already sent still bounds its wait
     assert manager.latest_reply_deadline() == deadline
+
+
+def test_a_delayed_reply_due_sooner_leaves_the_latest_deadline_alone(
+    a_manager: AManagerFactory,
+) -> None:
+    """The latest deadline is the latest recorded, not the last (ISS 1467)."""
+
+    async def reply() -> None:
+        """Stand in for a delayed reply's coroutine, never run."""
+
+    manager = a_manager(None)
+    later, sooner = reply(), reply()
+    manager.add_delayed_reply(later, 20.0)
+    manager.add_delayed_reply(sooner, 10.0)
+    assert manager.latest_reply_deadline() == 20.0
+    assert manager.delayed_replies == {later, sooner}
+    later.close()
+    sooner.close()
 
 
 def test_stop_finishes_a_delayed_reply_its_loop_never_stepped(
