@@ -1311,6 +1311,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   case on a machine without one, while a TEST-NET-1 case runs the same lines
   there, so the coverage floor holds either way** (closes #1556).
 
+### A raw transaction's hex with whitespace in it is refused
+
+- **`sendrawtransaction` and `testmempoolaccept` refuse a `rawtx` that is
+  not all hex digits, of even length and non-empty, as Core's `IsHex` does
+  inside `DecodeHexTx`, with its own `TX decode failed` error** (closes #1372).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
