@@ -27,7 +27,7 @@ from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
 from btclib_node import Node, main
-from btclib_node.chains import RegTest
+from btclib_node.chains import RegTest, SigNet
 from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate import utxo_index as utxo_index_module
 from btclib_node.chainstate.block_index import BlockIndex, BlockInfo, BlockStatus
@@ -40,6 +40,7 @@ from btclib_node.constants import (
 )
 from btclib_node.exceptions import (
     ChainstateInconsistencyError,
+    MisbehavingError,
     MissingPrevoutError,
     NonStandardTxError,
     TxRejectedError,
@@ -155,6 +156,29 @@ def spend(prevout_tx: Tx, value: int, script_sig: bytes | None = None) -> Tx:
     )
 
 
+def test_assert_valid_block_asks_the_signet_solution_on_a_signet_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`assert_valid_block`'s own `isinstance(chain, SigNet)` gate, isolated.
+
+    `signet.assert_valid_solution` itself is `tests/unit/signet_test.py`'s;
+    what is main's own to answer for is whether `assert_valid_block` calls
+    it at all, and only for a signet chain -- proven here by a stub that
+    always raises, so a genesis block (which the real function would wave
+    through on its own) still shows whether the call happened.
+    """
+
+    def always_raises(*_args: object, **_kwargs: object) -> None:
+        err_msg = "stub"
+        raise MisbehavingError(err_msg)
+
+    monkeypatch.setattr(main, "assert_valid_solution", always_raises)
+
+    with pytest.raises(MisbehavingError):
+        main.assert_valid_block(SigNet().genesis_block, SigNet())
+    main.assert_valid_block(RegTest().genesis_block, RegTest())  # no raise
+
+
 def test_reject_block_that_prints_money(node: Node) -> None:
     """A block whose output exceeds its input's value fails to connect."""
     # Script validation never reads the amounts except through the
@@ -250,7 +274,35 @@ def test_reject_block_whose_coinbase_does_not_commit_to_its_height(
 
     assert bad.header.hash not in block_index.active_chain
     assert len(block_index.active_chain) == connected
-    rejected_because(node, bad, "invalid coinbase height")
+    rejected_because(node, bad, "bad-cb-height")
+
+
+def test_reject_block_whose_coinbase_height_and_a_transaction_are_both_bad(
+    node: Node,
+) -> None:
+    """Core checks finality before the coinbase height commitment.
+
+    A wrong-height coinbase (BIP34) and a non-final transaction fail in
+    the same block; `bad-txns-nonfinal` is the answer, Core's own order
+    (`ContextualCheckBlock`, `src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). ISS 1335.
+    """
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, chain)
+    connected = len(block_index.active_chain)
+
+    funding = chain[0].transactions[0]
+    nonfinal = locked_spend(
+        funding, funding.vout[0].value, lock_time=2_000_000_000, sequence=0
+    )
+    bad = build_block(
+        chain[-1].header.hash, [generate_coinbase(), nonfinal], len(chain)
+    )
+    connect(node, [bad])
+
+    assert bad.header.hash not in block_index.active_chain
+    assert len(block_index.active_chain) == connected
+    rejected_because(node, bad, "bad-txns-nonfinal")
 
 
 def test_reject_block_spending_a_coinbase_one_short_of_maturity(node: Node) -> None:

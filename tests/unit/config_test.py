@@ -195,6 +195,23 @@ def test_listen_false_is_taken_as_given() -> None:
     assert Config(chain="regtest", connect=["127.0.0.1"]).listen is True
 
 
+def test_discover_defaults_to_listen() -> None:
+    """ISS 1330: `discover=None` follows `listen`, Core's own soft-set."""
+    assert Config(chain="regtest", listen=True).discover is True
+    assert Config(chain="regtest", listen=False).discover is False
+
+
+def test_discover_explicit_wins_over_listen() -> None:
+    """An explicit `-discover` always wins, even against `-listen=0`."""
+    assert Config(chain="regtest", listen=False, discover=True).discover is True
+    assert Config(chain="regtest", listen=True, discover=False).discover is False
+
+
+def test_peerblockfilters_defaults_to_false() -> None:
+    """Core's own `DEFAULT_PEERBLOCKFILTERS`."""
+    assert Config(chain="regtest").peerblockfilters is False
+
+
 def test_connect_resolves_to_the_chains_own_default_port() -> None:
     """A spec naming no port falls back to the chain's own P2P port."""
     config = Config(chain="regtest", connect=["127.0.0.1"])
@@ -244,12 +261,16 @@ def test_seednode_defaults_to_empty() -> None:
     assert Config(chain="regtest").seednode == ()
 
 
-def test_seednode_rejects_a_hostname() -> None:
-    """`_resolve_peers` refuses a hostname for `seednode` too (ISS 1264)."""
-    with pytest.raises(
-        ValueError, match="does not appear to be an IPv4 or IPv6 address"
-    ):
-        Config(chain="regtest", seednode=["example.com"])
+def test_seednode_takes_a_hostname() -> None:
+    """`_split_peers` splits a hostname the same as a literal IP (ISS 1264).
+
+    Core resolves `-seednode`'s own value at dial time
+    (`CConnman::ThreadOpenConnections`, `src/net.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag); this node does the same,
+    on `P2pManager`'s own loop, so `Config` itself refuses nothing here.
+    """
+    config = Config(chain="regtest", seednode=["example.com"])
+    assert config.seednode == (("example.com", RegTest().port),)
 
 
 def test_fixed_seeds_defaults_to_true() -> None:
@@ -274,19 +295,17 @@ def test_dnsseed_explicit_value_is_taken_as_given() -> None:
     assert config.dnsseed is True
 
 
-def test_connect_rejects_a_hostname() -> None:
-    """A spec whose host is not an IP literal raises rather than dialling wrong.
+def test_connect_takes_a_hostname() -> None:
+    """A spec whose host is not an IP literal is split, not refused (ISS 1264).
 
-    `p2p_manager.connect(peer_address(...))` -- the route `Node.run`
-    dials `connect`/`addnode` through -- takes a parsed IP; this node
-    resolves no hostname anywhere in its synchronous startup path
-    (`config.py`'s own `_resolve_peers` docstring), so a hostname here
-    is refused rather than silently mishandled.
+    `p2p_manager.connect_host(host, port)` -- the route `Node.run`
+    dials `connect`/`addnode` through -- resolves the host itself, on
+    `P2pManager`'s own loop, rather than taking an already-parsed IP the
+    way `peer_address` needs, so a hostname here is not this function's
+    to refuse.
     """
-    with pytest.raises(
-        ValueError, match="does not appear to be an IPv4 or IPv6 address"
-    ):
-        Config(chain="regtest", connect=["example.com"])
+    config = Config(chain="regtest", connect=["example.com"])
+    assert config.connect == (("example.com", RegTest().port),)
 
 
 def test_split_host_port_bare_host_takes_the_default_port() -> None:
@@ -366,6 +385,57 @@ def test_max_connections_negative_raises() -> None:
     """Core's own `InitError`, not a limit nothing could ever satisfy."""
     with pytest.raises(ValueError, match="greater or equal than zero"):
         Config(chain="regtest", max_connections=-1)
+
+
+def test_forcednsseed_defaults_to_false() -> None:
+    """Core's own `DEFAULT_FORCEDNSSEED`, at bitcoin/bitcoin@9be056a8a7."""
+    assert Config(chain="regtest").forcednsseed is False
+
+
+def test_forcednsseed_true_alongside_dnsseed_is_stored_back() -> None:
+    """`-forcednsseed` alongside a `-dnsseed` that is on: no refusal."""
+    config = Config(chain="regtest", dnsseed=True, forcednsseed=True)
+    assert config.forcednsseed is True
+    assert config.dnsseed is True
+
+
+def test_forcednsseed_true_alongside_dnsseed_false_raises() -> None:
+    """ISS 1265: Core's own wording (`AppInitParameterInteraction`)."""
+    with pytest.raises(
+        ValueError,
+        match=r"^Cannot set -forcednsseed to true when setting -dnsseed to false\.$",
+    ):
+        Config(chain="regtest", dnsseed=False, forcednsseed=True)
+
+
+def test_forcednsseed_true_alongside_the_dnsseed_soft_set_off_raises() -> None:
+    """The refusal reaches the soft-set too, `dnsseed` left at `None`.
+
+    `-connect` alone turns the soft-set off (`Config.dnsseed`'s own
+    docstring), with no explicit `-dnsseed` needed to trigger it.
+    """
+    with pytest.raises(
+        ValueError,
+        match=r"^Cannot set -forcednsseed to true when setting -dnsseed to false\.$",
+    ):
+        Config(chain="regtest", connect=["1.2.3.4"], forcednsseed=True)
+
+
+def test_an_explicit_dnsseed_true_wins_over_connects_soft_set_off() -> None:
+    """`-dnsseed=1 -forcednsseed=1 -connect=x`: no refusal, both on.
+
+    `InitParameterInteraction`'s own `SoftSetBoolArg` (`src/init.cpp`,
+    at bitcoin/bitcoin@9be056a8a7) never overwrites an arg already set,
+    so `-connect`'s soft-set-off of `-dnsseed` never reaches an explicit
+    `-dnsseed=1` -- `AppInitParameterInteraction`'s own forcednsseed
+    check (same sha) then reads that explicit `True` back, past
+    btclib-org/btclib-node#1192's own `-dnsseed` soft-set order.
+    """
+    config = Config(
+        chain="regtest", dnsseed=True, forcednsseed=True, connect=["1.2.3.4"]
+    )
+    assert config.dnsseed is True
+    assert config.forcednsseed is True
 
 
 def test_rpcauth_is_parsed_into_rpc_auth() -> None:

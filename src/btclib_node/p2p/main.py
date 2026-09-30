@@ -10,9 +10,7 @@ or `P2pManager.handshake_messages` -- and dispatch it through
 depending on the connection's own `P2pConnStatus`. An exception raised
 by a callback ends that connection's message rather than the loop: it
 goes to `P2pManager.maybe_discourage_and_disconnect` where it is a
-`MisbehavingError`, is logged with the peer kept where it is any other
-`BTClibException`, and stops the connection where it is a bug in the
-handler.
+`MisbehavingError`, and is logged with the peer kept otherwise.
 
 Each also weighs its own queued item's wire size back off the
 connection it came from, `queued_recv_bytes`, resuming that connection's
@@ -29,8 +27,6 @@ called once every pass of `run`'s own loop regardless.
 """
 
 from typing import TYPE_CHECKING
-
-from btclib.exceptions import BTClibException
 
 from btclib_node.constants import P2pConnStatus
 from btclib_node.exceptions import MisbehavingError
@@ -61,14 +57,12 @@ _BEFORE_VERACK = frozenset({"sendheaders"})
 def _drop(manager: P2pManager, conn: Connection, e: Exception) -> bool:
     """Punish `conn` over `e`, and answer whether its host was discouraged.
 
-    A `MisbehavingError` goes to `maybe_discourage_and_disconnect`, any
-    other `BTClibException` leaves the peer as it is, and anything else
-    stops the connection, `handle_p2p`'s own `except` explaining why.
+    A `MisbehavingError` goes to `maybe_discourage_and_disconnect`, and
+    anything else leaves the peer as it is, `handle_p2p`'s own `except`
+    explaining why.
     """
     if isinstance(e, MisbehavingError):
         return manager.maybe_discourage_and_disconnect(conn)
-    if not isinstance(e, BTClibException):
-        conn.stop()
     return False
 
 
@@ -188,21 +182,16 @@ def handle_p2p(node: Node) -> None:
                     callbacks[msg_type](node, msg, conn)
                 node.logger.debug("Finished p2p\n")
         except Exception as e:
-            # A `BTClibException` is btclib refusing this peer's own
-            # wire content. Where it is a `MisbehavingError`, a header
-            # or a block failing a consensus check or a message past
-            # Core's own size bound, the peer is discouraged, as Core
-            # calls `Misbehaving` there. Any other, a payload that does
-            # not parse among them, is logged and the peer kept, as
-            # Core's `ProcessMessages` only logs what `ProcessMessage`
-            # throws (`src/net_processing.cpp`, at
-            # bitcoin/bitcoin@9be056a8a7, the v31.1 tag;
-            # btclib-org/btclib-node#1170). Anything else caught here is
-            # this node's own code failing on content that was fine --
-            # `get_cfilters`'s "no filter for a block on the active
-            # chain" among them -- and stops the connection without
-            # discouraging the peer that merely triggered it.
-            # btclib-org/btclib-node#283
+            # A `MisbehavingError` -- a header or a block failing a
+            # consensus check, a message past Core's own size bound -- is
+            # where Core calls `Misbehaving`, so the peer is discouraged.
+            # Anything else, a payload that does not parse or this node's
+            # own code failing on content that was fine, is logged and the
+            # peer kept: Core's `ProcessMessages` catches every exception
+            # out of `ProcessMessage`, `catch (...)` included, logs it and
+            # keeps the peer (`src/net_processing.cpp`,
+            # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag;
+            # btclib-org/btclib-node#1170, btclib-org/btclib-node#1233).
             discourage = _drop(manager, conn, e)
             # `conn_id`, not `conn.address`: same reasoning as
             # `handle_p2p_handshake` above (#526)

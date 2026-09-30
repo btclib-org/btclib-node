@@ -37,7 +37,7 @@ from btclib_node.interpreter import warm
 from btclib_node.log import Logger
 from btclib_node.main import update_chain
 from btclib_node.mempool import Mempool
-from btclib_node.p2p.address import PeerDB, peer_address
+from btclib_node.p2p.address import PeerDB
 from btclib_node.p2p.banman import BanMan
 from btclib_node.p2p.main import (
     handle_p2p,
@@ -562,10 +562,10 @@ class Node(threading.Thread):
         """Handle whatever is waiting, and answer whether nothing was.
 
         One message must not end the node. `handle_p2p` and
-        `handle_p2p_handshake` already answer a bad message by dropping
-        the peer, but what reaches here is whatever they did not expect
-        -- and leaving `run`'s own loop by exception skips every close
-        below it, so the databases would stay open.
+        `handle_p2p_handshake` already answer a bad message, dropping the
+        peer for a `MisbehavingError`, but what reaches here is whatever
+        they did not expect -- and leaving `run`'s own loop by exception
+        skips every close below it, so the databases would stay open.
 
         `resume_cfilters` and `resume_getdata` are last and unconditional,
         not one more queue to size a share from: nothing is queued to
@@ -730,28 +730,23 @@ class Node(threading.Thread):
             self._abort_start(
                 [P2P_INIT_ERROR] if bind_error is None else [bind_error, P2P_INIT_ERROR]
             )
-        elif started and self.p2p_port:
-            # `config.connect` and `config.addnode` together, once the
-            # listener is bound, or skipped under `-listen=0`.
-            #
-            # A one-shot dial, not the standing connection Core keeps:
-            # `CConnman::ThreadOpenConnections`'s own `-connect` arm
-            # loops forever, redialling with backoff
-            # (`for (int64_t nLoop = 0;; nLoop++)`, `src/net.cpp:2599`,
-            # at bitcoin/bitcoin@ca7162cde5), and
-            # `ThreadOpenAddedConnections` does the same for `-addnode`.
-            # `P2pManager._maybe_dial_more_peers` is this node's own
-            # equivalent of that loop and, under `-connect`, is exactly
-            # what `use_addrman_outgoing` above turns off -- so a peer
-            # named here that drops after the handshake is not redialled
-            # by anything. btclib-org/btclib-node#651 is the follow-up
-            # this leaves open, filed rather than solved in this branch.
-            for host, port in (*self.config.connect, *self.config.addnode):
-                self.p2p_manager.connect(peer_address(host, port))
+        # `config.connect` and `config.addnode` are each dialled by a
+        # loop of `P2pManager`'s own, `_open_connect_peers` and
+        # `_open_added_peers`, started from `P2pManager.run` once the
+        # listener is bound; no dial happens here.
         while not self.terminate_flag.is_set():
             if self._drain_message_queues():
                 time.sleep(IDLE_SLEEP_SECONDS)
-            if self._step_chain():
+            # `_drain_message_queues` can itself set `terminate_flag`
+            # mid-pass -- `rpc.callbacks._validate_extending_tip`, run from
+            # inside `handle_rpc`, does exactly that on an exception
+            # `rpc.main._execute` still turns into `INTERNAL_ERROR` rather
+            # than letting propagate -- and this loop must not run
+            # `_step_chain`'s own `update_chain` once that has happened:
+            # the flag is the store's own word that it is unsafe to touch
+            # again this pass, not only next time the condition above is
+            # read.
+            if self.terminate_flag.is_set() or self._step_chain():
                 break
         self._stop_managers_and_close_stores()
 
