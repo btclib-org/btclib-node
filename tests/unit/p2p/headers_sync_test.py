@@ -141,8 +141,8 @@ def check(
 
 
 # Core's own `headers_sync_chainwork_tests`
-# (`src/test/headers_sync_chainwork_tests.cpp`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag), constant for constant
+# (`src/test/headers_sync_chainwork_tests.cpp`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), constant for constant
 _TARGET_BLOCKS = 15_000
 _REDOWNLOAD_BUFFER_SIZE = _TARGET_BLOCKS - (MAX_HEADERS_RESULTS + 123)
 _COMMITMENT_PERIOD = 600

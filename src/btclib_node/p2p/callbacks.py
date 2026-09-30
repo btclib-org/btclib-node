@@ -1836,11 +1836,12 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     # a `Misbehaving`, and that alone is reason enough to keep this
     # unchecked. It used to also refuse a version of zero or below on
     # its own, where Core leaves that to the same function's
-    # `bad-version` -- fixed at btclib 2026.9.29
-    # (btclib-org/btclib@bbb1ad71, closing btclib-org/btclib#2309;
-    # btclib-org/btclib-node#1511). The count and the transaction
-    # counts are bounded either way, and `add_headers` checks the work
-    # and both of Core's own contextual refusals.
+    # `bad-version` -- fixed
+    # at btclib 2026.9.29 (btclib-org/btclib@bbb1ad71, closing
+    # btclib-org/btclib#2309; btclib-org/btclib-node#1511). The count
+    # and the transaction counts are bounded either way, and
+    # `add_headers` checks the work and both of Core's own contextual
+    # refusals.
     headers: Sequence[BlockHeader] = Headers.parse(msg, check_validity=False).headers
     # what the message carried, which the rest reads whatever a low-work
     # sync hands back in its place: Core's `nCount`
