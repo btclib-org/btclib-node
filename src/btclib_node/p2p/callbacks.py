@@ -1180,10 +1180,14 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
         # A `MisbehavingError`: the body having passed `CheckBlock` above,
         # this is `ContextualCheckBlock`'s `bad-blk-weight`, whose
         # `BLOCK_CONSENSUS` `MaybePunishNodeForBlock` punishes
-        # (btclib-org/btclib-node#1170). One refusal here is
-        # btclib's and not Core's: its header check refuses a version of
-        # zero or below as "invalid version", where Core accepts such a
-        # block below BIP34's height (btclib-org/btclib#2309).
+        # (btclib-org/btclib-node#1170). btclib's own header check used
+        # to refuse a version of zero or below here on its own, where
+        # Core accepts such a block below BIP34's height -- fixed at
+        # btclib 2026.9.29 (btclib-org/btclib@bbb1ad71, closing
+        # btclib-org/btclib#2309): `assert_valid_block` refuses on
+        # version now only through the same height-gated `bad-version`
+        # `add_headers` already applied to this block's header, above
+        # (btclib-org/btclib-node#1511).
         try:
             assert_valid_block(block, node.chain)
         except BTClibException as e:
@@ -1743,12 +1747,17 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     # Core reads the count alone before it compares, so no entry is
     # needed in the payload for it to call `Misbehaving`
     _refuse_past_bound("headers", _count_past(msg, MAX_HEADERS_RESULTS, 0))
-    # Unchecked, as Core's own `CBlockHeader` read checks nothing: btclib's
-    # `BlockHeader.assert_valid` would refuse a version of zero or below
-    # (btclib-org/btclib#2309) and a time before genesis, which Core
-    # leaves to `ContextualCheckBlockHeader`'s `bad-version` and
-    # `time-too-old`, both `Misbehaving`. The count and the transaction
-    # counts are bounded either way, and `add_headers` checks the work.
+    # Unchecked, as Core's own `CBlockHeader` read checks nothing:
+    # btclib's `BlockHeader.assert_valid` refuses a time before genesis,
+    # which Core leaves to `ContextualCheckBlockHeader`'s `time-too-old`,
+    # a `Misbehaving`, and that alone is reason enough to keep this
+    # unchecked. It used to also refuse a version of zero or below on
+    # its own, where Core leaves that to the same function's
+    # `bad-version` -- fixed at btclib 2026.9.29
+    # (btclib-org/btclib@bbb1ad71, closing btclib-org/btclib#2309;
+    # btclib-org/btclib-node#1511). The count and the transaction
+    # counts are bounded either way, and `add_headers` checks the work
+    # and both of Core's own contextual refusals.
     headers = Headers.parse(msg, check_validity=False).headers
     if not headers:
         # Core's own `ProcessHeadersMessage` returns on the same batch,

@@ -20,7 +20,6 @@ from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import RPCErrorCode, chain_from_network
 from btclib.block import Block, median_time_past
-from btclib.descriptors import add_checksum, from_address
 from btclib.exceptions import BTClibException
 from btclib.fee import FeeRate, fee_from_vsize
 from btclib.p2p.address import ServiceFlags
@@ -30,6 +29,7 @@ from btclib.script.script_pub_key import ScriptPubKey, p2ms_m_and_keys, type_and
 from btclib.script.spendability import is_unspendable
 from btclib.tx import Tx
 from btclib.tx.out_point import OutPoint
+from btclib_wallet.descriptors import add_checksum, from_address
 
 from btclib_node.block_db import Coin
 from btclib_node.chainstate.block_index import BlockStatus, block_time
@@ -528,10 +528,15 @@ def get_block_header(
     if not verbose:
         # src/rpc/blockchain.cpp:668-673: the same eighty bytes a peer
         # is sent on the wire, hex-encoded rather than the JSON object.
-        # Unchecked, as the index stores it: a version of zero or below,
-        # which Core takes below BIP34's height, is one btclib's own
-        # check refuses (btclib-org/btclib#2309)
-        return header.serialize(check_validity=False).hex()
+        # Checked here now. It used to be serialized unchecked: a
+        # version of zero or below, which Core takes below BIP34's
+        # height, was one btclib's own check refused on its own -- fixed
+        # at btclib 2026.9.29 (btclib-org/btclib@bbb1ad71, closing
+        # btclib-org/btclib#2309; btclib-org/btclib-node#1511). The
+        # index only ever stores a header past `add_headers`'s own
+        # height-gated `bad-version` check, so nothing this validates
+        # can fail on one read back from here.
+        return header.serialize().hex()
 
     # the blocks this node has validated and connected, which is what
     # Core hands blockheaderToJSON: `ActiveChain().Tip()`, at
@@ -1923,8 +1928,9 @@ def _infer_descriptor(script_pub_key: ScriptPubKey) -> str:
       pubkey or the redeem script behind the hash and get nothing back,
       so `InferScript` falls through every one of its own `if`s to the
       top-level `ExtractDestination` case at the bottom of the function
-      -- `addr(...)`, `descriptors.from_address` already producing that
-      exact string. A witness program past version 0 that is not p2tr
+      -- `addr(...)`, `btclib_wallet.descriptors.from_address` already
+      producing that exact string. A witness program past version 0 that
+      is not p2tr
       -- this library's own "witness_unknown", the P2A anchor output
       among them -- reaches that identical fallback: Core's own
       `ExtractDestination` answers a destination for both
@@ -1947,7 +1953,7 @@ def _infer_descriptor(script_pub_key: ScriptPubKey) -> str:
 
     None of the five needs a key this node does not have; a checksum is
     added the way `Descriptor::ToString()`'s own default argument adds
-    one (`descriptors.add_checksum`).
+    one (`btclib_wallet.descriptors.add_checksum`).
     """
     script = script_pub_key.script
     script_type, payload = type_and_payload(script)

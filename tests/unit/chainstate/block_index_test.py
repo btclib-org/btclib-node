@@ -369,15 +369,19 @@ def test_a_header_failing_bip94s_timewarp_bound_becomes_a_misbehaving_error(
 def _mine_in_place(header: BlockHeader, pow_limit_bits: bytes) -> BlockHeader:
     """Search `header.nonce` upward until it meets `pow_limit_bits`, in place.
 
-    The nonce is searched in place rather than by `brute_force_nonce`,
-    whose copy would refuse a version of zero or below, which a block's
-    own header reaches `add_headers` with unchecked. Shared rather than
-    inlined at each caller: a regtest target is met about every other
-    nonce, so the retry branch below is a coin flip on any one call, and
-    every caller of `a_mined_header` across this file already draws
-    enough of those flips between them to make the branch a certainty
-    over the whole suite -- the shape a lone caller's own coverage
-    cannot rely on for itself.
+    The nonce is searched in place rather than by `brute_force_nonce`.
+    Before btclib 2026.9.29 (btclib-org/btclib@bbb1ad71, closing
+    btclib-org/btclib#2309), `brute_force_nonce`'s own copy would refuse
+    a version of zero or below before ever searching, which a block's
+    own header reaches `add_headers` with unchecked; that refusal is
+    gone now (btclib-org/btclib-node#1511), but this helper's own
+    unbounded retry and in-place mutation are kept regardless of it.
+    Shared rather than inlined at each caller: a regtest target is met
+    about every other nonce, so the retry branch below is a coin flip on
+    any one call, and every caller of `a_mined_header` across this file
+    already draws enough of those flips between them to make the branch
+    a certainty over the whole suite -- the shape a lone caller's own
+    coverage cannot rely on for itself.
     """
     while True:
         with suppress(BTClibValueError):
@@ -454,8 +458,12 @@ def test_a_version_zero_header_below_bip34_is_indexed_and_reloaded(
 ) -> None:
     """ISS 1262: below BIP34's height Core takes a version of zero.
 
-    btclib's `BlockHeader.assert_valid` refuses one, so the index stores
-    and reads it back unchecked.
+    `BlockInfo.serialize` and `deserialize` round-trip this header with
+    no bypass needed for it: btclib's `BlockHeader.assert_valid` used to
+    refuse one on its own regardless of height, which is why the index
+    used to store and read it back unchecked, fixed at btclib 2026.9.29
+    (btclib-org/btclib@bbb1ad71, closing btclib-org/btclib#2309;
+    btclib-org/btclib-node#1511).
     """
     params = replace(
         RegTest().consensus, bip34_height=2, bip66_height=2, bip65_height=2
