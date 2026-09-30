@@ -1221,6 +1221,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **Every `#`-comment Core citation that wrapped `at` onto the line above
   `bitcoin/bitcoin@<sha>` now carries it on the sha's own line**, the
   shape #471 fixed for three (closes #1517).
+### `cli_test.py`'s `datadir` log-line tests compare against the escaped form
+
+- **Three tests build the expected `datadir=` line through
+  `_setting_to_write_str`, or a hand-written literal, matching Core's own
+  `json_escape`**, which doubles a backslash (closes #1509).
 
 ## v2026.9.24
 
