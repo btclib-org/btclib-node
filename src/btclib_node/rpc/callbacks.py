@@ -91,6 +91,7 @@ __all__ = [
     "get_peer_info",
     "get_raw_mempool",
     "get_raw_transaction",
+    "get_rpc_info",
     "get_tx_out",
     "get_tx_out_set_info",
     "help_rpc",
