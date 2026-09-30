@@ -1144,6 +1144,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A refusal after the data directory's lock reaches the file** (closes #1306).
 - **The file opens on five blank lines and a version line** (closes #1309).
 
+### `CONTRIBUTING.md` points a newcomer at `good first issue`
+
+- **An issue carrying the label is small and self-contained** (issue
+  btclib-org/.github#1362): *The issue tracker* says so, and links the
+  organization-wide search for the open ones.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
