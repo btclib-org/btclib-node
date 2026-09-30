@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, override
 
 import pytest
 from btclib.block import BlockHeader
+from btclib.block.limits import MAX_TIMEWARP
 from btclib.block.proof_of_work import REGTEST_POW_LIMIT_BITS
 from btclib.exceptions import BTClibValueError
 
@@ -36,6 +37,8 @@ from tests import brute_force_nonce, generate_random_header_chain
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
     from pathlib import Path
+
+    from btclib.consensus import ConsensusParams
 
     from btclib_node.chainstate.block_index import BlockIndex
 
@@ -296,13 +299,95 @@ def test_a_header_with_valid_pow_but_no_later_than_the_median_is_refused(
     assert len(block_index.header_dict) == 1
 
 
-def a_mined_header(parent: BlockHeader, version: int) -> BlockHeader:
-    """Mine a regtest header on `parent`, a second later, at `version`.
+class _RegTestWithBip94(RegTest):
+    """`RegTest`'s own genesis and limit, with BIP94 forced on.
+
+    No chain this package defines carries both `enforce_bip94=True` and
+    a difficulty period short enough to reach in a unit test --
+    `testnet4`'s own is real proof-of-work-limit work, 2016 blocks
+    apart -- so this overrides the one property `next_bits_required`
+    reads `enforce_bip94` off, `chain.consensus`, rather than building a
+    fifth chain no `__all__` names. A one-block period
+    (`pow_target_spacing == pow_target_timespan`) is what makes every
+    header a period boundary, so the bound in `_assert_valid_in_context`
+    is reached by the first header past genesis rather than the
+    2016th.
+    """
+
+    @property
+    @override
+    def consensus(self) -> ConsensusParams:
+        return replace(
+            super().consensus,
+            enforce_bip94=True,
+            pow_target_spacing=1,
+            pow_target_timespan=1,
+        )
+
+
+def test_a_header_failing_bip94s_timewarp_bound_becomes_a_misbehaving_error(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """ISS 1442: `next_bits_required`'s own timewarp refusal, translated.
+
+    Core's `time-timewarp-attack` is `BLOCK_INVALID_HEADER`, punished by
+    `MaybePunishNodeForBlock` exactly as `bad-diffbits` is
+    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag), but btclib's own `next_bits_required` raises a bare
+    `BTClibValueError` for it, having no `MisbehavingError` of its own
+    to raise -- this tree's exception, not btclib's. Before this,
+    `_assert_valid_in_context` let that bare exception through
+    unconverted, which `p2p.main.handle_p2p`'s own `isinstance(e,
+    MisbehavingError)` check would not have discouraged the peer for,
+    never exercised until a chain with `enforce_bip94=True` existed to
+    call it with. Only `testnet4` sets that flag among the chains this
+    package defines, and its real difficulty period is 2016 blocks,
+    too slow to mine in a unit test -- `_RegTestWithBip94` above is a
+    synthetic chain built to reach the same branch without it.
+    """
+    chainstate = a_chainstate(None)
+    block_index = chainstate.block_index
+    block_index.chain = _RegTestWithBip94()
+    genesis = block_index.chain.genesis
+    header = BlockHeader(
+        version=1,
+        previous_block_hash=genesis.hash,
+        merkle_root=secrets.token_bytes(32),
+        time=genesis.time - timedelta(seconds=MAX_TIMEWARP + 1),
+        bits=REGTEST_POW_LIMIT_BITS,
+        nonce=0,
+        check_validity=False,
+    )
+    _mine_in_place(header, REGTEST_POW_LIMIT_BITS)
+
+    with pytest.raises(MisbehavingError, match="timewarp attack"):
+        block_index.add_headers([header])
+    assert header.hash not in block_index.header_dict
+    assert len(block_index.header_dict) == 1
+
+
+def _mine_in_place(header: BlockHeader, pow_limit_bits: bytes) -> BlockHeader:
+    """Search `header.nonce` upward until it meets `pow_limit_bits`, in place.
 
     The nonce is searched in place rather than by `brute_force_nonce`,
     whose copy would refuse a version of zero or below, which a block's
-    own header reaches `add_headers` with unchecked.
+    own header reaches `add_headers` with unchecked. Shared rather than
+    inlined at each caller: a regtest target is met about every other
+    nonce, so the retry branch below is a coin flip on any one call, and
+    every caller of `a_mined_header` across this file already draws
+    enough of those flips between them to make the branch a certainty
+    over the whole suite -- the shape a lone caller's own coverage
+    cannot rely on for itself.
     """
+    while True:
+        with suppress(BTClibValueError):
+            header.assert_valid_pow(pow_limit_bits)
+            return header
+        header.nonce += 1
+
+
+def a_mined_header(parent: BlockHeader, version: int) -> BlockHeader:
+    """Mine a regtest header on `parent`, a second later, at `version`."""
     header = BlockHeader(
         version=version,
         previous_block_hash=parent.hash,
@@ -312,12 +397,7 @@ def a_mined_header(parent: BlockHeader, version: int) -> BlockHeader:
         nonce=0,
         check_validity=False,
     )
-    # a regtest target is met about every other nonce
-    while True:
-        with suppress(BTClibValueError):
-            header.assert_valid_pow(REGTEST_POW_LIMIT_BITS)
-            return header
-        header.nonce += 1
+    return _mine_in_place(header, REGTEST_POW_LIMIT_BITS)
 
 
 @pytest.mark.parametrize("version", [-1, 1, 2, 3])

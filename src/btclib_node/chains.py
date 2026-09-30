@@ -4,15 +4,15 @@
 
 """The networks this node can join, and the genesis block of each.
 
-`Chain` and its four leaves -- `Main`, `TestNet`, `SigNet`, `RegTest` --
-carry a network's magic, its seed addresses, its own genesis block, and
-what identifies this node's own copy of it -- a pruning floor and the
-port it dials. Consensus, an activation height, a subsidy interval, the
-easiest target and the exceptions a chain's own history forces, is
-`btclib.consensus`'s, reached below through `Chain.consensus` keyed by
-the same `name` `magic_from_network` already resolves. `config.py`'s
-`_resolve_chain` is what turns a chain's name, read from the command
-line or a functional test, into one of these.
+`Chain` and its five leaves -- `Main`, `TestNet`, `SigNet`, `RegTest`,
+`TestNet4` -- carry a network's magic, its seed addresses, its own
+genesis block, and what identifies this node's own copy of it -- a
+pruning floor and the port it dials. Consensus, an activation height, a
+subsidy interval, the easiest target and the exceptions a chain's own
+history forces, is `btclib.consensus`'s, reached below through
+`Chain.consensus` keyed by the same `name` `magic_from_network` already
+resolves. `config.py`'s `_resolve_chain` is what turns a chain's name,
+read from the command line or a functional test, into one of these.
 """
 
 from dataclasses import dataclass
@@ -31,35 +31,49 @@ from btclib_node._chainparamsseeds import (
     CHAINPARAMS_SEED_MAIN,
     CHAINPARAMS_SEED_SIGNET,
     CHAINPARAMS_SEED_TEST,
+    CHAINPARAMS_SEED_TESTNET4,
 )
 
-__all__ = ["Chain", "Main", "RegTest", "SigNet", "TestNet"]
+__all__ = ["Chain", "Main", "RegTest", "SigNet", "TestNet", "TestNet4"]
+
+# Bitcoin's own genesis coinbase message and Satoshi's pubkey
+# (`CreateGenesisBlock`'s five-argument overload, `src/kernel/
+# chainparams.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
+# `create_genesis`'s own defaults, which is what every leaf below but
+# `TestNet4` builds its genesis with
+_GENESIS_MESSAGE = (
+    b"The Times 03/Jan/2009 Chancellor on brink of second bailout for banks"
+)
+_GENESIS_SCRIPT_PUB_KEY_OPS = (
+    "04678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38c4f35504e51ec112de5c384df7ba0b8d578a4c702b6bf11d5f",
+    "OP_CHECKSIG",
+)
 
 
-def create_genesis(
-    time: int, nonce: int, difficulty: int, version: int, reward: int
+def create_genesis(  # noqa: PLR0913, PLR0917
+    time: int,
+    nonce: int,
+    difficulty: int,
+    version: int,
+    reward: int,
+    message: bytes = _GENESIS_MESSAGE,
+    script_pub_key_ops: tuple[str, ...] = _GENESIS_SCRIPT_PUB_KEY_OPS,
 ) -> Block:
     """Build a network's genesis block from its own header fields and reward.
 
-    The same coinbase text and public key on every network -- Bitcoin's
-    own genesis message and Satoshi's pubkey -- since what makes one
-    network's genesis differ from another's is the header alone: its
-    time, nonce, starting difficulty and version, plus how much the one
-    coinbase output pays.
+    `message` and `script_pub_key_ops` default to Bitcoin's own genesis
+    coinbase text and Satoshi's pubkey, which every leaf below but
+    `TestNet4` builds its genesis with unchanged: what makes one of
+    those networks' genesis differ from another's is the header alone,
+    its time, nonce, starting difficulty and version, plus how much the
+    one coinbase output pays. `TestNet4` passes its own message and
+    output script instead, Core doing the same in `CTestNet4Params`
+    (`src/kernel/chainparams.cpp:368-371`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) -- the first network this
+    node defines whose genesis is not Bitcoin's original one.
     """
-    script_sig = script.serialize(
-        [
-            "FFFF001D",
-            b"\x04",
-            b"The Times 03/Jan/2009 Chancellor on brink of second bailout for banks",
-        ]
-    )
-    script_pub_key = script.serialize(
-        [
-            "04678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38c4f35504e51ec112de5c384df7ba0b8d578a4c702b6bf11d5f",
-            "OP_CHECKSIG",
-        ]
-    )
+    script_sig = script.serialize(["FFFF001D", b"\x04", message])
+    script_pub_key = script.serialize(list(script_pub_key_ops))
     tx_in = TxIn(
         prev_out=OutPoint(),
         script_sig=script_sig,
@@ -290,4 +304,49 @@ class RegTest(Chain):
         # `opts.fastprune ? 100 : 1000` -- this tree never passes
         # `-fastprune`, Core's own knob for a lower regtest value in its
         # test suite, so 1000 is the one value that applies here
+        self.prune_after_height = 1000
+
+
+@dataclass
+class TestNet4(Chain):
+    """Testnet4: the public test chain that replaces the deprecated testnet3.
+
+    `btclib.consensus.CONSENSUS_PARAMS["testnet4"]` is the one row this
+    package's four other chains all leave at its default,
+    `enforce_bip94=True`: the timewarp mitigation BIP94 was written for
+    this network, and `btclib.block.header_context.next_bits_required`
+    reads that flag generically, off `Chain.consensus` like every other
+    field, so nothing here has to know about it.
+    """
+
+    # the class docstring above already says which network this is; the
+    # fields below are literal constants, not a decision this __init__
+    # makes that a docstring would need to explain
+    def __init__(self) -> None:  # noqa: D107
+        self.name = "testnet4"
+        self.port = 48333
+        self.rpc_port = 48332
+        self.addresses = [
+            "seed.testnet4.bitcoin.sprovoost.nl.",
+            "seed.testnet4.wiz.biz.",
+        ]
+        self.fixed_seeds = CHAINPARAMS_SEED_TESTNET4
+        # unlike the four leaves above, not Bitcoin's original genesis
+        # coinbase: Core's own testnet4 message and output script,
+        # explained in `create_genesis`'s own docstring
+        # (at bitcoin/bitcoin@9be056a8a7, the v31.1 tag,
+        # `src/kernel/chainparams.cpp:368-371`)
+        self.genesis_block = create_genesis(
+            1714777860,
+            393743547,
+            0x1D00FFFF,
+            1,
+            50 * 10**8,
+            message=b"03/May/2024 000000000000000000001ebd58c244970b3aa9d783bb001011fbe8ea8e98e00e",
+            script_pub_key_ops=(
+                "000000000000000000000000000000000000000000000000000000000000000000",
+                "OP_CHECKSIG",
+            ),
+        )
+        # src/kernel/chainparams.cpp:374, at bitcoin/bitcoin@ca7162cde5
         self.prune_after_height = 1000

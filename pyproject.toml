@@ -751,15 +751,21 @@ timeout = 300
 # suite.
 filterwarnings = [
     "error",
-    # `TestNet` (`src/btclib_node/chains.py`) is a chain, not a test: pytest
-    # collects any class whose name matches `Test*` and warns where it
-    # cannot, `__init__` being what stops it here. Named to that one
-    # class rather than to every class the blanket entry above used to
-    # cover -- nothing here is renamed to dodge pytest's own default,
-    # `python_classes` in this same table being what would have to
-    # change instead, at the cost of the name the wire protocol and
-    # every other repository reading it already agree on.
+    # `TestNet` and `TestNet4` (`src/btclib_node/chains.py`) are chains,
+    # not tests: pytest collects any class whose name matches `Test*`
+    # and warns where it cannot, `__init__` being what stops it here.
+    # Named to these two classes rather than to every class the blanket
+    # entry above used to cover -- nothing here is renamed to dodge
+    # pytest's own default, `python_classes` in this same table being
+    # what would have to change instead, at the cost of the name the
+    # wire protocol and every other repository reading it already
+    # agree on. `TestNet4`'s own message needs its own entry: pytest's
+    # `filterwarnings` matches the pattern against the start of the
+    # message rather than requiring the whole of it, so `'TestNet'`
+    # alone does not also match `'TestNet4'`, the character right after
+    # `TestNet` differing between the two.
     "ignore:cannot collect test class 'TestNet'",
+    "ignore:cannot collect test class 'TestNet4'",
     # `P2pManager.server` and `RpcManager.server` each carry this above
     # their own `accepted` queue rather than fixing it, the latter
     # naming the former as "the identical fix, for the identical

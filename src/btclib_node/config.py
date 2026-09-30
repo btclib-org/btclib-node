@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 
 from btclib.fee import FeeRate
 
-from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet
+from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet, TestNet4
 from btclib_node.exceptions import InvalidChainTypeError, UnknownChainError
 from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME
 from btclib_node.rpc.auth import (
@@ -199,6 +199,8 @@ def _resolve_chain(chain: Chain | str) -> Chain:
         return SigNet()
     if chain == "regtest":
         return RegTest()
+    if chain == "testnet4":
+        return TestNet4()
     raise UnknownChainError(chain)
 
 

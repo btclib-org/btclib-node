@@ -208,6 +208,7 @@ _CHAIN_SECTION = {
     "testnet": "test",
     "signet": "signet",
     "regtest": "regtest",
+    "testnet4": "testnet4",
 }
 
 # Core's own external `-chain=` vocabulary (`ChainTypeFromString`,
@@ -228,6 +229,7 @@ _CHAIN_ALIASES = {
     "test": "testnet",
     "signet": "signet",
     "regtest": "regtest",
+    "testnet4": "testnet4",
 }
 
 # `LOG_CATEGORIES_BY_STR` (`src/logging.cpp`, at
@@ -558,14 +560,20 @@ _OPTIONS: dict[str, _Option] = {
     ),
     "testnet": _Option(
         "",
-        "Use the testnet3 chain. Equivalent to -chain=test.",
+        "Use the testnet3 chain. Equivalent to -chain=test. Support for "
+        "testnet3 is deprecated and will be removed in an upcoming release. "
+        "Consider moving to testnet4 now by using -testnet4.",
+        _CHAINPARAMS_TITLE,
+    ),
+    "testnet4": _Option(
+        "",
+        "Use the testnet4 chain. Equivalent to -chain=testnet4.",
         _CHAINPARAMS_TITLE,
     ),
 }
 
 # The sections `GetUnrecognizedSections` (`src/common/args.cpp`, same
-# sha) does not warn about: every `ChainTypeToString`, `testnet4`
-# included though this node runs no such chain.
+# sha) does not warn about: every `ChainTypeToString`.
 _RECOGNIZED_SECTIONS = frozenset({"main", "test", "testnet4", "signet", "regtest"})
 
 # Where a section of a file was named: Core's `SectionInfo`, its name,
@@ -1221,21 +1229,17 @@ _UNKNOWN_CHAIN = "\0"
 
 
 def _chain_arg(settings: _Settings) -> str:
-    """Resolve `-chain`/`-testnet`/`-signet`/`-regtest`: `GetChainArg`.
+    """Resolve the chain selectors, `-chain` among them: `GetChainArg`.
 
-    `chain`/`testnet`/`signet`/`regtest` are read from the file's
-    default section only, never a chain's own section -- Core's own
-    `get_net` lambda passes an empty section for exactly this lookup
+    `chain`/`testnet`/`signet`/`regtest`/`testnet4` are read from the
+    file's default section only, never a chain's own section -- Core's
+    own `get_net` lambda passes an empty section for exactly this lookup
     (`GetChainArg`, `src/common/args.cpp`, at bitcoin/bitcoin@9be056a8a7),
     which is what lets a file decide the chain before any section but
     the default one can mean anything; and a negated selector on the
     command line is skipped there, as Core skips it. At most one of the
     five may resolve true; more is the same "Invalid combination" Core
-    refuses, in Core's own words, `-testnet4` named among the five
-    selectors although this node reads no such option of its own --
-    `get_net` above never sees it, so a `-testnet4` given alone still
-    silently selects mainnet, a gap of its own and not what this fixes
-    (btclib-org/btclib-node#1311). A `-chain` Core does not know is
+    refuses, in Core's own words. A `-chain` Core does not know is
     returned as given, behind `_UNKNOWN_CHAIN`, as `GetChainArg` returns
     it.
     """
@@ -1250,10 +1254,9 @@ def _chain_arg(settings: _Settings) -> str:
     testnet = get_net("testnet")
     signet = get_net("signet")
     regtest = get_net("regtest")
-    if sum([chain_alias is not None, testnet, signet, regtest]) > 1:
-        # Core's own words (`GetChainArg`, same citation as above),
-        # `-testnet4` named among the selectors even though this node's
-        # `get_net` never reads one (btclib-org/btclib-node#1311)
+    testnet4 = get_net("testnet4")
+    if sum([chain_alias is not None, testnet, signet, regtest, testnet4]) > 1:
+        # Core's own words (`GetChainArg`, same citation as above)
         err_msg = (
             "Invalid combination of -regtest, -signet, -testnet, -testnet4 "
             "and -chain. Can use at most one."
@@ -1267,6 +1270,8 @@ def _chain_arg(settings: _Settings) -> str:
         return "signet"
     if testnet:
         return "testnet"
+    if testnet4:
+        return "testnet4"
     return "mainnet"
 
 
