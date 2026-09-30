@@ -1300,6 +1300,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   replies it finishes, so a request arriving on one is answered `503` with
   `Connection: close`, as Core's event loop answers it** (closes #1545).
 
+### `SECURITY.md` promises a response time
+
+- **`SECURITY.md` says a report is acknowledged within 7 days**, and a
+  fix or a published advisory within 90 (issue btclib-org/.github#1460).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
