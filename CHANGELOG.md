@@ -1300,6 +1300,29 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   replies it finishes, so a request arriving on one is answered `503` with
   `Connection: close`, as Core's event loop answers it** (closes #1545).
 
+### `-blocknotify` and `-shutdownnotify` join the command line
+
+- **`-blocknotify=<cmd>` runs `%s` as the new tip's hash outside initial
+  block download; `-shutdownnotify=<cmd>` joins every configured command
+  before shutdown goes on** (closes #1519).
+
+### `-startupnotify` joins the command line
+
+- **`-startupnotify=<cmd>` runs a command once the RPC listener answers and
+  start-up has finished** (closes #1449).
+
+### `-alertnotify` joins the command line
+
+- **`-alertnotify=<cmd>` runs a command, `%s` replaced by the sanitized,
+  single-quoted message, whenever this node raises a warning of its own**
+  (issue #1475).
+
+### An invalid chain with more work than the active tip raises a warning
+
+- **More than six blocks' worth raises it to the log, to `-alertnotify`, and
+  to `getblockchaininfo`'s and `getnetworkinfo`'s own new `warnings` field**
+  (closes #1522).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

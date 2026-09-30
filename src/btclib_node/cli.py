@@ -107,8 +107,11 @@ section over the default section; within the command line the last
 value, within a file the first, the chain selectors aside; and a
 negation discarding every value named before it at its own level.
 `-connect`, `-addnode`, `-seednode`, `-rpcauth`, `-rpcwhitelist`,
-`-rpcbind`, `-rpcallowip` and `-debug` are lists, every value from
-every level applying.
+`-rpcbind`, `-rpcallowip`, `-debug` and `-shutdownnotify` are lists,
+every value from every level applying -- `-shutdownnotify` alone among
+the four notify options below, Core reading it with `GetArgs` rather
+than the `GetArg` the other three are read with (`notify.py`'s own
+module docstring).
 
 Not every option answers to the file the same way once the chain is
 not `main`: `-port`, `-rpcport`, `-rpcbind`, `-connect` and `-addnode`
@@ -340,6 +343,11 @@ _OPTIONS: dict[str, _Option] = {
         _CONNECTION_TITLE,
         network_only=True,
     ),
+    "alertnotify": _Option(
+        "=<cmd>",
+        "Execute command when an alert is raised (%s in cmd is replaced by message)",
+        _OPTIONS_TITLE,
+    ),
     "allowignoredconf": _Option(
         "",
         f"For backwards compatibility, treat an unused {_DEFAULT_CONF_FILENAME} "
@@ -351,6 +359,12 @@ _OPTIONS: dict[str, _Option] = {
         "Default duration (in seconds) of manually configured bans (default: "
         f"{DEFAULT_MISBEHAVING_BANTIME})",
         _CONNECTION_TITLE,
+    ),
+    "blocknotify": _Option(
+        "=<cmd>",
+        "Execute command when the best block changes (%s in cmd is replaced "
+        "by block hash)",
+        _OPTIONS_TITLE,
     ),
     "blocksdir": _Option(
         "=<dir>",
@@ -555,9 +569,18 @@ _OPTIONS: dict[str, _Option] = {
         _CONNECTION_TITLE,
     ),
     "server": _Option("", "Accept JSON-RPC commands", _RPC_TITLE),
+    "shutdownnotify": _Option(
+        "=<cmd>",
+        "Execute command immediately before beginning shutdown. The need for "
+        "shutdown may be urgent, so be careful not to delay it long (if the "
+        "command doesn't require interaction with the server, consider having "
+        "it fork into the background).",
+        _OPTIONS_TITLE,
+    ),
     "signet": _Option(
         "", "Use the signet chain. Equivalent to -chain=signet.", _CHAINPARAMS_TITLE
     ),
+    "startupnotify": _Option("=<cmd>", "Execute command on startup.", _OPTIONS_TITLE),
     "testnet": _Option(
         "",
         "Use the testnet3 chain. Equivalent to -chain=test. Support for "
@@ -1876,6 +1899,10 @@ def _after_lock(before: _BeforeLock) -> Config:
         forcednsseed=bool(_get_bool(settings, "forcednsseed")),
         fixed_seeds=fixedseeds,
         ban_time=ban_time,
+        block_notify=_get_arg(settings, "blocknotify") or "",
+        startup_notify=_get_arg(settings, "startupnotify") or "",
+        shutdown_notify=_get_args(settings, "shutdownnotify"),
+        alert_notify=_get_arg(settings, "alertnotify") or "",
         min_relay_feerate=before.min_relay_feerate,
         rpcauth=_get_args(settings, "rpcauth"),
         rpcuser=_get_arg(settings, "rpcuser") or "",

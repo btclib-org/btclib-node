@@ -204,6 +204,55 @@ def test_init(tmp_path: Path) -> None:
     node.stop()
 
 
+def test_startupnotify_fires_once_the_node_has_started(tmp_path: Path) -> None:
+    """ISS 1449: Core's own `StartupNotify`, once, after RPC/P2P come up.
+
+    `src/init.cpp:2294-2309`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag -- the last line of `AppInitServers`, run once this node's own
+    equivalent (`_start_rpc_and_load` and the P2P bind check) has
+    succeeded.
+    """
+    marker = tmp_path / "marker"
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path / "data",
+            allow_p2p=False,
+            allow_rpc=False,
+            debug=True,
+            startup_notify=f"touch {marker}",
+        )
+    )
+    node.start()
+    try:
+        wait_until(marker.exists)
+    finally:
+        node.stop()
+
+
+def test_shutdownnotify_has_finished_by_the_time_stop_returns(tmp_path: Path) -> None:
+    """ISS 1519: Core's own `ShutdownNotify`, joined ahead of everything else.
+
+    `src/init.cpp:256-276`, same sha: every configured command is run
+    and joined before `Interrupt` returns, so it has already finished
+    before this node's managers and stores ever close.
+    """
+    marker = tmp_path / "marker"
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path / "data",
+            allow_p2p=False,
+            allow_rpc=False,
+            debug=True,
+            shutdown_notify=(f"touch {marker}",),
+        )
+    )
+    node.start()
+    node.stop()
+    assert marker.exists()
+
+
 def test_pending_cfilters_starts_empty(tmp_path: Path) -> None:
     """A fresh node has nothing registered on `pending_cfilters`."""
     with unstarted_node_context(tmp_path) as node:

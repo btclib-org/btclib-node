@@ -16,6 +16,22 @@ with a leading underscore.
 """
 
 import os
+
+# A real import and not TYPE_CHECKING-only like Mapping below, despite
+# costing nothing more at runtime than that one would: Config.__init__
+# below carries ten `Sequence[str]` parameters, one per repeatable
+# setting, and past nine Sphinx's own autodoc -- resolving PEP 649's
+# lazy annotations through `annotationlib`, at this Python 3.14 target
+# -- answers the tenth with a broken cross-reference to a synthetic
+# `__annotationlib_name_N__` placeholder rather than the bare source
+# string it falls back to for the first nine, failing the docs gate's
+# own `-W`. A name TYPE_CHECKING alone cannot resolve is what forces
+# that fallback in the first place (CLAUDE.md's own note on
+# `autodoc_typehints_format`); importing it for real removes the need
+# for any fallback at all, for every `Sequence[str]` below at once,
+# rather than trading the tenth's placeholder for an eleventh later.
+# btclib-org/btclib-node#1519
+from collections.abc import Sequence  # noqa: TC003
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -33,7 +49,7 @@ from btclib_node.rpc.auth import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Mapping
 
 __all__ = [
     "DEFAULT_MAX_PEER_CONNECTIONS",
@@ -469,6 +485,28 @@ class Config:
     # Core's own `-bantime`: how long a `setban` ban lasts, in seconds,
     # where the call names no length. `Node` hands it to its `BanMan`.
     ban_time: int
+    # Core's own `-blocknotify`: the command `main._after_tip_change` runs
+    # through the shell each time a fork commits outside initial block
+    # download, `%s` replaced by the new tip's hash
+    # (`notify.run_detached`). `""` is Core's own unset
+    # (`GetArg("-blocknotify", "")`), which runs nothing.
+    block_notify: str
+    # Core's own `-startupnotify`: the command `Node.run` runs once,
+    # through the shell, once its RPC listener answers and start-up has
+    # finished. `""` runs nothing, as `block_notify` above.
+    startup_notify: str
+    # Core's own `-shutdownnotify`, one entry per value the option is
+    # given -- Core reads it with `GetArgs`, not `GetArg`, unlike the
+    # other three notify fields here -- each run through the shell and
+    # joined before `Node.stop`'s own shutdown goes on
+    # (`notify.run_shutdown_notify`).
+    shutdown_notify: tuple[str, ...]
+    # Core's own `-alertnotify`: the command
+    # `main.check_fork_warning_conditions` runs, through the shell,
+    # whenever this node raises a warning of its own, `%s` replaced by
+    # the sanitized, single-quoted message (`notify.alert_notify`). `""`
+    # runs nothing.
+    alert_notify: str
 
     # every parameter here is one independent setting, not a group of
     # related ones this signature happens to expose together: `chain` is
@@ -519,6 +557,10 @@ class Config:
         forcednsseed: bool = False,
         fixed_seeds: bool = True,
         ban_time: int = DEFAULT_MISBEHAVING_BANTIME,
+        block_notify: str = "",
+        startup_notify: str = "",
+        shutdown_notify: Sequence[str] = (),
+        alert_notify: str = "",
         rpcauth: Sequence[str] = (),
         rpcuser: str = "",
         rpcpassword: str = "",
@@ -592,6 +634,10 @@ class Config:
         self.max_connections = max_connections
         self.fixed_seeds = fixed_seeds
         self.ban_time = ban_time
+        self.block_notify = block_notify
+        self.startup_notify = startup_notify
+        self.shutdown_notify = tuple(shutdown_notify)
+        self.alert_notify = alert_notify
 
         self.p2p_port = None
         if allow_p2p:
