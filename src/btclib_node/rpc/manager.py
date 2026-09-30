@@ -30,7 +30,7 @@ from collections import deque
 from concurrent.futures import CancelledError
 from contextlib import ExitStack, suppress
 from ipaddress import ip_address
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, Any, override
 
 from btclib_node.config import split_host_port
 from btclib_node.exceptions import RpcCredentialRefusedError
@@ -39,7 +39,7 @@ from btclib_node.rpc.auth import RpcAuth
 from btclib_node.rpc.connection import REQUEST_TIMEOUT, RpcConnection
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Coroutine, Sequence
     from concurrent.futures import Future
 
     from btclib_node import Node
@@ -247,38 +247,44 @@ class RpcManager(threading.Thread):
         self._accept_queue: (
             asyncio.Queue[tuple[socket.socket, tuple[str, int]]] | None
         ) = None
-        # `RpcConnection.send_and_close_after`'s own `_delayed_send`
-        # registers itself here for the length of its own wait, so
-        # `stop` below can let it finish instead of cancelling it with
-        # every other pending task (btclib-org/btclib-node#1467 review):
-        # Core's own `ThreadPool::Stop` (`util/threadpool.h`,
-        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) joins every
-        # worker unconditionally, finishing whatever RPC that thread is
-        # still answering -- including one asleep in `stop`'s own
-        # hidden `wait` -- rather than tearing it down mid-reply.
-        self.pending_delayed_replies: set[asyncio.Task[None]] = set()
-        # `send_and_close_after` writes an entry here, keyed by a token
-        # of its own rather than by the task above -- the task does not
-        # exist yet at the point this needs to be visible -- the moment
-        # it schedules a delay, and drops it once that reply is sent.
-        # `latest_pending_reply_deadline` is `Node.stop`'s own read of
-        # it, from whatever third thread calls that (an operator's
-        # signal, through `install_signal_handlers`), to widen its join
-        # past a `wait` still running rather than reporting a wedge
-        # that is really this manager finishing correctly
-        # (btclib-org/btclib-node#1467 review, second round).
-        self.pending_reply_deadlines: dict[object, float] = {}
+        # The coroutine of every reply `add_delayed_reply` has recorded,
+        # so that `stop` below finishes the task running it rather than
+        # cancelling it with every other pending task, as `stop` argues.
+        # Unlocked, because one thread reaches it: `Node`'s, which adds
+        # to it from `handle_rpc` and reads it from `stop`, called by
+        # `Node.run` once its own loop has ended.
+        self.delayed_replies: set[Coroutine[Any, Any, None]] = set()
+        # Locked, because two threads reach it: `Node`'s writes it, and
+        # `Node.stop` reads it from whichever thread asks the node to
+        # stop -- an operator's signal, through `install_signal_handlers`.
+        self._latest_reply_deadline: float | None = None
+        self._reply_deadline_lock = threading.Lock()
 
-    def latest_pending_reply_deadline(self) -> float | None:
-        """Return the latest `time.monotonic()` deadline still pending, if any.
+    def add_delayed_reply(
+        self, reply: Coroutine[Any, Any, None], deadline: float
+    ) -> None:
+        """Record `reply`, due at the `time.monotonic()` value `deadline`.
 
-        `None` where nothing is scheduled. More than one entry is
-        possible only where more than one `stop wait=N` -- or another
-        caller of `send_and_close_after` altogether -- is in flight at
-        once; the latest is what a caller waiting for every one of them
-        to finish needs, not the soonest.
+        Called on `Node`'s thread before `reply` is handed to this
+        manager's loop, never from inside it: a task recording itself on
+        its own first step is missed by a `stop` whose `loop.stop` this
+        loop delivers in the same pass that creates that task, and is
+        then cancelled with the rest.
         """
-        return max(self.pending_reply_deadlines.values(), default=None)
+        self.delayed_replies.add(reply)
+        with self._reply_deadline_lock:
+            latest = self._latest_reply_deadline
+            if latest is None or deadline > latest:
+                self._latest_reply_deadline = deadline
+
+    def latest_reply_deadline(self) -> float | None:
+        """Answer the latest deadline `add_delayed_reply` has recorded.
+
+        `None` where it has recorded none. Never lowered once a reply is
+        sent: `Node.stop` has why.
+        """
+        with self._reply_deadline_lock:
+            return self._latest_reply_deadline
 
     def create_connection(
         self, loop: asyncio.AbstractEventLoop, client: socket.socket
@@ -698,16 +704,20 @@ class RpcManager(threading.Thread):
         # `P2pManager`, whose own connections sweep runs *before* this
         # same loop and so cannot.
         pending = asyncio.all_tasks(self.loop)
-        # `send_and_close_after`'s own `_delayed_send`, mid-wait for a
-        # `stop`'s hidden `wait` to elapse, registers itself into
-        # `pending_delayed_replies` for exactly that long
-        # (btclib-org/btclib-node#1467 review): cancelling it here, the
-        # way every other task below is cancelled, would discard the
-        # reply it is about to write, with nothing left to answer the
-        # client that asked for `wait` at all. It is carved out of
-        # `pending` before the cancel sweep reaches it, and joined
-        # separately, uncancelled, further down.
-        protected = pending & self.pending_delayed_replies
+        # A reply `add_delayed_reply` recorded is carved out of `pending`
+        # before the cancel sweep below reaches it, and finished further
+        # down, uncancelled: cancelling it would discard the reply the
+        # client asked `stop`'s own `wait` to delay, not to drop
+        # (btclib-org/btclib-node#1467). Every one not yet finished is in
+        # `pending`, stepped or not: `run_coroutine_threadsafe` queued its
+        # creation through `call_soon_threadsafe` on `Node`'s thread
+        # before this method, on that same thread, queued `loop.stop`
+        # behind it, and `join` above returned only once this loop had
+        # run both, in that order -- this manager's thread having run
+        # its loop, the only way a connection to reply on is accepted.
+        protected = {
+            task for task in pending if task.get_coro() in self.delayed_replies
+        }
         pending -= protected
         # No step of the loop first here, unlike an earlier version of
         # this method: that step existed only to let a task sitting on

@@ -767,7 +767,7 @@ class Node(threading.Thread):
             lock.release()
 
     def stop(self) -> None:
-        """Ask the main loop to stop, and wait up to `STOP_TIMEOUT` for it.
+        """Ask the main loop to stop, and wait a bounded time for it.
 
         Raises if the loop has not come back by then, the node having
         no way to be sure of its chainstate or its databases while a
@@ -797,27 +797,39 @@ class Node(threading.Thread):
         makes an operator's interrupt loud, and it does not make the
         process able to exit, the wedged thread being non-daemon.
 
-        `STOP_TIMEOUT` alone is not the whole bound where a `stop`
-        RPC's own hidden `wait` is still pending: `_stop_managers_and_
-        close_stores`, on this thread, reaches `rpc_manager.stop`,
-        which now waits out that reply rather than cancelling it
-        (btclib-org/btclib-node#1467), so a `wait` longer than
-        `STOP_TIMEOUT` legitimately keeps this thread alive past it --
-        correctly finishing, not wedged. A caller here, on a third
-        thread entirely (an operator's signal), read `rpc_manager`'s
-        own latest pending deadline and widens the join past it, so the
-        30-second bound still applies to this thread's own teardown,
-        measured from whenever that reply is actually sent, rather than
-        firing while a reply Core itself guarantees is still in
-        flight (btclib-org/btclib-node#1467 review, second round).
+        The bound is `STOP_TIMEOUT` past the later of this call and
+        `rpc_manager.latest_reply_deadline`: `rpc_manager.stop`, on this
+        node's thread, finishes a `stop` RPC's delayed reply before the
+        stores close (btclib-org/btclib-node#1467), so a hidden `wait`
+        longer than `STOP_TIMEOUT` keeps that thread alive past it
+        without its being wedged.
+
+        That deadline is read again each time the bound it gave runs
+        out, rather than once, and the last read is enough because:
+
+        - a deadline is recorded only on this node's thread, by
+          `handle_rpc`, which sets `terminate_flag` itself right after;
+          so none predates the shutdown it bounds, and once the flag is
+          set this thread records one only while it finishes the pass
+          of its loop already under way -- possibly after this method's
+          first read;
+        - the value is never lowered, so a read sees every deadline
+          recorded before it, a reply already sent included, while this
+          thread still closes the stores behind it;
+        - the last read comes `STOP_TIMEOUT` or more after the flag was
+          set, so a deadline recorded after it would mean this thread
+          was still in that pass by then: the wedge this raises for.
         """
         self.terminate_flag.set()
         if self.is_alive() and threading.current_thread() is not self:
-            timeout: float = STOP_TIMEOUT
-            deadline = self.rpc_manager.latest_pending_reply_deadline()
-            if deadline is not None:
-                timeout = max(STOP_TIMEOUT, deadline - time.monotonic() + STOP_TIMEOUT)
-            self.join(timeout=timeout)
+            called_at = time.monotonic()
+            while self.is_alive():
+                deadline = self.rpc_manager.latest_reply_deadline()
+                start = called_at if deadline is None else max(called_at, deadline)
+                remaining = start + STOP_TIMEOUT - time.monotonic()
+                if remaining <= 0:
+                    break
+                self.join(timeout=remaining)
             if self.is_alive():
                 # named by its data directory, which is what tells one
                 # node from another where several are running

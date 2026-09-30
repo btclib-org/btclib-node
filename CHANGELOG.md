@@ -1159,8 +1159,9 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 ### `stop`'s hidden `wait` argument is honoured
 
 - **A `stop` call carrying `wait` delays its own reply by that many
-  milliseconds**, as Core's own `stop <ms>` does, without blocking this
-  node's single thread for it (closes #1467).
+  milliseconds**, as Core's own `stop <ms>` does: the node starts
+  shutting down at once, and writes the reply before it closes its
+  stores (closes #1467).
 
 ## v2026.9.24
 

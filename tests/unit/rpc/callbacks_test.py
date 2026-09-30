@@ -1772,21 +1772,19 @@ def test_ping_and_stop_answer_without_a_connection() -> None:
     assert stop(node, _CONN, []) == "Btclib node stopping"
 
 
-@pytest.mark.parametrize("params", [[], [None], [5000], [-1000]])
+@pytest.mark.parametrize(
+    "params", [[], [None], [5000], [-1000], [2**31 - 1], [-(2**31)]]
+)
 def test_stop_never_sleeps_here_whatever_wait_is(
     monkeypatch: pytest.MonkeyPatch, params: list[Any]
 ) -> None:
     """ISS 1467/1441 review: `wait` is validated here, never slept on here.
 
     `stop`'s own docstring is where the reason is argued: a `time.sleep`
-    in this callback would run on `Node`'s single thread
-    (`ARCHITECTURE.md`, "The loop"), freezing P2P, every other RPC and
-    chain progress for as long as `wait` asks, unlike Core's own
-    per-connection wait. `rpc.main._answer_one` reads `wait` again, once
-    this call is known to have succeeded, and hands the delay to
-    `RpcConnection.send_and_close_after` instead -- `main_test.py` and
-    `connection_test.py` are where that delay is actually proven, off
-    this thread.
+    in this callback would run on `Node`'s single thread before
+    `handle_rpc` requested the node's shutdown, where Core requests it
+    before sleeping. `main_test.py` and `connection_test.py` are where
+    the delay is proven, off this thread.
     """
     monkeypatch.setattr(time, "sleep", lambda _: pytest.fail("stop must not sleep"))
     node = a_node()
@@ -1813,11 +1811,12 @@ def test_stop_refuses_a_bool_wait() -> None:
     assert raised.value.code == RPCErrorCode.TYPE_ERROR
 
 
-def test_stop_refuses_a_fractional_wait() -> None:
-    """A JSON number with a decimal point fails `getInt<int>()`, Core's way."""
+@pytest.mark.parametrize("wait", [10.5, 2**31, -(2**31) - 1])
+def test_stop_refuses_a_wait_getint_int_refuses(wait: float) -> None:
+    """A fractional `wait`, or one past C `int`, fails `getInt<int>()` as in Core."""
     node = a_node()
     with pytest.raises(RpcError) as raised:
-        stop(node, _CONN, [10.5])
+        stop(node, _CONN, [wait])
     assert raised.value.code == RPCErrorCode.MISC_ERROR
     assert raised.value.message == "JSON integer out of range"
 

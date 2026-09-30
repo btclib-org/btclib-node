@@ -1474,73 +1474,29 @@ class RpcConnection:
         with contextlib.suppress(TimeoutError):
             future.result(timeout=2)
 
-    def send_and_close_after(
-        self, reply: HttpReply, delay: float, on_sent: Callable[[], None]
-    ) -> None:
-        """Delay `reply` by `delay` seconds on this connection's own loop.
+    def send_and_close_after(self, reply: HttpReply, delay: float) -> None:
+        """Write `reply` `delay` seconds from now, on this connection's loop.
 
-        `rpc.callbacks.stop`'s own `wait` is the only caller, past
-        `handle_rpc`'s own `_answer_one` (btclib-org/btclib-node#1467):
-        `send_and_wait` above blocks the calling thread for its own
-        short, fixed wait, which is `Node`'s single thread for every
-        ordinary `stop`, and would freeze it -- P2P, every other RPC and
-        chain progress alike -- for as long as `wait` asks, unlike
-        Core's own per-connection wait, one thread among several. This
-        schedules the whole wait-then-write sequence on `loop`, this
-        connection's own thread, and returns to its caller at once
-        rather than making it wait; `on_sent` then runs on `loop`'s
-        thread, once the client has this reply, `close=True` as
-        `send_and_wait` already writes unconditionally. `on_sent` is
-        `node.terminate_flag.set` for `stop`, kept thread-safe by
-        `threading.Event` itself, so `Node`'s own rule that a reply is
-        never sent after that flag tears the loop it arrived on down
-        still holds -- the flag is what `handle_rpc`'s own `node.stop()`
-        already set from `Node`'s thread, only ever reached here once
-        this reply is already gone.
+        `rpc.main.handle_rpc` is the only caller, for a `stop` carrying
+        a positive `wait` (btclib-org/btclib-node#1467), and returns at
+        once to set `Node.terminate_flag`, as Core's own `stop` requests
+        shutdown before it sleeps. The wait runs on `loop`, and
+        `RpcManager.stop` finishes it rather than cancelling it, so the
+        reply still reaches the client once that shutdown is under way;
+        `close=True` for the reason `send_and_wait` above gives.
 
-        `_delayed_send` registers its own task into
-        `self.manager.pending_delayed_replies` for the length of its
-        wait, and removes it in `finally`, so `RpcManager.stop`
-        racing this delay finishes it rather than cancelling it
-        (btclib-org/btclib-node#1467 review): the registration itself
-        only ever runs on `loop`'s own thread, once this task is
-        actually stepped, never on the caller's -- the same thread
-        `stop`'s own cancel sweep runs on, so there is no race on the
-        set itself, only on whether the task is in it yet when that
-        sweep reads it.
-
-        The deadline below is recorded here instead, on the caller's
-        own thread, at the moment this reply is scheduled rather than
-        once `_delayed_send` first runs: `Node.stop`, called from a
-        third thread entirely -- an operator's signal, through
-        `install_signal_handlers` -- reads it to widen its own join
-        past a `wait` still pending, and has to see it the instant a
-        delay this long exists, not once `loop` gets around to
-        stepping the coroutine for the first time
-        (btclib-org/btclib-node#1467 review, second round). `token` is
-        an opaque key of this call's own, rather than the task itself,
-        because the task does not exist yet at this point.
+        `add_delayed_reply` records the coroutine before
+        `run_coroutine_threadsafe` hands it to `loop`, which is the order
+        that method's own docstring requires.
         """
-        deadline = time.monotonic() + delay
-        token = object()
-        self.manager.pending_reply_deadlines[token] = deadline
+        delayed = self._delayed_send(reply, delay)
+        self.manager.add_delayed_reply(delayed, time.monotonic() + delay)
+        asyncio.run_coroutine_threadsafe(delayed, self.loop)
 
-        async def _delayed_send() -> None:
-            # `current_task()` answers `None` only outside a running
-            # task; this coroutine is always scheduled as one, by
-            # `run_coroutine_threadsafe` below, so never `None` here.
-            task = cast("asyncio.Task[None]", asyncio.current_task())
-            self.manager.pending_delayed_replies.add(task)
-            try:
-                if delay:
-                    await asyncio.sleep(delay)
-                await self.async_send(reply, close=True)
-                on_sent()
-            finally:
-                self.manager.pending_delayed_replies.discard(task)
-                self.manager.pending_reply_deadlines.pop(token, None)
-
-        asyncio.run_coroutine_threadsafe(_delayed_send(), self.loop)
+    async def _delayed_send(self, reply: HttpReply, delay: float) -> None:
+        """Sleep `delay` seconds, then write `reply` and close."""
+        await asyncio.sleep(delay)
+        await self.async_send(reply, close=True)
 
     def _peer_address(self) -> str:
         """Return the client's `ip:port`, for a log line naming who asked."""

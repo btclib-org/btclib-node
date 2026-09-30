@@ -2875,10 +2875,11 @@ def stop_wait_param(params: list[Any]) -> int | None:
     neither delays the reply. Anything else that is not a JSON number is
     `RPC_TYPE_ERROR`, the same check `RPCMethod::HandleRequest` makes
     for every declared argument before the handler ever runs
-    (`src/rpc/util.cpp:653-661`); a JSON float is refused the way
-    `_height_param` above already refuses one, `UniValue::getInt`'s own
-    "JSON integer out of range" (`univalue.h`), thrown for a numeric
-    string `std::from_chars` cannot consume in full.
+    (`src/rpc/util.cpp:653-661`); a JSON float, or an integer outside
+    C `int`'s range, is refused the way `_height_param` above already
+    refuses a float, `UniValue::getInt<int>`'s own "JSON integer out of
+    range" (`univalue.h`), thrown where `std::from_chars` cannot consume
+    the number in full or reports it out of range.
 
     Called twice for one request that reaches it: here, to decide
     whether `stop` itself succeeds, and again by `rpc.main._answer_one`
@@ -2893,7 +2894,7 @@ def stop_wait_param(params: list[Any]) -> int | None:
     value = params[0]
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise type_error(1, "wait", value, "number")
-    if isinstance(value, float):
+    if isinstance(value, float) or not -(2**31) <= value < 2**31:
         raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
     return value
 
@@ -2910,19 +2911,17 @@ def stop(node: Node, conn: RpcConnection, params: list[Any]) -> str:
     slept on here, unlike Core's own `UninterruptibleSleep`, which this
     function has no equivalent of at all.
 
-    Core's sleep runs on the RPC request's own worker thread, one among
-    several, while a separate thread answers every other request and
-    the rest of the process keeps running underneath it. This node is
-    one thread for RPC, P2P and chain work alike (`ARCHITECTURE.md`,
-    "The loop"): a `time.sleep` here would freeze all three for `wait`
-    milliseconds, which a caller who only asked to delay one reply has
-    no way to expect and no way to see coming. `rpc.main._answer_one`
-    reads this same `wait` again once this call is known to have
-    succeeded and hands the delay to `RpcConnection.send_and_close_after`
-    instead, which runs it on the RPC manager's own event-loop thread --
-    the one already carrying every reply this node ever sends -- so the
-    delay reaches the client exactly as Core's own does, without asking
-    `Node`'s single thread to sit idle for it.
+    Core's sleep runs once `stop` has already requested shutdown, on
+    the request's own HTTP worker thread, which that shutdown joins
+    before it goes on (`StopHTTPServer`, `src/httpserver.cpp`, same
+    tag). A `time.sleep` here would run before `handle_rpc` requested
+    this node's shutdown at all, on the one thread that carries RPC, P2P
+    and chain work alike (`ARCHITECTURE.md`, "The loop").
+    `rpc.main._answer_one` reads this same `wait` again once this call
+    is known to have succeeded; `handle_rpc` hands the delayed reply to
+    `RpcConnection.send_and_close_after` and stops the node at once, and
+    `RpcManager.stop` finishes that reply the way Core's shutdown
+    finishes its worker.
     """
     stop_wait_param(params)
     return "Btclib node stopping"

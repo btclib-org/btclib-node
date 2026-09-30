@@ -61,22 +61,17 @@ def fake_manager(connections: dict[int, Any]) -> SimpleNamespace:
     Every source is allowed: a socketpair's peer has no IP address for
     `RpcManager.client_allowed` to read.
     """
+    # what `send_and_close_after` hands `RpcManager.add_delayed_reply`,
+    # `(coroutine, deadline)` pairs in call order
+    delayed: list[tuple[Any, float]] = []
     return SimpleNamespace(
         auth=RpcAuth((RpcAuthEntry.parse(RPCAUTH),)),
         client_allowed=lambda client: True,
         logger=Logger(debug=True),
         messages=[],
         connections=connections,
-        # `send_and_close_after`'s own `_delayed_send` registers into
-        # this real `RpcManager` attribute for the length of its wait
-        # (btclib-org/btclib-node#1467 review); a plain `set()` here is
-        # the same thing `RpcManager.__init__` builds, not a stub of it.
-        pending_delayed_replies=set(),
-        # `send_and_close_after` itself writes here, at schedule time,
-        # before `_delayed_send`'s own task exists
-        # (btclib-org/btclib-node#1467 review, second round); a plain
-        # `dict()` is the same thing `RpcManager.__init__` builds.
-        pending_reply_deadlines={},
+        delayed=delayed,
+        add_delayed_reply=lambda reply, deadline: delayed.append((reply, deadline)),
     )
 
 
@@ -898,85 +893,51 @@ def test_send_and_wait_gives_up_rather_than_blocking_forever() -> None:
 
 
 def test_send_and_close_after_returns_at_once_and_delays_the_write() -> None:
-    """`send_and_close_after` does not block its caller for `delay` (ISS 1467).
+    """`send_and_close_after` returns before `delay`, and writes after it.
 
-    `handle_rpc`'s own `stop` is the caller a positive `wait` reaches,
-    past `rpc.main._answer_one`: the review of #1441's own follow-up
-    found a `time.sleep` there froze `Node`'s single thread -- P2P,
-    every other RPC and chain progress alike (`ARCHITECTURE.md`, "The
-    loop") -- for as long as `wait` asked. This schedules the
-    wait-then-write on `loop`'s own thread, standing in for
-    `RpcManager`'s, and returns to its caller -- this test's own thread,
-    standing in for `Node`'s -- well before `delay` has elapsed; the
-    reply reaches the client, and `on_sent` fires, only once it has.
+    `handle_rpc` calls it on `Node`'s thread, played here by this test's
+    own, and stops the node right after (ISS 1467), so the wait runs on
+    `loop`, a thread of its own here as `RpcManager`'s is. What it hands
+    `RpcManager.add_delayed_reply` is the coroutine `loop` then runs,
+    with the deadline `delay` sets.
     """
+    delay = 1.0
     ours, theirs = socket.socketpair()
     ours.setblocking(False)
     loop = asyncio.new_event_loop()
     thread = threading.Thread(target=loop.run_forever)
     thread.start()
-    fired: list[float] = []
+    manager = fake_manager(connections={})
     try:
         conn = answering(
-            RpcConnection(
-                loop, ours, cast("RpcManager", fake_manager(connections={})), 0
-            ),
-            request(),
+            RpcConnection(loop, ours, cast("RpcManager", manager), 0), request()
         )
         started = time.monotonic()
-        conn.send_and_close_after(
-            HttpReply(OK, ANSWER), 0.3, lambda: fired.append(time.monotonic())
-        )
-        returned_after = time.monotonic() - started
+        conn.send_and_close_after(HttpReply(OK, ANSWER), delay)
+        returned = time.monotonic()
+        # nothing written yet: the call did not wait `delay` out itself
+        theirs.setblocking(False)
+        with pytest.raises(BlockingIOError):
+            theirs.recv(4096)
         theirs.settimeout(5)
         reply = b""
         while chunk := theirs.recv(4096):
             reply += chunk
+        received = time.monotonic()
     finally:
         loop.call_soon_threadsafe(loop.stop)
         thread.join()
         loop.close()
         theirs.close()
-    assert returned_after < 0.1
-    assert fired
-    assert fired[0] - started >= 0.3 - _WINDOWS_TIMER_TICK
+    [(delayed, deadline)] = manager.delayed
+    assert started + delay <= deadline <= returned + delay
+    # run to completion by `loop`, which is what clears a coroutine's frame
+    assert delayed.cr_frame is None
+    assert received - started >= delay - _WINDOWS_TIMER_TICK
     assert reply == framed(
         b"HTTP/1.1 200 OK", b"Connection: close", b"Content-Length: {length}"
     )
     assert ours.fileno() == -1
-
-
-def test_send_and_close_after_writes_at_once_for_a_zero_delay() -> None:
-    """A `delay` of `0.0` skips the wait branch, and still writes and fires."""
-    ours, theirs = socket.socketpair()
-    ours.setblocking(False)
-    loop = asyncio.new_event_loop()
-    thread = threading.Thread(target=loop.run_forever)
-    thread.start()
-    fired: list[bool] = []
-    try:
-        conn = answering(
-            RpcConnection(
-                loop, ours, cast("RpcManager", fake_manager(connections={})), 0
-            ),
-            request(),
-        )
-        conn.send_and_close_after(
-            HttpReply(OK, ANSWER), 0.0, lambda: fired.append(True)
-        )
-        theirs.settimeout(5)
-        reply = b""
-        while chunk := theirs.recv(4096):
-            reply += chunk
-    finally:
-        loop.call_soon_threadsafe(loop.stop)
-        thread.join()
-        loop.close()
-        theirs.close()
-    assert fired == [True]
-    assert reply == framed(
-        b"HTTP/1.1 200 OK", b"Connection: close", b"Content-Length: {length}"
-    )
 
 
 def refused(

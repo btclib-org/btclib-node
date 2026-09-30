@@ -12,6 +12,7 @@ go of both -- and until now only a functional test reached any of it.
 
 import asyncio
 import base64
+import inspect
 import json
 import os
 import socket
@@ -48,6 +49,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from btclib_node import Node
+    from btclib_node.rpc.connection import RpcConnection
 
 REQUEST = {"jsonrpc": "2.0", "id": "a", "method": "getbestblockhash"}
 
@@ -1044,61 +1046,93 @@ def test_stop_drains_a_task_whose_own_cancellation_needs_a_second_step(
     manager.stop()
 
 
+def a_connection_answering(manager: RpcManager, ours: socket.socket) -> RpcConnection:
+    """Wire `ours` through `manager.create_connection`, a request already read.
+
+    `create_connection` puts `ours` in non-blocking mode itself; `head`
+    stands in for `run` having parsed a request, which `async_send`
+    answers the version of.
+    """
+    conn = manager.create_connection(manager.loop, ours)
+    conn.head = parse_request_head(
+        b"POST / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+    )
+    return conn
+
+
+STOPPING = HttpReply(OK, {"result": "stopping", "error": None, "id": 1})
+
+
 def test_stop_lets_a_pending_delayed_reply_finish_rather_than_cancelling_it(
     a_manager: AManagerFactory,
 ) -> None:
-    """`stop` racing a pending `send_and_close_after` still delivers the reply.
+    """`stop` finishes a delayed reply asleep in its `wait` (ISS 1467).
 
-    The blanket cancel sweep above used to reach a still-sleeping
-    `send_and_close_after` task -- `stop`'s own hidden `wait`, mid-delay
-    -- exactly like any other pending task, discarding the reply before
-    it was ever written: nothing on the socket, `on_sent` never called.
-    That is a real gap, not a hypothetical one: `install_signal_handlers`
-    reaches this same `stop()` from a `SIGINT`/`SIGTERM`, and so does a
-    second plain `stop` call, either one able to land while a `stop
-    wait=N` from a moment earlier is still asleep
-    (btclib-org/btclib-node#1467 review). Core's own `ThreadPool::Stop`
-    (`util/threadpool.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
-    joins its workers unconditionally instead of cancelling one mid-task,
-    which is the guarantee `pending_delayed_replies` now gives this
-    reply too.
-
-    A real manager, a real thread, and a real socketpair, as
-    `connection_test.py`'s own `send_and_close_after` tests use --
-    `RpcManager.stop()` is what is under test here, not `RpcConnection`
-    on its own, so the connection is wired through the manager's real
-    `create_connection` instead of built by hand.
+    Core's own `ThreadPool::Stop` joins its workers rather than
+    cancelling one mid-request, `stop`'s own comment has where; this is
+    the same reply cancelled with every other task otherwise, nothing
+    ever written. The deadline recorded for it outlives the reply.
     """
     manager = a_manager(get_random_port())
     manager.start()
     wait_until_listening(manager)
     ours, theirs = socket.socketpair()
-    fired: list[bool] = []
     try:
-        # `create_connection` itself puts `ours` into non-blocking mode
-        # (`client.settimeout(0.0)`), so this test does not need its own
-        # `setblocking(False)` the way a bare `RpcConnection` built by
-        # hand, as in `connection_test.py`, does.
-        conn = manager.create_connection(manager.loop, ours)
-        # `async_send` answers `conn.head`'s own version, which only a
-        # parsed request sets: stand in for `run` having already done
-        # that, as `connection_test.py`'s own `answering` helper does.
-        conn.head = parse_request_head(
-            b"POST / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+        conn = a_connection_answering(manager, ours)
+        conn.send_and_close_after(STOPPING, 0.3)
+        deadline = manager.latest_reply_deadline()
+        [delayed] = manager.delayed_replies
+        # asleep in `asyncio.sleep(0.3)`: the window the race is about
+        wait_until(
+            lambda: inspect.getcoroutinestate(delayed) == inspect.CORO_SUSPENDED
         )
-        conn.send_and_close_after(
-            HttpReply(OK, {"result": "stopping", "error": None, "id": 1}),
-            0.3,
-            lambda: fired.append(True),
-        )
-        # Waits for `_delayed_send` to have registered itself and be
-        # asleep in `asyncio.sleep(0.3)` -- the window the race is about
-        # -- before `stop()` below is allowed to run.
-        wait_until(lambda: bool(manager.pending_delayed_replies))
-
         manager.stop()
+        theirs.settimeout(5)
+        reply = theirs.recv(65536)
+    finally:
+        theirs.close()
+    assert b"200 OK" in reply
+    assert b"stopping" in reply
+    # `Node.stop` has why a reply already sent still bounds its wait
+    assert manager.latest_reply_deadline() == deadline
 
-        assert fired == [True]
+
+def test_stop_finishes_a_delayed_reply_its_loop_never_stepped(
+    a_manager: AManagerFactory,
+) -> None:
+    """A delayed reply whose task exists, never stepped, is still finished.
+
+    Held busy on a callback of its own, the manager's loop runs the
+    task's creation in the same pass as `stop`'s own `loop.stop`, so the
+    task is in `asyncio.all_tasks` and has never run a line: what `stop`
+    reads to spare it has to have been recorded before it was handed to
+    the loop, not by its own first step (ISS 1467).
+    """
+    manager = a_manager(get_random_port())
+    manager.start()
+    wait_until_listening(manager)
+    holding = threading.Event()
+    release = threading.Event()
+
+    def hold() -> None:
+        holding.set()
+        release.wait(10)
+
+    join = manager.join
+
+    def release_then_join(timeout: float | None = None) -> None:
+        # reached by `stop` right after it queued `loop.stop`
+        release.set()
+        join(timeout)
+
+    ours, theirs = socket.socketpair()
+    try:
+        conn = a_connection_answering(manager, ours)
+        manager.loop.call_soon_threadsafe(hold)
+        assert holding.wait(10)
+        conn.send_and_close_after(STOPPING, 0.3)
+        manager.join = release_then_join  # type: ignore[method-assign]
+        manager.stop()
         theirs.settimeout(5)
         reply = theirs.recv(65536)
     finally:

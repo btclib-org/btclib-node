@@ -214,21 +214,13 @@ def handle_rpc(node: Node) -> None:
 
     An object is a lone request, an array a batch, and anything else is
     `PARSE_ERROR`'s "Top-level object parse error", as in Core. A `stop`
-    request's reply is sent before `node.stop()` runs, so the client
-    sees it before the loop it arrived on is torn down: waited for on
-    this thread where `stop` asked for no delay, matching every plain
-    `stop` this node has ever answered; handed to
-    `RpcConnection.send_and_close_after` otherwise, which runs the delay
-    and the reply on the RPC manager's own thread and sets
-    `node.terminate_flag` once the reply is sent, rather than making
-    this thread -- P2P, every other RPC and chain progress alike -- sit
-    idle for as long as `wait` asked (`stop`'s own docstring,
-    btclib-org/btclib-node#1467). `node.stop()` and a direct
-    `terminate_flag.set()` are the same request answered from two
-    different threads: `Node.stop`'s own docstring is where the
-    same-thread case already reaches only the flag, never the join, and
-    a plain `threading.Event` is exactly as safe set from the manager's
-    thread as from this one.
+    request's reply reaches the client before the loop it arrived on is
+    torn down: waited on before `node.stop()` runs, or, where `stop`
+    carries a positive `wait`, handed to
+    `RpcConnection.send_and_close_after`, whose delayed write
+    `RpcManager.stop` finishes, with `node.stop()` run at once -- Core's
+    own `stop` requests shutdown before it sleeps
+    (btclib-org/btclib-node#1467).
 
     `conn_id` is left in `manager.connections`: `RpcConnection.async_send`
     removes it, on the branch that closes `conn`, once `conn` is done
@@ -253,10 +245,11 @@ def handle_rpc(node: Node) -> None:
         stop = False
         delay = 0.0
 
-    if stop and delay:
-        conn.send_and_close_after(reply, delay, node.terminate_flag.set)
-    elif stop:
-        conn.send_and_wait(reply)
+    if stop:
+        if delay:
+            conn.send_and_close_after(reply, delay)
+        else:
+            conn.send_and_wait(reply)
         node.stop()
     else:
         conn.send(reply)

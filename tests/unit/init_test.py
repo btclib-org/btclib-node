@@ -46,6 +46,7 @@ from btclib_node.interpreter import warm
 from btclib_node.main import prune_up_to_height, update_chain
 from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES
 from btclib_node.rpc.auth import COOKIE_FILE
+from btclib_node.rpc.connection import RpcConnection
 from tests import (
     assert_loopbacks_free,
     cookie_path,
@@ -126,14 +127,10 @@ class AManager:
         """Record that `run`'s own teardown reached this stand-in."""
         self.stopped = True
 
-    def latest_pending_reply_deadline(self) -> float | None:
-        """Answer `RpcManager`'s own method: nothing pending, ever, here.
+    def latest_reply_deadline(self) -> float | None:
+        """Answer as `RpcManager` does where no reply was ever delayed.
 
-        `Node.stop` calls this on `self.rpc_manager` alone, but this one
-        class stands in for both managers (`a_networked_node` assigns
-        it to each), so it answers on either -- always `None`, this
-        stand-in never scheduling a delayed reply
-        (btclib-org/btclib-node#1467 review, second round).
+        `Node.stop` reads it off `rpc_manager` (btclib-org/btclib-node#1467).
         """
         return None
 
@@ -853,25 +850,8 @@ def test_the_node_that_will_not_stop_is_named(
         node.stop()
 
 
-def test_stop_widens_its_join_past_a_pending_delayed_reply(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """`stop`, from another thread, does not report a false wedge mid-`wait`.
-
-    `RpcManager.stop` now legitimately blocks this node's own thread
-    for whatever remains of a client's `stop wait=N` (#1467). Read
-    naively, `Node.stop`'s own `join(timeout=STOP_TIMEOUT)` -- called
-    here from this test's own thread, standing in for
-    `install_signal_handlers`'s signal-handler thread -- would give up
-    before that reply is sent wherever `wait` outlasts `STOP_TIMEOUT`,
-    and report `NodeShutdownTimeoutError`: a wedge that never happened,
-    the node finishing exactly as Core's own `ThreadPool::Stop`
-    (`util/threadpool.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
-    would, joining a worker still finishing a `stop <ms>` sleep with no
-    timeout of its own. `STOP_TIMEOUT` is shrunk well below `wait` so
-    the widened bound, and not the ordinary one, is what is under test.
-    """
-    monkeypatch.setattr(btclib_node, "STOP_TIMEOUT", 1.0)
+def a_stopping_rpc_node(tmp_path: Path) -> Node:
+    """Start a regtest node listening for RPC, P2P off."""
     node = Node(
         config=Config(
             chain="regtest",
@@ -883,32 +863,117 @@ def test_stop_widens_its_join_past_a_pending_delayed_reply(
     )
     node.start()
     wait_until_listening(node.rpc_manager)
-    client = rpc_client(node, timeout=10)
+    return node
+
+
+def call_stop_with_wait(
+    node: Node, wait_ms: int
+) -> tuple[threading.Thread, dict[str, Any]]:
+    """Call `stop` with `wait_ms` on another thread; its reply lands in the dict."""
+    client = rpc_client(node, timeout=wait_ms / 1000 + 10)
     reply: dict[str, Any] = {}
 
-    def call_stop() -> None:
-        status, envelope = client.call_raw(
-            "stop", [3000], jsonrpc="1.0", request_timeout=10
+    def call() -> None:
+        reply["status"], reply["envelope"] = client.call_raw(
+            "stop", [wait_ms], jsonrpc="1.0", request_timeout=wait_ms / 1000 + 10
         )
-        reply["status"] = status
-        reply["envelope"] = envelope
 
-    caller = threading.Thread(target=call_stop)
+    caller = threading.Thread(target=call)
     caller.start()
-    # the window the race is about: after the delay is scheduled and
-    # its deadline recorded, but well before the 3s `wait` has elapsed
-    wait_until(lambda: node.rpc_manager.pending_reply_deadlines, timeout=5)
+    return caller, reply
 
-    started = time.monotonic()
+
+# how early asyncio may wake a timer: `BaseEventLoop`'s own clock
+# resolution, the monotonic clock's
+_TIMER_SLACK = time.get_clock_info("monotonic").resolution
+
+
+def test_stop_widens_its_join_past_a_pending_delayed_reply(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`stop` from another thread outwaits a `stop wait=N` longer than its bound.
+
+    `RpcManager.stop`, on the node's own thread, finishes the delayed
+    reply before the stores close (#1467), so a `wait` longer than
+    `STOP_TIMEOUT` is the node stopping as asked, not a wedge. This
+    test's own thread stands in for `install_signal_handlers`'s signal
+    handler, calling once the deadline is recorded.
+    """
+    monkeypatch.setattr(btclib_node, "STOP_TIMEOUT", 1.0)
+    node = a_stopping_rpc_node(tmp_path)
+    caller, reply = call_stop_with_wait(node, 3000)
+    wait_until(lambda: node.rpc_manager.latest_reply_deadline() is not None)
+    deadline = node.rpc_manager.latest_reply_deadline()
+    assert deadline is not None
+
     node.stop()  # raises NodeShutdownTimeoutError here if this regresses
-    elapsed = time.monotonic() - started
+    stopped = time.monotonic()
 
     caller.join(timeout=10)
     assert not node.is_alive()
-    # bracketed rather than merely finite, as the wedge test above:
-    # under the old bound this would have returned around 1s regardless
-    # of how the reply itself was going, `is_alive()` still true
-    assert 2.5 <= elapsed < 3 * btclib_node.STOP_TIMEOUT + 3
+    # relative to the deadline rather than to a figure measured at
+    # idle: the node's thread ends only once the reply is written
+    assert stopped >= deadline - _TIMER_SLACK
+    assert reply["status"] == 200
+    assert reply["envelope"]["result"] == "Btclib node stopping"
+
+
+def test_stop_rereads_a_deadline_recorded_after_its_first_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `stop wait=N` handled while `stop` already waits still widens it.
+
+    The node's thread is held inside `handle_rpc`, the request already
+    popped and its reply not yet scheduled, until `Node.stop` -- called
+    from another thread -- has made its first read and found nothing to
+    wait for. Released, that thread records the deadline and stops the
+    node itself; `Node.stop`, having read once, would give up after
+    `STOP_TIMEOUT` with the reply still asleep (#1467). The hold is a
+    wrapper around `RpcConnection.send_and_close_after`, the one call
+    between answering `stop` and recording its deadline.
+    """
+    monkeypatch.setattr(btclib_node, "STOP_TIMEOUT", 1.0)
+    handling = threading.Event()
+    release = threading.Event()
+    send_and_close_after = RpcConnection.send_and_close_after
+
+    def held(conn: RpcConnection, reply: Any, delay: float) -> None:
+        handling.set()
+        release.wait(10)
+        send_and_close_after(conn, reply, delay)
+
+    monkeypatch.setattr(RpcConnection, "send_and_close_after", held)
+    node = a_stopping_rpc_node(tmp_path)
+    first_read = threading.Event()
+    latest_reply_deadline = node.rpc_manager.latest_reply_deadline
+
+    def read() -> float | None:
+        deadline = latest_reply_deadline()
+        first_read.set()
+        return deadline
+
+    monkeypatch.setattr(node.rpc_manager, "latest_reply_deadline", read)
+    caller, reply = call_stop_with_wait(node, 3000)
+    assert handling.wait(10)
+    raised: list[NodeShutdownTimeoutError] = []
+
+    def stop() -> None:
+        try:
+            node.stop()
+        except NodeShutdownTimeoutError as error:
+            raised.append(error)
+
+    stopper = threading.Thread(target=stop)
+    stopper.start()
+    assert first_read.wait(10)
+    assert latest_reply_deadline() is None
+    release.set()
+    stopper.join(timeout=20)
+    caller.join(timeout=10)
+
+    assert not raised
+    assert not stopper.is_alive()
+    assert not node.is_alive()
     assert reply["status"] == 200
     assert reply["envelope"]["result"] == "Btclib node stopping"
 
