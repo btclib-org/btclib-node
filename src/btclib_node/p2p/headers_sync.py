@@ -8,9 +8,9 @@
 and `src/headerssync.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
 tag), and `anti_dos_work_threshold` is its `GetAntiDoSWorkThreshold`
 (`src/net_processing.cpp`, same sha). `callbacks.headers` starts one
-per peer whose headers connect to this node's index on a chain with
-less work than that threshold, and hands it every batch that peer sends
-until it ends: in `PRESYNC` the headers are counted and, every
+per peer whose full batch of headers connects to this node's index on a
+chain with less work than that threshold, and hands it every batch that
+peer sends until it ends: in `PRESYNC` the headers are counted and, every
 `commitment_period` headers from a secret offset, one salted bit of a
 header's hash is kept; once the work clears the threshold, `REDOWNLOAD`
 asks for the same chain again from its start, checks each kept bit
@@ -255,7 +255,11 @@ class HeadersSyncState:
         self._last_header_received = self.chain_start.header
         self._last_header_received_hash = self.chain_start.header.hash
         self._current_height = self.chain_start.height
-        # REDOWNLOAD: set as it begins
+        # REDOWNLOAD: set as it begins. Each entry is a 48-byte `bytes`,
+        # about 89 bytes with its deque slot where Core's `CompressedHeader`
+        # is 48, so a peer's full buffer costs under twice the memory
+        # Core's `HeadersSyncParams` were sized for, the difference being
+        # the language's
         self._redownloaded_headers: deque[bytes] = deque()
         self._redownload_buffer_last_height = 0
         self._redownload_buffer_last_hash = b""

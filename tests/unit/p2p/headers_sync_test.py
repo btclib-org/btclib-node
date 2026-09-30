@@ -862,7 +862,7 @@ def test_the_bit_queue_gives_back_what_it_took_in_order() -> None:
 
 
 def test_the_redownload_buffer_holds_headers_compressed() -> None:
-    """What a full buffer costs is what 48-byte headers cost, not a header's.
+    """The buffer holds a `bytes` per 48-byte header, not a `BlockHeader`.
 
     Measured with `tracemalloc` around the buffering of a redownload held
     short of both the buffer's size and the target: a `BlockHeader` per
