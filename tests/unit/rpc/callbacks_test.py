@@ -4988,6 +4988,35 @@ def test_invalidate_block_reconnects_a_branch_it_was_previously_on(
         )
 
 
+def test_invalidate_block_does_not_reconnect_a_branch_of_equal_work(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Pins the divergence `generate_block_candidates`'s own docstring argues.
+
+    `first` (two blocks) connects, then `second` (three blocks, heavier)
+    reorgs it off; invalidating `second`'s own tip reduces it to
+    `second[1]`, exactly `first`'s own work -- and Core would reorg back
+    to `first` there, by `nSequenceId`'s own earliest-received tie-break
+    (`node/blockstorage.cpp:174-192`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag), `first` having connected first. This index tracks no
+    such order, and `work > current_work` is strict, so the tip simply
+    stays on `second[1]`: btclib-org/btclib-node#1579.
+    """
+    node = regtest_node()
+    first = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, first)
+    second = generate_random_chain(3, node.chain.genesis.hash)
+    connect(node, second)
+    block_index = node.chainstate.block_index
+    assert block_index.active_chain[-1] == second[-1].header.hash
+
+    invalidate_block(node, _CONN, [second[-1].header.hash.hex()])
+
+    assert block_index.active_chain[-1] == second[1].header.hash
+    assert block_index.active_chain[-1] != first[-1].header.hash
+    assert not block_index.block_candidates
+
+
 def test_invalidate_block_drops_a_disconnected_transaction_past_the_ten_block_cap(
     regtest_node: Callable[..., Node],
 ) -> None:

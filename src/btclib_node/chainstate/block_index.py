@@ -565,8 +565,8 @@ class BlockIndex:
         loop is what sets it -- becomes a candidate again once whatever
         displaced it is itself invalidated. Core's own `InvalidateBlock`
         (`src/validation.cpp:3663-3684`, at bitcoin/bitcoin@9be056a8a7,
-        the v31.1 tag) re-inserts an out-of-chain, equal-or-more-work
-        header into `setBlockIndexCandidates` only where
+        the v31.1 tag) re-inserts such an out-of-chain header into
+        `setBlockIndexCandidates` only where
         `candidate->IsValid(BLOCK_VALID_TRANSACTIONS) &&
         candidate->HaveNumChainTxs()` both hold (`:3674-3677`) -- so a
         `valid` block this index still holds the data for is offered,
@@ -579,6 +579,30 @@ class BlockIndex:
         this same reinsertion Core's source is arguing, and changing
         that pre-existing, separately-argued divergence is out of
         scope here. btclib-org/btclib-node#1561
+
+        The work comparison below is `>`, strict, where Core's own
+        `setBlockIndexCandidates` -- ordered by `CBlockIndexWorkComparator`
+        (`node/blockstorage.cpp:174-192`, same commit) -- admits a
+        candidate of *equal* chainwork too, breaking the tie by
+        `nSequenceId`, assigned once per block the first time its
+        content is fully validated: "sort by most total work, ... then
+        by earliest activatable time", the earlier-received block
+        winning. This is not matched, and is not merely the `downloaded`
+        gate above: this index tracks no received-order state at all, so
+        a block a reorg displaced and that is then reduced back to
+        exactly the active tip's own work is never reoffered here,
+        where Core would reorg back to whichever of the two it saw
+        first. The effect is confined to which of two equal-work chains
+        *this node's own tip* sits on -- never a fact the network
+        disagrees about, since every honest node answers the identical
+        question against its own received order, not a shared one --
+        but it is a real behavioural gap from Core's own
+        `rpc_invalidateblock.py`, which exercises exactly this shape.
+        Reaching it needs a received-order counter this index does not
+        keep, the same missing primitive #1534
+        (`preciousblock`, a manual override of the identical tie) was
+        dropped from this branch for; tracked on its own as
+        btclib-org/btclib-node#1579 rather than attempted here.
         """
         self.block_candidates = deque()
         active_chain_set = set(self.active_chain)
