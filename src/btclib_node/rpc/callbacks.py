@@ -729,7 +729,7 @@ def _known_block_hash(node: Node, params: list[Any], method: str) -> bytes:
 def invalidate_block(node: Node, conn: RpcConnection, params: list[Any]) -> None:
     """Answer `invalidateblock`, Core's own single `blockhash` argument.
 
-    Core's own `invalidateblock` (`rpc/blockchain.cpp:1716-1737`, calling
+    Core's own `invalidateblock` (`rpc/blockchain.cpp:1716-1738`, calling
     the free `InvalidateBlock`, `:1694-1712`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `_known_block_hash` above
     is this function's and `reconsider_block`'s own shared argument
@@ -746,8 +746,8 @@ def invalidate_block(node: Node, conn: RpcConnection, params: list[Any]) -> None
 def reconsider_block(node: Node, conn: RpcConnection, params: list[Any]) -> None:
     """Answer `reconsiderblock`, Core's own single `blockhash` argument.
 
-    Core's own `reconsiderblock` (`rpc/blockchain.cpp:1761-1782`, calling
-    the free `ReconsiderBlock`, `:1738-1756`, at
+    Core's own `reconsiderblock` (`rpc/blockchain.cpp:1761-1785`, calling
+    the free `ReconsiderBlock`, `:1741-1759`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `_known_block_hash` above
     is this function's and `invalidate_block`'s own shared argument
     check; `main.reconsider_chain`'s own docstring is where clearing the
