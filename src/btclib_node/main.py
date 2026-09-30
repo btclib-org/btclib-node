@@ -167,12 +167,12 @@ def check_fork_warning_conditions(node: Node) -> None:
 
     Called wherever this tree calls `BlockIndex.invalidate` (through
     `update_header_index` in `_invalidate_failed_block`, and directly in
-    `p2p.callbacks` and `rpc.callbacks`), or commits a fork
-    (`_after_tip_change`), and once at `Node.load`, matching Core's own
+    `invalidate_chain`, `p2p.callbacks` and `rpc.callbacks`), or commits
+    a fork (`_after_tip_change`), and once at `Node.load`, matching Core's own
     three call sites (`src/validation.cpp`, same sha): `InvalidChainFound`
     itself (`:1987`) -- reached both from `InvalidateBlock`'s own direct
     call and, for a block that fails validation, from `InvalidBlockFound`
-    calling `InvalidChainFound` in turn, the same way this tree's three
+    calling `InvalidChainFound` in turn, the same way this tree's four
     `invalidate` call sites above all reach this one function --
     `ActivateBestChainStep` (`:3318`, not `ConnectTip`, which calls
     neither `InvalidChainFound` nor this function itself), and
@@ -1571,6 +1571,11 @@ def invalidate_chain(node: Node, block_hash: bytes) -> None:
         )
     else:
         block_index.invalidate(block_hash)
+    # Core's own `InvalidChainFound(to_mark_failed)`, which ends in
+    # `CheckForkWarningConditions()` (`src/validation.cpp:3721` and
+    # `:1987`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), run once
+    # the disconnect is done and before `ActivateBestChain`
+    check_fork_warning_conditions(node)
 
     _activate_best_chain(node)
 
@@ -1588,6 +1593,13 @@ def reconsider_chain(node: Node, block_hash: bytes) -> None:
     rebuilds that the same way `invalidate` conditionally does.
     `_activate_best_chain` is this tree's own `ActivateBestChain`, run
     unconditionally the way Core's own `ReconsiderBlock` runs it.
+
+    A large-work-invalid-chain warning already raised is not cleared
+    here, only at the next `check_fork_warning_conditions` call. Core
+    behaves the same: `ActivateBestChain` reaches
+    `CheckForkWarningConditions` only through `ActivateBestChainStep`,
+    which runs only where a better chain is found
+    (`src/validation.cpp:3423-3424` and `:3318`, same sha).
 
     `rpc.callbacks.reconsider_block` is this function's only caller, and
     has already refused a `block_hash` this index does not know

@@ -1408,7 +1408,7 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 ### `invalidateblock` and `reconsiderblock` are served
 
 - **`invalidateblock` marks a block invalid, forces the chain off it, and
-  returns its transactions to the mempool** (closes #1480).
+  checks the large-work-invalid-chain warning** (closes #1480).
 - **`reconsiderblock` undoes that mark and retries the chain** (closes #1536).
 
 ### `invalidateblock` reconnects a branch it was previously on

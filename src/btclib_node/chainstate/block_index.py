@@ -903,6 +903,10 @@ class BlockIndex:
         clears may now be the best known header chain, or a legitimate
         candidate `get_first_candidate` already evicted as permanently
         stale against a tip the clearing has not yet moved.
+
+        `best_invalid` is reset to `None` where it names a header this
+        clears, as Core's own loop resets `m_best_invalid` to `nullptr`
+        (`:3772-3775`), without looking for the next-best invalid header.
         """
         target_height = self.get_block_info(block_hash).index
         for other_hash, other_info in list(self.header_dict.items()):
@@ -910,6 +914,8 @@ class BlockIndex:
                 other_hash, block_hash, target_height
             ):
                 self.set_status(other_hash, BlockStatus.valid_header)
+                if other_hash == self.best_invalid:
+                    self.best_invalid = None
         self.generate_block_candidates()
         self.header_index = self.active_chain[:]
         self.header_index_pos = {h: i for i, h in enumerate(self.header_index)}

@@ -56,7 +56,11 @@ from btclib_node.exceptions import (
     TxRejectedError,
 )
 from btclib_node.log import Logger
-from btclib_node.main import MempoolAcceptance, verify_mempool_acceptance
+from btclib_node.main import (
+    MempoolAcceptance,
+    check_fork_warning_conditions,
+    verify_mempool_acceptance,
+)
 from btclib_node.mempool import Mempool
 from btclib_node.notify import Warnings
 from btclib_node.p2p.address import peer_address
@@ -4935,6 +4939,68 @@ def test_reconsider_block_clears_an_invalidated_ancestor_s_whole_lineage(
         assert block_index.get_block_info(block.header.hash).status != (
             BlockStatus.invalid
         )
+
+
+# Core's own `LARGE_WORK_INVALID_CHAIN` text (`src/validation.cpp:1961`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+_LARGE_WORK_WARNING = (
+    "Warning: Found invalid chain more than 6 blocks longer than our best "
+    "chain. This could be due to database corruption or consensus "
+    "incompatibility with peers."
+)
+
+
+def test_invalidate_block_raises_the_fork_warning_its_disconnect_uncovers(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Invalidating an active block checks the fork warning, as Core does.
+
+    Core's own `InvalidateBlock` ends in `InvalidChainFound`, which calls
+    `CheckForkWarningConditions` (`src/validation.cpp:3721` and `:1987`,
+    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The invalid fork
+    carries 14 blocks' worth of work: less than the 10-block tip plus
+    six, more than the 5-block tip the disconnect leaves plus six.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(10, node.chain.genesis.hash)
+    connect(node, chain)
+    block_index = node.chainstate.block_index
+    fork = generate_random_header_chain(14, node.chain.genesis.hash)
+    block_index.add_headers(fork)
+    invalidate_block(node, _CONN, [fork[-1].hash.hex()])
+    assert node.warnings.get_messages() == []
+
+    invalidate_block(node, _CONN, [chain[5].header.hash.hex()])
+
+    assert block_index.active_chain[-1] == chain[4].header.hash
+    assert node.warnings.get_messages() == [_LARGE_WORK_WARNING]
+
+
+def test_reconsider_block_resets_best_invalid_it_clears(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Reconsidering the best invalid header resets `best_invalid`.
+
+    Core's own `ResetBlockFailureFlags` sets `m_best_invalid` to
+    `nullptr` (`src/validation.cpp:3772-3775`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The warning stays until
+    the next check, as in Core: no block is connected, so nothing runs
+    `CheckForkWarningConditions` in between.
+    """
+    node = regtest_node()
+    connect(node, generate_random_chain(10, node.chain.genesis.hash))
+    block_index = node.chainstate.block_index
+    fork = generate_random_header_chain(20, node.chain.genesis.hash)
+    block_index.add_headers(fork)
+    invalidate_block(node, _CONN, [fork[-1].hash.hex()])
+    assert node.warnings.get_messages() == [_LARGE_WORK_WARNING]
+
+    reconsider_block(node, _CONN, [fork[-1].hash.hex()])
+    assert node.warnings.get_messages() == [_LARGE_WORK_WARNING]
+    check_fork_warning_conditions(node)
+
+    assert block_index.best_invalid is None
+    assert node.warnings.get_messages() == []
 
 
 def test_invalidate_block_reconnects_a_header_only_branch_it_makes_competitive(
