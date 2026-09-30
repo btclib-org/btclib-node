@@ -39,6 +39,7 @@ from btclib_node.constants import MIN_BLOCKS_TO_KEEP, USER_AGENT
 from btclib_node.exceptions import MissingPrevoutError, TxRejectedError
 from btclib_node.main import (
     assert_valid_block,
+    check_fork_warning_conditions,
     is_block_failed,
     is_cached_invalid,
     new_pow_valid_block,
@@ -205,6 +206,17 @@ def get_blockchain_info(
     present only where that is true, is `prune_target_mib` in bytes,
     Core's own unit for the member of the same name.
 
+    `warnings` is `node.warnings.get_messages()`, Core's own
+    `node::GetWarningsForRpc(*node.warnings, IsDeprecatedRPCEnabled
+    ("warnings"))` (src/rpc/blockchain.cpp:1443, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) -- always the array form:
+    this node has no `-deprecatedrpc` of its own, so the single-string
+    form `use_deprecated=true` answers with is never reachable here.
+    Empty, ordinarily: `main.check_fork_warning_conditions` is this
+    tree's one writer of it so far, and it needs an invalid chain with
+    more work than this node's own tip to set anything
+    (btclib-org/btclib-node#1522).
+
     Absent, each for its own reason rather than by oversight:
     `verificationprogress`, Core's own `GuessVerificationProgress`
     (src/validation.cpp:5519, at bitcoin/bitcoin@ca7162cde5)
@@ -214,11 +226,10 @@ def get_blockchain_info(
     carries neither the per-chain assumption nor a per-block count, so
     answering this member under Core's own name would answer a number
     carrying none of Core's meaning behind it, rather than a truthful
-    one; `warnings`, this node raising none of its own; `signet_challenge`,
-    `SigNet` here carrying no configurable challenge (chains.py's own
-    genesis is the one public signet); `backgroundvalidation`, present
-    on Core's own side only behind an assumeutxo snapshot this node has
-    no counterpart to.
+    one; `signet_challenge`, `SigNet` here carrying no configurable
+    challenge (chains.py's own genesis is the one public signet);
+    `backgroundvalidation`, present on Core's own side only behind an
+    assumeutxo snapshot this node has no counterpart to.
     """
     block_index = node.chainstate.block_index
     active_chain = block_index.active_chain
@@ -240,6 +251,7 @@ def get_blockchain_info(
         "initialblockdownload": node.is_initial_block_download,
         "size_on_disk": node.block_db.current_usage(),
         "pruned": node.config.pruned,
+        "warnings": node.warnings.get_messages(),
     }
     if node.config.pruned:
         out["pruneheight"] = node.block_db.pruned_up_to + 1
@@ -1024,6 +1036,9 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
             segwit = parent.index + 1 >= node.chain.consensus.segwit_height
             if is_block_failed(block, check_witness_root=segwit):
                 block_index.invalidate(block_hash)
+                # Core's own `InvalidChainFound` call, same citation as
+                # `main.check_fork_warning_conditions`'s own docstring
+                check_fork_warning_conditions(node)
         return str(error)
 
     extends_tip = block.header.previous_block_hash == block_index.active_chain[-1]
@@ -1305,7 +1320,7 @@ def get_connection_count(node: Node, conn: RpcConnection, _: list[Any]) -> int:
 
 
 def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str, Any]:
-    """Answer `getnetworkinfo` with the two fields `connect_nodes` reads.
+    """Answer `getnetworkinfo` with `connect_nodes`'s fields, plus `warnings`.
 
     Core's own `getnetworkinfo` (`rpc/net.cpp:674-800`, at
     bitcoin/bitcoin@bb529657) answers two dozen fields, most either this
@@ -1332,6 +1347,13 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     its own (btclib-org/btclib-node#1394), `service_names` above turning
     the same bits into the strings `getpeerinfo`'s own `servicesnames`
     already uses for a peer's.
+
+    `warnings` is `node.warnings.get_messages()`, the same array
+    `get_blockchain_info`'s own `warnings` answers -- Core's own
+    `getnetworkinfo` reads the identical `node.warnings` `rpc/net.cpp`
+    does (`:740`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag -- not
+    `bb529657` above, this paragraph's own citation), so the two RPCs
+    never disagree here either.
     """
     services = local_services(node.config)
     return {
@@ -1339,6 +1361,7 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
         "protocolversion": PROTOCOL_VERSION,
         "localservices": f"{services:016x}",
         "localservicesnames": service_names(services),
+        "warnings": node.warnings.get_messages(),
     }
 
 

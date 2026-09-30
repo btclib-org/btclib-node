@@ -58,6 +58,7 @@ from btclib_node.exceptions import (
 from btclib_node.log import Logger
 from btclib_node.main import MempoolAcceptance, verify_mempool_acceptance
 from btclib_node.mempool import Mempool
+from btclib_node.notify import Warnings
 from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.banman import BanEntry, BanMan, lookup_subnet
 from btclib_node.p2p.block_availability import BlockAvailability
@@ -259,8 +260,9 @@ def a_node(
 ) -> Any:
     """Build a `Node` double carrying only what these callbacks read.
 
-    A peer table, a mempool, the configured minimum relay feerate, and a
-    block index answering the height of each hash in `heights` --
+    A peer table, a mempool, the configured minimum relay feerate, an
+    empty `notify.Warnings` for `get_network_info`'s own `warnings`, and
+    a block index answering the height of each hash in `heights` --
     nothing else these tests' own callbacks look at. `confirmed_outpoints`
     names the serialized outpoints (`OutPoint.serialize(check_validity=
     False)`) `send_raw_transaction`'s own `_already_confirmed` reads as
@@ -301,6 +303,7 @@ def a_node(
             pruned=pruned,
             peerblockfilters=peerblockfilters,
         ),
+        warnings=Warnings(),
         active_rpc_commands=(
             active_rpc_commands if active_rpc_commands is not None else []
         ),
@@ -2951,7 +2954,8 @@ def a_blockchain_info_node(
     bits/target/difficulty tests are cross-checked against.
     `header_index` defaults to the active chain's own hashes -- a node
     whose every known header has also been validated and connected,
-    which is every test here but the one naming the two apart.
+    which is every test here but the one naming the two apart. An empty
+    `notify.Warnings` is `warnings`'s own default: no test here sets one.
     """
     chain = chain if chain is not None else RegTest()
     headers = headers if headers is not None else [chain.genesis]
@@ -2980,6 +2984,7 @@ def a_blockchain_info_node(
             block_db=SimpleNamespace(
                 pruned_up_to=pruned_up_to, current_usage=lambda: current_usage
             ),
+            warnings=Warnings(),
         ),
     )
 
@@ -3020,6 +3025,24 @@ def test_blockchain_info_s_headers_outruns_blocks_during_header_sync() -> None:
     result = get_blockchain_info(node, _CONN, [])
     assert result["blocks"] == 0
     assert result["headers"] == 3
+
+
+def test_blockchain_info_s_warnings_is_node_warnings_get_messages() -> None:
+    """ISS 1522: `warnings` is the array `node.warnings` currently holds."""
+    node = a_blockchain_info_node()
+    assert get_blockchain_info(node, _CONN, [])["warnings"] == []
+
+    node.warnings.set_warning("w", "a warning")
+    assert get_blockchain_info(node, _CONN, [])["warnings"] == ["a warning"]
+
+
+def test_network_info_s_warnings_is_node_warnings_get_messages() -> None:
+    """ISS 1522: the same array `get_blockchain_info`'s own `warnings` field."""
+    node = a_node()
+    assert get_network_info(node, _CONN, [])["warnings"] == []
+
+    node.warnings.set_warning("w", "a warning")
+    assert get_network_info(node, _CONN, [])["warnings"] == ["a warning"]
 
 
 def test_blockchain_info_s_bestblockhash_is_the_active_chain_s_own_tip() -> None:
@@ -3658,6 +3681,7 @@ def test_get_network_info_answers_this_node_s_own_subversion_and_protocol() -> N
         "protocolversion": PROTOCOL_VERSION,
         "localservices": f"{ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_NETWORK_LIMITED | ServiceFlags.NODE_WITNESS:016x}",
         "localservicesnames": ["NETWORK", "WITNESS", "NETWORK_LIMITED"],
+        "warnings": [],
     }
 
 
