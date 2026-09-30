@@ -1338,8 +1338,9 @@ def test_stop_waits_unbounded_for_a_reply_once_request_timeout_is_none(
     `release`, an event this test controls, rather than a socket pair's
     own buffer: how much a write like this one can queue before it
     blocks is the platform's own number, not this test's, and asserting
-    `stopping.is_alive()` after a fixed join on that assumption failed
-    on Windows CI (issue #1548, review round 2). `manager.loop.sock_sendall`
+    `stopping.is_alive()` after a fixed join on that assumption fails
+    on Windows, whose `socketpair` is emulated over loopback TCP.
+    `manager.loop.sock_sendall`
     is what `RpcConnection._write` awaits to write the reply; patched
     here, it blocks on `release` before doing the real write, so the
     reply cannot finish, on any platform, until this test says so.
