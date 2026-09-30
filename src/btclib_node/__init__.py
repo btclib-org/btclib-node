@@ -303,6 +303,12 @@ class Node(threading.Thread):
 
         self.terminate_flag = threading.Event()
         log_path = self.data_dir / config.log_path if config.log_path else None
+        # `rpc.callbacks.get_rpc_info`'s own `logpath`: Core's
+        # `LogInstance().m_file_path.utf8string()` (`src/rpc/server.cpp`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), `""` where there
+        # is none, as that call's own `.utf8string()` answers for an
+        # unset `fs::path` too
+        self.log_path = log_path
         # `open_history_log` writes what Core logs ahead of anything this
         # node logs: the settings' own warnings, its version line, the
         # section warning, then `LogArgs`'s lines, in that order
@@ -316,13 +322,17 @@ class Node(threading.Thread):
 
         # A `getcfilters` answer `p2p.callbacks.get_cfilters` could not
         # finish scheduling under its own pacing bound, keyed by
-        # connection id: the connection itself and the heights still
-        # owed. `p2p.callbacks.advance_cfilters` and
-        # `p2p.main.resume_cfilters` are the only two that read or write
-        # this, and both run on this thread -- `run`'s own loop below,
-        # under `handle_p2p` or under `resume_cfilters` directly -- so
-        # nothing here needs a lock. btclib-org/btclib-node#442
-        self.pending_cfilters: dict[int, tuple[Connection, deque[int]]] = {}
+        # connection id: the connection itself and the block hashes
+        # still owed, resolved along the request's own stop block
+        # ancestry (`p2p.callbacks._filter_range`) rather than active
+        # chain heights, so a reorg mid-pause cannot change what this
+        # entry finishes sending (btclib-org/btclib-node#1476).
+        # `p2p.callbacks.advance_cfilters` and `p2p.main.resume_cfilters`
+        # are the only two that read or write this, and both run on this
+        # thread -- `run`'s own loop below, under `handle_p2p` or under
+        # `resume_cfilters` directly -- so nothing here needs a lock.
+        # btclib-org/btclib-node#442
+        self.pending_cfilters: dict[int, tuple[Connection, deque[bytes]]] = {}
 
         # The same shape as `pending_cfilters` above, for a `getdata`
         # `p2p.callbacks.getdata` could not finish serving: the
@@ -378,6 +388,17 @@ class Node(threading.Thread):
         else:
             self.rpc_port = None
         self.rpc_manager = RpcManager(self, self.rpc_port)
+        # `rpc.callbacks.get_rpc_info`'s own `active_commands`: the
+        # method and `time.monotonic()` start of every RPC call
+        # `rpc.main._execute` is currently running, in call order.
+        # Core's `RPCServerInfo.active_commands`/`RPCCommandExecution`
+        # (`src/rpc/server.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        # tag) guards the same list with a mutex because Core dispatches
+        # RPC calls from a worker pool; `_execute` runs only on this
+        # thread -- `handle_rpc`'s the same as every store and manager
+        # this node owns -- so nothing here needs a lock, the same
+        # reasoning `pending_cfilters` above is under.
+        self.active_rpc_commands: list[tuple[str, float]] = []
         # whether `load` has opened the stores `run`'s teardown closes
         self.loaded = False
         # the closes of what `load` opens, in order, which

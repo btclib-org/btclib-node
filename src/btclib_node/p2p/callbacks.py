@@ -128,6 +128,7 @@ if TYPE_CHECKING:
     from btclib.block import Block
 
     from btclib_node import Node
+    from btclib_node.chainstate.block_index import BlockIndex
     from btclib_node.p2p.connection import Connection
 
 __all__ = [
@@ -136,7 +137,7 @@ __all__ = [
     "MAX_CFILTERS_INFLIGHT_BYTES",
     "MAX_CMPCTBLOCK_DEPTH",
     "MAX_GETDATA_INFLIGHT_BYTES",
-    "MAX_PENDING_CFILTERS_HEIGHTS",
+    "MAX_PENDING_CFILTER_HASHES",
     "MAX_PENDING_GETDATA_ITEMS",
     "addr",
     "addrv2",
@@ -1084,7 +1085,7 @@ def _unrequested_block_refused(node: Node, block_hash: bytes) -> bool:
     return (
         work < block_index.chainwork[active_chain[-1]]
         or height > len(active_chain) - 1 + MIN_BLOCKS_TO_KEEP
-        or work < node.chain.consensus.minimum_chain_work
+        or work < node.config.minimum_chain_work
     )
 
 
@@ -1692,19 +1693,19 @@ def advance_getdata(node: Node, conn: Connection, items: deque[Inventory]) -> bo
 # How many items one connection's own entry on `node.pending_getdata`
 # may hold at once, `getdata` below extending an existing one rather
 # than answering a second `getdata` that arrives while the first is
-# still paused -- sized the way `MAX_PENDING_CFILTERS_HEIGHTS` above
+# still paused -- sized the way `MAX_PENDING_CFILTER_HASHES` below
 # is: two full requests, `MAX_INV_SZ` apiece, `GetData.parse` already
 # bounding any one message to that many. `getdata`'s own docstring below
 # is where this tree's own need for a numeric cap here, where Core's
 # real protection is not one, is argued.
 #
-# Unlike `MAX_PENDING_CFILTERS_HEIGHTS`'s own plain `int`s, an `Inventory`
-# is not negligible to hold: measured directly in this tree's own venv,
-# `tracemalloc` gives roughly 161 bytes per live instance, so this bound's
-# own 100,000 items cost roughly 16.1 MB of interpreter memory per
-# connection -- the same order as `MAX_QUEUED_SEND_BYTES` itself, not two
-# orders of magnitude below it the way the cfilters analogy alone would
-# suggest.
+# Unlike `MAX_PENDING_CFILTER_HASHES`'s own plain 32-byte hashes, an
+# `Inventory` is not negligible to hold: measured directly in this
+# tree's own venv, `tracemalloc` gives roughly 161 bytes per live
+# instance, so this bound's own 100,000 items cost roughly 16.1 MB of
+# interpreter memory per connection -- the same order as
+# `MAX_QUEUED_SEND_BYTES` itself, not two orders of magnitude below it
+# the way the cfilters analogy alone would suggest.
 MAX_PENDING_GETDATA_ITEMS = 2 * MAX_INV_SZ
 
 
@@ -1721,7 +1722,7 @@ def getdata(node: Node, msg: bytes, conn: Connection) -> None:
     rather than replacing it, up to `MAX_PENDING_GETDATA_ITEMS` -- past
     which a third stacked request is silent, the same answer
     `get_cfilters` below already gives a request past its own
-    `MAX_PENDING_CFILTERS_HEIGHTS`, and for the same reason: dropping
+    `MAX_PENDING_CFILTER_HASHES`, and for the same reason: dropping
     the connection over pipelining this node already tolerates
     elsewhere would be disproportionate to what tripped it, and
     `MAX_QUEUED_SEND_BYTES` (`connection.py`) is still underneath this
@@ -1989,7 +1990,7 @@ def getheaders(node: Node, msg: bytes, conn: Connection) -> None:
     block_index = node.chainstate.block_index
     active_chain = block_index.active_chain
     tip = active_chain[-1]
-    if block_index.chainwork[tip] < node.chain.consensus.minimum_chain_work:
+    if block_index.chainwork[tip] < node.config.minimum_chain_work:
         conn.send(Headers([]))
         return
     stop = getheaders.hash_stop
@@ -2034,53 +2035,153 @@ def _height_on_the_active_chain(node: Node, block_hash: bytes) -> int | None:
     return height
 
 
-def _filter_range(
+def _ancestor(block_index: BlockIndex, block_hash: bytes, height: int) -> bytes:
+    """`block_hash`'s ancestor at `height`, where the caller has bounded it.
+
+    `BlockIndex.get_ancestor` answers `None` only above `block_hash`'s
+    own height or below zero; every call site below keeps `height`
+    inside `[0, block_hash`'s own height]` before asking, so `None` here
+    would be a bug in the caller's own bound, not a gap in what this
+    node has indexed -- the same shape `block_availability._successors`
+    asserts, for the same reason.
+    """
+    ancestor = block_index.get_ancestor(block_hash, height)
+    assert ancestor is not None  # noqa: S101 -- bounded by the caller
+    return ancestor
+
+
+# Core's own `PrepareBlockFilterRequest` passes this for `getcfcheckpt`'s
+# `max_height_diff` (`net_processing.cpp:3400`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a checkpoint chain has
+# no range bound of its own, BIP157 answering only "the chain's length
+# is the bound" (`get_cfcheckpt`'s own comment below), so the range
+# check `_prepare_filter_request` shares with `getcfilters`/
+# `getcfheaders` is given a ceiling no chain height reaches instead of a
+# third branch.
+_NO_HEIGHT_DIFF_LIMIT = 2**32 - 1
+
+
+def _prepare_filter_request(  # noqa: PLR0913, PLR0917
     node: Node,
+    conn: Connection,
+    filter_type: BlockFilterType | int,
+    start_height: int,
+    stop_hash: bytes,
+    max_height_diff: int,
+) -> int | None:
+    """Validate a BIP157 filter request, answering the stop block's height.
+
+    Core's `PrepareBlockFilterRequest` (`net_processing.cpp:3265-3312`,
+    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): each of the four
+    checks below disconnects the peer rather than answering silently,
+    logging the line Core logs for it (ISS 1477). A fifth check of
+    Core's, the filter index for a supported type not existing, is not
+    one of these -- it is this node's own configuration rather than a
+    fault the peer caused, and every type `node.config.peerblockfilters`
+    lets through here has an index, so it never reaches this function at
+    all.
+
+    `not node.config.peerblockfilters` joins the first count rather than
+    opening a fifth: Core's own `PrepareBlockFilterRequest` folds
+    `filter_type == BASIC` and `peer.m_our_services & NODE_COMPACT_FILTERS`
+    into one `supported_filter_type`, and answers a peer that asked for a
+    type this node never advertised the same way it answers one that
+    asked for a type BIP157 has no other name for.
+
+    The stop block's own height is Core's `BlockRequestAllowed`
+    (`_block_request_allowed` above) gating which stale block a peer may
+    still be served -- the same gate `getheaders`' own empty-locator
+    branch already asks of a `hash_stop`, called at the same sha
+    `PrepareBlockFilterRequest` calls it at (ISS 1476).
+    """
+    if filter_type != BlockFilterType.BASIC or not node.config.peerblockfilters:
+        node.logger.debug(
+            "peer requested unsupported block filter type: %s, peer=%s",
+            int(filter_type),
+            conn.id,
+        )
+        conn.stop()
+        return None
+    block_index = node.chainstate.block_index
+    if stop_hash not in block_index.header_dict or not _block_request_allowed(
+        node, stop_hash
+    ):
+        node.logger.debug(
+            "peer requested invalid block hash: %s, peer=%s",
+            stop_hash.hex(),
+            conn.id,
+        )
+        conn.stop()
+        return None
+    stop_height = block_index.get_block_info(stop_hash).index
+    # BIP157: "The height of the block with hash StopHash MUST be
+    # greater than or equal to StartHeight". Only the upper end is
+    # checked: the field is unsigned on the wire and these requests are
+    # always parsed, so a negative start cannot arrive; `get_cfcheckpt`'s
+    # own `start_height` is always zero, so this never trips for it.
+    if start_height > stop_height:
+        node.logger.debug(
+            "peer sent invalid getcfilters/getcfheaders with start height "
+            "%d and stop height %d, peer=%s",
+            start_height,
+            stop_height,
+            conn.id,
+        )
+        conn.stop()
+        return None
+    # "and the difference MUST be strictly less than 1,000" -- 2,000 for
+    # getcfheaders, and no bound at all for getcfcheckpt
+    # (`_NO_HEIGHT_DIFF_LIMIT` above). Strictly, so a range whose ends
+    # differ by exactly the bound is one block too many.
+    if stop_height - start_height >= max_height_diff:
+        node.logger.debug(
+            "peer requested too many cfilters/cfheaders: %d / %d, peer=%s",
+            stop_height - start_height + 1,
+            max_height_diff,
+            conn.id,
+        )
+        conn.stop()
+        return None
+    return stop_height
+
+
+def _filter_range(  # noqa: PLR0913, PLR0917
+    node: Node,
+    conn: Connection,
     filter_type: BlockFilterType | int,
     start_height: int,
     stop_hash: bytes,
     limit: int,
-) -> range | None:
-    """Return the active-chain heights a BIP157 request names, or None.
+) -> list[bytes] | None:
+    """Return the block hashes a BIP157 range names, on the stop block's chain.
+
+    `None` for a request `_prepare_filter_request` refuses -- which has
+    already disconnected the peer where Core would.
 
     A range is a start height and the hash of the block it ends at, so
-    turning it into heights is the one thing `btclib.p2p.block_filters`
-    leaves to a caller: only a node holds the chain that says what
-    height a hash is at.
-
-    Nothing is sent for a request this cannot answer. BIP157 asks for
-    that on the first two counts -- a filter type not supported and a
-    StopHash not known are each "SHOULD NOT respond" -- and says nothing
-    at all about the third, the range being too long, where Core
-    disconnects instead. Silence is a choice there rather than the
-    letter of the specification, and it is the same answer as the other
-    two because there is no message defined for saying why.
-
-    `not node.config.peerblockfilters` joins the first count rather than
-    opening a fourth: Core's own `PrepareBlockFilterRequest`
-    (`net_processing.cpp:3265-3273`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag) folds `filter_type == BASIC` and `peer.m_our_services &
-    NODE_COMPACT_FILTERS` into one `supported_filter_type`, and answers
-    a peer that asked for a type this node never advertised the same way
-    it answers one that asked for a type BIP157 has no other name for.
+    turning it into block hashes is the one thing
+    `btclib.p2p.block_filters` leaves to a caller: only a node holds the
+    chain that says what height a hash is at. Resolving it walks the
+    stop block's own ancestry (`_ancestor` above) rather than
+    `active_chain`: a stop hash naming a block this node has since
+    reorged away from still names a chain, the one Core's own
+    `ProcessGetCFilters`/`ProcessGetCFHeaders` resolve the same way, from
+    `stop_index` rather than from `ActiveChain()` (`net_processing.cpp`,
+    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). BIP157 names it "the
+    chain terminating in StopHash" and asks only that the hash be "known
+    to belong to a block accepted by the receiving peer" -- which a
+    block this node has reorged away from still is (ISS 1476).
     """
-    if filter_type != BlockFilterType.BASIC or not node.config.peerblockfilters:
-        return None
-    stop_height = _height_on_the_active_chain(node, stop_hash)
+    stop_height = _prepare_filter_request(
+        node, conn, filter_type, start_height, stop_hash, limit
+    )
     if stop_height is None:
         return None
-    # BIP157: "The height of the block with hash StopHash MUST be
-    # greater than or equal to StartHeight". Only the upper end is
-    # checked: the field is unsigned on the wire and these requests are
-    # always parsed, so a negative start cannot arrive.
-    if start_height > stop_height:
-        return None
-    # "and the difference MUST be strictly less than 1,000" -- 2,000 for
-    # getcfheaders. Strictly, so a range whose ends differ by exactly
-    # the bound is one block too many.
-    if stop_height - start_height >= limit:
-        return None
-    return range(start_height, stop_height + 1)
+    block_index = node.chainstate.block_index
+    return [
+        _ancestor(block_index, stop_hash, height)
+        for height in range(start_height, stop_height + 1)
+    ]
 
 
 # Where `get_cfilters` below pauses mid-answer rather than scheduling
@@ -2116,47 +2217,51 @@ def _filter_range(
 # answer the bound it used to lean on already was.
 MAX_CFILTERS_INFLIGHT_BYTES = int(2 * ONE_BUSY_MODERN_BLOCK_FILTER_BYTES)
 
-# How many heights one connection's own entry on `node.pending_cfilters`
-# may hold at once, `get_cfilters` extending an existing one rather than
-# answering a second `getcfilters` that arrives while the first is still
-# paused. Core has nothing here to diverge from: `ProcessGetCFilters`
-# (`net_processing.cpp:3556`, b91d983f66) calls `LookupFilterRange` and
-# pushes every filter it returns in one call, with no pending state of
-# its own to collide with a second `getcfilters` from the same peer --
-# each is answered to completion, in turn, before the next is looked at,
-# relying only on `nSendBufferMaxSize`/`fPauseSend` to bound how much of
-# that can queue at the socket. This node's own pause point is per
-# request rather than per byte queued at the socket, so it needs a bound
-# of its own kind, and BIP157 says nothing about how many `getcfilters`
-# one connection may have outstanding at once for a reader to diverge
-# from either. Two full requests -- `MAX_GETCFILTERS_SIZE` apiece -- is
-# the room this bound gives on its own terms: enough for a `getcfilters`
-# already draining and a second one the same peer sends before the first
+# How many block hashes one connection's own entry on
+# `node.pending_cfilters` may hold at once, `get_cfilters` extending an
+# existing one rather than answering a second `getcfilters` that arrives
+# while the first is still paused. Core has nothing here to diverge
+# from: `ProcessGetCFilters` (`net_processing.cpp:3556`, b91d983f66)
+# calls `LookupFilterRange` and pushes every filter it returns in one
+# call, with no pending state of its own to collide with a second
+# `getcfilters` from the same peer -- each is answered to completion, in
+# turn, before the next is looked at, relying only on
+# `nSendBufferMaxSize`/`fPauseSend` to bound how much of that can queue
+# at the socket. This node's own pause point is per request rather than
+# per byte queued at the socket, so it needs a bound of its own kind,
+# and BIP157 says nothing about how many `getcfilters` one connection
+# may have outstanding at once for a reader to diverge from either. Two
+# full requests -- `MAX_GETCFILTERS_SIZE` apiece -- is the room this
+# bound gives on its own terms: enough for a `getcfilters` already
+# draining and a second one the same peer sends before the first
 # finishes to both extend the one pending entry, rather than have either
-# dropped. Past it, a third stacked request is silence -- `_filter_range`
-# below already answers this way for a request it declines on other
-# grounds, and a peer pipelining past what two full answers cover is the
-# same kind of request: one this node will not serve, with no refusal
-# message BIP157 defines to send instead. This file has a second idiom
-# for "won't serve", not just `_filter_range`'s: `MAX_QUEUED_SEND_BYTES`
-# drops the connection outright, for a capacity refusal much like this
-# one rather than a protocol-validity check. Silence is preferred here
-# because that byte bound is still underneath this one to catch a peer
-# that is actually abusive; dropping the connection over ordinary
-# pipelining this node already tolerates elsewhere would be
-# disproportionate to what tripped it.
-MAX_PENDING_CFILTERS_HEIGHTS = 2 * MAX_GETCFILTERS_SIZE
+# dropped.
+#
+# Past it, a third stacked request is silence rather than a disconnect.
+# `_prepare_filter_request` above now disconnects a request it declines
+# on protocol-validity grounds, matching Core (ISS 1477), but a peer
+# pipelining past what two full answers already cover is not a protocol
+# violation BIP157 or Core's own `PrepareBlockFilterRequest` reaches --
+# it is ordinary pipelining this node already tolerates elsewhere, past
+# this connection's own room for it, with no refusal message BIP157
+# defines to send instead, so dropping the connection over it would be
+# disproportionate to what tripped it. `MAX_QUEUED_SEND_BYTES`
+# (`connection.py`) is the other idiom sharing that same capacity
+# reasoning: a byte bound still underneath this one, for a peer that is
+# actually abusive, dropping the connection outright rather than leaving
+# a request unanswered.
+MAX_PENDING_CFILTER_HASHES = 2 * MAX_GETCFILTERS_SIZE
 
 
-def advance_cfilters(node: Node, conn: Connection, heights: deque[int]) -> bool:
-    """Send from the front of `heights` while `conn`'s own queue has room.
+def advance_cfilters(node: Node, conn: Connection, block_hashes: deque[bytes]) -> bool:
+    """Send from the front of `block_hashes` while `conn`'s own queue has room.
 
     Shared by `get_cfilters`, dispatching a request for the first time,
     and by `p2p.main.resume_cfilters`, retrying one already paused --
     each pops what it sends off the front of the same `deque`, so a
     later call, on a later turn of `Node`'s own loop, picks up exactly
     where the last one left off rather than resending or skipping a
-    height. Answers whether `heights` is now empty.
+    block. Answers whether `block_hashes` is now empty.
 
     Checked before every send rather than after, against the same field
     `advance_getdata` above paces on, unlocked for the reason argued
@@ -2166,20 +2271,22 @@ def advance_cfilters(node: Node, conn: Connection, heights: deque[int]) -> bool:
     way: seen one turn late it costs a filter serialized for a socket
     already closed, which `Connection._send` suppresses.
     """
-    active_chain = node.chainstate.block_index.active_chain
     filter_index = node.chainstate.filter_index
-    while heights:
+    while block_hashes:
         if conn.status == P2pConnStatus.Closed:
             return True
         if conn.queued_send_bytes >= MAX_CFILTERS_INFLIGHT_BYTES:
             return False
-        height = heights.popleft()
-        block_hash = active_chain[height]
-        # every block on the active chain is caught up before the node
-        # starts listening, and kept up as blocks connect
+        block_hash = block_hashes.popleft()
+        # `_filter_range` only ever names a block this node has indexed
+        # and that `_block_request_allowed` still permits serving -- on
+        # the active chain, or off it and validated, where its filter
+        # was computed while it was still connected and stays keyed by
+        # hash afterwards (`chainstate.filter_index`'s own module
+        # docstring)
         block_filter = filter_index.get_filter(block_hash)
         if block_filter is None:
-            err_msg = f"no filter for a block on the active chain: {block_hash.hex()}"
+            err_msg = f"no filter for a block this node has indexed: {block_hash.hex()}"
             raise ChainstateInconsistencyError(err_msg)
         conn.send(
             CFilter(
@@ -2192,11 +2299,12 @@ def advance_cfilters(node: Node, conn: Connection, heights: deque[int]) -> bool:
 
 
 def get_cfilters(node: Node, msg: bytes, conn: Connection) -> None:
-    """Answer a BIP157 `getcfilters` with one `cfilter` per requested height.
+    """Answer a BIP157 `getcfilters` with one `cfilter` per requested block.
 
-    Silent on a request `_filter_range` refuses. "sequentially in order
-    by block height" is BIP157's own words and the reason this is the
-    one request answered by many messages rather than one; `_filter_range`
+    Disconnects on a request `_filter_range` refuses; see its own
+    docstring and `_prepare_filter_request`'s. "sequentially in order by
+    block height" is BIP157's own words and the reason this is the one
+    request answered by many messages rather than one; `_filter_range`
     already bounds how many, and `advance_cfilters` above is where the
     rate they are produced at is bounded too, registering what it could
     not finish on `node.pending_cfilters` for `p2p.main.resume_cfilters`
@@ -2204,7 +2312,7 @@ def get_cfilters(node: Node, msg: bytes, conn: Connection) -> None:
 
     A second `getcfilters` arriving while `conn`'s own entry there is
     still paused extends that same `deque` rather than replacing it --
-    `MAX_PENDING_CFILTERS_HEIGHTS`, beside `advance_cfilters` above, is
+    `MAX_PENDING_CFILTER_HASHES`, beside `advance_cfilters` above, is
     where that bound and the reasoning behind it are. `_filter_range`
     has already validated and bounded this request's own range before
     that check runs, so what is refused there is refused whole: no
@@ -2212,23 +2320,24 @@ def get_cfilters(node: Node, msg: bytes, conn: Connection) -> None:
     finish.
     """
     request = GetCFilters.parse(msg)
-    heights = _filter_range(
+    block_hashes = _filter_range(
         node,
+        conn,
         request.filter_type,
         request.start_height,
         request.stop_hash,
         MAX_GETCFILTERS_SIZE,
     )
-    if heights is None:
+    if block_hashes is None:
         return
     existing = node.pending_cfilters.get(conn.id)
     if existing is None:
-        pending = deque(heights)
+        pending = deque(block_hashes)
     else:
         _, pending = existing
-        if len(pending) + len(heights) > MAX_PENDING_CFILTERS_HEIGHTS:
+        if len(pending) + len(block_hashes) > MAX_PENDING_CFILTER_HASHES:
             return
-        pending.extend(heights)
+        pending.extend(block_hashes)
     if not advance_cfilters(node, conn, pending):
         node.pending_cfilters[conn.id] = (conn, pending)
 
@@ -2236,41 +2345,46 @@ def get_cfilters(node: Node, msg: bytes, conn: Connection) -> None:
 def get_cfheaders(node: Node, msg: bytes, conn: Connection) -> None:
     """Answer a BIP157 `getcfheaders` with the requested range's filter headers.
 
-    Silent on a request `_filter_range` refuses.
+    Disconnects on a request `_filter_range` refuses; see its own
+    docstring and `_prepare_filter_request`'s.
     """
     request = GetCFHeaders.parse(msg)
-    heights = _filter_range(
+    block_hashes = _filter_range(
         node,
+        conn,
         request.filter_type,
         request.start_height,
         request.stop_hash,
         MAX_GETCFHEADERS_SIZE,
     )
-    if heights is None:
+    if block_hashes is None:
         return
-    active_chain = node.chainstate.block_index.active_chain
+    block_index = node.chainstate.block_index
     filter_index = node.chainstate.filter_index
-    start = heights.start
+    start = request.start_height
     # the header of the block before the range, which is what the
-    # hashes below chain onto. BIP157: "The previous filter header used
-    # to calculate that of the genesis block is defined to be the
-    # 32-byte array of 0's."
+    # hashes below chain onto -- resolved along the stop block's own
+    # ancestry, the same as every hash in `block_hashes` (`_filter_range`'s
+    # own docstring). BIP157: "The previous filter header used to
+    # calculate that of the genesis block is defined to be the 32-byte
+    # array of 0's."
     previous = (
-        filter_index.get_header(active_chain[start - 1])
+        filter_index.get_header(_ancestor(block_index, request.stop_hash, start - 1))
         if start
         else NO_PREVIOUS_FILTER_HEADER
     )
-    # every block on the active chain is caught up before the node
-    # starts listening, and kept up as blocks connect
+    # every block `_filter_range` named has been connected at some point
+    # -- `_block_request_allowed` -- so its filter and its header are
+    # still in the index (`chainstate.filter_index`'s own module
+    # docstring)
     if previous is None:
         err_msg = "no filter header for the parent of the requested range"
         raise ChainstateInconsistencyError(err_msg)
     filter_hashes = []
-    for h in heights:
-        filter_hash = filter_index.get_filter_hash(active_chain[h])
+    for block_hash in block_hashes:
+        filter_hash = filter_index.get_filter_hash(block_hash)
         if filter_hash is None:
-            block_hash = active_chain[h]
-            err_msg = f"no filter for a block on the active chain: {block_hash.hex()}"
+            err_msg = f"no filter for a block this node has indexed: {block_hash.hex()}"
             raise ChainstateInconsistencyError(err_msg)
         filter_hashes.append(filter_hash)
     conn.send(
@@ -2286,35 +2400,39 @@ def get_cfheaders(node: Node, msg: bytes, conn: Connection) -> None:
 def get_cfcheckpt(node: Node, msg: bytes, conn: Connection) -> None:
     """Answer a BIP157 `getcfcheckpt` with one filter header per checkpoint.
 
-    Silent for an unsupported filter type, a type not advertised under
-    `-peerblockfilters` (`_filter_range`'s own docstring), or an unknown
-    stop hash.
+    Disconnects for an unsupported filter type, a type not advertised
+    under `-peerblockfilters`, or a stop hash `_block_request_allowed`
+    refuses -- `_prepare_filter_request`'s own docstring, matching Core
+    (ISS 1477).
     """
     request = GetCFCheckpt.parse(msg)
     # not _filter_range: this request carries no start height, a
-    # checkpoint chain always beginning at the genesis block, so the two
-    # refusals it shares are asked for directly and there is no third
-    if request.filter_type != BlockFilterType.BASIC or not node.config.peerblockfilters:
-        return
-    stop_height = _height_on_the_active_chain(node, request.stop_hash)
+    # checkpoint chain always beginning at the genesis block, so the
+    # start-height and range-size checks `_prepare_filter_request` folds
+    # in for getcfilters/getcfheaders never trip here --
+    # `_NO_HEIGHT_DIFF_LIMIT`'s own comment says why a limit is still
+    # passed rather than a third branch opened for their absence.
+    stop_height = _prepare_filter_request(
+        node, conn, request.filter_type, 0, request.stop_hash, _NO_HEIGHT_DIFF_LIMIT
+    )
     if stop_height is None:
         return
-    active_chain = node.chainstate.block_index.active_chain
+    block_index = node.chainstate.block_index
     filter_index = node.chainstate.filter_index
     # BIP157: "FilterHeaders MUST have exactly one entry for each block
     # on the chain terminating in StopHash, where the block height is a
     # multiple of 1,000 greater than 0" -- so the range starts at the
     # interval and not at zero, and the stop block is an entry when its
     # own height falls on one. No bound: the chain's length is the
-    # bound, which is BIP157's answer too.
-    # every block on the active chain is caught up before the node
-    # starts listening, and kept up as blocks connect
+    # bound, which is BIP157's answer too. Resolved along the stop
+    # block's own ancestry, as `_filter_range` resolves a range for the
+    # other two requests, and for the same reason (ISS 1476).
     checkpoints = []
     for height in range(CFCHECKPT_INTERVAL, stop_height + 1, CFCHECKPT_INTERVAL):
-        block_hash = active_chain[height]
+        block_hash = _ancestor(block_index, request.stop_hash, height)
         header = filter_index.get_header(block_hash)
         if header is None:
-            err_msg = "no filter header for a block on the active chain: "
+            err_msg = "no filter header for a block this node has indexed: "
             err_msg += block_hash.hex()
             raise ChainstateInconsistencyError(err_msg)
         checkpoints.append(header)
@@ -2337,8 +2455,25 @@ def getblocktxn(node: Node, msg: bytes, conn: Connection) -> None:
     an older one the full block, queued as a `MSG_WITNESS_BLOCK` item of
     this connection's own `getdata`, whose serving pays for the disk
     read the request cost.
+
+    An empty `indexes` is dropped, undiscouraged, ahead of any lookup:
+    Core commit 28641fd195db2a175fd43fee2e32758aef9816a6 ("p2p: reject
+    empty getblocktxn requests"), on master and not yet in a release,
+    at bitcoin/bitcoin@28641fd195db -- "No legitimate reason to send
+    indexes empty" -- sets `fDisconnect` rather than calling
+    `Misbehaving`, so this raises no `MisbehavingError` and instead
+    drops the peer directly, matching `tx`'s own block-relay-only
+    refusal above. v31.1, at bitcoin/bitcoin@9be056a8a7, answers an
+    empty request the same as any other and keeps the peer, as this
+    node did before this check.
     """
     request = GetBlockTxn.parse(msg)
+    if not request.indexes:
+        node.logger.debug(
+            "getblocktxn received with no transaction indexes, peer=%s", conn.id
+        )
+        conn.stop()
+        return
     block_index = node.chainstate.block_index
     block_info = block_index.header_dict.get(request.block_hash)
     if block_info is None:
