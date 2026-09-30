@@ -20,7 +20,6 @@ from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import RPCErrorCode, chain_from_network
 from btclib.block import Block, median_time_past
-from btclib.descriptors import add_checksum, from_address
 from btclib.exceptions import BTClibException
 from btclib.fee import FeeRate, fee_from_vsize
 from btclib.p2p.address import ServiceFlags
@@ -30,6 +29,7 @@ from btclib.script.script_pub_key import ScriptPubKey, p2ms_m_and_keys, type_and
 from btclib.script.spendability import is_unspendable
 from btclib.tx import Tx
 from btclib.tx.out_point import OutPoint
+from btclib_wallet.descriptors import add_checksum, from_address
 
 from btclib_node.block_db import Coin
 from btclib_node.chainstate.block_index import BlockStatus, block_time
@@ -1922,8 +1922,9 @@ def _infer_descriptor(script_pub_key: ScriptPubKey) -> str:
       pubkey or the redeem script behind the hash and get nothing back,
       so `InferScript` falls through every one of its own `if`s to the
       top-level `ExtractDestination` case at the bottom of the function
-      -- `addr(...)`, `descriptors.from_address` already producing that
-      exact string. A witness program past version 0 that is not p2tr
+      -- `addr(...)`, `btclib_wallet.descriptors.from_address` already
+      producing that exact string. A witness program past version 0 that
+      is not p2tr
       -- this library's own "witness_unknown", the P2A anchor output
       among them -- reaches that identical fallback: Core's own
       `ExtractDestination` answers a destination for both
@@ -1946,7 +1947,7 @@ def _infer_descriptor(script_pub_key: ScriptPubKey) -> str:
 
     None of the five needs a key this node does not have; a checksum is
     added the way `Descriptor::ToString()`'s own default argument adds
-    one (`descriptors.add_checksum`).
+    one (`btclib_wallet.descriptors.add_checksum`).
     """
     script = script_pub_key.script
     script_type, payload = type_and_payload(script)

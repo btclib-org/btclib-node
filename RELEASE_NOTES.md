@@ -106,6 +106,11 @@ on release day.
   answered, only under `-peerblockfilters`** (closes #1395), off by
   default as in Core. A client relying on this node's own BIP157 filter
   service starts it with `-peerblockfilters=1`.
+- **`btclib-node` now depends on `btclib-wallet` directly** (closes
+  #1508): btclib 2026.9.29 moved `descriptors` out to it
+  (btclib-org/btclib#2129), so an unlocked install resolving that
+  release or later needs `btclib-wallet>=2026.9.30` alongside it, which
+  `pip install btclib-node` now pulls in on its own.
 
 ## v2026.9.24
 

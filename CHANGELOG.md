@@ -1180,6 +1180,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   than 256 of a resolver's answers**, matching `Lookup`'s own
   `nMaxSolutions` in Core's `ConnectNode` (closes #1466).
 
+### `btclib-wallet` is now a runtime dependency
+
+- **`rpc/callbacks.py` reads `add_checksum`/`from_address` from
+  `btclib_wallet.descriptors`**, following `descriptors` out of btclib
+  and into btclib-wallet, where btclib 2026.9.29 moved it (closes #1508).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
