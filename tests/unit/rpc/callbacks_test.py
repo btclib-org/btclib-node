@@ -39,7 +39,7 @@ from btclib.tx.tx_out import TxOut
 import btclib_node.p2p.banman as banman_module
 import btclib_node.rpc.callbacks as cb
 from btclib_node.block_db import Coin
-from btclib_node.chains import Chain, Main, RegTest
+from btclib_node.chains import Chain, HeadersSyncParams, Main, RegTest
 from btclib_node.chainstate.block_index import BlockStatus, block_time, calculate_work
 from btclib_node.chainstate.muhash import CoinStats
 from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
@@ -62,6 +62,7 @@ from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.banman import BanEntry, BanMan, lookup_subnet
 from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.connection import PeerStats
+from btclib_node.p2p.headers_sync import ChainStart, HeadersSyncState, State
 from btclib_node.rpc.callbacks import (
     add_node,
     callbacks,
@@ -236,6 +237,7 @@ def a_peer(
         feefilter=0,
         # what `Connection` starts every connection at
         addr_relay_enabled=False,
+        headers_sync=None,
     )
 
 
@@ -672,14 +674,45 @@ def test_the_synced_heights_are_the_peer_s_best_known_and_last_common_blocks(
 
 
 def test_the_fields_this_node_has_no_state_for_answer_core_s_value() -> None:
-    """No `cmpctblock` announcing, presync, permissions or BIP324 here."""
+    """No `cmpctblock` announcing, permissions or BIP324 here."""
     (info,) = get_peer_info(a_node({7: a_peer()}), _CONN, [])
     assert info["bip152_hb_to"] is False
     assert info["bip152_hb_from"] is False
-    assert info["presynced_headers"] == -1
     assert info["permissions"] == []
     assert info["transport_protocol_type"] == "v1"
     assert info["session_id"] == ""
+
+
+def test_presynced_headers_is_the_height_a_low_work_sync_has_reached() -> None:
+    """Core's `GetPresyncHeight` in either phase, -1 where no sync runs.
+
+    ISS 1246: a sync from regtest's genesis, told to redownload once three
+    headers of work are in, reports the height its first phase reached in
+    both phases.
+    """
+    genesis = RegTest().genesis
+    start = ChainStart(genesis, 0, calculate_work(genesis), 0, (genesis.hash,))
+    sync = HeadersSyncState(
+        RegTest().consensus,
+        HeadersSyncParams(commitment_period=5, redownload_buffer_size=10),
+        start,
+        minimum_required_work=4 * calculate_work(genesis),
+        now=0,
+    )
+    peer = a_peer()
+    node = a_node({7: peer})
+    (info,) = get_peer_info(node, _CONN, [])
+    assert info["presynced_headers"] == -1
+    peer.headers_sync = sync
+    chain = generate_random_header_chain(3, genesis.hash)
+    sync.process_next_headers(chain[:2], full_headers_message=True)
+    assert sync.state is State.PRESYNC
+    (info,) = get_peer_info(node, _CONN, [])
+    assert info["presynced_headers"] == 2
+    sync.process_next_headers(chain[2:], full_headers_message=True)
+    assert sync.state is State.REDOWNLOAD
+    (info,) = get_peer_info(node, _CONN, [])
+    assert info["presynced_headers"] == 3
 
 
 def test_a_peer_that_goes_away_mid_lookup_is_skipped() -> None:

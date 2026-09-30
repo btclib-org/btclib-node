@@ -70,7 +70,11 @@ from btclib.block.proof_of_work import block_work
 from btclib.exceptions import BTClibValueError
 from btclib.utils import bytesio_from_binarydata
 
-from btclib_node.exceptions import ChainstateInconsistencyError, MisbehavingError
+from btclib_node.exceptions import (
+    ChainstateInconsistencyError,
+    LowWorkHeaderError,
+    MisbehavingError,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -500,6 +504,27 @@ class BlockIndex:
                 walk_height -= 1
         return walk
 
+    def locator_entries(self, block_hash: bytes) -> list[bytes]:
+        """Return a block locator from `block_hash`: Core's `LocatorEntries`.
+
+        Core's is in `src/chain.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+        v31.1 tag: `block_hash` and its ancestors, one height apart for
+        the first ten and twice as far apart for each one after, down to
+        genesis, reached through skip pointers.
+        """
+        step = 1
+        have: list[bytes] = []
+        height = self.header_dict[block_hash].index
+        while True:
+            have.append(block_hash)
+            if height == 0:
+                return have
+            next_height = max(height - step, 0)
+            block_hash = self._ancestor(block_hash, height, next_height)
+            height = next_height
+            if len(have) > 10:  # noqa: PLR2004 -- Core's own bare 10
+                step *= 2
+
     def last_common_ancestor(self, first: bytes, second: bytes) -> bytes:
         """Return the fork point of two blocks: Core's `LastCommonAncestor`.
 
@@ -841,8 +866,17 @@ class BlockIndex:
     # header failing `ContextualCheckBlockHeader` and returns, so the
     # headers already accepted ahead of it, indexed one at a time as
     # they were accepted, stay indexed. btclib-org/btclib-node#1348
+    #
+    # `min_pow_checked` is Core's own parameter of the same name: where it
+    # is false, a new header passing every check above is refused as
+    # `too-little-chainwork` rather than indexed, after those checks as in
+    # Core, so a header that is also invalid is refused for that instead.
     def _insert_valid_headers(
-        self, headers: list[BlockHeader], *, punish_cached_invalid: bool
+        self,
+        headers: list[BlockHeader],
+        *,
+        punish_cached_invalid: bool,
+        min_pow_checked: bool,
     ) -> None:
         now = datetime.now(UTC)
         current_work = self.chainwork[self.active_chain[-1]]
@@ -870,6 +904,13 @@ class BlockIndex:
                     "Refused a header, keeping the ones before it: %s", e
                 )
                 raise
+            if not min_pow_checked:
+                self.logger.debug(
+                    "AcceptBlockHeader: not adding new block header %s, "
+                    "missing anti-dos proof-of-work validation",
+                    header.hash.hex(),
+                )
+                raise LowWorkHeaderError
 
             header_hash = header.hash
             height = parent_height + 1
@@ -958,7 +999,11 @@ class BlockIndex:
                 self.header_index_pos[added_hash] = base + offset
 
     def add_headers(
-        self, headers: Iterable[BlockHeader], *, punish_cached_invalid: bool = False
+        self,
+        headers: Iterable[BlockHeader],
+        *,
+        punish_cached_invalid: bool = False,
+        min_pow_checked: bool = True,
     ) -> bytes | None:
         """Validate `headers` as one batch, then index each in turn.
 
@@ -967,7 +1012,12 @@ class BlockIndex:
         nothing this index knows at all. `punish_cached_invalid` is
         whether a header already marked invalid is a `MisbehavingError`,
         as Core has it for an outbound peer, rather than a
-        `BTClibValueError`.
+        `BTClibValueError`. `min_pow_checked` is whether the caller has
+        checked the chain's work against `p2p.headers_sync`'s anti-DoS
+        threshold, a `LowWorkHeaderError` being what a new header gets
+        where it has not. True by default: `p2p.callbacks.headers` checks
+        before calling, and Core's RPCs pass true, which leaves
+        `p2p.callbacks.block` the one caller that can pass false.
         """
         # The batch's own proof of work and continuity are taken or
         # refused whole, ahead of indexing anything: chainwork is
@@ -980,7 +1030,11 @@ class BlockIndex:
         # at a time by then, stay indexed. btclib-org/btclib-node#1348
         headers = list(headers)
         self._validate_header_batch(headers)
-        self._insert_valid_headers(headers, punish_cached_invalid=punish_cached_invalid)
+        self._insert_valid_headers(
+            headers,
+            punish_cached_invalid=punish_cached_invalid,
+            min_pow_checked=min_pow_checked,
+        )
 
         # The header a caller should resume a sync from: the highest one
         # this batch carried that is indexed now, new or already known.

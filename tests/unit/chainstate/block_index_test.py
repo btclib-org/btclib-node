@@ -30,7 +30,11 @@ from btclib_node.chainstate.block_index import (
     _skip_height,
     calculate_work,
 )
-from btclib_node.exceptions import ChainstateInconsistencyError, MisbehavingError
+from btclib_node.exceptions import (
+    ChainstateInconsistencyError,
+    LowWorkHeaderError,
+    MisbehavingError,
+)
 from btclib_node.log import Logger
 from tests import brute_force_nonce, generate_random_header_chain
 
@@ -1060,6 +1064,69 @@ def test_block_locators(a_chainstate: Callable[[Path | None], Chainstate]) -> No
     block_index.add_headers(chain)
     locators = block_index.get_block_locator_hashes()
     assert len(locators) == 14
+
+
+def test_locator_entries_is_core_s_by_height(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """ISS 1246: Core's `LocatorEntries`, at bitcoin/bitcoin@9be056a8a7.
+
+    Twelve heights one apart, the step doubling once more than ten are
+    taken, down to genesis: `src/chain.cpp`'s own loop, from height 40 of
+    a fork off the active chain, which `header_index` does not hold.
+    """
+    block_index = a_chainstate(None).block_index
+    active = generate_random_header_chain(50, RegTest().genesis.hash)
+    block_index.add_headers(active)
+    fork = generate_random_header_chain(30, active[9].hash, active[9].time)
+    block_index.add_headers(fork)
+    height_of = {h: block_index.header_dict[h].index for h in block_index.header_dict}
+    locator = block_index.locator_entries(fork[-1].hash)
+    assert [height_of[h] for h in locator] == [
+        *range(40, 28, -1),
+        27,
+        23,
+        15,
+        0,
+    ]
+    # the fork's own headers, which start at height 11, down to its fork
+    # point's height, then genesis
+    assert locator[:-1] == [fork[height_of[h] - 11].hash for h in locator[:-1]]
+    assert locator[-1] == RegTest().genesis.hash
+    assert block_index.locator_entries(RegTest().genesis.hash) == [
+        RegTest().genesis.hash
+    ]
+
+
+def test_a_new_header_without_the_anti_dos_check_is_too_little_chainwork(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """ISS 1246: Core's `BLOCK_HEADER_LOW_WORK`, after the checks before it.
+
+    A new header whose caller has not checked its chain's work is refused
+    and not indexed; one already indexed is answered as known, and one
+    also failing its contextual check is refused for that first.
+    """
+    block_index = a_chainstate(None).block_index
+    (known,) = generate_random_header_chain(1, RegTest().genesis.hash)
+    block_index.add_headers([known])
+    assert block_index.add_headers([known], min_pow_checked=False) == known.hash
+    (new,) = generate_random_header_chain(1, known.hash, known.time)
+    with pytest.raises(LowWorkHeaderError, match=r"^too-little-chainwork$"):
+        block_index.add_headers([new], min_pow_checked=False)
+    assert new.hash not in block_index.header_dict
+    stale = BlockHeader(
+        version=4,
+        previous_block_hash=known.hash,
+        merkle_root=secrets.token_bytes(32),
+        time=RegTest().genesis.time,
+        bits=REGTEST_POW_LIMIT_BITS,
+        nonce=0,
+        check_validity=False,
+    )
+    brute_force_nonce(stale)
+    with pytest.raises(MisbehavingError, match="not after the median past"):
+        block_index.add_headers([stale], min_pow_checked=False)
 
 
 def test_a_locator_from_a_start_header_is_that_header_s_own_tip_locator(

@@ -106,6 +106,12 @@ on release day.
   answered, only under `-peerblockfilters`** (closes #1395), off by
   default as in Core. A client relying on this node's own BIP157 filter
   service starts it with `-peerblockfilters=1`.
+- **Headers a peer serves on a chain with less work than Core's anti-DoS
+  threshold are no longer stored** (closes #1246): they are counted,
+  then downloaded a second time and stored only once the chain clears
+  the threshold. Headers of such a chain that an existing data directory
+  already holds are kept and read as before, as Core keeps what its block
+  index holds, so nothing has to be done about them.
 
 ## v2026.9.24
 

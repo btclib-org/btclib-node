@@ -1162,6 +1162,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   than 256 of a resolver's answers**, matching `Lookup`'s own
   `nMaxSolutions` in Core's `ConnectNode` (closes #1466).
 
+### A low-work headers chain is synced twice before any of it is stored
+
+- **Headers below the anti-DoS work threshold go through Core's
+  `HeadersSyncState` before any is indexed** (closes #1246).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
