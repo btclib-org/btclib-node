@@ -51,8 +51,8 @@ if TYPE_CHECKING:
 
 __all__ = ["SIGNET_CHALLENGE", "assert_valid_solution"]
 
-# SigNetParams's own default (`src/kernel/chainparams.cpp`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the only signet
+# SigNetParams's own default (`src/kernel/chainparams.cpp`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the only signet
 # `chains.SigNet` runs, its own docstring says why, so this is the one
 # challenge this whole module ever checks a solution against.
 SIGNET_CHALLENGE = bytes.fromhex(

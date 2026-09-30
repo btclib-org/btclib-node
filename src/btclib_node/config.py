@@ -610,8 +610,8 @@ class Config:
         self.rpcallowip = tuple(rpcallowip)
         # Core reads the RPC options below in `StartHTTPRPC` and its
         # `InitRPCAuthentication` (`src/httprpc.cpp`), which `AppInitMain`
-        # runs under `-server` alone (`src/init.cpp`, both at
-        # bitcoin/bitcoin@9be056a8a7): with no RPC listener a malformed
+        # runs under `-server` alone (`src/init.cpp`, both
+        # at bitcoin/bitcoin@9be056a8a7): with no RPC listener a malformed
         # value refuses nothing
         if not allow_rpc:
             rpcauth, rpccookieperms, rpcwhitelist = (), None, ()

@@ -114,8 +114,8 @@ def update_header_index(index: BlockIndex, invalid_hash: bytes) -> None:
     index.invalidate(invalid_hash)
 
 
-# Core's own `MAX_BLOCKS_TO_ANNOUNCE` (`src/net_processing.cpp:152`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+# Core's own `MAX_BLOCKS_TO_ANNOUNCE` (`src/net_processing.cpp:152`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
 _MAX_BLOCKS_TO_ANNOUNCE = 8
 
 
@@ -615,8 +615,8 @@ def _rollback_trial(node: Node, utxo_mark: int, filter_mark: int) -> None:
 # "nothing left to ever do until a new header arrives".
 #
 # Not gated on `node.status`: Core's `ProcessNewBlock` hands every block
-# it accepts to `ActivateBestChain` (`src/validation.cpp:4481`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag) whether or not header sync
+# it accepts to `ActivateBestChain` (`src/validation.cpp:4481`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) whether or not header sync
 # has finished and whether or not any peer is connected, which is what
 # lets `submitblock` on a node with no peer connect its own block
 # (btclib-org/btclib-node#1071).

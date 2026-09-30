@@ -90,8 +90,8 @@ __all__ = ["P2pManager"]
 _ACTIVE_PRUNE_INTERVAL = 300
 
 # How long a connection has from connecting to finishing its handshake:
-# Core's `DEFAULT_PEER_CONNECT_TIMEOUT` (`src/net.h`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag), past which
+# Core's `DEFAULT_PEER_CONNECT_TIMEOUT` (`src/net.h`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), past which
 # `CConnman::InactivityCheck` drops a connection not yet
 # `fSuccessfullyConnected`, whatever it has sent. This node has no
 # `-peertimeout` to set it.
@@ -687,8 +687,8 @@ class P2pManager(threading.Thread):
         # The receive time is the wall clock time the message was read
         # off the socket: Core's `CNetMessage::m_time`, which
         # `ProcessMessage` takes as `time_received` and reads only in its
-        # `pong` handling (`src/net_processing.cpp`, at
-        # bitcoin/bitcoin@9be056a8a7), as only `callbacks.pong` reads it
+        # `pong` handling (`src/net_processing.cpp`,
+        # at bitcoin/bitcoin@9be056a8a7), as only `callbacks.pong` reads it
         # here. `handshake_messages` carries no `pong`, and no time.
         self.messages: deque[tuple[str, bytes, int, int, float]] = deque()
         self.handshake_messages: deque[tuple[str, bytes, int, int]] = deque()
@@ -1070,8 +1070,8 @@ class P2pManager(threading.Thread):
         """
         client = await dial(address)
         # Core's `ConnectNode` calls `Attempt` for every connection it
-        # tries, a `-connect` or `-addnode` one too (`src/net.cpp`, at
-        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+        # tries, a `-connect` or `-addnode` one too (`src/net.cpp`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
         self.peer_db.attempt(address)
         if client:
             self.create_connection(client, address, inbound=False)
@@ -1225,8 +1225,8 @@ class P2pManager(threading.Thread):
                 self.remove_connection(conn.id)
                 continue
             # Checked first and unconditionally, idle or not: Core's own
-            # `SendMessages` (`net_processing.cpp`, at
-            # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) returns on this
+            # `SendMessages` (`net_processing.cpp`,
+            # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) returns on this
             # same check before ever reaching `MaybeSendPing`, so a
             # chatty addr-fetch peer is still cut at this bound, from
             # `m_connected` rather than from its last message
@@ -1660,8 +1660,8 @@ class P2pManager(threading.Thread):
             # to avoid synchronization", ahead of the checks
             # `OpenNetworkConnection` makes
             await asyncio.sleep(secrets.SystemRandom().uniform(0, _FEELER_SLEEP_WINDOW))
-        # `OpenNetworkConnection` (`src/net.cpp`, at
-        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) returns without
+        # `OpenNetworkConnection` (`src/net.cpp`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) returns without
         # dialling a peer already connected, discouraged or banned, a
         # discouraged one being one this node dropped for cause
         # (btclib-org/btclib-node#283). `already_connected` is by host,

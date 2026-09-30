@@ -519,8 +519,8 @@ def get_block_header(
         block_info = block_index.get_block_info(block_hash)
     except KeyError as error:
         # a hash nothing indexed is a question about a block, not a
-        # fault of this node: src/rpc/blockchain.cpp:664-665, at
-        # bitcoin/bitcoin@ca7162cde5
+        # fault of this node: src/rpc/blockchain.cpp:664-665,
+        # at bitcoin/bitcoin@ca7162cde5
         raise RpcError(
             RPCErrorCode.INVALID_ADDRESS_OR_KEY, "Block not found"
         ) from error
@@ -1149,8 +1149,8 @@ def _peer_entry(
         if ping_wait > 0:
             entry["pingwait"] = ping_wait
     entry["version"] = 0 if version_message is None else version_message.version
-    # `connect_nodes` (`test_framework.py:568-594`, at
-    # bitcoin/bitcoin@bb529657) matches this against the peer's own
+    # `connect_nodes` (`test_framework.py:568-594`,
+    # at bitcoin/bitcoin@bb529657) matches this against the peer's own
     # `getnetworkinfo`-reported `subversion` to find its own connection
     # in the other side's peer list. Core sanitizes the wire bytes
     # through `SanitizeString` before calling this `cleanSubVer`; this
@@ -1340,8 +1340,8 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     }
 
 
-# Core's own three `addnode` commands (`rpc/net.cpp:341-415`, at
-# bitcoin/bitcoin@bb529657): `add`/`remove` reach `P2pManager`'s own
+# Core's own three `addnode` commands (`rpc/net.cpp:341-415`,
+# at bitcoin/bitcoin@bb529657): `add`/`remove` reach `P2pManager`'s own
 # `add_added_peer`/`remove_added_peer`, its counterpart to `CConnman`'s
 # `AddNode`/`RemoveAddedNode`, and `_open_added_peers`
 # (`p2p/manager.py`) is what actually dials whatever the list holds,
@@ -1855,8 +1855,8 @@ def get_tx_out_set_info(
     return result
 
 
-# Core's own literal sentinel, `MEMPOOL_HEIGHT` (`src/txmempool.h:50`, at
-# bitcoin/bitcoin@9be056a8a7): a `Coin` built from a mempool transaction's
+# Core's own literal sentinel, `MEMPOOL_HEIGHT` (`src/txmempool.h:50`,
+# at bitcoin/bitcoin@9be056a8a7): a `Coin` built from a mempool transaction's
 # own output rather than from the confirmed set carries this height
 # instead of a real one, and `gettxout` reads it back to answer
 # `confirmations: 0` (`rpc/blockchain.cpp:1243-1247`). Not
@@ -1866,8 +1866,8 @@ def get_tx_out_set_info(
 # out rather than storing it.
 _MEMPOOL_HEIGHT = 0x7FFF_FFFF
 
-# GetTxnOutputType's own vocabulary (`src/script/solver.cpp:18-34`, at
-# bitcoin/bitcoin@9be056a8a7), keyed on this library's own
+# GetTxnOutputType's own vocabulary (`src/script/solver.cpp:18-34`,
+# at bitcoin/bitcoin@9be056a8a7), keyed on this library's own
 # `type_and_payload` names (`btclib.script.script_pub_key`) -- the two
 # agree in spelling for nothing, "nulldata" being the closest case and
 # still its own key below rather than assumed. `_script_pub_key_dict`
@@ -1889,8 +1889,8 @@ _CORE_SCRIPT_TYPES: dict[str, str] = {
     "unknown": "nonstandard",
 }
 
-# `CScript::IsPayToAnchor` (`src/script/script.cpp:207-213`, at
-# bitcoin/bitcoin@9be056a8a7): the literal four-byte P2A script, OP_1
+# `CScript::IsPayToAnchor` (`src/script/script.cpp:207-213`,
+# at bitcoin/bitcoin@9be056a8a7): the literal four-byte P2A script, OP_1
 # followed by its own fixed two-byte push. `Solver` carves this one
 # script out of what would otherwise be `TxoutType::WITNESS_UNKNOWN`
 # (`src/script/solver.cpp:167-171`, same sha) into its own
@@ -2138,8 +2138,8 @@ def get_raw_mempool(
     refused outright, matching `MempoolToJSON`'s own combination check.
     """
     # verbose and mempool_sequence, both RPCArg::Type::BOOL,
-    # RPCArg::Default{false}: src/rpc/mempool.cpp:659-660, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag. Both are
+    # RPCArg::Default{false}: src/rpc/mempool.cpp:659-660,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag. Both are
     # checked, and every mismatch named, before either is raised on,
     # the way `disconnect_node` above already does for its own two
     # (`type_errors`' own docstring).

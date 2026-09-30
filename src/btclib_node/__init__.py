@@ -357,8 +357,8 @@ class Node(threading.Thread):
         self.init_errors: list[str] = []
         # `main.update_ibd_status`'s own latch, read by
         # `rpc.callbacks.get_blockchain_info`: Core's own
-        # `m_cached_is_ibd{true}` (`src/validation.h:1054`, at
-        # bitcoin/bitcoin@ca7162cde5) starts true the same way.
+        # `m_cached_is_ibd{true}` (`src/validation.h:1054`,
+        # at bitcoin/bitcoin@ca7162cde5) starts true the same way.
         self.is_initial_block_download = True
         # `main.new_pow_valid_block`'s height of the last block it sent to
         # high-bandwidth peers: Core's `m_highest_fast_announce{0}`
@@ -447,8 +447,8 @@ class Node(threading.Thread):
         # `p2p.connection.Connection.own_version`, for an outbound
         # connection on `P2pManager`'s own asyncio loop rather than this
         # thread, the same way Core's own
-        # `PushNodeVersion` (`net_processing.cpp:1673`, at
-        # bitcoin/bitcoin@ca7162cde5) reads `m_best_height` from the net
+        # `PushNodeVersion` (`net_processing.cpp:1673`,
+        # at bitcoin/bitcoin@ca7162cde5) reads `m_best_height` from the net
         # processing thread rather than validation's. Core declares that
         # field `std::atomic<int>` (`net_processing.cpp:873`) rather than
         # guarding it with `cs_main`, and writes it from

@@ -31,8 +31,8 @@ if TYPE_CHECKING:
 
 __all__ = ["Mempool", "MempoolEntry", "format_money"]
 
-# Core's own `MAX_BIP125_RBF_SEQUENCE` (`src/policy/rbf.h`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `SignalsOptInRBF`'s own
+# Core's own `MAX_BIP125_RBF_SEQUENCE` (`src/policy/rbf.h`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `SignalsOptInRBF`'s own
 # bound, an input below it opting a transaction into BIP125 replacement.
 _MAX_BIP125_RBF_SEQUENCE = 0xFFFFFFFE
 
