@@ -1092,11 +1092,15 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A hex `txid` or `blockhash` of the wrong length is refused**, rather
   than silently decoding to a hash nothing then finds (closes #1457).
 
-### The mempool RPCs, matched to Core's `rpc/mempool.cpp` field by field
+### `testmempoolaccept` and `sendrawtransaction` follow Core's `rpc/mempool.cpp`
 
-- **Each now applies `maxfeerate`/`maxburnamount` (closes #1371), answers `-27`
-  not `-25` for a confirmed resubmission (closes #1373) and `unbroadcastcount`
-  (closes #1421), and serves `getmempoolentry` (closes #1397).**
+- **Both apply `maxfeerate` and `maxburnamount`** (closes #1371).
+- **A confirmed resubmission answers `-27`, not `-25`** (closes #1373).
+
+### `getmempoolinfo` and `getmempoolentry` answer as Core's do
+
+- **`getmempoolinfo` answers `unbroadcastcount`** (closes #1421).
+- **`getmempoolentry` is served** (closes #1397).
 
 ## v2026.9.24
 
