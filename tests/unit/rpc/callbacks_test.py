@@ -709,6 +709,15 @@ def test_the_fields_this_node_has_no_state_for_answer_core_s_value() -> None:
     assert info["session_id"] == ""
 
 
+def state_of(sync: HeadersSyncState) -> State:
+    """Read `sync.state` again, which mypy would otherwise take as unchanged.
+
+    An `assert` on the state narrows it, and a later method call moving it
+    does not widen it back.
+    """
+    return sync.state
+
+
 def test_presynced_headers_is_the_height_a_low_work_sync_has_reached() -> None:
     """Core's `GetPresyncHeight` in either phase, -1 where no sync runs.
 
@@ -736,7 +745,7 @@ def test_presynced_headers_is_the_height_a_low_work_sync_has_reached() -> None:
     (info,) = get_peer_info(node, _CONN, [])
     assert info["presynced_headers"] == 2
     sync.process_next_headers(chain[2:], full_headers_message=True)
-    assert sync.state is State.REDOWNLOAD
+    assert state_of(sync) is State.REDOWNLOAD
     (info,) = get_peer_info(node, _CONN, [])
     assert info["presynced_headers"] == 3
 

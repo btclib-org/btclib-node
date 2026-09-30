@@ -76,6 +76,15 @@ def unsolved_chain(
     return chain
 
 
+def state_of(sync: HeadersSyncState) -> State:
+    """Read `sync.state` again, which mypy would otherwise take as unchanged.
+
+    An `assert` on the state narrows it, and a later method call moving it
+    does not widen it back.
+    """
+    return sync.state
+
+
 def a_sync(
     required_blocks: int,
     *,
@@ -379,11 +388,11 @@ def test_the_offset_and_the_salt_are_drawn_where_not_given() -> None:
 def test_the_clock_the_offset_and_the_salt_are_keywords_alone() -> None:
     """What a test injects cannot be passed by position by mistake."""
     with pytest.raises(TypeError):
-        HeadersSyncState(  # type: ignore[misc]
+        HeadersSyncState(  # type: ignore[call-arg]
             RegTest().consensus, HeadersSyncParams(7, 10), _START, 0, 10**9
         )
     with pytest.raises(TypeError):
-        a_sync(1).process_next_headers(unsolved_chain(1), True)  # type: ignore[misc]  # noqa: FBT003
+        a_sync(1).process_next_headers(unsolved_chain(1), True)  # type: ignore[call-arg]  # noqa: FBT003
 
 
 def test_a_full_presync_batch_asks_on_from_its_last_header() -> None:
@@ -715,7 +724,7 @@ def test_a_redownload_crossing_the_threshold_without_meeting_it_releases_all() -
     assert sync.state is State.REDOWNLOAD
     result = sync.process_next_headers(chain, full_headers_message=True)
     assert len(result.pow_validated_headers) == 5
-    assert sync.state is State.FINAL
+    assert state_of(sync) is State.FINAL
 
 
 def test_an_empty_buffer_before_the_target_still_asks_for_more() -> None:
@@ -796,7 +805,7 @@ def test_an_ended_sync_takes_nothing_and_asks_nothing() -> None:
     )
     assert sync.state is State.PRESYNC
     sync.process_next_headers(unsolved_chain(1), full_headers_message=False)
-    assert sync.state is State.FINAL
+    assert state_of(sync) is State.FINAL
     assert sync.next_headers_request_locator() == []
     assert sync.process_next_headers(unsolved_chain(1), full_headers_message=True) == (
         ProcessingResult([], success=False, request_more=False)
