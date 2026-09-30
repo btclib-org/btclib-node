@@ -659,6 +659,12 @@ class P2pManager(threading.Thread):
         # is refused -- and `dial` answers a refusal with None, which
         # `async_connect` drops. Nothing retries.
         self.listening = threading.Event()
+        # set beside `listening`, in `_bind`, and never cleared: `stop`
+        # clears `listening` once this thread has already ended, which on
+        # its own reads exactly like a bind that never came up at all --
+        # what `wait_until_listening` reads to tell the two apart
+        # (btclib-org/btclib-node#1361)
+        self.ever_listened = threading.Event()
         # Core's `mapLocalHost` as `IsLocal` reads it: this node's own
         # addresses, by `host_key`, the map being keyed by `CNetAddr`,
         # so `IsLocal` compares no port (`src/net.h`, `src/net.cpp`,
@@ -1890,6 +1896,7 @@ class P2pManager(threading.Thread):
         # them after (btclib-org/btclib-node#1325)
         self._server_sockets = sockets
         self.listening.set()
+        self.ever_listened.set()
         return sockets
 
     def start_listener(self) -> bool:

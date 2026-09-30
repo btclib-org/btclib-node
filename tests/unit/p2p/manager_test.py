@@ -64,7 +64,7 @@ if TYPE_CHECKING:
     from btclib_node import Node
     from btclib_node.p2p.eviction import EvictionCandidate
 from tests import (
-    WaitTimeoutError,
+    ListenerEndedError,
     generate_random_transaction,
     get_random_port,
     log_recorder,
@@ -3454,7 +3454,8 @@ def test_a_manager_that_cannot_bind_never_says_it_is_listening(
 
     Set after the bind and not before it, which is the whole of what a
     caller waiting on the event is told: a manager whose bind failed
-    never reaches the line that sets it.
+    never reaches the line that sets it. Its thread ends instead, which
+    `wait_until_listening` reports at once (btclib-org/btclib-node#1361).
     """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
         taken.bind(("", 0))
@@ -3462,8 +3463,9 @@ def test_a_manager_that_cannot_bind_never_says_it_is_listening(
         manager = a_manager(port=taken.getsockname()[1])
         manager.start()
         try:
-            with pytest.raises(WaitTimeoutError, match=r"within 0\.5 seconds"):
-                wait_until_listening(manager, timeout=0.5)
+            with pytest.raises(ListenerEndedError, match="ended without listening"):
+                wait_until_listening(manager, timeout=10)
+            assert not manager.listening.is_set()
         finally:
             manager.stop()
             manager.join(timeout=10)
