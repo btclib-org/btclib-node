@@ -11,12 +11,11 @@ Bitcoin Core's `contrib/seeds/generate-seeds.py` (at
 bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which writes
 `src/chainparamsseeds.h`: the same parsing and the same BIP155
 serialization of each `(networkID, addr, port)` tuple, one line per
-seed, emitted as Python rather than as C. The three inputs are Core's
-own `contrib/seeds/nodes_main.txt`, `nodes_signet.txt` and
-`nodes_test.txt` at that commit; Core's `nodes_testnet4.txt` is left
-out, this node having no testnet4. A fourth input is Core's `COPYING`,
-`BITCOIN_CORE_COPYING` here, written into the module's opening comment
-in full where Core's header points at the file.
+seed, emitted as Python rather than as C. The four inputs are Core's
+own `contrib/seeds/nodes_main.txt`, `nodes_signet.txt`, `nodes_test.txt`
+and `nodes_testnet4.txt` at that commit. A fifth input is Core's
+`COPYING`, `BITCOIN_CORE_COPYING` here, written into the module's
+opening comment in full where Core's header points at the file.
 
     uv run python scripts/seeds/generate_seeds.py scripts/seeds \
         > src/btclib_node/_chainparamsseeds.py
@@ -176,6 +175,7 @@ _CHAINS = (
     ("nodes_main.txt", "CHAINPARAMS_SEED_MAIN"),
     ("nodes_signet.txt", "CHAINPARAMS_SEED_SIGNET"),
     ("nodes_test.txt", "CHAINPARAMS_SEED_TEST"),
+    ("nodes_testnet4.txt", "CHAINPARAMS_SEED_TESTNET4"),
 )
 
 

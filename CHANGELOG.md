@@ -1143,6 +1143,23 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`addr` and `disconnectnode`'s `address` match answer the string a peer
   was dialled by once held, the formatted socket address otherwise**, as
   Core's `m_addr_name` does (closes #1301).
+### `history.log` opens the way `bitcoind`'s `debug.log` does
+
+- **Every setting read is logged, a sensitive one masked** (closes #1305).
+- **A refusal after the data directory's lock reaches the file** (closes #1306).
+- **The file opens on five blank lines and a version line** (closes #1309).
+
+### `CONTRIBUTING.md` points a newcomer at `good first issue`
+
+- **An issue carrying the label is small and self-contained** (issue
+  btclib-org/.github#1362): *The issue tracker* says so, and links the
+  organization-wide search for the open ones.
+
+### Testnet4 is a chain this node can join, `-testnet4` included
+
+- **`TestNet4` joins this node's chains, selected by `-testnet4` or
+  `-chain=testnet4` as Core's own `-testnet4` does, and a header failing
+  BIP94's timewarp bound is a `MisbehavingError`** (closes #1442).
 
 ## v2026.9.24
 

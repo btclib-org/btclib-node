@@ -152,9 +152,15 @@ intersphinx_cache_limit = 0
 #   each file imports under TYPE_CHECKING, so the whole subscript is
 #   unresolved regardless of BlockHeader already being granted its own
 #   entry above. The numbering restarts in each signature, and
-#   config.py's own Config.__init__ takes one number per parameter
-#   typed `Sequence[str]`, Sequence being what that file imports under
-#   TYPE_CHECKING: the entries past __annotationlib_name_2__ are those
+#   config.py's own Config.__init__ takes one number per parameter typed
+#   `Sequence[str]`, Sequence being what that file imports under
+#   TYPE_CHECKING: nine such parameters now that config_args is one of
+#   them, restarting at __annotationlib_name_1__ for that signature and
+#   reaching __annotationlib_name_9__ there. log.py's own
+#   open_history_log restarts the same way over its own three --
+#   log_path's Path, log_warnings, config_args -- reaching only
+#   __annotationlib_name_3__, already covered by Config's own entries
+#   above
 # - asyncio.AbstractEventLoop, spelled that way everywhere this tree
 #   uses it (p2p/manager.py, rpc/manager.py, rpc/connection.py):
 #   autodoc reads the qualified name back off the class itself once
@@ -182,6 +188,7 @@ nitpick_ignore = [
     ("py:class", "__annotationlib_name_6__"),
     ("py:class", "__annotationlib_name_7__"),
     ("py:class", "__annotationlib_name_8__"),
+    ("py:class", "__annotationlib_name_9__"),
     ("py:class", "asyncio.events.AbstractEventLoop"),
     ("py:class", "BinaryData"),
     ("py:class", "ScriptFlag"),
