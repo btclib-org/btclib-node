@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import RPCErrorCode, chain_from_network
 from btclib.block import Block, median_time_past
-from btclib.exceptions import BTClibException
+from btclib.exceptions import BTClibException, BTClibTypeError, BTClibValueError
 from btclib.fee import FeeRate, fee_from_vsize
 from btclib.p2p.address import ServiceFlags
 from btclib.p2p.limits import PROTOCOL_VERSION
@@ -78,6 +78,7 @@ __all__ = [
     "arg_names",
     "callbacks",
     "clear_banned",
+    "decode_raw_transaction",
     "disconnect_node",
     "get_best_block_hash",
     "get_block",
@@ -2435,6 +2436,263 @@ def get_raw_transaction(
     return out
 
 
+# Core's own `IsHex` (`src/util/strencodings.cpp`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): every character a hex
+# digit. btclib-org/btclib-node#1372
+_HEX_DIGITS = frozenset(string.hexdigits)
+
+
+def _is_hex(s: str) -> bool:
+    """Core's `IsHex` (`src/util/strencodings.cpp`, same tag).
+
+    Requires a non-empty, even-length hexadecimal string: Python's
+    `bytes.fromhex`, and so btclib's own `bytes_from_octets`
+    (`btclib/utils.py`), tolerates whitespace between and around bytes,
+    which is what let a `rawtx` Core refuses decode here instead.
+    btclib-org/btclib-node#1372
+    """
+    return bool(s) and len(s) % 2 == 0 and all(c in _HEX_DIGITS for c in s)
+
+
+def _decode_hex_tx(rawtx: str) -> Tx:
+    """Decode `rawtx` as Core's `DecodeHexTx` does.
+
+    `_is_hex` refuses any character outside `_HEX_DIGITS` -- a space
+    included -- and an odd or zero length, ahead of `ParseHex`
+    (`src/core_io.cpp`, same tag).
+
+    `check_validity=False`: `DecodeHexTx` decodes the wire encoding
+    alone and never asks whether the transaction it decoded is one
+    Core would accept -- `CheckTransaction` is a later, separate step
+    of `PreChecks`, and this node's own equivalent is
+    `_check_transaction` below, run only by the two callers that need
+    it. Answering a well-formed but structurally invalid transaction
+    with "TX decode failed" was btclib-org/btclib-node#1375.
+    """
+    if not _is_hex(rawtx):
+        err_msg = f"invalid hex string: {rawtx!r}"
+        raise BTClibValueError(err_msg)
+    return Tx.parse(bytes.fromhex(rawtx), check_validity=False)
+
+
+# Core's own `MAX_MONEY` (`src/consensus/amount.h`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): 21e6 BTC in satoshi, the
+# same bound btclib's own `valid_sats_amount` enforces under a private
+# name (`btclib/amount.py`) -- read again here only to tell
+# `bad-txns-vout-negative` from `bad-txns-vout-toolarge` apart, one
+# shared btclib message answering for both. btclib-org/btclib-node#1375
+_MAX_SATOSHI = 21_000_000 * 100_000_000
+
+
+# Every exact `Tx.assert_valid` message this translates one for one,
+# barring the amount-range messages `_amount_reject_reason` below
+# disambiguates and the oversize one `_reject_reason` matches by prefix,
+# both carrying a value `Tx.assert_valid` computed and this dict cannot
+# spell in advance.
+_EXACT_REJECT_REASONS = {
+    "Missing inputs": "bad-txns-vin-empty",
+    "Missing outputs": "bad-txns-vout-empty",
+    "the same outpoint is spent twice": "bad-txns-inputs-duplicate",
+    "Invalid coinbase script size": "bad-cb-length",
+    "coinbase input in a non-coinbase transaction": "bad-txns-prevout-null",
+}
+
+# `Tx.assert_valid`'s own oversize message (`btclib/tx/tx.py`, since
+# btclib 2026.9.30, btclib-org/btclib#2420): "invalid transaction size:
+# {size} * {WITNESS_SCALE_FACTOR} > {MAX_BLOCK_WEIGHT}", the last two
+# numbers fixed but the first the transaction's own stripped size, so
+# this is a prefix rather than an entry of `_EXACT_REJECT_REASONS`
+# above. btclib-org/btclib-node#1447
+_OVERSIZE_MESSAGE_PREFIX = "invalid transaction size:"
+
+
+def _amount_reject_reason(tx: Tx, message: str) -> str | None:
+    """Disambiguate the one btclib message shared by two of Core's own reasons.
+
+    `valid_sats_amount` (`btclib/amount.py`) raises the identical
+    "invalid satoshi amount" text for a negative value and for one
+    above `MAX_MONEY`, where Core's own `CheckTransaction` tells them
+    apart as `bad-txns-vout-negative` and `bad-txns-vout-toolarge`; this
+    reads the field itself to say which. `None` where `message` is
+    neither this nor the total-amount check's own message.
+    """
+    if message.startswith("invalid total output amount"):
+        return "bad-txns-txouttotal-toolarge"
+    if message.startswith("invalid satoshi amount"):
+        for tx_out in tx.vout:
+            if tx_out.value < 0:
+                return "bad-txns-vout-negative"
+            if tx_out.value > _MAX_SATOSHI:
+                return "bad-txns-vout-toolarge"
+    return None
+
+
+def _reject_reason(tx: Tx, error: BTClibException) -> str:
+    """Name `error`, a `Tx.assert_valid` refusal, Core's own way.
+
+    `Tx.assert_valid`'s own docstring already claims it checks what
+    Core's `CheckTransaction` checks of a lone transaction
+    (`src/consensus/tx_check.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag), and since btclib 2026.9.30 in the same order too:
+    vin-empty, vout-empty, the size, the outputs, the duplicate inputs,
+    the coinbase/prevout-null rule last (btclib-org/btclib#2417,
+    btclib-org/btclib#2422). This does not run any rule a second time
+    -- `error` is already btclib's own verdict, whichever rule
+    `assert_valid` raised first in its own order -- it only answers
+    which of Core's own reject reasons that message names, relying on
+    that order matching `CheckTransaction`'s for a transaction that
+    violates more than one rule at once to answer the same one of the
+    two Core would: two inputs, one of them the null outpoint, and no
+    outputs now answers `bad-txns-vout-empty` here, as it does in Core,
+    `Tx.assert_valid` having reached the empty `vout` before the
+    coinbase/prevout-null check reads either input
+    (btclib-org/btclib-node#1375).
+
+    Every message `assert_valid` can raise for a `Tx` built by
+    `_decode_hex_tx`'s own `check_validity=False` is named below,
+    barring the field-range checks on `version`/`lock_time`: `Tx.parse`
+    always builds a 4-byte-clean value for both, so neither ever reaches
+    this. A message this does not recognize is `error` itself, re-raised
+    -- this tree's own equivalent of Core's `Assume(false)` for a
+    consensus check the engine disagrees with itself about.
+    """
+    message = str(error)
+    if message in _EXACT_REJECT_REASONS:
+        return _EXACT_REJECT_REASONS[message]
+    if message.startswith(_OVERSIZE_MESSAGE_PREFIX):
+        return "bad-txns-oversize"
+    reason = _amount_reject_reason(tx, message)
+    if reason is not None:
+        return reason
+    raise error
+
+
+def _check_transaction(tx: Tx) -> str | None:
+    """Return Core's own `CheckTransaction` reject reason for `tx`, or None.
+
+    `tx.assert_valid()` is the rule, the same one this node already
+    trusts to judge a transaction, and this only translates a refusal
+    into the reason string Core's own JSON-RPC answers name -- it never
+    decides validity on its own account, `ARCHITECTURE.md`'s own
+    *What is delegated, and what is not*. `_reject_reason`'s own
+    docstring is where a transaction violating more than one of
+    `CheckTransaction`'s rules at once is argued: since btclib
+    2026.9.30, `assert_valid`'s own check order matches
+    `CheckTransaction`'s, so the rule it raises first is the one Core
+    would too (btclib-org/btclib#2417, btclib-org/btclib#2422).
+
+    Core's `bad-txns-oversize` -- a transaction whose own non-witness
+    size alone already exceeds a block's weight limit -- used to have
+    no `Tx.assert_valid` check behind it to translate, and a
+    transaction breaking only that rule was answered as one this node
+    accepted rather than refused (btclib-org/btclib-node#1447). Closed
+    by the same 2026.9.30 that fixed the check order:
+    `Tx.assert_valid` now raises its own message for it, ahead of the
+    per-output amount checks in `CheckTransaction`'s own order
+    (btclib-org/btclib#2420), and `_reject_reason` matches that message
+    by its fixed prefix, the transaction's own stripped size being the
+    one part of it that varies.
+    """
+    try:
+        tx.assert_valid()
+    except (BTClibValueError, BTClibTypeError) as error:
+        return _reject_reason(tx, error)
+    return None
+
+
+def decode_raw_transaction(
+    node: Node, conn: RpcConnection, params: list[Any]
+) -> dict[str, Any]:
+    """Answer `decoderawtransaction`: decode `hexstring`, answer its JSON.
+
+    No chain or mempool lookup, and no `CheckTransaction`: Core's own
+    handler (`src/rpc/rawtransaction.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag) calls `DecodeHexTx` and `TxToUniv` alone, so a
+    well-formed but structurally invalid transaction is answered here
+    too, the same as it decodes and displays there --
+    btclib-org/btclib-node#1398, and unlike `sendrawtransaction` and
+    `testmempoolaccept` above, which run `_check_transaction`.
+    `to_dict()`'s own top-level keys are Core's `decoderawtransaction`
+    ones (its own docstring, `btclib/tx/tx.py`), the same dict
+    `get_raw_transaction`'s own verbose answer builds on, minus the
+    `hex` that call adds and the `blockhash` it sometimes does: Core's
+    own `TxToUniv` call here passes `include_hex=false` and a null
+    `block_hash`, neither of which this RPC is given a block or asked
+    to serialize. `vin`/`vout`'s own nested fields are not Core's field
+    by field -- btclib-org/btclib-node#1448.
+
+    `iswitness=false` refuses a witness-serialized transaction Core's
+    own extended-only default would otherwise decode: Core's `DecodeTx`
+    (`src/core_io.cpp`, same tag) disables the extended (marker-aware)
+    reading for `iswitness=false` and tries the legacy one alone, which
+    reads the wire with no marker check at all, so the segwit marker
+    and flag are read as an input count and a following output count
+    instead -- the real input and output bytes that follow almost never
+    happen to leave the legacy reading having consumed exactly the
+    remaining bytes, `ssData.empty()`, so it fails and `DecodeHexTx`
+    answers `false`. `Tx.parse` (`btclib/tx/tx.py`) has no mode that
+    skips the marker check the way that legacy reading does, so this
+    reproduces the same practical outcome -- refusal, whenever the
+    decoded transaction turns out to carry a witness -- without
+    replaying Core's own byte-for-byte algorithm on the raw bytes; the
+    one case that could differ, a legacy reading of witness-serialized
+    bytes that coincidentally consumes them all and passes
+    `CheckTxScriptsSanity`, is not reproduced.
+    btclib-org/btclib-node#1458
+
+    `iswitness=true` disables only the legacy fallback and tries the
+    extended (marker-aware) reading alone -- exactly what `Tx.parse`
+    already and unconditionally does, witness-serialized or not, so
+    this changes nothing for it. `iswitness` omitted tries both, extended
+    preferred when it succeeds at all (`DecodeTx`'s own comment,
+    same file): the one case that additionally differs from a bare
+    `Tx.parse` is an ambiguous zero-input legacy encoding only the
+    legacy fallback can read, `Tx.parse` having none to fall back to
+    either -- the same gap `iswitness=false` above has, and not
+    reproduced for the same reason.
+    """
+    if not params:
+        # the same mechanism get_block_hash's own missing-argument case
+        # answers with: RPCMethod::HandleRequest throws HelpResult for a
+        # call short of a required argument, and ExecuteCommand's
+        # `catch (const std::exception& e)` turns that into Core's own
+        # JSONRPCError call, cited below for the shape rather than left
+        # commented out -- ERA001 reads it as Python and is wrong.
+        # JSONRPCError(RPC_MISC_ERROR, e.what()), src/rpc/server.cpp  # noqa: ERA001
+        # :887, carrying the method's own full help text
+        raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["decoderawtransaction"])
+    hexstring = params[0]
+    if not isinstance(hexstring, str):
+        # hexstring is declared RPCArg::Type::STR_HEX, type-checked
+        # before the handler body runs, the same as blockhash and txid
+        # elsewhere in this file
+        raise type_error(1, "hexstring", hexstring, "string")
+    # Not bool_param: that helper folds "omitted" into its own default,
+    # and the three cases -- omitted, explicit true, explicit false --
+    # answer differently here, this function's own docstring
+    iswitness: bool | None = None
+    if len(params) > 1 and params[1] is not None:
+        if not isinstance(params[1], bool):
+            raise type_error(2, "iswitness", params[1], "bool")
+        iswitness = params[1]
+    try:
+        tx = _decode_hex_tx(hexstring)
+    except BTClibException as error:
+        # Core's own bare message, with none of sendrawtransaction's
+        # "Make sure the tx has at least one input.": decoderawtransaction's
+        # own handler raises `JSONRPCError(RPC_DESERIALIZATION_ERROR,
+        # "TX decode failed")` with no further text
+        # (src/rpc/rawtransaction.cpp:439, same tag).
+        raise RpcError(
+            RPCErrorCode.DESERIALIZATION_ERROR, "TX decode failed"
+        ) from error
+    if iswitness is False and tx.is_segwit:
+        # this function's own docstring, `iswitness=false`
+        raise RpcError(RPCErrorCode.DESERIALIZATION_ERROR, "TX decode failed")
+    out: dict[str, Any] = tx.to_dict(check_validity=False)
+    return out
+
+
 # Core's own reason for a missing input, the one `PreChecks` gives
 # (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
 # which `sendrawtransaction` answers and `testmempoolaccept` replaces
@@ -2592,17 +2850,6 @@ def _exceeds_max_burn(tx: Tx, max_burn_amount: int) -> bool:
     )
 
 
-_HEX_DIGITS = frozenset(string.hexdigits)
-
-
-def _is_hex(s: str) -> bool:
-    """Core's `IsHex` (`src/util/strencodings.cpp`).
-
-    Requires non-empty, even-length hexadecimal string.
-    """
-    return bool(s) and len(s) % 2 == 0 and all(c in _HEX_DIGITS for c in s)
-
-
 def test_mempool_accept(
     node: Node, conn: RpcConnection, params: list[Any]
 ) -> list[dict[str, Any]]:
@@ -2656,17 +2903,8 @@ def test_mempool_accept(
                 "type string"
             )
             raise RpcError(RPCErrorCode.TYPE_ERROR, message)
-        if not _is_hex(rawtx):
-            # Core's `DecodeHexTx` (`src/core_io.cpp`, same tag) first
-            # requires `IsHex` (`src/util/strencodings.cpp`), which refuses
-            # whitespace and non-hex characters: bytes.fromhex accepts
-            # them, where Core answers `-22`. btclib-org/btclib-node#1372
-            err_msg = (
-                f"TX decode failed: {rawtx} Make sure the tx has at least one input."
-            )
-            raise RpcError(RPCErrorCode.DESERIALIZATION_ERROR, err_msg)
         try:
-            txs.append(Tx.parse(rawtx))
+            txs.append(_decode_hex_tx(rawtx))
         except BTClibException as error:
             # `BTClibException`, `send_raw_transaction`'s own clause below:
             # a script shorter than its declared length raises
@@ -2707,6 +2945,19 @@ def _mempool_accept_verdict(
         "wtxid": tx.hash,
         "allowed": False,
     }
+    reason = _check_transaction(tx)
+    if reason is not None:
+        # Core's own `PreChecks` (`src/validation.cpp`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) calls
+        # `CheckTransaction` first, ahead of everything
+        # context-dependent below; `reject-details` is
+        # `state.ToString()`, the same string as `reject-reason` where,
+        # as for every one of `CheckTransaction`'s own checks, no debug
+        # message is attached (`src/rpc/mempool.cpp`, same tag).
+        # btclib-org/btclib-node#1375
+        tx_res["reject-reason"] = reason
+        tx_res["reject-details"] = reason
+        return tx_res
     try:
         # `vsize` for an accepted one alone, as Core answers it: the
         # sigop-adjusted size, known once the prevouts are read.
@@ -2814,25 +3065,16 @@ def _decode_and_precheck_raw_tx(node: Node, params: list[Any]) -> tuple[Tx, int]
     max_burn_amount = _amount_param(
         params, 2, name="maxburnamount", default=_DEFAULT_MAX_BURN_AMOUNT
     )
-    if not _is_hex(rawtx):
-        # Core's `DecodeHexTx` (`src/core_io.cpp`, same tag) first
-        # requires `IsHex` (`src/util/strencodings.cpp`), which refuses
-        # whitespace and non-hex characters: bytes.fromhex accepts
-        # them, where Core answers `-22`. btclib-org/btclib-node#1372
-        raise RpcError(
-            RPCErrorCode.DESERIALIZATION_ERROR,
-            "TX decode failed. Make sure the tx has at least one input.",
-        )
     try:
-        tx = Tx.parse(rawtx)
+        tx = _decode_hex_tx(rawtx)
     except BTClibException as error:
         # Core's own RPC_DESERIALIZATION_ERROR, src/rpc/mempool.cpp: a
         # rawtx that never was a transaction, not one the mempool below
-        # looked at and refused. Tx.parse raises BTClibValueError for a
-        # string it cannot even decode and BTClibRuntimeError for one
-        # too short for what it declares -- `BTClibException`, neither
-        # itself raised, is the base both share and the one clause this
-        # catches them with
+        # looked at and refused. `_decode_hex_tx` raises BTClibValueError
+        # for a string that is not hex or that btclib's `Tx.parse` cannot
+        # decode and BTClibRuntimeError for one too short for what it
+        # declares -- `BTClibException`, neither itself raised, is the
+        # base both share and the one clause this catches them with
         raise RpcError(
             RPCErrorCode.DESERIALIZATION_ERROR,
             "TX decode failed. Make sure the tx has at least one input.",
@@ -2885,6 +3127,18 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
         # btclib-org/btclib-node#293
         node.p2p_manager.broadcast_raw_transaction(held, node.mempool.fees[held.hash])
         return tx.id.hex()
+    reason = _check_transaction(tx)
+    if reason is not None:
+        # `BroadcastTransaction` reads `state.ToString()` off
+        # `PreChecks`' own `CheckTransaction` refusal
+        # (`src/node/transaction.cpp`, at bitcoin/bitcoin@9be056a8a7,
+        # the v31.1 tag) before anything context-dependent runs, the
+        # same as `test_mempool_accept` above; that string is the bare
+        # reason, `CheckTransaction` attaching no debug message, and
+        # `TransactionError::MEMPOOL_REJECTED` is `RPC_TRANSACTION_REJECTED`,
+        # `_MEMPOOL_FULL_REASON`'s own alias for `-26`.
+        # btclib-org/btclib-node#1375
+        raise RpcError(RPCErrorCode.VERIFY_REJECTED, reason)
     try:
         fee, vsize = verify_mempool_acceptance(node, tx)
     except MissingPrevoutError as exc:
@@ -3071,6 +3325,7 @@ callbacks = {
     "getrawtransaction": get_raw_transaction,
     "gettxout": get_tx_out,
     "gettxoutsetinfo": get_tx_out_set_info,
+    "decoderawtransaction": decode_raw_transaction,
     "testmempoolaccept": test_mempool_accept,
     "sendrawtransaction": send_raw_transaction,
     "ping": ping,
@@ -3111,6 +3366,7 @@ arg_names: dict[str, tuple[str, ...]] = {
     "getrawtransaction": ("txid", "verbosity|verbose", "blockhash"),
     "gettxout": ("txid", "n", "include_mempool"),
     "gettxoutsetinfo": ("hash_type", "hash_or_height", "use_index"),
+    "decoderawtransaction": ("hexstring", "iswitness"),
     "testmempoolaccept": ("rawtxs", "maxfeerate"),
     "sendrawtransaction": ("hexstring", "maxfeerate", "maxburnamount"),
     "ping": (),
