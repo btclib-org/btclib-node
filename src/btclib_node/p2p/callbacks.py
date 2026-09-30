@@ -2051,12 +2051,13 @@ def _ancestor(block_index: BlockIndex, block_hash: bytes, height: int) -> bytes:
 
 
 # Core's own `PrepareBlockFilterRequest` passes this for `getcfcheckpt`'s
-# `max_height_diff` (`net_processing.cpp:3400`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a checkpoint chain has no
-# range bound of its own, BIP157 answering only "the chain's length is
-# the bound" (`get_cfcheckpt`'s own comment below), so the range check
-# `_prepare_filter_request` shares with `getcfilters`/`getcfheaders`
-# is given a ceiling no chain height reaches instead of a third branch.
+# `max_height_diff` (`net_processing.cpp:3400`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a checkpoint chain has
+# no range bound of its own, BIP157 answering only "the chain's length
+# is the bound" (`get_cfcheckpt`'s own comment below), so the range
+# check `_prepare_filter_request` shares with `getcfilters`/
+# `getcfheaders` is given a ceiling no chain height reaches instead of a
+# third branch.
 _NO_HEIGHT_DIFF_LIMIT = 2**32 - 1
 
 
