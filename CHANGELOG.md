@@ -1370,6 +1370,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   is not a positive integer**, a non-integer having raised `ValueError`
   and `0` `ZeroDivisionError` at `import btclib_node` (closes #1555).
 
+### `CLAUDE.md` moves *Following Bitcoin Core* to `CONTRIBUTING.md`
+
+- **`CLAUDE.md` takes the organization's shared primary-checkout section,
+  and *Following Bitcoin Core* moves to `CONTRIBUTING.md`'s last
+  section** (issue btclib-org/.github#1494).
+
 ### Address handling matches Core's own keys, timestamps and dial cadence
 
 - **`getaddr` is cached per network and local socket** (closes #1478).
