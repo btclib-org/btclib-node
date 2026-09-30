@@ -312,26 +312,42 @@ def test_the_checkpoints_of_a_chain_shorter_than_the_interval(
     assert not checkpoints.filter_headers
 
 
-def test_a_filter_type_this_node_does_not_serve_gets_no_answer(
-    peers: Peers, mark: int
+def test_a_filter_type_this_node_does_not_serve_disconnects(
+    peers: Peers, tmp_path_factory: pytest.TempPathFactory
 ) -> None:
-    """A `GetCFilters` naming an unserved filter type is silently dropped.
+    """A `GetCFilters` naming an unserved filter type disconnects the peer.
 
     `1` is not `BlockFilterType.BASIC`, the only type this node indexes,
-    so the request gets no `CFilter` at all -- not an error, nothing.
-    Absence is checked by waiting for a second, servable request to be
-    answered first: only once that answer has arrived can "no `CFilter`
-    showed up" mean the first request was refused rather than merely
-    still pending.
+    and Core's own `PrepareBlockFilterRequest` disconnects for it rather
+    than answering (ISS 1477). Checked over a connection of its own --
+    one request per fresh peer, the shape Core's own
+    `test/functional/p2p_blockfilters.py` checks this the same way --
+    rather than the module's shared `client`, which `P2pManager` refuses
+    to dial a second time (`AlreadyConnectedToHost`) and which every
+    other test here still needs connected.
     """
-    _, client, chain = peers
-    ask(client, GetCFilters(1, 1, chain[-1].header.hash))
-    # and then something it does answer, so this waits on an event
-    # rather than on a duration: the second answer arriving with no
-    # cfilter before it is what says the first was refused
-    ask(client, GetCFCheckpt(BlockFilterType.BASIC, chain[-1].header.hash))
-    answers(client, CFCheckpt, mark)
-    assert not received(client, CFilter, mark)
+    server, _, chain = peers
+    attacker = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path_factory.mktemp("block_filters_attacker"),
+            p2p_port=get_random_port(),
+            allow_rpc=False,
+            peerblockfilters=True,
+        )
+    )
+    try:
+        attacker.start()
+        wait_until_listening(attacker.p2p_manager)
+        attacker.p2p_manager.connect(local_addr(server.p2p_port))
+        wait_until(lambda: len(attacker.p2p_manager.connections))
+        connection = attacker.p2p_manager.connections[0]
+        wait_until(lambda: connection.status == P2pConnStatus.Connected)
+
+        connection.send(GetCFilters(1, 1, chain[-1].header.hash))
+        wait_until(lambda: connection.status == P2pConnStatus.Closed)
+    finally:
+        attacker.stop()
 
 
 def test_the_header_a_peer_derives_is_the_one_a_client_computes(

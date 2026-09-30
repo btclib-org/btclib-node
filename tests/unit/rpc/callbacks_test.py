@@ -81,6 +81,7 @@ from btclib_node.rpc.callbacks import (
     get_peer_info,
     get_raw_mempool,
     get_raw_transaction,
+    get_rpc_info,
     get_tx_out,
     get_tx_out_set_info,
     help_rpc,
@@ -253,6 +254,8 @@ def a_node(
     confirmed_outpoints: frozenset[bytes] | None = None,
     pruned: bool = False,
     peerblockfilters: bool = False,
+    active_rpc_commands: list[tuple[str, float]] | None = None,
+    log_path: str | None = None,
 ) -> Any:
     """Build a `Node` double carrying only what these callbacks read.
 
@@ -266,6 +269,8 @@ def a_node(
     `peerblockfilters` are `p2p.connection.local_services`'s own, off by
     default here as `Config`'s own defaults are, for
     `get_network_info`'s `localservices`/`localservicesnames`.
+    `active_rpc_commands` and `log_path` are `get_rpc_info`'s own, empty
+    and unset by default -- nothing else here reads either.
     """
     known = heights if heights is not None else {}
     confirmed = confirmed_outpoints if confirmed_outpoints is not None else frozenset()
@@ -296,6 +301,10 @@ def a_node(
             pruned=pruned,
             peerblockfilters=peerblockfilters,
         ),
+        active_rpc_commands=(
+            active_rpc_commands if active_rpc_commands is not None else []
+        ),
+        log_path=log_path,
         _accept=accept,
     )
 
@@ -1813,6 +1822,32 @@ def test_ping_and_stop_answer_without_a_connection() -> None:
     assert stop(node, _CONN, []) == "Btclib node stopping"
 
 
+def test_get_rpc_info_answers_active_commands_and_logpath() -> None:
+    """`getrpcinfo` reports `node.active_rpc_commands` and `node.log_path`.
+
+    `duration` is microseconds since each command's own recorded start,
+    `time.monotonic()` throughout -- Core's own `SteadyClock`
+    (`_HELP_GETRPCINFO`'s own citation in `rpc.help`).
+    """
+    now = time.monotonic()
+    node = a_node(
+        active_rpc_commands=[("getblockcount", now - 0.5), ("getrpcinfo", now)],
+        log_path="/data/regtest/history.log",
+    )
+    result = get_rpc_info(node, _CONN, [])
+    assert result["logpath"] == "/data/regtest/history.log"
+    methods = [entry["method"] for entry in result["active_commands"]]
+    assert methods == ["getblockcount", "getrpcinfo"]
+    durations = [entry["duration"] for entry in result["active_commands"]]
+    assert durations[0] >= 500_000 > durations[1]
+
+
+def test_get_rpc_info_answers_an_empty_logpath_with_no_log_file() -> None:
+    """`node.log_path` unset is Core's own `""`, not `None` or `null`."""
+    node = a_node(log_path=None)
+    assert get_rpc_info(node, _CONN, [])["logpath"] == ""
+
+
 @pytest.mark.parametrize(
     "params", [[], [None], [5000], [-1000], [2**31 - 1], [-(2**31)]]
 )
@@ -2080,6 +2115,26 @@ def test_a_rawtx_with_a_truncated_script_is_a_decode_failure() -> None:
     assert raised.value.message == decode_failure(truncated)
 
 
+def test_test_mempool_accept_refuses_rawtx_with_whitespace() -> None:
+    """Whitespace in a raw transaction hex is refused before decoding.
+
+    Core's `DecodeHexTx` requires `IsHex`, which rejects whitespace:
+    `bytes.fromhex` accepts it (btclib-org/btclib-node#1372).
+    """
+    valid_hex = a_tx().serialize(include_witness=True).hex()
+    for spaced in (
+        f" {valid_hex}",
+        f"{valid_hex} ",
+        f"{valid_hex[:8]} {valid_hex[8:]}",
+        f"{valid_hex[:8]}\t{valid_hex[8:]}",
+        f"{valid_hex[:8]}\n{valid_hex[8:]}",
+    ):
+        with pytest.raises(RpcError) as raised:
+            mempool_accept(a_node(), _CONN, [[spaced]])
+        assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
+        assert raised.value.message == decode_failure(spaced)
+
+
 def test_a_relayed_transaction_is_answered_with_its_txid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2140,6 +2195,28 @@ def test_a_transaction_truncated_inside_a_script_is_the_same_refusal() -> None:
     with pytest.raises(RpcError) as raised:
         send_raw_transaction(a_node(), _CONN, [truncated])
     assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
+
+
+def test_send_raw_transaction_refuses_rawtx_with_whitespace() -> None:
+    """Whitespace in a raw transaction hex is refused before decoding.
+
+    Core's `DecodeHexTx` requires `IsHex`, which rejects whitespace:
+    `bytes.fromhex` accepts it (btclib-org/btclib-node#1372).
+    """
+    valid_hex = a_tx().serialize(include_witness=True).hex()
+    for spaced in (
+        f" {valid_hex}",
+        f"{valid_hex} ",
+        f"{valid_hex[:8]} {valid_hex[8:]}",
+        f"{valid_hex[:8]}\t{valid_hex[8:]}",
+        f"{valid_hex[:8]}\n{valid_hex[8:]}",
+    ):
+        with pytest.raises(RpcError) as raised:
+            send_raw_transaction(a_node(), _CONN, [spaced])
+        assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
+        assert raised.value.message == (
+            "TX decode failed. Make sure the tx has at least one input."
+        )
 
 
 def test_a_rawtx_of_the_wrong_json_type_is_named() -> None:

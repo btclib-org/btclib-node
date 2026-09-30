@@ -37,7 +37,7 @@ from btclib_node.config import split_host_port
 from btclib_node.exceptions import RpcCredentialRefusedError
 from btclib_node.rpc.allow import allowed_subnets, client_allowed
 from btclib_node.rpc.auth import RpcAuth
-from btclib_node.rpc.connection import REQUEST_TIMEOUT, RpcConnection
+from btclib_node.rpc.connection import RpcConnection
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine, Sequence
@@ -172,6 +172,25 @@ def _bind_endpoint(host: str, port: int | None) -> socket.socket:
     return server_socket
 
 
+def _request_timeout(seconds: int) -> float | None:
+    """Return what `-rpcservertimeout=<seconds>` binds every read and write to.
+
+    Core's own `evhttp_set_timeout` (`src/httpserver.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `-1` builds no `timeval`
+    at all (`evhttp_set_timeout_tv(http, NULL)`), and `0` builds one that
+    is zero in both fields -- `{0, 0}` -- which libevent's own
+    `evutil_timerisset` then reads as unset wherever it decides whether
+    to arm a connection's read or write timer at all
+    (`bufferevent_generic_adj_timeouts_`, `bufferevent.c`, at
+    libevent/libevent@5df3037): every other value arms one, `0` included
+    in name only. `None` here is what `asyncio.timeout` reads as no
+    bound at all, for both call sites this feeds: `RpcConnection.run`,
+    directly, and `RpcManager._finish_replies`, as the bound it would
+    otherwise give the shutdown wait for a reply still being written.
+    """
+    return None if seconds in (0, -1) else float(seconds)
+
+
 class RpcManager(threading.Thread):
     """The thread listening for JSON-RPC connections.
 
@@ -197,8 +216,11 @@ class RpcManager(threading.Thread):
         # an instance attribute rather than a call-site default so a
         # test can lower it on a live manager, before opening the
         # connection it means to time out, without waiting through
-        # REQUEST_TIMEOUT's own real, Core-matching value.
-        self.request_timeout = REQUEST_TIMEOUT
+        # REQUEST_TIMEOUT's own real, Core-matching value. `-rpcservertimeout`
+        # is this attribute's own source once `Config` resolves it, `None`
+        # for no bound at all -- `_request_timeout`'s own docstring has
+        # Core's `0` and `-1`.
+        self.request_timeout = _request_timeout(node.config.rpcservertimeout)
         # `Config`'s users and whitelists, and the cookie's once `run`
         # writes it: what `RpcConnection.run` checks every request against
         self.auth = RpcAuth.from_config(node.config)
@@ -729,22 +751,36 @@ class RpcManager(threading.Thread):
         A reply scheduled during the wait -- the refusal of a request
         read off any connection, `stop` leaving every read running -- is
         waited for too, within the same bound.
+
+        `request_timeout` being `None` -- `-rpcservertimeout=0` or `=-1`,
+        `_request_timeout`'s own docstring has why both read that way --
+        there is no bound of Core's left to read either, `evhttp_set_timeout`
+        having armed none of its own for this same reason: the wait below
+        is then for as long as it takes, same as `WaitUntilEmpty` is, and
+        nothing is recorded through `extend_reply_deadline`, `Node.stop`'s
+        own `STOP_TIMEOUT` remaining as the one bound still standing over
+        this manager's own thread.
         """
         with self._replies_lock:
             if not self.replies:
                 return
             due = max(self.replies.values())
+        if self.request_timeout is None:
+            self.loop.run_until_complete(self._replies_written(None))
+            return
         finish_by = max(time.monotonic(), due) + self.request_timeout
         self.extend_reply_deadline(finish_by)
         self.loop.run_until_complete(self._replies_written(finish_by))
 
-    async def _replies_written(self, finish_by: float) -> None:
+    async def _replies_written(self, finish_by: float | None) -> None:
         """Return once `replies` is empty, or at `finish_by`.
 
-        `finish_by` is a `time.monotonic()` value.
+        `finish_by` is a `time.monotonic()` value, or `None` for no bound
+        at all, which `asyncio.timeout` reads the same way.
         """
+        delay = None if finish_by is None else finish_by - time.monotonic()
         with suppress(TimeoutError):
-            async with asyncio.timeout(finish_by - time.monotonic()):
+            async with asyncio.timeout(delay):
                 while True:
                     self._reply_ended.clear()
                     with self._replies_lock:

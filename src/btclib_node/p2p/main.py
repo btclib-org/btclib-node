@@ -207,15 +207,15 @@ def resume_cfilters(node: Node) -> bool:
     """Advance every paused `getcfilters` answer by what now fits.
 
     Answers whether anything did -- a connection dropped from
-    `node.pending_cfilters` counts, same as one whose `heights` shrank
-    from this function's own vantage point (a `getcfilters` extending
-    it runs inside `get_cfilters`, strictly before this is called
-    again, so growth is never what a pass here sees), so this only
-    answers `False` where every paused connection was tried and stayed
-    exactly as paused as it already was.
+    `node.pending_cfilters` counts, same as one whose block hashes
+    shrank from this function's own vantage point (a `getcfilters`
+    extending it runs inside `get_cfilters`, strictly before this is
+    called again, so growth is never what a pass here sees), so this
+    only answers `False` where every paused connection was tried and
+    stayed exactly as paused as it already was.
     `node.pending_cfilters` maps a connection id to the connection
-    itself and the heights `advance_cfilters` (`p2p.callbacks`) has not
-    yet sent -- entered there only when that call paused rather than
+    itself and the block hashes `advance_cfilters` (`p2p.callbacks`) has
+    not yet sent -- entered there only when that call paused rather than
     finished, and read and written only here and in `get_cfilters`
     itself, both on `Node`'s own thread, so nothing here needs a lock
     any more than `get_cfilters`'s own loop over a fresh request does.
@@ -230,14 +230,14 @@ def resume_cfilters(node: Node) -> bool:
     manager = node.p2p_manager
     done: list[int] = []
     progressed = False
-    for conn_id, (conn, heights) in list(node.pending_cfilters.items()):
+    for conn_id, (conn, block_hashes) in list(node.pending_cfilters.items()):
         if conn.status == P2pConnStatus.Closed:
             done.append(conn_id)
             progressed = True
             continue
-        before = len(heights)
+        before = len(block_hashes)
         try:
-            if advance_cfilters(node, conn, heights):
+            if advance_cfilters(node, conn, block_hashes):
                 done.append(conn_id)
                 progressed = True
         except Exception as e:
@@ -251,7 +251,7 @@ def resume_cfilters(node: Node) -> bool:
                 conn_id,
                 "peer discouraged" if discourage else "peer not discouraged",
             )
-        if len(heights) != before:
+        if len(block_hashes) != before:
             progressed = True
     for conn_id in done:
         del node.pending_cfilters[conn_id]
