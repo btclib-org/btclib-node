@@ -835,10 +835,7 @@ class BlockIndex:
         `m_best_invalid`. `calculate_chainwork` is the load-time path,
         which weighs every invalid block, descendants included.
         """
-        if self.best_invalid is None or (
-            self.chainwork[block_hash] > self.chainwork[self.best_invalid]
-        ):
-            self.best_invalid = block_hash
+        self.weigh_invalid(block_hash)
         to_invalidate = [block_hash]
         invalidated: set[bytes] = set()
         while to_invalidate:
@@ -864,6 +861,18 @@ class BlockIndex:
             self._extend_header_index(
                 sorted(self.header_dict, key=lambda h: self.header_dict[h].index)
             )
+
+    def weigh_invalid(self, block_hash: bytes) -> None:
+        """Make `block_hash` the `best_invalid` if it carries more work.
+
+        Core's own comparison wherever it writes `m_best_invalid`
+        (`src/validation.cpp:1971-1973`, at bitcoin/bitcoin@9be056a8a7,
+        the v31.1 tag): strictly greater, so a tie keeps the first.
+        """
+        if self.best_invalid is None or (
+            self.chainwork[block_hash] > self.chainwork[self.best_invalid]
+        ):
+            self.best_invalid = block_hash
 
     def _shares_lineage(
         self, other_hash: bytes, target: bytes, target_height: int

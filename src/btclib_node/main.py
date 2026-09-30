@@ -1282,29 +1282,78 @@ def _resolve_trial_exception(
     raise exc
 
 
+# Core's own `ActivateBestChainStep` connects at most this many blocks
+# per batch (`src/validation.cpp:3271`, at bitcoin/bitcoin@9be056a8a7,
+# the v31.1 tag)
+_CONNECT_BATCH = 32
+
+
+def _heaviest_downloaded_descendant(
+    block_index: BlockIndex, block_hash: bytes
+) -> bytes:
+    """Return the most-work downloaded block built on `block_hash`.
+
+    `block_hash` itself where nothing downloaded is built on it: Core's
+    `setBlockIndexCandidates` holds only blocks whose data, and every
+    ancestor's, has arrived.
+    """
+    heaviest = block_hash
+    to_visit = [block_hash]
+    while to_visit:
+        current = to_visit.pop()
+        if block_index.chainwork[current] > block_index.chainwork[heaviest]:
+            heaviest = current
+        to_visit.extend(
+            child
+            for child in block_index.children.get(current, ())
+            if block_index.get_block_info(child).downloaded
+        )
+    return heaviest
+
+
 def _invalidate_failed_block(
-    node: Node, block_index: BlockIndex, failed_hash: bytes
+    node: Node, block_index: BlockIndex, failed_hash: bytes, fork_height: int
 ) -> None:
-    """Mark `failed_hash` invalid and raise the fork warning it may trigger.
+    """Mark `failed_hash` invalid, weigh its branch, and check the fork warning.
 
-    A function of its own and not the two lines inline in `update_chain`'s
-    own tail -- ruff's own `too-many-statements` already counts
-    `update_chain` at its ceiling without this pair. Core's `ConnectTip`
-    calls `InvalidBlockFound` on the failed block (`src/validation.cpp:3090`,
-    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), whose
-    `InvalidChainFound` weighs it against `best_invalid` and ends in
-    `CheckForkWarningConditions` (`:1987`); `update_header_index` and
-    `check_fork_warning_conditions` below are those two steps.
+    A function of its own and not inline in `update_chain`'s own tail --
+    ruff's own `too-many-statements` already counts `update_chain` at its
+    ceiling. Core, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, names
+    three blocks as `m_best_invalid` in turn (`src/validation.cpp`):
 
-    Core's `ActivateBestChainStep` then calls `InvalidChainFound` a second
-    time, on the top of the batch of up to 32 blocks it was connecting
-    towards its most-work candidate (`:3271` and `:3287`). That is not
-    matched: `get_first_candidate` does not pick Core's most-work
-    candidate, so this tree has no counterpart to that batch top, and
-    `best_invalid` names only the failed block.
+    - `ConnectTip` calls `InvalidBlockFound` on the failed block (`:3090`),
+      which is `update_header_index` here;
+    - `ActivateBestChainStep` calls `InvalidChainFound` on the top of the
+      batch it was connecting towards its most-work candidate (`:3287`),
+      and checks the warning (`:1987`);
+    - the next `FindMostWorkChain` meets that candidate, finds its failed
+      ancestor, and names the candidate itself (`:3190-3191`).
+
+    The most-work candidate here is the heaviest block built on
+    `failed_hash` whose branch is downloaded, so a branch of up to 32
+    blocks raises the warning at once, and a longer one at the next check.
+
+    Three differences remain. Core's candidate is its most-work one,
+    where this tree tries `get_first_candidate`'s. Core starts a new batch
+    after any block that beats its old tip (`:3302-3306`), where batches
+    here are counted from the fork. And Core checks against its tip
+    part-way through the reorg, and again once it reconnects; this tree's
+    trial never moves `active_chain`, so the one check here is against the
+    tip before the trial.
     """
     update_header_index(block_index, failed_hash)
+    heaviest = _heaviest_downloaded_descendant(block_index, failed_hash)
+    failed_height = block_index.get_block_info(failed_hash).index
+    batches = (failed_height - fork_height - 1) // _CONNECT_BATCH + 1
+    batch_top = min(
+        fork_height + batches * _CONNECT_BATCH,
+        block_index.get_block_info(heaviest).index,
+    )
+    block_index.weigh_invalid(
+        cast("bytes", block_index.get_ancestor(heaviest, batch_top))
+    )
     check_fork_warning_conditions(node)
+    block_index.weigh_invalid(heaviest)
 
 
 def update_chain(node: Node) -> None:
@@ -1434,7 +1483,12 @@ def update_chain(node: Node) -> None:
 
     if not success and failed_hash is not None:
         node.logger.debug("Start updating index")
-        _invalidate_failed_block(node, block_index, failed_hash)
+        _invalidate_failed_block(
+            node,
+            block_index,
+            failed_hash,
+            block_index.get_block_info(to_add_hash[0]).index - 1,
+        )
 
     if success:
         _after_tip_change(node, to_remove, to_add)

@@ -2260,6 +2260,40 @@ def test_check_fork_warning_conditions_raises_once_and_clears_on_catch_up(
     assert len(calls) == 1
 
 
+def test_a_long_branch_on_a_failed_block_raises_the_fork_warning(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed connect weighs the downloaded branch built on the block.
+
+    Core's own `ActivateBestChainStep` hands `InvalidChainFound` the top of
+    the batch it was connecting, and `FindMostWorkChain` the candidate
+    itself (`src/validation.cpp:3287` and `:3190-3191`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): here `branch[-1]`, twelve
+    blocks' worth of work against a two-block tip.
+    """
+    calls: list[str] = []
+    monkeypatch.setattr(
+        main, "alert_notify", lambda logger, command, message: calls.append(message)
+    )
+    active = generate_random_chain(2, RegTest().genesis.hash)
+    block_index = connect(node, active)
+    bad = build_block(
+        RegTest().genesis.hash, [generate_coinbase(50 * 10**8 + 1, height=1)], 0
+    )
+    branch = [bad, *_extend(bad.header.hash, 1, 11)]
+    block_index.add_headers([block.header for block in branch])
+    for block in branch:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+
+    update_chain(node)
+
+    assert block_index.active_chain[1:] == hashes(active)
+    assert block_index.best_invalid == branch[-1].header.hash
+    assert len(node.warnings.get_messages()) == 1
+    assert len(calls) == 1
+
+
 def test_a_refused_branch_invalidates_only_the_block_that_failed(
     node: Node,
 ) -> None:

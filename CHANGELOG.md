@@ -1423,10 +1423,10 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   ten blocks a deep `invalidateblock` disconnects, and a held one a
   disconnect leaves immature or non-final is evicted** (closes #1570).
 
-### The large-work warning weighs the invalidated block, not its descendants
+### `invalidateblock` weighs only the block it invalidates for the large-work warning
 
-- **A deep `invalidateblock` on the active chain no longer raises it,
-  as Core's `InvalidChainFound` does not** (closes #1593).
+- **A deep `invalidateblock` raises no large-work warning, as Core's
+  `InvalidChainFound` weighs only the block it is handed** (closes #1593).
 
 ## v2026.9.24
 
