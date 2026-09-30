@@ -1798,6 +1798,55 @@ def test_ping_and_stop_answer_without_a_connection() -> None:
     assert stop(node, _CONN, []) == "Btclib node stopping"
 
 
+@pytest.mark.parametrize(
+    "params", [[], [None], [5000], [-1000], [2**31 - 1], [-(2**31)]]
+)
+def test_stop_never_sleeps_here_whatever_wait_is(
+    monkeypatch: pytest.MonkeyPatch, params: list[Any]
+) -> None:
+    """ISS 1467/1441 review: `wait` is validated here, never slept on here.
+
+    `stop`'s own docstring is where the reason is argued: a `time.sleep`
+    in this callback would run on `Node`'s single thread before
+    `handle_rpc` requested the node's shutdown, where Core requests it
+    before sleeping. `main_test.py` and `connection_test.py` are where
+    the delay is proven, off this thread.
+    """
+    monkeypatch.setattr(time, "sleep", lambda _: pytest.fail("stop must not sleep"))
+    node = a_node()
+    assert stop(node, _CONN, params) == "Btclib node stopping"
+
+
+def test_stop_refuses_a_wait_of_the_wrong_json_type() -> None:
+    """A non-numeric `wait` is named the way `type_error` names it."""
+    node = a_node()
+    with pytest.raises(RpcError) as raised:
+        stop(node, _CONN, ["1000"])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert raised.value.message == (
+        'Wrong type passed:\n{\n    "Position 1 (wait)": "JSON value '
+        'of type string is not of expected type number"\n}'
+    )
+
+
+def test_stop_refuses_a_bool_wait() -> None:
+    """A JSON bool is its own VBOOL, not VNUM, refused the same as a string."""
+    node = a_node()
+    with pytest.raises(RpcError) as raised:
+        stop(node, _CONN, [True])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+
+
+@pytest.mark.parametrize("wait", [10.5, 2**31, -(2**31) - 1])
+def test_stop_refuses_a_wait_getint_int_refuses(wait: float) -> None:
+    """A fractional `wait`, or one past C `int`, fails `getInt<int>()`."""
+    node = a_node()
+    with pytest.raises(RpcError) as raised:
+        stop(node, _CONN, [wait])
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
+    assert raised.value.message == "JSON integer out of range"
+
+
 def test_mempool_acceptance_reports_a_reason_for_each_refusal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

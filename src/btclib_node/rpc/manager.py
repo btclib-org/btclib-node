@@ -30,7 +30,7 @@ from collections import deque
 from concurrent.futures import CancelledError
 from contextlib import ExitStack, suppress
 from ipaddress import ip_address
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, Any, override
 
 from btclib_node.config import split_host_port
 from btclib_node.exceptions import RpcCredentialRefusedError
@@ -39,7 +39,7 @@ from btclib_node.rpc.auth import RpcAuth
 from btclib_node.rpc.connection import REQUEST_TIMEOUT, RpcConnection
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Coroutine, Sequence
     from concurrent.futures import Future
 
     from btclib_node import Node
@@ -247,6 +247,44 @@ class RpcManager(threading.Thread):
         self._accept_queue: (
             asyncio.Queue[tuple[socket.socket, tuple[str, int]]] | None
         ) = None
+        # The coroutine of every reply `add_delayed_reply` has recorded,
+        # so that `stop` below finishes the task running it rather than
+        # cancelling it with every other pending task, as `stop` argues.
+        # Unlocked, because one thread reaches it: `Node`'s, which adds
+        # to it from `handle_rpc` and reads it from `stop`, called by
+        # `Node.run` once its own loop has ended.
+        self.delayed_replies: set[Coroutine[Any, Any, None]] = set()
+        # Locked, because two threads reach it: `Node`'s writes it, and
+        # `Node.stop` reads it from whichever thread asks the node to
+        # stop -- an operator's signal, through `install_signal_handlers`.
+        self._latest_reply_deadline: float | None = None
+        self._reply_deadline_lock = threading.Lock()
+
+    def add_delayed_reply(
+        self, reply: Coroutine[Any, Any, None], deadline: float
+    ) -> None:
+        """Record `reply`, due at the `time.monotonic()` value `deadline`.
+
+        Called on `Node`'s thread before `reply` is handed to this
+        manager's loop, never from inside it: a task recording itself on
+        its own first step is missed by a `stop` whose `loop.stop` this
+        loop delivers in the same pass that creates that task, and is
+        then cancelled with the rest.
+        """
+        self.delayed_replies.add(reply)
+        with self._reply_deadline_lock:
+            latest = self._latest_reply_deadline
+            if latest is None or deadline > latest:
+                self._latest_reply_deadline = deadline
+
+    def latest_reply_deadline(self) -> float | None:
+        """Answer the latest deadline `add_delayed_reply` has recorded.
+
+        `None` where it has recorded none. Never lowered once a reply is
+        sent: `Node.stop` has why.
+        """
+        with self._reply_deadline_lock:
+            return self._latest_reply_deadline
 
     def create_connection(
         self, loop: asyncio.AbstractEventLoop, client: socket.socket
@@ -666,6 +704,21 @@ class RpcManager(threading.Thread):
         # `P2pManager`, whose own connections sweep runs *before* this
         # same loop and so cannot.
         pending = asyncio.all_tasks(self.loop)
+        # A reply `add_delayed_reply` recorded is carved out of `pending`
+        # before the cancel sweep below reaches it, and finished further
+        # down, uncancelled: cancelling it would discard the reply the
+        # client asked `stop`'s own `wait` to delay, not to drop
+        # (btclib-org/btclib-node#1467). Every one not yet finished is in
+        # `pending`, stepped or not: `run_coroutine_threadsafe` queued its
+        # creation through `call_soon_threadsafe` on `Node`'s thread
+        # before this method, on that same thread, queued `loop.stop`
+        # behind it, and `join` above returned only once this loop had
+        # run both, in that order -- this manager's thread having run
+        # its loop, the only way a connection to reply on is accepted.
+        protected = {
+            task for task in pending if task.get_coro() in self.delayed_replies
+        }
+        pending -= protected
         # No step of the loop first here, unlike an earlier version of
         # this method: that step existed only to let a task sitting on
         # an already-resolved future -- `server`'s own former `accept`
@@ -695,6 +748,17 @@ class RpcManager(threading.Thread):
         for task in pending:
             with suppress(asyncio.CancelledError):
                 self.loop.run_until_complete(task)
+        # Uncancelled, and with no bound of its own beyond `wait` itself
+        # -- already validated finite by `stop_wait_param` before this
+        # task was ever scheduled. Core's own `ThreadPool::Stop`
+        # (`util/threadpool.h`, at bitcoin/bitcoin@9be056a8a7, the
+        # v31.1 tag) joins every worker thread with no timeout either,
+        # finishing whatever request that thread is mid-answer on --
+        # including one asleep in `stop`'s own hidden `wait` -- rather
+        # than abandoning it, so a bound here would itself be an
+        # unargued divergence from Core, not a match to it.
+        for task in protected:
+            self.loop.run_until_complete(task)
         for conn in self.connections.values():
             conn.close()
         # Closed explicitly and unconditionally, after the loop above

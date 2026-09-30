@@ -1180,6 +1180,18 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   than 256 of a resolver's answers**, matching `Lookup`'s own
   `nMaxSolutions` in Core's `ConnectNode` (closes #1466).
 
+### Two manager tests wait for the store, not just the id that precedes it
+
+- **`create_connection` increments `last_connection_id` before it stores
+  the connection, so a test now waits on the store itself rather than
+  racing it by polling the id alone** (closes #1504).
+
+### `stop`'s hidden `wait` argument is honoured
+
+- **A `stop` call carrying `wait` delays its own reply by that many
+  milliseconds**, as Core's own `stop <ms>` does, while the node starts
+  shutting down at once (closes #1467).
+
 ### `btclib-wallet` is now a runtime dependency
 
 - **`rpc/callbacks.py` reads `add_checksum`/`from_address` from
@@ -1188,10 +1200,9 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 ### A stored header's own version is checked again, matching Core
 
-- **`BlockInfo.serialize` and `getblockheader false` validate the header
-  they write out, no longer bypassing btclib's own check**, now that it
-  refuses on version only the way Core's `ContextualCheckBlockHeader`
-  does (closes #1511).
+- **`BlockInfo.serialize` and `getblockheader false` validate the
+  header they write out again**, no longer bypassing btclib's own
+  check now that it refuses on version the way Core does (closes #1511).
 
 ## v2026.9.24
 

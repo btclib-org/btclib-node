@@ -4562,7 +4562,11 @@ def test_a_discouraged_host_is_refused_where_it_would_fill_the_last_slot(
         assert "connection from 1.2.3.4:50000 dropped (discouraged)" in logged
         _, accepted = land_an_inbound_peer(manager, "1.2.3.5", 50000)
         peers.enter_context(closing(accepted))
-        wait_until(lambda: manager.last_connection_id == 0)
+        # ISS 1504: `create_connection` increments `last_connection_id`
+        # before it stores the connection in `pending_connections` --
+        # waiting on the id alone races the store, on load, between
+        # this thread's read and the manager thread's write.
+        wait_until(lambda: 0 in manager.pending_connections)
         assert not manager.pending_connections[0].prefer_evict
         manager.stop()
         manager.join(timeout=10)
@@ -4587,7 +4591,10 @@ def test_a_discouraged_host_with_slots_to_spare_is_accepted_to_evict_first(
     with ExitStack() as peers:
         _, first = land_an_inbound_peer(manager, "1.2.3.4", 50000)
         peers.enter_context(closing(first))
-        wait_until(lambda: manager.last_connection_id == 0)
+        # ISS 1504: waits on the store itself, not the id alone --
+        # `create_connection` increments `last_connection_id` before it
+        # stores the connection.
+        wait_until(lambda: 0 in manager.pending_connections)
         conn = manager.pending_connections[0]
         assert conn.prefer_evict
         assert manager_module._eviction_candidate(conn).prefer_evict

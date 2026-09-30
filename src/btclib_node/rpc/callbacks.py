@@ -100,6 +100,7 @@ __all__ = [
     "service_names",
     "set_ban",
     "stop",
+    "stop_wait_param",
     "submit_block",
     "test_mempool_accept",
 ]
@@ -2886,8 +2887,64 @@ def ping(node: Node, conn: RpcConnection, _: list[Any]) -> None:
     node.p2p_manager.ping_all()
 
 
-def stop(node: Node, conn: RpcConnection, _: list[Any]) -> str:
-    """Answer `stop`; `handle_rpc` waits for this reply before stopping."""
+def stop_wait_param(params: list[Any]) -> int | None:
+    """Read `stop`'s own hidden `wait`, or `None` where none was given.
+
+    `RPCArg::Type::NUM`, `RPCArg::Optional::OMITTED`, hidden from help
+    (`src/rpc/server.cpp:155`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag): omitted or explicit `null` reads as `isNum()` false there, so
+    neither delays the reply. Anything else that is not a JSON number is
+    `RPC_TYPE_ERROR`, the same check `RPCMethod::HandleRequest` makes
+    for every declared argument before the handler ever runs
+    (`src/rpc/util.cpp:653-661`); a JSON float, or an integer outside
+    C `int`'s range, is refused the way `_height_param` above already
+    refuses a float, `UniValue::getInt<int>`'s own "JSON integer out of
+    range" (`univalue.h`), thrown where `std::from_chars` cannot consume
+    the number in full or reports it out of range.
+
+    Called twice for one request that reaches it: here, to decide
+    whether `stop` itself succeeds, and again by `rpc.main._answer_one`
+    once it has, to read the same already-valid `wait` back out and
+    schedule the delayed reply `stop`'s own docstring explains
+    (btclib-org/btclib-node#1467) -- this function's own return value is
+    not `stop`'s, which is the RPC's `result` field and cannot also
+    carry it.
+    """
+    if not params or params[0] is None:
+        return None
+    value = params[0]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise type_error(1, "wait", value, "number")
+    if isinstance(value, float) or not -(2**31) <= value < 2**31:
+        raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
+    return value
+
+
+def stop(node: Node, conn: RpcConnection, params: list[Any]) -> str:
+    """Answer `stop`; `handle_rpc` delays this reply by `wait`, then stops.
+
+    A `wait` in milliseconds holds the reply back that long, Core's own
+    hidden testing argument (`src/rpc/server.cpp:155-166`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): "'stop 1000' makes the
+    call wait 1 second before returning to the client". Read and
+    validated here, through `stop_wait_param`, exactly as every other
+    declared argument is validated by the callback that owns it; not
+    slept on here, unlike Core's own `UninterruptibleSleep`, which this
+    function has no equivalent of at all.
+
+    Core's sleep runs once `stop` has already requested shutdown, on
+    the request's own HTTP worker thread, which that shutdown joins
+    before it goes on (`StopHTTPServer`, `src/httpserver.cpp`, same
+    tag). A `time.sleep` here would run before `handle_rpc` requested
+    this node's shutdown at all, on the one thread that carries RPC, P2P
+    and chain work alike (`ARCHITECTURE.md`, "The loop").
+    `rpc.main._answer_one` reads this same `wait` again once this call
+    is known to have succeeded; `handle_rpc` hands the delayed reply to
+    `RpcConnection.send_and_close_after` and stops the node at once, and
+    `RpcManager.stop` finishes that reply the way Core's shutdown
+    finishes its worker.
+    """
+    stop_wait_param(params)
     return "Btclib node stopping"
 
 
