@@ -1353,6 +1353,17 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   which cost the chunked-body cases over half of `drive`'s 1.0s budget
   before any load; it also asserts `drive`'s own outcome (closes #1278).
 
+### `-maxtipage=<n>` sets the tip age initial block download ends at
+
+- **`Config.max_tip_age`, in seconds, is what `main.update_ibd_status` reads
+  as the bound**, `-maxtipage` unset defaulting to a day (closes #1474).
+
+### `-minimumchainwork=<hex>` sets the minimum chain work every check reads
+
+- **`Config.minimum_chain_work` defaults to the chain's own and refuses more
+  than 64 hex digits**, read wherever the minimum chain work is checked
+  (closes #1500).
+
 ### Address handling matches Core's own keys, timestamps and dial cadence
 
 - **`getaddr` is cached per network and local socket** (closes #1478).
