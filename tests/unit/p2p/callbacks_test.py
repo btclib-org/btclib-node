@@ -5670,13 +5670,16 @@ def test_a_new_header_with_more_work_than_the_tip_is_a_block_announcement(
 
 
 @pytest.mark.parametrize("version", [0, -1])
-def test_a_header_version_btclib_refuses_is_misbehaving_bad_version(
+def test_a_header_version_above_bip34_is_misbehaving_bad_version(
     an_index: BlockIndex, version: int
 ) -> None:
     """ISS 1262: a version of zero or below reaches Core's `bad-version`.
 
-    btclib's own parse would refuse it first as "invalid version", which
-    is no `MisbehavingError`; `headers` reads it unchecked instead.
+    btclib's own parse no longer refuses this version on its own (btclib
+    2026.9.29, closing btclib-org/btclib#2309): it is `add_headers`'s own
+    height-gated check, not btclib's, that this depends on, and `headers`
+    reads the batch unchecked so that check runs regardless
+    (btclib-org/btclib-node#1511).
     """
     genesis = RegTest().genesis
     header = BlockHeader(

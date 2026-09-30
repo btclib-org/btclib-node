@@ -527,10 +527,15 @@ def get_block_header(
     if not verbose:
         # src/rpc/blockchain.cpp:668-673: the same eighty bytes a peer
         # is sent on the wire, hex-encoded rather than the JSON object.
-        # Unchecked, as the index stores it: a version of zero or below,
-        # which Core takes below BIP34's height, is one btclib's own
-        # check refuses (btclib-org/btclib#2309)
-        return header.serialize(check_validity=False).hex()
+        # Checked here now. It used to be serialized unchecked: a
+        # version of zero or below, which Core takes below BIP34's
+        # height, was one btclib's own check refused on its own -- fixed
+        # at btclib 2026.9.29 (btclib-org/btclib@bbb1ad71, closing
+        # btclib-org/btclib#2309; btclib-org/btclib-node#1511). The
+        # index only ever stores a header past `add_headers`'s own
+        # height-gated `bad-version` check, so nothing this validates
+        # can fail on one read back from here.
+        return header.serialize().hex()
 
     # the blocks this node has validated and connected, which is what
     # Core hands blockheaderToJSON: `ActiveChain().Tip()`, at

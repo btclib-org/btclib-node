@@ -1186,6 +1186,13 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `btclib_wallet.descriptors`**, following `descriptors` out of btclib
   and into btclib-wallet, where btclib 2026.9.29 moved it (closes #1508).
 
+### A stored header's own version is checked again, matching Core
+
+- **`BlockInfo.serialize` and `getblockheader false` validate the header
+  they write out, no longer bypassing btclib's own check**, now that it
+  refuses on version only the way Core's `ContextualCheckBlockHeader`
+  does (closes #1511).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

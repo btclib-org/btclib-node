@@ -2454,6 +2454,36 @@ def test_verbose_false_answers_the_serialized_header_hex_not_the_object() -> Non
     assert answer == chain[1].serialize().hex()
 
 
+@pytest.mark.parametrize("version", [0, -1])
+def test_verbose_false_answers_a_version_zero_or_negative_header(version: int) -> None:
+    """ISS 1262: `getblockheader false` answers such a header too.
+
+    Core takes a version of zero or below below BIP34's height; this
+    node's own index only ever stores one past `add_headers`'s
+    height-gated `bad-version` check, so `header.serialize()` here never
+    has cause to refuse one, and needs no bypass for it -- btclib's own
+    `BlockHeader.assert_valid` doesn't either, since btclib 2026.9.29
+    (btclib-org/btclib@bbb1ad71, closing btclib-org/btclib#2309;
+    btclib-org/btclib-node#1511).
+    """
+    header = BlockHeader(
+        version=version,
+        previous_block_hash=RegTest().genesis.hash,
+        merkle_root=b"\x07" * 32,
+        time=RegTest().genesis.time,
+        bits=RegTest().genesis.bits,
+        nonce=0,
+    )
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chainstate=SimpleNamespace(block_index=a_block_index([header]))
+        ),
+    )
+    answer = get_block_header(node, _CONN, [header.hash.hex(), False])
+    assert answer == header.serialize().hex()
+
+
 def test_verbose_true_and_the_default_answer_the_same_object() -> None:
     """`getblockheader`'s default, explicit true and null all answer alike.
 
