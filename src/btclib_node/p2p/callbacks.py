@@ -1222,8 +1222,8 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
         # `BLOCK_CONSENSUS` `MaybePunishNodeForBlock` punishes
         # (btclib-org/btclib-node#1170). btclib's own header check used
         # to refuse a version of zero or below here on its own, where
-        # Core accepts such a block below BIP34's height -- fixed at
-        # btclib 2026.9.29 (btclib-org/btclib@bbb1ad71, closing
+        # Core accepts such a block below BIP34's height -- fixed
+        # at btclib 2026.9.29 (btclib-org/btclib@bbb1ad71, closing
         # btclib-org/btclib#2309): `assert_valid_block` refuses on
         # version now only through the same height-gated `bad-version`
         # `add_headers` already applied to this block's header, above

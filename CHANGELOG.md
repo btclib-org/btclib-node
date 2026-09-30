@@ -1238,6 +1238,7 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 - **Every `#` Core citation outside `p2p/callbacks.py`'s `headers()`
   carries `at` on the sha's own line** (closes #1517).
+- **So does `block()`'s btclib citation** (closes #1528).
 
 ## v2026.9.24
 
