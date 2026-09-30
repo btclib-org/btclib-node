@@ -414,6 +414,13 @@ def _reconcile_mempool_for_reorg(
                 # feerate floor a newcomer is. btclib-org/btclib-node#1245
                 fee, vsize = verify_mempool_acceptance(node, tx, bypass_limits=True)
             except MissingPrevoutError, BTClibValueError:
+                # Rejected on re-add, whether for a prevout this walk's
+                # own earlier iterations have not yet restored or for
+                # anything else `verify_mempool_acceptance` refuses: the
+                # identical "doesn't make it in to the mempool" shape the
+                # past-the-cap branch above answers, and the same
+                # `removeRecursive` citation answers it.
+                node.mempool.remove_dependents(tx)
                 continue
             # Core's own `nHeight`, the active chain's own tip height at
             # acceptance (`Mempool.heights`' own docstring,
@@ -467,13 +474,26 @@ def _still_final_and_mature(node: Node, tx: Tx) -> bool:
     under a transaction that was already held. `verify_mempool_acceptance`
     below checks the identical three things at acceptance time; this is
     deliberately not folded into one helper with it, since a prevout
-    this cannot resolve is answered differently here -- not this
-    check's own concern, since a reorg conflict is what
-    `Mempool.remove_conflicts`, called once per newly connected block's
-    own transactions in `_reconcile_mempool_for_reorg` above, already
-    takes out, where `verify_mempool_acceptance` raises
-    `MissingPrevoutError` for the identical case on a transaction never
-    yet accepted.
+    this cannot resolve is answered differently here than there --
+    kept (`return True` below) rather than raised on,
+    `verify_mempool_acceptance`'s own `MissingPrevoutError` being for a
+    transaction never yet accepted, not one already held.
+
+    Kept is not, the way this read before, "someone else's problem
+    because a reorg conflict is what `Mempool.remove_conflicts` already
+    takes out": that call runs only from `_reconcile_mempool_for_reorg`'s
+    own `to_add` loop, and `invalidate_chain`'s own call passes
+    `to_add=[]`, so `remove_conflicts` never runs at all on that path.
+    What actually keeps an unresolvable prevout from reaching this
+    function there is the re-add loop just above `remove_conflicts` in
+    that same caller: an unresolvable prevout here is exactly the shape
+    of a tx whose own parent failed to make it back into the mempool --
+    past the 10-block cap, or on `verify_mempool_acceptance`'s own
+    `MissingPrevoutError`/`BTClibValueError` -- and both of those
+    branches now call `Mempool.remove_dependents` on that parent,
+    taking any such entry out before this function is ever reached
+    for it. The `True` below is the fallback for whatever neither of
+    those already swept, not a claim that nothing could still reach it.
     """
     block_index = node.chainstate.block_index
     utxo_index = node.chainstate.utxo_index

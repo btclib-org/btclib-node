@@ -5069,6 +5069,66 @@ def test_invalidate_block_drops_a_disconnected_transaction_past_the_ten_block_ca
     assert not node.mempool.contains_tx(child)
 
 
+def test_invalidate_block_evicts_an_orphan_left_by_a_failed_readd(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A re-add that fails on its own prevout still evicts its mempool child.
+
+    `x` sits in the deepest of the eleven disconnected blocks -- past
+    `_INVALIDATE_MEMPOOL_READD_LIMIT`, so its own re-add is skipped
+    outright and `remove_dependents` already answers for it, the same
+    as `capped_tx` above. `t`, in the tip and well inside the cap, is
+    attempted: its own prevout is `x`'s output, gone from both the UTXO
+    set (`x`'s block disconnected) and the mempool (`x` never re-added),
+    so `verify_mempool_acceptance` raises `MissingPrevoutError` and the
+    re-add loop's `except` branch is reached instead. `c`, already
+    held and spending `t`'s own output, is what that branch's own
+    `Mempool.remove_dependents(tx)` call takes out -- Core's own
+    `removeRecursive` answering identically for a transaction that
+    "doesn't make it in to the mempool" whichever of the two reasons
+    stops it (`MaybeUpdateMempoolForReorg`, `src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): without that call, `c`
+    is left behind, spending an output that no longer exists anywhere.
+    btclib-org/btclib-node#1570
+    """
+    node = regtest_node()
+    common = generate_random_chain(COINBASE_MATURITY, node.chain.genesis.hash)
+    # Built by hand, the same reason `test_invalidate_block_drops_a_
+    # disconnected_transaction_past_the_ten_block_cap` above is: `x`
+    # sits in the eleventh-from-tip block, so eleven blocks disconnect
+    # above and including it, past the ten-block cap, and `t` sits in
+    # the tip, well inside it, spending `x`'s own output directly.
+    x = generate_random_transaction(common[0].transactions[0].id)
+    prev_hash = common[-1].header.hash
+    extra_blocks = []
+    t = None
+    for offset in range(11):
+        height = len(common) + 1 + offset
+        txs = [generate_coinbase(height=height)]
+        if offset == 0:
+            txs.append(x)
+        if offset == 10:
+            t = generate_random_transaction(x.id, value=x.vout[0].value)
+            txs.append(t)
+        block = build_block(prev_hash, txs, height - 1)
+        extra_blocks.append(block)
+        prev_hash = block.header.hash
+    assert t is not None
+    chain = [*common, *extra_blocks]
+    connect(node, chain)
+    deepest = extra_blocks[0]
+    c = generate_random_transaction(t.id, value=t.vout[0].value)
+    fee, vsize = verify_mempool_acceptance(node, c, bypass_limits=True)
+    node.mempool.add_tx(c, fee, vsize)
+    assert node.mempool.contains_tx(c)
+
+    invalidate_block(node, _CONN, [deepest.header.hash.hex()])
+
+    assert not node.mempool.contains_tx(x)
+    assert not node.mempool.contains_tx(t)
+    assert not node.mempool.contains_tx(c)
+
+
 def test_invalidate_block_evicts_a_mempool_transaction_a_disconnect_makes_immature(
     regtest_node: Callable[..., Node],
 ) -> None:
