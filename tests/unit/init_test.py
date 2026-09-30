@@ -1829,6 +1829,15 @@ def test_worker_count_falls_back_to_eight_split_if_the_core_count_is_unknown(
     assert btclib_node._default_worker_count() == 2
 
 
+@pytest.mark.parametrize("value", ["abc", "", "4.0", "0", "-1"])
+def test_worker_count_is_eight_unless_xdist_names_a_positive_integer(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    """A value `int` refuses, or one below one, leaves the count at 8."""
+    monkeypatch.setenv("PYTEST_XDIST_WORKER_COUNT", value)
+    assert btclib_node._default_worker_count() == 8
+
+
 def test_a_node_logs_the_configuration_warnings_first(tmp_path: Path) -> None:
     """ISS 1295: what Core logs while reading its settings opens the log.
 

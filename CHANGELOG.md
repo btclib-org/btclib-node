@@ -1364,6 +1364,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   than 64 hex digits**, read wherever the minimum chain work is checked
   (closes #1500).
 
+### A malformed `PYTEST_XDIST_WORKER_COUNT` leaves the worker count at eight
+
+- **`_default_worker_count` takes eight where `PYTEST_XDIST_WORKER_COUNT`
+  is not a positive integer**, a non-integer having raised `ValueError`
+  and `0` `ZeroDivisionError` at `import btclib_node` (closes #1555).
+
 ### Address handling matches Core's own keys, timestamps and dial cadence
 
 - **`getaddr` is cached per network and local socket** (closes #1478).
