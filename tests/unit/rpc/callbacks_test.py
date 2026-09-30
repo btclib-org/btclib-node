@@ -2394,158 +2394,30 @@ def test_a_structurally_invalid_tx_decodes_and_is_refused_by_reason(
     assert verdict["reject-details"] == reason
 
 
-@pytest.mark.parametrize(
-    ("overrides", "reason"),
-    [
-        (
-            # the reviewer's own verified case: `bitcoind` v31.1 on
-            # regtest answers `bad-txns-vout-empty` for this shape,
-            # where `Tx.assert_valid` raises for the null-outpoint
-            # input first -- `bad-txns-vout-empty` is Core's earlier
-            # rule of the two
-            {
-                "vin": [
-                    TxIn(
-                        prev_out=OutPoint(b"\x00" * 32, 0xFFFFFFFF),
-                        script_sig=b"",
-                        sequence=0xFFFFFFFF,
-                    ),
-                    TxIn(
-                        prev_out=OutPoint(b"\x33" * 32, 0),
-                        script_sig=b"",
-                        sequence=0xFFFFFFFF,
-                    ),
-                ],
-                "vout": [],
-            },
-            "bad-txns-vout-empty",
-        ),
-        (
-            # duplicate inputs and a negative output together:
-            # `Tx.assert_valid` raises for the duplicate first, where
-            # `CheckTransaction` checks every output's amount ahead of
-            # the duplicate-input pass
-            {
-                "vin": [a_malformed_tx().vin[0], a_malformed_tx().vin[0]],
-                "vout": [TxOut(value=-1, script_pub_key=b"\x51", check_validity=False)],
-            },
-            "bad-txns-vout-negative",
-        ),
-        (
-            # two inputs, the same null outpoint twice: both a
-            # duplicate and, `Tx.is_coinbase` being false at two
-            # inputs, each a coinbase input in a non-coinbase
-            # transaction. `Tx.assert_valid` raises for the prevout
-            # first, where `CheckTransaction` checks duplicate inputs
-            # ahead of the coinbase/prevout-null rule
-            {
-                "vin": [
-                    TxIn(
-                        prev_out=OutPoint(b"\x00" * 32, 0xFFFFFFFF),
-                        script_sig=b"",
-                        sequence=0xFFFFFFFF,
-                    ),
-                    TxIn(
-                        prev_out=OutPoint(b"\x00" * 32, 0xFFFFFFFF),
-                        script_sig=b"",
-                        sequence=0xFFFFFFFF,
-                    ),
-                ],
-            },
-            "bad-txns-inputs-duplicate",
-        ),
-    ],
-)
-def test_a_multiply_invalid_tx_is_refused_by_cores_earlier_rule(
-    overrides: dict[str, Any], reason: str
-) -> None:
-    """A tx violating two of Core's rules answers Core's earlier one.
-
-    Each shape here also violates a *second* `CheckTransaction` rule,
-    one `Tx.assert_valid` (`btclib/tx/tx.py`) checks first in its own
-    order, ahead of the one Core's own function would answer first --
-    `_core_order_reject_reason`'s own docstring has the order and why
-    the two differ. `bitcoind` v31.1 on regtest answers the reason
-    given for the first case; the rest are read from
-    `consensus/tx_check.cpp`'s own order rather than run end to end.
-    """
-    tx = a_malformed_tx(**overrides)
-    raw = tx.serialize(include_witness=False, check_validity=False).hex()
-
-    with pytest.raises(RpcError) as raised:
-        send_raw_transaction(a_node(), _CONN, [raw])
-    assert raised.value.code == RPCErrorCode.VERIFY_REJECTED
-    assert raised.value.message == reason
-
-    (verdict,) = mempool_accept(a_node(), _CONN, [[raw]])
-    assert verdict["allowed"] is False
-    assert verdict["reject-reason"] == reason
-    assert verdict["reject-details"] == reason
-
-
-def test_an_unrecognized_assert_valid_message_is_not_swallowed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """`_check_transaction` re-raises what its own order-check cannot place.
+def test_an_unrecognized_assert_valid_message_is_not_swallowed() -> None:
+    """`_reject_reason` re-raises what it does not recognize.
 
     Defensive: every message `Tx.assert_valid` can actually raise for a
-    `Tx` `_decode_hex_tx` builds is one of the six rules
-    `_core_order_reject_reason` knows (its own docstring), so this tx is
-    otherwise clean -- `_core_order_reject_reason` alone, called
-    directly, answers `None` for it -- and `assert_valid` is
-    monkeypatched to raise anyway, standing in for a rule this tree has
-    not taught either function yet.
+    parsed `Tx` is named, so this exercises the fallback with a message
+    that is not one of them, standing in for a rule this mapping has
+    not been taught yet.
     """
     tx = a_tx()
-    assert cb._core_order_reject_reason(tx) is None
     error = BTClibValueError("a rule this mapping does not know about")
-
-    def raise_error() -> None:
-        raise error
-
-    monkeypatch.setattr(tx, "assert_valid", raise_error)
     with pytest.raises(BTClibValueError):
-        cb._check_transaction(tx)
+        cb._reject_reason(tx, error)
 
 
-def test_core_order_reject_reason_answers_vin_empty_for_no_inputs() -> None:
-    """`_core_order_reject_reason` names the empty-`vin` rule directly.
+def test_amount_reject_reason_answers_none_when_nothing_violates() -> None:
+    """`_amount_reject_reason` falls through its own loop to `None`.
 
-    Not reachable through `_decode_hex_tx`: a zero-input transaction's
-    own wire encoding is exactly `Tx.parse`'s own segwit marker byte
-    followed by the first byte of what comes next, which `Tx.parse`
-    reads as the witness flag whenever that byte happens to be `0x01`
-    and otherwise fails to parse at all rather than answering a `Tx`
-    with an empty `vin` -- the same ambiguity
-    `decode_raw_transaction`'s own docstring names for `iswitness`,
-    btclib-org/btclib-node#1458. Called directly, standing in for the
-    `_check_transaction` caller no real raw tx can drive here.
+    Defensive, the same reason as the test above: `Tx.assert_valid` only
+    ever raises this message when some output really is out of range,
+    so this reaches the loop's fall-through directly rather than through
+    a real refusal that could not carry it.
     """
-    tx = a_malformed_tx(vin=[])
-    assert cb._core_order_reject_reason(tx) == "bad-txns-vin-empty"
-
-
-def test_core_order_coinbase_reason_answers_none_for_a_valid_coinbase() -> None:
-    """`_core_order_coinbase_reason` answers `None` for a length-valid coinbase.
-
-    `_core_order_reject_reason` only ever reaches this function once
-    `assert_valid` has already refused `tx`, so a coinbase whose own
-    script_sig length is valid never reaches it through
-    `_check_transaction` -- there would be nothing left for
-    `assert_valid` to have refused. Called directly, the same reasoning
-    as the vin-empty case above.
-    """
-    tx = a_malformed_tx(
-        vin=[
-            TxIn(
-                prev_out=OutPoint(b"\x00" * 32, 0xFFFFFFFF),
-                script_sig=b"\x02\x02",
-                sequence=0xFFFFFFFF,
-            )
-        ]
-    )
-    assert tx.is_coinbase
-    assert cb._core_order_coinbase_reason(tx) is None
+    tx = a_tx()
+    assert cb._amount_reject_reason(tx, "invalid satoshi amount: 5") is None
 
 
 def test_decoderawtransaction_answers_the_dict_shape_and_no_more() -> None:
