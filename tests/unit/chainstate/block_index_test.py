@@ -1141,6 +1141,26 @@ def test_block_locators(
     assert block_index.get_block_locator_hashes() == expected
 
 
+def test_a_locator_on_header_index_reads_it_by_height(
+    a_chainstate: Callable[[Path | None], Chainstate],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """btclib-org/btclib-node#1530: no skip-pointer walk where none is needed.
+
+    A block on `header_index` has its ancestors there by height, so the
+    locator is read off it without one `get_ancestor`, and is the one the
+    walk would have given.
+    """
+    block_index = a_chainstate(None).block_index
+    chain = generate_random_header_chain(40, RegTest().genesis.hash)
+    block_index.add_headers(chain)
+    heights = [*range(40, 28, -1), 27, 23, 15, 0]
+    walked = [block_index.get_ancestor(chain[-1].hash, h) for h in heights]
+    monkeypatch.setattr(block_index, "get_ancestor", None)
+    assert block_index.locator_entries(chain[-1].hash) == walked
+    assert block_index.get_block_locator_hashes() == walked
+
+
 def test_locator_entries_is_core_s_by_height(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:

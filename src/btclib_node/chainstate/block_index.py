@@ -57,7 +57,7 @@ import itertools
 from collections import deque
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from btclib import var_int
 from btclib.block import (
@@ -90,6 +90,7 @@ __all__ = [
     "block_time",
     "calculate_work",
     "check_headers_pow",
+    "locator_entries",
 ]
 
 
@@ -112,6 +113,40 @@ def _skip_height(height: int) -> int:
     if height & 1:
         return _invert_lowest_one(_invert_lowest_one(height - 1)) + 1
     return _invert_lowest_one(height)
+
+
+def locator_entries(block_index: BlockIndex, block_hash: bytes) -> list[bytes]:
+    """Return a block locator from `block_hash`: Core's `LocatorEntries`.
+
+    Core's is in `src/chain.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag: `block_hash` and its ancestors, one height apart for the
+    first ten and twice as far apart for each one after, down to
+    genesis. This is the tree's one copy of it (btclib-org/btclib-node#1530):
+    `BlockIndex.locator_entries`, `BlockIndex.get_block_locator_hashes`
+    and `p2p.chain_sync`'s own are its callers.
+
+    Core reaches each ancestor with `GetAncestor`. Where `block_hash` is
+    on `header_index`, which holds the best header chain by height, the
+    ancestor at a height is that entry of it, read in constant time; a
+    block anywhere else is walked back through `get_ancestor`'s skip
+    pointers, the same blocks at a cost logarithmic in the distance.
+    """
+    height = block_index.header_dict[block_hash].index
+    on_header_index = block_index.header_index_pos.get(block_hash) == height
+    step = 1
+    have: list[bytes] = []
+    while True:
+        have.append(block_hash)
+        if height == 0:
+            return have
+        height = max(height - step, 0)
+        if on_header_index:
+            block_hash = block_index.header_index[height]
+        else:
+            # always found: `height` is below `block_hash`'s own
+            block_hash = cast("bytes", block_index.get_ancestor(block_hash, height))
+        if len(have) > 10:  # noqa: PLR2004 -- Core's own bare 10
+            step *= 2
 
 
 def block_time(header: BlockHeader) -> int:
@@ -372,7 +407,7 @@ class BlockIndex:
         self.header_index: list[bytes] = []
 
         # header_index's own hash -> position, kept beside it rather
-        # than computed from it: `get_block_locator_hashes` and
+        # than computed from it: `locator_entries` and
         # `p2p.block_availability`'s block download ask where a block
         # is on header_index, which holds one entry per header this node
         # has ever indexed -- the whole known chain -- so a membership
@@ -511,25 +546,8 @@ class BlockIndex:
         return walk
 
     def locator_entries(self, block_hash: bytes) -> list[bytes]:
-        """Return a block locator from `block_hash`: Core's `LocatorEntries`.
-
-        Core's is in `src/chain.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-        v31.1 tag: `block_hash` and its ancestors, one height apart for
-        the first ten and twice as far apart for each one after, down to
-        genesis, reached through skip pointers.
-        """
-        step = 1
-        have: list[bytes] = []
-        height = self.header_dict[block_hash].index
-        while True:
-            have.append(block_hash)
-            if height == 0:
-                return have
-            next_height = max(height - step, 0)
-            block_hash = self._ancestor(block_hash, height, next_height)
-            height = next_height
-            if len(have) > 10:  # noqa: PLR2004 -- Core's own bare 10
-                step *= 2
+        """Return a block locator from `block_hash`: `locator_entries`'s."""
+        return locator_entries(self, block_hash)
 
     def last_common_ancestor(self, first: bytes, second: bytes) -> bytes:
         """Return the fork point of two blocks: Core's `LastCommonAncestor`.
@@ -1091,27 +1109,7 @@ class BlockIndex:
     def get_block_locator_hashes(self, start: bytes | None = None) -> list[bytes]:
         """Return a block locator over `header_index`, its own best known chain.
 
-        Exponentially sparser going back from `start`, a header of
-        `header_index` and its tip where none is given, always including
-        its genesis -- the shape Core's own `LocatorEntries` (`src/chain.cpp`,
-        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) builds. `header_index`
-        is indexed by height, so a position in it doubles as the height Core
-        walks: `height` here is Core's `index->nHeight`, and `step` doubles
-        once `block_locators` holds more than ten entries, matched rather
-        than named, since naming it here would claim a meaning Core's own
-        algorithm never gave it.
+        `locator_entries` from `start`, a header of `header_index`, or
+        from its tip where none is given.
         """
-        height = (
-            len(self.header_index) - 1
-            if start is None
-            else self.header_index_pos[start]
-        )
-        step = 1
-        block_locators: list[bytes] = []
-        while True:
-            block_locators.append(self.header_index[height])
-            if height == 0:
-                return block_locators
-            height = max(height - step, 0)
-            if len(block_locators) > 10:  # noqa: PLR2004
-                step *= 2
+        return locator_entries(self, self.header_index[-1] if start is None else start)
