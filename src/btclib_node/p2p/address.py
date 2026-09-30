@@ -292,21 +292,30 @@ _ADDRMAN_HORIZON = 30 * 24 * 3600
 # how far ahead of the clock a timestamp may be before it is terrible,
 # `IsTerrible`'s "flying DeLorean" (same file and sha)
 _ADDRMAN_FUTURE_SLACK = 10 * 60
+# `IsTerrible`'s own grace, ahead of both tests above (same file and
+# sha): "never remove things tried in the last minute". `PeerDB._last_try`
+# is `AddrInfo::m_last_try`; `RECENT_TRY_SECONDS` above is a different
+# Core window, `ThreadOpenConnections`'s, not this one.
+_ADDRMAN_RECENT_TRY_GRACE = 60
 
 
-def _aged_out(address: NetworkAddressV2, now: float) -> bool:
+def _aged_out(address: NetworkAddressV2, now: float, last_try: float) -> bool:
     """Whether `address`'s handshake stamp fails `IsTerrible`'s time tests.
 
-    The two time tests of `AddrInfo::IsTerrible` (`src/addrman.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): stamped more than ten
-    minutes ahead of `now`, or older than `_ADDRMAN_HORIZON`. Core
-    applies them to `nTime`, which `Good_` leaves alone at the handshake
-    and which gossip and `Connected_` move instead, the latter when a
-    full outbound peer disconnects. `PeerDB.add_addresses` stores a
-    gossiped address with timestamp 0, so there is no gossip time to
-    test, and the handshake's is tested instead
-    (btclib-org/btclib-node#1364).
+    `AddrInfo::IsTerrible` (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag) checks `last_try` first: tried within
+    `_ADDRMAN_RECENT_TRY_GRACE`, an address is never terrible, whatever
+    its timestamp says. Past that grace, its two time tests: stamped
+    more than ten minutes ahead of `now`, or older than
+    `_ADDRMAN_HORIZON`. Core applies them to `nTime`, which `Good_`
+    leaves alone at the handshake and which gossip and `Connected_` move
+    instead, the latter when a full outbound peer disconnects.
+    `PeerDB.add_addresses` stores a gossiped address with timestamp 0,
+    so there is no gossip time to test, and the handshake's is tested
+    instead (btclib-org/btclib-node#1364).
     """
+    if now - last_try <= _ADDRMAN_RECENT_TRY_GRACE:
+        return False
     age = now - address.timestamp
     return age < -_ADDRMAN_FUTURE_SLACK or age > _ADDRMAN_HORIZON
 
@@ -459,7 +468,15 @@ class PeerDB:
         # In memory only, as `AddrInfo`'s serialization leaves
         # `m_last_try` out of `peers.dat` (`src/addrman_impl.h`, at
         # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `attempt` writes it
-        # and `last_try` reads it, both on `P2pManager`'s thread alone.
+        # from `P2pManager`'s thread alone. `last_try` reads it from
+        # there too, and from `get_active_addresses`'s own call into
+        # `_aged_out`'s grace check, reachable from `Node`'s thread
+        # through `callbacks.getaddr` (btclib-org/btclib-node#1435).
+        # Unlocked on purpose: `attempt`'s reassignment of this dict is
+        # one step, not a read-modify-write of the attribute itself, so
+        # a concurrent `last_try` sees the whole old dict or the whole
+        # new one, never a partial one -- at worst one `attempt` stale,
+        # the same imprecision `is_empty` already accepts.
         self._last_try: dict[bytes, float] = {}
 
         # `None` is a table kept in memory only, which is what every
@@ -665,10 +682,25 @@ class PeerDB:
         that a feeler makes, and with `network` from both sides kept to
         the one network, as `CNetAddr::GetNetwork` names it: Core's
         `Select(false, {network})`, which an extra network peer makes.
+
+        The answered side reads `active_addresses` as it stands, not
+        `get_active_addresses`'s pruned view: Core's `Select_`
+        (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+        never calls `IsTerrible` -- only `GetAddr_`'s serving and
+        `AddSingle`'s duplicate-overwrite check do -- so a terrible entry
+        stays eligible for a draw here as it does there
+        (btclib-org/btclib-node#1434). A row this draws can still be
+        pruned from the table, and from the store, by
+        `get_active_addresses`'s own periodic sweep before the next
+        call; that remaining divergence from Core's tried table, which
+        keeps the entry until another address takes its slot, is argued
+        at `get_active_addresses`'s own docstring (#253).
         """
+        with self._active_lock:
+            raw_active = list(self.active_addresses)
         answered = [
             addr
-            for addr in self.get_active_addresses()
+            for addr in raw_active
             if can_connect(addr) and (network is None or get_network(addr) == network)
         ]
         tried = {_endpoint(addr) for addr in answered}
@@ -854,7 +886,7 @@ class PeerDB:
             # answered within the horizon (#253).
             active: list[NetworkAddressV2] = []
             for addr in self.active_addresses:
-                if not _aged_out(addr, now):
+                if not _aged_out(addr, now, self.last_try(addr)):
                     active.append(addr)
                 elif self.db is not None:
                     self.db.delete(_ANSWERED + endpoint_key(addr))

@@ -531,14 +531,12 @@ def test_more_positional_arguments_than_declared_is_refused_with_help(
     )
     handle_rpc(node)
     misc_error = error(RPCErrorCode.MISC_ERROR, HELP_TEXT[method])
-    # `stop`'s own reply, refused or not, goes through `send_and_wait`
-    # rather than `send`, and `handle_rpc` still calls `node.stop()`:
-    # `stop = request.method == "stop"` reads the method's own name,
-    # not whether answering it succeeded
+    # A refused `stop` is answered like any other refusal, through
+    # `send` rather than `send_and_wait`, and never calls `node.stop()`
+    # (ISS 1441): `boom` never running is what proves this reply came
+    # from the refusal and not from a handler that ran and then failed.
     reply = HttpReply(OK, {"jsonrpc": "2.0", "error": misc_error, "id": "a"})
-    assert (sent, waited, stopped) == (
-        ([], [reply], [True]) if method == "stop" else ([reply], [], [])
-    )
+    assert (sent, waited, stopped) == ([reply], [], [])
 
 
 def test_stop_is_asked_of_the_batch_not_of_its_last_request() -> None:
@@ -559,6 +557,41 @@ def test_stop_is_asked_of_the_batch_not_of_its_last_request() -> None:
 def test_a_lone_stop_waits_for_its_reply() -> None:
     """A lone `stop` is answered by `send_and_wait`, then the node stops."""
     node, sent, waited, stopped = make_node({"id": "a", "method": "stop"})
+    handle_rpc(node)
+    assert stopped == [True]
+    assert len(waited) == 1
+    assert not sent
+
+
+def test_a_refused_stop_in_a_batch_does_not_stop_the_node() -> None:
+    """A batch member refusing `stop` does not run `node.stop()` (ISS 1441).
+
+    `_answer_batch` used to set `stop` from a member's own method name as
+    soon as it was parsed, before `_exec` ever ran it, so a member that
+    asked to `stop` but was refused -- too many positional arguments,
+    here -- still reached `node.stop()`. The refused member is answered
+    inside the batch's own 200 reply, through `send`, exactly like the
+    ping beside it.
+    """
+    refused_stop = {"jsonrpc": "2.0", "id": "a", "method": "stop", "params": [1, 2]}
+    node, sent, waited, stopped = make_node([refused_stop, PING])
+    handle_rpc(node)
+    assert stopped == []
+    assert not waited
+    assert len(sent) == 1
+    [errors] = [reply["error"] for reply in sent[0].body if "error" in reply]
+    assert errors["message"] == HELP_TEXT["stop"]
+
+
+def test_a_genuine_stop_after_a_refused_one_still_stops_the_batch() -> None:
+    """A later, successful `stop` in the same batch still runs `node.stop()`.
+
+    Paired with the test above: refusing one member must not blind
+    `_answer_batch` to a real `stop` request elsewhere in the batch.
+    """
+    refused_stop = {"jsonrpc": "2.0", "id": "a", "method": "stop", "params": [1, 2]}
+    real_stop = {"jsonrpc": "2.0", "id": "b", "method": "stop"}
+    node, sent, waited, stopped = make_node([refused_stop, real_stop])
     handle_rpc(node)
     assert stopped == [True]
     assert len(waited) == 1

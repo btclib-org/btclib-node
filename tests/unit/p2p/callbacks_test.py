@@ -4,11 +4,11 @@
 
 """What this node answers a peer with, message by message.
 
-`main.handle_p2p` turns a callback that raises into a disconnect, and
-`handle_p2p_handshake` does the same, so what a callback does with a
-message it dislikes is the difference between refusing the message and
-losing the peer. The functional tests drive two cooperating nodes, which
-is the path where every message is welcome; these are the rest.
+`main.handle_p2p` turns a callback that raises a `MisbehavingError` into a
+disconnect, and `handle_p2p_handshake` does the same, so what a callback
+raises over a message it dislikes is the difference between refusing the
+message and losing the peer. The functional tests drive two cooperating
+nodes, which is the path where every message is welcome; these are the rest.
 """
 
 import logging
@@ -81,7 +81,6 @@ from btclib.p2p.limits import (
     PROTOCOL_VERSION,
 )
 from btclib.p2p.negotiation import FeeFilter, GetAddr, WtxidRelay
-from btclib.p2p.reject import Reject, RejectCode
 from btclib.script.witness import Witness
 
 import btclib_node.p2p.callbacks as cb
@@ -127,7 +126,6 @@ from btclib_node.p2p.callbacks import (
     not_found,
     ping,
     pong,
-    reject,
     sendaddrv2,
     sendheaders,
     tx,
@@ -1400,25 +1398,19 @@ def test_a_feefilter_lands_on_the_connection() -> None:
     [-500, sats_from_btc(Decimal(21_000_000)) + 1],
     ids=["negative", "above-max-money"],
 )
-def test_a_feefilter_outside_the_money_range_is_read_as_no_filter(
+def test_a_feefilter_outside_the_money_range_leaves_the_filter_in_place(
     feerate: int,
 ) -> None:
-    """A `feefilter` naming a rate outside MoneyRange reads as no filter.
+    """A `feefilter` outside MoneyRange keeps the peer's earlier filter.
 
-    Core acts on a received rate only within MoneyRange -- 0 to MAX_MONEY
-    inclusive (net_processing.cpp's NetMsgType::FEEFILTER, consensus/amount.h's
-    MoneyRange) -- and leaves either side of it parsed but unused, rather than
-    turning it into a filter nothing a real, non-negative fee rate could ever
-    fail.
+    Core assigns a received rate only within MoneyRange (net_processing.cpp's
+    NetMsgType::FEEFILTER, at bitcoin/bitcoin@9be056a8a7), so a rate outside it
+    neither sets a filter nor clears the one the peer sent before.
     """
-    # Core acts on a received rate only within MoneyRange -- 0 to
-    # MAX_MONEY inclusive (net_processing.cpp's NetMsgType::FEEFILTER,
-    # consensus/amount.h's MoneyRange) -- and leaves either side of it
-    # parsed but unused, rather than turning it into a filter nothing
-    # a real, non-negative fee rate could ever fail
     peer = a_peer()
+    feefilter(a_handshake_node(), FeeFilter(1000).serialize(), peer)
     feefilter(a_handshake_node(), FeeFilter(feerate).serialize(), peer)
-    assert peer.feefilter == 0
+    assert peer.feefilter == 1000
 
 
 def test_a_feefilter_at_the_edge_of_the_money_range_is_kept() -> None:
@@ -1866,18 +1858,22 @@ def test_an_address_of_a_network_nobody_here_has_heard_of_costs_nothing() -> Non
     assert not peer.stopped
 
 
-def test_a_notfound_is_logged_rather_than_held_against_the_peer() -> None:
-    """A `notfound` is logged as a warning, costing the peer nothing."""
-    logged, warning = log_recorder()
+def test_a_notfound_is_logged_at_debug_as_a_count_of_its_items() -> None:
+    """A `notfound` logs how many items it names, at debug, and not the items.
+
+    Core logs one only under `-debug=net`; the items are the peer's to size,
+    so a line carrying them is a line the peer sizes.
+    """
+    logged, debug = log_recorder()
+    warned, warning = log_recorder()
     node = a_handshake_node()
+    node.logger.debug = debug
     node.logger.warning = warning
     peer = a_peer()
-    not_found(
-        node,
-        NotFound([Inventory(InventoryType.MSG_TX, b"\x11" * 32)]).serialize(),
-        peer,
-    )
-    assert logged
+    items = [Inventory(InventoryType.MSG_TX, bytes([i]) * 32) for i in range(3)]
+    not_found(node, NotFound(items).serialize(), peer)
+    assert logged == ["notfound of 3 items"]
+    assert not warned
     assert not peer.stopped
 
 
@@ -1906,43 +1902,6 @@ def test_a_notfound_frees_the_transaction_it_names_to_be_asked_of_someone_else()
         peer,
     )
     assert peer.tx_requested == {b"\x22" * 32: 0.0}
-
-
-def test_a_reject_names_the_transaction_it_is_about() -> None:
-    """A `reject` is logged with its code, reason and the txid it is about."""
-    logged: list[str] = []
-    node = a_handshake_node()
-    node.logger.warning = logged.append
-    peer = a_peer()
-    txid = bytes(range(32))
-    message = Reject("tx", RejectCode.insufficientfee, "min relay fee not met", txid)
-    reject(node, message.serialize(), peer)
-    (line,) = logged
-    assert "insufficientfee" in line
-    assert "min relay fee not met" in line
-    assert txid.hex() in line
-    assert not peer.stopped
-
-
-def test_a_reject_names_a_reserved_code_by_number() -> None:
-    """A code BIP61 reserves without naming logs as the bare number.
-
-    `Reject.code` is a `RejectCode` where a member names the value and
-    a plain `int` where none does (`btclib.p2p.reject`'s own module
-    docstring): 0x44 falls in the 0x40-0x4f "Server policy rule" range
-    BIP61 reserves beside `nonstandard`, `dust`, `insufficientfee` and
-    `checkpoint`, and no member of `RejectCode` answers to it.
-    """
-    logged: list[str] = []
-    node = a_handshake_node()
-    node.logger.warning = logged.append
-    peer = a_peer()
-    txid = bytes(range(32))
-    message = Reject("tx", 0x44, "reserved code", txid)
-    reject(node, message.serialize(), peer)
-    (line,) = logged
-    assert line == f"Reject received: 68, reserved code, {txid.hex()}"
-    assert not peer.stopped
 
 
 def a_transaction() -> Tx:
@@ -3298,7 +3257,9 @@ def test_a_peer_that_declined_relay_is_still_served_a_block() -> None:
     mempool = Mempool(Logger(debug=True))
     mempool.add_tx(transaction)
     node = a_data_node(
-        mempool=mempool, block_db=SimpleNamespace(get_block=lambda h: block)
+        mempool=mempool,
+        block_index=a_tall_block_index(0, block.header.hash),
+        block_db=SimpleNamespace(get_block=lambda h: block),
     )
     peer = a_peer(relay_tx=False)
     items = [
@@ -3314,7 +3275,10 @@ def test_a_peer_that_declined_relay_is_still_served_a_block() -> None:
 def test_a_block_this_node_holds_is_served() -> None:
     """A `getdata` for a held block is served, witness included when asked."""
     block = a_block()
-    node = a_data_node(block_db=SimpleNamespace(get_block=lambda h: block))
+    node = a_data_node(
+        block_index=a_tall_block_index(0, block.header.hash),
+        block_db=SimpleNamespace(get_block=lambda h: block),
+    )
     for type_code, with_witness in (
         (InventoryType.MSG_BLOCK, False),
         (InventoryType.MSG_WITNESS_BLOCK, True),
@@ -3329,22 +3293,34 @@ def test_a_block_this_node_holds_is_served() -> None:
 
 
 def test_a_block_this_node_does_not_hold_is_not_answered() -> None:
-    """A `getdata` for a block this node lacks gets silence, matching Core."""
-    node = a_data_node(block_db=SimpleNamespace(get_block=lambda h: None))
+    """A `getdata` for a block indexed and not held gets silence, as in Core."""
+    node = a_data_node(
+        block_index=a_tall_block_index(0, b"\x11" * 32),
+        block_db=SimpleNamespace(get_block=lambda h: None),
+    )
     peer = a_peer()
     items = [Inventory(InventoryType.MSG_BLOCK, b"\x11" * 32)]
     getdata(node, GetData(items).serialize(), peer)
     assert not peer.sent
 
 
-def a_tall_block_index(length: int) -> Any:
-    """Build a `block_index` double `length` blocks tall, height by hash."""
+def a_tall_block_index(length: int, *held: bytes) -> Any:
+    """Build a `block_index` double `length` blocks tall, then `held` on top.
+
+    Every block is on the active chain, height by hash, so that a `getdata`
+    for any of them passes `_block_request_allowed`.
+    """
     active_chain = [height.to_bytes(32, "big") for height in range(length)]
+    active_chain.extend(held)
     header_dict = {
         block_hash: SimpleNamespace(index=height)
         for height, block_hash in enumerate(active_chain)
     }
-    return SimpleNamespace(active_chain=active_chain, header_dict=header_dict)
+    return SimpleNamespace(
+        active_chain=active_chain,
+        header_dict=header_dict,
+        get_block_info=header_dict.__getitem__,
+    )
 
 
 def test_a_pruned_node_disconnects_a_getdata_below_its_own_retained_depth() -> None:
@@ -3394,7 +3370,10 @@ def test_a_fresh_node_serves_its_genesis_block(tmp_path: Path) -> None:
     """
     genesis = RegTest().genesis_block
     with unstarted_node_context(tmp_path) as real:
-        node = a_data_node(block_db=real.block_db)
+        node = a_data_node(
+            block_index=a_tall_block_index(0, genesis.header.hash),
+            block_db=real.block_db,
+        )
         peer = a_peer()
         items = [Inventory(InventoryType.MSG_BLOCK, genesis.header.hash)]
         getdata(node, GetData(items).serialize(), peer)
@@ -3766,7 +3745,10 @@ def test_getdata_stops_sending_once_the_connection_closes_mid_answer() -> None:
     """
     blocks = [a_block() for _ in range(4)]
     lookup = {b.header.hash: b for b in blocks}
-    node = a_data_node(block_db=SimpleNamespace(get_block=lookup.get))
+    node = a_data_node(
+        block_index=a_tall_block_index(0, *lookup),
+        block_db=SimpleNamespace(get_block=lookup.get),
+    )
     peer = a_peer()
     sent = peer.sent
 
@@ -3825,34 +3807,36 @@ class FakeHeaderIndex:
         *,
         refuse: bool = False,
         header_index_tip: bytes = b"\xff" * 32,
-        tip_status: BlockStatus = BlockStatus.valid_header,
     ) -> None:
         """Fix `add_headers`'s return, whether it raises, and the tip."""
         self.tip = tip
         self.refuse = refuse
         self.header_index = [header_index_tip]
         self.header_index_pos = {header_index_tip: 0}
-        self.tip_status = tip_status
         self.given: list[BlockHeader] | None = None
-        # what `update_block_availability` looks a hash up in: empty, so
-        # every hash `headers` records for the peer is kept as unknown
-        self.header_dict: dict[bytes, Any] = {}
+        self.punish_cached_invalid: bool | None = None
+        # what `update_block_availability` looks a hash up in, and what
+        # `headers` asks whether a batch connects: regtest's genesis, the
+        # parent of every batch here, where `tip` says the batch connected,
+        # so every hash `headers` records for the peer is kept as unknown
+        self.header_dict: dict[bytes, Any] = (
+            {} if tip is None else {RegTest().genesis.hash: None}
+        )
         # every header of as much work as the tip, so that no batch here
         # is a block announcement
         self.active_chain = [header_index_tip]
         self.chainwork: defaultdict[bytes, int] = defaultdict(int)
 
-    def add_headers(self, headers: Iterable[BlockHeader]) -> bytes | None:
-        """Record the headers given, then answer `tip` or raise if `refuse`."""
+    def add_headers(
+        self, headers: Iterable[BlockHeader], *, punish_cached_invalid: bool = False
+    ) -> bytes | None:
+        """Record the headers and the flag given, then answer `tip` or raise."""
         self.given = list(headers)
+        self.punish_cached_invalid = punish_cached_invalid
         if self.refuse:
             err_msg = "a header failing on its own terms"
             raise BTClibValueError(err_msg)
         return self.tip
-
-    def get_block_info(self, block_hash: bytes) -> SimpleNamespace:
-        """Answer every hash with the same fixed `tip_status`, and index 0."""
-        return SimpleNamespace(status=self.tip_status, index=0)
 
     def get_block_locator_hashes(self) -> list[bytes]:
         """Return the one fixed locator hash this stand-in ever answers with."""
@@ -3903,35 +3887,6 @@ def test_a_full_batch_on_a_live_fork_asks_from_the_fork_s_own_tip() -> None:
     assert node.status == NodeStatus.SyncingHeaders
 
 
-def test_a_full_batch_on_an_invalid_fork_uses_the_usual_locator_instead() -> None:
-    """A full batch on an already-invalid fork falls back to the usual locator.
-
-    A batch built on a parent this node already proved invalid is a fork by the
-    header_index test above, but not one worth asking a peer for more of:
-    nothing in this tree scores or bans a peer that keeps sending it, so the
-    locator falls back rather than naming that fork's own tip back to it.
-    """
-    # a batch built on a parent this node already proved invalid is a
-    # fork by the header_index test above, but not one worth asking a
-    # peer for more of: nothing in this tree scores or bans a peer that
-    # keeps sending it, so the locator falls back rather than naming that
-    # fork's own tip back to it
-    chain = generate_random_header_chain(2000, RegTest().genesis.hash)
-    node = a_data_node(status=NodeStatus.SyncingHeaders)
-    index = FakeHeaderIndex(
-        tip=chain[-1].hash,
-        header_index_tip=b"\xff" * 32,
-        tip_status=BlockStatus.invalid,
-    )
-    node.chainstate.block_index = index
-    peer = a_peer()
-    headers(node, Headers(chain).serialize(), peer)
-    (answer,) = peer.sent
-    assert isinstance(answer, GetHeaders)
-    assert answer.locator == (b"\x00" * 32,)
-    assert node.status == NodeStatus.SyncingHeaders
-
-
 def test_a_full_batch_from_nowhere_known_asks_from_what_this_node_knows() -> None:
     """A full batch connecting to nothing known asks from what this node has.
 
@@ -3977,33 +3932,16 @@ def test_a_short_batch_from_nowhere_known_asks_from_what_this_node_knows() -> No
     assert node.status == NodeStatus.SyncingHeaders
 
 
-def test_a_batch_on_an_already_invalid_parent_is_not_asked_for_again(
+def test_a_batch_on_an_already_invalid_parent_is_refused_misbehaving(
     tmp_path: Path,
 ) -> None:
-    """A batch on an already-invalid parent falls back to the usual locator.
+    """ISS 1233: Core's `bad-prevblk`, which `MaybePunishNodeForBlock` punishes.
 
-    add_headers has no reason to refuse this batch -- every header in it still
-    passes its own checks on its own terms, invalid parent or not -- so avoiding
-    a request for more of a branch this node has already proved bad is
-    callbacks.headers's own contract, proved here through the real BlockIndex
-    and not a fake standing in for it. btclib-org/btclib-node#122
+    Through the real `BlockIndex`: nothing of the batch is indexed, and no
+    `getheaders` goes back for more of a branch this node proved bad.
     """
-    # add_headers has no reason to refuse this batch -- every header in
-    # it still passes its own checks on its own terms, invalid parent or
-    # not -- so avoiding a request for more of a branch this node has
-    # already proved bad is callbacks.headers's own contract, proved
-    # here through the real BlockIndex and not a fake standing in for
-    # it. btclib-org/btclib-node#122
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
-    # heavier than the invalid fork below could ever become, so
-    # header_index never shifts onto it and the fallback below is
-    # decided by BlockStatus alone, not by tip == header_index[-1]
-    active = generate_random_header_chain(3000, RegTest().genesis.hash)
-    block_index.add_headers(active)
-    for header in active:
-        block_index.add_to_active_chain(header.hash)
-
     victim = generate_random_header_chain(1, RegTest().genesis.hash)
     block_index.add_headers(victim)
     block_index.invalidate(victim[0].hash)
@@ -4011,14 +3949,68 @@ def test_a_batch_on_an_already_invalid_parent_is_not_asked_for_again(
     extension = generate_random_header_chain(2000, victim[0].hash, victim[0].time)
     node = a_data_node(block_index=block_index, status=NodeStatus.SyncingHeaders)
     peer = a_peer()
-    headers(node, Headers(extension).serialize(), peer)
+    with pytest.raises(MisbehavingError, match=r"^bad-prevblk$"):
+        headers(node, Headers(extension).serialize(), peer)
 
-    assert block_index.header_index[-1] == active[-1].hash
-    assert block_index.get_block_info(extension[-1].hash).status == BlockStatus.invalid
-    (answer,) = peer.sent
-    assert isinstance(answer, GetHeaders)
-    assert extension[-1].hash not in answer.locator
-    assert answer.locator == tuple(block_index.get_block_locator_hashes())
+    assert extension[0].hash not in block_index.header_dict
+    assert not peer.sent
+    chainstate.close()
+
+
+@pytest.mark.parametrize("inbound", [True, False])
+def test_headers_punishes_a_cached_invalid_header_from_an_outbound_peer_alone(
+    inbound: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1233: Core's `BLOCK_CACHED_INVALID` costs an outbound peer alone."""
+    chain = generate_random_header_chain(2, RegTest().genesis.hash)
+    node = a_data_node(status=NodeStatus.SyncingHeaders)
+    index = FakeHeaderIndex(tip=chain[-1].hash)
+    node.chainstate.block_index = index
+    headers(node, Headers(chain).serialize(), a_peer(inbound=inbound))
+    assert index.punish_cached_invalid is not inbound
+
+
+def test_a_connecting_batch_refused_from_a_kept_peer_answers_the_getheaders(
+    tmp_path: Path,
+) -> None:
+    """ISS 1233: Core clears the request in flight before accepting a header.
+
+    The batch's first header connects and passes `CheckHeadersPoW`, and the
+    batch is refused after that, `duplicate-invalid` from an inbound peer,
+    who is kept: the `getheaders` in flight is answered all the same.
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    block_index = chainstate.block_index
+    chain = generate_random_header_chain(1, RegTest().genesis.hash)
+    block_index.add_headers(chain)
+    block_index.invalidate(chain[0].hash)
+    node = a_data_node(block_index=block_index, status=NodeStatus.SyncingHeaders)
+    peer = a_peer(inbound=True)
+    node.download_manager.last_getheaders_timestamps[peer.id] = time.time()
+    with pytest.raises(BTClibValueError, match=r"^duplicate-invalid$"):
+        headers(node, Headers(chain).serialize(), peer)
+    assert peer.id not in node.download_manager.last_getheaders_timestamps
+    chainstate.close()
+
+
+def test_a_batch_failing_check_headers_pow_leaves_the_getheaders_in_flight(
+    tmp_path: Path,
+) -> None:
+    """ISS 1233: Core's `CheckHeadersPoW` refuses before the request is cleared.
+
+    The first header connects; the second does not build on it.
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    block_index = chainstate.block_index
+    first = generate_random_header_chain(1, RegTest().genesis.hash)
+    other = generate_random_header_chain(1, RegTest().genesis.hash)
+    node = a_data_node(block_index=block_index, status=NodeStatus.SyncingHeaders)
+    peer = a_peer()
+    in_flight = time.time()
+    node.download_manager.last_getheaders_timestamps[peer.id] = in_flight
+    with pytest.raises(MisbehavingError, match="non-continuous headers sequence"):
+        headers(node, Headers([*first, *other]).serialize(), peer)
+    assert node.download_manager.last_getheaders_timestamps[peer.id] == in_flight
     chainstate.close()
 
 
@@ -4338,6 +4330,62 @@ def test_a_validated_block_off_the_chain_is_served_while_little_work_behind(
 
     hashes, _ = answer(an_index, [], side[0].hash)
     assert hashes == ([side[0].hash] if allowed else None)
+
+
+def a_block_getdata(
+    block_index: BlockIndex, block_hash: bytes, *, pruned: bool = False
+) -> Any:
+    """Ask a node over `block_index` for `block_hash`, held; return the peer."""
+    block = a_block()
+    node = a_data_node(
+        block_index=block_index, block_db=SimpleNamespace(get_block=lambda h: block)
+    )
+    node.config.pruned = pruned
+    peer = a_peer()
+    items = [Inventory(InventoryType.MSG_WITNESS_BLOCK, block_hash)]
+    getdata(node, GetData(items).serialize(), peer)
+    return peer
+
+
+def test_a_stored_block_marked_invalid_is_not_served(an_index: BlockIndex) -> None:
+    """ISS 1254: Core's `BlockRequestAllowed`, off the chain and not valid."""
+    (header,) = generate_random_header_chain(1, _GENESIS)
+    an_index.add_headers([header])
+    an_index.invalidate(header.hash)
+    peer = a_block_getdata(an_index, header.hash)
+    assert not peer.sent
+    assert not peer.stopped
+
+
+@pytest.mark.parametrize(
+    ("status", "served"),
+    [(BlockStatus.valid, True), (BlockStatus.valid_header, False)],
+    ids=["validated", "header-only"],
+)
+def test_a_block_off_the_chain_is_served_only_where_validated(
+    an_index: BlockIndex,
+    status: BlockStatus,
+    served: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1254: a recent side block is served once it passed validation."""
+    (side,) = generate_random_header_chain(1, _GENESIS)
+    an_index.add_headers([side])
+    an_index.set_status(side.hash, status)
+    activated(an_index, generate_random_header_chain(2, _GENESIS))
+    peer = a_block_getdata(an_index, side.hash)
+    assert bool(peer.sent) is served
+
+
+def test_a_pruned_node_ignores_a_deep_side_block_rather_than_disconnecting(
+    an_index: BlockIndex,
+) -> None:
+    """ISS 1254: `BlockRequestAllowed` is asked ahead of the prune threshold."""
+    (side,) = generate_random_header_chain(1, _GENESIS)
+    an_index.add_headers([side])
+    activated(an_index, generate_random_header_chain(MIN_BLOCKS_TO_KEEP + 10, _GENESIS))
+    peer = a_block_getdata(an_index, side.hash, pruned=True)
+    assert not peer.sent
+    assert not peer.stopped
 
 
 def test_an_empty_headers_batch_asks_for_nothing_more() -> None:
@@ -5024,7 +5072,9 @@ def test_a_known_batch_off_the_best_header_chain_is_checked_on_the_active_one(
 def a_minimum_chain_work(node: Any, work: int) -> None:
     """Give `node` a regtest whose `minimum_chain_work` is `work`, not 0."""
     consensus = replace(node.chain.consensus, minimum_chain_work=work)
-    node.chain = SimpleNamespace(consensus=consensus)
+    node.chain = SimpleNamespace(
+        consensus=consensus, pow_limit_bits=node.chain.pow_limit_bits
+    )
 
 
 @pytest.mark.parametrize(
