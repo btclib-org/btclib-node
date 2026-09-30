@@ -2425,71 +2425,6 @@ def _decode_hex_tx(rawtx: str) -> Tx:
 _MAX_SATOSHI = 21_000_000 * 100_000_000
 
 
-# Every exact `Tx.assert_valid` message this translates one for one,
-# barring the two amount-range messages: `_amount_reject_reason` below
-# disambiguates those, one btclib message answering for both.
-_EXACT_REJECT_REASONS = {
-    "Missing inputs": "bad-txns-vin-empty",
-    "Missing outputs": "bad-txns-vout-empty",
-    "the same outpoint is spent twice": "bad-txns-inputs-duplicate",
-    "Invalid coinbase script size": "bad-cb-length",
-    "coinbase input in a non-coinbase transaction": "bad-txns-prevout-null",
-}
-
-
-def _amount_reject_reason(tx: Tx, message: str) -> str | None:
-    """Disambiguate the one btclib message shared by two of Core's own reasons.
-
-    `valid_sats_amount` (`btclib/amount.py`) raises the identical
-    "invalid satoshi amount" text for a negative value and for one
-    above `MAX_MONEY`, where Core's own `CheckTransaction` tells them
-    apart as `bad-txns-vout-negative` and `bad-txns-vout-toolarge`; this
-    reads the field itself to say which. `None` where `message` is
-    neither this nor the total-amount check's own message.
-    """
-    if message.startswith("invalid total output amount"):
-        return "bad-txns-txouttotal-toolarge"
-    if message.startswith("invalid satoshi amount"):
-        for tx_out in tx.vout:
-            if tx_out.value < 0:
-                return "bad-txns-vout-negative"
-            if tx_out.value > _MAX_SATOSHI:
-                return "bad-txns-vout-toolarge"
-    return None
-
-
-def _reject_reason(tx: Tx, error: BTClibException) -> str:
-    """Name `error`, a `Tx.assert_valid` refusal, Core's own way.
-
-    `Tx.assert_valid`'s own docstring already claims it checks what
-    Core's `CheckTransaction` checks of a lone transaction
-    (`src/consensus/tx_check.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag); this does not run that rule a second time -- `error` is
-    already btclib's own verdict -- it only answers which of Core's own
-    reject reasons applies, since `assert_valid`'s message does not
-    always say. Every message `assert_valid` can raise for a `Tx` built
-    by `_decode_hex_tx`'s own `check_validity=False` is named below,
-    barring the field-range checks on `version`/`lock_time`: `Tx.parse`
-    always builds a 4-byte-clean value for both, so neither ever reaches
-    this. A message this does not recognize is `error` itself, re-raised
-    -- this tree's own equivalent of Core's `Assume(false)` for a
-    consensus check the engine disagrees with itself about.
-
-    `_check_transaction`'s own fallback, reached only for a message
-    `_core_order_reject_reason` does not place: every rule that
-    function knows is named in `_EXACT_REJECT_REASONS` and
-    `_amount_reject_reason` too, so this is defensive rather than a
-    second, competing translation.
-    """
-    message = str(error)
-    if message in _EXACT_REJECT_REASONS:
-        return _EXACT_REJECT_REASONS[message]
-    reason = _amount_reject_reason(tx, message)
-    if reason is not None:
-        return reason
-    raise error
-
-
 # Core's own coinbase scriptSig bounds (`src/consensus/tx_check.cpp`,
 # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): named here only so the
 # two literals in `_core_order_coinbase_reason` below read as Core's own
@@ -2565,10 +2500,13 @@ def _core_order_reject_reason(tx: Tx) -> str | None:
     behind it to reorder (btclib-org/btclib-node#1447), so the size
     check between `vout-empty` and the per-output amounts in Core's own
     function is not repeated here. `None` where none of the checks
-    below fire, which given `assert_valid` already raised means it
-    raised for a rule this does not know how to place in Core's order
-    -- `_reject_reason`'s own translation of `assert_valid`'s message
-    is what answers that case.
+    below fire: every message `assert_valid` can actually raise for a
+    `Tx` built by `_decode_hex_tx`'s own `check_validity=False` is one
+    of these six, barring the field-range checks on
+    `version`/`lock_time` that `Tx.parse` never leaves reachable, so
+    `_check_transaction`'s own `None` case is defensive rather than a
+    second, real path -- `assert_valid` disagreeing with every one of
+    the checks it claims to make.
     """
     if not tx.vin:
         return "bad-txns-vin-empty"
@@ -2593,9 +2531,11 @@ def _check_transaction(tx: Tx) -> str | None:
     `assert_valid` already read, to pick which reason a transaction
     violating more than one of Core's rules is reported under, in
     Core's own order rather than `assert_valid`'s -- its own docstring
-    has why. A transaction `assert_valid` refuses for a rule that
-    function does not check falls back to `_reject_reason`'s own
-    translation of `assert_valid`'s message.
+    has why and has the six rules it knows. `error` itself is re-raised
+    for a message none of those six explain -- this tree's own
+    equivalent of Core's `Assume(false)` for a consensus check the
+    engine disagrees with itself about, `_core_order_reject_reason`'s
+    own docstring has why that is defensive rather than reachable.
 
     Core's `bad-txns-oversize` -- a transaction whose own non-witness
     size alone already exceeds a block's weight limit -- has no
@@ -2604,11 +2544,11 @@ def _check_transaction(tx: Tx) -> str | None:
     """
     try:
         tx.assert_valid()
-    except (BTClibValueError, BTClibTypeError) as error:
+    except BTClibValueError, BTClibTypeError:
         reason = _core_order_reject_reason(tx)
-        if reason is not None:
-            return reason
-        return _reject_reason(tx, error)
+        if reason is None:
+            raise
+        return reason
     return None
 
 

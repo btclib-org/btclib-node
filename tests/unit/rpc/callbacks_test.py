@@ -2483,30 +2483,69 @@ def test_a_multiply_invalid_tx_is_refused_by_cores_earlier_rule(
     assert verdict["reject-details"] == reason
 
 
-def test_an_unrecognized_assert_valid_message_is_not_swallowed() -> None:
-    """`_reject_reason` re-raises what it does not recognize.
+def test_an_unrecognized_assert_valid_message_is_not_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_check_transaction` re-raises what its own order-check cannot place.
 
     Defensive: every message `Tx.assert_valid` can actually raise for a
-    parsed `Tx` is named, so this exercises the fallback with a message
-    that is not one of them, standing in for a rule this mapping has
-    not been taught yet.
+    `Tx` `_decode_hex_tx` builds is one of the six rules
+    `_core_order_reject_reason` knows (its own docstring), so this tx is
+    otherwise clean -- `_core_order_reject_reason` alone, called
+    directly, answers `None` for it -- and `assert_valid` is
+    monkeypatched to raise anyway, standing in for a rule this tree has
+    not taught either function yet.
     """
     tx = a_tx()
+    assert cb._core_order_reject_reason(tx) is None
     error = BTClibValueError("a rule this mapping does not know about")
+
+    def raise_error() -> None:
+        raise error
+
+    monkeypatch.setattr(tx, "assert_valid", raise_error)
     with pytest.raises(BTClibValueError):
-        cb._reject_reason(tx, error)
+        cb._check_transaction(tx)
 
 
-def test_amount_reject_reason_answers_none_when_nothing_violates() -> None:
-    """`_amount_reject_reason` falls through its own loop to `None`.
+def test_core_order_reject_reason_answers_vin_empty_for_no_inputs() -> None:
+    """`_core_order_reject_reason` names the empty-`vin` rule directly.
 
-    Defensive, the same reason as the test above: `Tx.assert_valid` only
-    ever raises this message when some output really is out of range,
-    so this reaches the loop's fall-through directly rather than through
-    a real refusal that could not carry it.
+    Not reachable through `_decode_hex_tx`: a zero-input transaction's
+    own wire encoding is exactly `Tx.parse`'s own segwit marker byte
+    followed by the first byte of what comes next, which `Tx.parse`
+    reads as the witness flag whenever that byte happens to be `0x01`
+    and otherwise fails to parse at all rather than answering a `Tx`
+    with an empty `vin` -- the same ambiguity
+    `decode_raw_transaction`'s own docstring names for `iswitness`,
+    btclib-org/btclib-node#1458. Called directly, standing in for the
+    `_check_transaction` caller no real raw tx can drive here.
     """
-    tx = a_tx()
-    assert cb._amount_reject_reason(tx, "invalid satoshi amount: 5") is None
+    tx = a_malformed_tx(vin=[])
+    assert cb._core_order_reject_reason(tx) == "bad-txns-vin-empty"
+
+
+def test_core_order_coinbase_reason_answers_none_for_a_valid_coinbase() -> None:
+    """`_core_order_coinbase_reason` answers `None` for a length-valid coinbase.
+
+    `_core_order_reject_reason` only ever reaches this function once
+    `assert_valid` has already refused `tx`, so a coinbase whose own
+    script_sig length is valid never reaches it through
+    `_check_transaction` -- there would be nothing left for
+    `assert_valid` to have refused. Called directly, the same reasoning
+    as the vin-empty case above.
+    """
+    tx = a_malformed_tx(
+        vin=[
+            TxIn(
+                prev_out=OutPoint(b"\x00" * 32, 0xFFFFFFFF),
+                script_sig=b"\x02\x02",
+                sequence=0xFFFFFFFF,
+            )
+        ]
+    )
+    assert tx.is_coinbase
+    assert cb._core_order_coinbase_reason(tx) is None
 
 
 def test_decoderawtransaction_answers_the_dict_shape_and_no_more() -> None:
