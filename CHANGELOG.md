@@ -1192,6 +1192,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   milliseconds**, as Core's own `stop <ms>` does, while the node starts
   shutting down at once (closes #1467).
 
+### The OpenSSF Baseline badge
+
+- **`README.md`'s badge row ends with the OpenSSF Baseline badge**,
+  beside the Best Practices badge, which section 2 of the organization
+  standard admits (issue btclib-org/.github#1460).
+
 ### `btclib-wallet` is now a runtime dependency
 
 - **`rpc/callbacks.py` reads `add_checksum`/`from_address` from
