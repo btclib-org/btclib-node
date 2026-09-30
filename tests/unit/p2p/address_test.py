@@ -1058,13 +1058,41 @@ def test_a_self_announced_address_is_kept_with_no_penalty() -> None:
     `AddSingle`'s own `if (addr == source) { time_penalty = 0s; }`
     (same sha as the test above): the exemption is `add_addresses`'
     `source` argument, which `callbacks._store_gossip` passes as the
-    connection's own address. Compared by endpoint only -- `_endpoint`
-    rather than `==` -- since a self-announcement still carries its own
-    services and timestamp, which are no part of what names the peer.
+    connection's own address. Compared by host only -- `_host` rather
+    than `==` -- since a self-announcement still carries its own
+    services, timestamp and, as the test below covers, port, none of
+    which are what `CNetAddr::operator==` names the peer by.
     """
     peer_db = a_peer_db()
     now = int(time.time())
     source = peer_address("1.2.3.4", 8333, timestamp=1, services=ServiceFlags.NODE_NONE)
+    announced = peer_address("1.2.3.4", 8333, timestamp=now)
+    peer_db.add_addresses([announced], source=source)
+    (kept,) = peer_db.addresses
+    assert kept.timestamp == now
+
+
+def test_a_self_announcement_on_a_different_port_still_costs_no_penalty() -> None:
+    """An inbound peer's own ephemeral source port does not break the exemption.
+
+    `source` for an inbound connection is `conn.address` still carrying
+    the peer's ephemeral TCP source port from `sock.accept()`'s own
+    peername -- `callbacks.py`'s own `version` handler rewrites
+    `conn.address` for an outbound connection alone -- while the address
+    a peer announces about itself names its own listening port instead,
+    8333 here against a source on an unrelated ephemeral one. Core's own
+    comparison never sees either port: `AddrManImpl::AddSingle`'s `addr
+    == source` slices `addr`, a `CAddress`, down to its own `CNetAddr`
+    base before `CNetAddr::operator==` ever runs (`src/addrman.cpp` and
+    `src/netaddress.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
+    so the exemption still applies (btclib-org/btclib-node#1380, review
+    round 2).
+    """
+    peer_db = a_peer_db()
+    now = int(time.time())
+    source = peer_address(
+        "1.2.3.4", 54321, timestamp=1, services=ServiceFlags.NODE_NONE
+    )
     announced = peer_address("1.2.3.4", 8333, timestamp=now)
     peer_db.add_addresses([announced], source=source)
     (kept,) = peer_db.addresses

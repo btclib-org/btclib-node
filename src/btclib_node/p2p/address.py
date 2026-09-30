@@ -436,6 +436,22 @@ def _endpoint(address: NetworkAddressV2) -> tuple[int, bytes, int]:
     return address.network_id, address.address, address.port
 
 
+def _host(address: NetworkAddressV2) -> tuple[int, bytes]:
+    """Return the fields Core's `CNetAddr::operator==` compares: no port.
+
+    `bool operator==(const CNetAddr& a, const CNetAddr& b)` (`src/
+    netaddress.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) is
+    `a.m_net == b.m_net && a.m_addr == b.m_addr` -- `host_key` below is
+    `GetAddrBytes()`'s own octets alone, `m_addr`, and is paired with
+    `network_id` here for `m_net`: `AddrManImpl::AddSingle`'s `addr ==
+    source` (`src/addrman.cpp`, same sha) slices a `CAddress` down to
+    its `CNetAddr` base before this operator ever runs, which is what
+    drops the port from the comparison in Core too, not an omission of
+    this function's own.
+    """
+    return address.network_id, host_key(address)
+
+
 def host_key(address: NetworkAddressV2) -> bytes:
     """Return the octets Core's `CNetAddr::GetAddrBytes` gives: no port.
 
@@ -873,16 +889,30 @@ class PeerDB:
         `addrman.get().Add(vAdd, resolveSource)` alike pass no third
         argument), each answer already carrying a timestamp Core backdates
         itself before it ever reaches here. An
-        address equal to `source` -- endpoint only, `_endpoint` rather
-        than `==`, since two records differing in `timestamp` or
-        `services` are still one self-announcement -- is exempted from
+        address equal to `source` -- host only, `_host` rather than
+        `==`, since two records differing in `timestamp`, `services` or
+        even port are still one self-announcement -- is exempted from
         the penalty, as `AddSingle`'s own `if (addr == source) { time_penalty
         = 0s; }` is: a peer's word for its own address costs it nothing,
-        where the same word for somebody else's does.
+        where the same word for somebody else's does. The port is
+        dropped from the comparison because Core's is: `source` there is
+        a `CNetAddr`, not a `CAddress`, and `addr == source` slices
+        `addr` down to its own `CNetAddr` base first
+        (`AddrManImpl::AddSingle`, `src/addrman.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag) -- `_host`'s own
+        docstring is where `CNetAddr::operator==` itself is read. An
+        inbound `source` carries the peer's ephemeral source port from
+        `sock.accept()`'s own peername (`callbacks.py`'s own `version`
+        handler rewrites `conn.address` for an outbound connection
+        alone), which an endpoint-including comparison would have
+        compared against the peer's own announced listening port and
+        almost never matched (btclib-org/btclib-node#1380, review round
+        2) -- host-only is not merely Core's own comparison, it is what
+        makes the exemption reachable for an inbound peer at all.
         """
         # what each endpoint kept was gossiped with, for its answered row
         gossiped: dict[bytes, ServiceFlags] = {}
-        source_endpoint = _endpoint(source) if source is not None else None
+        source_host = _host(source) if source is not None else None
         with self._addresses_lock, self._write_batch() as wb:
             # `endpoint_key` is what the durable row is already keyed on --
             # network id, address and port, not `services` -- so a
@@ -911,7 +941,7 @@ class PeerDB:
                 services = address.services
                 if existing is not None:
                     services |= existing.services
-                penalty = 0.0 if _endpoint(address) == source_endpoint else time_penalty
+                penalty = 0.0 if _host(address) == source_host else time_penalty
                 timestamp = max(0, int(address.timestamp - penalty))
                 known = replace(address, timestamp=timestamp, services=services)
                 # the cap is on distinct endpoints, so updating one

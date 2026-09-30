@@ -979,8 +979,11 @@ def _store_gossip(
     # `source=conn.address`: Core's own `m_addrman.Add(vAddrOk,
     # pfrom.addr, /*time_penalty=*/2h)` (same loop, same sha) passes the
     # connection's own address as `AddSingle`'s `source`, which exempts
-    # a self-announcement -- an address equal to the peer's own -- from
-    # the batch's flat two-hour penalty, `add_addresses`' own default.
+    # a self-announcement -- an address equal to the peer's own host,
+    # port aside -- from the batch's flat two-hour penalty,
+    # `add_addresses`' own default; `add_addresses`'s own docstring is
+    # where the port is argued out of the comparison
+    # (btclib-org/btclib-node#1380, review round 2).
     manager.peer_db.add_addresses(kept, source=conn.address)
     if conn.addr_fetch and len(received) > 1:
         node.logger.debug("addrfetch connection completed, peer=%s", conn.id)

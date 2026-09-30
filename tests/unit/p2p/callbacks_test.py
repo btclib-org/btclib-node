@@ -666,7 +666,10 @@ def _as_stored(
     """Return `address` as `add_addresses` stores it, gossiped by `source`.
 
     Mirrors `add_addresses`'s own penalty (`address.py`): none where
-    `address` and `source` share an endpoint -- a self-announcement --
+    `address` and `source` share a host -- a self-announcement, port
+    aside, `address_module._host` rather than `endpoint_key` since an
+    inbound `source`'s own port is an ephemeral one
+    (btclib-org/btclib-node#1380, review round 2) --
     `address_module._GOSSIP_TIME_PENALTY` otherwise. `source` defaults
     to `a_peer()`'s own default address, which is what every test below
     gossips through unless it builds its own peer at another one.
@@ -675,7 +678,7 @@ def _as_stored(
         source = a_peer().address
     penalty = (
         0
-        if endpoint_key(address) == endpoint_key(source)
+        if address_module._host(address) == address_module._host(source)
         else address_module._GOSSIP_TIME_PENALTY
     )
     return replace(address, timestamp=max(0, int(address.timestamp - penalty)))
@@ -1718,6 +1721,31 @@ def test_the_addresses_a_peer_sends_are_kept() -> None:
         node = a_handshake_node(peer_db=peer_db)
         callback(node, message.serialize(), a_gossiping_peer())
         assert peer_db.addresses == {_as_stored(address) for address in given}
+
+
+def test_an_inbound_peer_s_self_announcement_costs_no_penalty_port_aside() -> None:
+    """#1380, review round 2: an inbound peer's own port is an ephemeral one.
+
+    `conn.address` for an inbound connection keeps the peer's ephemeral
+    TCP source port from `sock.accept()`'s own peername -- `version`'s
+    own handler rewrites `conn.address` for an outbound connection alone
+    -- while what a peer gossips about itself names its own listening
+    port instead, `18444` here against an inbound source on an unrelated
+    ephemeral one, `54321`. Core's own comparison never sees either
+    port (`AddrManImpl::AddSingle`'s `addr == source` slices `addr` down
+    to its `CNetAddr` base before `CNetAddr::operator==` ever runs,
+    `src/addrman.cpp` and `src/netaddress.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so the exemption still
+    has to apply here.
+    """
+    source = peer_address("1.2.3.4", 54321)
+    announced = a_gossiped_address("1.2.3.4")
+    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+    node = a_handshake_node(peer_db=peer_db)
+    peer = a_gossiping_peer(inbound=True, address=source)
+    message = AddrV2([announced])
+    addrv2(node, message.serialize(), peer)
+    assert peer_db.addresses == {_as_stored(announced, source=source)}
 
 
 def test_an_addr_fetch_peer_is_stopped_once_it_answers_with_more_than_one() -> None:
