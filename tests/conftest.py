@@ -568,15 +568,26 @@ def pytest_configure(config: pytest.Config) -> None:
 
 @contextmanager
 def node_context(
-    tmp_path: Path, *, allow_p2p: bool = True, allow_rpc: bool = True
+    tmp_path: Path,
+    *,
+    allow_p2p: bool = True,
+    allow_rpc: bool = True,
+    max_tip_age: int | None = None,
 ) -> Iterator[Node]:
     """Start a regtest node with each enabled server on a random port.
 
     `allow_p2p` and `allow_rpc` toggle which of the two servers actually
     binds one; `rpc_node` below is this with `allow_p2p=False`, for a
-    test that only ever talks to the node over RPC. `node.stop()` runs
-    once the caller's `with` block exits, whichever way it exits.
+    test that only ever talks to the node over RPC. `max_tip_age` is
+    `Config`'s own `-maxtipage`, left at its default where `None`, for a
+    test of `main.update_ibd_status` against a tip age narrower than
+    regtest's own fixtures carry (btclib-org/btclib-node#1474).
+    `node.stop()` runs once the caller's `with` block exits, whichever
+    way it exits.
     """
+    config_kwargs: dict[str, Any] = {}
+    if max_tip_age is not None:
+        config_kwargs["max_tip_age"] = max_tip_age
     node = Node(
         config=Config(
             chain="regtest",
@@ -586,6 +597,7 @@ def node_context(
             allow_rpc=allow_rpc,
             rpc_port=get_random_port() if allow_rpc else None,
             debug=True,
+            **config_kwargs,
         )
     )
     node.start()

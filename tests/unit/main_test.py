@@ -2499,6 +2499,7 @@ def an_ibd_node(
     chainwork: int,
     tip_time: datetime,
     minimum_chain_work: int = 0,
+    max_tip_age: int = int(MAX_TIP_AGE.total_seconds()),
     is_initial_block_download: bool = True,
 ) -> Node:
     """Build a node carrying just what `main.update_ibd_status` reads."""
@@ -2506,8 +2507,8 @@ def an_ibd_node(
     return cast(
         "Node",
         SimpleNamespace(
-            chain=SimpleNamespace(
-                consensus=SimpleNamespace(minimum_chain_work=minimum_chain_work)
+            config=SimpleNamespace(
+                minimum_chain_work=minimum_chain_work, max_tip_age=max_tip_age
             ),
             chainstate=SimpleNamespace(
                 block_index=SimpleNamespace(
@@ -2523,15 +2524,15 @@ def an_ibd_node(
     )
 
 
-def test_update_ibd_status_stays_true_below_the_chain_s_minimum_work() -> None:
-    """Below `Chain.consensus.minimum_chain_work`, the tip's age is unread."""
+def test_update_ibd_status_stays_true_below_the_configured_minimum_work() -> None:
+    """Below `node.config.minimum_chain_work`, the tip's age is unread."""
     node = an_ibd_node(chainwork=5, minimum_chain_work=10, tip_time=datetime.now(UTC))
     main.update_ibd_status(node)
     assert node.is_initial_block_download is True
 
 
-def test_update_ibd_status_stays_true_past_max_tip_age() -> None:
-    """Enough work, but a tip older than `MAX_TIP_AGE`: still in IBD."""
+def test_update_ibd_status_stays_true_past_the_configured_max_tip_age() -> None:
+    """Enough work, but a tip older than `config.max_tip_age`: still IBD."""
     node = an_ibd_node(
         chainwork=10,
         minimum_chain_work=10,
@@ -2539,6 +2540,51 @@ def test_update_ibd_status_stays_true_past_max_tip_age() -> None:
     )
     main.update_ibd_status(node)
     assert node.is_initial_block_download is True
+
+
+def test_update_ibd_status_reads_minimum_chain_work_off_config_not_the_chain() -> None:
+    """A `-minimumchainwork` override is read, not the chain's own floor.
+
+    `an_ibd_node`'s `minimum_chain_work` stands in for `-minimumchainwork`:
+    `update_ibd_status` no longer reads `node.chain.consensus` at all
+    (btclib-org/btclib-node#1500), so a `node.chain` this node has no
+    `consensus` on would not be noticed by a test built the old way.
+    """
+    node = an_ibd_node(
+        chainwork=100, minimum_chain_work=1000, tip_time=datetime.now(UTC)
+    )
+    assert not hasattr(node, "chain")
+    main.update_ibd_status(node)
+    assert node.is_initial_block_download is True
+
+    caught_up = an_ibd_node(
+        chainwork=1000, minimum_chain_work=1000, tip_time=datetime.now(UTC)
+    )
+    main.update_ibd_status(caught_up)
+    assert caught_up.is_initial_block_download is False
+
+
+def test_update_ibd_status_reads_max_tip_age_off_config_not_the_constant() -> None:
+    """A `-maxtipage` shorter than `MAX_TIP_AGE` ends IBD on a tip it stales.
+
+    btclib-org/btclib-node#1474: a tip `MAX_TIP_AGE` would still call
+    recent is too old for a `-maxtipage` this much smaller.
+    """
+    tip_time = datetime.now(UTC) - timedelta(hours=1)
+    node = an_ibd_node(
+        chainwork=10, minimum_chain_work=10, tip_time=tip_time, max_tip_age=60
+    )
+    main.update_ibd_status(node)
+    assert node.is_initial_block_download is True
+
+    lenient = an_ibd_node(
+        chainwork=10,
+        minimum_chain_work=10,
+        tip_time=tip_time,
+        max_tip_age=int(timedelta(hours=2).total_seconds()),
+    )
+    main.update_ibd_status(lenient)
+    assert lenient.is_initial_block_download is False
 
 
 def test_update_ibd_status_latches_off_and_never_back_as_the_tip_ages() -> None:
