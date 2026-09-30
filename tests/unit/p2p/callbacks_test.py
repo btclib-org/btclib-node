@@ -4708,6 +4708,25 @@ def a_filters_node(
     )
 
 
+def test_a_filters_node_s_get_ancestor_is_bounded_like_the_real_one() -> None:
+    """`None` past a block's own height and below zero, not an index error.
+
+    Mirrors `block_index_test.py`'s own
+    `test_get_ancestor_answers_what_the_parent_walk_answers`: no test
+    that drives `get_cfilters`/`get_cfheaders`/`get_cfcheckpt` ever asks
+    this fake for a height outside a block's own range, since
+    `_prepare_filter_request` refuses those before `_ancestor` is ever
+    called (btclib-org/btclib-node#1476) -- so the fake's own bound is
+    tested here directly instead.
+    """
+    node = a_filters_node(length=4)
+    get_ancestor = node.chainstate.block_index.get_ancestor
+    block_hash = node.chainstate.block_index.active_chain[2]
+    assert get_ancestor(block_hash, 2) == block_hash
+    assert get_ancestor(block_hash, 3) is None
+    assert get_ancestor(block_hash, -1) is None
+
+
 def a_getcfilters(
     node: Any,
     peer: Any,
