@@ -23,7 +23,7 @@ import time
 from collections import deque
 from dataclasses import replace
 from io import BytesIO
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from btclib import var_int
 from btclib.amount import valid_sats_amount
@@ -90,6 +90,7 @@ from btclib_node.chainstate.filter_index import NO_PREVIOUS_FILTER_HEADER
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, NodeStatus, P2pConnStatus
 from btclib_node.exceptions import (
     ChainstateInconsistencyError,
+    LowWorkHeaderError,
     MisbehavingError,
     MissingPrevoutError,
 )
@@ -103,7 +104,7 @@ from btclib_node.main import (
     passes_check_block,
     verify_mempool_acceptance,
 )
-from btclib_node.p2p.address import ip_and_port
+from btclib_node.p2p.address import AddrResponseCache, ip_and_port
 from btclib_node.p2p.block_availability import (
     remove_block_request,
     update_block_availability,
@@ -114,6 +115,12 @@ from btclib_node.p2p.chain_sync import (
 )
 from btclib_node.p2p.compact_block import compact_block
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
+from btclib_node.p2p.headers_sync import (
+    ChainStart,
+    HeadersSyncState,
+    State,
+    anti_dos_work_threshold,
+)
 from btclib_node.p2p.messages import FinalAlert
 from btclib_node.p2p.protocol_version import (
     BIP0031_VERSION,
@@ -126,7 +133,7 @@ from btclib_node.p2p.protocol_version import (
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
-    from btclib.block import Block
+    from btclib.block import Block, BlockHeader
 
     from btclib_node import Node
     from btclib_node.chainstate.block_index import BlockIndex
@@ -777,7 +784,27 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
     """Answer a peer's `getaddr` with a sample of known addresses, once.
 
     The sample itself is a cache, shared and redrawn only once its own
-    lifetime and jitter expire -- the comment below argues why.
+    lifetime and jitter expire -- the comment below argues why -- and
+    kept one per `conn.addr_cache_key` rather than one for every
+    connection. Core's `CConnman::GetAddresses` (`src/net.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) keys
+    `m_addr_response_caches` by `requestor.m_network_key`, itself keyed
+    by the connection's network (onion for an inbound onion listener,
+    which this node has none of yet -- btclib-org/btclib-node#1257) and
+    the local bind address and port the peer reached it on
+    (`CreateNodeFromAcceptedSocket`, same file and sha): "Addr responses
+    stored in different caches per (network, local socket) prevent
+    cross-network node identification. If a node for example is
+    multi-homed under Tor and IPv6, a single cache (or no cache at all)
+    would let an attacker to easily detect that it is the same node by
+    comparing responses." (`m_addr_response_caches`'s own comment,
+    `src/net.h`, same sha.) `conn.addr_cache_key`'s own docstring
+    (`connection.py`) is where the key is built; this node's own plain
+    tuple stands in for Core's SipHash-keyed `uint64_t`, which buys
+    unpredictability against a peer that could read the key off the
+    wire -- this key never leaves the process, so nothing here needs
+    that property, only that two different (network, local socket)
+    triples land on two different dict entries.
     """
     # Core's `GETADDR` handler (`src/net_processing.cpp`,
     # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) ignores one from a
@@ -795,13 +822,21 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
 
     peer_db = node.p2p_manager.peer_db
     now = time.time()
-    if now >= peer_db.addr_sample_expiration:
+    # Every inbound connection this callback ever reaches carries a key
+    # -- `P2pManager.server`/`create_connection` set it on acceptance,
+    # the only path into an inbound `Connection` -- so this is never
+    # `None` here; the cast is what tells mypy the same thing, `conn`
+    # typed `None` for an outbound connection's sake
+    # (`addr_cache_key`'s own docstring).
+    key = cast("tuple[int, str, int]", conn.addr_cache_key)
+    cache = peer_db.addr_response_caches.setdefault(key, AddrResponseCache())
+    if now >= cache.expiration:
         # Drawn and then filtered, as Core's `GetAddressesUnsafe` leaves
         # every discouraged or banned host out of what addrman drew
         # (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
         # before the cache is kept.
         manager = node.p2p_manager
-        peer_db.addr_sample = [
+        cache.sample = [
             address
             for address in _addresses_to_send(peer_db.get_active_addresses())
             if not manager.is_discouraged(address)
@@ -817,8 +852,8 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
         # to buy an accuracy guarantee gossip never promised in the
         # first place.
         jitter = secrets.SystemRandom().uniform(0, _ADDR_SAMPLE_JITTER)
-        peer_db.addr_sample_expiration = now + _ADDR_SAMPLE_LIFETIME + jitter
-    sample = peer_db.addr_sample
+        cache.expiration = now + _ADDR_SAMPLE_LIFETIME + jitter
+    sample = cache.sample
     # either message class, and not whichever the first branch names:
     # Addr and AddrV2 are siblings under Payload rather than one a
     # subclass of the other, so each is built from its own list rather
@@ -949,7 +984,15 @@ def _store_gossip(
         kept.append(address)
     conn.stats.addr_processed += len(kept)
     conn.stats.addr_rate_limited += rate_limited
-    manager.peer_db.add_addresses(kept)
+    # `source=conn.address`: Core's own `m_addrman.Add(vAddrOk,
+    # pfrom.addr, /*time_penalty=*/2h)` (same loop, same sha) passes the
+    # connection's own address as `AddSingle`'s `source`, which exempts
+    # a self-announcement -- an address equal to the peer's own host,
+    # port aside -- from the batch's flat two-hour penalty,
+    # `add_addresses`' own default; `add_addresses`'s own docstring is
+    # where the port is argued out of the comparison
+    # (btclib-org/btclib-node#1380, review round 2).
+    manager.peer_db.add_addresses(kept, source=conn.address)
     if conn.addr_fetch and len(received) > 1:
         node.logger.debug("addrfetch connection completed, peer=%s", conn.id)
         conn.stop()
@@ -1132,6 +1175,22 @@ def _refuse_before_indexing(node: Node, block: Block, conn: Connection) -> bool:
     return segwit
 
 
+def _min_pow_checked(node: Node, block: Block) -> bool:
+    """Whether a block's chain clears the anti-DoS work threshold.
+
+    Core's `min_pow_checked` in its `BLOCK` arm (`net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the parent is indexed,
+    and its work plus the block's own reaches
+    `headers_sync.anti_dos_work_threshold`.
+    """
+    block_index = node.chainstate.block_index
+    parent = block.header.previous_block_hash
+    return parent in block_index.header_dict and (
+        block_index.chainwork[parent] + calculate_work(block.header)
+        >= anti_dos_work_threshold(block_index, node.config.minimum_chain_work)
+    )
+
+
 def block(node: Node, msg: bytes, conn: Connection) -> None:
     """Store a requested block once its proof of work checks out.
 
@@ -1174,6 +1233,11 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
     `None` rather than raising, which is `headers`'s own "ask again" case
     and not this one's: a `MisbehavingError` is raised here instead,
     matching `Misbehaving`. btclib-org/btclib-node#711
+
+    A header new here whose chain is below the anti-DoS work threshold
+    (`_min_pow_checked`) is not indexed, and the block is dropped with it,
+    its peer kept: Core's `too-little-chainwork`
+    (btclib-org/btclib-node#1505).
     """
     # btclib's BlockPayload validates against mainnet's pow limit by
     # default, which no regtest or signet block meets. Its own docstring
@@ -1200,15 +1264,23 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
 
     block_index = node.chainstate.block_index
     segwit = _refuse_before_indexing(node, block, conn)
-    if (
-        block_hash not in block_index.header_dict
-        and block_index.add_headers([block.header]) is None
-    ):
-        err_msg = (
-            f"block {block_hash.hex()} has prev block not found: "
-            f"{block.header.previous_block_hash.hex()}"
-        )
-        raise MisbehavingError(err_msg)
+    if block_hash not in block_index.header_dict:
+        try:
+            tip = block_index.add_headers(
+                [block.header], min_pow_checked=_min_pow_checked(node, block)
+            )
+        except LowWorkHeaderError as e:
+            # Core's `ProcessNewBlock` logs "AcceptBlock FAILED", and its
+            # `MaybePunishNodeForBlock` punishes nobody for this result: a
+            # refusal it expects, so the line and not a traceback
+            node.logger.error("AcceptBlock FAILED (%s)", e)  # noqa: TRY400
+            return
+        if tip is None:
+            err_msg = (
+                f"block {block_hash.hex()} has prev block not found: "
+                f"{block.header.previous_block_hash.hex()}"
+            )
+            raise MisbehavingError(err_msg)
 
     block_info = block_index.get_block_info(block_hash)
 
@@ -1772,17 +1844,29 @@ def getdata(node: Node, msg: bytes, conn: Connection) -> None:
 def headers(node: Node, msg: bytes, conn: Connection) -> None:
     """Index a batch of headers, ask for more, or mark header sync finished.
 
-    A batch connecting to nothing known asks again from what this node
-    already has; a full-sized batch asks for the next one; a shorter
-    batch that still connected means the peer has nothing more to give,
-    which is what finishes header sync. An empty batch is the peer
-    having nothing to give, and asks for nothing more.
+    Core's `ProcessHeadersMessage` (`net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), in its order. An empty
+    batch is the peer having nothing to give: it ends a low-work sync
+    with it and asks for nothing more. A batch is checked for proof of
+    work and continuity, then handed to the peer's low-work sync where
+    one runs (`_is_continuation_of_low_work_headers_sync`), which may
+    keep it all. A batch connecting to nothing known asks again from
+    what this node already has. A connecting batch whose chain has less
+    work than `headers_sync.anti_dos_work_threshold` is not indexed: a
+    full one starts a low-work sync, a short one is ignored
+    (`_try_low_work_headers_sync`), and neither costs the peer anything.
+    A batch past all that is indexed, asks for the next one where it was
+    full and no sync is asking already, and ends header sync where it
+    was short; it is then handed to
+    `DownloadManager.headers_direct_fetch`.
 
     An empty batch, or one that connects, answers the `getheaders` in
-    flight to this peer, as Core's `ProcessHeadersMessage` takes it: one
+    flight to this peer, as does a batch a low-work sync takes; one
     connecting to nothing may be an announcement, and answers nothing.
-    A batch that connects is then handed to
-    `DownloadManager.headers_direct_fetch`.
+
+    Core also lets a peer with the `NoBan` permission skip the work
+    check; no peer holds a permission here (`getpeerinfo`'s own
+    `permissions`), so there is nothing to skip for.
     """
     # Core reads the count alone before it compares, so no entry is
     # needed in the payload for it to call `Misbehaving`
@@ -1793,40 +1877,57 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     # a `Misbehaving`, and that alone is reason enough to keep this
     # unchecked. It used to also refuse a version of zero or below on
     # its own, where Core leaves that to the same function's
-    # `bad-version` -- fixed at btclib 2026.9.29
-    # (btclib-org/btclib@bbb1ad71, closing btclib-org/btclib#2309;
-    # btclib-org/btclib-node#1511). The count and the transaction
-    # counts are bounded either way, and `add_headers` checks the work
-    # and both of Core's own contextual refusals.
-    headers = Headers.parse(msg, check_validity=False).headers
+    # `bad-version` -- fixed
+    # at btclib 2026.9.29 (btclib-org/btclib@bbb1ad71, closing
+    # btclib-org/btclib#2309; btclib-org/btclib-node#1511). The count
+    # and the transaction counts are bounded either way, and
+    # `add_headers` checks the work and both of Core's own contextual
+    # refusals.
+    headers: Sequence[BlockHeader] = Headers.parse(msg, check_validity=False).headers
+    # what the message carried, which the rest reads whatever a low-work
+    # sync hands back in its place: Core's `nCount`
+    n_count = len(headers)
+    timestamps = node.download_manager.last_getheaders_timestamps
     if not headers:
-        # Core's own `ProcessHeadersMessage` returns on the same batch,
         # "Nothing interesting. Stop asking this peers for more headers."
-        # (net_processing.cpp, at bitcoin/bitcoin@9be056a8a7): asking
-        # again, from this node's own tip, would draw the same empty answer.
-        node.download_manager.last_getheaders_timestamps.pop(conn.id, None)
+        # The peer may have reorganized onto this node's own chain, so a
+        # low-work sync with it ends too.
+        conn.headers_sync = None
+        timestamps.pop(conn.id, None)
         return
     block_index = node.chainstate.block_index
-    # Core's `CheckHeadersPoW`, then the getheaders in flight answered once
-    # the batch's first header connects, before any header is accepted, so
-    # a batch refused past this point still answers it
-    # (`ProcessHeadersMessage`, `net_processing.cpp`,
-    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
     check_headers_pow(headers, node.chain.pow_limit_bits)
-    if headers[0].previous_block_hash in block_index.header_dict:
-        node.download_manager.last_getheaders_timestamps.pop(conn.id, None)
-    # Core's `IsAncestorOfBestHeaderOrTip`, asked of the last header before
-    # the batch is indexed: its `ProcessHeadersMessage` hands any other
-    # batch whose chain has less than `minimum_chain_work` to
-    # `TryLowWorkHeadersSync`, and processes it no further, so the check
-    # for insufficient work below never sees it (`net_processing.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). This node stores such a
-    # batch instead (btclib-org/btclib-node#1246).
+    already_validated_work, headers = _is_continuation_of_low_work_headers_sync(
+        node, conn, headers
+    )
+    if not headers:
+        return
+    have_headers_sync = conn.headers_sync is not None
+    chain_start = headers[0].previous_block_hash
+    if chain_start not in block_index.header_dict:
+        # Core's `HandleUnconnectingHeaders`: maybe an announcement, so a
+        # `getheaders` from what this node has, whatever the batch's
+        # length (btclib-org/btclib-node#233), and the batch's last header
+        # kept as a block the peer has, unknown until it is indexed
+        maybe_send_getheaders(node, conn, block_index.get_block_locator_hashes())
+        update_block_availability(
+            block_index, conn.block_availability, headers[-1].hash
+        )
+        return
+    timestamps.pop(conn.id, None)
+    # Core's `IsAncestorOfBestHeaderOrTip`: a batch this node already
+    # holds on its best header chain or its active one costs no memory,
+    # and is processed whatever its work
     last = headers[-1].hash
-    known = (
-        last in block_index.header_index_pos
+    already_validated_work = (
+        already_validated_work
+        or last in block_index.header_index_pos
         or _height_on_the_active_chain(node, last) is not None
     )
+    if not already_validated_work and _try_low_work_headers_sync(
+        node, conn, chain_start, headers
+    ):
+        return
     received_new_header = last not in block_index.header_dict
     # add_headers raises on a batch it refuses, and the raise is left to
     # reach handle_p2p, which discourages the peer for a
@@ -1835,63 +1936,125 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     # ordinary end of a sync. btclib-org/btclib-node#75
     # A header already marked invalid costs an outbound peer alone, as
     # Core's `MaybePunishNodeForBlock` has it for `BLOCK_CACHED_INVALID`.
-    tip = block_index.add_headers(headers, punish_cached_invalid=not conn.inbound)
-    # Core's `m_last_block_announcement`, stamped where the batch
-    # connected, its last header was new and it has more work than the
-    # active tip
+    # The batch connects, so add_headers answers a hash.
+    tip = cast(
+        "bytes",
+        block_index.add_headers(headers, punish_cached_invalid=not conn.inbound),
+    )
+    # Core's `m_last_block_announcement`, stamped where its last header
+    # was new and it has more work than the active tip
     if (
-        tip is not None
-        and received_new_header
+        received_new_header
         and block_index.chainwork[tip]
         > block_index.chainwork[block_index.active_chain[-1]]
     ):
         conn.last_block_announcement = int(time.time())
     # The batch's last header is a block the peer has: Core's
-    # `UpdatePeerStateForReceivedHeaders` where the batch connected, and
-    # `HandleUnconnectingHeaders`, which keeps it as unknown until it is
-    # indexed, where it did not (`net_processing.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
-    update_block_availability(
-        block_index, conn.block_availability, headers[-1].hash if tip is None else tip
+    # `UpdatePeerStateForReceivedHeaders`
+    update_block_availability(block_index, conn.block_availability, tip)
+    # Core protects only a peer it did not just drop, and asks whether
+    # to drop it only where the message was short of a full one
+    if not (
+        n_count < MAX_HEADERS_RESULTS and disconnect_if_insufficient_work(node, conn)
+    ):
+        protect_if_caught_up(node, conn)
+    _ask_for_more_headers(node, conn, n_count, tip, have_headers_sync=have_headers_sync)
+    # Core's `ProcessHeadersMessage` ends by considering "immediately
+    # downloading blocks", `HeadersDirectFetchBlocks`
+    node.download_manager.headers_direct_fetch(conn, tip)
+
+
+def _is_continuation_of_low_work_headers_sync(
+    node: Node, conn: Connection, headers: Sequence[BlockHeader]
+) -> tuple[bool, Sequence[BlockHeader]]:
+    """Hand `headers` to `conn`'s low-work sync, where one runs.
+
+    Core's `IsContinuationOfLowWorkHeadersSync` (`net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Answers whether the sync
+    took the batch, and the headers left for `headers` to process: those
+    the sync released for indexing where it took the batch, none of them
+    in `PRESYNC`, and the batch itself where no sync runs or the sync
+    refused it. A batch taken answers the `getheaders` in flight; one the
+    sync asks more for sends the next; a sync that ended is dropped.
+
+    Core also ranks every peer's `PRESYNC` progress, for the "Pre-synchronizing
+    blockheaders" line its log and its GUI show; this node shows no such
+    line, so it keeps no such ranking.
+    """
+    sync = conn.headers_sync
+    if sync is None:
+        return False, headers
+    result = sync.process_next_headers(
+        headers, full_headers_message=len(headers) == MAX_HEADERS_RESULTS
     )
-    if tip is not None:
+    if result.success:
         node.download_manager.last_getheaders_timestamps.pop(conn.id, None)
-        # Core protects only a peer it did not just drop, and asks whether
-        # to drop it only where the batch was short of a full one
-        if not (
-            known
-            and len(headers) < MAX_HEADERS_RESULTS
-            and disconnect_if_insufficient_work(node, conn)
-        ):
-            protect_if_caught_up(node, conn)
-    _ask_for_more_headers(node, conn, len(headers), tip)
-    if tip is not None:
-        # Core's `ProcessHeadersMessage` (`src/net_processing.cpp`, at
-        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) ends by considering
-        # "immediately downloading blocks", `HeadersDirectFetchBlocks`
-        node.download_manager.headers_direct_fetch(conn, tip)
+    if result.request_more:
+        maybe_send_getheaders(node, conn, sync.next_headers_request_locator())
+    if sync.state is State.FINAL:
+        conn.headers_sync = None
+    if result.success:
+        return True, result.pow_validated_headers
+    return False, headers
+
+
+def _try_low_work_headers_sync(
+    node: Node, conn: Connection, chain_start: bytes, headers: Sequence[BlockHeader]
+) -> bool:
+    """Keep a low-work batch out of the index, syncing its chain where it may.
+
+    Core's `TryLowWorkHeadersSync` (`net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `chain_start`, where the
+    batch connects, plus the work the batch claims, below
+    `anti_dos_work_threshold` is a chain this node does not index yet. A
+    full batch starts `conn`'s low-work sync from `chain_start`, towards
+    that threshold as it stands now, and hands it the batch; a short one
+    has nothing behind it to reach the threshold with, and is ignored.
+    Answers whether the batch was kept out, which is the end of it for
+    `headers` either way.
+    """
+    block_index = node.chainstate.block_index
+    total_work = block_index.chainwork[chain_start] + sum(
+        calculate_work(header) for header in headers
+    )
+    threshold = anti_dos_work_threshold(block_index, node.config.minimum_chain_work)
+    if total_work >= threshold:
+        return False
+    if len(headers) == MAX_HEADERS_RESULTS:
+        conn.headers_sync = HeadersSyncState(
+            node.chain.consensus,
+            node.chain.headers_sync_params,
+            ChainStart.from_index(block_index, chain_start),
+            threshold,
+        )
+        _is_continuation_of_low_work_headers_sync(node, conn, headers)
+    else:
+        node.logger.debug(
+            "Ignoring low-work chain (height=%d) from peer=%d",
+            block_index.get_block_info(chain_start).index + len(headers),
+            conn.id,
+        )
+    return True
 
 
 def _ask_for_more_headers(
-    node: Node, conn: Connection, batch_size: int, tip: bytes | None
+    node: Node,
+    conn: Connection,
+    batch_size: int,
+    tip: bytes,
+    *,
+    have_headers_sync: bool,
 ) -> None:
     """Ask `conn` for the headers past a batch, or mark header sync finished.
 
-    `tip` is what `add_headers` answered for a batch of `batch_size`
-    headers: `None` where the batch connected to nothing this node knows.
+    `tip` is what `add_headers` answered for a message of `batch_size`
+    headers. A low-work sync still running with `conn` asks for its own
+    next batch, so `have_headers_sync` is what keeps this from asking too.
     """
     block_index = node.chainstate.block_index
-    if tip is None:
-        # a batch connecting to nothing this node knows, whatever its
-        # length: get_block_locator_hashes asks from what this node
-        # already has, the same request Core's own
-        # HandleUnconnectingHeaders sends regardless of batch size
-        # (src/net_processing.cpp), rather than a short, BIP130-style
-        # announcement being silently dropped for missing its own
-        # ancestors. btclib-org/btclib-node#233
-        block_locators = block_index.get_block_locator_hashes()
-        maybe_send_getheaders(node, conn, block_locators)
-    elif batch_size == MAX_HEADERS_RESULTS:  # the peer may have more to give us
+    if batch_size == MAX_HEADERS_RESULTS:  # the peer may have more to give us
+        if have_headers_sync:
+            return
         # [tip] only for a live fork below header_index's own tip: that
         # is the one case get_block_locator_hashes cannot reach on its
         # own, since header_index only moves for a header extending it

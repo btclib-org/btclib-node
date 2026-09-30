@@ -1399,6 +1399,57 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   to `getblockchaininfo`'s and `getnetworkinfo`'s own new `warnings` field**
   (closes #1522).
 
+### `release.yml` audits the lock before it publishes
+
+- **The `audit` job runs `uv audit` over what the wheel declares**, by calling
+  btclib-org/.github's `reusable-audit.yml`, and both publish jobs wait for
+  its success (issue btclib-org/.github#1466).
+
+### Address handling matches Core's own keys, timestamps and dial cadence
+
+- **`getaddr` is cached per network and local socket** (closes #1478).
+- **A gossiped or DNS-seeded address keeps a timestamp** (closes #1380).
+- **The automatic dial draws at most once every 500ms** (closes #1379).
+
+### A fixed seed keeps a timestamp too, one to two weeks old
+
+- **`fixed_seed_addresses` backdates each seed, as Core's `ConvertSeeds`
+  does** (closes #1571).
+
+### The mempool counts sigops with btclib's `sig_op_cost`
+
+- **`interpreter.py`'s own `GetTransactionSigOpCost` is gone**,
+  `_sigop_adjusted_vsize` calling btclib's `sig_op_cost` under
+  `STANDARD_FLAGS`, which answers the same (closes #1586).
+
+### A transaction Core decodes and refuses in `CheckTransaction`'s own words
+
+- **`sendrawtransaction` and `testmempoolaccept` answer that refusal too**,
+  rather than reporting the transaction as one that failed to decode
+  (closes #1375).
+
+### `decoderawtransaction` is served
+
+- **It answers Core's JSON shape for a hex-decoded transaction**, with no
+  chain or mempool lookup (closes #1398).
+
+### `sendrawtransaction` and `testmempoolaccept` answer `bad-txns-oversize`
+
+- **A transaction whose only fault is its own size answers Core's own
+  reject reason**, rather than `-32603` "Internal Error" off an
+  unrecognized `Tx.assert_valid` message (closes #1447).
+
+### A low-work headers chain is synced twice before any of it is stored
+
+- **Headers below the anti-DoS work threshold go through Core's
+  `HeadersSyncState` before any is indexed** (closes #1246).
+- **A block's new low-work header is refused, unpunished** (closes #1505).
+
+### One `LocatorEntries`
+
+- **Every block locator is built by `block_index.locator_entries`, read
+  off `header_index` by height where the block is on it** (closes #1530).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
