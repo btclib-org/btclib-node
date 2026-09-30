@@ -251,12 +251,34 @@ class RpcManager(threading.Thread):
         # registers itself here for the length of its own wait, so
         # `stop` below can let it finish instead of cancelling it with
         # every other pending task (btclib-org/btclib-node#1467 review):
-        # Core's own `ThreadPool::Stop` (`util/threadpool.h`, at
-        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) joins every worker
-        # unconditionally, finishing whatever RPC that thread is still
-        # answering -- including one asleep in `stop`'s own hidden
-        # `wait` -- rather than tearing it down mid-reply.
+        # Core's own `ThreadPool::Stop` (`util/threadpool.h`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) joins every
+        # worker unconditionally, finishing whatever RPC that thread is
+        # still answering -- including one asleep in `stop`'s own
+        # hidden `wait` -- rather than tearing it down mid-reply.
         self.pending_delayed_replies: set[asyncio.Task[None]] = set()
+        # `send_and_close_after` writes an entry here, keyed by a token
+        # of its own rather than by the task above -- the task does not
+        # exist yet at the point this needs to be visible -- the moment
+        # it schedules a delay, and drops it once that reply is sent.
+        # `latest_pending_reply_deadline` is `Node.stop`'s own read of
+        # it, from whatever third thread calls that (an operator's
+        # signal, through `install_signal_handlers`), to widen its join
+        # past a `wait` still running rather than reporting a wedge
+        # that is really this manager finishing correctly
+        # (btclib-org/btclib-node#1467 review, second round).
+        self.pending_reply_deadlines: dict[object, float] = {}
+
+    def latest_pending_reply_deadline(self) -> float | None:
+        """Return the latest `time.monotonic()` deadline still pending, if any.
+
+        `None` where nothing is scheduled. More than one entry is
+        possible only where more than one `stop wait=N` -- or another
+        caller of `send_and_close_after` altogether -- is in flight at
+        once; the latest is what a caller waiting for every one of them
+        to finish needs, not the soonest.
+        """
+        return max(self.pending_reply_deadlines.values(), default=None)
 
     def create_connection(
         self, loop: asyncio.AbstractEventLoop, client: socket.socket

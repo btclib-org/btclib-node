@@ -37,6 +37,7 @@ import ipaddress
 import json
 import re
 import secrets
+import time
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, cast, override
 
@@ -1507,7 +1508,22 @@ class RpcConnection:
         `stop`'s own cancel sweep runs on, so there is no race on the
         set itself, only on whether the task is in it yet when that
         sweep reads it.
+
+        The deadline below is recorded here instead, on the caller's
+        own thread, at the moment this reply is scheduled rather than
+        once `_delayed_send` first runs: `Node.stop`, called from a
+        third thread entirely -- an operator's signal, through
+        `install_signal_handlers` -- reads it to widen its own join
+        past a `wait` still pending, and has to see it the instant a
+        delay this long exists, not once `loop` gets around to
+        stepping the coroutine for the first time
+        (btclib-org/btclib-node#1467 review, second round). `token` is
+        an opaque key of this call's own, rather than the task itself,
+        because the task does not exist yet at this point.
         """
+        deadline = time.monotonic() + delay
+        token = object()
+        self.manager.pending_reply_deadlines[token] = deadline
 
         async def _delayed_send() -> None:
             # `current_task()` answers `None` only outside a running
@@ -1522,6 +1538,7 @@ class RpcConnection:
                 on_sent()
             finally:
                 self.manager.pending_delayed_replies.discard(task)
+                self.manager.pending_reply_deadlines.pop(token, None)
 
         asyncio.run_coroutine_threadsafe(_delayed_send(), self.loop)
 

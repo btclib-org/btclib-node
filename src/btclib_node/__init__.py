@@ -796,10 +796,28 @@ class Node(threading.Thread):
         handler is the other caller worth naming: this raising there
         makes an operator's interrupt loud, and it does not make the
         process able to exit, the wedged thread being non-daemon.
+
+        `STOP_TIMEOUT` alone is not the whole bound where a `stop`
+        RPC's own hidden `wait` is still pending: `_stop_managers_and_
+        close_stores`, on this thread, reaches `rpc_manager.stop`,
+        which now waits out that reply rather than cancelling it
+        (btclib-org/btclib-node#1467), so a `wait` longer than
+        `STOP_TIMEOUT` legitimately keeps this thread alive past it --
+        correctly finishing, not wedged. A caller here, on a third
+        thread entirely (an operator's signal), read `rpc_manager`'s
+        own latest pending deadline and widens the join past it, so the
+        30-second bound still applies to this thread's own teardown,
+        measured from whenever that reply is actually sent, rather than
+        firing while a reply Core itself guarantees is still in
+        flight (btclib-org/btclib-node#1467 review, second round).
         """
         self.terminate_flag.set()
         if self.is_alive() and threading.current_thread() is not self:
-            self.join(timeout=STOP_TIMEOUT)
+            timeout: float = STOP_TIMEOUT
+            deadline = self.rpc_manager.latest_pending_reply_deadline()
+            if deadline is not None:
+                timeout = max(STOP_TIMEOUT, deadline - time.monotonic() + STOP_TIMEOUT)
+            self.join(timeout=timeout)
             if self.is_alive():
                 # named by its data directory, which is what tells one
                 # node from another where several are running

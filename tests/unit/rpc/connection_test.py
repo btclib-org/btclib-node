@@ -72,6 +72,11 @@ def fake_manager(connections: dict[int, Any]) -> SimpleNamespace:
         # (btclib-org/btclib-node#1467 review); a plain `set()` here is
         # the same thing `RpcManager.__init__` builds, not a stub of it.
         pending_delayed_replies=set(),
+        # `send_and_close_after` itself writes here, at schedule time,
+        # before `_delayed_send`'s own task exists
+        # (btclib-org/btclib-node#1467 review, second round); a plain
+        # `dict()` is the same thing `RpcManager.__init__` builds.
+        pending_reply_deadlines={},
     )
 
 
