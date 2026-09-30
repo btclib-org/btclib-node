@@ -1300,6 +1300,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   replies it finishes, so a request arriving on one is answered `503` with
   `Connection: close`, as Core's event loop answers it** (closes #1545).
 
+### `getcfilters`, `getcfheaders` and `getcfcheckpt` answer Core's way
+
+- **A stop hash still known and allowed is served from its own chain**,
+  not `active_chain` (closes #1476).
+- **An invalid request disconnects the peer**, as Core does (closes #1477).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
