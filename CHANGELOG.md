@@ -1192,12 +1192,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   milliseconds**, as Core's own `stop <ms>` does, while the node starts
   shutting down at once (closes #1467).
 
-### `cli_test.py`'s `datadir` log-line tests compare against the escaped form
-
-- **Three tests build the expected `datadir=` line through
-  `_setting_to_write_str`, or a hand-written literal, matching Core's own
-  `json_escape`**, which doubles a backslash (closes #1509).
-
 ### The OpenSSF Baseline badge
 
 - **`README.md`'s badge row ends with the OpenSSF Baseline badge**,
@@ -1221,6 +1215,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **Consensus and relay follow the pinned Core release where it and
   master disagree; a peer-refusal rule may go stricter than the
   release first, where the divergence is argued** (closes #1520).
+
+### `cli_test.py`'s `datadir` log-line tests compare against the escaped form
+
+- **Three tests build the expected `datadir=` line through
+  `_setting_to_write_str`, or a hand-written literal, matching Core's own
+  `json_escape`**, which doubles a backslash (closes #1509).
 
 ## v2026.9.24
 
