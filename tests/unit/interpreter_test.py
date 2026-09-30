@@ -177,7 +177,6 @@ def test_a_transaction_that_prints_money_is_refused() -> None:
         )
 
 
-
 def test_a_block_s_sigop_cost_is_refused_before_a_later_transaction_s_amounts() -> None:
     """The first transaction to pass the limit refuses the block, not the last.
 
@@ -202,6 +201,7 @@ def test_a_block_s_sigop_cost_is_refused_before_a_later_transaction_s_amounts() 
             _A_BLOCK_HASH,
             _COINBASE,
         )
+
 
 _PRV = 0x1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF
 _PUB_KEY = PrvKeyData(_PRV).pub
