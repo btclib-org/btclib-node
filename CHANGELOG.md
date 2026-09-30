@@ -1423,6 +1423,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   ten blocks a deep `invalidateblock` disconnects, and a held one a
   disconnect leaves immature or non-final is evicted** (closes #1570).
 
+### The large-work warning weighs the invalidated block, not its descendants
+
+- **A deep `invalidateblock` on the active chain no longer raises it,
+  as Core's `InvalidChainFound` does not** (closes #1593).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

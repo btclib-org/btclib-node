@@ -1289,11 +1289,19 @@ def _invalidate_failed_block(
 
     A function of its own and not the two lines inline in `update_chain`'s
     own tail -- ruff's own `too-many-statements` already counts
-    `update_chain` at its ceiling without this pair. Core's own
-    `InvalidChainFound` calls `CheckForkWarningConditions` right after
-    marking a block invalid (`src/validation.cpp:1987`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag); `check_fork_warning_conditions`
-    below is that same call, for btclib-org/btclib-node#1522.
+    `update_chain` at its ceiling without this pair. Core's `ConnectTip`
+    calls `InvalidBlockFound` on the failed block (`src/validation.cpp:3090`,
+    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), whose
+    `InvalidChainFound` weighs it against `best_invalid` and ends in
+    `CheckForkWarningConditions` (`:1987`); `update_header_index` and
+    `check_fork_warning_conditions` below are those two steps.
+
+    Core's `ActivateBestChainStep` then calls `InvalidChainFound` a second
+    time, on the top of the batch of up to 32 blocks it was connecting
+    towards its most-work candidate (`:3271` and `:3287`). That is not
+    matched: `get_first_candidate` does not pick Core's most-work
+    candidate, so this tree has no counterpart to that batch top, and
+    `best_invalid` names only the failed block.
     """
     update_header_index(block_index, failed_hash)
     check_fork_warning_conditions(node)

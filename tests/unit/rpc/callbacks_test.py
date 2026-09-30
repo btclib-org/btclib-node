@@ -5003,6 +5003,29 @@ def test_reconsider_block_resets_best_invalid_it_clears(
     assert node.warnings.get_messages() == []
 
 
+def test_a_deep_invalidate_block_names_the_block_itself_best_invalid(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A deep `invalidateblock` on one chain raises no warning.
+
+    Core's own `InvalidChainFound(to_mark_failed)` weighs only the
+    invalidated block against `m_best_invalid` (`src/validation.cpp:3721`
+    and `:1971-1974`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The
+    descendant `chain[9]` would carry ten blocks' worth of work, more than
+    the remaining tip plus six.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(10, node.chain.genesis.hash)
+    connect(node, chain)
+    block_index = node.chainstate.block_index
+
+    invalidate_block(node, _CONN, [chain[1].header.hash.hex()])
+
+    assert block_index.active_chain[-1] == chain[0].header.hash
+    assert block_index.best_invalid == chain[1].header.hash
+    assert node.warnings.get_messages() == []
+
+
 def test_invalidate_block_reconnects_a_header_only_branch_it_makes_competitive(
     regtest_node: Callable[..., Node],
 ) -> None:

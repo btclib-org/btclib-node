@@ -401,17 +401,15 @@ class BlockIndex:
         # write together with UtxoIndex's own flush. btclib-org/btclib-node#586
         self.pending: dict[bytes, BlockInfo] = {}
 
-        # the invalid block with the most chainwork this index has ever
-        # indexed, Core's own `ChainstateManager::m_best_invalid`
-        # (`src/validation.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-        # tag): `calculate_chainwork` below sets it on load, the way
-        # Core's own `LoadBlockIndex` scan does
-        # (`src/validation.cpp:4964-4965`, same sha), and `invalidate`
-        # updates it at runtime, the way Core's `InvalidChainFound`/
-        # `InvalidBlockFound` and `InvalidateBlock` do. `None` where no
-        # block indexed so far is marked invalid.
-        # `main.check_fork_warning_conditions` is the only reader, for
-        # btclib-org/btclib-node#1522.
+        # Core's own `ChainstateManager::m_best_invalid` (`src/validation.h`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+        # `calculate_chainwork` below sets it on load to the invalid block
+        # with the most chainwork, as Core's `LoadBlockIndex` scan does
+        # (`src/validation.cpp:4964-4965`, same sha). At runtime
+        # `invalidate` weighs only the block it is handed, as Core's
+        # `InvalidChainFound` does, and `reconsider` resets it. `None`
+        # where nothing has been marked. `main.check_fork_warning_conditions`
+        # is the only reader, for btclib-org/btclib-node#1522.
         self.best_invalid: bytes | None = None
 
         self.init_from_db()
@@ -830,23 +828,23 @@ class BlockIndex:
         invalidated hash is dropped from `block_candidates`; `header_index`
         is rebuilt from `active_chain` only if it held one of them.
 
-        Updates `best_invalid` along the same walk, Core's own
-        `InvalidChainFound` (`src/validation.cpp:1971-1972`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag) comparing every
-        newly-invalid descendant against `m_best_invalid` the same way --
-        reached from `InvalidateBlock`'s own call into it (`:3721`), not
-        `InvalidateBlock` updating `m_best_invalid` directly itself.
+        Compares `block_hash` alone against `best_invalid`, as Core's own
+        `InvalidChainFound` does (`src/validation.cpp:1971-1974`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): its
+        `SetBlockFailureFlags` marks the descendants without touching
+        `m_best_invalid`. `calculate_chainwork` is the load-time path,
+        which weighs every invalid block, descendants included.
         """
+        if self.best_invalid is None or (
+            self.chainwork[block_hash] > self.chainwork[self.best_invalid]
+        ):
+            self.best_invalid = block_hash
         to_invalidate = [block_hash]
         invalidated: set[bytes] = set()
         while to_invalidate:
             current = to_invalidate.pop()
             invalidated.add(current)
             self.set_status(current, BlockStatus.invalid)
-            if self.best_invalid is None or (
-                self.chainwork[current] > self.chainwork[self.best_invalid]
-            ):
-                self.best_invalid = current
             to_invalidate.extend(self.children.get(current, ()))
         self.block_candidates = deque(
             [h, w] for h, w in self.block_candidates if h not in invalidated
