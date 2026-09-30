@@ -1264,6 +1264,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `<tag>.intoto.jsonl`** (issue btclib-org/.github#1468):
   `reusable-github-release.yml` attaches it under that name.
 
+### `codeql.yml`'s aggregate runs `check_run_jobs.py`
+
+- **The aggregate's step runs `check_run_jobs.py`, served from
+  `btclib-org/.github`,** which reads the jobs listing again up to a
+  deadline (issue btclib-org/.github#1463).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
