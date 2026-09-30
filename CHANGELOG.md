@@ -1168,6 +1168,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   the way `-addnode` already did, so `addr_name` carries it too** (closes
   #1493).
 
+### A literal-IP `-addnode` is held by its resolved address, not by name
+
+- **A `-addnode` spec that is a literal IP is now held by every
+  connection's own resolved address, whatever route opened it, matching
+  Core's `mapConnected`** (closes #1498).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

@@ -3143,15 +3143,17 @@ def test_the_added_loop_dials_the_peers_not_held(
 ) -> None:
     """ISS 1316: `ThreadOpenAddedConnections`, 500 ms apart, then 60 s.
 
-    "Held" is read off `addr_name`, as `async_connect_host`'s own
-    `AlreadyConnectedToHost` check is, not off the address: a peer
+    "Held" is read off `addr_name` for a name, as `async_connect_host`'s
+    own `AlreadyConnectedToHost` check is, not off the address: a peer
     given by name is not necessarily connected on the endpoint its name
-    last resolved to (btclib-org/btclib-node#1264). ISS 1493: the match
-    is by the raw spec, port included, so `held`'s own `addr_name` is
-    set to the exact spec it stands in for.
+    last resolved to (btclib-org/btclib-node#1264). `peers[0]` is a
+    literal IP, held by its own resolved `address` instead, Core's own
+    `mapConnected` arm (btclib-org/btclib-node#1498) -- `addr_name` is
+    set too, matching what a real dial through this same code would
+    leave, but is not what the match is against here.
     """
     peers = ["1.2.3.4:8333", "5.6.7.8:8333", "peer.example:8333"]
-    held = a_conn(1, addr_name=peers[0])
+    held = a_conn(1, address=peer_address("1.2.3.4", 8333), addr_name=peers[0])
     manager = a_manager([held], addnode_args=peers)
     dialled, slept = run_a_manual_loop(
         manager._open_added_peers, manager, monkeypatch, 6
@@ -3165,10 +3167,12 @@ def test_the_added_loop_waits_two_seconds_with_nothing_to_dial(
 ) -> None:
     """ISS 1316: a round that tried nothing sleeps `2s`, not `60s`.
 
-    ISS 1493: `held`'s own `addr_name` matches the raw spec, port
-    included, the way a real dial through this same code would set it.
+    `1.2.3.4:8333` is a literal IP, held by its own resolved `address`
+    (btclib-org/btclib-node#1498) -- `addr_name` is set too, matching
+    what a real dial through this same code would leave, but is not
+    what the match is against here.
     """
-    held = a_conn(1, addr_name="1.2.3.4:8333")
+    held = a_conn(1, address=peer_address("1.2.3.4", 8333), addr_name="1.2.3.4:8333")
     manager = a_manager([held], addnode_args=["1.2.3.4:8333"])
     dialled, slept = run_a_manual_loop(
         manager._open_added_peers, manager, monkeypatch, 2
@@ -3200,12 +3204,17 @@ def test_the_added_loop_stops_where_no_addnode_grant_is_free(
 ) -> None:
     """ISS 1316: `MAX_ADDNODE_CONNECTIONS` added peers held take every grant.
 
-    ISS 1493: held by the raw spec, port included, not a re-derived
-    `(host, port)` -- each held connection's own `addr_name` is set to
-    the exact spec string it stands in for.
+    Every spec here is a literal IP, so each is held by its own held
+    connection's resolved `address`, Core's own `mapConnected` arm
+    (btclib-org/btclib-node#1498) -- `addr_name` is set too, matching
+    what a real dial through this same code would leave, but is not
+    what the match is against here.
     """
     peers = [f"10.0.0.{i}:8333" for i in range(1, 10)]
-    conns = [a_conn(i, addr_name=spec) for i, spec in enumerate(peers[:8])]
+    conns = [
+        a_conn(i, address=peer_address(f"10.0.0.{i + 1}", 8333), addr_name=spec)
+        for i, spec in enumerate(peers[:8])
+    ]
     manager = a_manager(conns, addnode_args=peers)
     dialled, slept = run_a_manual_loop(
         manager._open_added_peers, manager, monkeypatch, 1
@@ -3416,6 +3425,129 @@ def test_open_added_peers_keeps_a_port_when_given(
         {"inbound": False, "addr_fetch": False, "addr_name": "peer.example:9999"}
     ]
     theirs.close()
+
+
+def test_added_held_counts_a_literal_ip_by_its_resolved_address(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1498: `_added_held`'s own count uses the literal/name split too.
+
+    `held`'s `addr_name` is deliberately a different port than its own
+    `address`, so a match through `addr_name` alone would miss it --
+    `_added_held` still counts it, through `_held_resolved_addresses`.
+    """
+    port = RegTest().port
+    held = a_conn(
+        1, address=peer_address("1.2.3.4", port), addr_name=f"1.2.3.4:{port + 1}"
+    )
+    manager = a_manager([held], addnode_args=["1.2.3.4"])
+    assert manager._added_held() == 1
+
+
+def test_the_added_loop_skips_a_literal_ip_held_by_a_different_route(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1498: a literal-IP `-addnode` is held by its resolved address.
+
+    ISS 1493's own regression: `held` was dialled by name (a `-connect`
+    or `onetry` spec naming a port), so its own `addr_name` is
+    `"1.2.3.4:<port>"`, never equal to the bare `-addnode=1.2.3.4`
+    spec's own raw string -- the check that regressed. Core's own
+    `mapConnected` (`GetAddedNodeInfo`, `src/net.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) keys on the resolved
+    address instead, whatever route opened the connection, which is
+    what this is held by here.
+    """
+    port = RegTest().port
+    held = a_conn(1, address=peer_address("1.2.3.4", port), addr_name=f"1.2.3.4:{port}")
+    manager = a_manager([held], addnode_args=["1.2.3.4"])
+    dialled, slept = run_a_manual_loop(
+        manager._open_added_peers, manager, monkeypatch, 1
+    )
+    assert dialled == []
+    assert slept == [2]
+
+
+def test_the_added_loop_skips_a_literal_ip_with_its_own_port_held(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1498: a literal spec naming a port is held at that exact port.
+
+    `held`'s own `addr_name` names a different host entirely, proving
+    the match is against the resolved address and not a coincidence of
+    `addr_name` text.
+    """
+    held = a_conn(
+        1, address=peer_address("1.2.3.4", 9999), addr_name="unrelated.example"
+    )
+    manager = a_manager([held], addnode_args=["1.2.3.4:9999"])
+    dialled, slept = run_a_manual_loop(
+        manager._open_added_peers, manager, monkeypatch, 1
+    )
+    assert dialled == []
+    assert slept == [2]
+
+
+def test_the_added_loop_dials_a_literal_ip_held_at_a_different_port(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1498: the same IP held at a different port is not a match.
+
+    Core's own `mapConnected` keys on the whole resolved `CService`,
+    address and port together, not the address alone.
+    """
+    held = a_conn(1, address=peer_address("1.2.3.4", 9999), addr_name="1.2.3.4:9999")
+    manager = a_manager([held], addnode_args=["1.2.3.4:8888"])
+    dialled, slept = run_a_manual_loop(
+        manager._open_added_peers, manager, monkeypatch, 1
+    )
+    assert dialled == [("1.2.3.4:8888", RegTest().port)]
+    assert slept == [0.5]
+
+
+def test_the_added_loop_dials_a_name_not_matched_by_resolved_address(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1498: a name spec is held by `addr_name` alone, never by address.
+
+    `held`'s own resolved address coincides with where `peer.example`
+    would dial, and its `addr_name` does not match the spec: Core's own
+    `mapConnectedByName` arm never consults `mapConnected` for a name
+    (`GetAddedNodeInfo`, `src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag), so this is dialled rather than skipped.
+    """
+    held = a_conn(
+        1, address=peer_address("1.2.3.4", RegTest().port), addr_name="other.example"
+    )
+    manager = a_manager([held], addnode_args=["peer.example"])
+    dialled, slept = run_a_manual_loop(
+        manager._open_added_peers, manager, monkeypatch, 1
+    )
+    assert dialled == [("peer.example", RegTest().port)]
+    assert slept == [0.5]
+
+
+def test_async_connect_host_skips_a_resolved_address_already_held(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`AlreadyConnectedToAddressPort` still holds, ISS 1498 untouched.
+
+    `async_connect_host`'s own inner resolved-address check keys on
+    `endpoint_key`, `PeerDB`'s own address identity, regardless of
+    `addr_name` -- unlike `_added_held`/`_open_added_peers`'s own
+    literal/name split above, this one path is not changed by ISS 1498.
+    """
+    logged, info = log_recorder()
+
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: _NamedLoop(["5.6.7.8"]))
+    monkeypatch.setattr(manager_module, "dial", refuses_to_be_asked)
+    held = a_conn(1, address=peer_address("5.6.7.8", 18444))
+    manager = a_manager([held])
+    monkeypatch.setattr(manager.logger, "info", info)
+    asyncio.run(manager.async_connect_host("peer.example", 18444))
+    assert logged == [
+        "Not opening a connection to peer.example, already connected to 5.6.7.8:18444"
+    ]
 
 
 def test_async_connect_host_logs_when_no_candidate_comes_up(

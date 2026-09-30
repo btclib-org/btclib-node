@@ -1334,12 +1334,13 @@ class P2pManager(threading.Thread):
     def _held_addr_names(self) -> set[str]:
         """Return the `addr_name` every held connection was dialled by.
 
-        `async_connect_host`'s own `AlreadyConnectedToHost` gate, and
-        `_open_added_peers`' own "not connected" filter, both key on
+        `async_connect_host`'s own `AlreadyConnectedToHost` gate keys on
         this rather than on an address: a connection dialled by name
         (`create_connection`'s own `addr_name`) is the only kind that
         carries one at all, `conn.addr_name` being `None` for every
-        other dial route.
+        other dial route. `_is_held` below is the name arm of
+        `-addnode`'s own held check, `mapConnectedByName`'s equivalent
+        (btclib-org/btclib-node#1498).
         """
         with self._connections_lock:
             return {
@@ -1350,6 +1351,61 @@ class P2pManager(threading.Thread):
                 )
                 if conn.addr_name is not None
             }
+
+    def _held_resolved_addresses(self) -> set[str]:
+        """Return every held connection's own peer address, `ip_and_port` text.
+
+        Core's `mapConnected[pnode->addr]` (`GetAddedNodeInfo`,
+        `src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
+        built from every held connection's own resolved address,
+        whatever route opened it -- inbound, an automatic outbound
+        dial, or a manual one -- unlike `_held_addr_names` above, which
+        only ever sees a connection this node itself dialled by name.
+        `_is_held` below is the literal-IP arm of `-addnode`'s own held
+        check, matched against this rather than against `addr_name`,
+        since Core's own map there keys on the resolved `CService`
+        regardless of how the connection was opened
+        (btclib-org/btclib-node#1498). A non-IP network -- unreachable
+        by `_REACHABLE_NETWORKS`, so never actually held here -- is
+        skipped rather than raised on, the same guard `can_connect`
+        gates a dial with.
+        """
+        with self._connections_lock:
+            addresses = [
+                conn.address
+                for conn in (
+                    *self.connections.values(),
+                    *self.pending_connections.values(),
+                )
+            ]
+        return {
+            ip_and_port(str(network_address(address).ip), address.port)
+            for address in addresses
+            if can_connect(address)
+        }
+
+    def _is_held(self, node_str: str, by_address: set[str], by_name: set[str]) -> bool:
+        """Whether `node_str` is already held, Core's own literal/name split.
+
+        `GetAddedNodeInfo` (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
+        the v31.1 tag) runs `LookupNumeric` on the spec first: where it
+        answers a valid `CService` -- `node_str`'s host is a literal IP,
+        `_resolved_literal` below's own question -- the spec is matched
+        against `mapConnected`, every held connection's own resolved
+        address, whatever route opened it. Otherwise the spec is a name,
+        matched against `mapConnectedByName`, `addr_name` alone. A
+        literal-IP spec is never held by `addr_name` alone, an
+        `-addnode=1.2.3.4` no longer recognizing a connection this node
+        holds to `1.2.3.4` under a `-connect`- or `onetry`-given
+        `addr_name` of its own -- `btclib-org/btclib-node#1493`'s own
+        regression, `addr_name` for the first time able to differ from
+        `_resolved_literal`'s own text once a spec's own port survives
+        onto it (btclib-org/btclib-node#1498).
+        """
+        resolved = self._resolved_literal(node_str)
+        if resolved is not None:
+            return resolved in by_address
+        return node_str in by_name
 
     def _full_outbound_count(self) -> int:
         """Return Core's `GetFullOutboundConnCount`: handshaken, full-relay.
@@ -1872,18 +1928,17 @@ class P2pManager(threading.Thread):
         A fresh read of `_added_peers` (locked) each time, never cached
         across a pass: `add_added_peer`/`remove_added_peer` can grow or
         shrink it between two calls, unlike `_connect_peers`, which
-        `_open_connect_peers` reads as a fixed tuple. Matched against
-        `held` by the raw string alone -- `node_str` is exactly what
-        `async_connect_host` records as `addr_name` once dialled, port
-        included where `node_str` names one -- rather than by a
-        re-derived `(host, port)`, which `held` no longer matches once a
-        `-addnode` spec's own port survives to `addr_name`
-        (btclib-org/btclib-node#1493).
+        `_open_connect_peers` reads as a fixed tuple. `_is_held`'s own
+        literal/name split, not the raw string against `addr_name`
+        alone: a literal-IP spec is held by its resolved address, held
+        by any route, the same as `_open_added_peers`' own filter below
+        (btclib-org/btclib-node#1498).
         """
         with self._added_peers_lock:
             raw = tuple(self._added_peers)
-        held = self._held_addr_names()
-        return sum(node_str in held for node_str in raw)
+        by_address = self._held_resolved_addresses()
+        by_name = self._held_addr_names()
+        return sum(self._is_held(node_str, by_address, by_name) for node_str in raw)
 
     async def _open_added_peers(self) -> None:
         """Dial each `-addnode` peer not held, as Core's loop does.
@@ -1911,20 +1966,24 @@ class P2pManager(threading.Thread):
         seconds. Validated here rather than left to
         `async_connect_host`'s own internal call, so a malformed value
         is given the plain "did not come up" line rather than a stack
-        trace off `_open_manual`'s own `except Exception`. Held by the
-        raw string alone, `node_str in held` rather than a re-derived
-        `(host, port)`'s own host: `held` is `addr_name`, and a
-        `-addnode` spec naming its own port now reaches `addr_name` with
-        that port on it (btclib-org/btclib-node#1493).
+        trace off `_open_manual`'s own `except Exception`. Held by
+        `_is_held`'s own literal/name split, a snapshot of each taken
+        once per pass here -- unlike `_added_held`'s own fresh read on
+        every dial below, where a peer that connects mid-pass has to
+        count at once. A `-addnode` spec naming its own port reaches
+        `addr_name` with that port on it (btclib-org/btclib-node#1493),
+        which is why a literal-IP spec is held by its resolved address
+        rather than by `addr_name` alone (btclib-org/btclib-node#1498).
         """
         while True:
-            held = self._held_addr_names()
+            by_address = self._held_resolved_addresses()
+            by_name = self._held_addr_names()
             with self._added_peers_lock:
                 raw = tuple(self._added_peers)
             port = self.node.chain.port
             tried = False
             for node_str in raw:
-                if node_str in held:
+                if self._is_held(node_str, by_address, by_name):
                     continue
                 if self._added_held() >= _MAX_ADDNODE_CONNECTIONS:
                     break

@@ -362,8 +362,8 @@ class Config:
     # the two disagree on exactly that one value.
     connect_given: bool
     # `-connect`, each exactly as given: Core's own `connect`
-    # (`connOptions.m_specified_outgoing`, `src/init.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag), passed whole as
+    # (`connOptions.m_specified_outgoing`, `src/init.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), passed whole as
     # `pszDest` (`ThreadOpenConnections`, `src/net.cpp`, same sha).
     # `P2pManager._connect_peers` reads this, not `connect` above, so a
     # spec naming its own port reaches `addr_name` with it still on
