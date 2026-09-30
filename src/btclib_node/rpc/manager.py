@@ -254,6 +254,9 @@ class RpcManager(threading.Thread):
         # concurrently -- `run` sets it once, from this thread, before
         # `stop` could possibly be reached by another.
         self._server_sockets: list[socket.socket] = []
+        # the coroutine of `server`'s own task, which `run` schedules and
+        # `stop` cancels ahead of every other (btclib-org/btclib-node#1545)
+        self._server_coro: Coroutine[Any, Any, None] | None = None
         # `server`'s own accept queue, kept here rather than only local
         # to `server`'s own frame so the two `manager_test.py` tests
         # naming btclib-org/btclib-node#391 can land a connection into
@@ -683,9 +686,10 @@ class RpcManager(threading.Thread):
             return
         finally:
             self._start_attempted.set()
-        asyncio.run_coroutine_threadsafe(
-            self.server(loop, server_sockets), loop
-        ).add_done_callback(self._report_server_failure)
+        self._server_coro = self.server(loop, server_sockets)
+        asyncio.run_coroutine_threadsafe(self._server_coro, loop).add_done_callback(
+            self._report_server_failure
+        )
         loop.run_forever()
 
     def interrupt(self) -> None:
@@ -723,8 +727,8 @@ class RpcManager(threading.Thread):
         closed.
 
         A reply scheduled during the wait -- the refusal of a request
-        read off a connection a reply here kept alive -- is waited for
-        too, within the same bound.
+        read off any connection, `stop` leaving every read running -- is
+        waited for too, within the same bound.
         """
         with self._replies_lock:
             if not self.replies:
@@ -751,10 +755,11 @@ class RpcManager(threading.Thread):
     def stop(self) -> None:
         """Stop this manager's loop, join its thread, and close every socket.
 
-        Once the thread has ended: cancels every task but the replies in
-        `replies`, which stops this manager listening, finishes those
-        replies through `_finish_replies`, then cancels whatever is left
-        and closes every connection (btclib-org/btclib-node#1539).
+        Once the thread has ended: cancels `server`, which stops this
+        manager listening, finishes the replies in `replies` through
+        `_finish_replies` while every connection goes on reading, then
+        cancels whatever is left and closes every connection
+        (btclib-org/btclib-node#1539, btclib-org/btclib-node#1545).
 
         Guarded on `is_alive` for the node that never started this
         thread at all; the long comments below argue why the handle
@@ -823,53 +828,13 @@ class RpcManager(threading.Thread):
         # the identical reason (btclib-org/btclib-node#377,
         # btclib-org/btclib-node#380).
         stop_handle.cancel()
-        # Cancelled here, as its own pass over `pending`, before any of
-        # them is driven to completion below -- not folded into one
-        # combined loop. `run_until_complete(task)`, for any one task,
-        # drives the *whole* loop, not only that task: under a single
-        # combined pass, `server`'s own accept loop -- not yet reached
-        # by this loop's own cancellation -- keeps accepting while an
-        # earlier task's cancellation is delivered, landing a task that
-        # is not in this snapshot and is never itself cancelled, only
-        # reported destroyed while still pending
-        # (btclib-org/btclib-node#323). This closes log noise rather
-        # than a leak: the sweep below already reaches such a
-        # connection's own socket, since it runs after this loop and
-        # `create_connection` puts every connection straight into
-        # `self.connections` rather than a dict of its own -- unlike
-        # `P2pManager`, whose own connections sweep runs *before* this
-        # same loop and so cannot.
-        pending = asyncio.all_tasks(self.loop)
-        # A reply in `replies` is carved out of `pending` before the
-        # cancel sweep below reaches it, and finished by
-        # `_finish_replies`, uncancelled: Core's `StopHTTPServer` waits
-        # in `g_requests.WaitUntilEmpty()` for the reply to every request
-        # `http_request_cb` registered, 403, 404 and 405 included, before
-        # it frees the event base (`src/httpserver.cpp`,
-        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The replies Core
-        # does not register -- libevent's own error pages, and
-        # `http_reject_request_cb`'s 503 -- are written by its event
-        # loop, which goes on running through that wait until
-        # `evhttp_free`; they are in `replies` all the same, this loop
-        # running only while this method drives it. Every one not
-        # yet finished is in `pending`, stepped or not: one handed over
-        # from `Node`'s thread had its creation queued through
-        # `call_soon_threadsafe` before this method, on that same thread,
-        # queued `loop.stop` behind it, and `join` above returned only
-        # once this loop had run both, in that order -- this manager's
-        # thread having run its loop, the only way a connection to reply
-        # on is accepted; one this loop scheduled itself was created
-        # there and then, by `create_task`.
+        # `server` is cancelled first and on its own, which is what stops
+        # this manager listening -- its `finally` cancels and awaits each
+        # `_accept_loop` -- as `StopHTTPServer` unlistens before it waits
+        # (`src/httpserver.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        # tag). Nothing else is: the read of every connection goes on
+        # running through `_finish_replies` below (btclib-org/btclib-node#1545).
         #
-        # What is cancelled is everything else: `server`, which is what
-        # stops this manager listening, as `StopHTTPServer` unlistens
-        # before it waits, and the read of every connection with no reply
-        # in flight -- a kept-alive one sitting idle among them, which
-        # `g_requests` does not count either, its entry removed once the
-        # reply is sent.
-        with self._replies_lock:
-            replying = {task for task in pending if task.get_coro() in self.replies}
-        pending -= replying
         # No step of the loop first here, unlike an earlier version of
         # this method: that step existed only to let a task sitting on
         # an already-resolved future -- `server`'s own former `accept`
@@ -894,9 +859,13 @@ class RpcManager(threading.Thread):
         # `loop.stop` (btclib-org/btclib-node#377,
         # btclib-org/btclib-node#380) -- so neither of the two reasons
         # this step used to answer still applies.
-        for task in pending:
+        listening = {
+            task
+            for task in asyncio.all_tasks(self.loop)
+            if task.get_coro() is self._server_coro
+        }
+        for task in listening:
             task.cancel()
-        for task in pending:
             with suppress(asyncio.CancelledError):
                 self.loop.run_until_complete(task)
         # Closed explicitly and unconditionally, after the loop above
@@ -911,10 +880,37 @@ class RpcManager(threading.Thread):
         # socket is closed only once, whichever call reaches it first.
         for server_socket in self._server_sockets:
             server_socket.close()
+        # `StopHTTPServer` then waits in `g_requests.WaitUntilEmpty()` for
+        # the reply to every request `http_request_cb` registered, 403,
+        # 404 and 405 included, and `_finish_replies` waits for every
+        # reply in `replies`. Core's event loop runs through that wait,
+        # `evhttp_free` coming only after it, so a request arriving on a
+        # kept-alive connection idle until then reaches
+        # `http_reject_request_cb`, set by `InterruptHTTPServer`, and is
+        # answered 503 with libevent's `Connection: close`; here the
+        # connection's read is still running, and `_refused_early`
+        # answers it the same, `interrupted` being set. `g_requests`
+        # counts no idle connection, and `replies` holds none either, so
+        # an idle read never holds the wait.
+        #
+        # What differs is the 503 itself, and libevent's own error pages:
+        # Core does not register them, and its loop writes them while it
+        # runs, until `evhttp_free`. Here they are in `replies`, this loop
+        # running only while this method drives it, so the wait lasts
+        # until they are written, within the same bound.
         self._finish_replies()
-        # What is left: a reply `_finish_replies` gave up on, and the read
-        # a kept-alive connection went back to, in the same task, once
-        # its reply was written.
+        # Every task left -- a reply `_finish_replies` gave up on, and the
+        # read of every connection -- cancelled as its own pass before
+        # any is driven to completion, not folded into one combined
+        # loop: `run_until_complete(task)` drives the *whole* loop, so
+        # under a single combined pass a task not yet reached by the
+        # cancellation keeps making progress while an earlier one's is
+        # delivered, landing a task that is not in this snapshot and is
+        # never itself cancelled, only reported destroyed while still
+        # pending (btclib-org/btclib-node#323, where that task was
+        # `server`'s own accept loop). The sweep below closes the socket
+        # of any connection such a task was reading, `create_connection`
+        # putting every connection straight into `self.connections`.
         pending = asyncio.all_tasks(self.loop)
         for task in pending:
             task.cancel()

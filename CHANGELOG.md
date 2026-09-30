@@ -1288,6 +1288,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   carries `Connection: close`, as Core's `HTTPRequest::WriteReply` adds it**
   (closes #1542).
 
+### A request on an idle RPC connection during shutdown's wait is answered 503
+
+- **`RpcManager.stop` keeps every connection reading while it waits for the
+  replies it finishes, so a request arriving on one is answered `503` with
+  `Connection: close`, as Core's event loop answers it** (closes #1545).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

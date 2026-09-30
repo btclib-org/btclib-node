@@ -725,6 +725,81 @@ def test_stop_finishes_a_parse_error_reply_scheduled_right_before_it(
     assert b'"code":-32700' in reply
 
 
+def test_stop_answers_a_request_on_an_idle_connection_while_it_waits(
+    a_manager: AManagerFactory,
+) -> None:
+    """A request arriving on an idle connection during `stop`'s wait: 503.
+
+    Core's event loop runs through `StopHTTPServer`'s
+    `g_requests.WaitUntilEmpty()`, so a request on a kept-alive
+    connection idle until then reaches `http_reject_request_cb`, which
+    `InterruptHTTPServer` set, and is answered 503 with `Connection:
+    close` (`src/httpserver.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag). One connection idles in `run`; another's reply is held
+    on the manager's loop, so `stop` is still waiting when the request
+    is sent, and released once the 503 is read. Nobody counts the idle
+    connection, so `stop` returns long before `request_timeout`
+    (btclib-org/btclib-node#1545).
+    """
+    manager = a_manager(get_random_port())
+    manager.start()
+    wait_until_listening(manager)
+    loop = manager.loop
+    idle, idle_peer = socket.socketpair()
+    busy, busy_peer = socket.socketpair()
+    released = asyncio.Event()
+    sock_sendall = loop.sock_sendall
+
+    async def held_sendall(sock: socket.socket, data: Buffer) -> None:
+        if sock is busy:
+            await released.wait()
+        await sock_sendall(sock, data)
+
+    waiting = threading.Event()
+    finish_replies = manager._finish_replies
+
+    def signal_then_finish() -> None:
+        waiting.set()
+        finish_replies()
+
+    def release() -> None:
+        with suppress(RuntimeError):
+            loop.call_soon_threadsafe(released.set)
+
+    stopping = threading.Thread(target=manager.stop)
+    try:
+        conn = manager.create_connection(loop, idle)
+        asyncio.run_coroutine_threadsafe(conn.run(), loop)
+        answering = a_connection_answering(manager, busy)
+        loop.sock_sendall = held_sendall  # type: ignore[method-assign]
+        manager._finish_replies = signal_then_finish  # type: ignore[method-assign]
+        answering.send(HttpReply(OK, {"result": None, "error": None, "id": 1}))
+        stopping.start()
+        assert waiting.wait(10)
+        body = json.dumps(REQUEST).encode()
+        idle_peer.sendall(
+            b"POST / HTTP/1.1\r\nHost: x\r\n"
+            + RPCAUTH_LINE
+            + b"Content-Length: %d\r\n\r\n" % len(body)
+            + body
+        )
+        reply = read_to_the_end(idle_peer)
+        release()
+        answered = read_to_the_end(busy_peer)
+        stopping.join(10)
+        stopped = not stopping.is_alive()
+    finally:
+        release()
+        idle_peer.close()
+        busy_peer.close()
+        stopping.join(60)
+    assert stopped
+    head = reply.partition(b"\r\n\r\n")[0].split(b"\r\n")
+    assert head[0] == b"HTTP/1.1 503 Service Unavailable"
+    assert b"Connection: close" in head
+    assert answered.startswith(b"HTTP/1.1 200 OK\r\n")
+
+
 def test_a_manager_that_cannot_bind_stops_being_alive(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
