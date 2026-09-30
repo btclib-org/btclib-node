@@ -1073,9 +1073,12 @@ def test_stop_lets_a_pending_delayed_reply_finish_rather_than_cancelling_it(
     manager.start()
     wait_until_listening(manager)
     ours, theirs = socket.socketpair()
-    ours.setblocking(False)
     fired: list[bool] = []
     try:
+        # `create_connection` itself puts `ours` into non-blocking mode
+        # (`client.settimeout(0.0)`), so this test does not need its own
+        # `setblocking(False)` the way a bare `RpcConnection` built by
+        # hand, as in `connection_test.py`, does.
         conn = manager.create_connection(manager.loop, ours)
         # `async_send` answers `conn.head`'s own version, which only a
         # parsed request sets: stand in for `run` having already done

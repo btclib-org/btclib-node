@@ -1510,8 +1510,10 @@ class RpcConnection:
         """
 
         async def _delayed_send() -> None:
-            task = asyncio.current_task()
-            assert task is not None
+            # `current_task()` answers `None` only outside a running
+            # task; this coroutine is always scheduled as one, by
+            # `run_coroutine_threadsafe` below, so never `None` here.
+            task = cast("asyncio.Task[None]", asyncio.current_task())
             self.manager.pending_delayed_replies.add(task)
             try:
                 if delay:
