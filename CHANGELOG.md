@@ -1311,6 +1311,18 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   case on a machine without one, while a TEST-NET-1 case runs the same lines
   there, so the coverage floor holds either way** (closes #1556).
 
+### A raw transaction's hex with whitespace in it is refused
+
+- **`sendrawtransaction` and `testmempoolaccept` refuse a `rawtx` that is
+  not all hex digits, of even length and non-empty, as Core's `IsHex` does
+  inside `DecodeHexTx`, with its own `TX decode failed` error** (closes #1372).
+
+### An empty `getblocktxn` drops the peer, undiscouraged
+
+- **A `getblocktxn` naming no transaction index is refused ahead of any
+  block lookup, dropping the peer without discouraging it**, matching
+  Core master's `fDisconnect` on an empty `indexes` (closes #1450).
+
 ### `getcfilters`, `getcfheaders` and `getcfcheckpt` answer Core's way
 
 - **A stop hash still known and allowed is served from its own chain**,
