@@ -30,6 +30,7 @@ from btclib.consensus import MAX_BLOCK_WEIGHT, WITNESS_SCALE_FACTOR, subsidy
 from btclib.exceptions import BTClibException, BTClibValueError
 from btclib.fee import fee_from_vsize
 from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
+from btclib.script.engine import sig_op_cost
 from btclib.script.engine.flags import ScriptFlag
 from btclib.tx.limits import COINBASE_MATURITY
 from btclib.tx.tx_context import (
@@ -60,10 +61,10 @@ from btclib_node.exceptions import (
     TxRejectedError,
 )
 from btclib_node.interpreter import (
+    STANDARD_FLAGS,
     check_transaction,
     check_transactions,
     get_flags,
-    sig_op_cost,
 )
 from btclib_node.mempool import format_money
 from btclib_node.notify import alert_notify, run_detached
@@ -1442,9 +1443,10 @@ def _sigop_adjusted_vsize(tx: Tx, prev_outputs: list[TxOut]) -> int:
     v31.1 tag), `bypass_limits` or not: `GetTransactionSigOpCost` under the
     standard flags, the vsize `GetVirtualTransactionSize` adjusts by it,
     and "bad-txns-too-many-sigops" past `MAX_STANDARD_TX_SIGOPS_COST`.
-    btclib-org/btclib-node#1357
+    `btclib.script.engine.sig_op_cost` is that function, term by term:
+    btclib-org/btclib-node#1357, btclib-org/btclib-node#1586.
     """
-    cost = sig_op_cost(tx, prev_outputs)
+    cost = sig_op_cost(prev_outputs, tx, STANDARD_FLAGS)
     if cost > _MAX_STANDARD_TX_SIGOPS_COST:
         reason, details = "bad-txns-too-many-sigops", str(cost)
         raise TxRejectedError(reason, details)

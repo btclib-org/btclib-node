@@ -1405,6 +1405,23 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   btclib-org/.github's `reusable-audit.yml`, and both publish jobs wait for
   its success (issue btclib-org/.github#1466).
 
+### Address handling matches Core's own keys, timestamps and dial cadence
+
+- **`getaddr` is cached per network and local socket** (closes #1478).
+- **A gossiped or DNS-seeded address keeps a timestamp** (closes #1380).
+- **The automatic dial draws at most once every 500ms** (closes #1379).
+
+### A fixed seed keeps a timestamp too, one to two weeks old
+
+- **`fixed_seed_addresses` backdates each seed, as Core's `ConvertSeeds`
+  does** (closes #1571).
+
+### The mempool counts sigops with btclib's `sig_op_cost`
+
+- **`interpreter.py`'s own `GetTransactionSigOpCost` is gone**,
+  `_sigop_adjusted_vsize` calling btclib's `sig_op_cost` under
+  `STANDARD_FLAGS`, which answers the same (closes #1586).
+
 ### A transaction Core decodes and refuses in `CheckTransaction`'s own words
 
 - **`sendrawtransaction` and `testmempoolaccept` answer that refusal too**,
