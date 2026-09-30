@@ -17,7 +17,6 @@ with a leading underscore.
 
 import os
 from dataclasses import dataclass
-from ipaddress import ip_address
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -119,35 +118,25 @@ def split_host_port(spec: str, default_port: int) -> tuple[str, int]:
     return host, port
 
 
-def _resolve_peers(
+def _split_peers(
     specs: Sequence[str], default_port: int
 ) -> tuple[tuple[str, int], ...]:
-    """Split every spec in `specs` and check its host is a literal IP.
+    """Split every spec in `specs` into its host and port, host unresolved.
 
-    A hostname is not resolved here, unlike Core's own `-connect`/
-    `-addnode`, which dial through `CConnman::ConnectNode` and resolve
-    one via `Resolve` (`src/net.cpp`) same as any other peer. This
-    node's own dial route -- `p2p_manager.connect(peer_address(...))`,
-    the one ISS 573 (btclib-org/btclib-node#573) asks these two fields
-    to use -- takes a `NetworkAddressV2` built straight off a parsed IP
-    (`p2p/address.py`'s `peer_address`), and nothing in this node's
-    synchronous startup path resolves a name into one: DNS is asked
-    only through `PeerDB.get_addr_from_dns`'s own coroutine and
-    `P2pManager._process_addr_fetch`'s resolution of an addr-fetch
-    seed (btclib-org/btclib-node#1284), both on `P2pManager`'s asyncio
-    loop, neither reachable before that manager's thread exists.
-    Widening `peer_address` or plumbing an
-    async resolve into `Node.run` for two config fields is a larger
-    change than this branch's scope; a hostname is refused up front,
-    at `Config` construction, rather than dialled wrong or silently
-    dropped later.
+    Core's own `-connect`/`-addnode`/`-seednode` reach
+    `CConnman::ConnectNode` as a name and resolve it via `Resolve`
+    (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) at
+    every dial, same as any other peer -- so a hostname here is not an
+    error, only a value nothing resolves until then.
+    `P2pManager.async_connect_host` (`p2p/manager.py`) is this node's
+    own equivalent: it resolves a host on `P2pManager`'s asyncio loop
+    right before dialling, the way `_process_addr_fetch`'s resolve of a
+    DNS seed or a `-seednode` value already did before this function
+    stopped refusing the same shape of value for `connect` and
+    `addnode` (btclib-org/btclib-node#1264). A malformed port is still
+    refused here, by `split_host_port` itself.
     """
-    peers: list[tuple[str, int]] = []
-    for spec in specs:
-        host, port = split_host_port(spec, default_port)
-        ip_address(host)  # raises ValueError on a hostname or garbage
-        peers.append((host, port))
-    return tuple(peers)
+    return tuple(split_host_port(spec, default_port) for spec in specs)
 
 
 def _read_cookie_perms(value: str) -> tuple[int | None, str | None]:
@@ -211,6 +200,29 @@ def _resolve_chain(chain: Chain | str) -> Chain:
     if chain == "regtest":
         return RegTest()
     raise UnknownChainError(chain)
+
+
+def _dnsseed(
+    *,
+    dnsseed: bool | None,
+    forcednsseed: bool,
+    connect_given: bool,
+    max_connections: int,
+) -> bool:
+    """Return `-dnsseed` after its soft-set; refused off with `-forcednsseed`.
+
+    `AppInitParameterInteraction`'s own order (`src/init.cpp`, at
+    bitcoin/bitcoin@9be056a8a7): the soft-set runs first -- off under
+    `-connect` or a non-positive `-maxconnections`, an explicit
+    `dnsseed` winning over it -- and only then is `-forcednsseed`
+    refused against the result, in Core's own wording.
+    """
+    if dnsseed is None:
+        dnsseed = not connect_given and max_connections > 0
+    if forcednsseed and not dnsseed:
+        err_msg = "Cannot set -forcednsseed to true when setting -dnsseed to false."
+        raise ValueError(err_msg)
+    return dnsseed
 
 
 @dataclass
@@ -317,14 +329,22 @@ class Config:
     # and `rpc.callbacks.get_blockchain_info` both check `pruned` first.
     prune_target_mib: int | None
     debug: bool
-    # what Core logs of its settings: the warnings it buffers while
-    # reading them, then the unrecognised-section warning, which it logs
-    # after its version line (a line history.log does not have, #1309).
-    # `Node` logs them in that order once its own log is open
+    # the warnings Core buffers while it reads its settings, in order;
+    # `open_history_log` logs each once its own log is open, ahead of
+    # its version line
     log_warnings: tuple[str, ...]
+    # `AppInitParameterInteraction`'s one warning about a section naming
+    # no chain (`cli._warn_unrecognized_sections`), logged after the
+    # version line; `""` where no section is unrecognised
+    section_warning: str
+    # `ArgsManager::LogArgs`'s own lines (`cli._log_args`): the config
+    # file's args, then the command line's, logged after
+    # `section_warning`
+    config_args: tuple[str, ...]
     min_relay_feerate: FeeRate
-    # (ip, port) pairs, resolved by `_resolve_peers` above: Core's own
-    # `-connect`, which dials these alone and turns off DNS seeding and
+    # (host, port) pairs, split by `_split_peers` above, host unresolved:
+    # Core's own `-connect`, which dials these alone and turns off DNS
+    # seeding and
     # every automatically-drawn outbound connection
     # (`InitParameterInteraction`, `src/init.cpp:814-819`, and
     # `connOptions.m_use_addrman_outgoing = false`, `src/init.cpp:2337`,
@@ -339,14 +359,29 @@ class Config:
     # `__init__` below was given rather than off `connect` above, since
     # the two disagree on exactly that one value.
     connect_given: bool
-    # the same pairs, dialled alongside the ordinary draw rather than
-    # instead of it: Core's own `-addnode`
-    # (`connOptions.m_added_nodes`, `src/init.cpp:2193-2198`, same sha).
+    # `_split_peers` run over `addnode_args` below, for its own
+    # malformed-port refusal alone: `P2pManager` reads `addnode_args`,
+    # not this, since `-addnode`'s own list is grown and shrunk at
+    # runtime by the `addnode` RPC's `add`/`remove`
+    # (`add_added_peer`/`remove_added_peer`, `p2p/manager.py`), which a
+    # value split once here could not follow (btclib-org/btclib-node#1350).
     addnode: tuple[tuple[str, int], ...]
-    # the same values as given, which Core's `AddedNodesContain`
-    # (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
-    # compares a drawn address's text with
+    # `-addnode`, each as given: Core's own `m_added_node_params`
+    # (`connOptions.m_added_nodes`, `src/init.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), dialled alongside the
+    # ordinary draw and compared, as text, against a drawn address by
+    # `AddedNodesContain` (`src/net.cpp`, same sha) -- both
+    # `P2pManager._open_added_peers` and `_added_node` read this, not
+    # `addnode` above, since `add_added_peer`/`remove_added_peer` mutate
+    # it at runtime (btclib-org/btclib-node#1350).
     addnode_args: tuple[str, ...]
+    # Core's own `-seednode`: peers `P2pManager` opens an `ADDR_FETCH`
+    # connection to, one at a time, to draw a `getaddr` answer and
+    # disconnect, ahead of the DNS seeds (`CConnman::ThreadOpenConnections`,
+    # `src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    # Split by `_split_peers` the same as `connect` and `addnode` above,
+    # host unresolved.
+    seednode: tuple[tuple[str, int], ...]
     # Core's own `-listen`, `DEFAULT_LISTEN` (`src/net.h`) true unless
     # `-connect` or `-maxconnections=0` is given, in which case
     # `InitParameterInteraction` (`src/init.cpp`,
@@ -358,19 +393,60 @@ class Config:
     # port and starts no `P2pManager` at all, so nothing could dial out
     # either.
     listen: bool
+    # Core's own `-discover`: whether `P2pManager` records this
+    # machine's own interface addresses at all (`p2p.netif.local_addresses`,
+    # btclib-org/btclib-node#1238). `InitParameterInteraction`
+    # (`src/init.cpp:786-817`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    # tag) soft-sets it off under `-proxy`, `-listen=0` or `-externalip`;
+    # this node has neither of the first and the last, so `-listen` is
+    # the only condition `__init__` reads, off `self.listen` rather than
+    # off the `listen` parameter, so that an explicit `-listen`'s own
+    # soft-set (above) is what this one sees. `None` here is the
+    # sentinel `dnsseed` above already uses for a soft default an
+    # explicit value wins over. Discovery runs whether or not `_bind`
+    # itself goes on to succeed, as Core's `Discover()`
+    # (`src/net.cpp:3376-3384`, same sha) does: `AppInitMain` calls it
+    # off `bind_on_any` (`src/init.cpp:2163`, same sha), never off
+    # `fListen`, and this node has no `-bind` to make `bind_on_any`
+    # false.
+    discover: bool
+    # Core's own `-peerblockfilters`: whether `NODE_COMPACT_FILTERS` is
+    # advertised in `version` and whether a BIP157 request is answered
+    # rather than refused (`p2p.connection.local_services`,
+    # `p2p.callbacks._filter_range` and `.get_cfcheckpt`). Core also
+    # requires `-blockfilterindex=basic` (`src/init.cpp:992-998`, same
+    # sha as above) and refuses `-peerblockfilters` without it; this
+    # node keeps the basic filter index unconditionally
+    # (`chainstate.filter_index.FilterIndex`), so that refusal never
+    # applies here.
+    peerblockfilters: bool
     # Core's own `-maxconnections`: the automatic connections this node
     # holds at once, inbound and outbound together. It does not limit a
     # `-connect` or `-addnode` dial, which Core makes as a manual
     # connection outside it too. `P2pManager.__init__` divides it into
     # inbound and outbound slots.
     max_connections: int
-    # Core's own `-dnsseed`, which this node has no option for: whether
-    # `P2pManager` asks the DNS seeds. `InitParameterInteraction`
-    # (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7) soft-sets it off
-    # under `-connect` or a `-maxconnections` whose `int64_t` is not
-    # positive; `__init__` computes that from `max_connections` where it
-    # is given `None`, and `cli` passes it from the `int64_t` itself.
+    # Core's own `-dnsseed`: whether `P2pManager` asks the DNS seeds.
+    # `InitParameterInteraction` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7)
+    # soft-sets it off under `-connect` or a `-maxconnections` whose
+    # `int64_t` is not positive; `__init__` below computes that soft-set
+    # from `max_connections` where `dnsseed` is given `None`, and takes
+    # the explicit value otherwise. `cli`'s own `-listen` fallback
+    # pattern, over the un-narrowed `int64_t` `-maxconnections` reads as
+    # (ISS 1324), computes the soft-set itself and never leaves
+    # `dnsseed` `None`.
     dnsseed: bool
+    # Core's own `-forcednsseed`, `DEFAULT_FORCEDNSSEED` (`src/net.h`,
+    # same sha) false: whether `P2pManager._dns_address_seed` skips its
+    # wait and asks every DNS seed at once regardless of what `PeerDB`
+    # already holds. Refused alongside a `dnsseed` that is false
+    # (`AppInitParameterInteraction`, `src/init.cpp`, same sha).
+    forcednsseed: bool
+    # Core's own `-fixedseeds`, `DEFAULT_FIXEDSEEDS` true: whether
+    # `P2pManager` may fall back on the chain's fixed seeds once DNS
+    # seeding, `-addnode` and `-seednode` have had their chance
+    # (`src/net.h`/`src/net.cpp`, same sha).
+    fixed_seeds: bool
     # Core's own `-bantime`: how long a `setban` ban lasts, in seconds,
     # where the call names no length. `Node` hands it to its `BanMan`.
     ban_time: int
@@ -415,9 +491,14 @@ class Config:
         min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
         connect: Sequence[str] = (),
         addnode: Sequence[str] = (),
+        seednode: Sequence[str] = (),
         listen: bool = True,
+        discover: bool | None = None,
+        peerblockfilters: bool = False,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
         dnsseed: bool | None = None,
+        forcednsseed: bool = False,
+        fixed_seeds: bool = True,
         ban_time: int = DEFAULT_MISBEHAVING_BANTIME,
         rpcauth: Sequence[str] = (),
         rpcuser: str = "",
@@ -427,6 +508,8 @@ class Config:
         rpcwhitelist: Sequence[str] = (),
         rpcwhitelistdefault: bool | None = None,
         log_warnings: Sequence[str] = (),
+        section_warning: str = "",
+        config_args: Sequence[str] = (),
     ) -> None:
         """Resolve `chain` and ports."""
         self.chain = _resolve_chain(chain)
@@ -453,28 +536,38 @@ class Config:
 
         self.connect_given = bool(connect)
         # Core's own "-connect=0": still the -connect arm above, but
-        # nobody named to dial -- `_resolve_peers` never sees the "0"
-        # itself, since `ip_address("0")` is not a valid literal and
-        # would raise where Core instead special-cases the value.
+        # nobody named to dial -- `_split_peers` never sees the "0"
+        # itself, checked here the same way Core's own options builder
+        # special-cases the value ahead of resolving anything
+        # (`connect.size() != 1 || connect[0] != "0"`, `src/init.cpp:2333`,
+        # at bitcoin/bitcoin@ca7162cde5).
         self.connect = (
-            () if list(connect) == ["0"] else _resolve_peers(connect, self.chain.port)
+            () if list(connect) == ["0"] else _split_peers(connect, self.chain.port)
         )
-        self.addnode = _resolve_peers(addnode, self.chain.port)
+        self.addnode = _split_peers(addnode, self.chain.port)
         self.addnode_args = tuple(addnode)
+        self.seednode = _split_peers(seednode, self.chain.port)
         self.listen = listen
+        self.discover = self.listen if discover is None else discover
+        self.peerblockfilters = peerblockfilters
+
+        # `_dnsseed`'s own docstring has `AppInitParameterInteraction`'s
+        # order, ahead of the `-maxconnections` refusal below.
+        self.dnsseed = _dnsseed(
+            dnsseed=dnsseed,
+            forcednsseed=forcednsseed,
+            connect_given=self.connect_given,
+            max_connections=max_connections,
+        )
+        self.forcednsseed = forcednsseed
 
         if max_connections < 0:
-            # Core's own wording (`AppInitParameterInteraction`,
-            # `src/init.cpp`, at bitcoin/bitcoin@9be056a8a7), fatal
-            # there too
+            # Core's own wording (`AppInitParameterInteraction`, same
+            # sha), fatal there too
             err_msg = "-maxconnections must be greater or equal than zero"
             raise ValueError(err_msg)
         self.max_connections = max_connections
-        self.dnsseed = (
-            not self.connect_given and max_connections > 0
-            if dnsseed is None
-            else dnsseed
-        )
+        self.fixed_seeds = fixed_seeds
         self.ban_time = ban_time
 
         self.p2p_port = None
@@ -529,4 +622,6 @@ class Config:
         self.debug = debug
         self.log_path = log_path
         self.log_warnings = tuple(log_warnings)
+        self.section_warning = section_warning
+        self.config_args = tuple(config_args)
         self.min_relay_feerate = min_relay_feerate

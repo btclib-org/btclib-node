@@ -106,9 +106,9 @@ Precedence is Core's `GetSetting` and `GetSettingsList`
 section over the default section; within the command line the last
 value, within a file the first, the chain selectors aside; and a
 negation discarding every value named before it at its own level.
-`-connect`, `-addnode`, `-rpcauth`, `-rpcwhitelist`, `-rpcbind`,
-`-rpcallowip` and `-debug` are lists, every value from every level
-applying.
+`-connect`, `-addnode`, `-seednode`, `-rpcauth`, `-rpcwhitelist`,
+`-rpcbind`, `-rpcallowip` and `-debug` are lists, every value from
+every level applying.
 
 Not every option answers to the file the same way once the chain is
 not `main`: `-port`, `-rpcport`, `-rpcbind`, `-connect` and `-addnode`
@@ -117,6 +117,11 @@ value for one of these is ignored once running testnet, signet or
 regtest -- only that chain's own section and the command line still
 reach it, and a negation in the default section still does. The
 `network_only` column of `_OPTIONS` is where that is written down.
+Ignored is not silent: `_check_network_only_args` refuses to start
+where that leaves such an option set only in the default section, as
+`AppInitParameterInteraction` refuses it (btclib-org/btclib-node#1327).
+`-bind` is `NETWORK_ONLY` in Core too and is not among `_OPTIONS` at
+all, a gap of its own this does not close.
 
 `includeconf=<file>`, resolved relative to the data directory the way
 Core resolves it, is read from the root file's section for the chain it
@@ -179,6 +184,7 @@ from btclib_node.config import (
 from btclib_node.constants import MIN_PRUNE_TARGET_MIB
 from btclib_node.dirlock import DirectoryLock, lock_directories
 from btclib_node.exceptions import DirectoryLockError
+from btclib_node.log import open_history_log
 from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME
 
 if TYPE_CHECKING:
@@ -383,6 +389,27 @@ _OPTIONS: dict[str, _Option] = {
         + ". This option can be specified multiple times.",
         _DEBUG_TEST_TITLE,
     ),
+    "discover": _Option(
+        "",
+        "Discover own IP addresses (default: 1 when listening)",
+        _CONNECTION_TITLE,
+    ),
+    "dnsseed": _Option(
+        "",
+        "Query for peer addresses via DNS lookup, if low on addresses "
+        "(default: 1 unless -connect used or -maxconnections=0)",
+        _CONNECTION_TITLE,
+    ),
+    "fixedseeds": _Option(
+        "",
+        "Allow fixed seeds if DNS seeds don't provide peers (default: 1)",
+        _CONNECTION_TITLE,
+    ),
+    "forcednsseed": _Option(
+        "",
+        "Always query for peer addresses via DNS lookup (default: 0)",
+        _CONNECTION_TITLE,
+    ),
     "h": _Option("", "", None),
     "help": _Option(
         "", "Print this help message and exit (also -h or -?)", _OPTIONS_TITLE
@@ -416,6 +443,11 @@ _OPTIONS: dict[str, _Option] = {
         "Maintain at most <n> automatic connections to peers (default: "
         f"{DEFAULT_MAX_PEER_CONNECTIONS}); does not limit a peer dialled through "
         "-connect or -addnode",
+        _CONNECTION_TITLE,
+    ),
+    "peerblockfilters": _Option(
+        "",
+        "Serve compact block filters to peers per BIP 157 (default: 0)",
         _CONNECTION_TITLE,
     ),
     "port": _Option(
@@ -513,6 +545,13 @@ _OPTIONS: dict[str, _Option] = {
         "server acts as if all rpc users are subject to empty whitelists.",
         _RPC_TITLE,
     ),
+    "seednode": _Option(
+        "=<ip>[:port]",
+        "Connect to a node to retrieve peer addresses, and disconnect. This "
+        "option can be specified multiple times to connect to multiple nodes. "
+        "During startup, seednodes will be tried before dnsseeds.",
+        _CONNECTION_TITLE,
+    ),
     "server": _Option("", "Accept JSON-RPC commands", _RPC_TITLE),
     "signet": _Option(
         "", "Use the signet chain. Equivalent to -chain=signet.", _CHAINPARAMS_TITLE
@@ -564,11 +603,13 @@ class _Settings:
     network: str = ""
     # Core's `m_config_sections`: every section the files read named
     config_sections: list[_SectionInfo] = field(default_factory=list)
-    # what Core logs of its settings: the warnings it buffers while
-    # reading them, then the unrecognised-section warning, which it logs
-    # after its version line (a line history.log does not have, #1309).
-    # `Node` logs them in that order once its own log is open
+    # the warnings Core buffers while it reads its settings, in order;
+    # `open_history_log` logs each once its own log is open, ahead of
+    # its version line
     log_warnings: list[str] = field(default_factory=list)
+    # `_warn_unrecognized_sections`'s one warning, logged after the
+    # version line; `""` where no section is unrecognised
+    section_warning: str = ""
 
 
 def _interpret_key(key: str) -> _KeyInfo:
@@ -775,7 +816,7 @@ def _parse_conf_text(
 
 
 def _read_conf_file(  # noqa: PLR0913
-    path: Path,
+    path: str | Path,
     *,
     required: bool,
     include: str | None = None,
@@ -798,19 +839,26 @@ def _read_conf_file(  # noqa: PLR0913
     the read raises is what "could not be opened" is here, a missing
     file and one the process may not read alike.
 
-    A directory is checked with `is_dir()` before the file is opened,
-    matching `ReadConfigFiles`'s own `fs::is_directory(conf_path)` guard,
-    which runs before the stream is ever opened rather than reading the
-    failure an open attempt raises. Catching the open failure instead
-    would depend on the platform: opening a directory raises
+    A directory is checked with `os.path.isdir` before the file is
+    opened, matching `ReadConfigFiles`'s own `fs::is_directory(conf_path)`
+    guard, which runs before the stream is ever opened rather than
+    reading the failure an open attempt raises. Catching the open failure
+    instead would depend on the platform: opening a directory raises
     `IsADirectoryError` (`errno.EISDIR`) on POSIX and `PermissionError`
     (`errno.EACCES`) on Windows, so a handler for one platform's
     exception class is not reached by the other's error.
 
+    `path` is taken as given -- a plain string where the caller built one
+    by joining onto a base directory, since `pathlib.Path` drops a `.`
+    component on construction and on `/` alike (btclib-org/btclib-node#1273),
+    where `os.path.isdir` and `open` resolve it exactly as the platform
+    resolves `fs::is_directory`/`std::ifstream` and are indifferent to
+    which one they are given.
+
     The refusals are `ReadConfigFiles`'s own words, those of an included
     file where `include` is the `includeconf` value that named it.
     """
-    if path.is_dir():
+    if os.path.isdir(path):  # noqa: PTH112
         kind = "Config" if include is None else "Included config"
         err_msg = f'{kind} file "{path}" is a directory.'
         raise ValueError(err_msg)
@@ -821,7 +869,10 @@ def _read_conf_file(  # noqa: PLR0913
         # nothing, so a byte UTF-8 does not accept is kept, as a lone
         # surrogate `rpc.auth.to_bytes` and the streams `main` writes turn
         # back into that byte
-        text = path.read_text(encoding="utf-8", errors="surrogateescape", newline="")
+        with open(  # noqa: PTH123
+            path, encoding="utf-8", errors="surrogateescape", newline=""
+        ) as conf_file:
+            text = conf_file.read()
     except OSError:
         if include is not None:
             err_msg = f"Failed to include configuration file {include}"
@@ -834,10 +885,10 @@ def _read_conf_file(  # noqa: PLR0913
 
 
 def _load_conf_tree(  # noqa: PLR0913
-    conf_path: Path,
+    conf_path: str | Path,
     *,
     conf_explicit: bool,
-    base_dir: Path,
+    base_dir: str | Path,
     use_includes: bool,
     sections: list[_SectionInfo] | None = None,
     command_line: dict[str, list[_Value]] | None = None,
@@ -865,6 +916,14 @@ def _load_conf_tree(  # noqa: PLR0913
     file under its path, an included one under its name as written, as
     `ReadConfigFiles` passes each to `ReadConfigStream`. `warnings` is
     `_interpret_value`'s.
+
+    `conf_path` and `base_dir` are taken as given -- a caller building one
+    by joining a value onto a base passes a plain string, `os.path.join`
+    rather than `Path`'s own `/`, for the same reason `_read_conf_file`
+    above takes one: Core does not lexically normalise an `includeconf`
+    value at all (`ReadConfigFiles`, same file), so `Path("./confdir")`
+    already reads wrong before it is ever joined onto anything
+    (btclib-org/btclib-node#1273).
     """
     tree = _read_conf_file(
         conf_path,
@@ -890,9 +949,11 @@ def _load_conf_tree(  # noqa: PLR0913
     chain_includes = add_includes(chain_id, names)
     default_includes = add_includes("", names)
     for include in names:
-        include_path = Path(include)
-        if not include_path.is_absolute():
-            include_path = base_dir / include_path
+        include_path = (
+            include
+            if os.path.isabs(include)  # noqa: PTH117
+            else os.path.join(str(base_dir), include)  # noqa: PTH118
+        )
         included = _read_conf_file(
             include_path,
             required=True,
@@ -1000,6 +1061,51 @@ def _setting_to_str(value: _Value) -> str:
     if value is False:
         return "0"
     return value
+
+
+def _setting_to_write_str(value: _Value) -> str:
+    """Return Core's `SettingsValue::write()`: `true`/`false`, else JSON.
+
+    `ArgsManager::LogArgs`'s own `logArgsPrefix` (`src/common/args.cpp`, at
+    bitcoin/bitcoin@9be056a8a7) writes a negation's `bool` this way, and a
+    plain string as a JSON string literal -- unlike `_setting_to_str`
+    above, which is `GetArg`'s own `SettingToString`, a different Core
+    function reached by a different reader.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _log_args(settings: _Settings) -> tuple[str, ...]:
+    """Return Core's `LogArgs` lines, config file first, command line last.
+
+    `ArgsManager::LogArgs`/`logArgsPrefix` (`src/common/args.cpp`, at
+    bitcoin/bitcoin@9be056a8a7): `std::map` order -- a section, then a
+    name inside it, each sorted, and each value in the order it was
+    read -- masked to `****` where `_Option.sensitive` is Core's own
+    `SENSITIVE` flag. Every name reaching this is already in `_OPTIONS`:
+    `_parse_conf_text` drops an unknown config key with its own warning,
+    and `_parse_parameters` refuses an unknown command-line one outright,
+    so Core's own `if (flags)` guard around this has nothing left here to
+    be false for. `LogArgs`'s middle category, "Setting file arg:" from
+    `m_settings.rw_settings`, is settings.json's, which this tree has
+    none of, so it never has a line to emit here.
+    """
+    lines: list[str] = []
+    for section, args in sorted(settings.ro_config.items()):
+        prefix = f"[{section}] " if section else ""
+        for name, values in sorted(args.items()):
+            sensitive = _OPTIONS[name].sensitive
+            for value in values:
+                shown = "****" if sensitive else _setting_to_write_str(value)
+                lines.append(f"Config file arg: {prefix}{name}={shown}")
+    for name, values in sorted(settings.command_line.items()):
+        sensitive = _OPTIONS[name].sensitive
+        for value in values:
+            shown = "****" if sensitive else _setting_to_write_str(value)
+            lines.append(f"Command-line arg: {name}={shown}")
+    return tuple(lines)
 
 
 def _get_arg(settings: _Settings, name: str) -> str | None:
@@ -1124,9 +1230,14 @@ def _chain_arg(settings: _Settings) -> str:
     which is what lets a file decide the chain before any section but
     the default one can mean anything; and a negated selector on the
     command line is skipped there, as Core skips it. At most one of the
-    four may resolve true; more is the same "Invalid combination" Core
-    refuses. A `-chain` Core does not know is returned as given, behind
-    `_UNKNOWN_CHAIN`, as `GetChainArg` returns it.
+    five may resolve true; more is the same "Invalid combination" Core
+    refuses, in Core's own words, `-testnet4` named among the five
+    selectors although this node reads no such option of its own --
+    `get_net` above never sees it, so a `-testnet4` given alone still
+    silently selects mainnet, a gap of its own and not what this fixes
+    (btclib-org/btclib-node#1311). A `-chain` Core does not know is
+    returned as given, behind `_UNKNOWN_CHAIN`, as `GetChainArg` returns
+    it.
     """
 
     def get_net(name: str) -> bool:
@@ -1140,7 +1251,13 @@ def _chain_arg(settings: _Settings) -> str:
     signet = get_net("signet")
     regtest = get_net("regtest")
     if sum([chain_alias is not None, testnet, signet, regtest]) > 1:
-        err_msg = "invalid combination of -regtest, -signet, -testnet and -chain: use at most one"
+        # Core's own words (`GetChainArg`, same citation as above),
+        # `-testnet4` named among the selectors even though this node's
+        # `get_net` never reads one (btclib-org/btclib-node#1311)
+        err_msg = (
+            "Invalid combination of -regtest, -signet, -testnet, -testnet4 "
+            "and -chain. Can use at most one."
+        )
         raise _ChainError(err_msg)
     if chain_alias is not None:
         return _CHAIN_ALIASES.get(chain_alias, _UNKNOWN_CHAIN + chain_alias)
@@ -1157,11 +1274,13 @@ def _resolve_chain_name(settings: _Settings) -> str:
     """Return `_chain_arg`'s chain, refusing one Core does not know.
 
     `GetChainType`'s refusal (`src/common/args.cpp`, at
-    bitcoin/bitcoin@9be056a8a7), asked once the files are read.
+    bitcoin/bitcoin@9be056a8a7), asked once the files are read: Core's
+    own `strprintf("Unknown chain %s.", ...)`, the name written in as
+    given rather than quoted (btclib-org/btclib-node#1311).
     """
     chain_name = _chain_arg(settings)
     if chain_name.startswith(_UNKNOWN_CHAIN):
-        err_msg = f"unknown chain {chain_name.removeprefix(_UNKNOWN_CHAIN)!r}"
+        err_msg = f"Unknown chain {chain_name.removeprefix(_UNKNOWN_CHAIN)}."
         raise ValueError(err_msg)
     return chain_name
 
@@ -1259,7 +1378,7 @@ def _quoted(text: str) -> str:
 
 
 def _check_ignored_conf(
-    settings: _Settings, base_dir: Path, conf_path: Path | None
+    settings: _Settings, base_dir: Path, conf_path: str | Path | None
 ) -> None:
     """Refuse a `bitcoin.conf` in `base_dir` that `-conf` leaves unread.
 
@@ -1286,7 +1405,10 @@ def _check_ignored_conf(
     # directory only where the path is relative
     base = str(base_dir)
     try:
-        if conf_path.samefile(base_config):
+        # not `Path(conf_path).samefile(...)`, ruff's own PTH121 fix:
+        # constructing a `Path` from `conf_path` is the very drop this
+        # module works around elsewhere (btclib-org/btclib-node#1273)
+        if os.path.samefile(conf_path, base_config):  # noqa: PTH121
             return
         if datadir := _get_arg(settings, "datadir"):
             base = get_path_arg(datadir)
@@ -1409,26 +1531,41 @@ def _read_settings(argv: Sequence[str]) -> tuple[_Settings, Path, str]:
     # `symlink/..` are the directory they are written in. `-datadir` is
     # made absolute as `GetDataDir` makes it (`src/common/args.cpp`, at
     # bitcoin/bitcoin@9be056a8a7). A value that is `.` once normal is
-    # where a path a refusal names still differs from Core's: Core joins
-    # the `.` on and `Path` drops it, so `-datadir=.` names "<cwd>/x"
-    # where Core names "<cwd>/./x" (btclib-org/btclib-node#1273).
+    # where a path a refusal names still differed from Core's: Core joins
+    # the `.` on (`fs::absolute`, `AbsPathForConfigVal`, both a literal
+    # `operator/` with no lexical pass of their own) and `pathlib.Path`
+    # drops it on construction and on `/` alike, so `base_display` below
+    # is the same join done as a string, kept alongside the `Path` every
+    # actual filesystem read and `Config` still use
+    # (btclib-org/btclib-node#1273).
     datadir = _get_arg(settings, "datadir")
     base_dir = Path.home() / ".btclib"
+    base_display = str(base_dir)
     if datadir:
-        base_dir = Path(get_path_arg(datadir))
-        if not base_dir.is_absolute():
+        normalized_datadir = get_path_arg(datadir)
+        base_dir = Path(normalized_datadir)
+        if base_dir.is_absolute():
+            base_display = normalized_datadir
+        else:
             base_dir = Path.cwd() / base_dir
+            base_display = os.path.join(  # noqa: PTH118
+                str(Path.cwd()), normalized_datadir
+            )
         _check_datadir(base_dir, datadir)
     conf_path = None
     if not _is_negated(settings, "conf"):
         conf = _get_arg(settings, "conf")
-        conf_value = Path(get_path_arg(conf) if conf else _DEFAULT_CONF_FILENAME)
-        conf_path = conf_value if conf_value.is_absolute() else base_dir / conf_value
+        normalized_conf = get_path_arg(conf) if conf else _DEFAULT_CONF_FILENAME
+        conf_path = (
+            normalized_conf
+            if os.path.isabs(normalized_conf)  # noqa: PTH117
+            else os.path.join(base_display, normalized_conf)  # noqa: PTH118
+        )
         try:
             settings.ro_config = _load_conf_tree(
                 conf_path,
                 conf_explicit=_is_set(settings, "conf"),
-                base_dir=base_dir,
+                base_dir=base_display,
                 use_includes="includeconf" not in settings.command_line,
                 sections=settings.config_sections,
                 command_line=settings.command_line,
@@ -1464,8 +1601,9 @@ class _BeforeLock:
 
     `prune` is `_prune_target_mib`'s. `directories` is a `Config` of the
     chain, the data directory and `-blocksdir`, the fields that name the
-    directories `Node.__init__` locks, and of `-maxconnections`, which
-    `Config.__init__` refuses just after a missing blocks directory, as
+    directories `Node.__init__` locks, and of `-dnsseed`'s soft-set,
+    `-forcednsseed` and `-maxconnections`, which `Config.__init__`
+    refuses in that order just after a missing blocks directory, as
     Core does.
     """
 
@@ -1483,6 +1621,70 @@ class _BeforeLock:
     directories: Config
 
 
+def _unsuitable_section_only_args(settings: _Settings) -> list[str]:
+    """Return Core's `GetUnsuitableSectionOnlyArgs` (`common/args.cpp:134`).
+
+    `main`'s own default section is never questioned, its own early
+    return there; off `main`, a `network_only` name whose only non-empty
+    source is the default section is what it collects --
+    `OnlyHasDefaultSectionSetting` (`src/common/settings.cpp`, same sha),
+    over the same three sources `_sources` above already reads. A
+    source ending in a negation is empty there too, `SettingsSpan::empty`,
+    same file, which is why a value is skipped rather than counted where
+    `values[-1] is False`, the idiom `_get_setting` above already uses
+    for it. `_OPTIONS` is walked in this module's own insertion order
+    rather than Core's `std::set<std::string>`'s alphabetical one, which
+    changes only the order `_check_network_only_args` below joins the
+    lines in, never which names are collected.
+    """
+    if settings.network == "main":
+        return []
+    names: list[str] = []
+    for name, option in _OPTIONS.items():
+        if not option.network_only:
+            continue
+        has_default_section_setting = False
+        has_other_setting = False
+        for values, source in _sources(settings, name, settings.network):
+            if values[-1] is False:
+                continue
+            if source == _DEFAULT_SECTION:
+                has_default_section_setting = True
+            else:
+                has_other_setting = True
+        if has_default_section_setting and not has_other_setting:
+            names.append(name)
+    return names
+
+
+def _check_network_only_args(settings: _Settings) -> None:
+    r"""Refuse a `NETWORK_ONLY` option set only in the default section.
+
+    `AppInitParameterInteraction`'s own loop over
+    `GetUnsuitableSectionOnlyArgs` (`src/init.cpp:936-950`, at
+    bitcoin/bitcoin@9be056a8a7), asked before the unrecognised-section
+    warning below, as Core asks it. One line per option, in Core's own
+    words, each ending in the newline that loop's own
+    `+ Untranslated("\n")` appends: `main`'s own `f"Error: {error}\n"`
+    around this refusal is what turns a single line's own trailing
+    newline into the blank line `bitcoind` v31.1.0 shows after it
+    (btclib-org/btclib-node#1327). `-bind` is among Core's own
+    `NETWORK_ONLY` options and is not among this node's -- `_OPTIONS`
+    has no such entry -- so it is never named here, a gap of its own and
+    not what this fixes.
+    """
+    names = _unsuitable_section_only_args(settings)
+    if not names:
+        return
+    chain = settings.network
+    lines = "".join(
+        f"Config setting for -{name} only applied on {chain} network when "
+        f"in [{chain}] section.\n"
+        for name in names
+    )
+    raise ValueError(lines)
+
+
 def _warn_unrecognized_sections(settings: _Settings) -> None:
     """Warn of every section that names no chain, as Core does.
 
@@ -1490,8 +1692,9 @@ def _warn_unrecognized_sections(settings: _Settings) -> None:
     `GetUnrecognizedSections` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7):
     a line per section, each ending in a newline, printed after
     `Warning: ` with a newline of its own, as `noui_ThreadSafeMessageBox`
-    prints it, and appended to `settings.log_warnings` too, that
-    function logging it as well.
+    prints it, and set as `settings.section_warning` too, that function
+    logging it as well -- after Core's own version line, `open_history_log`'s
+    own order for it.
     """
     lines = "".join(
         f"{filepath}:{lineno} Section [{name}] is not recognized.\n"
@@ -1500,18 +1703,21 @@ def _warn_unrecognized_sections(settings: _Settings) -> None:
     )
     if lines:
         sys.stderr.write(f"Warning: {lines}\n")
-        settings.log_warnings.append(lines)
+        settings.section_warning = lines
 
 
 def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     """Read `argv` and its file, and refuse what Core refuses before its lock.
 
     `InitConfig`, then `AppInitParameterInteraction` (`src/init.cpp`, at
-    bitcoin/bitcoin@9be056a8a7) in its order: the warning about a section
-    naming no chain, a missing blocks directory, a negative
-    `-maxconnections`, `-debug`'s categories, `-prune`, `-minrelaytxfee`.
+    bitcoin/bitcoin@9be056a8a7) in its order: a `NETWORK_ONLY` option set
+    only in the default section off `main`, the warning about a section
+    naming no chain, a missing blocks directory, `-forcednsseed` beside
+    a `-dnsseed` that is off, a negative `-maxconnections`, `-debug`'s
+    categories, `-prune`, `-minrelaytxfee`.
     """
     settings, base_dir, chain_name = _read_settings(argv)
+    _check_network_only_args(settings)
     _warn_unrecognized_sections(settings)
     # `GetBlocksDirPath`: a negated `-blocksdir` is an empty path, which
     # `fs::absolute` reads as the working directory
@@ -1522,11 +1728,27 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     if max_connections_arg is None:
         max_connections_arg = DEFAULT_MAX_PEER_CONNECTIONS
     max_connections = _to_int(max_connections_arg)
+    connect = _get_args(settings, "connect")
+    connect_negated = _is_negated(settings, "connect")
+    # `InitParameterInteraction`'s own soft-set (`src/init.cpp`, same
+    # sha), over the `int64_t` `-maxconnections` arg itself, as Core's
+    # own soft-set does -- but only where `-dnsseed` was not given a
+    # value of its own: `SoftSetBoolArg` never overwrites an arg already
+    # set, so an explicit `-dnsseed=1` reaches `Config.__init__`'s own
+    # `-forcednsseed` refusal as `True` even under `-connect`
+    # (btclib-org/btclib-node#1265, review round 3). `_after_lock`
+    # recomputes the identical value from `max_connections_arg` below,
+    # once this returns it.
+    dnsseed = _get_bool(settings, "dnsseed")
+    if dnsseed is None:
+        dnsseed = not connect and not connect_negated and max_connections_arg > 0
     directories = Config(
         chain=chain_name,
         data_dir=base_dir,
         blocks_dir=blocksdir,
         max_connections=max_connections,
+        dnsseed=dnsseed,
+        forcednsseed=bool(_get_bool(settings, "forcednsseed")),
     )
     debug = _resolve_debug(settings)
     prune = _prune_target_mib(_get_int(settings, "prune") or 0)
@@ -1593,9 +1815,25 @@ def _after_lock(before: _BeforeLock) -> Config:
     listen = _get_bool(settings, "listen")
     if listen is None:
         listen = not connect and not connect_negated and before.max_connections_arg > 0
-    # the same `if` soft-sets `-dnsseed`, reading the same `int64_t`, which
-    # `max_connections` has been narrowed from
-    dnsseed = not connect and not connect_negated and before.max_connections_arg > 0
+    # The same `if` as `-listen`'s soft-set, over the same `int64_t`
+    # (ISS 1324: `before.max_connections_arg`, not the 32-bit-narrowed
+    # `before.max_connections` `Config`'s own fallback for a `None`
+    # `dnsseed` would read), which an explicit `-dnsseed`/`-nodnsseed`
+    # wins over.
+    dnsseed = _get_bool(settings, "dnsseed")
+    if dnsseed is None:
+        no_peers = not connect and not connect_negated
+        dnsseed = no_peers and before.max_connections_arg > 0
+    # `-fixedseeds`'s own explicit value; `DEFAULT_FIXEDSEEDS` (true)
+    # where it is not given.
+    fixedseeds = _get_bool(settings, "fixedseeds")
+    if fixedseeds is None:
+        fixedseeds = True
+    # `Config.__init__`'s own soft-set reads `listen` above, already
+    # resolved, rather than repeating `InitParameterInteraction`'s
+    # `-listen=0` condition here
+    discover = _get_bool(settings, "discover")
+    peerblockfilters = bool(_get_bool(settings, "peerblockfilters"))
     # `GetAuthCookieFile` (`src/rpc/request.cpp`, same sha): negated, no cookie
     rpccookiefile = (
         None
@@ -1624,9 +1862,14 @@ def _after_lock(before: _BeforeLock) -> Config:
         debug=before.debug,
         connect=connect or (["0"] if connect_negated else []),
         addnode=_get_args(settings, "addnode"),
+        seednode=_get_args(settings, "seednode"),
         listen=listen,
+        discover=discover,
+        peerblockfilters=peerblockfilters,
         max_connections=before.max_connections,
         dnsseed=dnsseed,
+        forcednsseed=bool(_get_bool(settings, "forcednsseed")),
+        fixed_seeds=fixedseeds,
         ban_time=ban_time,
         min_relay_feerate=before.min_relay_feerate,
         rpcauth=_get_args(settings, "rpcauth"),
@@ -1637,6 +1880,8 @@ def _after_lock(before: _BeforeLock) -> Config:
         rpcwhitelist=_get_args(settings, "rpcwhitelist"),
         rpcwhitelistdefault=_get_bool(settings, "rpcwhitelistdefault"),
         log_warnings=settings.log_warnings,
+        section_warning=settings.section_warning,
+        config_args=_log_args(settings),
     )
 
 
@@ -1684,7 +1929,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     the exit status is `1`: Core's `InitError`, and `CConnman`'s own
     `MSG_ERROR` for a failed bind, reach stderr through
     `noui_ThreadSafeMessageBox` with that caption (`src/noui.cpp:22-46`, at
-    bitcoin/bitcoin@9be056a8a7), and `bitcoind` exits `EXIT_FAILURE`.
+    bitcoin/bitcoin@9be056a8a7), and `bitcoind` exits `EXIT_FAILURE`. A
+    refusal after the lock reaches `history.log` too, `open_history_log`
+    opened for it with no `Node` built, `LogError`'s own second
+    destination for the same message.
     """
     _setup_environment()
     # a byte of `bitcoin.conf` or of `argv` that is not UTF-8 reaches a
@@ -1703,6 +1951,27 @@ def main(argv: Sequence[str] | None = None) -> None:
         try:
             config = _after_lock(before)
         except ValueError as error:
+            directories = before.directories
+            log_path = (
+                directories.data_dir / directories.log_path
+                if directories.log_path
+                else None
+            )
+            # `AppInitMain`'s own refusals -- `CheckHostPortOptions`'s,
+            # which raises this one -- come after `init::StartLogging`
+            # (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7), so the log
+            # is already open by the time one of them fires, and
+            # `LogError`, reached through `noui_ThreadSafeMessageBox`,
+            # puts the message in it too
+            logger = open_history_log(
+                log_path,
+                debug=before.debug,
+                log_warnings=before.settings.log_warnings,
+                section_warning=before.settings.section_warning,
+                config_args=_log_args(before.settings),
+            )
+            logger.error(str(error))  # noqa: TRY400
+            logger.close()
             sys.stderr.write(f"Error: {error}\n")
             raise SystemExit(1) from error
         node = Node(config=config)

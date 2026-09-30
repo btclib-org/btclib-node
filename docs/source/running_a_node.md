@@ -98,9 +98,15 @@ way. Naming one turns off DNS seeding and every automatically-drawn
 outbound connection — Core's own `-connect` interaction — and defaults
 `-listen` off too, unless `-listen`/`-nolisten` overrides it
 explicitly. `-addnode=<ip>[:port]` dials a peer alongside the ordinary
-draw rather than instead of it. Only a literal IP address is accepted
-in either; a hostname is refused rather than resolved
+draw rather than instead of it. `-seednode=<ip>[:port]` addr-fetches a
+peer for its `addr` alone and disconnects, one at a time ahead of the
+DNS seeds. Only a literal IP address is accepted in any of the three; a
+hostname is refused rather than resolved
 ([#573](https://github.com/btclib-org/btclib-node/issues/573)).
+
+`-dnsseed` turns DNS seeding off (`-connect` and `-maxconnections=0`
+already default it off) and `-fixedseeds=0` keeps the chain's own
+built-in seeds out, both as in Core.
 
 This is the answer to "I already have the chain on another node, can
 this one validate it against that copy instead of the internet":

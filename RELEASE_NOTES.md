@@ -95,6 +95,17 @@ on release day.
   unless `init_errors` says start-up failed, or once `load()` has run for
   a node driven without its thread. A caller
   reading them off a node it never started calls `node.load()` first.
+- **`-port`, `-rpcport`, `-rpcbind`, `-connect` or `-addnode` set only in
+  `bitcoin.conf`'s default section, off `main`, refuses to start, as
+  `bitcoind` refuses it** (closes #1327). The node used to start anyway
+  with the option dropped; it now prints which option and which chain,
+  `Error: Config setting for -<option> only applied on <chain> network
+  when in [<chain>] section.`, and exits 1. Move the line into that
+  chain's own section, e.g. `[regtest]`, or set it on the command line.
+- **`version` signals `NODE_COMPACT_FILTERS`, and BIP157 requests are
+  answered, only under `-peerblockfilters`** (closes #1395), off by
+  default as in Core. A client relying on this node's own BIP157 filter
+  service starts it with `-peerblockfilters=1`.
 
 ## v2026.9.24
 

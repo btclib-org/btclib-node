@@ -32,6 +32,11 @@ A finding noticed while doing something else goes where `REVIEWING.md`'s
 reviewer: a pull request answering two questions cannot be accepted for
 either.
 
+An issue labelled `good first issue` is one set aside for a first
+contribution: small and self-contained.
+[One search][good-first] lists the open ones across the organization, so
+a newcomer need not know in advance which repository to look in.
+
 ## Documentation and comments
 
 [Section 9 of the standard][s9] is the prose style, and it governs the
@@ -247,6 +252,7 @@ settings and why they are what they are.
 [gh-merge]: https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request
 [governance]: https://github.com/btclib-org/.github/blob/main/GOVERNANCE.md
 [roadmap]: https://github.com/btclib-org/.github/blob/main/ROADMAP.md
+[good-first]: https://github.com/search?q=org%3Abtclib-org+label%3A%22good+first+issue%22+is%3Aopen&type=issues
 
 ## This repository in particular
 
@@ -368,8 +374,9 @@ server answered, and
 `bootstrap-dns.yml` asks the same question of the DNS seeds
 `src/btclib_node/chains.py` names. `claude-review.yml` writes the review
 and its own header says it must not become a required check.
-`vendored-vectors.yml` re-checks `tests/_data/README.md`'s pins against
-upstream, `deps-latest.yml` upgrades every dependency and runs the suite,
+`vendored-vectors.yml` re-checks `tests/_data/README.md`'s and
+`scripts/seeds/README.md`'s pins against upstream, `deps-latest.yml`
+upgrades every dependency and runs the suite,
 the lint gate and the packaging checks against the result,
 `deps-oldest.yml` is that sentinel's mirror and takes the registry
 specifiers down to their oldest allowed release instead, its own header
