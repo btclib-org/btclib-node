@@ -1255,10 +1255,10 @@ enable_error_code = [
 # so it is absent from every other platform's sync as well as from the
 # mypy hook's own `--group lint --group test` environment, which
 # installs neither group it is in. `ignore_missing_imports` covers both
-# gaps this tree ever hits it under -- the stub-less package the
-# comment above used to justify excluding the whole harness, and the
-# module missing outright -- rather than a narrower code list that
-# would need to change with whichever one a given run happens to meet.
+# shapes that absence takes -- the module missing outright, on every
+# platform but Linux, and its stubs missing where it is installed --
+# rather than a narrower code list that would need to change with
+# whichever shape a given run meets.
 module = "atheris"
 ignore_missing_imports = true
 
