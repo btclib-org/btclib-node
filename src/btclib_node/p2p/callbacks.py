@@ -23,7 +23,7 @@ import time
 from collections import deque
 from dataclasses import replace
 from io import BytesIO
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from btclib import var_int
 from btclib.amount import valid_sats_amount
@@ -103,7 +103,7 @@ from btclib_node.main import (
     passes_check_block,
     verify_mempool_acceptance,
 )
-from btclib_node.p2p.address import ip_and_port
+from btclib_node.p2p.address import AddrResponseCache, ip_and_port
 from btclib_node.p2p.block_availability import (
     remove_block_request,
     update_block_availability,
@@ -777,7 +777,27 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
     """Answer a peer's `getaddr` with a sample of known addresses, once.
 
     The sample itself is a cache, shared and redrawn only once its own
-    lifetime and jitter expire -- the comment below argues why.
+    lifetime and jitter expire -- the comment below argues why -- and
+    kept one per `conn.addr_cache_key` rather than one for every
+    connection. Core's `CConnman::GetAddresses` (`src/net.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) keys
+    `m_addr_response_caches` by `requestor.m_network_key`, itself keyed
+    by the connection's network (onion for an inbound onion listener,
+    which this node has none of yet -- btclib-org/btclib-node#1257) and
+    the local bind address and port the peer reached it on
+    (`CreateNodeFromAcceptedSocket`, same file and sha): "Addr responses
+    stored in different caches per (network, local socket) prevent
+    cross-network node identification. If a node for example is
+    multi-homed under Tor and IPv6, a single cache (or no cache at all)
+    would let an attacker to easily detect that it is the same node by
+    comparing responses." (`m_addr_response_caches`'s own comment,
+    `src/net.h`, same sha.) `conn.addr_cache_key`'s own docstring
+    (`connection.py`) is where the key is built; this node's own plain
+    tuple stands in for Core's SipHash-keyed `uint64_t`, which buys
+    unpredictability against a peer that could read the key off the
+    wire -- this key never leaves the process, so nothing here needs
+    that property, only that two different (network, local socket)
+    triples land on two different dict entries.
     """
     # Core's `GETADDR` handler (`src/net_processing.cpp`,
     # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) ignores one from a
@@ -795,13 +815,21 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
 
     peer_db = node.p2p_manager.peer_db
     now = time.time()
-    if now >= peer_db.addr_sample_expiration:
+    # Every inbound connection this callback ever reaches carries a key
+    # -- `P2pManager.server`/`create_connection` set it on acceptance,
+    # the only path into an inbound `Connection` -- so this is never
+    # `None` here; the cast is what tells mypy the same thing, `conn`
+    # typed `None` for an outbound connection's sake
+    # (`addr_cache_key`'s own docstring).
+    key = cast("tuple[int, str, int]", conn.addr_cache_key)
+    cache = peer_db.addr_response_caches.setdefault(key, AddrResponseCache())
+    if now >= cache.expiration:
         # Drawn and then filtered, as Core's `GetAddressesUnsafe` leaves
         # every discouraged or banned host out of what addrman drew
         # (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
         # before the cache is kept.
         manager = node.p2p_manager
-        peer_db.addr_sample = [
+        cache.sample = [
             address
             for address in _addresses_to_send(peer_db.get_active_addresses())
             if not manager.is_discouraged(address)
@@ -817,8 +845,8 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
         # to buy an accuracy guarantee gossip never promised in the
         # first place.
         jitter = secrets.SystemRandom().uniform(0, _ADDR_SAMPLE_JITTER)
-        peer_db.addr_sample_expiration = now + _ADDR_SAMPLE_LIFETIME + jitter
-    sample = peer_db.addr_sample
+        cache.expiration = now + _ADDR_SAMPLE_LIFETIME + jitter
+    sample = cache.sample
     # either message class, and not whichever the first branch names:
     # Addr and AddrV2 are siblings under Payload rather than one a
     # subclass of the other, so each is built from its own list rather
@@ -949,7 +977,15 @@ def _store_gossip(
         kept.append(address)
     conn.stats.addr_processed += len(kept)
     conn.stats.addr_rate_limited += rate_limited
-    manager.peer_db.add_addresses(kept)
+    # `source=conn.address`: Core's own `m_addrman.Add(vAddrOk,
+    # pfrom.addr, /*time_penalty=*/2h)` (same loop, same sha) passes the
+    # connection's own address as `AddSingle`'s `source`, which exempts
+    # a self-announcement -- an address equal to the peer's own host,
+    # port aside -- from the batch's flat two-hour penalty,
+    # `add_addresses`' own default; `add_addresses`'s own docstring is
+    # where the port is argued out of the comparison
+    # (btclib-org/btclib-node#1380, review round 2).
+    manager.peer_db.add_addresses(kept, source=conn.address)
     if conn.addr_fetch and len(received) > 1:
         node.logger.debug("addrfetch connection completed, peer=%s", conn.id)
         conn.stop()

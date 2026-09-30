@@ -1399,6 +1399,29 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   to `getblockchaininfo`'s and `getnetworkinfo`'s own new `warnings` field**
   (closes #1522).
 
+### `release.yml` audits the lock before it publishes
+
+- **The `audit` job runs `uv audit` over what the wheel declares**, by calling
+  btclib-org/.github's `reusable-audit.yml`, and both publish jobs wait for
+  its success (issue btclib-org/.github#1466).
+
+### Address handling matches Core's own keys, timestamps and dial cadence
+
+- **`getaddr` is cached per network and local socket** (closes #1478).
+- **A gossiped or DNS-seeded address keeps a timestamp** (closes #1380).
+- **The automatic dial draws at most once every 500ms** (closes #1379).
+
+### A fixed seed keeps a timestamp too, one to two weeks old
+
+- **`fixed_seed_addresses` backdates each seed, as Core's `ConvertSeeds`
+  does** (closes #1571).
+
+### The mempool counts sigops with btclib's `sig_op_cost`
+
+- **`interpreter.py`'s own `GetTransactionSigOpCost` is gone**,
+  `_sigop_adjusted_vsize` calling btclib's `sig_op_cost` under
+  `STANDARD_FLAGS`, which answers the same (closes #1586).
+
 ### A block is refused for its full sigop cost
 
 - **A block whose legacy, P2SH and witness sigops together cost more than

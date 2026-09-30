@@ -20,8 +20,8 @@ from btclib.exceptions import BTClibValueError, ScriptError
 from btclib.hashes import hash160, sha256
 from btclib.key import PrvKeyData
 from btclib.script import script, sig_hash, taproot
+from btclib.script.engine import sig_op_cost, verify_transaction
 from btclib.script.engine import verify_input as btclib_verify_input
-from btclib.script.engine import verify_transaction
 from btclib.script.engine.flags import ALL_FLAGS, NO_FLAGS, ScriptFlag
 from btclib.script.script_pub_key import ScriptPubKey
 from btclib.script.taproot import output_prvkey
@@ -45,7 +45,6 @@ from btclib_node.interpreter import (
     check_transactions,
     f,
     get_flags,
-    sig_op_cost,
     warm,
 )
 from tests import generate_coinbase
@@ -177,6 +176,32 @@ def test_a_transaction_that_prints_money_is_refused() -> None:
             [(coins([prevout()]), tx)], 1, make_node(), _A_BLOCK_HASH, _COINBASE
         )
 
+
+
+def test_a_block_s_sigop_cost_is_refused_before_a_later_transaction_s_amounts() -> None:
+    """The first transaction to pass the limit refuses the block, not the last.
+
+    Core's `ConnectBlock` adds each transaction's sigop cost to the
+    block's total before it checks the next one's inputs, so a block
+    whose first spend passes `MAX_BLOCK_SIGOPS_COST` and whose second
+    prints money is `bad-blk-sigops`, not an amounts refusal. The first
+    spend's 19,000 legacy sigops keep it inside `CheckBlock`'s own
+    legacy bound, and its redeem script's 51 bare `OP_CHECKMULTISIG`s,
+    20 each at four, take it past.
+    """
+    redeem = script.serialize(["OP_CHECKMULTISIG"] * 51)
+    over = spend(script.serialize([redeem]))
+    over.vout.append(TxOut(0, script.serialize(["OP_CHECKSIG"] * 19_000)))
+    prints_money = spend(script.serialize([b"\x11" * 32]), value=51 * 10**8)
+    p2sh = prevout(ScriptPubKey.p2sh(redeem).script)
+    with pytest.raises(BTClibValueError, match="bad-blk-sigops"):
+        check_transactions(
+            [(coins([p2sh]), over), (coins([prevout()]), prints_money)],
+            1,
+            make_node(),
+            _A_BLOCK_HASH,
+            _COINBASE,
+        )
 
 _PRV = 0x1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF
 _PUB_KEY = PrvKeyData(_PRV).pub
@@ -785,10 +810,13 @@ def test_sig_op_cost_is_core_s(
     output: bytes,
     cost: int,
 ) -> None:
-    """`sig_op_cost` is Core's `GetTransactionSigOpCost`, term by term."""
+    """Core's `GetTransactionSigOpCost`, term by term, is btclib's.
+
+    What `main._sigop_adjusted_vsize` relies on (btclib-org/btclib-node#1586).
+    """
     tx_in = TxIn(OutPoint(b"\x33" * 32, 0), script_sig, 0xFFFFFFFF, Witness(stack))
     tx = Tx(version=2, lock_time=0, vin=[tx_in], vout=[TxOut(1, output)])
-    assert sig_op_cost(tx, [TxOut(2, prevout)]) == cost
+    assert sig_op_cost([TxOut(2, prevout)], tx, STANDARD_FLAGS) == cost
 
 
 def test_a_script_refusal_is_in_core_s_words_and_names_its_input() -> None:
