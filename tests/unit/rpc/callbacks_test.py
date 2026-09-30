@@ -183,6 +183,7 @@ def a_peer(
     peer: str = "1.2.3.4",
     bind: str = "5.6.7.8",
     local: str = "9.10.11.12",
+    addr_name: str | None = None,
     user_agent: bytes = b"/btclib:test/",
     latency: float = 0.5,
     min_ping_time: float = 0.25,
@@ -213,6 +214,7 @@ def a_peer(
         client=FakeSocket(gone=gone, peer=peer, bind=bind),
         version_message=version_message if versioned else None,
         address=peer_address(peer, 8333),
+        addr_name=addr_name,
         # fractional where the connection keeps them so, and each a
         # different value, so that an answer naming the wrong source or
         # left unrounded cannot pass
@@ -326,6 +328,30 @@ def test_the_peer_table_names_a_connected_peer() -> None:
     assert info["addrlocal"] == "9.10.11.12:8333"
     assert info["servicesnames"] == ["NETWORK", "WITNESS"]
     assert info["inbound"] is True
+
+
+def test_a_peer_dialled_by_name_answers_that_name_as_addr() -> None:
+    """ISS 1301: `addr` is `m_addr_name`, not the socket, once one is held.
+
+    Core's `getpeerinfo` pushes `stats.m_addr_name`
+    (`src/rpc/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
+    which is the destination string a peer was dialled by rather than a
+    reformatting of the socket's own address -- a portless IP among
+    them, the ordinary case a client dialling by name produces.
+    `addrbind` is unaffected, being the bind address rather than the
+    peer's.
+    """
+    peer = a_peer(peer="1.2.3.4", bind="5.6.7.8", addr_name="203.0.113.5")
+    (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
+    assert info["addr"] == "203.0.113.5"
+    assert info["addrbind"] == "5.6.7.8:18444"
+
+
+def test_a_peer_dialled_by_address_still_answers_the_formatted_socket() -> None:
+    """No `addr_name` held: `addr` is the formatted socket address."""
+    peer = a_peer(peer="1.2.3.4", addr_name=None)
+    (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
+    assert info["addr"] == "1.2.3.4:8333"
 
 
 def test_a_peer_s_subver_is_its_own_announced_user_agent() -> None:
@@ -1785,6 +1811,55 @@ def test_ping_and_stop_answer_without_a_connection() -> None:
     ping(node, _CONN, [])
     assert pinged == [True]
     assert stop(node, _CONN, []) == "Btclib node stopping"
+
+
+@pytest.mark.parametrize(
+    "params", [[], [None], [5000], [-1000], [2**31 - 1], [-(2**31)]]
+)
+def test_stop_never_sleeps_here_whatever_wait_is(
+    monkeypatch: pytest.MonkeyPatch, params: list[Any]
+) -> None:
+    """ISS 1467/1441 review: `wait` is validated here, never slept on here.
+
+    `stop`'s own docstring is where the reason is argued: a `time.sleep`
+    in this callback would run on `Node`'s single thread before
+    `handle_rpc` requested the node's shutdown, where Core requests it
+    before sleeping. `main_test.py` and `connection_test.py` are where
+    the delay is proven, off this thread.
+    """
+    monkeypatch.setattr(time, "sleep", lambda _: pytest.fail("stop must not sleep"))
+    node = a_node()
+    assert stop(node, _CONN, params) == "Btclib node stopping"
+
+
+def test_stop_refuses_a_wait_of_the_wrong_json_type() -> None:
+    """A non-numeric `wait` is named the way `type_error` names it."""
+    node = a_node()
+    with pytest.raises(RpcError) as raised:
+        stop(node, _CONN, ["1000"])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert raised.value.message == (
+        'Wrong type passed:\n{\n    "Position 1 (wait)": "JSON value '
+        'of type string is not of expected type number"\n}'
+    )
+
+
+def test_stop_refuses_a_bool_wait() -> None:
+    """A JSON bool is its own VBOOL, not VNUM, refused the same as a string."""
+    node = a_node()
+    with pytest.raises(RpcError) as raised:
+        stop(node, _CONN, [True])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+
+
+@pytest.mark.parametrize("wait", [10.5, 2**31, -(2**31) - 1])
+def test_stop_refuses_a_wait_getint_int_refuses(wait: float) -> None:
+    """A fractional `wait`, or one past C `int`, fails `getInt<int>()`."""
+    node = a_node()
+    with pytest.raises(RpcError) as raised:
+        stop(node, _CONN, [wait])
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
+    assert raised.value.message == "JSON integer out of range"
 
 
 def test_mempool_acceptance_reports_a_reason_for_each_refusal(
@@ -3497,7 +3572,12 @@ def test_get_network_info_s_localservices_follows_pruned_and_peerblockfilters() 
 
 
 def test_addnode_onetry_dials_the_given_address_once() -> None:
-    """`addnode "host:port" "onetry"` schedules exactly one dial."""
+    """`addnode "host:port" "onetry"` schedules exactly one dial.
+
+    ISS 1493: `connect_host` is given `node_arg` whole, port included --
+    `split_host_port` above only validates it -- so `18444`, this
+    chain's own default, never reaches `connect_host` here at all.
+    """
     dialed: list[Any] = []
     node = cast(
         "Node",
@@ -3509,11 +3589,16 @@ def test_addnode_onetry_dials_the_given_address_once() -> None:
         ),
     )
     add_node(node, _CONN, ["127.0.0.1:9999", "onetry"])
-    assert dialed == [("127.0.0.1", 9999)]
+    assert dialed == [("127.0.0.1:9999", 18444)]
 
 
 def test_addnode_falls_back_to_the_chain_s_own_default_port() -> None:
-    """A `node` naming no port dials this chain's own default one."""
+    """A `node` naming no port dials this chain's own default one.
+
+    The negative half of ISS 1493's own positive above: `node_arg`
+    itself names no port, so it reaches `connect_host` unchanged and
+    `18444` is genuinely `default_port`, not a value already on `dest`.
+    """
     dialed: list[Any] = []
     node = cast(
         "Node",
@@ -3660,7 +3745,8 @@ def test_addnode_onetry_takes_a_hostname() -> None:
     """A hostname, rather than a literal IP, is dialled too (ISS 1264).
 
     `connect_host` resolves it on `P2pManager`'s own loop; this node's
-    synchronous RPC path splits the host from the port and nothing else.
+    synchronous RPC path only validates the port with `split_host_port`
+    (ISS 1493), passing `node_arg` itself on to `connect_host` whole.
     """
     dialed: list[Any] = []
     node = cast(
@@ -3673,7 +3759,7 @@ def test_addnode_onetry_takes_a_hostname() -> None:
         ),
     )
     add_node(node, _CONN, ["example.com:9999", "onetry"])
-    assert dialed == [("example.com", 9999)]
+    assert dialed == [("example.com:9999", 18444)]
 
 
 def test_addnode_refuses_a_port_int_would_read() -> None:
@@ -4758,6 +4844,24 @@ def test_disconnectnode_drops_the_peer_getpeerinfo_names_by_that_address() -> No
     node, removed = a_disconnecting_node(peers)
     (info,) = [info for info in get_peer_info(node, _CONN, []) if info["id"] == 3]
     disconnect_node(node, _CONN, [info["addr"]])
+    assert removed == [3]
+
+
+def test_disconnectnode_matches_the_name_a_peer_was_dialled_by() -> None:
+    """ISS 1301: `address` matches `m_addr_name`, a portless IP included.
+
+    Core's `CConnman::DisconnectNode(std::string_view)` matches
+    `node->m_addr_name` (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag); the socket's own `getpeername`, `"1.2.3.4:8333"`
+    here, does not match once a name is held.
+    """
+    peers = {3: a_peer(peer="1.2.3.4", addr_name="1.2.3.4")}
+    node, removed = a_disconnecting_node(peers)
+    with pytest.raises(RpcError) as raised:
+        disconnect_node(node, _CONN, ["1.2.3.4:8333"])
+    assert (raised.value.code, raised.value.message) == _DISCONNECT_NOT_FOUND
+    assert removed == []
+    disconnect_node(node, _CONN, ["1.2.3.4"])
     assert removed == [3]
 
 

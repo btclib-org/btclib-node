@@ -35,7 +35,7 @@ from btclib_node import Node, install_signal_handlers
 from btclib_node.chains import RegTest
 from btclib_node.chainstate import Chainstate
 from btclib_node.config import Config
-from btclib_node.constants import NodeStatus
+from btclib_node.constants import CLIENT_NAME, CLIENT_VERSION, NodeStatus
 from btclib_node.exceptions import (
     ChainstateInconsistencyError,
     DirectoryLockError,
@@ -46,6 +46,7 @@ from btclib_node.interpreter import warm
 from btclib_node.main import prune_up_to_height, update_chain
 from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES
 from btclib_node.rpc.auth import COOKIE_FILE
+from btclib_node.rpc.connection import RpcConnection
 from tests import (
     assert_loopbacks_free,
     cookie_path,
@@ -53,6 +54,7 @@ from tests import (
     get_random_port,
     held_by_another_process,
     lock_from_another_process,
+    rpc_client,
     taken_loopbacks,
     taken_port_bind_error,
     wait_until,
@@ -124,6 +126,13 @@ class AManager:
     def stop(self) -> None:
         """Record that `run`'s own teardown reached this stand-in."""
         self.stopped = True
+
+    def latest_reply_deadline(self) -> float | None:
+        """Answer as `RpcManager` does where no reply was ever delayed.
+
+        `Node.stop` reads it off `rpc_manager` (btclib-org/btclib-node#1467).
+        """
+        return None
 
 
 @pytest.fixture
@@ -841,6 +850,125 @@ def test_the_node_that_will_not_stop_is_named(
         node.stop()
 
 
+def a_stopping_rpc_node(tmp_path: Path) -> Node:
+    """Start a regtest node listening for RPC, P2P off."""
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path,
+            allow_p2p=False,
+            rpc_port=get_random_port(),
+            debug=True,
+        )
+    )
+    node.start()
+    wait_until_listening(node.rpc_manager)
+    return node
+
+
+def call_stop_with_wait(
+    node: Node, wait_ms: int
+) -> tuple[threading.Thread, dict[str, Any]]:
+    """Call `stop` with `wait_ms` on a thread; the dict gets its reply."""
+    client = rpc_client(node, timeout=wait_ms / 1000 + 10)
+    reply: dict[str, Any] = {}
+
+    def call() -> None:
+        reply["status"], reply["envelope"] = client.call_raw(
+            "stop", [wait_ms], jsonrpc="1.0", request_timeout=wait_ms / 1000 + 10
+        )
+
+    caller = threading.Thread(target=call)
+    caller.start()
+    return caller, reply
+
+
+# how early asyncio may wake a timer: `BaseEventLoop`'s own clock
+# resolution, the monotonic clock's
+_TIMER_SLACK = time.get_clock_info("monotonic").resolution
+
+
+def test_stop_widens_its_join_past_a_pending_delayed_reply(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`stop` from another thread outwaits a `stop wait=N` past its bound.
+
+    `RpcManager.stop`, on the node's own thread, finishes the delayed
+    reply before the stores close (#1467), so a `wait` longer than
+    `STOP_TIMEOUT` is the node stopping as asked, not a wedge. This
+    test's own thread stands in for `install_signal_handlers`'s signal
+    handler, calling once the deadline is recorded.
+    """
+    monkeypatch.setattr(btclib_node, "STOP_TIMEOUT", 1.0)
+    node = a_stopping_rpc_node(tmp_path)
+    caller, reply = call_stop_with_wait(node, 3000)
+    wait_until(lambda: node.rpc_manager.latest_reply_deadline() is not None)
+    deadline = node.rpc_manager.latest_reply_deadline()
+    assert deadline is not None
+
+    node.stop()  # raises NodeShutdownTimeoutError here if this regresses
+    stopped = time.monotonic()
+
+    caller.join(timeout=10)
+    assert not node.is_alive()
+    # relative to the deadline rather than to a figure measured at
+    # idle: the node's thread ends only once the reply is written
+    assert stopped >= deadline - _TIMER_SLACK
+    assert reply["status"] == 200
+    assert reply["envelope"]["result"] == "Btclib node stopping"
+
+
+def test_stop_rereads_a_deadline_recorded_after_its_first_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `stop wait=N` handled while `stop` already waits still widens it.
+
+    The node's thread is held inside `handle_rpc`, the request already
+    popped and its reply not yet scheduled, until `Node.stop` -- called
+    from another thread -- has made its first read and found nothing to
+    wait for. Released, that thread records the deadline and stops the
+    node itself; `Node.stop`, having read once, would give up after
+    `STOP_TIMEOUT` with the reply still asleep (#1467). The hold is a
+    wrapper around `RpcConnection.send_and_close_after`, the one call
+    between answering `stop` and recording its deadline.
+    """
+    monkeypatch.setattr(btclib_node, "STOP_TIMEOUT", 1.0)
+    handling = threading.Event()
+    release = threading.Event()
+    send_and_close_after = RpcConnection.send_and_close_after
+
+    def held(conn: RpcConnection, reply: Any, delay: float) -> None:
+        handling.set()
+        release.wait(10)
+        send_and_close_after(conn, reply, delay)
+
+    monkeypatch.setattr(RpcConnection, "send_and_close_after", held)
+    node = a_stopping_rpc_node(tmp_path)
+    first_read = threading.Event()
+    latest_reply_deadline = node.rpc_manager.latest_reply_deadline
+
+    def read() -> float | None:
+        deadline = latest_reply_deadline()
+        first_read.set()
+        return deadline
+
+    monkeypatch.setattr(node.rpc_manager, "latest_reply_deadline", read)
+    caller, reply = call_stop_with_wait(node, 3000)
+    assert handling.wait(10)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        stopping = pool.submit(node.stop)
+        assert first_read.wait(10)
+        assert latest_reply_deadline() is None
+        release.set()
+        # re-raises `NodeShutdownTimeoutError` here if this regresses
+        stopping.result(timeout=20)
+    caller.join(timeout=10)
+
+    assert not node.is_alive()
+    assert reply["status"] == 200
+    assert reply["envelope"]["result"] == "Btclib node stopping"
+
+
 def test_a_port_configured_is_a_manager_started_and_stopped(
     tmp_path: Path, a_networked_node: Node
 ) -> None:
@@ -1544,9 +1672,8 @@ def test_a_node_logs_the_configuration_warnings_first(tmp_path: Path) -> None:
     """ISS 1295: what Core logs while reading its settings opens the log.
 
     Each as one record, a section warning's lines and all, ahead of
-    anything the node logs of its own. `bitcoind`'s `debug.log` carries
-    the settings' warnings ahead of its version line and the section
-    warning after it, a line history.log does not have (#1309).
+    anything the node logs of its own -- after the five blank lines the
+    file opens on, its version line sitting between the two (#1309).
     """
     sections = (
         "a.conf:1 Section [x] is not recognized.\nb:2 Section [y] is not recognized.\n"
@@ -1557,7 +1684,8 @@ def test_a_node_logs_the_configuration_warnings_first(tmp_path: Path) -> None:
             data_dir=tmp_path,
             allow_p2p=False,
             allow_rpc=False,
-            log_warnings=["Ignoring unknown configuration value foo", sections],
+            log_warnings=["Ignoring unknown configuration value foo"],
+            section_warning=sections,
         )
     )
     try:
@@ -1565,9 +1693,43 @@ def test_a_node_logs_the_configuration_warnings_first(tmp_path: Path) -> None:
     finally:
         node.stop()
     log_text = (node.data_dir / "history.log").read_text(encoding="utf-8")
-    first, _, rest = log_text.partition("\n")
-    assert first.endswith(" Ignoring unknown configuration value foo")
-    assert rest.index(f" {sections}\n") < rest.index("Starting main loop")
+    assert log_text.startswith("\n\n\n\n\n")
+    warning_at = log_text.index("Ignoring unknown configuration value foo")
+    version_at = log_text.index(f"{CLIENT_NAME} version {CLIENT_VERSION}")
+    section_at = log_text.index(sections)
+    loop_at = log_text.index("Starting main loop")
+    assert warning_at < version_at < section_at < loop_at
+
+
+def test_a_node_logs_its_config_args_after_the_section_warning(
+    tmp_path: Path,
+) -> None:
+    """ISS 1305: `LogArgs`'s lines, last of what `open_history_log` writes.
+
+    `ArgsManager::LogArgs` (`src/common/args.cpp`, at
+    bitcoin/bitcoin@9be056a8a7) runs at the end of `init::StartLogging`
+    (`src/init/common.cpp`), after the version line and the section
+    warning it dumps from its own buffer.
+    """
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path,
+            allow_p2p=False,
+            allow_rpc=False,
+            section_warning="a.conf:1 Section [x] is not recognized.\n",
+            config_args=['Command-line arg: regtest="1"'],
+        )
+    )
+    try:
+        node.start()
+    finally:
+        node.stop()
+    log_text = (node.data_dir / "history.log").read_text(encoding="utf-8")
+    section_at = log_text.index("Section [x] is not recognized.")
+    args_at = log_text.index('Command-line arg: regtest="1"')
+    loop_at = log_text.index("Starting main loop")
+    assert section_at < args_at < loop_at
 
 
 def test_a_store_that_cannot_be_opened_ends_start_up_with_the_rest_closed(

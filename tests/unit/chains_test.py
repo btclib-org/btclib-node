@@ -17,9 +17,9 @@ from pathlib import Path
 
 from btclib.consensus import CONSENSUS_PARAMS
 
-from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet
+from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet, TestNet4
 
-CHAINS = (Main(), TestNet(), SigNet(), RegTest())
+CHAINS = (Main(), TestNet(), SigNet(), RegTest(), TestNet4())
 
 # Bitcoin Core's chainparams.cpp, per chain: `consensus.powLimit` as
 # compact bits, `pchMessageStart` and the genesis block hash. Every
@@ -47,6 +47,11 @@ EXPECTED = {
         "magic": "fabfb5da",
         "genesis": "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206",
     },
+    "testnet4": {
+        "pow_limit_bits": "1d00ffff",
+        "magic": "1c163f28",
+        "genesis": "00000000da84f2bafbbc53dee25a72ae507ff4914b867c565be350b0da8bf043",
+    },
 }
 
 
@@ -60,7 +65,7 @@ def test_every_chain_is_covered() -> None:
     """
     assert {chain.name for chain in CHAINS} == set(EXPECTED)
     # by class and not by the name an instance carries: `Chain` itself
-    # takes its four fields, so building one out of `__subclasses__`
+    # takes its own fields, so building one out of `__subclasses__`
     # was a call that only the subclasses' own no-argument __init__
     # answers, and nothing said so where it was read.
     assert set(Chain.__subclasses__()) == {type(chain) for chain in CHAINS}
@@ -137,12 +142,13 @@ def test_the_fixed_seeds_regenerate_from_cores_lists() -> None:
 
 
 def test_regtest_alone_has_no_fixed_seed() -> None:
-    """ISS 1099: Core clears `vFixedSeeds` for regtest alone of these four."""
+    """ISS 1099: Core clears `vFixedSeeds` for regtest alone of these five."""
     assert {chain.name: bool(chain.fixed_seeds) for chain in CHAINS} == {
         "mainnet": True,
         "testnet": True,
         "signet": True,
         "regtest": False,
+        "testnet4": True,
     }
 
 
@@ -175,4 +181,8 @@ def test_each_chain_asks_core_s_dns_seeds() -> None:
             "seed.signet.achownodes.xyz.",
         ],
         "regtest": ["dummySeed.invalid."],
+        "testnet4": [
+            "seed.testnet4.bitcoin.sprovoost.nl.",
+            "seed.testnet4.wiz.biz.",
+        ],
     }

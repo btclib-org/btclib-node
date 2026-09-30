@@ -34,7 +34,7 @@ from btclib_node.dirlock import lock_directories
 from btclib_node.download import DownloadManager
 from btclib_node.exceptions import NodeShutdownTimeoutError, ReimportedMainProcessError
 from btclib_node.interpreter import warm
-from btclib_node.log import Logger
+from btclib_node.log import open_history_log
 from btclib_node.main import update_chain
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import PeerDB
@@ -303,13 +303,16 @@ class Node(threading.Thread):
 
         self.terminate_flag = threading.Event()
         log_path = self.data_dir / config.log_path if config.log_path else None
-        self.logger = Logger(log_path, debug=config.debug)
-        # what Core logs of its settings, in its order, ahead of anything
-        # the node logs: Core's version line, which it logs between the
-        # warnings it buffered and the section warning, is not written
-        # here (#1309)
-        for warning in config.log_warnings:
-            self.logger.warning(warning)
+        # `open_history_log` writes what Core logs ahead of anything this
+        # node logs: the settings' own warnings, its version line, the
+        # section warning, then `LogArgs`'s lines, in that order
+        self.logger = open_history_log(
+            log_path,
+            debug=config.debug,
+            log_warnings=config.log_warnings,
+            section_warning=config.section_warning,
+            config_args=config.config_args,
+        )
 
         # A `getcfilters` answer `p2p.callbacks.get_cfilters` could not
         # finish scheduling under its own pacing bound, keyed by
@@ -769,7 +772,7 @@ class Node(threading.Thread):
             lock.release()
 
     def stop(self) -> None:
-        """Ask the main loop to stop, and wait up to `STOP_TIMEOUT` for it.
+        """Ask the main loop to stop, and wait a bounded time for it.
 
         Raises if the loop has not come back by then, the node having
         no way to be sure of its chainstate or its databases while a
@@ -798,10 +801,40 @@ class Node(threading.Thread):
         handler is the other caller worth naming: this raising there
         makes an operator's interrupt loud, and it does not make the
         process able to exit, the wedged thread being non-daemon.
+
+        The bound is `STOP_TIMEOUT` past the later of this call and
+        `rpc_manager.latest_reply_deadline`: `rpc_manager.stop`, on this
+        node's thread, finishes a `stop` RPC's delayed reply before the
+        stores close (btclib-org/btclib-node#1467), so a hidden `wait`
+        longer than `STOP_TIMEOUT` keeps that thread alive past it
+        without its being wedged.
+
+        That deadline is read again each time the bound it gave runs
+        out, rather than once, and the last read is enough because:
+
+        - a deadline is recorded only on this node's thread, by
+          `handle_rpc`, which sets `terminate_flag` itself right after;
+          so none predates the shutdown it bounds, and once the flag is
+          set this thread records one only while it finishes the pass
+          of its loop already under way -- possibly after this method's
+          first read;
+        - the value is never lowered, so a read sees every deadline
+          recorded before it, a reply already sent included, while this
+          thread still closes the stores behind it;
+        - the last read comes `STOP_TIMEOUT` or more after the flag was
+          set, so a deadline recorded after it would mean this thread
+          was still in that pass by then: the wedge this raises for.
         """
         self.terminate_flag.set()
         if self.is_alive() and threading.current_thread() is not self:
-            self.join(timeout=STOP_TIMEOUT)
+            called_at = time.monotonic()
+            while self.is_alive():
+                deadline = self.rpc_manager.latest_reply_deadline()
+                start = called_at if deadline is None else max(called_at, deadline)
+                remaining = start + STOP_TIMEOUT - time.monotonic()
+                if remaining <= 0:
+                    break
+                self.join(timeout=remaining)
             if self.is_alive():
                 # named by its data directory, which is what tells one
                 # node from another where several are running

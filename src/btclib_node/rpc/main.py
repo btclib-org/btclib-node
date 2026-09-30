@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import RPCErrorCode
 
-from btclib_node.rpc.callbacks import arg_names, callbacks
+from btclib_node.rpc.callbacks import arg_names, callbacks, stop_wait_param
 from btclib_node.rpc.errors import RpcError
 from btclib_node.rpc.help import HELP_TEXT
 from btclib_node.rpc.jsonrpc import (
@@ -109,10 +109,29 @@ def _exec(
     return request.reply(result)
 
 
+def _stop_delay_seconds(request: JsonRpcRequest) -> float:
+    """Read a successful `stop` call's own `wait`, in seconds, or `0.0`.
+
+    Only ever called once `request.method == "stop"` has already been
+    dispatched and answered without error, so the read below cannot
+    raise: `stop`'s own callback already ran `stop_wait_param` on the
+    same value and would have refused the call otherwise. The
+    named-argument transform is repeated rather than read off
+    `_execute`'s own local variable, which reaches nowhere outside that
+    function -- `request.params` itself is still whatever shape the
+    request gave it (btclib-org/btclib-node#1467).
+    """
+    params = request.params
+    if isinstance(params, dict):
+        params = transform_named_arguments(params, arg_names["stop"])
+    wait_ms = stop_wait_param(params)
+    return 0.0 if wait_ms is None else max(0, wait_ms) / 1000
+
+
 def _answer_one(
     node: Node, conn: RpcConnection, body: dict[str, Any]
-) -> tuple[HttpReply, bool]:
-    """Answer a lone request object, and say whether it asked to stop.
+) -> tuple[HttpReply, bool, float]:
+    """Answer a lone request object, and say whether -- and how late -- to stop.
 
     Legacy errors are an HTTP error status; 2.0 errors are HTTP 200, and
     a 2.0 notification is 204 with no body, having run.
@@ -125,7 +144,9 @@ def _answer_one(
     `RPCMethod::HandleRequest`'s own argument checks have passed
     (`src/rpc/util.cpp`, same tag): a throw from those checks propagates
     out of `ExecuteCommand` before the handler lambda is ever entered
-    (btclib-org/btclib-node#1441).
+    (btclib-org/btclib-node#1441). The delay `stop`'s own `wait` asks
+    for is read only once `stop` is already known true
+    (btclib-org/btclib-node#1467).
     """
     request = JsonRpcRequest()
     try:
@@ -136,17 +157,22 @@ def _answer_one(
         # which a release build does not enforce, and a 2.0 request
         # `parse` refuses reaches it: `bitcoind` v31.1.0 answers it in
         # the 2.0 envelope with the legacy status
-        return HttpReply(error_status(error.code), request.reply(error=error)), False
+        return (
+            HttpReply(error_status(error.code), request.reply(error=error)),
+            False,
+            0.0,
+        )
     stop = request.method == "stop" and reply.get("error") is None
+    delay = _stop_delay_seconds(request) if stop else 0.0
     if request.is_notification:
-        return HttpReply(NO_CONTENT, None), stop
-    return HttpReply(OK, reply), stop
+        return HttpReply(NO_CONTENT, None), stop, delay
+    return HttpReply(OK, reply), stop, delay
 
 
 def _answer_batch(
     node: Node, conn: RpcConnection, body: list[Any]
-) -> tuple[HttpReply, bool]:
-    """Answer a batch, and say whether any member asked to stop.
+) -> tuple[HttpReply, bool, float]:
+    """Answer a batch, and say whether -- and how late -- to stop.
 
     Every member is answered inside HTTP 200, whatever its version. One
     `JsonRpcRequest` is parsed into for the whole batch, as in Core, so
@@ -158,11 +184,14 @@ def _answer_batch(
     carries no error (btclib-org/btclib-node#1441): a member whose
     `request.parse` itself raises is answered from the previous member's
     still-held method and version and never sets `stop`, since it is not
-    that method's own reply.
+    that method's own reply. `stop` latches: once one member has set it,
+    a later member's own `wait` -- or refusal -- is never read, the same
+    way a later member's method name never was before it either.
     """
     request = JsonRpcRequest()
     replies: list[dict[str, Any]] = []
     stop = False
+    delay = 0.0
     for member in body:
         try:
             request.parse(member)
@@ -170,12 +199,14 @@ def _answer_batch(
         except RpcError as error:
             response = request.reply(error=error)
         else:
-            stop = stop or (request.method == "stop" and response.get("error") is None)
+            if not stop and request.method == "stop" and response.get("error") is None:
+                stop = True
+                delay = _stop_delay_seconds(request)
         if not request.is_notification:
             replies.append(response)
     if body and not replies:
-        return HttpReply(NO_CONTENT, None), stop
-    return HttpReply(OK, replies), stop
+        return HttpReply(NO_CONTENT, None), stop, delay
+    return HttpReply(OK, replies), stop, delay
 
 
 def handle_rpc(node: Node) -> None:
@@ -183,8 +214,13 @@ def handle_rpc(node: Node) -> None:
 
     An object is a lone request, an array a batch, and anything else is
     `PARSE_ERROR`'s "Top-level object parse error", as in Core. A `stop`
-    request's reply is waited on before `node.stop()` runs, so the
-    client sees it before the loop it arrived on is torn down.
+    request's reply reaches the client before the loop it arrived on is
+    torn down: waited on before `node.stop()` runs, or, where `stop`
+    carries a positive `wait`, handed to
+    `RpcConnection.send_and_close_after`, whose delayed write
+    `RpcManager.stop` finishes, with `node.stop()` run at once -- Core's
+    own `stop` requests shutdown before it sleeps
+    (btclib-org/btclib-node#1467).
 
     `conn_id` is left in `manager.connections`: `RpcConnection.async_send`
     removes it, on the branch that closes `conn`, once `conn` is done
@@ -201,15 +237,19 @@ def handle_rpc(node: Node) -> None:
     node.logger.debug("Received rpc message: %s", conn_id)
 
     if isinstance(body, dict):
-        reply, stop = _answer_one(node, conn, body)
+        reply, stop, delay = _answer_one(node, conn, body)
     elif isinstance(body, list):
-        reply, stop = _answer_batch(node, conn, body)
+        reply, stop, delay = _answer_batch(node, conn, body)
     else:
         reply = error_reply(RPCErrorCode.PARSE_ERROR, "Top-level object parse error")
         stop = False
+        delay = 0.0
 
     if stop:
-        conn.send_and_wait(reply)
+        if delay:
+            conn.send_and_close_after(reply, delay)
+        else:
+            conn.send_and_wait(reply)
         node.stop()
     else:
         conn.send(reply)

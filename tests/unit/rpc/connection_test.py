@@ -61,12 +61,17 @@ def fake_manager(connections: dict[int, Any]) -> SimpleNamespace:
     Every source is allowed: a socketpair's peer has no IP address for
     `RpcManager.client_allowed` to read.
     """
+    # what `send_and_close_after` hands `RpcManager.add_delayed_reply`,
+    # `(coroutine, deadline)` pairs in call order
+    delayed: list[tuple[Any, float]] = []
     return SimpleNamespace(
         auth=RpcAuth((RpcAuthEntry.parse(RPCAUTH),)),
         client_allowed=lambda client: True,
         logger=Logger(debug=True),
         messages=[],
         connections=connections,
+        delayed=delayed,
+        add_delayed_reply=lambda reply, deadline: delayed.append((reply, deadline)),
     )
 
 
@@ -885,6 +890,54 @@ def test_send_and_wait_gives_up_rather_than_blocking_forever() -> None:
     loop.close()
     ours.close()
     theirs.close()
+
+
+def test_send_and_close_after_returns_at_once_and_delays_the_write() -> None:
+    """`send_and_close_after` returns before `delay`, and writes after it.
+
+    `handle_rpc` calls it on `Node`'s thread, played here by this test's
+    own, and stops the node right after (ISS 1467), so the wait runs on
+    `loop`, a thread of its own here as `RpcManager`'s is. What it hands
+    `RpcManager.add_delayed_reply` is the coroutine `loop` then runs,
+    with the deadline `delay` sets.
+    """
+    delay = 1.0
+    ours, theirs = socket.socketpair()
+    ours.setblocking(False)
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    manager = fake_manager(connections={})
+    try:
+        conn = answering(
+            RpcConnection(loop, ours, cast("RpcManager", manager), 0), request()
+        )
+        started = time.monotonic()
+        conn.send_and_close_after(HttpReply(OK, ANSWER), delay)
+        returned = time.monotonic()
+        # nothing written yet: the call did not wait `delay` out itself
+        theirs.setblocking(False)
+        with pytest.raises(BlockingIOError):
+            theirs.recv(4096)
+        theirs.settimeout(5)
+        reply = b""
+        while chunk := theirs.recv(4096):
+            reply += chunk
+        received = time.monotonic()
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join()
+        loop.close()
+        theirs.close()
+    [(delayed, deadline)] = manager.delayed
+    assert started + delay <= deadline <= returned + delay
+    # run to completion by `loop`, which is what clears a coroutine's frame
+    assert delayed.cr_frame is None
+    assert received - started >= delay - _WINDOWS_TIMER_TICK
+    assert reply == framed(
+        b"HTTP/1.1 200 OK", b"Connection: close", b"Content-Length: {length}"
+    )
+    assert ours.fileno() == -1
 
 
 def refused(

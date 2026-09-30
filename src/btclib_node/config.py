@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 
 from btclib.fee import FeeRate
 
-from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet
+from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet, TestNet4
 from btclib_node.exceptions import InvalidChainTypeError, UnknownChainError
 from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME
 from btclib_node.rpc.auth import (
@@ -199,6 +199,8 @@ def _resolve_chain(chain: Chain | str) -> Chain:
         return SigNet()
     if chain == "regtest":
         return RegTest()
+    if chain == "testnet4":
+        return TestNet4()
     raise UnknownChainError(chain)
 
 
@@ -329,11 +331,18 @@ class Config:
     # and `rpc.callbacks.get_blockchain_info` both check `pruned` first.
     prune_target_mib: int | None
     debug: bool
-    # what Core logs of its settings: the warnings it buffers while
-    # reading them, then the unrecognised-section warning, which it logs
-    # after its version line (a line history.log does not have, #1309).
-    # `Node` logs them in that order once its own log is open
+    # the warnings Core buffers while it reads its settings, in order;
+    # `open_history_log` logs each once its own log is open, ahead of
+    # its version line
     log_warnings: tuple[str, ...]
+    # `AppInitParameterInteraction`'s one warning about a section naming
+    # no chain (`cli._warn_unrecognized_sections`), logged after the
+    # version line; `""` where no section is unrecognised
+    section_warning: str
+    # `ArgsManager::LogArgs`'s own lines (`cli._log_args`): the config
+    # file's args, then the command line's, logged after
+    # `section_warning`
+    config_args: tuple[str, ...]
     min_relay_feerate: FeeRate
     # (host, port) pairs, split by `_split_peers` above, host unresolved:
     # Core's own `-connect`, which dials these alone and turns off DNS
@@ -352,6 +361,16 @@ class Config:
     # `__init__` below was given rather than off `connect` above, since
     # the two disagree on exactly that one value.
     connect_given: bool
+    # `-connect`, each exactly as given: Core's own `connect`
+    # (`connOptions.m_specified_outgoing`, `src/init.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), passed whole as
+    # `pszDest` (`ThreadOpenConnections`, `src/net.cpp`, same sha).
+    # `P2pManager._connect_peers` reads this, not `connect` above, so a
+    # spec naming its own port reaches `addr_name` with it still on
+    # (btclib-org/btclib-node#1493) -- `connect` above exists for its
+    # own eager malformed-port refusal alone, the same split as
+    # `addnode` below for the same reason.
+    connect_args: tuple[str, ...]
     # `_split_peers` run over `addnode_args` below, for its own
     # malformed-port refusal alone: `P2pManager` reads `addnode_args`,
     # not this, since `-addnode`'s own list is grown and shrunk at
@@ -373,8 +392,15 @@ class Config:
     # disconnect, ahead of the DNS seeds (`CConnman::ThreadOpenConnections`,
     # `src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
     # Split by `_split_peers` the same as `connect` and `addnode` above,
-    # host unresolved.
+    # host unresolved -- for its own eager malformed-port refusal alone,
+    # the same reason `connect` above is kept beside `connect_args`.
     seednode: tuple[tuple[str, int], ...]
+    # `-seednode`, each exactly as given, passed whole as `pszDest`
+    # (`ProcessAddrFetch`, `src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    # the v31.1 tag): `P2pManager._seednodes` reads this, not `seednode`
+    # above, for the same reason `connect_args` exists beside `connect`
+    # (btclib-org/btclib-node#1493).
+    seednode_args: tuple[str, ...]
     # Core's own `-listen`, `DEFAULT_LISTEN` (`src/net.h`) true unless
     # `-connect` or `-maxconnections=0` is given, in which case
     # `InitParameterInteraction` (`src/init.cpp`,
@@ -501,6 +527,8 @@ class Config:
         rpcwhitelist: Sequence[str] = (),
         rpcwhitelistdefault: bool | None = None,
         log_warnings: Sequence[str] = (),
+        section_warning: str = "",
+        config_args: Sequence[str] = (),
     ) -> None:
         """Resolve `chain` and ports."""
         self.chain = _resolve_chain(chain)
@@ -535,9 +563,13 @@ class Config:
         self.connect = (
             () if list(connect) == ["0"] else _split_peers(connect, self.chain.port)
         )
+        # `["0"]` the same "dial nobody" spelling as `connect` above,
+        # rather than a literal peer named `"0"`.
+        self.connect_args = () if list(connect) == ["0"] else tuple(connect)
         self.addnode = _split_peers(addnode, self.chain.port)
         self.addnode_args = tuple(addnode)
         self.seednode = _split_peers(seednode, self.chain.port)
+        self.seednode_args = tuple(seednode)
         self.listen = listen
         self.discover = self.listen if discover is None else discover
         self.peerblockfilters = peerblockfilters
@@ -613,4 +645,6 @@ class Config:
         self.debug = debug
         self.log_path = log_path
         self.log_warnings = tuple(log_warnings)
+        self.section_warning = section_warning
+        self.config_args = tuple(config_args)
         self.min_relay_feerate = min_relay_feerate

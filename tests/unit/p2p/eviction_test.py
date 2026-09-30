@@ -25,6 +25,7 @@ from btclib_node.p2p.eviction import (
     EvictionCandidate,
     Network,
     get_network,
+    is_internal,
     is_local,
     is_valid,
     keyed_net_group,
@@ -559,6 +560,26 @@ def test_is_valid(ip: str, valid: bool) -> None:  # noqa: FBT001
     unspecified address, and so not valid either.
     """
     assert is_valid(IPv6Address(ip)) is valid
+
+
+# (`CNetAddr::IsInternal`, `IsInternal` alone -- narrower than `is_valid`
+# above, which also refuses the Tor v2 prefix and the plain-invalid
+# ranges `is_internal` does not ask about at all)
+INTERNAL_CASES = [
+    ("fd6b:88c0:8724::1", True),
+    ("fd6b:88c0:8724:ffff::1", True),
+    # beside the prefix, and not internal
+    ("fd6b:88c0:8725::1", False),
+    # the Tor v2 prefix is a different range, not internal
+    ("fd87:d87e:eb43::1", False),
+    ("::ffff:1.2.3.4", False),
+]
+
+
+@pytest.mark.parametrize(("ip", "internal"), INTERNAL_CASES)
+def test_is_internal(ip: str, internal: bool) -> None:  # noqa: FBT001
+    """`CNetAddr::IsInternal`: exactly the `fd6b:88c0:8724::/48` prefix."""
+    assert is_internal(IPv6Address(ip)) is internal
 
 
 def test_the_keyed_net_group_depends_on_the_key_alone() -> None:

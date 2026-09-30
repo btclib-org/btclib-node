@@ -895,9 +895,9 @@ def contextual_check_block(node: Node, block: Block, index: int) -> tuple[int, b
             err_msg = "bad-txns-nonfinal"
             raise BTClibValueError(err_msg)
     # Core's own ContextualCheckBlock checks finality before the
-    # coinbase height commitment (src/validation.cpp, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which is why this sits
-    # after the loop above rather than ahead of it. bad-cb-height is
+    # coinbase height commitment (src/validation.cpp,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which is why this
+    # sits after the loop above rather than ahead of it. bad-cb-height is
     # Core's own literal reason for the one failure this call can
     # actually reach: bad-diffbits and time-too-old stay unchecked here
     # (median_time_past and required_bits are never supplied), and
