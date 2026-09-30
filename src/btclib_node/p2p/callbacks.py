@@ -91,6 +91,7 @@ from btclib_node.chainstate.filter_index import NO_PREVIOUS_FILTER_HEADER
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, NodeStatus, P2pConnStatus
 from btclib_node.exceptions import (
     ChainstateInconsistencyError,
+    LowWorkHeaderError,
     MisbehavingError,
     MissingPrevoutError,
 )
@@ -1096,6 +1097,22 @@ def _refuse_before_indexing(node: Node, block: Block, conn: Connection) -> bool:
     return segwit
 
 
+def _min_pow_checked(node: Node, block: Block) -> bool:
+    """Whether a block's chain clears the anti-DoS work threshold.
+
+    Core's `min_pow_checked` in its `BLOCK` arm (`net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the parent is indexed,
+    and its work plus the block's own reaches
+    `headers_sync.anti_dos_work_threshold`.
+    """
+    block_index = node.chainstate.block_index
+    parent = block.header.previous_block_hash
+    return parent in block_index.header_dict and (
+        block_index.chainwork[parent] + calculate_work(block.header)
+        >= anti_dos_work_threshold(block_index, node.chain.consensus.minimum_chain_work)
+    )
+
+
 def block(node: Node, msg: bytes, conn: Connection) -> None:
     """Store a requested block once its proof of work checks out.
 
@@ -1138,6 +1155,11 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
     `None` rather than raising, which is `headers`'s own "ask again" case
     and not this one's: a `MisbehavingError` is raised here instead,
     matching `Misbehaving`. btclib-org/btclib-node#711
+
+    A header new here whose chain is below the anti-DoS work threshold
+    (`_min_pow_checked`) is not indexed, and the block is dropped with it,
+    its peer kept: Core's `too-little-chainwork`
+    (btclib-org/btclib-node#1505).
     """
     # btclib's BlockPayload validates against mainnet's pow limit by
     # default, which no regtest or signet block meets. Its own docstring
@@ -1164,15 +1186,23 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
 
     block_index = node.chainstate.block_index
     segwit = _refuse_before_indexing(node, block, conn)
-    if (
-        block_hash not in block_index.header_dict
-        and block_index.add_headers([block.header]) is None
-    ):
-        err_msg = (
-            f"block {block_hash.hex()} has prev block not found: "
-            f"{block.header.previous_block_hash.hex()}"
-        )
-        raise MisbehavingError(err_msg)
+    if block_hash not in block_index.header_dict:
+        try:
+            tip = block_index.add_headers(
+                [block.header], min_pow_checked=_min_pow_checked(node, block)
+            )
+        except LowWorkHeaderError as e:
+            # Core's `ProcessNewBlock` logs "AcceptBlock FAILED", and its
+            # `MaybePunishNodeForBlock` punishes nobody for this result: a
+            # refusal it expects, so the line and not a traceback
+            node.logger.error("AcceptBlock FAILED (%s)", e)  # noqa: TRY400
+            return
+        if tip is None:
+            err_msg = (
+                f"block {block_hash.hex()} has prev block not found: "
+                f"{block.header.previous_block_hash.hex()}"
+            )
+            raise MisbehavingError(err_msg)
 
     block_info = block_index.get_block_info(block_hash)
 

@@ -651,7 +651,10 @@ def a_handshake_node(
             )
         ),
         logger=SimpleNamespace(
-            info=lambda *a: None, warning=lambda *a: None, debug=lambda *a: None
+            info=lambda *a: None,
+            warning=lambda *a: None,
+            debug=lambda *a: None,
+            error=lambda *a: None,
         ),
     )
 
@@ -2372,13 +2375,17 @@ class FakeBlockIndex:
         """Record that this block hash was marked downloaded."""
         self.marked.append(block_hash)
 
-    def add_headers(self, headers: list[BlockHeader]) -> bytes | None:
+    def add_headers(
+        self, headers: list[BlockHeader], *, min_pow_checked: bool = True
+    ) -> bytes | None:
         """Index the one header `block` ever calls this with, or refuse it.
 
         `BlockIndex.add_headers`'s own contract for a single header:
         the hash it just indexed, or `None` for a header this stand-in
-        was built to refuse.
+        was built to refuse. `min_pow_checked` is recorded and not acted
+        on: no block here reaches the threshold's refusal.
         """
+        self.min_pow_checked = min_pow_checked
         self.added_headers.extend(headers)
         (header,) = headers
         if not self.accepts_headers:
@@ -5997,4 +6004,39 @@ def test_a_released_header_failing_its_checks_is_punished(
         headers(node, Headers(chain[3:]).serialize(), peer)
     assert chain[3].hash in node.chainstate.block_index.header_dict
     assert stale.hash not in node.chainstate.block_index.header_dict
+    node.chainstate.close()
+
+
+@pytest.mark.parametrize(("height", "indexed"), [(6, True), (5, False)])
+def test_a_block_s_new_header_below_the_threshold_is_not_indexed(
+    tmp_path: Path,
+    height: int,
+    indexed: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1505: Core's `min_pow_checked` in the `BLOCK` arm, bound included.
+
+    The tip is at 150, so the threshold is the tip's work less 144 blocks:
+    seven blocks of work, genesis in. A block at 6 off the active chain
+    brings exactly that, one at 5 a block less: its header is refused as
+    `too-little-chainwork` and its peer is not punished for it.
+    """
+    node = an_unrequested_block_node(tmp_path, 150)
+    block = a_block_at(node, height, fork=height - 1)
+    deliver(node, block)
+    block_index = node.chainstate.block_index
+    assert (block.header.hash in block_index.header_dict) is indexed
+    assert node.added == []
+    node.chainstate.close()
+
+
+def test_a_requested_block_on_a_low_work_chain_is_refused_all_the_same(
+    tmp_path: Path,
+) -> None:
+    """ISS 1505: Core weighs the work whether the block was asked for or not."""
+    node = an_unrequested_block_node(tmp_path, 150)
+    block = a_block_at(node, 5, fork=4)
+    asked = a_peer(download_queue=[block.header.hash])
+    deliver(node, block, asked)
+    assert block.header.hash not in node.chainstate.block_index.header_dict
+    assert node.added == []
     node.chainstate.close()

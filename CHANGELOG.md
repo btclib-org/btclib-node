@@ -1166,6 +1166,7 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 - **Headers below the anti-DoS work threshold go through Core's
   `HeadersSyncState` before any is indexed** (closes #1246).
+- **A block's new low-work header is refused, unpunished** (closes #1505).
 
 ## v2026.9.24
 
