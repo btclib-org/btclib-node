@@ -5,12 +5,16 @@
 """`notify.py`: running a `-*notify` command, and `Warnings`'s own dedup."""
 
 import logging
+import sys
 import threading
 from typing import TYPE_CHECKING, Any, override
 
 from btclib_node.log import Logger
 from btclib_node.notify import (
     Warnings,
+    _sanitize,
+    # exact same filter the Windows temp path's own backslashes go
+    # through, argued at that test's own docstring
     alert_notify,
     run_command,
     run_detached,
@@ -146,17 +150,26 @@ def test_alert_notify_substitutes_percent_s_with_the_quoted_message(
     """`%s` in the command becomes the message, single-quoted.
 
     No space sits before `>`, here and in the two tests below that
-    share this same command shape: cmd.exe's own `echo` keeps a space
-    that directly precedes a redirection operator as part of what it
-    echoes -- a trailing space before the newline the content otherwise
-    ends on -- where a POSIX shell discards it either way, so asserting
-    one fixed answer across platforms needs the command to carry no
-    such space for either shell to treat differently.
+    share this same command shape -- the incidental whitespace question
+    `test_run_command_runs_through_the_shell` above already settles, so
+    this test can carry the one difference that is actually its own:
+    `'...'` itself. A POSIX shell's own quoting strips the wrapping
+    single quotes before `echo` ever sees them, Core's own `runCommand`
+    on POSIX (`sh -c`, same citation as the module docstring) relying
+    on exactly that to keep the message one argument. cmd.exe has no
+    such quoting at all -- `runCommand` on Windows is `system()`
+    calling `cmd.exe /c`, same citation -- so the quotes `alert_notify`
+    wraps around the message reach the marker file literally there;
+    Core is not wrong to still wrap them, `AlertNotify`'s own comment
+    saying "to be safe" rather than promising POSIX's own stripping.
     """
     marker = tmp_path / "marker"
     alert_notify(Logger(), f"echo %s>{marker}", "hello")
     wait_until(marker.exists)
-    assert marker.read_text() == "hello\n"
+    if sys.platform == "win32":  # pragma: no cover -- exercised on Windows CI only
+        assert marker.read_text() == "'hello'\n"
+    else:
+        assert marker.read_text() == "hello\n"
 
 
 def test_alert_notify_drops_a_single_quote_before_wrapping_the_message(
@@ -165,9 +178,34 @@ def test_alert_notify_drops_a_single_quote_before_wrapping_the_message(
     """A `'` in the message cannot break out of the wrapping Core adds.
 
     `_sanitize` drops every `'` before `alert_notify` wraps the message
-    in one pair of its own -- if it did not, this message's semicolons
-    would end the `echo` early and run `touch <injected>` for real
-    rather than being printed as inert text inside the quotes.
+    in one pair of its own. On POSIX this is the injection the test
+    guards for real: `;` is that shell's own command separator, so an
+    unsanitized `'` here would end the quoted argument early and run
+    `touch <injected>` as a second, unquoted command rather than
+    leaving it printed as inert text inside the quotes. cmd.exe has no
+    `'...'` quoting and no `;` command separator either -- `&`/`&&` are
+    its own, `;` a literal character there whether or not a `'` sits
+    near it -- so `touch` never runs as a second command on Windows
+    regardless of sanitization; `not injected.exists()` still holds
+    there, just not as evidence of this test's own mutation being
+    caught, which is what the content assertion below is for instead.
+
+    The expected text is built by sanitizing `injected`'s own path
+    string, not by assuming it equal to the raw path: `_SAFE_CHARS`
+    carries no backslash, matching Core's own `SAFE_CHARS_DEFAULT`
+    (`notify.py`'s own module docstring), so a Windows temp path's
+    own backslashes are dropped by this same call along with the
+    message's quotes, and asserting the raw path's text would fail on
+    Windows for a reason that has nothing to do with this test's own
+    point.
+
+    Mutating `_SAFE_CHARS` to no longer drop `'` is still caught on
+    both platforms, by two different halves of this test: on POSIX,
+    `touch` actually runs and `injected.exists()` becomes true; on
+    Windows, where it does not run either way, the message's own
+    un-dropped quotes reach the marker file and the content assertion
+    -- built from the literal, quote-free text below rather than
+    through `_sanitize` -- no longer matches.
     """
     marker = tmp_path / "marker"
     injected = tmp_path / "injected"
@@ -175,17 +213,29 @@ def test_alert_notify_drops_a_single_quote_before_wrapping_the_message(
     alert_notify(Logger(), f"echo %s>{marker}", message)
     wait_until(marker.exists)
     assert not injected.exists()
-    assert marker.read_text() == f"x; touch {injected}; echo y\n"
+    sanitized_injected = _sanitize(str(injected))
+    expected = f"x; touch {sanitized_injected}; echo y"
+    if sys.platform == "win32":  # pragma: no cover -- exercised on Windows CI only
+        assert marker.read_text() == f"'{expected}'\n"
+    else:
+        assert marker.read_text() == f"{expected}\n"
 
 
 def test_alert_notify_drops_a_character_outside_cores_safe_set(
     tmp_path: Path,
 ) -> None:
-    """`$` and `` ` ``, among `SanitizeString`'s own excluded characters."""
+    """`$` and `` ` ``, among `SanitizeString`'s own excluded characters.
+
+    Wrapped in quotes cmd.exe does not strip, same reasoning as the
+    test above.
+    """
     marker = tmp_path / "marker"
     alert_notify(Logger(), f"echo %s>{marker}", "a$b`c")
     wait_until(marker.exists)
-    assert marker.read_text() == "abc\n"
+    if sys.platform == "win32":  # pragma: no cover -- exercised on Windows CI only
+        assert marker.read_text() == "'abc'\n"
+    else:
+        assert marker.read_text() == "abc\n"
 
 
 def test_set_warning_answers_whether_it_was_not_already_set() -> None:
