@@ -180,7 +180,7 @@ def disconnect_if_insufficient_work(node: Node, conn: Connection) -> bool:
 
     The initial-block-download check of Core's
     `UpdatePeerStateForReceivedHeaders`: a peer this node drew itself,
-    whose best known block has less work than the chain's
+    whose best known block has less work than `node.config`'s own
     `minimum_chain_work`, is disconnected, as it cannot serve a chain
     this node would download. `callbacks.headers` asks it only of a batch
     that says the peer has nothing more to give and that this node already
@@ -195,7 +195,7 @@ def disconnect_if_insufficient_work(node: Node, conn: Connection) -> bool:
     ):
         return False
     chainwork = node.chainstate.block_index.chainwork[best_known]
-    if chainwork >= node.chain.consensus.minimum_chain_work:
+    if chainwork >= node.config.minimum_chain_work:
         return False
     node.logger.info(
         "Outbound peer headers chain has insufficient work, "

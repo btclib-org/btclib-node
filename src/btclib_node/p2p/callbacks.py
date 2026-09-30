@@ -1085,7 +1085,7 @@ def _unrequested_block_refused(node: Node, block_hash: bytes) -> bool:
     return (
         work < block_index.chainwork[active_chain[-1]]
         or height > len(active_chain) - 1 + MIN_BLOCKS_TO_KEEP
-        or work < node.chain.consensus.minimum_chain_work
+        or work < node.config.minimum_chain_work
     )
 
 
@@ -1990,7 +1990,7 @@ def getheaders(node: Node, msg: bytes, conn: Connection) -> None:
     block_index = node.chainstate.block_index
     active_chain = block_index.active_chain
     tip = active_chain[-1]
-    if block_index.chainwork[tip] < node.chain.consensus.minimum_chain_work:
+    if block_index.chainwork[tip] < node.config.minimum_chain_work:
         conn.send(Headers([]))
         return
     stop = getheaders.hash_stop

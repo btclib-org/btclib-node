@@ -1347,6 +1347,23 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   node is currently running, and `logpath`, the file this node logs to**
   (closes #1486).
 
+### `test_a_chunked_body_is_decoded_and_dispatched` stops flaking
+
+- **`drive`'s sender yields between chunks instead of sleeping 10ms**,
+  which cost the chunked-body cases over half of `drive`'s 1.0s budget
+  before any load; it also asserts `drive`'s own outcome (closes #1278).
+
+### `-maxtipage=<n>` sets the tip age initial block download ends at
+
+- **`Config.max_tip_age`, in seconds, is what `main.update_ibd_status` reads
+  as the bound**, `-maxtipage` unset defaulting to a day (closes #1474).
+
+### `-minimumchainwork=<hex>` sets the minimum chain work every check reads
+
+- **`Config.minimum_chain_work` defaults to the chain's own and refuses more
+  than 64 hex digits**, read wherever the minimum chain work is checked
+  (closes #1500).
+
 ### A transaction Core decodes and refuses in `CheckTransaction`'s own words
 
 - **`sendrawtransaction` and `testmempoolaccept` answer that refusal too**,
