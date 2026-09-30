@@ -53,6 +53,7 @@ this check is for.
 """
 
 import enum
+import itertools
 from collections import deque
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -72,7 +73,7 @@ from btclib.utils import bytesio_from_binarydata
 from btclib_node.exceptions import ChainstateInconsistencyError, MisbehavingError
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Sequence
 
     from btclib_node.chains import Chain
     from btclib_node.db import KeyValueStore
@@ -84,6 +85,7 @@ __all__ = [
     "BlockStatus",
     "block_time",
     "calculate_work",
+    "check_headers_pow",
 ]
 
 
@@ -132,6 +134,34 @@ def _assert_valid_pow(header: BlockHeader, pow_limit_bits: bytes) -> None:
         header.assert_valid_pow(pow_limit_bits)
     except BTClibValueError as e:
         raise MisbehavingError(str(e)) from e
+
+
+def check_headers_pow(headers: Sequence[BlockHeader], pow_limit_bits: bytes) -> None:
+    """Core's `CheckHeadersPoW`: each header's proof of work, then continuity.
+
+    Both are `Misbehaving` in Core (`src/net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so both refusals are a
+    `MisbehavingError`. `BlockIndex.add_headers` asks it too, of every
+    batch it is given.
+    """
+    for header in headers:
+        _assert_valid_pow(header, pow_limit_bits)
+    _assert_continuous(headers)
+
+
+def _assert_continuous(headers: Sequence[BlockHeader]) -> None:
+    """Assert each header builds on the one before it in `headers`.
+
+    Core's `CheckHeadersAreContinuous`, which `CheckHeadersPoW` answers
+    with `Misbehaving` ("non-continuous headers sequence") ahead of any
+    `AcceptBlockHeader` (`src/net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so the refusal is a
+    `MisbehavingError`.
+    """
+    for previous, header in itertools.pairwise(headers):
+        if header.previous_block_hash != previous.hash:
+            err_msg = "non-continuous headers sequence"
+            raise MisbehavingError(err_msg)
 
 
 def _assert_valid_in_context(  # noqa: PLR0913, PLR0917
@@ -768,38 +798,31 @@ class BlockIndex:
         self.active_chain.pop()
 
     # add_headers' own validation stage: every header in the batch,
-    # checked and weighed against either the index already on disk or a
-    # parent earlier in this same batch, without indexing any of them
-    # yet. `pending` is what a header brought by this batch is weighed
-    # against, its parent being as likely to be a header two lines
-    # above as one already indexed. A header whose parent is in
-    # neither is left out of it: there is no chain to weigh it
-    # against, and nothing to give it a height -- unless that parent
-    # is itself later in this same batch, in which case there *is* a
-    # chain to weigh it against, just not yet processed, and this is
-    # not the peer's ordinary "connects to nothing I know" case:
-    # refusing the whole batch rather than dropping the one header
-    # silently is what Core's own per-message continuity check
-    # (`CheckHeadersAreContinuous`, `net_processing.cpp`) enforces
-    # unconditionally, whether or not the batch would otherwise
-    # connect to known history. btclib-org/btclib-node#214
+    # checked and weighed against either the index already on disk or the
+    # header before it in this same batch, without indexing any of them
+    # yet. A header whose parent is in neither is left out: there is no
+    # chain to weigh it against, and nothing to give it a height.
+    #
+    # Core's order, at bitcoin/bitcoin@9be056a8a7 (v31.1): `CheckHeadersPoW`
+    # (`net_processing.cpp`) over the whole batch, its proof of work and
+    # then its continuity, each a `Misbehaving`; then `AcceptBlockHeader`
+    # (`validation.cpp`) header by header, where a known header marked
+    # invalid is `duplicate-invalid`, `Misbehaving` for an outbound peer
+    # alone (`MaybePunishNodeForBlock`), and one whose parent is marked
+    # invalid is `bad-prevblk`, `Misbehaving` for any peer. Where a header
+    # fails the contextual check, Core keeps the headers before it and
+    # this batch is refused whole (btclib-org/btclib-node#1348).
     #
     # A refusal raises rather than answers False: it is a peer that
     # sent a header failing on its own terms, not the ordinary end
     # of a sync, and the caller needs to be able to tell the two
     # apart. btclib-org/btclib-node#75
     def _validate_header_batch(
-        self, headers: list[BlockHeader]
+        self, headers: list[BlockHeader], *, punish_cached_invalid: bool
     ) -> dict[bytes, tuple[BlockHeader, int]]:
         now = datetime.now(UTC)
         pow_limit_bits = self.chain.pow_limit_bits
         pending: dict[bytes, tuple[BlockHeader, int]] = {}
-        # every header's hash, shrunk as each is visited: what is still
-        # in here when a header is looked at is strictly later in the
-        # batch, not merely unresolved -- a header already visited and
-        # left unresolved (a batch that connects to nothing at all) is
-        # not in here either, so it does not trip the check below.
-        not_yet_visited = {header.hash for header in headers}
 
         def parent_of(header: BlockHeader) -> BlockHeader:
             previous = header.previous_block_hash
@@ -807,37 +830,72 @@ class BlockIndex:
                 return pending[previous][0]
             return self.header_dict[previous].header
 
-        for header in headers:
-            header_hash = header.hash
-            not_yet_visited.discard(header_hash)
-            try:
-                _assert_valid_pow(header, pow_limit_bits)
-                if header_hash in self.header_dict or header_hash in pending:
+        try:
+            check_headers_pow(headers, pow_limit_bits)
+            for header in headers:
+                if self._is_indexed(
+                    header, punish_cached_invalid=punish_cached_invalid
+                ):
                     continue
                 found = pending.get(header.previous_block_hash)
                 if found is None:
-                    block_info = self.header_dict.get(header.previous_block_hash)
-                    if block_info is None:
-                        if header.previous_block_hash in not_yet_visited:
-                            # inside the try: the except right below
-                            # logs every refusal this loop finds the
-                            # same way, whether it is this raise or
-                            # _assert_valid_in_context's own. Core's
-                            # "non-continuous headers sequence".
-                            err_msg = "a header's parent is later in the same batch"
-                            raise MisbehavingError(err_msg)
-                        continue
-                    found = (block_info.header, block_info.index)
+                    found = self._indexed_parent(header)
+                if found is None:
+                    continue
                 parent, parent_height = found
                 _assert_valid_in_context(
                     self.chain, header, parent, parent_height, parent_of, now
                 )
-            except BTClibValueError as e:
-                self.logger.warning("Refused a header batch: %s", e)
-                raise
-            pending[header_hash] = (header, parent_height + 1)
+                pending[header.hash] = (header, parent_height + 1)
+        except BTClibValueError as e:
+            self.logger.warning("Refused a header batch: %s", e)
+            raise
 
         return pending
+
+    def _is_indexed(self, header: BlockHeader, *, punish_cached_invalid: bool) -> bool:
+        """Answer whether `header` is indexed already, refusing it if invalid.
+
+        Core's `duplicate-invalid`, `BLOCK_CACHED_INVALID`: a
+        `MisbehavingError` where `punish_cached_invalid`, a plain
+        `BTClibValueError` otherwise. The reason is Core's word alone,
+        the hash going to the debug line Core's `AcceptBlockHeader` logs
+        (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        tag).
+        """
+        header_hash = header.hash
+        known = self.header_dict.get(header_hash)
+        if known is None:
+            return False
+        if known.status == BlockStatus.invalid:
+            self.logger.debug(
+                "AcceptBlockHeader: block %s is marked invalid", header_hash.hex()
+            )
+            err_msg = "duplicate-invalid"
+            if punish_cached_invalid:
+                raise MisbehavingError(err_msg)
+            raise BTClibValueError(err_msg)
+        return True
+
+    def _indexed_parent(self, header: BlockHeader) -> tuple[BlockHeader, int] | None:
+        """Answer `header`'s indexed parent and its height, None if unknown.
+
+        Core's `bad-prevblk`, `BLOCK_INVALID_PREV`, where the parent is
+        marked invalid: a `MisbehavingError`, its reason Core's word alone
+        and the two hashes on Core's debug line.
+        """
+        block_info = self.header_dict.get(header.previous_block_hash)
+        if block_info is None:
+            return None
+        if block_info.status == BlockStatus.invalid:
+            self.logger.debug(
+                "header %s has prev block invalid: %s",
+                header.hash.hex(),
+                header.previous_block_hash.hex(),
+            )
+            err_msg = "bad-prevblk"
+            raise MisbehavingError(err_msg)
+        return block_info.header, block_info.index
 
     # add_headers' own indexing stage, once every header in the batch has
     # passed `_validate_header_batch` above: nothing here is checked any
@@ -849,54 +907,49 @@ class BlockIndex:
     ) -> None:
         current_work = self.chainwork[self.active_chain[-1]]
         for header_hash, (header, height) in pending.items():
-            previous_block_info = self.get_block_info(header.previous_block_hash)
             new_work = self.chainwork[header.previous_block_hash] + calculate_work(
                 header
             )
-            # a header built on an invalid one is invalid itself, without
-            # a walk: previous_block_hash is already indexed by the time
-            # this runs, so the parent's status is already settled.
-            # btclib-org/btclib-node#120
-            invalid = previous_block_info.status == BlockStatus.invalid
-            status = BlockStatus.invalid if invalid else BlockStatus.valid_header
+            # never on an invalid parent: `_validate_header_batch` refuses
+            # that batch
             block_info = BlockInfo(
                 header,
                 height,
-                status,
+                BlockStatus.valid_header,
                 downloaded=False,
             )
             self._insert_block_info(block_info)
             self.chainwork[header_hash] = new_work
             self._build_skip(header_hash, block_info)
 
-            if not invalid and new_work > current_work:
+            if new_work > current_work:
                 self.block_candidates.append([header_hash, new_work])
 
-            # a peer sending more of an already-invalidated fork must not
-            # grow header_index onto it, work alone deciding nothing here
-            # any more than it did for block_candidates above.
-            # btclib-org/btclib-node#218
-            if not invalid:
-                best_header = self.header_index[-1]
-                if header.previous_block_hash == best_header:
-                    self.header_index.append(header_hash)
-                    self.header_index_pos[header_hash] = len(self.header_index) - 1
-                elif new_work > self.chainwork[best_header]:
-                    add, remove = self.get_fork_details(header_hash, self.header_index)
-                    for removed_hash in remove:
-                        del self.header_index_pos[removed_hash]
-                    self.header_index = self.header_index[: -len(remove)]
-                    base = len(self.header_index)
-                    self.header_index.extend(add)
-                    for offset, added_hash in enumerate(add):
-                        self.header_index_pos[added_hash] = base + offset
+            best_header = self.header_index[-1]
+            if header.previous_block_hash == best_header:
+                self.header_index.append(header_hash)
+                self.header_index_pos[header_hash] = len(self.header_index) - 1
+            elif new_work > self.chainwork[best_header]:
+                add, remove = self.get_fork_details(header_hash, self.header_index)
+                for removed_hash in remove:
+                    del self.header_index_pos[removed_hash]
+                self.header_index = self.header_index[: -len(remove)]
+                base = len(self.header_index)
+                self.header_index.extend(add)
+                for offset, added_hash in enumerate(add):
+                    self.header_index_pos[added_hash] = base + offset
 
-    def add_headers(self, headers: Iterable[BlockHeader]) -> bytes | None:
+    def add_headers(
+        self, headers: Iterable[BlockHeader], *, punish_cached_invalid: bool = False
+    ) -> bytes | None:
         """Validate `headers` as one batch, then index every one of them.
 
         Returns the highest header this batch carried that is indexed
         now (new or already known), or `None` if the batch connects to
-        nothing this index knows at all.
+        nothing this index knows at all. `punish_cached_invalid` is
+        whether a header already marked invalid is a `MisbehavingError`,
+        as Core has it for an outbound peer, rather than a
+        `BTClibValueError`.
         """
         # Nothing is indexed until every header has been checked, and the
         # batch is taken or refused whole: chainwork is credited from the
@@ -905,7 +958,9 @@ class BlockIndex:
         # to. A peer that sent one such header is not one to keep the
         # rest of the batch from either.
         headers = list(headers)
-        pending = self._validate_header_batch(headers)
+        pending = self._validate_header_batch(
+            headers, punish_cached_invalid=punish_cached_invalid
+        )
         self._insert_pending_headers(pending)
 
         # The header a caller should resume a sync from: the highest one
