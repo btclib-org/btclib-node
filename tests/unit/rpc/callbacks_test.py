@@ -1176,8 +1176,8 @@ def test_get_tx_out_answers_a_confirmed_coin(
     assert answer["value"].text == "50.00000000"
     assert answer["coinbase"] is True
     assert answer["scriptPubKey"]["hex"] == coinbase.vout[0].script_pub_key.script.hex()
-    assert answer["scriptPubKey"]["type"] == "nonstandard"
-    assert "address" not in answer["scriptPubKey"]
+    assert answer["scriptPubKey"]["type"] == "scripthash"
+    assert "address" in answer["scriptPubKey"]
 
 
 def test_get_tx_out_answers_none_for_an_unknown_outpoint(
@@ -1375,6 +1375,26 @@ def test_get_tx_out_answers_rawtr_desc_for_a_p2tr_coin(
     assert script_pub_key_dict["type"] == "witness_v1_taproot"
     _, payload = type_and_payload(script_pub_key.script)
     assert script_pub_key_dict["desc"] == add_checksum(f"rawtr({payload.hex()})")
+
+
+def test_get_tx_out_answers_nonstandard_type_and_raw_desc_for_an_odd_script(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A script no template matches is `nonstandard`, its `desc` `raw(...)`.
+
+    The shape every fixture's output had before it was made standard
+    (btclib-org/btclib-node#1382), kept here on purpose.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(1, node.chain.genesis.hash)
+    connect(node, chain)
+    raw_script = script.serialize([b"\x11" * 32, "OP_2DROP", "OP_1"])
+
+    script_pub_key_dict = _stage_coin_and_get_tx_out(node, ScriptPubKey(raw_script))
+
+    assert script_pub_key_dict["type"] == "nonstandard"
+    assert "address" not in script_pub_key_dict
+    assert script_pub_key_dict["desc"] == add_checksum(f"raw({raw_script.hex()})")
 
 
 def test_get_tx_out_answers_anchor_type_and_addr_desc_for_a_p2a_coin(

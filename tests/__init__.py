@@ -39,6 +39,7 @@ from btclib.block import Block, BlockHeader, build, witness_commitment_output
 from btclib.block.mining import candidate_block_header, mine
 from btclib.block.proof_of_work import REGTEST_POW_LIMIT_BITS
 from btclib.exceptions import BTClibValueError
+from btclib.hashes import hash160
 from btclib.script import script
 from btclib.script.witness import Witness
 from btclib.tx.limits import COINBASE_MATURITY
@@ -201,20 +202,44 @@ def generate_random_header_chain(
     return chain
 
 
-def anyone_can_spend() -> bytes:
-    """Return a script_pub_key that a one-push script_sig satisfies cleanly.
+def anyone_can_spend_redeem_script() -> bytes:
+    """Return the redeem script `anyone_can_spend` commits to: `OP_DROP OP_1`.
 
-    `interpreter.STANDARD_FLAGS` carries CLEANSTACK, which
-    `verify_mempool_acceptance` checks a candidate against, so a
-    script_pub_key that only pushes leaves the spender's own push
-    standing beside its own and the spend is refused as non-standard.
-    `OP_2DROP` clears both, and `OP_1` leaves the single true element
-    CLEANSTACK asks for. The random push is what keeps two of these
-    distinct: `generate_coinbase`'s own BIP34 script_sig is a function
-    of the height and nothing else, so the output script is what makes
-    two coinbases at one height two transactions.
+    No signature check, so no sigop counts against the 15 that
+    `AreInputsStandard` allows a P2SH redeem script, and it leaves the
+    single true element CLEANSTACK asks for once it has dropped the push
+    `anyone_can_spend_script_sig` puts ahead of it.
     """
-    return script.serialize([secrets.token_bytes(32), "OP_2DROP", "OP_1"])
+    return script.serialize(["OP_DROP", "OP_1"])
+
+
+def anyone_can_spend() -> bytes:
+    """Return a P2SH script_pub_key that `anyone_can_spend_script_sig` spends.
+
+    A P2SH output is one of `Solver`'s own templates, where the
+    `<rand32> OP_2DROP OP_1` this replaced was `NONSTANDARD` and, spent,
+    `AreInputsStandard`'s `bad-txns-nonstandard-inputs` (`policy.cpp`, at
+    bitcoin/bitcoin@9be056a8a7). The spend stays standard throughout:
+    push-only, minimal pushes, a clean stack, and no witness, so a block
+    carrying one needs no witness commitment.
+
+    Every one of these is the same script, so what makes two coinbases at
+    one height two transactions is `generate_coinbase`'s extra nonce and
+    not this.
+    """
+    return script.serialize(
+        ["OP_HASH160", hash160(anyone_can_spend_redeem_script()), "OP_EQUAL"]
+    )
+
+
+def anyone_can_spend_script_sig() -> bytes:
+    """Return a script_sig spending `anyone_can_spend`, random each call.
+
+    Two pushes: 32 random octets, which the redeem script drops, and the
+    redeem script itself. The random push is what keeps two spends of one
+    outpoint two transactions.
+    """
+    return script.serialize([secrets.token_bytes(32), anyone_can_spend_redeem_script()])
 
 
 def generate_random_transaction(
@@ -233,7 +258,7 @@ def generate_random_transaction(
     prevouthash = prevouthash or secrets.token_bytes(32)
     tx_in = TxIn(
         prev_out=OutPoint(prevouthash, 0),
-        script_sig=script.serialize([secrets.token_bytes(32)]),
+        script_sig=anyone_can_spend_script_sig(),
         sequence=0xFFFFFFFF,
     )
     tx_out = TxOut(value=value, script_pub_key=anyone_can_spend())
@@ -278,6 +303,7 @@ def generate_coinbase(value: int | None = None, height: int | None = None) -> Tx
         height,
         script_pub_key,
         halving_interval=RegTest().consensus.subsidy_halving_interval,
+        extra_nonce=secrets.token_bytes(32),
     )
     if value is not None:
         coinbase.vout = [TxOut(value, script_pub_key)]
