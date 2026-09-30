@@ -1366,9 +1366,9 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 ### `setnetworkactive` disables and enables all p2p activity
 
-- **On `false` it drops every connection this node holds, inbound and
-  pending included, and refuses every new dial and every accepted
-  socket until it is re-enabled** (closes #1392).
+- **On `false` it drops every connection, inbound and pending, on
+  every pass while it stays inactive, and refuses every new dial and
+  accepted socket until it is re-enabled** (closes #1392).
 
 ### `addconnection` dials one outbound connection of a chosen type
 
@@ -1376,11 +1376,41 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `block-relay-only`, `addr-fetch` or `feeler`, and `getpeerinfo`'s own
   `connection_type` reports it** (closes #1465).
 
+### `addconnection` reserves its capacity slot before dialling, not after
+
+- **`reserve_automatic_slot`/`release_automatic_slot` hold the slot
+  across the dial, closing the window two back-to-back calls used to
+  race through** (issue #1465).
+
+### `addconnection`'s own feeler is discouraged like the tree's drawn one
+
+- **It sets `automatic=True`, the flag the periodic dial loop's own
+  feeler carries, instead of being exempted from discouragement like
+  a manual peer** (issue #1465).
+
+### `addconnection` trims `connection_type` like Core's RPC does
+
+- **Surrounding whitespace is stripped with `TrimStringView`'s own six
+  characters, and the trimmed type is what gets echoed back**
+  (issue #1465).
+
+### DNS seed queries wait for `setnetworkactive` reactivation
+
+- **`_dns_address_seed` pauses per seed while the network is inactive,
+  instead of continuing to query it, matching Core's own wait loop**
+  (issue #1392).
+
+### The periodic dial loop counts a held addr-fetch connection too
+
+- **`_automatic_outbound` now counts a held addr-fetch connection,
+  and `_process_addr_fetch` reserves a slot before dialling it**
+  (closes #1575).
+
 ### `running_a_node.md`'s RPC list follows what the tree now serves
 
-- **Gains `getchaintips`, `getmempoolentry`, `gettxout`, `help` and
-  `setnetworkactive`; a hidden command such as `addconnection` stays
-  off it, as a bare `help` listing leaves them off** (closes #1560).
+- **Gains `getchaintips`, `getmempoolentry`, `gettxout`, `help`,
+  `setnetworkactive` and `getrpcinfo`; a hidden command such as
+  `addconnection` stays off it** (closes #1560).
 
 ## v2026.9.24
 

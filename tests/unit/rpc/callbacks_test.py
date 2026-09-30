@@ -4014,16 +4014,19 @@ def an_addconnection_node(
 ) -> tuple[Any, list[tuple[Any, ...]]]:
     """Build a node double `add_connection` dials through, recording each dial.
 
-    `outbound_type_counts` and `automatic_pool_size` answer the fixed
-    values given rather than reading real connections, the way
-    `P2pManager`'s own methods would off `_automatic_outbound`'s (the
-    first two) or every held connection's (the third) snapshot -- this
-    callback never reads a connection directly, only those three
-    methods' answers and the two per-type caps beside them.
-    `max_automatic_outbound`'s own default, 8 + 2 + 1, is deliberately
-    past `full_relay`'s and `block_relay`'s own default caps summed
-    with one feeler, so a test naming only a per-type count is never
-    also at the pool cap by accident.
+    `outbound_type_counts` answers the fixed pair given rather than
+    reading real connections, the way `P2pManager.outbound_type_counts`
+    itself would off `_automatic_outbound`'s own snapshot.
+    `reserve_automatic_slot` stands in for the real check-and-reserve:
+    refusing (answering `None`) where `pool_size` already meets
+    `max_automatic_outbound`, answering a plain empty list otherwise --
+    this callback only asks whether the answer is `None`, never what
+    it holds, `P2pManager.reserve_automatic_slot`'s own docstring
+    arguing why a real caller wants the list back and this one does
+    not. `max_automatic_outbound`'s own default, 8 + 2 + 1, is
+    deliberately past `full_relay`'s and `block_relay`'s own default
+    caps summed with one feeler, so a test naming only a per-type count
+    is never also at the pool cap by accident.
     """
     dialled: list[tuple[Any, ...]] = []
     node = SimpleNamespace(
@@ -4031,7 +4034,9 @@ def an_addconnection_node(
         config=SimpleNamespace(pruned=False, peerblockfilters=False),
         p2p_manager=SimpleNamespace(
             outbound_type_counts=lambda: (full_relay, block_relay),
-            automatic_pool_size=lambda: pool_size,
+            reserve_automatic_slot=(
+                lambda: None if pool_size >= max_automatic_outbound else []
+            ),
             max_outbound_full_relay=max_outbound_full_relay,
             max_outbound_block_relay=max_outbound_block_relay,
             max_automatic_outbound=max_automatic_outbound,
@@ -4053,6 +4058,7 @@ def an_addconnection_node(
                 "block_relay": False,
                 "feeler": False,
                 "addr_fetch": False,
+                "release_slot": True,
             },
         ),
         (
@@ -4062,6 +4068,7 @@ def an_addconnection_node(
                 "block_relay": True,
                 "feeler": False,
                 "addr_fetch": False,
+                "release_slot": True,
             },
         ),
         (
@@ -4071,15 +4078,23 @@ def an_addconnection_node(
                 "block_relay": False,
                 "feeler": False,
                 "addr_fetch": True,
+                "release_slot": True,
             },
         ),
         (
             "feeler",
             {
-                "automatic": False,
+                # Matching the drawn feeler's own flags
+                # (`_dial_one_draw`): `automatic=True` too, not just
+                # `feeler=True` (btclib-org/btclib-node#1580's own
+                # review) -- `maybe_discourage_and_disconnect`'s own
+                # `not conn.automatic` reads as "manual", which a
+                # feeler never is.
+                "automatic": True,
                 "block_relay": False,
                 "feeler": True,
                 "addr_fetch": False,
+                "release_slot": True,
             },
         ),
     ],
@@ -4092,6 +4107,33 @@ def test_addconnection_dials_with_the_named_type_s_own_flags(
     result = add_connection(node, _CONN, ["1.2.3.4:8333", connection_type, False])
     assert result == {"address": "1.2.3.4:8333", "connection_type": connection_type}
     assert dialled == [("1.2.3.4:8333", RegTest().port, kwargs)]
+
+
+@pytest.mark.parametrize("padded", [" feeler", "feeler\n"])
+def test_addconnection_trims_connection_type_like_core(padded: str) -> None:
+    r"""Core's own `util::TrimStringView(..., " \f\n\r\t\v")`, echoed back.
+
+    `rpc/net.cpp:414`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag:
+    a `connection_type` carrying one of its six whitespace characters
+    at either end still names the type past it, and the RPC's own
+    answer carries the trimmed form, not the one given.
+    """
+    node, dialled = an_addconnection_node()
+    result = add_connection(node, _CONN, ["1.2.3.4:8333", padded, False])
+    assert result == {"address": "1.2.3.4:8333", "connection_type": "feeler"}
+    assert dialled == [
+        (
+            "1.2.3.4:8333",
+            RegTest().port,
+            {
+                "automatic": True,
+                "block_relay": False,
+                "feeler": True,
+                "addr_fetch": False,
+                "release_slot": True,
+            },
+        )
+    ]
 
 
 def test_addconnection_refuses_off_regtest() -> None:
@@ -4156,8 +4198,8 @@ def test_addconnection_s_per_type_cap_does_not_reach_addr_fetch_or_feeler() -> N
     """Core's own switch sets no per-type cap for either of the other two.
 
     `full_relay`/`block_relay` sit at their own per-type caps here, and
-    still neither refuses -- only `automatic_pool_size` versus
-    `max_automatic_outbound` can, which
+    still neither refuses -- only `reserve_automatic_slot`'s own pool
+    check, against `max_automatic_outbound`, can, which
     `test_addconnection_refuses_past_the_shared_pool_whatever_the_type`
     below is the one to cover.
     """
@@ -4190,6 +4232,87 @@ def test_addconnection_refuses_past_the_shared_pool_whatever_the_type(
         "Error: Already at capacity for specified connection type."
     )
     assert dialled == []
+
+
+class _ReservingManagerDouble:
+    """Stands in for enough of `P2pManager` to prove #1580's own review right.
+
+    `reserve_automatic_slot`/`release_automatic_slot` mirror the real
+    atomic counter exactly: a slot taken is held until released, not
+    until the dial that took it happens to finish. `connect_typed`
+    here, unlike the real one, never itself calls
+    `release_automatic_slot` -- matching how the real `connect_typed`
+    only releases once its own coroutine, scheduled onto the p2p
+    loop, actually runs, which a synchronous call into `add_connection`
+    never reaches. So two calls into `add_connection` in a row, with no
+    loop iteration between them, see the pool exactly as two real
+    overlapping dials would: the first call's reservation still held
+    when the second one checks.
+    """
+
+    def __init__(self, *, max_automatic_outbound: int) -> None:
+        self.chain = RegTest()
+        self.config = SimpleNamespace(pruned=False, peerblockfilters=False)
+        self.max_outbound_full_relay = 8
+        self.max_outbound_block_relay = 2
+        self.max_automatic_outbound = max_automatic_outbound
+        self.dialled: list[tuple[Any, ...]] = []
+        self._reserved = 0
+
+    def outbound_type_counts(self) -> tuple[int, int]:
+        return (0, 0)
+
+    def reserve_automatic_slot(self) -> list[Any] | None:
+        if self._reserved >= self.max_automatic_outbound:
+            return None
+        self._reserved += 1
+        return []
+
+    def release_automatic_slot(self) -> None:
+        self._reserved -= 1
+
+    def connect_typed(self, address: str, port: int, **kwargs: Any) -> None:
+        self.dialled.append((address, port, kwargs))
+
+
+def test_addconnection_s_two_back_to_back_calls_do_not_both_pass_a_cap_of_one() -> None:
+    """The review's own scenario (btclib-org/btclib-node#1580): TOCTOU, closed.
+
+    Before `reserve_automatic_slot` existed, this callback read
+    `P2pManager.automatic_pool_size()` and scheduled the dial after --
+    two back-to-back calls with `max_automatic_outbound=1` each read
+    the pool as empty, since neither call's own dial had registered a
+    connection yet, so both were let through and the pool reached two.
+    `reserve_automatic_slot` checks and reserves in the one lock
+    acquisition its own docstring argues for, so the second call here
+    sees the first call's reservation already counted against the same
+    cap of one, and is refused before it ever reaches `connect_typed`.
+
+    A third call, past a `release_automatic_slot` standing in for the
+    first dial finally concluding, is let through again -- proof the
+    refusal above is the reservation still held rather than a cap this
+    double could never clear, and the only exercise
+    `_ReservingManagerDouble.release_automatic_slot` itself gets here.
+    """
+    manager = _ReservingManagerDouble(max_automatic_outbound=1)
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chain=manager.chain, config=manager.config, p2p_manager=manager
+        ),
+    )
+    add_connection(node, _CONN, ["1.2.3.4:8333", "outbound-full-relay", False])
+    assert len(manager.dialled) == 1
+    with pytest.raises(RpcError) as raised:
+        add_connection(node, _CONN, ["5.6.7.8:8333", "outbound-full-relay", False])
+    assert raised.value.code == RPCErrorCode.CLIENT_NODE_CAPACITY_REACHED
+    assert raised.value.message == (
+        "Error: Already at capacity for specified connection type."
+    )
+    assert len(manager.dialled) == 1
+    manager.release_automatic_slot()
+    add_connection(node, _CONN, ["9.10.11.12:8333", "outbound-full-relay", False])
+    assert len(manager.dialled) == 2
 
 
 def test_addconnection_with_too_few_arguments_is_answered_with_the_usage() -> None:

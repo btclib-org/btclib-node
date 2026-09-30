@@ -178,7 +178,7 @@ Each mirrors the Core method of the same name: `getbestblockhash`,
 `setnetworkactive`, `addnode`, `disconnectnode`, `setban`, `listbanned`,
 `clearbanned`, `getmempoolinfo`, `getmempoolentry`, `getrawmempool`,
 `getrawtransaction`, `gettxout`, `gettxoutsetinfo`, `testmempoolaccept`,
-`sendrawtransaction`, `ping`, `stop`, `help`. Core's own hidden
+`sendrawtransaction`, `ping`, `getrpcinfo`, `stop`, `help`. Core's own hidden
 commands -- `addconnection` among them -- are left off this list the
 same way `bitcoin-cli help`'s bare listing leaves them off. The
 `callbacks` table in `src/btclib_node/rpc/callbacks.py` is the list the

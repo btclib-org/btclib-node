@@ -282,6 +282,15 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
                 forcednsseed=forcednsseed,
                 fixed_seeds=fixed_seeds,
                 pruned=False,
+                # `Connection.local_services` reads this too, off a real
+                # outbound connection's own `own_version()` -- missing
+                # here left every such connection's `run()` raise an
+                # unlogged `AttributeError` straight past `async_send`,
+                # closing before its first `sock_recv`, silently: no
+                # existing test before this one watched that connection's
+                # own status long enough to notice
+                # (btclib-org/btclib-node#1580's own review).
+                peerblockfilters=False,
             ),
             # `Connection.own_version`'s own `start_height`
             # (btclib-org/btclib-node#722), 0 matching a fresh `Node`'s
@@ -791,6 +800,10 @@ def test_a_pong_landing_between_the_idle_check_and_its_reread_does_not_drop_the_
         feefilter = 0
         automatic = False
         addr_fetch = False
+        # read by `_automatic_outbound_locked`'s own `not conn.inbound`
+        # guard, reached from `manage_connections`'s `_maybe_dial_more_peers`
+        # call in the same pass this test drives
+        inbound = False
         version_message = SimpleNamespace(version=PROTOCOL_VERSION)
 
         @property
@@ -2046,6 +2059,46 @@ def test_dns_address_seed_queues_the_seed_query_dns_seed_returns(
     assert list(manager._addr_fetches) == [("dummySeed.invalid.", 18444)]
 
 
+def test_dns_address_seed_waits_for_setnetworkactive_reactivation(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's own wait ahead of every seed query, `network_active` too.
+
+    `ThreadDNSAddressSeed` polls once a second while `!fNetworkActive`,
+    ahead of every seed it asks (`src/net.cpp:2357-2361`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), rather than asking on
+    regardless and only gating the dial its own answer later queues --
+    this used to be one of those, `query_dns_seed` itself reached with
+    the network already inactive. `asyncio.sleep` is patched to the
+    one-second poll this wait takes, flipping `network_active` back on
+    after its first call rather than reactivating on its own: a real
+    flip is `set_network_active`'s, off `Node`'s own thread, which this
+    coroutine only ever polls for.
+
+    `query_dns_seed` itself asserts `network_active` rather than only
+    being reached or not: with the wait removed entirely, so that this
+    `asyncio.sleep` patch never fires at all, the seed would still be
+    asked exactly once, only while still inactive -- a bare
+    `asked == [...]` could not tell the two apart.
+    """
+    asked: list[str] = []
+
+    async def query_dns_seed(seed: str) -> None:
+        assert manager.network_active, "asked while still inactive"
+        asked.append(seed)
+
+    async def one_poll_then_reactivate(delay: float) -> None:
+        assert delay == 1
+        manager.network_active = True
+
+    peer_db = a_peer_db_stub(query_dns_seed=query_dns_seed)
+    manager = a_manager(peer_db=peer_db)
+    manager.network_active = False
+    monkeypatch.setattr(asyncio, "sleep", one_poll_then_reactivate)
+    asyncio.run(manager._dns_address_seed())
+    assert asked == ["dummySeed.invalid."]
+
+
 def test_dns_address_seed_shuffles_the_chains_seeds(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2503,6 +2556,53 @@ def test_process_addr_fetch_is_a_noop_on_an_empty_queue(
     manager = a_manager()
     asyncio.run(manager._process_addr_fetch())
     assert not manager.connections
+    assert not manager.pending_connections
+
+
+def test_process_addr_fetch_refuses_past_the_shared_pool(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`reserve_automatic_slot` is checked before the dial, past the pool.
+
+    Core's own `ProcessAddrFetch` takes the same `semOutbound` grant
+    every other automatic dial does (`CountingSemaphoreGrant<>
+    grant(*semOutbound, /*fTry=*/true)`, `src/net.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and gives up quietly
+    where none is free rather than dialling anyway -- exactly what an
+    addr-fetch connection used not to do here, `automatic` left `False`
+    on the call into `async_connect_host` and `_automatic_outbound`
+    never having gathered it either (issue #1575). `dial` itself would
+    fail this test if reached, the same proof
+    `test_process_addr_fetch_is_a_noop_on_an_empty_queue` above uses;
+    the queue entry still leaves the queue, Core's own `pszDest` gone
+    whether or not it connects. `get_running_loop` is patched to a
+    `_NamedLoop` that resolves `seed.example` rather than leaving the
+    real resolver to fail it first: unpatched, `getaddrinfo` itself
+    refuses that reserved TLD, reaching `dial` exactly as little as the
+    reservation check would, so a `.example` host alone would pass this
+    test whether or not the check it is for still ran.
+
+    `dial` records the call rather than only raising: `_process_addr_fetch`
+    wraps its own dial in a blanket `except Exception`, so a `dial` that
+    only raised would have its own failure swallowed right there and
+    this test would pass exactly as wrongly as it would asserting
+    nothing at all -- `dialled` is read after, past that same `except`,
+    so nothing here depends on what it does with what `dial` raises.
+    """
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: _NamedLoop(["5.6.7.8"]))
+    dialled: list[str] = []
+
+    async def spy_dial(address: NetworkAddressV2) -> NoReturn:
+        dialled.append(str(address))  # pragma: no cover -- refused before any dial
+        raise AssertionError  # pragma: no cover -- refused before any dial
+
+    monkeypatch.setattr(manager_module, "dial", spy_dial)
+    full = [a_conn(i, automatic=True) for i in range(11)]
+    manager = a_manager(full)
+    manager._addr_fetches.append(("seed.example", 18444))
+    asyncio.run(manager._process_addr_fetch())
+    assert not manager._addr_fetches
+    assert dialled == []
     assert not manager.pending_connections
 
 
@@ -3821,6 +3921,39 @@ def test_connect_typed_marks_the_dialled_connection_s_own_kind(
         assert conn.block_relay is True
         assert conn.feeler is False
         assert conn.addr_fetch is False
+    finally:
+        dialer.stop()
+        dialer.join(timeout=10)
+        target.stop()
+        target.join(timeout=10)
+
+
+def test_connect_typed_releases_its_reservation_once_the_dial_concludes(
+    a_manager: AManagerFactory,
+) -> None:
+    """`release_slot=True`'s own promise: the reservation outlives the dial.
+
+    `add_connection` (`rpc/callbacks.py`) calls `reserve_automatic_slot`
+    itself, ahead of `connect_typed`; this proves the other half, that
+    `release_automatic_slot` really runs once the dial `connect_typed`
+    schedules concludes -- `_dial_and_release`'s own `finally`, inside
+    the coroutine `run_coroutine_threadsafe` hands a `Future` nothing
+    here ever awaits directly, `wait_until` standing in for that.
+    """
+    target_port = get_random_port()
+    target = a_running_manager(a_manager, target_port)
+    dialer = a_manager()
+    try:
+        wait_until_listening(target)
+        dialer.start()
+        wait_until(dialer.loop.is_running)
+        assert dialer.reserve_automatic_slot() is not None
+        assert dialer._reserved_automatic_outbound == 1
+        dialer.connect_typed(
+            "127.0.0.1", target_port, automatic=True, release_slot=True
+        )
+        wait_until(lambda: dialer.pending_connections)
+        wait_until(lambda: dialer._reserved_automatic_outbound == 0)
     finally:
         dialer.stop()
         dialer.join(timeout=10)
@@ -6938,8 +7071,16 @@ def test_set_network_active_is_a_no_op_once_already_set(
 ) -> None:
     """Core's own early `if (fNetworkActive == active) return;`.
 
-    A manager starts active, so setting it active again drops nothing;
-    setting it inactive twice in a row drops the connection once.
+    This guards `set_network_active` itself against a redundant call,
+    not a claim that the whole node only ever sweeps once: past this,
+    `test_manage_connections_sweeps_a_dial_that_registers_after_the_flip`
+    below is where `manage_connections`'s own repeated sweep, every
+    pass while still inactive, is what actually answers a connection
+    that registers after this method's own one-shot call has already
+    run. A manager starts active, so setting it active again drops
+    nothing; setting it inactive twice in a row calls this method once,
+    `stop()` once with it -- the second call never reaches the sweep at
+    all.
     """
     conn = a_conn(0)
     manager = a_manager([conn])
@@ -6969,6 +7110,65 @@ def test_set_network_active_re_enabling_drops_nothing(
     assert conn.stopped == [True]
     assert manager.network_active is True
     assert manager.get_network_active() is True
+
+
+def test_manage_connections_sweeps_a_dial_that_registers_after_the_flip(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reviewer's own scenario: a dial delayed past the flip still drops.
+
+    `set_network_active`'s own sweep only stops what is already held
+    the instant it runs. A dial already past `async_connect`'s own
+    `if not self.network_active` gate when the flip happens, still
+    connecting, registers into `pending_connections` only once `dial`
+    itself returns -- after the flip, and after that one-shot sweep has
+    already run and found nothing. Core's own `DisconnectNodes` answers
+    this by running every pass of `ThreadSocketHandler` while
+    `!fNetworkActive` (`src/net.cpp:1931-1939`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) rather than once on the
+    flip; `manage_connections`'s own repeated sweep, once every 0.1s
+    pass, is this tree's match for it, and is what this test is for:
+    `connect` is called while still active, the flip follows at 0.1s,
+    and `dial` itself is delayed 0.5s past that, so the connection
+    registers a full four sweep passes after the flip already ran.
+    `connect` rather than `connect_host`: this is about the sweep, not
+    the resolve pipeline `async_connect_host` alone runs, and `connect`
+    takes an already-resolved address straight to `dial` the way
+    `async_connect`'s own docstring describes.
+
+    The final wait is bounded well under `_PEER_CONNECT_TIMEOUT`'s own
+    60s, deliberately: `_prune_stale_connections` drops any
+    `pending_connections` entry that old regardless of
+    `network_active`, so a bound left at `wait_until`'s own 60s default
+    would still pass with the per-pass sweep this test exists to cover
+    removed entirely, the generic handshake timeout closing the
+    connection instead and the assertion below never telling the two
+    apart -- measured by running this test with
+    `manage_connections`'s own `self._disconnect_if_inactive()` call
+    deleted, which still passed at the 60s default and only failed once
+    bounded here.
+    """
+    ours, theirs = socket.socketpair()
+
+    async def delayed_dial(address: NetworkAddressV2) -> socket.socket:
+        await asyncio.sleep(0.5)
+        return ours
+
+    monkeypatch.setattr(manager_module, "dial", delayed_dial)
+    manager = a_manager()
+    try:
+        manager.start()
+        wait_until(manager.loop.is_running)
+        manager.connect(a_full_node("1.2.3.4", 8333))
+        time.sleep(0.1)
+        manager.set_network_active(active=False)
+        wait_until(lambda: manager.pending_connections)
+        (conn,) = manager.pending_connections.values()
+        wait_until(lambda: conn.status == P2pConnStatus.Closed, timeout=5)
+    finally:
+        manager.stop()
+        manager.join(timeout=10)
+        theirs.close()
 
 
 def test_outbound_type_counts_splits_the_automatic_held_by_kind(

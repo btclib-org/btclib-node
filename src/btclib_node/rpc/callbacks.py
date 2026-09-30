@@ -70,6 +70,7 @@ if TYPE_CHECKING:
     from btclib_node.chainstate.block_index import BlockIndex
     from btclib_node.p2p.block_availability import BlockAvailability
     from btclib_node.p2p.connection import Connection
+    from btclib_node.p2p.manager import P2pManager
     from btclib_node.rpc.connection import RpcConnection
 
 __all__ = [
@@ -1570,6 +1571,34 @@ _ADDCONNECTION_TYPES = (
 )
 
 
+def _refuse_addconnection_past_capacity(
+    manager: P2pManager, connection_type: str
+) -> None:
+    """Raise `add_connection`'s own two capacity refusals, per-type then pool.
+
+    Split out of `add_connection` itself so that function stays under
+    ruff's own complexity bound -- `add_connection`'s own docstring
+    argues both checks this makes, in the same order.
+    """
+    full_relay, block_relay = manager.outbound_type_counts()
+    if (
+        connection_type == "outbound-full-relay"
+        and full_relay >= manager.max_outbound_full_relay
+    ) or (
+        connection_type == "block-relay-only"
+        and block_relay >= manager.max_outbound_block_relay
+    ):
+        raise RpcError(
+            RPCErrorCode.CLIENT_NODE_CAPACITY_REACHED,
+            "Error: Already at capacity for specified connection type.",
+        )
+    if manager.reserve_automatic_slot() is None:
+        raise RpcError(
+            RPCErrorCode.CLIENT_NODE_CAPACITY_REACHED,
+            "Error: Already at capacity for specified connection type.",
+        )
+
+
 def add_connection(
     node: Node, conn: RpcConnection, params: list[Any]
 ) -> dict[str, Any]:
@@ -1604,13 +1633,22 @@ def add_connection(
     keeps no literal semaphore, but the answer a `try_acquire` against
     one would give is a fact about the connections already held rather
     than about acquisition order or blocking, so it is exactly what
-    `P2pManager.automatic_pool_size` counts: `max_automatic_outbound`
-    already equals `semOutbound`'s own size
-    (`P2pManager.__init__`'s own comment), and comparing that count
-    against it here reproduces Core's `CLIENT_NODE_CAPACITY_REACHED`
-    for every one of the four types, not only the two with a per-type
-    cap -- the Python-native form of the same gate, not a design
-    weighed against Core's own.
+    `P2pManager.reserve_automatic_slot` checks and reserves in one
+    step, rather than `automatic_pool_size` read here and the dial
+    scheduled after: that method's own docstring argues why the two
+    have to be one atomic operation, not a check followed by a
+    schedule, once the dial the schedule leads to is itself
+    asynchronous. `P2pManager.release_automatic_slot` releases the
+    reservation once `async_connect_host` concludes, `release_slot=True`
+    telling it this call is the one holding it.
+
+    `automatic=True` for a `feeler` too, matching `_dial_one_draw`'s own
+    drawn one: `create_connection` reads every flag straight off what
+    it is given, and `maybe_discourage_and_disconnect` reads `automatic`
+    as its own proxy for "not `MANUAL`" (`p2p/manager.py`), which a
+    feeler never is in Core either (btclib-org/btclib-node#1580's own
+    review) -- leaving it `False` here exempted an addconnection-opened
+    feeler from that check the way only a manual peer should be.
 
     The dial itself, `P2pManager.connect_typed`, runs fire-and-forget,
     the same as `onetry`'s (`add_node` above, `connect_host`): this
@@ -1629,6 +1667,13 @@ def add_connection(
         mismatches.append((3, "v2transport", v2transport, "bool"))
     if mismatches:
         raise type_errors(*mismatches)
+    # Core's own `util::TrimStringView(..., " \f\n\r\t\v")`
+    # (`rpc/net.cpp:414`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
+    # ahead of the four-way match below and echoed back in the answer
+    # the same way: `str.strip` with no argument strips Unicode
+    # whitespace Core's own six-character pattern does not, so the
+    # characters are named explicitly rather than left to that default.
+    connection_type = connection_type.strip(" \f\n\r\t\v")
     if node.chain.name != "regtest":
         raise RpcError(
             RPCErrorCode.MISC_ERROR,
@@ -1643,30 +1688,16 @@ def add_connection(
             "init flag to be set.",
         )
     manager = node.p2p_manager
-    full_relay, block_relay = manager.outbound_type_counts()
-    at_capacity = (
-        (
-            connection_type == "outbound-full-relay"
-            and full_relay >= manager.max_outbound_full_relay
-        )
-        or (
-            connection_type == "block-relay-only"
-            and block_relay >= manager.max_outbound_block_relay
-        )
-        or manager.automatic_pool_size() >= manager.max_automatic_outbound
-    )
-    if at_capacity:
-        raise RpcError(
-            RPCErrorCode.CLIENT_NODE_CAPACITY_REACHED,
-            "Error: Already at capacity for specified connection type.",
-        )
+    _refuse_addconnection_past_capacity(manager, connection_type)
     manager.connect_typed(
         address,
         node.chain.port,
-        automatic=connection_type in {"outbound-full-relay", "block-relay-only"},
+        automatic=connection_type
+        in {"outbound-full-relay", "block-relay-only", "feeler"},
         block_relay=connection_type == "block-relay-only",
         feeler=connection_type == "feeler",
         addr_fetch=connection_type == "addr-fetch",
+        release_slot=True,
     )
     return {"address": address, "connection_type": connection_type}
 
