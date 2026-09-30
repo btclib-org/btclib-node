@@ -10,16 +10,25 @@ handler otherwise, and `close` to release whichever one it opened.
 Each line opens as Core's `debug.log` line does: `LogTimestampStr`'s
 time, in UTC and to the second, then the level as `GetLogPrefix` writes
 it for a line with no category.
+
+`open_history_log` is what a caller with a `Config` (or a `Config` never
+built at all, `cli.main`'s own refusal after the lock) opens one
+through, in Core's own order: the version line between the warnings
+buffered while the settings were read and the unrecognised-section
+warning, then `LogArgs`'s lines.
 """
 
 import logging
 import time
 from typing import TYPE_CHECKING, override
 
+from btclib_node.constants import CLIENT_NAME, CLIENT_VERSION
+
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from pathlib import Path
 
-__all__ = ["Logger"]
+__all__ = ["Logger", "open_history_log"]
 
 
 def _level_prefix(levelno: int) -> str:
@@ -75,14 +84,25 @@ class Logger(logging.Logger):
         # stood here before the branch was a third handler, built on
         # every path and used on none.
         handler: logging.Handler
-        # UTF-8 with `surrogateescape`: a setting holding a byte UTF-8 does
-        # not accept is logged as that byte, as Core writes the bytes it
-        # read (`cli._read_conf_file`)
-        handler = (
-            logging.FileHandler(log_path, encoding="utf-8", errors="surrogateescape")
-            if log_path
-            else logging.StreamHandler()
-        )
+        if log_path:
+            # UTF-8 with `surrogateescape`: a setting holding a byte UTF-8
+            # does not accept is logged as that byte, as Core writes the
+            # bytes it read (`cli._read_conf_file`)
+            handler = logging.FileHandler(
+                log_path, encoding="utf-8", errors="surrogateescape"
+            )
+            stream = handler.stream
+            assert stream is not None  # noqa: S101 -- `delay=False` opens it above
+            # `StartLogging`, at bitcoin/bitcoin@9be056a8a7
+            # (`src/logging.cpp:72`): five blank lines, written to the file
+            # the moment it opens and ahead of anything this node logs,
+            # marking where this execution's own record begins in a file
+            # appended across restarts. A stream has no earlier execution
+            # to mark, so this is the file branch alone.
+            stream.write("\n\n\n\n\n")
+            stream.flush()
+        else:
+            handler = logging.StreamHandler()
         # `%(asctime)s` in the format string is what makes `format` set
         # `record.asctime` before `formatMessage` reads it
         formatter = _LevelFormatter("%(asctime)s %(message)s")
@@ -94,3 +114,36 @@ class Logger(logging.Logger):
         for handler in self.handlers:
             handler.close()
             self.removeHandler(handler)
+
+
+def open_history_log(
+    log_path: str | Path | None,
+    *,
+    debug: bool,
+    log_warnings: Sequence[str] = (),
+    section_warning: str = "",
+    config_args: Sequence[str] = (),
+) -> Logger:
+    """Open a `Logger` and write what Core logs ahead of anything else.
+
+    Core's own order, across `init/common.cpp`'s `StartLogging`,
+    `LogPackageVersion` and `init.cpp`'s `AppInitParameterInteraction`
+    (all at bitcoin/bitcoin@9be056a8a7): `log_warnings`, buffered while
+    the settings were read, then the version line, then
+    `section_warning` -- the one warning about a section naming no
+    chain, empty where there is none -- then `config_args`, `LogArgs`'s
+    own "Config file arg:"/"Command-line arg:" lines.
+    """
+    logger = Logger(log_path, debug=debug)
+    for warning in log_warnings:
+        logger.warning(warning)
+    # `LogPackageVersion` appends " (release build)" or " (debug build)",
+    # `#ifdef DEBUG` deciding which -- a compile-time distinction this
+    # interpreted tree has no counterpart for, so the line carries
+    # neither rather than a suffix that would always read one way
+    logger.info("%s version %s", CLIENT_NAME, CLIENT_VERSION)
+    if section_warning:
+        logger.warning(section_warning)
+    for arg in config_args:
+        logger.info(arg)
+    return logger

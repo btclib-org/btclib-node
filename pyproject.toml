@@ -1130,12 +1130,13 @@ skip = "*/_data/*.json,*/_data/*.csv,*/_data/*.txt,*/_data/*.bin,fuzz/corpus/*,s
 # hides is what is written inside backticks, which is identifiers and
 # quoted strings -- typos' half of the work, not this hook's.
 ignore-regex = '`[^`]*`'
-# "ser", as `[tool.typos.default.extend-words]`'s own comment on the
-# identical word already argues -- codespell's dictionary makes the
-# same mistake, and the word appears bare (not backtick-quoted, since
-# it is TOML syntax rather than prose) on that config's own `ser =
-# "ser"` line, which backticks cannot protect.
-ignore-words-list = "ser"
+# "ser" and "daa", as `[tool.typos.default.extend-words]`'s own
+# comments on the identical words already argue -- codespell's
+# dictionary makes the same two mistakes, and each word appears bare
+# (not backtick-quoted, since it is TOML syntax rather than prose) on
+# that config's own `ser = "ser"` and `daa = "daa"` lines, which
+# backticks cannot protect.
+ignore-words-list = "ser,daa"
 
 [tool.typos.files]
 # the vendored data [tool.codespell] skips above, for the reason given
@@ -1278,3 +1279,13 @@ ser = "ser"
 # ChaCha20Aligned::Seek, past tense -- not the misspelling of "sought"
 # typos' dictionary offers for ordinary English usage.
 seeked = "seeked"
+# BIP325's own SIGNET_HEADER (signet.py, src/signet.cpp at
+# bitcoin/bitcoin@9be056a8a7): four bytes of a witness commitment's own
+# push data. typos tokenizes the hex literal `ecc7daa2` splitting the
+# trailing digit off, so the word it actually flags is `daa`, not
+# `data`, the misspelling its dictionary offers -- measured with
+# `uvx typos src/btclib_node/signet.py`, which named `daa` at column
+# 37 and --write-changes rewrote it to `ecc7data2` before this entry
+# existed. [tool.codespell]'s own `ignore-words-list` above names
+# `daa` too, for the bare word on the line right below.
+daa = "daa"

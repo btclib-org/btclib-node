@@ -184,6 +184,7 @@ from btclib_node.config import (
 from btclib_node.constants import MIN_PRUNE_TARGET_MIB
 from btclib_node.dirlock import DirectoryLock, lock_directories
 from btclib_node.exceptions import DirectoryLockError
+from btclib_node.log import open_history_log
 from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME
 
 if TYPE_CHECKING:
@@ -602,11 +603,13 @@ class _Settings:
     network: str = ""
     # Core's `m_config_sections`: every section the files read named
     config_sections: list[_SectionInfo] = field(default_factory=list)
-    # what Core logs of its settings: the warnings it buffers while
-    # reading them, then the unrecognised-section warning, which it logs
-    # after its version line (a line history.log does not have, #1309).
-    # `Node` logs them in that order once its own log is open
+    # the warnings Core buffers while it reads its settings, in order;
+    # `open_history_log` logs each once its own log is open, ahead of
+    # its version line
     log_warnings: list[str] = field(default_factory=list)
+    # `_warn_unrecognized_sections`'s one warning, logged after the
+    # version line; `""` where no section is unrecognised
+    section_warning: str = ""
 
 
 def _interpret_key(key: str) -> _KeyInfo:
@@ -1058,6 +1061,51 @@ def _setting_to_str(value: _Value) -> str:
     if value is False:
         return "0"
     return value
+
+
+def _setting_to_write_str(value: _Value) -> str:
+    """Return Core's `SettingsValue::write()`: `true`/`false`, else JSON.
+
+    `ArgsManager::LogArgs`'s own `logArgsPrefix` (`src/common/args.cpp`, at
+    bitcoin/bitcoin@9be056a8a7) writes a negation's `bool` this way, and a
+    plain string as a JSON string literal -- unlike `_setting_to_str`
+    above, which is `GetArg`'s own `SettingToString`, a different Core
+    function reached by a different reader.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _log_args(settings: _Settings) -> tuple[str, ...]:
+    """Return Core's `LogArgs` lines, config file first, command line last.
+
+    `ArgsManager::LogArgs`/`logArgsPrefix` (`src/common/args.cpp`, at
+    bitcoin/bitcoin@9be056a8a7): `std::map` order -- a section, then a
+    name inside it, each sorted, and each value in the order it was
+    read -- masked to `****` where `_Option.sensitive` is Core's own
+    `SENSITIVE` flag. Every name reaching this is already in `_OPTIONS`:
+    `_parse_conf_text` drops an unknown config key with its own warning,
+    and `_parse_parameters` refuses an unknown command-line one outright,
+    so Core's own `if (flags)` guard around this has nothing left here to
+    be false for. `LogArgs`'s middle category, "Setting file arg:" from
+    `m_settings.rw_settings`, is settings.json's, which this tree has
+    none of, so it never has a line to emit here.
+    """
+    lines: list[str] = []
+    for section, args in sorted(settings.ro_config.items()):
+        prefix = f"[{section}] " if section else ""
+        for name, values in sorted(args.items()):
+            sensitive = _OPTIONS[name].sensitive
+            for value in values:
+                shown = "****" if sensitive else _setting_to_write_str(value)
+                lines.append(f"Config file arg: {prefix}{name}={shown}")
+    for name, values in sorted(settings.command_line.items()):
+        sensitive = _OPTIONS[name].sensitive
+        for value in values:
+            shown = "****" if sensitive else _setting_to_write_str(value)
+            lines.append(f"Command-line arg: {name}={shown}")
+    return tuple(lines)
 
 
 def _get_arg(settings: _Settings, name: str) -> str | None:
@@ -1644,8 +1692,9 @@ def _warn_unrecognized_sections(settings: _Settings) -> None:
     `GetUnrecognizedSections` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7):
     a line per section, each ending in a newline, printed after
     `Warning: ` with a newline of its own, as `noui_ThreadSafeMessageBox`
-    prints it, and appended to `settings.log_warnings` too, that
-    function logging it as well.
+    prints it, and set as `settings.section_warning` too, that function
+    logging it as well -- after Core's own version line, `open_history_log`'s
+    own order for it.
     """
     lines = "".join(
         f"{filepath}:{lineno} Section [{name}] is not recognized.\n"
@@ -1654,7 +1703,7 @@ def _warn_unrecognized_sections(settings: _Settings) -> None:
     )
     if lines:
         sys.stderr.write(f"Warning: {lines}\n")
-        settings.log_warnings.append(lines)
+        settings.section_warning = lines
 
 
 def _before_lock(argv: Sequence[str]) -> _BeforeLock:
@@ -1831,6 +1880,8 @@ def _after_lock(before: _BeforeLock) -> Config:
         rpcwhitelist=_get_args(settings, "rpcwhitelist"),
         rpcwhitelistdefault=_get_bool(settings, "rpcwhitelistdefault"),
         log_warnings=settings.log_warnings,
+        section_warning=settings.section_warning,
+        config_args=_log_args(settings),
     )
 
 
@@ -1878,7 +1929,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     the exit status is `1`: Core's `InitError`, and `CConnman`'s own
     `MSG_ERROR` for a failed bind, reach stderr through
     `noui_ThreadSafeMessageBox` with that caption (`src/noui.cpp:22-46`, at
-    bitcoin/bitcoin@9be056a8a7), and `bitcoind` exits `EXIT_FAILURE`.
+    bitcoin/bitcoin@9be056a8a7), and `bitcoind` exits `EXIT_FAILURE`. A
+    refusal after the lock reaches `history.log` too, `open_history_log`
+    opened for it with no `Node` built, `LogError`'s own second
+    destination for the same message.
     """
     _setup_environment()
     # a byte of `bitcoin.conf` or of `argv` that is not UTF-8 reaches a
@@ -1897,6 +1951,27 @@ def main(argv: Sequence[str] | None = None) -> None:
         try:
             config = _after_lock(before)
         except ValueError as error:
+            directories = before.directories
+            log_path = (
+                directories.data_dir / directories.log_path
+                if directories.log_path
+                else None
+            )
+            # `AppInitMain`'s own refusals -- `CheckHostPortOptions`'s,
+            # which raises this one -- come after `init::StartLogging`
+            # (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7), so the log
+            # is already open by the time one of them fires, and
+            # `LogError`, reached through `noui_ThreadSafeMessageBox`,
+            # puts the message in it too
+            logger = open_history_log(
+                log_path,
+                debug=before.debug,
+                log_warnings=before.settings.log_warnings,
+                section_warning=before.settings.section_warning,
+                config_args=_log_args(before.settings),
+            )
+            logger.error(str(error))  # noqa: TRY400
+            logger.close()
             sys.stderr.write(f"Error: {error}\n")
             raise SystemExit(1) from error
         node = Node(config=config)

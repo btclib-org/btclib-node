@@ -713,7 +713,9 @@ def test_build_config_orders_the_log_warnings_as_bitcoind_logs_them(
     Measured on `bitcoind` v31.1.0 with this file and `-nolisten=0`: its
     `debug.log` opens, after five blank lines, on the first four, then
     its version line, then the section warning, which its stderr holds
-    alone. The version line is one history.log does not have (#1309).
+    alone (ISS 1309's own version line and ISS 1305's own `LogArgs` sit
+    between `log_warnings` and `section_warning`, `Config`'s own fields
+    for them).
     """
     conf = "regtest=1\nfoo=1\nnoserver=0\n[x]\n[y]\nbar=2\n"
     config = _build(tmp_path, "-nolisten=0", conf=conf)
@@ -727,9 +729,53 @@ def test_build_config_orders_the_log_warnings_as_bitcoind_logs_them(
         "Ignoring unknown configuration value foo",
         "Parsed potentially confusing double-negative -server=0",
         "Ignoring unknown configuration value y.bar",
-        sections,
     )
+    assert config.section_warning == sections
     assert capsys.readouterr().err == f"Warning: {sections}\n"
+
+
+def test_build_config_logs_its_config_file_and_command_line_args(
+    tmp_path: Path,
+) -> None:
+    """ISS 1305: `LogArgs`'s two prefixes, `[section] ` and a written value.
+
+    `ArgsManager::LogArgs`/`logArgsPrefix` (`src/common/args.cpp`, at
+    bitcoin/bitcoin@9be056a8a7): the config file's args, then the command
+    line's; a plain value quoted as `SettingsValue::write()` writes it, a
+    negation's `true`, and `-rpcpassword`'s masked to `****` on either.
+    """
+    conf = "regtest=1\n[regtest]\nrpcbind=127.0.0.1:8332\n"
+    config = _build(tmp_path, "-nolisten=0", "-rpcpassword=hunter2", conf=conf)
+    assert config.config_args == (
+        'Config file arg: regtest="1"',
+        'Config file arg: [regtest] rpcbind="127.0.0.1:8332"',
+        f'Command-line arg: datadir="{tmp_path}"',
+        "Command-line arg: listen=true",
+        "Command-line arg: rpcpassword=****",
+    )
+
+
+def test_log_args_is_config_file_first_then_command_line(tmp_path: Path) -> None:
+    """ISS 1305: `std::map` order, a section then a name inside it, sorted.
+
+    `m_settings.ro_config`/`command_line_options` (`src/common/settings.h`,
+    same sha): the default section (`""`) sorts ahead of a named one, and
+    a name sorts within its own section, whichever order they were set in.
+    """
+    settings = cli._Settings(
+        command_line={"rpcpassword": ["hunter2"], "datadir": [str(tmp_path)]},
+        ro_config={
+            "regtest": {"rpcbind": ["127.0.0.1:8332"]},
+            "": {"regtest": ["1"], "listen": [True]},
+        },
+    )
+    assert cli._log_args(settings) == (
+        "Config file arg: listen=true",
+        'Config file arg: regtest="1"',
+        'Config file arg: [regtest] rpcbind="127.0.0.1:8332"',
+        f'Command-line arg: datadir="{tmp_path}"',
+        "Command-line arg: rpcpassword=****",
+    )
 
 
 @pytest.mark.parametrize("name", ["rpcauth", "rpcpassword", "rpcuser"])
@@ -2859,12 +2905,12 @@ def test_warn_unrecognized_sections_is_one_core_warning(
     )
     assert capsys.readouterr().err == f"Warning: {lines}\n"
     # ISS 1295: logged too, as `noui_ThreadSafeMessageBox` logs a warning
-    assert settings.log_warnings == [lines]
+    assert settings.section_warning == lines
     settings = cli._Settings({})
     settings.config_sections = [("main", "a.conf", 1)]
     cli._warn_unrecognized_sections(settings)
     assert capsys.readouterr().err == ""
-    assert settings.log_warnings == []
+    assert settings.section_warning == ""
 
 
 def test_unsuitable_section_only_args_is_core_s_own_check() -> None:
@@ -2978,6 +3024,26 @@ def test_main_a_refused_argument_exits_one_as_init_error(
     captured = capsys.readouterr()
     assert captured.err == f"Error: {message}\n"
     assert not captured.out
+
+
+@pytest.mark.usefixtures("no_node")
+def test_main_a_refusal_after_the_lock_reaches_history_log(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 1306: `CheckHostPortOptions` fails after the log has started.
+
+    `init::StartLogging` (`src/init.cpp:1436`, at bitcoin/bitcoin@9be056a8a7)
+    runs ahead of `CheckHostPortOptions` (`:1525`, same file), so
+    `bitcoind`'s own `debug.log` already holds a `[error]` line for this
+    refusal, `LogError` reaching it through `noui_ThreadSafeMessageBox`
+    the way it reaches stderr.
+    """
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main([f"-datadir={tmp_path}", "-port=abc"])
+    assert excinfo.value.code == 1
+    assert capsys.readouterr().err == "Error: Invalid port specified in -port: 'abc'\n"
+    log_text = (tmp_path / "mainnet" / "history.log").read_text(encoding="utf-8")
+    assert "[error] Invalid port specified in -port: 'abc'" in log_text
 
 
 def test_dunder_main_calls_cli_main_under_the_guard(

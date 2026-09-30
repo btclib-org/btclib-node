@@ -16,7 +16,7 @@ import heapq
 import time
 from collections import deque
 from fractions import Fraction
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from btclib.fee import FeeRate, fee_from_vsize
 
@@ -29,7 +29,40 @@ if TYPE_CHECKING:
 
     from btclib_node.log import Logger
 
-__all__ = ["Mempool", "format_money"]
+__all__ = ["Mempool", "MempoolEntry", "format_money"]
+
+# Core's own `MAX_BIP125_RBF_SEQUENCE` (`src/policy/rbf.h`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `SignalsOptInRBF`'s own
+# bound, an input below it opting a transaction into BIP125 replacement.
+_MAX_BIP125_RBF_SEQUENCE = 0xFFFFFFFE
+
+
+class MempoolEntry(NamedTuple):
+    """One held transaction's own `getmempoolentry` accounting.
+
+    `Mempool.entry` below is the one place this is built; its own
+    docstring is where the shape -- Core's own `entryToJSON`, less what
+    a cluster mempool alone backs -- is argued.
+    """
+
+    vsize: int
+    weight: int
+    time: int
+    height: int
+    wtxid: bytes
+    fee: int
+    modified_fee: int
+    ancestor_count: int
+    ancestor_size: int
+    ancestor_fees: int
+    descendant_count: int
+    descendant_size: int
+    descendant_fees: int
+    depends: list[bytes]
+    spent_by: list[bytes]
+    bip125_replaceable: bool
+    unbroadcast: bool
+
 
 # Core's own `CRollingBloomFilter(120'000, 0.000'001)`
 # (`src/node/txdownloadman_impl.h`, at bitcoin/bitcoin@4519933391): "a
@@ -109,6 +142,29 @@ class Mempool:
         # vsize `main.verify_mempool_acceptance` computes: what every
         # feerate and the size limit here read. btclib-org/btclib-node#1357
         self.vsizes: dict[bytes, int] = {}
+        # wtxid -> Core's own `CTxMemPoolEntry::GetTime`
+        # (`src/kernel/mempool_entry.h`, at bitcoin/bitcoin@9be056a8a7, the
+        # v31.1 tag): the wall-clock second this entry was accepted,
+        # `add_tx` below's own `time.time()`. `getmempoolentry`'s own
+        # `time` field. btclib-org/btclib-node#1397
+        self.entry_times: dict[bytes, float] = {}
+        # wtxid -> Core's own `CTxMemPoolEntry::GetHeight`, the active
+        # chain's own tip height -- not `verify_mempool_acceptance`'s own
+        # `spend_height`, one past it -- at the moment this entry was
+        # accepted (`m_active_chainstate.m_chain.Height()`,
+        # `MemPoolAccept::Finalize`, `src/validation.cpp`, same tag).
+        # `getmempoolentry`'s own `height` field. btclib-org/btclib-node#1397
+        self.heights: dict[bytes, int] = {}
+        # txid -> nothing, this mempool's own copy of Core's own
+        # `m_unbroadcast_txids` (`src/txmempool.h`, same tag): a
+        # transaction `rpc.callbacks.send_raw_transaction` submitted and
+        # kept, until some peer's own `getdata` is served for it
+        # (`mark_broadcast` below) or it leaves this mempool for any
+        # reason (`_pop`) -- never one a peer handed this node over the
+        # wire, `p2p.callbacks.tx` calling neither. `get_mempool_info`'s
+        # own `unbroadcastcount` is this set's size.
+        # btclib-org/btclib-node#1421
+        self.unbroadcast: set[bytes] = set()
         # txid -> the wtxids, held in this mempool, of whatever spends an
         # output of that txid -- kept up to date in `add_tx` and `_pop`
         # rather than rebuilt at eviction time, `_descendants` below being
@@ -288,7 +344,9 @@ class Mempool:
         self._recent_rejects.add(wtxid)
 
     # Don't need lock because handled in same thread
-    def add_tx(self, tx: Tx, fee: int = 0, vsize: int | None = None) -> bool:
+    def add_tx(
+        self, tx: Tx, fee: int = 0, vsize: int | None = None, *, height: int = 0
+    ) -> bool:
         """Add `tx`, evict past the limit, and say whether it stuck.
 
         A no-op, returning `False`, for a txid already held or a
@@ -297,6 +355,13 @@ class Mempool:
         takes it right back out if it is itself the worst entry left
         once trimming is done -- so the return value is `False` there
         too, exactly as it would be for an outright refusal.
+
+        `height` defaults to 0 for the same callers `fee` and `vsize`
+        default for: every production caller passes the active chain's
+        own tip height, `self.heights`' own docstring above is where
+        Core's own convention for it -- and its own name,
+        `main.verify_mempool_acceptance`'s `spend_height` being one past
+        it -- is argued.
         """
         # `fee` defaults to 0 rather than being required, for the
         # callers -- mostly in tests -- that add a transaction without
@@ -341,6 +406,8 @@ class Mempool:
         self.txid_index[txid] = wtxid
         self.fees[wtxid] = fee
         self.vsizes[wtxid] = tx.vsize if vsize is None else vsize
+        self.entry_times[wtxid] = time.time()
+        self.heights[wtxid] = height
         for vin in tx.vin:
             self.spent_by.setdefault(vin.prev_out.tx_id, set()).add(wtxid)
         self.size += 1
@@ -489,6 +556,14 @@ class Mempool:
         self.txid_index.pop(tx.id, None)
         self.fees.pop(wtxid, None)
         vsize = self.vsizes.pop(wtxid)
+        self.entry_times.pop(wtxid, None)
+        self.heights.pop(wtxid, None)
+        # Core's own `removeUnchecked` discards it unconditionally on
+        # every way a transaction leaves the mempool -- eviction,
+        # confirmation, a conflict -- not only through `remove_tx`, the
+        # same way this call is not only reached from `remove_tx` here.
+        # btclib-org/btclib-node#1421
+        self.unbroadcast.discard(tx.id)
         self._heap_current_seq.pop(wtxid, None)
         # A set of the spent txids first, not a loop over `tx.vin` itself:
         # two inputs of one transaction spending two outputs of the same
@@ -550,6 +625,125 @@ class Mempool:
                 descendants.add(candidate_wtxid)
                 frontier.append(self.transactions[candidate_wtxid].id)
         return descendants
+
+    def _ancestors(self, wtxid: bytes) -> set[bytes]:
+        """Return wtxid and every mempool transaction it spends, transitively.
+
+        `_descendants`'s own mirror: walked from `tx.vin` rather than
+        from `spent_by`, through `txid_index` to find each parent still
+        held rather than confirmed. Terminates the same way
+        `_descendants` does -- a transaction's own inputs are always an
+        earlier transaction's own outputs, never its own, so the walk
+        never revisits a wtxid it has not already added to the set that
+        guards it. `getmempoolentry`'s own `ancestorcount`,
+        `ancestorsize` and `fees.ancestor`, and `is_bip125_replaceable`
+        below, are what read it. btclib-org/btclib-node#1397
+        """
+        ancestors = {wtxid}
+        frontier = list(self.transactions[wtxid].vin)
+        while frontier:
+            vin = frontier.pop()
+            parent_wtxid = self.txid_index.get(vin.prev_out.tx_id)
+            if parent_wtxid is None or parent_wtxid in ancestors:
+                continue
+            ancestors.add(parent_wtxid)
+            frontier.extend(self.transactions[parent_wtxid].vin)
+        return ancestors
+
+    def is_bip125_replaceable(self, wtxid: bytes) -> bool:
+        """Whether `wtxid`, or an unconfirmed ancestor, signals BIP125 opt-in.
+
+        Core's own `IsRBFOptIn`/`SignalsOptInRBF` (`src/policy/rbf.cpp`,
+        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): any input sequence
+        number under `MAX_BIP125_RBF_SEQUENCE`, on this transaction or on
+        an ancestor this mempool still holds unconfirmed -- a child of a
+        replaceable parent is itself replaceable, its own parent being
+        free to leave and be replaced by something that double-spends it
+        too. This mempool has no replacement of its own yet
+        (`check_replacement`'s own docstring, btclib-org/btclib-node#1334),
+        so this only ever answers the signal, the way Core's own
+        `getmempoolentry` does whether or not `-mempoolreplacement` is
+        set to allow acting on it.
+        """
+        return any(
+            vin.sequence < _MAX_BIP125_RBF_SEQUENCE
+            for ancestor_wtxid in self._ancestors(wtxid)
+            for vin in self.transactions[ancestor_wtxid].vin
+        )
+
+    def entry(self, wtxid: bytes) -> MempoolEntry:
+        """Return `wtxid`'s own `getmempoolentry` accounting.
+
+        Core's own `entryToJSON` (`src/rpc/mempool.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), less `chunkweight`
+        and the `fees` object's own `chunk`: both `GetMainChunkFeerate`'s,
+        a cluster mempool's own linearization this mempool does not
+        carry, the same reason `rpc.callbacks.get_mempool_info` leaves
+        out every field a cluster graph would back. `modified` is `base`
+        unchanged: Core's own difference between the two is
+        `prioritisetransaction`'s fee delta, which this tree does not
+        serve. `depends` and `spent_by` are each this transaction's own
+        direct mempool parents and children -- `tx.vin` filtered to
+        `txid_index`, and `self.spent_by` itself -- not the transitive
+        closure `_ancestors`/`_descendants` walk for the counts and
+        sizes beside them, matching Core's own `setDepends`/`GetChildren`.
+        """
+        tx = self.transactions[wtxid]
+        ancestors = self._ancestors(wtxid)
+        descendants = self._descendants(wtxid)
+        depends = sorted(
+            {vin.prev_out.tx_id for vin in tx.vin} & self.txid_index.keys()
+        )
+        spent_by = sorted(
+            self.transactions[child].id for child in self.spent_by.get(tx.id, ())
+        )
+        fee = self.fees[wtxid]
+        return MempoolEntry(
+            vsize=self.vsizes[wtxid],
+            weight=tx.weight,
+            time=int(self.entry_times[wtxid]),
+            height=self.heights[wtxid],
+            wtxid=wtxid,
+            fee=fee,
+            modified_fee=fee,
+            ancestor_count=len(ancestors),
+            ancestor_size=sum(self.vsizes[w] for w in ancestors),
+            ancestor_fees=sum(self.fees[w] for w in ancestors),
+            descendant_count=len(descendants),
+            descendant_size=sum(self.vsizes[w] for w in descendants),
+            descendant_fees=sum(self.fees[w] for w in descendants),
+            depends=depends,
+            spent_by=spent_by,
+            bip125_replaceable=self.is_bip125_replaceable(wtxid),
+            unbroadcast=tx.id in self.unbroadcast,
+        )
+
+    def mark_broadcast_locally(self, txid: bytes) -> None:
+        """Add `txid` to the unbroadcast set, Core's own `AddUnbroadcastTx`.
+
+        Called only where Core calls it: once a transaction submitted
+        through `sendrawtransaction` is kept, never for one a peer handed
+        this node over the wire -- `BroadcastTransaction`'s own
+        `MEMPOOL_AND_BROADCAST_TO_ALL` branch is the one call site Core
+        has for it (`src/node/transaction.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and `net_processing.cpp`'s
+        own p2p acceptance path has none. A txid this mempool does not
+        hold is left alone, the way Core's own sanity check leaves it
+        out of the set rather than inserting it. btclib-org/btclib-node#1421
+        """
+        if txid in self.txid_index:
+            self.unbroadcast.add(txid)
+
+    def mark_broadcast(self, txid: bytes) -> None:
+        """Discard `txid` from `unbroadcast`, Core's own `RemoveUnbroadcastTx`.
+
+        Called once some peer's own `getdata` is served for it
+        (`net_processing.cpp`'s `m_mempool.RemoveUnbroadcastTx`, same
+        commit) -- `_pop` above is the other call site, Core's own
+        `removeUnchecked` discarding it unconditionally on every way a
+        transaction leaves this mempool. btclib-org/btclib-node#1421
+        """
+        self.unbroadcast.discard(txid)
 
     def _pop_worst_wtxid(self) -> bytes:
         """Pop and return the currently held wtxid of the lowest feerate.

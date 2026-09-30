@@ -261,12 +261,16 @@ def test_seednode_defaults_to_empty() -> None:
     assert Config(chain="regtest").seednode == ()
 
 
-def test_seednode_rejects_a_hostname() -> None:
-    """`_resolve_peers` refuses a hostname for `seednode` too (ISS 1264)."""
-    with pytest.raises(
-        ValueError, match="does not appear to be an IPv4 or IPv6 address"
-    ):
-        Config(chain="regtest", seednode=["example.com"])
+def test_seednode_takes_a_hostname() -> None:
+    """`_split_peers` splits a hostname the same as a literal IP (ISS 1264).
+
+    Core resolves `-seednode`'s own value at dial time
+    (`CConnman::ThreadOpenConnections`, `src/net.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag); this node does the same,
+    on `P2pManager`'s own loop, so `Config` itself refuses nothing here.
+    """
+    config = Config(chain="regtest", seednode=["example.com"])
+    assert config.seednode == (("example.com", RegTest().port),)
 
 
 def test_fixed_seeds_defaults_to_true() -> None:
@@ -291,19 +295,17 @@ def test_dnsseed_explicit_value_is_taken_as_given() -> None:
     assert config.dnsseed is True
 
 
-def test_connect_rejects_a_hostname() -> None:
-    """A spec whose host is not an IP literal raises rather than dialling wrong.
+def test_connect_takes_a_hostname() -> None:
+    """A spec whose host is not an IP literal is split, not refused (ISS 1264).
 
-    `p2p_manager.connect(peer_address(...))` -- the route `Node.run`
-    dials `connect`/`addnode` through -- takes a parsed IP; this node
-    resolves no hostname anywhere in its synchronous startup path
-    (`config.py`'s own `_resolve_peers` docstring), so a hostname here
-    is refused rather than silently mishandled.
+    `p2p_manager.connect_host(host, port)` -- the route `Node.run`
+    dials `connect`/`addnode` through -- resolves the host itself, on
+    `P2pManager`'s own loop, rather than taking an already-parsed IP the
+    way `peer_address` needs, so a hostname here is not this function's
+    to refuse.
     """
-    with pytest.raises(
-        ValueError, match="does not appear to be an IPv4 or IPv6 address"
-    ):
-        Config(chain="regtest", connect=["example.com"])
+    config = Config(chain="regtest", connect=["example.com"])
+    assert config.connect == (("example.com", RegTest().port),)
 
 
 def test_split_host_port_bare_host_takes_the_default_port() -> None:

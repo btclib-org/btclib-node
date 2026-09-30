@@ -22,10 +22,13 @@ import pytest
 from bitcoin_core_rpc import RPCErrorCode
 from btclib.block import Block, BlockHeader
 from btclib.consensus import MAX_BLOCK_WEIGHT
+from btclib.descriptors import add_checksum, from_address
 from btclib.fee import FeeRate
+from btclib.key import PrvKeyData
 from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.p2p.limits import PROTOCOL_VERSION
 from btclib.script import script
+from btclib.script.script_pub_key import ScriptPubKey, p2ms_m_and_keys, type_and_payload
 from btclib.script.witness import Witness
 from btclib.tx.limits import COINBASE_MATURITY
 from btclib.tx.out_point import OutPoint
@@ -70,12 +73,15 @@ from btclib_node.rpc.callbacks import (
     get_block_hash,
     get_block_header,
     get_blockchain_info,
+    get_chain_tips,
     get_connection_count,
+    get_mempool_entry,
     get_mempool_info,
     get_network_info,
     get_peer_info,
     get_raw_mempool,
     get_raw_transaction,
+    get_tx_out,
     get_tx_out_set_info,
     help_rpc,
     list_banned,
@@ -112,6 +118,12 @@ if TYPE_CHECKING:
 
 # none of these callbacks reads the connection it is handed
 _CONN = cast("RpcConnection", None)
+
+# a fixed key, the identical one `tests/unit/interpreter_test.py`'s own
+# `_PRV`/`_PUB_KEY` already use, for building a p2pk/p2ms/p2tr `ScriptPubKey`
+_TEST_PUB_KEY = PrvKeyData(
+    0x1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF
+).pub
 
 
 def a_tx(tag: bytes = b"\x11") -> Tx:
@@ -235,6 +247,7 @@ def a_node(
     min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
     *,
     heights: dict[bytes, int] | None = None,
+    confirmed_outpoints: frozenset[bytes] | None = None,
     pruned: bool = False,
     peerblockfilters: bool = False,
 ) -> Any:
@@ -242,19 +255,32 @@ def a_node(
 
     A peer table, a mempool, the configured minimum relay feerate, and a
     block index answering the height of each hash in `heights` --
-    nothing else these tests' own callbacks look at. `pruned` and
+    nothing else these tests' own callbacks look at. `confirmed_outpoints`
+    names the serialized outpoints (`OutPoint.serialize(check_validity=
+    False)`) `send_raw_transaction`'s own `_already_confirmed` reads as
+    already in the UTXO set; empty by default, so nothing here answers
+    already confirmed. btclib-org/btclib-node#1373. `pruned` and
     `peerblockfilters` are `p2p.connection.local_services`'s own, off by
     default here as `Config`'s own defaults are, for
     `get_network_info`'s `localservices`/`localservicesnames`.
     """
     known = heights if heights is not None else {}
+    confirmed = confirmed_outpoints if confirmed_outpoints is not None else frozenset()
     return SimpleNamespace(
         chainstate=SimpleNamespace(
             block_index=SimpleNamespace(
                 get_block_info=lambda block_hash: SimpleNamespace(
                     index=known[block_hash]
-                )
-            )
+                ),
+                # a one-block chain, tip height 0: `send_raw_transaction`
+                # and `p2p.callbacks.tx` both read `len(active_chain) - 1`
+                # for `Mempool.add_tx`'s own `height`, and no test here
+                # asserts on the value it stores.
+                active_chain=[b"\x00" * 32],
+            ),
+            utxo_index=SimpleNamespace(
+                get_coin=lambda prevout: object() if prevout in confirmed else None
+            ),
         ),
         p2p_manager=SimpleNamespace(
             connections=peers if peers is not None else {},
@@ -970,16 +996,35 @@ def test_tx_out_set_info_hash_type_none_omits_the_muhash_field() -> None:
     assert result["txouts"] == 1
 
 
-def test_tx_out_set_info_defaults_to_hash_serialized_3_and_refuses_it() -> None:
-    """With no `hash_type` given, the default is Core's own, and refused.
+def test_tx_out_set_info_defaults_to_muhash_not_hash_serialized_3() -> None:
+    """With no `hash_type` given, a bare call answers `muhash`, not Core's own.
 
     This tree answers only from `CoinStats`, never from a live scan, so
     `hash_serialized_3` -- Core's own default -- has nothing to compute
-    it from.
+    it from; the departure is this tree's own default, argued in
+    `get_tx_out_set_info`'s own docstring.
+    """
+    coin_stats = CoinStats()
+    coin_stats.insert(*_a_coin_stats_coin())
+    node = a_coin_stats_node(coin_stats, [b"\x11" * 32])
+
+    bare = get_tx_out_set_info(node, _CONN, [])
+    explicit = get_tx_out_set_info(node, _CONN, ["muhash"])
+    bare["total_amount"] = bare["total_amount"].text
+    explicit["total_amount"] = explicit["total_amount"].text
+    assert bare == explicit
+    assert "muhash" in bare
+
+
+def test_tx_out_set_info_still_refuses_hash_serialized_3_asked_for_by_name() -> None:
+    """Asking for `hash_serialized_3` explicitly is refused as before.
+
+    Only the *default* moved; the hash type itself is still one this
+    tree has no accumulator for.
     """
     node = a_coin_stats_node(CoinStats(), [b"\x11" * 32])
     with pytest.raises(RpcError) as raised:
-        get_tx_out_set_info(node, _CONN, [])
+        get_tx_out_set_info(node, _CONN, ["hash_serialized_3"])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
     assert raised.value.message == "'hash_serialized_3' is not a valid hash_type"
 
@@ -1059,6 +1104,320 @@ def test_tx_out_set_info_use_index_is_type_checked_but_changes_nothing() -> None
     with pytest.raises(RpcError) as raised:
         get_tx_out_set_info(node, _CONN, ["none", None, "true"])
     assert raised.value.code == RPCErrorCode.TYPE_ERROR
+
+
+def test_get_tx_out_answers_a_confirmed_coin(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """`gettxout` answers Core's own shape for a coin still in the UTXO set."""
+    node = regtest_node()
+    chain = generate_random_chain(1, node.chain.genesis.hash)
+    connect(node, chain)
+    coinbase = chain[0].transactions[0]
+
+    answer = get_tx_out(node, _CONN, [coinbase.id.hex(), 0])
+
+    assert answer is not None
+    assert answer["bestblock"] == chain[0].header.hash
+    assert answer["confirmations"] == 1
+    assert answer["value"].text == "50.00000000"
+    assert answer["coinbase"] is True
+    assert answer["scriptPubKey"]["hex"] == coinbase.vout[0].script_pub_key.script.hex()
+    assert answer["scriptPubKey"]["type"] == "nonstandard"
+    assert "address" not in answer["scriptPubKey"]
+
+
+def test_get_tx_out_answers_none_for_an_unknown_outpoint(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """An outpoint this node never created answers `None`, not an error."""
+    node = regtest_node()
+    chain = generate_random_chain(1, node.chain.genesis.hash)
+    connect(node, chain)
+
+    assert get_tx_out(node, _CONN, [(b"\x11" * 32).hex(), 0]) is None
+
+
+def test_get_tx_out_include_mempool_hides_a_coin_a_mempool_tx_spends(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """`include_mempool` (true by default) answers null once mempool spends it.
+
+    `include_mempool: false` still answers the confirmed coin, matching
+    Core's own `fMempool` branch reading straight from `coins_view`.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(1, node.chain.genesis.hash)
+    connect(node, chain)
+    coinbase = chain[0].transactions[0]
+    spend = generate_random_transaction(coinbase.id, value=coinbase.vout[0].value)
+    node.mempool.add_tx(spend, fee=0)
+
+    assert get_tx_out(node, _CONN, [coinbase.id.hex(), 0]) is None
+    assert get_tx_out(node, _CONN, [coinbase.id.hex(), 0, True]) is None
+    still_confirmed = get_tx_out(node, _CONN, [coinbase.id.hex(), 0, False])
+    assert still_confirmed is not None
+    assert still_confirmed["confirmations"] == 1
+
+
+def test_get_tx_out_include_mempool_walks_past_a_sibling_output_s_spend(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """`Mempool.spent_by` keys on the parent txid, `isSpent` on the outpoint.
+
+    A query for one output walks past a mempool spend of a different
+    one of that parent's own outputs before answering -- `_mempool_spends`'s
+    own docstring names this scan, unlike Core's O(1) `mapNextTx` lookup.
+    """
+    node = regtest_node()
+    parent_txid = b"\x33" * 32
+    spend0 = generate_random_transaction(parent_txid)
+    spend1 = generate_random_transaction(parent_txid)
+    spend1.vin[0].prev_out = OutPoint(parent_txid, 1)
+    node.mempool.add_tx(spend0, fee=0)
+    node.mempool.add_tx(spend1, fee=0)
+
+    assert get_tx_out(node, _CONN, [parent_txid.hex(), 2]) is None
+
+
+def test_get_tx_out_include_mempool_answers_a_coin_a_mempool_tx_creates(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A mempool transaction's own output answers, at `confirmations: 0`.
+
+    Not yet in the confirmed UTXO set at all: `include_mempool: false`
+    answers `None` for the identical outpoint.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(1, node.chain.genesis.hash)
+    connect(node, chain)
+    coinbase = chain[0].transactions[0]
+    spend = generate_random_transaction(coinbase.id, value=coinbase.vout[0].value)
+    node.mempool.add_tx(spend, fee=0)
+
+    mempool_only = get_tx_out(node, _CONN, [spend.id.hex(), 0])
+    assert mempool_only is not None
+    assert mempool_only["confirmations"] == 0
+    assert mempool_only["coinbase"] is False
+    assert mempool_only["bestblock"] == chain[0].header.hash
+
+    assert get_tx_out(node, _CONN, [spend.id.hex(), 0, False]) is None
+
+
+def test_get_tx_out_include_mempool_answers_none_past_a_mempool_tx_s_own_outputs(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A vout past a mempool-only transaction's own `vout` list answers `None`.
+
+    Matching Core's own `CCoinsViewMemPool::GetCoin` for an outpoint whose
+    own txid is a mempool transaction but whose index is not one of its
+    outputs -- neither confirmed nor a mempool output to answer with.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(1, node.chain.genesis.hash)
+    connect(node, chain)
+    coinbase = chain[0].transactions[0]
+    spend = generate_random_transaction(coinbase.id, value=coinbase.vout[0].value)
+    node.mempool.add_tx(spend, fee=0)
+
+    assert len(spend.vout) == 1
+    assert get_tx_out(node, _CONN, [spend.id.hex(), 1]) is None
+
+
+def test_get_tx_out_answers_core_s_nested_scriptpubkey_for_a_p2pkh_coin(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A p2pkh coin's own `scriptPubKey` nests Core's own `type` and `address`.
+
+    Staged directly into `UtxoIndex.updated_utxo_set`, ahead of any
+    `finalize`: `UtxoIndex.get_coin` reads that dict before the store,
+    so this is real UTXO-index state and not a double standing in for
+    one.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(1, node.chain.genesis.hash)
+    connect(node, chain)
+
+    raw_script = bytes.fromhex("76a914") + b"\x11" * 20 + bytes.fromhex("88ac")
+    script_pub_key = ScriptPubKey(raw_script)
+    out_point = OutPoint(b"\x22" * 32, 0)
+    coin = Coin(TxOut(1234, script_pub_key), height=1, is_coinbase=False)
+    node.chainstate.utxo_index.updated_utxo_set[
+        out_point.serialize(check_validity=False)
+    ] = coin
+
+    answer = get_tx_out(node, _CONN, [out_point.tx_id.hex(), out_point.vout])
+
+    assert answer is not None
+    script_pub_key_dict = answer["scriptPubKey"]
+    assert script_pub_key_dict["type"] == "pubkeyhash"
+    assert script_pub_key_dict["hex"] == raw_script.hex()
+    assert script_pub_key_dict["address"] == script_pub_key.address
+    assert script_pub_key_dict["desc"] == from_address(script_pub_key.address)
+
+
+def _stage_coin_and_get_tx_out(
+    node: Node, script_pub_key: ScriptPubKey
+) -> dict[str, Any]:
+    """Stage `script_pub_key`'s own coin into `UtxoIndex` and answer `gettxout`.
+
+    The identical staging `test_get_tx_out_answers_core_s_nested_scriptpubkey_
+    for_a_p2pkh_coin` above does, factored out for the three script types
+    that test's own `desc` does not exercise.
+    """
+    out_point = OutPoint(b"\x22" * 32, 0)
+    coin = Coin(TxOut(1234, script_pub_key), height=1, is_coinbase=False)
+    node.chainstate.utxo_index.updated_utxo_set[
+        out_point.serialize(check_validity=False)
+    ] = coin
+    answer = get_tx_out(node, _CONN, [out_point.tx_id.hex(), out_point.vout])
+    assert answer is not None
+    return cast("dict[str, Any]", answer["scriptPubKey"])
+
+
+def test_get_tx_out_answers_pk_desc_for_a_p2pk_coin(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A p2pk coin's own `desc` is `pk(<pubkey>)`, `InferPubkey` with no key."""
+    node = regtest_node()
+    chain = generate_random_chain(1, node.chain.genesis.hash)
+    connect(node, chain)
+    script_pub_key = ScriptPubKey.p2pk(_TEST_PUB_KEY)
+
+    script_pub_key_dict = _stage_coin_and_get_tx_out(node, script_pub_key)
+
+    assert script_pub_key_dict["type"] == "pubkey"
+    _, payload = type_and_payload(script_pub_key.script)
+    assert script_pub_key_dict["desc"] == add_checksum(f"pk({payload.hex()})")
+
+
+def test_get_tx_out_answers_multi_desc_for_a_p2ms_coin(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A p2ms coin's own `desc` is `multi(...)`, `InferPubkey` with no key."""
+    node = regtest_node()
+    chain = generate_random_chain(1, node.chain.genesis.hash)
+    connect(node, chain)
+    script_pub_key = ScriptPubKey.p2ms(1, [_TEST_PUB_KEY])
+
+    script_pub_key_dict = _stage_coin_and_get_tx_out(node, script_pub_key)
+
+    assert script_pub_key_dict["type"] == "multisig"
+    threshold, keys = p2ms_m_and_keys(script_pub_key.script)
+    key_list = ",".join(key.hex() for key in keys)
+    assert script_pub_key_dict["desc"] == add_checksum(f"multi({threshold},{key_list})")
+
+
+def test_get_tx_out_answers_rawtr_desc_for_a_p2tr_coin(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A p2tr coin's own `desc` is `rawtr(...)`, no `TaprootSpendData` found."""
+    node = regtest_node()
+    chain = generate_random_chain(1, node.chain.genesis.hash)
+    connect(node, chain)
+    script_pub_key = ScriptPubKey.p2tr(_TEST_PUB_KEY)
+
+    script_pub_key_dict = _stage_coin_and_get_tx_out(node, script_pub_key)
+
+    assert script_pub_key_dict["type"] == "witness_v1_taproot"
+    _, payload = type_and_payload(script_pub_key.script)
+    assert script_pub_key_dict["desc"] == add_checksum(f"rawtr({payload.hex()})")
+
+
+def test_get_tx_out_answers_anchor_type_and_addr_desc_for_a_p2a_coin(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A P2A coin's own `type` is `anchor`, `desc` still `addr(...)`.
+
+    `Solver`'s own `TxoutType::ANCHOR` (`src/script/solver.cpp:167-171`,
+    at bitcoin/bitcoin@9be056a8a7) is a cut this library's own
+    `type_and_payload` does not make -- the script answers
+    "witness_unknown" there -- but `ExtractDestination` answers a
+    destination for both the same way (`src/addresstype.cpp:90-93`,
+    same sha), so `desc` is unaffected and still `addr(...)`.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(1, node.chain.genesis.hash)
+    connect(node, chain)
+    script_pub_key = ScriptPubKey(bytes.fromhex("51024e73"))
+
+    script_pub_key_dict = _stage_coin_and_get_tx_out(node, script_pub_key)
+
+    assert script_pub_key_dict["type"] == "anchor"
+    assert script_pub_key_dict["address"] == script_pub_key.address
+    assert script_pub_key_dict["desc"] == from_address(script_pub_key.address)
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        [],
+        [(b"\x11" * 32).hex()],
+    ],
+)
+def test_get_tx_out_with_too_few_arguments_is_answered_with_the_usage(
+    regtest_node: Callable[..., Node], params: list[Any]
+) -> None:
+    """`txid` and `n` are both required; either missing is the same refusal."""
+    node = regtest_node()
+    with pytest.raises(RpcError) as raised:
+        get_tx_out(node, _CONN, params)
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
+    assert raised.value.message == HELP_TEXT["gettxout"]
+
+
+def test_get_tx_out_type_checks_txid_and_n_together(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A wrongly typed `txid` and `n` are both named, in one refusal."""
+    node = regtest_node()
+    with pytest.raises(RpcError) as raised:
+        get_tx_out(node, _CONN, [12345, "not a number"])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert "Position 1 (txid)" in raised.value.message
+    assert "Position 2 (n)" in raised.value.message
+
+
+def test_get_tx_out_refuses_a_non_hexadecimal_txid(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A right-length, non-hex `txid` is Core's own `ParseHashV` text."""
+    node = regtest_node()
+    not_hex = "z" * 64
+    with pytest.raises(RpcError) as raised:
+        get_tx_out(node, _CONN, [not_hex, 0])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert raised.value.message == f"txid must be hexadecimal string (not '{not_hex}')"
+
+
+def test_get_tx_out_refuses_a_txid_of_the_wrong_length(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A valid-hex, wrong-length `txid` is refused before it is decoded.
+
+    `ParseHashV` checks the string's own length before it ever tries to
+    decode it (`src/rpc/util.cpp:117-124`, at
+    bitcoin/bitcoin@9be056a8a7), so `"aabb"` -- four valid hex digits --
+    is refused for its length rather than silently decoding to a
+    two-byte `txid` nothing then finds.
+    """
+    node = regtest_node()
+    with pytest.raises(RpcError) as raised:
+        get_tx_out(node, _CONN, ["aabb", 0])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert raised.value.message == "txid must be of length 64 (not 4, for 'aabb')"
+
+
+@pytest.mark.parametrize("n", [-1, 2**32, 1.5])
+def test_get_tx_out_refuses_n_out_of_uint32_range(
+    regtest_node: Callable[..., Node], n: float
+) -> None:
+    """`UniValue::getInt<uint32_t>()`'s own range, not this library's `int`."""
+    node = regtest_node()
+    with pytest.raises(RpcError) as raised:
+        get_tx_out(node, _CONN, [(b"\x11" * 32).hex(), n])
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
+    assert raised.value.message == "JSON integer out of range"
 
 
 def a_tx_lookup_node(
@@ -1303,6 +1662,22 @@ def test_a_txid_that_is_not_hex_is_named_back_to_the_client() -> None:
     assert "zz" in raised.value.message
 
 
+def test_a_txid_of_the_wrong_length_is_refused_before_it_is_decoded() -> None:
+    """A valid-hex, wrong-length `txid` names "parameter 1", Core's own label.
+
+    `ParseHashV` checks the string's own length before it ever tries to
+    decode it (`src/rpc/util.cpp:117-124`, at
+    bitcoin/bitcoin@9be056a8a7).
+    """
+    node = a_tx_lookup_node()
+    with pytest.raises(RpcError) as raised:
+        get_raw_transaction(node, _CONN, ["aabb"])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert (
+        raised.value.message == "parameter 1 must be of length 64 (not 4, for 'aabb')"
+    )
+
+
 def test_a_blockhash_of_the_wrong_json_type_is_named() -> None:
     """`getrawtransaction`'s blockhash of the wrong JSON type is named."""
     node = a_tx_lookup_node()
@@ -1322,6 +1697,17 @@ def test_a_blockhash_that_is_not_hex_is_named_back_to_the_client() -> None:
         get_raw_transaction(node, _CONN, ["11" * 32, False, "zz"])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
     assert "zz" in raised.value.message
+
+
+def test_a_blockhash_of_the_wrong_length_is_refused_before_it_is_decoded() -> None:
+    """A valid-hex, wrong-length `blockhash` names "parameter 3", Core's own."""
+    node = a_tx_lookup_node()
+    with pytest.raises(RpcError) as raised:
+        get_raw_transaction(node, _CONN, ["11" * 32, False, "aabb"])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert (
+        raised.value.message == "parameter 3 must be of length 64 (not 4, for 'aabb')"
+    )
 
 
 def test_a_null_blockhash_is_the_same_as_none_given() -> None:
@@ -2281,6 +2667,38 @@ def test_a_null_block_hash_is_the_same_wrong_type_as_any_other() -> None:
     )
 
 
+def test_get_block_header_refuses_a_hash_that_is_not_hexadecimal() -> None:
+    """A right-length, non-hex `hash` is Core's own `ParseHashV` text."""
+    chain = generate_random_header_chain(1, RegTest().genesis.hash)
+    node = cast(
+        "Node",
+        SimpleNamespace(chainstate=SimpleNamespace(block_index=a_block_index(chain))),
+    )
+    not_hex = "z" * 64
+    with pytest.raises(RpcError) as raised:
+        get_block_header(node, _CONN, [not_hex])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert raised.value.message == f"hash must be hexadecimal string (not '{not_hex}')"
+
+
+def test_get_block_header_refuses_a_hash_of_the_wrong_length() -> None:
+    """A valid-hex, wrong-length `hash` is refused before it is decoded.
+
+    `ParseHashV` checks the string's own length before it ever tries to
+    decode it (`src/rpc/util.cpp:117-124`, at
+    bitcoin/bitcoin@9be056a8a7).
+    """
+    chain = generate_random_header_chain(1, RegTest().genesis.hash)
+    node = cast(
+        "Node",
+        SimpleNamespace(chainstate=SimpleNamespace(block_index=a_block_index(chain))),
+    )
+    with pytest.raises(RpcError) as raised:
+        get_block_header(node, _CONN, ["aabb"])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert raised.value.message == "hash must be of length 64 (not 4, for 'aabb')"
+
+
 def test_two_wrongly_typed_arguments_are_both_named_at_once() -> None:
     """ISS 1293: `getblockheader [1, "x"]` names both, as a real bitcoind does.
 
@@ -3120,13 +3538,13 @@ def test_addnode_onetry_dials_the_given_address_once() -> None:
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
-            p2p_manager=SimpleNamespace(connect=dialed.append),
+            p2p_manager=SimpleNamespace(
+                connect_host=lambda h, p: dialed.append((h, p))
+            ),
         ),
     )
     add_node(node, _CONN, ["127.0.0.1:9999", "onetry"])
-    assert len(dialed) == 1
-    assert dialed[0].network_id.name == "IPV4"
-    assert dialed[0].port == 9999
+    assert dialed == [("127.0.0.1", 9999)]
 
 
 def test_addnode_falls_back_to_the_chain_s_own_default_port() -> None:
@@ -3136,44 +3554,69 @@ def test_addnode_falls_back_to_the_chain_s_own_default_port() -> None:
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
-            p2p_manager=SimpleNamespace(connect=dialed.append),
+            p2p_manager=SimpleNamespace(
+                connect_host=lambda h, p: dialed.append((h, p))
+            ),
         ),
     )
     add_node(node, _CONN, ["127.0.0.1", "onetry"])
-    assert dialed[0].port == 18444
+    assert dialed == [("127.0.0.1", 18444)]
 
 
-def test_addnode_add_also_dials_once_rather_than_persisting() -> None:
-    """`addnode ... "add"` is accepted, and dialled the same as `onetry`.
+def test_addnode_add_persists_instead_of_dialling() -> None:
+    """`addnode ... "add"` grows the list `_open_added_peers` dials, ISS 1350.
 
-    This node keeps no added-node list distinct from `Config.addnode`'s
-    own startup tuple, so `add` does not persist across a later dial the
-    way Core's own `CConnman::AddNode` does -- the module-level comment
-    beside `_ADDNODE_COMMANDS` argues why dialling once and not raising
-    is the more faithful of the two shortfalls available.
+    `add` reaches `P2pManager.add_added_peer`, Core's own `AddNode`, and
+    schedules no dial of its own -- `_open_added_peers` is what picks a
+    newly-added peer up, on its own loop, the way Core's
+    `ThreadOpenAddedConnections` does.
     """
-    dialed: list[Any] = []
+    added: list[str] = []
+
+    def record_add(node_str: str) -> bool:
+        added.append(node_str)
+        return True
+
     node = cast(
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
-            p2p_manager=SimpleNamespace(connect=dialed.append),
+            p2p_manager=SimpleNamespace(
+                add_added_peer=record_add,
+                connect_host=lambda h, p: pytest.fail("add must not dial"),
+            ),
         ),
     )
     add_node(node, _CONN, ["127.0.0.1:9999", "add"])
-    assert len(dialed) == 1
+    assert added == ["127.0.0.1:9999"]
+
+
+def test_addnode_add_refuses_a_duplicate() -> None:
+    """`add_added_peer` answering `False` is Core's own already-added error."""
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chain=SimpleNamespace(port=18444),
+            p2p_manager=SimpleNamespace(add_added_peer=lambda node_str: False),
+        ),
+    )
+    with pytest.raises(RpcError) as raised:
+        add_node(node, _CONN, ["127.0.0.1:9999", "add"])
+    assert raised.value.code == RPCErrorCode.CLIENT_NODE_ALREADY_ADDED
+    assert raised.value.message == "Error: Node already added"
 
 
 def test_addnode_remove_answers_not_added_every_time() -> None:
     """`addnode ... "remove"` is Core's own `RPC_CLIENT_NODE_NOT_ADDED`.
 
-    There is nothing this node ever added by RPC for it to find.
+    `remove_added_peer` answering `False`, there being nothing by that
+    name in the list.
     """
     node = cast(
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
-            p2p_manager=SimpleNamespace(connect=lambda _address: None),
+            p2p_manager=SimpleNamespace(remove_added_peer=lambda node_str: False),
         ),
     )
     with pytest.raises(RpcError) as raised:
@@ -3184,13 +3627,32 @@ def test_addnode_remove_answers_not_added_every_time() -> None:
     )
 
 
+def test_addnode_remove_succeeds_once_added() -> None:
+    """`remove_added_peer` answering `True` raises nothing, ISS 1350."""
+    removed: list[str] = []
+
+    def record_remove(node_str: str) -> bool:
+        removed.append(node_str)
+        return True
+
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chain=SimpleNamespace(port=18444),
+            p2p_manager=SimpleNamespace(remove_added_peer=record_remove),
+        ),
+    )
+    add_node(node, _CONN, ["127.0.0.1:9999", "remove"])
+    assert removed == ["127.0.0.1:9999"]
+
+
 def test_addnode_refuses_an_empty_node_address() -> None:
     """Core's own exact text for a blank `node` argument."""
     node = cast(
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
-            p2p_manager=SimpleNamespace(connect=lambda _address: None),
+            p2p_manager=SimpleNamespace(connect_host=lambda host, port: None),
         ),
     )
     with pytest.raises(RpcError) as raised:
@@ -3205,7 +3667,7 @@ def test_addnode_refuses_an_unknown_command() -> None:
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
-            p2p_manager=SimpleNamespace(connect=lambda _address: None),
+            p2p_manager=SimpleNamespace(connect_host=lambda host, port: None),
         ),
     )
     with pytest.raises(RpcError) as raised:
@@ -3220,7 +3682,7 @@ def test_addnode_with_no_arguments_is_answered_with_the_usage() -> None:
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
-            p2p_manager=SimpleNamespace(connect=lambda _address: None),
+            p2p_manager=SimpleNamespace(connect_host=lambda host, port: None),
         ),
     )
     with pytest.raises(RpcError) as raised:
@@ -3229,22 +3691,24 @@ def test_addnode_with_no_arguments_is_answered_with_the_usage() -> None:
     assert raised.value.message == HELP_TEXT["addnode"]
 
 
-def test_addnode_refuses_a_hostname() -> None:
-    """A hostname, rather than a literal IP, is refused: no DNS resolve here.
+def test_addnode_onetry_takes_a_hostname() -> None:
+    """A hostname, rather than a literal IP, is dialled too (ISS 1264).
 
-    The same refusal `Config.addnode`'s own `_resolve_peers` already
-    gives `-addnode`'s spec, and for the identical reason.
+    `connect_host` resolves it on `P2pManager`'s own loop; this node's
+    synchronous RPC path splits the host from the port and nothing else.
     """
+    dialed: list[Any] = []
     node = cast(
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
-            p2p_manager=SimpleNamespace(connect=lambda _address: None),
+            p2p_manager=SimpleNamespace(
+                connect_host=lambda h, p: dialed.append((h, p))
+            ),
         ),
     )
-    with pytest.raises(RpcError) as raised:
-        add_node(node, _CONN, ["example.com:9999", "onetry"])
-    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    add_node(node, _CONN, ["example.com:9999", "onetry"])
+    assert dialed == [("example.com", 9999)]
 
 
 def test_addnode_refuses_a_port_int_would_read() -> None:
@@ -3254,7 +3718,9 @@ def test_addnode_refuses_a_port_int_would_read() -> None:
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
-            p2p_manager=SimpleNamespace(connect=dialled.append),
+            p2p_manager=SimpleNamespace(
+                connect_host=lambda h, p: dialled.append((h, p))
+            ),
         ),
     )
     with pytest.raises(RpcError) as raised:
@@ -3269,7 +3735,7 @@ def test_addnode_type_checks_node_and_command() -> None:
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
-            p2p_manager=SimpleNamespace(connect=lambda _address: None),
+            p2p_manager=SimpleNamespace(connect_host=lambda host, port: None),
         ),
     )
     with pytest.raises(RpcError) as raised:
@@ -3665,24 +4131,152 @@ def test_get_block_refuses_a_hash_this_node_has_never_indexed(
     assert raised.value.message == "Block not found"
 
 
-def test_get_block_refuses_every_verbosity_but_zero(
+def test_get_block_refuses_verbosity_past_2(
     regtest_node: Callable[..., Node],
 ) -> None:
-    """Verbosity 1 (Core's own default), `true`, and 2 all refuse."""
+    """Verbosity 3 (Core's own prevout detail) and past it are still refused.
+
+    Verbosity 1 and 2 are answered now; the tests below cover them.
+    """
     node = regtest_node()
     chain = generate_random_chain(1, node.chain.genesis.hash)
     connect(node, chain)
     block_hash_hex = chain[0].header.hash.hex()
 
-    for params in (
-        [block_hash_hex],
-        [block_hash_hex, True],
-        [block_hash_hex, 1],
-        [block_hash_hex, 2],
-    ):
+    for params in ([block_hash_hex, 3], [block_hash_hex, -1]):
         with pytest.raises(RpcError) as raised:
             get_block(node, _CONN, params)
         assert raised.value.code == RPCErrorCode.MISC_ERROR
+        assert raised.value.message == (
+            "getblock: only verbosity 0, 1 and 2 are served here"
+        )
+
+
+def test_get_block_verbosity_1_answers_the_header_plus_size_and_txids(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Verbosity 1, Core's own default, answers the header, size and txids."""
+    node = regtest_node()
+    chain = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, chain)
+    block = chain[0]
+
+    for params in ([block.header.hash.hex()], [block.header.hash.hex(), True]):
+        answer = get_block(node, _CONN, params)
+        assert isinstance(answer, dict)
+        assert answer["hash"] == block.header.hash
+        assert answer["height"] == 1
+        assert answer["confirmations"] == 2
+        assert answer["strippedsize"] == block.stripped_size
+        assert answer["size"] == block.size
+        assert answer["weight"] == block.weight
+        assert answer["nTx"] == len(block.transactions)
+        assert answer["tx"] == [tx.id for tx in block.transactions]
+        assert answer["previousblockhash"] == block.header.previous_block_hash
+        assert answer["nextblockhash"] == chain[1].header.hash
+        assert answer["coinbase_tx"]["coinbase"] == (
+            block.transactions[0].vin[0].script_sig.hex()
+        )
+        assert answer["coinbase_tx"]["version"] == block.transactions[0].version
+
+
+def test_get_block_verbosity_2_answers_decoded_transactions(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Verbosity 2 answers `tx` as decoded objects, not a bare txid array."""
+    node = regtest_node()
+    chain = generate_random_chain(1, node.chain.genesis.hash)
+    connect(node, chain)
+    block = chain[0]
+
+    answer = get_block(node, _CONN, [block.header.hash.hex(), 2])
+
+    assert isinstance(answer, dict)
+    entries = answer["tx"]
+    assert len(entries) == len(block.transactions)
+    for entry, tx in zip(entries, block.transactions, strict=True):
+        assert entry["txid"] == tx.id.hex()
+        assert entry["hex"] == tx.serialize(include_witness=True).hex()
+        assert "fee" not in entry
+
+
+def test_get_block_verbosity_1_answers_the_coinbase_witness(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A segwit coinbase's own witness stack answers `coinbase_tx["witness"]`.
+
+    `coinbaseTxToJSON`'s own `CHECK_NONFATAL(witness_stack.size() == 1)`
+    (`src/rpc/blockchain.cpp:195`, at bitcoin/bitcoin@9be056a8a7): the
+    coinbase's own BIP141 nonce, once the block itself commits to one.
+    """
+    node = regtest_node()
+    block = generate_segwit_block()
+    block_index = node.chainstate.block_index
+    block_index.add_headers([block.header])
+    node.block_db.add_block(block)
+    block_index.set_downloaded(block.header.hash)
+
+    answer = get_block(node, _CONN, [block.header.hash.hex(), 1])
+
+    assert isinstance(answer, dict)
+    nonce = block.transactions[0].vin[0].script_witness.stack[0]
+    assert answer["coinbase_tx"]["witness"] == nonce.hex()
+
+
+def test_get_block_genesis_has_no_previousblockhash(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Genesis, height 0, is the one block missing `previousblockhash` here."""
+    node = regtest_node()
+
+    answer = get_block(node, _CONN, [node.chain.genesis.hash.hex(), 1])
+
+    assert isinstance(answer, dict)
+    assert answer["height"] == 0
+    assert "previousblockhash" not in answer
+
+
+def test_get_block_refuses_a_fractional_verbosity(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A JSON number with a decimal point fails `getInt<int>()`, Core's way."""
+    node = regtest_node()
+    chain = generate_random_chain(1, node.chain.genesis.hash)
+    connect(node, chain)
+
+    with pytest.raises(RpcError) as raised:
+        get_block(node, _CONN, [chain[0].header.hash.hex(), 1.5])
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
+    assert raised.value.message == "JSON integer out of range"
+
+
+def test_get_block_refuses_a_verbosity_of_the_wrong_json_type(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A `verbosity` that is neither bool, int nor float is named, not read."""
+    node = regtest_node()
+    chain = generate_random_chain(1, node.chain.genesis.hash)
+    connect(node, chain)
+
+    with pytest.raises(RpcError) as raised:
+        get_block(node, _CONN, [chain[0].header.hash.hex(), "1"])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+
+
+def test_get_block_verbosity_false_and_2_are_not_confused_with_each_other(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """`false` is still verbosity 0, `ParseVerbosity`'s own bool degrading."""
+    node = regtest_node()
+    chain = generate_random_chain(1, node.chain.genesis.hash)
+    connect(node, chain)
+    block_hash_hex = chain[0].header.hash.hex()
+
+    hex_answer = get_block(node, _CONN, [block_hash_hex, False])
+    json_answer = get_block(node, _CONN, [block_hash_hex, 2])
+
+    assert hex_answer == chain[0].serialize(check_validity=False).hex()
+    assert isinstance(json_answer, dict)
 
 
 def test_get_block_refuses_a_block_this_node_has_pruned(
@@ -3726,14 +4320,27 @@ def test_get_block_refuses_a_blockhash_of_the_wrong_json_type(
 def test_get_block_refuses_a_blockhash_that_is_not_hexadecimal(
     regtest_node: Callable[..., Node],
 ) -> None:
-    """A non-hex `blockhash` is Core's own `ParseHashV` text."""
+    """A right-length, non-hex `blockhash` is Core's own `ParseHashV` text."""
     node = regtest_node()
+    not_hex = "z" * 64
     with pytest.raises(RpcError) as raised:
-        get_block(node, _CONN, ["not hex", 0])
+        get_block(node, _CONN, [not_hex, 0])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
     assert (
-        raised.value.message == "blockhash must be hexadecimal string (not 'not hex')"
+        raised.value.message
+        == f"blockhash must be hexadecimal string (not '{not_hex}')"
     )
+
+
+def test_get_block_refuses_a_blockhash_of_the_wrong_length(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A valid-hex, wrong-length `blockhash` is refused before it is decoded."""
+    node = regtest_node()
+    with pytest.raises(RpcError) as raised:
+        get_block(node, _CONN, ["aabb", 0])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert raised.value.message == "blockhash must be of length 64 (not 4, for 'aabb')"
 
 
 def test_get_block_refuses_a_header_only_block_as_not_fully_downloaded(
@@ -3754,6 +4361,129 @@ def test_get_block_refuses_a_header_only_block_as_not_fully_downloaded(
         get_block(node, _CONN, [header.hash.hex(), 0])
     assert raised.value.code == RPCErrorCode.MISC_ERROR
     assert raised.value.message == "Block not available (not fully downloaded)"
+
+
+def test_get_chain_tips_answers_only_the_active_tip_on_a_single_chain(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """With no fork, the one tip is the active chain's own, `branchlen: 0`."""
+    node = regtest_node()
+    chain = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, chain)
+
+    tips = get_chain_tips(node, _CONN, [])
+
+    assert len(tips) == 1
+    assert tips[0] == {
+        "height": 2,
+        "hash": chain[-1].header.hash,
+        "branchlen": 0,
+        "status": "active",
+    }
+
+
+def test_get_chain_tips_answers_a_headers_only_fork(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A header-only fork's tip is `headers-only`, `branchlen` its length."""
+    node = regtest_node()
+    chain = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, chain)
+    fork = generate_random_header_chain(2, chain[0].header.hash, chain[0].header.time)
+    node.chainstate.block_index.add_headers(fork)
+
+    tips = get_chain_tips(node, _CONN, [])
+
+    by_hash = {tip["hash"]: tip for tip in tips}
+    assert len(tips) == 2
+    fork_tip = by_hash[fork[-1].hash]
+    assert fork_tip["status"] == "headers-only"
+    assert fork_tip["branchlen"] == 2
+    assert fork_tip["height"] == 3
+    assert by_hash[chain[-1].header.hash]["status"] == "active"
+
+
+def test_get_chain_tips_answers_a_reorged_away_fork(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A downloaded fork `BlockStatus.valid` marks is `valid-fork`.
+
+    `_finalize_fork`'s own `to_remove` loop is the only place that sets
+    that status, on a block a reorg has dropped from the active chain
+    after it was itself once connected; `set_status` reaches the same
+    state directly, the same shortcut
+    `tests/unit/p2p/callbacks_test.py`'s own reorg tests already take.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, chain)
+    height = len(chain) + 1
+    block = build_block(
+        chain[-1].header.hash, [generate_coinbase(height=height)], height
+    )
+    block_index = node.chainstate.block_index
+    block_index.add_headers([block.header])
+    node.block_db.add_block(block)
+    block_index.set_downloaded(block.header.hash)
+    block_index.set_status(block.header.hash, BlockStatus.valid)
+
+    tips = get_chain_tips(node, _CONN, [])
+
+    by_hash = {tip["hash"]: tip for tip in tips}
+    assert by_hash[block.header.hash]["status"] == "valid-fork"
+    assert by_hash[block.header.hash]["branchlen"] == 1
+
+
+def test_get_chain_tips_answers_a_downloaded_never_activated_fork(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A block whose body is downloaded but never connected is `valid-headers`.
+
+    Never offered to `update_chain` at all, so it stays `valid_header` in
+    `BlockIndex` -- `set_downloaded` alone is enough for `getchaintips` to
+    tell it apart from a header-only tip. Built extending the active
+    chain's own tip, at its real next height, rather than a second,
+    independently-dated fork off a block already connected: two chains
+    built by `generate_random_chain` from two different starting hashes
+    date their own blocks the identical way relative to each one's own
+    start, so a second one forking mid-chain collides on the parent's
+    own timestamp instead of following it.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, chain)
+    height = len(chain) + 1
+    block = build_block(
+        chain[-1].header.hash, [generate_coinbase(height=height)], height
+    )
+    block_index = node.chainstate.block_index
+    block_index.add_headers([block.header])
+    node.block_db.add_block(block)
+    block_index.set_downloaded(block.header.hash)
+
+    tips = get_chain_tips(node, _CONN, [])
+
+    by_hash = {tip["hash"]: tip for tip in tips}
+    assert by_hash[block.header.hash]["status"] == "valid-headers"
+    assert by_hash[block.header.hash]["branchlen"] == 1
+
+
+def test_get_chain_tips_answers_an_invalid_fork(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A fork `BlockIndex.invalidate` has marked answers `invalid`."""
+    node = regtest_node()
+    chain = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, chain)
+    fork = generate_random_header_chain(1, chain[0].header.hash, chain[0].header.time)
+    block_index = node.chainstate.block_index
+    block_index.add_headers(fork)
+    block_index.invalidate(fork[0].hash)
+
+    tips = get_chain_tips(node, _CONN, [])
+
+    by_hash = {tip["hash"]: tip for tip in tips}
+    assert by_hash[fork[0].hash]["status"] == "invalid"
 
 
 def a_block_claiming_an_easier_target_than_the_chain_allows(block: Block) -> Block:
@@ -4420,6 +5150,343 @@ def test_a_feeler_has_no_tx_relay() -> None:
     peer = a_peer(inbound=False, automatic=True, feeler=True, relay=True)
     (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
     assert info["relaytxes"] is False
+
+
+def a_high_fee_acceptance(node: Any, transaction: Any) -> MempoolAcceptance:
+    """Answer a tiny, cheap transaction paying far above the default cap.
+
+    `vsize=200`: the default `maxfeerate`, 0.1 BTC/kvB
+    (`cb._DEFAULT_MAX_RAW_TX_FEE_RATE`, 10_000_000 sat/kvB), caps a
+    200-vbyte transaction's fee at 2_000_000 sat -- `fee=3_000_000` is
+    comfortably over it.
+    """
+    return MempoolAcceptance(fee=3_000_000, vsize=200)
+
+
+def test_test_mempool_accept_default_maxfeerate_refuses_a_high_fee(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`testmempoolaccept` answers `max-fee-exceeded`, no `maxfeerate` given.
+
+    bitcoind v31.1's own default `maxfeerate` is 0.1 BTC/kvB
+    (`DEFAULT_MAX_RAW_TX_FEE_RATE`). btclib-org/btclib-node#1371
+    """
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", a_high_fee_acceptance)
+    (result,) = mempool_accept(
+        a_node(), _CONN, [[a_tx().serialize(include_witness=True).hex()]]
+    )
+    assert result["allowed"] is False
+    assert result["reject-reason"] == "max-fee-exceeded"
+    assert "vsize" not in result
+    assert "reject-details" not in result
+
+
+def test_test_mempool_accept_maxfeerate_zero_accepts_any_fee(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`maxfeerate: 0` is Core's own "accept any fee rate", not a zero cap."""
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", a_high_fee_acceptance)
+    (result,) = mempool_accept(
+        a_node(), _CONN, [[a_tx().serialize(include_witness=True).hex()], 0]
+    )
+    assert result["allowed"] is True
+    assert result["vsize"] == 200
+
+
+def test_test_mempool_accept_a_lower_maxfeerate_still_refuses_a_cheaper_fee(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lower `maxfeerate` catches a fee the default would have cleared."""
+
+    def cheap(node: Any, transaction: Any) -> MempoolAcceptance:
+        return MempoolAcceptance(fee=500_000, vsize=200)
+
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", cheap)
+    # 500_000 sat / 200 vbyte * 1000 = 2_500_000 sat/kvB: under the
+    # default cap (10_000_000 sat/kvB) and over a maxfeerate of
+    # 0.00001 BTC/kvB (1_000 sat/kvB)
+    (result,) = mempool_accept(
+        a_node(), _CONN, [[a_tx().serialize(include_witness=True).hex()], "0.00001"]
+    )
+    assert result["allowed"] is False
+    assert result["reject-reason"] == "max-fee-exceeded"
+
+
+def test_test_mempool_accept_maxfeerate_at_1btc_is_refused() -> None:
+    """`maxfeerate` of 1 BTC/kvB or more is refused, Core's own words."""
+    with pytest.raises(RpcError) as raised:
+        mempool_accept(
+            a_node(), _CONN, [[a_tx().serialize(include_witness=True).hex()], 1]
+        )
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert raised.value.message == (
+        "Fee rates larger than or equal to 1BTC/kvB are not accepted"
+    )
+
+
+def test_test_mempool_accept_maxfeerate_of_the_wrong_json_type_is_refused() -> None:
+    """`maxfeerate` neither a number nor a string is Core's own `TYPE_ERROR`."""
+    with pytest.raises(RpcError) as raised:
+        mempool_accept(
+            a_node(), _CONN, [[a_tx().serialize(include_witness=True).hex()], [5]]
+        )
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert raised.value.message == "Amount is not a number or string"
+
+
+def test_send_raw_transaction_default_maxfeerate_refuses_a_high_fee(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`sendrawtransaction` answers Core's own `MAX_FEE_EXCEEDED` message."""
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", a_high_fee_acceptance)
+    mempool = Mempool(Logger(debug=True))
+    broadcast: list[Tx] = []
+    node = a_node(mempool=mempool)
+    node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: broadcast.append(tx)
+    tx = a_tx()
+
+    with pytest.raises(RpcError) as raised:
+        send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
+    assert raised.value.code == RPCErrorCode.VERIFY_ERROR
+    assert raised.value.message == (
+        "Fee exceeds maximum configured by user (e.g. -maxtxfee, maxfeerate)"
+    )
+    assert not mempool.contains_tx(tx)
+    assert broadcast == []
+
+
+def test_send_raw_transaction_a_maxfeerate_param_allows_a_higher_default_fee(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A higher `maxfeerate` clears a fee the default would have refused."""
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", a_high_fee_acceptance)
+    mempool = Mempool(Logger(debug=True))
+    broadcast: list[Tx] = []
+    node = a_node(mempool=mempool)
+    node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: broadcast.append(tx)
+    tx = a_tx()
+
+    # 3_000_000 sat / 200 vbyte * 1000 = 15_000_000 sat/kvB: a maxfeerate
+    # of 0.16 BTC/kvB (16_000_000 sat/kvB) clears it
+    txid = send_raw_transaction(
+        node, _CONN, [tx.serialize(include_witness=True).hex(), "0.16"]
+    )
+    assert txid == tx.id.hex()
+    assert mempool.contains_tx(tx)
+    assert broadcast == [tx]
+
+
+def a_burn_tx(tag: bytes = b"\x33", value: int = 1_000) -> Tx:
+    """Build a transaction paying one `OP_RETURN` output of `value` satoshi."""
+    return Tx(
+        version=1,
+        lock_time=0,
+        vin=[
+            TxIn(
+                prev_out=OutPoint(tag * 32, 0),
+                script_sig=script.serialize([tag * 8]),
+                sequence=0xFFFFFFFF,
+            )
+        ],
+        vout=[TxOut(value=value, script_pub_key=script.serialize(["OP_RETURN"]))],
+    )
+
+
+def test_send_raw_transaction_default_maxburnamount_refuses_an_op_return_value() -> (
+    None
+):
+    """`sendrawtransaction` refuses a burn, Core's own default cap being 0."""
+    tx = a_burn_tx()
+    node = a_node()
+    with pytest.raises(RpcError) as raised:
+        send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
+    assert raised.value.code == RPCErrorCode.VERIFY_ERROR
+    assert raised.value.message == (
+        "Unspendable output exceeds maximum configured by user (maxburnamount)"
+    )
+
+
+def test_send_raw_transaction_a_maxburnamount_param_allows_a_smaller_burn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `maxburnamount` at or above the burned value clears the refusal."""
+    monkeypatch.setattr(
+        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, 100)
+    )
+    mempool = Mempool(Logger(debug=True))
+    broadcast: list[Tx] = []
+    node = a_node(mempool=mempool)
+    node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: broadcast.append(tx)
+    tx = a_burn_tx(value=1_000)
+
+    txid = send_raw_transaction(
+        node, _CONN, [tx.serialize(include_witness=True).hex(), None, "0.00001000"]
+    )
+    assert txid == tx.id.hex()
+    assert mempool.contains_tx(tx)
+
+
+def test_send_raw_transaction_maxburnamount_not_a_decimal_is_invalid_amount() -> None:
+    """A `maxburnamount` `Decimal` can't parse is Core's "Invalid amount"."""
+    tx = a_tx()
+    with pytest.raises(RpcError) as raised:
+        send_raw_transaction(
+            a_node(), _CONN, [tx.serialize(include_witness=True).hex(), None, "abc"]
+        )
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert raised.value.message == "Invalid amount"
+
+
+def test_send_raw_transaction_maxburnamount_infinite_is_invalid_amount() -> None:
+    """A non-finite `maxburnamount` is Core's own "Invalid amount"."""
+    tx = a_tx()
+    with pytest.raises(RpcError) as raised:
+        send_raw_transaction(
+            a_node(),
+            _CONN,
+            [tx.serialize(include_witness=True).hex(), None, "Infinity"],
+        )
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert raised.value.message == "Invalid amount"
+
+
+def test_send_raw_transaction_maxburnamount_finer_than_a_satoshi_is_invalid() -> None:
+    """More than eight decimals leaves a remainder: Core's "Invalid amount"."""
+    tx = a_tx()
+    with pytest.raises(RpcError) as raised:
+        send_raw_transaction(
+            a_node(),
+            _CONN,
+            [tx.serialize(include_witness=True).hex(), None, "0.123456789"],
+        )
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert raised.value.message == "Invalid amount"
+
+
+def test_send_raw_transaction_maxburnamount_negative_is_out_of_range() -> None:
+    """A negative `maxburnamount` is Core's own `MoneyRange` refusal."""
+    tx = a_tx()
+    with pytest.raises(RpcError) as raised:
+        send_raw_transaction(
+            a_node(), _CONN, [tx.serialize(include_witness=True).hex(), None, "-1"]
+        )
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert raised.value.message == "Amount out of range"
+
+
+def test_send_raw_transaction_refuses_a_confirmed_transaction_in_core_s_words() -> None:
+    """A transaction whose own output is already in the UTXO set is `-27`.
+
+    bitcoind v31.1 answers a resubmitted, already-confirmed transaction
+    `RPC_VERIFY_ALREADY_IN_UTXO_SET` (-27), "Transaction outputs already
+    in utxo set" -- not `RPC_VERIFY_ERROR` (-25) "Missing prevouts", the
+    prevout-lookup failure a confirmed transaction's own *inputs*, spent
+    when it confirmed, would otherwise raise first. btclib-org/btclib-node#1373
+    """
+    tx = a_tx()
+    outpoint = OutPoint(tx.id, 0, check_validity=False).serialize(check_validity=False)
+    node = a_node(confirmed_outpoints=frozenset({outpoint}))
+    with pytest.raises(RpcError) as raised:
+        send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
+    assert raised.value.code == RPCErrorCode.VERIFY_ALREADY_IN_UTXO_SET
+    assert raised.value.message == "Transaction outputs already in utxo set"
+
+
+def test_send_raw_transaction_marks_a_kept_transaction_unbroadcast(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transaction `sendrawtransaction` keeps enters the unbroadcast set.
+
+    Core's own `AddUnbroadcastTx`, called only for a transaction
+    submitted this way -- never for one a peer handed this node over the
+    wire. btclib-org/btclib-node#1421
+    """
+    monkeypatch.setattr(
+        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, 100)
+    )
+    mempool = Mempool(Logger(debug=True))
+    node = a_node(mempool=mempool)
+    node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: None
+    tx = a_tx()
+
+    send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
+    assert mempool.unbroadcast == {tx.id}
+
+
+def test_get_mempool_info_answers_unbroadcastcount() -> None:
+    """`getmempoolinfo`'s `unbroadcastcount` is `Mempool.unbroadcast`'s size."""
+    mempool = Mempool(Logger(debug=True))
+    held = a_tx()
+    mempool.add_tx(held, 0)
+    mempool.mark_broadcast_locally(held.id)
+    other = a_tx(b"\x44")
+    mempool.add_tx(other, 0)
+    node = a_node(mempool=mempool)
+    assert get_mempool_info(node, _CONN, [])["unbroadcastcount"] == 1
+
+
+def test_get_mempool_entry_refuses_a_txid_not_held() -> None:
+    """`getmempoolentry` for a txid this mempool lacks is Core's own `-5`."""
+    node = a_node(mempool=Mempool(Logger(debug=True)))
+    with pytest.raises(RpcError) as raised:
+        get_mempool_entry(node, _CONN, [("00" * 32)])
+    assert raised.value.code == RPCErrorCode.INVALID_ADDRESS_OR_KEY
+    assert raised.value.message == "Transaction not in mempool"
+
+
+def test_get_mempool_entry_with_no_params_is_core_s_own_help_shape() -> None:
+    """No `txid` at all answers `RPC_MISC_ERROR` with the usage string."""
+    with pytest.raises(RpcError) as raised:
+        get_mempool_entry(a_node(), _CONN, [])
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
+    assert raised.value.message == 'getmempoolentry "txid"'
+
+
+def test_get_mempool_entry_a_non_string_txid_is_a_type_error() -> None:
+    """A `txid` that is not a JSON string is named as `type_error` names it."""
+    with pytest.raises(RpcError) as raised:
+        get_mempool_entry(a_node(), _CONN, [5])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+
+
+def test_get_mempool_entry_a_non_hex_txid_is_invalid_parameter() -> None:
+    """A `txid` that is not valid hex is `ParseHashV`'s own refusal."""
+    with pytest.raises(RpcError) as raised:
+        get_mempool_entry(a_node(), _CONN, ["not-hex"])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert raised.value.message == "txid must be hexadecimal string (not 'not-hex')"
+
+
+def test_get_mempool_entry_answers_core_s_own_shape() -> None:
+    """`getmempoolentry` answers vsize, weight, fees, ancestors and descendants.
+
+    `parent` <- `tx` <- `child`, one held entry each, `tx` in the middle
+    read back. btclib-org/btclib-node#1397
+    """
+    mempool = Mempool(Logger(debug=True))
+    parent = generate_random_transaction()
+    tx = generate_random_transaction(parent.id)
+    child = generate_random_transaction(tx.id)
+    mempool.add_tx(parent, 1_000, height=100)
+    mempool.add_tx(tx, 2_000, height=100)
+    mempool.add_tx(child, 3_000, height=100)
+    node = a_node(mempool=mempool)
+
+    entry = get_mempool_entry(node, _CONN, [tx.id.hex()])
+    assert entry["vsize"] == mempool.vsizes[tx.hash]
+    assert entry["weight"] == tx.weight
+    assert entry["height"] == 100
+    assert entry["wtxid"] == tx.hash
+    assert entry["ancestorcount"] == 2
+    assert entry["descendantcount"] == 2
+    assert entry["fees"]["base"].text == "0.00002000"
+    assert entry["fees"]["modified"].text == "0.00002000"
+    assert entry["fees"]["ancestor"].text == "0.00003000"
+    assert entry["fees"]["descendant"].text == "0.00005000"
+    assert entry["depends"] == [parent.id]
+    assert entry["spentby"] == [child.id]
+    assert entry["bip125-replaceable"] is False
+    assert entry["unbroadcast"] is False
 
 
 def test_help_rpc_answers_through_answer_help() -> None:
