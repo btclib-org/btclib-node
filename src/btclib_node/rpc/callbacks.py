@@ -20,15 +20,19 @@ from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import RPCErrorCode, chain_from_network
 from btclib.block import Block, median_time_past
+from btclib.descriptors import add_checksum, from_address
 from btclib.exceptions import BTClibException
 from btclib.fee import FeeRate, fee_from_vsize
 from btclib.p2p.address import ServiceFlags
 from btclib.p2p.limits import PROTOCOL_VERSION
+from btclib.script.script import script_to_dict
+from btclib.script.script_pub_key import ScriptPubKey, p2ms_m_and_keys, type_and_payload
 from btclib.script.spendability import is_unspendable
 from btclib.tx import Tx
 from btclib.tx.out_point import OutPoint
 
-from btclib_node.chainstate.block_index import block_time
+from btclib_node.block_db import Coin
+from btclib_node.chainstate.block_index import BlockStatus, block_time
 from btclib_node.config import split_host_port
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, USER_AGENT
 from btclib_node.exceptions import MissingPrevoutError, TxRejectedError
@@ -38,10 +42,12 @@ from btclib_node.main import (
     parent_lookup,
     passes_check_block,
     prune_up_to_height,
+    update_chain,
     verify_mempool_acceptance,
 )
 from btclib_node.p2p.address import ip_and_port, peer_address
 from btclib_node.p2p.banman import Subnet, is_valid_host, lookup_host, lookup_subnet
+from btclib_node.p2p.connection import local_services
 from btclib_node.p2p.eviction import Network, is_valid, net_class
 from btclib_node.rpc.connection import RawJSON
 from btclib_node.rpc.errors import (
@@ -55,6 +61,8 @@ from btclib_node.rpc.errors import (
 from btclib_node.rpc.help import HELP_TEXT, answer_help
 
 if TYPE_CHECKING:
+    from btclib.block import BlockHeader
+
     from btclib_node import Node
     from btclib_node.chainstate.block_index import BlockIndex
     from btclib_node.p2p.block_availability import BlockAvailability
@@ -73,6 +81,7 @@ __all__ = [
     "get_block_hash",
     "get_block_header",
     "get_blockchain_info",
+    "get_chain_tips",
     "get_connection_count",
     "get_mempool_entry",
     "get_mempool_info",
@@ -80,6 +89,7 @@ __all__ = [
     "get_peer_info",
     "get_raw_mempool",
     "get_raw_transaction",
+    "get_tx_out",
     "get_tx_out_set_info",
     "help_rpc",
     "list_banned",
@@ -412,6 +422,39 @@ def get_block_hash(node: Node, conn: RpcConnection, params: list[Any]) -> bytes:
     return active_chain[height]
 
 
+def _parse_hash_v(name: str, value: str) -> bytes:
+    """Answer Core's own `ParseHashV`: a hash from its own 64-character hex.
+
+    `ParseHashV` (`src/rpc/util.cpp:116-124`, at bitcoin/bitcoin@9be056a8a7)
+    checks the string's own length before it ever tries to decode it:
+    `uint256::FromHex` answers `nullopt` for anything but exactly 64
+    characters, so a wrong length is `"<name> must be of length 64 (not
+    <n>, for '<value>')"` even where every character is a valid hex
+    digit (`"aabb"`, four of them) -- and only a 64-character string
+    that still fails to decode reaches the second message, `"<name>
+    must be hexadecimal string (not '<value>')"`, `bytes.fromhex`'s own
+    `ValueError` standing in for `FromHex`'s own failure at that point.
+    `name` is each call site's own choice, matching Core's: `"hash"` for
+    `getblockheader`, `"blockhash"` for `getblock`, `"txid"` for
+    `gettxout` (`src/rpc/blockchain.cpp:678,828,1258`, same sha), and
+    `"parameter 1"`/`"parameter 3"` for `getrawtransaction`'s own two
+    hash arguments, Core's own names for them
+    (`src/rpc/rawtransaction.cpp:304,317`, same sha).
+    """
+    if len(value) != 64:  # noqa: PLR2004
+        raise RpcError(
+            RPCErrorCode.INVALID_PARAMETER,
+            f"{name} must be of length 64 (not {len(value)}, for '{value}')",
+        )
+    try:
+        return bytes.fromhex(value)
+    except ValueError as error:
+        raise RpcError(
+            RPCErrorCode.INVALID_PARAMETER,
+            f"{name} must be hexadecimal string (not '{value}')",
+        ) from error
+
+
 def get_block_header(
     node: Node, conn: RpcConnection, params: list[Any]
 ) -> dict[str, Any] | str:
@@ -466,14 +509,9 @@ def get_block_header(
 
     verbose = bool_param(params, 1, name="verbose", default=True)
 
-    try:
-        block_hash = bytes.fromhex(params[0])
-    except ValueError as error:
-        # ParseHashV, src/rpc/util.cpp:125, down to the sentence
-        raise RpcError(
-            RPCErrorCode.INVALID_PARAMETER,
-            f"hash must be hexadecimal string (not '{params[0]}')",
-        ) from error
+    # ParseHashV, src/rpc/util.cpp:116-124, "hash" -- getblockheader's own
+    # label, not getblock's "blockhash"
+    block_hash = _parse_hash_v("hash", params[0])
     try:
         block_info = block_index.get_block_info(block_hash)
     except KeyError as error:
@@ -570,55 +608,216 @@ def get_block_header(
     return out
 
 
-def get_block(node: Node, conn: RpcConnection, params: list[Any]) -> str:
-    """Answer `getblock` at verbosity 0: the block's own wire bytes, hex.
+def get_chain_tips(
+    node: Node, conn: RpcConnection, _: list[Any]
+) -> list[dict[str, Any]]:
+    """Answer `getchaintips`: every known tip, Core's own status vocabulary.
 
-    Core's own `getblock` (`rpc/blockchain.cpp:835-920`, at
-    bitcoin/bitcoin@bb529657) answers verbosity 1, 2 and 3 with a JSON
-    object too -- `blockToJSON`'s own field-by-field accounting, one
-    `TxVerbosity` deeper each time. `get_block_header` above is where
-    that same accounting already lives for a header alone; tf2's own
-    first family reads only the hex form (`btclib-org/btclib-node#1006`),
-    so that is the one verbosity served here. Verbosity 1 default
-    included: `ParseVerbosity` (`rpc/util.cpp:89-102`, same sha) answers
-    a missing argument with 1, and this refuses that default rather than
-    silently answering hex for it.
+    Core's own `getchaintips` (`rpc/blockchain.cpp:1556-1651`, at
+    bitcoin/bitcoin@9be056a8a7) finds a tip by one pass over every header
+    it knows, keeping the ones nothing else names as its own parent, and
+    always adds the active chain's own tip. `block_index.children` is
+    this index's own parent -> children table, already kept for
+    `BlockIndex.invalidate`'s own walk (that class's own comment on it),
+    so a tip here is exactly a hash with no entry in it, or an empty
+    one -- the active tip included, nothing ever being staged on top of
+    it until a block extends it, so it needs no separate case the way
+    Core's own `setTips.insert(active_chain.Tip())` does past its own
+    orphans-only loop.
+
+    `branchlen` is the fork's own length (`CChain::FindFork`'s height
+    difference, `:1618`) -- `BlockIndex.get_fork_details` already
+    returns that same branch, oldest first, for a header not on
+    `active_chain`, and its own length is this call's `branchlen`; the
+    active tip's own fork is empty by definition, so it is answered `0`
+    without calling that method at all.
+
+    `status`, in Core's own priority order (`:1622-1639`): `"active"`
+    for the chain's own tip; `"invalid"` for a tip `BlockStatus.invalid`
+    already marks, itself or an ancestor, `invalidate` above already
+    propagating that mark down every child rather than leaving it for a
+    walk here; `"headers-only"` where the fork's own blocks are not
+    every one downloaded (Core's own `HaveNumChainTxs`, which needs the
+    whole branch's data and not merely this tip's -- `_branch_is_downloaded`'s
+    own reasoning, inlined here rather than called, since its own fork
+    is this call's own `fork` already); `"valid-fork"` for
+    `BlockStatus.valid`, the one status `_finalize_fork`'s own
+    `to_remove` loop sets, for a block that was connected once and a
+    reorg has since dropped (Core's `IsValid(BLOCK_VALID_SCRIPTS)`); and
+    `"valid-headers"` for a fully downloaded `BlockStatus.valid_header`
+    that never was (Core's `IsValid(BLOCK_VALID_TREE)`) -- the one status
+    left once the other four are ruled out, since every header this
+    index carries already passed `_validate_header_batch`'s own
+    contextual checks, which is what Core's own final "unknown" case
+    answers a status below that nothing indexed here ever reaches.
+    """
+    block_index = node.chainstate.block_index
+    active_chain = block_index.active_chain
+    active_tip = active_chain[-1]
+    tips = [h for h in block_index.header_dict if not block_index.children.get(h)]
+
+    out: list[dict[str, Any]] = []
+    for tip_hash in tips:
+        block_info = block_index.get_block_info(tip_hash)
+        entry: dict[str, Any] = {"height": block_info.index, "hash": tip_hash}
+        if tip_hash == active_tip:
+            entry["branchlen"] = 0
+            entry["status"] = "active"
+        else:
+            fork, _tail = block_index.get_fork_details(tip_hash)
+            entry["branchlen"] = len(fork)
+            if block_info.status == BlockStatus.invalid:
+                entry["status"] = "invalid"
+            elif not all(block_index.get_block_info(h).downloaded for h in fork):
+                entry["status"] = "headers-only"
+            elif block_info.status == BlockStatus.valid:
+                entry["status"] = "valid-fork"
+            else:
+                entry["status"] = "valid-headers"
+        out.append(entry)
+    # Core's own CompareBlocksByHeight: height descending, ties broken so
+    # that unequal blocks at one height never compare equal -- pointer
+    # identity there, the hash itself here, both being arbitrary but
+    # stable within one answer.
+    out.sort(key=lambda entry: (-entry["height"], entry["hash"]))
+    return out
+
+
+def _coinbase_tx_dict(coinbase: Tx) -> dict[str, Any]:
+    """Answer `getblock`'s own `coinbase_tx`, Core's `coinbaseTxToJSON`.
+
+    `coinbaseTxToJSON` (`src/rpc/blockchain.cpp:183-199`, at
+    bitcoin/bitcoin@9be056a8a7): the coinbase input's own version,
+    locktime, sequence and `scriptSig` -- named `coinbase` here, not
+    `scriptSig`, the one field this whole method answers under a name
+    that is not the script's own -- plus its witness stack's one
+    element, where segwit gives it one at all.
+    """
+    vin0 = coinbase.vin[0]
+    out: dict[str, Any] = {
+        "version": coinbase.version,
+        "locktime": coinbase.lock_time,
+        "sequence": vin0.sequence,
+        "coinbase": vin0.script_sig.hex(),
+    }
+    stack = vin0.script_witness.stack
+    if stack:
+        # `CHECK_NONFATAL(witness_stack.size() == 1)` (same file, :195):
+        # a coinbase carries at most the one segwit commitment element.
+        out["witness"] = stack[0].hex()
+    return out
+
+
+def _block_json_header(
+    node: Node, block_hash: bytes, header: BlockHeader, height: int, n_tx: int
+) -> dict[str, Any]:
+    """Answer the header fields `blockToJSON` shares with `blockheaderToJSON`.
+
+    Mirrors `get_block_header`'s own verbose branch field for field,
+    each one's own Core citation living there rather than repeated
+    here -- `nTx` is the one field that branch leaves out, its own
+    docstring arguing why: no block body to count transactions from.
+    `get_block` always has the body by the time this runs, so it is
+    answered here rather than left absent a second time.
+    """
+    block_index = node.chainstate.block_index
+    active_chain = block_index.active_chain
+    on_active_chain = height < len(active_chain) and active_chain[height] == block_hash
+    out: dict[str, Any] = {
+        "hash": header.hash,
+        "confirmations": len(active_chain) - height if on_active_chain else -1,
+        "height": height,
+        "version": header.version,
+        "versionHex": f"{header.version & 0xFFFFFFFF:08x}",
+        "merkleroot": header.merkle_root,
+        "time": block_time(header),
+        "mediantime": median_time_past(header, height, parent_lookup(node)),
+        "nonce": header.nonce,
+        "bits": header.bits,
+        "target": header.target,
+        "difficulty": header.difficulty,
+        "chainwork": f"{block_index.chainwork[block_hash]:064x}",
+        "nTx": n_tx,
+    }
+    if height > 0:
+        out["previousblockhash"] = header.previous_block_hash
+    if on_active_chain and height < len(active_chain) - 1:
+        out["nextblockhash"] = active_chain[height + 1]
+    return out
+
+
+def _parse_get_block_params(params: list[Any]) -> tuple[bytes, int]:
+    """Validate `getblock`'s own two arguments; answer `(blockhash, verbosity)`.
+
+    `ParseVerbosity` (`rpc/util.cpp:89-102`, at bitcoin/bitcoin@9be056a8a7)
+    is what a missing argument answers with `default_verbosity`, 1 here,
+    and what a JSON bool degrades to (`true` as `1`, `false` as `0`)
+    under this argument's own `skip_type_check` (`:772`) -- the same
+    allowance `get_raw_transaction`'s own `verbose` argument does not
+    carry, argued in that function's own missing-argument comment. Refusing
+    anything but 0, 1 or 2 is this tree's own boundary, argued in
+    `get_block`'s docstring below.
     """
     if not params:
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["getblock"])
     if not isinstance(params[0], str):
         raise type_error(1, "blockhash", params[0], "string")
-    try:
-        block_hash = bytes.fromhex(params[0])
-    except ValueError as error:
-        # `ParseHashV(request.params[0], "blockhash")` (`rpc/blockchain.cpp`,
-        # line 882, same sha) -- `getblock`'s own label, not
-        # `get_block_header`'s "hash" (line 679, same sha), the two RPCs
-        # naming the same positional argument differently.
-        raise RpcError(
-            RPCErrorCode.INVALID_PARAMETER,
-            f"blockhash must be hexadecimal string (not '{params[0]}')",
-        ) from error
+    # `ParseHashV(request.params[0], "blockhash")` (`rpc/blockchain.cpp
+    # :828`, same sha) -- `getblock`'s own label, not `get_block_header`'s
+    # "hash", the two RPCs naming the same positional argument differently.
+    block_hash = _parse_hash_v("blockhash", params[0])
 
-    # `ParseVerbosity` (`rpc/util.cpp:89-102`) answers a missing or
-    # `null` argument with `default_verbosity`, 1 here -- read the same
-    # way, so that omitting the argument is refused below exactly as
-    # asking for verbosity 1 explicitly would be, rather than silently
-    # answered with hex. `false`/`0` alone pass; `true` or any other
-    # verbosity is refused too.
     has_verbosity = len(params) > 1 and params[1] is not None
-    verbosity = params[1] if has_verbosity else 1
-    if verbosity not in (0, False):
+    verbosity_param: Any = params[1] if has_verbosity else 1
+    if isinstance(verbosity_param, bool):
+        verbosity = int(verbosity_param)
+    elif isinstance(verbosity_param, float):
+        # `UniValue::getInt<int>()` (`src/univalue/include/univalue.h
+        # :142-153`), which `ParseVerbosity` calls once `skip_type_check`
+        # has let a non-bool, non-null value through unchecked: a
+        # non-integral number is `RPC_MISC_ERROR`, the same message
+        # `get_block_hash`'s own float check answers above.
+        raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
+    elif isinstance(verbosity_param, int):
+        verbosity = verbosity_param
+    else:
+        raise type_error(2, "verbosity", verbosity_param, "number")
+
+    if verbosity not in (0, 1, 2):
         raise RpcError(
             RPCErrorCode.MISC_ERROR,
-            "getblock: only verbosity 0 (hex-encoded data) is served here",
+            "getblock: only verbosity 0, 1 and 2 are served here",
         )
+    return block_hash, verbosity
+
+
+def get_block(
+    node: Node, conn: RpcConnection, params: list[Any]
+) -> str | dict[str, Any]:
+    """Answer `getblock` at verbosity 0, 1 or 2: hex, or Core's own JSON shape.
+
+    Core's own `getblock` (`rpc/blockchain.cpp:761-841`, calling
+    `blockToJSON`, `:200-243`, at bitcoin/bitcoin@9be056a8a7) answers
+    verbosity 1 with the header fields `blockheaderToJSON` answers
+    (`get_block_header`'s own verbose branch, mirrored by
+    `_block_json_header` above) plus `strippedsize`, `size`, `weight`,
+    `coinbase_tx` and `tx` as an array of txids (`TxVerbosity::SHOW_TXID`);
+    verbosity 2 the same with `tx` as an array of decoded transactions
+    instead, `getrawtransaction`'s own verbose shape
+    (`get_raw_transaction`'s own `tx.to_dict()` plus `hex`) rather than a
+    second rendering of one call's own shape, `TxVerbosity::SHOW_DETAILS`
+    -- one field short of Core's, `tx[].fee`, which needs the block's own
+    undo data to compute even at this verbosity and not only at 3, left
+    absent along with verbosity 3 itself for the same reason
+    (btclib-org/btclib-node#1446).
+    """
+    block_hash, verbosity = _parse_get_block_params(params)
 
     block_index = node.chainstate.block_index
     try:
         block_info = block_index.get_block_info(block_hash)
     except KeyError as error:
-        # `getblock`'s own throw, `rpc/blockchain.cpp:895`, same sha
+        # `getblock`'s own throw, `rpc/blockchain.cpp:806`, same sha
         raise RpcError(
             RPCErrorCode.INVALID_ADDRESS_OR_KEY, "Block not found"
         ) from error
@@ -633,7 +832,27 @@ def get_block(node: Node, conn: RpcConnection, params: list[Any]) -> str:
         raise RpcError(
             RPCErrorCode.MISC_ERROR, "Block not available (not fully downloaded)"
         )
-    return block.serialize(check_validity=False).hex()
+
+    if verbosity == 0:
+        return block.serialize(check_validity=False).hex()
+
+    out = _block_json_header(
+        node, block_hash, block.header, block_info.index, len(block.transactions)
+    )
+    out["strippedsize"] = block.stripped_size
+    out["size"] = block.size
+    out["weight"] = block.weight
+    out["coinbase_tx"] = _coinbase_tx_dict(block.transactions[0])
+    if verbosity == 1:
+        out["tx"] = [tx.id for tx in block.transactions]
+    else:
+        txs: list[dict[str, Any]] = []
+        for tx in block.transactions:
+            tx_dict: dict[str, Any] = tx.to_dict()
+            tx_dict["hex"] = tx.serialize(include_witness=True).hex()
+            txs.append(tx_dict)
+        out["tx"] = txs
+    return out
 
 
 def _index_submitted_header(block_index: BlockIndex, block: Block) -> str | None:
@@ -643,6 +862,15 @@ def _index_submitted_header(block_index: BlockIndex, block: Block) -> str | None
     `CheckBlock` (`main.passes_check_block`), `"prev-blk-not-found"` for
     a header whose parent is unknown, and btclib's own message for a
     header `add_headers` refuses; `submit_block` argues each.
+
+    A header this node has never indexed is indexed only once its own
+    body passes `CheckBlock`: Core's `ProcessNewBlock` asks `CheckBlock`
+    before `AcceptBlock`, so a body failing it never reaches
+    `AcceptBlockHeader` at all, and the header stays unindexed
+    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+    -- `p2p.callbacks.block`'s own `_refuse_before_indexing` already
+    asks the wire path's body in the same order, for the same reason
+    (btclib-org/btclib-node#1247). ISS 1339.
     """
     block_hash = block.header.hash
     if block_hash in block_index.header_dict:
@@ -654,7 +882,7 @@ def _index_submitted_header(block_index: BlockIndex, block: Block) -> str | None
             block
         ):
             return "duplicate"
-    else:
+    elif passes_check_block(block):
         try:
             if block_index.add_headers([block.header]) is None:
                 return "prev-blk-not-found"
@@ -666,6 +894,28 @@ def _index_submitted_header(block_index: BlockIndex, block: Block) -> str | None
             # caller punishes the peer for it and `submitblock` has no
             # peer to punish, only a reason to answer
             return str(error)
+    return None
+
+
+def _validate_extending_tip(node: Node, block_hash: bytes) -> str | None:
+    """Run `main.update_chain` here, and answer its verdict on `block_hash`.
+
+    Called only where the block just stored extends the active tip --
+    `submit_block`'s own docstring argues why, and is where the caller
+    already knows that. A failure the trial does not swallow into
+    `Node.last_rejected_block` is this node's own storage or bookkeeping
+    proving itself unsafe to keep running past, not this submission's
+    content, and is left to propagate, `Node.terminate_flag` set first
+    so a caller reached from here still stops `Node.run`'s loop for it.
+    """
+    try:
+        update_chain(node)
+    except Exception:
+        node.terminate_flag.set()
+        raise
+    failed = node.last_rejected_block
+    if failed is not None and failed[0] == block_hash:
+        return str(failed[1])
     return None
 
 
@@ -682,7 +932,8 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     (`validation.cpp:4225`, same sha), which this node's own
     `block_index.add_headers` answers the identical way
     `p2p.callbacks.block` already reads it (missing rather than invalid),
-    and `ContextualCheckBlockHeader`'s `"bad-version(0x%08x)"`, which
+    `AcceptBlockHeader`'s `"bad-prevblk"` for a parent marked invalid, and
+    `ContextualCheckBlockHeader`'s `"bad-version(0x%08x)"`, which
     `add_headers` raises in Core's words (`src/validation.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Any other invalid block is
     answered with btclib's own exception message instead of one of Core's:
@@ -694,12 +945,41 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     `p2p.callbacks.block` makes for a block delivered over the wire,
     minus that callback's own `Connection`-specific bookkeeping
     (`remove_block_request`), which does not apply to a block submitted
-    out of band. Connecting
-    the block to the active chain, on either path, is `main.
-    update_chain`'s own job, run once every pass of `Node`'s loop
-    rather than inline here -- the same pass this callback's own return
-    runs in, `Node.run`'s `_step_chain` following `_drain_message_queues`
-    unconditionally.
+    out of band.
+
+    Where the stored block extends the active tip, `main.update_chain`
+    is run right here rather than waited for on `Node`'s next pass:
+    Core's own `ProcessNewBlock` calls `AcceptBlock` and then
+    `ActivateBestChain` -- contextual and connect validation both --
+    before it ever returns to `submitblock` (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so a caller is answered
+    only once that trial has actually run, and never told a block was
+    accepted that its own contextual or script check refuses a moment
+    later (ISS 1335, ISS 1390). `_ready_fork` is not gated on
+    `Node.status` for exactly this reason (its own comment,
+    btclib-org/btclib-node#1071): calling it here finds this same
+    submission ready, or finds nothing and costs nothing. A block that
+    does not extend the tip is stored and left for that later pass, as
+    before -- Core's own `ActivateBestChain` runs unconditionally too,
+    but a competing, lower branch is not what either issue measured,
+    and this tree does not chase it synchronously.
+
+    `main._validate_block`'s own `bad-txns-nonfinal` and `bad-cb-height`
+    are Core's literal reasons already; `interpreter.check_transactions`
+    wraps a script failure into `BlockScriptVerifyError`, whose own
+    `str()` is Core's `block-script-verify-flag-failed (%s)`
+    (`CheckInputScripts`, same file and sha) with btclib's own message
+    in place of `ScriptErrorString`. Anything else `update_chain`'s
+    trial raises for this exact hash is answered with btclib's own
+    text, the same divergence the paragraph above already argues for
+    every reason this function has no literal word for.
+
+    A failure `update_chain`'s own trial does not swallow into a
+    rejection -- this node's own storage or bookkeeping, not the
+    submission's content -- is not answered at all: it is left to
+    propagate, `Node.terminate_flag` set first, so a caller reached
+    from here instead of from `Node`'s own scheduled pass still stops
+    the loop rather than running on past it.
     """
     if not params:
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["submitblock"])
@@ -725,14 +1005,22 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     try:
         block.assert_valid(node.chain.pow_limit_bits)
     except BTClibException as error:
-        parent = block_index.get_block_info(block.header.previous_block_hash)
-        segwit = parent.index + 1 >= node.chain.consensus.segwit_height
-        if is_block_failed(block, check_witness_root=segwit):
-            block_index.invalidate(block_hash)
+        # passes_check_block is what is_block_failed itself requires, so
+        # a body that never got this far indexed (ISS 1339) has nothing
+        # here to invalidate either -- checked before touching the
+        # parent, which such a body's own header may never have named
+        if passes_check_block(block):
+            parent = block_index.get_block_info(block.header.previous_block_hash)
+            segwit = parent.index + 1 >= node.chain.consensus.segwit_height
+            if is_block_failed(block, check_witness_root=segwit):
+                block_index.invalidate(block_hash)
         return str(error)
 
+    extends_tip = block.header.previous_block_hash == block_index.active_chain[-1]
     node.block_db.add_block(block)
     block_index.set_downloaded(block_hash)
+    if extends_tip:
+        return _validate_extending_tip(node, block_hash)
     return None
 
 
@@ -1013,10 +1301,21 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     `protocolversion` is `PROTOCOL_VERSION` (`btclib.p2p.limits`), the
     same constant every `version` this node sends and every
     `getheaders` it builds already carries.
+
+    `localservices` and `localservicesnames` are `p2p.connection.local_services`
+    (`rpc/net.cpp:706-708`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag) -- the services this node's own `version` advertises on every
+    connection, one function answering both rather than each computing
+    its own (btclib-org/btclib-node#1394), `service_names` above turning
+    the same bits into the strings `getpeerinfo`'s own `servicesnames`
+    already uses for a peer's.
     """
+    services = local_services(node.config)
     return {
         "subversion": USER_AGENT,
         "protocolversion": PROTOCOL_VERSION,
+        "localservices": f"{services:016x}",
+        "localservicesnames": service_names(services),
     }
 
 
@@ -1393,6 +1692,14 @@ def get_mempool_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
 # would otherwise accept, is argued.
 _TX_OUT_SET_HASH_TYPES = {"muhash", "none"}
 
+# Core's own default is "hash_serialized_3"
+# (`RPCArg::Default{"hash_serialized_3"}`, `src/rpc/blockchain.cpp:1054`,
+# at bitcoin/bitcoin@9be056a8a7); this tree's own default is
+# `get_tx_out_set_info`'s own one hash type it can actually answer
+# without a live scan -- that docstring is where the departure, and
+# what would remove it, is argued.
+_DEFAULT_TX_OUT_SET_HASH_TYPE = "muhash"
+
 
 def get_tx_out_set_info(
     node: Node, conn: RpcConnection, params: list[Any]
@@ -1420,10 +1727,30 @@ def get_tx_out_set_info(
     double-SHA256 scan -- is refused with `ParseHashType`'s own error
     text (`RPC_INVALID_PARAMETER`, `'%s' is not a valid hash_type`),
     reused here for a value Core itself accepts but this tree has no
-    accumulator for: this node answers only from `CoinStats`, never
-    from a live scan, so there is no second computation to answer that
-    hash type with. `hash_type: "none"` answers every field but
-    `muhash` itself, the way Core's own `CoinStatsHashType::NONE` does.
+    accumulator for: `ApplyHash`/`TxOutSer` (`kernel/coinstats.cpp`)
+    fold every coin into one incremental hash in the coins-view
+    cursor's own order, by txid as the store's own keys sort it and
+    then by vout, and answering it here would mean a live, ordered
+    walk of every `utxo-` record on every call -- `KeyValueStore`'s own
+    `__iter__` (`db.py`) is the one full-store scan this tree carries,
+    reads every column family whole into memory, in one array, and
+    carries no prefix or streaming cursor a caller could narrow to
+    `utxo-` alone. This node answers only from `CoinStats`, the
+    incrementally-maintained accumulator `-coinstatsindex` puts in
+    front of that same scan on a real `bitcoind`, and building the
+    ordered scan `hash_serialized_3` needs beside it, on the tree's own
+    ordered store rather than through that one whole-store `__iter__`,
+    is its own issue rather than this one's.
+
+    So where Core's own default answers, this one refuses -- the
+    departure this docstring argues rather than leaves silent -- and
+    where a caller asks for nothing at all, `_DEFAULT_TX_OUT_SET_HASH_TYPE`
+    is what this tree answers instead: `"muhash"`, the one hash type
+    `CoinStats` already keeps running, so a bare `gettxoutsetinfo`
+    answers something rather than the error Core's own unreachable
+    default would otherwise still produce here. `hash_type: "none"`
+    answers every field but `muhash` itself, the way Core's own
+    `CoinStatsHashType::NONE` does.
 
     `hash_or_height` is refused the way an ordinary `bitcoind`, run
     without `-coinstatsindex`, already refuses it -- `!g_coin_stats_index`
@@ -1446,7 +1773,9 @@ def get_tx_out_set_info(
     schedule, the BIP30/genesis/unclaimed-reward split) this branch does
     not add, and issue #639's own "Not in scope" does not ask for them.
     """
-    hash_type = params[0] if params and params[0] is not None else "hash_serialized_3"
+    hash_type = (
+        params[0] if params and params[0] is not None else _DEFAULT_TX_OUT_SET_HASH_TYPE
+    )
     # hash_type and use_index are checked, and every mismatch named,
     # before either is raised on or any value-level check below runs,
     # the way `disconnect_node` above already does for its own two
@@ -1485,6 +1814,277 @@ def get_tx_out_set_info(
         result["muhash"] = coin_stats.digest[::-1]
     result["total_amount"] = _btc_amount(coin_stats.total_amount)
     return result
+
+
+# Core's own literal sentinel, `MEMPOOL_HEIGHT` (`src/txmempool.h:50`, at
+# bitcoin/bitcoin@9be056a8a7): a `Coin` built from a mempool transaction's
+# own output rather than from the confirmed set carries this height
+# instead of a real one, and `gettxout` reads it back to answer
+# `confirmations: 0` (`rpc/blockchain.cpp:1243-1247`). Not
+# `main.py`'s own `spend_height` -- that is `CalculatePrevHeights`'s
+# *different* convention, "assume a mempool parent confirms in the next
+# block" for a sequence-lock height, and reads this same sentinel back
+# out rather than storing it.
+_MEMPOOL_HEIGHT = 0x7FFF_FFFF
+
+# GetTxnOutputType's own vocabulary (`src/script/solver.cpp:18-34`, at
+# bitcoin/bitcoin@9be056a8a7), keyed on this library's own
+# `type_and_payload` names (`btclib.script.script_pub_key`) -- the two
+# agree in spelling for nothing, "nulldata" being the closest case and
+# still its own key below rather than assumed. `_script_pub_key_dict`
+# below is the one place this tree renders a `scriptPubKey`'s own
+# `type` in Core's words rather than this library's; ISS 1440 is where
+# `get_raw_transaction`'s own verbose form, which answers this library's
+# names instead and at the wrong nesting level, is filed for the
+# sibling mismatch this table does not reach.
+_CORE_SCRIPT_TYPES: dict[str, str] = {
+    "p2pk": "pubkey",
+    "p2pkh": "pubkeyhash",
+    "p2sh": "scripthash",
+    "p2ms": "multisig",
+    "nulldata": "nulldata",
+    "p2wpkh": "witness_v0_keyhash",
+    "p2wsh": "witness_v0_scripthash",
+    "p2tr": "witness_v1_taproot",
+    "witness_unknown": "witness_unknown",
+    "unknown": "nonstandard",
+}
+
+# `CScript::IsPayToAnchor` (`src/script/script.cpp:207-213`, at
+# bitcoin/bitcoin@9be056a8a7): the literal four-byte P2A script, OP_1
+# followed by its own fixed two-byte push. `Solver` carves this one
+# script out of what would otherwise be `TxoutType::WITNESS_UNKNOWN`
+# (`src/script/solver.cpp:167-171`, same sha) into its own
+# `TxoutType::ANCHOR`; this library's own `type_and_payload` answers
+# "witness_unknown" for it same as any other non-p2tr version-1
+# program, making no such cut of its own.
+_ANCHOR_SCRIPT = bytes.fromhex("51024e73")
+
+
+def _core_script_type(script_pub_key: ScriptPubKey) -> str:
+    """Answer `GetTxnOutputType`'s own name for `script_pub_key`'s own type.
+
+    `_CORE_SCRIPT_TYPES` carries every other name across one for one;
+    `"anchor"` is the one Core name with no btclib type behind it, so
+    it is matched here directly against the literal script byte for
+    byte, ahead of the table.
+    """
+    if script_pub_key.script == _ANCHOR_SCRIPT:
+        return "anchor"
+    return _CORE_SCRIPT_TYPES[script_pub_key.type]
+
+
+def _infer_descriptor(script_pub_key: ScriptPubKey) -> str:
+    """Answer `gettxout`'s own `desc`, Core's `InferDescriptor` with no wallet.
+
+    Core's `InferDescriptor` (`src/script/descriptor.cpp:3037`, calling
+    `InferScript`, at bitcoin/bitcoin@9be056a8a7) is handed
+    `DUMMY_SIGNING_PROVIDER` here -- this node keeps no wallet keys to
+    hand it a real one either, so every branch of `InferScript` that
+    consults the provider takes its "not found" path, and what is left
+    is exactly what each standard script type answers with no provider
+    at all:
+
+    - p2pk and p2ms carry their own pubkeys in the script bytes, no
+      provider needed (`InferPubkey`, same file, :2252-2265, called
+      unconditionally once `Solver` names the type) -- `pk(...)` and
+      `multi(...)`.
+    - p2pkh, p2wpkh, p2sh and p2wsh each ask the provider for the
+      pubkey or the redeem script behind the hash and get nothing back,
+      so `InferScript` falls through every one of its own `if`s to the
+      top-level `ExtractDestination` case at the bottom of the function
+      -- `addr(...)`, `descriptors.from_address` already producing that
+      exact string. A witness program past version 0 that is not p2tr
+      -- this library's own "witness_unknown", the P2A anchor output
+      among them -- reaches that identical fallback: Core's own
+      `ExtractDestination` answers a destination for both
+      `TxoutType::ANCHOR` and `TxoutType::WITNESS_UNKNOWN` the same way
+      it does for the four named above (`src/addresstype.cpp:90-93`,
+      same sha), and `ScriptPubKey.address` already answers one for
+      every such program, so `addr(...)` is what a P2A output answers
+      here too, matching a real `bitcoind` rather than diverging from
+      it -- `_core_script_type` above is what still answers `"anchor"`
+      for `scriptPubKey.type` on the same output, `Solver`'s own cut
+      this library's `type_and_payload` does not make.
+    - p2tr likewise finds no `TaprootSpendData` and falls to its own
+      narrower fallback, two branches above the general one -- `rawtr(...)`,
+      the bare x-only key.
+    - nulldata and anything else `Solver` does not classify at all
+      extract no destination and reach `RawDescriptor` -- `raw(...)`,
+      the whole script; `ScriptPubKey.address`'s own docstring names
+      p2pk, p2ms, nulldata and unknown as the four types it answers ""
+      for.
+
+    None of the five needs a key this node does not have; a checksum is
+    added the way `Descriptor::ToString()`'s own default argument adds
+    one (`descriptors.add_checksum`).
+    """
+    script = script_pub_key.script
+    script_type, payload = type_and_payload(script)
+    if script_type == "p2pk":
+        return add_checksum(f"pk({payload.hex()})")
+    if script_type == "p2ms":
+        threshold, keys = p2ms_m_and_keys(script)
+        key_list = ",".join(key.hex() for key in keys)
+        return add_checksum(f"multi({threshold},{key_list})")
+    if script_type == "p2tr":
+        return add_checksum(f"rawtr({payload.hex()})")
+    address = script_pub_key.address
+    if address:
+        return from_address(address)
+    return add_checksum(f"raw({script.hex()})")
+
+
+def _script_pub_key_dict(script_pub_key: ScriptPubKey) -> dict[str, Any]:
+    """Answer `gettxout`'s own `scriptPubKey`, Core's nested shape.
+
+    Core's `ScriptToUniv` (`src/core_io.cpp:411-428`, at
+    bitcoin/bitcoin@9be056a8a7) nests `asm`, `desc`, `hex`, `type` and
+    `address` inside `scriptPubKey` itself, unlike this tree's own
+    `TxOut.to_dict`, which `get_raw_transaction`'s verbose form already
+    answers with and which keeps `type`/`addresses`/`network` as that
+    method's own siblings instead (ISS 1440, filed for that mismatch
+    rather than carried into this new RPC). `address` is answered only
+    where one exists, matching `ScriptToUniv`'s own `type !=
+    TxoutType::PUBKEY` exclusion -- `ScriptPubKey.address` already
+    answers `""` for p2pk without that check repeated here, `address`'s
+    own docstring naming p2pk, p2ms, nulldata and unknown as the four
+    types it has none for.
+    """
+    script_dict = script_to_dict(script_pub_key.script)
+    out: dict[str, Any] = {
+        "asm": script_dict["asm"],
+        "desc": _infer_descriptor(script_pub_key),
+        "hex": script_dict["hex"],
+        "type": _core_script_type(script_pub_key),
+    }
+    address = script_pub_key.address
+    if address:
+        out["address"] = address
+    return out
+
+
+def _parse_get_tx_out_params(params: list[Any]) -> tuple[bytes, int, bool]:
+    """Check `gettxout`'s own three arguments, Core's checks in Core's order.
+
+    `txid` and `n` are both required (`RPCArg::Optional::NO`,
+    `rpc/blockchain.cpp:1184-1188`, at bitcoin/bitcoin@9be056a8a7):
+    `RPCMethod::HandleRequest` throws its own `HelpResult` for either
+    missing, before either argument's own type is read (`src/rpc/util.cpp`),
+    so a call short of `n` is refused the same generic way as one short
+    of both. Every declared argument's JSON type is then checked before
+    the handler body runs at all (`src/rpc/util.cpp:653-661`), so a
+    wrongly typed `txid` and a wrongly typed `n` are reported together,
+    `type_errors`'s own shape.
+    """
+    if len(params) < 2:  # noqa: PLR2004
+        raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["gettxout"])
+    txid_param, n_param = params[0], params[1]
+    mismatches: list[tuple[int, str, object, str]] = []
+    if not isinstance(txid_param, str):
+        mismatches.append((1, "txid", txid_param, "string"))
+    if isinstance(n_param, bool) or not isinstance(n_param, (int, float)):
+        mismatches.append((2, "n", n_param, "number"))
+    if mismatches:
+        raise type_errors(*mismatches)
+    txid = _parse_hash_v("txid", txid_param)
+    # `UniValue::getInt<uint32_t>()` (`src/univalue/include/univalue.h
+    # :142-153`): a non-integral number, or one outside uint32_t's own
+    # range, is `RPC_MISC_ERROR` ("JSON integer out of range") -- the
+    # same message `get_block_hash`'s own float check above answers,
+    # and not `RPC_TYPE_ERROR`, the type check having already passed.
+    if isinstance(n_param, float) or not 0 <= n_param < 2**32:
+        raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
+    include_mempool = bool_param(params, 2, name="include_mempool", default=True)
+    return txid, n_param, include_mempool
+
+
+def _mempool_spends(node: Node, txid: bytes, out_point_bytes: bytes) -> bool:
+    """Whether a mempool transaction spends this outpoint -- Core's `isSpent`.
+
+    Core's `CTxMemPool::isSpent` (`src/txmempool.cpp:190-194`, at
+    bitcoin/bitcoin@9be056a8a7) is a single lookup into `mapNextTx`,
+    keyed on the whole outpoint. `Mempool.spent_by` (`mempool.py`) is
+    keyed on the prevout's own txid alone -- more than one mempool
+    transaction spending different outputs of one parent being the
+    case its own docstring names -- so answering the identical question
+    here costs a scan of however many candidates share that txid rather
+    than Core's O(1) lookup, never more than the handful of mempool
+    transactions actually spending that one parent's outputs.
+    """
+    for wtxid in node.mempool.spent_by.get(txid, ()):
+        tx = node.mempool.transactions.get(wtxid)
+        if tx is not None and any(
+            vin.prev_out.serialize(check_validity=False) == out_point_bytes
+            for vin in tx.vin
+        ):
+            return True
+    return False
+
+
+def get_tx_out(
+    node: Node, conn: RpcConnection, params: list[Any]
+) -> dict[str, Any] | None:
+    """Answer `gettxout`: one outpoint's own unspent coin, or null.
+
+    Core's own `gettxout` (`rpc/blockchain.cpp:1182-1261`, at
+    bitcoin/bitcoin@9be056a8a7). `include_mempool`, true by default,
+    overlays this node's own mempool on the confirmed UTXO set the same
+    two ways Core's `CCoinsViewMemPool` does: an outpoint a mempool
+    transaction spends answers null before either view is read
+    (`isSpent`, `_mempool_spends` above), and one a mempool transaction
+    creates -- not yet in `UtxoIndex` at all -- answers that
+    transaction's own output, at Core's own sentinel height
+    `MEMPOOL_HEIGHT`, ahead of the confirmed set
+    (`CCoinsViewMemPool::GetCoin`, `src/txmempool.cpp:790-811`) --
+    `Mempool.get_tx` by txid is that same lookup, Core's own
+    `mempool.get(outpoint.hash)`.
+
+    `confirmations` is `0` for a coin at that sentinel height, matching
+    Core's own `coin->nHeight == MEMPOOL_HEIGHT` check, and otherwise
+    the active chain's own height past the coin's, `pindex->nHeight -
+    coin->nHeight + 1` -- `active_chain`'s own length already being the
+    tip's height plus one, the "+ 1" is folded into the subtraction the
+    same way `get_block_header`'s own `confirmations` folds it in above.
+    """
+    txid, n, include_mempool = _parse_get_tx_out_params(params)
+    out_point_bytes = OutPoint(txid, n, check_validity=False).serialize(
+        check_validity=False
+    )
+
+    coin: Coin | None
+    if not include_mempool:
+        coin = node.chainstate.utxo_index.get_coin(out_point_bytes)
+    elif _mempool_spends(node, txid, out_point_bytes):
+        coin = None
+    else:
+        mempool_tx = node.mempool.get_tx(txid)
+        if mempool_tx is None:
+            coin = node.chainstate.utxo_index.get_coin(out_point_bytes)
+        elif n < len(mempool_tx.vout):
+            coin = Coin(
+                mempool_tx.vout[n],
+                _MEMPOOL_HEIGHT,
+                is_coinbase=False,
+                check_validity=False,
+            )
+        else:
+            coin = None
+
+    if coin is None:
+        return None
+
+    active_chain = node.chainstate.block_index.active_chain
+    confirmations = (
+        0 if coin.height == _MEMPOOL_HEIGHT else len(active_chain) - coin.height
+    )
+    return {
+        "bestblock": active_chain[-1],
+        "confirmations": confirmations,
+        "value": _btc_amount(coin.tx_out.value),
+        "scriptPubKey": _script_pub_key_dict(coin.tx_out.script_pub_key),
+        "coinbase": coin.is_coinbase,
+    }
 
 
 def get_raw_mempool(
@@ -1609,14 +2209,13 @@ def get_mempool_entry(
 
 
 def _decode_txid(txid_arg: str) -> bytes:
-    """Hex-decode `getrawtransaction`'s own `txid`, already type-checked."""
-    try:
-        return bytes.fromhex(txid_arg)
-    except ValueError as error:
-        raise RpcError(
-            RPCErrorCode.INVALID_PARAMETER,
-            f"parameter 1 must be hexadecimal string (not '{txid_arg}')",
-        ) from error
+    """Hex-decode `getrawtransaction`'s own `txid`, already type-checked.
+
+    `ParseHashV(request.params[0], "parameter 1")` (`rpc/rawtransaction.cpp
+    :304`, at bitcoin/bitcoin@9be056a8a7) -- Core's own name for this
+    argument here, not "txid".
+    """
+    return _parse_hash_v("parameter 1", txid_arg)
 
 
 def _decode_optional_block_hash(params: list[Any]) -> bytes | None:
@@ -1629,13 +2228,9 @@ def _decode_optional_block_hash(params: list[Any]) -> bytes | None:
     """
     if len(params) <= 2 or params[2] is None:  # noqa: PLR2004
         return None
-    try:
-        return bytes.fromhex(params[2])
-    except ValueError as error:
-        raise RpcError(
-            RPCErrorCode.INVALID_PARAMETER,
-            f"parameter 3 must be hexadecimal string (not '{params[2]}')",
-        ) from error
+    # `ParseHashV(request.params[2], "parameter 3")` (`rpc/rawtransaction.cpp
+    # :317`, at bitcoin/bitcoin@9be056a8a7) -- Core's own name here too.
+    return _parse_hash_v("parameter 3", params[2])
 
 
 def _find_transaction(
@@ -2280,6 +2875,7 @@ callbacks = {
     "getblockhash": get_block_hash,
     "getblockheader": get_block_header,
     "getblock": get_block,
+    "getchaintips": get_chain_tips,
     "submitblock": submit_block,
     "getpeerinfo": get_peer_info,
     "getconnectioncount": get_connection_count,
@@ -2293,6 +2889,7 @@ callbacks = {
     "getrawmempool": get_raw_mempool,
     "getmempoolentry": get_mempool_entry,
     "getrawtransaction": get_raw_transaction,
+    "gettxout": get_tx_out,
     "gettxoutsetinfo": get_tx_out_set_info,
     "testmempoolaccept": test_mempool_accept,
     "sendrawtransaction": send_raw_transaction,
@@ -2317,6 +2914,7 @@ arg_names: dict[str, tuple[str, ...]] = {
     "getblockhash": ("height",),
     "getblockheader": ("blockhash", "verbose"),
     "getblock": ("blockhash", "verbosity|verbose"),
+    "getchaintips": (),
     "submitblock": ("hexdata", "dummy"),
     "getpeerinfo": (),
     "getconnectioncount": (),
@@ -2330,6 +2928,7 @@ arg_names: dict[str, tuple[str, ...]] = {
     "getrawmempool": ("verbose", "mempool_sequence"),
     "getmempoolentry": ("txid",),
     "getrawtransaction": ("txid", "verbosity|verbose", "blockhash"),
+    "gettxout": ("txid", "n", "include_mempool"),
     "gettxoutsetinfo": ("hash_type", "hash_or_height", "use_index"),
     "testmempoolaccept": ("rawtxs", "maxfeerate"),
     "sendrawtransaction": ("hexstring", "maxfeerate", "maxburnamount"),

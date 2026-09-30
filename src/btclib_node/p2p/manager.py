@@ -154,13 +154,23 @@ _FIXED_SEEDS_CHECK_INTERVAL = 0.5
 # Core's `SEED_OUTBOUND_CONNECTION_THRESHOLD`
 # (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
 # `_maybe_add_seednode` keeps queuing `-seednode` values while fewer
-# full-relay peers than this are held.
+# full-relay peers than this are held, and `_wait_for_seednode_peers`
+# and `_dns_address_seed` below each end a wait of their own early once
+# this many are.
 _SEED_OUTBOUND_CONNECTION_THRESHOLD = 2
 
 # Core's `ADD_NEXT_SEEDNODE` (`src/net.cpp`, same sha): how long
 # `_maybe_add_seednode` waits between two `-seednode` values, in
 # seconds.
 _ADD_SEEDNODE_INTERVAL = 10
+
+# `ThreadDNSAddressSeed`'s own wait for `-seednode`, ahead of the DNS
+# seeds (`src/net.cpp`, same sha, btclib-org/btclib-node#1461): thirty
+# seconds, "so this does not become a race against fixedseeds (which
+# triggers after 1 min)", Core's own comment there, polled every half
+# second (`sleep_for(500ms)`).
+_SEEDNODE_TIMEOUT = 30
+_SEEDNODE_POLL_INTERVAL = 0.5
 
 # The networks Core reaches by default, which are this node's two:
 # `g_reachable_nets` loses Tor, I2P and CJDNS in `AppInitMain` where no
@@ -300,6 +310,24 @@ _FEELER_SLEEP_WINDOW = 1.0
 # `_prune_stale_connections` drops it whether or not it ever answered.
 _ADDR_FETCH_TIMEOUT = 10 * 30
 
+# `ThreadDNSAddressSeed`'s own DNS-seed schedule (`src/net.cpp`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), past
+# `_wait_for_seednode_peers`'s own `-seednode` wait above: a batch of
+# this many seeds is asked before the next wait, and a wait ends early
+# once `_SEED_OUTBOUND_CONNECTION_THRESHOLD` above (Core's own constant
+# of that name, shared with `_maybe_add_seednode` and
+# `_wait_for_seednode_peers`) full-relay outbound peers are past the
+# handshake.
+_DNS_SEEDS_TO_QUERY_AT_ONCE = 3
+# `DNSSEEDS_DELAY_FEW_PEERS`, `DNSSEEDS_DELAY_MANY_PEERS` and
+# `DNSSEEDS_DELAY_PEER_THRESHOLD`, same sha: the wait between two
+# batches, 11 seconds under this many addresses in `peer_db`, 5 minutes
+# from it up, slept in `_DNS_SEEDS_DELAY_FEW_PEERS`-second steps so a
+# wait of the longer length still ends as soon as enough peers answer.
+_DNS_SEEDS_DELAY_FEW_PEERS = 11
+_DNS_SEEDS_DELAY_MANY_PEERS = 5 * 60
+_DNS_SEEDS_DELAY_PEER_THRESHOLD = 1000
+
 
 class _Outbound(enum.Enum):
     """The automatic connection kinds `ThreadOpenConnections` opens."""
@@ -428,6 +456,10 @@ class P2pManager(threading.Thread):
         # rather than reread from a `Config` a caller could still
         # mutate underneath `run`.
         self.listen = node.config.listen
+        # Core's own `-discover`, read the same way and for the same
+        # reason: whether `_discover` below runs at all, independent of
+        # `self.listen` (btclib-org/btclib-node#1330's own "Expected").
+        self.discover = node.config.discover
         # Core's own division of `-maxconnections`, `CConnman::Init`
         # (`src/net.h`, at bitcoin/bitcoin@9be056a8a7): the outbound
         # slots above come off the top, capped by the total itself, and
@@ -474,6 +506,10 @@ class P2pManager(threading.Thread):
         # Core's own `-dnsseed`, `Config.dnsseed` having taken its
         # soft-set: whether `run` schedules the lookup.
         self.use_dns_seed = node.config.dnsseed
+        # Core's own `-forcednsseed`: `_dns_address_seed` skips its wait
+        # and asks every seed at once regardless of what `peer_db`
+        # already holds.
+        self.force_dns_seed = node.config.forcednsseed
         # Core's `-fixedseeds`, `DEFAULT_FIXEDSEEDS` being true; cleared
         # once the seeds are added, as `ThreadOpenConnections` clears
         # `add_fixed_seeds`.
@@ -619,8 +655,9 @@ class P2pManager(threading.Thread):
         # connection's entry on this manager's own thread can never
         # race a lookup for a different one on `Node`'s.
         self.pending_outbound_nonces: set[int] = set()
-        # Core's `m_addr_fetches`: a seed name `get_addr_from_dns` (below,
-        # scheduled from `run`) could not resolve at its `x9.` subdomain,
+        # Core's `m_addr_fetches`: a seed name `query_dns_seed` (below,
+        # called from `_dns_address_seed`, `run` scheduling that) could
+        # not resolve at its `x9.` subdomain,
         # paired with the chain's port, `AddAddrFetch`'s own strDest.
         # `_process_addr_fetch` pops and dials this queue the way
         # `ProcessAddrFetch` does `m_addr_fetches`
@@ -655,6 +692,12 @@ class P2pManager(threading.Thread):
         # is refused -- and `dial` answers a refusal with None, which
         # `async_connect` drops. Nothing retries.
         self.listening = threading.Event()
+        # set beside `listening`, in `_bind`, and never cleared: `stop`
+        # clears `listening` once this thread has already ended, which on
+        # its own reads exactly like a bind that never came up at all --
+        # what `wait_until_listening` reads to tell the two apart
+        # (btclib-org/btclib-node#1361)
+        self.ever_listened = threading.Event()
         # Core's `mapLocalHost` as `IsLocal` reads it: this node's own
         # addresses, by `host_key`, the map being keyed by `CNetAddr`,
         # so `IsLocal` compares no port (`src/net.h`, `src/net.cpp`,
@@ -1048,12 +1091,12 @@ class P2pManager(threading.Thread):
     def _maybe_prune_active_addresses(self, now: float) -> None:
         if now - self._last_active_prune < _ACTIVE_PRUNE_INTERVAL:
             return
-        # The only other callers of `get_active_addresses` are
-        # `address_sampler`, which this loop stops reaching for
-        # once it has enough connections, and `getaddr`, answered
-        # once per connection and never again -- so a node with
-        # enough peers that nobody asks a `getaddr` would
-        # otherwise never prune a stale row. btclib-org/btclib-node#71
+        # The only other caller of `get_active_addresses` is `getaddr`,
+        # answered once per connection and never again -- `address_sampler`
+        # reads `active_addresses` unfiltered instead
+        # (btclib-org/btclib-node#1434) -- so a node with enough peers
+        # that nobody asks a `getaddr` would otherwise never prune a
+        # stale row. btclib-org/btclib-node#71
         self._last_active_prune = now
         try:
             # get_active_addresses deletes every aged-out row
@@ -1131,6 +1174,33 @@ class P2pManager(threading.Thread):
                 )
                 if conn.automatic
             ]
+
+    def _full_outbound_count(self) -> int:
+        """Return Core's `GetFullOutboundConnCount`: handshaken, full-relay.
+
+        `fSuccessfullyConnected && IsFullOutboundConn()` (`src/net.cpp`,
+        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a connection past
+        its handshake -- promoted into `connections`, `pending_connections`
+        left out unlike `_automatic_outbound` above -- that is automatic
+        and neither block-relay-only, a feeler nor an addr-fetch. Locked
+        for the same reason `_automatic_outbound` is. Not
+        `_maybe_add_seednode`'s own `full_relay` below: that one is
+        `ThreadOpenConnections`'s own `nOutboundFullRelay`, which counts
+        `IsFullOutboundConn()` over every node in `m_nodes` including one
+        still mid-handshake, a distinct count from `GetFullOutboundConnCount`'s
+        `fSuccessfullyConnected`-gated one this method stands for
+        (`src/net.cpp`, same sha, `ThreadOpenConnections`'s own loop
+        versus `CConnman::GetFullOutboundConnCount`).
+        """
+        with self._connections_lock:
+            return sum(
+                1
+                for conn in self.connections.values()
+                if conn.automatic
+                and not conn.block_relay
+                and not conn.feeler
+                and not conn.addr_fetch
+            )
 
     def _arm_dial_loop(self) -> None:
         """Anchor `_dial_start` and the seednode drip-feed's own timer.
@@ -1394,8 +1464,8 @@ class P2pManager(threading.Thread):
         `Select(false, {preferred_net})`.
 
         A feeler draws from the gossiped addresses not in the answered
-        table, which `get_active_addresses` prunes by age
-        (btclib-org/btclib-node#1318), standing in for Core's
+        table, which `address_sampler` reads unfiltered by age
+        (btclib-org/btclib-node#1434), standing in for Core's
         `Select(true, ...)` of the new table. It is held to no network
         group, and wants only `MayHaveUsefulAddressDB` of what it draws.
         Core's `SelectTriedCollision`, asked first, has nothing to answer
@@ -1608,19 +1678,91 @@ class P2pManager(threading.Thread):
             except Exception:
                 self.logger.exception("Exception occurred")
 
-    async def _dns_address_seed(self) -> None:
-        """Ask every chain DNS seed, queuing an addr-fetch for each unanswered.
+    async def _wait_for_seednode_peers(self) -> None:
+        """Give `-seednode` up to `_SEEDNODE_TIMEOUT` before the DNS seeds.
 
-        `run` (below) schedules this once, onto this loop, in place of
-        `peer_db.get_addr_from_dns()` directly: that coroutine returns a
-        seed's bare name for each subdomain that answered nothing, for
-        `AddAddrFetch` to have queued (`src/net.cpp`,
-        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) -- a queue
-        `PeerDB` itself holds none of (btclib-org/btclib-node#1284).
+        `ThreadDNSAddressSeed`'s own wait, ahead of its DNS-seed loop
+        (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a
+        no-op where `-seednode` was never given (`use_seednodes`, fixed
+        for this manager's life once set at construction), otherwise
+        polled every `_SEEDNODE_POLL_INTERVAL` until either
+        `_SEED_OUTBOUND_CONNECTION_THRESHOLD` full-relay outbound peers
+        are past their handshake or `_SEEDNODE_TIMEOUT` seconds have
+        passed since this was entered -- Core's own two `break`s, timeout
+        checked first each step, both read every poll rather than the
+        wait being scheduled once for the full length
+        (btclib-org/btclib-node#1461).
         """
+        if not self.use_seednodes:
+            return
+        elapsed = 0.0
+        while True:
+            await asyncio.sleep(_SEEDNODE_POLL_INTERVAL)
+            elapsed += _SEEDNODE_POLL_INTERVAL
+            if elapsed > _SEEDNODE_TIMEOUT:
+                return
+            if self._full_outbound_count() >= _SEED_OUTBOUND_CONNECTION_THRESHOLD:
+                return
+
+    async def _dns_address_seed(self) -> None:
+        """Ask the chain's DNS seeds on Core's own schedule, `-seednode` first.
+
+        Ports `ThreadDNSAddressSeed` (`src/net.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `_wait_for_seednode_peers`
+        above is this coroutine's own first step, Core's own `-seednode`
+        wait sitting ahead of the DNS-seed loop in the one function.
+        Once it returns, the chain's seeds are shuffled, then asked
+        through `peer_db.query_dns_seed`, one
+        seed at a time so this can wait between batches of
+        `_DNS_SEEDS_TO_QUERY_AT_ONCE`. Every seed is asked at once under
+        `-forcednsseed` or where `peer_db.size` starts at zero; otherwise
+        each batch boundary re-reads `peer_db.size` only to decide
+        whether to wait at all (Core's own `addrman.get().Size() > 0`),
+        never to choose the wait's length -- that length is
+        `_DNS_SEEDS_DELAY_MANY_PEERS` or `_DNS_SEEDS_DELAY_FEW_PEERS`,
+        decided once from `peer_db.size` before the first seed is asked
+        and fixed for the rest of this call, matching Core's own
+        `const std::chrono::seconds seeds_wait_time` (declared once,
+        above its own loop, same function). Each wait is slept in
+        `_DNS_SEEDS_DELAY_FEW_PEERS`-second steps so that
+        `_SEED_OUTBOUND_CONNECTION_THRESHOLD` full-relay outbound peers
+        past their handshake end this coroutine early, whichever wait it
+        is in. `run` (below) schedules this once, onto this loop; a
+        seed `query_dns_seed` returns rather than `None` is queued as
+        its own addr-fetch, on the chain's own port, for
+        `_process_addr_fetch` (btclib-org/btclib-node#1284) -- Core
+        queues it the same way (`AddAddrFetch(seed)`) rather than
+        resolving the bare name here.
+        """
+        await self._wait_for_seednode_peers()
+        seeds = list(self.node.chain.addresses)
+        secrets.SystemRandom().shuffle(seeds)
         port = self.node.chain.port
-        for seed in await self.peer_db.get_addr_from_dns():
-            self._addr_fetches.append((seed, port))
+        ask_all_at_once = self.force_dns_seed or self.peer_db.size == 0
+        seeds_right_now = len(seeds) if ask_all_at_once else 0
+        wait_duration = (
+            _DNS_SEEDS_DELAY_MANY_PEERS
+            if self.peer_db.size >= _DNS_SEEDS_DELAY_PEER_THRESHOLD
+            else _DNS_SEEDS_DELAY_FEW_PEERS
+        )
+        for seed in seeds:
+            if seeds_right_now == 0:
+                seeds_right_now = _DNS_SEEDS_TO_QUERY_AT_ONCE
+                if self.peer_db.size > 0:
+                    wait = wait_duration
+                    while wait > 0:
+                        step = min(_DNS_SEEDS_DELAY_FEW_PEERS, wait)
+                        await asyncio.sleep(step)
+                        wait -= step
+                        if (
+                            self._full_outbound_count()
+                            >= _SEED_OUTBOUND_CONNECTION_THRESHOLD
+                        ):
+                            return
+            unanswered = await self.peer_db.query_dns_seed(seed)
+            if unanswered is not None:
+                self._addr_fetches.append((unanswered, port))
+            seeds_right_now -= 1
 
     async def _process_addr_fetch(self) -> None:
         """Dial the addr-fetch queue's first entry, an addr-fetch connection.
@@ -1839,17 +1981,20 @@ class P2pManager(threading.Thread):
     def _discover(self) -> None:
         """Record this machine's routable addresses, as Core's `Discover` does.
 
-        `AppInitMain` calls `Discover` (`src/net.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag) ahead of the bind,
-        where the listener is to bind every interface, as `_bind`'s
-        does, and `-discover` is on. Core's parameter interaction turns
-        `-discover` off under `-listen=0`, `-proxy` or `-externalip`, and
-        this node has neither of the last two, so `run` calls this
-        wherever it is about to bind. This node has no `-discover` of its
-        own to override that either way (btclib-org/btclib-node#1330).
-        Each address goes to `AddLocal` at
-        the listening port, which keeps a routable one on a reachable
-        network; IPv4 and IPv6 are both reachable here.
+        `AppInitMain` calls `Discover` (`src/net.cpp:3376-3384`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag) off `bind_on_any`
+        (`src/init.cpp:2163`, `:2193-2196`, same sha) -- whether the
+        node would bind every interface, which is unconditional here,
+        this node having no `-bind` -- never off `fListen`, which is
+        why `run` below calls this off `self.discover` rather than off
+        `self.listen`: an explicit `-discover=1` still records these
+        addresses under `-listen=0` (btclib-org/btclib-node#1330).
+        `self.discover` is itself Core's own soft `-discover=0` under
+        `-listen=0`, `-proxy` or `-externalip` (`Config.discover`'s own
+        comment; this node has neither of the last two). Each address
+        goes to `AddLocal` at the listening port, which keeps a
+        routable one on a reachable network; IPv4 and IPv6 are both
+        reachable here.
         """
         # set wherever `run` binds, which is where it calls this
         port = cast("int", self.port)
@@ -1883,6 +2028,7 @@ class P2pManager(threading.Thread):
         # them after (btclib-org/btclib-node#1325)
         self._server_sockets = sockets
         self.listening.set()
+        self.ever_listened.set()
         return sockets
 
     def start_listener(self) -> bool:
@@ -2050,7 +2196,7 @@ class P2pManager(threading.Thread):
                     # two fields for an AF_INET peer, four for an
                     # AF_INET6 one -- the flow info and the scope id
                     # BIP155 has nowhere to carry either,
-                    # `get_addr_from_dns`'s own sockaddr comment being
+                    # `query_dns_seed`'s own sockaddr comment being
                     # where that is argued
                     address = peer_address(*sockaddr[:2])
                     # Core's `CreateNodeFromAcceptedSocket` (`src/net.cpp`,
@@ -2149,13 +2295,16 @@ class P2pManager(threading.Thread):
         # untouched -- `_bind`'s own listener socket is the only thing
         # this skips, `manage_connections` and the dial loop below both
         # running on this same loop regardless of whether `_bind` below
-        # ever ran.
+        # ever ran. `_discover` is gated on `self.discover` alone, not
+        # on `self.listen`: Core calls `Discover()` off `bind_on_any`,
+        # never off `fListen` (`_discover`'s own docstring).
         server_sockets: list[socket.socket] = []
         try:
             self.logger.info("Starting P2P manager")
             asyncio.set_event_loop(loop)
-            if self.listen:
+            if self.discover:
                 self._discover()
+            if self.listen:
                 server_sockets = self._bind()
         except OSError as error:
             # `start_listener` reads the failure off `listening`, so it

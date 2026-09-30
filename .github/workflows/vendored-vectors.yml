@@ -1,10 +1,11 @@
 ---
 name: vendored-vectors
 
-# tests/_data/README.md pins each vendored file to a Bitcoin Core commit
-# and a git blob SHA-1, with a documented manual procedure to re-check
-# it -- last done by hand on the date the file itself records. This runs
-# that procedure once a week instead, and fails where either has moved.
+# tests/_data/README.md and scripts/seeds/README.md each pin a vendored
+# file to a Bitcoin Core commit and a git blob SHA-1, with a documented
+# manual procedure to re-check it -- last done by hand on the date each
+# file itself records. This runs that procedure once a week instead, and
+# fails where either has moved.
 #
 # Not the machinery btclib carries under this same name. That script
 # parses a README with dozens of headings, skips entries already
@@ -35,6 +36,7 @@ on:
       - .github/workflows/vendored-vectors.yml
       - .github/scripts/check_vendored_pin.py
       - tests/_data/README.md
+      - scripts/seeds/README.md
 
 # least privilege for the GITHUB_TOKEN: the script reads this repository
 # and Bitcoin Core's, both public, and writes nothing anywhere
@@ -79,5 +81,9 @@ jobs:
       # pin more tightly than that
       - name: Re-check the pin against upstream
         run: python3 .github/scripts/check_vendored_pin.py tests/_data/README.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Re-check the fixed seeds' pin against upstream
+        run: python3 .github/scripts/check_vendored_pin.py scripts/seeds/README.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
