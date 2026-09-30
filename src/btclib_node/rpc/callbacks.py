@@ -15,16 +15,19 @@ call every entry, `stop` included, unless `-rpcwhitelistdefault` holds.
 
 import math
 import time
+from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import RPCErrorCode, chain_from_network
 from btclib.block import Block, median_time_past
 from btclib.descriptors import add_checksum, from_address
 from btclib.exceptions import BTClibException
+from btclib.fee import FeeRate, fee_from_vsize
 from btclib.p2p.address import ServiceFlags
 from btclib.p2p.limits import PROTOCOL_VERSION
 from btclib.script.script import script_to_dict
 from btclib.script.script_pub_key import ScriptPubKey, p2ms_m_and_keys, type_and_payload
+from btclib.script.spendability import is_unspendable
 from btclib.tx import Tx
 from btclib.tx.out_point import OutPoint
 
@@ -34,6 +37,7 @@ from btclib_node.config import split_host_port
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, USER_AGENT
 from btclib_node.exceptions import MissingPrevoutError, TxRejectedError
 from btclib_node.main import (
+    assert_valid_block,
     is_block_failed,
     is_cached_invalid,
     parent_lookup,
@@ -42,7 +46,7 @@ from btclib_node.main import (
     update_chain,
     verify_mempool_acceptance,
 )
-from btclib_node.p2p.address import ip_and_port, peer_address
+from btclib_node.p2p.address import ip_and_port
 from btclib_node.p2p.banman import Subnet, is_valid_host, lookup_host, lookup_subnet
 from btclib_node.p2p.connection import local_services
 from btclib_node.p2p.eviction import Network, is_valid, net_class
@@ -80,6 +84,7 @@ __all__ = [
     "get_blockchain_info",
     "get_chain_tips",
     "get_connection_count",
+    "get_mempool_entry",
     "get_mempool_info",
     "get_network_info",
     "get_peer_info",
@@ -999,7 +1004,7 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
         return refusal
 
     try:
-        block.assert_valid(node.chain.pow_limit_bits)
+        assert_valid_block(block, node.chain)
     except BTClibException as error:
         # passes_check_block is what is_block_failed itself requires, so
         # a body that never got this far indexed (ISS 1339) has nothing
@@ -1316,56 +1321,25 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
 
 
 # Core's own three `addnode` commands (`rpc/net.cpp:341-415`, at
-# bitcoin/bitcoin@bb529657); `add`/`remove` mutate `CConnman`'s own
-# persistent added-node list, which this node has no counterpart to --
-# `Config.addnode`, its own equivalent of `-addnode`, is a tuple
-# resolved once at startup (`config.py`'s `_resolve_peers`) and dialled
-# through `P2pManager`'s own redial set, never grown or shrunk at
-# runtime. `connect_nodes`, the one caller this node's own tf2 census
-# names for this method (`test_framework.py:568-594`, same sha), only
-# ever calls `onetry`, which is the one command below with a real
-# effect: it schedules the identical one-shot dial `onetry` gets in
-# Core (`OpenNetworkConnection`, `conn_type=MANUAL`, no persistence, no
-# dedup). `add` is accepted and scheduled the same way rather than
-# raising, since refusing an otherwise-valid command would be less
-# faithful to Core than dialling once and not persisting; `remove`
-# answers Core's own `RPC_CLIENT_NODE_NOT_ADDED` every time, there being
-# no added-node list here for it to find an entry in.
+# bitcoin/bitcoin@bb529657): `add`/`remove` reach `P2pManager`'s own
+# `add_added_peer`/`remove_added_peer`, its counterpart to `CConnman`'s
+# `AddNode`/`RemoveAddedNode`, and `_open_added_peers`
+# (`p2p/manager.py`) is what actually dials whatever the list holds,
+# never this function (btclib-org/btclib-node#1350). `onetry` schedules
+# the identical one-shot dial Core's `OpenNetworkConnection` does
+# (`conn_type=MANUAL`, no persistence, no dedup) -- the one command
+# `connect_nodes`, the one caller this node's own tf2 census names for
+# this method (`test_framework.py:568-594`, same sha), ever calls.
 _ADDNODE_COMMANDS = ("add", "remove", "onetry")
 
 
-def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
-    """Answer `addnode`, `onetry` for real and the other two commands honestly.
+def _parsed_addnode_args(params: list[Any]) -> tuple[str, str]:
+    """Return `addnode`'s own `(node, command)`, or raise as Core's parser does.
 
-    The module-level comment above argues the three commands; this
-    function is Core's own argument parsing and its two literal error
-    messages (`rpc/net.cpp:365-377`, at bitcoin/bitcoin@bb529657). The
-    empty-`node` refusal is master's own fix
-    (`rpc: reject empty node argument in addnode`,
-    at bitcoin/bitcoin@90ce21e21d) rather than this tree's own pinned
-    `bitcoind`'s: at bitcoin/bitcoin@9be056a8a7 -- v31.1, the release
-    `integration-bitcoind.yml` pins, answers an empty `node` with a
-    silent, do-nothing success instead, measured directly against a
-    real v31.1.0 (issue #1010). `90ce21e21d` post-dates v31.1's own tag
-    commit and is confirmed on `bb529657`'s own ancestry via
-    `git merge-base --is-ancestor`.
-
-    Matching master here rather than the release this tree tests
-    against is a decision, not an oversight: `CLAUDE.md`'s own
-    *Following Bitcoin Core* names matching Core's behaviour as the
-    default, and reserves a release-pinned citation for a claim about
-    the behaviour of the bitcoind this tree is tested against rather
-    than for what this node implements. Master's own code comment names
-    why the fix exists -- "Such a node would never resolve, but would
-    be retried indefinitely" -- and nothing under `tests/integration/`
-    drives `addnode ""`, so this tree's own integration suite, run
-    against v31.1, never exercises the one call shape the two
-    disagree on. Matching the release instead would mean knowingly
-    carrying a defect Core itself already fixed, only to undo that the
-    moment the pin advances past it -- issue #1010 is closed on this
-    reasoning. `v2transport` is read and type-checked, matching Core's
-    own optional third argument, and otherwise unused: BIP324 is not a
-    transport this node speaks yet.
+    Split out of `add_node` below so that function's own three-command
+    dispatch stays under `ruff`'s complexity floor; the checks
+    themselves are unchanged (`rpc/net.cpp:365-377`, at
+    bitcoin/bitcoin@bb529657).
     """
     if len(params) < 2:  # noqa: PLR2004
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["addnode"])
@@ -1398,24 +1372,68 @@ def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
         raise RpcError(
             RPCErrorCode.INVALID_PARAMETER, "Error: Node address cannot be empty"
         )
+    return node_arg, command
+
+
+def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
+    """Answer `addnode`'s three commands for real, each against Core's own list.
+
+    The module-level comment above argues the three commands; this
+    function is Core's own argument parsing and its two literal error
+    messages (`rpc/net.cpp:365-377`, at bitcoin/bitcoin@bb529657). The
+    empty-`node` refusal is master's own fix
+    (`rpc: reject empty node argument in addnode`,
+    at bitcoin/bitcoin@90ce21e21d) rather than this tree's own pinned
+    `bitcoind`'s: at bitcoin/bitcoin@9be056a8a7 -- v31.1, the release
+    `integration-bitcoind.yml` pins, answers an empty `node` with a
+    silent, do-nothing success instead, measured directly against a
+    real v31.1.0 (issue #1010). `90ce21e21d` post-dates v31.1's own tag
+    commit and is confirmed on `bb529657`'s own ancestry via
+    `git merge-base --is-ancestor`.
+
+    Matching master here rather than the release this tree tests
+    against is a decision, not an oversight: `CLAUDE.md`'s own
+    *Following Bitcoin Core* names matching Core's behaviour as the
+    default, and reserves a release-pinned citation for a claim about
+    the behaviour of the bitcoind this tree is tested against rather
+    than for what this node implements. Master's own code comment names
+    why the fix exists -- "Such a node would never resolve, but would
+    be retried indefinitely" -- and nothing under `tests/integration/`
+    drives `addnode ""`, so this tree's own integration suite, run
+    against v31.1, never exercises the one call shape the two
+    disagree on. Matching the release instead would mean knowingly
+    carrying a defect Core itself already fixed, only to undo that the
+    moment the pin advances past it -- issue #1010 is closed on this
+    reasoning. `v2transport` is read and type-checked, matching Core's
+    own optional third argument, and otherwise unused: BIP324 is not a
+    transport this node speaks yet.
+    """
+    node_arg, command = _parsed_addnode_args(params)
+
+    if command == "add":
+        if not node.p2p_manager.add_added_peer(node_arg):
+            raise RpcError(
+                RPCErrorCode.CLIENT_NODE_ALREADY_ADDED, "Error: Node already added"
+            )
+        return
 
     if command == "remove":
-        raise RpcError(
-            RPCErrorCode.CLIENT_NODE_NOT_ADDED,
-            "Error: Node could not be removed. It has not been added previously.",
-        )
+        if not node.p2p_manager.remove_added_peer(node_arg):
+            raise RpcError(
+                RPCErrorCode.CLIENT_NODE_NOT_ADDED,
+                "Error: Node could not be removed. It has not been added previously.",
+            )
+        return
 
     try:
         host, port = split_host_port(node_arg, node.chain.port)
-        address = peer_address(host, port)
     except ValueError as error:
-        # a hostname, or a malformed port: `_resolve_peers` (config.py)
-        # refuses `-addnode`'s own spec the identical way and for the
-        # identical reason -- this node's synchronous RPC path resolves
-        # no DNS
+        # a malformed port alone: a hostname is no longer refused here,
+        # `connect_host` resolving one the way `P2pManager`'s own
+        # redial and `Node.run`'s startup dial do (btclib-org/btclib-node#1264)
         raise RpcError(RPCErrorCode.INVALID_PARAMETER, str(error)) from error
 
-    node.p2p_manager.connect(address)
+    node.p2p_manager.connect_host(host, port)
 
 
 # `UniValue::getInt<int64_t>`'s own range, past which it throws "JSON
@@ -1639,20 +1657,20 @@ def get_mempool_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     mempool = node.mempool
     # Core's own MempoolInfoToJSON (`src/rpc/mempool.cpp:1075-1086`,
     # at bitcoin/bitcoin@58a7869f86) answers several fields beyond these
-    # four: `usage`, `total_fee`, `unbroadcastcount`,
-    # `permitbaremultisig`, `maxdatacarriersize`, `limitclustercount`,
-    # `limitclustersize`, `optimal`, the deprecated `fullrbf`. Every one
-    # of those is backed by a concept this tree does not carry -- a
-    # cluster mempool graph, a persisted total fee, unbroadcast-tx
-    # tracking, a bare-multisig policy knob -- and answering any of them
-    # with a placeholder would be exactly the decoration this method's
-    # own sparse answer already was. `minrelaytxfee` and
+    # five: `usage`, `total_fee`, `permitbaremultisig`,
+    # `maxdatacarriersize`, `limitclustercount`, `limitclustersize`,
+    # `optimal`, the deprecated `fullrbf`. Every one of those is backed
+    # by a concept this tree does not carry -- a cluster mempool graph, a
+    # persisted total fee, a bare-multisig policy knob -- and answering
+    # any of them with a placeholder would be exactly the decoration
+    # this method's own sparse answer already was. `minrelaytxfee` and
     # `incrementalrelayfee` are excluded for a different reason: both
     # are real and cheap to answer here too (`Config.min_relay_feerate`,
     # `mempool.py`'s own incremental-fee constant), left out only
     # because #305 named these two fields and not those. `maxmempool`
     # and `mempoolminfee` are wired in because #294 gave both a real
-    # source to read. btclib-org/btclib-node#305
+    # source to read, and `unbroadcastcount` because #1421 gave
+    # `Mempool.unbroadcast` one. btclib-org/btclib-node#305
     #
     # `mempoolminfee` is BTC/kvB, matching Core's own
     # `ValueFromAmount`-converted unit rather than this tree's own
@@ -1676,6 +1694,7 @@ def get_mempool_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
         "bytes": mempool.bytesize,
         "maxmempool": mempool.bytesize_limit,
         "mempoolminfee": _btc_amount(mempoolminfee),
+        "unbroadcastcount": len(mempool.unbroadcast),
     }
 
 
@@ -2140,6 +2159,69 @@ def get_raw_mempool(
     return {"txids": txids, "mempool_sequence": node.mempool.sequence}
 
 
+def get_mempool_entry(
+    node: Node, conn: RpcConnection, params: list[Any]
+) -> dict[str, Any]:
+    """Answer `getmempoolentry`: one held transaction's own accounting.
+
+    Core's own shape (`entryToJSON`, `src/rpc/mempool.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), less `chunkweight` and
+    the `fees` object's own `chunk` -- `Mempool.entry`'s own docstring is
+    where that is argued. A `txid` this mempool does not hold is Core's
+    own `RPC_INVALID_ADDRESS_OR_KEY`, "Transaction not in mempool".
+    btclib-org/btclib-node#1397
+    """
+    if not params:
+        # the same mechanism get_block_header's own missing-argument case
+        # answers with, above: RPCMethod::HandleRequest's HelpResult,
+        # RPC_MISC_ERROR (src/rpc/server.cpp:887). `txid` is declared
+        # RPCArg::Type::STR_HEX and Optional::NO, so it renders quoted
+        # and outside any `( ... )` group --
+        # read at bitcoin/bitcoin@b91d983f66, src/rpc/mempool.cpp:869-870
+        raise RpcError(RPCErrorCode.MISC_ERROR, 'getmempoolentry "txid"')
+    if not isinstance(params[0], str):
+        raise type_error(1, "txid", params[0], "string")
+    try:
+        txid = bytes.fromhex(params[0])
+    except ValueError as error:
+        # ParseHashV, src/rpc/util.cpp:125, down to the sentence -- the
+        # same simplification `get_block_header`'s own `blockhash` above
+        # takes, an odd-length or non-hex string refused and a
+        # wrong-length-but-valid-hex one not
+        raise RpcError(
+            RPCErrorCode.INVALID_PARAMETER,
+            f"txid must be hexadecimal string (not '{params[0]}')",
+        ) from error
+    mempool = node.mempool
+    wtxid = mempool.txid_index.get(txid)
+    if wtxid is None:
+        raise RpcError(
+            RPCErrorCode.INVALID_ADDRESS_OR_KEY, "Transaction not in mempool"
+        )
+    entry = mempool.entry(wtxid)
+    return {
+        "vsize": entry.vsize,
+        "weight": entry.weight,
+        "time": entry.time,
+        "height": entry.height,
+        "descendantcount": entry.descendant_count,
+        "descendantsize": entry.descendant_size,
+        "ancestorcount": entry.ancestor_count,
+        "ancestorsize": entry.ancestor_size,
+        "wtxid": entry.wtxid,
+        "fees": {
+            "base": _btc_amount(entry.fee),
+            "modified": _btc_amount(entry.modified_fee),
+            "ancestor": _btc_amount(entry.ancestor_fees),
+            "descendant": _btc_amount(entry.descendant_fees),
+        },
+        "depends": entry.depends,
+        "spentby": entry.spent_by,
+        "bip125-replaceable": entry.bip125_replaceable,
+        "unbroadcast": entry.unbroadcast,
+    }
+
+
 def _decode_txid(txid_arg: str) -> bytes:
     """Hex-decode `getrawtransaction`'s own `txid`, already type-checked.
 
@@ -2324,6 +2406,140 @@ _MEMPOOL_FULL_REASON = "mempool full"
 # `testmempoolaccept` takes. btclib-org/btclib-node#1329
 _MAX_PACKAGE_COUNT = 25
 
+# Core's own `COIN` and `MAX_MONEY` (`src/consensus/amount.h`, same
+# tag): `MoneyRange`'s own bound, what `AmountFromValue` refuses an
+# out-of-range `maxfeerate` or `maxburnamount` against.
+_COIN = 100_000_000
+_MAX_MONEY = 21_000_000 * _COIN
+# Core's own `DEFAULT_MAX_RAW_TX_FEE_RATE` (`src/node/transaction.h`,
+# same tag): `sendrawtransaction` and `testmempoolaccept`'s own default
+# `maxfeerate`, 0.1 BTC/kvB.
+_DEFAULT_MAX_RAW_TX_FEE_RATE = _COIN // 10
+# Core's own `DEFAULT_MAX_BURN_AMOUNT` (same file): `sendrawtransaction`'s
+# own default `maxburnamount`, zero.
+_DEFAULT_MAX_BURN_AMOUNT = 0
+# Core's own error, `AmountFromValue`'s (`src/rpc/util.cpp`, same tag)
+# ahead of `ParseFeeRate`'s own bound, both of `test_mempool_accept` and
+# `send_raw_transaction` below reading it through `_amount_param`.
+_AMOUNT_NOT_NUMBER_OR_STRING = "Amount is not a number or string"
+
+
+def _amount_param(params: list[Any], position: int, *, name: str, default: int) -> int:
+    """Read an `RPCArg::Type::AMOUNT` argument, Core's own `AmountFromValue`.
+
+    `src/rpc/util.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag:
+    `RPCArg::Type::AMOUNT` is exempt from `RPCMethod::HandleRequest`'s
+    own pre-check (`ExpectedType` answers `std::nullopt` for it, "VNUM
+    or VSTR, checked inside AmountFromValue()"), so a JSON number or
+    string is read here as a decimal BTC amount, exact to eight
+    decimals, and refused as `RPC_TYPE_ERROR`: "Amount is not a number
+    or string" for a JSON value of neither type -- `bool` included,
+    `bool` being `int`'s own subclass in Python and no JSON bool ever
+    being a number to Core's own `UniValue` -- "Invalid amount" for one
+    that does not parse as a decimal, is not finite, or is not a whole
+    number of satoshi, and "Amount out of range" for one that parses but
+    falls outside `MoneyRange`, 0 through `MAX_MONEY`.
+
+    `btclib.amount.valid_btc_amount` parses and range-checks the same
+    grammar -- `Decimal`, finite, at most eight decimals, 0 through the
+    21 million cap -- but folds Core's own two distinct messages above
+    into the one `BTClibValueError` it always raises, which is why this
+    reads the value with `Decimal` directly instead. `ParseFixedPoint`'s
+    own digit-by-digit overflow guard (`src/util/strencodings.cpp`, same
+    tag) is not replayed either: `Decimal.as_integer_ratio` is exact
+    with no fixed width to overflow, the way `btclib.fee.FeeRate`'s own
+    `from_sats_per_vbyte` already reads a decimal quote, and the
+    `MoneyRange` check below is what `AmountFromValue` bounds its own
+    result against either way -- the same value refused, whichever the
+    parser.
+    """
+    if len(params) <= position or params[position] is None:
+        return default
+    value = params[position]
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise RpcError(RPCErrorCode.TYPE_ERROR, _AMOUNT_NOT_NUMBER_OR_STRING)
+    try:
+        decimal_value = Decimal(str(value))
+    except InvalidOperation:
+        raise RpcError(RPCErrorCode.TYPE_ERROR, "Invalid amount") from None
+    if not decimal_value.is_finite():
+        raise RpcError(RPCErrorCode.TYPE_ERROR, "Invalid amount")
+    numerator, denominator = decimal_value.as_integer_ratio()
+    amount, remainder = divmod(numerator * _COIN, denominator)
+    if remainder:
+        raise RpcError(RPCErrorCode.TYPE_ERROR, "Invalid amount")
+    if not 0 <= amount <= _MAX_MONEY:
+        raise RpcError(RPCErrorCode.TYPE_ERROR, "Amount out of range")
+    return amount
+
+
+def _parse_max_fee_rate(params: list[Any], position: int) -> int:
+    """Read `maxfeerate`, Core's own `ParseFeeRate` over `_amount_param`.
+
+    `src/rpc/util.cpp`, same tag: a rate of 1 BTC/kvB or more is
+    refused, `RPC_INVALID_PARAMETER`, in Core's own words -- "Set to 0
+    to accept any fee rate" is `_exceeds_max_fee` below's own reading of
+    a zero rate as no cap, not a refusal here.
+    """
+    rate = _amount_param(
+        params, position, name="maxfeerate", default=_DEFAULT_MAX_RAW_TX_FEE_RATE
+    )
+    if rate >= _COIN:
+        raise RpcError(
+            RPCErrorCode.INVALID_PARAMETER,
+            "Fee rates larger than or equal to 1BTC/kvB are not accepted",
+        )
+    return rate
+
+
+def _exceeds_max_fee(vsize: int, fee: int, max_raw_tx_fee_rate: int) -> bool:
+    """Whether `fee` for `vsize` exceeds `max_raw_tx_fee_rate`, Core's check.
+
+    Core's own `max_raw_tx_fee = max_raw_tx_fee_rate.GetFee(virtual_size)`
+    then `if (max_raw_tx_fee && fee > max_raw_tx_fee)`
+    (`src/rpc/mempool.cpp`/`src/node/transaction.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a `max_raw_tx_fee_rate`
+    of zero makes `max_raw_tx_fee` zero too, and the `&&` reads that as
+    no cap rather than a cap of zero satoshi. Unlike Core's own
+    `sendrawtransaction`, which estimates `virtual_size` from the
+    transaction's own weight alone (`GetVirtualTransactionSize(*tx)`,
+    sigops uncounted) before it knows whether the transaction even
+    verifies, and only later compares the cap this estimate derives
+    against the real fee `ProcessTransaction` computes -- this tree
+    verifies once, not test-accept-then-submit, so both callers below
+    pass the same sigop-adjusted `vsize`
+    `main.verify_mempool_acceptance` already computed and the mempool
+    itself prices by, rather than a second, coarser estimate that exists
+    in Core only because its own two-call shape has no other vsize to
+    reach for yet.
+    """
+    max_raw_tx_fee = fee_from_vsize(vsize, FeeRate(sats_per_kvbyte=max_raw_tx_fee_rate))
+    return bool(max_raw_tx_fee) and fee > max_raw_tx_fee
+
+
+def _exceeds_max_burn(tx: Tx, max_burn_amount: int) -> bool:
+    """Whether an unspendable output of `tx` exceeds `max_burn_amount`.
+
+    Core's own check (`sendrawtransaction`'s handler, `src/rpc/mempool.cpp`,
+    same tag): `out.scriptPubKey.IsUnspendable() ||
+    !out.scriptPubKey.HasValidOps()`, `out.nValue > max_burn_amount`,
+    refused as soon as one output matches. `!HasValidOps()` -- a push
+    past the script's own end, or an opcode no table names -- is not
+    replayed here: `btclib`'s own `Script.assert_valid` deliberately
+    answers no such question (its own docstring, "there is no other
+    question to ask: Bitcoin Core has no validity notion for a script
+    either"), and `is_unspendable` is the one script-level predicate this
+    tree's own dependency already carries the way `IsUnspendable()` is
+    Core's -- an output whose script is grammatically malformed but not
+    `is_unspendable` is a narrower case this check leaves to whatever
+    this node already does with such a script elsewhere, rather than
+    adding the opcode-validity scan `btclib` does not expose.
+    """
+    return any(
+        is_unspendable(tx_out.script_pub_key.script) and tx_out.value > max_burn_amount
+        for tx_out in tx.vout
+    )
+
 
 def test_mempool_accept(
     node: Node, conn: RpcConnection, params: list[Any]
@@ -2363,6 +2579,11 @@ def test_mempool_accept(
     if not 1 <= len(rawtxs) <= _MAX_PACKAGE_COUNT:
         err_msg = f"Array must contain between 1 and {_MAX_PACKAGE_COUNT} transactions."
         raise RpcError(RPCErrorCode.INVALID_PARAMETER, err_msg)
+    # Core's own order: `maxfeerate` is parsed here, ahead of the decode
+    # loop below, the same as `ParseFeeRate`'s own call sits ahead of
+    # Core's own loop (`src/rpc/mempool.cpp`, same tag).
+    # btclib-org/btclib-node#1371
+    max_raw_tx_fee_rate = _parse_max_fee_rate(params, 1)
     txs: list[Tx] = []
     for rawtx in rawtxs:
         if not isinstance(rawtx, str):
@@ -2383,10 +2604,12 @@ def test_mempool_accept(
                 f"TX decode failed: {rawtx} Make sure the tx has at least one input."
             )
             raise RpcError(RPCErrorCode.DESERIALIZATION_ERROR, err_msg) from error
-    return [_mempool_accept_verdict(node, tx) for tx in txs]
+    return [_mempool_accept_verdict(node, tx, max_raw_tx_fee_rate) for tx in txs]
 
 
-def _mempool_accept_verdict(node: Node, tx: Tx) -> dict[str, Any]:
+def _mempool_accept_verdict(
+    node: Node, tx: Tx, max_raw_tx_fee_rate: int
+) -> dict[str, Any]:
     """Return `test_mempool_accept`'s own per-tx verdict for `tx`.
 
     Only these two, matching Core's own shape: testmempoolaccept's
@@ -2401,6 +2624,12 @@ def _mempool_accept_verdict(node: Node, tx: Tx) -> dict[str, Any]:
     INTERNAL_ERROR for exactly this, the same uniform catch
     send_raw_transaction below already relies on for anything past its
     own two excepts (btclib-org/btclib-node#668).
+
+    `max_raw_tx_fee_rate`'s own refusal is not a third exception: Core's
+    own fee-cap check runs after its candidate already verified
+    (`src/rpc/mempool.cpp`, same tag), so `_exceeds_max_fee` below reads
+    `verify_mempool_acceptance`'s own successful answer rather than
+    catching anything. btclib-org/btclib-node#1371
     """
     tx_res: dict[str, Any] = {
         "txid": tx.id,
@@ -2411,8 +2640,16 @@ def _mempool_accept_verdict(node: Node, tx: Tx) -> dict[str, Any]:
         # `vsize` for an accepted one alone, as Core answers it: the
         # sigop-adjusted size, known once the prevouts are read.
         # btclib-org/btclib-node#1357
-        tx_res["vsize"] = verify_mempool_acceptance(node, tx).vsize
-        tx_res["allowed"] = True
+        fee, vsize = verify_mempool_acceptance(node, tx)
+        if _exceeds_max_fee(vsize, fee, max_raw_tx_fee_rate):
+            # Core's own reject-reason for this one alone, with no
+            # reject-details (`src/rpc/mempool.cpp`, same tag): the
+            # candidate itself verified, so there is no `TxRejectedError`
+            # to read one from. btclib-org/btclib-node#1371
+            tx_res["reject-reason"] = "max-fee-exceeded"
+        else:
+            tx_res["vsize"] = vsize
+            tx_res["allowed"] = True
     except TxRejectedError as exc:
         # Core's own pair for every reason but `missing-inputs`
         # (`src/rpc/mempool.cpp`, at bitcoin/bitcoin@9be056a8a7, the
@@ -2425,15 +2662,63 @@ def _mempool_accept_verdict(node: Node, tx: Tx) -> dict[str, Any]:
     return tx_res
 
 
-def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> str:
-    """Answer `sendrawtransaction`: verify, add to the mempool, announce.
+def _already_confirmed(node: Node, tx: Tx) -> bool:
+    """Whether an unspent output of `tx`'s own is already in the UTXO set.
 
-    A transaction that fails to decode, that `verify_mempool_acceptance`
-    refuses, or that `Mempool.add_tx` evicts right back out under its
-    own size limit is each refused with the reject reason and code
-    cited beside its own raise, below; one kept is broadcast to peers
-    and its txid answered, and so is one whose txid is already held,
-    without being verified again.
+    Core's own `BroadcastTransaction` (`node/transaction.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) walks `tx->vout` against
+    the coins tip before anything else: "If the transaction is already
+    confirmed in the chain, don't do anything and return early." An
+    output the active chain spent again since is gone from the UTXO set
+    the same as one this transaction never had, so only an *unspent* one
+    of this transaction's own outputs says it already confirmed.
+    """
+    utxo_index = node.chainstate.utxo_index
+    return any(
+        utxo_index.get_coin(
+            OutPoint(tx.id, vout, check_validity=False).serialize(check_validity=False)
+        )
+        is not None
+        for vout in range(len(tx.vout))
+    )
+
+
+# Core's own `TransactionErrorString(TransactionError::ALREADY_IN_UTXO_SET)`
+# (`src/common/messages.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+# tag): `RPCErrorFromTransactionError` maps that error to
+# `RPC_VERIFY_ALREADY_IN_UTXO_SET` (-27),
+# `RPCErrorCode.VERIFY_ALREADY_IN_UTXO_SET` here.
+# btclib-org/btclib-node#1373
+_ALREADY_IN_UTXO_SET_REASON = "Transaction outputs already in utxo set"
+# Core's own `TransactionErrorString(TransactionError::MAX_FEE_EXCEEDED)`,
+# same file: `RPCErrorFromTransactionError`'s own `default` case answers
+# it, like every `TransactionError` but the two named there,
+# `RPC_TRANSACTION_ERROR` -- a bare alias of `RPC_VERIFY_ERROR` (-25,
+# `src/rpc/protocol.h`). btclib-org/btclib-node#1371
+_MAX_FEE_EXCEEDED_REASON = (
+    "Fee exceeds maximum configured by user (e.g. -maxtxfee, maxfeerate)"
+)
+# Core's own `TransactionErrorString(TransactionError::MAX_BURN_EXCEEDED)`,
+# same file and same `RPC_TRANSACTION_ERROR` mapping.
+# btclib-org/btclib-node#1371
+_MAX_BURN_EXCEEDED_REASON = (
+    "Unspendable output exceeds maximum configured by user (maxburnamount)"
+)
+
+
+def _decode_and_precheck_raw_tx(node: Node, params: list[Any]) -> tuple[Tx, int]:
+    """Decode `sendrawtransaction`'s `hexstring`, and its two early refusals.
+
+    Everything `send_raw_transaction` below does ahead of the
+    held-in-mempool check: the no-argument usage string, `hexstring`'s
+    own type check, decoding it, and the two refusals Core's own
+    `BroadcastTransaction` and its handler make on the decoded
+    transaction alone -- `MAX_BURN_EXCEEDED` and the already-confirmed
+    early return -- ahead of anything that reads the mempool.
+    Returns the transaction and `maxfeerate`, Core's own `max_raw_tx_fee_rate`,
+    read but not yet acted on: `_exceeds_max_fee` below is not one of
+    Core's own two decoded-transaction-only checks, needing the mempool's
+    own verified fee and vsize instead.
     """
     if not params:
         # the same mechanism get_block_hash's own missing-argument case
@@ -2451,6 +2736,13 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
         # (src/rpc/mempool.cpp:72), type-checked before the handler
         # body runs, the same as blockhash and txid above
         raise type_error(1, "hexstring", rawtx, "string")
+    # Core's own order: `maxburnamount` is parsed here, ahead of the
+    # decode below, the same as its own read of `request.params[2]` sits
+    # ahead of `DecodeHexTx` (`src/rpc/mempool.cpp`, same tag).
+    # btclib-org/btclib-node#1371
+    max_burn_amount = _amount_param(
+        params, 2, name="maxburnamount", default=_DEFAULT_MAX_BURN_AMOUNT
+    )
     try:
         tx = Tx.parse(rawtx)
     except BTClibException as error:
@@ -2465,6 +2757,38 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
             RPCErrorCode.DESERIALIZATION_ERROR,
             "TX decode failed. Make sure the tx has at least one input.",
         ) from error
+    if _exceeds_max_burn(tx, max_burn_amount):
+        # Core's own `MAX_BURN_EXCEEDED`, checked on the decoded
+        # transaction ahead of everything below it, `maxfeerate`
+        # included (`src/rpc/mempool.cpp`, same tag).
+        # btclib-org/btclib-node#1371
+        raise RpcError(RPCErrorCode.VERIFY_ERROR, _MAX_BURN_EXCEEDED_REASON)
+    max_raw_tx_fee_rate = _parse_max_fee_rate(params, 1)
+    if _already_confirmed(node, tx):
+        # Core's own early return, ahead of the held-in-mempool check
+        # below and of verification itself (`_already_confirmed`'s own
+        # docstring). btclib-org/btclib-node#1373
+        raise RpcError(
+            RPCErrorCode.VERIFY_ALREADY_IN_UTXO_SET, _ALREADY_IN_UTXO_SET_REASON
+        )
+    return tx, max_raw_tx_fee_rate
+
+
+def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> str:
+    """Answer `sendrawtransaction`: verify, add to the mempool, announce.
+
+    A transaction that fails to decode, that `verify_mempool_acceptance`
+    refuses, or that `Mempool.add_tx` evicts right back out under its
+    own size limit is each refused with the reject reason and code
+    cited beside its own raise, below; one kept is broadcast to peers
+    and its txid answered, and so is one whose txid is already held,
+    without being verified again. One whose own outputs are already in
+    the UTXO set, or whose burned or feerate cost exceeds `maxburnamount`
+    or `maxfeerate`, is refused before either of those two, the order
+    Core's own `BroadcastTransaction` checks them in --
+    `_decode_and_precheck_raw_tx` above is that first half.
+    """
+    tx, max_raw_tx_fee_rate = _decode_and_precheck_raw_tx(node, params)
     held = node.mempool.get_tx(tx.id)
     if held is not None:
         # This txid is already held, possibly under a different witness
@@ -2494,6 +2818,12 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
         # `verify_mempool_acceptance` makes but a missing input.
         # btclib-org/btclib-node#1245, btclib-org/btclib-node#1328
         raise RpcError(RPCErrorCode.VERIFY_REJECTED, str(exc)) from exc
+    if _exceeds_max_fee(vsize, fee, max_raw_tx_fee_rate):
+        # Core's own `MAX_FEE_EXCEEDED`, `_exceeds_max_fee`'s own
+        # docstring is where reading it against the real, verified
+        # `vsize` and `fee` rather than a pre-verification estimate is
+        # argued. btclib-org/btclib-node#1371
+        raise RpcError(RPCErrorCode.VERIFY_ERROR, _MAX_FEE_EXCEEDED_REASON)
     # `Mempool.add_tx` now evicts to make room rather than refusing
     # outright past its old `is_full()` gate (btclib-org/btclib-node#294),
     # so whether this call is answered with the refusal below is no
@@ -2505,13 +2835,18 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
     # `tx.id.hex()` regardless of that boolean would tell the caller
     # this transaction was kept when it was not -- the same defect #277
     # fixed on the peer-to-peer path, `p2p/callbacks.py`'s `tx` handler.
-    if not node.mempool.add_tx(tx, fee, vsize):
+    tip_height = len(node.chainstate.block_index.active_chain) - 1
+    if not node.mempool.add_tx(tx, fee, vsize, height=tip_height):
         # Not kept: `Mempool._evict_to_limit` ran
         # and took this transaction right back out for being the worst
         # one held once `Mempool.bytesize_limit` was restored -- exactly
         # the case `_MEMPOOL_FULL_REASON`'s own comment names, Core's
         # `TX_RECONSIDERABLE` "mempool full". btclib-org/btclib-node#294
         raise RpcError(RPCErrorCode.VERIFY_REJECTED, _MEMPOOL_FULL_REASON)
+    # Core's own `AddUnbroadcastTx`, called only here -- never for a
+    # transaction a peer handed this node over the wire.
+    # btclib-org/btclib-node#1421
+    node.mempool.mark_broadcast_locally(tx.id)
     node.p2p_manager.broadcast_raw_transaction(tx, fee)
     return tx.id.hex()
 
@@ -2566,6 +2901,7 @@ callbacks = {
     "clearbanned": clear_banned,
     "getmempoolinfo": get_mempool_info,
     "getrawmempool": get_raw_mempool,
+    "getmempoolentry": get_mempool_entry,
     "getrawtransaction": get_raw_transaction,
     "gettxout": get_tx_out,
     "gettxoutsetinfo": get_tx_out_set_info,
@@ -2604,6 +2940,7 @@ arg_names: dict[str, tuple[str, ...]] = {
     "clearbanned": (),
     "getmempoolinfo": (),
     "getrawmempool": ("verbose", "mempool_sequence"),
+    "getmempoolentry": ("txid",),
     "getrawtransaction": ("txid", "verbosity|verbose", "blockhash"),
     "gettxout": ("txid", "n", "include_mempool"),
     "gettxoutsetinfo": ("hash_type", "hash_or_height", "use_index"),

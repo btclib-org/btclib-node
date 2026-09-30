@@ -1092,6 +1092,64 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A hex `txid` or `blockhash` of the wrong length is refused**, rather
   than silently decoding to a hash nothing then finds (closes #1457).
 
+### `testmempoolaccept` and `sendrawtransaction` follow Core's `rpc/mempool.cpp`
+
+- **Both apply `maxfeerate` and `maxburnamount`** (closes #1371).
+- **A confirmed resubmission answers `-27`, not `-25`** (closes #1373).
+
+### `getmempoolinfo` and `getmempoolentry` answer as Core's do
+
+- **`getmempoolinfo` answers `unbroadcastcount`** (closes #1421).
+- **`getmempoolentry` is served** (closes #1397).
+
+### A signet block needs a real BIP325 solution
+
+- **A signet block without a valid solution for the chain's own
+  challenge is refused, `bad-signet-blksig`, as Core's
+  `CheckSignetBlockSolution` refuses it** (closes #1342).
+
+### A headers batch indexes its valid prefix through a contextual failure
+
+- **A header failing only its contextual check no longer discards the
+  valid headers ahead of it, matching Core's two-stage
+  `CheckHeadersPoW` then `AcceptBlockHeader`** (closes #1348).
+
+### `-connect`, `-addnode` and `-seednode` take a hostname
+
+- **A hostname given to `-connect`, `-addnode`, `-seednode` or the
+  `addnode` RPC is resolved at dial time, not refused at startup**
+  (closes #1264), as Core's `ConnectNode` resolves a `pszDest`.
+
+### `-connect` and `-addnode` are each dialled by a loop of their own
+
+- **A `-connect` or `-addnode` peer not held is redialled by a standing
+  loop of its own, on Core's own cadence, in place of one shared,
+  capped, doubling backoff** (closes #1316).
+
+### The `addnode` RPC's `add` and `remove` grow and shrink the `-addnode` list
+
+- **`add` and `remove` now mutate the list `-addnode`'s own dial loop
+  reads, as Core's `AddNode`/`RemoveAddedNode` do, in place of `add`
+  dialling once unpersisted and `remove` always refusing** (closes #1350).
+
+### An addr-fetch dial no longer holds up pruning
+
+- **The addr-fetch queue is now dialled by a standing loop of its own,
+  off `manage_connections`'s own step, so a slow resolve or connect no
+  longer delays that loop's pruning and eviction** (closes #1366).
+
+### `history.log` opens the way `bitcoind`'s `debug.log` does
+
+- **Every setting read is logged, a sensitive one masked** (closes #1305).
+- **A refusal after the data directory's lock reaches the file** (closes #1306).
+- **The file opens on five blank lines and a version line** (closes #1309).
+
+### `CONTRIBUTING.md` points a newcomer at `good first issue`
+
+- **An issue carrying the label is small and self-contained** (issue
+  btclib-org/.github#1362): *The issue tracker* says so, and links the
+  organization-wide search for the open ones.
+
 ### Testnet4 is a chain this node can join, `-testnet4` included
 
 - **`TestNet4` joins this node's chains, selected by `-testnet4` or

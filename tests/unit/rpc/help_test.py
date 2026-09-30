@@ -33,6 +33,7 @@ _EXPECTED_BARE_LISTING = (
     "getblockhash height\n"
     'getblockheader "blockhash" ( verbose )\n'
     "getchaintips\n"
+    'getmempoolentry "txid"\n'
     "getmempoolinfo\n"
     "getrawmempool ( verbose mempool_sequence )\n"
     'gettxout "txid" n ( include_mempool )\n'

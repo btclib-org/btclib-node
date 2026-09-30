@@ -35,7 +35,7 @@ from btclib_node import Node, install_signal_handlers
 from btclib_node.chains import RegTest
 from btclib_node.chainstate import Chainstate
 from btclib_node.config import Config
-from btclib_node.constants import NodeStatus
+from btclib_node.constants import CLIENT_NAME, CLIENT_VERSION, NodeStatus
 from btclib_node.exceptions import (
     ChainstateInconsistencyError,
     DirectoryLockError,
@@ -44,7 +44,6 @@ from btclib_node.exceptions import (
 )
 from btclib_node.interpreter import warm
 from btclib_node.main import prune_up_to_height, update_chain
-from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES
 from btclib_node.rpc.auth import COOKIE_FILE
 from tests import (
@@ -109,11 +108,6 @@ class AManager:
         # times `run`'s shutdown dumped it, as Core's `~BanMan` does
         self.ban_list_dumps = 0
         self.ban_man = SimpleNamespace(dump=self._dump_ban_list)
-        # what `run`'s own `config.connect`/`config.addnode` dial loop
-        # calls, in order -- only P2pManager's own attribute has a real
-        # `connect`, and this stand-in is asked for both managers, so
-        # both carry it the same way `peer_db` above does
-        self.connect_calls: list[Any] = []
 
     def _dump_ban_list(self) -> None:
         self.ban_list_dumps += 1
@@ -130,10 +124,6 @@ class AManager:
     def stop(self) -> None:
         """Record that `run`'s own teardown reached this stand-in."""
         self.stopped = True
-
-    def connect(self, address: Any) -> None:
-        """Record `address`, in the order `run` dialled it."""
-        self.connect_calls.append(address)
 
 
 @pytest.fixture
@@ -879,54 +869,6 @@ def test_a_port_configured_is_a_manager_started_and_stopped(
     assert not quiet.rpc_manager.is_alive()
 
 
-def test_run_dials_every_connect_and_addnode_peer_at_startup(tmp_path: Path) -> None:
-    """`run` calls `p2p_manager.connect` once per `connect`/`addnode` peer.
-
-    Built by hand rather than through `a_networked_node`, which carries
-    no `connect`/`addnode` of its own: the real `P2pManager` this
-    `Config` builds is torn down and replaced with the same `AManager`
-    stand-in that fixture swaps in, for the same reason (#263's own
-    `peer_db` needs closing before the only reference to it drops).
-    """
-    node = Node(
-        config=Config(
-            chain="regtest",
-            data_dir=tmp_path,
-            p2p_port=18444,
-            allow_rpc=False,
-            connect=["10.0.0.1:1"],
-            addnode=["10.0.0.2:2"],
-            debug=True,
-        )
-    )
-    node.load()
-    node.p2p_manager.loop.close()
-    node.p2p_manager.peer_db.close()
-    node.p2p_manager = AManager()  # type: ignore[assignment]
-    p2p_manager = cast("AManager", node.p2p_manager)
-    try:
-        node.start()
-        wait_until(lambda: len(p2p_manager.connect_calls) == 2)
-        assert p2p_manager.connect_calls == [
-            peer_address("10.0.0.1", 1),
-            peer_address("10.0.0.2", 2),
-        ]
-    finally:
-        node.stop()
-
-
-def test_run_dials_nothing_extra_without_connect_or_addnode(
-    a_networked_node: Node,
-) -> None:
-    """`connect`/`addnode` empty, the ordinary case: no `connect` call."""
-    node = a_networked_node
-    p2p_manager = cast("AManager", node.p2p_manager)
-    node.start()
-    wait_until(lambda: p2p_manager.started)
-    node.stop()
-    assert p2p_manager.connect_calls == []
-
-
 def test_a_node_whose_rpc_port_is_taken_stops_before_its_p2p_side_starts(
     tmp_path: Path,
 ) -> None:
@@ -1602,9 +1544,8 @@ def test_a_node_logs_the_configuration_warnings_first(tmp_path: Path) -> None:
     """ISS 1295: what Core logs while reading its settings opens the log.
 
     Each as one record, a section warning's lines and all, ahead of
-    anything the node logs of its own. `bitcoind`'s `debug.log` carries
-    the settings' warnings ahead of its version line and the section
-    warning after it, a line history.log does not have (#1309).
+    anything the node logs of its own -- after the five blank lines the
+    file opens on, its version line sitting between the two (#1309).
     """
     sections = (
         "a.conf:1 Section [x] is not recognized.\nb:2 Section [y] is not recognized.\n"
@@ -1615,7 +1556,8 @@ def test_a_node_logs_the_configuration_warnings_first(tmp_path: Path) -> None:
             data_dir=tmp_path,
             allow_p2p=False,
             allow_rpc=False,
-            log_warnings=["Ignoring unknown configuration value foo", sections],
+            log_warnings=["Ignoring unknown configuration value foo"],
+            section_warning=sections,
         )
     )
     try:
@@ -1623,9 +1565,43 @@ def test_a_node_logs_the_configuration_warnings_first(tmp_path: Path) -> None:
     finally:
         node.stop()
     log_text = (node.data_dir / "history.log").read_text(encoding="utf-8")
-    first, _, rest = log_text.partition("\n")
-    assert first.endswith(" Ignoring unknown configuration value foo")
-    assert rest.index(f" {sections}\n") < rest.index("Starting main loop")
+    assert log_text.startswith("\n\n\n\n\n")
+    warning_at = log_text.index("Ignoring unknown configuration value foo")
+    version_at = log_text.index(f"{CLIENT_NAME} version {CLIENT_VERSION}")
+    section_at = log_text.index(sections)
+    loop_at = log_text.index("Starting main loop")
+    assert warning_at < version_at < section_at < loop_at
+
+
+def test_a_node_logs_its_config_args_after_the_section_warning(
+    tmp_path: Path,
+) -> None:
+    """ISS 1305: `LogArgs`'s lines, last of what `open_history_log` writes.
+
+    `ArgsManager::LogArgs` (`src/common/args.cpp`, at
+    bitcoin/bitcoin@9be056a8a7) runs at the end of `init::StartLogging`
+    (`src/init/common.cpp`), after the version line and the section
+    warning it dumps from its own buffer.
+    """
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path,
+            allow_p2p=False,
+            allow_rpc=False,
+            section_warning="a.conf:1 Section [x] is not recognized.\n",
+            config_args=['Command-line arg: regtest="1"'],
+        )
+    )
+    try:
+        node.start()
+    finally:
+        node.stop()
+    log_text = (node.data_dir / "history.log").read_text(encoding="utf-8")
+    section_at = log_text.index("Section [x] is not recognized.")
+    args_at = log_text.index('Command-line arg: regtest="1"')
+    loop_at = log_text.index("Starting main loop")
+    assert section_at < args_at < loop_at
 
 
 def test_a_store_that_cannot_be_opened_ends_start_up_with_the_rest_closed(

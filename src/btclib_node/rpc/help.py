@@ -280,6 +280,51 @@ _HELP_GETCHAINTIPS = (
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "getchaintips", "params": []}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
+_HELP_GETMEMPOOLENTRY = (
+    'getmempoolentry "txid"\n'
+    "\n"
+    "Returns mempool data for given transaction\n"
+    "\n"
+    "Arguments:\n"
+    "1. txid    (string, required) The transaction id (must be in mempool)\n"
+    "\n"
+    "Result:\n"
+    "{                                       (json object)\n"
+    '  "vsize" : n,                          (numeric) virtual transaction size as defined in BIP 141. This is different from actual serialized size for witness transactions as witness data is discounted.\n'
+    '  "weight" : n,                         (numeric) transaction weight as defined in BIP 141.\n'
+    '  "time" : xxx,                         (numeric) local time transaction entered pool in seconds since 1 Jan 1970 GMT\n'
+    '  "height" : n,                         (numeric) block height when transaction entered pool\n'
+    '  "descendantcount" : n,                (numeric) number of in-mempool descendant transactions (including this one)\n'
+    '  "descendantsize" : n,                 (numeric) virtual transaction size of in-mempool descendants (including this one)\n'
+    '  "ancestorcount" : n,                  (numeric) number of in-mempool ancestor transactions (including this one)\n'
+    '  "ancestorsize" : n,                   (numeric) virtual transaction size of in-mempool ancestors (including this one)\n'
+    "  \"chunkweight\" : n,                    (numeric) sigops-adjusted weight (as defined in BIP 141 and modified by '-bytespersigop') of this transaction's chunk\n"
+    '  "wtxid" : "hex",                      (string) hash of serialized transaction, including witness data\n'
+    '  "fees" : {                            (json object)\n'
+    '    "base" : n,                         (numeric) transaction fee, denominated in BTC\n'
+    '    "modified" : n,                     (numeric) transaction fee with fee deltas used for mining priority, denominated in BTC\n'
+    '    "ancestor" : n,                     (numeric) transaction fees of in-mempool ancestors (including this one) with fee deltas used for mining priority, denominated in BTC\n'
+    '    "descendant" : n,                   (numeric) transaction fees of in-mempool descendants (including this one) with fee deltas used for mining priority, denominated in BTC\n'
+    '    "chunk" : n                         (numeric) transaction fees of chunk, denominated in BTC\n'
+    "  },\n"
+    '  "depends" : [                         (json array) unconfirmed transactions used as inputs for this transaction\n'
+    '    "hex",                              (string) parent transaction id\n'
+    "    ...\n"
+    "  ],\n"
+    '  "spentby" : [                         (json array) unconfirmed transactions spending outputs from this transaction\n'
+    '    "hex",                              (string) child transaction id\n'
+    "    ...\n"
+    "  ],\n"
+    '  "bip125-replaceable" : true|false,    (boolean) Whether this transaction signals BIP125 replaceability or has an unconfirmed ancestor signaling BIP125 replaceability. (DEPRECATED)\n'
+    "                                        \n"
+    '  "unbroadcast" : true|false            (boolean) Whether this transaction is currently unbroadcast (initial broadcast not yet acknowledged by any peers)\n'
+    "}\n"
+    "\n"
+    "Examples:\n"
+    '> bitcoin-cli getmempoolentry "mytxid"\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "getmempoolentry", "params": ["mytxid"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
 _HELP_GETMEMPOOLINFO = (
     "getmempoolinfo\n"
     "\n"
@@ -1041,6 +1086,7 @@ HELP_TEXT: dict[str, str] = {
     "getblockhash": _HELP_GETBLOCKHASH,
     "getblockheader": _HELP_GETBLOCKHEADER,
     "getchaintips": _HELP_GETCHAINTIPS,
+    "getmempoolentry": _HELP_GETMEMPOOLENTRY,
     "getmempoolinfo": _HELP_GETMEMPOOLINFO,
     "getrawmempool": _HELP_GETRAWMEMPOOL,
     "gettxout": _HELP_GETTXOUT,
@@ -1075,6 +1121,7 @@ CATEGORY: dict[str, str] = {
     "getblockhash": "Blockchain",
     "getblockheader": "Blockchain",
     "getchaintips": "Blockchain",
+    "getmempoolentry": "Blockchain",
     "getmempoolinfo": "Blockchain",
     "getrawmempool": "Blockchain",
     "gettxout": "Blockchain",

@@ -636,7 +636,14 @@ def a_handshake_node(
             ban_man=a_ban_man(*banned),
         ),
         chainstate=SimpleNamespace(
-            block_index=SimpleNamespace(get_block_locator_hashes=lambda: [b"\x00" * 32])
+            block_index=SimpleNamespace(
+                get_block_locator_hashes=lambda: [b"\x00" * 32],
+                # a one-block chain, tip height 0: `tx`'s own `add_tx`
+                # call reads `len(active_chain) - 1` for `Mempool.add_tx`'s
+                # own `height`, and no test here asserts on the value it
+                # stores. btclib-org/btclib-node#1397
+                active_chain=[b"\x00" * 32],
+            )
         ),
         logger=SimpleNamespace(
             info=lambda *a: None, warning=lambda *a: None, debug=lambda *a: None
@@ -2730,6 +2737,33 @@ def test_a_committed_body_failing_check_block_leaves_the_header_valid(
     node.chainstate.close()
 
 
+def test_check_block_failure_asks_assert_valid_block_not_plain_assert_valid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_refuse_before_indexing` asks `main.assert_valid_block`, isolated.
+
+    So a signet block failing both its own BIP325 solution and
+    `passes_check_block`'s other rules answers `bad-signet-blksig`
+    first, matching `CheckSignetBlockSolution` running ahead of the
+    merkle root in Core's own `CheckBlock` (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) -- proven here, as
+    `main_test.py`'s own isolated gating test is, by a stub standing in
+    for `assert_valid_block` rather than a real signet-difficulty block,
+    which this test's chain (regtest) could not mine in reasonable time.
+    """
+    node = a_chainstate_node(tmp_path)
+    twice = generate_segwit_block(generate_coinbase(height=1))
+
+    def stub(*_args: object, **_kwargs: object) -> None:
+        err_msg = "bad-signet-blksig: stub"
+        raise MisbehavingError(err_msg)
+
+    monkeypatch.setattr(cb, "assert_valid_block", stub)
+    with pytest.raises(MisbehavingError, match="bad-signet-blksig"):
+        cb._refuse_before_indexing(node, twice, a_peer())
+    node.chainstate.close()
+
+
 @pytest.mark.parametrize("inbound", [True, False])
 def test_an_unrequested_low_work_block_failing_check_block_costs_its_peer(
     tmp_path: Path,
@@ -3155,6 +3189,29 @@ def test_a_transaction_this_node_holds_is_served() -> None:
         assert isinstance(answer, TxMsg)
         assert answer.tx == transaction
         assert answer.include_witness is with_witness
+
+
+def test_serving_a_getdata_for_a_transaction_clears_it_unbroadcast() -> None:
+    """A peer's `getdata` is the acknowledgment `unbroadcastcount` waits for.
+
+    `Mempool.mark_broadcast`, Core's own `RemoveUnbroadcastTx` call site
+    in `net_processing.cpp` -- by txid, the way `AddUnbroadcastTx` marked
+    it, not by whichever identifier this particular peer asked by.
+    btclib-org/btclib-node#1421
+    """
+    transaction = a_transaction()
+    mempool = Mempool(Logger(debug=True))
+    mempool.add_tx(transaction)
+    mempool.mark_broadcast_locally(transaction.id)
+    assert mempool.unbroadcast == {transaction.id}
+    node = a_data_node(mempool=mempool)
+    peer = a_peer()
+    getdata(
+        node,
+        GetData([Inventory(InventoryType.MSG_WTX, transaction.hash)]).serialize(),
+        peer,
+    )
+    assert mempool.unbroadcast == set()
 
 
 def test_a_transaction_is_not_found_under_the_other_identifier() -> None:
