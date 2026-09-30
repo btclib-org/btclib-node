@@ -1334,31 +1334,50 @@ def test_stop_waits_unbounded_for_a_reply_once_request_timeout_is_none(
     (its docstring has why); Core's `WaitUntilEmpty` has no bound of its
     own once `evhttp_set_timeout` has armed none either. The shape is
     the sibling test above, its own `request_timeout=0.2` bound turned
-    off here instead of shortened: `stop` is still running well past
-    that test's own 0.2s bound, and closing the socket -- the only
-    thing left to unblock a write nobody reads -- is what ends it here
-    instead.
+    off here instead of shortened -- but what holds the write open is
+    `release`, an event this test controls, rather than a socket pair's
+    own buffer: how much a write like this one can queue before it
+    blocks is the platform's own number, not this test's, and asserting
+    `stopping.is_alive()` after a fixed join on that assumption failed
+    on Windows CI (issue #1548, review round 2). `manager.loop.sock_sendall`
+    is what `RpcConnection._write` awaits to write the reply; patched
+    here, it blocks on `release` before doing the real write, so the
+    reply cannot finish, on any platform, until this test says so.
     """
     manager = a_manager(get_random_port())
     manager.request_timeout = None
     manager.start()
     wait_until_listening(manager)
+    holding = threading.Event()
+    release = threading.Event()
+    real_sock_sendall = manager.loop.sock_sendall
+
+    async def held_sock_sendall(sock: socket.socket, data: Buffer) -> None:
+        holding.set()
+        await asyncio.to_thread(release.wait)
+        await real_sock_sendall(sock, data)
+
+    manager.loop.sock_sendall = held_sock_sendall  # type: ignore[method-assign]
     ours, theirs = socket.socketpair()
     stopping = threading.Thread(target=manager.stop)
     try:
         conn = manager.create_connection(manager.loop, ours)
         conn.head = parse_request_head(b"POST / HTTP/1.1\r\nHost: x\r\n\r\n")
         manager.node.terminate_flag.set()
-        reply = {"result": "0" * (4 * 1024 * 1024), "error": None, "id": 1}
+        reply = {"result": "stopping", "error": None, "id": 1}
         conn.send(HttpReply(OK, reply))
-        wait_until(lambda: select.select([theirs], [], [], 0)[0])
+        # the write has begun, and cannot finish until `release` is set
+        assert holding.wait(10)
         stopping.start()
-        # well past the 0.2s `request_timeout` the sibling test above
-        # holds this same shape to: still running, this one having none
+        # deterministic, not a wall-clock guess: `release` is unset, so
+        # the write this reply is stuck in cannot have ended, whatever
+        # this join's own timeout is
         stopping.join(1.0)
         assert stopping.is_alive()
+        release.set()
+        stopping.join(10)
     finally:
-        # what ends `stop` here, nothing else being left to bound it
+        release.set()
         theirs.close()
         stopping.join(10)
     assert not stopping.is_alive()
