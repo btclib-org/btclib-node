@@ -1156,6 +1156,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `-chain=testnet4` as Core's own `-testnet4` does, and a header failing
   BIP94's timewarp bound is a `MisbehavingError`** (closes #1442).
 
+### A manual dial's resolved answers are capped at 256
+
+- **`async_connect_host` no longer shuffles, validates or dials more
+  than 256 of a resolver's answers**, matching `Lookup`'s own
+  `nMaxSolutions` in Core's `ConnectNode` (closes #1466).
+
 ### `stop`'s hidden `wait` argument is honoured
 
 - **A `stop` call carrying `wait` delays its own reply by that many

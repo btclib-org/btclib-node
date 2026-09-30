@@ -56,6 +56,7 @@ from btclib_node.p2p.eviction import (
     EvictionCandidate,
     Network,
     get_network,
+    is_internal,
     is_local,
     is_routable,
     is_valid,
@@ -196,6 +197,21 @@ _BAD_PORT_DRAWS = 50
 # `AddedNodesContain`'s bound: with this many `-addnode` values or more
 # it answers no for every address (`src/net.cpp`, same sha).
 _ADDED_NODES_BOUND = 24
+
+# `Lookup`'s own `nMaxSolutions` argument, as `ConnectNode` calls it for
+# a `pszDest` (`src/net.cpp:413`, at bitcoin/bitcoin@9be056a8a7, the
+# v31.1 tag): `LookupIntern` (`src/netbase.cpp:144-168`, same sha) stops
+# collecting once this many resolved answers have cleared its own
+# `IsInternal` filter, whatever the resolver answered with past that
+# point, and before `ConnectNode` ever shuffles or dials any of them.
+# `async_connect_host` below applies the two in that same order and no
+# other: `is_internal` filters before this cap counts, exactly what
+# `LookupIntern` filters before its own count, and `is_valid`'s broader
+# refusal still runs after, unchanged, on the shuffled, capped list --
+# an answer neither internal nor otherwise invalid, past the 256th
+# non-internal one, is what this cap alone drops
+# (btclib-org/btclib-node#1466).
+_MAX_RESOLVED_ADDRESSES = 256
 
 # Core's `IsBadPort` (`src/netbase.cpp`, at bitcoin/bitcoin@9be056a8a7,
 # the v31.1 tag): ports other services listen on, which an automatic
@@ -1074,8 +1090,11 @@ class P2pManager(threading.Thread):
         own record of that string, held only by a connection this
         method itself dialled -- every other dial route leaves it
         `None`. Past that, `ConnectNode` resolves `pszDest`
-        (`src/net.cpp:404-424`, same sha): every answer shuffled, then
-        validated and checked against `AlreadyConnectedToAddressPort` in
+        (`src/net.cpp:404-424`, same sha), an internal answer dropped
+        and the rest capped at `_MAX_RESOLVED_ADDRESSES`, in that order,
+        before any of it is shuffled (btclib-org/btclib-node#1466):
+        every answer shuffled, then validated and checked against
+        `AlreadyConnectedToAddressPort` in
         that same, unmodified order, the whole attempt abandoned on the
         first answer either check refuses -- never on a later one alone,
         however many earlier answers would have connected -- and only
@@ -1111,6 +1130,18 @@ class P2pManager(threading.Thread):
         # seed decide an order the shuffle below is supposed to be the
         # only source of.
         ips = list(dict.fromkeys(str(sockaddr[0]) for *_, sockaddr in answers))
+        # `LookupIntern`'s own collection loop (`src/netbase.cpp:144-168`,
+        # same sha): an internal answer is dropped rather than counted,
+        # so it never takes one of the `_MAX_RESOLVED_ADDRESSES` slots a
+        # valid answer further down the resolver's own order could have
+        # filled instead. `is_valid`'s broader refusal below still runs,
+        # unchanged, on whatever clears this and the cap together -- an
+        # answer it refuses still aborts the whole attempt
+        # (btclib-org/btclib-node#1284), matching `ConnectNode`'s own
+        # `IsValid()` call on an answer `IsInternal` has already passed.
+        ips = [ip for ip in ips if not is_internal(_legacy_ipv6(ip))][
+            :_MAX_RESOLVED_ADDRESSES
+        ]
         secrets.SystemRandom().shuffle(ips)
         addresses = [peer_address(ip, port) for ip in ips]
         # read after the lookup, as `ConnectNode` asks
