@@ -688,7 +688,7 @@ class Node(threading.Thread):
             self._load_attempted.set()
 
     def _drain_rpc_queue(self) -> None:
-        """Answer every RPC request already queued, before anything closes.
+        """Interrupt new RPC work, then answer everything already queued.
 
         `run`'s own loop below leaves as soon as `terminate_flag` is set,
         which can happen mid-pass -- a `getblockcount` queued behind a
@@ -698,12 +698,20 @@ class Node(threading.Thread):
         every connection right after, which would otherwise answer that
         request with a closed socket rather than a reply.
 
-        Core drains the same way: `ThreadPool::Stop`'s "Help draining
-        queue" loop (`while (ProcessTask()) {}`, `src/util/threadpool.h`,
-        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) runs every task
-        still on `g_threadpool_http`'s own work queue before
-        `StopHTTPServer` unlistens its sockets and joins the workers
-        (`src/httpserver.cpp`, same tag).
+        `rpc_manager.interrupt()` runs first, in the order Core's
+        `Interrupt(node)` -- which calls `InterruptHTTPServer` -- runs
+        ahead of `Shutdown(node)`'s own `StopHTTPServer` (`src/init.cpp`,
+        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Every
+        `RpcConnection.run` reads `rpc_manager.interrupted`, and queues
+        a request only while it is unset, holding the
+        `rpc_manager.queue_lock` `interrupt` sets it under, answering
+        `503` instead once it is set (btclib-org/btclib-node#1515), so
+        nothing reaches `messages` after this line runs -- what this loop
+        drains below is therefore bounded to what was already queued
+        when shutdown began, exactly as `ThreadPool::Stop`'s "Help
+        draining queue" loop (`while (ProcessTask()) {}`,
+        `src/util/threadpool.h`, same tag) is bounded by `Interrupt()`
+        having already stopped `Submit` from accepting more.
 
         Each request answered pushes `rpc_manager`'s own reply deadline
         forward (`extend_reply_deadline`), the same one `Node.stop`'s
@@ -728,16 +736,8 @@ class Node(threading.Thread):
         propagate -- but this still guards the drain the way
         `_drain_message_queues` guards the loop it runs under: one bad
         reply must not leave the rest of the queue unanswered.
-
-        A request arriving after this point -- on a connection
-        `rpc_manager`'s own accept loop is still open on, its thread not
-        yet stopped -- is not covered here: Core's own
-        `InterruptHTTPServer` switches to `http_reject_request_cb` before
-        `StopHTTPServer` drains, answering such a request `503` rather
-        than leaving it either unanswered or drained as if it had arrived
-        in time, and this node has no such interrupt phase yet
-        (btclib-org/btclib-node#1515).
         """
+        self.rpc_manager.interrupt()
         while self.rpc_manager.messages:
             try:
                 handle_rpc(self)

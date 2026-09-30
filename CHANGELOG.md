@@ -1194,9 +1194,9 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 ### An RPC request queued when shutdown starts is answered, not closed
 
-- **`Node.run` answers everything already queued on
-  `rpc_manager.messages` before either manager stops**, matching Core's
-  `ThreadPool::Stop` (closes #1506).
+- **`Node.run` drains what was already queued before either manager
+  stops** (closes #1506).
+- **A request after that drain begins gets `503` instead** (closes #1515).
 
 ## v2026.9.24
 

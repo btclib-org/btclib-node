@@ -10,11 +10,12 @@ checked, answers a request line, a request-target, a header field or
 a `Content-Length` Core's listener cannot frame, and a chunked body it
 cannot read, with 400 or 413 (`_HeadReader`, `_ChunkedReader`), answers
 an `Expect` it does not meet with 417 and `100-continue` with an interim
-`100 Continue`, answers a source `-rpcallowip` does not name with a
-bare 403, refuses a method or a path Core's listener refuses before
-Core checks a credential (`_refusal`), answers a request whose
-`Authorization` header `rpc.auth.RpcAuth` does not accept with 401, and
-decodes the body of one it does accept, which
+`100 Continue`, answers `manager.interrupted` with 503 once
+`RpcManager.interrupt` has set it (issue #1515), answers a source
+`-rpcallowip` does not name with a bare 403, refuses a method or a path
+Core's listener refuses before Core checks a credential (`_refusal`),
+answers a request whose `Authorization` header `rpc.auth.RpcAuth` does
+not accept with 401, and decodes the body of one it does accept, which
 `rpc.manager.RpcManager.messages` queues for `rpc.main.handle_rpc`.
 `RawJSON` is a JSON number written back out exactly as given, the way
 Core's own `UniValue` writes one built from a string rather than from a
@@ -210,6 +211,11 @@ _BAD_REQUEST = "400 Bad Request"
 _ENTITY_TOO_LARGE = "413 Request Entity Too Large"
 _EXPECTATION_FAILED = "417 Expectation Failed"
 _NOT_IMPLEMENTED = "501 Not Implemented"
+# `http_reject_request_cb`'s own status (`src/httpserver.cpp`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `evhttp_send_error(req,
+# HTTP_SERVUNAVAIL, nullptr)`, `nullptr` reading libevent's own default
+# reason phrase for the code.
+_SERVICE_UNAVAILABLE = "503 Service Unavailable"
 # The methods Core's listener lets through to `http_request_cb`: every
 # other one is answered 501 before that callback runs. Core's source has
 # no 501 and never sets evhttp's allowed methods, so the refusal is the
@@ -1056,9 +1062,13 @@ class RpcConnection:
         meet, or a chunked body `_ChunkedReader` refuses, is answered
         400, 417 or 413 by `_send_framing_error`, as soon as it is
         refused; a method outside `_LIBEVENT_METHODS` is answered 501,
-        from any source; a source `manager.client_allowed` refuses is
-        answered a bare 403; a method or a target `_refusal` refuses is
-        answered by `_send_refusal`, whatever the credential; a request whose
+        from any source; `manager.interrupted` is answered 503, by
+        `_refused_early` ahead of everything below it, or by
+        `_send_shutdown_refusal` where it is set only once
+        `_refused_early` has let the request through (issue #1515); a
+        source `manager.client_allowed` refuses is answered a
+        bare 403; a method or a target `_refusal` refuses is answered by
+        `_send_refusal`, whatever the credential; a request whose
         `Authorization` header `manager.auth` does not accept is
         answered 401 by `_send_unauthorized`, its body read off the
         socket and never decoded; and one whose decoded body
@@ -1090,107 +1100,20 @@ class RpcConnection:
             # on to its next request after the refusal.
             if self._refused_early(head):
                 return
-            # Core's `HTTPReq_JSONRPC`: no `Authorization` at all is a
-            # 401 at once, one it does not accept a 401 after
-            # `FAILED_ATTEMPT_DELAY`. Scheduled as a task of its own, as
-            # the parse-error reply below is, for the reasons given there.
-            if head.authorization is None:
-                self._unauthorized_reply = self.loop.create_task(
-                    self._send_unauthorized(0)
-                )
-                return
-            user = self.manager.auth.authenticated_user(head.authorization)
-            if user is None:
-                self.manager.logger.warning(
-                    "ThreadRPCServer incorrect password attempt from %s",
-                    self._peer_address(),
-                )
-                self._unauthorized_reply = self.loop.create_task(
-                    self._send_unauthorized(FAILED_ATTEMPT_DELAY)
-                )
-                return
-            try:
-                body = decode(body_bytes)
-            except ValueError:
-                # `HTTPReq_JSONRPC`'s `RPC_PARSE_ERROR`, thrown before
-                # any request is read, so `JSONErrorReply` answers it
-                # 500 in the legacy envelope with `"id":null`
-                # (`src/httprpc.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-                # v31.1 tag). `ValueError` and
-                # not `json.JSONDecodeError` alone, since malformed
-                # bytes `json.loads` cannot even decode as text raise
-                # the stdlib's own `UnicodeDecodeError`, a `ValueError`
-                # too and the same "invalid JSON" from the client's side.
-                # Scheduled as a task of its own, the same seam `send`
-                # below reaches this same coroutine through, rather than
-                # awaited in this very frame: this request's own
-                # keep-alive is
-                # honoured here exactly as it is for a dispatched reply,
-                # matching Core's own `HTTPReq_JSONRPC`
-                # (`src/httprpc.cpp:232-244`, at bitcoin/bitcoin@ca7162cde5),
-                # which negotiates keep-alive on a parse error the same
-                # way it does on any other reply -- so where it says to,
-                # `async_send` calls back into `run` for a further
-                # request, and doing that by awaiting it here would grow
-                # this coroutine's own stack by one frame per malformed
-                # body a kept-alive connection sent in a row, rather than
-                # by a scheduled task's own fresh one each time, the way
-                # `send` below already keeps a dispatched reply's own
-                # recursion flat.
-                #
-                # `self.loop.create_task`, not `send`'s own
-                # `run_coroutine_threadsafe`: this method already runs on
-                # `self.loop`'s own thread, so `run_coroutine_threadsafe`
-                # here would only requeue itself onto the very loop it is
-                # already running on, through `call_soon_threadsafe` -- a
-                # Task made real one further turn later rather than this
-                # one, invisible to `asyncio.all_tasks()` for that whole
-                # turn. `RpcManager.stop` reads `all_tasks()` exactly
-                # once, to build the set it cancels; a task not yet in it
-                # that turn is not in the set it cancels either, and never
-                # gets to run at all once `stop` has since closed the loop
-                # under it (measured against the unmodified `stop()`,
-                # issue #640 review round 2). `self.loop.create_task` --
-                # unlike `send`'s own cross-thread call, which does need
-                # the thread-safe seam -- makes the `Task` object exist
-                # synchronously, in time for that one read to find it.
-                #
-                # Left in `manager.connections` rather than popped here,
-                # so that `stop`'s own socket-closing sweep of that dict
-                # can still reach this connection even on a turn where
-                # the task above never gets to run at all; `async_send`
-                # below pops it once it does, on the branch that closes
-                # rather than keeps this connection. `rpc.main.handle_rpc`
-                # carried a pop of its own once, on `Node`'s thread, that
-                # this comment used to be contrasted against as the
-                # thread-safe side of the same dict -- issue #688 is where
-                # that pop turned out not to be safe after all, racing not
-                # `stop` but `async_send`'s own re-entry into `run` for
-                # this same connection's next request, and removed it.
-                # Assigned to `self._parse_error_reply` (its own
-                # docstring above has why) rather than left a bare
-                # statement: unlike `run_coroutine_threadsafe` elsewhere
-                # in this class, `create_task` returns an `Awaitable`,
-                # which mypy's own `unused-awaitable` flags as a
-                # likely-missing `await` when discarded outright.
-                self._parse_error_reply = self.loop.create_task(
-                    self.async_send(
-                        error_reply(RPCErrorCode.PARSE_ERROR, "Parse error")
+            # Core's `ThreadPool::Submit` reads `m_interrupt` and queues
+            # under the one `m_mutex` `Interrupt` sets it under
+            # (`src/util/threadpool.h`, at bitcoin/bitcoin@9be056a8a7, the
+            # v31.1 tag), so a request is either queued before
+            # `RpcManager.interrupt` returns, and drained, or refused
+            # here. Held through the credential check below as well,
+            # which Core makes on a worker, after `Submit`.
+            with self.manager.queue_lock:
+                if self.manager.interrupted.is_set():
+                    self._refusal_reply = self.loop.create_task(
+                        self._send_shutdown_refusal()
                     )
-                )
-                return
-
-            # Core's per-method check, which needs the decoded body and
-            # so comes after the credential's
-            whitelist_refusal = self.manager.auth.refusal(user, body)
-            if whitelist_refusal is not None:
-                if whitelist_refusal.warning:
-                    self.manager.logger.warning(*whitelist_refusal.warning)
-                self._whitelist_reply = self.loop.create_task(
-                    self._send_whitelist_refusal(whitelist_refusal)
-                )
-                return
-            self.manager.messages.append((body, self.id))
+                    return
+                self._queue(head, body_bytes)
         # deliberately blind (BLE001), not for the event loop's own
         # sake: `run` is scheduled through `run_coroutine_threadsafe`,
         # whose own Future nothing here ever reads, so an unhandled
@@ -1217,28 +1140,149 @@ class RpcConnection:
             self.client.close()
             self.manager.connections.pop(self.id, None)
 
+    def _queue(self, head: RequestHead, body_bytes: bytes) -> None:
+        """Answer what Core refuses at or past the credential; queue the rest.
+
+        `run` calls this holding `manager.queue_lock`, `manager.interrupted`
+        unset.
+        """
+        # Core's `HTTPReq_JSONRPC`: no `Authorization` at all is a
+        # 401 at once, one it does not accept a 401 after
+        # `FAILED_ATTEMPT_DELAY`. Scheduled as a task of its own, as
+        # the parse-error reply below is, for the reasons given there.
+        if head.authorization is None:
+            self._unauthorized_reply = self.loop.create_task(self._send_unauthorized(0))
+            return
+        user = self.manager.auth.authenticated_user(head.authorization)
+        if user is None:
+            self.manager.logger.warning(
+                "ThreadRPCServer incorrect password attempt from %s",
+                self._peer_address(),
+            )
+            self._unauthorized_reply = self.loop.create_task(
+                self._send_unauthorized(FAILED_ATTEMPT_DELAY)
+            )
+            return
+        try:
+            body = decode(body_bytes)
+        except ValueError:
+            # `HTTPReq_JSONRPC`'s `RPC_PARSE_ERROR`, thrown before
+            # any request is read, so `JSONErrorReply` answers it
+            # 500 in the legacy envelope with `"id":null`
+            # (`src/httprpc.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+            # v31.1 tag). `ValueError` and
+            # not `json.JSONDecodeError` alone, since malformed
+            # bytes `json.loads` cannot even decode as text raise
+            # the stdlib's own `UnicodeDecodeError`, a `ValueError`
+            # too and the same "invalid JSON" from the client's side.
+            # Scheduled as a task of its own, the same seam `send`
+            # below reaches this same coroutine through, rather than
+            # awaited in `run`'s own frame: this request's own
+            # keep-alive is
+            # honoured here exactly as it is for a dispatched reply,
+            # matching Core's own `HTTPReq_JSONRPC`
+            # (`src/httprpc.cpp:232-244`, at bitcoin/bitcoin@ca7162cde5),
+            # which negotiates keep-alive on a parse error the same
+            # way it does on any other reply -- so where it says to,
+            # `async_send` calls back into `run` for a further
+            # request, and doing that by awaiting it from `run` would
+            # grow `run`'s own stack by one frame per malformed
+            # body a kept-alive connection sent in a row, rather than
+            # by a scheduled task's own fresh one each time, the way
+            # `send` below already keeps a dispatched reply's own
+            # recursion flat.
+            #
+            # `self.loop.create_task`, not `send`'s own
+            # `run_coroutine_threadsafe`: this method already runs on
+            # `self.loop`'s own thread, so `run_coroutine_threadsafe`
+            # here would only requeue itself onto the very loop it is
+            # already running on, through `call_soon_threadsafe` -- a
+            # Task made real one further turn later rather than this
+            # one, invisible to `asyncio.all_tasks()` for that whole
+            # turn. `RpcManager.stop` reads `all_tasks()` exactly
+            # once, to build the set it cancels; a task not yet in it
+            # that turn is not in the set it cancels either, and never
+            # gets to run at all once `stop` has since closed the loop
+            # under it (measured against the unmodified `stop()`,
+            # issue #640 review round 2). `self.loop.create_task` --
+            # unlike `send`'s own cross-thread call, which does need
+            # the thread-safe seam -- makes the `Task` object exist
+            # synchronously, in time for that one read to find it.
+            #
+            # Left in `manager.connections` rather than popped here,
+            # so that `stop`'s own socket-closing sweep of that dict
+            # can still reach this connection even on a turn where
+            # the task above never gets to run at all; `async_send`
+            # below pops it once it does, on the branch that closes
+            # rather than keeps this connection. `rpc.main.handle_rpc`
+            # carried a pop of its own once, on `Node`'s thread, that
+            # this comment used to be contrasted against as the
+            # thread-safe side of the same dict -- issue #688 is where
+            # that pop turned out not to be safe after all, racing not
+            # `stop` but `async_send`'s own re-entry into `run` for
+            # this same connection's next request, and removed it.
+            # Assigned to `self._parse_error_reply` (its own
+            # docstring above has why) rather than left a bare
+            # statement: unlike `run_coroutine_threadsafe` elsewhere
+            # in this class, `create_task` returns an `Awaitable`,
+            # which mypy's own `unused-awaitable` flags as a
+            # likely-missing `await` when discarded outright.
+            self._parse_error_reply = self.loop.create_task(
+                self.async_send(error_reply(RPCErrorCode.PARSE_ERROR, "Parse error"))
+            )
+            return
+
+        # Core's per-method check, which needs the decoded body and
+        # so comes after the credential's
+        whitelist_refusal = self.manager.auth.refusal(user, body)
+        if whitelist_refusal is not None:
+            if whitelist_refusal.warning:
+                self.manager.logger.warning(*whitelist_refusal.warning)
+            self._whitelist_reply = self.loop.create_task(
+                self._send_whitelist_refusal(whitelist_refusal)
+            )
+            return
+        self.manager.messages.append((body, self.id))
+
     def _refused_early(self, head: RequestHead) -> bool:
         """Schedule the reply to what Core refuses ahead of the credential.
 
         A method outside `_LIBEVENT_METHODS` is libevent's 501, answered
-        before Core's `http_request_cb` runs; then, in that callback's
-        order (`src/httpserver.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-        v31.1 tag), a source `ClientAllowed` refuses is a bare 403, and
-        a method or a target `_refusal` refuses is answered as it says.
-        Answers whether a reply was scheduled.
+        before any request callback of Core's runs. Past that,
+        `manager.interrupted` is a 503: `InterruptHTTPServer`
+        (`src/httpserver.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        tag) swaps `http_request_cb` -- the callback the checks below
+        model, `_refusal`'s own docstring naming which -- out for
+        `http_reject_request_cb`, which answers every request that
+        reaches it `503` outright. A real `bitcoind` v31.1.0, a `stop`
+        RPC asleep in its hidden `wait`, answers `FOO` 501 and a `POST`
+        or a `DELETE` 503, from a source `-rpcallowip` names or not.
+        Then, in `http_request_cb`'s own order (same file, same tag), a
+        source `ClientAllowed` refuses is a bare 403, and a method or a
+        target `_refusal` refuses is answered as it says. Answers
+        whether a reply was scheduled.
         """
-        if head.method in _LIBEVENT_METHODS and not self.manager.client_allowed(
-            self.client
-        ):
-            self.manager.logger.debug(
-                "HTTP request from %s rejected: Client network is not "
-                "allowed RPC access",
-                self._peer_address(),
-            )
-            self._refusal_reply = self.loop.create_task(
-                self._send_refusal(FORBIDDEN, "")
-            )
-            return True
+        if head.method in _LIBEVENT_METHODS:
+            if self.manager.interrupted.is_set():
+                self.manager.logger.debug("Rejecting request while shutting down")
+                self._refusal_reply = self.loop.create_task(
+                    self._send_refusal(
+                        _SERVICE_UNAVAILABLE,
+                        _error_page(_SERVICE_UNAVAILABLE),
+                        page=True,
+                    )
+                )
+                return True
+            if not self.manager.client_allowed(self.client):
+                self.manager.logger.debug(
+                    "HTTP request from %s rejected: Client network is not "
+                    "allowed RPC access",
+                    self._peer_address(),
+                )
+                self._refusal_reply = self.loop.create_task(
+                    self._send_refusal(FORBIDDEN, "")
+                )
+                return True
         refusal = _refusal(head.method, head.target)
         if refusal is None:
             return False
@@ -1415,6 +1459,25 @@ class RpcConnection:
         written, as `_send_unauthorized` does not write it.
         """
         await self._write(self._frame(status, body.encode(), page=page))
+
+    async def _send_shutdown_refusal(self) -> None:
+        """Answer a request `manager.interrupted` stopped from being queued.
+
+        `http_request_cb`'s own answer where `Submit` refuses a request
+        once the pool is interrupted: a warning naming
+        `SubmitError::Interrupted`, then 503 "Request rejected during
+        server shutdown", which `HTTPRequest::WriteReply` sends with
+        `Connection: close` once shutdown has begun (`src/httpserver.cpp`,
+        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The `Content-Type`
+        header libevent adds is not written, as `_send_unauthorized` does
+        not write it.
+        """
+        self.manager.logger.warning(
+            "HTTP request rejected during server shutdown: '%s'", "Interrupted"
+        )
+        fields = ("Connection: close",)
+        body = b"Request rejected during server shutdown"
+        await self._write(self._frame(_SERVICE_UNAVAILABLE, body, fields))
 
     async def _write(self, http_response: bytes) -> None:
         """Write one reply, then read the next request or close.

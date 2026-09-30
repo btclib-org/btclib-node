@@ -316,6 +316,10 @@ def exchange(auth: RpcAuth, requests: list[Any]) -> tuple[bytes, list[Any], list
             # a node not shutting down, whose replies `send` schedules
             # as they come
             node=SimpleNamespace(terminate_flag=threading.Event()),
+            # unset: this manager never calls `interrupt`
+            # (btclib-org/btclib-node#1515)
+            interrupted=threading.Event(),
+            queue_lock=threading.Lock(),
         )
         conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
         userpass = base64.b64encode(b"pytest:pytest")

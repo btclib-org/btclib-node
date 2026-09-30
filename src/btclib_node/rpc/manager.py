@@ -221,6 +221,26 @@ class RpcManager(threading.Thread):
         # set by `run` once it has either set `listening` or given up on
         # it, which is what `start_listener` waits on
         self._start_attempted = threading.Event()
+        # Set by `interrupt`, read by every `RpcConnection.run` on this
+        # manager's own loop: Core's `ThreadPool`'s own `m_interrupt`,
+        # set by `InterruptHTTPServer`'s call to
+        # `g_threadpool_http.Interrupt()` ahead of `StopHTTPServer`'s own
+        # `Stop()` (`src/httpserver.cpp`, `src/util/threadpool.h`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). A `threading.Event`
+        # rather than a plain attribute for the same reason `listening`
+        # and `ever_listened` are: it is written on `Node`'s thread and
+        # read on this manager's own. `stop` also sets it,
+        # unconditionally, as `ThreadPool::Stop` sets `m_interrupt`
+        # itself too rather than relying on `Interrupt` having already
+        # been called (btclib-org/btclib-node#1515).
+        self.interrupted = threading.Event()
+        # Held to set `interrupted`, and by `RpcConnection.run` from
+        # reading it to queuing onto `messages`: `ThreadPool`'s own
+        # `m_mutex`, which guards `m_interrupt` and `m_work_queue`
+        # together (same file, same tag), so a request is either on
+        # `messages` before `interrupt` returns or refused
+        # (btclib-org/btclib-node#1515).
+        self.queue_lock = threading.Lock()
         # What `run` binds and `stop` closes. `server`'s own
         # `ExitStack` ordinarily closes these once `stop`'s
         # cancellation reaches that task -- except where `stop` arrives
@@ -645,6 +665,22 @@ class RpcManager(threading.Thread):
         ).add_done_callback(self._report_server_failure)
         loop.run_forever()
 
+    def interrupt(self) -> None:
+        """Stop accepting new RPC work, without waiting for this thread.
+
+        Core's `InterruptHTTPServer` (`src/httpserver.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): swaps in the request
+        callback that answers `503` and calls `g_threadpool_http.Interrupt()`,
+        both ahead of `StopHTTPServer`'s own `Stop()`, so a request already
+        queued keeps draining in the background while a new one is refused
+        at once rather than either queued or left for `stop` to close
+        unanswered. `Node._drain_rpc_queue` calls this before it drains,
+        which is what bounds that drain to what was queued before this
+        call (btclib-org/btclib-node#1515).
+        """
+        with self.queue_lock:
+            self.interrupted.set()
+
     def stop(self) -> None:
         """Stop this manager's loop, join its thread, and close every socket.
 
@@ -654,7 +690,16 @@ class RpcManager(threading.Thread):
         pending-task sweep runs as its own pass rather than folded into
         one combined loop, and why closing `_server_sockets` here does
         not race `server`'s own `ExitStack`.
+
+        Sets `interrupted` too, unconditionally: Core's `ThreadPool::Stop`
+        sets `m_interrupt = true` itself rather than relying on a prior
+        `Interrupt()` call, and a caller here that goes straight to `stop`
+        -- every test that never calls `Node`, and `RpcManager.stop`'s own
+        callers before btclib-org/btclib-node#1515 -- gets the identical
+        guarantee: nothing reaches `messages` once this method has begun.
         """
+        with self.queue_lock:
+            self.interrupted.set()
         stop_handle = self.loop.call_soon_threadsafe(self.loop.stop)
         # `join` blocks this thread without spinning it, the way
         # `Node.stop` already waits on itself with `self.join`. Guarded

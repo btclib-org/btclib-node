@@ -104,6 +104,8 @@ class AManager:
         self.connections: dict[int, Any] = {}
         self.started = False
         self.stopped = False
+        # `interrupt` and `stop`, in the order `run`'s teardown called them
+        self.calls: list[str] = []
         # only P2pManager's own peer_db attribute has one; run()'s
         # shutdown path reads it off whichever manager it holds without
         # checking which, so the stand-in carries it too (#263)
@@ -128,6 +130,23 @@ class AManager:
     def stop(self) -> None:
         """Record that `run`'s own teardown reached this stand-in."""
         self.stopped = True
+        self.calls.append("stop")
+
+    def interrupt(self) -> None:
+        """Record that `_drain_rpc_queue` called this, as `RpcManager`'s.
+
+        Only `rpc_manager`'s is called, before it drains
+        (btclib-org/btclib-node#1515).
+        """
+        self.calls.append("interrupt")
+
+    def extend_reply_deadline(self, deadline: float) -> None:
+        """Record the push, as `RpcManager.extend_reply_deadline` does.
+
+        `Node._drain_rpc_queue` calls this once per message it answers
+        (btclib-org/btclib-node#1506); nothing here reads it back, `messages`
+        starting empty in every test built on this stand-in.
+        """
 
     def latest_reply_deadline(self) -> float | None:
         """Answer as `RpcManager` does where no reply was ever delayed.
@@ -1114,6 +1133,10 @@ def test_a_port_configured_is_a_manager_started_and_stopped(
     assert p2p_manager.stopped
     assert rpc_manager.stopped
     assert p2p_manager.ban_list_dumps == 1
+    # the RPC manager interrupted before it is stopped, as Core's
+    # `InterruptHTTPServer` runs ahead of `StopHTTPServer` (ISS 1515)
+    assert rpc_manager.calls == ["interrupt", "stop"]
+    assert p2p_manager.calls == ["stop"]
 
     quiet = a_node(tmp_path / "quiet")
     quiet.start()
