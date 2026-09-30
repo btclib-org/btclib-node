@@ -556,7 +556,7 @@ this release included.
 
    **A resolved version is not in it, deliberately**, and this is where
    a reader is most likely to think the document is broken.
-   `.github/scripts/generate_sbom.py`'s own docstring is the argument:
+   The docstring of btclib-org/.github's `generate_sbom.py` is the argument:
    what a user's installer resolves is not a fact about these files, so
    a resolved version recorded here would be a claim the wheel does not
    make. A requirement pinned with `==` gets a `version`; anything else
@@ -695,8 +695,12 @@ uv_version=$(unzip -p "$wheels"/*.whl '*.dist-info/WHEEL' |
 uvx "uv@$uv_version" build &&
 uv run --no-project --python "$python" \
   .github/scripts/normalize_sdist.py dist/ &&
+served=$(mktemp -d) &&
+git clone --depth 1 --filter=blob:none --sparse \
+  https://github.com/btclib-org/.github "$served" &&
+git -C "$served" sparse-checkout set .github/scripts &&
 uv run --no-project --python "$python" \
-  .github/scripts/generate_sbom.py dist/ sbom/ &&
+  "$served"/.github/scripts/generate_sbom.py dist/ sbom/ &&
 gh attestation verify "dist/btclib_node-${version:?}.tar.gz" \
   --repo "$repo" --signer-workflow "$signer" &&
 gh attestation verify "dist/btclib_node-${version:?}-py3-none-any.whl" \
@@ -732,6 +736,11 @@ of materials follows it, `generate_sbom.py` deriving its serial number
 from both files' digests (issue #1063). The sdist is verified first, it
 being the file the rebuild exists to reproduce: a wheel that still
 disagrees stops the chain after that check rather than ahead of it.
+
+`generate_sbom.py` comes from btclib-org/.github's `main`, not from
+the tag, so once `main` changes what it writes the third command fails
+with the files unchanged. Releases through v2026.9.24 already fail it,
+their documents naming `btclib-node:*` properties.
 
 Three things bound that guarantee, and each is worth knowing before
 reading a mismatch as tampering:
