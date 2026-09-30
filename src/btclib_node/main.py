@@ -458,7 +458,7 @@ def _still_final_and_mature(node: Node, tx: Tx) -> bool:
 
     Core's own `filter_final_and_mature`, the predicate
     `MaybeUpdateMempoolForReorg`'s own `removeForReorg` call filters the
-    whole mempool by, every time it runs (`src/validation.cpp:350-391`,
+    whole mempool by, every time it runs (`src/validation.cpp:348-392`,
     at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): finality
     (`CheckFinalTxAtTip`), BIP68 sequence locks
     (`CheckSequenceLocksAtTip`) and, for a coinbase-spending input,
@@ -1349,7 +1349,7 @@ def invalidate_chain(node: Node, block_hash: bytes) -> None:
     `rpc.callbacks._validate_extending_tip` already answers
     `submit_block`'s own fatal case: `node.terminate_flag` set, then
     left to propagate. What that propagation actually reaches is
-    `rpc.main`'s own dispatcher (`_execute`, lines 86-92), which
+    `rpc.main`'s own dispatcher (`_execute`), which
     catches any `Exception` a callback raises and answers
     `INTERNAL_ERROR` with it -- not Core's own `RPC_DATABASE_ERROR`,
     since this tree carries no per-failure vocabulary that specific,
@@ -1364,8 +1364,13 @@ def invalidate_chain(node: Node, block_hash: bytes) -> None:
     runs `ActivateBestChain`, and the RPC answers `null` -- the node
     keeps running and serving the next call. Only a `FlushStateToDisk`
     failure on the same path (`:2981-2983`) is fatal: it reaches
-    `AbortNode`, which marks `state` invalid and aborts the process,
-    and that is what `RPC_DATABASE_ERROR` actually answers for. This
+    `FatalError` (`:2140-2144`, same tag), which is what marks `state`
+    invalid, `state.Error(...)` in its own body -- `AbortNode`
+    (`node/abort.cpp`, same tag) is a different function, reached only
+    through `notifications.fatalError`'s own callback, and only
+    requests the shutdown rather than marking `state` or aborting the
+    process itself. `RPC_DATABASE_ERROR` answers for `state` having
+    been marked, which is `FatalError`'s own doing. This
     tree's own `apply_rev_block` and `_finalize_fork` give no way to
     tell a merely-missing read back from real corruption --
     `ChainstateInconsistencyError`'s own docstring in `db.py` is where

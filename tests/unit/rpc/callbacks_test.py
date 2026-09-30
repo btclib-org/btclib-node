@@ -5076,7 +5076,7 @@ def test_invalidate_block_evicts_a_mempool_transaction_a_disconnect_makes_immatu
 
     Core's own `removeForReorg`, run through `filter_final_and_mature`
     every time `MaybeUpdateMempoolForReorg` is called
-    (`src/validation.cpp:350-391`, at bitcoin/bitcoin@9be056a8a7, the
+    (`src/validation.cpp:348-392`, at bitcoin/bitcoin@9be056a8a7, the
     v31.1 tag): a coinbase spend mature against one tip can be immature
     again against an earlier one a disconnect reveals.
     `main._still_final_and_mature`'s own docstring is where this tree's
