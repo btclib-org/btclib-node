@@ -99,6 +99,13 @@ btclib\_node.mempool module
    :members:
    :show-inheritance:
 
+btclib\_node.signet module
+---------------------------
+
+.. automodule:: btclib_node.signet
+   :members:
+   :show-inheritance:
+
 Module contents
 ---------------
 

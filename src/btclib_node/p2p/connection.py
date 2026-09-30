@@ -57,6 +57,7 @@ if TYPE_CHECKING:
     from btclib.p2p.payload import Payload
 
     from btclib_node import Node
+    from btclib_node.config import Config
     from btclib_node.p2p.manager import P2pManager
 
 __all__ = [
@@ -66,6 +67,7 @@ __all__ = [
     "PeerStats",
     "frame_message",
     "frame_message_bytes",
+    "local_services",
 ]
 
 
@@ -403,6 +405,42 @@ def frame_message_bytes(data: bytes) -> Message:
     must not carry any.
     """
     return frame_message(BytesIO(data), RegTest().magic)
+
+
+def local_services(config: Config) -> ServiceFlags:
+    """Return the services this node offers, Core's own `g_local_services`.
+
+    `own_version` below sends this, and `rpc.callbacks.get_network_info`
+    answers `getnetworkinfo`'s `localservices`/`localservicesnames` from
+    it too -- one function rather than each computing its own, as
+    ISS 1394 asks.
+
+    `NODE_NETWORK_LIMITED` is set unconditionally and `NODE_NETWORK`
+    only where this node is not pruned, matching Core's own
+    `g_local_services` (`src/init.cpp`, at bitcoin/bitcoin@ca7162cde5):
+    `NODE_NETWORK_LIMITED | NODE_WITNESS` from the start, gaining
+    `NODE_NETWORK` only once `!chainman.m_blockman.IsPruneMode()`
+    (`:2026-2028`). `Config.pruned` answers that check here, one fixed
+    set of services for every connection rather than the per-chainstate
+    assumeutxo case Core's own comment there also covers -- this tree
+    has no counterpart to a background snapshot sync.
+
+    `NODE_COMPACT_FILTERS` is BIP157's, and saying it promises an
+    answer to `getcfilters`, `getcfheaders` and `getcfcheckpt` for every
+    block of the chain. `Config.peerblockfilters` is Core's own
+    `-peerblockfilters` (`src/init.cpp:992-998`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), off by default there
+    (`DEFAULT_PEERBLOCKFILTERS`, `src/net_processing.h`) as it is here.
+    The filter index is caught up before the node starts listening and
+    kept up as blocks connect, so the promise holds whenever
+    `peerblockfilters` is on.
+    """
+    services = ServiceFlags.NODE_WITNESS | ServiceFlags.NODE_NETWORK_LIMITED
+    if not config.pruned:
+        services |= ServiceFlags.NODE_NETWORK
+    if config.peerblockfilters:
+        services |= ServiceFlags.NODE_COMPACT_FILTERS
+    return services
 
 
 @dataclass(slots=True)
@@ -1159,26 +1197,7 @@ class Connection:
         `PushNodeVersion` for each (`src/net_processing.cpp`, at
         bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
         """
-        # compact_filters is BIP157's NODE_COMPACT_FILTERS, and saying
-        # it promises an answer to getcfilters, getcfheaders and
-        # getcfcheckpt for every block of the chain. The filter index is
-        # caught up before the node starts listening and kept up as
-        # blocks connect, so the promise holds whenever this is sent.
-        #
-        # NODE_NETWORK_LIMITED is set unconditionally and NODE_NETWORK
-        # only where this node is not pruned, matching Core's own
-        # `g_local_services` (`src/init.cpp`, at bitcoin/bitcoin@ca7162cde5):
-        # `NODE_NETWORK_LIMITED | NODE_WITNESS` from the start, gaining
-        # `NODE_NETWORK` only once `!chainman.m_blockman.IsPruneMode()`
-        # (`:2026-2028`). `Config.pruned` answers that check here, one
-        # fixed set of services for every connection rather than the
-        # per-chainstate assumeutxo case Core's own comment there also
-        # covers -- this tree has no counterpart to a background
-        # snapshot sync.
-        services = ServiceFlags.NODE_WITNESS | ServiceFlags.NODE_NETWORK_LIMITED
-        if not self.manager.node.config.pruned:
-            services |= ServiceFlags.NODE_NETWORK
-        services |= ServiceFlags.NODE_COMPACT_FILTERS
+        services = local_services(self.manager.node.config)
         # over the whole 64-bit field, as Core draws it: this nonce is
         # how a node recognises a connection to itself, so a narrower
         # draw is a narrower guarantee of that

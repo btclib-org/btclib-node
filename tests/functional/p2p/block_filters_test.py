@@ -112,6 +112,8 @@ def peers(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Peers]:
     than this fixture's.
     """
     tmp_path = tmp_path_factory.mktemp("block_filters")
+    # `peerblockfilters=True`: this whole module is a BIP157 test, and
+    # `-peerblockfilters` is off by default (ISS 1395)
     nodes = [
         Node(
             config=Config(
@@ -119,6 +121,7 @@ def peers(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Peers]:
                 data_dir=tmp_path / name,
                 p2p_port=get_random_port(),
                 allow_rpc=False,
+                peerblockfilters=True,
             )
         )
         for name in ("server", "client")

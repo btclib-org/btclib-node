@@ -14,6 +14,7 @@ from collections import deque
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
+import pytest
 from bitcoin_core_rpc import RPCErrorCode
 
 import btclib_node.rpc.callbacks as rpc_callbacks
@@ -21,14 +22,13 @@ from btclib_node.exceptions import StoreCorruptionError
 from btclib_node.log import Logger
 from btclib_node.rpc.callbacks import arg_names, callbacks
 from btclib_node.rpc.errors import RpcError
+from btclib_node.rpc.help import HELP_TEXT
 from btclib_node.rpc.jsonrpc import NO_CONTENT, OK, HttpReply, decode
 from btclib_node.rpc.main import get_connection, handle_rpc
 from tests import generate_random_transaction
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    import pytest
 
     from btclib_node.rpc.manager import RpcManager
 
@@ -349,6 +349,10 @@ def test_params_are_passed_when_given(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(
         callbacks, "withparams", lambda node, conn, params: seen.append(params)
     )
+    # `_execute`'s own upper-bound check reads `arg_names[method]` before
+    # the callback ever runs, so a fake method needs a declared count
+    # too, wide enough for `params` not to be refused as carrying too many
+    monkeypatch.setitem(arg_names, "withparams", ("a", "b"))
     handle_rpc(node)
     assert seen == [[1, 2]]
 
@@ -359,6 +363,7 @@ def test_no_params_is_an_empty_list(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(
         callbacks, "noparams", lambda node, conn, params: seen.append(params)
     )
+    monkeypatch.setitem(arg_names, "noparams", ())
     for request in (
         {"jsonrpc": "2.0", "id": "a", "method": "noparams"},
         {"jsonrpc": "2.0", "id": "a", "method": "noparams", "params": None},
@@ -414,12 +419,33 @@ def test_an_args_array_holds_the_leading_positions(
     for params, positions in (
         (b'{"args":[1]}', [1]),
         (b'{"args":[1],"c":3}', [1, None, 3]),
-        (b'{"args":[1,2,3,4]}', [1, 2, 3, 4]),
+        (b'{"args":[1,2,3]}', [1, 2, 3]),
         (b'{"args":5,"a":1}', [1]),
         (b'{"args":null}', []),
     ):
         seen, _ = _named(monkeypatch, b'{"id":1,"method":"named","params":%s}' % params)
         assert seen == [positions]
+
+
+def test_an_args_array_past_the_declared_count_is_refused_with_help(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_execute`'s own upper-bound check reads the mapped positions too.
+
+    `named` declares three (`_named`'s own docstring); an `args` array
+    of four maps onto four positions the same way `transform_named_arguments`
+    always does, and `_execute` refuses that count exactly as it would a
+    plain positional array of four -- the check is on the resulting
+    `params`, not on the shape the request arrived in.
+    """
+    monkeypatch.setitem(HELP_TEXT, "named", "named ( a b c )\n\nfake help\n")
+    seen, answer = _named(
+        monkeypatch, b'{"id":1,"method":"named","params":{"args":[1,2,3,4]}}'
+    )
+    assert not seen
+    assert answer.body["error"] == error(
+        RPCErrorCode.MISC_ERROR, "named ( a b c )\n\nfake help\n"
+    )
 
 
 def test_a_named_params_refusal_is_invalid_parameter(
@@ -471,6 +497,48 @@ def test_every_method_names_its_positions() -> None:
     assert arg_names.keys() == callbacks.keys()
 
 
+@pytest.mark.parametrize(
+    ("method", "params"),
+    [
+        ("ping", [1]),
+        ("getbestblockhash", [1]),
+        ("stop", [1, 2]),
+        ("disconnectnode", ["", 1, None]),
+    ],
+)
+def test_more_positional_arguments_than_declared_is_refused_with_help(
+    monkeypatch: pytest.MonkeyPatch, method: str, params: list[Any]
+) -> None:
+    """ISS 1424: `_execute` refuses a call past `arg_names[method]`'s count.
+
+    `ping` and `getbestblockhash` declare none; `stop` declares one,
+    `wait`, hidden from its own help text (Core's own `RPCArgOptions
+    {.hidden=true}`, `src/rpc/server.cpp:155`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) but still counted;
+    `disconnectnode` declares two. Each method's own real callback is
+    replaced with one that raises: reaching it would answer Internal
+    Error rather than the expected help refusal, so the assertion
+    below passing is what proves `_execute` refused the call before
+    ever dispatching to it, `boom` itself never running.
+    """
+
+    def boom(node: Any, conn: Any, params: Any) -> NoReturn:
+        raise RuntimeError("ran")  # pragma: no cover -- must never run
+
+    monkeypatch.setitem(callbacks, method, boom)
+    node, sent, waited, stopped = make_node(
+        {"jsonrpc": "2.0", "id": "a", "method": method, "params": params}
+    )
+    handle_rpc(node)
+    misc_error = error(RPCErrorCode.MISC_ERROR, HELP_TEXT[method])
+    # A refused `stop` is answered like any other refusal, through
+    # `send` rather than `send_and_wait`, and never calls `node.stop()`
+    # (ISS 1441): `boom` never running is what proves this reply came
+    # from the refusal and not from a handler that ran and then failed.
+    reply = HttpReply(OK, {"jsonrpc": "2.0", "error": misc_error, "id": "a"})
+    assert (sent, waited, stopped) == ([reply], [], [])
+
+
 def test_stop_is_asked_of_the_batch_not_of_its_last_request() -> None:
     """handle_rpc stops the node for a stop request anywhere in the batch.
 
@@ -489,6 +557,41 @@ def test_stop_is_asked_of_the_batch_not_of_its_last_request() -> None:
 def test_a_lone_stop_waits_for_its_reply() -> None:
     """A lone `stop` is answered by `send_and_wait`, then the node stops."""
     node, sent, waited, stopped = make_node({"id": "a", "method": "stop"})
+    handle_rpc(node)
+    assert stopped == [True]
+    assert len(waited) == 1
+    assert not sent
+
+
+def test_a_refused_stop_in_a_batch_does_not_stop_the_node() -> None:
+    """A batch member refusing `stop` does not run `node.stop()` (ISS 1441).
+
+    `_answer_batch` used to set `stop` from a member's own method name as
+    soon as it was parsed, before `_exec` ever ran it, so a member that
+    asked to `stop` but was refused -- too many positional arguments,
+    here -- still reached `node.stop()`. The refused member is answered
+    inside the batch's own 200 reply, through `send`, exactly like the
+    ping beside it.
+    """
+    refused_stop = {"jsonrpc": "2.0", "id": "a", "method": "stop", "params": [1, 2]}
+    node, sent, waited, stopped = make_node([refused_stop, PING])
+    handle_rpc(node)
+    assert stopped == []
+    assert not waited
+    assert len(sent) == 1
+    [errors] = [reply["error"] for reply in sent[0].body if "error" in reply]
+    assert errors["message"] == HELP_TEXT["stop"]
+
+
+def test_a_genuine_stop_after_a_refused_one_still_stops_the_batch() -> None:
+    """A later, successful `stop` in the same batch still runs `node.stop()`.
+
+    Paired with the test above: refusing one member must not blind
+    `_answer_batch` to a real `stop` request elsewhere in the batch.
+    """
+    refused_stop = {"jsonrpc": "2.0", "id": "a", "method": "stop", "params": [1, 2]}
+    real_stop = {"jsonrpc": "2.0", "id": "b", "method": "stop"}
+    node, sent, waited, stopped = make_node([refused_stop, real_stop])
     handle_rpc(node)
     assert stopped == [True]
     assert len(waited) == 1
