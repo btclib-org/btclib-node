@@ -666,6 +666,59 @@ def test_help_names_bantime() -> None:
 
 
 @pytest.mark.parametrize(
+    ("option", "field"),
+    [
+        ("blocknotify", "block_notify"),
+        ("startupnotify", "startup_notify"),
+        ("alertnotify", "alert_notify"),
+    ],
+    ids=["blocknotify", "startupnotify", "alertnotify"],
+)
+def test_build_config_reads_a_scalar_notify_option(
+    tmp_path: Path, option: str, field: str
+) -> None:
+    """ISS 1519, ISS 1449, ISS 1475: `""` unset, the command line's value set.
+
+    Core reads each of these three with `GetArg`, so only the last
+    command-line value survives -- `notify.py`'s own module docstring.
+    """
+    assert getattr(_build(tmp_path, "-regtest"), field) == ""
+    config = _build(tmp_path, "-regtest", f"-{option}=echo one", f"-{option}=echo two")
+    assert getattr(config, field) == "echo two"
+
+
+def test_build_config_reads_shutdownnotify_as_a_list(tmp_path: Path) -> None:
+    """ISS 1519: `-shutdownnotify` is Core's own `GetArgs`, every value kept.
+
+    Unlike `-blocknotify`/`-startupnotify`/`-alertnotify` above, which
+    each keep only the command line's last value.
+    """
+    assert _build(tmp_path, "-regtest").shutdown_notify == ()
+    config = _build(
+        tmp_path, "-regtest", "-shutdownnotify=echo one", "-shutdownnotify=echo two"
+    )
+    assert config.shutdown_notify == ("echo one", "echo two")
+
+
+def test_help_names_the_four_notify_options() -> None:
+    """ISS 1519, ISS 1449, ISS 1475: each in Core's own words."""
+    message = " ".join(cli._help_message(show_debug=False).split())
+    assert (
+        "Execute command when an alert is raised (%s in cmd is replaced by "
+        "message)" in message
+    )
+    assert (
+        "Execute command when the best block changes (%s in cmd is replaced "
+        "by block hash)" in message
+    )
+    assert "Execute command on startup." in message
+    assert (
+        "Execute command immediately before beginning shutdown. The need "
+        "for shutdown may be urgent" in message
+    )
+
+
+@pytest.mark.parametrize(
     ("argv", "conf", "rpcservertimeout"),
     [
         ([], "", 30),

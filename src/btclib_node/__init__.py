@@ -35,8 +35,9 @@ from btclib_node.download import DownloadManager
 from btclib_node.exceptions import NodeShutdownTimeoutError, ReimportedMainProcessError
 from btclib_node.interpreter import warm
 from btclib_node.log import open_history_log
-from btclib_node.main import update_chain
+from btclib_node.main import check_fork_warning_conditions, update_chain
 from btclib_node.mempool import Mempool
+from btclib_node.notify import Warnings, run_detached, run_shutdown_notify
 from btclib_node.p2p.address import PeerDB
 from btclib_node.p2p.banman import BanMan
 from btclib_node.p2p.main import (
@@ -374,6 +375,11 @@ class Node(threading.Thread):
         # `m_cached_is_ibd{true}` (`src/validation.h:1054`,
         # at bitcoin/bitcoin@ca7162cde5) starts true the same way.
         self.is_initial_block_download = True
+        # this node's own `node::Warnings` (`notify.py`'s own module
+        # docstring): `rpc.callbacks.get_blockchain_info` and
+        # `get_network_info` both read `get_messages()`, and
+        # `main.check_fork_warning_conditions` is the only writer so far
+        self.warnings = Warnings()
         # `main.new_pow_valid_block`'s height of the last block it sent to
         # high-bandwidth peers: Core's `m_highest_fast_announce{0}`
         # (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the
@@ -493,6 +499,14 @@ class Node(threading.Thread):
         # index 0. btclib-org/btclib-node#722
         self.best_height = len(self.chainstate.block_index.active_chain) - 1
         self.download_manager = DownloadManager(self, self.logger)
+        # Core's own `LoadChainTip` calling `CheckForkWarningConditions`
+        # once the chainstate is loaded (`src/validation.cpp`, at
+        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `BlockIndex`'s own
+        # `best_invalid` is already backfilled by the `init_from_db` call
+        # `Chainstate.__init__` above made, so a condition already true
+        # when this node last stopped is raised again rather than
+        # waiting for the next fork to change.
+        check_fork_warning_conditions(self)
         self.loaded = True
 
     @property
@@ -777,6 +791,13 @@ class Node(threading.Thread):
 
     def _stop_managers_and_close_stores(self) -> None:
         """Stop both managers and close the stores, those `load` opened."""
+        # Core's own `Interrupt(node)` calling `ShutdownNotify` ahead of
+        # `InterruptHTTPServer`/`InterruptHTTPRPC` and the rest
+        # (`src/init.cpp:256-276`, at bitcoin/bitcoin@9be056a8a7, the
+        # v31.1 tag): every `-shutdownnotify` command, joined before
+        # anything below runs, so shutdown does not go on until each has
+        # finished.
+        run_shutdown_notify(self.logger, self.config.shutdown_notify)
         self._drain_rpc_queue()
         if self.loaded:
             self.p2p_manager.stop()
@@ -822,6 +843,14 @@ class Node(threading.Thread):
             self._abort_start(
                 [P2P_INIT_ERROR] if bind_error is None else [bind_error, P2P_INIT_ERROR]
             )
+        if not self.terminate_flag.is_set():
+            # Core's own `StartupNotify(args)`, the last line of
+            # `AppInitServers` -- called once both listeners are up and
+            # `SetRPCWarmupFinished()`/`uiInterface.InitMessage("Done
+            # loading")` have already run (`src/init.cpp:2294-2309`, at
+            # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): run once, on a
+            # thread nothing waits for.
+            run_detached(self.logger, self.config.startup_notify)
         # `config.connect` and `config.addnode` are each dialled by a
         # loop of `P2pManager`'s own, `_open_connect_peers` and
         # `_open_added_peers`, started from `P2pManager.run` once the

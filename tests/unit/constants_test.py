@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 from btclib_node import constants
+from btclib_node.notify import Warnings
 from btclib_node.p2p import connection
 from btclib_node.rpc.callbacks import get_network_info
 
@@ -28,7 +29,10 @@ def test_the_wire_user_agent_and_getnetworkinfo_s_subversion_are_one_constant() 
     """
     node = cast(
         "Any",
-        SimpleNamespace(config=SimpleNamespace(pruned=False, peerblockfilters=False)),
+        SimpleNamespace(
+            config=SimpleNamespace(pruned=False, peerblockfilters=False),
+            warnings=Warnings(),
+        ),
     )
     conn = cast("RpcConnection", None)
     result = get_network_info(node, conn, [])
