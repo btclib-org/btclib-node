@@ -1040,6 +1040,30 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   whichever is first, wherever `-seednode` is given** (closes #1461),
   as Core's `ThreadDNSAddressSeed` does.
 
+### `fuzz/` is under mypy, atheris excepted
+
+- **`[tool.mypy]`'s `files` carries `fuzz`, and an override reads `atheris`
+  alone as untyped**: the harness itself now gets the same check as
+  `src/btclib_node`, and its own two errors are fixed (closes #1259).
+
+### `scripts/` drops two stale hand-run templates
+
+- **`test_errors.py` is deleted, and `prune.py` now calls
+  `main.prune_up_to_height` through a `Node` it builds, not the stale
+  `BlockDB`/`Chainstate` pair its docstring named** (closes #1260).
+
+### `scripts/seeds/README.md`'s pins are re-checked against their own tag
+
+- **Each fixed-seed list carries a `ref` field, and `check_vendored_pin.py`
+  reads a `ref`-pinned entry against that tag's own tree, skipping the
+  "newest commit" check a tag cannot fail** (closes #1227).
+
+### `interpreter_test.py` builds signatures through `btclib_ecc`, not `btclib.ecc`
+
+- **`dsa`/`ssa` come from `btclib_ecc.ecc`, ahead of btclib dropping the
+  re-export (btclib-org/btclib#2404); `test` gains `btclib-ecc` and a
+  raised `btclib-secp256k1` floor for its bindings import** (closes #1431).
+
 ### `gettxoutsetinfo` defaults to `muhash`, not Core's `hash_serialized_3`
 
 - **A bare `gettxoutsetinfo` answers `muhash`**, the one hash type this
