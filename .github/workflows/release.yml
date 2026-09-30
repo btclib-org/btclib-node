@@ -98,6 +98,18 @@ jobs:
     with:
       package: btclib_node
 
+  # `uv audit` over what the wheel declares, before anything is published:
+  # btclib-org/.github's reusable-audit.yml, called at @main so that the uv
+  # version, the flags and what it refuses are written once. An
+  # advisory or an unreachable service fails it, and the publish jobs
+  # below name it in `needs:` and in their `if:`, `always()` there being
+  # what would otherwise let them run past a red one. The callee asks only
+  # for the `contents: read` this workflow grants, as the calls above do.
+  # attest and github-release do not name it: neither runs without a publish
+  # job's success
+  audit:
+    uses: btclib-org/.github/.github/workflows/reusable-audit.yml@main
+
   # the whole test/lint gate, exactly as a pull request runs it, and the
   # distribution files besides: test.yml's `dist` job builds them, checks
   # them and uploads them, so this call is what makes them exist for the
@@ -155,12 +167,13 @@ jobs:
     # btclib-org/btclib#1461 is where this exact shape blocked
     # publish-testpypi from ever starting, on the first cycle to run
     # public-api against a real breaking change
-    needs: [public-api, test, lint, docs]
+    needs: [public-api, audit, test, lint, docs]
     if: >-
       always() && github.event_name == 'workflow_dispatch' &&
       github.repository == 'btclib-org/btclib-node' &&
       needs.test.result == 'success' && needs.lint.result == 'success' &&
-      needs.docs.result == 'success'
+      needs.docs.result == 'success' &&
+      needs.audit.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment:
@@ -190,12 +203,13 @@ jobs:
     # See publish-testpypi's own comment: public-api stays a need for
     # ordering, not for its result, the same issue applying to a tag
     # push as to a rehearsal
-    needs: [public-api, test, lint, docs]
+    needs: [public-api, audit, test, lint, docs]
     if: >-
       always() && github.event_name == 'push' &&
       github.repository == 'btclib-org/btclib-node' &&
       needs.test.result == 'success' && needs.lint.result == 'success' &&
-      needs.docs.result == 'success'
+      needs.docs.result == 'success' &&
+      needs.audit.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # deployment gate: configure required reviewers on the "pypi"

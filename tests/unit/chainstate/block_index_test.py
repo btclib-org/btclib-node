@@ -848,6 +848,92 @@ def test_invalidated_headers_stay_out_of_header_index_after_a_restart(
     assert chain[-1].hash not in new_block_index.header_index
 
 
+def test_best_invalid_starts_none(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """A fresh index, nothing invalidated, carries no `best_invalid`."""
+    chainstate = a_chainstate(None)
+    assert chainstate.block_index.best_invalid is None
+    chainstate.close()
+
+
+def test_invalidate_sets_best_invalid_to_the_first_invalidated_block(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """ISS 1522: `best_invalid` is `invalidate`'s own hash, once marked.
+
+    Core's own `m_best_invalid` (`ChainstateManager`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the invalid block with
+    the most chainwork this index has ever indexed.
+
+    No precondition check on `best_invalid` before `invalidate` runs, on
+    purpose -- `test_best_invalid_starts_none` above already covers it,
+    separately, because mypy's own narrowing of `block_index.best_invalid`
+    from an `is None` check survives the `invalidate` call that follows
+    it (an ordinary method call, confirmed against a minimal
+    reproduction outside this tree not to invalidate the narrowing the
+    way it should), which reports the assertion below as unreachable
+    once both are in the same function.
+    """
+    chainstate = a_chainstate(None)
+    block_index = chainstate.block_index
+    (header,) = generate_random_header_chain(1, RegTest().genesis.hash)
+    block_index.add_headers([header])
+
+    block_index.invalidate(header.hash)
+
+    assert block_index.best_invalid == header.hash
+    chainstate.close()
+
+
+def test_invalidate_keeps_the_higher_work_invalid_block(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """A later, lower-chainwork invalidate does not replace `best_invalid`.
+
+    Core's own comparison in `InvalidChainFound`/`InvalidateBlock`:
+    `pindexNew->nChainWork > m_best_invalid->nChainWork`, strictly
+    greater, so a second invalid block with no more work than the first
+    does not take over. `long_chain[-1]` carries three blocks' worth of
+    chainwork, `short_chain[0]` one, both mined at the same (regtest)
+    difficulty, so the comparison is unambiguous.
+    """
+    chainstate = a_chainstate(None)
+    block_index = chainstate.block_index
+    long_chain = generate_random_header_chain(3, RegTest().genesis.hash)
+    short_chain = generate_random_header_chain(1, RegTest().genesis.hash)
+    block_index.add_headers(long_chain)
+    block_index.add_headers(short_chain)
+
+    block_index.invalidate(long_chain[-1].hash)
+    assert block_index.best_invalid == long_chain[-1].hash
+
+    block_index.invalidate(short_chain[0].hash)
+    assert block_index.best_invalid == long_chain[-1].hash
+    chainstate.close()
+
+
+def test_best_invalid_survives_a_restart(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """`calculate_chainwork`'s own load-time scan rebuilds `best_invalid`.
+
+    Core's own `LoadBlockIndex` scan (`src/validation.cpp:4964-4965`,
+    same tag as the sibling test above): a block already marked invalid
+    when this index was last written is found again on the next load,
+    not only by a fresh call to `invalidate`.
+    """
+    chainstate = a_chainstate(None)
+    block_index = chainstate.block_index
+    (header,) = generate_random_header_chain(1, RegTest().genesis.hash)
+    block_index.add_headers([header])
+    block_index.invalidate(header.hash)
+    chainstate.db.close()
+
+    new_chainstate = a_chainstate(None)
+    assert new_chainstate.block_index.best_invalid == header.hash
+
+
 def test_first_candidate_skips_a_hole_behind_a_downloaded_tip(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:

@@ -1376,6 +1376,69 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   and *Following Bitcoin Core* moves to `CONTRIBUTING.md`'s last
   section** (issue btclib-org/.github#1494).
 
+### `-blocknotify` and `-shutdownnotify` join the command line
+
+- **`-blocknotify=<cmd>` runs `%s` as the new tip's hash outside initial
+  block download; `-shutdownnotify=<cmd>` joins every configured command
+  before shutdown goes on** (closes #1519).
+
+### `-startupnotify` joins the command line
+
+- **`-startupnotify=<cmd>` runs a command once the RPC listener answers and
+  start-up has finished** (closes #1449).
+
+### `-alertnotify` joins the command line
+
+- **`-alertnotify=<cmd>` runs a command, `%s` replaced by the sanitized,
+  single-quoted message, whenever this node raises a warning of its own**
+  (issue #1475).
+
+### An invalid chain with more work than the active tip raises a warning
+
+- **More than six blocks' worth raises it to the log, to `-alertnotify`, and
+  to `getblockchaininfo`'s and `getnetworkinfo`'s own new `warnings` field**
+  (closes #1522).
+
+### `release.yml` audits the lock before it publishes
+
+- **The `audit` job runs `uv audit` over what the wheel declares**, by calling
+  btclib-org/.github's `reusable-audit.yml`, and both publish jobs wait for
+  its success (issue btclib-org/.github#1466).
+
+### Address handling matches Core's own keys, timestamps and dial cadence
+
+- **`getaddr` is cached per network and local socket** (closes #1478).
+- **A gossiped or DNS-seeded address keeps a timestamp** (closes #1380).
+- **The automatic dial draws at most once every 500ms** (closes #1379).
+
+### A fixed seed keeps a timestamp too, one to two weeks old
+
+- **`fixed_seed_addresses` backdates each seed, as Core's `ConvertSeeds`
+  does** (closes #1571).
+
+### The mempool counts sigops with btclib's `sig_op_cost`
+
+- **`interpreter.py`'s own `GetTransactionSigOpCost` is gone**,
+  `_sigop_adjusted_vsize` calling btclib's `sig_op_cost` under
+  `STANDARD_FLAGS`, which answers the same (closes #1586).
+
+### A transaction Core decodes and refuses in `CheckTransaction`'s own words
+
+- **`sendrawtransaction` and `testmempoolaccept` answer that refusal too**,
+  rather than reporting the transaction as one that failed to decode
+  (closes #1375).
+
+### `decoderawtransaction` is served
+
+- **It answers Core's JSON shape for a hex-decoded transaction**, with no
+  chain or mempool lookup (closes #1398).
+
+### `sendrawtransaction` and `testmempoolaccept` answer `bad-txns-oversize`
+
+- **A transaction whose only fault is its own size answers Core's own
+  reject reason**, rather than `-32603` "Internal Error" off an
+  unrecognized `Tx.assert_valid` message (closes #1447).
+
 ### A low-work headers chain is synced twice before any of it is stored
 
 - **Headers below the anti-DoS work threshold go through Core's

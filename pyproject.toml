@@ -42,16 +42,19 @@ dependencies = [
     # imports -- `btclib.muhash`, `btclib.p2p.reject`, `btclib.tx.coin`
     # and `btclib.tx.tx_context` among the modules -- so a floor below
     # it is a release the published wheel's own smoke test cannot
-    # import (btclib-org/btclib-node#848). Raised to 2026.9.29, the
-    # release `btclib.descriptors` leaves for `btclib-wallet`
-    # (btclib-org/btclib#2129) -- `rpc/callbacks.py` now imports it
-    # from there instead (btclib-org/btclib-node#1508) -- and the
-    # release `btclib-wallet`'s own floor below already requires,
-    # stated directly rather than left to that transitive pull.
+    # import (btclib-org/btclib-node#848). Raised to 2026.9.30, the
+    # release fixing `Tx.assert_valid`'s own check order to match
+    # Core's `CheckTransaction` (btclib-org/btclib#2417,
+    # btclib-org/btclib#2422): `rpc/callbacks.py`'s own
+    # `_reject_reason` answers a multi-violation transaction's reject
+    # reason by reading `assert_valid`'s own first-raised message, and
+    # relies on that order matching Core's rather than reordering it a
+    # second time itself (btclib-org/btclib-node#1375). A floor below
+    # it is a release this answers wrongly on.
     # `tests/unit/interpreter_test.py` hands `ScriptPubKey` a
-    # `PubKeyData`, unchanged since 2026.9.24. Raised to 2026.9.30, the
-    # release carrying `permitted_difficulty_transition`
-    # (btclib-org/btclib#2418), which `p2p/headers_sync.py` imports.
+    # `PubKeyData`, unchanged since 2026.9.24. 2026.9.30 also carries
+    # `permitted_difficulty_transition` (btclib-org/btclib#2418), which
+    # `p2p/headers_sync.py` imports.
     "btclib[secp256k1]>=2026.9.30",
     # `rpc/callbacks.py` imports `add_checksum`/`from_address` from
     # `btclib_wallet.descriptors`, where btclib's own `descriptors`

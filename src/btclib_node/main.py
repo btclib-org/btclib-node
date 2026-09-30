@@ -30,6 +30,7 @@ from btclib.consensus import MAX_BLOCK_WEIGHT, WITNESS_SCALE_FACTOR, subsidy
 from btclib.exceptions import BTClibException, BTClibValueError
 from btclib.fee import fee_from_vsize
 from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
+from btclib.script.engine import sig_op_cost
 from btclib.script.engine.flags import ScriptFlag
 from btclib.tx.limits import COINBASE_MATURITY
 from btclib.tx.tx_context import (
@@ -41,7 +42,12 @@ from btclib.tx.tx_context import (
 
 from btclib_node.block_db import Coin
 from btclib_node.chains import SigNet
-from btclib_node.chainstate.block_index import BlockIndex, BlockStatus, block_time
+from btclib_node.chainstate.block_index import (
+    BlockIndex,
+    BlockStatus,
+    block_time,
+    calculate_work,
+)
 from btclib_node.constants import (
     MIN_BLOCKS_TO_KEEP,
     NodeStatus,
@@ -55,12 +61,13 @@ from btclib_node.exceptions import (
     TxRejectedError,
 )
 from btclib_node.interpreter import (
+    STANDARD_FLAGS,
     check_transaction,
     check_transactions,
     get_flags,
-    sig_op_cost,
 )
 from btclib_node.mempool import format_money
+from btclib_node.notify import alert_notify, run_detached
 from btclib_node.p2p.block_availability import (
     peer_has_header,
     process_block_availability,
@@ -90,6 +97,7 @@ if TYPE_CHECKING:
 __all__ = [
     "MempoolAcceptance",
     "assert_valid_block",
+    "check_fork_warning_conditions",
     "contextual_check_block",
     "is_block_failed",
     "is_block_mutated",
@@ -111,6 +119,87 @@ __all__ = [
 def update_header_index(index: BlockIndex, invalid_hash: bytes) -> None:
     """Invalidate the block `update_chain`'s own trial loop just failed on."""
     index.invalidate(invalid_hash)
+
+
+# Core's own `GetBlockProof(*m_chain.Tip()) * 6`
+# (`src/validation.cpp:1957`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+# tag): six blocks' worth of work at the tip's own difficulty.
+_LARGE_WORK_INVALID_CHAIN_PERIODS = 6
+
+# Core's own `kernel::Warning::LARGE_WORK_INVALID_CHAIN`
+# (`src/kernel/warning.h`, same sha), passed to `notify.Warnings` as a
+# plain string id: this tree tracks no other warning, so there is
+# nothing else the id has to be distinct from but itself.
+_LARGE_WORK_INVALID_CHAIN = "large_work_invalid_chain"
+
+# Core's own two strings, cited apart because one reaches the log alone
+# and the other reaches `-alertnotify` and the `warnings` RPC field
+# (`src/validation.cpp:1957-1960`, same sha): the log line carries no
+# "Warning: " prefix, the notified one does.
+_LARGE_WORK_INVALID_CHAIN_LOG = (
+    "Found invalid chain more than 6 blocks longer than our best chain. "
+    "This could be due to database corruption or consensus incompatibility "
+    "with peers."
+)
+_LARGE_WORK_INVALID_CHAIN_MESSAGE = "Warning: " + _LARGE_WORK_INVALID_CHAIN_LOG
+
+
+def check_fork_warning_conditions(node: Node) -> None:
+    """Raise or clear the large-work-invalid-chain warning: Core's own check.
+
+    `Chainstate::CheckForkWarningConditions` (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), for
+    btclib-org/btclib-node#1522: once `node.chainstate.block_index`'s
+    own `best_invalid` carries more chainwork than the active tip plus
+    six blocks' worth of work at the tip's own difficulty, this node logs
+    the condition on every call, same as Core, and raises the warning
+    once -- `node.warnings.set_warning`'s own dedup is what keeps a
+    condition that is still true from firing `-alertnotify` again on
+    every later call, matching `KernelNotifications::warningSet` only
+    calling `AlertNotify` where `Warnings::Set` answers `True`. Cleared,
+    silently, the moment the condition no longer holds.
+
+    Core's own function returns early for a historical chainstate
+    (`this->GetRole().historical`, background validation under an
+    assumeutxo snapshot): this tree keeps exactly one chainstate, so
+    that check has no counterpart here to make.
+
+    Called wherever this tree calls `BlockIndex.invalidate` (through
+    `update_header_index` in `_invalidate_failed_block`, and directly in
+    `p2p.callbacks` and `rpc.callbacks`), or commits a fork
+    (`_after_tip_change`), and once at `Node.load`, matching Core's own
+    three call sites (`src/validation.cpp`, same sha): `InvalidChainFound`
+    itself (`:1987`) -- reached both from `InvalidateBlock`'s own direct
+    call and, for a block that fails validation, from `InvalidBlockFound`
+    calling `InvalidChainFound` in turn, the same way this tree's three
+    `invalidate` call sites above all reach this one function --
+    `ActivateBestChainStep` (`:3318`, not `ConnectTip`, which calls
+    neither `InvalidChainFound` nor this function itself), and
+    `LoadChainTip` (`:4643`, not `LoadBlockIndex`, which is `best_invalid`'s
+    own load-time rescan in `BlockIndex.calculate_chainwork`, argued
+    there rather than here).
+    """
+    block_index = node.chainstate.block_index
+    best_invalid = block_index.best_invalid
+    tip_hash = block_index.active_chain[-1]
+    tip_header = block_index.header_dict[tip_hash].header
+    large_work = best_invalid is not None and (
+        block_index.chainwork[best_invalid]
+        > block_index.chainwork[tip_hash]
+        + calculate_work(tip_header) * _LARGE_WORK_INVALID_CHAIN_PERIODS
+    )
+    if large_work:
+        node.logger.warning(_LARGE_WORK_INVALID_CHAIN_LOG)
+        if node.warnings.set_warning(
+            _LARGE_WORK_INVALID_CHAIN, _LARGE_WORK_INVALID_CHAIN_MESSAGE
+        ):
+            alert_notify(
+                node.logger,
+                node.config.alert_notify,
+                _LARGE_WORK_INVALID_CHAIN_MESSAGE,
+            )
+    else:
+        node.warnings.unset_warning(_LARGE_WORK_INVALID_CHAIN)
 
 
 # Core's own `MAX_BLOCKS_TO_ANNOUNCE` (`src/net_processing.cpp:152`,
@@ -409,6 +498,19 @@ def _reconcile_mempool_for_reorg(
 # tag). `PeerManagerImpl::BlockConnected`, once per block connected,
 # decays the block stalling timeout. btclib-org/btclib-node#1144,
 # btclib-org/btclib-node#1148, btclib-org/btclib-node#1179
+#
+# `-blocknotify` fires here too, once per call rather than once per
+# block in `to_add`: Core's own `NotifyBlockTip` fires once per
+# `ActivateBestChainStep` call (`src/validation.cpp:3465-3482`, same
+# sha), and this function is `update_chain`'s own once-per-fork-trial
+# commit step, the same granularity. Gated on IBD the way
+# `_announce_added_blocks` below already is, matching Core's own
+# `NotifyBlockTip_connect` callback refusing everything but
+# `SynchronizationState::POST_INIT` (`src/init.cpp:2011-2019`, same
+# sha); `to_add[-1]` is the new tip, Core's own `block.GetBlockHash()`
+# there. `check_fork_warning_conditions` is not gated on IBD, matching
+# Core calling `CheckForkWarningConditions()` unconditionally after
+# every commit (`src/validation.cpp:3318`, same sha).
 def _after_tip_change(
     node: Node, to_remove: list[RevBlock], to_add: list[Block]
 ) -> None:
@@ -416,8 +518,13 @@ def _after_tip_change(
     for _ in to_add:
         node.download_manager.block_connected()
     _reconcile_mempool_for_reorg(node, to_remove, to_add)
+    check_fork_warning_conditions(node)
     if not node.is_initial_block_download:
         _announce_added_blocks(node, to_add)
+        run_detached(
+            node.logger,
+            node.config.block_notify.replace("%s", to_add[-1].header.hash.hex()),
+        )
 
 
 # update_chain's own commit step, once the trial loop above has gone
@@ -1013,6 +1120,23 @@ def _resolve_trial_exception(
     raise exc
 
 
+def _invalidate_failed_block(
+    node: Node, block_index: BlockIndex, failed_hash: bytes
+) -> None:
+    """Mark `failed_hash` invalid and raise the fork warning it may trigger.
+
+    A function of its own and not the two lines inline in `update_chain`'s
+    own tail -- ruff's own `too-many-statements` already counts
+    `update_chain` at its ceiling without this pair. Core's own
+    `InvalidChainFound` calls `CheckForkWarningConditions` right after
+    marking a block invalid (`src/validation.cpp:1987`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag); `check_fork_warning_conditions`
+    below is that same call, for btclib-org/btclib-node#1522.
+    """
+    update_header_index(block_index, failed_hash)
+    check_fork_warning_conditions(node)
+
+
 def update_chain(node: Node) -> None:
     """Try the best ready fork block by block, and commit or roll it back.
 
@@ -1140,7 +1264,7 @@ def update_chain(node: Node) -> None:
 
     if not success and failed_hash is not None:
         node.logger.debug("Start updating index")
-        update_header_index(block_index, failed_hash)
+        _invalidate_failed_block(node, block_index, failed_hash)
 
     if success:
         _after_tip_change(node, to_remove, to_add)
@@ -1319,9 +1443,10 @@ def _sigop_adjusted_vsize(tx: Tx, prev_outputs: list[TxOut]) -> int:
     v31.1 tag), `bypass_limits` or not: `GetTransactionSigOpCost` under the
     standard flags, the vsize `GetVirtualTransactionSize` adjusts by it,
     and "bad-txns-too-many-sigops" past `MAX_STANDARD_TX_SIGOPS_COST`.
-    btclib-org/btclib-node#1357
+    `btclib.script.engine.sig_op_cost` is that function, term by term:
+    btclib-org/btclib-node#1357, btclib-org/btclib-node#1586.
     """
-    cost = sig_op_cost(tx, prev_outputs)
+    cost = sig_op_cost(prev_outputs, tx, STANDARD_FLAGS)
     if cost > _MAX_STANDARD_TX_SIGOPS_COST:
         reason, details = "bad-txns-too-many-sigops", str(cost)
         raise TxRejectedError(reason, details)

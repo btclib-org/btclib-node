@@ -83,6 +83,7 @@ from btclib.p2p.limits import (
 from btclib.p2p.negotiation import FeeFilter, GetAddr, WtxidRelay
 from btclib.script.witness import Witness
 
+import btclib_node.p2p.address as address_module
 import btclib_node.p2p.callbacks as cb
 from btclib_node.chains import HeadersSyncParams, RegTest
 from btclib_node.chainstate import Chainstate
@@ -99,6 +100,7 @@ from btclib_node.exceptions import (
 from btclib_node.log import Logger
 from btclib_node.main import MempoolAcceptance, verify_mempool_acceptance
 from btclib_node.mempool import Mempool
+from btclib_node.notify import Warnings
 from btclib_node.p2p.address import PeerDB, endpoint_key, host_key, peer_address
 from btclib_node.p2p.banman import BanMan, lookup_subnet
 from btclib_node.p2p.block_availability import BlockAvailability
@@ -217,6 +219,18 @@ def a_ban_man(*subnets: str) -> BanMan:
     return ban_man
 
 
+# `conn.addr_cache_key`'s own default here and in `another_conn` below:
+# the two share this value, which is what makes the two-connection
+# "close together" tests exercise one cache -- `a_different_cache_key`
+# is what a test asking about two different keys passes instead.
+_A_CACHE_KEY = (BIP155Network.IPV4, "127.0.0.1", 8333)
+
+
+def a_different_cache_key() -> tuple[int, str, int]:
+    """Return a key `_A_CACHE_KEY` never equals: a different local port."""
+    return (BIP155Network.IPV4, "127.0.0.1", 8334)
+
+
 def make_node(
     addresses: Sequence[NetworkAddressV2],
     *,
@@ -224,6 +238,7 @@ def make_node(
     discouraged: Sequence[NetworkAddressV2] = (),
     banned: Sequence[str] = (),
     inbound: bool = True,
+    addr_cache_key: tuple[int, str, int] = _A_CACHE_KEY,
 ) -> tuple[Any, Any, list[Any]]:
     """Build a node with `peer_db` addresses active, and a peer stand-in.
 
@@ -241,6 +256,7 @@ def make_node(
         answered_getaddr=False,
         addr_relay_enabled=False,
         inbound=inbound,
+        addr_cache_key=addr_cache_key,
     )
     keys = {host_key(address) for address in discouraged}
     node = SimpleNamespace(
@@ -381,10 +397,20 @@ def test_a_second_getaddr_on_the_same_connection_is_ignored() -> None:
     assert len(sent) == 1
 
 
-def another_conn(sent: list[Any]) -> Any:
-    """Build a second peer stand-in sharing `sent` with `make_node`'s own."""
+def another_conn(
+    sent: list[Any], *, addr_cache_key: tuple[int, str, int] = _A_CACHE_KEY
+) -> Any:
+    """Build a second peer stand-in sharing `sent` with `make_node`'s own.
+
+    `addr_cache_key` defaults to the same key `make_node` does, so the
+    two share one `getaddr` cache unless a test asks otherwise.
+    """
     return SimpleNamespace(
-        prefer_addressv2=False, send=sent.append, answered_getaddr=False, inbound=True
+        prefer_addressv2=False,
+        send=sent.append,
+        answered_getaddr=False,
+        inbound=True,
+        addr_cache_key=addr_cache_key,
     )
 
 
@@ -412,6 +438,38 @@ def test_two_connections_close_together_are_answered_the_same_sample(
     getaddr(node, b"", conn2)
     assert len(draws) == 1
     assert sent[0].addresses == sent[1].addresses
+
+
+def test_two_connections_on_different_local_sockets_are_answered_independently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1478: two different `addr_cache_key`s draw two separate samples.
+
+    Core's own reason, quoted in `getaddr`'s docstring: a node reachable
+    at two local sockets must not let a peer on one compare its answer
+    against a peer on the other to link the two as one node. Patched to
+    return a distinct one-element list per call -- a `random.sample`
+    stand-in that a shared cache would make answer the *first* call's
+    value twice over, which this distinguishes from two real, separate
+    draws.
+    """
+    calls = 0
+
+    def distinct_sample(active: list[NetworkAddressV2]) -> list[NetworkAddressV2]:
+        nonlocal calls
+        calls += 1
+        return [replace(active[0], port=active[0].port + calls)]
+
+    monkeypatch.setattr(cb, "_addresses_to_send", distinct_sample)
+    address = an_address()
+    node, conn1, sent = make_node([address])
+    conn2 = another_conn(sent, addr_cache_key=a_different_cache_key())
+    getaddr(node, b"", conn1)
+    getaddr(node, b"", conn2)
+    assert calls == 2
+    assert sent[0].addresses != sent[1].addresses
+    peer_db = node.p2p_manager.peer_db
+    assert len(peer_db.addr_response_caches) == 2
 
 
 def test_the_cached_sample_is_redrawn_once_it_expires(
@@ -611,6 +669,30 @@ def a_gossiped_address(
     return peer_address(host, 18444, timestamp=int(time.time()), services=services)
 
 
+def _as_stored(
+    address: NetworkAddressV2, *, source: NetworkAddressV2 | None = None
+) -> NetworkAddressV2:
+    """Return `address` as `add_addresses` stores it, gossiped by `source`.
+
+    Mirrors `add_addresses`'s own penalty (`address.py`): none where
+    `address` and `source` share a host -- a self-announcement, port
+    aside, `address_module._host` rather than `endpoint_key` since an
+    inbound `source`'s own port is an ephemeral one
+    (btclib-org/btclib-node#1380, review round 2) --
+    `address_module._GOSSIP_TIME_PENALTY` otherwise. `source` defaults
+    to `a_peer()`'s own default address, which is what every test below
+    gossips through unless it builds its own peer at another one.
+    """
+    if source is None:
+        source = a_peer().address
+    penalty = (
+        0
+        if address_module._host(address) == address_module._host(source)
+        else address_module._GOSSIP_TIME_PENALTY
+    )
+    return replace(address, timestamp=max(0, int(address.timestamp - penalty)))
+
+
 def a_handshake_node(
     *,
     pending_outbound_nonces: Sequence[int] = (),
@@ -626,7 +708,10 @@ def a_handshake_node(
     `is_discouraged` answers for the IPs `discouraged_hosts` names,
     whatever the port, the ban list holds the subnets of `banned`, and
     the peer table is an empty one in memory unless `peer_db` names
-    another.
+    another. `config.block_notify`/`config.alert_notify` are `""` and
+    `warnings` an empty `notify.Warnings` -- `check_fork_warning_conditions`
+    reaches both wherever a callback built on this double invalidates a
+    block (btclib-org/btclib-node#1522).
     """
     discouraged, record = discourage_recorder()
     discouraged_keys = {host_key(peer_address(host, 0)) for host in discouraged_hosts}
@@ -634,8 +719,13 @@ def a_handshake_node(
     return SimpleNamespace(
         status=status,
         config=SimpleNamespace(
-            min_relay_feerate=min_relay_feerate, pruned=False, minimum_chain_work=0
+            min_relay_feerate=min_relay_feerate,
+            pruned=False,
+            minimum_chain_work=0,
+            block_notify="",
+            alert_notify="",
         ),
+        warnings=Warnings(),
         p2p_manager=SimpleNamespace(
             connections={},
             pending_outbound_nonces=own_nonces,
@@ -1640,8 +1730,9 @@ def test_the_addresses_a_peer_sends_are_kept() -> None:
     """Both `addr` and `addrv2` land the same addresses in the peer database.
 
     BIP155's record either way, the addr version 1 entry being
-    translated back into one; and without the timestamp the peer
-    quoted, which is `PeerDB.add_addresses`'s own doing.
+    translated back into one, and `_as_stored`'s own timestamp: `1.2.3.4`
+    is `a_gossiping_peer()`'s own address, so it lands with no penalty,
+    and `1.2.3.5` pays the two-hour one.
     """
     given = [a_gossiped_address("1.2.3.4"), a_gossiped_address("1.2.3.5")]
     for callback, message in (
@@ -1651,10 +1742,32 @@ def test_the_addresses_a_peer_sends_are_kept() -> None:
         peer_db = PeerDB(cast("Chain", None), cast("Path", None))
         node = a_handshake_node(peer_db=peer_db)
         callback(node, message.serialize(), a_gossiping_peer())
-        # BIP155's record either way, the addr version 1 entry being
-        # translated back into one; and without the timestamp the peer
-        # quoted, which is PeerDB.add_addresses' doing
-        assert peer_db.addresses == {replace(address, timestamp=0) for address in given}
+        assert peer_db.addresses == {_as_stored(address) for address in given}
+
+
+def test_an_inbound_peer_s_self_announcement_costs_no_penalty_port_aside() -> None:
+    """#1380, review round 2: an inbound peer's own port is an ephemeral one.
+
+    `conn.address` for an inbound connection keeps the peer's ephemeral
+    TCP source port from `sock.accept()`'s own peername -- `version`'s
+    own handler rewrites `conn.address` for an outbound connection alone
+    -- while what a peer gossips about itself names its own listening
+    port instead, `18444` here against an inbound source on an unrelated
+    ephemeral one, `54321`. Core's own comparison never sees either
+    port (`AddrManImpl::AddSingle`'s `addr == source` slices `addr` down
+    to its `CNetAddr` base before `CNetAddr::operator==` ever runs,
+    `src/addrman.cpp` and `src/netaddress.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so the exemption still
+    has to apply here.
+    """
+    source = peer_address("1.2.3.4", 54321)
+    announced = a_gossiped_address("1.2.3.4")
+    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+    node = a_handshake_node(peer_db=peer_db)
+    peer = a_gossiping_peer(inbound=True, address=source)
+    message = AddrV2([announced])
+    addrv2(node, message.serialize(), peer)
+    assert peer_db.addresses == {_as_stored(announced, source=source)}
 
 
 def test_an_addr_fetch_peer_is_stopped_once_it_answers_with_more_than_one() -> None:
@@ -1673,7 +1786,7 @@ def test_an_addr_fetch_peer_is_stopped_once_it_answers_with_more_than_one() -> N
         peer = a_gossiping_peer(addr_fetch=True)
         callback(node, message.serialize(), peer)
         assert peer.stopped
-        assert peer_db.addresses == {replace(address, timestamp=0) for address in given}
+        assert peer_db.addresses == {_as_stored(address) for address in given}
 
 
 def test_an_addr_fetch_peer_answering_with_one_address_is_kept() -> None:
@@ -1718,7 +1831,7 @@ def test_a_discouraged_host_gossiped_is_not_stored() -> None:
         peer_db = PeerDB(cast("Chain", None), cast("Path", None))
         node = a_handshake_node(peer_db=peer_db, discouraged_hosts=["1.2.3.5"])
         callback(node, message.serialize(), a_gossiping_peer())
-        assert peer_db.addresses == {replace(kept, timestamp=0)}
+        assert peer_db.addresses == {_as_stored(kept)}
 
 
 def test_a_banned_host_gossiped_is_not_stored() -> None:
@@ -1732,7 +1845,7 @@ def test_a_banned_host_gossiped_is_not_stored() -> None:
         peer_db = PeerDB(cast("Chain", None), cast("Path", None))
         node = a_handshake_node(peer_db=peer_db, banned=["5.6.7.0/24"])
         callback(node, message.serialize(), a_gossiping_peer())
-        assert peer_db.addresses == {replace(kept, timestamp=0)}
+        assert peer_db.addresses == {_as_stored(kept)}
 
 
 def test_the_addresses_kept_are_counted_per_peer() -> None:
@@ -1777,7 +1890,7 @@ def test_an_address_of_no_full_node_is_neither_stored_nor_counted() -> None:
         node = a_handshake_node(peer_db=peer_db)
         peer = a_gossiping_peer()
         callback(node, message.serialize(), peer)
-        assert peer_db.addresses == {replace(address, timestamp=0) for address in kept}
+        assert peer_db.addresses == {_as_stored(address) for address in kept}
         assert peer.stats.addr_processed == len(kept)
         assert peer.stats.addr_rate_limited == 0
 
@@ -1799,7 +1912,7 @@ def test_what_a_peer_sends_past_its_tokens_is_dropped_and_counted() -> None:
         peer = a_peer()
         callback(node, message.serialize(), peer)
         assert len(peer_db.addresses) == 1
-        assert peer_db.addresses <= {replace(a, timestamp=0) for a in given}
+        assert peer_db.addresses <= {_as_stored(a) for a in given}
         assert peer.stats.addr_processed == 1
         assert peer.stats.addr_rate_limited == len(given) - 1
 
@@ -1844,7 +1957,7 @@ def test_the_message_is_shuffled_before_its_tokens_are_spent(
     peer_db = PeerDB(cast("Chain", None), cast("Path", None))
     node = a_handshake_node(peer_db=peer_db)
     addrv2(node, AddrV2([first, last]).serialize(), a_peer())
-    assert peer_db.addresses == {replace(last, timestamp=0)}
+    assert peer_db.addresses == {_as_stored(last)}
 
 
 @pytest.mark.parametrize(
@@ -1906,7 +2019,7 @@ def test_an_octet_past_an_addr_or_addrv2_no_longer_costs_the_peer() -> None:
         node = a_handshake_node(peer_db=peer_db)
         peer = a_peer()
         callback(node, message.serialize() + b"\x00", peer)
-        assert peer_db.addresses == {replace(address, timestamp=0) for address in given}
+        assert peer_db.addresses == {_as_stored(address) for address in given}
         assert not peer.stopped
         # ISS 1178: Core's `SetupAddressRelay`, for any addr or addrv2
         assert peer.addr_relay_enabled is True

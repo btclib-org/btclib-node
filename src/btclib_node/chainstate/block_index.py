@@ -439,6 +439,19 @@ class BlockIndex:
         # write together with UtxoIndex's own flush. btclib-org/btclib-node#586
         self.pending: dict[bytes, BlockInfo] = {}
 
+        # the invalid block with the most chainwork this index has ever
+        # indexed, Core's own `ChainstateManager::m_best_invalid`
+        # (`src/validation.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        # tag): `calculate_chainwork` below sets it on load, the way
+        # Core's own `LoadBlockIndex` scan does
+        # (`src/validation.cpp:4964-4965`, same sha), and `invalidate`
+        # updates it at runtime, the way Core's `InvalidChainFound`/
+        # `InvalidBlockFound` and `InvalidateBlock` do. `None` where no
+        # block indexed so far is marked invalid.
+        # `main.check_fork_warning_conditions` is the only reader, for
+        # btclib-org/btclib-node#1522.
+        self.best_invalid: bytes | None = None
+
         self.init_from_db()
 
     def init_from_db(self) -> None:
@@ -477,7 +490,12 @@ class BlockIndex:
     def calculate_chainwork(self) -> None:
         """Compute every header's cumulative work into `chainwork`.
 
-        Backfills `children` along the way, one entry per header visited.
+        Backfills `children` along the way, one entry per header visited,
+        and `best_invalid` the same way Core's own `LoadBlockIndex` scan
+        does (`src/validation.cpp:4964-4965`, at bitcoin/bitcoin@9be056a8a7,
+        the v31.1 tag): a block already marked invalid when this index
+        was last written beats whatever `best_invalid` already holds if
+        its chainwork is greater.
         """
         for block_hash in self.sorted_header_dict:
             block_info = self.get_block_info(block_hash)
@@ -491,8 +509,13 @@ class BlockIndex:
             # BlockInfo/_insert_block_info: chainwork is not part of
             # the stored record, so this loop touches one int per
             # header rather than replacing the record itself
-            self.chainwork[block_hash] = old_work + calculate_work(block_info.header)
+            work = old_work + calculate_work(block_info.header)
+            self.chainwork[block_hash] = work
             self._build_skip(block_hash, block_info)
+            if block_info.status == BlockStatus.invalid and (
+                self.best_invalid is None or work > self.chainwork[self.best_invalid]
+            ):
+                self.best_invalid = block_hash
 
     def _build_skip(self, block_hash: bytes, block_info: BlockInfo) -> None:
         """Set `block_hash`'s skip pointer: Core's `BuildSkip`, parent first."""
@@ -782,6 +805,13 @@ class BlockIndex:
         size of the bad lineage rather than of the whole index. Every
         invalidated hash is dropped from `block_candidates`; `header_index`
         is rebuilt from `active_chain` only if it held one of them.
+
+        Updates `best_invalid` along the same walk, Core's own
+        `InvalidChainFound` (`src/validation.cpp:1971-1972`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag) comparing every
+        newly-invalid descendant against `m_best_invalid` the same way --
+        reached from `InvalidateBlock`'s own call into it (`:3721`), not
+        `InvalidateBlock` updating `m_best_invalid` directly itself.
         """
         to_invalidate = [block_hash]
         invalidated: set[bytes] = set()
@@ -789,6 +819,10 @@ class BlockIndex:
             current = to_invalidate.pop()
             invalidated.add(current)
             self.set_status(current, BlockStatus.invalid)
+            if self.best_invalid is None or (
+                self.chainwork[current] > self.chainwork[self.best_invalid]
+            ):
+                self.best_invalid = current
             to_invalidate.extend(self.children.get(current, ()))
         self.block_candidates = deque(
             [h, w] for h, w in self.block_candidates if h not in invalidated
