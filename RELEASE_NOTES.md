@@ -111,6 +111,12 @@ on release day.
   (btclib-org/btclib#2129), so an unlocked install resolving that
   release or later needs `btclib-wallet>=2026.9.30` alongside it, which
   `pip install btclib-node` now pulls in on its own.
+- **Headers a peer serves on a chain with less work than Core's anti-DoS
+  threshold are no longer stored** (closes #1246): they are counted,
+  then downloaded a second time and stored only once the chain clears
+  the threshold. Headers of such a chain that an existing data directory
+  already holds are kept and read as before, as Core keeps what its block
+  index holds, so nothing has to be done about them.
 
 ## v2026.9.24
 

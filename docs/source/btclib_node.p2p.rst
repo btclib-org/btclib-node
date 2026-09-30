@@ -82,6 +82,13 @@ btclib\_node.p2p.filter\_size module
    :members:
    :show-inheritance:
 
+btclib\_node.p2p.headers\_sync module
+----------------------------------------
+
+.. automodule:: btclib_node.p2p.headers_sync
+   :members:
+   :show-inheritance:
+
 btclib\_node.p2p.main module
 --------------------------------
 

@@ -89,6 +89,19 @@ __all__ = ["P2pManager"]
 # btclib-org/btclib-node#71
 _ACTIVE_PRUNE_INTERVAL = 300
 
+# How often `manage_connections`' own loop calls `_maybe_dial_more_peers`,
+# the "draw a candidate and dial it" arm of Core's `ThreadOpenConnections`
+# (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
+# `m_interrupt_net->sleep_for(500ms)`, once a pass, ahead of the draw.
+# `_open_addr_fetches`'s own `_MANUAL_STEP` sleep already matches that
+# same function's `ProcessAddrFetch` arm at this cadence
+# (btclib-org/btclib-node#1366); this is the other arm's, gated inside
+# `manage_connections`'s faster loop rather than pulled into a loop of
+# its own, since `_maybe_dial_more_peers` is what dozens of unit tests
+# call directly and a loop of its own would give it nothing they need.
+# btclib-org/btclib-node#1379
+_AUTOMATIC_DIAL_INTERVAL = 0.5
+
 # How long a connection has from connecting to finishing its handshake:
 # Core's `DEFAULT_PEER_CONNECT_TIMEOUT` (`src/net.h`,
 # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), past which
@@ -760,6 +773,10 @@ class P2pManager(threading.Thread):
         # prunes on the spot rather than waiting a full
         # `_ACTIVE_PRUNE_INTERVAL` after this manager was constructed.
         self._last_active_prune = 0.0
+        # Overwritten by `_arm_dial_loop` before any loop ever reads it
+        # (`manage_connections` calls it first thing); the value here is
+        # dead until then.
+        self._last_dial_pass = 0.0
 
         # Set once the listening socket is bound and can hold a peer's
         # connection in its backlog. `is_alive()` says only that this
@@ -855,6 +872,7 @@ class P2pManager(threading.Thread):
         prefer_evict: bool = False,
         addr_fetch: bool = False,
         addr_name: str | None = None,
+        local_address: tuple[str, int] | None = None,
     ) -> None:
         """Build a `Connection` for `client`, hold it pending, and start it.
 
@@ -891,6 +909,12 @@ class P2pManager(threading.Thread):
         the same reason -- argued there rather than twice here: Core's
         analogous site, `CNode`'s own constructor (`src/net.cpp`, at
         bitcoin/bitcoin@05e49b342f), gates the address on `fLogIPs`.
+
+        `local_address` is `server`'s own listening socket's bind
+        address, `None` for a dialled connection -- the only inbound
+        path, `server` below, is the only caller that ever passes one.
+        `conn.addr_cache_key`'s own docstring (`connection.py`) is
+        where the key built from it is argued.
         """
         client.settimeout(0.0)
         self.last_connection_id += 1
@@ -911,6 +935,8 @@ class P2pManager(threading.Thread):
         conn.addr_fetch = addr_fetch
         conn.addr_name = addr_name
         conn.keyed_net_group = keyed_net_group(self._net_group_key, address)
+        if local_address is not None:
+            conn.addr_cache_key = (address.network_id, *local_address)
         self.pending_connections[self.last_connection_id] = conn
         task = asyncio.run_coroutine_threadsafe(conn.run(), self.loop)
         conn.task = task
@@ -1551,7 +1577,17 @@ class P2pManager(threading.Thread):
             for address in fixed_seed_addresses(self.node.chain.fixed_seeds)
             if address.network_id in empty
         ]
-        self.peer_db.add_addresses(seeds)
+        # time_penalty=0, not `add_addresses`'s own gossip default:
+        # `ThreadOpenConnections` calls `addrman.get().Add(seed_addrs,
+        # local)` with no third argument (`src/net.cpp`, at
+        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and
+        # `AddrManImpl::Add`'s own default for that argument is `0s`
+        # (`src/addrman.h`, same sha) -- a fixed seed already carries
+        # `fixed_seed_addresses`'s own one-to-two-week backdating
+        # (btclib-org/btclib-node#1571); the flat 2h penalty is
+        # `net_processing.cpp`'s own explicit argument on the gossip
+        # path alone, not `Add`'s default.
+        self.peer_db.add_addresses(seeds, time_penalty=0)
         self.add_fixed_seeds = False
         self.logger.info("Added %s fixed seeds from reachable networks.", len(seeds))
 
@@ -1712,6 +1748,18 @@ class P2pManager(threading.Thread):
         review round 2).
         """
         self._dial_start = time.time()
+        # Anchored at the same instant as `_dial_start`, not backdated:
+        # Core's own first pass sleeps its full 500ms before its first
+        # draw exactly as every later pass does --
+        # `m_interrupt_net->sleep_for(500ms)` runs once per iteration of
+        # `ThreadOpenConnections`'s `while` loop, ahead of "Choose an
+        # address to connect to", with no earlier exit from that loop
+        # skipping it (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+        # v31.1 tag). So this (re)start's first pass waits
+        # `_AUTOMATIC_DIAL_INTERVAL` too, the same as every pass after
+        # it -- no shortcut for a loop armed a while after this manager
+        # was built (btclib-org/btclib-node#1379, review round 2).
+        self._last_dial_pass = self._dial_start
         # Core's own `add_addr_fetch`'s initial value: the first
         # `-seednode` is queued as soon as this pass starts where
         # `peer_db` holds nothing at all yet, rather than waiting for the
@@ -2471,21 +2519,25 @@ class P2pManager(threading.Thread):
         `_prune_stale_connections` pings or drops an idle peer every
         pass; `_maybe_prune_active_addresses` and `_maybe_dump_banlist`
         run far less often; `_disconnect_if_inactive` repeats
-        `set_network_active`'s own one-shot sweep for as long as
-        `network_active` stays false, its own docstring arguing why a
+        `set_network_active`'s own one-shot sweep every pass for as long
+        as `network_active` stays false, its own docstring arguing why a
         one-shot call is not enough; `_maybe_dial_more_peers` dials one
-        more only if this node still has room for it. `-connect` and
-        `-addnode` peers are dialled by loops of their own,
+        more only if this node still has room for it, and only every
+        `_AUTOMATIC_DIAL_INTERVAL` -- `_AUTOMATIC_DIAL_INTERVAL`'s own
+        comment is where that cadence is argued against Core's
+        (btclib-org/btclib-node#1379), this loop's own faster sleep
+        below being what every other step here still runs on. `-connect`
+        and `-addnode` peers are dialled by loops of their own,
         `_open_connect_peers` and `_open_added_peers` (`run`, below),
         issue #651's own redial and #1316's replacement of the backoff
         it first shipped with; `_process_addr_fetch` is
         `_open_addr_fetches`' own standing loop, for the same reason
         (btclib-org/btclib-node#1366): an addr-fetch dial can resolve a
-        hostname (a DNS seed subdomain or a `-seednode` value) before
-        it ever reaches `dial`, and `getaddrinfo` and `dial` both run
-        on this same loop, so a step here that awaited one directly
-        would hold up every pass' `_prune_stale_connections` for as
-        long as either took.
+        hostname (a DNS seed subdomain or a `-seednode` value) before it
+        ever reaches `dial`, and `getaddrinfo` and `dial` both run on
+        this same loop, so a step here that awaited one directly would
+        hold up every pass' `_prune_stale_connections` for as long as
+        either took.
         """
         self._arm_dial_loop()
         while True:
@@ -2494,7 +2546,9 @@ class P2pManager(threading.Thread):
             self._maybe_prune_active_addresses(now)
             self._maybe_dump_banlist(now)
             self._disconnect_if_inactive()
-            await self._maybe_dial_more_peers()
+            if now - self._last_dial_pass >= _AUTOMATIC_DIAL_INTERVAL:
+                self._last_dial_pass = now
+                await self._maybe_dial_more_peers()
             await asyncio.sleep(0.1)
 
     async def _open_addr_fetches(self) -> None:
@@ -2756,6 +2810,14 @@ class P2pManager(threading.Thread):
         `await loop.sock_accept(server_socket)` right here, which does
         not have the property the comment below argues for.
         """
+        # This socket's own bind, read once: it never changes for as
+        # long as this coroutine runs, and it is what every connection
+        # `create_connection` builds off it shares as the local half of
+        # its own `addr_cache_key` -- `[:2]` drops the flow info and
+        # scope id an AF_INET6 `getsockname()` carries, which nothing
+        # here needs, the same trim `server`'s own `sockaddr[:2]` below
+        # gives the peer's half.
+        local_address = cast("tuple[str, int]", server_socket.getsockname()[:2])
         with server_socket:
             # The queue is what keeps a shutdown from discarding an
             # already-accepted socket reaching `server`'s own consumption
@@ -2854,7 +2916,11 @@ class P2pManager(threading.Thread):
                         sock.close()
                         continue
                     self.create_connection(
-                        sock, address, inbound=True, prefer_evict=discouraged
+                        sock,
+                        address,
+                        inbound=True,
+                        prefer_evict=discouraged,
+                        local_address=local_address,
                     )
             finally:
                 # Already cancelled directly by `stop`'s own sweep

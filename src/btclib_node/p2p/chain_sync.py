@@ -27,8 +27,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
+from btclib_node.chainstate.block_index import locator_entries
 from btclib_node.constants import P2pConnStatus
-from btclib_node.p2p.block_availability import get_ancestor
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -84,28 +84,12 @@ def _full_outbound(conn: Connection) -> bool:
 
 
 def _locator(block_index: BlockIndex, start: bytes) -> list[bytes]:
-    """Return Core's `GetLocator(start)`: `start` and its ancestors.
+    """Return Core's `GetLocator(start)`: `locator_entries` from `start`.
 
-    Core's `LocatorEntries` (`src/chain.cpp`, at bitcoin/bitcoin@9be056a8a7):
-    `start` and each of the ten blocks below it, then exponentially
-    sparser, always ending at genesis. The ancestors are `start`'s own,
-    through `get_ancestor`, whether or not `start` is still on the active
+    `start`'s own ancestors, whether or not it is still on the active
     chain.
     """
-    current = start
-    height = block_index.header_dict[start].index
-    locator: list[bytes] = []
-    step = 1
-    while True:
-        locator.append(current)
-        if height == 0:
-            return locator
-        height = max(height - step, 0)
-        # always found: `height` is at most `current`'s own
-        current = cast("bytes", get_ancestor(block_index, current, height))
-        # Core's own unnamed 10, as in `get_block_locator_hashes`
-        if len(locator) > 10:  # noqa: PLR2004
-            step *= 2
+    return locator_entries(block_index, start)
 
 
 def consider_eviction(
@@ -183,8 +167,8 @@ def disconnect_if_insufficient_work(node: Node, conn: Connection) -> bool:
     whose best known block has less work than `node.config`'s own
     `minimum_chain_work`, is disconnected, as it cannot serve a chain
     this node would download. `callbacks.headers` asks it only of a batch
-    that says the peer has nothing more to give and that this node already
-    had, the gates Core puts in front of it. Answers whether the peer was
+    it has indexed, past the low-work gate, from a message short of a full
+    one, the gates Core puts in front of it. Answers whether the peer was
     dropped.
     """
     best_known = conn.block_availability.best_known

@@ -41,6 +41,7 @@ from btclib_node.chains import Main, RegTest
 from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.log import Logger
+from btclib_node.p2p import address as address_module
 from btclib_node.p2p import manager as manager_module
 from btclib_node.p2p.address import (
     SEEDS_SERVICE_FLAGS,
@@ -333,13 +334,34 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
 
 
 async def one_pass(manager: P2pManager) -> bool:
-    """Run the housekeeping loop's body exactly once.
+    """Run the housekeeping loop's body exactly once, dial included.
 
     `ensure_future` queues the task's first step ahead of the timer, so
     the body runs before the cancel however slow the machine is. Two
     passes is this twice, rather than a sleep long enough for the loop's
     own -- which is a wait on the scheduler, and #46's shape.
+
+    Core's own first dial pass waits its full 500ms before its first
+    draw, the same as every later one
+    (`_AUTOMATIC_DIAL_INTERVAL`'s own comment, at
+    bitcoin/bitcoin@9be056a8a7), so production code carries no
+    immediate-first-pass shortcut around that. This helper is the
+    test-side clock advance instead: it wraps `_arm_dial_loop` for the
+    life of this one call so that the instant it runs, `_last_dial_pass`
+    is already `_AUTOMATIC_DIAL_INTERVAL` in the past, which is what
+    lets the dozens of tests below drive a single pass that still dials,
+    without a production divergence earning its keep only for them
+    (btclib-org/btclib-node#1379, review round 2).
     """
+
+    def armed_and_due() -> None:
+        # The class's own implementation, not `manager._arm_dial_loop`:
+        # a second `one_pass` on the same manager must not wrap an
+        # already-wrapped instance attribute left by the first call.
+        P2pManager._arm_dial_loop(manager)
+        manager._last_dial_pass -= manager_module._AUTOMATIC_DIAL_INTERVAL
+
+    manager._arm_dial_loop = armed_and_due  # type: ignore[method-assign]
     task = asyncio.ensure_future(manager.manage_connections())
     await asyncio.sleep(0.05)
     still_running = not task.done()
@@ -931,6 +953,79 @@ def test_the_active_table_prune_repeats_once_the_interval_passes(
     assert len(calls) == 2
 
 
+async def _dial_call_count_over(manager: P2pManager, real_seconds: float) -> int:
+    """Run `manage_connections` as one continuous task for `real_seconds`.
+
+    Real time, not `time.time()` faked: `manage_connections`'s own
+    `asyncio.sleep(0.1)` paces this for real, which is what lets a
+    single run answer both "well inside the interval" and "past it" at
+    different points along its own real elapsed time, unlike `one_pass`
+    -- a fresh task each call, `_arm_dial_loop` resetting `_last_dial_pass`
+    every time, is deliberately not what this is testing: #1379 is about
+    passes inside *one* standing loop, not about separate calls.
+    """
+    calls = 0
+
+    async def counting() -> None:
+        nonlocal calls
+        calls += 1
+
+    manager._maybe_dial_more_peers = counting  # type: ignore[method-assign]
+    task = asyncio.ensure_future(manager.manage_connections())
+    await asyncio.sleep(real_seconds)
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+    return calls
+
+
+def test_the_first_dial_pass_waits_out_its_interval_like_every_later_one(
+    a_manager: AManagerFactory,
+) -> None:
+    """#1379: even the very first dial pass waits a full 0.5s, not 0.1s.
+
+    Core's own `ThreadOpenConnections` sleeps its full 500ms ahead of
+    "Choose an address to connect to" once a pass, with no earlier exit
+    from its `while` loop skipping that sleep on the very first
+    iteration (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag) -- so `_last_dial_pass` starts anchored at `_arm_dial_loop`'s
+    own "now" rather than at `0.0`, and 0.2s real elapsed, well under
+    the interval, is not enough for even one pass to be due. Without
+    the gate this loop's own 0.1s sleep would have let up to two dial
+    passes happen by 0.2s real time.
+    """
+    manager = a_manager()
+    assert asyncio.run(_dial_call_count_over(manager, 0.2)) == 0
+
+
+def test_the_automatic_dial_pass_fires_once_its_first_interval_elapses(
+    a_manager: AManagerFactory,
+) -> None:
+    """The first dial pass runs once real time crosses the interval.
+
+    0.65s real, past the 0.5s interval and a couple of
+    `manage_connections`'s own 0.1s ticks beyond it, so the loop has had
+    more than one chance to notice and take its first pass, and not yet
+    enough real time for a second.
+    """
+    manager = a_manager()
+    assert asyncio.run(_dial_call_count_over(manager, 0.65)) == 1
+
+
+def test_the_automatic_dial_pass_repeats_once_its_interval_passes_again(
+    a_manager: AManagerFactory,
+) -> None:
+    """A second dial pass runs once real time crosses the interval twice.
+
+    1.2s real, past both the first interval (~0.5s) and the second
+    (~1.0s), with margin for `manage_connections`'s own 0.1s ticks and
+    scheduler jitter, so the loop has had more than one chance to notice
+    and take each of its first two passes.
+    """
+    manager = a_manager()
+    assert asyncio.run(_dial_call_count_over(manager, 1.2)) == 2
+
+
 def raises_pruning() -> NoReturn:
     """Stand in for a `get_active_addresses` whose own `db.delete` raised."""
     raise RuntimeError("no")
@@ -1341,7 +1436,7 @@ def a_seeding_manager(
     peer_db = a_peer_db_stub(
         is_empty=True,
         holds_network=lambda network_id: network_id in held,
-        add_addresses=lambda addresses: added.append(list(addresses)),
+        add_addresses=lambda addresses, **_kwargs: added.append(list(addresses)),
     )
     manager = a_manager(
         conns, peer_db=peer_db, addnode_args=addnode_args, seednode=seednode
@@ -1373,12 +1468,20 @@ def test_the_fixed_seeds_of_every_empty_network_are_added_after_a_minute(
     a_manager: AManagerFactory,
     held: Sequence[BIP155Network],
     networks: set[BIP155Network],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """ISS 1099: past sixty seconds, the seeds of each empty reachable network.
 
     Core adds the seeds of the reachable networks `addrman` holds nothing
     for, and only once: a second pass adds nothing more.
+
+    `_fixed_seed_timestamp` pinned (issue #1571): it draws a fresh
+    random age each call, and the comparison below calls
+    `fixed_seed_addresses` a second time on its own -- unpinned, the two
+    calls would differ only on that draw and fail this equality for a
+    reason that has nothing to do with what this test is about.
     """
+    monkeypatch.setattr(address_module, "_fixed_seed_timestamp", lambda: 0)
     manager, added = a_seeding_manager(a_manager, held=held, elapsed=61)
     asyncio.run(manager._maybe_dial_more_peers())
     (seeds,) = added
@@ -1392,6 +1495,38 @@ def test_the_fixed_seeds_of_every_empty_network_are_added_after_a_minute(
     manager._next_fixed_seeds_check = 0.0
     asyncio.run(manager._maybe_dial_more_peers())
     assert len(added) == 1
+
+
+def test_a_fixed_seed_s_own_backdating_is_not_penalized_again(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1571: `_maybe_add_fixed_seeds` passes `AddrMan::Add`'s own 0s default.
+
+    `add_addresses`'s own default `time_penalty` is the flat 2h gossip
+    discount (`_GOSSIP_TIME_PENALTY`) -- right for `net_processing.cpp`'s
+    `ADDR`/`ADDRV2` handler, which is the only caller `AddrMan::Add`'s
+    default does not already suit. `ThreadOpenConnections`'s own
+    `addrman.get().Add(seed_addrs, local)` passes no third argument
+    (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so a
+    fixed seed's own one-to-two-week backdating must reach `peer_db`
+    whole. A real `PeerDB`, not the stub used elsewhere in this file: the
+    stub only records what it was handed and never runs the penalty
+    math, so it cannot tell a passed-through timestamp from a penalized
+    one.
+    """
+    stamp = int(time.time()) - 10 * 24 * 3600  # ten days old, past the 2h penalty
+    monkeypatch.setattr(address_module, "_fixed_seed_timestamp", lambda: stamp)
+    peer_db = PeerDB(cast("Any", None), None)
+    manager = a_manager(peer_db=peer_db)
+    manager.node.chain = Main()
+    manager._dial_start = time.time() - 61
+    # `_maybe_add_fixed_seeds` directly, not the full async
+    # `_maybe_dial_more_peers`: the latter draws and dials past it once
+    # the store holds something, which would leave a real `Connection`
+    # task behind for this synchronous call to never await.
+    manager._maybe_add_fixed_seeds()
+    assert peer_db.addresses
+    assert {address.timestamp for address in peer_db.addresses} == {stamp}
 
 
 def test_no_fixed_seed_is_added_where_every_reachable_network_is_held(
@@ -4764,6 +4899,61 @@ def land_an_inbound_peer(
     )
     theirs.settimeout(20)
     return ours, theirs
+
+
+def test_an_inbound_connection_s_cache_key_is_its_own_local_socket(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1478: `create_connection` keys an inbound peer by its local bind.
+
+    `server_socket.getsockname()` is what `server` reads the local half
+    from; the network half is the accepted peer's own `network_id`,
+    which the two peers below share despite arriving at different ports
+    -- this node has one IPv4 listener, so both land on the one bind.
+    """
+    port = get_random_port()
+    manager = a_manager(port=port)
+    manager.start()
+    wait_until_listening(manager)
+    server_socket = manager._server_sockets[0]
+    local_host, local_port = server_socket.getsockname()[:2]
+    with ExitStack() as peers:
+        _, first = land_an_inbound_peer(manager, "1.2.3.4", 50000)
+        peers.enter_context(closing(first))
+        wait_until(lambda: 0 in manager.pending_connections)
+        _, second = land_an_inbound_peer(manager, "1.2.3.5", 50001)
+        peers.enter_context(closing(second))
+        wait_until(lambda: 1 in manager.pending_connections)
+        for conn in manager.pending_connections.values():
+            assert conn.addr_cache_key == (
+                BIP155Network.IPV4,
+                local_host,
+                local_port,
+            )
+        manager.stop()
+        manager.join(timeout=10)
+
+
+def test_a_dialled_connection_has_no_cache_key(a_manager: AManagerFactory) -> None:
+    """ISS 1478: an outbound connection's `addr_cache_key` stays `None`.
+
+    `getaddr` never answers one (`callbacks.py`), so `create_connection`
+    is never given a `local_address` to build one from for it.
+    """
+    manager = a_manager()
+    ours, theirs = socket.socketpair()
+    address = peer_address("1.2.3.4", 18444)
+
+    async def create() -> None:
+        manager.create_connection(ours, address, inbound=False)
+        (conn,) = manager.pending_connections.values()
+        assert conn.addr_cache_key is None
+        assert conn.task is not None
+        conn.task.cancel()
+        await asyncio.sleep(0)
+
+    with ours, theirs:
+        manager.loop.run_until_complete(create())
 
 
 def test_a_discouraged_host_is_refused_where_it_would_fill_the_last_slot(

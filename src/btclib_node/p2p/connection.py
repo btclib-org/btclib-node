@@ -58,6 +58,7 @@ if TYPE_CHECKING:
 
     from btclib_node import Node
     from btclib_node.config import Config
+    from btclib_node.p2p.headers_sync import HeadersSyncState
     from btclib_node.p2p.manager import P2pManager
 
 __all__ = [
@@ -588,6 +589,12 @@ class Connection:
     # the reason `time_received` gives. btclib-org/btclib-node#1204
     ping_start: float = 0
 
+    # Core's `Peer::m_headers_sync` (`p2p/headers_sync.py`): this peer's
+    # low-work headers sync, `None` where none runs. Written by
+    # `callbacks.headers` and read by `getpeerinfo`, both on `Node`'s
+    # thread; a class default for the reason `time_received` gives.
+    headers_sync: HeadersSyncState | None = None
+
     # Core's `CNodeState::m_chain_sync` (`p2p/chain_sync.py`), here for
     # the same reasons as `block_availability` above.
     @cached_property
@@ -634,6 +641,16 @@ class Connection:
         # `P2pManager.server` decides it on accept and
         # `P2pManager.create_connection` sets it; nothing changes it after.
         self.prefer_evict: bool = False
+        # Core's `CNode::m_network_key` (`src/net.h`, at
+        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the key
+        # `callbacks.getaddr` caches its answer under -- this node's own
+        # network id, local bind host and local bind port, standing in
+        # for Core's own SipHash-keyed `uint64_t` of the same three
+        # (`CreateNodeFromAcceptedSocket`, same file and sha). `None`
+        # for an outbound connection, which `getaddr` never answers.
+        # `P2pManager.server` knows the local bind address it accepted
+        # on; `P2pManager.create_connection` sets this from it.
+        self.addr_cache_key: tuple[int, str, int] | None = None
 
         # Set by `own_version`, below, to what it drew: `None` until
         # then, and afterwards this connection's own share of

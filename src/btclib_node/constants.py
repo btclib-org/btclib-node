@@ -115,7 +115,13 @@ class P2pConnStatus(enum.IntEnum):
 
 
 class NodeStatus(enum.IntEnum):
-    """Which stage of startup or sync a `Node` as a whole is in."""
+    """Which stage of startup or sync a `Node` as a whole is in.
+
+    `SyncingHeaders` ends on a short batch of headers that was indexed,
+    so a node whose peers all serve chains below the anti-DoS work
+    threshold (`p2p.headers_sync`) stays in it: none of their headers is
+    indexed.
+    """
 
     Starting = 1
     SyncingHeaders = 2

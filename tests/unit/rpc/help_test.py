@@ -61,6 +61,7 @@ _EXPECTED_BARE_LISTING = (
     "setnetworkactive state\n"
     "\n"
     "== Rawtransactions ==\n"
+    'decoderawtransaction "hexstring" ( iswitness )\n'
     'getrawtransaction "txid" ( verbosity "blockhash" )\n'
     'sendrawtransaction "hexstring" ( maxfeerate maxburnamount )\n'
     'testmempoolaccept ["rawtx",...] ( maxfeerate )'
