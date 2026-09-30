@@ -12,9 +12,10 @@ from typing import TYPE_CHECKING, Any, override
 from btclib_node.log import Logger
 from btclib_node.notify import (
     Warnings,
+    # the injection test below needs the exact same filter the Windows
+    # temp path's own backslashes go through, argued at that test's own
+    # docstring
     _sanitize,
-    # exact same filter the Windows temp path's own backslashes go
-    # through, argued at that test's own docstring
     alert_notify,
     run_command,
     run_detached,
@@ -24,6 +25,29 @@ from tests import wait_until
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+def _wait_for_marker_text(marker: Path) -> None:
+    """Wait for `marker` to hold its final content, not just to exist.
+
+    cmd.exe's own redirection creates the target file before the
+    command it redirects has written anything into it -- Core's own
+    `runCommand` (`shell=True`, same citation as the module docstring)
+    races the same way on POSIX, just narrower there, a write usually
+    landing before the next scheduler tick reads it back -- so
+    `wait_until(marker.exists)` alone can return between the create and
+    the write, reading back an empty file that is not yet done. Every
+    command the three `alert_notify` tests below redirect into a marker
+    ends its own output in a newline, `echo`'s own, so waiting for one
+    is waiting for the write to have landed rather than only for the
+    create. `test_run_detached_runs_the_command_on_a_thread_nothing_
+    waits_for` below does not use this: its own marker is `touch`'s,
+    carrying no content ever, so the create is the only event there is
+    to wait for and this function's own condition would never see one.
+    """
+    wait_until(
+        lambda: marker.exists() and marker.read_text(encoding="utf-8").endswith("\n")
+    )
 
 
 class _RecordingHandler(logging.Handler):
@@ -165,7 +189,7 @@ def test_alert_notify_substitutes_percent_s_with_the_quoted_message(
     """
     marker = tmp_path / "marker"
     alert_notify(Logger(), f"echo %s>{marker}", "hello")
-    wait_until(marker.exists)
+    _wait_for_marker_text(marker)
     if sys.platform == "win32":  # pragma: no cover -- exercised on Windows CI only
         assert marker.read_text() == "'hello'\n"
     else:
@@ -211,7 +235,7 @@ def test_alert_notify_drops_a_single_quote_before_wrapping_the_message(
     injected = tmp_path / "injected"
     message = f"x'; touch {injected}; echo 'y"
     alert_notify(Logger(), f"echo %s>{marker}", message)
-    wait_until(marker.exists)
+    _wait_for_marker_text(marker)
     assert not injected.exists()
     sanitized_injected = _sanitize(str(injected))
     expected = f"x; touch {sanitized_injected}; echo y"
@@ -231,7 +255,7 @@ def test_alert_notify_drops_a_character_outside_cores_safe_set(
     """
     marker = tmp_path / "marker"
     alert_notify(Logger(), f"echo %s>{marker}", "a$b`c")
-    wait_until(marker.exists)
+    _wait_for_marker_text(marker)
     if sys.platform == "win32":  # pragma: no cover -- exercised on Windows CI only
         assert marker.read_text() == "'abc'\n"
     else:
