@@ -85,9 +85,9 @@ from btclib.script.witness import Witness
 
 import btclib_node.p2p.address as address_module
 import btclib_node.p2p.callbacks as cb
-from btclib_node.chains import RegTest
+from btclib_node.chains import HeadersSyncParams, RegTest
 from btclib_node.chainstate import Chainstate
-from btclib_node.chainstate.block_index import BlockStatus
+from btclib_node.chainstate.block_index import BlockStatus, calculate_work
 from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, NodeStatus, P2pConnStatus
 from btclib_node.exceptions import (
@@ -136,9 +136,13 @@ from btclib_node.p2p.callbacks import (
     wtxidrelay,
 )
 from btclib_node.p2p.callbacks import block as block_callback
-from btclib_node.p2p.chain_sync import ChainSyncTimeoutState
+from btclib_node.p2p.chain_sync import (
+    ChainSyncTimeoutState,
+    disconnect_if_insufficient_work,
+)
 from btclib_node.p2p.compact_block import compact_block
 from btclib_node.p2p.connection import Connection, PeerStats
+from btclib_node.p2p.headers_sync import HeadersSyncState, State
 from btclib_node.p2p.protocol_version import (
     BIP0031_VERSION,
     MIN_PEER_PROTO_VERSION,
@@ -146,6 +150,7 @@ from btclib_node.p2p.protocol_version import (
     WTXID_RELAY_VERSION,
 )
 from tests import (
+    brute_force_nonce,
     build_block,
     discourage_recorder,
     generate_coinbase,
@@ -618,6 +623,9 @@ def a_peer(**attributes: Any) -> Any:
         # and what `headers` writes, for the extra full-relay peer's
         # eviction (ISS 1100)
         last_block_announcement=0,
+        # what `Connection` starts every connection at, and what `headers`
+        # sets while a low-work headers sync runs (ISS 1246)
+        headers_sync=None,
         has_all_wanted_services=False,
         _ping_lock=threading.Lock(),
         send_ping=lambda: sent.append("ping"),
@@ -740,7 +748,10 @@ def a_handshake_node(
             )
         ),
         logger=SimpleNamespace(
-            info=lambda *a: None, warning=lambda *a: None, debug=lambda *a: None
+            info=lambda *a: None,
+            warning=lambda *a: None,
+            debug=lambda *a: None,
+            error=lambda *a: None,
         ),
     )
 
@@ -2556,13 +2567,17 @@ class FakeBlockIndex:
         """Record that this block hash was marked downloaded."""
         self.marked.append(block_hash)
 
-    def add_headers(self, headers: list[BlockHeader]) -> bytes | None:
+    def add_headers(
+        self, headers: list[BlockHeader], *, min_pow_checked: bool = True
+    ) -> bytes | None:
         """Index the one header `block` ever calls this with, or refuse it.
 
         `BlockIndex.add_headers`'s own contract for a single header:
         the hash it just indexed, or `None` for a header this stand-in
-        was built to refuse.
+        was built to refuse. `min_pow_checked` is recorded and not acted
+        on: no block here reaches the threshold's refusal.
         """
+        self.min_pow_checked = min_pow_checked
         self.added_headers.extend(headers)
         (header,) = headers
         if not self.accepts_headers:
@@ -4129,6 +4144,14 @@ class FakeHeaderIndex:
         """Return the one fixed locator hash this stand-in ever answers with."""
         return [b"\x00" * 32]
 
+    def get_block_info(self, block_hash: bytes) -> Any:
+        """Answer regtest's genesis for any hash, for the tip's own work.
+
+        Its work is the chain's per-block work, and the tip's own chain work
+        is zero, so no batch here is below the anti-DoS threshold.
+        """
+        return SimpleNamespace(header=RegTest().genesis, index=0)
+
 
 def test_a_full_batch_extending_the_best_chain_uses_the_usual_locator() -> None:
     """A full batch extending the best chain gets the ordinary locator.
@@ -4315,7 +4338,9 @@ def test_a_refused_batch_is_not_the_end_of_a_sync() -> None:
     # up. btclib-org/btclib-node#75
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
     node = a_data_node(status=NodeStatus.SyncingHeaders)
-    node.chainstate.block_index = FakeHeaderIndex(refuse=True)
+    # a batch that connects: one that does not is asked about again
+    # before anything is indexed, as Core's `HandleUnconnectingHeaders` is
+    node.chainstate.block_index = FakeHeaderIndex(tip=chain[-1].hash, refuse=True)
     peer = a_peer()
     with pytest.raises(BTClibValueError):
         headers(node, Headers(chain).serialize(), peer)
@@ -5602,7 +5627,8 @@ def test_a_drawn_peer_whose_chain_lacks_the_minimum_work_is_dropped_in_ibd(
     known block has less than the minimum chain work. It does so after a
     batch that is not full, and one that its anti-DoS check let through,
     which for such a chain means a batch this node already had. A dropped
-    peer is not protected.
+    peer is not protected, and a batch the anti-DoS check keeps out
+    reaches neither step (ISS 1246).
     """
     chain = generate_random_header_chain(2, RegTest().genesis.hash)
     with unstarted_node_context(tmp_path) as real:
@@ -5617,7 +5643,7 @@ def test_a_drawn_peer_whose_chain_lacks_the_minimum_work_is_dropped_in_ibd(
         node.p2p_manager.connections = {peer.id: peer}
         headers(node, Headers(chain).serialize(), peer)
         assert bool(peer.stopped) is dropped
-        assert peer.chain_sync.protect is (automatic and not dropped)
+        assert peer.chain_sync.protect is (automatic and not dropped and known)
 
 
 def test_every_block_announced_is_one_the_peer_has() -> None:
@@ -6103,3 +6129,384 @@ def test_a_header_version_above_bip34_is_misbehaving_bad_version(
     payload = Headers([header], check_validity=False).serialize(check_validity=False)
     with pytest.raises(MisbehavingError, match=r"bad-version\(0x"):
         headers(a_data_node(block_index=an_index), payload, a_peer())
+
+
+def a_low_work_node(
+    tmp_path: Path, minimum_blocks: int, buffer: int = 7017, **kwargs: Any
+) -> Any:
+    """Build a node over a real regtest index, holding genesis alone.
+
+    Its `config.minimum_chain_work`, `-minimumchainwork`'s own, is
+    `minimum_blocks` blocks of work, genesis included, while its chain's
+    own stays regtest's zero, and it buffers `buffer` redownloaded
+    headers: regtest's own commitment period stands, so a low-work sync's
+    checks run as they do on regtest.
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    node = a_data_node(block_index=chainstate.block_index, **kwargs)
+    node.chainstate = chainstate
+    node.config.minimum_chain_work = minimum_blocks * calculate_work(RegTest().genesis)
+    node.chain = SimpleNamespace(
+        consensus=RegTest().consensus,
+        pow_limit_bits=RegTest().pow_limit_bits,
+        headers_sync_params=HeadersSyncParams(275, buffer),
+    )
+    return node
+
+
+def sent_getheaders(peer: Any) -> list[GetHeaders]:
+    """Return the `getheaders` sent to `peer`, in order."""
+    return [message for message in peer.sent if isinstance(message, GetHeaders)]
+
+
+def test_low_work_headers_are_stored_nowhere_even_after_a_reopen(
+    tmp_path: Path,
+) -> None:
+    """ISS 1246's own probe: a header each, off genesis, below the minimum.
+
+    Each batch is short, so no sync starts for it, and none is indexed, in
+    memory or on disk; nor is its peer punished for it.
+    """
+    node = a_low_work_node(tmp_path, minimum_blocks=50)
+    block_index = node.chainstate.block_index
+    spam = [
+        generate_random_header_chain(1, RegTest().genesis.hash)[0] for _ in range(5)
+    ]
+    peer = a_peer()
+    for header in spam:
+        headers(node, Headers([header]).serialize(), peer)
+    assert not any(h.hash in block_index.header_dict for h in spam)
+    assert peer.headers_sync is None
+    assert not peer.sent
+    node.chainstate.close()
+    reopened = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    assert not any(h.hash in reopened.block_index.header_dict for h in spam)
+    reopened.close()
+
+
+def test_a_short_low_work_batch_answers_the_getheaders_and_nothing_else(
+    tmp_path: Path,
+) -> None:
+    """It connects, so the request in flight is answered, then it is ignored."""
+    node = a_low_work_node(tmp_path, minimum_blocks=50)
+    peer = a_peer()
+    node.download_manager.last_getheaders_timestamps[peer.id] = time.time()
+    chain = generate_random_header_chain(3, RegTest().genesis.hash)
+    headers(node, Headers(chain).serialize(), peer)
+    assert peer.id not in node.download_manager.last_getheaders_timestamps
+    assert not peer.sent
+    assert peer.block_availability == BlockAvailability()
+    node.chainstate.close()
+
+
+@pytest.mark.parametrize(("surplus", "indexed"), [(0, True), (1, False)])
+def test_a_batch_reaching_the_threshold_exactly_is_indexed(
+    tmp_path: Path,
+    surplus: int,
+    indexed: bool,  # noqa: FBT001
+) -> None:
+    """Core's `total_work < minimum_chain_work`: the threshold itself is enough.
+
+    Genesis and three headers against a minimum of four blocks, then five.
+    """
+    node = a_low_work_node(tmp_path, minimum_blocks=4 + surplus)
+    chain = generate_random_header_chain(3, RegTest().genesis.hash)
+    headers(node, Headers(chain).serialize(), a_peer())
+    assert (chain[-1].hash in node.chainstate.block_index.header_dict) is indexed
+    node.chainstate.close()
+
+
+def test_a_known_batch_is_processed_whatever_its_work(tmp_path: Path) -> None:
+    """Core's `IsAncestorOfBestHeaderOrTip`: already held, so it costs nothing.
+
+    Indexed before the minimum was raised; re-sent, it is processed, and
+    the peer is known to have its last block.
+    """
+    node = a_low_work_node(tmp_path, minimum_blocks=50)
+    chain = generate_random_header_chain(3, RegTest().genesis.hash)
+    node.chainstate.block_index.add_headers(chain)
+    peer = a_peer()
+    headers(node, Headers(chain).serialize(), peer)
+    assert peer.block_availability.best_known == chain[-1].hash
+    node.chainstate.close()
+
+
+def test_a_full_low_work_batch_starts_a_sync_and_asks_on_from_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's `TryLowWorkHeadersSync`: a sync from where the batch connects.
+
+    Nothing is indexed, and the next `getheaders` asks from the batch's
+    last header, then from genesis, the chain start's own locator.
+    """
+    monkeypatch.setattr(cb, "MAX_HEADERS_RESULTS", 3)
+    node = a_low_work_node(tmp_path, minimum_blocks=50)
+    chain = generate_random_header_chain(3, RegTest().genesis.hash)
+    peer = a_peer()
+    headers(node, Headers(chain).serialize(), peer)
+    assert isinstance(peer.headers_sync, HeadersSyncState)
+    assert peer.headers_sync.state is State.PRESYNC
+    assert peer.headers_sync.minimum_required_work == (
+        50 * calculate_work(RegTest().genesis)
+    )
+    assert chain[0].hash not in node.chainstate.block_index.header_dict
+    (request,) = sent_getheaders(peer)
+    assert request.locator == (chain[-1].hash, RegTest().genesis.hash)
+    assert peer.id in node.download_manager.last_getheaders_timestamps
+    node.chainstate.close()
+
+
+def test_a_sync_taking_a_short_batch_below_the_work_ends_quietly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A short batch continuing the sync is a chain that ended too light.
+
+    The sync ends, nothing more is asked, and the peer is kept.
+    """
+    monkeypatch.setattr(cb, "MAX_HEADERS_RESULTS", 3)
+    node = a_low_work_node(
+        tmp_path, minimum_blocks=50, status=NodeStatus.SyncingHeaders
+    )
+    chain = generate_random_header_chain(5, RegTest().genesis.hash)
+    peer = a_peer()
+    headers(node, Headers(chain[:3]).serialize(), peer)
+    headers(node, Headers(chain[3:]).serialize(), peer)
+    assert peer.headers_sync is None
+    assert len(sent_getheaders(peer)) == 1
+    # nothing of it was indexed, so it is no end of header sync either
+    assert node.status == NodeStatus.SyncingHeaders
+    node.chainstate.close()
+
+
+def test_an_empty_batch_ends_a_sync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core resets `m_headers_sync` on an empty `headers`: nothing to give."""
+    monkeypatch.setattr(cb, "MAX_HEADERS_RESULTS", 3)
+    node = a_low_work_node(tmp_path, minimum_blocks=50)
+    peer = a_peer()
+    chain = generate_random_header_chain(3, RegTest().genesis.hash)
+    headers(node, Headers(chain).serialize(), peer)
+    assert peer.headers_sync is not None
+    headers(node, Headers([]).serialize(), peer)
+    assert peer.headers_sync is None
+    node.chainstate.close()
+
+
+def test_a_sync_refusing_a_batch_is_dropped_and_its_peer_kept(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A batch not continuing the sync ends it, and is weighed on its own.
+
+    Core's `IsContinuationOfLowWorkHeadersSync` hands a refused batch back
+    unchanged: this one is short and light, so it is ignored, and nothing
+    punishes the peer for the sync's end.
+    """
+    monkeypatch.setattr(cb, "MAX_HEADERS_RESULTS", 3)
+    node = a_low_work_node(tmp_path, minimum_blocks=50)
+    peer = a_peer()
+    headers(
+        node,
+        Headers(generate_random_header_chain(3, RegTest().genesis.hash)).serialize(),
+        peer,
+    )
+    other = generate_random_header_chain(2, RegTest().genesis.hash)
+    headers(node, Headers(other).serialize(), peer)
+    assert peer.headers_sync is None
+    assert other[0].hash not in node.chainstate.block_index.header_dict
+    assert len(sent_getheaders(peer)) == 1
+    node.chainstate.close()
+
+
+def a_synced_chain(node: Any, peer: Any, chain: list[BlockHeader], batch: int) -> None:
+    """Send `chain` twice in batches of `batch`, as the sync asks for it."""
+    for _ in range(2):
+        for start in range(0, len(chain), batch):
+            headers(node, Headers(chain[start : start + batch]).serialize(), peer)
+
+
+def test_a_sync_clearing_the_work_indexes_the_whole_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PRESYNC to the work, REDOWNLOAD from genesis, then all of it indexed.
+
+    Released headers are processed as any others: the peer has the last
+    one, and it is fetched towards.
+    """
+    monkeypatch.setattr(cb, "MAX_HEADERS_RESULTS", 3)
+    node = a_low_work_node(tmp_path, minimum_blocks=10)
+    chain = generate_random_header_chain(9, RegTest().genesis.hash)
+    peer = a_peer()
+    a_synced_chain(node, peer, chain, 3)
+    block_index = node.chainstate.block_index
+    assert all(h.hash in block_index.header_dict for h in chain)
+    assert peer.headers_sync is None
+    assert peer.block_availability.best_known == chain[-1].hash
+    assert node.download_manager.direct_fetches[-1] == (peer.id, chain[-1].hash)
+    # PRESYNC's two requests and REDOWNLOAD's first two, then the last
+    # full batch indexed asks on from its own tip, as any full batch does
+    assert [r.locator[0] for r in sent_getheaders(peer)] == [
+        chain[2].hash,
+        chain[5].hash,
+        RegTest().genesis.hash,
+        chain[2].hash,
+        chain[5].hash,
+        chain[8].hash,
+    ]
+    node.chainstate.close()
+
+
+def test_a_short_message_releasing_a_full_batch_is_weighed_for_dropping(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core asks whether to drop the peer by the message's `nCount`.
+
+    The short last message of a REDOWNLOAD reaches the target and
+    releases every header held: more than a full batch, from a message
+    short of one. The peer is still asked about, and kept, the released
+    chain having the work.
+    """
+    monkeypatch.setattr(cb, "MAX_HEADERS_RESULTS", 3)
+    asked: list[int] = []
+
+    def recording(node: Any, conn: Any) -> bool:
+        asked.append(conn.id)
+        return disconnect_if_insufficient_work(node, conn)
+
+    monkeypatch.setattr(cb, "disconnect_if_insufficient_work", recording)
+    node = a_low_work_node(tmp_path, minimum_blocks=9, is_initial_block_download=True)
+    chain = generate_random_header_chain(8, RegTest().genesis.hash)
+    peer = a_peer(automatic=True)
+    for _ in range(2):  # PRESYNC, then REDOWNLOAD
+        for start in (0, 3, 6):
+            headers(node, Headers(chain[start : start + 3]).serialize(), peer)
+    assert asked == [peer.id]
+    assert all(h.hash in node.chainstate.block_index.header_dict for h in chain)
+    assert peer.headers_sync is None
+    assert not peer.stopped
+    node.chainstate.close()
+
+
+def test_headers_released_while_the_sync_goes_on_ask_nothing_more(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core asks for more only `!have_headers_sync`: the sync asks already.
+
+    A buffer of one releases headers before the target: the message
+    carried a full batch, so it neither ends header sync nor asks twice,
+    and a peer this node dialled is not weighed for dropping, whatever
+    the few headers released weigh.
+    """
+    monkeypatch.setattr(cb, "MAX_HEADERS_RESULTS", 3)
+    node = a_low_work_node(
+        tmp_path,
+        minimum_blocks=10,
+        buffer=1,
+        status=NodeStatus.SyncingHeaders,
+        is_initial_block_download=True,
+    )
+    chain = generate_random_header_chain(9, RegTest().genesis.hash)
+    peer = a_peer(automatic=True)
+    for start in (0, 3, 6):
+        headers(node, Headers(chain[start : start + 3]).serialize(), peer)
+    peer.sent.clear()
+    headers(node, Headers(chain[:3]).serialize(), peer)
+    assert chain[1].hash in node.chainstate.block_index.header_dict
+    assert chain[2].hash not in node.chainstate.block_index.header_dict
+    (request,) = sent_getheaders(peer)
+    assert request.locator[0] == chain[2].hash
+    assert node.status == NodeStatus.SyncingHeaders
+    assert peer.headers_sync is not None
+    assert not peer.stopped
+    node.chainstate.close()
+
+
+def test_a_released_header_failing_its_checks_is_punished(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The work was checked twice; the header itself is not, until released.
+
+    A header dated before the median of those before it passes both
+    phases, which weigh work alone, and is refused when indexed.
+    """
+    monkeypatch.setattr(cb, "MAX_HEADERS_RESULTS", 3)
+    node = a_low_work_node(tmp_path, minimum_blocks=7)
+    chain = generate_random_header_chain(4, RegTest().genesis.hash)
+    stale = BlockHeader(
+        version=4,
+        previous_block_hash=chain[-1].hash,
+        merkle_root=secrets.token_bytes(32),
+        time=RegTest().genesis.time,
+        bits=RegTest().pow_limit_bits,
+        nonce=0,
+        check_validity=False,
+    )
+    brute_force_nonce(stale)
+    chain += [stale, *generate_random_header_chain(1, stale.hash, chain[3].time)]
+    peer = a_peer()
+    for start in (0, 3, 0):
+        headers(node, Headers(chain[start : start + 3]).serialize(), peer)
+    with pytest.raises(MisbehavingError, match="not after the median past"):
+        headers(node, Headers(chain[3:]).serialize(), peer)
+    assert chain[3].hash in node.chainstate.block_index.header_dict
+    assert stale.hash not in node.chainstate.block_index.header_dict
+    node.chainstate.close()
+
+
+@pytest.mark.parametrize(("height", "indexed"), [(6, True), (5, False)])
+def test_a_block_s_new_header_below_the_threshold_is_not_indexed(
+    tmp_path: Path,
+    height: int,
+    indexed: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1505: Core's `min_pow_checked` in the `BLOCK` arm, bound included.
+
+    The tip is at 150, so the threshold is the tip's work less 144 blocks:
+    seven blocks of work, genesis in. A block at 6 off the active chain
+    brings exactly that, one at 5 a block less: its header is refused as
+    `too-little-chainwork` and its peer is not punished for it.
+    """
+    node = an_unrequested_block_node(tmp_path, 150)
+    block = a_block_at(node, height, fork=height - 1)
+    deliver(node, block)
+    block_index = node.chainstate.block_index
+    assert (block.header.hash in block_index.header_dict) is indexed
+    assert node.added == []
+    node.chainstate.close()
+
+
+def test_a_requested_block_on_a_low_work_chain_is_refused_all_the_same(
+    tmp_path: Path,
+) -> None:
+    """ISS 1505: Core weighs the work whether the block was asked for or not."""
+    node = an_unrequested_block_node(tmp_path, 150)
+    block = a_block_at(node, 5, fork=4)
+    asked = a_peer(download_queue=[block.header.hash])
+    deliver(node, block, asked)
+    assert block.header.hash not in node.chainstate.block_index.header_dict
+    assert node.added == []
+    node.chainstate.close()
+
+
+@pytest.mark.parametrize(("surplus", "indexed"), [(0, True), (1, False)])
+def test_a_block_s_new_header_is_weighed_against_minimumchainwork(
+    tmp_path: Path,
+    surplus: int,
+    indexed: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1505: the threshold's floor is `-minimumchainwork`, not the chain's.
+
+    Core's `GetAntiDoSWorkThreshold` reads `MinimumChainWork()`: here
+    `config.minimum_chain_work` is the new block's own chain work, or one
+    more, while regtest's own stays zero.
+    """
+    node = an_unrequested_block_node(tmp_path, 1)
+    block = a_block_at(node, 2)
+    block_index = node.chainstate.block_index
+    work = block_index.chainwork[block_index.active_chain[-1]] + calculate_work(
+        block.header
+    )
+    node.config.minimum_chain_work = work + surplus
+    deliver(node, block)
+    assert (block.header.hash in block_index.header_dict) is indexed
+    node.chainstate.close()

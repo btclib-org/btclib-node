@@ -421,10 +421,11 @@ uv run --locked --no-default-groups --group test --group mutation \
 
 The session writes each mutation into `src/btclib_node/interpreter.py`
 and restores it afterwards, so nothing else may read the file while it
-runs. `interpreter.py` is the one scope so far — the consensus entry
-point ARCHITECTURE.md's *Validation* names as what validates — and a
-second scope is a second `.toml` beside it, the way
-`btclib-org/btclib`'s own `.github/mutation/` holds one per profile.
+runs. `interpreter.py` is the consensus entry point ARCHITECTURE.md's
+*Validation* names as what validates. Each scope is a `.toml` of its own
+in `.github/mutation/`, the way `btclib-org/btclib`'s own holds one per
+profile, and is run the same way with its own name in place of
+`interpreter`: `headers_sync.toml` mutates `p2p/headers_sync.py`.
 
 `test-command` in `.github/mutation/interpreter.toml` runs with `-n0`,
 overriding `addopts`' own `-n auto` for the one process that reads the

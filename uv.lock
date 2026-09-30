@@ -241,16 +241,16 @@ wheels = [
 
 [[package]]
 name = "btclib"
-version = "2026.9.29"
+version = "2026.9.30"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "bitcoin-core-rpc" },
     { name = "btclib-ecc" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/55/4f/7b508d72ac8db97b31bfa563384252d369be1e9a1f6fd1a865256d1e603c/btclib-2026.9.29.tar.gz", hash = "sha256:9c8d8e6e0d55967ea3f915a6454a6893aab952145a6af18e5ff49787422949c9", size = 7145782, upload-time = "2026-09-29T12:04:16.312Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b0/60/1372a867b8ddcb0e50747531aeec3b5e6d8a555ac621b49bf0994dd00416/btclib-2026.9.30.tar.gz", hash = "sha256:28809184571e3ddd8830fbdbce398c75393d73d9407829ccce8773057ea3504c", size = 7140884, upload-time = "2026-09-30T20:07:03.229Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5e/1c/eb5cfbf57146c5b00ae9aad7d4ae9e4b1f089b5b0d8553ddd2a185ac8ae7/btclib-2026.9.29-py3-none-any.whl", hash = "sha256:082f96f0d4c7067a740aad9693302f73f4d24ba76401916173d0c62eb41f40cd", size = 423097, upload-time = "2026-09-29T12:04:14.043Z" },
+    { url = "https://files.pythonhosted.org/packages/08/4a/c9508ea048604fe37c603cda1e0e30e1685e45aa03e5a1523fd02a8d93e4/btclib-2026.9.30-py3-none-any.whl", hash = "sha256:566740373b273e88ca320f930ddf45fa480717ba811e63352f4722c7e8c901ab", size = 412304, upload-time = "2026-09-30T20:07:00.813Z" },
 ]
 
 [package.optional-dependencies]
@@ -369,7 +369,7 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "bitcoin-core-rpc", specifier = ">=2026.9.3" },
-    { name = "btclib", extras = ["secp256k1"], specifier = ">=2026.9.29" },
+    { name = "btclib", extras = ["secp256k1"], specifier = ">=2026.9.30" },
     { name = "btclib-wallet", specifier = ">=2026.9.30" },
     { name = "rocksdict", specifier = ">=0.3.29" },
 ]

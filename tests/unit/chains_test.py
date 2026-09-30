@@ -17,7 +17,15 @@ from pathlib import Path
 
 from btclib.consensus import CONSENSUS_PARAMS
 
-from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet, TestNet4
+from btclib_node.chains import (
+    Chain,
+    HeadersSyncParams,
+    Main,
+    RegTest,
+    SigNet,
+    TestNet,
+    TestNet4,
+)
 
 CHAINS = (Main(), TestNet(), SigNet(), RegTest(), TestNet4())
 
@@ -185,4 +193,20 @@ def test_each_chain_asks_core_s_dns_seeds() -> None:
             "seed.testnet4.bitcoin.sprovoost.nl.",
             "seed.testnet4.wiz.biz.",
         ],
+    }
+
+
+def test_each_chain_carries_core_s_headers_sync_params() -> None:
+    """ISS 1246: Core's `m_headers_sync_params`, at bitcoin/bitcoin@9be056a8a7.
+
+    Read from `src/kernel/chainparams.cpp` there, the v31.1 tag, for every
+    chain this package defines: the commitment period, then the redownload
+    buffer's size.
+    """
+    assert {chain.name: chain.headers_sync_params for chain in CHAINS} == {
+        "mainnet": HeadersSyncParams(641, 15218),
+        "testnet": HeadersSyncParams(673, 14460),
+        "signet": HeadersSyncParams(620, 15724),
+        "regtest": HeadersSyncParams(275, 7017),
+        "testnet4": HeadersSyncParams(606, 16092),
     }
