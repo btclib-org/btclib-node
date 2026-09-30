@@ -920,6 +920,67 @@ _HELP_SETBAN = (
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "setban", "params": ["192.168.0.6", "add", 86400]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
+_HELP_DECODERAWTRANSACTION = (
+    'decoderawtransaction "hexstring" ( iswitness )\n'
+    "\n"
+    "Return a JSON object representing the serialized, hex-encoded transaction.\n"
+    "\n"
+    "Arguments:\n"
+    "1. hexstring    (string, required) The transaction hex string\n"
+    "2. iswitness    (boolean, optional, default=depends on heuristic tests) Whether the transaction hex is a serialized witness transaction.\n"
+    "                If iswitness is not present, heuristic tests will be used in decoding.\n"
+    "                If true, only witness deserialization will be tried.\n"
+    "                If false, only non-witness deserialization will be tried.\n"
+    "                This boolean should reflect whether the transaction has inputs\n"
+    "                (e.g. fully valid, or on-chain transactions), if known by the caller.\n"
+    "\n"
+    "Result:\n"
+    "{                             (json object)\n"
+    '  "txid" : "hex",             (string) The transaction id\n'
+    '  "hash" : "hex",             (string) The transaction hash (differs from txid for witness transactions)\n'
+    '  "size" : n,                 (numeric) The serialized transaction size\n'
+    '  "vsize" : n,                (numeric) The virtual transaction size (differs from size for witness transactions)\n'
+    '  "weight" : n,               (numeric) The transaction\'s weight (between vsize*4-3 and vsize*4)\n'
+    '  "version" : n,              (numeric) The version\n'
+    '  "locktime" : xxx,           (numeric) The lock time\n'
+    '  "vin" : [                   (json array)\n'
+    "    {                         (json object)\n"
+    '      "coinbase" : "hex",     (string, optional) The coinbase value (only if coinbase transaction)\n'
+    '      "txid" : "hex",         (string, optional) The transaction id (if not coinbase transaction)\n'
+    '      "vout" : n,             (numeric, optional) The output number (if not coinbase transaction)\n'
+    '      "scriptSig" : {         (json object, optional) The script (if not coinbase transaction)\n'
+    '        "asm" : "str",        (string) Disassembly of the signature script\n'
+    '        "hex" : "hex"         (string) The raw signature script bytes, hex-encoded\n'
+    "      },\n"
+    '      "txinwitness" : [       (json array, optional)\n'
+    '        "hex",                (string) hex-encoded witness data (if any)\n'
+    "        ...\n"
+    "      ],\n"
+    '      "sequence" : n          (numeric) The script sequence number\n'
+    "    },\n"
+    "    ...\n"
+    "  ],\n"
+    '  "vout" : [                  (json array)\n'
+    "    {                         (json object)\n"
+    '      "value" : n,            (numeric) The value in BTC\n'
+    '      "n" : n,                (numeric) index\n'
+    '      "scriptPubKey" : {      (json object)\n'
+    '        "asm" : "str",        (string) Disassembly of the output script\n'
+    '        "desc" : "str",       (string) Inferred descriptor for the output\n'
+    '        "hex" : "hex",        (string) The raw output script bytes, hex-encoded\n'
+    '        "address" : "str",    (string, optional) The Bitcoin address (only if a well-defined address exists)\n'
+    '        "type" : "str"        (string) The type (one of: nonstandard, anchor, pubkey, pubkeyhash, scripthash, multisig, nulldata, witness_v0_scripthash, witness_v0_keyhash, witness_v1_taproot, witness_unknown)\n'
+    "      }\n"
+    "    },\n"
+    "    ...\n"
+    "  ]\n"
+    "}\n"
+    "\n"
+    "Examples:\n"
+    '> bitcoin-cli decoderawtransaction "hexstring"\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "decoderawtransaction", "params": ["hexstring"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
 _HELP_GETRAWTRANSACTION = (
     'getrawtransaction "txid" ( verbosity "blockhash" )\n'
     "\n"
@@ -1166,6 +1227,7 @@ HELP_TEXT: dict[str, str] = {
     "listbanned": _HELP_LISTBANNED,
     "ping": _HELP_PING,
     "setban": _HELP_SETBAN,
+    "decoderawtransaction": _HELP_DECODERAWTRANSACTION,
     "getrawtransaction": _HELP_GETRAWTRANSACTION,
     "sendrawtransaction": _HELP_SENDRAWTRANSACTION,
     "testmempoolaccept": _HELP_TESTMEMPOOLACCEPT,
@@ -1204,6 +1266,7 @@ CATEGORY: dict[str, str] = {
     "listbanned": "Network",
     "ping": "Network",
     "setban": "Network",
+    "decoderawtransaction": "Rawtransactions",
     "getrawtransaction": "Rawtransactions",
     "sendrawtransaction": "Rawtransactions",
     "testmempoolaccept": "Rawtransactions",

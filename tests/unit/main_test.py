@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
-from btclib.block import Block
+from btclib.block import Block, witness_commitment_output
 from btclib.consensus import MAX_BLOCK_WEIGHT
 from btclib.exceptions import BTClibValueError
 from btclib.fee import FeeRate, fee_from_vsize
@@ -27,7 +27,7 @@ from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
-from btclib_node import Node, main
+from btclib_node import Node, interpreter, main
 from btclib_node.chains import RegTest, SigNet
 from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate import utxo_index as utxo_index_module
@@ -58,6 +58,8 @@ from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.compact_block import compact_block
 from tests import (
     anyone_can_spend,
+    anyone_can_spend_redeem_script,
+    anyone_can_spend_script_sig,
     build_block,
     generate_coinbase,
     generate_random_chain,
@@ -153,12 +155,12 @@ def spend(prevout_tx: Tx, value: int, script_sig: bytes | None = None) -> Tx:
                 prev_out=OutPoint(prevout_tx.id, 0),
                 script_sig=script_sig
                 if script_sig is not None
-                else script.serialize([b"\x11" * 32]),
+                else anyone_can_spend_script_sig(),
                 sequence=0xFFFFFFFF,
             )
         ],
         vout=[
-            TxOut(value=value, script_pub_key=script.serialize([b"\x22" * 32])),
+            TxOut(value=value, script_pub_key=anyone_can_spend()),
         ],
     )
 
@@ -264,6 +266,150 @@ def test_reject_block_whose_coinbase_pays_more_than_subsidy_plus_fees(
     assert bad.header.hash not in block_index.active_chain
     assert len(block_index.active_chain) == connected
     rejected_because(node, bad, "bad-cb-amount")
+
+
+# MAX_BLOCK_SIGOPS_COST, 80_000, is reached below exactly: each
+# `_sigop_script` counts 3_800 sigops, 20 per bare OP_CHECKMULTISIG, so
+# 4 p2sh inputs * 3_800 * 4 + 5 p2wsh inputs * 3_800 + 50 coinbase
+# OP_CHECKSIGs * 4.
+_P2SH_INPUTS, _P2WSH_INPUTS, _MULTISIGS, _COINBASE_CHECKSIGS = 4, 5, 190, 50
+
+
+def _sigop_script(extra_checksigs: int = 0) -> bytes:
+    """Return a script true on an empty stack, of `20 * _MULTISIGS` sigops.
+
+    `extra_checksigs` more `OP_CHECKSIG`s add one sigop each, all of
+    them in the branch `OP_0 OP_IF` never runs, so the scripts verify.
+    """
+    return script.serialize(
+        [
+            "OP_0",
+            "OP_IF",
+            *["OP_CHECKMULTISIG"] * _MULTISIGS,
+            *["OP_CHECKSIG"] * extra_checksigs,
+            "OP_ENDIF",
+            "OP_1",
+        ]
+    )
+
+
+def _sigop_blocks(node: Node) -> tuple[BlockIndex, Callable[..., Block]]:
+    """Connect a funded chain; return a builder of blocks near the sigop limit.
+
+    The builder's block spends `_P2SH_INPUTS` p2sh and `_P2WSH_INPUTS`
+    p2wsh outputs, each through `_sigop_script`, and its coinbase carries
+    `_COINBASE_CHECKSIGS` legacy sigops: exactly `MAX_BLOCK_SIGOPS_COST`
+    with no `*_over` set, and one sigop more of that kind for each set.
+    """
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    funding = chain[0].transactions[0]
+    # one p2sh and one p2wsh output more, committing to a script with an
+    # extra sigop, so that a block over the limit still verifies and
+    # the sigop cost is the one rule it breaks
+    p2sh = [_sigop_script()] * _P2SH_INPUTS + [_sigop_script(1)]
+    p2wsh = [_sigop_script()] * _P2WSH_INPUTS + [_sigop_script(1)]
+    value = funding.vout[0].value // (len(p2sh) + len(p2wsh))
+    fund = spend(funding, 0)
+    fund.vout = [
+        *[TxOut(value, ScriptPubKey.p2sh(redeem)) for redeem in p2sh],
+        *[TxOut(value, ScriptPubKey.p2wsh(witness)) for witness in p2wsh],
+    ]
+    fund_block = build_block(
+        chain[-1].header.hash,
+        [generate_coinbase(height=len(chain) + 1), fund],
+        len(chain),
+    )
+    block_index = connect(node, [*chain, fund_block])
+    assert fund_block.header.hash in block_index.active_chain
+
+    def build(
+        *,
+        p2sh_over: bool = False,
+        witness_over: bool = False,
+        coinbase_over: bool = False,
+    ) -> Block:
+        # the outputs the block spends: the last p2sh one in place of the
+        # first where `p2sh_over`, and likewise for p2wsh
+        p2sh_vouts = list(range(_P2SH_INPUTS))
+        if p2sh_over:
+            p2sh_vouts[0] = _P2SH_INPUTS
+        p2wsh_vouts = [len(p2sh) + i for i in range(_P2WSH_INPUTS)]
+        if witness_over:
+            p2wsh_vouts[0] = len(p2sh) + _P2WSH_INPUTS
+        tx = spend(fund, value)
+        tx.vin = [
+            *[
+                TxIn(OutPoint(fund.id, i), script.serialize([p2sh[i]]))
+                for i in p2sh_vouts
+            ],
+            *[
+                TxIn(
+                    OutPoint(fund.id, i),
+                    b"",
+                    script_witness=Witness([p2wsh[i - len(p2sh)]]),
+                )
+                for i in p2wsh_vouts
+            ],
+        ]
+        coinbase = generate_coinbase(height=len(chain) + 2)
+        checksigs = _COINBASE_CHECKSIGS + coinbase_over
+        nonce = bytes(32)
+        coinbase.vout = [
+            *coinbase.vout,
+            TxOut(0, script.serialize(["OP_CHECKSIG"] * checksigs)),
+        ]
+        coinbase.vout.append(witness_commitment_output([coinbase, tx], nonce))
+        coinbase.vin[0].script_witness = Witness([nonce])
+        return build_block(fund_block.header.hash, [coinbase, tx], len(chain) + 1)
+
+    return block_index, build
+
+
+def test_a_block_at_the_sigop_cost_limit_connects(node: Node) -> None:
+    """Exactly `MAX_BLOCK_SIGOPS_COST`, legacy, p2sh and witness, connects."""
+    block_index, build = _sigop_blocks(node)
+    good = build()
+    connect(node, [good])
+    assert good.header.hash in block_index.active_chain
+
+
+@pytest.mark.parametrize(
+    "over",
+    [{"witness_over": True}, {"p2sh_over": True}, {"coinbase_over": True}],
+    ids=["witness", "p2sh", "coinbase"],
+)
+def test_a_block_over_the_sigop_cost_limit_is_refused(
+    node: Node, over: dict[str, bool]
+) -> None:
+    """One sigop more of any kind is `bad-blk-sigops`, and the block invalid.
+
+    btclib-org/btclib-node#1585: only `CheckBlock`'s legacy count was
+    bounded, so this connected. Each case adds to one term alone, so
+    each proves that term is counted: a witness sigop costs one, a p2sh
+    sigop and a coinbase's legacy one cost four.
+    """
+    block_index, build = _sigop_blocks(node)
+    bad = build(**over)
+    connect(node, [bad])
+    assert bad.header.hash not in block_index.active_chain
+    rejected_because(node, bad, "bad-blk-sigops")
+    assert block_index.get_block_info(bad.header.hash).status == BlockStatus.invalid
+
+
+def test_the_sigop_cost_is_counted_under_the_block_s_own_flags(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without P2SH and WITNESS, as at a block Core exempts, only legacy counts.
+
+    Core's `GetBlockScriptFlags` turns both off for the one mainnet block
+    that broke BIP16, and `GetTransactionSigOpCost` then counts neither
+    term; regtest exempts no block, so the flags are patched in.
+    """
+    block_index, build = _sigop_blocks(node)
+    monkeypatch.setattr(interpreter, "get_flags", lambda *_: ScriptFlag(0))
+    over = build(p2sh_over=True, witness_over=True)
+    connect(node, [over])
+    assert over.header.hash in block_index.active_chain
 
 
 def test_reject_block_whose_coinbase_does_not_commit_to_its_height(
@@ -406,12 +552,12 @@ def locked_spend(
                 prev_out=OutPoint(prevout_tx.id, 0),
                 script_sig=script_sig
                 if script_sig is not None
-                else script.serialize([b"\x11" * 32]),
+                else anyone_can_spend_script_sig(),
                 sequence=sequence,
             )
         ],
         vout=[
-            TxOut(value=value, script_pub_key=script.serialize([b"\x22" * 32])),
+            TxOut(value=value, script_pub_key=anyone_can_spend()),
         ],
     )
 
@@ -907,12 +1053,13 @@ def test_a_spend_of_an_output_a_mempool_parent_lacks_is_a_missing_prevout(
 def test_a_mempool_candidate_is_read_against_relay_policy(node: Node) -> None:
     """`verify_mempool_acceptance` refuses a spend only standardness refuses.
 
-    The two spends below differ in one push: `4c 01 01` is OP_PUSHDATA1
-    over the byte `01`, where OP_1 is the push MINIMALDATA asks for, and
-    that rule is not a consensus one -- a block carrying the first spend
-    connects. `interpreter.STANDARD_FLAGS` is what refuses it here, and
-    the second one being accepted is what says the refusal is that push
-    and not something else about the pair. `NonStandardTxError` is the
+    The two spends below differ in one push: the redeem script, pushed
+    with OP_PUSHDATA1 (`4c 02 ...`) in the first, where the two-octet
+    push MINIMALDATA asks for is the second's, and that rule is not a
+    consensus one -- a block carrying the first spend connects.
+    `interpreter.STANDARD_FLAGS` is what refuses it here, and the second
+    one being accepted is what says the refusal is that push and not
+    something else about the pair. `NonStandardTxError` is the
     class the refusal reaches a caller as, which is what keeps the peer
     that relayed the transaction (`p2p/callbacks_test.py`).
     """
@@ -923,14 +1070,17 @@ def test_a_mempool_candidate_is_read_against_relay_policy(node: Node) -> None:
     non_minimal = generate_random_transaction(
         coinbase.id, value=coinbase.vout[0].value - FEE
     )
-    non_minimal.vin[0].script_sig = b"\x4c\x01\x01"
+    non_minimal.vin[0].script_sig = (
+        script.serialize([b"\x11" * 32])
+        + b"\x4c\x02"
+        + anyone_can_spend_redeem_script()
+    )
     with pytest.raises(NonStandardTxError, match="non-minimal push"):
         verify_mempool_acceptance(node, non_minimal)
 
     minimal = generate_random_transaction(
         coinbase.id, value=coinbase.vout[0].value - FEE
     )
-    minimal.vin[0].script_sig = script.serialize(["OP_1"])
     assert verify_mempool_acceptance(node, minimal).fee == FEE
 
 
@@ -2492,12 +2642,13 @@ def test_a_stop_mid_reorg_rolls_the_trial_back_without_invalidating_it(
         index: int,
         node: Node,
         block_hash: bytes,
+        coinbase: Tx,
     ) -> None:
         nonlocal calls
         calls += 1
         if calls == 2:
             node.terminate_flag.set()
-        return check_transactions(transaction_data, index, node, block_hash)
+        return check_transactions(transaction_data, index, node, block_hash, coinbase)
 
     monkeypatch.setattr(main, "check_transactions", stop_after_the_second_block)
 

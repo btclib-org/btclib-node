@@ -38,6 +38,7 @@ __all__ = [
     "IncompleteRequestHeadError",
     "InvalidBlockInputError",
     "InvalidChainTypeError",
+    "LowWorkHeaderError",
     "MalformedRequestHeadError",
     "MisbehavingError",
     "MissingPrevoutError",
@@ -97,6 +98,22 @@ class MisbehavingError(BTClibValueError):
     `BTClibValueError`, so that a caller refusing a header or a block
     for any reason still catches it as one.
     """
+
+
+class LowWorkHeaderError(BTClibValueError):
+    """A new header refused for want of the anti-DoS proof of work.
+
+    Core's `BLOCK_HEADER_LOW_WORK`, "too-little-chainwork", which
+    `AcceptBlockHeader` answers for a header whose caller has not checked
+    that its chain clears `GetAntiDoSWorkThreshold`, and which
+    `MaybePunishNodeForBlock` does not punish (`src/validation.cpp` and
+    `src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag). Not a `MisbehavingError` for that reason.
+    """
+
+    def __init__(self) -> None:
+        """Carry Core's own reason."""
+        super().__init__("too-little-chainwork")
 
 
 class MissingPrevoutError(ValueError):

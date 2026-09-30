@@ -1,0 +1,24 @@
+# The low-work headers sync, mutated: src/btclib_node/p2p/headers_sync.py
+# is Core's HeadersSyncState, the state a peer's chain passes through
+# before any of it is indexed, and what its mistakes cost is a chain
+# stored that should not be or one refused that should not be -- neither
+# of which a line merely executed says anything about.
+
+[cosmic-ray]
+module-path = "src/btclib_node/p2p/headers_sync.py"
+
+# Its own unit tests and none of the callbacks' own, so that a mutant
+# costs one file's run rather than the suite's. A session its budget cuts
+# still reports the mutants it reached.
+test-command = """python -m pytest -x -q -n0 --no-cov \
+  tests/unit/p2p/headers_sync_test.py"""
+
+# The per-mutant ceiling is wide against the unmutated command, as
+# interpreter.toml's is and for its reason: a timeout is reported as
+# KILLED.
+timeout = 60
+
+excluded-modules = []
+
+[cosmic-ray.distributor]
+name = "local"

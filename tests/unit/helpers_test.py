@@ -24,14 +24,19 @@ from btclib.block import (
 )
 from btclib.exceptions import BTClibValueError
 from btclib.p2p.addrv2 import BIP155Network
+from btclib.script import script
+from btclib.script.engine import verify_input
 from btclib.tx.limits import COINBASE_MATURITY
 
 from btclib_node.chains import RegTest
+from btclib_node.interpreter import STANDARD_FLAGS
 from tests import (
     TEST_PORTS,
     ListenerEndedError,
     PortPool,
     WaitTimeoutError,
+    anyone_can_spend,
+    anyone_can_spend_redeem_script,
     brute_force_nonce,
     build_block,
     call_within,
@@ -423,6 +428,36 @@ def test_a_transaction_spends_what_it_is_told_to() -> None:
     assert spend.vin[0].prev_out.tx_id == funding.id
     assert generate_random_transaction().vin[0].prev_out.tx_id != funding.id
     assert generate_random_transaction(value=1).vout[0].value == 1
+
+
+def test_the_anyone_can_spend_spend_is_standard() -> None:
+    """A spend of `anyone_can_spend` passes every standard flag.
+
+    What `IsStandardTx` and `AreInputsStandard` read (`policy.cpp`, at
+    bitcoin/bitcoin@9be056a8a7): the output is P2SH, the script_sig is
+    pushes only and the redeem script it pushes checks no signature.
+    `STANDARD_FLAGS` carries CLEANSTACK and MINIMALDATA, which the spend
+    has to satisfy as well.
+    """
+    funding = generate_coinbase(height=1)
+    spend = generate_random_transaction(funding.id)
+    assert funding.vout[0].script_pub_key.type == "p2sh"
+    assert funding.vout[0].script_pub_key.script == anyone_can_spend()
+    # `parse` spells a data push as hex and an op code by its name
+    commands = script.parse(spend.vin[0].script_sig)
+    assert len(commands) == 2
+    assert all(isinstance(c, str) and not c.startswith("OP_") for c in commands)
+    assert str(commands[-1]).lower() == anyone_can_spend_redeem_script().hex()
+    assert script.parse(anyone_can_spend_redeem_script()) == ["OP_DROP", "OP_1"]
+    assert spend.vin[0].script_witness.stack == ()
+    verify_input([funding.vout[0]], spend, 0, STANDARD_FLAGS)
+
+
+def test_two_coinbases_at_one_height_are_two_transactions() -> None:
+    """The extra nonce, not the output script, tells them apart."""
+    first, second = generate_coinbase(height=7), generate_coinbase(height=7)
+    assert first.vout[0].script_pub_key == second.vout[0].script_pub_key
+    assert first.id != second.id
 
 
 def test_a_built_block_carries_the_transactions_it_was_given() -> None:
