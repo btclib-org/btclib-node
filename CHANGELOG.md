@@ -1323,6 +1323,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   block lookup, dropping the peer without discouraging it**, matching
   Core master's `fDisconnect` on an empty `indexes` (closes #1450).
 
+### `getcfilters`, `getcfheaders` and `getcfcheckpt` answer Core's way
+
+- **A stop hash still known and allowed is served from its own chain**,
+  not `active_chain` (closes #1476).
+- **An invalid request disconnects the peer**, as Core does (closes #1477).
+
 ### `-rpcservertimeout` bounds an RPC connection's read and its idle gap
 
 - **`-rpcservertimeout=<n>` feeds `RpcManager.request_timeout`, seconds as
