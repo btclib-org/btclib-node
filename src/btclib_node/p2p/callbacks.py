@@ -95,6 +95,7 @@ from btclib_node.exceptions import (
 )
 from btclib_node.main import (
     assert_valid_block,
+    check_fork_warning_conditions,
     is_block_failed,
     is_block_mutated,
     is_cached_invalid,
@@ -1234,6 +1235,9 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
         except BTClibException as e:
             if is_block_failed(block, check_witness_root=segwit):
                 block_index.invalidate(block_hash)
+                # Core's own `InvalidChainFound` call, same citation as
+                # `main.check_fork_warning_conditions`'s own docstring
+                check_fork_warning_conditions(node)
             raise MisbehavingError(str(e)) from e
         node.block_db.add_block(block)
         # novel, past its own checks and on disk: what Core's own

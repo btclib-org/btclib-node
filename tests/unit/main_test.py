@@ -48,7 +48,11 @@ from btclib_node.exceptions import (
     TxRejectedError,
 )
 from btclib_node.interpreter import check_transactions, get_flags
-from btclib_node.main import update_chain, verify_mempool_acceptance
+from btclib_node.main import (
+    check_fork_warning_conditions,
+    update_chain,
+    verify_mempool_acceptance,
+)
 from btclib_node.mempool import format_money
 from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.compact_block import compact_block
@@ -2037,6 +2041,111 @@ def test_the_block_ending_initial_block_download_is_announced_before_sync(
     (headers,) = sent
     assert isinstance(headers, Headers)
     assert [header.hash for header in headers.headers] == hashes(chain)
+
+
+def test_blocknotify_does_not_fire_during_initial_block_download(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1519: Core's own `NotifyBlockTip_connect` gate.
+
+    `if (sync_state != POST_INIT) return;` (`src/init.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `generate_random_chain`
+    dates every block too far back for the tip to end initial block
+    download, the same premise `test_a_reorg_during_initial_block_
+    download_announces_nothing` above rests on.
+
+    A separate test from the one below, on purpose: mypy's own
+    narrowing of `node.is_initial_block_download` from an `is True`
+    check does not see `connect` (an ordinary function call) as able to
+    change it, and reports the final assertion of a combined version of
+    this test as unreachable once a later `is False` check follows it
+    in the same function -- confirmed against a minimal reproduction
+    outside this tree, the same mypy limitation
+    `chainstate/block_index_test.py`'s own
+    `test_invalidate_sets_best_invalid_to_the_first_invalidated_block`
+    docstring names.
+    """
+    calls: list[str] = []
+    monkeypatch.setattr(
+        main, "run_detached", lambda logger, command: calls.append(command)
+    )
+    node.config.block_notify = "touch %s"
+
+    stale = generate_random_chain(2, RegTest().genesis.hash)
+    connect(node, stale)
+    assert node.is_initial_block_download is True
+    assert calls == []
+
+
+def test_blocknotify_fires_once_with_the_new_tips_hash_once_ibd_ends(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1519: `%s` is the new tip's hash, hex, once per commit.
+
+    `recent` connects three blocks in one `_after_tip_change` call, so
+    one call with the branch's own tip is also what tells this apart
+    from firing once per block in it.
+    """
+    calls: list[str] = []
+    monkeypatch.setattr(
+        main, "run_detached", lambda logger, command: calls.append(command)
+    )
+    node.config.block_notify = "touch %s"
+
+    recent = generate_random_chain(
+        3, RegTest().genesis.hash, tip_time=datetime.now(UTC)
+    )
+    connect(node, recent)
+    assert node.is_initial_block_download is False
+    assert calls == [f"touch {recent[-1].header.hash.hex()}"]
+
+
+def test_check_fork_warning_conditions_raises_once_and_clears_on_catch_up(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1522: more than six blocks' worth of work past the tip, once.
+
+    Core's own `CheckForkWarningConditions` (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `alert_notify` fires only
+    the first time the condition becomes true -- `Warnings::Set`'s own
+    dedup -- and the warning clears, silently, once the active tip's own
+    chainwork catches back up.
+    """
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        main,
+        "alert_notify",
+        lambda logger, command, message: calls.append((command, message)),
+    )
+    node.config.alert_notify = "echo %s"
+    block_index = node.chainstate.block_index
+    genesis = RegTest().genesis.hash
+
+    invalid_chain = generate_random_header_chain(8, genesis)
+    block_index.add_headers(invalid_chain)
+    block_index.invalidate(invalid_chain[-1].hash)
+
+    check_fork_warning_conditions(node)
+    assert node.warnings.get_messages() == [
+        (
+            "Warning: Found invalid chain more than 6 blocks longer than our "
+            "best chain. This could be due to database corruption or "
+            "consensus incompatibility with peers."
+        )
+    ]
+    assert len(calls) == 1
+
+    # still true: no second call
+    check_fork_warning_conditions(node)
+    assert len(calls) == 1
+
+    catch_up = generate_random_header_chain(9, genesis)
+    block_index.add_headers(catch_up)
+    for header in catch_up:
+        block_index.add_to_active_chain(header.hash)
+    check_fork_warning_conditions(node)
+    assert node.warnings.get_messages() == []
+    assert len(calls) == 1
 
 
 def test_a_refused_branch_invalidates_only_the_block_that_failed(
