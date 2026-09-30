@@ -124,7 +124,7 @@ class Chain:
     # (`src/chainparamsbase.cpp`, at bitcoin/bitcoin@05e49b342f): one
     # below `port` on every leaf below, not `port + 1` -- the client on
     # the other end is `bitcoin-cli` or another program written against
-    # Core, so CLAUDE.md's own `Following Bitcoin Core` is what decides
+    # Core, so CONTRIBUTING.md's own `Following Bitcoin Core` is what decides
     # this rather than any pattern internal to this file.
     # `config.py`'s `Config.__init__` used to compute `port + 1`
     # instead (btclib-org/btclib-node#605), which happens to be Core's

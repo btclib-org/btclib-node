@@ -1370,6 +1370,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   is not a positive integer**, a non-integer having raised `ValueError`
   and `0` `ZeroDivisionError` at `import btclib_node` (closes #1555).
 
+### `CLAUDE.md` moves *Following Bitcoin Core* to `CONTRIBUTING.md`
+
+- **`CLAUDE.md` takes the organization's shared primary-checkout section,
+  and *Following Bitcoin Core* moves to `CONTRIBUTING.md`'s last
+  section** (issue btclib-org/.github#1494).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

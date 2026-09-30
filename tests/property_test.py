@@ -88,9 +88,8 @@ def test_the_walk_finds_a_parser_to_draw_for() -> None:
 
     `pytest.mark.parametrize` over an empty sequence collects nothing
     and reports no failure, so the layer would report green having
-    stated nothing at all -- the shape CLAUDE.md's own union bullet
-    calls a check that can only report the absence of damage. This is
-    the guard against it.
+    stated nothing at all -- the shape of a check that can only
+    report the absence of damage. This is the guard against it.
     """
     assert _parser_specs()
 
