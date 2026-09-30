@@ -661,6 +661,7 @@ package = ["src/btclib_node"]
 testpaths = [
     "tests/check_core_citation_pin_test.py",
     "tests/fuzz_corpus_test.py",
+    "tests/generate_sbom_test.py",
     "tests/interpreters_test.py",
     "tests/pragma_test.py",
     "tests/property_test.py",

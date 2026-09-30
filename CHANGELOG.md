@@ -1276,6 +1276,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   stops** (closes #1506).
 - **A request after that drain begins gets `503` instead** (closes #1515).
 
+### `generate_sbom.py` carries a not-affected list into the bill of materials
+
+- **`generate_sbom.py` reads `.github/vex.toml`**, where the tree lists the
+  vulnerabilities its release is not affected by, into the document's
+  `vulnerabilities`; no list, no key (issue btclib-org/.github#1469).
+
 ### `RpcManager.stop` finishes every reply its loop has begun
 
 - **A reply begun before shutdown, or by the RPC loop itself such as a `401`,
