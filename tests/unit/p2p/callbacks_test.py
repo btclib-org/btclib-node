@@ -134,7 +134,10 @@ from btclib_node.p2p.callbacks import (
     wtxidrelay,
 )
 from btclib_node.p2p.callbacks import block as block_callback
-from btclib_node.p2p.chain_sync import ChainSyncTimeoutState
+from btclib_node.p2p.chain_sync import (
+    ChainSyncTimeoutState,
+    disconnect_if_insufficient_work,
+)
 from btclib_node.p2p.compact_block import compact_block
 from btclib_node.p2p.connection import Connection, PeerStats
 from btclib_node.p2p.headers_sync import HeadersSyncState, State
@@ -6048,6 +6051,37 @@ def test_a_sync_clearing_the_work_indexes_the_whole_chain(
         chain[5].hash,
         chain[8].hash,
     ]
+    node.chainstate.close()
+
+
+def test_a_short_message_releasing_a_full_batch_is_weighed_for_dropping(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core asks whether to drop the peer by the message's `nCount`.
+
+    The short last message of a REDOWNLOAD reaches the target and
+    releases every header held: more than a full batch, from a message
+    short of one. The peer is still asked about, and kept, the released
+    chain having the work.
+    """
+    monkeypatch.setattr(cb, "MAX_HEADERS_RESULTS", 3)
+    asked: list[int] = []
+
+    def recording(node: Any, conn: Any) -> bool:
+        asked.append(conn.id)
+        return disconnect_if_insufficient_work(node, conn)
+
+    monkeypatch.setattr(cb, "disconnect_if_insufficient_work", recording)
+    node = a_low_work_node(tmp_path, minimum_blocks=9, is_initial_block_download=True)
+    chain = generate_random_header_chain(8, RegTest().genesis.hash)
+    peer = a_peer(automatic=True)
+    for _ in range(2):  # PRESYNC, then REDOWNLOAD
+        for start in (0, 3, 6):
+            headers(node, Headers(chain[start : start + 3]).serialize(), peer)
+    assert asked == [peer.id]
+    assert all(h.hash in node.chainstate.block_index.header_dict for h in chain)
+    assert peer.headers_sync is None
+    assert not peer.stopped
     node.chainstate.close()
 
 
