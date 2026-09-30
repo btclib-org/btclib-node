@@ -1216,12 +1216,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   master disagree; a peer-refusal rule may go stricter than the
   release first, where the divergence is argued** (closes #1520).
 
-### Core citations keep `at` on the same line as the sha they cite
-
-- **Every `#`-comment Core citation that wrapped `at` onto the line above
-  `bitcoin/bitcoin@<sha>` now carries it on the sha's own line**, the
-  shape #471 fixed for three (closes #1517).
-
 ### `cli_test.py`'s `datadir` log-line tests compare against the escaped form
 
 - **Three tests build the expected `datadir=` line through
@@ -1239,6 +1233,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A block past Core's `ContextualCheckBlock` that extends the tip is sent as a
   `cmpctblock` to every high-bandwidth peer that has its parent, as
   `NewPoWValidBlock` sends it** (closes #1315).
+
+### Core citations keep `at` on the same line as the sha they cite
+
+- **Every `#`-comment Core citation that wrapped `at` onto the line above
+  `bitcoin/bitcoin@<sha>` now carries it on the sha's own line**, the
+  shape #471 fixed for three (closes #1517).
 
 ## v2026.9.24
 
