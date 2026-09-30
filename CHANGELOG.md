@@ -1399,6 +1399,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   to `getblockchaininfo`'s and `getnetworkinfo`'s own new `warnings` field**
   (closes #1522).
 
+### `release.yml` audits the lock before it publishes
+
+- **The `audit` job runs `uv audit` over what the wheel declares**, by calling
+  btclib-org/.github's `reusable-audit.yml`, and both publish jobs wait for
+  its success (issue btclib-org/.github#1466).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
