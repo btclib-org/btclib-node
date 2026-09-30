@@ -5954,14 +5954,20 @@ def test_headers_released_while_the_sync_goes_on_ask_nothing_more(
     """Core asks for more only `!have_headers_sync`: the sync asks already.
 
     A buffer of one releases headers before the target: the message
-    carried a full batch, so it neither ends header sync nor asks twice.
+    carried a full batch, so it neither ends header sync nor asks twice,
+    and a peer this node dialled is not weighed for dropping, whatever
+    the few headers released weigh.
     """
     monkeypatch.setattr(cb, "MAX_HEADERS_RESULTS", 3)
     node = a_low_work_node(
-        tmp_path, minimum_blocks=10, buffer=1, status=NodeStatus.SyncingHeaders
+        tmp_path,
+        minimum_blocks=10,
+        buffer=1,
+        status=NodeStatus.SyncingHeaders,
+        is_initial_block_download=True,
     )
     chain = generate_random_header_chain(9, RegTest().genesis.hash)
-    peer = a_peer()
+    peer = a_peer(automatic=True)
     for start in (0, 3, 6):
         headers(node, Headers(chain[start : start + 3]).serialize(), peer)
     peer.sent.clear()
@@ -5972,6 +5978,7 @@ def test_headers_released_while_the_sync_goes_on_ask_nothing_more(
     assert request.locator[0] == chain[2].hash
     assert node.status == NodeStatus.SyncingHeaders
     assert peer.headers_sync is not None
+    assert not peer.stopped
     node.chainstate.close()
 
 
