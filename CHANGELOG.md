@@ -1258,6 +1258,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   matching Core's own unnamed threshold, rather than as the tenth is
   appended** (closes #1510).
 
+### The release's attestation bundle is attached as `*.intoto.jsonl`
+
+- **`RELEASING.md`'s commands and `SECURITY.md`'s verification name the bundle
+  `<tag>.intoto.jsonl`** (issue btclib-org/.github#1468):
+  `reusable-github-release.yml` attaches it under that name.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
