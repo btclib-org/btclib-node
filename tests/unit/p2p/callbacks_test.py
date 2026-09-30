@@ -4519,6 +4519,11 @@ def a_filters_node(
             ),
             filter_index=filter_index,
         ),
+        # on by default here: `-peerblockfilters` off is what
+        # `test_a_getcfilters_is_refused_without_peerblockfilters` and
+        # its `get_cfheaders`/`get_cfcheckpt` siblings turn off on
+        # purpose (ISS 1395's own "Background").
+        config=SimpleNamespace(peerblockfilters=True),
         logger=SimpleNamespace(
             info=lambda *a: None, warning=lambda *a: None, debug=lambda *a: None
         ),
@@ -4719,6 +4724,38 @@ def test_a_filter_type_this_node_does_not_serve_is_not_answered() -> None:
     node = a_filters_node()
     peer = a_peer()
     a_getcfilters(node, peer, 0, 1, filter_type=cast("BlockFilterType", 1))
+    assert not peer.sent
+
+
+def test_peerblockfilters_off_answers_none_of_the_three() -> None:
+    """ISS 1395: `-peerblockfilters` off answers none of the three requests.
+
+    Core's `PrepareBlockFilterRequest` folds `peer.m_our_services &
+    NODE_COMPACT_FILTERS` into the same `supported_filter_type` check as
+    the filter type itself (`_filter_range`'s own docstring), so a type
+    this node never advertised is refused the same silent way as one
+    BIP157 has no name for.
+    """
+    node = a_filters_node()
+    node.config.peerblockfilters = False
+    peer = a_peer()
+    a_getcfilters(node, peer, 0, 1)
+    assert not peer.sent
+
+    peer = a_peer()
+    get_cfheaders(
+        node,
+        GetCFHeaders(BlockFilterType.BASIC, 0, (1).to_bytes(32, "big")).serialize(),
+        peer,
+    )
+    assert not peer.sent
+
+    peer = a_peer()
+    get_cfcheckpt(
+        node,
+        GetCFCheckpt(BlockFilterType.BASIC, (1).to_bytes(32, "big")).serialize(),
+        peer,
+    )
     assert not peer.sent
 
 

@@ -195,6 +195,23 @@ def test_listen_false_is_taken_as_given() -> None:
     assert Config(chain="regtest", connect=["127.0.0.1"]).listen is True
 
 
+def test_discover_defaults_to_listen() -> None:
+    """ISS 1330: `discover=None` follows `listen`, Core's own soft-set."""
+    assert Config(chain="regtest", listen=True).discover is True
+    assert Config(chain="regtest", listen=False).discover is False
+
+
+def test_discover_explicit_wins_over_listen() -> None:
+    """An explicit `-discover` always wins, even against `-listen=0`."""
+    assert Config(chain="regtest", listen=False, discover=True).discover is True
+    assert Config(chain="regtest", listen=True, discover=False).discover is False
+
+
+def test_peerblockfilters_defaults_to_false() -> None:
+    """Core's own `DEFAULT_PEERBLOCKFILTERS`."""
+    assert Config(chain="regtest").peerblockfilters is False
+
+
 def test_connect_resolves_to_the_chains_own_default_port() -> None:
     """A spec naming no port falls back to the chain's own P2P port."""
     config = Config(chain="regtest", connect=["127.0.0.1"])

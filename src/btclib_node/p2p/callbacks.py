@@ -1996,8 +1996,16 @@ def _filter_range(
     disconnects instead. Silence is a choice there rather than the
     letter of the specification, and it is the same answer as the other
     two because there is no message defined for saying why.
+
+    `not node.config.peerblockfilters` joins the first count rather than
+    opening a fourth: Core's own `PrepareBlockFilterRequest`
+    (`net_processing.cpp:3265-3273`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag) folds `filter_type == BASIC` and `peer.m_our_services &
+    NODE_COMPACT_FILTERS` into one `supported_filter_type`, and answers
+    a peer that asked for a type this node never advertised the same way
+    it answers one that asked for a type BIP157 has no other name for.
     """
-    if filter_type != BlockFilterType.BASIC:
+    if filter_type != BlockFilterType.BASIC or not node.config.peerblockfilters:
         return None
     stop_height = _height_on_the_active_chain(node, stop_hash)
     if stop_height is None:
@@ -2219,13 +2227,15 @@ def get_cfheaders(node: Node, msg: bytes, conn: Connection) -> None:
 def get_cfcheckpt(node: Node, msg: bytes, conn: Connection) -> None:
     """Answer a BIP157 `getcfcheckpt` with one filter header per checkpoint.
 
-    Silent for an unsupported filter type or an unknown stop hash.
+    Silent for an unsupported filter type, a type not advertised under
+    `-peerblockfilters` (`_filter_range`'s own docstring), or an unknown
+    stop hash.
     """
     request = GetCFCheckpt.parse(msg)
     # not _filter_range: this request carries no start height, a
     # checkpoint chain always beginning at the genesis block, so the two
     # refusals it shares are asked for directly and there is no third
-    if request.filter_type != BlockFilterType.BASIC:
+    if request.filter_type != BlockFilterType.BASIC or not node.config.peerblockfilters:
         return
     stop_height = _height_on_the_active_chain(node, request.stop_hash)
     if stop_height is None:

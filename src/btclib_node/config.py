@@ -389,6 +389,33 @@ class Config:
     # port and starts no `P2pManager` at all, so nothing could dial out
     # either.
     listen: bool
+    # Core's own `-discover`: whether `P2pManager` records this
+    # machine's own interface addresses at all (`p2p.netif.local_addresses`,
+    # btclib-org/btclib-node#1238). `InitParameterInteraction`
+    # (`src/init.cpp:786-817`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    # tag) soft-sets it off under `-proxy`, `-listen=0` or `-externalip`;
+    # this node has neither of the first and the last, so `-listen` is
+    # the only condition `__init__` reads, off `self.listen` rather than
+    # off the `listen` parameter, so that an explicit `-listen`'s own
+    # soft-set (above) is what this one sees. `None` here is the
+    # sentinel `dnsseed` above already uses for a soft default an
+    # explicit value wins over. Discovery runs whether or not `_bind`
+    # itself goes on to succeed, as Core's `Discover()`
+    # (`src/net.cpp:3376-3384`, same sha) does: `AppInitMain` calls it
+    # off `bind_on_any` (`src/init.cpp:2163`, same sha), never off
+    # `fListen`, and this node has no `-bind` to make `bind_on_any`
+    # false.
+    discover: bool
+    # Core's own `-peerblockfilters`: whether `NODE_COMPACT_FILTERS` is
+    # advertised in `version` and whether a BIP157 request is answered
+    # rather than refused (`p2p.connection.local_services`,
+    # `p2p.callbacks._filter_range` and `.get_cfcheckpt`). Core also
+    # requires `-blockfilterindex=basic` (`src/init.cpp:992-998`, same
+    # sha as above) and refuses `-peerblockfilters` without it; this
+    # node keeps the basic filter index unconditionally
+    # (`chainstate.filter_index.FilterIndex`), so that refusal never
+    # applies here.
+    peerblockfilters: bool
     # Core's own `-maxconnections`: the automatic connections this node
     # holds at once, inbound and outbound together. It does not limit a
     # `-connect` or `-addnode` dial, which Core makes as a manual
@@ -462,6 +489,8 @@ class Config:
         addnode: Sequence[str] = (),
         seednode: Sequence[str] = (),
         listen: bool = True,
+        discover: bool | None = None,
+        peerblockfilters: bool = False,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
         dnsseed: bool | None = None,
         forcednsseed: bool = False,
@@ -511,6 +540,8 @@ class Config:
         self.addnode_args = tuple(addnode)
         self.seednode = _resolve_peers(seednode, self.chain.port)
         self.listen = listen
+        self.discover = self.listen if discover is None else discover
+        self.peerblockfilters = peerblockfilters
 
         # `_dnsseed`'s own docstring has `AppInitParameterInteraction`'s
         # order, ahead of the `-maxconnections` refusal below.

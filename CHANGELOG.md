@@ -990,6 +990,44 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   non-continuous batch cost the sender, as does one already invalid from an
   outbound peer; other exceptions keep the peer** (closes #1233).
 
+### A conflicting or unknown `-chain` is refused in `bitcoind`'s own words
+
+- **`-testnet4` is named among the selectors, and the refusal ends in a full
+  stop, as `bitcoind` writes it** (closes #1311).
+
+### A `-datadir` or `-conf` value that normalises to `.` keeps it in a refusal
+
+- **The `.` is joined onto a refusal's path as `AbsPathForConfigVal` joins
+  it, not dropped as `pathlib.Path` drops it** (closes #1273).
+
+### A `NETWORK_ONLY` option set only in the default section refuses to start
+
+- **Off `main`, as `bitcoind` refuses it, rather than being silently
+  dropped** (closes #1327).
+
+### A listener that cannot bind is reported as one, not as a slow one
+
+- **`wait_until_listening` raises `ListenerEndedError` as soon as a manager's
+  thread ends without listening, naming its `bind_error` where it has one**,
+  where it waited out its timeout and reported one (closes #1361).
+
+### `version` signals `NODE_COMPACT_FILTERS` only under `-peerblockfilters`
+
+- **Off by default, as in Core; a `getcfilters`, `getcfheaders` or
+  `getcfcheckpt` this node never advertised is refused the same silent way
+  as a filter type BIP157 has no name for** (closes #1395).
+
+### `getnetworkinfo` answers `localservices` and `localservicesnames`
+
+- **The same services `version` sends, one function answering both**
+  (closes #1394).
+
+### `-discover` decides whether this node records its own addresses
+
+- **Independently of `-listen`, defaulting to it and overridable either
+  way, as Core's `Discover` runs off whether it would bind every interface
+  rather than off `-listen`** (closes #1330).
+
 ### DNS seeding waits, batches by three, and reads `-forcednsseed`
 
 - **A wait, then three seeds at a time, ends early at two full-relay

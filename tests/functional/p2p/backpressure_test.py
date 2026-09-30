@@ -179,7 +179,11 @@ def blocks_of(count: int, payload_bytes: int) -> list[Block]:
 
 @contextmanager
 def a_served_node(tmp_path: Path, chain: list[Block]) -> Iterator[Node]:
-    """Give a started node holding `chain` in its store, stopped on exit."""
+    """Give a started node holding `chain` in its store, stopped on exit.
+
+    `peerblockfilters=True`: `deaf_peer` below feeds a BIP157 test, and
+    `-peerblockfilters` is off by default (ISS 1395).
+    """
     node = Node(
         config=Config(
             chain="regtest",
@@ -187,6 +191,7 @@ def a_served_node(tmp_path: Path, chain: list[Block]) -> Iterator[Node]:
             p2p_port=get_random_port(),
             allow_rpc=False,
             debug=True,
+            peerblockfilters=True,
         )
     )
     node.start()

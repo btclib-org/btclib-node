@@ -235,12 +235,17 @@ def a_node(
     min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
     *,
     heights: dict[bytes, int] | None = None,
+    pruned: bool = False,
+    peerblockfilters: bool = False,
 ) -> Any:
     """Build a `Node` double carrying only what these callbacks read.
 
     A peer table, a mempool, the configured minimum relay feerate, and a
     block index answering the height of each hash in `heights` --
-    nothing else these tests' own callbacks look at.
+    nothing else these tests' own callbacks look at. `pruned` and
+    `peerblockfilters` are `p2p.connection.local_services`'s own, off by
+    default here as `Config`'s own defaults are, for
+    `get_network_info`'s `localservices`/`localservicesnames`.
     """
     known = heights if heights is not None else {}
     return SimpleNamespace(
@@ -257,7 +262,11 @@ def a_node(
             ping_all=lambda: None,
         ),
         mempool=mempool if mempool is not None else Mempool(Logger(debug=True)),
-        config=SimpleNamespace(min_relay_feerate=min_relay_feerate),
+        config=SimpleNamespace(
+            min_relay_feerate=min_relay_feerate,
+            pruned=pruned,
+            peerblockfilters=peerblockfilters,
+        ),
         _accept=accept,
     )
 
@@ -3019,15 +3028,39 @@ def test_a_corrupted_stored_record_is_not_answered_as_the_tx_s_own_refusal(
 
 
 def test_get_network_info_answers_this_node_s_own_subversion_and_protocol() -> None:
-    """`getnetworkinfo` answers `subversion`/`protocolversion`, nothing else.
+    """`getnetworkinfo` answers `subversion`/`protocolversion` and the services.
 
     `connect_nodes`'s own read is `subversion` alone
     (`test_framework.py:568-594`, at bitcoin/bitcoin@bb529657);
     `protocolversion` is included beside it as a real, cheaply-answered
-    constant rather than as decoration.
+    constant rather than as decoration. `NODE_NETWORK_LIMITED |
+    NODE_WITNESS` is `Config`'s own defaults, unpruned and with
+    `-peerblockfilters` off.
     """
     result = get_network_info(a_node(), _CONN, [])
-    assert result == {"subversion": USER_AGENT, "protocolversion": PROTOCOL_VERSION}
+    assert result == {
+        "subversion": USER_AGENT,
+        "protocolversion": PROTOCOL_VERSION,
+        "localservices": f"{ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_NETWORK_LIMITED | ServiceFlags.NODE_WITNESS:016x}",
+        "localservicesnames": ["NETWORK", "WITNESS", "NETWORK_LIMITED"],
+    }
+
+
+def test_get_network_info_s_localservices_follows_pruned_and_peerblockfilters() -> None:
+    """ISS 1394: pruned drops `NODE_NETWORK`, `peerblockfilters` adds a bit.
+
+    The same `local_services` `own_version` sends, so the two never
+    disagree about what this node advertises (ISS 1394's own "Fix").
+    """
+    result = get_network_info(a_node(pruned=True, peerblockfilters=True), _CONN, [])
+    assert result["localservices"] == (
+        f"{ServiceFlags.NODE_NETWORK_LIMITED | ServiceFlags.NODE_WITNESS | ServiceFlags.NODE_COMPACT_FILTERS:016x}"
+    )
+    assert result["localservicesnames"] == [
+        "WITNESS",
+        "COMPACT_FILTERS",
+        "NETWORK_LIMITED",
+    ]
 
 
 def test_addnode_onetry_dials_the_given_address_once() -> None:

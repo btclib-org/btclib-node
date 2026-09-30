@@ -64,7 +64,7 @@ if TYPE_CHECKING:
     from btclib_node import Node
     from btclib_node.p2p.eviction import EvictionCandidate
 from tests import (
-    WaitTimeoutError,
+    ListenerEndedError,
     generate_random_transaction,
     get_random_port,
     log_recorder,
@@ -196,6 +196,7 @@ class AManagerFactory(Protocol):
         addnode_args: Sequence[str] = (),
         seednode: Sequence[tuple[str, int]] = (),
         listen: bool = True,
+        discover: bool | None = None,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
         forcednsseed: bool = False,
         fixed_seeds: bool = True,
@@ -226,6 +227,7 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
         addnode_args: Sequence[str] = (),
         seednode: Sequence[tuple[str, int]] = (),
         listen: bool = True,
+        discover: bool | None = None,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
         forcednsseed: bool = False,
         fixed_seeds: bool = True,
@@ -267,6 +269,10 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
                 addnode_args=tuple(addnode_args),
                 seednode=seednode,
                 listen=listen,
+                # `Config.__init__`'s own sentinel: `discover=None`
+                # follows `listen`, an explicit value winning over it,
+                # exactly as `Config.discover` itself resolves.
+                discover=listen if discover is None else discover,
                 max_connections=max_connections,
                 dnsseed=not connect and max_connections > 0,
                 forcednsseed=forcednsseed,
@@ -1654,7 +1660,11 @@ def test_discover_keeps_each_routable_interface_address_by_host(
 def test_run_discovers_where_it_listens_and_nowhere_else(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, *, listen: bool
 ) -> None:
-    """ISS 1238: `Discover` at start-up, and `-listen=0` turns it off."""
+    """ISS 1238: `Discover` at start-up, `-listen=0` soft-sets it off.
+
+    No `discover=` is given, so `a_manager`'s own sentinel ties it to
+    `listen`, `Config.discover`'s default (ISS 1330).
+    """
     monkeypatch.setattr(
         manager_module, "local_addresses", lambda: [ip_address("1.2.3.4")]
     )
@@ -1665,6 +1675,32 @@ def test_run_discovers_where_it_listens_and_nowhere_else(
         wait_until(manager.loop.is_running)
         expected = {host_key(peer_address("1.2.3.4", port))} if listen else set()
         assert manager.local_addresses == expected
+    finally:
+        manager.stop()
+        manager.join(timeout=10)
+
+
+def test_run_discovers_under_listen_0_discover_1(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1330: an explicit `-discover=1` records addresses under `-listen=0`.
+
+    Core calls `Discover()` off `bind_on_any`, never off `fListen`
+    (`P2pManager._discover`'s own docstring), which is exactly what
+    `-listen=0 -discover=1` could not do before this: `_bind` never
+    runs, so `manager.listening` stays clear, but `local_addresses` is
+    filled all the same.
+    """
+    monkeypatch.setattr(
+        manager_module, "local_addresses", lambda: [ip_address("1.2.3.4")]
+    )
+    port = get_random_port()
+    manager = a_manager(port=port, listen=False, discover=True)
+    try:
+        assert manager.start_listener()
+        wait_until(manager.loop.is_running)
+        assert not manager.listening.is_set()
+        assert manager.local_addresses == {host_key(peer_address("1.2.3.4", port))}
     finally:
         manager.stop()
         manager.join(timeout=10)
@@ -3893,7 +3929,8 @@ def test_a_manager_that_cannot_bind_never_says_it_is_listening(
 
     Set after the bind and not before it, which is the whole of what a
     caller waiting on the event is told: a manager whose bind failed
-    never reaches the line that sets it.
+    never reaches the line that sets it. Its thread ends instead, which
+    `wait_until_listening` reports at once (btclib-org/btclib-node#1361).
     """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
         taken.bind(("", 0))
@@ -3901,8 +3938,9 @@ def test_a_manager_that_cannot_bind_never_says_it_is_listening(
         manager = a_manager(port=taken.getsockname()[1])
         manager.start()
         try:
-            with pytest.raises(WaitTimeoutError, match=r"within 0\.5 seconds"):
-                wait_until_listening(manager, timeout=0.5)
+            with pytest.raises(ListenerEndedError, match="ended without listening"):
+                wait_until_listening(manager, timeout=10)
+            assert not manager.listening.is_set()
         finally:
             manager.stop()
             manager.join(timeout=10)

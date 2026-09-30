@@ -57,6 +57,7 @@ from tests import (
     taken_loopbacks,
     taken_port_bind_error,
     wait_until,
+    wait_until_listening,
 )
 from tests.conftest import node_context, unstarted_node_context
 
@@ -1077,7 +1078,7 @@ def test_a_node_refusing_an_rpc_credential_names_it_in_the_log_alone(
 def test_a_node_whose_rpc_listener_starts_has_no_init_errors(tmp_path: Path) -> None:
     """`init_errors` stays empty, and the node runs, once its listener is up."""
     with node_context(tmp_path, allow_p2p=False) as node:
-        wait_until(node.rpc_manager.listening.is_set)
+        wait_until_listening(node.rpc_manager)
         assert node.is_alive()
     assert node.init_errors == []
 

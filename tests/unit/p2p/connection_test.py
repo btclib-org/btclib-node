@@ -78,7 +78,7 @@ def a_connection(
     logged, warning = log_recorder()
     node = SimpleNamespace(
         chain=RegTest(),
-        config=SimpleNamespace(pruned=False),
+        config=SimpleNamespace(pruned=False, peerblockfilters=False),
         # what `own_version` now carries as `start_height`: 0, matching
         # a fresh `Node`'s own initial value before `main._finalize_fork`
         # ever writes it (`__init__.py`). btclib-org/btclib-node#722
@@ -390,7 +390,7 @@ def a_running_connection(
     node = SimpleNamespace(
         chain=RegTest(),
         status=NodeStatus.Starting,
-        config=SimpleNamespace(pruned=False),
+        config=SimpleNamespace(pruned=False, peerblockfilters=False),
         # `own_version`'s own `start_height` (btclib-org/btclib-node#722),
         # 0 matching a fresh `Node`'s own initial value (`__init__.py`).
         best_height=0,
