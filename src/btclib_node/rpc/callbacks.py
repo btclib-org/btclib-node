@@ -1877,9 +1877,6 @@ def _script_pub_key_dict(script_pub_key: ScriptPubKey) -> dict[str, Any]:
     return out
 
 
-_GETTXOUT_USAGE = 'gettxout "txid" n ( include_mempool )'
-
-
 def _parse_get_tx_out_params(params: list[Any]) -> tuple[bytes, int, bool]:
     """Check `gettxout`'s own three arguments, Core's checks in Core's order.
 
@@ -1894,7 +1891,7 @@ def _parse_get_tx_out_params(params: list[Any]) -> tuple[bytes, int, bool]:
     `type_errors`'s own shape.
     """
     if len(params) < 2:  # noqa: PLR2004
-        raise RpcError(RPCErrorCode.MISC_ERROR, _GETTXOUT_USAGE)
+        raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["gettxout"])
     txid_param, n_param = params[0], params[1]
     mismatches: list[tuple[int, str, object, str]] = []
     if not isinstance(txid_param, str):

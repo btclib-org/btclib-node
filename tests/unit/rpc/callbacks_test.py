@@ -1338,7 +1338,7 @@ def test_get_tx_out_with_too_few_arguments_is_answered_with_the_usage(
     with pytest.raises(RpcError) as raised:
         get_tx_out(node, _CONN, params)
     assert raised.value.code == RPCErrorCode.MISC_ERROR
-    assert raised.value.message == 'gettxout "txid" n ( include_mempool )'
+    assert raised.value.message == HELP_TEXT["gettxout"]
 
 
 def test_get_tx_out_type_checks_txid_and_n_together(
