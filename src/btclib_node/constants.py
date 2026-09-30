@@ -18,6 +18,7 @@ from importlib.metadata import version
 
 __all__ = [
     "CLIENT_NAME",
+    "CLIENT_VERSION",
     "MAX_TIP_AGE",
     "MIN_BLOCKS_TO_KEEP",
     "MIN_PRUNE_TARGET_MIB",
@@ -83,13 +84,16 @@ MIN_PRUNE_TARGET_MIB = 550
 # is a claim, and one that says `unknown` where the version belongs is
 # worse than a node that says why it will not start.
 # btclib-org/btclib-node#580
-USER_AGENT = f"/btclib:{version('btclib-node')}/"
+CLIENT_VERSION = version("btclib-node")
+USER_AGENT = f"/btclib:{CLIENT_VERSION}/"
 
 # Core's own `CLIENT_NAME`, what its refusals name as probably already
 # running where a port or a data directory is taken
 # (`CConnman::BindListenPort`, `src/net.cpp:3356`, and `LockDirectory`,
 # `src/init.cpp`, at bitcoin/bitcoin@9be056a8a7): the program this runs
-# as, the command `pyproject.toml`'s `[project.scripts]` installs.
+# as, the command `pyproject.toml`'s `[project.scripts]` installs. Its
+# own version line, `LogPackageVersion` (`src/init/common.cpp:156`, same
+# sha), is `CLIENT_NAME` and `CLIENT_VERSION` the same way.
 CLIENT_NAME = "btclib-node"
 
 

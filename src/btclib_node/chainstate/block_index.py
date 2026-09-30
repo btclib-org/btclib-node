@@ -191,18 +191,26 @@ def _assert_valid_in_context(  # noqa: PLR0913, PLR0917
     the header itself claims -- and `_validate_header_batch`'s own loop
     has already asked it of `header`, ahead of this.
 
-    The target, the median time and the version are Core's
-    `bad-diffbits`, `time-too-old` and `bad-version`,
-    `BLOCK_INVALID_HEADER`, which Core's `MaybePunishNodeForBlock`
-    answers with `Misbehaving`, so they raise `MisbehavingError`.
+    The target, the median time, the version and BIP94's own timewarp
+    bound are Core's `bad-diffbits`, `time-too-old`, `bad-version` and
+    `time-timewarp-attack`, every one of them `BLOCK_INVALID_HEADER`,
+    which Core's `MaybePunishNodeForBlock` answers with `Misbehaving`, so
+    they raise `MisbehavingError`. `next_bits_required` raises a bare
+    `BTClibValueError` for the timewarp bound, having no
+    `MisbehavingError` of its own to raise -- this tree's exception and
+    not btclib's -- so it is caught and re-raised as one here, the way
+    `_assert_valid_pow` already does for `assert_valid_pow`'s own.
     `time-too-new` is `BLOCK_TIME_FUTURE`, which it does not punish, so
     btclib's own refusal is left as it is
     (`src/validation.cpp` and `src/net_processing.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
     """
-    required = next_bits_required(
-        header, parent, parent_height, parent_of, chain.consensus
-    )
+    try:
+        required = next_bits_required(
+            header, parent, parent_height, parent_of, chain.consensus
+        )
+    except BTClibValueError as e:
+        raise MisbehavingError(str(e)) from e
     if header.bits != required:
         err_msg = f"proof-of-work target not the required one: {header.bits.hex()}"
         err_msg += f" instead of {required.hex()}"

@@ -34,7 +34,7 @@ from btclib_node.dirlock import lock_directories
 from btclib_node.download import DownloadManager
 from btclib_node.exceptions import NodeShutdownTimeoutError, ReimportedMainProcessError
 from btclib_node.interpreter import warm
-from btclib_node.log import Logger
+from btclib_node.log import open_history_log
 from btclib_node.main import update_chain
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import PeerDB
@@ -303,13 +303,16 @@ class Node(threading.Thread):
 
         self.terminate_flag = threading.Event()
         log_path = self.data_dir / config.log_path if config.log_path else None
-        self.logger = Logger(log_path, debug=config.debug)
-        # what Core logs of its settings, in its order, ahead of anything
-        # the node logs: Core's version line, which it logs between the
-        # warnings it buffered and the section warning, is not written
-        # here (#1309)
-        for warning in config.log_warnings:
-            self.logger.warning(warning)
+        # `open_history_log` writes what Core logs ahead of anything this
+        # node logs: the settings' own warnings, its version line, the
+        # section warning, then `LogArgs`'s lines, in that order
+        self.logger = open_history_log(
+            log_path,
+            debug=config.debug,
+            log_warnings=config.log_warnings,
+            section_warning=config.section_warning,
+            config_args=config.config_args,
+        )
 
         # A `getcfilters` answer `p2p.callbacks.get_cfilters` could not
         # finish scheduling under its own pacing bound, keyed by

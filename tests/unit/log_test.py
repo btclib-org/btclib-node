@@ -83,10 +83,36 @@ def test_a_line_carries_its_level_as_core_s_log_does(tmp_path: Path) -> None:
     logger.error("e")
     logger.critical("c")
     logger.close()
-    messages = [
-        line.split(" ", 1)[1] for line in path.read_text(encoding="utf-8").splitlines()
-    ]
+    # the five blank lines `Logger.__init__` opens the file on (#1309)
+    # are not a record this test is about
+    lines = path.read_text(encoding="utf-8").splitlines()[5:]
+    messages = [line.split(" ", 1)[1] for line in lines]
     assert messages == ["[debug] d", "i", "[warning] w", "[error] e", "[error] c"]
+
+
+def test_a_file_log_opens_on_five_blank_lines(tmp_path: Path) -> None:
+    """ISS 1309: `StartLogging`'s five blank lines, absent from a stream.
+
+    `src/logging.cpp:72`, at bitcoin/bitcoin@9be056a8a7: written to the
+    file the moment it opens, marking one execution's record off from
+    the last one's in a file appended across restarts.
+    """
+    path = tmp_path / "history.log"
+    logger = Logger(path)
+    logger.info("i")
+    logger.close()
+    assert path.read_text(encoding="utf-8").splitlines()[:5] == [""] * 5
+
+
+def test_a_stream_log_opens_on_no_blank_line(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A stream has no earlier execution to mark off from this one."""
+    logger = Logger()
+    logger.info("i")
+    logger.close()
+    (line,) = capsys.readouterr().err.splitlines()
+    assert line.endswith(" i")
 
 
 @pytest.mark.skipif(not hasattr(time, "tzset"), reason="no time.tzset on Windows")

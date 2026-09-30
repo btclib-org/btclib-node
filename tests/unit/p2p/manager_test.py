@@ -3331,21 +3331,32 @@ def test_async_connect_host_drops_an_internal_answer_before_counting_to_256(
 
     `LookupIntern` drops an `IsInternal` answer at collection time and
     never counts it toward `nMaxSolutions` (`src/netbase.cpp:144-168`,
-    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). An internal answer
-    ahead of 257 valid ones, capping at the raw list rather than
-    filtering first, would leave only 255 valid candidates behind it
-    inside the first 256 and an internal one at the front -- aborting
-    the whole attempt on the first pass's own `is_valid` check, the
-    same shape the invalid-candidate test above already proves aborts
-    everything. Filtering first instead leaves 256 valid candidates,
-    none of them ever reaching that check.
+    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). 257 raw answers: one
+    internal, then 256 valid -- `dial` connects on the last of those 256
+    alone, refusing every one ahead of it, so a dial only ever reaches
+    it by trying every other valid candidate first and finding none of
+    them connect, the real loop below and not a shortcut through it.
+
+    Capping the raw list before filtering, rather than after, drops
+    that last valid answer instead of the internal one -- it is the
+    257th raw entry, one past a 256-wide cap taken before the internal
+    one is removed from the count -- leaving 255 valid candidates, all
+    of which `dial` refuses, so nothing connects. Filtering first
+    leaves the internal one out of the count instead, and all 256 valid
+    candidates, that last one included, get their turn.
     """
     ours, theirs = socket.socketpair()
+    port = 18444
+    valid_answers = [f"10.0.{i // 256}.{i % 256}" for i in range(256)]
+    survivor = peer_address(valid_answers[-1], port)
+    tried: list[NetworkAddressV2] = []
 
-    async def connects(address: NetworkAddressV2) -> socket.socket:
-        return ours
+    async def connects(address: NetworkAddressV2) -> socket.socket | None:
+        tried.append(address)
+        if address == survivor:
+            return ours
+        return None
 
-    valid_answers = [f"10.0.{i // 256}.{i % 256}" for i in range(257)]
     monkeypatch.setattr(secrets, "SystemRandom", _NoShuffle)
     monkeypatch.setattr(
         asyncio,
@@ -3358,7 +3369,8 @@ def test_async_connect_host_drops_an_internal_answer_before_counting_to_256(
     monkeypatch.setattr(
         manager, "create_connection", lambda *args, **kwargs: made.append(kwargs)
     )
-    asyncio.run(manager.async_connect_host("seed.example", 18444))
+    asyncio.run(manager.async_connect_host("seed.example", port))
+    assert tried == [peer_address(ip, port) for ip in valid_answers]
     assert made == [
         {
             "inbound": False,

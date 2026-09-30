@@ -37,6 +37,7 @@ __all__ = [
     "EvictionCandidate",
     "Network",
     "get_network",
+    "is_internal",
     "is_local",
     "is_routable",
     "is_valid",
