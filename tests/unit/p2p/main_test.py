@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from btclib.exceptions import BTClibValueError
 from btclib.p2p.addrv2 import NetworkAddressV2
+from btclib.p2p.compact_blocks import SendCmpct
 from btclib.p2p.data import TxPayload as TxMsg
 from btclib.p2p.limits import MAX_INV_SZ
 from btclib.p2p.reject import Reject, RejectCode
@@ -434,6 +435,29 @@ def test_a_sendheaders_ahead_of_verack_is_recorded_once_version_is_in(
     conn.prefers_headers = False
     handle_p2p(node)
     assert conn.prefers_headers is versioned
+    assert not stopped
+    assert not node.p2p_manager.discouraged
+
+
+@pytest.mark.parametrize("versioned", [True, False])
+def test_a_sendcmpct_ahead_of_verack_is_recorded_once_version_is_in(
+    versioned: bool,  # noqa: FBT001
+) -> None:
+    """A `sendcmpct` between `version` and `verack` is recorded, as in Core.
+
+    Core's `ProcessMessage` handles `sendcmpct` ahead of its "Unsupported
+    message prior to verack" return, as it does `sendheaders`
+    (btclib-org/btclib-node#1223).
+    """
+    payload = SendCmpct(announce=True, version=2).serialize()
+    node, stopped = make_node(
+        "messages", ("sendcmpct", payload, 0, 1, 0.0), status=P2pConnStatus.Open
+    )
+    conn = node.p2p_manager.connections[0]
+    conn.version_message = object() if versioned else None
+    conn.requested_hb_cmpctblocks = False
+    handle_p2p(node)
+    assert conn.requested_hb_cmpctblocks is versioned
     assert not stopped
     assert not node.p2p_manager.discouraged
 

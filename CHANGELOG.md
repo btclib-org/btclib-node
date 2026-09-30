@@ -1192,12 +1192,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   milliseconds**, as Core's own `stop <ms>` does, while the node starts
   shutting down at once (closes #1467).
 
-### `cli_test.py`'s `datadir` log-line tests compare against the escaped form
-
-- **Three tests build the expected `datadir=` line through
-  `_setting_to_write_str`, or a hand-written literal, matching Core's own
-  `json_escape`**, which doubles a backslash (closes #1509).
-
 ### The OpenSSF Baseline badge
 
 - **`README.md`'s badge row ends with the OpenSSF Baseline badge**,
@@ -1221,6 +1215,24 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **Consensus and relay follow the pinned Core release where it and
   master disagree; a peer-refusal rule may go stricter than the
   release first, where the divergence is argued** (closes #1520).
+
+### `cli_test.py`'s `datadir` log-line tests compare against the escaped form
+
+- **Three tests build the expected `datadir=` line through
+  `_setting_to_write_str`, or a hand-written literal, matching Core's own
+  `json_escape`**, which doubles a backslash (closes #1509).
+
+### A high-bandwidth peer is announced a new block as `cmpctblock`, as in Core
+
+- **A peer's `sendcmpct` of version 2 is recorded, and a peer that chose this
+  node as high-bandwidth is sent a lone new block as a `cmpctblock` and reported
+  in `getpeerinfo`'s `bip152_hb_from`** (closes #1223).
+
+### A new block reaches a high-bandwidth peer before it is connected, as in Core
+
+- **A block past Core's `ContextualCheckBlock` that extends the tip is sent as a
+  `cmpctblock` to every high-bandwidth peer that has its parent, as
+  `NewPoWValidBlock` sends it** (closes #1315).
 
 ### A low-work headers chain is synced twice before any of it is stored
 
