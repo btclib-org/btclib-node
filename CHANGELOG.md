@@ -851,29 +851,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A host held on any port is not dialled again** (closes #1304), and an
   inbound peer's address keeps the port it connected from.
 
-### `gettxout` answers an outpoint's own unspent coin, or null
-
-- **`gettxout` reads the confirmed UTXO set, `include_mempool`'s mempool
-  overlay included, and answers Core's own shape** (closes #1388).
-
-### `getchaintips` answers every known tip, each with its status
-
-- **`getchaintips` answers every header this node has seen with no child
-  building on it, plus the active tip, each with its height, branch
-  length and Core's own status vocabulary** (closes #1393).
-
-### `getblock` answers its own default verbosity, and verbosity 2
-
-- **`getblock` answers verbosity 1 and 2 in Core's own shape**, refusing
-  only verbosity 3, which needs this node's own undo data threaded
-  through and is left to issue #1446 (closes #1428).
-
-### `gettxoutsetinfo` defaults to `muhash`, not Core's `hash_serialized_3`
-
-- **A bare `gettxoutsetinfo` answers `muhash`**, the one hash type this
-  tree keeps running, rather than refusing outright on Core's own
-  default (closes #1387).
-
 ### The mempool refuses a second spend of one outpoint, and a block evicts it
 
 - **A conflicting candidate is refused, in Core's words where its fee rules
@@ -961,10 +938,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   and a served command's own full help text with one, or Core's own
   "unknown command" for one it does not serve** (closes #1405).
 
-### RPC hash arguments refuse the wrong length, Core's own `ParseHashV` check
-
-- **A hex `txid` or `blockhash` of the wrong length is refused**, rather
-  than silently decoding to a hash nothing then finds (closes #1457).
 ### A refused `stop` no longer shuts the node down
 
 - **`rpc.main` calls `node.stop()` only where the `stop` reply carries
@@ -1066,6 +1039,34 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **DNS seeding waits for two full-relay peers or thirty seconds,
   whichever is first, wherever `-seednode` is given** (closes #1461),
   as Core's `ThreadDNSAddressSeed` does.
+
+### `gettxoutsetinfo` defaults to `muhash`, not Core's `hash_serialized_3`
+
+- **A bare `gettxoutsetinfo` answers `muhash`**, the one hash type this
+  tree keeps running, rather than refusing outright on Core's own
+  default (closes #1387).
+
+### `gettxout` answers an outpoint's own unspent coin, or null
+
+- **`gettxout` reads the confirmed UTXO set, `include_mempool`'s mempool
+  overlay included, and answers Core's own shape** (closes #1388).
+
+### `getchaintips` answers every known tip, each with its status
+
+- **`getchaintips` answers every header this node has seen with no child
+  building on it, plus the active tip, each with its height, branch
+  length and Core's own status vocabulary** (closes #1393).
+
+### `getblock` answers its own default verbosity, and verbosity 2
+
+- **`getblock` answers verbosity 1 and 2 in Core's own shape**, refusing
+  only verbosity 3, which needs this node's own undo data threaded
+  through and is left to issue #1446 (closes #1428).
+
+### RPC hash arguments refuse the wrong length, Core's own `ParseHashV` check
+
+- **A hex `txid` or `blockhash` of the wrong length is refused**, rather
+  than silently decoding to a hash nothing then finds (closes #1457).
 
 ## v2026.9.24
 
