@@ -141,7 +141,7 @@ _KERNEL_BUFFER_ALLOWANCE = 4_000_000
 # bound *before* popping the next item, so once `queued_send_bytes` reaches
 # `MAX_GETDATA_INFLIGHT_BYTES` the rest of `items` -- connected or not --
 # is left where it was, never reaching `_block_request_allowed`. A block
-# not on the active chain is answered `notfound` and adds nothing, so the
+# not on the active chain is skipped silently and adds nothing, so the
 # bytes served are the connected blocks' own, and they must exceed that
 # bound plus whatever the buffers swallow. A block message is a little
 # over `_SERVED_BLOCK_BYTES`, so dividing by that size is the most
