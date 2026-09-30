@@ -785,7 +785,9 @@ class BlockIndex:
                 sorted(self.header_dict, key=lambda h: self.header_dict[h].index)
             )
 
-    def _shares_lineage(self, other_hash: bytes, target: bytes, target_height: int) -> bool:
+    def _shares_lineage(
+        self, other_hash: bytes, target: bytes, target_height: int
+    ) -> bool:
         """Whether `other_hash` is `target`'s own ancestor, descendant or self.
 
         Core's `ResetBlockFailureFlags` own condition
@@ -804,7 +806,7 @@ class BlockIndex:
         )
 
     def reconsider(self, block_hash: bytes) -> None:
-        """Undo `invalidate`'s own mark on `block_hash`, its lineage, then rebuild.
+        """Undo `invalidate`'s mark on `block_hash`'s own lineage, then rebuild.
 
         Core's own `Chainstate::ResetBlockFailureFlags` (`src/validation
         .cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): every header

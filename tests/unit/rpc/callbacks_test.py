@@ -4587,7 +4587,7 @@ def test_invalidate_block_refuses_a_blockhash_of_the_wrong_json_type() -> None:
 def test_invalidate_block_refuses_an_unknown_hash(
     regtest_node: Callable[..., Node],
 ) -> None:
-    """A hash this index has never indexed answers Core's `"Block not found"`."""
+    """An unindexed hash answers Core's own `"Block not found"`."""
     node = regtest_node()
     with pytest.raises(RpcError) as raised:
         invalidate_block(node, _CONN, [(b"\x11" * 32).hex()])
@@ -4610,7 +4610,7 @@ def test_invalidate_block_on_genesis_is_a_silent_no_op(
     block_index = node.chainstate.block_index
     tip_before = block_index.active_chain[-1]
 
-    assert invalidate_block(node, _CONN, [node.chain.genesis.hash.hex()]) is None
+    invalidate_block(node, _CONN, [node.chain.genesis.hash.hex()])
 
     assert block_index.active_chain[-1] == tip_before
     assert block_index.get_block_info(node.chain.genesis.hash).status == (
@@ -4629,7 +4629,7 @@ def test_invalidate_block_disconnects_the_tip(
     tip_hash = chain[-1].header.hash
     assert block_index.active_chain[-1] == tip_hash
 
-    assert invalidate_block(node, _CONN, [tip_hash.hex()]) is None
+    invalidate_block(node, _CONN, [tip_hash.hex()])
 
     assert block_index.active_chain[-1] == chain[-2].header.hash
     assert block_index.get_block_info(tip_hash).status == BlockStatus.invalid
@@ -4638,7 +4638,7 @@ def test_invalidate_block_disconnects_the_tip(
 def test_invalidate_block_on_a_mid_chain_block_disconnects_down_to_its_parent(
     regtest_node: Callable[..., Node],
 ) -> None:
-    """Invalidating an ancestor deep in the chain disconnects everything above it.
+    """Invalidating a deep ancestor disconnects everything above it.
 
     Measured against a real regtest bitcoind v31.1.0 on a five-block
     chain: invalidating the block at height 3 leaves the tip at height 2
@@ -4651,7 +4651,7 @@ def test_invalidate_block_on_a_mid_chain_block_disconnects_down_to_its_parent(
     # chain[2] is height 3: one-indexed, genesis is active_chain[0]
     target = chain[2].header.hash
 
-    assert invalidate_block(node, _CONN, [target.hex()]) is None
+    invalidate_block(node, _CONN, [target.hex()])
 
     assert block_index.active_chain[-1] == chain[1].header.hash
     assert len(block_index.active_chain) == 3
@@ -4686,9 +4686,61 @@ def test_invalidate_block_returns_a_disconnected_transaction_to_the_mempool(
     connect(node, [*common, tip])
     assert not node.mempool.contains_tx(resurrectable)
 
-    assert invalidate_block(node, _CONN, [tip.header.hash.hex()]) is None
+    invalidate_block(node, _CONN, [tip.header.hash.hex()])
 
     assert node.mempool.contains_tx(resurrectable)
+
+
+def test_invalidate_block_on_an_off_chain_candidate_leaves_the_active_chain_be(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Invalidating a header never on the active chain moves no block at all.
+
+    Core's own `pindex_was_in_chain` branch of `InvalidateBlock`: marking
+    an out-of-chain candidate bad still runs `ActivateBestChain`
+    afterward, but there is nothing to disconnect, and nothing here does.
+    """
+    node = regtest_node()
+    heavier = generate_random_chain(3, node.chain.genesis.hash)
+    connect(node, heavier)
+    lighter = generate_random_chain(1, node.chain.genesis.hash)
+    connect(node, lighter)
+    block_index = node.chainstate.block_index
+    tip_before = block_index.active_chain[:]
+    off_chain = lighter[0].header.hash
+    assert off_chain not in block_index.active_chain
+
+    invalidate_block(node, _CONN, [off_chain.hex()])
+
+    assert block_index.active_chain == tip_before
+    assert block_index.get_block_info(off_chain).status == BlockStatus.invalid
+
+
+def test_invalidate_block_stops_the_node_where_the_disconnect_finds_storage_unsafe(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure disconnecting the tip propagates and stops `Node`, unswallowed.
+
+    The same shape `test_submit_block_stops_the_node_where_update_chain_
+    finds_storage_unsafe` already covers for `update_chain`'s own trial:
+    `main.invalidate_chain`'s own disconnect is not inside that trial, so
+    it needs its own `except Exception: node.terminate_flag.set(); raise`,
+    argued in its own docstring, and proven here the same way.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, chain)
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        err_msg = "boom"
+        raise ChainstateInconsistencyError(err_msg)
+
+    monkeypatch.setattr(node.chainstate.utxo_index, "apply_rev_block", boom)
+
+    assert not node.terminate_flag.is_set()
+    with pytest.raises(ChainstateInconsistencyError, match="boom"):
+        invalidate_block(node, _CONN, [chain[-1].header.hash.hex()])
+    assert node.terminate_flag.is_set()
 
 
 def test_reconsider_block_with_no_arguments_is_answered_with_the_usage() -> None:
@@ -4709,7 +4761,7 @@ def test_reconsider_block_refuses_a_blockhash_of_the_wrong_json_type() -> None:
 def test_reconsider_block_refuses_an_unknown_hash(
     regtest_node: Callable[..., Node],
 ) -> None:
-    """A hash this index has never indexed answers Core's `"Block not found"`."""
+    """An unindexed hash answers Core's own `"Block not found"`."""
     node = regtest_node()
     with pytest.raises(RpcError) as raised:
         reconsider_block(node, _CONN, [(b"\x11" * 32).hex()])
@@ -4727,7 +4779,7 @@ def test_reconsider_block_on_a_block_never_invalidated_is_a_no_op(
     block_index = node.chainstate.block_index
     tip_before = block_index.active_chain[-1]
 
-    assert reconsider_block(node, _CONN, [chain[0].header.hash.hex()]) is None
+    reconsider_block(node, _CONN, [chain[0].header.hash.hex()])
 
     assert block_index.active_chain[-1] == tip_before
 
@@ -4749,7 +4801,7 @@ def test_reconsider_block_undoes_invalidate_block(
     invalidate_block(node, _CONN, [tip_hash.hex()])
     assert block_index.active_chain[-1] != tip_hash
 
-    assert reconsider_block(node, _CONN, [tip_hash.hex()]) is None
+    reconsider_block(node, _CONN, [tip_hash.hex()])
 
     assert block_index.active_chain[-1] == tip_hash
     assert block_index.get_block_info(tip_hash).status == BlockStatus.in_active_chain
@@ -4775,7 +4827,7 @@ def test_reconsider_block_clears_an_invalidated_ancestor_s_whole_lineage(
             BlockStatus.invalid
         )
 
-    assert reconsider_block(node, _CONN, [target.hex()]) is None
+    reconsider_block(node, _CONN, [target.hex()])
 
     assert block_index.active_chain[-1] == chain[-1].header.hash
     for block in chain:
@@ -4787,7 +4839,7 @@ def test_reconsider_block_clears_an_invalidated_ancestor_s_whole_lineage(
 def test_invalidate_block_reconnects_a_header_only_branch_it_makes_competitive(
     regtest_node: Callable[..., Node],
 ) -> None:
-    """A branch never added as a candidate for lack of work is found once one is.
+    """A branch never made a candidate for lack of work is found once one is.
 
     `heavier` connects first, so `lighter`'s own headers -- added while
     `heavier` is already ahead -- are indexed but never once appended to
@@ -4808,9 +4860,11 @@ def test_invalidate_block_reconnects_a_header_only_branch_it_makes_competitive(
     connect(node, lighter)
     block_index = node.chainstate.block_index
     assert block_index.active_chain[-1] == heavier[-1].header.hash
-    assert not any(h == lighter[-1].header.hash for h, _ in block_index.block_candidates)
+    assert not any(
+        h == lighter[-1].header.hash for h, _ in block_index.block_candidates
+    )
 
-    assert invalidate_block(node, _CONN, [heavier[1].header.hash.hex()]) is None
+    invalidate_block(node, _CONN, [heavier[1].header.hash.hex()])
 
     assert block_index.active_chain[-1] == lighter[-1].header.hash
     assert block_index.active_chain[1:] == [b.header.hash for b in lighter]

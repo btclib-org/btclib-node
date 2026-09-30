@@ -1302,13 +1302,9 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 ### `invalidateblock` and `reconsiderblock` are served
 
-- **`invalidateblock "blockhash"` marks a block and everything built on it
-  invalid, forces the active chain off it even where nothing yet outweighs
-  its own work, and returns what a disconnected block leaves back to the
-  mempool, as Core's `InvalidateBlock` does** (closes #1480).
-- **`reconsiderblock "blockhash"` clears that mark from the block, its
-  ancestors and its descendants, and retries the chain, as Core's
-  `ReconsiderBlock` does** (closes #1536).
+- **`invalidateblock` marks a block invalid, forces the chain off it, and
+  returns its transactions to the mempool** (closes #1480).
+- **`reconsiderblock` undoes that mark and retries the chain** (closes #1536).
 
 ## v2026.9.24
 
