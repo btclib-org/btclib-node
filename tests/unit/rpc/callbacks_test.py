@@ -4911,6 +4911,96 @@ def test_invalidate_block_reconnects_a_branch_it_was_previously_on(
         )
 
 
+def test_invalidate_block_drops_a_disconnected_transaction_past_the_ten_block_cap(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Past Core's own 10-block cap, a disconnected transaction is dropped.
+
+    `Chainstate::InvalidateBlock`'s own per-block counter
+    (`++disconnected <= 10`, `src/validation.cpp:3611` and `:3637`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) stops re-adding once the
+    eleventh block disconnects; `_reconcile_mempool_for_reorg`'s own
+    `readd_limit` is that same cap, counted tip-first the way Core's own
+    disconnect loop counts it. The dropped transaction's own mempool
+    child -- never confirmed, so the cap itself never touches it -- is
+    evicted with it, `Mempool.remove_dependents` answering Core's own
+    `removeRecursive` for a transaction that "doesn't make it in to the
+    mempool" (`MaybeUpdateMempoolForReorg`, same file).
+    btclib-org/btclib-node#1570
+    """
+    node = regtest_node()
+    common = generate_random_chain(COINBASE_MATURITY, node.chain.genesis.hash)
+    # Built by hand rather than through `generate_random_chain` past
+    # `COINBASE_MATURITY`: that helper's own daisy chain would have a
+    # later block spend `capped_tx`'s own output, leaving nothing here
+    # for `child` to spend. `capped` is the block the cap drops --
+    # eleven blocks disconnect above and including it, so tip-first it
+    # is the eleventh, past `_INVALIDATE_MEMPOOL_READD_LIMIT` -- and the
+    # ten blocks above it carry nothing but their own coinbase, so
+    # `capped_tx`'s own output stays unspent until `child` spends it.
+    capped_tx = generate_random_transaction(common[0].transactions[0].id)
+    prev_hash = common[-1].header.hash
+    extra_blocks = []
+    for offset in range(11):
+        height = len(common) + 1 + offset
+        txs = [generate_coinbase(height=height)]
+        if offset == 0:
+            txs.append(capped_tx)
+        block = build_block(prev_hash, txs, height - 1)
+        extra_blocks.append(block)
+        prev_hash = block.header.hash
+    chain = [*common, *extra_blocks]
+    connect(node, chain)
+    capped = extra_blocks[0]
+    child = generate_random_transaction(capped_tx.id, value=capped_tx.vout[0].value)
+    fee, vsize = verify_mempool_acceptance(node, child, bypass_limits=True)
+    node.mempool.add_tx(child, fee, vsize)
+    assert node.mempool.contains_tx(child)
+
+    invalidate_block(node, _CONN, [capped.header.hash.hex()])
+
+    assert not node.mempool.contains_tx(capped_tx)
+    assert not node.mempool.contains_tx(child)
+
+
+def test_invalidate_block_evicts_a_mempool_transaction_a_disconnect_makes_immature(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A disconnect shortening the chain can make a held spend immature again.
+
+    Core's own `removeForReorg`, run through `filter_final_and_mature`
+    every time `MaybeUpdateMempoolForReorg` is called
+    (`src/validation.cpp:350-391`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag): a coinbase spend mature against one tip can be immature
+    again against an earlier one a disconnect reveals.
+    `main._still_final_and_mature`'s own docstring is where this tree's
+    match is argued. btclib-org/btclib-node#1570
+    """
+    node = regtest_node()
+    # One short of COINBASE_MATURITY: with `extra` connected, the next
+    # spend_height is COINBASE_MATURITY + 2 and common[0]'s own coinbase
+    # (height 1) is exactly COINBASE_MATURITY deep -- mature, on the
+    # boundary `test_invalidate_block_returns_a_disconnected_transaction_
+    # to_the_mempool` above also measures. Once `extra` disconnects
+    # again, the next spend_height drops to COINBASE_MATURITY + 1 and
+    # the same coin is only COINBASE_MATURITY - 1 deep: immature.
+    common = generate_random_chain(COINBASE_MATURITY - 1, node.chain.genesis.hash)
+    connect(node, common)
+    extra = build_block(
+        common[-1].header.hash,
+        [generate_coinbase(height=len(common) + 1)],
+        len(common),
+    )
+    connect(node, [extra])
+    mature_spend = generate_random_transaction(common[0].transactions[0].id)
+    fee, vsize = verify_mempool_acceptance(node, mature_spend, bypass_limits=True)
+    node.mempool.add_tx(mature_spend, fee, vsize, height=len(common) + 1)
+    assert node.mempool.contains_tx(mature_spend)
+
+    invalidate_block(node, _CONN, [extra.header.hash.hex()])
+
+    assert not node.mempool.contains_tx(mature_spend)
+
 
 def a_block_claiming_an_easier_target_than_the_chain_allows(block: Block) -> Block:
     """Rebuild `block` with `bits` set past regtest's own proof-of-work limit.

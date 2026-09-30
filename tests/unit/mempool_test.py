@@ -909,6 +909,46 @@ def test_a_confirmed_spend_evicts_its_conflicts_and_their_descendants() -> None:
     assert set(mempool.outpoint_spender) == {(unrelated.vin[0].prev_out.tx_id, 0)}
 
 
+def test_remove_dependents_walks_a_chain_of_held_spenders() -> None:
+    """`remove_dependents` walks a chain, not only a spender directly held.
+
+    `tx` itself is never a member here -- the case
+    `main._reconcile_mempool_for_reorg` calls it for, a disconnected
+    transaction past the 10-block cap and never re-added -- so `child`
+    and `grandchild`, both already held, are what it has to find through
+    `spent_by` alone. btclib-org/btclib-node#1570
+    """
+    mempool = Mempool(Logger(debug=True))
+    dropped = a_spend_of([(secrets.token_bytes(32), 0)])
+    child = a_spend_of([(dropped.id, 0)])
+    grandchild = a_spend_of([(child.id, 0)])
+    assert mempool.add_tx(child, 1000)
+    assert mempool.add_tx(grandchild, 1000)
+
+    mempool.remove_dependents(dropped)
+
+    assert not mempool.contains_tx(child)
+    assert not mempool.contains_tx(grandchild)
+    assert mempool.size == 0
+
+
+def test_remove_with_descendants_on_an_absent_wtxid_is_a_no_op() -> None:
+    """`remove_with_descendants` of a wtxid never held changes nothing.
+
+    `main._evict_immature_or_nonfinal`'s own snapshot-then-skip guard
+    covers the case a descendant's own removal already popped a later
+    wtxid in the same pass; this is the same absence, reached directly.
+    """
+    mempool = Mempool(Logger(debug=True))
+    held = a_spend_of([(secrets.token_bytes(32), 0)])
+    assert mempool.add_tx(held, 1000)
+
+    mempool.remove_with_descendants(secrets.token_bytes(32))
+
+    assert mempool.contains_tx(held)
+    assert mempool.size == 1
+
+
 def test_an_entry_is_counted_and_priced_by_the_vsize_it_came_with() -> None:
     """The sigop-adjusted vsize, not the weight's, is the entry's size.
 

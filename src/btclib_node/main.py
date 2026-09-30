@@ -333,14 +333,47 @@ def _rev_blocks_to_remove(node: Node, to_remove_hash: list[bytes]) -> list[RevBl
     return to_remove
 
 
+# Core's own literal, `Chainstate::InvalidateBlock`'s own per-block
+# counter (`int disconnected = 0; ... (++disconnected <= 10) && ret`,
+# `src/validation.cpp:3611` and `:3637`, at bitcoin/bitcoin@9be056a8a7,
+# the v31.1 tag), named here since `_reconcile_mempool_for_reorg` below
+# takes it as a parameter rather than as a literal a reader would have
+# to trace back to this same citation a second time.
+_INVALIDATE_MEMPOOL_READD_LIMIT = 10
+
+
 # _after_tip_change's own step, once a fork has actually connected:
 # every abandoned block's own transactions rejoin the mempool where they
 # still verify, and every newly-connected block's own transactions
 # leave it, mirroring what connecting them to the chain already made
 # true of the UTXO set they are checked against.
 def _reconcile_mempool_for_reorg(
-    node: Node, to_remove: list[RevBlock], to_add: list[Block]
+    node: Node,
+    to_remove: list[RevBlock],
+    to_add: list[Block],
+    *,
+    readd_limit: int | None = None,
 ) -> None:
+    """Re-add, drop or evict every transaction a disconnect or connect touches.
+
+    `readd_limit` is `None` for `_after_tip_change`'s own ordinary-reorg
+    call, and `_INVALIDATE_MEMPOOL_READD_LIMIT` for `invalidate_chain`'s
+    own deep-invalidation call below -- the one place Core's own
+    `(++disconnected <= 10) && ret` gate applies, since it counts
+    `Chainstate::InvalidateBlock`'s own per-block disconnect loop and
+    not `ActivateBestChainStep`'s ordinary one, which always passes
+    `true` for its own single end-of-reorg call
+    (`src/validation.cpp:3314`, same tag). `to_remove` already carries
+    Core's own disconnectpool order, tip-first -- the one
+    `_rev_blocks_to_remove` builds and `invalidate_chain` passes
+    straight through -- so `readd_ok` below counts against that order
+    directly, ahead of the `reversed` loop that walks it oldest-first
+    for re-add.
+    """
+    readd_ok = {
+        rev_block.hash: readd_limit is None or i < readd_limit
+        for i, rev_block in enumerate(to_remove)
+    }
     # oldest-abandoned-block first, the opposite of to_remove's own
     # tip-first order above: a transaction from a later abandoned
     # block may spend an output only an earlier abandoned block's
@@ -364,6 +397,15 @@ def _reconcile_mempool_for_reorg(
             # entrant is checked before it is trusted, and this is
             # the one path into the mempool that skipped that.
             # btclib-org/btclib-node#85
+            if not readd_ok[rev_block.hash]:
+                # Past Core's own 10-block cap: not attempted at all --
+                # `fAddToMempool=false` -- and whatever already depends
+                # on it in the mempool is now an orphan, exactly the
+                # case `MaybeUpdateMempoolForReorg`'s own `removeRecursive`
+                # answers for a transaction that "doesn't make it in to
+                # the mempool" (same citation as `bypass_limits` below).
+                node.mempool.remove_dependents(tx)
+                continue
             try:
                 # Core's own `bypass_limits=true` for this re-add
                 # (`MaybeUpdateMempoolForReorg`, `src/validation.cpp`,
@@ -397,6 +439,104 @@ def _reconcile_mempool_for_reorg(
         # runs once per transaction rather than once per block.
         # btclib-org/btclib-node#294
         node.mempool.note_block_connected()
+    if to_remove:
+        # Core's own `removeForReorg` runs every time
+        # `MaybeUpdateMempoolForReorg` does, whether or not
+        # `fAddToMempool` holds (same citation as `_still_final_and_mature`
+        # below) -- unlike the re-add above, gated on `to_remove` alone
+        # rather than on `readd_limit`. Not run on a pure extend
+        # (`to_remove` empty): the chain's own height and MTP only ever
+        # move forward there, so finality, sequence locks and coinbase
+        # maturity can only ever become easier to satisfy, never harder
+        # -- Core's own `ConnectTip` never calls this path either,
+        # running `removeForBlock` alone. btclib-org/btclib-node#1570
+        _evict_immature_or_nonfinal(node)
+
+
+def _still_final_and_mature(node: Node, tx: Tx) -> bool:
+    """Whether `tx`, already held, is still final and mature against the tip.
+
+    Core's own `filter_final_and_mature`, the predicate
+    `MaybeUpdateMempoolForReorg`'s own `removeForReorg` call filters the
+    whole mempool by, every time it runs (`src/validation.cpp:350-391`,
+    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): finality
+    (`CheckFinalTxAtTip`), BIP68 sequence locks
+    (`CheckSequenceLocksAtTip`) and, for a coinbase-spending input,
+    `COINBASE_MATURITY` -- all three re-checked against the chain's own
+    tip as it stands now, once a disconnect can have moved it backward
+    under a transaction that was already held. `verify_mempool_acceptance`
+    below checks the identical three things at acceptance time; this is
+    deliberately not folded into one helper with it, since a prevout
+    this cannot resolve is answered differently here -- not this
+    check's own concern, since a reorg conflict is what
+    `Mempool.remove_conflicts`, called once per newly connected block's
+    own transactions in `_reconcile_mempool_for_reorg` above, already
+    takes out, where `verify_mempool_acceptance` raises
+    `MissingPrevoutError` for the identical case on a transaction never
+    yet accepted.
+    """
+    block_index = node.chainstate.block_index
+    utxo_index = node.chainstate.utxo_index
+    mempool = node.mempool
+    spend_height = len(block_index.active_chain)
+    tip_hash = block_index.active_chain[-1]
+    tip_header = block_index.header_dict[tip_hash].header
+    tip_height = spend_height - 1
+    parent_of = parent_lookup(node)
+    tip_mtp = median_time_past(tip_header, tip_height, parent_of)
+
+    if not is_final(tx, spend_height, tip_mtp):
+        return False
+
+    prevout_coins: list[Coin] = []
+    for tx_in in tx.vin:
+        prevout_bytes = tx_in.prev_out.serialize(check_validity=False)
+        coin = utxo_index.get_coin(prevout_bytes)
+        if coin:
+            prevout_coins.append(coin)
+        else:
+            previous_tx = mempool.get_tx(tx_in.prev_out.tx_id)
+            if previous_tx and tx_in.prev_out.vout < len(previous_tx.vout):
+                tx_out = previous_tx.vout[tx_in.prev_out.vout]
+                prevout_coins.append(Coin(tx_out, spend_height, is_coinbase=False))
+            else:
+                return True
+
+    def ancestor_median_time_past(height: int) -> int:
+        header = header_at_height(tip_header, tip_height, height, parent_of)
+        return median_time_past(header, height, parent_of)
+
+    try:
+        assert_sequence_locks(
+            tx, prevout_coins, spend_height, tip_mtp, ancestor_median_time_past
+        )
+    except BTClibValueError:
+        return False
+
+    for coin in prevout_coins:
+        depth = spend_height - coin.height
+        if coin.is_coinbase and depth < COINBASE_MATURITY:
+            return False
+    return True
+
+
+def _evict_immature_or_nonfinal(node: Node) -> None:
+    """Evict every held transaction `_still_final_and_mature` now refuses.
+
+    Core's own `removeForReorg` (same citation as
+    `_still_final_and_mature` above): every remaining entry the
+    predicate flags is removed with its own descendants,
+    `CTxMemPool::RemoveStaged`'s own `CalculateDescendants` matched here
+    by `Mempool.remove_with_descendants`. Snapshots `node.mempool
+    .transactions` before the loop, since eviction mutates it, and skips
+    a wtxid a descendant's own removal already took out by the time
+    this reaches it.
+    """
+    for wtxid, tx in list(node.mempool.transactions.items()):
+        if wtxid not in node.mempool.transactions:
+            continue
+        if not _still_final_and_mature(node, tx):
+            node.mempool.remove_with_descendants(wtxid)
 
 
 # update_chain's own step once a fork has committed, whatever
@@ -1256,7 +1396,9 @@ def invalidate_chain(node: Node, block_hash: bytes) -> None:
         block_index.invalidate(block_hash)
         block_index.generate_block_candidates()
         update_ibd_status(node)
-        _reconcile_mempool_for_reorg(node, to_remove, [])
+        _reconcile_mempool_for_reorg(
+            node, to_remove, [], readd_limit=_INVALIDATE_MEMPOOL_READD_LIMIT
+        )
     else:
         block_index.invalidate(block_hash)
 

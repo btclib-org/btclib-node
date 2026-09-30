@@ -1323,6 +1323,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   block candidate again once what displaced it is invalidated, matching
   Core's own `InvalidateBlock`** (closes #1561).
 
+### Deep invalidation matches Core's own mempool reconciliation
+
+- **A disconnected transaction re-enters the mempool only for the first
+  ten blocks a deep `invalidateblock` disconnects, and a held one a
+  disconnect leaves immature or non-final is evicted** (closes #1570).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

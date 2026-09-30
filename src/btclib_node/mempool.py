@@ -510,6 +510,56 @@ class Mempool:
         for victim in self._replaced(tx):
             self._pop(victim)
 
+    def remove_dependents(self, tx: Tx) -> None:
+        """Remove what spends any of `tx`'s own outputs, with its descendants.
+
+        `tx` itself is not a member -- a disconnected block's
+        transaction this mempool chose not to re-add, still confirmed
+        elsewhere, or a coinbase, never a mempool entrant on any path --
+        so the walk `_descendants` otherwise begins from an already-held
+        wtxid starts at `tx.id` itself instead: every wtxid `spent_by`
+        names for it, and everything depending on each of those in turn.
+        Core's own `removeRecursive` reached the identical way, on a
+        disconnected transaction that did not make it back into the
+        mempool (`MaybeUpdateMempoolForReorg`, `src/validation.cpp`,
+        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): "If the
+        transaction doesn't make it in to the mempool, remove any
+        transactions that depend on it (which would now be orphans)."
+        """
+        dependents: set[bytes] = set()
+        frontier = [tx.id]
+        while frontier:
+            txid = frontier.pop()
+            for candidate_wtxid in self.spent_by.get(txid, ()):
+                if candidate_wtxid in dependents:
+                    continue
+                dependents.add(candidate_wtxid)
+                frontier.append(self.transactions[candidate_wtxid].id)
+        for wtxid in dependents:
+            self._pop(wtxid)
+
+    def remove_with_descendants(self, wtxid: bytes) -> None:
+        """Remove `wtxid` and everything depending on it, a no-op if absent.
+
+        `wtxid` is itself a member here, unlike `remove_dependents`
+        above -- `main._evict_immature_or_nonfinal`'s own case, a
+        transaction a reorg left immature or non-final, where
+        `remove_dependents` answers `main._reconcile_mempool_for_reorg`'s
+        own case, a disconnected transaction dropped rather than
+        re-added. The package this removes is the same one
+        `_evict_to_limit` above already computes through `_descendants`,
+        generalized into its own method rather than duplicated a second
+        time: Core's own `CTxMemPool::RemoveStaged`, over
+        `CalculateDescendants`, is what `removeForReorg` calls for an
+        entry `filter_final_and_mature` flags
+        (`src/txmempool.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        tag).
+        """
+        if wtxid not in self.transactions:
+            return
+        for victim in self._descendants(wtxid):
+            self._pop(victim)
+
     def meets_fee_rate(self, wtxid: bytes, min_fee_rate: int) -> bool:
         """Whether the entry's own fee clears a rate quoted in sat/kvB.
 
