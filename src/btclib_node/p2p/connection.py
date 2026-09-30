@@ -528,9 +528,12 @@ class Connection:
     # was dialled by, where it was dialled by one rather than by a
     # resolved address -- `pszDest` in `ConnectNode` (`src/net.cpp`, at
     # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `None` for a connection
-    # dialled by address, `_process_addr_fetch`'s own addr-fetch dial
-    # being the only path that currently sets it, to the seed name it
-    # resolved (btclib-org/btclib-node#1432). Core's own field falls back
+    # accepted or dialled straight to an address:
+    # `P2pManager.async_connect_host` is this tree's one setter, its own
+    # `host` argument becoming this field for every manual dial --
+    # `-connect`'s and `-addnode`'s own standing loops, the `addnode`
+    # RPC's `onetry`, and an addr-fetch dial alike
+    # (btclib-org/btclib-node#1264, #1432). Core's own field falls back
     # to the formatted socket address for a connection dialled by
     # address, which `_socket_addresses` (`rpc/callbacks.py`) does the
     # same way for `getpeerinfo`'s own `addr`. Set by

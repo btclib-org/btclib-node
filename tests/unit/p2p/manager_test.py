@@ -3250,6 +3250,46 @@ def test_open_connect_peers_resolves_a_hostname(
     theirs.close()
 
 
+def test_open_added_peers_resolves_a_hostname(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1301: an `-addnode` peer given by name names its connection too.
+
+    `run_a_manual_loop` (above) proves `_open_added_peers`' own dial
+    loop -- which `(host, port)` pairs it reaches and its retry timing
+    -- by mocking `async_connect_host` itself, so none of its own tests
+    exercise `async_connect_host`'s real body. This one does not mock
+    it, the way `test_open_connect_peers_resolves_a_hostname` already
+    does for `-connect`: `create_connection` is reached for real, so
+    the `addr_name` it is given -- `node_str`, unresolved -- is proved
+    to survive `_open_added_peers`' own `split_host_port` and
+    `_open_manual` in between, not only `async_connect_host`'s own.
+    """
+    ours, theirs = socket.socketpair()
+
+    async def connects(address: NetworkAddressV2) -> socket.socket:
+        return ours
+
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: _NamedLoop(["5.6.7.8"]))
+    monkeypatch.setattr(manager_module, "dial", connects)
+    made: list[dict[str, Any]] = []
+    manager = a_manager(addnode_args=["peer.example"])
+    monkeypatch.setattr(
+        manager, "create_connection", lambda *args, **kwargs: made.append(kwargs)
+    )
+
+    async def stop_after_one_sleep(seconds: float) -> NoReturn:
+        raise _LoopStoppedError
+
+    monkeypatch.setattr(asyncio, "sleep", stop_after_one_sleep)
+    with pytest.raises(_LoopStoppedError):
+        asyncio.run(manager._open_added_peers())
+    assert made == [
+        {"inbound": False, "addr_fetch": False, "addr_name": "peer.example"}
+    ]
+    theirs.close()
+
+
 def test_async_connect_host_logs_when_no_candidate_comes_up(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

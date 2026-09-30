@@ -938,11 +938,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   and a served command's own full help text with one, or Core's own
   "unknown command" for one it does not serve** (closes #1405).
 
-### `getpeerinfo`'s `addr` is the name a peer was dialled by, where one was given
-
-- **`addr` and `disconnectnode`'s `address` match answer the string a peer
-  was dialled by once held, the formatted socket address otherwise**, as
-  Core's `m_addr_name` does (closes #1301).
 ### A refused `stop` no longer shuts the node down
 
 - **`rpc.main` calls `node.stop()` only where the `stop` reply carries
@@ -1142,6 +1137,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **The addr-fetch queue is now dialled by a standing loop of its own,
   off `manage_connections`'s own step, so a slow resolve or connect no
   longer delays that loop's pruning and eviction** (closes #1366).
+
+### `getpeerinfo`'s `addr` is the name a peer was dialled by, where one was given
+
+- **`addr` and `disconnectnode`'s `address` match answer the string a peer
+  was dialled by once held, the formatted socket address otherwise**, as
+  Core's `m_addr_name` does (closes #1301).
 
 ## v2026.9.24
 
