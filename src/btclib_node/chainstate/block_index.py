@@ -292,11 +292,17 @@ class BlockInfo:
     def serialize(self) -> bytes:
         """Serialize this record to the bytes stored under `blkinfo-<hash>`.
 
-        The header unchecked, as `deserialize`'s caller reads it back: a
-        header of a version zero or below is Core's to take below BIP34's
-        height, and btclib's `BlockHeader.assert_valid` refuses it.
+        The header checked here now. It used to be serialized unchecked:
+        a header of a version zero or below is Core's to take below
+        BIP34's height, and btclib's `BlockHeader.assert_valid` refused
+        it on its own -- fixed at btclib 2026.9.29
+        (btclib-org/btclib@bbb1ad71, closing btclib-org/btclib#2309;
+        btclib-org/btclib-node#1511). A header reaches a `BlockInfo` only
+        past `add_headers`'s own height-gated `bad-version` check
+        (`_assert_valid_in_context`), so nothing `assert_valid` still
+        checks can refuse one that got here honestly.
         """
-        out = self.header.serialize(check_validity=False)
+        out = self.header.serialize()
         out += var_int.serialize(self.index)
         out += self.status.to_bytes(1, "little")
         out += int(self.downloaded).to_bytes(1, "little")

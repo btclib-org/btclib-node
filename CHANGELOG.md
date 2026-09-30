@@ -1198,6 +1198,30 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   beside the Best Practices badge, which section 2 of the organization
   standard admits (issue btclib-org/.github#1460).
 
+### `btclib-wallet` is now a runtime dependency
+
+- **`rpc/callbacks.py` reads `add_checksum`/`from_address` from
+  `btclib_wallet.descriptors`**, following `descriptors` out of btclib
+  and into btclib-wallet, where btclib 2026.9.29 moved it (closes #1508).
+
+### A stored header's own version is checked again, matching Core
+
+- **`BlockInfo.serialize` and `getblockheader false` validate the
+  header they write out again**, no longer bypassing btclib's own
+  check now that it refuses on version the way Core does (closes #1511).
+
+### CLAUDE.md says which behaviour a release and master disagreement follows
+
+- **Consensus and relay follow the pinned Core release where it and
+  master disagree; a peer-refusal rule may go stricter than the
+  release first, where the divergence is argued** (closes #1520).
+
+### `cli_test.py`'s `datadir` log-line tests compare against the escaped form
+
+- **Three tests build the expected `datadir=` line through
+  `_setting_to_write_str`, or a hand-written literal, matching Core's own
+  `json_escape`**, which doubles a backslash (closes #1509).
+
 ### A high-bandwidth peer is announced a new block as `cmpctblock`, as in Core
 
 - **A peer's `sendcmpct` of version 2 is recorded, and a peer that chose this
