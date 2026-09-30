@@ -3019,11 +3019,11 @@ def test_the_added_loop_logs_an_unparsable_entry_and_dials_the_rest(
     connects either, so no `(host, port)` here is dialled for it -- but
     Core's own loop still marks `tried` and spends this pass's 500ms
     step on it before `OpenNetworkConnection` ever resolves its
-    `pszDest` (`src/net.cpp:3065-3072`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag), so it must not be filtered out of the pass
-    entirely: doing so answered `tried` wrongly for an all-malformed
-    list, this test's sibling below (btclib-org/btclib-node#1350,
-    coordinator review of the 1264 group).
+    `pszDest` (`ThreadOpenAddedConnections`, `src/net.cpp`,
+    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so it must not be
+    filtered out of the pass entirely: doing so answers `tried` wrongly
+    for an all-malformed list, this test's sibling below
+    (btclib-org/btclib-node#1350).
     """
     logged, info = log_recorder()
     manager = a_manager(addnode_args=["1.2.3.4:99999", "5.6.7.8:8333"])

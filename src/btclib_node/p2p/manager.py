@@ -109,20 +109,18 @@ _IDLE_TIMEOUT = 120
 # The two loops Core dials `-connect` and `-addnode` from, each its own
 # thread (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
 # and `_open_connect_peers`/`_open_added_peers` below each their own
-# task rather than the one shared, capped, doubling backoff this tree
-# used before #1316 replaced it. `ThreadOpenConnections`'s own
+# task (btclib-org/btclib-node#1316). `ThreadOpenConnections`'s own
 # `-connect` arm is an uncapped `for (int64_t nLoop = 0;; nLoop++)`
 # loop redialling every named peer in turn, `_MANUAL_STEP` times
 # `min(nLoop, _CONNECT_MAX_STEPS)` after each address and one more
-# `_MANUAL_STEP` after the whole list (`src/net.cpp:2592-2625`, at
-# bitcoin/bitcoin@ca7162cde5). `ThreadOpenAddedConnections` is a
+# `_MANUAL_STEP` after the whole list. `ThreadOpenAddedConnections` is a
 # `while (true)` loop over `GetAddedNodeInfo(include_connected=false)`
 # -- the "already connected, skip it" filter `_open_added_peers` below
 # reproduces with `_held_addr_names` -- redialling every not-yet-connected
 # added peer `_MANUAL_STEP` apart while a `semAddnode` grant is free,
 # then sleeping `_ADDNODE_RETRY_TRIED` where it dialled any and
-# `_ADDNODE_RETRY_IDLE` where it dialled none (`src/net.cpp:3052-3082`,
-# same sha). `_MAX_ADDNODE_CONNECTIONS` is Core's own
+# `_ADDNODE_RETRY_IDLE` where it dialled none.
+# `_MAX_ADDNODE_CONNECTIONS` is Core's own
 # `MAX_ADDNODE_CONNECTIONS` (`src/net.h`, same sha), the grants
 # `semAddnode` holds; an added peer counts as holding one for as long
 # as its own endpoint is held, where Core moves the grant into the
@@ -1855,10 +1853,9 @@ class P2pManager(threading.Thread):
         `addnode` RPC's `add`, `-addnode` itself being validated at
         startup (`Config.addnode`) -- is skipped rather than raised: it
         can never be held, so it is correctly absent from `_added_held`,
-        the one caller left once #1366's review moved
-        `_open_added_peers` below off this method (it now walks
-        `_added_peers` itself, to give such a value the same `tried`
-        accounting Core's own loop does).
+        this method's one caller. `_open_added_peers` below walks
+        `_added_peers` itself instead, to give such a value the same
+        `tried` accounting Core's own loop does.
         """
         with self._added_peers_lock:
             raw = tuple(self._added_peers)
@@ -1890,15 +1887,11 @@ class P2pManager(threading.Thread):
         filtered out by `_added_entries`: Core's own loop marks `tried`
         and spends a grant and this pass's 500ms step on a `vInfo` entry
         before `OpenNetworkConnection` ever resolves its `pszDest`
-        (`src/net.cpp:3065-3072`, same sha), so a value that will never
-        resolve is still "tried" there, and the pass still waits
+        (`ThreadOpenAddedConnections`, same sha), so a value that will
+        never resolve is still "tried" there, and the pass still waits
         `_ADDNODE_RETRY_TRIED` rather than `_ADDNODE_RETRY_IDLE` after
-        it. Filtering it out first, as an earlier revision of this
-        method did, answered `tried` correctly for every other case but
-        wrongly for an all-malformed list, retrying every
-        `_ADDNODE_RETRY_IDLE` instead of `_ADDNODE_RETRY_TRIED`
-        (btclib-org/btclib-node#1350, coordinator review of the 1264
-        group). Since there is no `(host, port)` to dial or to hold a
+        it: an all-malformed list retries every minute, not every two
+        seconds. Since there is no `(host, port)` to dial or to hold a
         grant for, the dial itself is skipped and logged the way
         `async_connect_host`'s own give-up is.
         """
@@ -2592,8 +2585,8 @@ class P2pManager(threading.Thread):
         )
         asyncio.run_coroutine_threadsafe(self.manage_connections(), loop)
         # Core's `CConnman::Start` starts `ThreadOpenAddedConnections`
-        # and then `ThreadOpenConnections` (`src/net.cpp`, at
-        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag); these are their
+        # and then `ThreadOpenConnections` (`src/net.cpp`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag); these are their
         # standing tasks, each its own coroutine rather than a thread,
         # never awaited by anything here -- `stop`'s own sweep of
         # `asyncio.all_tasks` is what ends them.

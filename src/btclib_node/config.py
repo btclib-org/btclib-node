@@ -360,8 +360,8 @@ class Config:
     # value split once here could not follow (btclib-org/btclib-node#1350).
     addnode: tuple[tuple[str, int], ...]
     # `-addnode`, each as given: Core's own `m_added_node_params`
-    # (`connOptions.m_added_nodes`, `src/init.cpp:2193-2198`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag), dialled alongside the
+    # (`connOptions.m_added_nodes`, `src/init.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), dialled alongside the
     # ordinary draw and compared, as text, against a drawn address by
     # `AddedNodesContain` (`src/net.cpp`, same sha) -- both
     # `P2pManager._open_added_peers` and `_added_node` read this, not
