@@ -1236,9 +1236,8 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 ### Core citations keep `at` on the same line as the sha they cite
 
-- **Every `#`-comment Core citation that wrapped `at` onto the line above
-  `bitcoin/bitcoin@<sha>` now carries it on the sha's own line**, the
-  shape #471 fixed for three (closes #1517).
+- **Every `#` Core citation outside `p2p/callbacks.py`'s `headers()`
+  carries `at` on the sha's own line** (closes #1517).
 
 ## v2026.9.24
 
