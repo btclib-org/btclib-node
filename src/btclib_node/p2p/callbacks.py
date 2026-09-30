@@ -299,8 +299,8 @@ def has_all_desirable_services(node: Node, services: int) -> bool:
     return not desirable & ~services
 
 
-# Core's `HEADERS_RESPONSE_TIME` (`net_processing.cpp`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag), in seconds: how long a
+# Core's `HEADERS_RESPONSE_TIME` (`net_processing.cpp`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), in seconds: how long a
 # `getheaders` a peer has not answered holds off the next one to it.
 _HEADERS_RESPONSE_TIME = 2 * 60
 
@@ -458,8 +458,8 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
 
     conn.version_message = version_msg
     # Core's `SetServices` of an outbound peer's own services, ahead of
-    # every refusal below (`src/net_processing.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a table row gossip
+    # every refusal below (`src/net_processing.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a table row gossip
     # mislabelled is corrected here, the peer dropped or not
     if not conn.inbound:
         node.p2p_manager.peer_db.set_services(conn.address, version_msg.services)
@@ -482,8 +482,8 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     # Core's `VERSION` handler, right after `VERACK`, calls
     # `SetupAddressRelay` for a peer this node dialled, and sends it a
     # `getaddr` with room for the answer past
-    # `_MAX_ADDR_PROCESSING_TOKEN_BUCKET` (`net_processing.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). An inbound peer keeps
+    # `_MAX_ADDR_PROCESSING_TOKEN_BUCKET` (`net_processing.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). An inbound peer keeps
     # the one token it started with, and waits for its own first `addr`,
     # `addrv2` or `getaddr`. `SetupAddressRelay` answers false, and so
     # sends no `getaddr`, for a block-relay-only peer.
@@ -493,8 +493,8 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
         conn.addr_token_bucket += MAX_ADDR_TO_SEND
 
     # Right after that `getaddr`, Core calls `m_addrman.Good(pfrom.addr)`
-    # for a peer this node dialled (`net_processing.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag), under
+    # for a peer this node dialled (`net_processing.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), under
     # `!pfrom.IsInboundConn()` alone -- not waiting for this connection's
     # own `verack`, which a peer that answers `version` and then stalls
     # never sends, and which `manager.py`'s own 60-second drop of a
@@ -523,8 +523,8 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     # because an absent flag means true, which is BIP37's default and
     # Core's. A block-relay-only connection or a feeler relays no
     # transaction whatever the peer asked for: Core's `VERSION` handler
-    # builds no `TxRelay` for either (`net_processing.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so nothing is announced
+    # builds no `TxRelay` for either (`net_processing.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so nothing is announced
     # to it and a `getdata` of its for a transaction goes unanswered.
     conn.relay_tx = (
         version_msg.is_relay_requested and not conn.block_relay and not conn.feeler
@@ -681,8 +681,8 @@ def pong(node: Node, msg: bytes, conn: Connection) -> None:
         conn.ping_sent = 0
         conn.ping_nonce = 0
         if nonce:
-            # Core's `CNode::PongReceived` (`src/net.h`, at
-            # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) records the round
+            # Core's `CNode::PongReceived` (`src/net.h`,
+            # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) records the round
             # trip and keeps the lowest for eviction, and `ProcessMessage`
             # calls it only for a round trip that is not negative: a clock
             # stepped back between ping and pong finishes the ping and
@@ -737,8 +737,8 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
     The sample itself is a cache, shared and redrawn only once its own
     lifetime and jitter expire -- the comment below argues why.
     """
-    # Core's `GETADDR` handler (`src/net_processing.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) ignores one from a
+    # Core's `GETADDR` handler (`src/net_processing.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) ignores one from a
     # connection it opened itself: answering it would let a peer plant
     # addresses and read them back from a node that only dials out.
     if not conn.inbound:
@@ -997,14 +997,14 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
         # punishes neither: "Tx failures never trigger
         # disconnections/bans ... either due to non-consensus relay
         # policies ... or due to new consensus rules introduced in soft
-        # forks" (`src/validation.cpp:2112-2117`, at
-        # bitcoin/bitcoin@4519933391), and `PeerManagerImpl::ProcessInvalidTx`
-        # (`src/net_processing.cpp`, same commit) calls nothing punitive
-        # for a transaction failure -- there is no `MaybePunishNodeForTx`,
-        # where `MaybePunishNodeForBlock` exists and is called. None of
-        # these is a `MisbehavingError`, so `p2p.main.handle_p2p` would
-        # not discourage the peer either; caught here for the record
-        # below. btclib-org/btclib-node#843
+        # forks" (`src/validation.cpp:2112-2117`,
+        # at bitcoin/bitcoin@4519933391), and
+        # `PeerManagerImpl::ProcessInvalidTx` (`src/net_processing.cpp`, same
+        # commit) calls nothing punitive for a transaction failure -- there is
+        # no `MaybePunishNodeForTx`, where `MaybePunishNodeForBlock` exists and
+        # is called. None of these is a `MisbehavingError`, so
+        # `p2p.main.handle_p2p` would not discourage the peer either; caught
+        # here for the record below. btclib-org/btclib-node#843
         #
         # Recorded in `Mempool`'s own reject cache, whose docstring
         # argues the resubmission cost this answers and the gap it
@@ -1197,8 +1197,8 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
         node.block_db.add_block(block)
         # novel, past its own checks and on disk: what Core's own
         # `m_last_block_time` records for eviction, whether or not the
-        # block later connects (`PeerManagerImpl::ProcessBlock`, at
-        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+        # block later connects (`PeerManagerImpl::ProcessBlock`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
         conn.last_novel_block_time = int(time.time())
         node.logger.info("Received new block with hash:%s", block_hash.hex())
         block_index.set_downloaded(block_hash)
@@ -1314,8 +1314,8 @@ _GETDATA_BLOCK_TYPES = (
     InventoryType.MSG_CMPCT_BLOCK,
 )
 
-# BIP152's compact blocks as Core serves them (`net_processing.cpp`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the one version Core speaks,
+# BIP152's compact blocks as Core serves them (`net_processing.cpp`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the one version Core speaks,
 # the depth past which a `MSG_CMPCT_BLOCK` is answered with the full block
 # instead, and the depth past which a `getblocktxn` is
 CMPCTBLOCKS_VERSION = 2
@@ -1870,8 +1870,8 @@ def _ask_for_more_headers(
         node.status = NodeStatus.HeaderSynced
 
 
-# Core's `STALE_RELAY_AGE_LIMIT` (`src/net_processing.cpp`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): how old, in time and in
+# Core's `STALE_RELAY_AGE_LIMIT` (`src/net_processing.cpp`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): how old, in time and in
 # proof-equivalent time, a block off the active chain may be and still
 # be served.
 _STALE_RELAY_AGE_LIMIT = 30 * 24 * 60 * 60

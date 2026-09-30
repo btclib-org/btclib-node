@@ -842,8 +842,8 @@ class BlockIndex:
     # `header_index` where the batch's own work actually beats what
     # each already holds -- before the next header of the batch is even
     # looked at. Core's own `AcceptBlockHeader`, called once per header
-    # from `ProcessNewBlockHeaders` (`validation.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): it stops at the first
+    # from `ProcessNewBlockHeaders` (`validation.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): it stops at the first
     # header failing `ContextualCheckBlockHeader` and returns, so the
     # headers already accepted ahead of it, indexed one at a time as
     # they were accepted, stay indexed. btclib-org/btclib-node#1348
