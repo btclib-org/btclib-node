@@ -12,6 +12,7 @@ go of both -- and until now only a functional test reached any of it.
 
 import asyncio
 import base64
+import inspect
 import json
 import os
 import socket
@@ -27,6 +28,7 @@ from btclib_node.chains import RegTest
 from btclib_node.config import Config
 from btclib_node.log import Logger
 from btclib_node.rpc import manager as manager_module
+from btclib_node.rpc.connection import parse_request_head
 from btclib_node.rpc.jsonrpc import OK, HttpReply
 from btclib_node.rpc.manager import RpcManager
 from tests import (
@@ -47,6 +49,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from btclib_node import Node
+    from btclib_node.rpc.connection import RpcConnection
 
 REQUEST = {"jsonrpc": "2.0", "id": "a", "method": "getbestblockhash"}
 
@@ -1041,6 +1044,117 @@ def test_stop_drains_a_task_whose_own_cancellation_needs_a_second_step(
     assert not task.done()
 
     manager.stop()
+
+
+def a_connection_answering(manager: RpcManager, ours: socket.socket) -> RpcConnection:
+    """Wire `ours` through `manager.create_connection`, a request already read.
+
+    `create_connection` puts `ours` in non-blocking mode itself; `head`
+    stands in for `run` having parsed a request, which `async_send`
+    answers the version of.
+    """
+    conn = manager.create_connection(manager.loop, ours)
+    conn.head = parse_request_head(
+        b"POST / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+    )
+    return conn
+
+
+STOPPING = HttpReply(OK, {"result": "stopping", "error": None, "id": 1})
+
+
+def test_stop_lets_a_pending_delayed_reply_finish_rather_than_cancelling_it(
+    a_manager: AManagerFactory,
+) -> None:
+    """`stop` finishes a delayed reply asleep in its `wait` (ISS 1467).
+
+    Core's own `ThreadPool::Stop` joins its workers rather than
+    cancelling one mid-request, `stop`'s own comment has where; this is
+    the same reply cancelled with every other task otherwise, nothing
+    ever written. The deadline recorded for it outlives the reply.
+    """
+    manager = a_manager(get_random_port())
+    manager.start()
+    wait_until_listening(manager)
+    ours, theirs = socket.socketpair()
+    try:
+        conn = a_connection_answering(manager, ours)
+        conn.send_and_close_after(STOPPING, 0.3)
+        deadline = manager.latest_reply_deadline()
+        [delayed] = manager.delayed_replies
+        # asleep in `asyncio.sleep(0.3)`: the window the race is about
+        wait_until(lambda: inspect.getcoroutinestate(delayed) == inspect.CORO_SUSPENDED)
+        manager.stop()
+        theirs.settimeout(5)
+        reply = theirs.recv(65536)
+    finally:
+        theirs.close()
+    assert b"200 OK" in reply
+    assert b"stopping" in reply
+    # `Node.stop` has why a reply already sent still bounds its wait
+    assert manager.latest_reply_deadline() == deadline
+
+
+def test_a_delayed_reply_due_sooner_leaves_the_latest_deadline_alone(
+    a_manager: AManagerFactory,
+) -> None:
+    """The latest deadline is the latest recorded, not the last (ISS 1467)."""
+
+    async def reply() -> None:
+        """Stand in for a delayed reply's coroutine, never run."""
+
+    manager = a_manager(None)
+    later, sooner = reply(), reply()
+    manager.add_delayed_reply(later, 20.0)
+    manager.add_delayed_reply(sooner, 10.0)
+    assert manager.latest_reply_deadline() == 20.0
+    assert manager.delayed_replies == {later, sooner}
+    later.close()
+    sooner.close()
+
+
+def test_stop_finishes_a_delayed_reply_its_loop_never_stepped(
+    a_manager: AManagerFactory,
+) -> None:
+    """A delayed reply whose task exists, never stepped, is still finished.
+
+    Held busy on a callback of its own, the manager's loop runs the
+    task's creation in the same pass as `stop`'s own `loop.stop`, so the
+    task is in `asyncio.all_tasks` and has never run a line: what `stop`
+    reads to spare it has to have been recorded before it was handed to
+    the loop, not by its own first step (ISS 1467).
+    """
+    manager = a_manager(get_random_port())
+    manager.start()
+    wait_until_listening(manager)
+    holding = threading.Event()
+    release = threading.Event()
+
+    def hold() -> None:
+        holding.set()
+        release.wait(10)
+
+    join = manager.join
+
+    def release_then_join(timeout: float | None = None) -> None:
+        # reached by `stop` right after it queued `loop.stop`
+        release.set()
+        join(timeout)
+
+    ours, theirs = socket.socketpair()
+    try:
+        conn = a_connection_answering(manager, ours)
+        manager.loop.call_soon_threadsafe(hold)
+        assert holding.wait(10)
+        conn.send_and_close_after(STOPPING, 0.3)
+        manager.join = release_then_join  # type: ignore[method-assign]
+        manager.stop()
+        theirs.settimeout(5)
+        reply = theirs.recv(65536)
+    finally:
+        theirs.close()
+    assert b"200 OK" in reply
+    assert b"stopping" in reply
 
 
 def test_stop_does_not_raise_where_start_was_called_but_run_never_reached_run_forever(

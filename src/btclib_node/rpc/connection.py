@@ -37,6 +37,7 @@ import ipaddress
 import json
 import re
 import secrets
+import time
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, cast, override
 
@@ -1472,6 +1473,30 @@ class RpcConnection:
         )
         with contextlib.suppress(TimeoutError):
             future.result(timeout=2)
+
+    def send_and_close_after(self, reply: HttpReply, delay: float) -> None:
+        """Write `reply` `delay` seconds from now, on this connection's loop.
+
+        `rpc.main.handle_rpc` is the only caller, for a `stop` carrying
+        a positive `wait` (btclib-org/btclib-node#1467), and returns at
+        once to set `Node.terminate_flag`, as Core's own `stop` requests
+        shutdown before it sleeps. The wait runs on `loop`, and
+        `RpcManager.stop` finishes it rather than cancelling it, so the
+        reply still reaches the client once that shutdown is under way;
+        `close=True` for the reason `send_and_wait` above gives.
+
+        `add_delayed_reply` records the coroutine before
+        `run_coroutine_threadsafe` hands it to `loop`, which is the order
+        that method's own docstring requires.
+        """
+        delayed = self._delayed_send(reply, delay)
+        self.manager.add_delayed_reply(delayed, time.monotonic() + delay)
+        asyncio.run_coroutine_threadsafe(delayed, self.loop)
+
+    async def _delayed_send(self, reply: HttpReply, delay: float) -> None:
+        """Sleep `delay` seconds, then write `reply` and close."""
+        await asyncio.sleep(delay)
+        await self.async_send(reply, close=True)
 
     def _peer_address(self) -> str:
         """Return the client's `ip:port`, for a log line naming who asked."""

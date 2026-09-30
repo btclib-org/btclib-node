@@ -1156,11 +1156,47 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `-chain=testnet4` as Core's own `-testnet4` does, and a header failing
   BIP94's timewarp bound is a `MisbehavingError`** (closes #1442).
 
+### `getpeerinfo`'s `addr` is the name a peer was dialled by, where one was given
+
+- **`addr` and `disconnectnode`'s `address` match answer the string a peer
+  was dialled by once held, the formatted socket address otherwise**, as
+  Core's `m_addr_name` does (closes #1301).
+
+### A `-connect` or `-seednode` spec's own port now survives to `addr_name`
+
+- **`-connect` and `-seednode` keep the raw spec given, port included,
+  the way `-addnode` already did, so `addr_name` carries it too** (closes
+  #1493).
+
+### A literal-IP `-addnode` is held by its resolved address, not by name
+
+- **A `-addnode` spec that is a literal IP is now held by every
+  connection's own resolved address, whatever route opened it, matching
+  Core's `mapConnected`** (closes #1498).
+
 ### A manual dial's resolved answers are capped at 256
 
 - **`async_connect_host` no longer shuffles, validates or dials more
   than 256 of a resolver's answers**, matching `Lookup`'s own
   `nMaxSolutions` in Core's `ConnectNode` (closes #1466).
+
+### Two manager tests wait for the store, not just the id that precedes it
+
+- **`create_connection` increments `last_connection_id` before it stores
+  the connection, so a test now waits on the store itself rather than
+  racing it by polling the id alone** (closes #1504).
+
+### `stop`'s hidden `wait` argument is honoured
+
+- **A `stop` call carrying `wait` delays its own reply by that many
+  milliseconds**, as Core's own `stop <ms>` does, while the node starts
+  shutting down at once (closes #1467).
+
+### The OpenSSF Baseline badge
+
+- **`README.md`'s badge row ends with the OpenSSF Baseline badge**,
+  beside the Best Practices badge, which section 2 of the organization
+  standard admits (issue btclib-org/.github#1460).
 
 ### A low-work headers chain is synced twice before any of it is stored
 

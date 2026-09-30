@@ -179,6 +179,7 @@ def test_connect_zero_dials_nobody_but_still_counts_as_given() -> None:
     config = Config(chain="regtest", connect=["0"])
     assert config.connect == ()
     assert config.connect_given is True
+    assert config.connect_args == ()
 
 
 def test_listen_defaults_to_true() -> None:
@@ -237,6 +238,24 @@ def test_addnode_keeps_its_values_as_given() -> None:
     """ISS 1224: `AddedNodesContain` compares the values as given."""
     config = Config(chain="regtest", addnode=["10.0.0.1:1", "10.0.0.2"])
     assert config.addnode_args == ("10.0.0.1:1", "10.0.0.2")
+
+
+def test_connect_keeps_its_values_as_given() -> None:
+    """ISS 1493: `m_addr_name` is `pszDest` verbatim, a port kept when given.
+
+    `connect` itself (above) already splits and defaults the port for
+    dialling; `connect_args` is the same raw strings `addnode_args`
+    already kept, one per spec, port included where the spec names one
+    and omitted where it does not -- `async_connect_host`'s own `dest`.
+    """
+    config = Config(chain="regtest", connect=["10.0.0.1:1", "10.0.0.2"])
+    assert config.connect_args == ("10.0.0.1:1", "10.0.0.2")
+
+
+def test_seednode_keeps_its_values_as_given() -> None:
+    """ISS 1493: `-seednode`'s own raw spec, mirroring `connect_args`."""
+    config = Config(chain="regtest", seednode=["10.0.0.1:1", "10.0.0.2"])
+    assert config.seednode_args == ("10.0.0.1:1", "10.0.0.2")
 
 
 def test_connect_and_addnode_both_take_several_entries() -> None:

@@ -361,6 +361,16 @@ class Config:
     # `__init__` below was given rather than off `connect` above, since
     # the two disagree on exactly that one value.
     connect_given: bool
+    # `-connect`, each exactly as given: Core's own `connect`
+    # (`connOptions.m_specified_outgoing`, `src/init.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), passed whole as
+    # `pszDest` (`ThreadOpenConnections`, `src/net.cpp`, same sha).
+    # `P2pManager._connect_peers` reads this, not `connect` above, so a
+    # spec naming its own port reaches `addr_name` with it still on
+    # (btclib-org/btclib-node#1493) -- `connect` above exists for its
+    # own eager malformed-port refusal alone, the same split as
+    # `addnode` below for the same reason.
+    connect_args: tuple[str, ...]
     # `_split_peers` run over `addnode_args` below, for its own
     # malformed-port refusal alone: `P2pManager` reads `addnode_args`,
     # not this, since `-addnode`'s own list is grown and shrunk at
@@ -382,8 +392,15 @@ class Config:
     # disconnect, ahead of the DNS seeds (`CConnman::ThreadOpenConnections`,
     # `src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
     # Split by `_split_peers` the same as `connect` and `addnode` above,
-    # host unresolved.
+    # host unresolved -- for its own eager malformed-port refusal alone,
+    # the same reason `connect` above is kept beside `connect_args`.
     seednode: tuple[tuple[str, int], ...]
+    # `-seednode`, each exactly as given, passed whole as `pszDest`
+    # (`ProcessAddrFetch`, `src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    # the v31.1 tag): `P2pManager._seednodes` reads this, not `seednode`
+    # above, for the same reason `connect_args` exists beside `connect`
+    # (btclib-org/btclib-node#1493).
+    seednode_args: tuple[str, ...]
     # Core's own `-listen`, `DEFAULT_LISTEN` (`src/net.h`) true unless
     # `-connect` or `-maxconnections=0` is given, in which case
     # `InitParameterInteraction` (`src/init.cpp`,
@@ -546,9 +563,13 @@ class Config:
         self.connect = (
             () if list(connect) == ["0"] else _split_peers(connect, self.chain.port)
         )
+        # `["0"]` the same "dial nobody" spelling as `connect` above,
+        # rather than a literal peer named `"0"`.
+        self.connect_args = () if list(connect) == ["0"] else tuple(connect)
         self.addnode = _split_peers(addnode, self.chain.port)
         self.addnode_args = tuple(addnode)
         self.seednode = _split_peers(seednode, self.chain.port)
+        self.seednode_args = tuple(seednode)
         self.listen = listen
         self.discover = self.listen if discover is None else discover
         self.peerblockfilters = peerblockfilters
