@@ -103,7 +103,19 @@ _SUBSIDY = 50 * 10**8
 # `MAX_BLOCKS_IN_TRANSIT_PER_PEER` blocks of up to
 # `MAX_PROTOCOL_MESSAGE_LENGTH` (`btclib_node/download.py`), which is
 # what this node asks its own peers for.
-_SERVED_BLOCK_BYTES = 1_000_000
+#
+# Just short of a megabyte, not a whole one: `a_block`'s one coinbase
+# carries this whole payload in its own output, and `Tx.assert_valid`
+# (btclib 2026.9.30) now refuses a transaction whose stripped
+# serialization, times `WITNESS_SCALE_FACTOR`, exceeds
+# `MAX_BLOCK_WEIGHT` -- Core's own `CheckTransaction`
+# `bad-txns-oversize` (`consensus/tx_check.cpp`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which already refused a
+# transaction this large (btclib-org/btclib#2417, btclib-org/btclib#2420).
+# A full megabyte crossed that bound by the coinbase's own ~100 bytes
+# of non-payload fields; this leaves headroom for them at every height
+# `blocks_of` below ever reaches.
+_SERVED_BLOCK_BYTES = 999_000
 _BLOCKS_ASKED_FOR = 3 * MAX_QUEUED_SEND_BYTES // _SERVED_BLOCK_BYTES
 
 # How many of `chain`'s own blocks `test_a_getdata_answer_pauses_...`
@@ -180,7 +192,15 @@ def blocks_of(count: int, payload_bytes: int) -> list[Block]:
 
     Each pays the whole subsidy to one output whose script is that many
     random octets, which is what makes a block as large as a caller
-    wants without giving it transactions to validate.
+    wants without giving it transactions to validate. One coinbase, not
+    several transactions: `update_chain` -- which `test_a_getdata_answer_
+    pauses_rather_than_filling_the_send_queue` and `test_a_getcfilters_
+    answer_will_not_schedule_ahead_of_a_peer_that_is_behind` below both
+    run a handful of these blocks through, to put them on the active
+    chain -- validates a non-coinbase input's prevout against the UTXO
+    set, which nothing here ever populates; a coinbase has none to
+    check. `_SERVED_BLOCK_BYTES`'s own comment is where this output's
+    upper bound comes from.
     """
     chain: list[Block] = []
     previous_block_hash = RegTest().genesis.hash
