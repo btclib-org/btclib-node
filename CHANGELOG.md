@@ -1234,6 +1234,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `cmpctblock` to every high-bandwidth peer that has its parent, as
   `NewPoWValidBlock` sends it** (closes #1315).
 
+### `pypi-install.yml` retries the install of the version the release published
+
+- **Each install cell installs through btclib-org/.github's
+  `install_published_release.py`, which retries only while the installer says
+  the pin is not resolvable** (issue btclib-org/.github#1458).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
