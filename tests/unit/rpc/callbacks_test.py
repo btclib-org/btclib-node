@@ -2080,6 +2080,26 @@ def test_a_rawtx_with_a_truncated_script_is_a_decode_failure() -> None:
     assert raised.value.message == decode_failure(truncated)
 
 
+def test_test_mempool_accept_refuses_rawtx_with_whitespace() -> None:
+    """Whitespace in a raw transaction hex is refused before decoding.
+
+    Core's `DecodeHexTx` requires `IsHex`, which rejects whitespace:
+    `bytes.fromhex` accepts it (btclib-org/btclib-node#1372).
+    """
+    valid_hex = a_tx().serialize(include_witness=True).hex()
+    for spaced in (
+        f" {valid_hex}",
+        f"{valid_hex} ",
+        f"{valid_hex[:8]} {valid_hex[8:]}",
+        f"{valid_hex[:8]}\t{valid_hex[8:]}",
+        f"{valid_hex[:8]}\n{valid_hex[8:]}",
+    ):
+        with pytest.raises(RpcError) as raised:
+            mempool_accept(a_node(), _CONN, [[spaced]])
+        assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
+        assert raised.value.message == decode_failure(spaced)
+
+
 def test_a_relayed_transaction_is_answered_with_its_txid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2140,6 +2160,28 @@ def test_a_transaction_truncated_inside_a_script_is_the_same_refusal() -> None:
     with pytest.raises(RpcError) as raised:
         send_raw_transaction(a_node(), _CONN, [truncated])
     assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
+
+
+def test_send_raw_transaction_refuses_rawtx_with_whitespace() -> None:
+    """Whitespace in a raw transaction hex is refused before decoding.
+
+    Core's `DecodeHexTx` requires `IsHex`, which rejects whitespace:
+    `bytes.fromhex` accepts it (btclib-org/btclib-node#1372).
+    """
+    valid_hex = a_tx().serialize(include_witness=True).hex()
+    for spaced in (
+        f" {valid_hex}",
+        f"{valid_hex} ",
+        f"{valid_hex[:8]} {valid_hex[8:]}",
+        f"{valid_hex[:8]}\t{valid_hex[8:]}",
+        f"{valid_hex[:8]}\n{valid_hex[8:]}",
+    ):
+        with pytest.raises(RpcError) as raised:
+            send_raw_transaction(a_node(), _CONN, [spaced])
+        assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
+        assert raised.value.message == (
+            "TX decode failed. Make sure the tx has at least one input."
+        )
 
 
 def test_a_rawtx_of_the_wrong_json_type_is_named() -> None:
