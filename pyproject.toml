@@ -52,7 +52,9 @@ dependencies = [
     # second time itself (btclib-org/btclib-node#1375). A floor below
     # it is a release this answers wrongly on.
     # `tests/unit/interpreter_test.py` hands `ScriptPubKey` a
-    # `PubKeyData`, unchanged since 2026.9.24.
+    # `PubKeyData`, unchanged since 2026.9.24. 2026.9.30 also carries
+    # `permitted_difficulty_transition` (btclib-org/btclib#2418), which
+    # `p2p/headers_sync.py` imports.
     "btclib[secp256k1]>=2026.9.30",
     # `rpc/callbacks.py` imports `add_checksum`/`from_address` from
     # `btclib_wallet.descriptors`, where btclib's own `descriptors`

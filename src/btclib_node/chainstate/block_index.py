@@ -57,7 +57,7 @@ import itertools
 from collections import deque
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from btclib import var_int
 from btclib.block import (
@@ -70,7 +70,11 @@ from btclib.block.proof_of_work import block_work
 from btclib.exceptions import BTClibValueError
 from btclib.utils import bytesio_from_binarydata
 
-from btclib_node.exceptions import ChainstateInconsistencyError, MisbehavingError
+from btclib_node.exceptions import (
+    ChainstateInconsistencyError,
+    LowWorkHeaderError,
+    MisbehavingError,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -86,6 +90,7 @@ __all__ = [
     "block_time",
     "calculate_work",
     "check_headers_pow",
+    "locator_entries",
 ]
 
 
@@ -108,6 +113,40 @@ def _skip_height(height: int) -> int:
     if height & 1:
         return _invert_lowest_one(_invert_lowest_one(height - 1)) + 1
     return _invert_lowest_one(height)
+
+
+def locator_entries(block_index: BlockIndex, block_hash: bytes) -> list[bytes]:
+    """Return a block locator from `block_hash`: Core's `LocatorEntries`.
+
+    Core's is in `src/chain.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag: `block_hash` and its ancestors, one height apart for the
+    first ten and twice as far apart for each one after, down to
+    genesis. This is the tree's one copy of it (btclib-org/btclib-node#1530):
+    `BlockIndex.locator_entries`, `BlockIndex.get_block_locator_hashes`
+    and `p2p.chain_sync`'s own are its callers.
+
+    Core reaches each ancestor with `GetAncestor`. Where `block_hash` is
+    on `header_index`, which holds the best header chain by height, the
+    ancestor at a height is that entry of it, read in constant time; a
+    block anywhere else is walked back through `get_ancestor`'s skip
+    pointers, the same blocks at a cost logarithmic in the distance.
+    """
+    height = block_index.header_dict[block_hash].index
+    on_header_index = block_index.header_index_pos.get(block_hash) == height
+    step = 1
+    have: list[bytes] = []
+    while True:
+        have.append(block_hash)
+        if height == 0:
+            return have
+        height = max(height - step, 0)
+        if on_header_index:
+            block_hash = block_index.header_index[height]
+        else:
+            # always found: `height` is below `block_hash`'s own
+            block_hash = cast("bytes", block_index.get_ancestor(block_hash, height))
+        if len(have) > 10:  # noqa: PLR2004 -- Core's own bare 10
+            step *= 2
 
 
 def block_time(header: BlockHeader) -> int:
@@ -368,7 +407,7 @@ class BlockIndex:
         self.header_index: list[bytes] = []
 
         # header_index's own hash -> position, kept beside it rather
-        # than computed from it: `get_block_locator_hashes` and
+        # than computed from it: `locator_entries` and
         # `p2p.block_availability`'s block download ask where a block
         # is on header_index, which holds one entry per header this node
         # has ever indexed -- the whole known chain -- so a membership
@@ -528,6 +567,10 @@ class BlockIndex:
                 walk = header_dict[walk].header.previous_block_hash
                 walk_height -= 1
         return walk
+
+    def locator_entries(self, block_hash: bytes) -> list[bytes]:
+        """Return a block locator from `block_hash`: `locator_entries`'s."""
+        return locator_entries(self, block_hash)
 
     def last_common_ancestor(self, first: bytes, second: bytes) -> bytes:
         """Return the fork point of two blocks: Core's `LastCommonAncestor`.
@@ -881,8 +924,17 @@ class BlockIndex:
     # header failing `ContextualCheckBlockHeader` and returns, so the
     # headers already accepted ahead of it, indexed one at a time as
     # they were accepted, stay indexed. btclib-org/btclib-node#1348
+    #
+    # `min_pow_checked` is Core's own parameter of the same name: where it
+    # is false, a new header passing every check above is refused as
+    # `too-little-chainwork` rather than indexed, after those checks as in
+    # Core, so a header that is also invalid is refused for that instead.
     def _insert_valid_headers(
-        self, headers: list[BlockHeader], *, punish_cached_invalid: bool
+        self,
+        headers: list[BlockHeader],
+        *,
+        punish_cached_invalid: bool,
+        min_pow_checked: bool,
     ) -> None:
         now = datetime.now(UTC)
         current_work = self.chainwork[self.active_chain[-1]]
@@ -910,6 +962,13 @@ class BlockIndex:
                     "Refused a header, keeping the ones before it: %s", e
                 )
                 raise
+            if not min_pow_checked:
+                self.logger.debug(
+                    "AcceptBlockHeader: not adding new block header %s, "
+                    "missing anti-dos proof-of-work validation",
+                    header.hash.hex(),
+                )
+                raise LowWorkHeaderError
 
             header_hash = header.hash
             height = parent_height + 1
@@ -998,7 +1057,11 @@ class BlockIndex:
                 self.header_index_pos[added_hash] = base + offset
 
     def add_headers(
-        self, headers: Iterable[BlockHeader], *, punish_cached_invalid: bool = False
+        self,
+        headers: Iterable[BlockHeader],
+        *,
+        punish_cached_invalid: bool = False,
+        min_pow_checked: bool = True,
     ) -> bytes | None:
         """Validate `headers` as one batch, then index each in turn.
 
@@ -1007,7 +1070,12 @@ class BlockIndex:
         nothing this index knows at all. `punish_cached_invalid` is
         whether a header already marked invalid is a `MisbehavingError`,
         as Core has it for an outbound peer, rather than a
-        `BTClibValueError`.
+        `BTClibValueError`. `min_pow_checked` is whether the caller has
+        checked the chain's work against `p2p.headers_sync`'s anti-DoS
+        threshold, a `LowWorkHeaderError` being what a new header gets
+        where it has not. True by default: `p2p.callbacks.headers` checks
+        before calling, and Core's RPCs pass true, which leaves
+        `p2p.callbacks.block` the one caller that can pass false.
         """
         # The batch's own proof of work and continuity are taken or
         # refused whole, ahead of indexing anything: chainwork is
@@ -1020,7 +1088,11 @@ class BlockIndex:
         # at a time by then, stay indexed. btclib-org/btclib-node#1348
         headers = list(headers)
         self._validate_header_batch(headers)
-        self._insert_valid_headers(headers, punish_cached_invalid=punish_cached_invalid)
+        self._insert_valid_headers(
+            headers,
+            punish_cached_invalid=punish_cached_invalid,
+            min_pow_checked=min_pow_checked,
+        )
 
         # The header a caller should resume a sync from: the highest one
         # this batch carried that is indexed now, new or already known.
@@ -1071,27 +1143,7 @@ class BlockIndex:
     def get_block_locator_hashes(self, start: bytes | None = None) -> list[bytes]:
         """Return a block locator over `header_index`, its own best known chain.
 
-        Exponentially sparser going back from `start`, a header of
-        `header_index` and its tip where none is given, always including
-        its genesis -- the shape Core's own `LocatorEntries` (`src/chain.cpp`,
-        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) builds. `header_index`
-        is indexed by height, so a position in it doubles as the height Core
-        walks: `height` here is Core's `index->nHeight`, and `step` doubles
-        once `block_locators` holds more than ten entries, matched rather
-        than named, since naming it here would claim a meaning Core's own
-        algorithm never gave it.
+        `locator_entries` from `start`, a header of `header_index`, or
+        from its tip where none is given.
         """
-        height = (
-            len(self.header_index) - 1
-            if start is None
-            else self.header_index_pos[start]
-        )
-        step = 1
-        block_locators: list[bytes] = []
-        while True:
-            block_locators.append(self.header_index[height])
-            if height == 0:
-                return block_locators
-            height = max(height - step, 0)
-            if len(block_locators) > 10:  # noqa: PLR2004
-                step *= 2
+        return locator_entries(self, self.header_index[-1] if start is None else start)

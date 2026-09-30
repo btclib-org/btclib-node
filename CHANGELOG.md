@@ -1439,6 +1439,17 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   reject reason**, rather than `-32603` "Internal Error" off an
   unrecognized `Tx.assert_valid` message (closes #1447).
 
+### A low-work headers chain is synced twice before any of it is stored
+
+- **Headers below the anti-DoS work threshold go through Core's
+  `HeadersSyncState` before any is indexed** (closes #1246).
+- **A block's new low-work header is refused, unpunished** (closes #1505).
+
+### One `LocatorEntries`
+
+- **Every block locator is built by `block_index.locator_entries`, read
+  off `header_index` by height where the block is on it** (closes #1530).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

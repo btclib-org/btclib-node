@@ -1189,9 +1189,11 @@ def _peer_entry(
     # asked (p2p.callbacks.sendcmpct), Core's `m_bip152_highbandwidth_from`.
     entry["bip152_hb_to"] = False
     entry["bip152_hb_from"] = p2p_conn.requested_hb_cmpctblocks
-    # -1, Core's answer where no low-work headers presync runs, which
-    # this node never runs.
-    entry["presynced_headers"] = -1
+    # Core's `GetPresyncHeight` while a low-work headers sync runs with
+    # the peer, in either of its phases, and -1 where none does
+    entry["presynced_headers"] = (
+        -1 if p2p_conn.headers_sync is None else p2p_conn.headers_sync.presync_height
+    )
     block_index = node.chainstate.block_index
     entry["synced_headers"], entry["synced_blocks"] = _synced_heights(
         block_index, p2p_conn.block_availability
