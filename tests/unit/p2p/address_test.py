@@ -610,7 +610,7 @@ def test_a_refused_dial_does_not_cost_the_full_timeout() -> None:
 
 
 def a_seed_host(name: str) -> str:
-    """Return the `x9.` subdomain `get_addr_from_dns` asks of seed `name`.
+    """Return the `x9.` subdomain `query_dns_seed` asks of seed `name`.
 
     `int(SEEDS_SERVICE_FLAGS)` is 9, `NODE_NETWORK | NODE_WITNESS`.
     """
@@ -654,16 +654,16 @@ def a_seed_answer(ip: str) -> NetworkAddressV2:
     return peer_address(ip, 18444, services=SEEDS_SERVICE_FLAGS)
 
 
-def test_the_seeds_that_answer_fill_the_table_and_the_rest_are_returned(
+def test_a_seed_that_fails_is_returned_and_a_winner_fills_the_table(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A seed's `x9.` that fails is returned; a winner fills the table.
 
     `down.example`'s subdomain raises `gaierror` and contributes nothing
-    to the table, but is named in the returned list, for
-    `P2pManager` to queue as an addr-fetch; every address
-    `up.example`'s subdomain answers with lands in `peer_db.addresses`,
-    on the chain's own port, `18444`, and not `8333`.
+    to the table, but is what this returns, for `P2pManager` to queue
+    as an addr-fetch; every address `up.example`'s subdomain answers
+    with lands in `peer_db.addresses`, on the chain's own port, `18444`,
+    and not `8333`.
     """
     peer_db = a_peer_db(a_chain(["down.example", "up.example"]))
     loop = FakeLoop(
@@ -673,8 +673,8 @@ def test_the_seeds_that_answer_fill_the_table_and_the_rest_are_returned(
         }
     )
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
-    unanswered = asyncio.run(peer_db.get_addr_from_dns())
-    assert unanswered == ["down.example"]
+    assert asyncio.run(peer_db.query_dns_seed("down.example")) == "down.example"
+    assert asyncio.run(peer_db.query_dns_seed("up.example")) is None
     assert peer_db.addresses == {
         a_seed_answer("1.2.3.4"),
         a_seed_answer("5.6.7.8"),
@@ -690,24 +690,20 @@ def test_a_seed_answering_nothing_is_returned_too(
     peer_db = a_peer_db(a_chain(["empty.example"]))
     loop = FakeLoop({a_seed_host("empty.example"): []})
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
-    unanswered = asyncio.run(peer_db.get_addr_from_dns())
-    assert unanswered == ["empty.example"]
+    assert asyncio.run(peer_db.query_dns_seed("empty.example")) == "empty.example"
     assert peer_db.addresses == set()
 
 
-def test_every_seed_that_answers_is_taken_and_a_host_two_of_them_share_is_one(
+def test_every_seed_queried_is_taken_and_a_host_two_of_them_share_is_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The table after a DNS lookup is the union of every seed's answer.
+    """The table after two lookups is the union of both seeds' answers.
 
-    Two seeds share one address here: the table is the union over all
-    of them and not the last one queried, since a lookup that started
-    over per seed would leave a node with whatever the seed at the end
-    of the list happened to know.
+    Two seeds share one address here: the table is the union over both
+    calls and not only the last one, since a lookup that started over
+    per seed would leave a node with whatever the seed queried last
+    happened to know.
     """
-    # the table is the union over the seeds and not the last answer:
-    # a lookup that starts over per seed leaves a node with whatever
-    # the seed at the end of the list happened to know
     peer_db = a_peer_db(a_chain(["one.example", "two.example"]))
     loop = FakeLoop(
         {
@@ -716,8 +712,8 @@ def test_every_seed_that_answers_is_taken_and_a_host_two_of_them_share_is_one(
         }
     )
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
-    unanswered = asyncio.run(peer_db.get_addr_from_dns())
-    assert unanswered == []
+    assert asyncio.run(peer_db.query_dns_seed("one.example")) is None
+    assert asyncio.run(peer_db.query_dns_seed("two.example")) is None
     assert peer_db.addresses == {
         a_seed_answer("1.2.3.4"),
         a_seed_answer("5.6.7.8"),
@@ -733,8 +729,7 @@ def test_a_seed_answering_past_the_cap_is_taken_only_up_to_it(
     ips = [f"1.2.{i}.4" for i in range(40)]
     loop = FakeLoop({a_seed_host("many.example"): ips})
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
-    unanswered = asyncio.run(peer_db.get_addr_from_dns())
-    assert unanswered == []
+    assert asyncio.run(peer_db.query_dns_seed("many.example")) is None
     assert len(peer_db.addresses) == 32
 
 
@@ -766,34 +761,8 @@ def test_a_seed_answering_with_ipv6_gives_up_its_host_and_its_port(
     """
     peer_db = a_peer_db(a_chain(["v6.example"]))
     monkeypatch.setattr(asyncio, "get_running_loop", FakeIpv6Loop)
-    assert asyncio.run(peer_db.get_addr_from_dns()) == []
+    assert asyncio.run(peer_db.query_dns_seed("v6.example")) is None
     assert peer_db.addresses == {a_seed_answer("2a01:4f8::1")}
-
-
-def test_a_node_that_already_knows_peers_does_not_ask_the_seeds(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """`ask_dns_nodes` false skips the DNS lookup, checked at the lookup itself.
-
-    `get_running_loop` is patched to fail the test outright rather than
-    to record that it was called: a flag set from inside an `or`'s
-    right-hand side (`asked.append(True) or FakeLoop({})`) would look
-    equivalent but is not, since `list.append` returns `None` and that
-    branch runs every time regardless of whether the left side already
-    holds a value. Failing where the call would happen has no such gap.
-    """
-    peer_db = a_peer_db(a_chain(["up.example"]))
-    peer_db.addresses.add(peer_address("1.2.3.4", 8333))
-    peer_db.ask_dns_nodes = False
-    # the seed lookup fails where it happens rather than being recorded
-    # and asserted about afterwards: `asked.append(True) or FakeLoop({})`
-    # said the same thing through the right-hand side of an `or` whose
-    # left one is `None` every time -- `list.append` returns nothing,
-    # so the fallback was the whole of it.
-    monkeypatch.setattr(
-        asyncio, "get_running_loop", lambda: pytest.fail("asked the seeds")
-    )
-    assert asyncio.run(peer_db.get_addr_from_dns()) == []
 
 
 def test_an_address_is_drawn_from_the_ones_that_can_be_dialled() -> None:
@@ -1304,43 +1273,47 @@ def test_an_address_that_answered_survives_a_restart_and_is_drawn(
     second.close()
 
 
-def test_a_fresh_store_asks_the_seeds(tmp_path: Path) -> None:
-    """A brand-new, empty store starts out willing to ask the DNS seeds."""
+def test_a_fresh_store_has_size_zero(tmp_path: Path) -> None:
+    """A brand-new store starts out at Core's own `addrman.Size()` of 0."""
     peer_db = a_peer_db(data_dir=tmp_path)
-    assert peer_db.ask_dns_nodes
+    assert peer_db.size == 0
     peer_db.close()
 
 
-def test_a_store_holding_only_unconfirmed_gossip_still_asks_the_seeds(
-    tmp_path: Path,
-) -> None:
-    """A store that only ever heard gossip, none of it confirmed, still asks.
+def test_size_counts_unconfirmed_gossip_too(tmp_path: Path) -> None:
+    """`size` counts every known address, confirmed or not, as `Size()` does.
 
-    #89: a table that is not empty but is not dialable either -- a
-    seed that answered with AAAA records alone leaves exactly this --
-    is not a reason to skip the seeds.
+    A restart with nothing but gossip, none of it confirmed, is not an
+    empty table: `P2pManager._dns_address_seed` waits between batches
+    of seeds rather than asking every one of them at once
+    (btclib-org/btclib-node#1265).
     """
-    # #89: a table that is not empty but is not dialable either -- a
-    # seed that answered with AAAA records alone leaves exactly this --
-    # is not a reason to skip the seeds
     first = a_peer_db(data_dir=tmp_path)
-    first.add_addresses([peer_address("2a01:4f8::1", 8333)])
+    first.add_addresses([peer_address("1.2.3.4", 8333)])
     first.close()
 
     second = a_peer_db(data_dir=tmp_path)
-    assert second.ask_dns_nodes
+    assert second.size == 1
     second.close()
 
 
-def test_a_store_with_a_recently_answered_address_skips_the_seeds(
+def test_size_counts_a_gossiped_and_answered_address_once_each(
     tmp_path: Path,
 ) -> None:
-    """A store restarting with a recently confirmed address skips the seeds.
+    """One endpoint, gossiped and confirmed, is one row of `size`, not two.
 
-    `ask_dns_nodes` is decided from `get_active_addresses()` at
-    construction, filtered to what `can_connect` accepts, so a durable
-    active row read back from a fresh store answers the same way a
-    freshly confirmed one in memory would.
+    Both the known row and the answered row are read back after a
+    restart, and `size` counts the endpoint once, as Core's
+    `addrman.Size()` counts a tried entry once and never as a new one
+    too (`AddrManImpl::Good_` moves it rather than duplicating it,
+    `src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    This tree's own two-table split leaves the row in both `addresses`
+    and `active_addresses` (`address_sampler`'s own docstring says so),
+    so counting the union of their keys, not the sum of their lengths,
+    is what keeps this test's name true (ISS 1265: a `bitcoind` this
+    node has actually handshaken with, previously double-counted here,
+    is what pushed `PeerDB.size` past `_DNS_SEEDS_DELAY_PEER_THRESHOLD`
+    twice as fast as Core's own table would).
     """
     first = a_peer_db(data_dir=tmp_path)
     answered = peer_address("1.2.3.4", 8333)
@@ -1349,19 +1322,41 @@ def test_a_store_with_a_recently_answered_address_skips_the_seeds(
     first.close()
 
     second = a_peer_db(data_dir=tmp_path)
-    assert not second.ask_dns_nodes
+    assert second.size == 1
     second.close()
 
 
-def test_a_stale_answered_address_no_longer_holds_off_the_seeds(
+def test_size_stays_put_across_a_handshake_with_a_gossiped_endpoint(
+    tmp_path: Path,
+) -> None:
+    """A handshake with an already-gossiped endpoint does not grow `size`.
+
+    One `PeerDB`, no restart: gossip through `add_addresses`, read
+    `size`, then a handshake through `add_active_address` for the same
+    endpoint, read `size` again. Core's `addrman.Size()` does not grow
+    across `Good_` either -- it moves the entry from the new table to
+    the tried one rather than adding a second (`AddrManImpl::Good_`,
+    `src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    """
+    peer_db = a_peer_db(data_dir=tmp_path)
+    address = peer_address("1.2.3.4", 8333)
+    peer_db.add_addresses([address])
+    assert peer_db.size == 1
+    peer_db.add_active_address(address)
+    assert peer_db.size == 1
+    peer_db.close()
+
+
+def test_a_stale_answered_address_no_longer_counts_towards_size(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An active address recorded past the horizon no longer skips the seeds.
+    """An active row past the horizon is pruned before `size` reads it.
 
     `time.time` is patched to 31 days in the past only for the
     `add_active_address` call, so the row is written stale rather than
-    aged after the fact; a fresh `PeerDB` on the same store reads it
-    back past `_ADDRMAN_HORIZON` and asks the seeds anyway.
+    aged after the fact; `__init__` (`get_active_addresses`, above)
+    prunes it before construction returns, so only the endpoint's own
+    gossiped row is left to count.
     """
     first = a_peer_db(data_dir=tmp_path)
     stale = peer_address("1.2.3.4", 8333)
@@ -1373,17 +1368,17 @@ def test_a_stale_answered_address_no_longer_holds_off_the_seeds(
     first.close()
 
     second = a_peer_db(data_dir=tmp_path)
-    assert second.ask_dns_nodes
+    assert second.size == 1
     second.close()
 
 
-def test_a_store_answered_a_day_ago_still_skips_the_seeds(
+def test_a_store_answered_a_day_ago_keeps_its_size(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """ISS 1318: a node down for a day restarts with its answered rows.
 
     Core's tried table survives a restart of any length under
-    `ADDRMAN_HORIZON`, so the store is not treated as empty.
+    `ADDRMAN_HORIZON`, so `size` still counts the row.
     """
     first = a_peer_db(data_dir=tmp_path)
     answered = peer_address("1.2.3.4", 8333)
@@ -1395,7 +1390,7 @@ def test_a_store_answered_a_day_ago_still_skips_the_seeds(
     first.close()
 
     second = a_peer_db(data_dir=tmp_path)
-    assert not second.ask_dns_nodes
+    assert second.size == 1
     assert [a.address for a in second.get_active_addresses()] == [answered.address]
     second.close()
 
@@ -1434,8 +1429,7 @@ def test_a_stale_answered_row_does_not_survive_a_restart(
 ) -> None:
     """A stale active row is gone from the store by the time a restart returns.
 
-    `__init__` already calls `get_active_addresses` once, to decide
-    `ask_dns_nodes`, so the pruning
+    `__init__` already calls `get_active_addresses` once, so the pruning
     `test_get_active_addresses_deletes_a_stale_row_from_the_store`
     checks explicitly also happens as a side effect of just opening a
     second `PeerDB` on the same store.
@@ -1450,9 +1444,9 @@ def test_a_stale_answered_row_does_not_survive_a_restart(
     first.close()
 
     second = a_peer_db(data_dir=tmp_path)
-    # `__init__` already calls `get_active_addresses` once, to decide
-    # `ask_dns_nodes`, so the row is gone from the store by the time
-    # construction returns, where the gossiped row it was known by stays
+    # `__init__` already calls `get_active_addresses` once, so the row
+    # is gone from the store by the time construction returns, where
+    # the gossiped row it was known by stays
     assert second.db is not None
     assert [key for key, _ in second.db] == [
         b"known-" + address_module.endpoint_key(stale)

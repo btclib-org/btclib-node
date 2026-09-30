@@ -253,6 +253,33 @@ _HELP_GETBLOCKHEADER = (
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "getblockheader", "params": ["00000000c937983704a73af28acdec37b049d214adbda81d7e2a3dd146f6ed09"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
+_HELP_GETCHAINTIPS = (
+    "getchaintips\n"
+    "\n"
+    "Return information about all known tips in the block tree, including the main chain as well as orphaned branches.\n"
+    "\n"
+    "Result:\n"
+    "[                        (json array)\n"
+    "  {                      (json object)\n"
+    '    "height" : n,        (numeric) height of the chain tip\n'
+    '    "hash" : "hex",      (string) block hash of the tip\n'
+    '    "branchlen" : n,     (numeric) zero for main chain, otherwise length of branch connecting the tip to the main chain\n'
+    '    "status" : "str"     (string) status of the chain, "active" for the main chain\n'
+    "                         Possible values for status:\n"
+    '                         1.  "invalid"               This branch contains at least one invalid block\n'
+    '                         2.  "headers-only"          Not all blocks for this branch are available, but the headers are valid\n'
+    '                         3.  "valid-headers"         All blocks are available for this branch, but they were never fully validated\n'
+    '                         4.  "valid-fork"            This branch is not part of the active chain, but is fully validated\n'
+    '                         5.  "active"                This is the tip of the active main chain, which is certainly valid\n'
+    "  },\n"
+    "  ...\n"
+    "]\n"
+    "\n"
+    "Examples:\n"
+    "> bitcoin-cli getchaintips \n"
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "getchaintips", "params": []}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
 _HELP_GETMEMPOOLINFO = (
     "getmempoolinfo\n"
     "\n"
@@ -347,6 +374,46 @@ _HELP_GETRAWMEMPOOL = (
     "Examples:\n"
     "> bitcoin-cli getrawmempool true\n"
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "getrawmempool", "params": [true]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
+_HELP_GETTXOUT = (
+    'gettxout "txid" n ( include_mempool )\n'
+    "\n"
+    "Returns details about an unspent transaction output.\n"
+    "\n"
+    "Arguments:\n"
+    "1. txid               (string, required) The transaction id\n"
+    "2. n                  (numeric, required) vout number\n"
+    "3. include_mempool    (boolean, optional, default=true) Whether to include the mempool. Note that an unspent output that is spent in the mempool won't appear.\n"
+    "\n"
+    "Result (If the UTXO was not found):\n"
+    "null    (json null)\n"
+    "\n"
+    "Result (Otherwise):\n"
+    "{                             (json object)\n"
+    '  "bestblock" : "hex",        (string) The hash of the block at the tip of the chain\n'
+    '  "confirmations" : n,        (numeric) The number of confirmations\n'
+    '  "value" : n,                (numeric) The transaction value in BTC\n'
+    '  "scriptPubKey" : {          (json object)\n'
+    '    "asm" : "str",            (string) Disassembly of the output script\n'
+    '    "desc" : "str",           (string) Inferred descriptor for the output\n'
+    '    "hex" : "hex",            (string) The raw output script bytes, hex-encoded\n'
+    '    "type" : "str",           (string) The type, eg pubkeyhash\n'
+    '    "address" : "str"         (string, optional) The Bitcoin address (only if a well-defined address exists)\n'
+    "  },\n"
+    '  "coinbase" : true|false     (boolean) Coinbase or not\n'
+    "}\n"
+    "\n"
+    "Examples:\n"
+    "\n"
+    "Get unspent transactions\n"
+    "> bitcoin-cli listunspent \n"
+    "\n"
+    "View the details\n"
+    '> bitcoin-cli gettxout "txid" 1\n'
+    "\n"
+    "As a JSON-RPC call\n"
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "gettxout", "params": ["txid", 1]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
 _HELP_GETTXOUTSETINFO = (
@@ -973,8 +1040,10 @@ HELP_TEXT: dict[str, str] = {
     "getblockcount": _HELP_GETBLOCKCOUNT,
     "getblockhash": _HELP_GETBLOCKHASH,
     "getblockheader": _HELP_GETBLOCKHEADER,
+    "getchaintips": _HELP_GETCHAINTIPS,
     "getmempoolinfo": _HELP_GETMEMPOOLINFO,
     "getrawmempool": _HELP_GETRAWMEMPOOL,
+    "gettxout": _HELP_GETTXOUT,
     "gettxoutsetinfo": _HELP_GETTXOUTSETINFO,
     "pruneblockchain": _HELP_PRUNEBLOCKCHAIN,
     "help": _HELP_HELP,
@@ -1005,8 +1074,10 @@ CATEGORY: dict[str, str] = {
     "getblockcount": "Blockchain",
     "getblockhash": "Blockchain",
     "getblockheader": "Blockchain",
+    "getchaintips": "Blockchain",
     "getmempoolinfo": "Blockchain",
     "getrawmempool": "Blockchain",
+    "gettxout": "Blockchain",
     "gettxoutsetinfo": "Blockchain",
     "pruneblockchain": "Blockchain",
     "help": "Control",

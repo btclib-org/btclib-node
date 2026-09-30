@@ -225,12 +225,19 @@ jobs:
         shell: bash
         env:
           NO_BINARY: ${{ matrix.no-binary || false }}
+          # the tag release.yml passes and the wait above held for, so the
+          # install takes that version and not whichever the runner's view
+          # of the index calls newest; empty on the schedule and a
+          # dispatch, where the newest is the one wanted
+          TAG: ${{ inputs.version }}
         run: |
           uv venv --python 3.14
+          requirement=btclib-node
+          if [ -n "$TAG" ]; then requirement="btclib-node==${TAG#v}"; fi
           if [ "$NO_BINARY" = "true" ]; then
-            uv pip install --verbose --no-binary btclib-node btclib-node
+            uv pip install --verbose --no-binary btclib-node "$requirement"
           else
-            uv pip install --verbose --only-binary btclib-node btclib-node
+            uv pip install --verbose --only-binary btclib-node "$requirement"
           fi
       # is_libsecp256k1_serving is what the header above says a bare
       # import cannot see: this package names no extra of its own that
