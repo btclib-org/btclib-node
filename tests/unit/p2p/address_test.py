@@ -315,6 +315,34 @@ def test_an_answered_address_is_kept_until_is_terrible_ages_it_out(
     assert peer_db.active_addresses == expected
 
 
+def test_a_row_tried_within_the_last_minute_is_never_aged_out() -> None:
+    """ISS 1435: `IsTerrible`'s `m_last_try` guard runs ahead of its time tests.
+
+    `terrible`'s own stamp is 31 days old, past `_ADDRMAN_HORIZON`, but
+    `attempt` marks it tried just now, and the grace keeps it regardless.
+    """
+    peer_db = a_peer_db()
+    now = int(time.time())
+    terrible = peer_address("1.2.3.4", 18444, timestamp=now - 31 * 24 * 3600)
+    peer_db.add_addresses([terrible])
+    peer_db.active_addresses.append(terrible)
+    peer_db.attempt(terrible)
+    assert peer_db.get_active_addresses() == [terrible]
+    assert peer_db.active_addresses == [terrible]
+
+
+def test_the_recent_try_grace_expires_after_a_minute() -> None:
+    """ISS 1435: past the grace, `terrible`'s own time tests apply again."""
+    peer_db = a_peer_db()
+    now = time.time()
+    terrible = peer_address("1.2.3.4", 18444, timestamp=int(now) - 31 * 24 * 3600)
+    peer_db.add_addresses([terrible])
+    peer_db.active_addresses.append(terrible)
+    peer_db._last_try[address_module.endpoint_key(terrible)] = now - 61
+    assert peer_db.get_active_addresses() == []
+    assert peer_db.active_addresses == []
+
+
 def test_the_two_ip_networks_are_told_apart_by_the_text_of_the_address() -> None:
     """`peer_address` reads the network id and the field width off the text.
 
@@ -1124,6 +1152,22 @@ def test_an_answered_endpoint_is_drawn_from_the_answered_table_alone() -> None:
     tried, new = cast("Any", peer_db.address_sampler()).args
     assert [a.address for a in tried] == [answered.address]
     assert [a.address for a in new] == [gossiped.address]
+
+
+def test_the_tried_side_draws_a_row_terrible_by_age_as_select_does() -> None:
+    """ISS 1434: Core's `Select_` never calls `IsTerrible`, unlike `GetAddr_`.
+
+    `terrible`'s stamp is 31 days old, past `_ADDRMAN_HORIZON`: excluded
+    from `get_active_addresses`'s own pruned answer, as `getaddr` would
+    see it, but still drawable from the tried side of `address_sampler`.
+    """
+    peer_db = a_peer_db()
+    now = int(time.time())
+    terrible = peer_address("1.2.3.4", 8333, timestamp=now - 31 * 24 * 3600)
+    peer_db.active_addresses.append(terrible)
+    tried, _ = cast("Any", peer_db.address_sampler()).args
+    assert [a.address for a in tried] == [terrible.address]
+    assert peer_db.get_active_addresses() == []
 
 
 @pytest.mark.parametrize(

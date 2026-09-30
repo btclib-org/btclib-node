@@ -250,7 +250,35 @@ def test_reject_block_whose_coinbase_does_not_commit_to_its_height(
 
     assert bad.header.hash not in block_index.active_chain
     assert len(block_index.active_chain) == connected
-    rejected_because(node, bad, "invalid coinbase height")
+    rejected_because(node, bad, "bad-cb-height")
+
+
+def test_reject_block_whose_coinbase_height_and_a_transaction_are_both_bad(
+    node: Node,
+) -> None:
+    """Core checks finality before the coinbase height commitment.
+
+    A wrong-height coinbase (BIP34) and a non-final transaction fail in
+    the same block; `bad-txns-nonfinal` is the answer, Core's own order
+    (`ContextualCheckBlock`, `src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). ISS 1335.
+    """
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, chain)
+    connected = len(block_index.active_chain)
+
+    funding = chain[0].transactions[0]
+    nonfinal = locked_spend(
+        funding, funding.vout[0].value, lock_time=2_000_000_000, sequence=0
+    )
+    bad = build_block(
+        chain[-1].header.hash, [generate_coinbase(), nonfinal], len(chain)
+    )
+    connect(node, [bad])
+
+    assert bad.header.hash not in block_index.active_chain
+    assert len(block_index.active_chain) == connected
+    rejected_because(node, bad, "bad-txns-nonfinal")
 
 
 def test_reject_block_spending_a_coinbase_one_short_of_maturity(node: Node) -> None:
