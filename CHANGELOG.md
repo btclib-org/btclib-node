@@ -1387,6 +1387,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **It answers Core's JSON shape for a hex-decoded transaction**, with no
   chain or mempool lookup (closes #1398).
 
+### `sendrawtransaction` and `testmempoolaccept` answer `bad-txns-oversize`
+
+- **A transaction whose only fault is its own size answers Core's own
+  reject reason**, rather than `-32603` "Internal Error" off an
+  unrecognized `Tx.assert_valid` message (closes #1447).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

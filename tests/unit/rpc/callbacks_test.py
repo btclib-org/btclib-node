@@ -2602,6 +2602,44 @@ def test_a_transaction_violating_two_rules_answers_cores_own_first_one() -> None
     assert verdict["reject-reason"] == "bad-txns-vout-empty"
 
 
+def test_an_oversize_tx_with_no_other_violation_answers_bad_txns_oversize() -> None:
+    """A transaction whose only fault is its size is refused as Core refuses it.
+
+    `CheckTransaction` (`src/consensus/tx_check.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) checks `bad-txns-oversize`
+    -- a transaction's own stripped size, times `WITNESS_SCALE_FACTOR`,
+    over `MAX_BLOCK_WEIGHT` -- ahead of the per-output amount checks;
+    `Tx.assert_valid` (btclib 2026.9.30) raises its own message for the
+    same rule at the same point (btclib-org/btclib#2420), which
+    `_reject_reason` now matches by its fixed prefix. 101 individually
+    small, positive-value outputs, none of them triggering any other
+    rule (no empty vin/vout, no duplicate input, a coinbase-free single
+    ordinary prevout, a total well under `MAX_MONEY`): before this
+    translation existed, `_reject_reason` fell through to `raise error`
+    on `Tx.assert_valid`'s own oversize message, which
+    `rpc.main._execute`'s uniform catch turned into `-32603` "Internal
+    Error" rather than Core's own `-26` `bad-txns-oversize`.
+    btclib-org/btclib-node#1447
+    """
+    outputs = [
+        TxOut(value=1000, script_pub_key=script.serialize([b"\x22" * 9900]))
+        for _ in range(101)
+    ]
+    tx = a_malformed_tx(vout=outputs)
+    stripped_size = len(tx.serialize(include_witness=False, check_validity=False))
+    assert stripped_size * 4 > MAX_BLOCK_WEIGHT
+    raw = tx.serialize(include_witness=False, check_validity=False).hex()
+
+    with pytest.raises(RpcError) as raised:
+        send_raw_transaction(a_node(), _CONN, [raw])
+    assert raised.value.code == RPCErrorCode.VERIFY_REJECTED
+    assert raised.value.message == "bad-txns-oversize"
+
+    (verdict,) = mempool_accept(a_node(), _CONN, [[raw]])
+    assert verdict["allowed"] is False
+    assert verdict["reject-reason"] == "bad-txns-oversize"
+
+
 def test_an_unrecognized_assert_valid_message_is_not_swallowed() -> None:
     """`_reject_reason` re-raises what it does not recognize.
 

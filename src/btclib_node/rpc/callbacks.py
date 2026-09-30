@@ -2462,8 +2462,10 @@ _MAX_SATOSHI = 21_000_000 * 100_000_000
 
 
 # Every exact `Tx.assert_valid` message this translates one for one,
-# barring the two amount-range messages: `_amount_reject_reason` below
-# disambiguates those, one btclib message answering for both.
+# barring the amount-range messages `_amount_reject_reason` below
+# disambiguates and the oversize one `_reject_reason` matches by prefix,
+# both carrying a value `Tx.assert_valid` computed and this dict cannot
+# spell in advance.
 _EXACT_REJECT_REASONS = {
     "Missing inputs": "bad-txns-vin-empty",
     "Missing outputs": "bad-txns-vout-empty",
@@ -2471,6 +2473,14 @@ _EXACT_REJECT_REASONS = {
     "Invalid coinbase script size": "bad-cb-length",
     "coinbase input in a non-coinbase transaction": "bad-txns-prevout-null",
 }
+
+# `Tx.assert_valid`'s own oversize message (`btclib/tx/tx.py`, since
+# btclib 2026.9.30, btclib-org/btclib#2420): "invalid transaction size:
+# {size} * {WITNESS_SCALE_FACTOR} > {MAX_BLOCK_WEIGHT}", the last two
+# numbers fixed but the first the transaction's own stripped size, so
+# this is a prefix rather than an entry of `_EXACT_REJECT_REASONS`
+# above. btclib-org/btclib-node#1447
+_OVERSIZE_MESSAGE_PREFIX = "invalid transaction size:"
 
 
 def _amount_reject_reason(tx: Tx, message: str) -> str | None:
@@ -2526,6 +2536,8 @@ def _reject_reason(tx: Tx, error: BTClibException) -> str:
     message = str(error)
     if message in _EXACT_REJECT_REASONS:
         return _EXACT_REJECT_REASONS[message]
+    if message.startswith(_OVERSIZE_MESSAGE_PREFIX):
+        return "bad-txns-oversize"
     reason = _amount_reject_reason(tx, message)
     if reason is not None:
         return reason
@@ -2547,9 +2559,16 @@ def _check_transaction(tx: Tx) -> str | None:
     would too (btclib-org/btclib#2417, btclib-org/btclib#2422).
 
     Core's `bad-txns-oversize` -- a transaction whose own non-witness
-    size alone already exceeds a block's weight limit -- has no
-    `Tx.assert_valid` check behind it to translate and is not answered
-    here. btclib-org/btclib-node#1447
+    size alone already exceeds a block's weight limit -- used to have
+    no `Tx.assert_valid` check behind it to translate, and a
+    transaction breaking only that rule was answered as one this node
+    accepted rather than refused (btclib-org/btclib-node#1447). Closed
+    by the same 2026.9.30 that fixed the check order:
+    `Tx.assert_valid` now raises its own message for it, ahead of the
+    per-output amount checks in `CheckTransaction`'s own order
+    (btclib-org/btclib#2420), and `_reject_reason` matches that message
+    by its fixed prefix, the transaction's own stripped size being the
+    one part of it that varies.
     """
     try:
         tx.assert_valid()
