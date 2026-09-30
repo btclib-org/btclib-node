@@ -146,7 +146,7 @@ def test_many_unpaced_calls_over_one_session_transport_do_not_reset(
     timed out` here means one of 300 individually stalled that long --
     a far larger exposure to external load than any other test carries,
     for a shape neither this file nor `CLAUDE.md`'s own coverage-floor
-    bullets (issue #372, issue #617) already cover.
+    bullet (issue #372, issue #617) already cover.
 
     issue #664 read a run of this test failing standalone as that
     exposure to ordinary contention rather than as a defect, on the

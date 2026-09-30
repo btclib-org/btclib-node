@@ -190,6 +190,11 @@ module docstring is where each flag is named against Bitcoin Core's
 equivalent. Nothing under `src/` opens a file the operator did not name,
 directly or through the datadir.
 
+`PYTEST_XDIST_WORKER_COUNT` is read in any process, not only under
+pytest: `_default_worker_count` in `src/btclib_node/__init__.py` sizes
+`Node.worker_pool` from it, and takes eight where it is not a positive
+integer.
+
 **Bitcoin Core, as an oracle rather than a dependency.**
 `.github/workflows/integration-bitcoind.yml` is the one place this
 node's own answers are checked against a `bitcoind` it does not talk to

@@ -519,3 +519,91 @@ publisher registration through the tag command itself — naming the
 release commit explicitly, which the argumentless `git tag -s v<version>`
 this paragraph could show instead does not — through what to do if a
 release goes wrong; it is not repeated here.
+
+### Following Bitcoin Core
+
+Where this tree reimplements something Bitcoin Core also does — a
+constant, an eviction order, the error an RPC answers a refusal with —
+it **matches Core's behaviour, always**, and the comment beside it names
+the commit Core was read at. The only licence to differ is the
+language: Python-native, fluent or efficient in Python where Core's own
+line is shaped by C++, never a design weighed against Core's on its own
+merits. What differs from Core in consensus or in relay is a difference
+the network sees, so the default is not a matter of taste.
+
+Write the citation as `at bitcoin/bitcoin@<sha>` with `at` on the same
+physical line as the sha: ruff's `ERA001` reads a comment line at a
+time, and `at` glued to the citation is never valid Python
+(btclib-org/btclib-node#471). A citation in a docstring needs none of
+this.
+
+`src/btclib_node/db.py`'s docstring is the worked example of the
+Python-native axis: taking LevelDB's own fork through `rocksdict`, a
+typed wheel on this tree's interpreter, over Core's vendored LevelDB is
+a packaging choice, and the docstring argues the store against Core's on
+those terms.
+
+Mimicry is of the observed behaviour end to end, not of a local
+`catch`: where a layer below differs, the same behaviour can need
+different code above it, and that is still matching. `db.py`'s store
+verifies a per-block checksum on every read
+(btclib-org/btclib-node#641), the guarantee LevelDB gives Core's
+`CDBWrapper::Read` before its deserialize `try` runs. `UtxoIndex`'s two
+`Coin.parse` fallbacks answer `None` for a checksum-clean record that
+does not deserialize, as `CDBWrapper::Read` and
+`CCoinsViewDB::GetCoin` answer "absent" rather than raising
+(btclib-org/btclib-node#650); `ChainstateInconsistencyError`'s docstring
+argues that decision.
+
+A capability Core has that this tree lacks is a gap to close, not a
+constraint to design around, wherever the reason is a library fact
+rather than a decision: the store's per-block checksum is RocksDB's own
+(btclib-org/btclib-node#641), taken in place of a stdlib `sqlite3` that
+ships no checksummed VFS (btclib-org/btclib-node#637).
+
+**A convention of this tree is not on that axis.** Where Core defines
+the surface — an RPC's field names and what they mean, a message's
+semantics — consistency with the rest of this codebase is no reason to
+answer differently from Core: the reader on the other side is a client
+written against Core.
+
+**Units are where that bites hardest.** A feerate here is satoshis per
+kvB wherever one is emitted or read, and Core's `getmempoolinfo` answers
+`mempoolminfee` in BTC per kvB. A field of Core's that this tree answers
+takes Core's unit: the client reading it was written against Core, so
+the internally consistent answer is wrong by eight orders of magnitude
+with nothing to say so. The rule stops where the encoding is not this
+tree's to pick: BIP133's `feefilter` carries satoshis per kvB on the
+wire because BIP133 says so.
+
+What is not legitimate is the silent kind. Where the behaviour departs
+from a source the code cites, the code says so and says what forced it:
+a reader who finds a citation and an unexplained difference cannot tell
+a decision from an oversight. Reading Core's own source is part of
+writing the divergence, because what gets reproduced is what Core does
+rather than what a report said it does.
+
+Core is read from a local checkout brought forward with a fetch and a
+fast-forward on a clean `master`, never written to, rather than fetched
+a file at a time: a raw fetch can come back truncated with nothing to
+say so, missing the function a divergence question is about. The sha the
+checkout lands on is what the comment cites.
+
+The other sha a citation may carry is a released Core's, with the
+release's tag name beside it: a claim about the bitcoind this tree is
+tested against, rather than about Core's tip, is cited at that release's
+tag commit. `.github/workflows/integration-bitcoind.yml` pins the
+release, and a citation reads it there. The tag name is what tells such
+a citation from a stale read, because ancestry does not: a sha read from
+an out-of-date `master` is an ancestor of `master` all the same.
+
+Where that release and Core master behave differently, consensus and
+relay follow the release: the network runs released Cores, so a peer on
+the wire is never speaking master's tip. A peer-refusal rule may go
+stricter than the release ahead of that behaviour landing in one,
+provided the code argues the divergence against the release and cites
+master's sha beside it: refusing a misbehaving peer more readily changes
+nothing an honest peer's messages achieve. `sendcmpct`'s announce octet
+is the case in point: master reads it as a byte and calls `Misbehaving`
+on a value above one, where the release reads a bare bool and refuses
+nothing.

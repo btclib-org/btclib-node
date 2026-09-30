@@ -1364,6 +1364,41 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   than 64 hex digits**, read wherever the minimum chain work is checked
   (closes #1500).
 
+### A malformed `PYTEST_XDIST_WORKER_COUNT` leaves the worker count at eight
+
+- **`_default_worker_count` takes eight where `PYTEST_XDIST_WORKER_COUNT`
+  is not a positive integer**, a non-integer having raised `ValueError`
+  and `0` `ZeroDivisionError` at `import btclib_node` (closes #1555).
+
+### `CLAUDE.md` moves *Following Bitcoin Core* to `CONTRIBUTING.md`
+
+- **`CLAUDE.md` takes the organization's shared primary-checkout section,
+  and *Following Bitcoin Core* moves to `CONTRIBUTING.md`'s last
+  section** (issue btclib-org/.github#1494).
+
+### `-blocknotify` and `-shutdownnotify` join the command line
+
+- **`-blocknotify=<cmd>` runs `%s` as the new tip's hash outside initial
+  block download; `-shutdownnotify=<cmd>` joins every configured command
+  before shutdown goes on** (closes #1519).
+
+### `-startupnotify` joins the command line
+
+- **`-startupnotify=<cmd>` runs a command once the RPC listener answers and
+  start-up has finished** (closes #1449).
+
+### `-alertnotify` joins the command line
+
+- **`-alertnotify=<cmd>` runs a command, `%s` replaced by the sanitized,
+  single-quoted message, whenever this node raises a warning of its own**
+  (issue #1475).
+
+### An invalid chain with more work than the active tip raises a warning
+
+- **More than six blocks' worth raises it to the log, to `-alertnotify`, and
+  to `getblockchaininfo`'s and `getnetworkinfo`'s own new `warnings` field**
+  (closes #1522).
+
 ### `setnetworkactive` disables and enables all p2p activity
 
 - **On `false` it drops every connection, inbound and pending, on
