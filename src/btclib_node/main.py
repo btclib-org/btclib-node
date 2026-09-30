@@ -922,7 +922,7 @@ def is_cached_invalid(block_index: BlockIndex, block: Block) -> bool:
 # bad-cb-height, wherever BIP34 binds (Chain.consensus.bip34_height, per
 # network) -- a spend of a coinbase not yet COINBASE_MATURITY deep via
 # btclib.tx.tx_context.assert_coinbase_maturity, this block's own
-# scripts and amounts via interpreter.check_transactions, and a
+# amounts, sigop cost and scripts via interpreter.check_transactions, and a
 # coinbase paying more than subsidy plus fees via
 # btclib.tx.tx_context.assert_coinbase_value. BIP30 runs earlier still,
 # inside utxo_index.add_block, before this is ever called: its own
@@ -953,7 +953,7 @@ def _validate_block(
 
     for prevouts, _tx in transactions:
         assert_coinbase_maturity(prevouts, index)
-    check_transactions(transactions, index, node, block_hash)
+    check_transactions(transactions, index, node, block_hash, block.transactions[0])
 
     fees = sum(
         sum(coin.tx_out.value for coin in prevouts) - sum(x.value for x in tx.vout)

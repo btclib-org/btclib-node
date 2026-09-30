@@ -47,6 +47,7 @@ from btclib_node.interpreter import (
     get_flags,
     warm,
 )
+from tests import generate_coinbase
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -134,11 +135,14 @@ def make_node() -> Any:
 # about the height-gated flags rather than about the exception table,
 # which is btclib's own to test
 _A_BLOCK_HASH = bytes(32)
+# the candidate block's own coinbase, which check_transactions counts
+# the sigops of and nothing else
+_COINBASE = generate_coinbase(height=1)
 
 
 def test_nothing_to_check_is_not_an_error() -> None:
     """An empty transaction list returns without touching the pool."""
-    check_transactions([], 1, make_node(), _A_BLOCK_HASH)
+    check_transactions([], 1, make_node(), _A_BLOCK_HASH, _COINBASE)
 
 
 def test_a_prevout_count_that_does_not_match_the_inputs_is_refused() -> None:
@@ -146,7 +150,7 @@ def test_a_prevout_count_that_does_not_match_the_inputs_is_refused() -> None:
     # one input, no prevout for it: the caller built the pair wrong, and
     # verifying nothing would look like verifying everything
     with pytest.raises(ValueError, match="prevout count does not match input count"):
-        check_transactions([([], spend(b""))], 1, make_node(), _A_BLOCK_HASH)
+        check_transactions([([], spend(b""))], 1, make_node(), _A_BLOCK_HASH, _COINBASE)
 
 
 def test_a_prevout_count_that_exceeds_the_inputs_is_also_refused() -> None:
@@ -156,7 +160,11 @@ def test_a_prevout_count_that_exceeds_the_inputs_is_also_refused() -> None:
     # a surplus prevout list through to verify_amounts and the pool
     with pytest.raises(ValueError, match="prevout count does not match input count"):
         check_transactions(
-            [(coins([prevout(), prevout()]), spend(b""))], 1, make_node(), _A_BLOCK_HASH
+            [(coins([prevout(), prevout()]), spend(b""))],
+            1,
+            make_node(),
+            _A_BLOCK_HASH,
+            _COINBASE,
         )
 
 
@@ -164,7 +172,35 @@ def test_a_transaction_that_prints_money_is_refused() -> None:
     """An output worth more than its prevout raises before script checks run."""
     tx = spend(script.serialize([b"\x11" * 32]), value=51 * 10**8)
     with pytest.raises(BTClibValueError, match="Invalid transaction amounts"):
-        check_transactions([(coins([prevout()]), tx)], 1, make_node(), _A_BLOCK_HASH)
+        check_transactions(
+            [(coins([prevout()]), tx)], 1, make_node(), _A_BLOCK_HASH, _COINBASE
+        )
+
+
+def test_a_block_s_sigop_cost_is_refused_before_a_later_transaction_s_amounts() -> None:
+    """The first transaction to pass the limit refuses the block, not the last.
+
+    Core's `ConnectBlock` adds each transaction's sigop cost to the
+    block's total before it checks the next one's inputs, so a block
+    whose first spend passes `MAX_BLOCK_SIGOPS_COST` and whose second
+    prints money is `bad-blk-sigops`, not an amounts refusal. The first
+    spend's 19,000 legacy sigops keep it inside `CheckBlock`'s own
+    legacy bound, and its redeem script's 51 bare `OP_CHECKMULTISIG`s,
+    20 each at four, take it past.
+    """
+    redeem = script.serialize(["OP_CHECKMULTISIG"] * 51)
+    over = spend(script.serialize([redeem]))
+    over.vout.append(TxOut(0, script.serialize(["OP_CHECKSIG"] * 19_000)))
+    prints_money = spend(script.serialize([b"\x11" * 32]), value=51 * 10**8)
+    p2sh = prevout(ScriptPubKey.p2sh(redeem).script)
+    with pytest.raises(BTClibValueError, match="bad-blk-sigops"):
+        check_transactions(
+            [(coins([p2sh]), over), (coins([prevout()]), prints_money)],
+            1,
+            make_node(),
+            _A_BLOCK_HASH,
+            _COINBASE,
+        )
 
 
 _PRV = 0x1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF
@@ -312,7 +348,9 @@ def _multi_input_p2wpkh_spend(n: int) -> tuple[list[TxOut], Tx]:
 def test_check_transactions_verifies_every_input_of_a_multi_input_transaction() -> None:
     """`check_transactions` raises nothing when every input verifies."""
     prevouts, tx = _multi_input_p2wpkh_spend(3)
-    check_transactions([(coins(prevouts), tx)], 1, make_node(), _A_BLOCK_HASH)
+    check_transactions(
+        [(coins(prevouts), tx)], 1, make_node(), _A_BLOCK_HASH, _COINBASE
+    )
 
 
 def test_check_transactions_still_raises_when_one_input_does_not_verify() -> None:
@@ -328,7 +366,9 @@ def test_check_transactions_still_raises_when_one_input_does_not_verify() -> Non
     sig, pub = tx.vin[2].script_witness.stack
     tx.vin[2].script_witness = Witness([bytes([sig[0] ^ 1]) + sig[1:], pub])
     with pytest.raises(BlockScriptVerifyError, match="block-script-verify-flag-failed"):
-        check_transactions([(coins(prevouts), tx)], 1, make_node(), _A_BLOCK_HASH)
+        check_transactions(
+            [(coins(prevouts), tx)], 1, make_node(), _A_BLOCK_HASH, _COINBASE
+        )
 
 
 def _count_transaction_wide_serializations(
@@ -400,7 +440,7 @@ def test_check_transactions_builds_the_precomputed_data_once_per_transaction(
         )
     ]
     count = _count_transaction_wide_serializations(monkeypatch)
-    check_transactions(transaction_data, 1, make_node(), _A_BLOCK_HASH)
+    check_transactions(transaction_data, 1, make_node(), _A_BLOCK_HASH, _COINBASE)
     # three transactions, three serializers each called once per
     # transaction by PrecomputedTxData.__init__ -- not once per input,
     # whichever of the 1, 7 or 20 inputs each transaction carries
