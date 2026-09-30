@@ -245,8 +245,9 @@ class BlockStatus(enum.IntEnum):
     `in_active_chain` is on the active chain now; `valid` is a block
     whose content passed validation but that a reorg has since removed
     from the active chain (`_finalize_fork`'s own `to_remove` loop is
-    the only place that sets it). `invalid` is terminal, set on a block
-    itself or on any block built on one already marked `invalid`.
+    the only place that sets it). `invalid` is set on a block itself or
+    on any block built on one already marked `invalid` -- not terminal,
+    since `reconsider` below is exactly what clears it again.
     """
 
     valid_header = 1
@@ -542,15 +543,15 @@ class BlockIndex:
             self.active_chain.append(chain_dict[index])
 
     def generate_block_candidates(self) -> None:
-        """(Re)build `block_candidates` from every `valid_header` past the tip.
+        """Rebuild `block_candidates` over every `valid_header`/`valid` entry.
 
         `init_from_db` calls this once at start-up, over every header the
-        store holds; `invalidate` and `reconsider` below call it again
-        once disconnecting or reconnecting has moved the active chain's
-        own tip work, since a candidate `get_first_candidate` already
-        evicted as stale against the old tip is gone from the deque for
-        good once popped -- reachable again only by rebuilding from
-        `header_dict` whole, the way this does. Sorts `header_dict`
+        store holds; `reconsider` above and `main.invalidate_chain` call
+        it again once disconnecting or reconnecting has moved the active
+        chain's own tip work, since a candidate `get_first_candidate`
+        already evicted as stale against the old tip is gone from the
+        deque for good once popped -- reachable again only by rebuilding
+        from `header_dict` whole, the way this does. Sorts `header_dict`
         itself rather than reading `sorted_header_dict`, the start-up-only
         list `init_from_db` frees right after this call returns there, so
         that a later caller finds the same list this one would have.
@@ -558,6 +559,26 @@ class BlockIndex:
         whatever is there, which only matters past start-up:
         `block_candidates` is empty already the one time `init_from_db`
         calls this.
+
+        `valid` is offered alongside `valid_header` so that a branch a
+        reorg has since displaced -- `_finalize_fork`'s own `to_remove`
+        loop is what sets it -- becomes a candidate again once whatever
+        displaced it is itself invalidated. Core's own `InvalidateBlock`
+        (`src/validation.cpp:3663-3684`, at bitcoin/bitcoin@9be056a8a7,
+        the v31.1 tag) re-inserts an out-of-chain, equal-or-more-work
+        header into `setBlockIndexCandidates` only where
+        `candidate->IsValid(BLOCK_VALID_TRANSACTIONS) &&
+        candidate->HaveNumChainTxs()` both hold (`:3674-3677`) -- so a
+        `valid` block this index still holds the data for is offered,
+        matched here by requiring `downloaded` as well as the status,
+        and one a completed prune has since cleared `downloaded` on
+        (`main.prune_up_to_height`) is not, matching Core rather than
+        the un-downloaded `valid_header` candidates this deque already
+        carries for a different reason: a `valid_header` was never
+        `BLOCK_VALID_TRANSACTIONS` in the first place, so it is not
+        this same reinsertion Core's source is arguing, and changing
+        that pre-existing, separately-argued divergence is out of
+        scope here. btclib-org/btclib-node#1561
         """
         self.block_candidates = deque()
         active_chain_set = set(self.active_chain)
@@ -568,7 +589,9 @@ class BlockIndex:
             if block_hash in active_chain_set:
                 continue
             block_info = self.get_block_info(block_hash)
-            if block_info.status != BlockStatus.valid_header:
+            if block_info.status == BlockStatus.valid and not block_info.downloaded:
+                continue
+            if block_info.status not in (BlockStatus.valid_header, BlockStatus.valid):
                 continue
             work = self.chainwork[block_hash]
             if work > current_work:
@@ -793,11 +816,12 @@ class BlockIndex:
         Core's `ResetBlockFailureFlags` own condition
         (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
         tag): `other_hash` is a descendant where its ancestor at
-        `target`'s height is `target` itself, and an ancestor (`target`
-        is equal or below it) where `target`'s own ancestor at
-        `other_hash`'s height is `other_hash`. `other_hash == target` is
-        the first clause's own degenerate case -- a hash is its own
-        ancestor at its own height -- so nothing here special-cases it.
+        `target`'s height is `target` itself, and an ancestor (`other_hash`
+        is equal or below `target`'s own height) where `target`'s own
+        ancestor at `other_hash`'s height is `other_hash`. `other_hash ==
+        target` is the first clause's own degenerate case -- a hash is
+        its own ancestor at its own height -- so nothing here
+        special-cases it.
         """
         other_height = self.header_dict[other_hash].index
         return (

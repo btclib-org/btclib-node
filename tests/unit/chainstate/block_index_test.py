@@ -640,8 +640,11 @@ def test_generate_block_candidates_2(
 
     With the 200-header fork marked `invalid` instead, a reload's
     `generate_block_candidates` counts every header of the 2000-header
-    chain: `valid_header` status alone is what qualifies a header, and
-    the active chain never had its own status set to anything else here.
+    chain: every one of them is still `valid_header`, never explicitly
+    set to anything else here, and `generate_block_candidates` admits
+    that status same as it always has -- `valid` is the status its own
+    docstring argues admitting too, untouched by this test, since
+    nothing here is ever set to it.
     """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
@@ -655,6 +658,36 @@ def test_generate_block_candidates_2(
     new_chainstate = a_chainstate(None)
     new_block_index = new_chainstate.block_index
     assert len(new_block_index.block_candidates) == 2000
+
+
+def test_generate_block_candidates_admits_a_valid_block_only_if_downloaded(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """A `valid` block still `downloaded` is a candidate; a pruned one isn't.
+
+    Core's own `InvalidateBlock` (`src/validation.cpp:3674-3677`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) gates the identical
+    reinsertion of an out-of-chain, equal-or-more-work header on
+    `candidate->HaveNumChainTxs()`; `generate_block_candidates`'s own
+    docstring argues matching it here with `downloaded`, over
+    `valid_header`, which carries no such gate for a different, already
+    argued reason. btclib-org/btclib-node#1561
+    """
+    chainstate = a_chainstate(None)
+    block_index = chainstate.block_index
+    chain = generate_random_header_chain(3, RegTest().genesis.hash)
+    block_index.add_headers(chain)
+    for header in chain:
+        block_index.set_downloaded(header.hash)
+        block_index.set_status(header.hash, BlockStatus.valid)
+    block_index.generate_block_candidates()
+    assert len(block_index.block_candidates) == 3
+
+    block_index.set_downloaded(chain[0].hash, downloaded=False)
+    block_index.generate_block_candidates()
+
+    assert len(block_index.block_candidates) == 2
+    assert not any(h == chain[0].hash for h, _ in block_index.block_candidates)
 
 
 def test_invalidate_marks_every_header_indexed_on_it_not_only_candidates(
@@ -694,6 +727,42 @@ def test_invalidate_marks_every_header_indexed_on_it_not_only_candidates(
         block_index.get_block_info(sibling[0].hash).status == BlockStatus.valid_header
     )
     assert not victim_hashes & {h for h, _ in block_index.block_candidates}
+    chainstate.close()
+
+
+def test_reconsider_clears_an_invalid_ancestor_through_its_descendant(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """`_shares_lineage`'s own ancestor clause, isolated from any reconnect.
+
+    Called directly, not through `main.reconsider_chain`: a status
+    `reconsider` sets is observable here before any trial connects
+    anything, where a reconnect through the RPC would set the same
+    status on every block of the branch anyway once it succeeds,
+    whether or not the ancestor clause ever fired -- `get_fork_details`
+    walks by hash, not by status, so it is blind to this distinction.
+    `chain[2]` is invalidated, and `chain[-1]`, its own descendant, is
+    what is passed to `reconsider`: the only way `chain[2]`'s own mark
+    is cleared at all is through `_shares_lineage`'s `other_hash` an
+    ancestor of `target` clause, since `chain[2]` is nobody's
+    descendant here.
+    """
+    chainstate = a_chainstate(None)
+    block_index = chainstate.block_index
+    chain = generate_random_header_chain(5, RegTest().genesis.hash)
+    block_index.add_headers(chain)
+    for header in chain:
+        block_index.add_to_active_chain(header.hash)
+    block_index.invalidate(chain[2].hash)
+    for header in chain[2:]:
+        assert block_index.get_block_info(header.hash).status == BlockStatus.invalid
+
+    block_index.reconsider(chain[-1].hash)
+
+    for header in chain[2:]:
+        assert (
+            block_index.get_block_info(header.hash).status == BlockStatus.valid_header
+        )
     chainstate.close()
 
 

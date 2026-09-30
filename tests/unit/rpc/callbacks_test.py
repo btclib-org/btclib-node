@@ -4870,6 +4870,48 @@ def test_invalidate_block_reconnects_a_header_only_branch_it_makes_competitive(
     assert block_index.active_chain[1:] == [b.header.hash for b in lighter]
 
 
+def test_invalidate_block_reconnects_a_branch_it_was_previously_on(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A branch a reorg displaced is a candidate once its winner is invalidated.
+
+    Core's own `rpc_invalidateblock.py` functional test, its first case:
+    connect a two-block chain, then a four-block one from genesis, which
+    reorgs the first one off; invalidating the second chain's own first
+    block reorgs back to the first. `generate_block_candidates`'s own
+    docstring is where offering a `valid`-status block -- what the
+    displaced chain's own blocks become -- as a candidate again is
+    argued, matching Core's own `InvalidateBlock`
+    (`src/validation.cpp:3663-3684`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag). btclib-org/btclib-node#1561
+    """
+    node = regtest_node()
+    first = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, first)
+    second = generate_random_chain(4, node.chain.genesis.hash)
+    connect(node, second)
+    block_index = node.chainstate.block_index
+    assert block_index.active_chain[-1] == second[-1].header.hash
+    for block in first:
+        assert block_index.get_block_info(block.header.hash).status == (
+            BlockStatus.valid
+        )
+
+    invalidate_block(node, _CONN, [second[0].header.hash.hex()])
+
+    assert block_index.active_chain[-1] == first[-1].header.hash
+    assert block_index.active_chain[1:] == [b.header.hash for b in first]
+    for block in first:
+        assert block_index.get_block_info(block.header.hash).status == (
+            BlockStatus.in_active_chain
+        )
+    for block in second:
+        assert block_index.get_block_info(block.header.hash).status == (
+            BlockStatus.invalid
+        )
+
+
+
 def a_block_claiming_an_easier_target_than_the_chain_allows(block: Block) -> Block:
     """Rebuild `block` with `bits` set past regtest's own proof-of-work limit.
 
