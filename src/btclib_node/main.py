@@ -478,19 +478,24 @@ def _reconcile_mempool_for_reorg(
         if removed_block is None:
             err_msg = f"block just removed is missing: {rev_block.hash.hex()}"
             raise ChainstateInconsistencyError(err_msg)
-        for tx in removed_block.transactions[1:]:
-            # a coinbase is never a mempool entrant on any path
-            # into it, and one that is only valid on the branch
-            # just abandoned is never valid again: the output it
-            # spent no longer exists on any chain. Every other
-            # entrant is checked before it is trusted, and this is
-            # the one path into the mempool that skipped that.
-            # btclib-org/btclib-node#85
-            if not readd_ok[rev_block.hash]:
-                # Past Core's own 10-block cap: not attempted at all --
-                # `fAddToMempool=false` -- and whatever already depends
-                # on it in the mempool is now an orphan, exactly the
-                # case `MaybeUpdateMempoolForReorg`'s own `removeRecursive`
+        for tx in removed_block.transactions:
+            # Core's own disconnectpool holds the whole block,
+            # coinbase included (`AddTransactionsFromBlock(block.vtx)`),
+            # and `MaybeUpdateMempoolForReorg` never re-adds one
+            # (`(*it)->IsCoinBase() ||`, `src/validation.cpp`, at
+            # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the output it
+            # spent no longer exists on any chain, so it is never a
+            # mempool entrant on any path into it. What already spends
+            # one of its outputs is the orphan `removeRecursive` takes
+            # out. `verify_mempool_acceptance` would refuse a coinbase
+            # too, so the `is_coinbase` test states Core's rule rather
+            # than deciding the outcome. btclib-org/btclib-node#85
+            if tx.is_coinbase or not readd_ok[rev_block.hash]:
+                # A coinbase, or a transaction past Core's own 10-block
+                # cap -- `fAddToMempool=false` -- is not attempted at
+                # all, and whatever already depends on it in the mempool
+                # is now an orphan, exactly the case
+                # `MaybeUpdateMempoolForReorg`'s own `removeRecursive`
                 # answers for a transaction that "doesn't make it in to
                 # the mempool" (same citation as `bypass_limits` below).
                 node.mempool.remove_dependents(tx)
@@ -568,21 +573,17 @@ def _still_final_and_mature(node: Node, tx: Tx) -> bool:
     `verify_mempool_acceptance`'s own `MissingPrevoutError` being for a
     transaction never yet accepted, not one already held.
 
-    Kept is not, the way this read before, "someone else's problem
-    because a reorg conflict is what `Mempool.remove_conflicts` already
-    takes out": that call runs only from `_reconcile_mempool_for_reorg`'s
-    own `to_add` loop, and `invalidate_chain`'s own call passes
-    `to_add=[]`, so `remove_conflicts` never runs at all on that path.
-    What actually keeps an unresolvable prevout from reaching this
-    function there is the re-add loop just above `remove_conflicts` in
-    that same caller: an unresolvable prevout here is exactly the shape
-    of a tx whose own parent failed to make it back into the mempool --
-    past the 10-block cap, or on `verify_mempool_acceptance`'s own
-    `MissingPrevoutError`/`BTClibValueError` -- and both of those
-    branches now call `Mempool.remove_dependents` on that parent,
-    taking any such entry out before this function is ever reached
-    for it. The `True` below is the fallback for whatever neither of
-    those already swept, not a claim that nothing could still reach it.
+    Keeping it is not justified by `Mempool.remove_conflicts`, which
+    runs only from `_reconcile_mempool_for_reorg`'s own `to_add` loop:
+    `invalidate_chain`'s call passes `to_add=[]`, so it never runs there.
+    What keeps such an entry from reaching this function is the re-add
+    loop just above that one. An unresolvable prevout here is the output
+    of a disconnected transaction that did not make it back into the
+    mempool -- a coinbase, one past the 10-block cap, or one
+    `verify_mempool_acceptance` refused -- and each of those three
+    branches calls `Mempool.remove_dependents` on it first. The `True`
+    below is the fallback for a prevout none of them explains, which this
+    tree has no known way to produce.
     """
     block_index = node.chainstate.block_index
     utxo_index = node.chainstate.utxo_index

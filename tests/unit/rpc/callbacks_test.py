@@ -5153,6 +5153,33 @@ def test_invalidate_block_evicts_an_orphan_left_by_a_failed_readd(
     assert not node.mempool.contains_tx(c)
 
 
+def test_invalidate_block_evicts_a_spend_of_a_disconnected_coinbase(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A held spend of a disconnected block's own coinbase is evicted.
+
+    Core's disconnectpool takes the whole block, coinbase included
+    (`AddTransactionsFromBlock(block.vtx)`), and
+    `MaybeUpdateMempoolForReorg` calls `removeRecursive` for a coinbase
+    instead of re-adding it (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `common[0]`'s coinbase
+    is mature, so `spend` is admitted; once `common[0]` is invalidated
+    that output no longer exists, and `spend` must go with it.
+    btclib-org/btclib-node#1570
+    """
+    node = regtest_node()
+    common = generate_random_chain(COINBASE_MATURITY, node.chain.genesis.hash)
+    connect(node, common)
+    spend = generate_random_transaction(common[0].transactions[0].id)
+    fee, vsize = verify_mempool_acceptance(node, spend, bypass_limits=True)
+    node.mempool.add_tx(spend, fee, vsize)
+    assert node.mempool.contains_tx(spend)
+
+    invalidate_block(node, _CONN, [common[0].header.hash.hex()])
+
+    assert not node.mempool.contains_tx(spend)
+
+
 def test_invalidate_block_evicts_a_mempool_transaction_a_disconnect_makes_immature(
     regtest_node: Callable[..., Node],
 ) -> None:
