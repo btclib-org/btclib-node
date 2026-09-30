@@ -730,7 +730,7 @@ def invalidate_block(node: Node, conn: RpcConnection, params: list[Any]) -> None
     """Answer `invalidateblock`, Core's own single `blockhash` argument.
 
     Core's own `invalidateblock` (`rpc/blockchain.cpp:1716-1738`, calling
-    the free `InvalidateBlock`, `:1694-1712`, at
+    the free `InvalidateBlock`, `:1695-1714`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `_known_block_hash` above
     is this function's and `reconsider_block`'s own shared argument
     check; `main.invalidate_chain`'s own docstring is where marking the

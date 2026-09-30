@@ -1319,15 +1319,15 @@ def invalidate_chain(node: Node, block_hash: bytes) -> None:
     """Mark `block_hash` invalid, forcing the chain off it, then retry.
 
     Core's own `InvalidateBlock`, the free RPC-layer function
-    (`src/rpc/blockchain.cpp`) calling `Chainstate::InvalidateBlock`
+    (`src/rpc/blockchain.cpp:1695-1714`) calling `Chainstate::InvalidateBlock`
     (`src/validation.cpp`), both at bitcoin/bitcoin@9be056a8a7, the v31.1
     tag. `rpc.callbacks.invalidate_block` is this function's only caller,
     and has already refused a `block_hash` this index does not know
-    (Core's own `RPC_INVALID_ADDRESS_OR_KEY`) and answered Core's own
-    silent no-op for the genesis block (`if (pindex->nHeight == 0) return
-    false`, reached there rather than here since `BlockIndex.invalidate`
-    itself has no such floor and would mark the whole index invalid by
-    walking every block ever built on genesis).
+    (Core's own `RPC_INVALID_ADDRESS_OR_KEY`); Core's own silent no-op
+    for the genesis block (`if (pindex->nHeight == 0) return false`) is
+    answered below, in this function, rather than there, since
+    `BlockIndex.invalidate` itself has no such floor and would mark the
+    whole index invalid by walking every block ever built on genesis.
 
     `BlockIndex.invalidate` already marks `block_hash` and everything
     indexed on top of it; what Core's own disconnect loop adds beyond
@@ -1343,16 +1343,36 @@ def invalidate_chain(node: Node, block_hash: bytes) -> None:
     `_finalize_fork` -- run here directly rather than through that
     function's own trial loop, since there is no new block content to
     validate on the way down, only already-connected blocks to undo; a
-    failure partway through is this node's own storage proving itself
-    unsafe to keep running past, exactly as `_validate_extending_tip`
-    above already argues for `submit_block`'s own fatal case, and is
-    answered the same way: `node.terminate_flag` set, then left to
-    propagate rather than translated into an RPC error, since nothing in
-    this tree recovers from one of these to keep serving RPCs afterward
-    -- a narrower answer than Core's own `RPC_DATABASE_ERROR`, argued
-    here rather than reproduced, because Core's RPC layer survives a
-    failed `ActivateBestChain` to answer the next call and this tree's
-    does not.
+    failure partway through -- `_rev_blocks_to_remove`'s own
+    missing-patch `ChainstateInconsistencyError`, or one
+    `apply_rev_block` raises -- is answered the way
+    `rpc.callbacks._validate_extending_tip` already answers
+    `submit_block`'s own fatal case: `node.terminate_flag` set, then
+    left to propagate. What that propagation actually reaches is
+    `rpc.main`'s own dispatcher (`_execute`, lines 86-92), which
+    catches any `Exception` a callback raises and answers
+    `INTERNAL_ERROR` with it -- not Core's own `RPC_DATABASE_ERROR`,
+    since this tree carries no per-failure vocabulary that specific,
+    and not left uncaught either.
+
+    Core does not treat every failure on this path as fatal the way
+    this does. `Chainstate::DisconnectTip`'s own `ReadBlock` or
+    `DisconnectBlock` failure (`src/validation.cpp:2952-2955` and
+    `:2961-2964`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) returns
+    `false` without touching `state` at all, so the free
+    `InvalidateBlock` above still finds `state.IsValid()` true, still
+    runs `ActivateBestChain`, and the RPC answers `null` -- the node
+    keeps running and serving the next call. Only a `FlushStateToDisk`
+    failure on the same path (`:2981-2983`) is fatal: it reaches
+    `AbortNode`, which marks `state` invalid and aborts the process,
+    and that is what `RPC_DATABASE_ERROR` actually answers for. This
+    tree's own `apply_rev_block` and `_finalize_fork` give no way to
+    tell a merely-missing read back from real corruption --
+    `ChainstateInconsistencyError`'s own docstring in `db.py` is where
+    that is argued -- so both are answered here as Core's fatal case
+    alone is: stricter than Core in the direction of stopping rather
+    than silently continuing past unread data, not a divergence chosen
+    for its own sake.
 
     `block_index.invalidate` runs only once the disconnect (if any) has
     fully committed, and not before: `_finalize_fork`'s own to_remove
@@ -1429,15 +1449,15 @@ def reconsider_chain(node: Node, block_hash: bytes) -> None:
     already best.
 
     `BlockStatus` carries no counterpart to Core's own separate
-    `BLOCK_FAILED_VALID` bit: `invalid` is this tree's one terminal
-    status, so `reconsider` cannot hand a previously-connected block back
-    its old `valid`/`in_active_chain` status -- `valid_header` is what it
-    answers with instead, forcing `_validate_block`'s own content checks
-    to run again before such a block is trusted enough to reconnect,
-    where Core's own separate `BLOCK_VALID_TRANSACTIONS` bit survives the
-    round trip untouched and skips them. Stricter than Core in the
-    direction that costs a redundant revalidation rather than one that is
-    skipped, forced by this tree's own single-field `BlockStatus`
+    `BLOCK_FAILED_VALID` bit: `valid` and `invalid` share the one field
+    `reconsider` clears, so `reconsider` cannot hand a previously-connected
+    block back its old `valid`/`in_active_chain` status -- `valid_header`
+    is what it answers with instead, forcing `_validate_block`'s own
+    content checks to run again before such a block is trusted enough to
+    reconnect, where Core's own separate `BLOCK_VALID_TRANSACTIONS` bit
+    survives the round trip untouched and skips them. Stricter than Core
+    in the direction that costs a redundant revalidation rather than one
+    that is skipped, forced by this tree's own single-field `BlockStatus`
     (`block_index.py`'s own class docstring) rather than chosen against
     it.
     """

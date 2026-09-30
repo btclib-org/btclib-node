@@ -1192,7 +1192,7 @@ CATEGORY: dict[str, str] = {
 # than written out by hand a second time, which is what would go stale
 # the day a served method's category changes and this list does not.
 # `category == "hidden"` is skipped, Core's own `CRPCTable::help` loop
-# condition (`src/rpc/server.cpp:80`, same tag): `invalidateblock` and
+# condition (`src/rpc/server.cpp:87`, same tag): `invalidateblock` and
 # `reconsiderblock` carry that category (`CATEGORY`'s own module
 # docstring), and `help <command>` still answers either by name --
 # `answer_help` below reads `HELP_TEXT` directly, never `_BARE_LISTING`,
