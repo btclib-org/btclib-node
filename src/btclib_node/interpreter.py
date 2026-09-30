@@ -197,8 +197,8 @@ def check_transactions(
     and leaves the block off the active chain once this does. Amounts
     are checked here, per transaction and outside the pool, since
     script validation alone never reads them, and so is the block's
-    sigop cost, `coinbase` included, which is refused `bad-blk-sigops`. `transaction_data` carries
-    each prevout as a `Coin` -- what `main._validate_block`'s own
+    sigop cost, `coinbase` included. `transaction_data` carries each
+    prevout as a `Coin` -- what `main._validate_block`'s own
     `btclib.tx.tx_context.assert_coinbase_maturity` call needs of it --
     and every btclib call here wants a bare `TxOut`, so each is unwrapped
     where it is used rather than threaded through as two parallel lists.
@@ -228,7 +228,12 @@ def check_transactions(
     # its sigop cost to the block's running total and refuses the block
     # once that passes MAX_BLOCK_SIGOPS_COST, the coinbase counted
     # first; the scripts come after (src/validation.cpp,
-    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The checks
+    # main._validate_block makes before this one each run over the whole
+    # block first, where Core's run per transaction: btclib-org/btclib-node#1587.
+    # A block with no transaction but its coinbase returned above
+    # uncounted: CheckBlock's legacy bound already holds its cost to the
+    # limit.
     cost = engine.sig_op_cost([], coinbase, flags)
     for prevouts, tx in transaction_data:
         tx_outs = [coin.tx_out for coin in prevouts]

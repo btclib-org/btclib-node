@@ -1399,6 +1399,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   to `getblockchaininfo`'s and `getnetworkinfo`'s own new `warnings` field**
   (closes #1522).
 
+### A block is refused for its full sigop cost
+
+- **A block whose legacy, P2SH and witness sigops together cost more than
+  `MAX_BLOCK_SIGOPS_COST` is refused `bad-blk-sigops` and marked invalid,
+  as Core's `ConnectBlock` refuses it** (closes #1585).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
