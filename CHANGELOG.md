@@ -1192,6 +1192,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   milliseconds**, as Core's own `stop <ms>` does, while the node starts
   shutting down at once (closes #1467).
 
+### `cli_test.py`'s `datadir` log-line tests compare against the escaped form
+
+- **The two tests build the expected `datadir=` line through
+  `_setting_to_write_str`, matching Core's own `json_escape`**, which
+  doubles a backslash (closes #1509).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
