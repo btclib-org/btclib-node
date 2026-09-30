@@ -471,6 +471,17 @@ jobs:
         run: |
           uv run --no-project --python 3.14 \
             .github/scripts/normalize_sdist.py dist/
+      # the script that writes the bill of materials is btclib-org/.github's,
+      # served from `main`. It goes under a `path:` and after the build, so
+      # it is not among the files `uv build` packed
+      - name: Check out the script that writes the bill of materials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: btclib-org/.github
+          ref: main
+          path: btclib-org-github
+          persist-credentials: false
+          sparse-checkout: .github/scripts
       # a CycloneDX bill of materials naming the distribution, its
       # licence and every dependency the wheel's own metadata declares
       # -- what an attestation vouches for the bytes of and says nothing
@@ -479,7 +490,7 @@ jobs:
       - name: Write the bill of materials
         run: |
           uv run --no-project --python 3.14 \
-            .github/scripts/generate_sbom.py dist/ sbom/
+            btclib-org-github/.github/scripts/generate_sbom.py dist/ sbom/
       - name: Checksum the distribution files
         run: sha256sum dist/* sbom/*
       # before anything is installed, and that ordering is the point: a
