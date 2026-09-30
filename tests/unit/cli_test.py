@@ -95,8 +95,8 @@ def test_parse_conf_text_reads_a_no_prefix_as_a_negation(
 
 
 # `GetConfigOptions`, `IsConfSupported` and `InterpretValue`'s words
-# (`src/common/config.cpp`, `src/common/args.cpp`, at
-# bitcoin/bitcoin@9be056a8a7), each measured on `bitcoind` v31.1.0 with
+# (`src/common/config.cpp`, `src/common/args.cpp`,
+# at bitcoin/bitcoin@9be056a8a7), each measured on `bitcoind` v31.1.0 with
 # the line below `regtest=1`, which is what numbers it 2
 @pytest.mark.parametrize(
     ("line", "refusal"),

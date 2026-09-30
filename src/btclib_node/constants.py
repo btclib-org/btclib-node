@@ -35,8 +35,8 @@ __all__ = [
 # (`btclib.consensus`).
 MAX_TIP_AGE = timedelta(hours=24)
 
-# Core's own `MIN_BLOCKS_TO_KEEP` (`src/validation.h:76`, at
-# bitcoin/bitcoin@ca7162cde5): block files within this many blocks of the
+# Core's own `MIN_BLOCKS_TO_KEEP` (`src/validation.h:76`,
+# at bitcoin/bitcoin@ca7162cde5): block files within this many blocks of the
 # tip are never pruned. `NODE_NETWORK_LIMITED_MIN_BLOCKS`
 # (`src/net_processing.cpp:157`, same commit) is the separate constant
 # Core checks before answering a peer's `getdata` for an old block once
@@ -47,8 +47,8 @@ MAX_TIP_AGE = timedelta(hours=24)
 # two constants that only happen to agree today.
 MIN_BLOCKS_TO_KEEP = 288
 
-# Core's own `MIN_DISK_SPACE_FOR_BLOCK_FILES` (`src/validation.h:87`, at
-# bitcoin/bitcoin@ca7162cde5): the smallest `-prune=<n>` MiB target Core
+# Core's own `MIN_DISK_SPACE_FOR_BLOCK_FILES` (`src/validation.h:87`,
+# at bitcoin/bitcoin@ca7162cde5): the smallest `-prune=<n>` MiB target Core
 # accepts for automatic pruning -- `node::ApplyArgsManOptions`
 # (`node/blockmanager_args.cpp:28-34`, same sha) treats `<n>` between 2
 # and this value minus one as too small to run a node on and refuses to

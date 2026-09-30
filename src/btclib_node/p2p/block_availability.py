@@ -48,8 +48,8 @@ __all__ = [
     "update_block_availability",
 ]
 
-# Core's `BLOCK_DOWNLOAD_WINDOW` (`src/net_processing.cpp`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): how far past a peer's
+# Core's `BLOCK_DOWNLOAD_WINDOW` (`src/net_processing.cpp`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): how far past a peer's
 # `last_common` block anything is asked of it.
 BLOCK_DOWNLOAD_WINDOW = 1024
 

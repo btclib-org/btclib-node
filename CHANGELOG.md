@@ -1234,6 +1234,18 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `cmpctblock` to every high-bandwidth peer that has its parent, as
   `NewPoWValidBlock` sends it** (closes #1315).
 
+### `pypi-install.yml` retries the install of the version the release published
+
+- **Each install cell installs through btclib-org/.github's
+  `install_published_release.py`, which retries only while the installer says
+  the pin is not resolvable** (issue btclib-org/.github#1458).
+
+### Core citations keep `at` on the same line as the sha they cite
+
+- **Every `#` Core citation outside `p2p/callbacks.py`'s `headers()`
+  carries `at` on the sha's own line** (closes #1517).
+- **So does `block()`'s btclib citation** (closes #1528).
+
 ### A low-work headers chain is synced twice before any of it is stored
 
 - **Headers below the anti-DoS work threshold go through Core's
