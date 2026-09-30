@@ -99,6 +99,7 @@ from btclib_node.exceptions import (
 from btclib_node.log import Logger
 from btclib_node.main import MempoolAcceptance, verify_mempool_acceptance
 from btclib_node.mempool import Mempool
+from btclib_node.notify import Warnings
 from btclib_node.p2p.address import PeerDB, endpoint_key, host_key, peer_address
 from btclib_node.p2p.banman import BanMan, lookup_subnet
 from btclib_node.p2p.block_availability import BlockAvailability
@@ -618,7 +619,10 @@ def a_handshake_node(
     `is_discouraged` answers for the IPs `discouraged_hosts` names,
     whatever the port, the ban list holds the subnets of `banned`, and
     the peer table is an empty one in memory unless `peer_db` names
-    another.
+    another. `config.block_notify`/`config.alert_notify` are `""` and
+    `warnings` an empty `notify.Warnings` -- `check_fork_warning_conditions`
+    reaches both wherever a callback built on this double invalidates a
+    block (btclib-org/btclib-node#1522).
     """
     discouraged, record = discourage_recorder()
     discouraged_keys = {host_key(peer_address(host, 0)) for host in discouraged_hosts}
@@ -626,8 +630,13 @@ def a_handshake_node(
     return SimpleNamespace(
         status=status,
         config=SimpleNamespace(
-            min_relay_feerate=min_relay_feerate, pruned=False, minimum_chain_work=0
+            min_relay_feerate=min_relay_feerate,
+            pruned=False,
+            minimum_chain_work=0,
+            block_notify="",
+            alert_notify="",
         ),
+        warnings=Warnings(),
         p2p_manager=SimpleNamespace(
             connections={},
             pending_outbound_nonces=own_nonces,
