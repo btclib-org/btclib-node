@@ -562,10 +562,10 @@ class Node(threading.Thread):
         """Handle whatever is waiting, and answer whether nothing was.
 
         One message must not end the node. `handle_p2p` and
-        `handle_p2p_handshake` already answer a bad message by dropping
-        the peer, but what reaches here is whatever they did not expect
-        -- and leaving `run`'s own loop by exception skips every close
-        below it, so the databases would stay open.
+        `handle_p2p_handshake` already answer a bad message, dropping the
+        peer for a `MisbehavingError`, but what reaches here is whatever
+        they did not expect -- and leaving `run`'s own loop by exception
+        skips every close below it, so the databases would stay open.
 
         `resume_cfilters` and `resume_getdata` are last and unconditional,
         not one more queue to size a share from: nothing is queued to
@@ -737,7 +737,16 @@ class Node(threading.Thread):
         while not self.terminate_flag.is_set():
             if self._drain_message_queues():
                 time.sleep(IDLE_SLEEP_SECONDS)
-            if self._step_chain():
+            # `_drain_message_queues` can itself set `terminate_flag`
+            # mid-pass -- `rpc.callbacks._validate_extending_tip`, run from
+            # inside `handle_rpc`, does exactly that on an exception
+            # `rpc.main._execute` still turns into `INTERNAL_ERROR` rather
+            # than letting propagate -- and this loop must not run
+            # `_step_chain`'s own `update_chain` once that has happened:
+            # the flag is the store's own word that it is unsafe to touch
+            # again this pass, not only next time the condition above is
+            # read.
+            if self.terminate_flag.is_set() or self._step_chain():
                 break
         self._stop_managers_and_close_stores()
 

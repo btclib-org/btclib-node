@@ -281,6 +281,23 @@ test = [
     # dependency and not a runtime one, nothing under `src/` importing it.
     # Its own btclib requirement is what sets btclib's floor above.
     "btclib-wallet>=2026.9.24",
+    # tests/unit/interpreter_test.py builds signatures through
+    # `btclib_ecc.ecc.dsa`/`ssa` directly rather than through btclib's own
+    # re-export, ahead of btclib dropping that re-export
+    # (btclib-org/btclib#2404, decided 2026-09-28): `src/` imports
+    # nothing from it, and stays declared against btclib alone, so this
+    # is a test dependency landing before the re-export it replaces is
+    # gone rather than a runtime one (btclib-org/btclib-node#1431).
+    "btclib-ecc>=2026.9.26",
+    # btclib-ecc's own bindings import (`_libsecp256k1.py`) reaches
+    # `btclib_secp256k1.ecdh.shared_point`, absent below 0.8.0.8 --
+    # measured directly, an older install answers plain `ImportError`
+    # there rather than the `ModuleNotFoundError` that import is guarded
+    # against, so the bindings-missing fallback never catches it. `btclib
+    # [secp256k1]`'s own floor above resolves 0.8.0.6 on its own; this
+    # raises what the two together resolve rather than what either
+    # alone asks for.
+    "btclib-secp256k1>=0.8.0.8",
 ]
 # mypy runs from this environment rather than from a hook's own --
 # .pre-commit-config.yaml's mypy hook is where that decision is argued
@@ -1038,13 +1055,9 @@ ignore = [
 # from ERA001's usual leftover.
 "scripts/reset_chainstate.py" = ["ERA001"]
 "scripts/reset_download.py" = ["ERA001"]
-# a manual diagnostic run over local error test vectors: the `print`s
-# are its progress and its result, not debug residue left behind.
-"scripts/test_errors.py" = ["T20"]
-# the same reason, for a script a workflow runs rather than a person: a
-# GitHub Actions step reads its result from stdout, not from a return
+# a GitHub Actions step reads its result from stdout, not from a return
 # value, so `check_vendored_pin.py`'s prints are its report and not
-# debug residue either.
+# debug residue.
 ".github/scripts/check_vendored_pin.py" = ["T20"]
 # and the same for the citation pin check: the pre-commit hook that
 # runs it reads a failing developer's terminal, not a return value
@@ -1153,13 +1166,11 @@ extend-exclude = [
 # the list the lint gate runs on and not only the one a bare `mypy`
 # reads: the hook in .pre-commit-config.yaml passes no paths of its own,
 # for the reason given there. Section 6 of btclib-org/.github's README
-# states the scope as the package, the tests and .github/scripts.
-# fuzz/ is outside it because atheris is: the harnesses import a package
-# the `fuzz` dependency group installs and the lint environment does
-# not, so what mypy would report there is the import rather than the
-# harness. tests/fuzz_corpus_test.py is inside it, and reads a harness
-# without importing one.
-files = ["src/btclib_node", "tests", "scripts", ".github/scripts"]
+# states the scope as the package, the tests and .github/scripts. fuzz/
+# is here too, with the exception below covering only the one import
+# that reason ever justified skipping -- the harness itself is this
+# tree's own code and gets the same check as everything above.
+files = ["src/btclib_node", "tests", "scripts", ".github/scripts", "fuzz"]
 # the floor `project.requires-python` declares, and not the interpreter
 # that happens to be running: a name added to the standard library
 # later passes here and fails for whoever is on the oldest version this
@@ -1237,6 +1248,19 @@ enable_error_code = [
     "unimported-reveal",
     "unused-awaitable",
 ]
+
+[[tool.mypy.overrides]]
+# atheris is the one import `files` above's own fuzz/ entry does not
+# reach: `[dependency-groups].fuzz` marks it `sys_platform == 'linux'`,
+# so it is absent from every other platform's sync as well as from the
+# mypy hook's own `--group lint --group test` environment, which
+# installs neither group it is in. `ignore_missing_imports` covers both
+# shapes that absence takes -- the module missing outright, on every
+# platform but Linux, and its stubs missing where it is installed --
+# rather than a narrower code list that would need to change with
+# whichever shape a given run meets.
+module = "atheris"
+ignore_missing_imports = true
 
 [tool.typos.default.extend-words]
 # ruff's copyright rule, not the misspelling of COPY or CPU that typos'

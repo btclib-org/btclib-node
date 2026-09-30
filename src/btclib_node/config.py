@@ -202,6 +202,29 @@ def _resolve_chain(chain: Chain | str) -> Chain:
     raise UnknownChainError(chain)
 
 
+def _dnsseed(
+    *,
+    dnsseed: bool | None,
+    forcednsseed: bool,
+    connect_given: bool,
+    max_connections: int,
+) -> bool:
+    """Return `-dnsseed` after its soft-set; refused off with `-forcednsseed`.
+
+    `AppInitParameterInteraction`'s own order (`src/init.cpp`, at
+    bitcoin/bitcoin@9be056a8a7): the soft-set runs first -- off under
+    `-connect` or a non-positive `-maxconnections`, an explicit
+    `dnsseed` winning over it -- and only then is `-forcednsseed`
+    refused against the result, in Core's own wording.
+    """
+    if dnsseed is None:
+        dnsseed = not connect_given and max_connections > 0
+    if forcednsseed and not dnsseed:
+        err_msg = "Cannot set -forcednsseed to true when setting -dnsseed to false."
+        raise ValueError(err_msg)
+    return dnsseed
+
+
 @dataclass
 class Config:
     """Every setting one `Node` is built from, flat and keyword-only.
@@ -363,6 +386,33 @@ class Config:
     # port and starts no `P2pManager` at all, so nothing could dial out
     # either.
     listen: bool
+    # Core's own `-discover`: whether `P2pManager` records this
+    # machine's own interface addresses at all (`p2p.netif.local_addresses`,
+    # btclib-org/btclib-node#1238). `InitParameterInteraction`
+    # (`src/init.cpp:786-817`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    # tag) soft-sets it off under `-proxy`, `-listen=0` or `-externalip`;
+    # this node has neither of the first and the last, so `-listen` is
+    # the only condition `__init__` reads, off `self.listen` rather than
+    # off the `listen` parameter, so that an explicit `-listen`'s own
+    # soft-set (above) is what this one sees. `None` here is the
+    # sentinel `dnsseed` above already uses for a soft default an
+    # explicit value wins over. Discovery runs whether or not `_bind`
+    # itself goes on to succeed, as Core's `Discover()`
+    # (`src/net.cpp:3376-3384`, same sha) does: `AppInitMain` calls it
+    # off `bind_on_any` (`src/init.cpp:2163`, same sha), never off
+    # `fListen`, and this node has no `-bind` to make `bind_on_any`
+    # false.
+    discover: bool
+    # Core's own `-peerblockfilters`: whether `NODE_COMPACT_FILTERS` is
+    # advertised in `version` and whether a BIP157 request is answered
+    # rather than refused (`p2p.connection.local_services`,
+    # `p2p.callbacks._filter_range` and `.get_cfcheckpt`). Core also
+    # requires `-blockfilterindex=basic` (`src/init.cpp:992-998`, same
+    # sha as above) and refuses `-peerblockfilters` without it; this
+    # node keeps the basic filter index unconditionally
+    # (`chainstate.filter_index.FilterIndex`), so that refusal never
+    # applies here.
+    peerblockfilters: bool
     # Core's own `-maxconnections`: the automatic connections this node
     # holds at once, inbound and outbound together. It does not limit a
     # `-connect` or `-addnode` dial, which Core makes as a manual
@@ -379,6 +429,12 @@ class Config:
     # (ISS 1324), computes the soft-set itself and never leaves
     # `dnsseed` `None`.
     dnsseed: bool
+    # Core's own `-forcednsseed`, `DEFAULT_FORCEDNSSEED` (`src/net.h`,
+    # same sha) false: whether `P2pManager._dns_address_seed` skips its
+    # wait and asks every DNS seed at once regardless of what `PeerDB`
+    # already holds. Refused alongside a `dnsseed` that is false
+    # (`AppInitParameterInteraction`, `src/init.cpp`, same sha).
+    forcednsseed: bool
     # Core's own `-fixedseeds`, `DEFAULT_FIXEDSEEDS` true: whether
     # `P2pManager` may fall back on the chain's fixed seeds once DNS
     # seeding, `-addnode` and `-seednode` have had their chance
@@ -430,8 +486,11 @@ class Config:
         addnode: Sequence[str] = (),
         seednode: Sequence[str] = (),
         listen: bool = True,
+        discover: bool | None = None,
+        peerblockfilters: bool = False,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
         dnsseed: bool | None = None,
+        forcednsseed: bool = False,
         fixed_seeds: bool = True,
         ban_time: int = DEFAULT_MISBEHAVING_BANTIME,
         rpcauth: Sequence[str] = (),
@@ -480,19 +539,25 @@ class Config:
         self.addnode_args = tuple(addnode)
         self.seednode = _split_peers(seednode, self.chain.port)
         self.listen = listen
+        self.discover = self.listen if discover is None else discover
+        self.peerblockfilters = peerblockfilters
+
+        # `_dnsseed`'s own docstring has `AppInitParameterInteraction`'s
+        # order, ahead of the `-maxconnections` refusal below.
+        self.dnsseed = _dnsseed(
+            dnsseed=dnsseed,
+            forcednsseed=forcednsseed,
+            connect_given=self.connect_given,
+            max_connections=max_connections,
+        )
+        self.forcednsseed = forcednsseed
 
         if max_connections < 0:
-            # Core's own wording (`AppInitParameterInteraction`,
-            # `src/init.cpp`, at bitcoin/bitcoin@9be056a8a7), fatal
-            # there too
+            # Core's own wording (`AppInitParameterInteraction`, same
+            # sha), fatal there too
             err_msg = "-maxconnections must be greater or equal than zero"
             raise ValueError(err_msg)
         self.max_connections = max_connections
-        self.dnsseed = (
-            not self.connect_given and max_connections > 0
-            if dnsseed is None
-            else dnsseed
-        )
         self.fixed_seeds = fixed_seeds
         self.ban_time = ban_time
 

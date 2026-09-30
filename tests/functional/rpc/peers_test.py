@@ -98,13 +98,13 @@ def test_get_peer_info(tmp_path: Path) -> None:
         assert body["result"][0]["addrbind"] == f"127.0.0.1:{local_port}"
         assert body["result"][0]["addrlocal"] == f"127.0.0.1:{local_port}"
         assert body["result"][0]["network"] == "not_publicly_routable"
-        # network | witness | compact_filters | network_limited, which
-        # is what own_version advertises, over the 64-bit field
-        assert body["result"][0]["services"] == "0000000000000449"
+        # network | witness | network_limited, which is what own_version
+        # advertises by default, over the 64-bit field -- -peerblockfilters
+        # is off, so no COMPACT_FILTERS bit here (ISS 1395)
+        assert body["result"][0]["services"] == "0000000000000409"
         assert body["result"][0]["servicesnames"] == [
             "NETWORK",
             "WITNESS",
-            "COMPACT_FILTERS",
             "NETWORK_LIMITED",
         ]
         assert not body["result"][0]["inbound"]
@@ -117,13 +117,13 @@ def test_get_peer_info(tmp_path: Path) -> None:
         assert body["result"][0]["addrbind"] == f"127.0.0.1:{node1.p2p_port}"
         assert body["result"][0]["addrlocal"] == f"127.0.0.1:{node1.p2p_port}"
         assert body["result"][0]["network"] == "not_publicly_routable"
-        # network | witness | compact_filters | network_limited, which
-        # is what own_version advertises, over the 64-bit field
-        assert body["result"][0]["services"] == "0000000000000449"
+        # network | witness | network_limited, which is what own_version
+        # advertises by default, over the 64-bit field -- -peerblockfilters
+        # is off, so no COMPACT_FILTERS bit here (ISS 1395)
+        assert body["result"][0]["services"] == "0000000000000409"
         assert body["result"][0]["servicesnames"] == [
             "NETWORK",
             "WITNESS",
-            "COMPACT_FILTERS",
             "NETWORK_LIMITED",
         ]
         assert body["result"][0]["inbound"]
