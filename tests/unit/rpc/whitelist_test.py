@@ -15,6 +15,7 @@ import asyncio
 import base64
 import json
 import socket
+import threading
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -312,6 +313,9 @@ def exchange(auth: RpcAuth, requests: list[Any]) -> tuple[bytes, list[Any], list
             logger=SimpleNamespace(warning=lambda *args: warnings.append(args)),
             messages=messages,
             connections={0: None},
+            # a node not shutting down, whose replies `send` schedules
+            # as they come
+            node=SimpleNamespace(terminate_flag=threading.Event()),
         )
         conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
         userpass = base64.b64encode(b"pytest:pytest")

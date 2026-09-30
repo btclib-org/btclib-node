@@ -260,10 +260,32 @@ class RpcManager(threading.Thread):
         self._latest_reply_deadline: float | None = None
         self._reply_deadline_lock = threading.Lock()
 
+    def extend_reply_deadline(self, deadline: float) -> None:
+        """Push `latest_reply_deadline` to `deadline`, never back.
+
+        Called by `add_delayed_reply` below, and by
+        `Node._drain_rpc_queue` once per request it answers: each such
+        request is progress exactly as a delayed `stop` reply's own
+        countdown is, and `Node.stop`'s wait loop reads
+        `latest_reply_deadline` without caring which of the two moved it.
+        `deadline` is the caller's own `time.monotonic()` reading, taken
+        on its own thread rather than this method's, so that a caller
+        answering several requests in a row times each push at the
+        moment that request actually finished.
+        """
+        with self._reply_deadline_lock:
+            latest = self._latest_reply_deadline
+            if latest is None or deadline > latest:
+                self._latest_reply_deadline = deadline
+
     def add_delayed_reply(
         self, reply: Coroutine[Any, Any, None], deadline: float
     ) -> None:
-        """Record `reply`, due at the `time.monotonic()` value `deadline`.
+        """Record `reply`, written by the `time.monotonic()` value `deadline`.
+
+        `reply` is a `stop` RPC's delayed reply
+        (btclib-org/btclib-node#1467) or one `RpcConnection.send` writes
+        once shutdown has begun (btclib-org/btclib-node#1506).
 
         Called on `Node`'s thread before `reply` is handed to this
         manager's loop, never from inside it: a task recording itself on
@@ -272,10 +294,7 @@ class RpcManager(threading.Thread):
         then cancelled with the rest.
         """
         self.delayed_replies.add(reply)
-        with self._reply_deadline_lock:
-            latest = self._latest_reply_deadline
-            if latest is None or deadline > latest:
-                self._latest_reply_deadline = deadline
+        self.extend_reply_deadline(deadline)
 
     def latest_reply_deadline(self) -> float | None:
         """Answer the latest deadline `add_delayed_reply` has recorded.
@@ -708,8 +727,11 @@ class RpcManager(threading.Thread):
         # before the cancel sweep below reaches it, and finished further
         # down, uncancelled: cancelling it would discard the reply the
         # client asked `stop`'s own `wait` to delay, not to drop
-        # (btclib-org/btclib-node#1467). Every one not yet finished is in
-        # `pending`, stepped or not: `run_coroutine_threadsafe` queued its
+        # (btclib-org/btclib-node#1467), or cut short one
+        # `RpcConnection.send` wrote once shutdown had begun, still
+        # waiting on the socket (btclib-org/btclib-node#1506). Every one
+        # not yet finished is in `pending`, stepped or not:
+        # `run_coroutine_threadsafe` queued its
         # creation through `call_soon_threadsafe` on `Node`'s thread
         # before this method, on that same thread, queued `loop.stop`
         # behind it, and `join` above returned only once this loop had
@@ -750,9 +772,11 @@ class RpcManager(threading.Thread):
                 self.loop.run_until_complete(task)
         # Uncancelled, and with no bound of its own beyond `wait` itself
         # -- already validated finite by `stop_wait_param` before this
-        # task was ever scheduled. Core's own `ThreadPool::Stop`
-        # (`util/threadpool.h`, at bitcoin/bitcoin@9be056a8a7, the
-        # v31.1 tag) joins every worker thread with no timeout either,
+        # task was ever scheduled -- or the `request_timeout`
+        # `RpcConnection.send` bounds its own write with. Core's own
+        # `ThreadPool::Stop` (`util/threadpool.h`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) joins every
+        # worker thread with no timeout either,
         # finishing whatever request that thread is mid-answer on --
         # including one asleep in `stop`'s own hidden `wait` -- rather
         # than abandoning it, so a bound here would itself be an

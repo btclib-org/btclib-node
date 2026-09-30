@@ -15,6 +15,7 @@ import base64
 import inspect
 import json
 import os
+import select
 import socket
 import threading
 from concurrent.futures import Future
@@ -96,7 +97,12 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
             cast(
                 "Node",
                 SimpleNamespace(
-                    logger=Logger(debug=True), chain=RegTest(), config=config
+                    logger=Logger(debug=True),
+                    chain=RegTest(),
+                    config=config,
+                    # what `RpcConnection.send` reads: unset until a
+                    # test says the node is shutting down
+                    terminate_flag=threading.Event(),
                 ),
             ),
             port,
@@ -1155,6 +1161,84 @@ def test_stop_finishes_a_delayed_reply_its_loop_never_stepped(
         theirs.close()
     assert b"200 OK" in reply
     assert b"stopping" in reply
+
+
+def test_stop_finishes_a_reply_written_once_shutdown_began(
+    a_manager: AManagerFactory,
+) -> None:
+    """`stop` finishes a reply `send` wrote after `terminate_flag` (ISS 1506).
+
+    The reply is larger than the socket pair can buffer, so its write is
+    still waiting on the socket when `stop` sweeps the loop's tasks:
+    this side reads only once the manager's own thread has ended, when
+    `stop`'s sweep is the only thing left driving the loop. Core's
+    `StopHTTPServer` waits for every reply it tracks to be sent before
+    it frees the event base (`src/httpserver.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The request asked for
+    keep-alive, and the reply still carries the `Connection: close`
+    Core's `HTTPRequest::WriteReply` adds once shutdown has begun.
+    """
+    manager = a_manager(get_random_port())
+    manager.start()
+    wait_until_listening(manager)
+    result = "0" * (4 * 1024 * 1024)
+    ours, theirs = socket.socketpair()
+    try:
+        conn = manager.create_connection(manager.loop, ours)
+        conn.head = parse_request_head(b"POST / HTTP/1.1\r\nHost: x\r\n\r\n")
+        manager.node.terminate_flag.set()
+        conn.send(HttpReply(OK, {"result": result, "error": None, "id": 1}))
+        # the write has begun, and cannot finish until this side reads
+        wait_until(lambda: select.select([theirs], [], [], 0)[0])
+        stopping = threading.Thread(target=manager.stop)
+        stopping.start()
+        wait_until(lambda: not manager.is_alive())
+        theirs.settimeout(10)
+        reply = b""
+        while chunk := theirs.recv(1 << 16):
+            reply += chunk
+        stopping.join(10)
+    finally:
+        theirs.close()
+    assert not stopping.is_alive()
+    head, _, body = reply.partition(b"\r\n\r\n")
+    assert b"Connection: close" in head.split(b"\r\n")
+    assert json.loads(body)["result"] == result
+
+
+def test_stop_gives_up_a_reply_written_once_shutdown_began_after_its_timeout(
+    a_manager: AManagerFactory,
+) -> None:
+    """A reply nobody reads holds `stop` no longer than `request_timeout`.
+
+    `evhttp_set_timeout` bounds Core's own write with
+    `-rpcservertimeout` (`src/httpserver.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag); the reply `stop`
+    finishes rather than cancels is bounded the same way, and its
+    connection is closed once it gives up (ISS 1506).
+    """
+    manager = a_manager(get_random_port())
+    manager.request_timeout = 0.2
+    manager.start()
+    wait_until_listening(manager)
+    ours, theirs = socket.socketpair()
+    stopping = threading.Thread(target=manager.stop)
+    try:
+        conn = manager.create_connection(manager.loop, ours)
+        conn.head = parse_request_head(b"POST / HTTP/1.1\r\nHost: x\r\n\r\n")
+        manager.node.terminate_flag.set()
+        reply = {"result": "0" * (4 * 1024 * 1024), "error": None, "id": 1}
+        conn.send(HttpReply(OK, reply))
+        wait_until(lambda: select.select([theirs], [], [], 0)[0])
+        stopping.start()
+        stopping.join(10)
+        stopped = not stopping.is_alive()
+    finally:
+        # what lets `stop` return where the write is not bounded
+        theirs.close()
+        stopping.join(10)
+    assert stopped
+    assert ours.fileno() == -1
 
 
 def test_stop_does_not_raise_where_start_was_called_but_run_never_reached_run_forever(

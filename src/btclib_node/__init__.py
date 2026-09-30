@@ -687,8 +687,67 @@ class Node(threading.Thread):
         finally:
             self._load_attempted.set()
 
+    def _drain_rpc_queue(self) -> None:
+        """Answer every RPC request already queued, before anything closes.
+
+        `run`'s own loop below leaves as soon as `terminate_flag` is set,
+        which can happen mid-pass -- a `getblockcount` queued behind a
+        slow `getbestblockhash` handler, say -- so a request already
+        parsed onto `rpc_manager.messages` can still be sitting there
+        once the loop exits. `_stop_managers_and_close_stores` closes
+        every connection right after, which would otherwise answer that
+        request with a closed socket rather than a reply.
+
+        Core drains the same way: `ThreadPool::Stop`'s "Help draining
+        queue" loop (`while (ProcessTask()) {}`, `src/util/threadpool.h`,
+        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) runs every task
+        still on `g_threadpool_http`'s own work queue before
+        `StopHTTPServer` unlistens its sockets and joins the workers
+        (`src/httpserver.cpp`, same tag).
+
+        Each request answered pushes `rpc_manager`'s own reply deadline
+        forward (`extend_reply_deadline`), the same one `Node.stop`'s
+        wait loop reads to give a `stop` RPC's own hidden `wait` more
+        than `STOP_TIMEOUT` (#1467). Without this, a drain busy
+        answering several requests in a row is indistinguishable, to
+        that wait loop, from a wedge: `STOP_TIMEOUT` measured from the
+        call to `stop` alone would run out from ordinary drain work
+        rather than from the node failing to come back, and `stop` would
+        raise `NodeShutdownTimeoutError` on a node that was making
+        progress throughout. Pushed whether or not the request's own
+        answer raised: a failed answer still consumed one message and
+        moved the drain on to the next.
+
+        Each reply is written by `RpcConnection.send`, which, the flag
+        being set, has `rpc_manager.stop` finish writing it rather than
+        cancel it (btclib-org/btclib-node#1506).
+
+        `handle_rpc` pops one message per call and never raises in the
+        ordinary case -- `rpc.main._execute` turns a callback's own
+        exception into `RpcError(INTERNAL_ERROR)` before it can
+        propagate -- but this still guards the drain the way
+        `_drain_message_queues` guards the loop it runs under: one bad
+        reply must not leave the rest of the queue unanswered.
+
+        A request arriving after this point -- on a connection
+        `rpc_manager`'s own accept loop is still open on, its thread not
+        yet stopped -- is not covered here: Core's own
+        `InterruptHTTPServer` switches to `http_reject_request_cb` before
+        `StopHTTPServer` drains, answering such a request `503` rather
+        than leaving it either unanswered or drained as if it had arrived
+        in time, and this node has no such interrupt phase yet
+        (btclib-org/btclib-node#1515).
+        """
+        while self.rpc_manager.messages:
+            try:
+                handle_rpc(self)
+            except Exception:
+                self.logger.exception("Exception occurred answering a queued rpc")
+            self.rpc_manager.extend_reply_deadline(time.monotonic())
+
     def _stop_managers_and_close_stores(self) -> None:
         """Stop both managers and close the stores, those `load` opened."""
+        self._drain_rpc_queue()
         if self.loaded:
             self.p2p_manager.stop()
         self.rpc_manager.stop()
@@ -807,18 +866,20 @@ class Node(threading.Thread):
         That deadline is read again each time the bound it gave runs
         out, rather than once, and the last read is enough because:
 
-        - a deadline is recorded only on this node's thread, by
-          `handle_rpc`, which sets `terminate_flag` itself right after;
-          so none predates the shutdown it bounds, and once the flag is
-          set this thread records one only while it finishes the pass
-          of its loop already under way -- possibly after this method's
-          first read;
+        - a deadline is recorded only on this node's thread: by
+          `handle_rpc`, which sets `terminate_flag` itself right after,
+          and, once the flag is set, by `_drain_rpc_queue` for each
+          request it answers and by `RpcConnection.send` for each reply
+          it writes (btclib-org/btclib-node#1506); so none predates the
+          shutdown it bounds, and one can be recorded after this
+          method's first read;
         - the value is never lowered, so a read sees every deadline
           recorded before it, a reply already sent included, while this
           thread still closes the stores behind it;
-        - the last read comes `STOP_TIMEOUT` or more after the flag was
-          set, so a deadline recorded after it would mean this thread
-          was still in that pass by then: the wedge this raises for.
+        - the last read comes `STOP_TIMEOUT` or more after the later of
+          this call and the deadline it answers, so a deadline recorded
+          after it would mean this thread went that long without
+          recording one: the wedge this raises for.
         """
         self.terminate_flag.set()
         if self.is_alive() and threading.current_thread() is not self:

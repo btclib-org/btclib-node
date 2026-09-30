@@ -13,6 +13,7 @@ messages directly and what it does with them does not depend on
 scheduling.
 """
 
+import logging
 import multiprocessing
 import os
 import re
@@ -46,6 +47,7 @@ from btclib_node.interpreter import warm
 from btclib_node.main import prune_up_to_height, update_chain
 from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES
 from btclib_node.rpc.auth import COOKIE_FILE
+from btclib_node.rpc.callbacks import callbacks
 from btclib_node.rpc.connection import RpcConnection
 from tests import (
     assert_loopbacks_free,
@@ -269,6 +271,133 @@ def test_drain_message_queues_calls_resume_getdata(
 
         monkeypatch.setattr(btclib_node, "resume_getdata", lambda _n: True)
         assert node._drain_message_queues() is False
+
+
+class _RecordingHandler(logging.Handler):
+    """A handler that keeps every record it is given, for a test to read.
+
+    `caplog` sees nothing `Node.logger` emits, `Logger` never being
+    looked up through `logging.getLogger` (its own module docstring),
+    so a test that has to observe it attaches one of these directly
+    instead.
+    """
+
+    def __init__(self) -> None:
+        """Start with no records."""
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    @override
+    def emit(self, record: logging.LogRecord) -> None:
+        """Keep `record`."""
+        self.records.append(record)
+
+
+def test_drain_rpc_queue_logs_and_continues_past_a_handler_that_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A queued reply that raises does not stop the rest of the drain.
+
+    `handle_rpc` itself never raises in the ordinary case --
+    `rpc.main._execute` turns a callback's own exception into
+    `RpcError(INTERNAL_ERROR)` before it can propagate -- so this
+    exercises `_drain_rpc_queue`'s own guard the way
+    `test_drain_message_queues_calls_resume_cfilters` above exercises
+    `_drain_message_queues`'s identical one: patched at the name
+    `_drain_rpc_queue` calls, a structural failure below `_execute`'s own
+    catch rather than a callback's.
+    """
+    with unstarted_node_context(tmp_path) as node:
+        node.rpc_manager.messages.extend([(None, -1), (None, -1)])
+        calls = 0
+
+        def raising_handle_rpc(handled_node: Node) -> None:
+            nonlocal calls
+            handled_node.rpc_manager.messages.popleft()
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("boom")
+
+        monkeypatch.setattr(btclib_node, "handle_rpc", raising_handle_rpc)
+
+        handler = _RecordingHandler()
+        node.logger.addHandler(handler)
+        try:
+            node._drain_rpc_queue()
+        finally:
+            node.logger.removeHandler(handler)
+
+        assert calls == 2
+        assert not node.rpc_manager.messages
+        assert [record.levelno for record in handler.records] == [logging.ERROR]
+        assert (
+            "Exception occurred answering a queued rpc"
+            in handler.records[0].getMessage()
+        )
+
+
+def test_drain_progress_extends_stop_s_wait_past_stop_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ten queued requests, each slower than instant, do not wedge `stop`.
+
+    None of the ten is individually slow enough to wedge anything, but
+    their sum outlasts `STOP_TIMEOUT`: `getbestblockhash` is held on an
+    event to keep the ten `getblockcount` calls sent behind it queued
+    rather than answered as they arrive, `node.stop()` runs once all ten
+    are on `rpc_manager.messages`, and only then is the first released,
+    so `_drain_rpc_queue` answers all ten -- 0.15 seconds apiece -- after
+    `Node.stop`'s own wait loop has already started timing it.
+    `STOP_TIMEOUT` measured from the call to `stop` alone would run out
+    partway through, on a node that was answering requests the entire
+    time; `extend_reply_deadline` is what `Node.stop`'s wait loop reads
+    instead, exactly as it already does for a delayed `stop` reply
+    (#1467).
+    """
+    monkeypatch.setattr(btclib_node, "STOP_TIMEOUT", 1.0)
+    hold = threading.Event()
+    original_get_best_block_hash = callbacks["getbestblockhash"]
+    original_get_block_count = callbacks["getblockcount"]
+
+    def held_get_best_block_hash(node: Node, conn: Any, params: Any) -> Any:
+        hold.wait(10)
+        return original_get_best_block_hash(node, conn, params)
+
+    def slow_get_block_count(node: Node, conn: Any, params: Any) -> Any:
+        time.sleep(0.15)
+        return original_get_block_count(node, conn, params)
+
+    monkeypatch.setitem(callbacks, "getbestblockhash", held_get_best_block_hash)
+    monkeypatch.setitem(callbacks, "getblockcount", slow_get_block_count)
+
+    node = a_stopping_rpc_node(tmp_path)
+    first = threading.Thread(
+        target=lambda: rpc_client(node).call_raw("getbestblockhash"), daemon=True
+    )
+    first.start()
+
+    queued = 10
+    callers = [
+        threading.Thread(
+            target=lambda: rpc_client(node, timeout=30).call_raw("getblockcount"),
+            daemon=True,
+        )
+        for _ in range(queued)
+    ]
+    for caller in callers:
+        caller.start()
+    wait_until(lambda: len(node.rpc_manager.messages) == queued)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        stopping = pool.submit(node.stop)
+        hold.set()
+        # re-raises NodeShutdownTimeoutError here if this regresses
+        stopping.result(timeout=30)
+
+    for caller in callers:
+        caller.join(timeout=10)
+    first.join(timeout=10)
+    assert not node.is_alive()
 
 
 # How many items one busy connection's own queued bytes are split into,

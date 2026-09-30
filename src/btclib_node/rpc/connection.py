@@ -1454,8 +1454,36 @@ class RpcConnection:
             self.manager.connections.pop(self.id, None)
 
     def send(self, reply: HttpReply) -> None:
-        """Schedule `async_send` on `loop`, from `handle_rpc`'s own thread."""
-        asyncio.run_coroutine_threadsafe(self.async_send(reply), self.loop)
+        """Schedule `async_send` on `loop`, from `handle_rpc`'s own thread.
+
+        Once `Node.terminate_flag` is set, the reply carries the
+        `Connection: close` Core's `HTTPRequest::WriteReply` adds once
+        shutdown has begun, and is recorded through
+        `RpcManager.add_delayed_reply` so that `RpcManager.stop` finishes
+        writing it rather than cancelling it: Core's `StopHTTPServer`
+        waits in `g_requests.WaitUntilEmpty()` for every request it
+        tracks to have its reply sent before it frees the event base
+        (`src/httpserver.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        tag). That write is bounded by `request_timeout`, as
+        `evhttp_set_timeout` bounds Core's with `-rpcservertimeout`
+        (same file, same tag), and the bound is the deadline recorded.
+        """
+        if not self.manager.node.terminate_flag.is_set():
+            asyncio.run_coroutine_threadsafe(self.async_send(reply), self.loop)
+            return
+        final = self._final_send(reply)
+        self.manager.add_delayed_reply(final, time.monotonic() + self.request_timeout)
+        asyncio.run_coroutine_threadsafe(final, self.loop)
+
+    async def _final_send(self, reply: HttpReply) -> None:
+        """Write `reply` and close, giving up after `request_timeout`.
+
+        An abandoned write leaves this connection in `manager.connections`,
+        where `RpcManager.stop`'s own sweep closes it.
+        """
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(self.request_timeout):
+                await self.async_send(reply, close=True)
 
     # Use with care
     def send_and_wait(self, reply: HttpReply) -> None:

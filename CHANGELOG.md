@@ -1192,6 +1192,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   milliseconds**, as Core's own `stop <ms>` does, while the node starts
   shutting down at once (closes #1467).
 
+### An RPC request queued when shutdown starts is answered, not closed
+
+- **`Node.run` answers everything already queued on
+  `rpc_manager.messages` before either manager stops**, matching Core's
+  `ThreadPool::Stop` (closes #1506).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
