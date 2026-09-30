@@ -1480,6 +1480,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `setnetworkactive` and `getrpcinfo`; a hidden command such as
   `addconnection` stays off it** (closes #1560).
 
+### `generate_sbom.py` is btclib-org/.github's
+
+- **btclib-org/.github's `generate_sbom.py` writes the bill of materials**,
+  served from `main`, and names its properties `btclib:*`, where they were
+  `btclib-node:*` (issue btclib-org/.github#1478).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
