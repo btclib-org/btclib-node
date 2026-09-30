@@ -914,6 +914,82 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   seeds off, and `-seednode` addr-fetches a peer ahead of the DNS seeds,
   one at a time** (closes #1192), as Core's `ThreadOpenConnections` does.
 
+### A call past its own declared argument count is refused with help
+
+- **`rpc.main._execute` refuses a call carrying more positional arguments
+  than its method declares, with that method's own full help text**
+  (closes #1424).
+
+### Two or more wrongly typed arguments are all named in one refusal
+
+- **Every declared argument's type is checked before any is raised on, so a
+  call with two or more wrong ones names every one, not the first alone**
+  (closes #1293).
+
+### A short or refused call is answered with the method's own full help
+
+- **The one-line usage string a callback raised for a missing argument, or a
+  value it refuses outright, is now that method's own full help text**
+  (closes #1294).
+
+### `help` is served, as Core's `help` RPC serves it
+
+- **The commands this node serves, grouped by category, with no argument,
+  and a served command's own full help text with one, or Core's own
+  "unknown command" for one it does not serve** (closes #1405).
+
+### A refused `stop` no longer shuts the node down
+
+- **`rpc.main` calls `node.stop()` only where the `stop` reply carries
+  no error**, as Core's own `stop()` handler does (closes #1441).
+
+### `submitblock` answers Core's own reasons where it used to answer `null`
+
+- **A tip block answers `bad-cb-height` or `bad-txns-nonfinal`** (closes #1335).
+- **Failing scripts answer `block-script-verify-flag-failed`** (closes #1390).
+- **A body failing `CheckBlock` leaves no header indexed** (closes #1339).
+
+### `address_sampler`'s tried side draws an aged-out row, as `Select_` does
+
+- **The tried side reads `active_addresses` unfiltered by `_aged_out`,
+  matching Core's `Select_`** (closes #1434), where an aged-out answered
+  endpoint was never drawn again.
+
+### `_aged_out` grants `IsTerrible`'s one-minute grace to a row just tried
+
+- **A row tried within the last minute is never aged out, whatever its
+  timestamp says** (closes #1435), matching `IsTerrible`'s own `m_last_try`
+  guard.
+
+### `pypi-install.yml` installs the version the release published
+
+- **The install names `btclib-node==<version>` from the tag `release.yml`
+  passes** (issue btclib-org/.github#1456): a bare name let a lagging
+  index serve the release before it.
+
+### An out-of-range `feefilter` leaves the peer's filter in place, as in Core
+
+- **A rate outside `MoneyRange` is ignored rather than clearing the filter the
+  peer sent before** (closes #1256).
+
+### `getdata` serves a block only where Core's `BlockRequestAllowed` would
+
+- **A block off the active chain is served only once validated and recent, and
+  an unknown or refused one is ignored before the prune threshold is read**
+  (closes #1254).
+
+### A `notfound` is logged at debug as a count, and a `reject` is ignored
+
+- **Neither puts what the peer wrote into the log** (closes #1255): `notfound`
+  logs how many items it names, and `reject` reaches no handler, as Core's
+  `ProcessMessage` has none.
+
+### Three peer refusals are answered as Core answers them
+
+- **A header on an invalid parent (`bad-prevblk`, in `submitblock` too) and a
+  non-continuous batch cost the sender, as does one already invalid from an
+  outbound peer; other exceptions keep the peer** (closes #1233).
+
 ### DNS seeding waits, batches by three, and reads `-forcednsseed`
 
 - **A wait, then three seeds at a time, ends early at two full-relay

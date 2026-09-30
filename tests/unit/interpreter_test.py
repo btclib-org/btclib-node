@@ -34,7 +34,11 @@ from btclib.tx.tx_out import TxOut
 
 from btclib_node.block_db import Coin
 from btclib_node.chains import RegTest
-from btclib_node.exceptions import NonStandardTxError, TxRejectedError
+from btclib_node.exceptions import (
+    BlockScriptVerifyError,
+    NonStandardTxError,
+    TxRejectedError,
+)
 from btclib_node.interpreter import (
     STANDARD_FLAGS,
     check_transaction,
@@ -313,13 +317,18 @@ def test_check_transactions_verifies_every_input_of_a_multi_input_transaction() 
 
 
 def test_check_transactions_still_raises_when_one_input_does_not_verify() -> None:
-    """One tampered signature among several inputs raises `ScriptError`."""
+    """One tampered signature among several raises `BlockScriptVerifyError`.
+
+    `check_transactions` wraps whatever the pool raises -- `f`'s own
+    `ScriptError` here -- into Core's own wire format for a script
+    check failed while connecting.
+    """
     # the same refusal the per-input dispatch gave: a bad input has to
     # reach main.update_chain whichever input in the transaction it is
     prevouts, tx = _multi_input_p2wpkh_spend(3)
     sig, pub = tx.vin[2].script_witness.stack
     tx.vin[2].script_witness = Witness([bytes([sig[0] ^ 1]) + sig[1:], pub])
-    with pytest.raises(ScriptError):
+    with pytest.raises(BlockScriptVerifyError, match="block-script-verify-flag-failed"):
         check_transactions([(coins(prevouts), tx)], 1, make_node(), _A_BLOCK_HASH)
 
 
