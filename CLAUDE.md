@@ -125,6 +125,20 @@ an ancestor of `master` all the same, so
 `git merge-base --is-ancestor <sha> master` answering false finds a
 release commit and still cannot say whether its author meant one.
 
+Where that release and Core master behave differently, consensus and
+relay follow the release: the network runs released Cores, never
+`master`, so a peer on the wire is never speaking master's own tip.
+
+A peer-refusal rule may go stricter than the release ahead of that
+stricter behaviour landing in one, provided the code argues the
+divergence against the release and cites master's own sha beside it —
+refusing a misbehaving peer more readily changes nothing an honest
+peer's messages achieve, where a consensus or relay difference is one
+the network itself sees. `sendcmpct`'s announce octet is the case in
+point: master reads the octet as a byte and calls `Misbehaving` on a
+value above one, where the release still reads a bare bool and refuses
+nothing.
+
 That checkout sits at `../bitcoin` from there, not from whichever
 worktree a session is working in — every session works in one, by the
 rule below — so a plain `../bitcoin` typed from a worktree resolves to

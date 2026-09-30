@@ -51,7 +51,6 @@ from btclib.p2p.compact_blocks import (
     BlockTxn,
     CmpctBlock,
     GetBlockTxn,
-    PrefilledTransaction,
     SendCmpct,
 )
 from btclib.p2p.data import BlockPayload as BlockMsg
@@ -99,6 +98,7 @@ from btclib_node.main import (
     is_block_failed,
     is_block_mutated,
     is_cached_invalid,
+    new_pow_valid_block,
     passes_check_block,
     verify_mempool_acceptance,
 )
@@ -111,6 +111,7 @@ from btclib_node.p2p.chain_sync import (
     disconnect_if_insufficient_work,
     protect_if_caught_up,
 )
+from btclib_node.p2p.compact_block import compact_block
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 from btclib_node.p2p.messages import FinalAlert
 from btclib_node.p2p.protocol_version import (
@@ -143,7 +144,6 @@ __all__ = [
     "advance_getdata",
     "block",
     "callbacks",
-    "compact_block",
     "feefilter",
     "get_cfcheckpt",
     "get_cfheaders",
@@ -161,6 +161,7 @@ __all__ = [
     "ping",
     "pong",
     "sendaddrv2",
+    "sendcmpct",
     "sendheaders",
     "tx",
     "verack",
@@ -636,6 +637,45 @@ def sendheaders(node: Node, msg: bytes, conn: Connection) -> None:
     # itself is the request. Core's own handler does the same one
     # thing and nothing else (net_processing.cpp). btclib-org/btclib-node#202
     conn.prefers_headers = True
+
+
+# `sendcmpct`'s payload: the announce octet and the eight of the version
+_SENDCMPCT_SIZE = 9
+
+
+def sendcmpct(node: Node, msg: bytes, conn: Connection) -> None:
+    """Record whether the peer wants new blocks announced as `cmpctblock`.
+
+    Core's `SENDCMPCT` handler (`src/net_processing.cpp`) on master,
+    at bitcoin/bitcoin@ba8fdb9717: the announce octet is read as a
+    `uint8_t`, not a `bool`, so a value above one is refused as
+    "invalid sendcmpct announce field" before a version other than
+    `CMPCTBLOCKS_VERSION` is ignored; otherwise the announce octet is
+    the peer's choice of this node as a BIP152 high-bandwidth peer,
+    which a later `sendcmpct` can take back.
+
+    v31.1, at bitcoin/bitcoin@9be056a8a7, the release
+    `.github/workflows/integration-bitcoind.yml` pins and the
+    integration tests run against, still reads the octet as a plain
+    `bool` and never refuses one above one: the `uint8_t` read and the
+    `Misbehaving` call are Core commit 2d0dce0af5, on master and in
+    `v32.0rc1`, not yet in a release.
+    """
+    # read as Core's `vRecv >> sendcmpct_hb >> sendcmpct_version` reads
+    # it, bytes past the ninth left unread; btclib's `SendCmpct.parse`
+    # is not used here because BTClibValueError leaves the peer
+    # undiscouraged (`p2p.main._drop`), where Core's own refusal is a
+    # `Misbehaving` call
+    if len(msg) < _SENDCMPCT_SIZE:
+        err_msg = f"sendcmpct payload of {len(msg)} bytes"
+        raise BTClibValueError(err_msg)
+    announce = msg[0]
+    if announce > 1:
+        err_msg = f"invalid sendcmpct announce field: {announce}"
+        raise MisbehavingError(err_msg)
+    if int.from_bytes(msg[1:_SENDCMPCT_SIZE], "little") != CMPCTBLOCKS_VERSION:
+        return
+    conn.requested_hb_cmpctblocks = announce != 0
 
 
 def ping(node: Node, msg: bytes, conn: Connection) -> None:
@@ -1202,6 +1242,11 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
         conn.last_novel_block_time = int(time.time())
         node.logger.info("Received new block with hash:%s", block_hash.hex())
         block_index.set_downloaded(block_hash)
+        # Core's `AcceptBlock` calls `NewPoWValidBlock` from inside
+        # `ProcessNewBlock`, ahead of `ProcessBlock`'s own
+        # `RemoveBlockRequest` below, at bitcoin/bitcoin@9be056a8a7
+        # (`net_processing.cpp`, the v31.1 tag)
+        new_pow_valid_block(node, block)
         # stored, so awaited from nobody: Core's `ProcessBlock`
         remove_block_request(connections, block_hash, time.time())
 
@@ -1317,26 +1362,14 @@ _GETDATA_BLOCK_TYPES = (
 # BIP152's compact blocks as Core serves them (`net_processing.cpp`, at
 # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the one version Core speaks,
 # the depth past which a `MSG_CMPCT_BLOCK` is answered with the full block
-# instead, and the depth past which a `getblocktxn` is
+# instead, and the depth past which a `getblocktxn` is answered with the
+# full block too
 CMPCTBLOCKS_VERSION = 2
 MAX_CMPCTBLOCK_DEPTH = 5
 MAX_BLOCKTXN_DEPTH = 10
 # Core's `CanDirectFetch`: the tip is within this many target spacings
 # of now
 _DIRECT_FETCH_SPACINGS = 20
-
-
-def compact_block(block: Block, nonce: int) -> CmpctBlock:
-    """Return `block` as a `cmpctblock`, the coinbase alone sent whole.
-
-    Core's `CBlockHeaderAndShortTxIDs` constructor: the coinbase
-    prefilled at index 0, and every other transaction by the short id of
-    its wtxid under the key `nonce` and the header give.
-    """
-    coinbase = PrefilledTransaction(0, block.transactions[0])
-    keyed = CmpctBlock(block.header, nonce, (), (coinbase,), check_validity=False)
-    short_ids = [keyed.short_id(tx.hash) for tx in block.transactions[1:]]
-    return CmpctBlock(block.header, nonce, short_ids, (coinbase,))
 
 
 def _can_direct_fetch(node: Node) -> bool:
@@ -1360,6 +1393,8 @@ def _block_answer(node: Node, item: Inventory, block: Block) -> BlockMsg | Cmpct
         height = block_index.header_dict[item.hash].index
         tip_height = len(block_index.active_chain) - 1
         if _can_direct_fetch(node) and height >= tip_height - MAX_CMPCTBLOCK_DEPTH:
+            # a fresh nonce, where Core answers the most recent block with
+            # the one it announced (btclib-org/btclib-node#1336)
             return compact_block(block, secrets.randbits(64))
         include_witness = True
     else:
@@ -2381,6 +2416,7 @@ callbacks = {
     "addrv2": addrv2,
     "getaddr": getaddr,
     "sendheaders": sendheaders,
+    "sendcmpct": sendcmpct,
     "getcfilters": get_cfilters,
     "getcfheaders": get_cfheaders,
     "getcfcheckpt": get_cfcheckpt,

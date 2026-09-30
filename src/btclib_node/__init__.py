@@ -360,6 +360,11 @@ class Node(threading.Thread):
         # `m_cached_is_ibd{true}` (`src/validation.h:1054`, at
         # bitcoin/bitcoin@ca7162cde5) starts true the same way.
         self.is_initial_block_download = True
+        # `main.new_pow_valid_block`'s height of the last block it sent to
+        # high-bandwidth peers: Core's `m_highest_fast_announce{0}`
+        # (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+        # v31.1 tag). btclib-org/btclib-node#1315
+        self.highest_fast_announce = 0
 
         self.p2p_port: int | None
         if config.p2p_port:

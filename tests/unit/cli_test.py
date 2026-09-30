@@ -743,13 +743,20 @@ def test_build_config_logs_its_config_file_and_command_line_args(
     bitcoin/bitcoin@9be056a8a7): the config file's args, then the command
     line's; a plain value quoted as `SettingsValue::write()` writes it, a
     negation's `true`, and `-rpcpassword`'s masked to `****` on either.
+    `SettingsValue::write()`'s own `json_escape`
+    (`src/univalue/lib/univalue_write.cpp`, same sha) doubles a backslash
+    like any other JSON string writer, so `datadir` is compared through
+    `cli._setting_to_write_str` rather than against the raw path: on
+    `windows-latest`, where `tmp_path` carries real backslashes, a plain
+    f-string would compare the doubled logged form against the
+    undoubled one (ISS 1509).
     """
     conf = "regtest=1\n[regtest]\nrpcbind=127.0.0.1:8332\n"
     config = _build(tmp_path, "-nolisten=0", "-rpcpassword=hunter2", conf=conf)
     assert config.config_args == (
         'Config file arg: regtest="1"',
         'Config file arg: [regtest] rpcbind="127.0.0.1:8332"',
-        f'Command-line arg: datadir="{tmp_path}"',
+        f"Command-line arg: datadir={cli._setting_to_write_str(str(tmp_path))}",
         "Command-line arg: listen=true",
         "Command-line arg: rpcpassword=****",
     )
@@ -761,6 +768,9 @@ def test_log_args_is_config_file_first_then_command_line(tmp_path: Path) -> None
     `m_settings.ro_config`/`command_line_options` (`src/common/settings.h`,
     same sha): the default section (`""`) sorts ahead of a named one, and
     a name sorts within its own section, whichever order they were set in.
+    `datadir` is compared through `cli._setting_to_write_str`, for the
+    same reason given in `test_build_config_logs_its_config_file_and_
+    command_line_args` above (ISS 1509).
     """
     settings = cli._Settings(
         command_line={"rpcpassword": ["hunter2"], "datadir": [str(tmp_path)]},
@@ -773,8 +783,26 @@ def test_log_args_is_config_file_first_then_command_line(tmp_path: Path) -> None
         "Config file arg: listen=true",
         'Config file arg: regtest="1"',
         'Config file arg: [regtest] rpcbind="127.0.0.1:8332"',
-        f'Command-line arg: datadir="{tmp_path}"',
+        f"Command-line arg: datadir={cli._setting_to_write_str(str(tmp_path))}",
         "Command-line arg: rpcpassword=****",
+    )
+
+
+def test_log_args_escapes_a_backslash_in_datadir() -> None:
+    r"""ISS 1509: `value.write()` JSON-escapes a backslash, doubling it.
+
+    A manufactured Windows-style path exercises `SettingsValue::write()`'s
+    `json_escape` (`src/univalue/lib/univalue_write.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, `escapes[0x5c] == "\\"`) without a
+    Windows runner: a literal single backslash in `datadir` is doubled in
+    the logged line, exactly as any other string value is. The expected
+    value is a hand-written literal, not `_setting_to_write_str` again,
+    so the test cannot pass a change that stops escaping it.
+    """
+    windows_datadir = r"C:\Users\runneradmin\datadir"
+    settings = cli._Settings(command_line={"datadir": [windows_datadir]}, ro_config={})
+    assert cli._log_args(settings) == (
+        'Command-line arg: datadir="C:\\\\Users\\\\runneradmin\\\\datadir"',
     )
 
 
