@@ -128,7 +128,8 @@ P2P_INIT_ERROR = "Failed to listen on any port. Use -listen=0 if you want this."
 def _default_worker_count() -> int:
     """How many workers `Node.worker_pool` spawns.
 
-    Eight outside of a test run, unconditionally. Under `pytest-xdist`,
+    Eight outside of a test run, and where `PYTEST_XDIST_WORKER_COUNT` is
+    not a positive integer. Under `pytest-xdist`,
     `PYTEST_XDIST_WORKER_COUNT` is the number of worker processes the
     run was split across (`xdist/remote.py` sets it in the worker's own
     environment before any test module is imported), and every one of
@@ -150,10 +151,13 @@ def _default_worker_count() -> int:
     process does once the interpreter that spawns it is free-threaded
     (btclib-org/btclib-node#388).
     """
-    xdist_workers = os.environ.get("PYTEST_XDIST_WORKER_COUNT")
-    if xdist_workers is None:
+    try:
+        count = int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", ""))
+    except ValueError:
+        count = 0
+    if count < 1:
         return 8
-    return max(1, (os.cpu_count() or 8) // int(xdist_workers))
+    return max(1, (os.cpu_count() or 8) // count)
 
 
 # `Node.worker_pool`'s own size, named so `warm_worker_pool` can compute

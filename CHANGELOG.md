@@ -1364,6 +1364,18 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   than 64 hex digits**, read wherever the minimum chain work is checked
   (closes #1500).
 
+### A malformed `PYTEST_XDIST_WORKER_COUNT` leaves the worker count at eight
+
+- **`_default_worker_count` takes eight where `PYTEST_XDIST_WORKER_COUNT`
+  is not a positive integer**, a non-integer having raised `ValueError`
+  and `0` `ZeroDivisionError` at `import btclib_node` (closes #1555).
+
+### `CLAUDE.md` moves *Following Bitcoin Core* to `CONTRIBUTING.md`
+
+- **`CLAUDE.md` takes the organization's shared primary-checkout section,
+  and *Following Bitcoin Core* moves to `CONTRIBUTING.md`'s last
+  section** (issue btclib-org/.github#1494).
+
 ### A transaction Core decodes and refuses in `CheckTransaction`'s own words
 
 - **`sendrawtransaction` and `testmempoolaccept` answer that refusal too**,

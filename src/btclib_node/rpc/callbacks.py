@@ -1415,7 +1415,7 @@ def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
     `git merge-base --is-ancestor`.
 
     Matching master here rather than the release this tree tests
-    against is a decision, not an oversight: `CLAUDE.md`'s own
+    against is a decision, not an oversight: `CONTRIBUTING.md`'s own
     *Following Bitcoin Core* names matching Core's behaviour as the
     default, and reserves a release-pinned citation for a claim about
     the behaviour of the bitcoind this tree is tested against rather
