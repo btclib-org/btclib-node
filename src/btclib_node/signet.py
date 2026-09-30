@@ -288,8 +288,6 @@ def assert_valid_solution(block: Block, chain: Chain) -> None:
     try:
         to_sign, to_spend = _signet_transactions(block, coinbase, commitment_index)
         verify_input([to_spend.vout[0]], to_sign, 0, _SCRIPT_FLAGS)
-    except MisbehavingError:
-        raise
     except Exception as e:
         # btclib's own exceptions, BTClibValueError chief among them,
         # caught broadly because a malformed solution can also reach the

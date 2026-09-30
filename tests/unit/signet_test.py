@@ -188,10 +188,11 @@ def test_a_solution_with_a_byte_past_the_witness_stack_is_refused() -> None:
     Unlike `test_a_truncated_solution_is_refused` above, every read
     here succeeds; what is wrong is only what is left once they are
     done. `_parse_solution` raises a plain `ValueError` for it, not
-    `MisbehavingError`, so this reaches `assert_valid_solution`'s
-    broader `except Exception` and carries `bad-signet-blksig:` the
-    same way every other failure here does, rather than escaping
-    untagged through its narrower `except MisbehavingError: raise`.
+    `MisbehavingError`, so this reaches `assert_valid_solution`'s own
+    `except Exception` and carries `bad-signet-blksig:` the same way
+    every other failure here does, rather than escaping untagged --
+    which a `MisbehavingError` would, `assert_valid_solution` raising
+    every one of its own unwrapped.
     """
     block = Block.parse(_SIGNET_BLOCKS[0], check_validity=False)
     coinbase = block.transactions[0]
