@@ -1210,6 +1210,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   header they write out again**, no longer bypassing btclib's own
   check now that it refuses on version the way Core does (closes #1511).
 
+### The backpressure pause test connects fewer blocks
+
+- **`test_a_getdata_answer_pauses_rather_than_filling_the_send_queue`
+  connects only as many blocks as `advance_getdata`'s own pause needs**,
+  cutting the wait that timed out under load (closes #1518).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
