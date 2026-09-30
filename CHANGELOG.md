@@ -1138,11 +1138,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   off `manage_connections`'s own step, so a slow resolve or connect no
   longer delays that loop's pruning and eviction** (closes #1366).
 
-### `getpeerinfo`'s `addr` is the name a peer was dialled by, where one was given
-
-- **`addr` and `disconnectnode`'s `address` match answer the string a peer
-  was dialled by once held, the formatted socket address otherwise**, as
-  Core's `m_addr_name` does (closes #1301).
 ### `history.log` opens the way `bitcoind`'s `debug.log` does
 
 - **Every setting read is logged, a sensitive one masked** (closes #1305).
@@ -1160,6 +1155,18 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`TestNet4` joins this node's chains, selected by `-testnet4` or
   `-chain=testnet4` as Core's own `-testnet4` does, and a header failing
   BIP94's timewarp bound is a `MisbehavingError`** (closes #1442).
+
+### `getpeerinfo`'s `addr` is the name a peer was dialled by, where one was given
+
+- **`addr` and `disconnectnode`'s `address` match answer the string a peer
+  was dialled by once held, the formatted socket address otherwise**, as
+  Core's `m_addr_name` does (closes #1301).
+
+### A `-connect` or `-seednode` spec's own port now survives to `addr_name`
+
+- **`-connect` and `-seednode` keep the raw spec given, port included,
+  the way `-addnode` already did, so `addr_name` carries it too** (closes
+  #1493).
 
 ## v2026.9.24
 

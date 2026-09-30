@@ -3508,7 +3508,12 @@ def test_get_network_info_s_localservices_follows_pruned_and_peerblockfilters() 
 
 
 def test_addnode_onetry_dials_the_given_address_once() -> None:
-    """`addnode "host:port" "onetry"` schedules exactly one dial."""
+    """`addnode "host:port" "onetry"` schedules exactly one dial.
+
+    ISS 1493: `connect_host` is given `node_arg` whole, port included --
+    `split_host_port` above only validates it -- so `18444`, this
+    chain's own default, never reaches `connect_host` here at all.
+    """
     dialed: list[Any] = []
     node = cast(
         "Node",
@@ -3520,11 +3525,16 @@ def test_addnode_onetry_dials_the_given_address_once() -> None:
         ),
     )
     add_node(node, _CONN, ["127.0.0.1:9999", "onetry"])
-    assert dialed == [("127.0.0.1", 9999)]
+    assert dialed == [("127.0.0.1:9999", 18444)]
 
 
 def test_addnode_falls_back_to_the_chain_s_own_default_port() -> None:
-    """A `node` naming no port dials this chain's own default one."""
+    """A `node` naming no port dials this chain's own default one.
+
+    The negative half of ISS 1493's own positive above: `node_arg`
+    itself names no port, so it reaches `connect_host` unchanged and
+    `18444` is genuinely `default_port`, not a value already on `dest`.
+    """
     dialed: list[Any] = []
     node = cast(
         "Node",
@@ -3671,7 +3681,8 @@ def test_addnode_onetry_takes_a_hostname() -> None:
     """A hostname, rather than a literal IP, is dialled too (ISS 1264).
 
     `connect_host` resolves it on `P2pManager`'s own loop; this node's
-    synchronous RPC path splits the host from the port and nothing else.
+    synchronous RPC path only validates the port with `split_host_port`
+    (ISS 1493), passing `node_arg` itself on to `connect_host` whole.
     """
     dialed: list[Any] = []
     node = cast(
@@ -3684,7 +3695,7 @@ def test_addnode_onetry_takes_a_hostname() -> None:
         ),
     )
     add_node(node, _CONN, ["example.com:9999", "onetry"])
-    assert dialed == [("example.com", 9999)]
+    assert dialed == [("example.com:9999", 18444)]
 
 
 def test_addnode_refuses_a_port_int_would_read() -> None:

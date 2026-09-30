@@ -530,16 +530,16 @@ class Connection:
     # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `None` for a connection
     # accepted or dialled straight to an address:
     # `P2pManager.async_connect_host` is this tree's one setter, its own
-    # `host` argument becoming this field for every manual dial --
-    # `-connect`'s and `-addnode`'s own standing loops, the `addnode`
-    # RPC's `onetry`, and an addr-fetch dial alike
-    # (btclib-org/btclib-node#1264, #1432). Core's own field falls back
-    # to the formatted socket address for a connection dialled by
-    # address, which `_socket_addresses` (`rpc/callbacks.py`) does the
-    # same way for `getpeerinfo`'s own `addr`. Set by
-    # `P2pManager.create_connection` before this connection's task is
-    # scheduled, and never changed after; a class default for the same
-    # reason as `time_received`.
+    # `dest` argument becoming this field verbatim -- port included
+    # where `dest` names one -- for every manual dial: `-connect`'s and
+    # `-addnode`'s own standing loops, the `addnode` RPC's `onetry`, and
+    # an addr-fetch dial alike (btclib-org/btclib-node#1264, #1432,
+    # #1493). Core's own field falls back to the formatted socket
+    # address for a connection dialled by address, which
+    # `_socket_addresses` (`rpc/callbacks.py`) does the same way for
+    # `getpeerinfo`'s own `addr`. Set by `P2pManager.create_connection`
+    # before this connection's task is scheduled, and never changed
+    # after; a class default for the same reason as `time_received`.
     addr_name: str | None = None
     # Core's `m_last_block_announcement`: when this peer last sent a
     # header new here and with more work than the active tip, which

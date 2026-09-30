@@ -1436,14 +1436,19 @@ def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
         return
 
     try:
-        host, port = split_host_port(node_arg, node.chain.port)
+        split_host_port(node_arg, node.chain.port)
     except ValueError as error:
         # a malformed port alone: a hostname is no longer refused here,
         # `connect_host` resolving one the way `P2pManager`'s own
         # redial and `Node.run`'s startup dial do (btclib-org/btclib-node#1264)
         raise RpcError(RPCErrorCode.INVALID_PARAMETER, str(error)) from error
 
-    node.p2p_manager.connect_host(host, port)
+    # `node_arg` whole, not the `(host, port)` the check above only
+    # validated with: Core's own `onetry` passes `node_arg` itself as
+    # `pszDest` (`src/rpc/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    # v31.1 tag), so a port the caller gave reaches `addr_name` too
+    # (btclib-org/btclib-node#1493).
+    node.p2p_manager.connect_host(node_arg, node.chain.port)
 
 
 # `UniValue::getInt<int64_t>`'s own range, past which it throws "JSON
