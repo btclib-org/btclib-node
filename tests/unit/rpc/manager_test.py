@@ -30,7 +30,7 @@ from btclib_node.chains import RegTest
 from btclib_node.config import Config
 from btclib_node.log import Logger
 from btclib_node.rpc import manager as manager_module
-from btclib_node.rpc.connection import parse_request_head
+from btclib_node.rpc.connection import REQUEST_TIMEOUT, parse_request_head
 from btclib_node.rpc.jsonrpc import OK, HttpReply
 from btclib_node.rpc.manager import RpcManager
 from tests import (
@@ -65,6 +65,7 @@ class AManagerFactory(Protocol):
         rpc_host: str | None = None,
         rpcbind: tuple[str, ...] = (),
         rpcallowip: tuple[str, ...] = (),
+        rpcservertimeout: int = int(REQUEST_TIMEOUT),
     ) -> RpcManager:
         """Build an `RpcManager` bound to `port` and `rpc_host` once started."""
         ...
@@ -84,6 +85,7 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
         rpc_host: str | None = None,
         rpcbind: tuple[str, ...] = (),
         rpcallowip: tuple[str, ...] = (),
+        rpcservertimeout: int = int(REQUEST_TIMEOUT),
     ) -> RpcManager:
         config = Config(
             chain="regtest",
@@ -92,6 +94,7 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
             rpcbind=rpcbind,
             rpcallowip=rpcallowip,
             rpcauth=[RPCAUTH],
+            rpcservertimeout=rpcservertimeout,
         )
         config.data_dir.mkdir(exist_ok=True)
         manager = RpcManager(
@@ -1322,6 +1325,63 @@ def test_stop_gives_up_a_reply_written_once_shutdown_began_after_its_timeout(
     assert ours.fileno() == -1
 
 
+def test_stop_waits_unbounded_for_a_reply_once_request_timeout_is_none(
+    a_manager: AManagerFactory,
+) -> None:
+    """`request_timeout=None` leaves `stop`'s own reply wait unbounded.
+
+    `-rpcservertimeout=0` or `=-1` is `_request_timeout`'s own `None`
+    (its docstring has why); Core's `WaitUntilEmpty` has no bound of its
+    own once `evhttp_set_timeout` has armed none either. The shape is
+    the sibling test above, its own `request_timeout=0.2` bound turned
+    off here instead of shortened: `stop` is still running well past
+    that test's own 0.2s bound, and closing the socket -- the only
+    thing left to unblock a write nobody reads -- is what ends it here
+    instead.
+    """
+    manager = a_manager(get_random_port())
+    manager.request_timeout = None
+    manager.start()
+    wait_until_listening(manager)
+    ours, theirs = socket.socketpair()
+    stopping = threading.Thread(target=manager.stop)
+    try:
+        conn = manager.create_connection(manager.loop, ours)
+        conn.head = parse_request_head(b"POST / HTTP/1.1\r\nHost: x\r\n\r\n")
+        manager.node.terminate_flag.set()
+        reply = {"result": "0" * (4 * 1024 * 1024), "error": None, "id": 1}
+        conn.send(HttpReply(OK, reply))
+        wait_until(lambda: select.select([theirs], [], [], 0)[0])
+        stopping.start()
+        # well past the 0.2s `request_timeout` the sibling test above
+        # holds this same shape to: still running, this one having none
+        stopping.join(1.0)
+        assert stopping.is_alive()
+    finally:
+        # what ends `stop` here, nothing else being left to bound it
+        theirs.close()
+        stopping.join(10)
+    assert not stopping.is_alive()
+    assert ours.fileno() == -1
+
+
+def test_manager_takes_request_timeout_from_rpcservertimeout(
+    a_manager: AManagerFactory,
+) -> None:
+    """`RpcManager.__init__` reads `request_timeout` off `Config`.
+
+    `-rpcservertimeout=0` is one of Core's own two spellings for no
+    bound at all (`_request_timeout`'s own docstring has the other,
+    `-1`), which this manager carries as `None` from construction --
+    not only where a test lowers `request_timeout` directly afterward,
+    the seam `RpcManager.__init__`'s own comment names.
+    """
+    manager = a_manager(get_random_port(), rpcservertimeout=0)
+    assert manager.request_timeout is None
+    other = a_manager(get_random_port(), rpcservertimeout=45)
+    assert other.request_timeout == 45.0
+
+
 def test_stop_finishes_a_reply_scheduled_before_shutdown_began(
     a_manager: AManagerFactory,
 ) -> None:
@@ -1383,6 +1443,7 @@ def test_stop_finishes_a_reply_scheduled_before_shutdown_began(
     assert json.loads(body)["result"] == result
     deadline = manager.latest_reply_deadline()
     assert deadline is not None
+    assert manager.request_timeout is not None
     assert deadline >= sent + manager.request_timeout
 
 

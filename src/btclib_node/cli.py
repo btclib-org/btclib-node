@@ -186,6 +186,7 @@ from btclib_node.dirlock import DirectoryLock, lock_directories
 from btclib_node.exceptions import DirectoryLockError
 from btclib_node.log import open_history_log
 from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME
+from btclib_node.rpc.connection import REQUEST_TIMEOUT
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -525,6 +526,12 @@ _OPTIONS: dict[str, _Option] = {
         "Listen for JSON-RPC connections on <port>",
         _RPC_TITLE,
         network_only=True,
+    ),
+    "rpcservertimeout": _Option(
+        "=<n>",
+        f"Timeout during HTTP requests (default: {int(REQUEST_TIMEOUT)})",
+        _RPC_TITLE,
+        debug_only=True,
     ),
     "rpcuser": _Option(
         "=<user>", "Username for JSON-RPC connections", _RPC_TITLE, sensitive=True
@@ -1852,6 +1859,15 @@ def _after_lock(before: _BeforeLock) -> Config:
     if ban_time is None:
         ban_time = DEFAULT_MISBEHAVING_BANTIME
     prune = before.prune
+    # `-rpcservertimeout`, which `InitHTTPServer` hands to libevent's
+    # `evhttp_set_timeout` as a 32-bit `int`
+    # (`src/httpserver.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    # tag): the same `int64_t`-to-`int` narrowing `-maxconnections`
+    # above takes through `_to_int`.
+    rpcservertimeout = _get_int(settings, "rpcservertimeout")
+    rpcservertimeout = (
+        int(REQUEST_TIMEOUT) if rpcservertimeout is None else _to_int(rpcservertimeout)
+    )
 
     return Config(
         chain=before.chain_name,
@@ -1861,6 +1877,7 @@ def _after_lock(before: _BeforeLock) -> Config:
         rpc_port=rpc_port,
         rpcbind=tuple(rpcbind),
         rpcallowip=_get_args(settings, "rpcallowip"),
+        rpcservertimeout=rpcservertimeout,
         allow_rpc=server is None or server,
         pruned=bool(prune),
         prune_target_mib=prune if prune >= MIN_PRUNE_TARGET_MIB else None,

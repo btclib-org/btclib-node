@@ -31,6 +31,7 @@ from btclib_node.rpc.auth import (
     cookie_perms,
     parse_whitelist,
 )
+from btclib_node.rpc.connection import REQUEST_TIMEOUT
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -280,6 +281,14 @@ class Config:
     # starts, as `InitHTTPServer` parses them, and answers a request
     # from no source they or loopback name with a 403.
     rpcallowip: tuple[str, ...]
+    # Core's own `-rpcservertimeout`, in seconds: how long
+    # `RpcConnection.run` may take reading one request, and the idle gap
+    # a kept-alive connection may sit in between two of them, both
+    # matched to `REQUEST_TIMEOUT` by default. `RpcManager.__init__` is
+    # where `0` and `-1` both read as no bound at all, as they do for
+    # Core's own `evhttp_set_timeout` (`rpc.manager._request_timeout`'s
+    # own docstring).
+    rpcservertimeout: int
     # Core's own `-rpcauth`, one entry per value: users the RPC listener
     # accepts beside the cookie and `rpc_password_entry`. Where a value
     # is malformed, the values ahead of it, and `rpc_auth_invalid` set.
@@ -501,6 +510,7 @@ class Config:
         rpc_host: str | None = None,
         rpcbind: Sequence[str] = (),
         rpcallowip: Sequence[str] = (),
+        rpcservertimeout: int = int(REQUEST_TIMEOUT),
         allow_p2p: bool = True,
         allow_rpc: bool = True,
         pruned: bool = False,
@@ -608,6 +618,7 @@ class Config:
         self.rpc_host = rpc_host
         self.rpcbind = tuple(rpcbind)
         self.rpcallowip = tuple(rpcallowip)
+        self.rpcservertimeout = rpcservertimeout
         # Core reads the RPC options below in `StartHTTPRPC` and its
         # `InitRPCAuthentication` (`src/httprpc.cpp`), which `AppInitMain`
         # runs under `-server` alone (`src/init.cpp`, both

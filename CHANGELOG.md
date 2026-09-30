@@ -1300,6 +1300,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   replies it finishes, so a request arriving on one is answered `503` with
   `Connection: close`, as Core's event loop answers it** (closes #1545).
 
+### `-rpcservertimeout` bounds an RPC connection's read and its idle gap
+
+- **`-rpcservertimeout=<n>` feeds `RpcManager.request_timeout`, seconds as
+  Core's own `-rpcservertimeout` is, `0` and `-1` both arming no bound at
+  all, as `evhttp_set_timeout` arms none for either** (closes #1548).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
