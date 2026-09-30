@@ -850,14 +850,12 @@ def test_build_config_a_double_negative_int_is_one(tmp_path: Path) -> None:
         (["-noconnect"], "", True, False),
         (["-noconnect"], "connect=10.0.0.1\n", True, False),
         (["-noconnect", "-connect=10.0.0.2"], "connect=10.0.0.1\n", True, False),
-        ([], "regtest=1\nconnect=10.0.0.1\n", False, True),
         ([], "regtest=1\n[regtest]\nconnect=10.0.0.1\n", True, False),
     ],
     ids=[
         "-noconnect",
         "-noconnect over the file",
         "a value after the negation",
-        "network-only, the default section off main",
         "network-only, the chain's own section",
     ],
 )
@@ -878,6 +876,22 @@ def test_build_config_reads_connect_as_get_settings_list(
             ("10.0.0.2", Main().port),
             ("10.0.0.1", Main().port),
         )
+
+
+def test_build_config_a_network_only_value_given_on_the_command_line_too(
+    tmp_path: Path,
+) -> None:
+    """A `network_only` default-section value is skipped once given elsewhere.
+
+    `_check_network_only_args` does not refuse this: `-connect` is also
+    given on the command line, so `OnlyHasDefaultSectionSetting` is
+    false and `GetUnsuitableSectionOnlyArgs` does not name it -- but
+    `GetSettingsList`'s own `UseDefaultSection` skip still drops the
+    default section's own value, as it does when nothing else sets the
+    option at all.
+    """
+    config = _build(tmp_path, "-connect=10.0.0.2", conf="regtest=1\nconnect=10.0.0.1\n")
+    assert config.connect == (("10.0.0.2", RegTest().port),)
 
 
 @pytest.mark.parametrize(
@@ -901,6 +915,49 @@ def test_build_config_refuses_a_port_as_check_host_port_options(
     """
     with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
         _build(tmp_path, *argv, conf=conf)
+
+
+@pytest.mark.parametrize("name", ["port", "rpcport", "rpcbind", "connect", "addnode"])
+def test_build_config_refuses_every_network_only_option_off_main(
+    tmp_path: Path, name: str
+) -> None:
+    """ISS 1327: `bitcoind` v31.1.0 refuses to start on this, not only `-port`.
+
+    Each of this node's own `network_only` options, set only in the
+    default section while regtest is the chain: Core's own words for
+    each, `AppInitParameterInteraction`'s `GetUnsuitableSectionOnlyArgs`
+    loop (`src/init.cpp:936-950`, at bitcoin/bitcoin@9be056a8a7).
+    """
+    value = "127.0.0.1:99999" if name == "rpcbind" else "1"
+    message = (
+        f"Config setting for -{name} only applied on regtest network "
+        "when in [regtest] section.\n"
+    )
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        _build(tmp_path, conf=f"regtest=1\n{name}={value}\n")
+
+
+def test_build_config_refuses_a_network_only_value_before_a_blocksdir_check(
+    tmp_path: Path,
+) -> None:
+    """ISS 1327: `bitcoind` v31.1.0 refuses this before naming `-blocksdir`.
+
+    Measured on `bitcoind` v31.1.0 with `-datadir=<dir> -listen=0
+    -rpcport=47391`, `regtest=1` and `port=18999` both in the default
+    section, and `-blocksdir=/nonexistent`: the network-only refusal,
+    not "Specified blocks directory ... does not exist.", `init.cpp`
+    asking `GetUnsuitableSectionOnlyArgs` first.
+    """
+    message = (
+        "Config setting for -port only applied on regtest network when "
+        "in [regtest] section.\n"
+    )
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        _build(
+            tmp_path,
+            "-blocksdir=/nonexistent",
+            conf="regtest=1\nport=18999\n",
+        )
 
 
 @pytest.mark.parametrize(
@@ -1279,8 +1336,19 @@ def test_build_config_selects_the_chain(
 def test_build_config_refuses_two_chain_selectors(
     tmp_path: Path, argv: list[str], conf: str
 ) -> None:
-    """More than one selector, counted over the command line and the file."""
-    with pytest.raises(ValueError, match="use at most one"):
+    """More than one selector, counted over the command line and the file.
+
+    `bitcoind` v31.1.0's own words, `-testnet4` named among the five
+    selectors even though this node reads no such option of its own
+    (btclib-org/btclib-node#1311).
+    """
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"^Invalid combination of -regtest, -signet, -testnet, "
+            r"-testnet4 and -chain\. Can use at most one\.$"
+        ),
+    ):
         _build(tmp_path, *argv, conf=conf)
 
 
@@ -1291,8 +1359,12 @@ def test_build_config_refuses_two_chain_selectors(
 def test_build_config_refuses_an_unknown_chain(
     tmp_path: Path, argv: list[str], conf: str, alias: str
 ) -> None:
-    """An alias outside Core's four, `-nochain`'s `0` among them."""
-    with pytest.raises(ValueError, match=f"^unknown chain '{alias}'$"):
+    """An alias outside Core's four, `-nochain`'s `0` among them.
+
+    `bitcoind` v31.1.0's own words: "Unknown chain bogus.", not quoted
+    and ending in a full stop (btclib-org/btclib-node#1311).
+    """
+    with pytest.raises(ValueError, match=f"^Unknown chain {alias}\\.$"):
         _build(tmp_path, *argv, conf=conf)
 
 
@@ -1783,7 +1855,7 @@ def test_build_config_an_ignored_bitcoin_conf_os_error_is_refused(
 
     (tmp_path / "bitcoin.conf").write_text("", encoding="utf-8")
     (tmp_path / "other.conf").write_text("", encoding="utf-8")
-    monkeypatch.setattr(Path, "samefile", refuse)
+    monkeypatch.setattr(os.path, "samefile", refuse)
     with pytest.raises(ValueError, match=r"^\[Errno 13\] Permission denied$"):
         cli.build_config([f"-datadir={tmp_path}", "-conf=other.conf"])
 
@@ -1903,6 +1975,73 @@ def test_build_config_a_configuration_file_refusal_is_core_s(
     refusal = "Error reading configuration file: " + refusal.format(d=data, s=os.sep)
     with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$"):
         cli.build_config([f"-datadir={data}", *argv])
+
+
+def test_build_config_a_datadir_that_normalises_to_dot_keeps_it_in_a_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`-datadir=.` keeps its `.` when joined onto a missing `-conf` value.
+
+    Measured on `bitcoind` v31.1.0: `-datadir=. -conf=missing.conf` names
+    "<cwd>/./missing.conf", not "<cwd>/missing.conf" -- `fs::absolute`
+    joins the `.` on literally, where `pathlib.Path` drops it
+    (btclib-org/btclib-node#1273).
+    """
+    (tmp_path / "bitcoin.conf").write_text("regtest=1\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    refusal = (
+        "Error reading configuration file: specified config file "
+        f'"{tmp_path}{os.sep}.{os.sep}missing.conf" could not be opened.'
+    )
+    with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$"):
+        cli.build_config(["-datadir=.", "-conf=missing.conf"])
+
+
+def test_build_config_a_conf_that_normalises_to_dot_keeps_it_in_a_refusal(
+    paths: Path,
+) -> None:
+    """`-conf=nosuch/..` is `.` once normal, kept joined onto `-datadir`.
+
+    Measured on `bitcoind` v31.1.0: names "<X>/.", not "<X>" --
+    `AbsPathForConfigVal`'s join is as literal as `fs::absolute`'s above
+    (btclib-org/btclib-node#1273).
+    """
+    data = paths / "d"
+    refusal = (
+        f'Error reading configuration file: Config file "{data}{os.sep}." '
+        "is a directory."
+    )
+    with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$"):
+        cli.build_config([f"-datadir={data}", "-conf=nosuch/.."])
+
+
+@pytest.mark.parametrize(
+    "include", ["./confdir", "sub/./../confdir", "sub//../confdir"]
+)
+def test_build_config_an_includeconf_value_is_not_lexically_normalised(
+    paths: Path, include: str
+) -> None:
+    """Core never normalises `includeconf`, unlike `-datadir` and `-conf`.
+
+    Measured on `bitcoind` v31.1.0 with a directory `confdir` and a
+    directory `sub` under the data directory: each of these three names
+    the directory `includeconf=confdir` also names, and each is refused
+    with its own value joined onto the data directory exactly as
+    written, `.` segments and the repeated `/` both kept
+    (btclib-org/btclib-node#1273, comment).
+    """
+    data = paths / "d"
+    (data / "confdir").mkdir()
+    (data / "sub").mkdir()
+    (data / "j.conf").write_text(
+        f"regtest=1\nincludeconf={include}\n", encoding="utf-8"
+    )
+    refusal = (
+        "Error reading configuration file: Included config file "
+        f'"{data}{os.sep}{include}" is a directory.'
+    )
+    with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$"):
+        cli.build_config([f"-datadir={data}", "-conf=j.conf"])
 
 
 def test_build_config_a_relative_datadir_is_refused_by_its_full_path(
@@ -2562,15 +2701,15 @@ def test_main_refuses_a_conflicting_chain_before_any_include(
 
     `bitcoind` v31.1.0 refuses the combination, not the missing file,
     and without `InitConfig`'s "Error reading configuration file: ",
-    the refusal being thrown rather than returned; its words are its
-    own (btclib-org/btclib-node#1311).
+    the refusal being thrown rather than returned; its words are
+    `bitcoind`'s own (btclib-org/btclib-node#1311).
     """
     (tmp_path / "bitcoin.conf").write_text(
         "regtest=1\nincludeconf=nosuch.conf\n", encoding="utf-8"
     )
     with pytest.raises(SystemExit):
         cli.main([f"-datadir={tmp_path}", "-testnet"])
-    assert capsys.readouterr().err.startswith("Error: invalid combination of ")
+    assert capsys.readouterr().err.startswith("Error: Invalid combination of ")
 
 
 def test_config_options_records_every_section_as_core_does() -> None:
@@ -2619,6 +2758,62 @@ def test_warn_unrecognized_sections_is_one_core_warning(
     cli._warn_unrecognized_sections(settings)
     assert capsys.readouterr().err == ""
     assert settings.log_warnings == []
+
+
+def test_unsuitable_section_only_args_is_core_s_own_check() -> None:
+    """ISS 1327: `GetUnsuitableSectionOnlyArgs`, several options and a negation.
+
+    `main`'s own default section is never asked, `m_network.empty()`'s
+    early return applying here too; a negated default-section value is
+    `SettingsSpan::empty()`, not `OnlyHasDefaultSectionSetting`'s
+    concern; several unsuitable names come back in `_OPTIONS`'s own
+    order, `connect` ahead of `port` there.
+    """
+    on_main = cli._Settings({}, ro_config={"": {"port": ["1"]}}, network="main")
+    assert cli._unsuitable_section_only_args(on_main) == []
+
+    negated = cli._Settings({}, ro_config={"": {"port": [False]}}, network="regtest")
+    assert cli._unsuitable_section_only_args(negated) == []
+
+    several = cli._Settings(
+        {},
+        ro_config={"": {"connect": ["10.0.0.1"], "port": ["1"]}},
+        network="regtest",
+    )
+    assert cli._unsuitable_section_only_args(several) == ["connect", "port"]
+
+
+def test_check_network_only_args_joins_one_line_per_option() -> None:
+    """ISS 1327: Core's own words, one full sentence per option, joined."""
+    settings = cli._Settings(
+        {},
+        ro_config={"": {"connect": ["10.0.0.1"], "port": ["1"]}},
+        network="regtest",
+    )
+    message = (
+        "Config setting for -connect only applied on regtest network when "
+        "in [regtest] section.\n"
+        "Config setting for -port only applied on regtest network when in "
+        "[regtest] section.\n"
+    )
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        cli._check_network_only_args(settings)
+
+
+def test_get_setting_skips_a_network_only_default_section_value() -> None:
+    """`GetSetting`'s own `ignore_default`, called directly for it.
+
+    Core keeps this skip in `GetSetting` itself, independent of
+    `GetUnsuitableSectionOnlyArgs`, and so does `_get_setting`: reached
+    through `build_config`'s own pipeline, this exact input -- a
+    single-valued `network_only` option set only in the default
+    section, off `main` -- is always refused first by
+    `_check_network_only_args`, which is what makes this line
+    unreachable from there and worth calling directly
+    (btclib-org/btclib-node#1327).
+    """
+    settings = cli._Settings({}, ro_config={"": {"port": ["1"]}}, network="regtest")
+    assert cli._get_setting(settings, "port") is None
 
 
 @pytest.mark.usefixtures("no_node")
