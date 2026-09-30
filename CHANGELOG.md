@@ -1311,6 +1311,24 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   case on a machine without one, while a TEST-NET-1 case runs the same lines
   there, so the coverage floor holds either way** (closes #1556).
 
+### `setnetworkactive` disables and enables all p2p activity
+
+- **On `false` it drops every connection this node holds, inbound and
+  pending included, and refuses every new dial and every accepted
+  socket until it is re-enabled** (closes #1392).
+
+### `addconnection` dials one outbound connection of a chosen type
+
+- **Regtest only, as Core's own RPC is: `outbound-full-relay`,
+  `block-relay-only`, `addr-fetch` or `feeler`, and `getpeerinfo`'s own
+  `connection_type` reports it** (closes #1465).
+
+### `running_a_node.md`'s RPC list follows what the tree now serves
+
+- **Gains `getchaintips`, `getmempoolentry`, `gettxout`, `help` and
+  `setnetworkactive`; a hidden command such as `addconnection` stays
+  off it, as a bare `help` listing leaves them off** (closes #1560).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

@@ -63,6 +63,7 @@ from btclib_node.p2p.banman import BanEntry, BanMan, lookup_subnet
 from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.connection import PeerStats
 from btclib_node.rpc.callbacks import (
+    add_connection,
     add_node,
     callbacks,
     clear_banned,
@@ -90,6 +91,7 @@ from btclib_node.rpc.callbacks import (
     send_raw_transaction,
     service_names,
     set_ban,
+    set_network_active,
     stop,
     submit_block,
 )
@@ -3887,6 +3889,267 @@ def test_addnode_names_all_three_wrongly_typed_arguments_at_once() -> None:
         ' not of expected type bool"\n'
         "}"
     )
+
+
+def test_setnetworkactive_flips_and_answers_the_new_state() -> None:
+    """Core's own `connman.SetNetworkActive`/`GetNetworkActive` round trip."""
+    calls: list[bool] = []
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            p2p_manager=SimpleNamespace(
+                set_network_active=lambda *, active: calls.append(active)
+            )
+        ),
+    )
+    assert set_network_active(node, _CONN, [False]) is False
+    assert set_network_active(node, _CONN, [True]) is True
+    assert calls == [False, True]
+
+
+def test_setnetworkactive_with_no_arguments_is_answered_with_the_usage() -> None:
+    """The one required argument is refused with the help, not defaulted."""
+    node = cast("Node", SimpleNamespace(p2p_manager=SimpleNamespace()))
+    with pytest.raises(RpcError) as raised:
+        set_network_active(node, _CONN, [])
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
+    assert raised.value.message == HELP_TEXT["setnetworkactive"]
+
+
+def test_setnetworkactive_type_checks_state() -> None:
+    """`state` of the wrong JSON type is named, not coerced -- null included."""
+    node = cast("Node", SimpleNamespace(p2p_manager=SimpleNamespace()))
+    for bad in ("true", 1, None):
+        with pytest.raises(RpcError) as raised:
+            set_network_active(node, _CONN, [bad])
+        assert raised.value.code == RPCErrorCode.TYPE_ERROR
+
+
+def an_addconnection_node(
+    *,
+    chain: Chain | None = None,
+    full_relay: int = 0,
+    block_relay: int = 0,
+    max_outbound_full_relay: int = 8,
+    max_outbound_block_relay: int = 2,
+    pool_size: int = 0,
+    max_automatic_outbound: int = 11,
+) -> tuple[Any, list[tuple[Any, ...]]]:
+    """Build a node double `add_connection` dials through, recording each dial.
+
+    `outbound_type_counts` and `automatic_pool_size` answer the fixed
+    values given rather than reading real connections, the way
+    `P2pManager`'s own methods would off `_automatic_outbound`'s (the
+    first two) or every held connection's (the third) snapshot -- this
+    callback never reads a connection directly, only those three
+    methods' answers and the two per-type caps beside them.
+    `max_automatic_outbound`'s own default, 8 + 2 + 1, is deliberately
+    past `full_relay`'s and `block_relay`'s own default caps summed
+    with one feeler, so a test naming only a per-type count is never
+    also at the pool cap by accident.
+    """
+    dialled: list[tuple[Any, ...]] = []
+    node = SimpleNamespace(
+        chain=chain if chain is not None else RegTest(),
+        config=SimpleNamespace(pruned=False, peerblockfilters=False),
+        p2p_manager=SimpleNamespace(
+            outbound_type_counts=lambda: (full_relay, block_relay),
+            automatic_pool_size=lambda: pool_size,
+            max_outbound_full_relay=max_outbound_full_relay,
+            max_outbound_block_relay=max_outbound_block_relay,
+            max_automatic_outbound=max_automatic_outbound,
+            connect_typed=lambda address, port, **kw: dialled.append(
+                (address, port, kw)
+            ),
+        ),
+    )
+    return node, dialled
+
+
+@pytest.mark.parametrize(
+    ("connection_type", "kwargs"),
+    [
+        (
+            "outbound-full-relay",
+            {
+                "automatic": True,
+                "block_relay": False,
+                "feeler": False,
+                "addr_fetch": False,
+            },
+        ),
+        (
+            "block-relay-only",
+            {
+                "automatic": True,
+                "block_relay": True,
+                "feeler": False,
+                "addr_fetch": False,
+            },
+        ),
+        (
+            "addr-fetch",
+            {
+                "automatic": False,
+                "block_relay": False,
+                "feeler": False,
+                "addr_fetch": True,
+            },
+        ),
+        (
+            "feeler",
+            {
+                "automatic": False,
+                "block_relay": False,
+                "feeler": True,
+                "addr_fetch": False,
+            },
+        ),
+    ],
+)
+def test_addconnection_dials_with_the_named_type_s_own_flags(
+    connection_type: str, kwargs: dict[str, bool]
+) -> None:
+    """Each of Core's own four names sets exactly the flags its kind needs."""
+    node, dialled = an_addconnection_node()
+    result = add_connection(node, _CONN, ["1.2.3.4:8333", connection_type, False])
+    assert result == {"address": "1.2.3.4:8333", "connection_type": connection_type}
+    assert dialled == [("1.2.3.4:8333", RegTest().port, kwargs)]
+
+
+def test_addconnection_refuses_off_regtest() -> None:
+    """Core's own chain gate: refused before the connection type is read."""
+    node, dialled = an_addconnection_node(chain=Main())
+    with pytest.raises(RpcError) as raised:
+        add_connection(node, _CONN, ["1.2.3.4:8333", "outbound-full-relay", False])
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
+    assert raised.value.message == (
+        "addconnection is for regression testing (-regtest mode) only."
+    )
+    assert dialled == []
+
+
+def test_addconnection_refuses_an_unknown_connection_type() -> None:
+    """A `connection_type` outside Core's own four is refused with the help."""
+    node, dialled = an_addconnection_node()
+    with pytest.raises(RpcError) as raised:
+        add_connection(node, _CONN, ["1.2.3.4:8333", "manual", False])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert raised.value.message == HELP_TEXT["addconnection"]
+    assert dialled == []
+
+
+def test_addconnection_refuses_v2transport() -> None:
+    """This node never sets `NODE_P2P_V2`, so `v2transport` true is refused."""
+    node, dialled = an_addconnection_node()
+    with pytest.raises(RpcError) as raised:
+        add_connection(node, _CONN, ["1.2.3.4:8333", "outbound-full-relay", True])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert raised.value.message == (
+        "Error: Adding v2transport connections requires -v2transport "
+        "init flag to be set."
+    )
+    assert dialled == []
+
+
+@pytest.mark.parametrize(
+    ("connection_type", "full_relay", "block_relay"),
+    [
+        ("outbound-full-relay", 8, 0),
+        ("block-relay-only", 0, 2),
+    ],
+)
+def test_addconnection_refuses_past_its_own_per_type_cap(
+    connection_type: str, full_relay: int, block_relay: int
+) -> None:
+    """`CConnman::AddConnection`'s own per-type cap, the same pair it reads."""
+    node, dialled = an_addconnection_node(
+        full_relay=full_relay, block_relay=block_relay
+    )
+    with pytest.raises(RpcError) as raised:
+        add_connection(node, _CONN, ["1.2.3.4:8333", connection_type, False])
+    assert raised.value.code == RPCErrorCode.CLIENT_NODE_CAPACITY_REACHED
+    assert raised.value.message == (
+        "Error: Already at capacity for specified connection type."
+    )
+    assert dialled == []
+
+
+def test_addconnection_s_per_type_cap_does_not_reach_addr_fetch_or_feeler() -> None:
+    """Core's own switch sets no per-type cap for either of the other two.
+
+    `full_relay`/`block_relay` sit at their own per-type caps here, and
+    still neither refuses -- only `automatic_pool_size` versus
+    `max_automatic_outbound` can, which
+    `test_addconnection_refuses_past_the_shared_pool_whatever_the_type`
+    below is the one to cover.
+    """
+    node, dialled = an_addconnection_node(full_relay=8, block_relay=2)
+    add_connection(node, _CONN, ["1.2.3.4:8333", "addr-fetch", False])
+    add_connection(node, _CONN, ["1.2.3.4:8333", "feeler", False])
+    assert len(dialled) == 2
+
+
+@pytest.mark.parametrize(
+    "connection_type",
+    ["outbound-full-relay", "block-relay-only", "addr-fetch", "feeler"],
+)
+def test_addconnection_refuses_past_the_shared_pool_whatever_the_type(
+    connection_type: str,
+) -> None:
+    """`CConnman::AddConnection`'s shared `semOutbound` grant, past its own cap.
+
+    Every one of Core's four types falls through the same
+    `CountingSemaphoreGrant<> grant(*semOutbound, true)` once its own
+    per-type check (where it has one) is past -- `addr-fetch` and
+    `feeler` take none of the per-type caps above and are refused here
+    all the same, on the shared pool alone.
+    """
+    node, dialled = an_addconnection_node(pool_size=11, max_automatic_outbound=11)
+    with pytest.raises(RpcError) as raised:
+        add_connection(node, _CONN, ["1.2.3.4:8333", connection_type, False])
+    assert raised.value.code == RPCErrorCode.CLIENT_NODE_CAPACITY_REACHED
+    assert raised.value.message == (
+        "Error: Already at capacity for specified connection type."
+    )
+    assert dialled == []
+
+
+def test_addconnection_with_too_few_arguments_is_answered_with_the_usage() -> None:
+    """Fewer than the three required arguments is refused with the help."""
+    node, dialled = an_addconnection_node()
+    with pytest.raises(RpcError) as raised:
+        add_connection(node, _CONN, ["1.2.3.4:8333", "outbound-full-relay"])
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
+    assert raised.value.message == HELP_TEXT["addconnection"]
+    assert dialled == []
+
+
+def test_addconnection_names_every_wrongly_typed_argument_at_once() -> None:
+    """The generic type check runs, and collects, ahead of the chain gate.
+
+    All three arguments are the wrong JSON type and the chain is not
+    regtest either -- the type refusal is what answers, not the chain
+    one, `add_connection`'s own docstring arguing why: Core's generic
+    `RPCHelpMan::HandleRequest` check runs ahead of every method's own
+    lambda, the chain gate included.
+    """
+    node, dialled = an_addconnection_node(chain=Main())
+    with pytest.raises(RpcError) as raised:
+        add_connection(node, _CONN, [1, 2, "not a bool"])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert raised.value.message == (
+        "Wrong type passed:\n"
+        "{\n"
+        '    "Position 1 (address)": "JSON value of type number is not of'
+        ' expected type string",\n'
+        '    "Position 2 (connection_type)": "JSON value of type number is'
+        ' not of expected type string",\n'
+        '    "Position 3 (v2transport)": "JSON value of type string is not'
+        ' of expected type bool"\n'
+        "}"
+    )
+    assert dialled == []
 
 
 _BAN_NOW = 1_700_000_000

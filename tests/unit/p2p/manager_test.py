@@ -2561,7 +2561,16 @@ def test_process_addr_fetch_resolves_a_queued_host_held_by_no_connection(
     manager._addr_fetches.append(("seed.example", 18444))
     asyncio.run(manager._process_addr_fetch())
     assert not manager._addr_fetches
-    assert made == [{"inbound": False, "addr_fetch": True, "addr_name": "seed.example"}]
+    assert made == [
+        {
+            "inbound": False,
+            "automatic": False,
+            "block_relay": False,
+            "feeler": False,
+            "addr_fetch": True,
+            "addr_name": "seed.example",
+        }
+    ]
     theirs.close()
 
 
@@ -2591,7 +2600,14 @@ def test_process_addr_fetch_keeps_a_port_when_the_dest_names_one(
     asyncio.run(manager._process_addr_fetch())
     assert not manager._addr_fetches
     assert made == [
-        {"inbound": False, "addr_fetch": True, "addr_name": "seed.example:9999"}
+        {
+            "inbound": False,
+            "automatic": False,
+            "block_relay": False,
+            "feeler": False,
+            "addr_fetch": True,
+            "addr_name": "seed.example:9999",
+        }
     ]
     theirs.close()
 
@@ -2758,7 +2774,16 @@ def test_process_addr_fetch_dials_and_marks_the_connection_addr_fetch(
     manager._addr_fetches.append(("seed.example", 18444))
     asyncio.run(manager._process_addr_fetch())
     assert not manager._addr_fetches
-    assert made == [{"inbound": False, "addr_fetch": True, "addr_name": "seed.example"}]
+    assert made == [
+        {
+            "inbound": False,
+            "automatic": False,
+            "block_relay": False,
+            "feeler": False,
+            "addr_fetch": True,
+            "addr_name": "seed.example",
+        }
+    ]
     theirs.close()
 
 
@@ -2787,7 +2812,16 @@ def test_process_addr_fetch_tries_the_next_candidate_when_the_first_never_connec
     manager._addr_fetches.append(("seed.example", 18444))
     asyncio.run(manager._process_addr_fetch())
     assert len(tried) == 2
-    assert made == [{"inbound": False, "addr_fetch": True, "addr_name": "seed.example"}]
+    assert made == [
+        {
+            "inbound": False,
+            "automatic": False,
+            "block_relay": False,
+            "feeler": False,
+            "addr_fetch": True,
+            "addr_name": "seed.example",
+        }
+    ]
     theirs.close()
 
 
@@ -3319,7 +3353,14 @@ def test_open_connect_peers_resolves_a_hostname(
     with pytest.raises(_LoopStoppedError):
         asyncio.run(manager._open_connect_peers())
     assert made == [
-        {"inbound": False, "addr_fetch": False, "addr_name": "peer.example:8333"}
+        {
+            "inbound": False,
+            "automatic": False,
+            "block_relay": False,
+            "feeler": False,
+            "addr_fetch": False,
+            "addr_name": "peer.example:8333",
+        }
     ]
     theirs.close()
 
@@ -3353,7 +3394,14 @@ def test_open_connect_peers_keeps_a_portless_hostname_without_one(
     with pytest.raises(_LoopStoppedError):
         asyncio.run(manager._open_connect_peers())
     assert made == [
-        {"inbound": False, "addr_fetch": False, "addr_name": "peer.example"}
+        {
+            "inbound": False,
+            "automatic": False,
+            "block_relay": False,
+            "feeler": False,
+            "addr_fetch": False,
+            "addr_name": "peer.example",
+        }
     ]
     theirs.close()
 
@@ -3396,7 +3444,14 @@ def test_open_added_peers_resolves_a_hostname(
     with pytest.raises(_LoopStoppedError):
         asyncio.run(manager._open_added_peers())
     assert made == [
-        {"inbound": False, "addr_fetch": False, "addr_name": "peer.example"}
+        {
+            "inbound": False,
+            "automatic": False,
+            "block_relay": False,
+            "feeler": False,
+            "addr_fetch": False,
+            "addr_name": "peer.example",
+        }
     ]
     theirs.close()
 
@@ -3429,7 +3484,14 @@ def test_open_added_peers_keeps_a_port_when_given(
     with pytest.raises(_LoopStoppedError):
         asyncio.run(manager._open_added_peers())
     assert made == [
-        {"inbound": False, "addr_fetch": False, "addr_name": "peer.example:9999"}
+        {
+            "inbound": False,
+            "automatic": False,
+            "block_relay": False,
+            "feeler": False,
+            "addr_fetch": False,
+            "addr_name": "peer.example:9999",
+        }
     ]
     theirs.close()
 
@@ -3638,6 +3700,9 @@ def test_async_connect_host_caps_the_resolved_list_at_256_before_dialling(
     assert made == [
         {
             "inbound": False,
+            "automatic": False,
+            "block_relay": False,
+            "feeler": False,
             "addr_fetch": False,
             "addr_name": "seed.example",
         }
@@ -3695,6 +3760,9 @@ def test_async_connect_host_drops_an_internal_answer_before_counting_to_256(
     assert made == [
         {
             "inbound": False,
+            "automatic": False,
+            "block_relay": False,
+            "feeler": False,
             "addr_fetch": False,
             "addr_name": "seed.example",
         }
@@ -3721,6 +3789,38 @@ def test_connect_host_schedules_a_dial_on_this_manager_s_own_loop(
         dialer.connect_host("127.0.0.1", target_port)
         wait_until(lambda: dialer.pending_connections)
         wait_until(lambda: target.pending_connections)
+    finally:
+        dialer.stop()
+        dialer.join(timeout=10)
+        target.stop()
+        target.join(timeout=10)
+
+
+def test_connect_typed_marks_the_dialled_connection_s_own_kind(
+    a_manager: AManagerFactory,
+) -> None:
+    """`addconnection`'s own dial: `connect_host`'s sibling, naming a kind.
+
+    Proven through a real dial rather than a stub, the same shape
+    `test_connect_host_schedules_a_dial_on_this_manager_s_own_loop`
+    above already argues for `connect_host` -- `create_connection`
+    reads the four flags straight off what this call is given, here a
+    block-relay-only connection's own combination.
+    """
+    target_port = get_random_port()
+    target = a_running_manager(a_manager, target_port)
+    dialer = a_manager()
+    try:
+        wait_until_listening(target)
+        dialer.start()
+        wait_until(dialer.loop.is_running)
+        dialer.connect_typed("127.0.0.1", target_port, automatic=True, block_relay=True)
+        wait_until(lambda: dialer.pending_connections)
+        (conn,) = dialer.pending_connections.values()
+        assert conn.automatic is True
+        assert conn.block_relay is True
+        assert conn.feeler is False
+        assert conn.addr_fetch is False
     finally:
         dialer.stop()
         dialer.join(timeout=10)
@@ -6670,6 +6770,36 @@ def test_every_dial_records_its_try(
     assert tries_of(manager) == {endpoint_key(address): now}
 
 
+@pytest.mark.parametrize("dialler", ["automatic", "connect", "connect_host"])
+def test_network_active_false_refuses_every_dial(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, dialler: str
+) -> None:
+    """`OpenNetworkConnection`'s own `!fNetworkActive` gate, every dial route.
+
+    The automatic dial's (`_maybe_dial_more_peers`), `async_connect`'s
+    (the `-connect`/`-addnode` redial) and `async_connect_host`'s
+    (`onetry`, the `addnode` RPC, `addconnection`) alike -- each refuses
+    before ever reaching `dial`. `dial` is left as `a_dialling_manager`'s
+    own recording stub, which returns no socket rather than raising:
+    `_maybe_dial_more_peers`'s own `_dial_one_draw` call is wrapped in a
+    `try/except Exception` that logs and swallows, so a stub that raises
+    instead -- `refuses_to_be_asked` -- would pass this same assertion
+    whether the gate ran or was bypassed, the exception never reaching
+    `dialled` either way.
+    """
+    address = a_full_node("5.6.7.8", 8333)
+    manager, _, dialled = a_dialling_manager(a_manager, monkeypatch, [address])
+    manager.network_active = False
+    if dialler == "automatic":
+        asyncio.run(manager._maybe_dial_more_peers())
+    elif dialler == "connect":
+        asyncio.run(manager.async_connect(address))
+    else:
+        asyncio.run(manager.async_connect_host("5.6.7.8", 18444))
+    assert dialled == []
+    assert tries_of(manager) == {}
+
+
 def a_subnet(text: str) -> Subnet:
     """Parse `text` as `setban` would, asserting it parses."""
     subnet = lookup_subnet(text)
@@ -6702,6 +6832,36 @@ def test_a_banned_host_is_refused_with_every_slot_free(
         _, accepted = land_an_inbound_peer(manager, "1.2.4.4", 50000)
         peers.enter_context(closing(accepted))
         wait_until(lambda: manager.last_connection_id == 0)
+        manager.stop()
+        manager.join(timeout=10)
+
+
+def test_network_active_false_refuses_every_accepted_socket(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`CreateNodeFromAcceptedSocket`'s own `!fNetworkActive` gate.
+
+    Ahead of the ban check even -- `1.2.3.4` is not banned here, and is
+    refused all the same, the same way `test_a_banned_host_is_refused_
+    with_every_slot_free` above proves the ban check runs with no slot
+    taken.
+    """
+    port = get_random_port()
+    manager = a_manager(port=port)
+    manager.network_active = False
+    logged, record = log_recorder()
+    monkeypatch.setattr(manager.logger, "debug", record)
+    manager.start()
+    wait_until_listening(manager)
+    with ExitStack() as peers:
+        _, refused = land_an_inbound_peer(manager, "1.2.3.4", 50000)
+        peers.enter_context(closing(refused))
+        assert refused.recv(4096) == b""
+        assert manager.last_connection_id == -1
+        assert (
+            "connection from 1.2.3.4:50000 dropped: not accepting new connections"
+            in logged
+        )
         manager.stop()
         manager.join(timeout=10)
 
@@ -6748,6 +6908,114 @@ def test_disconnecting_a_subnet_drops_every_connection_it_holds(
     assert not other.stopped
     assert not onion.stopped
     assert manager.disconnect_subnet(a_subnet("5.6.7.8")) is False
+
+
+def test_set_network_active_drops_every_held_connection(
+    a_manager: AManagerFactory,
+) -> None:
+    """Core's `DisconnectNodes` sweep once `fNetworkActive` reads false.
+
+    Inbound, manual and pending alike, a manual one included -- the
+    same unconditional `DisconnectNode(CSubNet)` shape
+    `test_disconnecting_a_subnet_drops_every_connection_it_holds` above
+    already argues, `set_network_active` running it at once rather than
+    waiting on the next `manage_connections` pass.
+    """
+    inbound = a_conn(0, inbound=True)
+    manual = a_conn(1)
+    pending = a_conn(2, automatic=True)
+    manager = a_manager([inbound, manual])
+    manager.pending_connections[2] = pending
+    manager.set_network_active(active=False)
+    for conn in (inbound, manual, pending):
+        assert conn.stopped == [True]
+    assert manager.network_active is False
+    assert manager.get_network_active() is False
+
+
+def test_set_network_active_is_a_no_op_once_already_set(
+    a_manager: AManagerFactory,
+) -> None:
+    """Core's own early `if (fNetworkActive == active) return;`.
+
+    A manager starts active, so setting it active again drops nothing;
+    setting it inactive twice in a row drops the connection once.
+    """
+    conn = a_conn(0)
+    manager = a_manager([conn])
+    manager.set_network_active(active=True)
+    assert conn.stopped == []
+    manager.set_network_active(active=False)
+    manager.set_network_active(active=False)
+    assert conn.stopped == [True]
+
+
+def test_set_network_active_re_enabling_drops_nothing(
+    a_manager: AManagerFactory,
+) -> None:
+    """Flipping back to `true` touches no connection, past ones included.
+
+    The one shape the two tests above do not reach: `active=True` past
+    the early-return guard, once the manager already reads `false` --
+    `not active` false with the guard already behind it, where the
+    other two tests only ever see this line on `false` or on the guard
+    itself.
+    """
+    conn = a_conn(0)
+    manager = a_manager([conn])
+    manager.set_network_active(active=False)
+    assert conn.stopped == [True]
+    manager.set_network_active(active=True)
+    assert conn.stopped == [True]
+    assert manager.network_active is True
+    assert manager.get_network_active() is True
+
+
+def test_outbound_type_counts_splits_the_automatic_held_by_kind(
+    a_manager: AManagerFactory,
+) -> None:
+    """`addconnection`'s own per-type cap, read off the same pair.
+
+    `_automatic_outbound`'s own snapshot: a manual (non-automatic)
+    connection counts toward neither, and a feeler counts toward
+    neither full-relay nor block-relay-only.
+    """
+    full = a_conn(0, automatic=True)
+    block = a_conn(1, automatic=True, block_relay=True)
+    feeler = a_conn(2, automatic=True, feeler=True)
+    manual = a_conn(3)
+    manager = a_manager([full, block, feeler, manual])
+    assert manager.outbound_type_counts() == (1, 1)
+
+
+def test_automatic_pool_size_counts_every_kind_semoutbound_would_grant(
+    a_manager: AManagerFactory,
+) -> None:
+    """The shared pool `addconnection`'s own capacity check reads.
+
+    `full`, `block` and `feeler` are gathered the same way
+    `outbound_type_counts` above already covers; `fetched` is the one
+    this method adds over `_automatic_outbound`'s own filter -- an
+    addr-fetch connection dialled with `automatic` left `False`, the
+    shape `_process_addr_fetch` itself dials with, which Core's
+    `ProcessAddrFetch` still takes a `semOutbound` grant for. `inbound`
+    and `manual` count toward neither, an inbound connection taking no
+    grant at all in Core and a manual one (`-connect`, `-addnode`, the
+    `addnode` RPC) taking `ConnectionType::MANUAL`'s own early `return
+    false` ahead of ever reaching the grant.
+    """
+    full = a_conn(0, automatic=True)
+    block = a_conn(1, automatic=True, block_relay=True)
+    feeler = a_conn(2, automatic=True, feeler=True)
+    fetched = a_conn(3, addr_fetch=True)
+    # Never a real shape -- `INBOUND` and an automatic dial type are
+    # mutually exclusive in Core -- but it is what isolates the
+    # `not conn.inbound` guard: without it this double would count
+    # toward the pool the same as `full` above, `automatic=True` alike.
+    inbound = a_conn(4, inbound=True, automatic=True)
+    manual = a_conn(5)
+    manager = a_manager([full, block, feeler, fetched, inbound, manual])
+    assert manager.automatic_pool_size() == 4
 
 
 def test_the_ban_list_is_written_once_every_interval(

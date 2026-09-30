@@ -57,6 +57,7 @@ _EXPECTED_BARE_LISTING = (
     "listbanned\n"
     "ping\n"
     'setban "subnet" "command" ( bantime absolute )\n'
+    "setnetworkactive state\n"
     "\n"
     "== Rawtransactions ==\n"
     'getrawtransaction "txid" ( verbosity "blockhash" )\n'
@@ -180,6 +181,19 @@ def test_bare_help_is_also_answered_for_an_empty_or_null_command() -> None:
     """An explicit empty string or `null` is the argument's own default."""
     assert answer_help([""]) == _EXPECTED_BARE_LISTING
     assert answer_help([None]) == _EXPECTED_BARE_LISTING
+
+
+def test_addconnection_is_hidden_from_the_bare_listing_not_from_its_own_help() -> None:
+    """Core's own `category == "hidden"` skip, this table's first such entry.
+
+    `_EXPECTED_BARE_LISTING` above already pins the positive half --
+    nothing there names `addconnection` -- so this is the negative one:
+    a reader who only checked `"addconnection" not in _BARE_LISTING`
+    could not tell a real skip from a name that was simply never added.
+    """
+    assert CATEGORY["addconnection"] == "hidden"
+    assert "addconnection" not in answer_help([])
+    assert answer_help(["addconnection"]) == HELP_TEXT["addconnection"].rstrip("\n")
 
 
 @pytest.mark.parametrize("name", sorted(callbacks))
