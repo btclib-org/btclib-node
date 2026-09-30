@@ -12,6 +12,7 @@ where a request is parsed and where the answer's envelope and HTTP
 status come from.
 """
 
+import time
 from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import RPCErrorCode
@@ -78,18 +79,30 @@ def _execute(node: Node, conn: RpcConnection, request: JsonRpcRequest) -> object
     callback = callbacks.get(request.method)
     if callback is None:
         raise RpcError(RPCErrorCode.METHOD_NOT_FOUND, "Method not found")
-    params = request.params
-    if isinstance(params, dict):
-        params = transform_named_arguments(params, arg_names[request.method])
-    if len(params) > len(arg_names[request.method]):
-        raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT[request.method])
+    # `rpc.callbacks.get_rpc_info`'s own `active_commands`, appended for
+    # exactly the span Core's `RPCCommandExecution` covers: from here,
+    # the method already resolved to a command as `ExecuteCommand` is
+    # only ever reached for one, to this function's own return or raise,
+    # which is where that guard's destructor runs
+    # (`src/rpc/server.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    # tag) -- the argument-count refusal below included, `HandleRequest`
+    # throwing its own `HelpResult` from inside that same guard's scope.
+    node.active_rpc_commands.append((request.method, time.monotonic()))
     try:
-        return callback(node, conn, params)
-    except RpcError:
-        raise
-    except Exception as e:
-        node.logger.exception("Exception occurred")
-        raise RpcError(RPCErrorCode.INTERNAL_ERROR, "Internal Error") from e
+        params = request.params
+        if isinstance(params, dict):
+            params = transform_named_arguments(params, arg_names[request.method])
+        if len(params) > len(arg_names[request.method]):
+            raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT[request.method])
+        try:
+            return callback(node, conn, params)
+        except RpcError:
+            raise
+        except Exception as e:
+            node.logger.exception("Exception occurred")
+            raise RpcError(RPCErrorCode.INTERNAL_ERROR, "Internal Error") from e
+    finally:
+        node.active_rpc_commands.pop()
 
 
 def _exec(

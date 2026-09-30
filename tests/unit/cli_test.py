@@ -665,6 +665,31 @@ def test_help_names_bantime() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("argv", "conf", "rpcservertimeout"),
+    [
+        ([], "", 30),
+        (["-rpcservertimeout=99000"], "", 99000),
+        ([], "rpcservertimeout=5\n", 5),
+        (["-rpcservertimeout=0"], "", 0),
+        (["-rpcservertimeout=-1"], "", -1),
+    ],
+    ids=["Core's default", "command line", "file", "zero", "negative one"],
+)
+def test_build_config_reads_rpcservertimeout(
+    tmp_path: Path, argv: list[str], conf: str, rpcservertimeout: int
+) -> None:
+    """ISS 1548: `-rpcservertimeout` reaches `Config`, as `-bantime` does."""
+    assert _build(tmp_path, *argv, conf=conf).rpcservertimeout == rpcservertimeout
+
+
+def test_help_names_rpcservertimeout_under_debug_alone() -> None:
+    """`-rpcservertimeout` is `DEBUG_ONLY` in Core, as `-regtest` is."""
+    message = " ".join(cli._help_message(show_debug=True).split())
+    assert "Timeout during HTTP requests (default: 30)" in message
+    assert "-rpcservertimeout" not in cli._help_message(show_debug=False)
+
+
 def test_help_names_dnsseed_fixedseeds_and_seednode() -> None:
     """ISS 1192: `-dnsseed`, `-fixedseeds` and `-seednode`, in Core's words."""
     message = " ".join(cli._help_message(show_debug=False).split())

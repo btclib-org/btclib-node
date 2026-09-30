@@ -110,7 +110,11 @@ MAX_BODY_BYTES = 32 * 1024 * 1024
 # a float, not Core's own int seconds: asyncio.timeout below and
 # RpcManager.request_timeout both carry this as a float throughout, a
 # test lowering it to a fraction of a second being the only assignment
-# that would otherwise disagree with an int-inferred attribute
+# that would otherwise disagree with an int-inferred attribute. This is
+# `cli.py`'s own default for `-rpcservertimeout`, which is what
+# `RpcManager.request_timeout` actually carries once a `Node` is built
+# from a `Config` -- `rpc.manager._request_timeout`'s own docstring has
+# Core's `0` and `-1`, both of which turn this into `None` instead.
 REQUEST_TIMEOUT = 30.0
 
 
@@ -901,15 +905,18 @@ class RpcConnection:
         client: socket.socket,
         manager: RpcManager,
         connection_id: int,
-        request_timeout: float = REQUEST_TIMEOUT,
+        request_timeout: float | None = REQUEST_TIMEOUT,
     ) -> None:
         """Set up empty buffers for `client`, tracked under `connection_id`.
 
         `request_timeout` is `REQUEST_TIMEOUT` unless `manager` -- in
-        practice `RpcManager.create_connection` -- is built or told to
-        hand over something else, which is the seam a test uses to keep
+        practice `RpcManager.create_connection`, handing over
+        `manager.request_timeout` -- is built or told to hand over
+        something else, which is the seam a test uses to keep
         `REQUEST_TIMEOUT`'s own real, Core-matching value off its own
-        critical path.
+        critical path. `None` is `-rpcservertimeout=0` or `=-1`, Core's
+        own two ways of arming no timeout at all
+        (`rpc.manager._request_timeout`'s own docstring).
         """
         super().__init__()
         self.loop = loop

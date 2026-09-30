@@ -1335,6 +1335,18 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   GHSA-vxq7-64xx-v4gw and GHSA-8988-9cw3-xx77; it reaches the dev group
   alone, through `twine`, `sphinx` and `pyroma`, never the wheel.
 
+### `-rpcservertimeout` bounds an RPC connection's read and its idle gap
+
+- **`-rpcservertimeout=<n>` feeds `RpcManager.request_timeout`, seconds as
+  Core's own `-rpcservertimeout` is, `0` and `-1` both arming no bound at
+  all, as `evhttp_set_timeout` arms none for either** (closes #1548).
+
+### `getrpcinfo` is served
+
+- **`getrpcinfo` answers `active_commands`, one entry per RPC call this
+  node is currently running, and `logpath`, the file this node logs to**
+  (closes #1486).
+
 ### `-maxtipage=<n>` sets the tip age initial block download ends at
 
 - **`Config.max_tip_age`, in seconds, is what `main.update_ibd_status` reads

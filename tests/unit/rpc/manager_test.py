@@ -30,7 +30,7 @@ from btclib_node.chains import RegTest
 from btclib_node.config import Config
 from btclib_node.log import Logger
 from btclib_node.rpc import manager as manager_module
-from btclib_node.rpc.connection import parse_request_head
+from btclib_node.rpc.connection import REQUEST_TIMEOUT, parse_request_head
 from btclib_node.rpc.jsonrpc import OK, HttpReply
 from btclib_node.rpc.manager import RpcManager
 from tests import (
@@ -65,6 +65,7 @@ class AManagerFactory(Protocol):
         rpc_host: str | None = None,
         rpcbind: tuple[str, ...] = (),
         rpcallowip: tuple[str, ...] = (),
+        rpcservertimeout: int = int(REQUEST_TIMEOUT),
     ) -> RpcManager:
         """Build an `RpcManager` bound to `port` and `rpc_host` once started."""
         ...
@@ -84,6 +85,7 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
         rpc_host: str | None = None,
         rpcbind: tuple[str, ...] = (),
         rpcallowip: tuple[str, ...] = (),
+        rpcservertimeout: int = int(REQUEST_TIMEOUT),
     ) -> RpcManager:
         config = Config(
             chain="regtest",
@@ -92,6 +94,7 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
             rpcbind=rpcbind,
             rpcallowip=rpcallowip,
             rpcauth=[RPCAUTH],
+            rpcservertimeout=rpcservertimeout,
         )
         config.data_dir.mkdir(exist_ok=True)
         manager = RpcManager(
@@ -1322,6 +1325,83 @@ def test_stop_gives_up_a_reply_written_once_shutdown_began_after_its_timeout(
     assert ours.fileno() == -1
 
 
+def test_stop_waits_unbounded_for_a_reply_once_request_timeout_is_none(
+    a_manager: AManagerFactory,
+) -> None:
+    """`request_timeout=None` leaves `stop`'s own reply wait unbounded.
+
+    `-rpcservertimeout=0` or `=-1` is `_request_timeout`'s own `None`
+    (its docstring has why); Core's `WaitUntilEmpty` has no bound of its
+    own once `evhttp_set_timeout` has armed none either. The shape is
+    the sibling test above, its own `request_timeout=0.2` bound turned
+    off here instead of shortened -- but what holds the write open is
+    `release`, an event this test controls, rather than a socket pair's
+    own buffer: how much a write like this one can queue before it
+    blocks is the platform's own number, not this test's, and asserting
+    `stopping.is_alive()` after a fixed join on that assumption fails
+    on Windows, whose `socketpair` is emulated over loopback TCP.
+    `manager.loop.sock_sendall`
+    is what `RpcConnection._write` awaits to write the reply; patched
+    here, it blocks on `release` before doing the real write, so the
+    reply cannot finish, on any platform, until this test says so.
+    """
+    manager = a_manager(get_random_port())
+    manager.request_timeout = None
+    manager.start()
+    wait_until_listening(manager)
+    holding = threading.Event()
+    release = threading.Event()
+    real_sock_sendall = manager.loop.sock_sendall
+
+    async def held_sock_sendall(sock: socket.socket, data: Buffer) -> None:
+        holding.set()
+        await asyncio.to_thread(release.wait)
+        await real_sock_sendall(sock, data)
+
+    manager.loop.sock_sendall = held_sock_sendall  # type: ignore[method-assign]
+    ours, theirs = socket.socketpair()
+    stopping = threading.Thread(target=manager.stop)
+    try:
+        conn = manager.create_connection(manager.loop, ours)
+        conn.head = parse_request_head(b"POST / HTTP/1.1\r\nHost: x\r\n\r\n")
+        manager.node.terminate_flag.set()
+        reply = {"result": "stopping", "error": None, "id": 1}
+        conn.send(HttpReply(OK, reply))
+        # the write has begun, and cannot finish until `release` is set
+        assert holding.wait(10)
+        stopping.start()
+        # deterministic, not a wall-clock guess: `release` is unset, so
+        # the write this reply is stuck in cannot have ended, whatever
+        # this join's own timeout is
+        stopping.join(1.0)
+        assert stopping.is_alive()
+        release.set()
+        stopping.join(10)
+    finally:
+        release.set()
+        theirs.close()
+        stopping.join(10)
+    assert not stopping.is_alive()
+    assert ours.fileno() == -1
+
+
+def test_manager_takes_request_timeout_from_rpcservertimeout(
+    a_manager: AManagerFactory,
+) -> None:
+    """`RpcManager.__init__` reads `request_timeout` off `Config`.
+
+    `-rpcservertimeout=0` is one of Core's own two spellings for no
+    bound at all (`_request_timeout`'s own docstring has the other,
+    `-1`), which this manager carries as `None` from construction --
+    not only where a test lowers `request_timeout` directly afterward,
+    the seam `RpcManager.__init__`'s own comment names.
+    """
+    manager = a_manager(get_random_port(), rpcservertimeout=0)
+    assert manager.request_timeout is None
+    other = a_manager(get_random_port(), rpcservertimeout=45)
+    assert other.request_timeout == 45.0
+
+
 def test_stop_finishes_a_reply_scheduled_before_shutdown_began(
     a_manager: AManagerFactory,
 ) -> None:
@@ -1383,6 +1463,7 @@ def test_stop_finishes_a_reply_scheduled_before_shutdown_began(
     assert json.loads(body)["result"] == result
     deadline = manager.latest_reply_deadline()
     assert deadline is not None
+    assert manager.request_timeout is not None
     assert deadline >= sent + manager.request_timeout
 
 
