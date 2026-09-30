@@ -1300,6 +1300,17 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   replies it finishes, so a request arriving on one is answered `503` with
   `Connection: close`, as Core's event loop answers it** (closes #1545).
 
+### `SECURITY.md` promises a response time
+
+- **`SECURITY.md` says a report is acknowledged within 7 days**, and a
+  fix or a published advisory within 90 (issue btclib-org/.github#1460).
+
+### The netif test decides its skip without a route before it runs
+
+- **`netif_test.py` probes the route at import and skips the kernel's-source
+  case on a machine without one, while a TEST-NET-1 case runs the same lines
+  there, so the coverage floor holds either way** (closes #1556).
+
 ### `-rpcservertimeout` bounds an RPC connection's read and its idle gap
 
 - **`-rpcservertimeout=<n>` feeds `RpcManager.request_timeout`, seconds as
