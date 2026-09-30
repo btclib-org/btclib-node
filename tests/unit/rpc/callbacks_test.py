@@ -2561,6 +2561,47 @@ def test_a_structurally_invalid_tx_decodes_and_is_refused_by_reason(
     assert verdict["reject-details"] == reason
 
 
+def test_a_transaction_violating_two_rules_answers_cores_own_first_one() -> None:
+    """A multi-violation tx is reported under Core's own first-checked rule.
+
+    Two inputs, one of them the null outpoint, and no outputs: Core's
+    `CheckTransaction` (`src/consensus/tx_check.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) checks `vout.empty()`
+    well ahead of the coinbase/prevout-null rule, so it answers
+    `bad-txns-vout-empty`, not `bad-txns-prevout-null`. `Tx.assert_valid`
+    (btclib 2026.9.30) checks in the same order since
+    btclib-org/btclib#2417 and btclib-org/btclib#2422, so
+    `_reject_reason`'s plain message match -- whichever rule
+    `assert_valid` raises first -- now answers the same reason Core
+    does, with no reordering of its own. btclib-org/btclib-node#1375
+    """
+    tx = a_malformed_tx(
+        vin=[
+            TxIn(
+                prev_out=OutPoint(b"\x00" * 32, 0xFFFFFFFF),
+                script_sig=b"",
+                sequence=0xFFFFFFFF,
+            ),
+            TxIn(
+                prev_out=OutPoint(b"\x33" * 32, 0),
+                script_sig=b"",
+                sequence=0xFFFFFFFF,
+            ),
+        ],
+        vout=[],
+    )
+    raw = tx.serialize(include_witness=False, check_validity=False).hex()
+
+    with pytest.raises(RpcError) as raised:
+        send_raw_transaction(a_node(), _CONN, [raw])
+    assert raised.value.code == RPCErrorCode.VERIFY_REJECTED
+    assert raised.value.message == "bad-txns-vout-empty"
+
+    (verdict,) = mempool_accept(a_node(), _CONN, [[raw]])
+    assert verdict["allowed"] is False
+    assert verdict["reject-reason"] == "bad-txns-vout-empty"
+
+
 def test_an_unrecognized_assert_valid_message_is_not_swallowed() -> None:
     """`_reject_reason` re-raises what it does not recognize.
 
