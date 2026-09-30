@@ -1399,6 +1399,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   to `getblockchaininfo`'s and `getnetworkinfo`'s own new `warnings` field**
   (closes #1522).
 
+### The mempool counts sigops with btclib's `sig_op_cost`
+
+- **`interpreter.py`'s own `GetTransactionSigOpCost` is gone**,
+  `_sigop_adjusted_vsize` calling btclib's `sig_op_cost` under
+  `STANDARD_FLAGS`, which answers the same (closes #1586).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

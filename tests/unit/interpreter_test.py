@@ -20,8 +20,8 @@ from btclib.exceptions import BTClibValueError, ScriptError
 from btclib.hashes import hash160, sha256
 from btclib.key import PrvKeyData
 from btclib.script import script, sig_hash, taproot
-from btclib.script.engine import verify_input as btclib_verify_input
 from btclib.script.engine import sig_op_cost, verify_transaction
+from btclib.script.engine import verify_input as btclib_verify_input
 from btclib.script.engine.flags import ALL_FLAGS, NO_FLAGS, ScriptFlag
 from btclib.script.script_pub_key import ScriptPubKey
 from btclib.script.taproot import output_prvkey
@@ -770,10 +770,9 @@ def test_sig_op_cost_is_core_s(
     output: bytes,
     cost: int,
 ) -> None:
-    """btclib's `sig_op_cost` answers Core's `GetTransactionSigOpCost`, term by term.
+    """Core's `GetTransactionSigOpCost`, term by term, is btclib's.
 
-    What `main._sigop_adjusted_vsize` relies on, under `STANDARD_FLAGS`
-    (btclib-org/btclib-node#1586).
+    What `main._sigop_adjusted_vsize` relies on (btclib-org/btclib-node#1586).
     """
     tx_in = TxIn(OutPoint(b"\x33" * 32, 0), script_sig, 0xFFFFFFFF, Witness(stack))
     tx = Tx(version=2, lock_time=0, vin=[tx_in], vout=[TxOut(1, output)])
