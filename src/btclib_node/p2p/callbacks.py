@@ -1150,7 +1150,7 @@ def _min_pow_checked(node: Node, block: Block) -> bool:
     parent = block.header.previous_block_hash
     return parent in block_index.header_dict and (
         block_index.chainwork[parent] + calculate_work(block.header)
-        >= anti_dos_work_threshold(block_index, node.chain.consensus.minimum_chain_work)
+        >= anti_dos_work_threshold(block_index, node.config.minimum_chain_work)
     )
 
 
@@ -1977,9 +1977,7 @@ def _try_low_work_headers_sync(
     total_work = block_index.chainwork[chain_start] + sum(
         calculate_work(header) for header in headers
     )
-    threshold = anti_dos_work_threshold(
-        block_index, node.chain.consensus.minimum_chain_work
-    )
+    threshold = anti_dos_work_threshold(block_index, node.config.minimum_chain_work)
     if total_work >= threshold:
         return False
     if len(headers) == MAX_HEADERS_RESULTS:

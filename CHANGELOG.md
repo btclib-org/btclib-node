@@ -1258,16 +1258,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   matching Core's own unnamed threshold, rather than as the tenth is
   appended** (closes #1510).
 
-### A low-work headers chain is synced twice before any of it is stored
-
-- **Headers below the anti-DoS work threshold go through Core's
-  `HeadersSyncState` before any is indexed** (closes #1246).
-- **A block's new low-work header is refused, unpunished** (closes #1505).
-
-### One `LocatorEntries`
-
-- **Every block locator is built by `block_index.locator_entries`, read
-  off `header_index` by height where the block is on it** (closes #1530).
 ### The release's attestation bundle is attached as `*.intoto.jsonl`
 
 - **`RELEASING.md`'s commands and `SECURITY.md`'s verification name the bundle
@@ -1373,6 +1363,17 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`Config.minimum_chain_work` defaults to the chain's own and refuses more
   than 64 hex digits**, read wherever the minimum chain work is checked
   (closes #1500).
+
+### A low-work headers chain is synced twice before any of it is stored
+
+- **Headers below the anti-DoS work threshold go through Core's
+  `HeadersSyncState` before any is indexed** (closes #1246).
+- **A block's new low-work header is refused, unpunished** (closes #1505).
+
+### One `LocatorEntries`
+
+- **Every block locator is built by `block_index.locator_entries`, read
+  off `header_index` by height where the block is on it** (closes #1530).
 
 ## v2026.9.24
 

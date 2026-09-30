@@ -42,7 +42,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from btclib.block import BlockHeader, median_time_past
 from btclib.block.limits import MAX_FUTURE_BLOCK_TIME
-from btclib.block.proof_of_work import bits_from_target, target_from_bits
+from btclib.block.proof_of_work import permitted_difficulty_transition
 from btclib.hashes import siphash
 
 from btclib_node.chainstate.block_index import calculate_work
@@ -61,7 +61,6 @@ __all__ = [
     "ProcessingResult",
     "State",
     "anti_dos_work_threshold",
-    "permitted_difficulty_transition",
 ]
 
 # Core's own buffer below the tip, in blocks, inside
@@ -87,59 +86,16 @@ def anti_dos_work_threshold(block_index: BlockIndex, minimum_chain_work: int) ->
 
     Core's `GetAntiDoSWorkThreshold` (`src/net_processing.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the active tip's work
-    less 144 blocks of the tip's own work, and never less than the
-    chain's `minimum_chain_work`. The active chain always holds genesis
-    here, where Core allows for no tip at all.
+    less 144 blocks of the tip's own work, and never less than
+    `minimum_chain_work`, which callers pass as `Config.minimum_chain_work`
+    (`-minimumchainwork`), Core's `MinimumChainWork`. The active chain
+    always holds genesis here, where Core allows for no tip at all.
     """
     tip = block_index.active_chain[-1]
     tip_work = block_index.chainwork[tip]
     tip_proof = calculate_work(block_index.get_block_info(tip).header)
     near_tip_work = tip_work - min(_NEAR_TIP_BLOCKS * tip_proof, tip_work)
     return max(near_tip_work, minimum_chain_work)
-
-
-def _target(bits: bytes) -> int:
-    return int.from_bytes(target_from_bits(bits), "big")
-
-
-def _rounded(target: int) -> int:
-    """Return `target` through the compact form and back, as Core rounds it."""
-    return _target(bits_from_target(target.to_bytes(32, "big")))
-
-
-def permitted_difficulty_transition(
-    consensus: ConsensusParams, height: int, old_bits: bytes, new_bits: bytes
-) -> bool:
-    """Whether a header at `height` may carry `new_bits` after `old_bits`.
-
-    Core's `PermittedDifficultyTransition` (`src/pow.cpp:89-135`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which a chain that
-    allows minimum-difficulty blocks always passes: at a retarget height
-    the new target lies within the factor of four either way a retarget
-    allows, both bounds clamped to the chain's easiest target and
-    rounded through the compact form as Core rounds them; at any other
-    height the bits do not change.
-
-    btclib's own `permitted_difficulty_transition`, with this signature,
-    is btclib-org/btclib#2418, and the btclib release this tree installs
-    does not carry it: every caller here goes through this function, so
-    taking btclib's is this body becoming that one call.
-    """
-    if consensus.pow_allow_min_difficulty_blocks:
-        return True
-    if height % consensus.difficulty_adjustment_interval:
-        return old_bits == new_bits
-    timespan = consensus.pow_target_timespan
-    pow_limit = _target(consensus.pow_limit_bits)
-    observed = _target(new_bits)
-    old_target = _target(old_bits)
-    # Core multiplies in `arith_uint256`, which wraps: the mask is that
-    # wrap, as `btclib.block.proof_of_work.next_bits` carries it too
-    largest = min((old_target * (timespan * 4)) % 2**256 // timespan, pow_limit)
-    if _rounded(largest) < observed:
-        return False
-    smallest = min((old_target * (timespan // 4)) % 2**256 // timespan, pow_limit)
-    return _rounded(smallest) <= observed
 
 
 class State(enum.Enum):

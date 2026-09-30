@@ -6023,18 +6023,18 @@ def a_low_work_node(
 ) -> Any:
     """Build a node over a real regtest index, holding genesis alone.
 
-    Its chain asks `minimum_blocks` blocks of work, genesis included, and
-    buffers `buffer` redownloaded headers: regtest's own commitment period
-    stands, so a low-work sync's checks run as they do on regtest.
+    Its `config.minimum_chain_work`, `-minimumchainwork`'s own, is
+    `minimum_blocks` blocks of work, genesis included, while its chain's
+    own stays regtest's zero, and it buffers `buffer` redownloaded
+    headers: regtest's own commitment period stands, so a low-work sync's
+    checks run as they do on regtest.
     """
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     node = a_data_node(block_index=chainstate.block_index, **kwargs)
     node.chainstate = chainstate
-    work = calculate_work(RegTest().genesis)
+    node.config.minimum_chain_work = minimum_blocks * calculate_work(RegTest().genesis)
     node.chain = SimpleNamespace(
-        consensus=replace(
-            RegTest().consensus, minimum_chain_work=minimum_blocks * work
-        ),
+        consensus=RegTest().consensus,
         pow_limit_bits=RegTest().pow_limit_bits,
         headers_sync_params=HeadersSyncParams(275, buffer),
     )
@@ -6372,4 +6372,28 @@ def test_a_requested_block_on_a_low_work_chain_is_refused_all_the_same(
     deliver(node, block, asked)
     assert block.header.hash not in node.chainstate.block_index.header_dict
     assert node.added == []
+    node.chainstate.close()
+
+
+@pytest.mark.parametrize(("surplus", "indexed"), [(0, True), (1, False)])
+def test_a_block_s_new_header_is_weighed_against_minimumchainwork(
+    tmp_path: Path,
+    surplus: int,
+    indexed: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1505: the threshold's floor is `-minimumchainwork`, not the chain's.
+
+    Core's `GetAntiDoSWorkThreshold` reads `MinimumChainWork()`: here
+    `config.minimum_chain_work` is the new block's own chain work, or one
+    more, while regtest's own stays zero.
+    """
+    node = an_unrequested_block_node(tmp_path, 1)
+    block = a_block_at(node, 2)
+    block_index = node.chainstate.block_index
+    work = block_index.chainwork[block_index.active_chain[-1]] + calculate_work(
+        block.header
+    )
+    node.config.minimum_chain_work = work + surplus
+    deliver(node, block)
+    assert (block.header.hash in block_index.header_dict) is indexed
     node.chainstate.close()

@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 from btclib.block import BlockHeader
-from btclib.consensus import CONSENSUS_PARAMS
 from btclib.exceptions import BTClibValueError
 from btclib.hashes import siphash
 from btclib.p2p.limits import MAX_HEADERS_RESULTS
@@ -35,7 +34,6 @@ from btclib_node.p2p.headers_sync import (
     _compress,
     _full_header,
     anti_dos_work_threshold,
-    permitted_difficulty_transition,
 )
 from tests import generate_random_header_chain
 
@@ -906,77 +904,6 @@ def test_the_commitments_cost_one_bit_each() -> None:
     assert sync.process_next_headers(chain, full_headers_message=True).success
     assert len(sync._commitments) == count
     assert len(sync._commitments._octets) == count // 8
-
-
-# Core's `pow_tests` (`src/test/pow_tests.cpp`, at bitcoin/bitcoin@9be056a8a7,
-# the v31.1 tag): each case's `nHeight + 1`, `nBits` and expected bits, the
-# expected bits minus or plus one being the transition refused beyond it
-_MAINNET = CONSENSUS_PARAMS["mainnet"]
-
-
-@pytest.mark.parametrize(
-    ("height", "old", "new", "refused"),
-    [
-        (32256, 0x1D00FFFF, 0x1D00D86A, None),
-        (2016, 0x1D00FFFF, 0x1D00FFFF, None),
-        (68544, 0x1C05A3F4, 0x1C0168FD, 0x1C0168FD - 1),
-        (46368, 0x1C387F6F, 0x1D00E1FD, 0x1D00E1FD + 1),
-    ],
-    ids=["get_next_work", "pow_limit", "lower_limit", "upper_limit"],
-)
-def test_core_s_permitted_difficulty_transitions(
-    height: int, old: int, new: int, refused: int | None
-) -> None:
-    """Core's vectors, and the one step past each bound Core refuses."""
-    old_bits, new_bits = old.to_bytes(4, "big"), new.to_bytes(4, "big")
-    assert permitted_difficulty_transition(_MAINNET, height, old_bits, new_bits)
-    if refused is not None:
-        assert not permitted_difficulty_transition(
-            _MAINNET, height, old_bits, refused.to_bytes(4, "big")
-        )
-
-
-def test_off_a_retarget_the_bits_may_not_move() -> None:
-    """Between retargets the bits stay; min-difficulty chains pass anyway."""
-    bits, other = bytes.fromhex("1d00ffff"), bytes.fromhex("1c00ffff")
-    assert permitted_difficulty_transition(_MAINNET, 2017, bits, bits)
-    assert not permitted_difficulty_transition(_MAINNET, 2017, bits, other)
-    assert not permitted_difficulty_transition(_MAINNET, 2017, other, bits)
-    testnet = CONSENSUS_PARAMS["testnet"]
-    assert permitted_difficulty_transition(testnet, 2017, bits, other)
-
-
-# Core multiplies an `arith_uint256` by a `uint32_t`, which drops the
-# carry: each case below is one where that 256-bit wrap decides the
-# answer. Signet reaches it with a real target; regtest only with its
-# minimum-difficulty rule switched off, where its easiest target is
-# refused at every retarget.
-_NO_MIN_DIFFICULTY_REGTEST = replace(
-    CONSENSUS_PARAMS["regtest"], pow_allow_min_difficulty_blocks=False
-)
-
-
-@pytest.mark.parametrize(
-    ("chain", "old", "new", "permitted"),
-    [
-        ("signet", 0x1E020000, 0x1E0377AE, True),
-        ("regtest", 0x207FFFFF, 0x207FFFFF, False),
-        ("regtest", 0x1E3A7717, 0x1E3A7717, False),
-        ("regtest", 0x1F01FEF4, 0x1E66014D, False),
-        ("regtest", 0x1F03986E, 0x1E23ED3A, True),
-    ],
-)
-def test_a_retarget_is_bounded_in_core_s_256_bit_arithmetic(
-    chain: str, old: int, new: int, *, permitted: bool
-) -> None:
-    """The bounds wrap past 2**256 as Core's do, and only there."""
-    consensus = (
-        CONSENSUS_PARAMS[chain] if chain == "signet" else _NO_MIN_DIFFICULTY_REGTEST
-    )
-    old_bits, new_bits = old.to_bytes(4, "big"), new.to_bytes(4, "big")
-    interval = consensus.difficulty_adjustment_interval
-    result = permitted_difficulty_transition(consensus, interval, old_bits, new_bits)
-    assert result is permitted
 
 
 def an_index(heights: int) -> Any:

@@ -133,7 +133,7 @@ intersphinx_cache_limit = 0
 #   p2p/manager.py), Path (p2p/address.py, chainstate/__init__.py,
 #   log.py), ScriptFlag/ScriptFlags (interpreter.py's own get_flags
 #   and f) and ConsensusParams (p2p/headers_sync.py's own
-#   permitted_difficulty_transition and HeadersSyncState) are
+#   HeadersSyncState) are
 #   this tree's own public API doing exactly what "TC"'s own reason asks
 #   of it. p2p/manager.py's own Tx is besides imported under the alias
 #   BtclibTx, which resolves to nothing under that name for the same

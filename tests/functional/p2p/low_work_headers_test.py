@@ -4,15 +4,15 @@
 
 """A node meets a peer's chain through its low-work headers sync (ISS 1246).
 
-`node_a` asks for more work than regtest does; `node_b` holds a real
-chain on plain regtest and serves its headers. `MAX_HEADERS_RESULTS` is
-lowered for both, in this one process, so that a short chain still comes
-in full batches, which is what starts a sync at all.
+`node_a` is given a `minimum_chain_work` above regtest's own, as
+`-minimumchainwork` sets it; `node_b` holds a real chain on plain
+regtest and serves its headers. `MAX_HEADERS_RESULTS` is lowered for
+both, in this one process, so that a short chain still comes in full
+batches, which is what starts a sync at all.
 """
 
 from contextlib import ExitStack
-from dataclasses import replace
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING
 
 from btclib.p2p.inventory import Headers
 
@@ -34,7 +34,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     import pytest
-    from btclib.consensus import ConsensusParams
 
     from btclib_node.p2p.connection import Connection
 
@@ -42,27 +41,14 @@ _BATCH = 10
 _LENGTH = 25
 
 
-class _Demanding(RegTest):
-    """Regtest, asking `blocks` blocks of work where regtest asks none."""
-
-    def __init__(self, blocks: int) -> None:
-        super().__init__()
-        self.blocks = blocks
-
-    @property
-    @override
-    def consensus(self) -> ConsensusParams:
-        work = calculate_work(self.genesis)
-        return replace(super().consensus, minimum_chain_work=self.blocks * work)
-
-
-def _node(tmp_path: Path, name: str, chain: RegTest) -> Node:
+def _node(tmp_path: Path, name: str, minimum_chain_work: int | None = None) -> Node:
     node = Node(
         config=Config(
-            chain=chain,
+            chain=RegTest(),
             data_dir=tmp_path / name,
             p2p_port=get_random_port(),
             allow_rpc=False,
+            minimum_chain_work=minimum_chain_work,
         )
     )
     node.load()
@@ -91,13 +77,14 @@ def _sync(
 
     monkeypatch.setitem(cb.callbacks, "headers", recording)
     chain = generate_random_chain(_LENGTH, RegTest().genesis.hash)
-    node_b = _node(tmp_path, "node_b", RegTest())
+    node_b = _node(tmp_path, "node_b")
     block_index = node_b.chainstate.block_index
     block_index.add_headers([block.header for block in chain])
     for block in chain:
         node_b.block_db.add_block(block)
         block_index.set_downloaded(block.header.hash)
-    node_a = _node(tmp_path, "node_a", _Demanding(required_blocks))
+    work = calculate_work(RegTest().genesis)
+    node_a = _node(tmp_path, "node_a", required_blocks * work)
     stack = ExitStack()
     for node in (node_b, node_a):
         node.start()

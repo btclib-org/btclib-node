@@ -49,8 +49,10 @@ dependencies = [
     # release `btclib-wallet`'s own floor below already requires,
     # stated directly rather than left to that transitive pull.
     # `tests/unit/interpreter_test.py` hands `ScriptPubKey` a
-    # `PubKeyData`, unchanged since 2026.9.24.
-    "btclib[secp256k1]>=2026.9.29",
+    # `PubKeyData`, unchanged since 2026.9.24. Raised to 2026.9.30, the
+    # release carrying `permitted_difficulty_transition`
+    # (btclib-org/btclib#2418), which `p2p/headers_sync.py` imports.
+    "btclib[secp256k1]>=2026.9.30",
     # `rpc/callbacks.py` imports `add_checksum`/`from_address` from
     # `btclib_wallet.descriptors`, where btclib's own `descriptors`
     # moved (btclib-org/btclib#2129): a runtime dependency now, not the
