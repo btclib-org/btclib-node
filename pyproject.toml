@@ -42,14 +42,25 @@ dependencies = [
     # imports -- `btclib.muhash`, `btclib.p2p.reject`, `btclib.tx.coin`
     # and `btclib.tx.tx_context` among the modules -- so a floor below
     # it is a release the published wheel's own smoke test cannot
-    # import (btclib-org/btclib-node#848). Raised to 2026.9.24, the
-    # release the `test` group's `btclib-wallet` requires, so no run of
-    # the suite -- deps-oldest.yml's included -- resolves anything lower,
-    # and a floor below it would be one no run exercises
-    # (btclib-org/btclib-node#1181). `tests/unit/interpreter_test.py`
-    # hands `ScriptPubKey` a `PubKeyData`, which that release's
-    # constructors take in place of the key's octets.
-    "btclib[secp256k1]>=2026.9.24",
+    # import (btclib-org/btclib-node#848). Raised to 2026.9.29, the
+    # release `btclib.descriptors` leaves for `btclib-wallet`
+    # (btclib-org/btclib#2129) -- `rpc/callbacks.py` now imports it
+    # from there instead (btclib-org/btclib-node#1508) -- and the
+    # release `btclib-wallet`'s own floor below already requires,
+    # stated directly rather than left to that transitive pull.
+    # `tests/unit/interpreter_test.py` hands `ScriptPubKey` a
+    # `PubKeyData`, unchanged since 2026.9.24.
+    "btclib[secp256k1]>=2026.9.29",
+    # `rpc/callbacks.py` imports `add_checksum`/`from_address` from
+    # `btclib_wallet.descriptors`, where btclib's own `descriptors`
+    # moved (btclib-org/btclib#2129): a runtime dependency now, not the
+    # `test` group's own it used to be, carried there only for
+    # `BitcoinCoreFetcher` (btclib-org/btclib-node#1181,
+    # btclib-org/btclib-node#1508). The floor is 2026.9.30, the first
+    # release requiring btclib>=2026.9.29 -- the release the module
+    # moved in -- rather than 2026.9.24, which predates that move and
+    # was never checked against a btclib this new.
+    "btclib-wallet>=2026.9.30",
     "rocksdict>=0.3.29",
     # `rpc/errors.py` imports `RPCErrorCode` directly now, so this is a
     # direct runtime dependency rather than the transitive arrival
@@ -274,13 +285,6 @@ test = [
     # through the first two where they express the case, and the
     # integration client is a `SessionTransport` now.
     "bitcoin-core-rpc>=2026.8.29",
-    # `BitcoinCoreFetcher`, which tests/functional/rpc drives against
-    # this node unchanged: `btclib_wallet.fetch` is where it lives,
-    # btclib's `main` holding no `fetch` package and its next release none
-    # (btclib-org/btclib-node#1181). A test
-    # dependency and not a runtime one, nothing under `src/` importing it.
-    # Its own btclib requirement is what sets btclib's floor above.
-    "btclib-wallet>=2026.9.24",
     # tests/unit/interpreter_test.py builds signatures through
     # `btclib_ecc.ecc.dsa`/`ssa` directly rather than through btclib's own
     # re-export, ahead of btclib dropping that re-export

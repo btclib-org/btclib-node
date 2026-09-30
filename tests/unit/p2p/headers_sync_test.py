@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from btclib.block import BlockHeader
 from btclib.consensus import CONSENSUS_PARAMS
+from btclib.exceptions import BTClibValueError
 from btclib.hashes import siphash
 from btclib.p2p.limits import MAX_HEADERS_RESULTS
 
@@ -824,23 +825,27 @@ def test_a_compressed_header_is_48_bytes_and_rebuilds_the_header() -> None:
     assert rebuilt.hash == header.hash
 
 
-def test_a_version_btclib_refuses_survives_the_buffer() -> None:
+def test_a_header_btclib_would_refuse_survives_the_buffer() -> None:
     """Compressed and rebuilt unchecked, as Core copies the fields it holds.
 
-    A version of zero is btclib's refusal and not Core's below BIP34
-    (btclib-org/btclib#2309), so the buffer does not ask btclib either way.
+    A time before genesis is btclib's own refusal, which Core leaves to
+    `ContextualCheckBlockHeader`'s `time-too-old` when the header is
+    indexed, so the buffer does not ask btclib either way.
     """
+    early = _GENESIS.time.replace(year=2000)
     header = BlockHeader(
-        version=0,
+        version=4,
         previous_block_hash=_GENESIS.hash,
         merkle_root=b"\x00" * 32,
-        time=_GENESIS.time,
+        time=early,
         bits=_GENESIS.bits,
         nonce=0,
         check_validity=False,
     )
+    with pytest.raises(BTClibValueError, match="before genesis"):
+        header.assert_valid()
     rebuilt = _full_header(_compress(header), header.previous_block_hash)
-    assert rebuilt.version == 0
+    assert rebuilt.time == early
     assert rebuilt.hash == header.hash
 
 
