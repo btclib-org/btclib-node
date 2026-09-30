@@ -373,6 +373,19 @@ class _Outbound(enum.Enum):
     NETWORK = enum.auto()
 
 
+def _outbound_type_counts(automatic: list[Connection]) -> tuple[int, int]:
+    """Return how many of `automatic` are full-relay and block-relay-only.
+
+    Every automatic connection that is neither block-relay-only, a
+    feeler nor an addr-fetch is full-relay, as Core's
+    `ConnectionType::OUTBOUND_FULL_RELAY` is.
+    """
+    block_relay = sum(conn.block_relay for conn in automatic)
+    feelers = sum(conn.feeler for conn in automatic)
+    addr_fetches = sum(conn.addr_fetch for conn in automatic)
+    return len(automatic) - block_relay - feelers - addr_fetches, block_relay
+
+
 def _may_have_useful_address_db(address: NetworkAddressV2) -> bool:
     """Core's `MayHaveUsefulAddressDB`, of `address`'s own services."""
     return bool(
@@ -511,6 +524,15 @@ class P2pManager(threading.Thread):
         # reason: whether `_discover` below runs at all, independent of
         # `self.listen` (btclib-org/btclib-node#1330's own "Expected").
         self.discover = node.config.discover
+        # Core's own `fNetworkActive` (`src/net.h`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), always true at
+        # construction there (`CConnman`'s own constructor passes
+        # `network_active=true`), and flipped only by the
+        # `setnetworkactive` RPC (`set_network_active` below). Read at
+        # every dial and accept site the same way `fNetworkActive` gates
+        # `OpenNetworkConnection` and `CreateNodeFromAcceptedSocket`
+        # there.
+        self.network_active = True
         # Core's own division of `-maxconnections`, `CConnman::Init`
         # (`src/net.h`, at bitcoin/bitcoin@9be056a8a7): the outbound
         # slots above come off the top, capped by the total itself, and
@@ -664,6 +686,11 @@ class P2pManager(threading.Thread):
         # included -- not a second snapshot-style reader this lock left
         # out.
         self._connections_lock = threading.Lock()
+        # `reserve_automatic_slot`'s reservations by `connection_type`:
+        # a dial past its capacity check that has not yet registered or
+        # given up. Guarded by `_connections_lock`; that method's
+        # docstring says why the caps count them.
+        self._reserved_outbound: Counter[str | None] = Counter()
         # (command, payload, connection id, wire size), and for
         # `messages` a receive time after that, below -- the size,
         # `Connection.parse_messages`'s own addition since #462, is what
@@ -1079,6 +1106,164 @@ class P2pManager(threading.Thread):
             conn.stop()
         return bool(matched)
 
+    def get_network_active(self) -> bool:
+        """Core's own `CConnman::GetNetworkActive`: this manager's own flag."""
+        return self.network_active
+
+    def _disconnect_if_inactive(self) -> None:
+        """Drop every held connection while `network_active` reads `false`.
+
+        Core's own `DisconnectNodes`, called every pass of
+        `ThreadSocketHandler` and dropping every node it holds --
+        inbound, pending and outbound alike, a manual one included --
+        for as long as `fNetworkActive` reads false, not only the pass
+        it first does (`src/net.cpp:1931-1939`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `set_network_active`
+        below calls this once, at once, on the flip itself, the same
+        shortcut `disconnect_subnet` above already takes for a bulk
+        drop; `manage_connections` calls it again every pass while
+        still inactive, which is the repeat Core's own loop makes and
+        this node's own dial being asynchronous is why it is needed
+        here too: a dial already past its own `network_active` gate
+        when the flip runs registers into `pending_connections` only
+        once `dial` itself returns, which can be well after that
+        one-shot call already found nothing to drop. `conn.stop()` is
+        idempotent, so a connection this already dropped costs nothing
+        on a later pass that finds it again.
+        """
+        if self.network_active:
+            return
+        with self._connections_lock:
+            held = (
+                *self.connections.values(),
+                *self.pending_connections.values(),
+            )
+        for conn in held:
+            conn.stop()
+
+    def set_network_active(self, *, active: bool) -> None:
+        """Flip `network_active`, dropping every held connection on a `false`.
+
+        Core's own `CConnman::SetNetworkActive` (`src/net.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): only where `active`
+        actually changed, drop every connection this node holds at
+        once, `_disconnect_if_inactive`'s own docstring arguing why
+        that is not the only time it runs.
+
+        Reached from the `setnetworkactive` RPC, on `Node`'s own thread
+        -- the same thread `disconnect_node` already calls
+        `remove_connection` from, `_connections_lock` (`__init__`) being
+        what makes that safe.
+        """
+        if self.network_active == active:
+            return
+        self.network_active = active
+        self._disconnect_if_inactive()
+
+    def reserve_automatic_slot(
+        self, connection_type: str | None = None
+    ) -> list[Connection] | None:
+        """Check the outbound caps and reserve one slot, in one step.
+
+        Core's `CConnman::AddConnection` checks the per-type cap, takes a
+        `semOutbound` grant and runs `OpenNetworkConnection`
+        synchronously, so its next call already counts the node the last
+        one added (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        tag). Here the dial runs later, on this manager's loop, and
+        registers only once it connects: a check of held connections
+        alone would let two callers in a row pass a cap only one of them
+        fits under.
+
+        So each cap counts held connections plus reservations, and the
+        reservation is taken under the same `_connections_lock`
+        acquisition as the check. The two caps, in `AddConnection`'s
+        order:
+
+        - per type: `max_outbound_full_relay` for `outbound-full-relay`
+          and `max_outbound_block_relay` for `block-relay-only`, none for
+          any other `connection_type`, as Core sets none for
+          `ADDR_FETCH` or `FEELER`;
+        - the shared pool, `max_automatic_outbound`, which every
+          reservation and every automatic or addr-fetch connection
+          counts against, each taking a `semOutbound` grant in Core.
+
+        `connection_type` is `addconnection`'s own. `None` reserves a
+        slot of the pool alone: `_maybe_dial_more_peers`' reservation,
+        taken before its kind is chosen, and `_process_addr_fetch`'s.
+
+        The caller releases the slot with `release_automatic_slot`, of
+        the same `connection_type`, once the dial concludes. A dial that
+        connected is a held connection by then: `create_connection`
+        registers it before the release runs, both on this manager's
+        loop with no `await` between them, so no check finds the dial
+        counted as neither.
+
+        Returns the automatic connections the check counted, or `None`
+        where a cap was met and nothing was reserved.
+        `_maybe_dial_more_peers` splits its own counts off that list
+        rather than reading the connections a second time
+        (btclib-org/btclib-node#367 argues the same for two reads).
+        """
+        with self._connections_lock:
+            automatic = self._automatic_outbound_locked()
+            full_relay, block_relay = _outbound_type_counts(automatic)
+            per_type = {
+                "outbound-full-relay": (full_relay, self.max_outbound_full_relay),
+                "block-relay-only": (block_relay, self.max_outbound_block_relay),
+            }
+            if connection_type in per_type:
+                held, cap = per_type[connection_type]
+                if held + self._reserved_outbound[connection_type] >= cap:
+                    return None
+            reserved = self._reserved_outbound.total()
+            if len(automatic) + reserved >= self.max_automatic_outbound:
+                return None
+            self._reserved_outbound[connection_type] += 1
+            return automatic
+
+    def release_automatic_slot(self, connection_type: str | None = None) -> None:
+        """Release a slot `reserve_automatic_slot` took as `connection_type`."""
+        with self._connections_lock:
+            self._reserved_outbound[connection_type] -= 1
+
+    def connect_typed(  # noqa: PLR0913
+        self,
+        dest: str,
+        default_port: int,
+        *,
+        automatic: bool = False,
+        block_relay: bool = False,
+        feeler: bool = False,
+        addr_fetch: bool = False,
+        reserved: str | None = None,
+    ) -> None:
+        """Schedule `async_connect_host` on this manager's own loop.
+
+        `addconnection`'s dial: `connect_host`'s sibling, for a caller
+        setting the flags `create_connection` reads off a drawn automatic
+        dial. `reserved` is the `connection_type` the caller's
+        `reserve_automatic_slot` slot was taken as, released once the dial
+        concludes; `None` where the caller reserved nothing. The release
+        is in the `finally` of a coroutine wrapping the dial, since this
+        method returns as soon as the dial is scheduled.
+        """
+
+        async def _dial_and_release() -> None:
+            try:
+                await self.async_connect_host(
+                    dest,
+                    default_port,
+                    addr_fetch=addr_fetch,
+                    automatic=automatic,
+                    block_relay=block_relay,
+                    feeler=feeler,
+                )
+            finally:
+                if reserved is not None:
+                    self.release_automatic_slot(reserved)
+
+        asyncio.run_coroutine_threadsafe(_dial_and_release(), self.loop)
+
     async def async_connect(self, address: NetworkAddressV2) -> None:
         """Dial `address` and, if it comes up, register the connection.
 
@@ -1093,7 +1278,14 @@ class P2pManager(threading.Thread):
         rather than a resolved address, `-connect`/`-addnode`'s own
         redial among them, wants `async_connect_host` instead
         (btclib-org/btclib-node#1264).
+
+        Refuses silently where `network_active` is false, the same
+        `OpenNetworkConnection`'s own `if (!fNetworkActive) { return
+        false; }` does (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+        v31.1 tag) -- no log line there either, only the refusal.
         """
+        if not self.network_active:
+            return
         client = await dial(address)
         # Core's `ConnectNode` calls `Attempt` for every connection it
         # tries, a `-connect` or `-addnode` one too (`src/net.cpp`,
@@ -1112,8 +1304,15 @@ class P2pManager(threading.Thread):
         """Schedule `async_connect(address)` onto this manager's own loop."""
         asyncio.run_coroutine_threadsafe(self.async_connect(address), self.loop)
 
-    async def async_connect_host(
-        self, dest: str, default_port: int, *, addr_fetch: bool = False
+    async def async_connect_host(  # noqa: PLR0913
+        self,
+        dest: str,
+        default_port: int,
+        *,
+        addr_fetch: bool = False,
+        automatic: bool = False,
+        block_relay: bool = False,
+        feeler: bool = False,
     ) -> None:
         """Resolve `dest` and dial what it names, `ConnectNode`'s `pszDest` arm.
 
@@ -1156,8 +1355,17 @@ class P2pManager(threading.Thread):
         `-addnode`'s own redial, the `addnode` RPC, `Node.run`'s startup
         dial -- want a dial that came up with nothing logged the way
         `async_connect` logs it, since nothing else names the attempt
-        (btclib-org/btclib-node#1264).
+        (btclib-org/btclib-node#1264). `automatic`, `block_relay` and
+        `feeler` are `connect_typed`'s own (`addconnection`'s RPC),
+        unset by every other caller: `create_connection` reads all four
+        flags straight off whichever this call was given, the same
+        fields a drawn automatic dial (`_dial_one_draw`) sets directly.
+
+        Refuses silently where `network_active` is false, `async_connect`
+        above's own docstring giving the citation.
         """
+        if not self.network_active:
+            return
         if dest in self._held_addr_names():
             self.logger.info(
                 "Not opening a connection to %s, already connected to it by name",
@@ -1232,6 +1440,9 @@ class P2pManager(threading.Thread):
                     sock,
                     address,
                     inbound=False,
+                    automatic=automatic,
+                    block_relay=block_relay,
+                    feeler=feeler,
                     addr_fetch=addr_fetch,
                     addr_name=dest,
                 )
@@ -1380,22 +1591,43 @@ class P2pManager(threading.Thread):
         self.add_fixed_seeds = False
         self.logger.info("Added %s fixed seeds from reachable networks.", len(seeds))
 
+    def _automatic_outbound_locked(self) -> list[Connection]:
+        """`_automatic_outbound`'s own filter, `_connections_lock` already held.
+
+        Split out so `reserve_automatic_slot` can read this count and
+        reserve a slot in the one critical section, rather than taking
+        the lock twice with another caller able to run in between.
+        `not conn.inbound` matches this method's own docstring, never
+        true together with `conn.automatic` or `conn.addr_fetch` in any
+        real dial this tree makes -- `create_connection`'s every
+        inbound caller (`server`, below) passes neither -- kept
+        explicit anyway, the same defensive shape Core's own switch
+        keeps by returning `false` on `ConnectionType::INBOUND` before
+        ever reaching its shared grant, rather than by argument that an
+        inbound connection could not name itself automatic.
+        """
+        return [
+            conn
+            for conn in (
+                *self.connections.values(),
+                *self.pending_connections.values(),
+            )
+            if not conn.inbound and (conn.automatic or conn.addr_fetch)
+        ]
+
     def _automatic_outbound(self) -> list[Connection]:
         """Return the connections holding what Core's `semOutbound` grants.
 
         This node's own automatic dials, pending ones included, and not
-        inbound or manual peers. Locked for the reason
-        `_maybe_dial_more_peers` gives.
+        inbound or manual peers -- `conn.addr_fetch` alongside
+        `conn.automatic` because `_process_addr_fetch`'s own dial
+        (`addr_fetch=True`) never sets the latter, though
+        `ProcessAddrFetch` takes the identical grant for it
+        (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+        Locked for the reason `_maybe_dial_more_peers` gives.
         """
         with self._connections_lock:
-            return [
-                conn
-                for conn in (
-                    *self.connections.values(),
-                    *self.pending_connections.values(),
-                )
-                if conn.automatic
-            ]
+            return self._automatic_outbound_locked()
 
     def _held_addr_names(self) -> set[str]:
         """Return the `addr_name` every held connection was dialled by.
@@ -1626,61 +1858,69 @@ class P2pManager(threading.Thread):
         # building `already_connected` -- which such a pass would only
         # throw away -- is not owed every 100 ms just because this
         # count is.
-        automatic = self._automatic_outbound()
-        block_relay = sum(conn.block_relay for conn in automatic)
-        feelers = sum(conn.feeler for conn in automatic)
-        if len(automatic) >= self.max_automatic_outbound:
+        # Core's `semOutbound` grant, taken before the kind is chosen:
+        # `reserve_automatic_slot` counts an `addconnection` dial still
+        # in flight too, and its docstring says why. Released in the
+        # `finally` below whatever this pass goes on to do.
+        automatic = self.reserve_automatic_slot()
+        if automatic is None:
             return
-        # Past the grant and ahead of the two targets, as Core takes a
-        # `semOutbound` grant and then adds fixed seeds and queues a
-        # `-seednode` before it counts peers of either kind, so a node
-        # holding all of them still seeds. Guarded as the draw below is:
-        # `add_addresses` writes to the store.
         try:
-            self._maybe_add_fixed_seeds()
-            self._maybe_add_seednode()
-        except Exception:
-            self.logger.exception("Exception occurred")
-        kind = self._next_outbound(len(automatic) - block_relay - feelers, block_relay)
-        # an anchor is tried whatever the table holds, as Core tries it
-        # ahead of `addrman`
-        if kind is None or (kind is not _Outbound.ANCHOR and self.peer_db.is_empty):
-            return
-        # By host, as Core's `AlreadyConnectedToAddress(const CNetAddr&)`
-        # compares each node's address with no port (`src/net.cpp`,
-        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a host this node
-        # holds any connection with, an inbound one on its ephemeral port
-        # included, is not dialled again on another port.
-        #
-        # Locked for the same reason the count above is
-        # (btclib-org/btclib-node#355).
-        with self._connections_lock:
-            connected = (
-                *self.connections.values(),
-                *self.pending_connections.values(),
-            )
-        already_connected = {host_key(conn.address) for conn in connected}
-        # One outbound peer per network group, as
-        # `CConnman::ThreadOpenConnections` keeps them: the groups of
-        # its `MANUAL`, `OUTBOUND_FULL_RELAY` and `BLOCK_RELAY` peers,
-        # which here are every connection neither inbound, a feeler, nor
-        # an addr-fetch, pending ones included -- `IsOutboundOrBlockRelayConn`
-        # answers false for `ADDR_FETCH` too (`src/net.h`, same sha). A
-        # peer off IPv4 and IPv6 adds no group, as Core adds none for Tor,
-        # I2P or CJDNS (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-        # v31.1 tag).
-        outbound_net_groups = {
-            net_group(conn.address)
-            for conn in connected
-            if not conn.inbound
-            and not conn.feeler
-            and not conn.addr_fetch
-            and can_addrv1(conn.address)
-        }
-        try:
-            await self._dial_one_draw(already_connected, outbound_net_groups, kind)
-        except Exception:
-            self.logger.exception("Exception occurred")
+            full_relay, block_relay = _outbound_type_counts(automatic)
+            # Past the grant and ahead of the two targets, as Core takes
+            # a `semOutbound` grant and then adds fixed seeds and queues
+            # a `-seednode` before it counts peers of either kind, so a
+            # node holding all of them still seeds. Guarded as the draw
+            # below is: `add_addresses` writes to the store.
+            try:
+                self._maybe_add_fixed_seeds()
+                self._maybe_add_seednode()
+            except Exception:
+                self.logger.exception("Exception occurred")
+            kind = self._next_outbound(full_relay, block_relay)
+            # an anchor is tried whatever the table holds, as Core tries
+            # it ahead of `addrman`
+            if kind is None or (kind is not _Outbound.ANCHOR and self.peer_db.is_empty):
+                return
+            # By host, as Core's `AlreadyConnectedToAddress(const CNetAddr&)`
+            # compares each node's address with no port (`src/net.cpp`,
+            # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a host this
+            # node holds any connection with, an inbound one on its
+            # ephemeral port included, is not dialled again on another
+            # port.
+            #
+            # Locked for the same reason the count above is
+            # (btclib-org/btclib-node#355).
+            with self._connections_lock:
+                connected = (
+                    *self.connections.values(),
+                    *self.pending_connections.values(),
+                )
+            already_connected = {host_key(conn.address) for conn in connected}
+            # One outbound peer per network group, as
+            # `CConnman::ThreadOpenConnections` keeps them: the groups of
+            # its `MANUAL`, `OUTBOUND_FULL_RELAY` and `BLOCK_RELAY` peers,
+            # which here are every connection neither inbound, a feeler,
+            # nor an addr-fetch, pending ones included --
+            # `IsOutboundOrBlockRelayConn` answers false for `ADDR_FETCH`
+            # too (`src/net.h`, same sha). A peer off IPv4 and IPv6 adds
+            # no group, as Core adds none for Tor, I2P or CJDNS
+            # (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+            # tag).
+            outbound_net_groups = {
+                net_group(conn.address)
+                for conn in connected
+                if not conn.inbound
+                and not conn.feeler
+                and not conn.addr_fetch
+                and can_addrv1(conn.address)
+            }
+            try:
+                await self._dial_one_draw(already_connected, outbound_net_groups, kind)
+            except Exception:
+                self.logger.exception("Exception occurred")
+        finally:
+            self.release_automatic_slot()
 
     async def _dial_one_draw(
         self,
@@ -1708,6 +1948,13 @@ class P2pManager(threading.Thread):
             # to avoid synchronization", ahead of the checks
             # `OpenNetworkConnection` makes
             await asyncio.sleep(secrets.SystemRandom().uniform(0, _FEELER_SLEEP_WINDOW))
+        # `OpenNetworkConnection`'s `fNetworkActive` gate, where Core
+        # reaches it: past the grant, the fixed seeds, the `-seednode`
+        # queue and the draw, so an inactive network still seeds and
+        # still pops the anchor it would have dialled
+        # (`async_connect`'s docstring has the citation).
+        if not self.network_active:
+            return
         # `OpenNetworkConnection` (`src/net.cpp`,
         # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) returns without
         # dialling a peer already connected, discouraged or banned, a
@@ -2210,6 +2457,19 @@ class P2pManager(threading.Thread):
                             >= _SEED_OUTBOUND_CONNECTION_THRESHOLD
                         ):
                             return
+            # Core's "hold off on querying seeds if P2P network
+            # deactivated", ahead of every seed query, logged once and
+            # polled once a second (`src/net.cpp`,
+            # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). A plain
+            # poll of the flag `set_network_active` sets on `Node`'s
+            # thread, where an `asyncio.Event` (ruff's ASYNC110) would
+            # need that thread to signal this loop.
+            if not self.network_active:
+                self.logger.info(
+                    "Waiting for network to be reactivated before querying DNS seeds."
+                )
+                while not self.network_active:  # noqa: ASYNC110
+                    await asyncio.sleep(1)
             unanswered = await self.peer_db.query_dns_seed(seed)
             if unanswered is not None:
                 self._addr_fetches.append((unanswered, port))
@@ -2220,14 +2480,17 @@ class P2pManager(threading.Thread):
 
         Core's `ProcessAddrFetch` (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
         the v31.1 tag): the entry leaves the queue whether or not it is
-        dialled, as it does there where no `semOutbound` grant is free --
-        this node has no such grant to take for it, `ADDR_FETCH` taking
-        none in Core either ("no limit for ADDR_FETCH because -seednode
-        has no limit either", `src/net.cpp`, same sha).
-        `async_connect_host` above is `ConnectNode`'s own resolve and
-        dial of a `pszDest`, `addr_fetch=True` so a candidate that never
-        connects is given up on quietly, `ADDR_FETCH` having no retry of
-        its own (btclib-org/btclib-node#1284).
+        dialled, as it does there, where the pop comes before the
+        `CountingSemaphoreGrant<> grant(*semOutbound, /*fTry=*/true)`
+        the dial is refused without. `ADDR_FETCH` has no per-type cap
+        ("no limit for ADDR_FETCH because -seednode has no limit
+        either", `src/net.cpp`, same sha) but takes a slot of the shared
+        pool, so `reserve_automatic_slot` is asked before the dial.
+        `async_connect_host`
+        above is `ConnectNode`'s own resolve and dial of a `pszDest`,
+        `addr_fetch=True` so a candidate that never connects is given
+        up on quietly, `ADDR_FETCH` having no retry of its own
+        (btclib-org/btclib-node#1284).
 
         Wrapped in its own `try`, for the reason
         `_maybe_prune_active_addresses` already gives for its own:
@@ -2241,18 +2504,25 @@ class P2pManager(threading.Thread):
         if not self._addr_fetches:
             return
         dest, default_port = self._addr_fetches.popleft()
+        if self.reserve_automatic_slot() is None:
+            return
         try:
             await self.async_connect_host(dest, default_port, addr_fetch=True)
         except Exception:
             self.logger.exception("Exception occurred")
+        finally:
+            self.release_automatic_slot()
 
     async def manage_connections(self) -> None:
         """Prune, prune some more, maybe dial, sleep -- forever, every 0.1s.
 
         `_prune_stale_connections` pings or drops an idle peer every
         pass; `_maybe_prune_active_addresses` and `_maybe_dump_banlist`
-        run far less often; `_maybe_dial_more_peers` dials one more only
-        if this node still has room for it, and only every
+        run far less often; `_disconnect_if_inactive` repeats
+        `set_network_active`'s own one-shot sweep every pass for as long
+        as `network_active` stays false, its own docstring arguing why a
+        one-shot call is not enough; `_maybe_dial_more_peers` dials one
+        more only if this node still has room for it, and only every
         `_AUTOMATIC_DIAL_INTERVAL` -- `_AUTOMATIC_DIAL_INTERVAL`'s own
         comment is where that cadence is argued against Core's
         (btclib-org/btclib-node#1379), this loop's own faster sleep
@@ -2275,6 +2545,7 @@ class P2pManager(threading.Thread):
             self._prune_stale_connections(now)
             self._maybe_prune_active_addresses(now)
             self._maybe_dump_banlist(now)
+            self._disconnect_if_inactive()
             if now - self._last_dial_pass >= _AUTOMATIC_DIAL_INTERVAL:
                 self._last_dial_pass = now
                 await self._maybe_dial_more_peers()
@@ -2598,13 +2869,24 @@ class P2pManager(threading.Thread):
                     address = peer_address(*sockaddr[:2])
                     # Core's `CreateNodeFromAcceptedSocket` (`src/net.cpp`,
                     # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), on one
-                    # count of the inbound peers: a banned host is refused
-                    # outright, a discouraged host once one more peer would
-                    # fill the inbound share; past that share an inbound
-                    # peer is evicted to make room, and only where every
-                    # candidate is protected is the new peer refused. Every
-                    # refusal comes before `create_connection` builds
-                    # anything.
+                    # count of the inbound peers: `fNetworkActive` false
+                    # refuses every accepted socket outright, ahead of the
+                    # ban check below -- that function's own order, the
+                    # network-active read sitting above its own `banned`
+                    # read. Past that, a banned host is refused outright, a
+                    # discouraged host once one more peer would fill the
+                    # inbound share; past that share an inbound peer is
+                    # evicted to make room, and only where every candidate
+                    # is protected is the new peer refused. Every refusal
+                    # comes before `create_connection` builds anything.
+                    if not self.network_active:
+                        endpoint = network_address(address)
+                        self.logger.debug(
+                            "connection from %s dropped: not accepting new connections",
+                            ip_and_port(str(endpoint.ip), endpoint.port),
+                        )
+                        sock.close()
+                        continue
                     if self.ban_man.is_peer_banned(address):
                         endpoint = network_address(address)
                         self.logger.debug(

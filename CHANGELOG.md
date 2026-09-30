@@ -1456,6 +1456,30 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `MAX_BLOCK_SIGOPS_COST` is refused `bad-blk-sigops` and marked invalid,
   as Core's `ConnectBlock` refuses it** (closes #1585).
 
+### `setnetworkactive` disables and enables all p2p activity
+
+- **On `false` it drops every connection on every pass, and refuses
+  every dial, accepted socket and DNS seed query, until it is
+  re-enabled** (closes #1392).
+
+### `addconnection` dials one outbound connection of a chosen type
+
+- **Regtest only, as Core's: one of Core's four types, trimmed as Core
+  trims it; a dial still in flight counts against its caps, and its
+  feeler is discouraged like a drawn one** (closes #1465).
+
+### The periodic dial loop counts a held addr-fetch connection too
+
+- **`_automatic_outbound` now counts a held addr-fetch connection,
+  and `_process_addr_fetch` reserves a slot before dialling it**
+  (closes #1575).
+
+### `running_a_node.md`'s RPC list follows what the tree now serves
+
+- **Gains `getchaintips`, `getmempoolentry`, `gettxout`, `help`,
+  `setnetworkactive` and `getrpcinfo`; a hidden command such as
+  `addconnection` stays off it** (closes #1560).
+
 ### `invalidateblock` and `reconsiderblock` are served
 
 - **`invalidateblock` marks a block invalid, forces the chain off it, and

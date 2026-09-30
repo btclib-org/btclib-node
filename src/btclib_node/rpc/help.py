@@ -30,14 +30,15 @@ function sorts `vCommands`: by category, and by
 name within it. `help_rpc` groups this node's own served commands
 under those same headings and in that same order, the way Core's own
 bare listing would if run against a `bitcoind` serving only this
-node's own method table -- `"hidden"` is one of those headings rather
-than a fourth field of its own, matching Core's own `category ==
-"hidden"` naming it the same way (`CRPCCommand::category`,
-`src/rpc/server.h`, same tag): `invalidateblock` and `reconsiderblock`
-are the two entries this node carries under it, and `_BARE_LISTING`
-below leaves that one heading out of the bare listing entirely, the way
-Core's own loop skips it, while `help <command>` still answers either
-by name, same as any other served method.
+node's own method table -- `addconnection`, `invalidateblock` and
+`reconsiderblock` being this table's hidden entries, `category ==
+"hidden"` is left out of that listing the same way Core's own bare
+listing leaves a `category == "hidden"` entry out of its
+(`answer_help`'s own docstring is where that check is
+argued, `_BARE_LISTING`'s own comment where it is made real). A hidden
+command's own help still answers in full for `help <command>` named
+explicitly -- `HELP_TEXT` carries every served method alike, hidden or
+not, and only the bare listing's own construction reads `CATEGORY`.
 """
 
 from typing import Any
@@ -697,6 +698,39 @@ _HELP_DISCONNECTNODE = (
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "disconnectnode", "params": ["", 1]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
+_HELP_SETNETWORKACTIVE = (
+    "setnetworkactive state\n"
+    "\n"
+    "Disable/enable all p2p network activity.\n"
+    "\n"
+    "Arguments:\n"
+    "1. state    (boolean, required) true to enable networking, false to disable\n"
+    "\n"
+    "Result:\n"
+    "true|false    (boolean) The value that was passed in\n"
+)
+
+_HELP_ADDCONNECTION = (
+    'addconnection "address" "connection_type" v2transport\n'
+    "\n"
+    "Open an outbound connection to a specified node. This RPC is for testing only.\n"
+    "\n"
+    "Arguments:\n"
+    "1. address            (string, required) The IP address and port to attempt connecting to.\n"
+    '2. connection_type    (string, required) Type of connection to open ("outbound-full-relay", "block-relay-only", "addr-fetch" or "feeler").\n'
+    "3. v2transport        (boolean, required) Attempt to connect using BIP324 v2 transport protocol\n"
+    "\n"
+    "Result:\n"
+    "{                               (json object)\n"
+    '  "address" : "str",            (string) Address of newly added connection.\n'
+    '  "connection_type" : "str"     (string) Type of connection opened.\n'
+    "}\n"
+    "\n"
+    "Examples:\n"
+    '> bitcoin-cli addconnection "192.168.0.6:8333" "outbound-full-relay" true\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "addconnection", "params": ["192.168.0.6:8333" "outbound-full-relay" true]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
 _HELP_GETCONNECTIONCOUNT = (
     "getconnectioncount\n"
     "\n"
@@ -1219,8 +1253,10 @@ HELP_TEXT: dict[str, str] = {
     "getrpcinfo": _HELP_GETRPCINFO,
     "submitblock": _HELP_SUBMITBLOCK,
     "addnode": _HELP_ADDNODE,
+    "addconnection": _HELP_ADDCONNECTION,
     "clearbanned": _HELP_CLEARBANNED,
     "disconnectnode": _HELP_DISCONNECTNODE,
+    "setnetworkactive": _HELP_SETNETWORKACTIVE,
     "getconnectioncount": _HELP_GETCONNECTIONCOUNT,
     "getnetworkinfo": _HELP_GETNETWORKINFO,
     "getpeerinfo": _HELP_GETPEERINFO,
@@ -1260,12 +1296,22 @@ CATEGORY: dict[str, str] = {
     "addnode": "Network",
     "clearbanned": "Network",
     "disconnectnode": "Network",
+    "setnetworkactive": "Network",
     "getconnectioncount": "Network",
     "getnetworkinfo": "Network",
     "getpeerinfo": "Network",
     "listbanned": "Network",
     "ping": "Network",
     "setban": "Network",
+    # Core's own `{"hidden", &addconnection}` (`src/rpc/net.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): no heading of its own
+    # in the bare listing, `_BARE_LISTING`'s own construction excluding
+    # this category rather than sorting it in alphabetically where
+    # "hidden" would fall. `help addconnection` still answers its own
+    # help text in full, `HELP_TEXT` carrying it exactly like any other
+    # entry -- only the bare listing leaves it out, Core's own
+    # `CRPCTable::help` skipping a `"hidden"` category the identical way.
+    "addconnection": "hidden",
     "decoderawtransaction": "Rawtransactions",
     "getrawtransaction": "Rawtransactions",
     "sendrawtransaction": "Rawtransactions",
@@ -1278,12 +1324,11 @@ CATEGORY: dict[str, str] = {
 # name within it -- rebuilt here from `CATEGORY` and `HELP_TEXT` rather
 # than written out by hand a second time, which is what would go stale
 # the day a served method's category changes and this list does not.
-# `category == "hidden"` is skipped, Core's own `CRPCTable::help` loop
-# condition (`src/rpc/server.cpp:87`, same tag): `invalidateblock` and
-# `reconsiderblock` carry that category (`CATEGORY`'s own module
-# docstring), and `help <command>` still answers either by name --
-# `answer_help` below reads `HELP_TEXT` directly, never `_BARE_LISTING`,
-# for that path.
+# `category == "hidden"` is left out of the category set itself, the
+# same `continue` `CRPCTable::help`'s own loop makes on that exact
+# string for the bare listing (`src/rpc/server.cpp:87`, same sha, its
+# `strCommand == ""` arm) before it ever reaches the sort this line
+# reproduces.
 _BARE_LISTING = "\n\n".join(
     "== {} ==\n{}".format(
         category,
@@ -1302,22 +1347,27 @@ def answer_help(params: list[Any]) -> str:
     r"""Answer `help`: every served command's usage, or one command's own.
 
     With no argument (or an empty string, its own declared default),
-    `_BARE_LISTING` above -- Core's own bare listing (`CRPCTable::help`,
-    `src/rpc/server.cpp`, same tag), grouped by category and truncated to
-    each entry's own usage line the way that function's own
-    `strHelp.substr(0, strHelp.find('\n'))` truncates it, `"hidden"`
-    already left out the way Core's own loop leaves it out
-    (`_BARE_LISTING`'s own comment). With a command's name, that
-    command's own untruncated help from `HELP_TEXT` directly --
-    `invalidateblock` and `reconsiderblock` included, same as any other
-    served command, since `category == "hidden"` only ever governs the
-    bare listing above and Core answers `help <command>` for a hidden one
-    exactly this way too -- or, for a name nothing here serves, Core's own
-    literal `"help: unknown command: %s"` (`src/rpc/server.cpp:114`) -- a
-    successful reply, not a refusal, matching Core answering it as
-    `RPCResult::Type::STR` rather than raising. `rpc.callbacks.help_rpc`
-    is the shared-signature wrapper `handle_rpc` actually dispatches to,
-    this function taking `params` alone since it reads no node state.
+    Core's own bare listing (`CRPCTable::help`, `src/rpc/server.cpp`,
+    same tag), grouped by category and truncated to each entry's own
+    usage line the way that function's own `strHelp.substr(0,
+    strHelp.find('\n'))` truncates it -- restricted to the commands
+    `rpc.callbacks.callbacks` actually serves, and, among those, to the
+    ones `CATEGORY` does not mark `"hidden"`: `_BARE_LISTING`'s own
+    construction (module level, below `CATEGORY`) drops that category
+    from the set it sorts headings out of, the same `continue`
+    `CRPCTable::help`'s own loop makes on `pcmd->category == "hidden"`
+    for its `strCommand == ""` arm (`src/rpc/server.cpp:87`, same tag).
+    With a command's name, that command's own untruncated help --
+    `addconnection`, `invalidateblock` and `reconsiderblock` included,
+    Core's own loop answering a named hidden
+    command exactly as it answers any other, that same line's `||`
+    never reached once `strMethod == strCommand` -- or, for a name
+    nothing here serves, Core's own literal `"help: unknown command:
+    %s"` (`src/rpc/server.cpp:114`) -- a successful reply, not a
+    refusal, matching Core answering it as `RPCResult::Type::STR`
+    rather than raising. `rpc.callbacks.help_rpc` is the
+    shared-signature wrapper `handle_rpc` actually dispatches to, this
+    function taking `params` alone since it reads no node state.
     """
     command = params[0] if params and params[0] is not None else ""
     if not isinstance(command, str):
