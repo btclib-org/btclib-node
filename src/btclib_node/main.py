@@ -40,6 +40,7 @@ from btclib.tx.tx_context import (
 )
 
 from btclib_node.block_db import Coin
+from btclib_node.chains import SigNet
 from btclib_node.chainstate.block_index import BlockIndex, BlockStatus, block_time
 from btclib_node.constants import (
     MAX_TIP_AGE,
@@ -70,6 +71,7 @@ from btclib_node.p2p.protocol_version import (
     INVALID_CB_NO_BAN_VERSION,
     common_version,
 )
+from btclib_node.signet import assert_valid_solution
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -81,12 +83,14 @@ if TYPE_CHECKING:
 
     from btclib_node import Node
     from btclib_node.block_db import RevBlock
+    from btclib_node.chains import Chain
     from btclib_node.chainstate.filter_index import FilterIndex
     from btclib_node.chainstate.utxo_index import UtxoIndex
     from btclib_node.p2p.block_availability import BlockAvailability
 
 __all__ = [
     "MempoolAcceptance",
+    "assert_valid_block",
     "contextual_check_block",
     "is_block_failed",
     "is_block_mutated",
@@ -367,7 +371,14 @@ def _reconcile_mempool_for_reorg(
                 fee, vsize = verify_mempool_acceptance(node, tx, bypass_limits=True)
             except MissingPrevoutError, BTClibValueError:
                 continue
-            node.mempool.add_tx(tx, fee, vsize)
+            # Core's own `nHeight`, the active chain's own tip height at
+            # acceptance (`Mempool.heights`' own docstring,
+            # btclib-org/btclib-node#1397): read again here rather than
+            # carried from `verify_mempool_acceptance`'s own
+            # `spend_height`, one past it, because this loop moves the
+            # active chain one block at a time as it re-adds.
+            tip_height = len(node.chainstate.block_index.active_chain) - 1
+            node.mempool.add_tx(tx, fee, vsize, height=tip_height)
     for block in to_add:
         # an empty mempool holds none of them, and `remove_tx` hashes
         # each transaction to ask, which a block connected during
@@ -735,6 +746,28 @@ def passes_check_block(block: Block) -> bool:
     return True
 
 
+def assert_valid_block(block: Block, chain: Chain) -> None:
+    """Assert what `Block.assert_valid` asks, the signet solution spliced in.
+
+    `Block.assert_valid`'s own three steps -- the header, its proof of
+    work, then every other rule `passes_check_block` above already
+    names -- with `signet.assert_valid_solution` run between the second
+    and the third, on a signet chain only: Core's own `CheckBlock` asks
+    it there too, gated on `consensusParams.signet_blocks`
+    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag), right after the header's proof of work and before the merkle
+    root. btclib carries no signet concept to splice this into
+    `Block.assert_valid` itself, hence the decomposition here instead
+    of a fourth argument to it -- the same three calls that function
+    already makes, in the same order, for every chain but this one.
+    """
+    block.header.assert_valid()
+    block.header.assert_valid_pow(chain.pow_limit_bits)
+    if isinstance(chain, SigNet):
+        assert_valid_solution(block, chain)
+    block.assert_valid_structure()
+
+
 def is_block_failed(block: Block, *, check_witness_root: bool) -> bool:
     """Whether `block`, failing `Block.assert_valid`, is marked failed.
 
@@ -772,20 +805,20 @@ def is_cached_invalid(block_index: BlockIndex, block: Block) -> bool:
 
 
 # update_chain's own per-block gate, once a candidate's spends and
-# creations are staged and its own height is known: script and amounts
-# (interpreter.check_transactions), a coinbase paying more than subsidy
-# plus fees (btclib.tx.tx_context.assert_coinbase_value), a spend of a
-# coinbase not yet COINBASE_MATURITY deep
-# (btclib.tx.tx_context.assert_coinbase_maturity), the two rules a
-# height and a clock decide on their own (Block.assert_valid_contextual)
-# -- time-too-new, already checked on the header path
-# (chainstate/block_index.py's own header validation), and
+# creations are staged and its own height is known: every transaction's
+# own finality via btclib.tx.tx_context.is_final (BIP113-aware) and its
+# BIP68 relative lock via btclib.tx.tx_context.assert_sequence_locks,
+# the two rules a height and a clock decide on their own through
+# Block.assert_valid_contextual -- time-too-new, already checked on the
+# header path (chainstate/block_index.py's own header validation), and
 # bad-cb-height, wherever BIP34 binds (Chain.consensus.bip34_height, per
-# network) -- and now every transaction's own finality
-# (btclib.tx.tx_context.is_final, BIP113-aware) and BIP68 relative lock
-# (btclib.tx.tx_context.assert_sequence_locks). BIP30 runs earlier
-# still, inside utxo_index.add_block, before this is ever called: its
-# own docstring is where that ordering and the two 2010 exceptions are
+# network) -- a spend of a coinbase not yet COINBASE_MATURITY deep via
+# btclib.tx.tx_context.assert_coinbase_maturity, this block's own
+# scripts and amounts via interpreter.check_transactions, and a
+# coinbase paying more than subsidy plus fees via
+# btclib.tx.tx_context.assert_coinbase_value. BIP30 runs earlier still,
+# inside utxo_index.add_block, before this is ever called: its own
+# docstring is where that ordering and the two 2010 exceptions are
 # argued. A function of its own rather than statements inline:
 # update_chain's own trial loop is already long enough that PLR0915
 # counts every statement gained here against it.
@@ -835,7 +868,9 @@ def contextual_check_block(node: Node, block: Block, index: int) -> tuple[int, b
     this passes it unless the clock went back. The block's parent is
     indexed, and the block need not be on the active chain. Answers the
     parent's median time past and whether BIP113 binds, which
-    `_validate_block`'s sequence locks read too.
+    `_validate_block`'s sequence locks read too. Every caller reaches
+    `bad-cb-height` through this one call: there is no second
+    `assert_valid_contextual` left in `_validate_block` to translate it.
     """
     block_hash = block.header.hash
     block_index = node.chainstate.block_index
@@ -859,9 +894,28 @@ def contextual_check_block(node: Node, block: Block, index: int) -> tuple[int, b
         if not is_final(tx, index, lock_time_cutoff):
             err_msg = "bad-txns-nonfinal"
             raise BTClibValueError(err_msg)
-    block.assert_valid_contextual(
-        BlockContext(index, datetime.now(UTC), node.chain.consensus.bip34_height)
-    )
+    # Core's own ContextualCheckBlock checks finality before the
+    # coinbase height commitment (src/validation.cpp, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which is why this sits
+    # after the loop above rather than ahead of it. bad-cb-height is
+    # Core's own literal reason for the one failure this call can
+    # actually reach: bad-diffbits and time-too-old stay unchecked here
+    # (median_time_past and required_bits are never supplied), and
+    # time-too-new -- the one rule this call still asks unconditionally
+    # -- is already refused on the header path, so it cannot be why this
+    # ever raises; the message is checked before translating it rather
+    # than assumed, in case that invariant is ever wrong.
+    try:
+        block.assert_valid_contextual(
+            BlockContext(index, datetime.now(UTC), node.chain.consensus.bip34_height)
+        )
+    except BTClibValueError as error:
+        if index >= node.chain.consensus.bip34_height and "coinbase height" in str(
+            error
+        ):
+            err_msg = "bad-cb-height"
+            raise BTClibValueError(err_msg) from error
+        raise  # pragma: no cover -- unreachable per the comment above
     return parent_mtp, bip113_active
 
 

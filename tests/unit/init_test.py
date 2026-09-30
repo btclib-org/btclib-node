@@ -37,13 +37,13 @@ from btclib_node.chainstate import Chainstate
 from btclib_node.config import Config
 from btclib_node.constants import NodeStatus
 from btclib_node.exceptions import (
+    ChainstateInconsistencyError,
     DirectoryLockError,
     NodeShutdownTimeoutError,
     ReimportedMainProcessError,
 )
 from btclib_node.interpreter import warm
 from btclib_node.main import prune_up_to_height, update_chain
-from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES
 from btclib_node.rpc.auth import COOKIE_FILE
 from tests import (
@@ -56,6 +56,7 @@ from tests import (
     taken_loopbacks,
     taken_port_bind_error,
     wait_until,
+    wait_until_listening,
 )
 from tests.conftest import node_context, unstarted_node_context
 
@@ -107,11 +108,6 @@ class AManager:
         # times `run`'s shutdown dumped it, as Core's `~BanMan` does
         self.ban_list_dumps = 0
         self.ban_man = SimpleNamespace(dump=self._dump_ban_list)
-        # what `run`'s own `config.connect`/`config.addnode` dial loop
-        # calls, in order -- only P2pManager's own attribute has a real
-        # `connect`, and this stand-in is asked for both managers, so
-        # both carry it the same way `peer_db` above does
-        self.connect_calls: list[Any] = []
 
     def _dump_ban_list(self) -> None:
         self.ban_list_dumps += 1
@@ -128,10 +124,6 @@ class AManager:
     def stop(self) -> None:
         """Record that `run`'s own teardown reached this stand-in."""
         self.stopped = True
-
-    def connect(self, address: Any) -> None:
-        """Record `address`, in the order `run` dialled it."""
-        self.connect_calls.append(address)
 
 
 @pytest.fixture
@@ -877,54 +869,6 @@ def test_a_port_configured_is_a_manager_started_and_stopped(
     assert not quiet.rpc_manager.is_alive()
 
 
-def test_run_dials_every_connect_and_addnode_peer_at_startup(tmp_path: Path) -> None:
-    """`run` calls `p2p_manager.connect` once per `connect`/`addnode` peer.
-
-    Built by hand rather than through `a_networked_node`, which carries
-    no `connect`/`addnode` of its own: the real `P2pManager` this
-    `Config` builds is torn down and replaced with the same `AManager`
-    stand-in that fixture swaps in, for the same reason (#263's own
-    `peer_db` needs closing before the only reference to it drops).
-    """
-    node = Node(
-        config=Config(
-            chain="regtest",
-            data_dir=tmp_path,
-            p2p_port=18444,
-            allow_rpc=False,
-            connect=["10.0.0.1:1"],
-            addnode=["10.0.0.2:2"],
-            debug=True,
-        )
-    )
-    node.load()
-    node.p2p_manager.loop.close()
-    node.p2p_manager.peer_db.close()
-    node.p2p_manager = AManager()  # type: ignore[assignment]
-    p2p_manager = cast("AManager", node.p2p_manager)
-    try:
-        node.start()
-        wait_until(lambda: len(p2p_manager.connect_calls) == 2)
-        assert p2p_manager.connect_calls == [
-            peer_address("10.0.0.1", 1),
-            peer_address("10.0.0.2", 2),
-        ]
-    finally:
-        node.stop()
-
-
-def test_run_dials_nothing_extra_without_connect_or_addnode(
-    a_networked_node: Node,
-) -> None:
-    """`connect`/`addnode` empty, the ordinary case: no `connect` call."""
-    node = a_networked_node
-    p2p_manager = cast("AManager", node.p2p_manager)
-    node.start()
-    wait_until(lambda: p2p_manager.started)
-    node.stop()
-    assert p2p_manager.connect_calls == []
-
-
 def test_a_node_whose_rpc_port_is_taken_stops_before_its_p2p_side_starts(
     tmp_path: Path,
 ) -> None:
@@ -1076,7 +1020,7 @@ def test_a_node_refusing_an_rpc_credential_names_it_in_the_log_alone(
 def test_a_node_whose_rpc_listener_starts_has_no_init_errors(tmp_path: Path) -> None:
     """`init_errors` stays empty, and the node runs, once its listener is up."""
     with node_context(tmp_path, allow_p2p=False) as node:
-        wait_until(node.rpc_manager.listening.is_set)
+        wait_until_listening(node.rpc_manager)
         assert node.is_alive()
     assert node.init_errors == []
 
@@ -1233,6 +1177,80 @@ def test_a_message_the_handlers_did_not_expect_does_not_end_the_loop(
     node.stop()
     (answer,) = answered
     assert answer.body["id"] == "b"
+
+
+def test_a_submitblock_storage_fault_stops_the_loop_before_the_next_step(
+    a_networked_node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`run`'s loop must not reach `_step_chain` once a pass has set the flag.
+
+    `rpc.callbacks._validate_extending_tip` sets `terminate_flag` and
+    re-raises where `update_chain`'s own trial does not swallow the
+    exception -- but `rpc.main._execute` still turns that into
+    `INTERNAL_ERROR` before it ever reaches this loop, so the flag,
+    checked here, is the only signal left that the store just proved
+    itself unsafe to touch again this pass. `add_block` failing is what
+    `tests/unit/rpc/callbacks_test.py`'s own
+    `test_submit_block_stops_the_node_where_update_chain_finds_storage_unsafe`
+    already uses for the same kind of fault, one layer down.
+
+    What is counted is `_step_chain`'s own call to `update_chain`, patched
+    through the name `Node.run` actually reads
+    (`btclib_node.update_chain`, this module's own top-level import) --
+    not `add_block`'s own call count, which stays flat at one either way:
+    `update_chain`'s own mid-fork loop already refuses to touch a block
+    once `terminate_flag` reads set (`main.py`'s own comment above that
+    check), which is a second, narrower guard and not the one under test
+    here. `rpc.callbacks._validate_extending_tip` imports `update_chain`
+    under a name of its own, so patching this module's copy leaves the
+    first, fault-triggering call untouched and only counts a second one
+    reached through `_step_chain`.
+    """
+    node = a_networked_node
+    rpc_manager = cast("AManager", node.rpc_manager)
+    answered: list[Any] = []
+    rpc_manager.connections[0] = SimpleNamespace(
+        send=answered.append, send_and_wait=answered.append
+    )
+
+    def boom(*args: Any, **kwargs: Any) -> None:
+        msg = "boom"
+        raise ChainstateInconsistencyError(msg)
+
+    monkeypatch.setattr(node.chainstate.utxo_index, "add_block", boom)
+
+    # a recorder and nothing else: any call at all is the failure under
+    # test, so nothing past the record ever needs to run
+    step_chain_update_chain_calls: list[Node] = []
+    # the string form: `btclib_node.update_chain` is `_step_chain`'s own
+    # name for it, imported there rather than re-exported, so reading it
+    # as an attribute of the `btclib_node` package from outside is the
+    # implicit reexport `[tool.mypy]`'s own `no_implicit_reexport` refuses
+    # -- `update_chain` above is this module's own explicit import from
+    # its true home, `btclib_node.main`
+    monkeypatch.setattr(
+        "btclib_node.update_chain", step_chain_update_chain_calls.append
+    )
+
+    (new_block,) = generate_random_chain(1, node.chain.genesis.hash)
+    rpc_manager.messages.append(
+        (
+            {
+                "jsonrpc": "2.0",
+                "id": "s",
+                "method": "submitblock",
+                "params": [new_block.serialize(check_validity=False).hex()],
+            },
+            0,
+        )
+    )
+
+    node.start()
+    wait_until(lambda: answered)
+    wait_until(lambda: not node.is_alive())
+
+    assert node.terminate_flag.is_set()
+    assert step_chain_update_chain_calls == []
 
 
 class APool:

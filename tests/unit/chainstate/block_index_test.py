@@ -14,7 +14,7 @@ import secrets
 from contextlib import ExitStack, suppress
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 import pytest
 from btclib.block import BlockHeader
@@ -23,7 +23,12 @@ from btclib.exceptions import BTClibValueError
 
 from btclib_node.chains import Main, RegTest
 from btclib_node.chainstate import Chainstate
-from btclib_node.chainstate.block_index import BlockInfo, BlockStatus, calculate_work
+from btclib_node.chainstate.block_index import (
+    BlockInfo,
+    BlockStatus,
+    _skip_height,
+    calculate_work,
+)
 from btclib_node.exceptions import ChainstateInconsistencyError, MisbehavingError
 from btclib_node.log import Logger
 from tests import brute_force_nonce, generate_random_header_chain
@@ -31,6 +36,8 @@ from tests import brute_force_nonce, generate_random_header_chain
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
     from pathlib import Path
+
+    from btclib_node.chainstate.block_index import BlockIndex
 
 
 @pytest.fixture
@@ -158,14 +165,19 @@ def test_reject_header_with_zero_target(
     assert len(block_index.header_dict) == 1
 
 
-def test_one_bad_header_refuses_the_whole_batch(
+def test_a_header_failing_its_own_pow_refuses_the_whole_batch(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
-    """One bad header keeps the whole batch, valid prefix included, out.
+    """A header failing its own proof of work keeps the whole batch out.
 
-    Core takes a headers message as a unit, and so does this: the valid
-    prefix ahead of the bad header is not indexed either, though the
-    same headers sent again on their own are.
+    Core's `CheckHeadersPoW` checks every header's own proof of work
+    before any of the batch reaches `AcceptBlockHeader`
+    (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag), so a header failing it leaves the valid prefix ahead of it
+    unindexed too -- unlike a header failing only its contextual check,
+    `test_a_header_failing_only_its_contextual_check_leaves_the_prefix_indexed`
+    below. The same headers sent again on their own are taken.
+    btclib-org/btclib-node#1348
     """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
@@ -178,6 +190,44 @@ def test_one_bad_header_refuses_the_whole_batch(
     # and the same batch without it is taken
     assert block_index.add_headers(chain)
     assert len(block_index.header_dict) == 5 + 1
+
+
+def test_a_header_failing_only_its_contextual_check_leaves_the_prefix_indexed(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """A header failing only its contextual check leaves the prefix indexed.
+
+    Core's `ProcessNewBlockHeaders` calls `AcceptBlockHeader` once per
+    header and returns at the first one failing
+    `ContextualCheckBlockHeader`, so the headers already accepted ahead
+    of it stay indexed (`validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) -- unlike a header
+    failing its own proof of work, the previous test above.
+    btclib-org/btclib-node#1348
+    """
+    chainstate = a_chainstate(None)
+    block_index = chainstate.block_index
+    genesis = RegTest().genesis
+    chain = generate_random_header_chain(5, genesis.hash)
+    # not later than its own parent's median -- _assert_valid_in_context's
+    # own time-too-old check, never assert_valid_pow's
+    bad = BlockHeader(
+        version=70015,
+        previous_block_hash=chain[-1].hash,
+        merkle_root=secrets.token_bytes(32),
+        time=genesis.time,
+        bits=REGTEST_POW_LIMIT_BITS,
+        nonce=1,
+        check_validity=False,
+    )
+    brute_force_nonce(bad)
+
+    with pytest.raises(MisbehavingError):
+        block_index.add_headers([*chain, bad])
+    assert bad.hash not in block_index.header_dict
+    assert len(block_index.header_dict) == 5 + 1
+    assert all(header.hash in block_index.header_dict for header in chain)
+    assert block_index.get_block_info(chain[-1].hash).index == 5
 
 
 def test_a_header_with_valid_pow_but_the_wrong_required_target_is_refused(
@@ -559,15 +609,13 @@ def test_invalidate_marks_every_header_indexed_on_it_not_only_candidates(
     chainstate.close()
 
 
-def test_a_header_built_on_an_invalid_parent_is_invalid_and_not_a_candidate(
+def test_a_header_built_on_an_invalid_parent_refuses_the_batch_misbehaving(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
-    """A header extending an invalidated parent is indexed invalid on arrival.
+    """ISS 1233: Core's `bad-prevblk`, `BLOCK_INVALID_PREV`, a `Misbehaving`.
 
     Invalidating a chain's first header, then sending a header that
-    extends its second, still succeeds -- add_headers takes the batch --
-    but the new header is filed `invalid` from the start and never
-    enters `block_candidates`.
+    extends its second: refused, and nothing of it indexed.
     """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
@@ -576,11 +624,9 @@ def test_a_header_built_on_an_invalid_parent_is_invalid_and_not_a_candidate(
     block_index.invalidate(chain[0].hash)
 
     extension = generate_random_header_chain(1, chain[1].hash, chain[1].time)
-    assert block_index.add_headers(extension)
-
-    info = block_index.get_block_info(extension[0].hash)
-    assert info.status == BlockStatus.invalid
-    assert extension[0].hash not in [h for h, _ in block_index.block_candidates]
+    with pytest.raises(MisbehavingError, match=r"^bad-prevblk$"):
+        block_index.add_headers(extension)
+    assert extension[0].hash not in block_index.header_dict
     chainstate.close()
 
 
@@ -641,10 +687,10 @@ def test_a_batch_extending_an_invalidated_chain_does_not_move_header_index(
 ) -> None:
     """More headers on an already-invalidated chain never move header_index.
 
-    add_headers' own header_index update has to read the same invalid
-    flag block_candidates already does, or a peer sending more of a
-    chain this node has already refused keeps growing what this index
-    reports as its best known header chain. btclib-org/btclib-node#218
+    The batch is refused (`bad-prevblk`, btclib-org/btclib-node#1233), so
+    a peer sending more of a chain this node has already refused cannot
+    grow what this index reports as its best known header chain.
+    btclib-org/btclib-node#218
     """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
@@ -654,8 +700,34 @@ def test_a_batch_extending_an_invalidated_chain_does_not_move_header_index(
     header_index_before = list(block_index.header_index)
 
     extension = generate_random_header_chain(10, chain[1].hash, chain[1].time)
-    assert block_index.add_headers(extension) == extension[-1].hash
+    with pytest.raises(MisbehavingError, match=r"^bad-prevblk$"):
+        block_index.add_headers(extension)
     assert block_index.header_index == header_index_before
+    chainstate.close()
+
+
+@pytest.mark.parametrize("punish", [True, False])
+def test_an_invalid_header_sent_again_refuses_the_batch(
+    a_chainstate: Callable[[Path | None], Chainstate],
+    punish: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1233: Core's `duplicate-invalid`, `BLOCK_CACHED_INVALID`.
+
+    A `MisbehavingError` where the caller asks for it, as Core punishes
+    an outbound peer alone; otherwise a refusal that costs nothing. The
+    header after it in the batch is not indexed either way.
+    """
+    chainstate = a_chainstate(None)
+    block_index = chainstate.block_index
+    chain = generate_random_header_chain(2, RegTest().genesis.hash)
+    block_index.add_headers(chain[:1])
+    block_index.invalidate(chain[0].hash)
+
+    with pytest.raises(BTClibValueError, match=r"^duplicate-invalid$") as refused:
+        block_index.add_headers(chain, punish_cached_invalid=punish)
+    assert isinstance(refused.value, MisbehavingError) is punish
+    assert chain[1].hash not in block_index.header_dict
+    assert block_index.get_block_info(chain[0].hash).status == BlockStatus.invalid
     chainstate.close()
 
 
@@ -787,20 +859,41 @@ def test_a_header_before_its_own_new_parent_in_the_batch_refuses_the_batch(
 ) -> None:
     """A batch carrying a child before its own new parent is refused whole.
 
-    A peer is not required to send a headers message in strict
-    parent-before-child order, and a compliant one reordering
-    internally produces exactly this: btclib-org/btclib-node#214. Both
-    headers stay out of `header_dict`.
+    Core's `CheckHeadersAreContinuous` asks each header to build on the
+    one before it, and this one does not: btclib-org/btclib-node#214.
+    Both headers stay out of `header_dict`.
     """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     parent, child = generate_random_header_chain(2, RegTest().genesis.hash)
 
-    with pytest.raises(MisbehavingError):
+    with pytest.raises(MisbehavingError, match="non-continuous headers sequence"):
         block_index.add_headers([child, parent])
     assert child.hash not in block_index.header_dict
     assert parent.hash not in block_index.header_dict
     assert len(block_index.header_dict) == 1
+
+
+def test_a_batch_jumping_to_a_known_header_s_child_is_refused(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """ISS 1233: Core's "non-continuous headers sequence", a `Misbehaving`.
+
+    Every header here connects to something indexed on its own: the
+    second builds on a header this node holds, not on the first.
+    """
+    chainstate = a_chainstate(None)
+    block_index = chainstate.block_index
+    chain = generate_random_header_chain(1, RegTest().genesis.hash)
+    block_index.add_headers(chain)
+    first = generate_random_header_chain(1, RegTest().genesis.hash)
+    jump = generate_random_header_chain(1, chain[0].hash, chain[0].time)
+
+    with pytest.raises(MisbehavingError, match="non-continuous headers sequence"):
+        block_index.add_headers([*first, *jump])
+    assert first[0].hash not in block_index.header_dict
+    assert jump[0].hash not in block_index.header_dict
+    chainstate.close()
 
 
 def test_add_headers_short(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
@@ -870,6 +963,8 @@ def test_long_init(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
     # not persisted, recomputed by calculate_chainwork on each start:
     # btclib-org/btclib-node#201
     assert block_index.chainwork == new_block_index.chainwork
+    # rebuilt on each start as well, as Core's `BuildSkip` is on load
+    assert block_index.skip == new_block_index.skip
 
 
 def test_block_locators(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
@@ -1133,3 +1228,130 @@ def test_set_downloaded_after_stage_status_is_not_undone_by_a_later_finalize(
     stored = BlockInfo.deserialize(data, check_validity=False)
     assert stored.downloaded is False
     chainstate.close()
+
+
+def _walked_ancestor(block_index: BlockIndex, block_hash: bytes, height: int) -> bytes:
+    """Return the ancestor at `height` by parent hash alone, the slow way."""
+    while block_index.header_dict[block_hash].index > height:
+        block_hash = block_index.header_dict[block_hash].header.previous_block_hash
+    return block_hash
+
+
+def test_the_skip_heights_are_core_s() -> None:
+    """`_skip_height` is Core's `GetSkipHeight`, at heights worked by hand.
+
+    Below 2 it is 0; at an even height the lowest set bit is cleared; at
+    an odd one the two lowest set bits of the height below are, plus one.
+    """
+    assert [_skip_height(h) for h in range(10)] == [0, 0, 0, 1, 0, 1, 4, 1, 0, 1]
+    assert _skip_height(20000) == 19968
+    assert _skip_height(20001) == 19457
+    assert all(0 <= _skip_height(h) < h for h in range(2, 5000))
+
+
+def test_every_skip_pointer_is_the_ancestor_at_its_skip_height(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """Core's `skiplist_test`: each pointer lands where `GetSkipHeight` says.
+
+    On a chain and on a fork off its middle, and genesis alone without one.
+    """
+    block_index = a_chainstate(None).block_index
+    chain = generate_random_header_chain(600, RegTest().genesis.hash)
+    fork = generate_random_header_chain(300, chain[299].hash, chain[299].time)
+    block_index.add_headers(chain)
+    block_index.add_headers(fork)
+    assert RegTest().genesis.hash not in block_index.skip
+    for header in (*chain, *fork):
+        block_hash = header.hash
+        height = block_index.header_dict[block_hash].index
+        skip = block_index.skip[block_hash]
+        assert block_index.header_dict[skip].index == _skip_height(height)
+        assert skip == _walked_ancestor(block_index, block_hash, _skip_height(height))
+
+
+def test_get_ancestor_answers_what_the_parent_walk_answers(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """Core's `GetAncestor`, at every height of a block and past both ends.
+
+    `None` above the block's own height and below zero.
+    """
+    block_index = a_chainstate(None).block_index
+    chain = generate_random_header_chain(1100, RegTest().genesis.hash)
+    fork = generate_random_header_chain(600, chain[499].hash, chain[499].time)
+    block_index.add_headers(chain)
+    block_index.add_headers(fork)
+    for tip in (chain[-1].hash, fork[-1].hash, fork[0].hash):
+        tip_height = block_index.header_dict[tip].index
+        for height in range(tip_height + 1):
+            assert block_index.get_ancestor(tip, height) == _walked_ancestor(
+                block_index, tip, height
+            )
+        assert block_index.get_ancestor(tip, tip_height + 1) is None
+        assert block_index.get_ancestor(tip, -1) is None
+
+
+def test_the_last_common_ancestor_is_the_fork_point(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """Core's `LastCommonAncestor`, whichever block is the higher one.
+
+    Branches off one block, a block and its own ancestor, and a block
+    with itself.
+    """
+    block_index = a_chainstate(None).block_index
+    chain = generate_random_header_chain(1000, RegTest().genesis.hash)
+    block_index.add_headers(chain)
+    for fork_at, length in ((0, 700), (345, 1), (345, 900), (998, 3)):
+        fork = generate_random_header_chain(
+            length, chain[fork_at].hash, chain[fork_at].time
+        )
+        block_index.add_headers(fork)
+        for first, second in (
+            (chain[-1].hash, fork[-1].hash),
+            (fork[-1].hash, chain[-1].hash),
+        ):
+            fork_point = block_index.last_common_ancestor(first, second)
+            assert fork_point == chain[fork_at].hash
+    ancestor, descendant = chain[10].hash, chain[700].hash
+    assert block_index.last_common_ancestor(ancestor, descendant) == ancestor
+    assert block_index.last_common_ancestor(ancestor, ancestor) == ancestor
+
+
+class _CountingDict(dict[bytes, object]):
+    """A dict counting its own item reads, for the cost of a walk."""
+
+    reads = 0
+
+    @override
+    def __getitem__(self, key: bytes) -> object:
+        _CountingDict.reads += 1
+        return super().__getitem__(key)
+
+
+def test_an_ancestor_far_below_is_reached_in_few_steps(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """The skip pointers bound the walk, as Core's `GetAncestor` has them do.
+
+    On a chain of 4000 headers, reaching any height from the tip reads
+    far fewer entries than the 4000 a walk by parent hash would, and so
+    does the fork point of two branches 2000 blocks long.
+    """
+    block_index = a_chainstate(None).block_index
+    chain = generate_random_header_chain(4000, RegTest().genesis.hash)
+    fork = generate_random_header_chain(2000, chain[1999].hash, chain[1999].time)
+    block_index.add_headers(chain)
+    block_index.add_headers(fork)
+    block_index.header_dict = _CountingDict(block_index.header_dict)  # type: ignore[assignment]
+    block_index.skip = _CountingDict(block_index.skip)  # type: ignore[assignment]
+    most = 0
+    for height in range(0, 4001, 37):
+        _CountingDict.reads = 0
+        block_index.get_ancestor(chain[-1].hash, height)
+        most = max(most, _CountingDict.reads)
+    assert most < 200
+    _CountingDict.reads = 0
+    block_index.last_common_ancestor(chain[-1].hash, fork[-1].hash)
+    assert _CountingDict.reads < 200
