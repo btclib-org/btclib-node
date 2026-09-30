@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING
 
 from btclib.block import Block, BlockHeader, merkle_root_and_mutated_from_transactions
 from btclib.block.proof_of_work import REGTEST_POW_LIMIT_BITS
+from btclib.hashes import hash160
 from btclib.script import script
 from btclib.tx.out_point import OutPoint
 from btclib.tx.tx import Tx
@@ -82,21 +83,19 @@ _COMMON = 100
 _SUBSIDY = 50 * 10**8
 _FEE = 10**8
 
-# An output anything spends and the input that spends it. A bare data
-# push leaves a non-zero stack top, which is all consensus asks of a
-# scriptPubKey that is neither P2SH nor a witness program -- so no key
-# is generated and nothing is signed -- but `confirmed` also has to
-# survive `interpreter.STANDARD_FLAGS` once the reorg tries to put it
-# back in the mempool, which a bare push does not: CLEANSTACK refuses
-# the two pushes a plain spend leaves on the stack. `OP_2DROP` clears
-# both and `OP_1` leaves the single true element CLEANSTACK asks for,
-# the same suffix `tests.anyone_can_spend` carries for the same reason
-# (btclib-org/btclib-node#847). `tests/unit/main_test.py`'s own `spend`
-# builds its transactions the plain way still: they are only ever
-# connected in a block, where consensus and not `STANDARD_FLAGS`
-# applies, and never handed to `verify_mempool_acceptance`.
-_FUNDED = script.serialize([b"\x22" * 32, "OP_2DROP", "OP_1"])
-_SPENDS_IT = script.serialize([b"\x11" * 32])
+# An output anything spends and the input that spends it: P2SH over
+# `OP_DROP OP_1`, satisfied by a push the redeem script drops and the
+# redeem script itself. `confirmed` has to survive `interpreter.STANDARD_FLAGS`
+# once the reorg puts it back in the mempool, CLEANSTACK among them, and
+# has to be a standard shape there too: a bare push is `NONSTANDARD` to
+# Core's `Solver` (btclib-org/btclib-node#847, #1382). It is the script
+# `tests.anyone_can_spend` builds. `tests/unit/main_test.py`'s own
+# `spend` builds its transactions the plain way still: they are only ever
+# connected in a block, where consensus and not `STANDARD_FLAGS` applies,
+# and never handed to `verify_mempool_acceptance`.
+_REDEEM = script.serialize(["OP_DROP", "OP_1"])
+_FUNDED = script.serialize(["OP_HASH160", hash160(_REDEEM), "OP_EQUAL"])
+_SPENDS_IT = script.serialize([b"\x11" * 32, _REDEEM])
 
 # What dates the headers, and it is not the regtest genesis
 # `backpressure_test.py` beside this one counts from. Core relays no
@@ -231,7 +230,7 @@ def spending(funding_coinbase: Tx) -> Tx:
         vout=[
             TxOut(
                 value=_SUBSIDY - _FEE,
-                script_pub_key=script.serialize([secrets.token_bytes(32)]),
+                script_pub_key=_FUNDED,
             )
         ],
     )

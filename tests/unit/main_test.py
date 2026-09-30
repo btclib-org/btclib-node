@@ -58,6 +58,8 @@ from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.compact_block import compact_block
 from tests import (
     anyone_can_spend,
+    anyone_can_spend_redeem_script,
+    anyone_can_spend_script_sig,
     build_block,
     generate_coinbase,
     generate_random_chain,
@@ -153,12 +155,12 @@ def spend(prevout_tx: Tx, value: int, script_sig: bytes | None = None) -> Tx:
                 prev_out=OutPoint(prevout_tx.id, 0),
                 script_sig=script_sig
                 if script_sig is not None
-                else script.serialize([b"\x11" * 32]),
+                else anyone_can_spend_script_sig(),
                 sequence=0xFFFFFFFF,
             )
         ],
         vout=[
-            TxOut(value=value, script_pub_key=script.serialize([b"\x22" * 32])),
+            TxOut(value=value, script_pub_key=anyone_can_spend()),
         ],
     )
 
@@ -406,12 +408,12 @@ def locked_spend(
                 prev_out=OutPoint(prevout_tx.id, 0),
                 script_sig=script_sig
                 if script_sig is not None
-                else script.serialize([b"\x11" * 32]),
+                else anyone_can_spend_script_sig(),
                 sequence=sequence,
             )
         ],
         vout=[
-            TxOut(value=value, script_pub_key=script.serialize([b"\x22" * 32])),
+            TxOut(value=value, script_pub_key=anyone_can_spend()),
         ],
     )
 
@@ -907,12 +909,13 @@ def test_a_spend_of_an_output_a_mempool_parent_lacks_is_a_missing_prevout(
 def test_a_mempool_candidate_is_read_against_relay_policy(node: Node) -> None:
     """`verify_mempool_acceptance` refuses a spend only standardness refuses.
 
-    The two spends below differ in one push: `4c 01 01` is OP_PUSHDATA1
-    over the byte `01`, where OP_1 is the push MINIMALDATA asks for, and
-    that rule is not a consensus one -- a block carrying the first spend
-    connects. `interpreter.STANDARD_FLAGS` is what refuses it here, and
-    the second one being accepted is what says the refusal is that push
-    and not something else about the pair. `NonStandardTxError` is the
+    The two spends below differ in one push: the redeem script, pushed
+    with OP_PUSHDATA1 (`4c 02 ...`) in the first, where the two-octet
+    push MINIMALDATA asks for is the second's, and that rule is not a
+    consensus one -- a block carrying the first spend connects.
+    `interpreter.STANDARD_FLAGS` is what refuses it here, and the second
+    one being accepted is what says the refusal is that push and not
+    something else about the pair. `NonStandardTxError` is the
     class the refusal reaches a caller as, which is what keeps the peer
     that relayed the transaction (`p2p/callbacks_test.py`).
     """
@@ -923,14 +926,17 @@ def test_a_mempool_candidate_is_read_against_relay_policy(node: Node) -> None:
     non_minimal = generate_random_transaction(
         coinbase.id, value=coinbase.vout[0].value - FEE
     )
-    non_minimal.vin[0].script_sig = b"\x4c\x01\x01"
+    non_minimal.vin[0].script_sig = (
+        script.serialize([b"\x11" * 32])
+        + b"\x4c\x02"
+        + anyone_can_spend_redeem_script()
+    )
     with pytest.raises(NonStandardTxError, match="non-minimal push"):
         verify_mempool_acceptance(node, non_minimal)
 
     minimal = generate_random_transaction(
         coinbase.id, value=coinbase.vout[0].value - FEE
     )
-    minimal.vin[0].script_sig = script.serialize(["OP_1"])
     assert verify_mempool_acceptance(node, minimal).fee == FEE
 
 
