@@ -1536,6 +1536,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `-acceptnonstdtxn` are read, and `getmempoolinfo` answers
   `maxdatacarriersize`** (issue #1382).
 
+### `Dependency review` is a required check
+
+- **`REPOSITORY.md` reads `lint / Dependency review` back with the other
+  required checks** (issue btclib-org/.github#1465).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
