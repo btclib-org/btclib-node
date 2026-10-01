@@ -266,16 +266,17 @@ def test_each_block_a_commit_connected_is_checked_as_core_checks_each(
 ) -> None:
     """ISS 1475: `UpdateTip` runs for each block, so a boundary is seen once.
 
-    The tip is the last block of the period that locks the bit in, and
-    the commit connected two blocks: the first is still `STARTED`, and
-    only the second logs.
+    The tip is a block past the boundary that locks the bit in, and the
+    commit connected three blocks: the first is still `STARTED`, and only
+    the other two log.
     """
-    versions = periods(0) + periods(bit(_UNKNOWN))
+    versions = periods(0) + periods(bit(_UNKNOWN)) + periods(0)
     log_path = tmp_path / "history.log"
-    node = _Node(versions, log_path)
-    check_unknown_activations(cast("Any", node), 2)
+    node = _Node(versions[: 2 * _PERIOD + 1], log_path)
+    check_unknown_activations(cast("Any", node), 3)
     node.logger.close()
-    assert logged(log_path) == [f"Unknown new rules activated (versionbit {_UNKNOWN})"]
+    message = f"Unknown new rules activated (versionbit {_UNKNOWN})"
+    assert logged(log_path) == [message, message]
 
 
 @pytest.mark.parametrize(

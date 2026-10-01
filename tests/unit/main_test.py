@@ -2396,6 +2396,20 @@ def test_unknown_activations_are_checked_once_per_commit_out_of_ibd(
     assert calls == [(node, 1)]
 
 
+def test_a_reorganisation_checks_each_block_it_connects(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1475: the count is the blocks of the commit, here two."""
+    calls: list[tuple[Node, int]] = []
+    monkeypatch.setattr(
+        main, "check_unknown_activations", lambda *args: calls.append(args)
+    )
+    genesis = RegTest().genesis.hash
+    connect(node, generate_random_chain(1, genesis, tip_time=datetime.now(UTC)))
+    connect(node, generate_random_chain(2, genesis, tip_time=datetime.now(UTC)))
+    assert calls == [(node, 1), (node, 2)]
+
+
 def test_check_fork_warning_conditions_raises_once_and_clears_on_catch_up(
     node: Node, monkeypatch: pytest.MonkeyPatch
 ) -> None:
