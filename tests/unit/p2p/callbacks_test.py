@@ -6446,7 +6446,7 @@ def test_a_released_header_failing_its_checks_is_punished(
     peer = a_peer()
     for start in (0, 3, 0):
         headers(node, Headers(chain[start : start + 3]).serialize(), peer)
-    with pytest.raises(MisbehavingError, match="not after the median past"):
+    with pytest.raises(MisbehavingError, match=r"^time-too-old$"):
         headers(node, Headers(chain[3:]).serialize(), peer)
     assert chain[3].hash in node.chainstate.block_index.header_dict
     assert stale.hash not in node.chainstate.block_index.header_dict

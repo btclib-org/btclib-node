@@ -1020,7 +1020,7 @@ def _index_submitted_header(block_index: BlockIndex, block: Block) -> str | None
 
     `"duplicate"` for a block already downloaded whose body passes
     `CheckBlock` (`main.passes_check_block`), `"prev-blk-not-found"` for
-    a header whose parent is unknown, and btclib's own message for a
+    a header whose parent is unknown, and Core's reject reason for a
     header `add_headers` refuses; `submit_block` argues each.
 
     A header this node has never indexed is indexed only once its own
@@ -1075,6 +1075,9 @@ def _validate_extending_tip(node: Node, block_hash: bytes) -> str | None:
         raise
     failed = node.last_rejected_block
     if failed is not None and failed[0] == block_hash:
+        # Core answers `GetRejectReason()` alone, never its debug message
+        if isinstance(failed[1], TxRejectedError):
+            return failed[1].reason
         return str(failed[1])
     return None
 
@@ -1093,8 +1096,10 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     `block_index.add_headers` answers the identical way
     `p2p.callbacks.block` already reads it (missing rather than invalid),
     `AcceptBlockHeader`'s `"bad-prevblk"` for a parent marked invalid, and
-    `ContextualCheckBlockHeader`'s `"bad-version(0x%08x)"`, which
-    `add_headers` raises in Core's words (`src/validation.cpp`, at
+    `ContextualCheckBlockHeader`'s `bad-diffbits`, `time-too-old`,
+    `time-timewarp-attack`, `time-too-new` and `"bad-version(0x%08x)"`,
+    and `CheckBlockHeader`'s `high-hash`, which `add_headers` raises in
+    Core's words (`src/validation.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Any other invalid block is
     answered with btclib's own exception message instead of one of Core's:
     `BlockValidationResult` names dozens of distinct single-word reasons
@@ -1125,11 +1130,15 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     and this tree does not chase it synchronously.
 
     `main._validate_block`'s own `bad-txns-nonfinal` and `bad-cb-height`
-    are Core's literal reasons already; `interpreter.check_transactions`
+    are Core's literal reasons already; `interpreter.check_scripts`
     wraps a script failure into `BlockScriptVerifyError`, whose own
     `str()` is Core's `block-script-verify-flag-failed (%s)`
-    (`CheckInputScripts`, same file and sha) with btclib's own message
-    in place of `ScriptErrorString`. Anything else `update_chain`'s
+    (`CheckInputScripts`, same file and sha) with `ScriptErrorString`.
+    A spend of an immature coinbase and one over its inputs are Core's
+    `bad-txns-premature-spend-of-coinbase` and `bad-txns-in-belowout`,
+    the reason alone as `GetRejectReason` gives it, and so are
+    `bad-txns-accumulated-fee-outofrange` and `bad-blk-sigops`. Anything
+    else `update_chain`'s
     trial raises for this exact hash is answered with btclib's own
     text, the same divergence the paragraph above already argues for
     every reason this function has no literal word for.
@@ -1201,10 +1210,9 @@ def submit_header(node: Node, conn: RpcConnection, params: list[Any]) -> None:
     A header whose parent this index does not hold is refused before any
     check. `BlockIndex.add_headers` then checks and indexes it, as
     `ProcessNewBlockHeaders` does, and `None` answers a header indexed
-    now or already. A refusal answers the reason `add_headers` raises:
-    Core's word where it raises one, such as `duplicate-invalid` or
-    `bad-prevblk`, and otherwise its own message, the divergence
-    `submit_block` argues.
+    now or already. A refusal answers the reason `add_headers` raises,
+    Core's word, such as `duplicate-invalid`, `bad-prevblk`,
+    `bad-diffbits` or `high-hash`.
     """
     if not params:
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["submitheader"])

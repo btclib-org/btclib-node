@@ -5,7 +5,7 @@
 """`UtxoIndex`, the set of transaction outputs a spend may still reference.
 
 `add_block` applies one block's own spends and creations, returning the
-prevouts each transaction consumed -- what `interpreter.check_transactions`
+prevouts each transaction consumed -- what `main._validate_block`
 validates against -- and the `block_db.RevBlock` a reorg away from this
 block would need to undo it.
 """
@@ -387,7 +387,7 @@ class UtxoIndex:
         legitimately unspent).
 
         Returns each non-coinbase transaction paired with the prevouts
-        its own inputs consumed -- what `interpreter.check_transactions`
+        its own inputs consumed -- what `main._validate_block`
         validates against -- and the `RevBlock` that undoes this call.
 
         Every output this stages and every prevout it spends also moves

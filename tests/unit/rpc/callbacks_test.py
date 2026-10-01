@@ -6712,8 +6712,8 @@ def test_submit_block_answers_a_reason_for_a_header_that_never_gets_indexed(
 
     result = submit_block(node, _CONN, [broken.serialize(check_validity=False).hex()])
 
-    assert isinstance(result, str)
-    assert result not in (None, "duplicate", "prev-blk-not-found")
+    # `CheckBlockHeader`'s reason for a target above the chain's limit
+    assert result == "high-hash"
     assert broken.header.hash not in node.chainstate.block_index.header_dict
     assert node.block_db.get_block(broken.header.hash) is None
 
@@ -6996,8 +6996,8 @@ def test_submit_header_answers_the_reason_a_header_is_refused(
     """A refused header is `RPC_VERIFY_ERROR` with `add_headers`' reason.
 
     `duplicate-invalid` for a header marked invalid, `bad-prevblk` for
-    one whose parent is, and the proof-of-work refusal for a hash that
-    misses its target; none of them is indexed.
+    one whose parent is, and `high-hash` for a hash that misses its
+    target; none of them is indexed.
     """
     node = regtest_node()
     block_index = node.chainstate.block_index
@@ -7022,6 +7022,7 @@ def test_submit_header_answers_the_reason_a_header_is_refused(
     with pytest.raises(RpcError) as raised:
         submit_header(node, _CONN, [unmined.serialize(check_validity=False).hex()])
     assert raised.value.code == RPCErrorCode.VERIFY_ERROR
+    assert raised.value.message == "high-hash"
     assert unmined.hash not in block_index.header_dict
 
 
@@ -7167,10 +7168,7 @@ def test_submit_block_answers_a_script_failure_for_a_block_extending_the_tip(
     """ISS 1390: Core's `ConnectBlock`, run synchronously where the tip moves.
 
     Measured against bitcoind v31.1: `block-script-verify-flag-failed
-    (<reason>)`. This tree does not reproduce Core's own vocabulary for
-    the text inside the parentheses -- `submit_block`'s own docstring
-    argues the same divergence for every other reject reason it has no
-    literal word for.
+    (OP_RETURN was encountered)`.
     """
     node = regtest_node()
     chain = generate_random_chain(COINBASE_MATURITY, node.chain.genesis.hash)
@@ -7190,13 +7188,46 @@ def test_submit_block_answers_a_script_failure_for_a_block_extending_the_tip(
 
     result = submit_block(node, _CONN, [bad.serialize(check_validity=False).hex()])
 
-    assert isinstance(result, str)
-    assert result.startswith("block-script-verify-flag-failed")
-    assert "OP_RETURN" in result
+    assert result == "block-script-verify-flag-failed (OP_RETURN was encountered)"
     assert bad.header.hash not in node.chainstate.block_index.active_chain
     block_info = node.chainstate.block_index.get_block_info(bad.header.hash)
     assert block_info.status == BlockStatus.invalid
     assert node.block_db.get_block(bad.header.hash) is not None
+
+
+@pytest.mark.parametrize(
+    ("chain_length", "excess", "reason"),
+    [
+        (COINBASE_MATURITY - 1, 0, "bad-txns-premature-spend-of-coinbase"),
+        (COINBASE_MATURITY, 1, "bad-txns-in-belowout"),
+    ],
+    ids=["immature", "belowout"],
+)
+def test_submit_block_answers_a_spend_refusal_as_its_reason_alone(
+    regtest_node: Callable[..., Node], chain_length: int, excess: int, reason: str
+) -> None:
+    """`CheckTxInputs`' refusals are `GetRejectReason()`, without its details.
+
+    Core's `submitblock` answers the reason alone (`src/rpc/mining.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), where `TxRejectedError`'s
+    own `str()` carries the details after it.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(chain_length, node.chain.genesis.hash)
+    connect(node, chain)
+    funding = chain[0].transactions[0]
+    bad = build_block(
+        chain[-1].header.hash,
+        [
+            generate_coinbase(height=len(chain) + 1),
+            spend(funding, funding.vout[0].value + excess),
+        ],
+        len(chain),
+    )
+
+    result = submit_block(node, _CONN, [bad.serialize(check_validity=False).hex()])
+
+    assert result == reason
 
 
 def test_submit_block_stops_the_node_where_update_chain_finds_storage_unsafe(
