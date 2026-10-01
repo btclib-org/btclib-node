@@ -1624,6 +1624,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A bit signalled at the threshold in a period is logged once locked
   in, and once active is in `warnings` and runs `-alertnotify`**
   (closes #1475).
+### A release ships floors, and the text says so
+
+- **A release ships dependency floors, not pins: `pip install btclib-node`
+  gets the newest version each floor admits, and `uv.lock` protects only
+  an install from the checkout** (closes #1553).
 
 ## v2026.9.24
 

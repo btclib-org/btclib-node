@@ -28,11 +28,12 @@ license-files = ["LICENSE", "AUTHORS.md"]
 requires-python = ">=3.14"
 # Floors only, here and in the dependency groups below: an upper bound
 # on a release nobody has seen break is a guess, and uv.lock is what
-# decides what any given checkout installs. Exact versions are pinned
-# when a release is cut, not while the tree is developed. Each floor is
-# the release this tree is developed against; btclib's is also the
-# release whose API this code is written to, anything older wanting
-# `merkle_root_` and taking `check_validity` positionally.
+# decides what any given checkout installs. A release ships the floors
+# and pins nothing, so `pip install btclib-node` gets the newest version
+# each floor admits. Each floor is the release this tree is developed
+# against; btclib's is also the release whose API this code is written
+# to, anything older wanting `merkle_root_` and taking `check_validity`
+# positionally.
 dependencies = [
     # The `secp256k1` extra, not an optional-dependencies table of this
     # package's own: btclib-org/btclib-node#361 is where dependency
