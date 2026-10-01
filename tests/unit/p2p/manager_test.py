@@ -61,6 +61,7 @@ from btclib_node.p2p.banman import (
 from btclib_node.p2p.eviction import Network, net_group
 from btclib_node.p2p.main import handle_p2p_handshake
 from btclib_node.p2p.manager import P2pManager
+from btclib_node.p2p.permissions import NetPermissionFlags, Whitelist
 from btclib_node.rpc.callbacks import add_connection
 from btclib_node.rpc.errors import RpcError
 
@@ -101,6 +102,7 @@ def a_conn(
     block_relay: bool = False,
     feeler: bool = False,
     addr_fetch: bool = False,
+    permissions: NetPermissionFlags = NetPermissionFlags.NONE,
     addr_name: str | None = None,
 ) -> Any:
     """Build a `Connection` double: no socket, its own `sent`/`stopped` logs.
@@ -129,6 +131,7 @@ def a_conn(
         block_relay=block_relay,
         feeler=feeler,
         addr_fetch=addr_fetch,
+        permissions=permissions,
         addr_name=addr_name,
         sent=[],
         stopped=[],
@@ -7770,3 +7773,156 @@ def test_a_feeler_passes_over_an_address_tried_recently_and_records_its_own(
     assert len(counted) == manager_module._RECENT_TRY_DRAWS
     assert made
     assert tries_of(manager)[endpoint_key(new)] >= before
+
+
+def test_an_addr_fetch_peer_misbehaving_is_discouraged(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1588: only a manual peer is spared, and an addr-fetch one is not.
+
+    It is dialled with `automatic` false, as a manual peer is, and is
+    told apart by `addr_fetch`.
+    """
+    misbehaving = a_conn(0, addr_fetch=True)
+    manager = a_manager([misbehaving])
+    assert manager.maybe_discourage_and_disconnect(misbehaving) is True
+    assert manager.is_discouraged(misbehaving.address)
+    assert misbehaving.stopped == [True]
+
+
+@pytest.mark.parametrize("kind", ["inbound", "automatic", "manual"])
+def test_a_no_ban_peer_is_never_discouraged(
+    a_manager: AManagerFactory, kind: str
+) -> None:
+    """ISS 1320: Core's `MaybeDiscourageAndDisconnect` spares a `NoBan` peer.
+
+    Whatever its kind: nothing is dropped and nothing discouraged.
+    """
+    misbehaving = a_conn(
+        0,
+        inbound=kind == "inbound",
+        automatic=kind == "automatic",
+        permissions=NetPermissionFlags.NO_BAN,
+    )
+    manager = a_manager([misbehaving])
+    assert manager.maybe_discourage_and_disconnect(misbehaving) is False
+    assert not manager.is_discouraged(misbehaving.address)
+    assert not misbehaving.stopped
+
+
+def test_a_peer_holding_download_alone_is_discouraged(
+    a_manager: AManagerFactory,
+) -> None:
+    """`NoBan` holds `Download`, and `Download` does not hold `NoBan`."""
+    misbehaving = a_conn(0, inbound=True, permissions=NetPermissionFlags.DOWNLOAD)
+    manager = a_manager([misbehaving])
+    assert manager.maybe_discourage_and_disconnect(misbehaving) is True
+
+
+def test_an_eviction_candidate_is_no_ban_where_its_peer_holds_the_permission() -> None:
+    """ISS 1320: `m_noban` is read off the connection's permissions."""
+    conn = a_conn(1, inbound=True)
+    conn.__dict__.update(
+        connected_time=0,
+        min_ping_time=0.0,
+        last_novel_block_time=0,
+        last_novel_tx_time=0,
+        has_all_wanted_services=False,
+        keyed_net_group=0,
+        prefer_evict=False,
+        version_message=None,
+    )
+    assert not manager_module._eviction_candidate(conn).noban
+    conn.permissions = NetPermissionFlags.DOWNLOAD
+    assert not manager_module._eviction_candidate(conn).noban
+    conn.permissions = NetPermissionFlags.NO_BAN
+    assert manager_module._eviction_candidate(conn).noban
+
+
+def test_a_banned_host_holding_no_ban_is_accepted_with_its_permissions(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1320: Core's `rpc_setban` scenario, at the accept path.
+
+    The ban stands, and the one host the whitelist names connects past it,
+    holding what it is granted; the next host of the subnet is refused.
+    """
+    manager = a_manager(port=get_random_port())
+    manager.ban_man.ban(a_subnet("1.2.3.0/24"))
+    manager.whitelist = Whitelist.parse(["1.2.3.4"])
+    manager.start()
+    wait_until_listening(manager)
+    with ExitStack() as peers:
+        _, accepted = land_an_inbound_peer(manager, "1.2.3.4", 50000)
+        peers.enter_context(closing(accepted))
+        wait_until(lambda: 0 in manager.pending_connections)
+        assert manager.pending_connections[0].permissions == (
+            NetPermissionFlags.NO_BAN
+            | NetPermissionFlags.RELAY
+            | NetPermissionFlags.MEMPOOL
+        )
+        _, refused = land_an_inbound_peer(manager, "1.2.3.5", 50000)
+        peers.enter_context(closing(refused))
+        assert refused.recv(4096) == b""
+        assert manager.last_connection_id == 0
+        assert manager.ban_man.is_peer_banned(peer_address("1.2.3.4", 1))
+        manager.stop()
+        manager.join(timeout=10)
+
+
+def test_a_discouraged_host_holding_no_ban_takes_the_last_slot(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1320: Core's discouraged-host refusal needs `!NoBan`.
+
+    `max_connections=12` leaves one inbound slot, which `1.2.3.4` is
+    refused for as `test_a_discouraged_host_is_refused_where_it_would_fill_
+    the_last_slot` shows. Whitelisted, it is accepted, and `prefer_evict`
+    still says it was discouraged.
+    """
+    manager = a_manager(port=get_random_port(), max_connections=12)
+    manager.discourage(peer_address("1.2.3.4", 18444))
+    manager.whitelist = Whitelist.parse(["noban@1.2.3.4"])
+    manager.start()
+    wait_until_listening(manager)
+    with ExitStack() as peers:
+        _, accepted = land_an_inbound_peer(manager, "1.2.3.4", 50000)
+        peers.enter_context(closing(accepted))
+        wait_until(lambda: 0 in manager.pending_connections)
+        conn = manager.pending_connections[0]
+        assert (
+            conn.permissions == NetPermissionFlags.NO_BAN | NetPermissionFlags.DOWNLOAD
+        )
+        assert conn.prefer_evict
+        manager.stop()
+        manager.join(timeout=10)
+
+
+@pytest.mark.parametrize(
+    ("kind", "granted"), [("manual", True), ("automatic", False), ("addr_fetch", False)]
+)
+def test_only_a_manual_dial_is_granted_what_out_names(
+    a_manager: AManagerFactory, kind: str, *, granted: bool
+) -> None:
+    """ISS 1320: Core matches the outgoing ranges for a manual dial alone."""
+    manager = a_manager()
+    manager.whitelist = Whitelist.parse(["out,noban@1.2.3.4"])
+    ours, theirs = socket.socketpair()
+
+    async def create() -> NetPermissionFlags:
+        manager.create_connection(
+            ours,
+            peer_address("1.2.3.4", 18444),
+            inbound=False,
+            automatic=kind == "automatic",
+            addr_fetch=kind == "addr_fetch",
+        )
+        (conn,) = manager.pending_connections.values()
+        assert conn.task is not None
+        conn.task.cancel()
+        await asyncio.sleep(0)
+        return conn.permissions
+
+    with ours, theirs:
+        permissions = manager.loop.run_until_complete(create())
+    assert (NetPermissionFlags.NO_BAN in permissions) is granted

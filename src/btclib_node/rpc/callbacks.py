@@ -64,6 +64,7 @@ from btclib_node.p2p.banman import (
 )
 from btclib_node.p2p.connection import local_services
 from btclib_node.p2p.eviction import Network, is_valid, net_class
+from btclib_node.p2p.permissions import permission_names
 from btclib_node.rpc.connection import RawJSON
 from btclib_node.rpc.errors import (
     RpcError,
@@ -1405,8 +1406,7 @@ def _peer_entry(
     entry["addr_relay_enabled"] = p2p_conn.addr_relay_enabled
     entry["addr_processed"] = p2p_conn.stats.addr_processed
     entry["addr_rate_limited"] = p2p_conn.stats.addr_rate_limited
-    # No `-whitelist`/`-whitebind`: no peer holds a permission.
-    entry["permissions"] = []
+    entry["permissions"] = permission_names(p2p_conn.permissions)
     entry["minfeefilter"] = _btc_amount(p2p_conn.feefilter if relays else 0)
     # Core's tables are `std::map`s, iterated in key order, and push
     # only a type with bytes counted.

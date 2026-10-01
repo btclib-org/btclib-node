@@ -357,6 +357,13 @@ class Config:
     # starts, as `InitHTTPServer` parses them, and answers a request
     # from no source they or loopback name with a 403.
     rpcallowip: tuple[str, ...]
+    # Core's `-whitelist` values, each exactly as given: `Node.run` reads
+    # them with `-whitelistrelay` and `-whitelistforcerelay`
+    # (`p2p.permissions.Whitelist.parse`), as `AppInitMain` does once the
+    # stores are open, and refuses the node's start for one it cannot.
+    whitelist: tuple[str, ...]
+    whitelist_relay: bool
+    whitelist_force_relay: bool
     # Core's own `-rpcservertimeout`, in seconds: how long
     # `RpcConnection.run` may take reading one request, and the idle gap
     # a kept-alive connection may sit in between two of them, both
@@ -653,6 +660,9 @@ class Config:
         rpc_host: str | None = None,
         rpcbind: Sequence[str] = (),
         rpcallowip: Sequence[str] = (),
+        whitelist: Sequence[str] = (),
+        whitelist_relay: bool = True,
+        whitelist_force_relay: bool = False,
         rpcservertimeout: int = int(REQUEST_TIMEOUT),
         allow_p2p: bool = True,
         allow_rpc: bool = True,
@@ -785,6 +795,9 @@ class Config:
         self.rpc_host = rpc_host
         self.rpcbind = tuple(rpcbind)
         self.rpcallowip = tuple(rpcallowip)
+        self.whitelist = tuple(whitelist)
+        self.whitelist_relay = whitelist_relay
+        self.whitelist_force_relay = whitelist_force_relay
         self.rpcservertimeout = rpcservertimeout
         # Core reads the RPC options below in `StartHTTPRPC` and its
         # `InitRPCAuthentication` (`src/httprpc.cpp`), which `AppInitMain`

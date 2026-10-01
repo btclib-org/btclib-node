@@ -122,6 +122,7 @@ from btclib_node.p2p.headers_sync import (
     anti_dos_work_threshold,
 )
 from btclib_node.p2p.messages import FinalAlert
+from btclib_node.p2p.permissions import NetPermissionFlags
 from btclib_node.p2p.protocol_version import (
     BIP0031_VERSION,
     MIN_PEER_PROTO_VERSION,
@@ -763,11 +764,56 @@ _ADDR_SAMPLE_LIFETIME = 3600 * 21
 _ADDR_SAMPLE_JITTER = 3600 * 6
 
 
+def _draw_sample(node: Node) -> list[NetworkAddressV2]:
+    """Draw what a `getaddr` answers, without a discouraged or banned host.
+
+    Core's `GetAddressesUnsafe` (`src/net.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) filters what addrman drew
+    the same way.
+    """
+    manager = node.p2p_manager
+    return [
+        address
+        for address in manager.peer_db.get_addr(MAX_ADDR_TO_SEND, _MAX_PCT_ADDR_TO_SEND)
+        if not manager.is_discouraged(address)
+        and not manager.ban_man.is_peer_banned(address)
+    ]
+
+
+def _cached_sample(node: Node, conn: Connection) -> list[NetworkAddressV2]:
+    """Return the sample cached under `conn`'s key, redrawn once expired."""
+    peer_db = node.p2p_manager.peer_db
+    now = time.time()
+    # Every inbound connection this callback ever reaches carries a key
+    # -- `P2pManager.server`/`create_connection` set it on acceptance,
+    # the only path into an inbound `Connection` -- so this is never
+    # `None` here; the cast is what tells mypy the same thing, `conn`
+    # typed `None` for an outbound connection's sake
+    # (`addr_cache_key`'s own docstring).
+    key = cast("tuple[int, str, int]", conn.addr_cache_key)
+    cache = peer_db.addr_response_caches.setdefault(key, AddrResponseCache())
+    if now >= cache.expiration:
+        cache.sample = _draw_sample(node)
+        # The sample can go on naming an endpoint the table has
+        # since aged out or dropped, for as long as this cache is still
+        # good: intended, not overlooked -- the cache is not what a
+        # `getaddr` answer's freshness rests on, an `addr` entry already
+        # carries its own timestamp for whoever receives it to judge
+        # staleness by, and shortening this lifetime to track the table
+        # more closely would give back the privacy this cache exists for
+        # to buy an accuracy guarantee gossip never promised in the
+        # first place.
+        jitter = secrets.SystemRandom().uniform(0, _ADDR_SAMPLE_JITTER)
+        cache.expiration = now + _ADDR_SAMPLE_LIFETIME + jitter
+    return cache.sample
+
+
 def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
     """Answer a peer's `getaddr` with a sample of every known address, once.
 
-    The sample itself is a cache, shared and redrawn only once its own
-    lifetime and jitter expire -- the comment below argues why -- and
+    A peer holding `ADDR` is answered from a draw of its own. For any
+    other the sample is a cache, shared and redrawn only once its own
+    lifetime and jitter expire -- `_cached_sample` argues why -- and
     kept one per `conn.addr_cache_key` rather than one for every
     connection. Core's `CConnman::GetAddresses` (`src/net.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag) keys
@@ -803,40 +849,12 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
         return
     conn.answered_getaddr = True
 
-    peer_db = node.p2p_manager.peer_db
-    now = time.time()
-    # Every inbound connection this callback ever reaches carries a key
-    # -- `P2pManager.server`/`create_connection` set it on acceptance,
-    # the only path into an inbound `Connection` -- so this is never
-    # `None` here; the cast is what tells mypy the same thing, `conn`
-    # typed `None` for an outbound connection's sake
-    # (`addr_cache_key`'s own docstring).
-    key = cast("tuple[int, str, int]", conn.addr_cache_key)
-    cache = peer_db.addr_response_caches.setdefault(key, AddrResponseCache())
-    if now >= cache.expiration:
-        # Drawn and then filtered, as Core's `GetAddressesUnsafe` leaves
-        # every discouraged or banned host out of what addrman drew
-        # (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
-        # before the cache is kept.
-        manager = node.p2p_manager
-        cache.sample = [
-            address
-            for address in peer_db.get_addr(MAX_ADDR_TO_SEND, _MAX_PCT_ADDR_TO_SEND)
-            if not manager.is_discouraged(address)
-            and not manager.ban_man.is_peer_banned(address)
-        ]
-        # The sample can go on naming an endpoint the table has
-        # since aged out or dropped, for as long as this cache is still
-        # good: intended, not overlooked -- the cache is not what a
-        # `getaddr` answer's freshness rests on, an `addr` entry already
-        # carries its own timestamp for whoever receives it to judge
-        # staleness by, and shortening this lifetime to track the table
-        # more closely would give back the privacy this cache exists for
-        # to buy an accuracy guarantee gossip never promised in the
-        # first place.
-        jitter = secrets.SystemRandom().uniform(0, _ADDR_SAMPLE_JITTER)
-        cache.expiration = now + _ADDR_SAMPLE_LIFETIME + jitter
-    sample = cache.sample
+    if NetPermissionFlags.ADDR in conn.permissions:
+        # Core's `GetAddressesUnsafe`: a peer holding `ADDR` is answered
+        # from a draw of its own, and no cache of it is kept
+        sample = _draw_sample(node)
+    else:
+        sample = _cached_sample(node, conn)
     # either message class, and not whichever the first branch names:
     # Addr and AddrV2 are siblings under Payload rather than one a
     # subclass of the other, so each is built from its own list rather
@@ -933,12 +951,12 @@ def _store_gossip(
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag) tops up the peer's
     `m_addr_token_bucket`, shuffles the message, and then takes each
     address in turn: one without a token is dropped and counted in
-    `m_addr_rate_limited`; one with a token spends it, and is then
-    skipped if its services carry neither `NODE_NETWORK` nor
-    `NODE_NETWORK_LIMITED`, skipped if `IsDiscouraged` answers for it,
-    and otherwise counted in `m_addr_processed` before `AddrMan` refuses
-    any of it. An addr-fetch connection is dropped once this answers
-    with more than one address, "to avoid disconnecting on
+    `m_addr_rate_limited`, unless the peer holds `ADDR`; one with a token
+    spends it, and is then skipped if its services carry neither
+    `NODE_NETWORK` nor `NODE_NETWORK_LIMITED`, skipped if `IsDiscouraged`
+    answers for it, and otherwise counted in `m_addr_processed` before
+    `AddrMan` refuses any of it. An addr-fetch connection is dropped once
+    this answers with more than one address, "to avoid disconnecting on
     self-announcements" (same loop, same sha) -- of `addresses` as
     received, ahead of every filter above, matching Core's own
     `vAddr.size()` (btclib-org/btclib-node#1284). A time Core finds
@@ -958,12 +976,13 @@ def _store_gossip(
     kept: list[NetworkAddressV2] = []
     rate_limited = 0
     for address in received:
-        # Core exempts a peer holding `NetPermissionFlags::Addr`, which
-        # only `-whitelist`/`-whitebind` grant and this node has neither
-        if conn.addr_token_bucket < 1:
+        # a peer holding `ADDR` is never rate limited, and a bucket
+        # without a token is not spent into debt for it
+        if conn.addr_token_bucket >= 1:
+            conn.addr_token_bucket -= 1
+        elif NetPermissionFlags.ADDR not in conn.permissions:
             rate_limited += 1
             continue
-        conn.addr_token_bucket -= 1
         # Core's `!MayHaveUsefulAddressDB && !HasAllDesirableServiceFlags`:
         # every set `GetDesirableServiceFlags` answers holds one of these
         # two flags, so the second half never keeps what the first drops
@@ -1055,6 +1074,15 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
     # between this check and the `except` below can change either
     # answer out from under it.
     if node.mempool.contains_tx(tx) or node.mempool.was_recently_rejected(tx.hash):
+        # a `FORCE_RELAY` peer's transaction is announced to the others
+        # all the same, where the mempool holds it, as Core's
+        # `InitiateTxBroadcastToAll` does. Core skips a peer whose
+        # `m_tx_inventory_known_filter` holds the hash
+        # (`net_processing.cpp:2262`, same sha). This node keeps no such
+        # filter, so a peer already told is told again.
+        # btclib-org/btclib-node#1630
+        if NetPermissionFlags.FORCE_RELAY in conn.permissions:
+            node.download_manager.received_txs.append((conn.id, tx.hash))
         return
     try:
         fee, vsize = verify_mempool_acceptance(node, tx)
@@ -1641,7 +1669,11 @@ def _serve_getdata_item(
             return not_found_bytes
         if not _block_request_allowed(node, item.hash):
             return not_found_bytes
-        if node.config.pruned and _below_prune_threshold(node, item.hash):
+        if (
+            node.config.pruned
+            and NetPermissionFlags.NO_BAN not in conn.permissions
+            and _below_prune_threshold(node, item.hash)
+        ):
             conn.stop()
             return not_found_bytes
         # Core's `a_recent_block`, ahead of the read
@@ -1872,9 +1904,7 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     flight to this peer, as does a batch a low-work sync takes; one
     connecting to nothing may be an announcement, and answers nothing.
 
-    Core also lets a peer with the `NoBan` permission skip the work
-    check; no peer holds a permission here (`getpeerinfo`'s own
-    `permissions`), so there is nothing to skip for.
+    A peer holding `NO_BAN` skips the work check, as in Core.
     """
     # Core reads the count alone before it compares, so no entry is
     # needed in the payload for it to call `Misbehaving`
@@ -1931,6 +1961,8 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
         already_validated_work
         or last in block_index.header_index_pos
         or _height_on_the_active_chain(node, last) is not None
+        # "a trusted peer on startup", Core says: it saves bandwidth
+        or NetPermissionFlags.NO_BAN in conn.permissions
     )
     if not already_validated_work and _try_low_work_headers_sync(
         node, conn, chain_start, headers
@@ -2147,7 +2179,8 @@ def getheaders(node: Node, msg: bytes, conn: Connection) -> None:
     The `GETHEADERS` branch of Core's `ProcessMessage`
     (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
     tag). An active chain with less work than the minimum chain work is
-    answered with an empty `headers`. An empty locator asks for the
+    answered with an empty `headers`, unless the peer holds `DOWNLOAD`. An
+    empty locator asks for the
     `hash_stop` header alone, answered only where it is known and
     `_block_request_allowed`, and not at all otherwise. Any other
     locator is answered with the active chain after
@@ -2166,7 +2199,10 @@ def getheaders(node: Node, msg: bytes, conn: Connection) -> None:
     block_index = node.chainstate.block_index
     active_chain = block_index.active_chain
     tip = active_chain[-1]
-    if block_index.chainwork[tip] < node.config.minimum_chain_work:
+    if (
+        block_index.chainwork[tip] < node.config.minimum_chain_work
+        and NetPermissionFlags.DOWNLOAD not in conn.permissions
+    ):
         conn.send(Headers([]))
         return
     stop = getheaders.hash_stop

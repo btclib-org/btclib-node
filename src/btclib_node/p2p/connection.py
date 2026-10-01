@@ -47,6 +47,7 @@ from btclib_node.p2p.callbacks import (
 from btclib_node.p2p.chain_sync import ChainSyncTimeoutState
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 from btclib_node.p2p.messages import NoncelessPing
+from btclib_node.p2p.permissions import NetPermissionFlags
 from btclib_node.p2p.protocol_version import BIP0031_VERSION, common_version
 
 if TYPE_CHECKING:
@@ -636,6 +637,10 @@ class Connection:
         # count the first two kinds, and not a feeler.
         # `P2pManager.create_connection` sets it.
         self.automatic: bool = False
+        # Core's `CNode::m_permission_flags`: what `-whitelist` grants this
+        # peer, decided where the connection is accepted or dialled
+        # (`P2pManager.create_connection`) and kept.
+        self.permissions: NetPermissionFlags = NetPermissionFlags.NONE
         # Core's `CNode::m_prefer_evict`: whether this peer was accepted
         # from a discouraged host, which `select_node_to_evict` reads.
         # `P2pManager.server` decides it on accept and

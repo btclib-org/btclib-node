@@ -3761,3 +3761,75 @@ def test_build_config_refuses_a_debugexclude_category_core_does_not_know(
 def test_help_names_debugexclude_under_debug_alone() -> None:
     """ISS 1609: `-debugexclude` is a `DEBUG_TEST` option, as `-debug` is."""
     assert "-debugexclude=<category>" in cli._help_message(show_debug=True)
+
+
+@pytest.mark.parametrize(
+    ("argv", "conf", "values"),
+    [
+        (
+            ["-whitelist=noban@10.0.0.0/8"],
+            "whitelist=1.2.3.4\n",
+            ("noban@10.0.0.0/8", "1.2.3.4"),
+        ),
+        (["-nowhitelist"], "whitelist=1.2.3.4\n", ()),
+    ],
+    ids=["the command line then the file", "negated"],
+)
+def test_build_config_whitelist_is_read_as_a_list(
+    tmp_path: Path, argv: list[str], conf: str, values: tuple[str, ...]
+) -> None:
+    """ISS 1320: Core's `GetArgs("-whitelist")`, not `NETWORK_ONLY`."""
+    assert _build(tmp_path, "-regtest", *argv, conf=conf).whitelist == values
+
+
+@pytest.mark.parametrize(
+    ("argv", "relay", "force_relay"),
+    [
+        ([], True, False),
+        (["-nowhitelistrelay"], False, False),
+        (["-whitelistforcerelay"], True, True),
+        (["-whitelistrelay=0", "-whitelistforcerelay=1"], False, True),
+    ],
+)
+def test_build_config_whitelistrelay_and_whitelistforcerelay_default_as_core_does(
+    tmp_path: Path, argv: list[str], *, relay: bool, force_relay: bool
+) -> None:
+    """ISS 1320: relay is on by default, and force relay off."""
+    config = _build(tmp_path, "-regtest", *argv)
+    assert (config.whitelist_relay, config.whitelist_force_relay) == (
+        relay,
+        force_relay,
+    )
+
+
+def test_help_names_the_whitelist_options() -> None:
+    """ISS 1320: Core's words, cut to what this node does."""
+    message = " ".join(cli._help_message(show_debug=False).split())
+    assert (
+        "-whitelist=<[permissions@]IP address or network> Add permission "
+        "flags to the peers using the given IP address (e.g. 1.2.3.4) or "
+        "CIDR-notated network (e.g. 1.2.3.0/24). Allowed permissions: "
+        "bloomfilter (accepted, does nothing: no BIP37), noban (do not ban "
+        "for misbehavior; implies download), forcerelay (relay "
+        "transactions that are already in the mempool; implies relay), "
+        "relay (unlimited transaction announcements), mempool (accepted, "
+        "does nothing: no BIP35), download (allow getheaders during IBD), "
+        "addr (responses to GETADDR avoid hitting the cache and contain "
+        "random "
+        "records with the most up-to-date info). Specify multiple "
+        "permissions separated by commas (default: "
+        "download,noban,mempool,relay). "
+        'Additional flags "in" and "out" control whether '
+        "permissions apply to incoming connections and/or manual (default: "
+        "incoming only). Can be specified multiple times." in message
+    )
+    assert (
+        "-whitelistforcerelay Add 'forcerelay' permission to whitelisted "
+        "peers with default permissions. This will relay transactions even "
+        "if the transactions were already in the mempool. (default: 0)" in message
+    )
+    assert (
+        "-whitelistrelay Add 'relay' permission to whitelisted peers with "
+        "default permissions. This lifts the limit on their transaction "
+        "announcements (default: 1)" in message
+    )

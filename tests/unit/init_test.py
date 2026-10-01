@@ -2056,3 +2056,58 @@ def test_a_nodes_ban_list_takes_its_default_length_from_the_config(
         assert node.p2p_manager.ban_man.default_ban_time == 100
     finally:
         node.stop()
+
+
+def test_a_whitelist_value_core_refuses_ends_start_up_with_its_message(
+    tmp_path: Path,
+) -> None:
+    """ISS 1320: `AppInitMain` refuses `-whitelist` before it starts `connman`.
+
+    The stores were opened by then, so `run`'s teardown closes them, and
+    the RPC listener is stopped.
+    """
+    rpc_port = get_random_port()
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path,
+            p2p_port=get_random_port(),
+            rpc_port=rpc_port,
+            whitelist=["noban@1.2.3.4", "bogus@1.2.3.4"],
+            debug=True,
+        )
+    )
+    try:
+        node.start()
+        wait_until(lambda: not node.is_alive())
+    finally:
+        node.stop()
+    assert node.init_errors == ["Invalid P2P permission: 'bogus'"]
+    assert not node.rpc_manager.is_alive()
+    assert node.chainstate.db.closed
+    assert_loopbacks_free(rpc_port)
+
+
+def test_a_node_hands_its_whitelist_to_the_p2p_manager(tmp_path: Path) -> None:
+    """ISS 1320: the three options reach `P2pManager.whitelist`."""
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path,
+            p2p_port=get_random_port(),
+            rpc_port=get_random_port(),
+            whitelist=["noban@1.2.3.4", "out,addr@5.6.7.8"],
+            whitelist_relay=False,
+            whitelist_force_relay=True,
+        )
+    )
+    try:
+        node.start()
+        wait_until_listening(node.p2p_manager)
+        whitelist = node.p2p_manager.whitelist
+    finally:
+        node.stop()
+    assert [str(entry.subnet) for entry in whitelist.incoming] == ["1.2.3.4/32"]
+    assert [str(entry.subnet) for entry in whitelist.outgoing] == ["5.6.7.8/32"]
+    assert (whitelist.relay, whitelist.force_relay) == (False, True)
+    assert node.init_errors == []

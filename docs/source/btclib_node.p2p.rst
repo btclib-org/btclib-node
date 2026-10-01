@@ -110,6 +110,13 @@ btclib\_node.p2p.netif module
    :members:
    :show-inheritance:
 
+btclib\_node.p2p.permissions module
+--------------------------------------
+
+.. automodule:: btclib_node.p2p.permissions
+   :members:
+   :show-inheritance:
+
 btclib\_node.p2p.protocol\_version module
 --------------------------------------------
 

@@ -69,6 +69,7 @@ from btclib_node.p2p.banman import BanEntry, BanMan, lookup_subnet
 from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.connection import PeerStats
 from btclib_node.p2p.headers_sync import ChainStart, HeadersSyncState, State
+from btclib_node.p2p.permissions import NetPermissionFlags
 from btclib_node.rpc.callbacks import (
     add_connection,
     add_node,
@@ -208,6 +209,7 @@ def a_peer(
     block_relay: bool = False,
     feeler: bool = False,
     addr_fetch: bool = False,
+    permissions: NetPermissionFlags = NetPermissionFlags.NONE,
     versioned: bool = True,
 ) -> Any:
     """Build a `P2pManager.connections` entry `get_peer_info` can read.
@@ -245,6 +247,7 @@ def a_peer(
         block_relay=block_relay,
         feeler=feeler,
         addr_fetch=addr_fetch,
+        permissions=permissions,
         stats=PeerStats(),
         block_availability=BlockAvailability(),
         tx_announce_queue=[],
@@ -730,10 +733,9 @@ def test_the_synced_heights_are_the_peer_s_best_known_and_last_common_blocks(
 
 
 def test_the_fields_this_node_has_no_state_for_answer_core_s_value() -> None:
-    """No high-bandwidth peer chosen, permissions or BIP324 here."""
+    """No high-bandwidth peer chosen or BIP324 here."""
     (info,) = get_peer_info(a_node({7: a_peer()}), _CONN, [])
     assert info["bip152_hb_to"] is False
-    assert info["permissions"] == []
     assert info["transport_protocol_type"] == "v1"
     assert info["session_id"] == ""
 
@@ -7710,3 +7712,30 @@ def test_help_rpc_answers_through_answer_help() -> None:
     node = cast("Node", SimpleNamespace())
     for params in ([], ["stop"]):
         assert help_rpc(node, _CONN, params) == answer_help(params)
+
+
+@pytest.mark.parametrize(
+    ("permissions", "names"),
+    [
+        (NetPermissionFlags.NONE, []),
+        (NetPermissionFlags.NO_BAN, ["noban", "download"]),
+        (
+            NetPermissionFlags.ALL,
+            [
+                "bloomfilter",
+                "noban",
+                "forcerelay",
+                "relay",
+                "mempool",
+                "download",
+                "addr",
+            ],
+        ),
+    ],
+)
+def test_permissions_lists_what_the_peer_is_granted_in_core_s_order(
+    permissions: NetPermissionFlags, names: list[str]
+) -> None:
+    """ISS 1320: `getpeerinfo` lists `NetPermissions::ToStrings` of the peer."""
+    (info,) = get_peer_info(a_node({7: a_peer(permissions=permissions)}), _CONN, [])
+    assert info["permissions"] == names
