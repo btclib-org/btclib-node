@@ -1602,6 +1602,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`mutation.yml`'s session budget is 45 minutes and its ceiling 60,
   where 10 and 20 cut off more than half of the mutants** (closes #1557).
 
+### A release ships floors, and the text says so
+
+- **A release ships dependency floors, not pins: `pip install btclib-node`
+  gets the newest version each floor admits, and `uv.lock` protects only
+  an install from the checkout** (closes #1553).
+
 ### `history.log` marks a debug line with its category
 
 - **A debug line is written under Core's category for it, `[net]` for a
@@ -1624,11 +1630,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A bit signalled at the threshold in a period is logged once locked
   in, and once active is in `warnings` and runs `-alertnotify`**
   (closes #1475).
-### A release ships floors, and the text says so
-
-- **A release ships dependency floors, not pins: `pip install btclib-node`
-  gets the newest version each floor admits, and `uv.lock` protects only
-  an install from the checkout** (closes #1553).
 
 ## v2026.9.24
 
