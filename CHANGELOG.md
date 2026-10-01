@@ -1600,9 +1600,8 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 ### Refusals carry Core's reasons, in Core's order
 
 - **A refused header, a script refusal and a block's refusals carry Core's
-  reasons, in Core's order, `ConnectBlock`'s accumulated fee bound
-  included** (closes #1600) (closes #1362) (closes #1587).
-  `interpreter.check_transactions` is `check_scripts`, the scripts alone.
+  reasons, in Core's order; `interpreter.check_transactions` is
+  `check_scripts`** (closes #1600) (closes #1362) (closes #1587).
 
 ## v2026.9.24
 
