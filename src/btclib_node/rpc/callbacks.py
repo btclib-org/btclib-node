@@ -896,7 +896,7 @@ def get_block(
     `coinbase_tx` and `tx` as an array of txids (`TxVerbosity::SHOW_TXID`);
     verbosity 2 the same with `tx` as an array of decoded transactions
     instead, `getrawtransaction`'s own verbose shape
-    (`get_raw_transaction`'s own `tx.to_dict()` plus `hex`) rather than a
+    (`_tx_to_univ`, with `hex`) rather than a
     second rendering of one call's own shape, `TxVerbosity::SHOW_DETAILS`
     -- one field short of Core's, `tx[].fee`, which needs the block's own
     undo data to compute even at this verbosity and not only at 3, left
@@ -938,12 +938,10 @@ def get_block(
     if verbosity == 1:
         out["tx"] = [tx.id for tx in block.transactions]
     else:
-        txs: list[dict[str, Any]] = []
-        for tx in block.transactions:
-            tx_dict: dict[str, Any] = tx.to_dict()
-            tx_dict["hex"] = tx.serialize(include_witness=True).hex()
-            txs.append(tx_dict)
-        out["tx"] = txs
+        out["tx"] = [
+            _tx_to_univ(tx, node.chain.name, include_hex=True)
+            for tx in block.transactions
+        ]
     return out
 
 
@@ -2183,8 +2181,8 @@ def _script_pub_key_dict(script: bytes, network: str) -> dict[str, Any]:
 
     `ScriptToUniv` (`src/core_io.cpp:409-428`, at
     bitcoin/bitcoin@9be056a8a7) nests `asm`, `desc`, `hex`, `address` and
-    `type`, in that order, inside `scriptPubKey` itself, which is what `gettxout`
-    and every transaction's `vout` answer here (`TxOut.to_dict` keeps
+    `type`, in that order, inside `scriptPubKey` itself, which is what
+    `gettxout` and every transaction's `vout` answer here (`TxOut.to_dict` keeps
     `type`, `addresses` and `network` beside it instead). The type is
     `GetTxnOutputType`'s name from `solver`, the address is spelled for
     `network`, and `address` is answered only where one exists.
@@ -2200,6 +2198,34 @@ def _script_pub_key_dict(script: bytes, network: str) -> dict[str, Any]:
         out["address"] = address
     out["type"] = script_type
     return out
+
+
+def _vin_to_univ(tx: Tx) -> list[dict[str, Any]]:
+    """Answer a transaction's `vin` as `TxToUniv` does.
+
+    An ordinary input is `txid`, `vout`, `scriptSig` (`asm` and `hex`)
+    and `sequence`; a coinbase's own is `coinbase`, the script's hex,
+    where `txid`, `vout` and `scriptSig` have no meaning. `txinwitness`
+    is answered only where the witness stack is not empty
+    (`src/core_io.cpp:451-493`, at bitcoin/bitcoin@9be056a8a7), whereas
+    `TxIn.to_dict` answers `prev_out`, `scriptSig`, `sequence` and
+    `txinwitness` for every input, an empty list included.
+    """
+    vin: list[dict[str, Any]] = []
+    for tx_in in tx.vin:
+        entry: dict[str, Any] = {}
+        if tx.is_coinbase:
+            entry["coinbase"] = tx_in.script_sig.hex()
+        else:
+            entry["txid"] = tx_in.prev_out.tx_id.hex()
+            entry["vout"] = tx_in.prev_out.vout
+            entry["scriptSig"] = script_to_dict(tx_in.script_sig)
+        stack = tx_in.script_witness.stack
+        if stack:
+            entry["txinwitness"] = [item.hex() for item in stack]
+        entry["sequence"] = tx_in.sequence
+        vin.append(entry)
+    return vin
 
 
 def _vout_to_univ(tx: Tx, network: str) -> list[dict[str, Any]]:
@@ -2218,6 +2244,32 @@ def _vout_to_univ(tx: Tx, network: str) -> list[dict[str, Any]]:
         }
         for n, tx_out in enumerate(tx.vout)
     ]
+
+
+def _tx_to_univ(tx: Tx, network: str, *, include_hex: bool) -> dict[str, Any]:
+    """Answer a transaction as Core's `TxToUniv` does, addresses for `network`.
+
+    `src/core_io.cpp:430-534`, at bitcoin/bitcoin@9be056a8a7, in its
+    own key order. Every field is written here rather than taken from
+    `Tx.to_dict`, whose `vin` and `vout` are btclib's own shape and
+    whose `value` cannot render a negative amount, which a decoded
+    output can carry. `hash` is the witness hash, `size` the size with
+    the witness and `vsize` the weight in virtual bytes.
+    """
+    out: dict[str, Any] = {
+        "txid": tx.id.hex(),
+        "hash": tx.hash.hex(),
+        "version": tx.version,
+        "size": tx.size,
+        "vsize": tx.vsize,
+        "weight": tx.weight,
+        "locktime": tx.lock_time,
+        "vin": _vin_to_univ(tx),
+        "vout": _vout_to_univ(tx, network),
+    }
+    if include_hex:
+        out["hex"] = tx.serialize(include_witness=True, check_validity=False).hex()
+    return out
 
 
 def _parse_get_tx_out_params(params: list[Any]) -> tuple[bytes, int, bool]:
@@ -2608,20 +2660,20 @@ def get_raw_transaction(
     if not verbose:
         return tx.serialize(include_witness=True).hex()
 
-    # to_dict()'s own keys are Core's decoderawtransaction ones (its own
-    # docstring), str | int | list -- narrower than this callback's
-    # declared return, so the three below need the wider type spelled
-    # out, the same as get_block_header's out: dict[str, Any] above it
-    out: dict[str, Any] = tx.to_dict()
-    out["vout"] = _vout_to_univ(tx, node.chain.name)
-    out["hex"] = tx.serialize(include_witness=True).hex()
+    # Core's key order: `in_active_chain` first, then `TxToUniv`'s keys,
+    # then the block's (`src/rpc/rawtransaction.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7)
+    out: dict[str, Any] = {}
+    active_chain = node.chainstate.block_index.active_chain
+    on_active_chain = False
     if block_hash is not None and block_height is not None:
-        active_chain = node.chainstate.block_index.active_chain
         on_active_chain = (
             block_height < len(active_chain)
             and active_chain[block_height] == block_hash
         )
         out["in_active_chain"] = on_active_chain
+    out.update(_tx_to_univ(tx, node.chain.name, include_hex=True))
+    if block_hash is not None and block_height is not None:
         out["blockhash"] = block_hash.hex()
         out["confirmations"] = (
             len(active_chain) - block_height if on_active_chain else -1
@@ -2805,14 +2857,11 @@ def decode_raw_transaction(
     too, the same as it decodes and displays there --
     btclib-org/btclib-node#1398, and unlike `sendrawtransaction` and
     `testmempoolaccept` above, which run `_check_transaction`.
-    `to_dict()`'s own top-level keys are Core's `decoderawtransaction`
-    ones (its own docstring, `btclib/tx/tx.py`), the same dict
-    `get_raw_transaction`'s own verbose answer builds on, minus the
-    `hex` that call adds and the `blockhash` it sometimes does: Core's
-    own `TxToUniv` call here passes `include_hex=false` and a null
-    `block_hash`, neither of which this RPC is given a block or asked
-    to serialize. `vin`/`vout`'s own nested fields are not Core's field
-    by field -- btclib-org/btclib-node#1448.
+    The answer is `_tx_to_univ`'s, the one `get_raw_transaction`'s own
+    verbose answer builds on, minus the `hex` that call adds and the
+    `blockhash` it sometimes does: Core's own `TxToUniv` call here
+    passes `include_hex=false` and a null `block_hash`, neither of
+    which this RPC is given a block or asked to serialize.
 
     `iswitness=false` refuses a witness-serialized transaction Core's
     own extended-only default would otherwise decode: Core's `DecodeTx`
@@ -2882,9 +2931,7 @@ def decode_raw_transaction(
     if iswitness is False and tx.is_segwit:
         # this function's own docstring, `iswitness=false`
         raise RpcError(RPCErrorCode.DESERIALIZATION_ERROR, "TX decode failed")
-    out: dict[str, Any] = tx.to_dict(check_validity=False)
-    out["vout"] = _vout_to_univ(tx, node.chain.name)
-    return out
+    return _tx_to_univ(tx, node.chain.name, include_hex=False)
 
 
 # Core's own reason for a missing input, the one `PreChecks` gives

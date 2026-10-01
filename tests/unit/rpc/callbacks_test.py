@@ -27,7 +27,7 @@ from btclib.fee import FeeRate
 from btclib.key import PrvKeyData
 from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.p2p.limits import PROTOCOL_VERSION
-from btclib.script import script
+from btclib.script import script, script_to_dict
 from btclib.script.script_pub_key import ScriptPubKey, p2ms_m_and_keys, type_and_payload
 from btclib.script.witness import Witness
 from btclib.tx.limits import COINBASE_MATURITY
@@ -1668,6 +1668,11 @@ def test_a_transaction_is_read_out_of_the_block_named() -> None:
     assert verbose["blockhash"] == header.hash.hex()
     assert verbose["in_active_chain"] is True
     assert verbose["confirmations"] == 1
+    # Core's order: `in_active_chain`, `TxToUniv`'s keys, then the block's
+    keys = list(verbose)
+    assert keys[0] == "in_active_chain"
+    assert keys[1] == "txid"
+    assert keys[-3:] == ["hex", "blockhash", "confirmations"]
 
 
 def test_a_transaction_off_the_active_chain_is_named_but_not_confirmed() -> None:
@@ -2862,6 +2867,88 @@ def test_a_vout_entry_is_core_s_nested_shape() -> None:
     assert second["n"] == 1
     assert second["scriptPubKey"]["type"] == "nulldata"
     assert "address" not in second["scriptPubKey"]
+
+
+def test_a_vin_entry_is_core_s_flat_shape() -> None:
+    """A `vin` entry is `txid`, `vout`, `scriptSig`, `txinwitness`, `sequence`.
+
+    `TxIn.to_dict` nests the first two under `prev_out` and answers
+    `txinwitness` for every input; `TxToUniv` flattens them and omits
+    `txinwitness` where the witness stack is empty
+    (btclib-org/btclib-node#1448).
+    """
+    tx = a_tx()
+    with_witness = tx.vin[0]
+    without = replace(with_witness, script_witness=Witness([]))
+    mixed = Tx(
+        version=1,
+        lock_time=0,
+        vin=[with_witness, without],
+        vout=tx.vout,
+        check_validity=False,
+    )
+    raw = mixed.serialize(include_witness=True, check_validity=False).hex()
+    first, second = cb.decode_raw_transaction(a_node(), _CONN, [raw])["vin"]
+
+    assert list(first) == ["txid", "vout", "scriptSig", "txinwitness", "sequence"]
+    assert first["txid"] == with_witness.prev_out.tx_id.hex()
+    assert first["vout"] == 0
+    assert first["scriptSig"] == {
+        "asm": script_to_dict(with_witness.script_sig)["asm"],
+        "hex": with_witness.script_sig.hex(),
+    }
+    assert first["txinwitness"] == [(b"\x11" * 8).hex()]
+    assert first["sequence"] == 0xFFFFFFFF
+    assert list(second) == ["txid", "vout", "scriptSig", "sequence"]
+
+
+def test_a_coinbase_vin_entry_is_its_script_alone() -> None:
+    """A coinbase input answers `coinbase` and no `txid`, `vout` or `scriptSig`.
+
+    Its witness, the BIP141 nonce, still answers `txinwitness`.
+    """
+    coinbase = generate_segwit_block().transactions[0]
+    raw = coinbase.serialize(include_witness=True, check_validity=False).hex()
+    (entry,) = cb.decode_raw_transaction(a_node(), _CONN, [raw])["vin"]
+
+    assert list(entry) == ["coinbase", "txinwitness", "sequence"]
+    assert entry["coinbase"] == coinbase.vin[0].script_sig.hex()
+
+
+def test_a_transaction_is_core_s_txtouniv_key_for_key() -> None:
+    """The top-level keys are `TxToUniv`'s, in its order, `hex` last.
+
+    `decoderawtransaction` passes `include_hex=false`; `getrawtransaction`
+    adds the block fields after.
+    """
+    tx = a_tx()
+    keys = ["txid", "hash", "version", "size", "vsize", "weight", "locktime"]
+    keys += ["vin", "vout"]
+    decoded = cb.decode_raw_transaction(
+        a_node(), _CONN, [tx.serialize(include_witness=True).hex()]
+    )
+    assert list(decoded) == keys
+    assert decoded["hash"] == tx.hash.hex()
+    assert (decoded["size"], decoded["vsize"], decoded["weight"]) == (
+        tx.size,
+        tx.vsize,
+        tx.weight,
+    )
+
+    verbose = get_raw_transaction(
+        a_tx_lookup_node(mempool_txs=[tx]), _CONN, [tx.id.hex(), True]
+    )
+    assert isinstance(verbose, dict)
+    assert list(verbose) == [*keys, "hex"]
+
+
+def test_decoderawtransaction_renders_a_negative_output_value() -> None:
+    """An output of negative value decodes, as `CAmount` is signed in Core."""
+    script_pub_key = a_tx().vout[0].script_pub_key
+    tx = a_malformed_tx(vout=[TxOut(-1, script_pub_key, check_validity=False)])
+    raw = tx.serialize(include_witness=True, check_validity=False).hex()
+    (entry,) = cb.decode_raw_transaction(a_node(), _CONN, [raw])["vout"]
+    assert entry["value"].text == "-0.00000001"
 
 
 def test_getrawtransaction_verbose_vout_is_core_s_nested_shape() -> None:

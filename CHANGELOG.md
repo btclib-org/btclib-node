@@ -12466,3 +12466,11 @@ dereferences it, and `refs/tags/v1^{}` does the same from a checkout.
   own types called a nulldata past 80 bytes and a bare key off the curve
   or hybrid `nonstandard`. An `address` is spelled for the node's
   network, where `gettxout` spelled mainnet's.
+- **A `vin` entry is flat, as Core's `TxToUniv` writes it**: `txid`,
+  `vout`, `scriptSig` and `sequence`, or `coinbase` alone for a coinbase,
+  and `txinwitness` only where the witness is not empty; `TxIn.to_dict`
+  nested the outpoint under `prev_out` and answered `txinwitness` for
+  every input. `getrawtransaction`, `decoderawtransaction` and
+  `getblock` at verbosity 2 render a transaction the same way, and a
+  decoded output of negative value renders as Core's `CAmount` does
+  rather than failing (closes #1448).

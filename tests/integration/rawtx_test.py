@@ -182,17 +182,19 @@ def test_decoderawtransaction_answers_as_bitcoind_does(
     node = _a_node(tmp_path)
     try:
         client = rpc_client(node)
-        for tx in _transactions()[:-1]:
+        for tx in _transactions():
             raw = tx.serialize(include_witness=True, check_validity=False).hex()
             ours = client.call("decoderawtransaction", [raw])
             theirs = bitcoind.rpc("decoderawtransaction", [raw])
             ours, theirs = _without_asm(ours), _without_asm(theirs)
-            assert _key_order(ours["vout"]) == _key_order(theirs["vout"])
+            assert _key_order(ours) == _key_order(theirs)
+            assert ours["vin"] == theirs["vin"]
             assert len(ours["vout"]) == len(theirs["vout"])
             for ours_out, theirs_out in zip(ours["vout"], theirs["vout"], strict=True):
                 assert ours_out == theirs_out, tx.vout[
                     ours_out["n"]
                 ].script_pub_key.script.hex()
+            assert ours == theirs
     finally:
         node.stop()
         node.join()
