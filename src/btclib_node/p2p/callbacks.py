@@ -454,13 +454,13 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     `WTXID_RELAY_VERSION` and, to an inbound peer, this node's own
     `version` ahead of all three; setting up address relay with a peer
     this node dialled, and asking it for addresses; recording a peer
-    this node dialled as answered, right where Core calls
-    `AddrMan::Good` -- not waiting for its own `verack`, which may never
-    come (#1169); and recording whether the peer asked to have
-    transactions relayed. A feeler then has its address recorded as
-    answered, and is dropped once those are written, as Core's
-    `VERSION` handler ends one (`net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    this node dialled as answered, block-relay-only peers and feelers
+    included, right where Core calls `AddrMan::Good` -- not waiting for
+    its own `verack`, which may never come (#1169); and recording whether
+    the peer asked to have transactions relayed. A feeler is then dropped
+    once those are written, as Core's `VERSION` handler ends one
+    (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag).
     """
     if conn.version_message is not None:
         return
@@ -511,17 +511,16 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     # pending connection (btclib-org/btclib-node#1169) makes a real,
     # reachable case here. `conn.address` is what this node dialled, and
     # the socket connecting there already answered.
-    # Not a block-relay-only peer's, and not a feeler's, which `version`
-    # records below, once, at the point Core drops it: the table this
-    # writes into is what `getaddr` answers from, so recording a
-    # block-relay-only peer there would advertise the link, which Core
-    # avoids by never calling `AddrMan::Connected` for one
-    # (`FinalizeNode`); its own `AddrMan::Good`, which this table cannot
-    # record apart from that, is not reproduced (btclib-org/btclib-node#1226).
+    # Every peer this node dialled is recorded, block-relay-only ones
+    # and feelers included: Core's comment there says not moving the
+    # address to the tried table is also harmful, new-table entries being
+    # evictable on collision. `Good_` leaves `nTime` alone, so recording
+    # one advertises nothing; `AddrMan::Connected`, which does, is never
+    # called for a block-relay-only peer or a feeler (`P2pManager._finalize`).
     # An inbound peer is not recorded here or anywhere: its connection
     # proves only that it can reach this node, not that this node can
     # reach it back. btclib-org/btclib-node#1229
-    if not conn.inbound and not conn.block_relay and not conn.feeler:
+    if not conn.inbound:
         address = replace(conn.address, services=version_msg.services)
         conn.address = address
         node.p2p_manager.peer_db.add_active_address(address)
@@ -546,23 +545,19 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     # the old alert system". btclib-org/btclib-node#1205
     if common_version(conn) <= _FINAL_ALERT_VERSION:
         conn.send(FinalAlert())
-    _end_if_feeler(node, conn, version_msg.services)
+    _end_if_feeler(node, conn)
 
 
-def _end_if_feeler(node: Node, conn: Connection, services: ServiceFlags) -> None:
-    """Record a feeler's address as answered, and drop it once sent.
+def _end_if_feeler(node: Node, conn: Connection) -> None:
+    """Drop a feeler once its `version` is handled, as Core's handler ends one.
 
     Any other connection is left as it is. `SetupAddressRelay` holds
-    for a feeler, so `version` has asked it for addresses already.
-    `AddrMan::Good` is what a feeler is for; the table this records into
-    stamps the address answered now as well, which Core's `Good` does
-    not (btclib-org/btclib-node#1226). Split out of `version` for ruff's
-    complexity ceiling.
+    for a feeler, so `version` has asked it for addresses already, and
+    has recorded its address as answered. Split out of `version` for
+    ruff's complexity ceiling.
     """
     if not conn.feeler:
         return
-    address = replace(conn.address, services=services)
-    node.p2p_manager.peer_db.add_active_address(address)
     node.logger.debug("feeler connection completed, peer=%s", conn.id)
     conn.stop_when_sent()
 

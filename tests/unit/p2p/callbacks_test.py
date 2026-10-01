@@ -5876,19 +5876,24 @@ def test_a_block_relay_only_peer_is_relayed_no_transaction(
 
 
 @pytest.mark.parametrize("block_relay", [True, False])
-def test_a_block_relay_only_peer_is_asked_for_no_addresses_nor_recorded(
+def test_a_block_relay_only_peer_is_asked_for_no_addresses_but_recorded(
     *, block_relay: bool
 ) -> None:
-    """ISS 1095: no `getaddr` to it, and its address not advertised.
+    """ISS 1095, ISS 1226: no `getaddr` to it, and its address moved to tried.
 
     `SetupAddressRelay` refuses a block-relay-only peer, at its `version`,
-    and Core never calls `AddrMan::Connected` for one at its `verack`. A
-    full-relay peer, the control, is asked and recorded.
+    and Core's `AddrMan::Good` runs for it all the same, leaving the
+    time of the address alone, so that recording it advertises nothing.
+    A full-relay peer, the control, is asked and recorded alike.
     """
-    peer = a_peer(inbound=False, automatic=True, block_relay=block_relay)
+    heard = int(time.time()) - 3 * 24 * 3600
+    dialled = peer_address("1.2.3.4", 18444, timestamp=heard)
+    peer = a_peer(
+        inbound=False, automatic=True, block_relay=block_relay, address=dialled
+    )
     peer_db = PeerDB(cast("Chain", None), cast("Path", None))
     # gossiped first: `add_active_address` records a known endpoint alone
-    peer_db.add_addresses([peer.address])
+    peer_db.add_addresses([dialled], time_penalty=0)
     node = a_handshake_node(peer_db=peer_db)
     version(node, a_version(), peer)
     assert ("GetAddr" in commands(peer)) is not block_relay
@@ -5896,7 +5901,9 @@ def test_a_block_relay_only_peer_is_asked_for_no_addresses_nor_recorded(
     assert peer.addr_token_bucket == (1.0 if block_relay else 1.0 + MAX_ADDR_TO_SEND)
     verack(node, b"", peer)
     assert peer.status == P2pConnStatus.Connected
-    assert bool(peer_db.active_addresses) is not block_relay
+    (recorded,) = peer_db.active_addresses
+    assert endpoint_key(recorded) == endpoint_key(dialled)
+    assert recorded.timestamp == heard
 
 
 @pytest.mark.parametrize("block_relay", [True, False])
@@ -6030,12 +6037,15 @@ def test_a_feeler_is_asked_for_addresses_recorded_and_dropped_at_its_version(
     `getaddr` after the three answers, as to a full-relay peer, then the
     address recorded as answered with the services the `version` names,
     same as a full-relay peer, the control, and only then the drop,
-    after what was sent.
+    after what was sent. ISS 1226: Core's `FinalizeNode` never calls
+    `Connected` for a feeler, so the time of the address is the one
+    gossip gave it.
     """
-    dialled = peer_address("1.2.3.4", 18444)
+    heard = int(time.time()) - 3 * 24 * 3600
+    dialled = peer_address("1.2.3.4", 18444, timestamp=heard)
     peer_db = PeerDB(cast("Chain", None), cast("Path", None))
     # gossiped first: `add_active_address` records a known endpoint alone
-    peer_db.add_addresses([dialled])
+    peer_db.add_addresses([dialled], time_penalty=0)
     peer = a_peer(inbound=False, automatic=True, feeler=feeler, address=dialled)
     version(a_handshake_node(peer_db=peer_db), a_version(), peer)
     assert not peer.stopped
@@ -6043,6 +6053,7 @@ def test_a_feeler_is_asked_for_addresses_recorded_and_dropped_at_its_version(
     (recorded,) = peer_db.active_addresses
     assert endpoint_key(recorded) == endpoint_key(dialled)
     assert recorded.services == ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
+    assert recorded.timestamp == heard
     if feeler:
         assert commands(peer) == [
             "WtxidRelay",

@@ -1553,6 +1553,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   now when a full outbound connection ends, as Core's `Good_` and
   `Connected_`** (closes #1364).
 
+### A block-relay-only peer and a feeler are recorded as answered
+
+- **A block-relay-only peer and a feeler are moved to the answered
+  table at their `version`, as Core's `AddrMan::Good` does** (closes
+  #1226).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
