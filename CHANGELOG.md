@@ -1614,6 +1614,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   -1, off the active chain; a verbosity of the wrong type is Core's bare
   error** (closes #1597).
 
+### The Windows suite no longer errors at the solver test
+
+- **`test_solver_names_the_type_core_does` has short test ids**, where the
+  largest was 280206 characters and Windows refuses an environment
+  variable over 32767, which is where pytest puts it (closes #1613).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
