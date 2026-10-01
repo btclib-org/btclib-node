@@ -4,9 +4,15 @@
 
 """`update_chain`/`verify_mempool_acceptance`: connect, reorg, reject."""
 
+import os
+import shutil
+import signal
+import subprocess
+import sys
 import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -28,6 +34,7 @@ from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
 from btclib_node import Node, interpreter, main
+from btclib_node.block_db import BlockDB
 from btclib_node.chains import RegTest, SigNet
 from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate import utxo_index as utxo_index_module
@@ -48,8 +55,10 @@ from btclib_node.exceptions import (
     TxRejectedError,
 )
 from btclib_node.interpreter import check_transactions, get_flags
+from btclib_node.log import Logger
 from btclib_node.main import (
     check_fork_warning_conditions,
+    prune_up_to_height,
     update_chain,
     verify_mempool_acceptance,
 )
@@ -70,7 +79,6 @@ from tests import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
 
     from btclib_node.block_db import Coin
     from btclib_node.p2p.connection import Connection
@@ -3209,16 +3217,11 @@ def test_a_fork_longer_than_the_retained_depth_prunes_correctly_on_disk(
     `MIN_BLOCKS_TO_KEEP` anywhere, and `connect` below marks every
     header downloaded before its first `update_chain` call, so the
     whole `MIN_BLOCKS_TO_KEEP + 5`-block chain connects as one trial,
-    one `_finalize_fork_and_prune` call -- `chainstate.flush()` never
-    fires mid-trial on a chain this size, `should_flush`'s own
-    `_FLUSH_BOUND` being far past what a handful of coinbase-only blocks
-    touch, so every hash `prune_up_to_height` clears is still one
-    `stage_status` staged into `pending`, unflushed, in the very same
-    call. `get_block_info` reads `header_dict`, updated the same way
-    whether `set_downloaded` writes through or folds into `pending`, so
-    it cannot tell the two apart -- only what actually reaches the store
-    can, which is why this closes and reopens `Chainstate` rather than
-    reading `block_index` again.
+    one `_finalize_fork_and_prune` call. `get_block_info` reads
+    `header_dict`, which a write that never reaches the store updates
+    too -- only what actually reaches the store can tell, which is why
+    this closes and reopens `Chainstate` rather than reading
+    `block_index` again.
     """
     node = regtest_node(pruned=True, prune_target_mib=1)
     _always_over_target(node, monkeypatch)
@@ -3237,6 +3240,170 @@ def test_a_fork_longer_than_the_retained_depth_prunes_correctly_on_disk(
     for block_hash in kept_hashes:
         assert reopened.block_index.get_block_info(block_hash).downloaded is True
     reopened.close()
+
+
+class _CrashError(Exception):
+    """Stands for the process stopping at the point it is raised."""
+
+
+def _crash_after(calls: int, original: Callable[..., Any]) -> Callable[..., Any]:
+    """Wrap `original` so every call after the first `calls` raises."""
+    seen = 0
+
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        nonlocal seen
+        seen += 1
+        if seen > calls:
+            raise _CrashError
+        return original(*args, **kwargs)
+
+    return wrapper
+
+
+def _assert_restartable(image: Path, chain: list[bytes]) -> int:
+    """Open a crashed data directory and check no block it needs is gone.
+
+    Needed are the blocks above the chainstate's own tip, which a restart
+    connects again from `BlockDB`, and every block the index still marks
+    `downloaded`. Returns the height the chainstate restarts from.
+    """
+    logger = Logger(debug=False)
+    chainstate = Chainstate(image, RegTest(), logger)
+    block_db = BlockDB(image, logger)
+    try:
+        height = len(chainstate.block_index.active_chain) - 1
+        for block_hash in chain[height:]:
+            assert block_db.get_block(block_hash) is not None
+        for block_hash, info in chainstate.block_index.header_dict.items():
+            assert not info.downloaded or block_db.get_block(block_hash) is not None
+    finally:
+        chainstate.close()
+        block_db.close()
+    return height
+
+
+_CRASH_POINTS = {
+    "before the flush": lambda node, patch: patch(node.chainstate, "flush", 0),
+    "before the first flag is cleared": lambda node, patch: patch(
+        node.chainstate.block_index, "set_downloaded", 0
+    ),
+    "between two flags": lambda node, patch: patch(
+        node.chainstate.block_index, "set_downloaded", 3
+    ),
+    "before the delete": lambda node, patch: patch(node.block_db, "prune_up_to", 0),
+    "between two deletes": lambda node, patch: patch(node.block_db.db, "delete", 3),
+}
+
+
+def _a_pruned_chain(
+    regtest_node: Callable[..., Node],
+) -> tuple[Node, list[bytes], int]:
+    """Connect a chain with nothing flushed: the bound is never reached."""
+    node = regtest_node(pruned=True, prune_target_mib=None)
+    chain = generate_random_chain(MIN_BLOCKS_TO_KEEP + 20, node.chain.genesis.hash)
+    block_index = node.chainstate.block_index
+    block_index.add_headers([block.header for block in chain])
+    for block_hash in block_index.header_dict:
+        block_index.set_downloaded(block_hash)
+    for block in chain:
+        node.block_db.add_block(block)
+    for _ in chain:
+        update_chain(node)
+    return (
+        node,
+        [block.header.hash for block in chain],
+        len(block_index.active_chain) - 1,
+    )
+
+
+def test_pruning_flushes_the_chainstate_before_it_deletes(
+    regtest_node: Callable[..., Node], tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """ISS 1248: a crash right after a prune restarts from the tip that pruned.
+
+    Nothing flushed the chainstate before, so its on-disk tip was behind
+    the blocks the prune had deleted.
+    """
+    node, chain, tip_height = _a_pruned_chain(regtest_node)
+    prune_up_to_height(node, 19)
+    image = tmp_path_factory.mktemp("image") / "data"
+    shutil.copytree(node.data_dir, image)
+    assert _assert_restartable(image, chain) == tip_height
+
+
+@pytest.mark.parametrize("point", _CRASH_POINTS)
+def test_a_crash_while_pruning_leaves_nothing_a_restart_needs_missing(
+    point: str,
+    regtest_node: Callable[..., Node],
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1248: the data directory a stop at each step leaves restarts."""
+    node, chain, _ = _a_pruned_chain(regtest_node)
+
+    def patch(target: object, name: str, calls: int) -> None:
+        monkeypatch.setattr(target, name, _crash_after(calls, getattr(target, name)))
+
+    _CRASH_POINTS[point](node, patch)
+    with pytest.raises(_CrashError):
+        prune_up_to_height(node, 19)
+    image = tmp_path_factory.mktemp("image") / "data"
+    shutil.copytree(node.data_dir, image)
+    _assert_restartable(image, chain)
+
+
+_ROOT = Path(__file__).parents[2]
+
+# a child that connects a chain, then kills itself with SIGKILL at the
+# third key `BlockDB` deletes: nothing closes, nothing is flushed but
+# what `prune_up_to_height` itself flushed
+_KILLED_WHILE_PRUNING = """
+import os, signal, sys
+from pathlib import Path
+from btclib_node.constants import NodeStatus
+from btclib_node.main import prune_up_to_height
+from tests.conftest import unstarted_node_context
+from tests.unit.main_test import _a_pruned_chain
+
+with unstarted_node_context(Path(sys.argv[1]), pruned=True) as node:
+    node.status = NodeStatus.HeaderSynced
+    _, chain, _ = _a_pruned_chain(lambda **_: node)
+    Path(sys.argv[2]).write_text(" ".join(h.hex() for h in chain))
+    deleted = []
+    delete = node.block_db.db.delete
+
+    def die_at_the_third(key):
+        deleted.append(key)
+        if len(deleted) == 3:
+            os.kill(os.getpid(), signal.SIGKILL)
+        delete(key)
+
+    node.block_db.db.delete = die_at_the_third
+    prune_up_to_height(node, 19)
+"""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no SIGKILL")
+def test_a_process_killed_while_pruning_restarts(tmp_path: Path) -> None:
+    """ISS 1248: the same check, after a real SIGKILL rather than a raise."""
+    hashes = tmp_path / "hashes"
+    completed = subprocess.run(  # noqa: S603
+        [
+            sys.executable,
+            "-c",
+            _KILLED_WHILE_PRUNING,
+            str(tmp_path / "data"),
+            str(hashes),
+        ],
+        cwd=_ROOT,
+        env={**os.environ, "PYTHONPATH": str(_ROOT)},
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+    assert completed.returncode == -signal.SIGKILL, completed.stderr
+    chain = [bytes.fromhex(h) for h in hashes.read_text().split()]
+    assert _assert_restartable(tmp_path / "data" / "regtest", chain) == len(chain)
 
 
 def test_a_block_connected_stamps_the_last_tip_update(node: Node) -> None:

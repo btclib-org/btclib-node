@@ -737,7 +737,7 @@ def _finalize_fork(node: Node, to_add: list[Block], to_remove: list[RevBlock]) -
 
 
 def prune_up_to_height(node: Node, target_height: int) -> None:
-    """Delete block and undo data up to `target_height`, clearing `downloaded`.
+    """Flush, then delete block and undo data up to `target_height`.
 
     The one write path `_prune_chain`'s own automatic-target walk below
     and `rpc.callbacks.prune_blockchain`'s manual call share: both need
@@ -760,7 +760,18 @@ def prune_up_to_height(node: Node, target_height: int) -> None:
     (`src/validation.cpp:6382`, at bitcoin/bitcoin@9be056a8a7, the v31.1
     tag) starts the prunable range at height 0 on a chain not built from
     a snapshot.
+
+    The chainstate is flushed first, then the flags are cleared, then the
+    data is deleted, so a process killed at any point restarts with every
+    block it needs. Without the flush the UTXO set reaches disk only at
+    `UtxoIndex.should_flush`, and a restart from that older tip would need
+    blocks this call deleted (btclib-org/btclib-node#1248). Core's
+    `Chainstate::FlushStateToDisk` (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7) unlinks the pruned files after it writes
+    the block index and before it flushes the coins; this tree flushes
+    first, at the cost of one flush per call.
     """
+    node.chainstate.flush()
     block_index = node.chainstate.block_index
     for height in range(node.block_db.pruned_up_to + 1, target_height + 1):
         block_hash = block_index.active_chain[height]
