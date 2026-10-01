@@ -103,7 +103,7 @@ def make_node(
         logger=logger
         if logger is not None
         else SimpleNamespace(
-            info=lambda *a: None, debug=lambda *a: None, exception=lambda *a: None
+            info=lambda *a: None, log_debug=lambda *a: None, exception=lambda *a: None
         ),
     )
     return node, stopped
@@ -490,7 +490,7 @@ def test_a_reject_is_ignored_as_core_ignores_it() -> None:
     failed, exception = log_recorder()
     logger = SimpleNamespace(
         info=lambda *a: None,
-        debug=lambda *a: None,
+        log_debug=lambda *a: None,
         warning=warning,
         exception=exception,
     )
@@ -560,7 +560,7 @@ def test_a_message_that_does_not_parse_costs_the_peer_nothing(
 
     logged, record = log_recorder()
     logger = SimpleNamespace(
-        info=lambda *a: None, debug=lambda *a: None, exception=record
+        info=lambda *a: None, log_debug=lambda *a: None, exception=record
     )
     if handshake:
         monkeypatch.setitem(handshake_callbacks, "version", boom)
@@ -631,7 +631,7 @@ def test_a_peer_the_manager_spares_is_logged_as_not_discouraged(
         ("ping", b"", 0, 1, 0.0),
         status=P2pConnStatus.Connected,
         logger=SimpleNamespace(
-            info=lambda *a: None, debug=lambda *a: None, exception=record
+            info=lambda *a: None, log_debug=lambda *a: None, exception=record
         ),
     )
     node.p2p_manager.maybe_discourage_and_disconnect = spare

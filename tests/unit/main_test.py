@@ -2493,6 +2493,54 @@ def test_blocknotify_fires_once_with_the_new_tips_hash_once_ibd_ends(
     assert calls == [f"touch {recent[-1].header.hash.hex()}"]
 
 
+def test_unknown_activations_are_not_checked_during_initial_block_download(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1475: `Chainstate::UpdateTip` asks `if (!IsInitialBlockDownload())`.
+
+    `generate_random_chain` dates every block too far back for the tip to
+    end initial block download, as `test_blocknotify_does_not_fire_during_
+    initial_block_download` above has it.
+    """
+    calls: list[tuple[Node, int]] = []
+    monkeypatch.setattr(
+        main, "check_unknown_activations", lambda *args: calls.append(args)
+    )
+    connect(node, generate_random_chain(2, RegTest().genesis.hash))
+    assert node.is_initial_block_download is True
+    assert calls == []
+
+
+def test_unknown_activations_are_checked_once_per_commit_out_of_ibd(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1475: one call, with the number of blocks the commit connected."""
+    calls: list[tuple[Node, int]] = []
+    monkeypatch.setattr(
+        main, "check_unknown_activations", lambda *args: calls.append(args)
+    )
+    recent = generate_random_chain(
+        3, RegTest().genesis.hash, tip_time=datetime.now(UTC)
+    )
+    connect(node, recent)
+    assert node.is_initial_block_download is False
+    assert calls == [(node, 1)]
+
+
+def test_a_reorganisation_checks_each_block_it_connects(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1475: the count is the blocks of the commit, here two."""
+    calls: list[tuple[Node, int]] = []
+    monkeypatch.setattr(
+        main, "check_unknown_activations", lambda *args: calls.append(args)
+    )
+    genesis = RegTest().genesis.hash
+    connect(node, generate_random_chain(1, genesis, tip_time=datetime.now(UTC)))
+    connect(node, generate_random_chain(2, genesis, tip_time=datetime.now(UTC)))
+    assert calls == [(node, 1), (node, 2)]
+
+
 def test_check_fork_warning_conditions_raises_once_and_clears_on_catch_up(
     node: Node, monkeypatch: pytest.MonkeyPatch
 ) -> None:

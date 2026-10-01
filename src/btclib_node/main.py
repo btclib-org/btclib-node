@@ -77,6 +77,7 @@ from btclib_node.p2p.protocol_version import (
     common_version,
 )
 from btclib_node.signet import assert_valid_solution
+from btclib_node.versionbits import check_unknown_activations
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -674,6 +675,9 @@ def _evict_immature_or_nonfinal(node: Node) -> None:
 # there. `check_fork_warning_conditions` is not gated on IBD, matching
 # Core calling `CheckForkWarningConditions()` unconditionally after
 # every commit (`src/validation.cpp:3318`, same sha).
+# `check_unknown_activations` is, as `UpdateTip` gates it
+# (`src/validation.cpp:2916`, same sha), and runs for each block of `to_add`,
+# as Core runs it for each block it connects.
 def _after_tip_change(
     node: Node, to_remove: list[RevBlock], to_add: list[Block]
 ) -> None:
@@ -683,6 +687,7 @@ def _after_tip_change(
     _reconcile_mempool_for_reorg(node, to_remove, to_add)
     check_fork_warning_conditions(node)
     if not node.is_initial_block_download:
+        check_unknown_activations(node, len(to_add))
         _announce_added_blocks(node, to_add)
         run_detached(
             node.logger,
@@ -712,12 +717,12 @@ def _after_tip_change(
 def _finalize_fork(node: Node, to_add: list[Block], to_remove: list[RevBlock]) -> None:
     block_index = node.chainstate.block_index
     utxo_index = node.chainstate.utxo_index
-    node.logger.debug("Start chainstate finalize")
+    node.logger.log_debug("validation", "Start chainstate finalize")
     node.block_db.finalize()
     for rev_block in to_remove:
         block_index.remove_from_active_chain(rev_block.hash)
         block_index.stage_status(rev_block.hash, BlockStatus.valid)
-        node.logger.debug("Removed block %s", rev_block.hash.hex())
+        node.logger.log_debug("validation", "Removed block %s", rev_block.hash.hex())
     for block in to_add:
         block_hash = block.header.hash
         block_index.add_to_active_chain(block_hash)
@@ -732,7 +737,7 @@ def _finalize_fork(node: Node, to_add: list[Block], to_remove: list[RevBlock]) -
     node.best_height = len(block_index.active_chain) - 1
     if utxo_index.should_flush():
         node.chainstate.flush()
-    node.logger.debug("End chainstate finalize")
+    node.logger.log_debug("validation", "End chainstate finalize")
 
 
 def prune_up_to_height(node: Node, target_height: int) -> None:
@@ -1386,7 +1391,7 @@ def update_chain(node: Node) -> None:
 
     node.logger.info("Start block validation")
 
-    node.logger.debug("Start getting blocks")
+    node.logger.log_debug("validation", "Start getting blocks")
     # Deliberately outside the try below, so a raise from either call
     # propagates out of update_chain, into Node._step_chain and out of
     # Node.run's own loop, rather than being caught and rolled back the
@@ -1423,9 +1428,9 @@ def update_chain(node: Node) -> None:
     # node's own storage, not the fork's content. btclib-org/btclib-node#452
     to_add = _blocks_to_add(node, to_add_hash)
     to_remove = _rev_blocks_to_remove(node, to_remove_hash)
-    node.logger.debug("Got all blocks")
+    node.logger.log_debug("validation", "Got all blocks")
 
-    node.logger.debug("Start chainstate test")
+    node.logger.log_debug("validation", "Start chainstate test")
 
     success = True
     # set the moment a block starts and cleared once it is fully
@@ -1480,20 +1485,20 @@ def update_chain(node: Node) -> None:
         if success:
             _finalize_fork_and_prune(node, to_add, to_remove)
         else:
-            node.logger.debug("Start chainstate rollback")
+            node.logger.log_debug("validation", "Start chainstate rollback")
             _rollback_trial(node, utxo_mark, filter_mark)
-            node.logger.debug("End chainstate rollback")
+            node.logger.log_debug("validation", "End chainstate rollback")
 
     node.logger.info("End block validation")
 
     if not success and failed_hash is not None:
-        node.logger.debug("Start updating index")
+        node.logger.log_debug("validation", "Start updating index")
         _invalidate_failed_block(node, block_index, failed_hash)
 
     if success:
         _after_tip_change(node, to_remove, to_add)
 
-    node.logger.debug("Finished main\n")
+    node.logger.log_debug("validation", "Finished main\n")
 
     if not block_index.get_first_candidate():
         settle_at_no_candidate(node)

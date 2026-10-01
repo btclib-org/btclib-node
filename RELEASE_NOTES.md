@@ -120,6 +120,11 @@ on release day.
 - **`interpreter.check_transactions` is `check_scripts(transaction_data,
   flags, node)`, and checks the scripts alone**: a block's amounts, fees
   and sigop cost are `main._validate_block`'s.
+- **`history.log` marks each debug line with its category, `[net]` for
+  one, where it had `[debug]`, and `-debug=<category>` writes only that
+  category's lines** (closes #1322). A start with `-debug=rpc` no longer
+  logs the peer lines; `-debug`, `-debug=1` or `-debug=all` still logs
+  every one, and `-debugexclude=<category>` drops one (closes #1609).
 
 ## v2026.9.24
 

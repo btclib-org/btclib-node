@@ -49,6 +49,7 @@ from btclib_node.p2p.main import (
 from btclib_node.p2p.manager import P2pManager
 from btclib_node.rpc.main import handle_rpc
 from btclib_node.rpc.manager import RpcManager
+from btclib_node.versionbits import UnknownActivations
 
 if TYPE_CHECKING:
     from collections import deque
@@ -320,6 +321,10 @@ class Node(threading.Thread):
         self.logger = open_history_log(
             log_path,
             debug=config.debug,
+            debug_categories=config.debug_categories,
+            debug_exclude=config.debug_exclude,
+            data_dir=self.data_dir,
+            config_file_line=config.config_file_line,
             log_warnings=config.log_warnings,
             section_warning=config.section_warning,
             config_args=config.config_args,
@@ -378,8 +383,12 @@ class Node(threading.Thread):
         # this node's own `node::Warnings` (`notify.py`'s own module
         # docstring): `rpc.callbacks.get_blockchain_info` and
         # `get_network_info` both read `get_messages()`, and
-        # `main.check_fork_warning_conditions` is the only writer so far
+        # `main.check_fork_warning_conditions` and
+        # `versionbits.check_unknown_activations` write it
         self.warnings = Warnings()
+        # reached by `update_chain`, which runs on this thread alone
+        # (ARCHITECTURE.md), so it needs no lock
+        self.unknown_activations = UnknownActivations(self.chain)
         # `main.new_pow_valid_block`'s height of the last block it sent to
         # high-bandwidth peers: Core's `m_highest_fast_announce{0}`
         # (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the

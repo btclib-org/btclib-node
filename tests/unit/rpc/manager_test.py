@@ -513,7 +513,7 @@ def test_rpcallowip_without_rpcbind_is_warned_over_and_loopback_bound(
     warnings: list[tuple[object, ...]] = []
     debugs: list[tuple[object, ...]] = []
     monkeypatch.setattr(manager.logger, "warning", warnings_into(warnings))
-    monkeypatch.setattr(manager.logger, "debug", lambda *args: debugs.append(args))
+    monkeypatch.setattr(manager.logger, "log_debug", lambda *args: debugs.append(args))
     assert manager.start_listener()
     try:
         assert bound_hosts(list(manager._server_sockets)) == LOOPBACKS
@@ -522,6 +522,7 @@ def test_rpcallowip_without_rpcbind_is_warned_over_and_loopback_bound(
     assert warnings == [(_ALLOW_ALONE,)]
     # measured with `-debug=http`: every subnet, a space after each
     assert (
+        "http",
         "Allowing HTTP connections from: %s",
         "127.0.0.0/8 ::1/128 10.0.0.0/8 ",
     ) in debugs

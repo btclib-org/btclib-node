@@ -222,10 +222,11 @@ def get_blockchain_info(
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag) -- always the array form:
     this node has no `-deprecatedrpc` of its own, so the single-string
     form `use_deprecated=true` answers with is never reachable here.
-    Empty, ordinarily: `main.check_fork_warning_conditions` is this
-    tree's one writer of it so far, and it needs an invalid chain with
-    more work than this node's own tip to set anything
-    (btclib-org/btclib-node#1522).
+    Empty, ordinarily: it takes an invalid chain with more work than this
+    node's own tip (`main.check_fork_warning_conditions`,
+    btclib-org/btclib-node#1522) or a version bit no deployment uses
+    reaching its threshold (`versionbits.check_unknown_activations`,
+    btclib-org/btclib-node#1475) to set anything.
 
     Absent, each for its own reason rather than by oversight:
     `verificationprogress`, Core's own `GuessVerificationProgress`

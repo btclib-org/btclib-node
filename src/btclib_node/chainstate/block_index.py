@@ -1180,7 +1180,8 @@ class BlockIndex:
                 )
                 raise
             if not min_pow_checked:
-                self.logger.debug(
+                self.logger.log_debug(
+                    "validation",
                     "AcceptBlockHeader: not adding new block header %s, "
                     "missing anti-dos proof-of-work validation",
                     header.hash.hex(),
@@ -1223,8 +1224,10 @@ class BlockIndex:
         if known is None:
             return False
         if known.status == BlockStatus.invalid:
-            self.logger.debug(
-                "AcceptBlockHeader: block %s is marked invalid", header_hash.hex()
+            self.logger.log_debug(
+                "validation",
+                "AcceptBlockHeader: block %s is marked invalid",
+                header_hash.hex(),
             )
             err_msg = "duplicate-invalid"
             if punish_cached_invalid:
@@ -1243,7 +1246,8 @@ class BlockIndex:
         if block_info is None:
             return None
         if block_info.status == BlockStatus.invalid:
-            self.logger.debug(
+            self.logger.log_debug(
+                "validation",
                 "header %s has prev block invalid: %s",
                 header.hash.hex(),
                 header.previous_block_hash.hex(),

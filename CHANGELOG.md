@@ -1649,6 +1649,29 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 `SECURITY.md` gives the date of the latest security review and links the issue
 that records it (issue btclib-org/.github#1362).
 
+### `history.log` marks a debug line with its category
+
+- **A debug line is written under Core's category for it, `[net]` for a
+  peer's, and `-debug=<category>` selects the lines of its category**
+  (closes #1322).
+
+### `history.log` names the data directory and the configuration file
+
+- **It names the data directory and the configuration file after its
+  version line, in `debug.log`'s `Default data directory`, `Using data
+  directory` and `Config file:` lines** (closes #1444).
+
+### `-debugexclude` drops a category from `-debug`
+
+- **`-debugexclude=<category>` is read, takes priority over `-debug`, and
+  refuses an unknown category in Core's words** (closes #1609).
+
+### A version bit no deployment uses raises Core's warning
+
+- **A bit signalled at the threshold in a period is logged once locked
+  in, and once active is in `warnings` and runs `-alertnotify`**
+  (closes #1475).
+
 ### Refusals carry Core's reasons, in Core's order
 
 - **A refused header, a script refusal and a block's refusals carry Core's
