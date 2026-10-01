@@ -24,8 +24,13 @@ here are the ones [ARCHITECTURE](./ARCHITECTURE.md) describes.
   be or are refused, and nothing else.** `tests/property_test.py`'s own
   property — "over unconstrained octets, a declared entry point either
   returns or raises `BTClibException`, and nothing else" — is checked by
-  Hypothesis over the domain it describes and extended by the harnesses
-  under `fuzz/`, run under ClusterFuzzLite in `.github/workflows/fuzz.yml`.
+  Hypothesis over the domain it describes, for `frame_message_bytes` and
+  `parse_request_head`, and extended by the atheris harnesses under
+  `fuzz/`. `.github/workflows/fuzz.yml` runs them weekly as ordinary
+  scripts, not under ClusterFuzzLite, from the committed seeds and with
+  no corpus kept between runs. `fuzz_process_message.py` reaches the
+  handlers of `p2p/callbacks.py` through a `Node`, which the property
+  test leaves out. Nothing here fuzzes the `json.loads` of an RPC body.
 - **What one connection may cost this node, and how many inbound
   connections it holds, are bounded.** A single peer cannot commit this
   node past `MAX_QUEUED_SEND_BYTES`, a fixed sum of a block's and a
