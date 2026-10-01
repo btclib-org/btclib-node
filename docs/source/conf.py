@@ -77,11 +77,25 @@ source_suffix = [".rst", ".md"]
 # 8: rpc/errors.py imports RPCErrorCode from it directly now, and the
 # package publishes its own inventory the same way btclib does
 intersphinx_mapping = {
-    "python": ("https://docs.python.org/3", None),
+    "python": ("https://docs.python.org/3", (None, "python-objects.inv")),
     "btclib": ("https://btclib.readthedocs.io/en/latest/", None),
     "bitcoin-core-rpc": ("https://bitcoin-core-rpc.readthedocs.io/en/latest/", None),
 }
 
+# python alone has a second location, tried only where docs.python.org
+# fails: python-objects.inv beside this file, a copy of
+# https://docs.python.org/3/objects.inv taken on 2026-10-01 at Python
+# 3.14. docs.python.org answered 503 for hours that day, and with it
+# every standard-library reference warned and -W failed the build
+# (issue #1626). The primary is still first, so a name the standard
+# library removes fails the build whenever docs.python.org is reachable.
+# The copy is a tracked file, so a diff shows when it changes;
+# `python -m sphinx.ext.intersphinx docs/source/python-objects.inv`
+# lists it. The standard library's inventory moves little inside a minor
+# version, so a copy answers the same names for as long as .python-version
+# stays on that minor. Refresh it when .python-version moves to another
+# minor. btclib and bitcoin-core-rpc have no copy, for the reason below.
+#
 # every build fetches every mapped inventory, rather than reading back
 # the copy sphinx writes beside the doctrees and reuses until that copy
 # expires. The copy sits under docs/build, which .gitignore covers, so
@@ -102,14 +116,15 @@ intersphinx_mapping = {
 # What it costs is a fetch of each inventory on every build, which is
 # what docs.yml and .readthedocs.yaml already do, their checkouts
 # carrying no copy to read; and a build with no route to a mapped host
-# fails under -W where one reading the copy would have passed.
+# fails under -W, which for `python` the fallback copy above answers.
 #
 # Not -d, putting the doctrees outside the tree: that relocates the copy
 # rather than expiring it, and reaches only the command CONTRIBUTING.md
 # documents, leaving those two files building against whatever their own
-# doctree directory holds. Not a vendored inventory either, which fixes
-# the reference set at the commit that added it and leaves the build
-# unable to say whether btclib still publishes the name
+# doctree directory holds. Not a vendored inventory for btclib or
+# bitcoin-core-rpc either, which fixes the reference set at the commit
+# that added it and leaves the build unable to say whether btclib still
+# publishes the name
 intersphinx_cache_limit = 0
 
 # What the mapping above cannot answer for, and each entry below carries
