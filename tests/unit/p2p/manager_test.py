@@ -51,7 +51,13 @@ from btclib_node.p2p.address import (
     peer_address,
 )
 from btclib_node.p2p.anchors import dump_anchors, read_anchors
-from btclib_node.p2p.banman import DUMP_BANS_INTERVAL, BanMan, Subnet, lookup_subnet
+from btclib_node.p2p.banman import (
+    DUMP_BANS_INTERVAL,
+    BanMan,
+    SpecialAddress,
+    Subnet,
+    lookup_subnet,
+)
 from btclib_node.p2p.eviction import Network, net_group
 from btclib_node.p2p.main import handle_p2p_handshake
 from btclib_node.p2p.manager import P2pManager
@@ -3294,8 +3300,7 @@ def test_add_added_peer_refuses_the_same_resolved_literal(
 
     Core's own `AddNode` refuses a second literal address that resolves
     (`LookupNumeric`) to the one an existing entry already does; a name
-    is compared as text alone, `_resolved_literal` answering `None` for
-    one.
+    is compared as text alone.
     """
     manager = a_manager()
     assert manager.add_added_peer("1.2.3.4") is True
@@ -3314,61 +3319,168 @@ def test_add_added_peer_refuses_the_same_resolved_literal(
 def test_add_added_peer_accepts_a_value_with_an_out_of_range_port(
     a_manager: AManagerFactory,
 ) -> None:
-    """ISS 1350: `split_host_port`'s own refusal does not reach `AddNode`.
+    """ISS 1350: an unparsable port does not stop `AddNode`.
 
     Core's `LookupNumeric` never raises on an unparsable spec, only
-    answers an invalid `CService`; `_resolved_literal` reads
-    `split_host_port`'s `ValueError` the same way, so `add_added_peer`
-    still adds the value, matching Core's own permissive `AddNode`.
+    answers an invalid `CService`; `_numeric_endpoint` answers `None`
+    the same way, so `add_added_peer` still adds the value.
     """
     manager = a_manager()
     assert manager.add_added_peer("1.2.3.4:99999") is True
     assert manager._added_peers == {"1.2.3.4:99999": None}
 
 
-def test_the_added_loop_logs_an_unparsable_entry_and_dials_the_rest(
+def test_the_added_loop_dials_a_value_with_no_valid_port_as_a_name(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ISS 1350: a value `split_host_port` refuses is `tried`, not dialled.
+    """ISS 1292: a value `SplitHostPort` refuses is `tried` and dialled whole.
 
-    Reachable only through `add_added_peer`, `-addnode` itself being
-    validated at startup. Core's own dial of such a value never
-    connects either, so no `(host, port)` here is dialled for it -- but
-    Core's own loop still marks `tried` and spends this pass's 500ms
-    step on it before `OpenNetworkConnection` ever resolves its
-    `pszDest` (`ThreadOpenAddedConnections`, `src/net.cpp`,
-    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so it must not be
-    filtered out of the pass entirely: doing so answers `tried` wrongly
-    for an all-malformed list, this test's sibling below
-    (btclib-org/btclib-node#1350).
+    Core's own dial of such a value never connects, the whole spec being
+    looked up as a name, and its own loop marks `tried` and spends this
+    pass's 500ms step on it before `OpenNetworkConnection` ever resolves
+    its `pszDest` (`ThreadOpenAddedConnections`, `src/net.cpp`,
+    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the rest of the list is
+    dialled after it (btclib-org/btclib-node#1350).
     """
-    logged, info = log_recorder()
     manager = a_manager(addnode_args=["1.2.3.4:99999", "5.6.7.8:8333"])
-    monkeypatch.setattr(manager.logger, "info", info)
     dialled, slept = run_a_manual_loop(
         manager._open_added_peers, manager, monkeypatch, 2
     )
-    assert dialled == [("5.6.7.8:8333", RegTest().port)]
+    assert dialled == [
+        ("1.2.3.4:99999", RegTest().port),
+        ("5.6.7.8:8333", RegTest().port),
+    ]
     assert slept == [0.5, 0.5]
-    assert "Dial to 1.2.3.4:99999 did not come up" in logged
 
 
-def test_the_added_loop_retries_an_all_malformed_list_at_the_tried_interval(
+def test_the_added_loop_retries_a_list_with_no_valid_port_at_the_tried_interval(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ISS 1350: an all-malformed list still waits `_ADDNODE_RETRY_TRIED`.
+    """ISS 1350: a list resolving to nothing waits `_ADDNODE_RETRY_TRIED`.
 
     Not `_ADDNODE_RETRY_IDLE`: Core's own loop marks `tried` on every
     `vInfo` entry a free grant reaches, whether or not it ever resolves,
-    so a list of nothing but malformed values is `tried` every pass, the
-    same as a list that dialled for real.
+    so such a list is `tried` every pass, the same as one that dialled
+    for real.
     """
     manager = a_manager(addnode_args=["1.2.3.4:99999"])
     dialled, slept = run_a_manual_loop(
         manager._open_added_peers, manager, monkeypatch, 2
     )
-    assert dialled == []
+    assert dialled == [("1.2.3.4:99999", RegTest().port)]
     assert slept == [0.5, 60]
+
+
+@pytest.mark.parametrize("spec", ["127.0.0.1:+80", "127.0.0.1:0x50", "127.0.0.1: 80"])
+def test_a_spec_with_no_valid_port_is_looked_up_whole(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, spec: str
+) -> None:
+    """ISS 1292: `bitcoind` v31.1.0 never connects such a peer.
+
+    `async_connect_host` asks the resolver for the whole spec, at the
+    default port, and returns when it answers nothing.
+    """
+    asked: list[tuple[str, int]] = []
+
+    class _NoAnswerLoop:
+        async def getaddrinfo(self, host: str, port: int, **kwargs: object) -> None:
+            asked.append((host, port))
+            raise socket.gaierror
+
+    monkeypatch.setattr(asyncio, "get_running_loop", _NoAnswerLoop)
+    manager = a_manager()
+    asyncio.run(manager.async_connect_host(spec, RegTest().port))
+    assert asked == [(spec, RegTest().port)]
+
+
+_ONION_NAME = "pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion"
+_I2P_NAME = str(SpecialAddress(BIP155Network.I2P, bytes(range(32))))
+
+
+def test_add_added_peer_refuses_an_onion_name_given_twice(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1369: `LookupNumeric` reads the name as an address.
+
+    Measured against `bitcoind` v31.1.0 on regtest: the name, then the
+    name with `:18444`, is `RPC_CLIENT_NODE_ALREADY_ADDED`, and with
+    `:1` it is added.
+    """
+    manager = a_manager()
+    assert manager.add_added_peer(_ONION_NAME) is True
+    assert manager.add_added_peer(f"{_ONION_NAME}:{RegTest().port}") is False
+    assert manager.add_added_peer(f"[{_ONION_NAME}]") is False
+    assert manager.add_added_peer(f"{_ONION_NAME}:1") is True
+    assert set(manager._added_peers) == {_ONION_NAME, f"{_ONION_NAME}:1"}
+
+
+def test_add_added_peer_gives_an_i2p_name_port_zero_by_default(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1369: `GetDefaultPort` of an I2P name is `I2P_SAM31_PORT`, 0."""
+    manager = a_manager()
+    assert manager.add_added_peer(_I2P_NAME) is True
+    assert manager.add_added_peer(f"{_I2P_NAME}:{RegTest().port}") is True
+    assert manager.add_added_peer(f"{_I2P_NAME}:0") is False
+    assert set(manager._added_peers) == {_I2P_NAME, f"{_I2P_NAME}:{RegTest().port}"}
+
+
+def test_add_added_peer_compares_a_name_that_is_no_address_as_text(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1369: an onion name failing its checksum is a name."""
+    bad = _ONION_NAME.replace("pg6m", "pg6n", 1)
+    manager = a_manager()
+    assert manager.add_added_peer(bad) is True
+    assert manager.add_added_peer(f"{bad}:{RegTest().port}") is True
+
+
+def test_add_added_peer_strips_one_pair_of_brackets_alone(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1292: `bitcoind` v31.1.0 adds `[[1.2.3.4]]` beside `1.2.3.4`.
+
+    `SplitHostPort` strips one pair and `LookupIntern` none, so the
+    doubled form is no address, and neither is `[[::1]]:80`.
+    """
+    manager = a_manager()
+    assert manager.add_added_peer("1.2.3.4") is True
+    assert manager.add_added_peer("[[1.2.3.4]]") is True
+    assert manager.add_added_peer("[::1]:80") is True
+    assert manager.add_added_peer("[[::1]]:80") is True
+    assert manager.add_added_peer("[1.2.3.4]") is False
+
+
+def test_an_onion_or_i2p_entry_is_never_held_and_does_not_raise(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1369: no such peer is dialled, so none is held, and the loop goes on.
+
+    `_is_held` is `False` for an address that is no IP, and
+    `_open_added_peers` walks it as any other entry.
+    """
+    manager = a_manager(addnode_args=[_ONION_NAME, _I2P_NAME])
+    assert manager._is_held(_ONION_NAME, set(), set()) is False
+    assert manager._is_held(_I2P_NAME, set(), set()) is False
+    dialled, _ = run_a_manual_loop(manager._open_added_peers, manager, monkeypatch, 2)
+    assert dialled == [
+        (_ONION_NAME, RegTest().port),
+        (_I2P_NAME, RegTest().port),
+    ]
+
+
+def test_an_empty_host_is_not_resolved(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1608: `:80` resolves to nothing, as in `bitcoind` v31.1.0.
+
+    Python's `getaddrinfo("", 80)` answers loopback on macOS.
+    """
+    monkeypatch.setattr(
+        asyncio, "get_running_loop", lambda: pytest.fail("the resolver was asked")
+    )
+    manager = a_manager()
+    asyncio.run(manager.async_connect_host(":80", RegTest().port))
 
 
 def test_remove_added_peer_matches_the_exact_string_alone(
@@ -3653,8 +3765,8 @@ def test_open_added_peers_resolves_a_hostname(
     it, the way `test_open_connect_peers_resolves_a_hostname` already
     does for `-connect`: `create_connection` is reached for real, so
     the `addr_name` it is given -- `node_str`, unresolved -- is proved
-    to survive `_open_added_peers`' own `split_host_port` and
-    `_open_manual` in between, not only `async_connect_host`'s own.
+    to survive `_open_manual` in between, not only
+    `async_connect_host`'s own.
 
     This spec names no port; `test_open_added_peers_keeps_a_port_when_given`
     (below) is ISS 1493's own positive, a spec that names one.
