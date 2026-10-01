@@ -1557,6 +1557,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **Both come from the block's undo data and are absent without it**
   (closes #1446).
 
+### `getrawtransaction` answers `time`, `blocktime` and verbosity 2
+
+- **Verbosity 2 adds `fee` and `prevout`, and `confirmations` is 0, not
+  -1, off the active chain; a verbosity of the wrong type is Core's bare
+  error** (closes #1597).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
