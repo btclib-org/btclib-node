@@ -1672,6 +1672,12 @@ that records it (issue btclib-org/.github#1362).
   in, and once active is in `warnings` and runs `-alertnotify`**
   (closes #1475).
 
+### `virtualenv` and `GitPython` move in the lock
+
+- **`uv.lock` pins `virtualenv` 21.14.2 and `GitPython` 3.2.0**, past
+  GHSA-94p9-xgh2-xp45, GHSA-9h9j-4vrj-gf7g and GHSA-59cr-6r3x-644w; the
+  lint and mutation groups alone reach them (closes #1620).
+
 ### Refusals carry Core's reasons, in Core's order
 
 - **A refused header, a script refusal and a block's refusals carry Core's
