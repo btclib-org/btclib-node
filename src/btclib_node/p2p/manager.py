@@ -74,6 +74,7 @@ from btclib_node.p2p.eviction import (
     select_node_to_evict,
 )
 from btclib_node.p2p.netif import local_addresses
+from btclib_node.p2p.permissions import NetPermissionFlags, Whitelist
 from btclib_node.p2p.protocol_version import BIP0031_VERSION, common_version
 
 if TYPE_CHECKING:
@@ -488,6 +489,9 @@ class P2pManager(threading.Thread):
         self.port = port
         self.peer_db = peer_db
         self.ban_man = ban_man if ban_man is not None else BanMan(None, node.logger)
+        # Core's `vWhitelistedRangeIncoming` and `vWhitelistedRangeOutgoing`:
+        # `Node.run` sets it from `-whitelist` before the listener starts
+        self.whitelist = Whitelist()
         # Core's scheduler first dumps the ban list one interval after
         # start (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
         # tag)
@@ -918,6 +922,11 @@ class P2pManager(threading.Thread):
             self, client, address, self.last_connection_id, inbound=inbound
         )
         conn.automatic = automatic
+        conn.permissions = self.whitelist.flags(
+            address,
+            inbound=inbound,
+            manual=not (automatic or addr_fetch),
+        )
         conn.block_relay = block_relay
         conn.feeler = feeler
         conn.prefer_evict = prefer_evict
@@ -1076,14 +1085,18 @@ class P2pManager(threading.Thread):
         at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), answering whether
         the host was discouraged. A manual peer, one `-connect`,
         `-addnode` or the `addnode` RPC dialled, is neither discouraged
-        nor dropped. A local peer is dropped alone, since discouraging
-        it would discourage every peer on the same local address.
+        nor dropped, and neither is a peer holding `NO_BAN`. An addr-fetch
+        peer is not a manual one. A local peer is dropped alone, since
+        discouraging it would discourage every peer on the same local
+        address.
         Otherwise the host is discouraged and every connection held with
         it is dropped, whatever its port and its kind, as Core's
         `DisconnectNode(CSubNet(addr))` does (`src/net.cpp`, same sha).
         """
         address = conn.address
-        if not conn.inbound and not conn.automatic:
+        if NetPermissionFlags.NO_BAN in conn.permissions:
+            return False
+        if not conn.inbound and not conn.automatic and not conn.addr_fetch:
             return False
         if can_addrv1(address) and is_local(address):
             conn.stop()
@@ -2904,7 +2917,8 @@ class P2pManager(threading.Thread):
                     # network-active read sitting above its own `banned`
                     # read. Past that, a banned host is refused outright, a
                     # discouraged host once one more peer would fill the
-                    # inbound share; past that share an inbound peer is
+                    # inbound share, unless `-whitelist` grants it `NO_BAN`;
+                    # past that share an inbound peer is
                     # evicted to make room, and only where every candidate
                     # is protected is the new peer refused. Every refusal
                     # comes before `create_connection` builds anything.
@@ -2917,7 +2931,9 @@ class P2pManager(threading.Thread):
                         )
                         sock.close()
                         continue
-                    if self.ban_man.is_peer_banned(address):
+                    permissions = self.whitelist.flags(address, inbound=True)
+                    no_ban = NetPermissionFlags.NO_BAN in permissions
+                    if not no_ban and self.ban_man.is_peer_banned(address):
                         endpoint = network_address(address)
                         self.logger.log_debug(
                             "net",
@@ -2928,7 +2944,7 @@ class P2pManager(threading.Thread):
                         continue
                     inbound = self._inbound_count()
                     discouraged = self.is_discouraged(address)
-                    if discouraged and inbound + 1 >= self.max_inbound:
+                    if not no_ban and discouraged and inbound + 1 >= self.max_inbound:
                         endpoint = network_address(address)
                         self.logger.log_debug(
                             "net",
@@ -3336,7 +3352,6 @@ def _eviction_candidate(conn: Connection) -> EvictionCandidate:
     the value that protects nobody:
 
     - `fBloomFilter`: this node answers no BIP37 `filterload`.
-    - `m_noban`: this node has no `-whitebind`/`-whitelist` permissions.
     - an onion peer's `m_network`: this node has no Tor listener, so
       `net_class` answers from the address alone.
 
@@ -3360,6 +3375,6 @@ def _eviction_candidate(conn: Connection) -> EvictionCandidate:
         prefer_evict=conn.prefer_evict,
         is_local=is_local(conn.address),
         network=net_class(conn.address),
-        noban=False,
+        noban=NetPermissionFlags.NO_BAN in conn.permissions,
         inbound=conn.inbound,
     )

@@ -41,6 +41,7 @@ from btclib_node.p2p.callbacks import MAX_GETDATA_INFLIGHT_BYTES
 from btclib_node.p2p.chain_sync import ChainSyncTimeoutState
 from btclib_node.p2p.connection import PeerStats
 from btclib_node.p2p.manager import P2pManager
+from btclib_node.p2p.permissions import NetPermissionFlags
 from btclib_node.p2p.protocol_version import FEEFILTER_VERSION, SENDHEADERS_VERSION
 from tests import generate_random_header_chain, generate_random_transaction
 
@@ -80,6 +81,7 @@ def a_conn(
     automatic: bool = False,
     feeler: bool = False,
     addr_fetch: bool = False,
+    permissions: NetPermissionFlags = NetPermissionFlags.NONE,
     last_block_announcement: int = 0,
 ) -> Any:
     """Build a fake connection, recording every message handed to `send`.
@@ -112,6 +114,7 @@ def a_conn(
         automatic=automatic,
         feeler=feeler,
         addr_fetch=addr_fetch,
+        permissions=permissions,
         last_block_announcement=last_block_announcement,
         tx_announce_queue=[],
         next_inv_send_time=0.0,
@@ -1569,6 +1572,21 @@ def test_an_inbound_peer_is_asked_where_there_is_no_preferred_peer() -> None:
     assert asked(inbound)
 
 
+def test_an_addr_fetch_peer_alone_is_not_asked_for_headers() -> None:
+    """Core's `sync_blocks_and_headers_from_peer` excludes `IsAddrFetchConn()`.
+
+    An inbound peer is the control: alone, it is asked.
+    """
+    fetcher = an_outbound(1, addr_fetch=True)
+    manager = make_manager([fetcher], block_index=HeaderIndex(age=_OLD))
+    manager.sync_headers()
+    assert not asked(fetcher)
+    inbound = a_conn(2)
+    manager = make_manager([inbound], block_index=HeaderIndex(age=_OLD))
+    manager.sync_headers()
+    assert asked(inbound)
+
+
 def test_the_headers_sync_timeout_scales_with_the_best_headers_age() -> None:
     """Core's `m_headers_sync_timeout`: a base, plus one allowance per header.
 
@@ -1794,15 +1812,16 @@ def test_in_initial_block_download_only_a_peer_synced_from_is_asked(
 ) -> None:
     """A preferred peer, any where nothing is in flight, never a limited one.
 
-    Core's `sync_blocks_and_headers_from_peer` and `IsLimitedPeer` terms
-    of the same gate.
+    Nor an addr-fetch one. Core's `sync_blocks_and_headers_from_peer` and
+    `IsLimitedPeer` terms of the same gate.
     """
     preferred = an_outbound(1, queue=[a_hash(1)] if in_flight else [])
     preferred.block_availability.downloading_since = time.time()
     inbound = a_conn(2)
     limited = an_outbound(3, version_message=a_version(_LIMITED))
+    fetcher = an_outbound(4, addr_fetch=True)
     manager = make_manager(
-        [preferred, inbound, limited], is_initial_block_download=True
+        [preferred, inbound, limited, fetcher], is_initial_block_download=True
     )
     expected = [preferred] if in_flight else [preferred, inbound]
     assert asked_for_blocks(manager, monkeypatch) == expected
@@ -2421,3 +2440,77 @@ def test_a_direct_fetch_reads_the_connections_through_a_snapshot(
     leaving.download_queue = RemovingQueue()
     manager.headers_direct_fetch(conn, announced[-1])
     assert conn.download_queue == announced
+
+
+@pytest.mark.parametrize(
+    ("inbound", "permissions", "addr_fetch", "preferred"),
+    [
+        (False, NetPermissionFlags.NONE, False, True),
+        (True, NetPermissionFlags.NONE, False, False),
+        (True, NetPermissionFlags.DOWNLOAD, False, False),
+        (True, NetPermissionFlags.NO_BAN, False, True),
+        (False, NetPermissionFlags.NONE, True, False),
+    ],
+)
+def test_a_preferred_download_peer_is_outbound_or_no_ban_and_not_addr_fetch(
+    *,
+    inbound: bool,
+    permissions: NetPermissionFlags,
+    addr_fetch: bool,
+    preferred: bool,
+) -> None:
+    """ISS 1320: Core's `fPreferredDownload` of `ProcessMessage`'s `VERACK`."""
+    conn = a_conn(1, inbound=inbound, permissions=permissions, addr_fetch=addr_fetch)
+    assert download_module._is_preferred_download(conn) is preferred
+
+
+def test_a_stalled_no_ban_sync_peer_is_kept_and_its_sync_reset() -> None:
+    """ISS 1320: Core keeps a `NoBan` peer, resetting its `fSyncStarted`.
+
+    The control, a peer without the permission, is dropped as
+    `test_a_sole_sync_peer_past_its_timeout_is_dropped_for_another` shows.
+    """
+    stalled = an_outbound(1, permissions=NetPermissionFlags.NO_BAN)
+    stopped = recording_stops(stalled)
+    manager = make_manager([stalled, an_outbound(2)], block_index=HeaderIndex(age=_OLD))
+    manager.headers_sync_timeouts[1] = time.time() - 1
+    manager.sync_headers()
+    assert stopped == []
+    assert 1 not in manager.headers_sync_timeouts
+
+
+def test_a_no_ban_peer_is_announced_to_before_its_trickle_is_due() -> None:
+    """ISS 1320: `fSendTrickle` is true for `NoBan`, due or not."""
+    trusted = a_conn(1, permissions=NetPermissionFlags.NO_BAN)
+    other = a_conn(2)
+    manager = make_manager([trusted, other])
+    for conn in (trusted, other):
+        conn.tx_announce_queue = [a_hash(1)]
+        conn.next_inv_send_time = time.time() + 3600
+    hold(manager, a_hash(1))
+    manager._send_due_announcements()
+    assert hashes_of(only(trusted, Inv)[0]) == [a_hash(1)]
+    assert not only(other, Inv)
+
+
+def test_a_relay_peer_has_no_limit_on_announcements() -> None:
+    """ISS 1320: `m_relay_permissions` lifts `MAX_PEER_TX_ANNOUNCEMENTS`."""
+    conn = a_conn(1, permissions=NetPermissionFlags.RELAY)
+    manager = make_manager([conn])
+    announced = [
+        a_hash(n) for n in range(download_module._MAX_PEER_TX_ANNOUNCEMENTS + 3)
+    ]
+    manager.inv_txs = [(1, h) for h in announced]
+    manager.tx_download()
+    asked = [h for g in only(conn, GetData) for h in hashes_of(g)]
+    assert asked == announced
+
+
+def test_a_force_relay_peer_is_sent_no_feefilter() -> None:
+    """ISS 1320: `MaybeSendFeefilter` returns for `ForceRelay`, not `Relay`."""
+    forced = a_conn(1, permissions=NetPermissionFlags.FORCE_RELAY)
+    relayed = a_conn(2, permissions=NetPermissionFlags.RELAY)
+    manager = make_manager([forced, relayed])
+    manager._send_due_feefilters()
+    assert not only(forced, FeeFilter)
+    assert only(relayed, FeeFilter)

@@ -46,8 +46,9 @@ here are the ones [ARCHITECTURE](./ARCHITECTURE.md) describes.
   own rules and closes the new one, before building anything for it,
   only where every peer held is protected. A peer from a host this node
   has discouraged is closed where it would take the last inbound slot or
-  none is left, and is otherwise preferred for eviction, as in Core
-  (`src/btclib_node/p2p/manager.py`, `src/btclib_node/p2p/eviction.py`),
+  none is left, unless `-whitelist` grants it `noban`, and is otherwise
+  preferred for eviction, as in Core (`src/btclib_node/p2p/manager.py`,
+  `src/btclib_node/p2p/eviction.py`),
   closed as btclib-org/btclib-node#1054, btclib-org/btclib-node#1064 and
   btclib-org/btclib-node#1078.
 - **Inbound connections do not stop this node dialling.** The outbound

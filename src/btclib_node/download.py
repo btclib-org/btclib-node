@@ -35,6 +35,7 @@ from btclib_node.p2p.callbacks import (
 )
 from btclib_node.p2p.chain_sync import consider_eviction
 from btclib_node.p2p.eviction import get_network
+from btclib_node.p2p.permissions import NetPermissionFlags
 from btclib_node.p2p.protocol_version import (
     FEEFILTER_VERSION,
     SENDHEADERS_VERSION,
@@ -278,13 +279,27 @@ def _is_preferred_download(conn: Connection) -> bool:
     """Whether `conn` is a peer headers and blocks are preferably synced from.
 
     Core's own `fPreferredDownload` (`net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): an outbound peer that
-    can serve blocks. Core's other two terms have nothing to read here:
-    a `NoBan` inbound peer counts as preferred, and an `ADDR_FETCH`
-    connection never does, and this tree grants no permission and opens
-    no such connection.
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): an outbound or `NO_BAN`
+    peer that is not an addr-fetch one and can serve blocks.
     """
-    return not conn.inbound and _can_serve_blocks(conn)
+    return (
+        (not conn.inbound or NetPermissionFlags.NO_BAN in conn.permissions)
+        and not conn.addr_fetch
+        and _can_serve_blocks(conn)
+    )
+
+
+def _is_sync_peer(conn: Connection, preferred: int, *, blocks_in_flight: bool) -> bool:
+    """Whether headers and blocks are synced from `conn`.
+
+    Core's `sync_blocks_and_headers_from_peer` (`net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a preferred peer, or any
+    other that is not an addr-fetch one while there is no preferred peer
+    or no block in flight.
+    """
+    return _is_preferred_download(conn) or (
+        not conn.addr_fetch and (not preferred or not blocks_in_flight)
+    )
 
 
 def _tx_fetch_type(conn: Connection) -> InventoryType:
@@ -722,8 +737,13 @@ class DownloadManager:
             # is dropped, the ones already tracked counting against it.
             # Everything this pass queued is asked for in this pass, so
             # what is tracked is what is outstanding plus these.
-            room = _MAX_PEER_TX_ANNOUNCEMENTS - len(target.tx_requested)
-            wanted = wanted[: max(room, 0)]
+            # A peer holding `RELAY` has no such limit.
+            room = (
+                len(wanted)
+                if NetPermissionFlags.RELAY in target.permissions
+                else max(_MAX_PEER_TX_ANNOUNCEMENTS - len(target.tx_requested), 0)
+            )
+            wanted = wanted[:room]
             if not wanted:
                 continue
             for announced in wanted:
@@ -748,7 +768,12 @@ class DownloadManager:
         for conn in self.node.p2p_manager.connections.copy().values():
             if not conn.relay_tx:
                 continue
-            if conn.next_inv_send_time and now < conn.next_inv_send_time:
+            # `fSendTrickle` is always true for a `NO_BAN` peer
+            if (
+                conn.next_inv_send_time
+                and now < conn.next_inv_send_time
+                and NetPermissionFlags.NO_BAN not in conn.permissions
+            ):
                 continue
             # Core's trickle records the mempool's sequence whether or
             # not it announces anything
@@ -901,10 +926,9 @@ class DownloadManager:
 
         A block-relay-only connection is sent none, as Core returns for
         `IsBlockOnlyConn()`: it never announces a transaction to this
-        node. `NetPermissionFlags::ForceRelay` and `-blocksonly`
-        (`m_opts.ignore_incoming_txs`) have nothing to read here and are
-        not reproduced, being a permission and a run mode this tree does
-        not have.
+        node. A peer holding `FORCE_RELAY` is sent none either, as Core
+        returns for it. `-blocksonly` (`m_opts.ignore_incoming_txs`) has
+        nothing to read here, being a run mode this tree does not have.
 
         Core's `GetCommonVersion() < FEEFILTER_VERSION` return is kept:
         a peer that old is sent none.
@@ -937,6 +961,9 @@ class DownloadManager:
             if conn.status != P2pConnStatus.Connected or conn.block_relay:
                 continue
             if common_version(conn) < FEEFILTER_VERSION:
+                continue
+            # a peer holding `FORCE_RELAY` is not filtered
+            if NetPermissionFlags.FORCE_RELAY in conn.permissions:
                 continue
             # Once this node is done with IBD, a peer sitting on the
             # `_max_feefilter` this branch sent it during IBD is not
@@ -1067,8 +1094,8 @@ class DownloadManager:
             # Core's `sync_blocks_and_headers_from_peer`: a peer that is
             # not preferred is still one to sync from where there is no
             # preferred peer, or no block in flight from anybody.
-            from_peer = (
-                _is_preferred_download(conn) or not preferred or not blocks_in_flight
+            from_peer = _is_sync_peer(
+                conn, preferred, blocks_in_flight=blocks_in_flight
             )
             if (sync_started == 0 and from_peer) or recent:
                 locator = block_index.get_block_locator_hashes(start)
@@ -1091,12 +1118,29 @@ class DownloadManager:
                 now > timeouts[conn.id]
                 and sync_started == 1
                 and preferred - _is_preferred_download(conn) >= 1
-            ):
-                self.logger.info(
-                    "Timeout downloading headers, disconnecting connection %s",
-                    conn.id,
-                )
-                conn.stop()
+            ) and self._end_stalled_headers_sync(conn):
+                sync_started -= 1
+
+    def _end_stalled_headers_sync(self, conn: Connection) -> bool:
+        """End `conn`'s stalled headers sync, answering whether it was reset.
+
+        A peer holding `NO_BAN` is not disconnected: as in Core, its sync
+        state is reset, so that another peer may be tried and this one
+        asked again.
+        """
+        if NetPermissionFlags.NO_BAN in conn.permissions:
+            self.logger.info(
+                "Timeout downloading headers from noban connection %s,"
+                " not disconnecting",
+                conn.id,
+            )
+            del self.headers_sync_timeouts[conn.id]
+            return True
+        self.logger.info(
+            "Timeout downloading headers, disconnecting connection %s", conn.id
+        )
+        conn.stop()
+        return False
 
     def block_connected(self) -> None:
         """Bring the stalling timeout back towards its default, a block on.
@@ -1152,7 +1196,7 @@ class DownloadManager:
             if self._stalling_or_timed_out(conn, now, downloading_from):
                 conn.stop()
                 continue
-            from_peer = _is_preferred_download(conn) or not preferred or not in_flight
+            from_peer = _is_sync_peer(conn, preferred, blocks_in_flight=bool(in_flight))
             if not (
                 _can_serve_blocks(conn)
                 and (

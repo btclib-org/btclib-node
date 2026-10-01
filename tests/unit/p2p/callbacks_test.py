@@ -142,6 +142,7 @@ from btclib_node.p2p.chain_sync import (
 from btclib_node.p2p.compact_block import compact_block
 from btclib_node.p2p.connection import Connection, PeerStats
 from btclib_node.p2p.headers_sync import HeadersSyncState, State
+from btclib_node.p2p.permissions import NetPermissionFlags
 from btclib_node.p2p.protocol_version import (
     BIP0031_VERSION,
     MIN_PEER_PROTO_VERSION,
@@ -257,6 +258,7 @@ def make_node(
         addr_relay_enabled=False,
         inbound=inbound,
         addr_cache_key=addr_cache_key,
+        permissions=NetPermissionFlags.NONE,
     )
     keys = {host_key(address) for address in discouraged}
     node = SimpleNamespace(
@@ -416,6 +418,7 @@ def another_conn(
         prefer_addressv2=False,
         send=sent.append,
         answered_getaddr=False,
+        permissions=NetPermissionFlags.NONE,
         inbound=True,
         addr_cache_key=addr_cache_key,
     )
@@ -657,6 +660,7 @@ def a_peer(**attributes: Any) -> Any:
         block_relay=False,
         feeler=False,
         addr_fetch=False,
+        permissions=NetPermissionFlags.NONE,
         address=peer_address("1.2.3.4", 18444),
         stats=PeerStats(),
         # what `Connection` starts every connection at, and what
@@ -6746,3 +6750,125 @@ def test_a_block_s_new_header_is_weighed_against_minimumchainwork(
     deliver(node, block)
     assert (block.header.hash in block_index.header_dict) is indexed
     node.chainstate.close()
+
+
+def test_a_peer_holding_addr_is_never_rate_limited() -> None:
+    """ISS 1320: Core's `NetPermissionFlags::Addr` skips the token bucket.
+
+    The three addresses are all processed, and the bucket is spent down to
+    nothing and no further, as Core's `else` branch has it.
+    """
+    given = [a_gossiped_address(f"1.2.3.{n}") for n in (1, 2, 3)]
+    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+    node = a_handshake_node(peer_db=peer_db)
+    peer = a_peer(permissions=NetPermissionFlags.ADDR)
+    addrv2(node, AddrV2(given).serialize(), peer)
+    assert peer_db.addresses == {_as_stored(a) for a in given}
+    assert peer.stats.addr_processed == len(given)
+    assert peer.stats.addr_rate_limited == 0
+    assert 0 <= peer.addr_token_bucket < 1
+
+
+def test_a_peer_holding_addr_is_answered_from_a_draw_of_its_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1320: `GetAddressesUnsafe` for `Addr`, no cache read or written.
+
+    The first peer fills the cache; an address learnt afterwards is in
+    what the peer holding `ADDR` is sent and not in what a third is.
+    """
+    monkeypatch.setattr(PeerDB, "get_addr", an_unsampled_table)
+    now = int(time.time())
+    first = peer_address("1.2.3.4", 18444, timestamp=now)
+    later = peer_address("1.2.3.5", 18444, timestamp=now)
+    node, plain, sent = make_node([first], prefer_addressv2=True)
+    getaddr(node, b"", plain)
+    node.p2p_manager.peer_db.addresses.add(later)
+    privileged, third = another_conn(sent), another_conn(sent)
+    privileged.permissions = NetPermissionFlags.ADDR
+    privileged.prefer_addressv2 = third.prefer_addressv2 = True
+    getaddr(node, b"", privileged)
+    getaddr(node, b"", third)
+    assert [set(answer.addresses) for answer in sent] == [
+        {first},
+        {first, later},
+        {first},
+    ]
+
+
+def test_a_peer_holding_no_ban_has_its_headers_taken_below_the_minimum_work(
+    tmp_path: Path,
+) -> None:
+    """ISS 1320: Core sets `already_validated_work` for a `NoBan` peer.
+
+    The batch `test_a_short_low_work_batch_answers_the_getheaders_and_
+    nothing_else` ignores is indexed.
+    """
+    node = a_low_work_node(tmp_path, minimum_blocks=50)
+    chain = generate_random_header_chain(3, RegTest().genesis.hash)
+    headers(
+        node,
+        Headers(chain).serialize(),
+        a_peer(permissions=NetPermissionFlags.NO_BAN),
+    )
+    assert chain[-1].hash in node.chainstate.block_index.header_dict
+    node.chainstate.close()
+
+
+def test_a_peer_holding_download_is_answered_below_the_minimum_work(
+    an_index: BlockIndex, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1320: Core's `getheaders` gate passes `Download`, and so `NoBan`."""
+    active = activated(an_index, generate_random_header_chain(2, _GENESIS))
+    node = a_data_node(block_index=an_index)
+    work = an_index.chainwork[an_index.active_chain[-1]] + 1
+    monkeypatch.setattr(node.config, "minimum_chain_work", work)
+    message = GetHeaders(PROTOCOL_VERSION, [_GENESIS], _NO_STOP).serialize()
+    for permission in (NetPermissionFlags.DOWNLOAD, NetPermissionFlags.NO_BAN):
+        peer = a_peer(permissions=permission)
+        getheaders(node, message, peer)
+        (sent,) = peer.sent
+        assert [header.hash for header in sent.headers] == active
+    other = a_peer(permissions=NetPermissionFlags.RELAY)
+    getheaders(node, message, other)
+    (sent,) = other.sent
+    assert list(sent.headers) == []
+
+
+def test_a_pruned_node_serves_a_no_ban_peer_below_its_retained_depth() -> None:
+    """ISS 1320: Core's prune-height guard is `!HasPermission(NoBan)`."""
+    block_index = a_tall_block_index(MIN_BLOCKS_TO_KEEP + 10)
+    node = a_data_node(
+        block_index=block_index, block_db=SimpleNamespace(get_block=lambda h: a_block())
+    )
+    node.config.pruned = True
+    peer = a_peer(permissions=NetPermissionFlags.NO_BAN)
+    items = [Inventory(InventoryType.MSG_BLOCK, block_index.active_chain[0])]
+    getdata(node, GetData(items).serialize(), peer)
+    (answer,) = peer.sent
+    assert isinstance(answer, BlockMsg)
+    assert not peer.stopped
+
+
+def test_a_transaction_the_mempool_holds_is_announced_for_a_force_relay_peer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1320: Core relays a known transaction from a `ForceRelay` peer.
+
+    Reported to the download manager as received from that peer; from a
+    peer without the permission it is dropped, as before.
+    """
+    monkeypatch.setattr(
+        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, 999)
+    )
+    transaction = a_transaction()
+    node = a_data_node()
+    message = TxMsg(transaction, include_witness=True).serialize()
+    tx(node, message, a_peer(id=3))
+    node.download_manager.received_txs.clear()
+    tx(node, message, a_peer(id=4))
+    assert node.download_manager.received_txs == []
+    tx(node, message, a_peer(id=6, permissions=NetPermissionFlags.RELAY))
+    assert node.download_manager.received_txs == []
+    tx(node, message, a_peer(id=5, permissions=NetPermissionFlags.FORCE_RELAY))
+    assert node.download_manager.received_txs == [(5, transaction.hash)]

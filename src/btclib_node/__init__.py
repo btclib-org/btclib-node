@@ -47,6 +47,7 @@ from btclib_node.p2p.main import (
     resume_getdata,
 )
 from btclib_node.p2p.manager import P2pManager
+from btclib_node.p2p.permissions import Whitelist
 from btclib_node.rpc.main import handle_rpc
 from btclib_node.rpc.manager import RpcManager
 from btclib_node.versionbits import UnknownActivations
@@ -751,6 +752,25 @@ class Node(threading.Thread):
         finally:
             self._load_attempted.set()
 
+    def _read_whitelist(self) -> bool:
+        """Read `-whitelist` into the P2P manager; answer whether it was valid.
+
+        As `AppInitMain` does once the stores are open and before it starts
+        `connman` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        tag): a value it refuses is `Node.init_errors`.
+        """
+        config = self.config
+        try:
+            self.p2p_manager.whitelist = Whitelist.parse(
+                config.whitelist,
+                relay=config.whitelist_relay,
+                force_relay=config.whitelist_force_relay,
+            )
+        except ValueError as error:
+            self._abort_start([str(error)])
+            return False
+        return True
+
     def _drain_rpc_queue(self) -> None:
         """Interrupt new RPC work, then answer everything already queued.
 
@@ -853,6 +873,7 @@ class Node(threading.Thread):
         # Core returns on `ShutdownRequested` after loading its block
         # index, before step 12 (`src/init.cpp:1887-1890`, same sha).
         started = self._start_rpc_and_load() and not self.terminate_flag.is_set()
+        started = started and self._read_whitelist()
         if started and self.p2p_port and not self.p2p_manager.start_listener():
             # the bind's own reason first, as Core's `CConnman::Bind`
             # shows it before `CConnman::Start` shows its own

@@ -1754,6 +1754,18 @@ that records it (issue btclib-org/.github#1362).
   and a `cmpctblock` `getdata` resend that one, a block `getdata` and
   `getblocktxn` use the kept block** (closes #1336) (closes #1612).
 
+### `-whitelist` grants a peer Core's permissions
+
+- **`-whitelist`, `-whitelistrelay` and `-whitelistforcerelay` grant a peer
+  `noban` and Core's other permissions, which `getpeerinfo` lists** (closes
+  #1320); `bloomfilter` and `mempool` change nothing; `-whitebind` is not read.
+
+### An addr-fetch peer that misbehaves is discouraged
+
+- **Only a manual or a `noban` peer is spared discouragement, and an
+  addr-fetch peer is not a preferred download peer nor one headers and blocks
+  are synced from, as in Core** (closes #1588).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

@@ -111,8 +111,8 @@ section over the default section; within the command line the last
 value, within a file the first, the chain selectors aside; and a
 negation discarding every value named before it at its own level.
 `-connect`, `-addnode`, `-seednode`, `-rpcauth`, `-rpcwhitelist`,
-`-rpcbind`, `-rpcallowip`, `-debug` and `-shutdownnotify` are lists,
-every value from every level applying -- `-shutdownnotify` alone among
+`-rpcbind`, `-rpcallowip`, `-whitelist`, `-debug` and `-shutdownnotify` are
+lists, every value from every level applying -- `-shutdownnotify` alone among
 the four notify options below, Core reading it with `GetArgs` rather
 than the `GetArg` the other three are read with (`notify.py`'s own
 module docstring).
@@ -198,6 +198,7 @@ from btclib_node.dirlock import DirectoryLock, lock_directories
 from btclib_node.exceptions import DirectoryLockError
 from btclib_node.log import open_history_log
 from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME
+from btclib_node.p2p.permissions import NET_PERMISSIONS_DOC
 from btclib_node.rpc.connection import REQUEST_TIMEOUT
 
 if TYPE_CHECKING:
@@ -714,6 +715,32 @@ _OPTIONS: dict[str, _Option] = {
         "",
         "Use the testnet4 chain. Equivalent to -chain=testnet4.",
         _CHAINPARAMS_TITLE,
+    ),
+    "whitelist": _Option(
+        "=<[permissions@]IP address or network>",
+        "Add permission flags to the peers using the given IP address (e.g. "
+        "1.2.3.4) or CIDR-notated network (e.g. 1.2.3.0/24). Allowed "
+        "permissions: " + ", ".join(NET_PERMISSIONS_DOC) + ". Specify "
+        "multiple permissions separated by commas (default: "
+        "download,noban,mempool,relay). "
+        'Additional flags "in" and "out" '
+        "control whether permissions apply to incoming connections and/or "
+        "manual (default: incoming only). Can be specified multiple times.",
+        _CONNECTION_TITLE,
+    ),
+    "whitelistforcerelay": _Option(
+        "",
+        "Add 'forcerelay' permission to whitelisted peers with default "
+        "permissions. This will relay transactions even if the transactions "
+        "were already in the mempool. (default: 0)",
+        _NODE_RELAY_TITLE,
+    ),
+    "whitelistrelay": _Option(
+        "",
+        "Add 'relay' permission to whitelisted peers with default "
+        "permissions. This lifts the limit on their transaction "
+        "announcements (default: 1)",
+        _NODE_RELAY_TITLE,
     ),
 }
 
@@ -2127,6 +2154,10 @@ def _after_lock(before: _BeforeLock) -> Config:
     # `-listen=0` condition here
     discover = _get_bool(settings, "discover")
     peerblockfilters = bool(_get_bool(settings, "peerblockfilters"))
+    # `DEFAULT_WHITELISTRELAY` (true) where `-whitelistrelay` is not given
+    whitelist_relay = _get_bool(settings, "whitelistrelay")
+    if whitelist_relay is None:
+        whitelist_relay = True
     # `GetAuthCookieFile` (`src/rpc/request.cpp`, same sha): negated, no cookie
     rpccookiefile = (
         None
@@ -2158,6 +2189,9 @@ def _after_lock(before: _BeforeLock) -> Config:
         rpc_port=rpc_port,
         rpcbind=tuple(rpcbind),
         rpcallowip=_get_args(settings, "rpcallowip"),
+        whitelist=_get_args(settings, "whitelist"),
+        whitelist_relay=whitelist_relay,
+        whitelist_force_relay=bool(_get_bool(settings, "whitelistforcerelay")),
         rpcservertimeout=rpcservertimeout,
         allow_rpc=server is None or server,
         pruned=bool(prune),
