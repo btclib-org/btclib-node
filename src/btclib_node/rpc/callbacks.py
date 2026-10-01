@@ -841,14 +841,14 @@ def _block_json_header(
 def _parse_get_block_params(params: list[Any]) -> tuple[bytes, int]:
     """Validate `getblock`'s own two arguments; answer `(blockhash, verbosity)`.
 
-    `ParseVerbosity` (`rpc/util.cpp:89-102`, at bitcoin/bitcoin@9be056a8a7)
+    `ParseVerbosity` (`rpc/util.cpp:83-97`, at bitcoin/bitcoin@9be056a8a7)
     is what a missing argument answers with `default_verbosity`, 1 here,
     and what a JSON bool degrades to (`true` as `1`, `false` as `0`)
     under this argument's own `skip_type_check` (`:772`) -- the same
     allowance `get_raw_transaction`'s own `verbose` argument does not
-    carry, argued in that function's own missing-argument comment. Refusing
-    anything but 0, 1 or 2 is this tree's own boundary, argued in
-    `get_block`'s docstring below.
+    carry, argued in that function's own missing-argument comment. Any
+    `int` is a verbosity, and `get_block` reads one at or below 0 as 0
+    and one at or above 3 as 3, as `getblock` does.
     """
     if not params:
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["getblock"])
@@ -871,37 +871,63 @@ def _parse_get_block_params(params: list[Any]) -> tuple[bytes, int]:
         # `get_block_hash`'s own float check answers above.
         raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
     elif isinstance(verbosity_param, int):
+        # the same `getInt<int>()`: a 32-bit `int`
+        if not -(2**31) <= verbosity_param < 2**31:
+            raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
         verbosity = verbosity_param
     else:
         raise type_error(2, "verbosity", verbosity_param, "number")
-
-    if verbosity not in (0, 1, 2):
-        raise RpcError(
-            RPCErrorCode.MISC_ERROR,
-            "getblock: only verbosity 0, 1 and 2 are served here",
-        )
     return block_hash, verbosity
+
+
+def _block_undo(node: Node, block_hash: bytes, block: Block) -> list[list[Coin] | None]:
+    """Answer the coins each transaction of `block` spent, in input order.
+
+    Core's `blockToJSON` hands `TxToUniv` the `CTxUndo` of every
+    transaction but the coinbase, which has none, when the block's undo
+    data is held, and none at all where it is not
+    (`src/rpc/blockchain.cpp:223-239`, at bitcoin/bitcoin@9be056a8a7).
+    The reverse patch `UtxoIndex.add_block` files for a connected block
+    lists the coin of every input of every transaction after the
+    coinbase, in block order (`RevBlock.to_add`), so each transaction
+    takes the next `len(vin)` of them. A patch that holds another number
+    is Core's "Undo data expected but can't be read".
+    """
+    rev_block = node.block_db.get_rev_block(block_hash)
+    if rev_block is None:
+        return [None] * len(block.transactions)
+    coins = [coin for _, coin in rev_block.to_add]
+    if len(coins) != sum(len(tx.vin) for tx in block.transactions[1:]):
+        raise RpcError(
+            RPCErrorCode.INTERNAL_ERROR,
+            "Undo data expected but can't be read. This could be due to "
+            "disk corruption or a conflict with a pruning event.",
+        )
+    undo: list[list[Coin] | None] = [None]
+    start = 0
+    for tx in block.transactions[1:]:
+        undo.append(coins[start : start + len(tx.vin)])
+        start += len(tx.vin)
+    return undo
 
 
 def get_block(
     node: Node, conn: RpcConnection, params: list[Any]
 ) -> str | dict[str, Any]:
-    """Answer `getblock` at verbosity 0, 1 or 2: hex, or Core's own JSON shape.
+    """Answer `getblock`: the block's hex, or Core's own JSON shape.
 
     Core's own `getblock` (`rpc/blockchain.cpp:761-841`, calling
     `blockToJSON`, `:200-243`, at bitcoin/bitcoin@9be056a8a7) answers
-    verbosity 1 with the header fields `blockheaderToJSON` answers
-    (`get_block_header`'s own verbose branch, mirrored by
-    `_block_json_header` above) plus `strippedsize`, `size`, `weight`,
-    `coinbase_tx` and `tx` as an array of txids (`TxVerbosity::SHOW_TXID`);
-    verbosity 2 the same with `tx` as an array of decoded transactions
-    instead, `getrawtransaction`'s own verbose shape
-    (`_tx_to_univ`, with `hex`) rather than a
-    second rendering of one call's own shape, `TxVerbosity::SHOW_DETAILS`
-    -- one field short of Core's, `tx[].fee`, which needs the block's own
-    undo data to compute even at this verbosity and not only at 3, left
-    absent along with verbosity 3 itself for the same reason
-    (btclib-org/btclib-node#1446).
+    verbosity 0 or below with the hex, and verbosity 1 with the header
+    fields `blockheaderToJSON` answers (`get_block_header`'s own verbose
+    branch, mirrored by `_block_json_header` above) plus `strippedsize`,
+    `size`, `weight`, `coinbase_tx` and `tx` as an array of txids
+    (`TxVerbosity::SHOW_TXID`). Verbosity 2 answers `tx` as an array of
+    decoded transactions instead, `getrawtransaction`'s own verbose shape
+    (`_tx_to_univ`, with `hex`) plus the `fee` of a transaction whose
+    undo data is held; verbosity 3 and above add each input's `prevout`
+    (`TxVerbosity::SHOW_DETAILS_AND_PREVOUT`). `_block_undo` is where the
+    undo data is read.
     """
     block_hash, verbosity = _parse_get_block_params(params)
 
@@ -925,7 +951,7 @@ def get_block(
             RPCErrorCode.MISC_ERROR, "Block not available (not fully downloaded)"
         )
 
-    if verbosity == 0:
+    if verbosity <= 0:
         return block.serialize(check_validity=False).hex()
 
     out = _block_json_header(
@@ -938,9 +964,16 @@ def get_block(
     if verbosity == 1:
         out["tx"] = [tx.id for tx in block.transactions]
     else:
+        undo = _block_undo(node, block_hash, block)
         out["tx"] = [
-            _tx_to_univ(tx, node.chain.name, include_hex=True)
-            for tx in block.transactions
+            _tx_to_univ(
+                tx,
+                node.chain.name,
+                include_hex=True,
+                undo=undo[i],
+                prevout=verbosity >= 3,  # noqa: PLR2004
+            )
+            for i, tx in enumerate(block.transactions)
         ]
     return out
 
@@ -2200,7 +2233,9 @@ def _script_pub_key_dict(script: bytes, network: str) -> dict[str, Any]:
     return out
 
 
-def _vin_to_univ(tx: Tx) -> list[dict[str, Any]]:
+def _vin_to_univ(
+    tx: Tx, network: str, undo: list[Coin] | None, *, prevout: bool
+) -> list[dict[str, Any]]:
     """Answer a transaction's `vin` as `TxToUniv` does.
 
     An ordinary input is `txid`, `vout`, `scriptSig` (`asm` and `hex`)
@@ -2209,10 +2244,13 @@ def _vin_to_univ(tx: Tx) -> list[dict[str, Any]]:
     is answered only where the witness stack is not empty
     (`src/core_io.cpp:451-493`, at bitcoin/bitcoin@9be056a8a7), whereas
     `TxIn.to_dict` answers `prev_out`, `scriptSig`, `sequence` and
-    `txinwitness` for every input, an empty list included.
+    `txinwitness` for every input, an empty list included. Where `undo`
+    holds the coin each input spent and `prevout` asks for it, `prevout`
+    follows the witness: `generated`, `height`, `value` and the coin's
+    `scriptPubKey`.
     """
     vin: list[dict[str, Any]] = []
-    for tx_in in tx.vin:
+    for i, tx_in in enumerate(tx.vin):
         entry: dict[str, Any] = {}
         if tx.is_coinbase:
             entry["coinbase"] = tx_in.script_sig.hex()
@@ -2223,6 +2261,16 @@ def _vin_to_univ(tx: Tx) -> list[dict[str, Any]]:
         stack = tx_in.script_witness.stack
         if stack:
             entry["txinwitness"] = [item.hex() for item in stack]
+        if undo is not None and prevout:
+            coin = undo[i]
+            entry["prevout"] = {
+                "generated": coin.is_coinbase,
+                "height": coin.height,
+                "value": _btc_amount(coin.tx_out.value),
+                "scriptPubKey": _script_pub_key_dict(
+                    coin.tx_out.script_pub_key.script, network
+                ),
+            }
         entry["sequence"] = tx_in.sequence
         vin.append(entry)
     return vin
@@ -2246,7 +2294,14 @@ def _vout_to_univ(tx: Tx, network: str) -> list[dict[str, Any]]:
     ]
 
 
-def _tx_to_univ(tx: Tx, network: str, *, include_hex: bool) -> dict[str, Any]:
+def _tx_to_univ(
+    tx: Tx,
+    network: str,
+    *,
+    include_hex: bool,
+    undo: list[Coin] | None = None,
+    prevout: bool = False,
+) -> dict[str, Any]:
     """Answer a transaction as Core's `TxToUniv` does, addresses for `network`.
 
     `src/core_io.cpp:430-534`, at bitcoin/bitcoin@9be056a8a7, in its
@@ -2255,6 +2310,11 @@ def _tx_to_univ(tx: Tx, network: str, *, include_hex: bool) -> dict[str, Any]:
     whose `value` cannot render a negative amount, which a decoded
     output can carry. `hash` is the witness hash, `size` the size with
     the witness and `vsize` the weight in virtual bytes.
+
+    `undo` is the coin each input spent, which `TxToUniv` takes as
+    `txundo`: where it is given, `fee` is those values less the outputs',
+    and `prevout` adds each input's coin to `vin`. A coinbase, or a
+    transaction whose undo data is not held, is passed none.
     """
     out: dict[str, Any] = {
         "txid": tx.id.hex(),
@@ -2264,9 +2324,12 @@ def _tx_to_univ(tx: Tx, network: str, *, include_hex: bool) -> dict[str, Any]:
         "vsize": tx.vsize,
         "weight": tx.weight,
         "locktime": tx.lock_time,
-        "vin": _vin_to_univ(tx),
+        "vin": _vin_to_univ(tx, network, undo, prevout=prevout),
         "vout": _vout_to_univ(tx, network),
     }
+    if undo is not None:
+        spent = sum(coin.tx_out.value for coin in undo)
+        out["fee"] = _btc_amount(spent - sum(tx_out.value for tx_out in tx.vout))
     if include_hex:
         out["hex"] = tx.serialize(include_witness=True, check_validity=False).hex()
     return out
@@ -2651,8 +2714,9 @@ def get_raw_transaction(
     # Core declares this argument NUM with allow_bool=true
     # (src/rpc/rawtransaction.cpp:286); this node answers only the
     # default and the boolean shape every other verbose flag here
-    # already takes, and not Core's 2 -- fee and prevout data come from
-    # undo data this node does not keep alongside a block
+    # already takes, and not Core's 2, whose `fee` and `prevout` are
+    # what `_block_undo` reads for `getblock`
+    # (btclib-org/btclib-node#1597)
     verbose = bool_param(params, 1, name="verbose", default=False)
     block_hash = _decode_optional_block_hash(params)
     tx, block_height = _find_transaction(node, txid, block_hash)

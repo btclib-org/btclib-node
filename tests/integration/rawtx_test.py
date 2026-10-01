@@ -10,13 +10,14 @@ transaction with, so each of them is held to bitcoind's own answer for
 the same bytes, key for key.
 
 `asm` is left out of every comparison. This node renders it with
-btclib's `script_to_dict`, which is not `ScriptToAsmStr` and says so in its
-own docstring.
+btclib's `script_to_dict`, which is not `ScriptToAsmStr`
+(btclib-org/btclib#2461).
 """
 
 import random
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
+import pytest
 from btclib.hashes import hash160, sha256
 from btclib.script import script
 from btclib.script.witness import Witness
@@ -27,7 +28,9 @@ from btclib.tx.tx_out import TxOut
 
 from btclib_node import Node
 from btclib_node.config import Config
-from tests import get_random_port, rpc_client, wait_until_listening
+from btclib_node.constants import NodeStatus
+from btclib_node.p2p.address import peer_address
+from tests import get_random_port, rpc_client, wait_until, wait_until_listening
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -194,6 +197,128 @@ def test_decoderawtransaction_answers_as_bitcoind_does(
                 assert ours_out == theirs_out, tx.vout[
                     ours_out["n"]
                 ].script_pub_key.script.hex()
+            assert ours == theirs
+    finally:
+        node.stop()
+        node.join()
+
+
+def _descriptor(bitcoind: Bitcoind, script_pub_key: bytes) -> str:
+    """Return bitcoind's own checksummed `raw(...)` descriptor for a script."""
+    info = bitcoind.rpc("getdescriptorinfo", [f"raw({script_pub_key.hex()})"])
+    return cast("dict[str, str]", info)["descriptor"]
+
+
+def _spend(inputs: list[tuple[bytes, TxIn]], outputs: list[TxOut]) -> Tx:
+    """Return a transaction of `inputs`, each a `(txid, TxIn)` built already."""
+    return Tx(2, 0, [tx_in for _, tx_in in inputs], outputs, check_validity=False)
+
+
+def test_getblock_and_getrawtransaction_answer_as_bitcoind_does(
+    bitcoind: Bitcoind, tmp_path: Path
+) -> None:
+    """A block with fees, witnesses and an in-block spend, at every verbosity.
+
+    The first three blocks pay anyone-can-spend outputs of three kinds
+    (P2WSH, P2SH and bare `OP_TRUE`), and a fourth spends them once
+    they mature, with one of its own outputs spent again in the same
+    block. `getblock` at verbosity 2 and 3 and `getrawtransaction` with
+    its block named are then asked of both, for every block, `asm` aside
+    and, for `getrawtransaction`, `time` and `blocktime`, which this node
+    does not answer.
+    """
+    op_true = b"\x51"
+    p2wsh = bytes.fromhex("0020") + sha256(op_true)
+    p2sh = bytes.fromhex("a914") + hash160(op_true) + bytes.fromhex("87")
+    funding = [p2wsh, p2sh, op_true]
+    burial = _descriptor(bitcoind, op_true)
+    for script_pub_key in funding:
+        bitcoind.rpc("generatetodescriptor", [1, _descriptor(bitcoind, script_pub_key)])
+    bitcoind.rpc("generatetodescriptor", [100, burial])
+
+    coinbases: list[tuple[bytes, int]] = []
+    for height in (1, 2, 3):
+        block = cast(
+            "dict[str, Any]",
+            bitcoind.rpc("getblock", [bitcoind.rpc("getblockhash", [height]), 2]),
+        )
+        coinbase = block["tx"][0]
+        coinbases.append(
+            (bytes.fromhex(coinbase["txid"]), int(coinbase["vout"][0]["value"] * 10**8))
+        )
+    witness = Witness([op_true])
+    first = _spend(
+        [
+            (
+                coinbases[0][0],
+                TxIn(OutPoint(coinbases[0][0], 0), b"", 0xFFFFFFFD, witness),
+            ),
+            (
+                coinbases[1][0],
+                TxIn(OutPoint(coinbases[1][0], 0), script.serialize([op_true]), 0),
+            ),
+            (coinbases[2][0], TxIn(OutPoint(coinbases[2][0], 0), b"", 0xFFFFFFFF)),
+        ],
+        [TxOut(1000, p2wsh), *(TxOut(1000 + n, s) for n, s in enumerate(_SCRIPTS))],
+    )
+    total = sum(value for _, value in coinbases)
+    first.vout[0] = TxOut(total - 12345 - sum(o.value for o in first.vout[1:]), p2wsh)
+    second = _spend(
+        [(first.id, TxIn(OutPoint(first.id, 0), b"", 0xFFFFFFFF, witness))],
+        [TxOut(first.vout[0].value - 777, bytes.fromhex("0014") + hash160(_G))],
+    )
+    mined = bitcoind.rpc(
+        "generateblock",
+        [
+            burial,
+            [
+                tx.serialize(include_witness=True, check_validity=False).hex()
+                for tx in (first, second)
+            ],
+        ],
+    )
+    spending_block = cast("dict[str, str]", mined)["hash"]
+    bitcoind.rpc("generatetodescriptor", [2, burial])
+    tip = cast("int", bitcoind.rpc("getblockcount"))
+
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path / "node",
+            p2p_port=get_random_port(),
+            rpc_port=get_random_port(),
+        )
+    )
+    node.start()
+    try:
+        wait_until_listening(node.p2p_manager)
+        wait_until_listening(node.rpc_manager)
+        node.p2p_manager.connect(peer_address("127.0.0.1", bitcoind.p2p_port, 0, 0))
+        wait_until(lambda: len(node.chainstate.block_index.active_chain) == tip + 1)
+        wait_until(lambda: node.status == NodeStatus.BlockSynced)
+        client = rpc_client(node)
+
+        for height in range(tip + 1):
+            block_hash = bitcoind.rpc("getblockhash", [height])
+            for verbosity in (2, 3):
+                ours = client.call("getblock", [block_hash, verbosity])
+                theirs = bitcoind.rpc("getblock", [block_hash, verbosity])
+                ours, theirs = _without_asm(ours), _without_asm(theirs)
+                # one double, spelled with 16 digits by one and 17 by the other
+                assert ours.pop("difficulty") == pytest.approx(theirs.pop("difficulty"))
+                assert _key_order(ours) == _key_order(theirs)
+                assert ours == theirs, (height, verbosity)
+
+        spending = cast("dict[str, Any]", bitcoind.rpc("getblock", [spending_block, 3]))
+        assert all("fee" in tx for tx in spending["tx"][1:])
+        assert all("prevout" in vin for tx in spending["tx"][1:] for vin in tx["vin"])
+        for tx in (first, second):
+            args = [tx.id.hex(), True, spending_block]
+            ours = _without_asm(client.call("getrawtransaction", args))
+            theirs = _without_asm(bitcoind.rpc("getrawtransaction", args))
+            for key in ("time", "blocktime"):
+                theirs.pop(key)
+            assert _key_order(ours) == _key_order(theirs)
             assert ours == theirs
     finally:
         node.stop()

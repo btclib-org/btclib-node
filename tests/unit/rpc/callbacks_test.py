@@ -39,7 +39,7 @@ from btclib_wallet.descriptors import add_checksum, from_address
 
 import btclib_node.p2p.banman as banman_module
 import btclib_node.rpc.callbacks as cb
-from btclib_node.block_db import Coin
+from btclib_node.block_db import Coin, RevBlock
 from btclib_node.chains import Chain, HeadersSyncParams, Main, RegTest
 from btclib_node.chainstate.block_index import BlockStatus, block_time, calculate_work
 from btclib_node.chainstate.muhash import CoinStats
@@ -5213,25 +5213,143 @@ def test_get_block_refuses_a_hash_this_node_has_never_indexed(
     assert raised.value.message == "Block not found"
 
 
-def test_get_block_refuses_verbosity_past_2(
+def test_get_block_reads_a_verbosity_at_or_below_zero_as_the_hex(
     regtest_node: Callable[..., Node],
 ) -> None:
-    """Verbosity 3 (Core's own prevout detail) and past it are still refused.
+    """`getblock` serves any `int`: at or below 0 is the hex, as Core's.
 
-    Verbosity 1 and 2 are answered now; the tests below cover them.
+    `blockToJSON` is reached only from 1 up; `getblock`'s own
+    `verbosity <= 0` answers the hex first.
     """
     node = regtest_node()
     chain = generate_random_chain(1, node.chain.genesis.hash)
     connect(node, chain)
-    block_hash_hex = chain[0].header.hash.hex()
 
-    for params in ([block_hash_hex, 3], [block_hash_hex, -1]):
-        with pytest.raises(RpcError) as raised:
-            get_block(node, _CONN, params)
-        assert raised.value.code == RPCErrorCode.MISC_ERROR
-        assert raised.value.message == (
-            "getblock: only verbosity 0, 1 and 2 are served here"
-        )
+    answer = get_block(node, _CONN, [chain[0].header.hash.hex(), -1])
+
+    assert answer == chain[0].serialize(check_validity=False).hex()
+
+
+@pytest.mark.parametrize("verbosity", [2**31, -(2**31) - 1])
+def test_get_block_refuses_a_verbosity_past_an_int(
+    regtest_node: Callable[..., Node], verbosity: int
+) -> None:
+    """`getInt<int>()`'s own range: 32 bits, past which Core refuses."""
+    node = regtest_node()
+    chain = generate_random_chain(1, node.chain.genesis.hash)
+    connect(node, chain)
+
+    with pytest.raises(RpcError) as raised:
+        get_block(node, _CONN, [chain[0].header.hash.hex(), verbosity])
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
+    assert raised.value.message == "JSON integer out of range"
+
+
+_FEE = 5000
+
+
+def a_node_with_a_paying_spend(
+    regtest_node: Callable[..., Node],
+) -> tuple[Node, Block, Tx]:
+    """Return a node holding a block whose second transaction pays `_FEE`.
+
+    The first `COINBASE_MATURITY` blocks carry only a coinbase each, and
+    the next one spends the first of them, paying less than it was worth.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(COINBASE_MATURITY, node.chain.genesis.hash)
+    funding = chain[0].transactions[0]
+    paying = generate_random_transaction(funding.id, value=funding.vout[0].value - _FEE)
+    block = build_block(
+        chain[-1].header.hash,
+        [generate_coinbase(height=COINBASE_MATURITY + 1), paying],
+        COINBASE_MATURITY,
+    )
+    connect(node, [*chain, block])
+    return node, block, funding
+
+
+def test_get_block_verbosity_2_answers_the_fee_of_a_spend(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Verbosity 2 answers `fee` from the block's undo data, no `prevout`.
+
+    The coinbase has no undo data and so no `fee`
+    (btclib-org/btclib-node#1446).
+    """
+    node, block, _ = a_node_with_a_paying_spend(regtest_node)
+
+    answer = get_block(node, _CONN, [block.header.hash.hex(), 2])
+
+    assert isinstance(answer, dict)
+    coinbase, paying = answer["tx"]
+    assert "fee" not in coinbase
+    assert paying["fee"].text == "0.00005000"
+    assert list(paying)[-2:] == ["fee", "hex"]
+    assert "prevout" not in paying["vin"][0]
+
+
+@pytest.mark.parametrize("verbosity", [3, 4, 2**31 - 1])
+def test_get_block_verbosity_3_answers_each_input_s_prevout(
+    regtest_node: Callable[..., Node], verbosity: int
+) -> None:
+    """Verbosity 3 and above nest the spent coin under `vin[].prevout`.
+
+    `generated`, `height`, `value` and the coin's own `scriptPubKey`, in
+    that order, between `txinwitness` and `sequence`.
+    """
+    node, block, funding = a_node_with_a_paying_spend(regtest_node)
+
+    answer = get_block(node, _CONN, [block.header.hash.hex(), verbosity])
+
+    assert isinstance(answer, dict)
+    coinbase, paying = answer["tx"]
+    assert "prevout" not in coinbase["vin"][0]
+    (vin,) = paying["vin"]
+    assert list(vin) == ["txid", "vout", "scriptSig", "prevout", "sequence"]
+    prevout = vin["prevout"]
+    assert list(prevout) == ["generated", "height", "value", "scriptPubKey"]
+    assert prevout["generated"] is True
+    assert prevout["height"] == 1
+    assert prevout["value"].text == "50.00000000"
+    assert prevout["scriptPubKey"] == cb._script_pub_key_dict(
+        funding.vout[0].script_pub_key.script, "regtest"
+    )
+    assert paying["fee"].text == "0.00005000"
+
+
+def test_get_block_answers_neither_fee_nor_prevout_without_undo_data(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A block with no undo data held answers as verbosity 2 without it.
+
+    Core's `fee` is "omitted if block undo data is not available", and
+    `prevout` is "only if undo information is available".
+    """
+    node, block, _ = a_node_with_a_paying_spend(regtest_node)
+    monkeypatch.setattr(node.block_db, "get_rev_block", lambda _hash: None)
+
+    answer = get_block(node, _CONN, [block.header.hash.hex(), 3])
+
+    assert isinstance(answer, dict)
+    _, paying = answer["tx"]
+    assert "fee" not in paying
+    assert "prevout" not in paying["vin"][0]
+    assert paying["txid"] == block.transactions[1].id.hex()
+
+
+def test_get_block_refuses_undo_data_that_does_not_match_the_block(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A patch with another number of coins is Core's own "can't be read"."""
+    node, block, _ = a_node_with_a_paying_spend(regtest_node)
+    emptied = RevBlock(block.header.hash, to_add=[], to_remove=[])
+    monkeypatch.setattr(node.block_db, "get_rev_block", lambda _hash: emptied)
+
+    with pytest.raises(RpcError) as raised:
+        get_block(node, _CONN, [block.header.hash.hex(), 2])
+    assert raised.value.code == RPCErrorCode.INTERNAL_ERROR
+    assert raised.value.message.startswith("Undo data expected but can't be read.")
 
 
 def test_get_block_verbosity_1_answers_the_header_plus_size_and_txids(

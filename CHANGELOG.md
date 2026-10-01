@@ -12474,3 +12474,12 @@ dereferences it, and `refs/tags/v1^{}` does the same from a checkout.
   `getblock` at verbosity 2 render a transaction the same way, and a
   decoded output of negative value renders as Core's `CAmount` does
   rather than failing (closes #1448).
+
+### `getblock` answers each transaction's fee and, at verbosity 3, its prevouts
+
+- **Verbosity 2 adds `fee` to each transaction after the coinbase, and
+  verbosity 3 and above add `prevout` to each input, from the block's
+  undo data** (closes #1446). Both are left out where the undo data is
+  not held, as Core leaves them out. A verbosity at or below 0 answers
+  the hex, and one outside a 32-bit integer is refused, where every
+  verbosity but 0, 1 and 2 was.
