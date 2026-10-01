@@ -47,6 +47,7 @@ _EXPECTED_BARE_LISTING = (
     "stop\n"
     "\n"
     "== Mining ==\n"
+    'getblocktemplate {"mode":"str","capabilities":["str",...],"rules":["segwit","str",...],"longpollid":"str","data":"hex"}\n'
     'submitblock "hexdata" ( "dummy" )\n'
     'submitheader "hexdata"\n'
     "\n"

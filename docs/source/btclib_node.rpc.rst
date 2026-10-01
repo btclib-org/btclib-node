@@ -67,6 +67,13 @@ btclib\_node.rpc.manager module
    :members:
    :show-inheritance:
 
+btclib\_node.rpc.mining module
+---------------------------------
+
+.. automodule:: btclib_node.rpc.mining
+   :members:
+   :show-inheritance:
+
 btclib\_node.rpc.solver module
 -----------------------------------
 

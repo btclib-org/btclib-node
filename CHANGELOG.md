@@ -1766,6 +1766,23 @@ that records it (issue btclib-org/.github#1362).
   addr-fetch peer is not a preferred download peer nor one headers and blocks
   are synced from, as in Core** (closes #1588).
 
+### `generatetoaddress` is served
+
+- **`generatetoaddress` mines blocks of the mempool's best packages to an
+  address, as Core's does, and answers their hashes** (closes #1404).
+
+### `generateblock` is served
+
+- **`generateblock` mines a block of the given transactions, to an address
+  or a descriptor, and answers its hash, or its hex with `submit=false`**
+  (closes #1396).
+
+### `getblocktemplate` is served
+
+- **`getblocktemplate` answers a template or checks a proposal, as Core's
+  does, a mined block's version and a template's `vbavailable` following
+  the versionbits state; `longpollid` is refused** (closes #1427).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

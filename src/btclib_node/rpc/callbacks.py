@@ -75,6 +75,11 @@ from btclib_node.rpc.errors import (
     type_errors,
 )
 from btclib_node.rpc.help import HELP_TEXT, answer_help
+from btclib_node.rpc.mining import (
+    generate_block,
+    generate_to_address,
+    get_block_template,
+)
 from btclib_node.rpc.solver import solver
 
 if TYPE_CHECKING:
@@ -3894,6 +3899,9 @@ callbacks = {
     "preciousblock": precious_block,
     "submitblock": submit_block,
     "submitheader": submit_header,
+    "getblocktemplate": get_block_template,
+    "generatetoaddress": generate_to_address,
+    "generateblock": generate_block,
     "getpeerinfo": get_peer_info,
     "getconnectioncount": get_connection_count,
     "getnetworkinfo": get_network_info,
@@ -3943,6 +3951,9 @@ arg_names: dict[str, tuple[str, ...]] = {
     "preciousblock": ("blockhash",),
     "submitblock": ("hexdata", "dummy"),
     "submitheader": ("hexdata",),
+    "getblocktemplate": ("template_request",),
+    "generatetoaddress": ("nblocks", "address", "maxtries"),
+    "generateblock": ("output", "transactions", "submit"),
     "getpeerinfo": (),
     "getconnectioncount": (),
     "getnetworkinfo": (),
