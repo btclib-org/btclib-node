@@ -916,6 +916,14 @@ _MAX_ADDR_RATE_PER_SECOND = 0.1
 _MAX_ADDR_PROCESSING_TOKEN_BUCKET = MAX_ADDR_TO_SEND
 
 
+# `ProcessMessage`'s plausibility bounds for a gossiped time
+# (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+# tag): at or before this, or more than ten minutes ahead of the clock,
+# it is replaced by five days ago
+_GOSSIP_MIN_TIME = 100_000_000
+_GOSSIP_REDATE = 5 * 24 * 3600
+
+
 def _store_gossip(
     node: Node, conn: Connection, addresses: Iterable[NetworkAddressV2]
 ) -> None:
@@ -933,7 +941,8 @@ def _store_gossip(
     with more than one address, "to avoid disconnecting on
     self-announcements" (same loop, same sha) -- of `addresses` as
     received, ahead of every filter above, matching Core's own
-    `vAddr.size()` (btclib-org/btclib-node#1284).
+    `vAddr.size()` (btclib-org/btclib-node#1284). A time Core finds
+    implausible is replaced first (btclib-org/btclib-node#1605).
     """
     now = time.time()
     if conn.addr_token_bucket < _MAX_ADDR_PROCESSING_TOKEN_BUCKET:
@@ -962,9 +971,14 @@ def _store_gossip(
             ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_NETWORK_LIMITED
         ):
             continue
-        if manager.is_discouraged(address) or manager.ban_man.is_peer_banned(address):
+        # Core re-dates a time before 1973 or ahead of the clock, ahead
+        # of the discouraged and banned check
+        dated = address
+        if address.timestamp <= _GOSSIP_MIN_TIME or address.timestamp > now + 600:
+            dated = replace(address, timestamp=int(now - _GOSSIP_REDATE))
+        if manager.is_discouraged(dated) or manager.ban_man.is_peer_banned(dated):
             continue
-        kept.append(address)
+        kept.append(dated)
     conn.stats.addr_processed += len(kept)
     conn.stats.addr_rate_limited += rate_limited
     # `source=conn.address`: Core's own `m_addrman.Add(vAddrOk,

@@ -1854,6 +1854,47 @@ def test_an_ordinary_peer_answering_with_more_than_one_is_not_stopped() -> None:
         assert not peer.stopped
 
 
+@pytest.mark.parametrize(
+    "offset",
+    [None, 24 * 3600],
+    ids=["before 1973", "a day ahead"],
+)
+def test_an_implausible_gossiped_time_is_five_days_back(offset: int | None) -> None:
+    """ISS 1605: Core's `ADDR` handler re-dates a time before 1973 or ahead.
+
+    Five days back, then the two-hour penalty as for any gossip, so the
+    address is not terrible and is served.
+    """
+    now = int(time.time())
+    stamp = 50 if offset is None else now + offset
+    given = [
+        peer_address(
+            "1.2.3.5", 18444, timestamp=stamp, services=ServiceFlags.NODE_NETWORK
+        )
+    ]
+    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+    node = a_handshake_node(peer_db=peer_db)
+    addrv2(node, AddrV2(given).serialize(), a_gossiping_peer())
+    (row,) = peer_db.addresses
+    expected = now - 5 * 24 * 3600 - address_module._GOSSIP_TIME_PENALTY
+    assert abs(row.timestamp - expected) <= 2
+    assert peer_db.get_addr(0, 0) == [row]
+
+
+def test_a_gossiped_time_ten_minutes_ahead_is_kept() -> None:
+    """ISS 1605: only a time over ten minutes ahead of the clock is replaced."""
+    now = int(time.time())
+    given = [peer_address("1.2.3.5", 18444, timestamp=now + 300, services=1)]
+    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+    addrv2(
+        a_handshake_node(peer_db=peer_db),
+        AddrV2(given).serialize(),
+        a_gossiping_peer(),
+    )
+    (row,) = peer_db.addresses
+    assert row.timestamp == now + 300 - address_module._GOSSIP_TIME_PENALTY
+
+
 def test_a_discouraged_host_gossiped_is_not_stored() -> None:
     """ISS 1089: Core's `ADDR`/`ADDRV2` loop skips a discouraged host.
 

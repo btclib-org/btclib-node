@@ -1571,6 +1571,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   hour or a day, as Core's `AddSingle`; the answered table is pruned by
   its own handshake time, not by that `nTime`** (closes #1603).
 
+### A gossiped time Core finds implausible is five days back
+
+- **A gossiped time at or before 1973, or over ten minutes ahead of the
+  clock, is replaced by five days ago before it is stored, as Core's
+  `ADDR` handler does** (closes #1605).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
