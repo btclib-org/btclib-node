@@ -247,7 +247,7 @@ def handle_rpc(node: Node) -> None:
     if not conn:
         return
 
-    node.logger.debug("Received rpc message: %s", conn_id)
+    node.logger.log_debug("rpc", "Received rpc message: %s", conn_id)
 
     if isinstance(body, dict):
         reply, stop, delay = _answer_one(node, conn, body)
@@ -266,4 +266,4 @@ def handle_rpc(node: Node) -> None:
         node.stop()
     else:
         conn.send(reply)
-    node.logger.debug("Finished rpc\n")
+    node.logger.log_debug("rpc", "Finished rpc\n")

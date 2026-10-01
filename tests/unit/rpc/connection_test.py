@@ -1009,7 +1009,7 @@ def refused(
         manager = fake_manager(connections={0: None})
         manager.logger = SimpleNamespace(
             warning=lambda *args: warnings.append(args),
-            debug=lambda *args: debug_lines.append(args),
+            log_debug=lambda *args: debug_lines.append(args),
         )
         manager.client_allowed = lambda client: allowed
         if interrupted:
@@ -1242,7 +1242,8 @@ def test_a_source_rpcallowip_does_not_name_is_refused_403_first(
     assert not closed
     assert not messages
     assert not warnings
-    ((message, _),) = debugs
+    ((category, message, _),) = debugs
+    assert category == "http"
     assert message == (
         "HTTP request from %s rejected: Client network is not allowed RPC access"
     )
@@ -1264,7 +1265,7 @@ def test_a_refused_source_s_next_request_is_refused_403_too() -> None:
         loop = asyncio.get_running_loop()
         manager = fake_manager(connections={0: None})
         manager.logger = SimpleNamespace(
-            warning=lambda *_args: None, debug=lambda *_args: None
+            warning=lambda *_args: None, log_debug=lambda *_args: None
         )
         manager.client_allowed = lambda _client: False
         conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)

@@ -117,6 +117,11 @@ on release day.
   the threshold. Headers of such a chain that an existing data directory
   already holds are kept and read as before, as Core keeps what its block
   index holds, so nothing has to be done about them.
+- **`history.log` marks each debug line with its category, `[net]` for
+  one, where it had `[debug]`, and `-debug=<category>` writes only that
+  category's lines** (closes #1322). A start with `-debug=rpc` no longer
+  logs the peer lines; `-debug`, `-debug=1` or `-debug=all` still logs
+  every one, and `-debugexclude=<category>` drops one (closes #1609).
 
 ## v2026.9.24
 

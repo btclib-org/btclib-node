@@ -1417,7 +1417,8 @@ class P2pManager(threading.Thread):
         # check.
         for ip, address in zip(ips, addresses, strict=True):
             if not is_valid(_legacy_ipv6(ip)):
-                self.logger.debug(
+                self.logger.log_debug(
+                    "net",
                     "Resolver returned invalid address %s for %s",
                     ip_and_port(ip, port),
                     dest,
@@ -1469,7 +1470,9 @@ class P2pManager(threading.Thread):
             # `m_connected` rather than from its last message
             # (btclib-org/btclib-node#1284).
             if conn.addr_fetch and now - conn.connected_time > _ADDR_FETCH_TIMEOUT:
-                self.logger.debug("addrfetch connection timeout, peer=%s", conn.id)
+                self.logger.log_debug(
+                    "net", "addrfetch connection timeout, peer=%s", conn.id
+                )
                 self.remove_connection(conn.id)
                 continue
             if now - conn.last_receive > _IDLE_TIMEOUT:
@@ -2001,7 +2004,8 @@ class P2pManager(threading.Thread):
                 )
             ):
                 endpoint = network_address(anchor)
-                self.logger.debug(
+                self.logger.log_debug(
+                    "net",
                     "Trying to make an anchor connection to %s",
                     ip_and_port(str(endpoint.ip), endpoint.port),
                 )
@@ -2791,7 +2795,8 @@ class P2pManager(threading.Thread):
         if evict_id is None:
             return False
         endpoint = network_address(conns[evict_id].address)
-        self.logger.debug(
+        self.logger.log_debug(
+            "net",
             "selected inbound connection for eviction, disconnecting peer=%d"
             " peeraddr=%s",
             evict_id,
@@ -2881,7 +2886,8 @@ class P2pManager(threading.Thread):
                     # comes before `create_connection` builds anything.
                     if not self.network_active:
                         endpoint = network_address(address)
-                        self.logger.debug(
+                        self.logger.log_debug(
+                            "net",
                             "connection from %s dropped: not accepting new connections",
                             ip_and_port(str(endpoint.ip), endpoint.port),
                         )
@@ -2889,7 +2895,8 @@ class P2pManager(threading.Thread):
                         continue
                     if self.ban_man.is_peer_banned(address):
                         endpoint = network_address(address)
-                        self.logger.debug(
+                        self.logger.log_debug(
+                            "net",
                             "connection from %s dropped (banned)",
                             ip_and_port(str(endpoint.ip), endpoint.port),
                         )
@@ -2899,7 +2906,8 @@ class P2pManager(threading.Thread):
                     discouraged = self.is_discouraged(address)
                     if discouraged and inbound + 1 >= self.max_inbound:
                         endpoint = network_address(address)
-                        self.logger.debug(
+                        self.logger.log_debug(
+                            "net",
                             "connection from %s dropped (discouraged)",
                             ip_and_port(str(endpoint.ip), endpoint.port),
                         )
@@ -2909,9 +2917,10 @@ class P2pManager(threading.Thread):
                         inbound >= self.max_inbound
                         and not self._attempt_to_evict_connection()
                     ):
-                        self.logger.debug(
+                        self.logger.log_debug(
+                            "net",
                             "failed to find an eviction candidate"
-                            " - connection dropped (full)"
+                            " - connection dropped (full)",
                         )
                         sock.close()
                         continue

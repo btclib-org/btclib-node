@@ -79,7 +79,7 @@ def make_node(
         ),
         logger=logger
         if logger is not None
-        else SimpleNamespace(debug=lambda *a: None, exception=lambda *a: None),
+        else SimpleNamespace(log_debug=lambda *a: None, exception=lambda *a: None),
         stop=lambda: stopped.append(True),
         p2p_manager=SimpleNamespace(ping_all=callback or (lambda: None)),
         # `_execute`'s own `RPCCommandExecution` span, popped again
