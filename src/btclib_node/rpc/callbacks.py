@@ -18,7 +18,7 @@ import string
 import time
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from bitcoin_core_rpc import RPCErrorCode, chain_from_network
 from btclib import b32, b58
@@ -221,10 +221,11 @@ def get_blockchain_info(
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag) -- always the array form:
     this node has no `-deprecatedrpc` of its own, so the single-string
     form `use_deprecated=true` answers with is never reachable here.
-    Empty, ordinarily: `main.check_fork_warning_conditions` is this
-    tree's one writer of it so far, and it needs an invalid chain with
-    more work than this node's own tip to set anything
-    (btclib-org/btclib-node#1522).
+    Empty, ordinarily: it takes an invalid chain with more work than this
+    node's own tip (`main.check_fork_warning_conditions`,
+    btclib-org/btclib-node#1522) or a version bit no deployment uses
+    reaching its threshold (`versionbits.check_unknown_activations`,
+    btclib-org/btclib-node#1475) to set anything.
 
     Absent, each for its own reason rather than by oversight:
     `verificationprogress`, Core's own `GuessVerificationProgress`
@@ -855,17 +856,44 @@ def _block_json_header(
     return out
 
 
+def _parse_verbosity(params: list[Any], position: int, *, default: int) -> int:
+    """Read a `verbosity` argument as Core's `ParseVerbosity` does.
+
+    `ParseVerbosity` (`rpc/util.cpp:83-96`, at bitcoin/bitcoin@9be056a8a7)
+    answers `default` for a missing or null argument and a JSON bool as
+    1 or 0, the argument being declared `skip_type_check` in `getblock`
+    and `getrawtransaction` alike. Anything else goes to
+    `UniValue::getInt<int>()` (`src/univalue/include/univalue.h
+    :142-153`): a non-integral number, or one outside a 32-bit `int`, is
+    `RPC_MISC_ERROR` "JSON integer out of range", and a value that is no
+    number is `RPC_TYPE_ERROR` with the bare "JSON value of type ... is
+    not of expected type number", not the "Wrong type passed" object of
+    a type-checked argument (measured against bitcoind v31.1.0 for both
+    RPCs).
+    """
+    if len(params) <= position or params[position] is None:
+        return default
+    value = params[position]
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, float):
+        raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
+    if isinstance(value, int):
+        if not -(2**31) <= value < 2**31:
+            raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
+        return value
+    raise RpcError(
+        RPCErrorCode.TYPE_ERROR,
+        f"JSON value of type {json_type_name(value)} is not of expected type number",
+    )
+
+
 def _parse_get_block_params(params: list[Any]) -> tuple[bytes, int]:
     """Validate `getblock`'s own two arguments; answer `(blockhash, verbosity)`.
 
-    `ParseVerbosity` (`rpc/util.cpp:83-97`, at bitcoin/bitcoin@9be056a8a7)
-    is what a missing argument answers with `default_verbosity`, 1 here,
-    and what a JSON bool degrades to (`true` as `1`, `false` as `0`)
-    under this argument's own `skip_type_check` (`:772`) -- the same
-    allowance `get_raw_transaction`'s own `verbose` argument does not
-    carry, argued in that function's own missing-argument comment. Any
-    `int` is a verbosity, and `get_block` reads one at or below 0 as 0
-    and one at or above 3 as 3, as `getblock` does.
+    The verbosity is `_parse_verbosity`'s, 1 by default. Any `int` is a
+    verbosity, and `get_block` reads one at or below 0 as 0 and one at or
+    above 3 as 3, as `getblock` does.
     """
     if not params:
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["getblock"])
@@ -876,28 +904,22 @@ def _parse_get_block_params(params: list[Any]) -> tuple[bytes, int]:
     # "hash", the two RPCs naming the same positional argument differently.
     block_hash = _parse_hash_v("blockhash", params[0])
 
-    has_verbosity = len(params) > 1 and params[1] is not None
-    verbosity_param: Any = params[1] if has_verbosity else 1
-    if isinstance(verbosity_param, bool):
-        verbosity = int(verbosity_param)
-    elif isinstance(verbosity_param, float):
-        # `UniValue::getInt<int>()` (`src/univalue/include/univalue.h
-        # :142-153`), which `ParseVerbosity` calls once `skip_type_check`
-        # has let a non-bool, non-null value through unchecked: a
-        # non-integral number is `RPC_MISC_ERROR`, the same message
-        # `get_block_hash`'s own float check answers above.
-        raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
-    elif isinstance(verbosity_param, int):
-        # the same `getInt<int>()`: a 32-bit `int`
-        if not -(2**31) <= verbosity_param < 2**31:
-            raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
-        verbosity = verbosity_param
-    else:
-        raise type_error(2, "verbosity", verbosity_param, "number")
+    verbosity = _parse_verbosity(params, 1, default=1)
     return block_hash, verbosity
 
 
-def _block_undo(node: Node, block_hash: bytes, block: Block) -> list[list[Coin] | None]:
+# Core's own refusal when a block's undo data is wanted and cannot be read
+# (`src/rpc/blockchain.cpp` and `src/rpc/rawtransaction.cpp`, at
+# bitcoin/bitcoin@9be056a8a7)
+_UNDO_UNREADABLE = (
+    "Undo data expected but can't be read. This could be due to "
+    "disk corruption or a conflict with a pruning event."
+)
+
+
+def _block_undo(
+    node: Node, block_hash: bytes, block: Block
+) -> list[list[Coin] | None] | None:
     """Answer the coins each transaction of `block` spent, in input order.
 
     Core's `blockToJSON` hands `TxToUniv` the `CTxUndo` of every
@@ -908,18 +930,15 @@ def _block_undo(node: Node, block_hash: bytes, block: Block) -> list[list[Coin] 
     lists the coin of every input of every transaction after the
     coinbase, in block order (`RevBlock.to_add`), so each transaction
     takes the next `len(vin)` of them. A patch that holds another number
-    is Core's "Undo data expected but can't be read".
+    is Core's "Undo data expected but can't be read". None is a block
+    whose patch is not held.
     """
     rev_block = node.block_db.get_rev_block(block_hash)
     if rev_block is None:
-        return [None] * len(block.transactions)
+        return None
     coins = [coin for _, coin in rev_block.to_add]
     if len(coins) != sum(len(tx.vin) for tx in block.transactions[1:]):
-        raise RpcError(
-            RPCErrorCode.INTERNAL_ERROR,
-            "Undo data expected but can't be read. This could be due to "
-            "disk corruption or a conflict with a pruning event.",
-        )
+        raise RpcError(RPCErrorCode.INTERNAL_ERROR, _UNDO_UNREADABLE)
     undo: list[list[Coin] | None] = [None]
     start = 0
     for tx in block.transactions[1:]:
@@ -981,7 +1000,7 @@ def get_block(
     if verbosity == 1:
         out["tx"] = [tx.id for tx in block.transactions]
     else:
-        undo = _block_undo(node, block_hash, block)
+        undo = _block_undo(node, block_hash, block) or [None] * len(block.transactions)
         out["tx"] = [
             _tx_to_univ(
                 tx,
@@ -2665,10 +2684,23 @@ def _decode_optional_block_hash(params: list[Any]) -> bytes | None:
     return _parse_hash_v("parameter 3", params[2])
 
 
+class _FoundTransaction(NamedTuple):
+    """A transaction and where `_find_transaction` found it.
+
+    `height` and `block` are None for a mempool transaction, whose
+    `position` is 0.
+    """
+
+    tx: Tx
+    height: int | None
+    block: Block | None
+    position: int
+
+
 def _find_transaction(
     node: Node, txid: bytes, block_hash: bytes | None
-) -> tuple[Tx, int | None]:
-    """Return the transaction `txid` names, and its block height if named."""
+) -> _FoundTransaction:
+    """Return the transaction `txid` names, from the mempool or the block."""
     if block_hash is None:
         tx = node.mempool.get_tx(txid)
         if tx is None:
@@ -2679,7 +2711,7 @@ def _find_transaction(
                 "look there instead. Use gettransaction for wallet "
                 "transactions.",
             )
-        return tx, None
+        return _FoundTransaction(tx, None, None, 0)
 
     try:
         block_info = node.chainstate.block_index.get_block_info(block_hash)
@@ -2702,14 +2734,61 @@ def _find_transaction(
         raise RpcError(
             RPCErrorCode.MISC_ERROR, "Block not available (not fully downloaded)"
         )
-    tx = next((t for t in block.transactions if t.id == txid), None)
-    if tx is None:
+    position = next((i for i, t in enumerate(block.transactions) if t.id == txid), None)
+    if position is None:
         raise RpcError(
             RPCErrorCode.INVALID_ADDRESS_OR_KEY,
             "No such transaction found in the provided block. Use "
             "gettransaction for wallet transactions.",
         )
-    return tx, block_info.index
+    return _FoundTransaction(
+        block.transactions[position], block_info.index, block, position
+    )
+
+
+def _raw_transaction_json(
+    node: Node, found: _FoundTransaction, verbosity: int
+) -> dict[str, Any]:
+    """Answer `getrawtransaction`'s JSON at verbosity 1 or 2, `TxToJSON`'s way.
+
+    Core's key order is `in_active_chain` first, then `TxToUniv`'s keys,
+    then the block's (`src/rpc/rawtransaction.cpp`, at
+    bitcoin/bitcoin@9be056a8a7). Verbosity 2 adds `fee` and each input's
+    `prevout` from the block's undo data; a coinbase has none, and for
+    any other transaction in a block Core answers a patch it cannot read
+    as an error, not as no `fee`. A block off the active chain is 0
+    confirmations and names no time.
+    """
+    tx, block_height, block, position = found
+    out: dict[str, Any] = {}
+    active_chain = node.chainstate.block_index.active_chain
+    on_active_chain = False
+    if block is not None and block_height is not None:
+        on_active_chain = (
+            block_height < len(active_chain)
+            and active_chain[block_height] == block.header.hash
+        )
+        out["in_active_chain"] = on_active_chain
+    undo: list[Coin] | None = None
+    if verbosity >= 2 and block is not None and not tx.is_coinbase:  # noqa: PLR2004
+        block_undo = _block_undo(node, block.header.hash, block)
+        if block_undo is None:
+            raise RpcError(RPCErrorCode.INTERNAL_ERROR, _UNDO_UNREADABLE)
+        undo = block_undo[position]
+    out.update(
+        _tx_to_univ(
+            tx, node.chain.name, include_hex=True, undo=undo, prevout=undo is not None
+        )
+    )
+    if block is not None and block_height is not None:
+        out["blockhash"] = block.header.hash.hex()
+        if on_active_chain:
+            out["confirmations"] = len(active_chain) - block_height
+            out["time"] = block_time(block.header)
+            out["blocktime"] = block_time(block.header)
+        else:
+            out["confirmations"] = 0
+    return out
 
 
 def get_raw_transaction(
@@ -2733,27 +2812,17 @@ def get_raw_transaction(
     if not params:
         # the same shape as getblockheader's own missing-argument case:
         # RPCMethod::HandleRequest's HelpResult, RPC_MISC_ERROR
-        # (src/rpc/server.cpp:887). Core's own first name for this
-        # argument is "verbosity" (declared "verbosity|verbose",
-        # src/rpc/rawtransaction.cpp:247); this node keeps its own
-        # "verbose" instead, because `verbose` below reads only the
-        # boolean shape Core's `RPCArg::Default{0}` degrades to under
-        # `allow_bool=true`, not the full 0/1/2 verbosity Core's name
-        # is for -- read at bitcoin/bitcoin@b91d983f66
+        # (src/rpc/server.cpp:887)
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["getrawtransaction"])
-    # txid, verbose and blockhash are checked, and every mismatch
-    # named, before any of them is raised on or any value-level check
-    # below runs (the genesis exception, the two hex decodes), the way
-    # `disconnect_node` above already does for its own two declared
-    # arguments (`type_errors`' own docstring). txid and blockhash are
-    # each declared RPCArg::Type::STR_HEX, type-checked before the
-    # handler body runs
+    # txid and blockhash are checked, and every mismatch named, before
+    # any value-level check below runs (the genesis exception, the two
+    # hex decodes), the way `disconnect_node` above already does for its
+    # own two declared arguments (`type_errors`' own docstring). Each is
+    # declared RPCArg::Type::STR_HEX, type-checked before the handler
+    # body runs; the verbosity is not (`_parse_verbosity`)
     mismatches: list[tuple[int, str, object, str]] = []
     if not isinstance(params[0], str):
         mismatches.append((1, "txid", params[0], "string"))
-    verbose_mismatch = bool_mismatch(params, 1, name="verbose")
-    if verbose_mismatch is not None:
-        mismatches.append(verbose_mismatch)
     if len(params) > 2 and params[2] is not None and not isinstance(params[2], str):  # noqa: PLR2004
         mismatches.append((3, "blockhash", params[2], "string"))
     if mismatches:
@@ -2770,38 +2839,17 @@ def get_raw_transaction(
             "The genesis block coinbase is not considered an ordinary "
             "transaction and cannot be retrieved",
         )
-    # Core declares this argument NUM with allow_bool=true
-    # (src/rpc/rawtransaction.cpp:286); this node answers only the
-    # default and the boolean shape every other verbose flag here
-    # already takes, and not Core's 2, whose `fee` and `prevout` are
-    # what `_block_undo` reads for `getblock`
-    # (btclib-org/btclib-node#1597)
-    verbose = bool_param(params, 1, name="verbose", default=False)
+    # `skip_type_check` (src/rpc/rawtransaction.cpp:233), so the type of
+    # this argument is read here, after the genesis exception, as
+    # `ParseVerbosity` reads it (`_parse_verbosity`)
+    verbosity = _parse_verbosity(params, 1, default=0)
     block_hash = _decode_optional_block_hash(params)
-    tx, block_height = _find_transaction(node, txid, block_hash)
+    found = _find_transaction(node, txid, block_hash)
 
-    if not verbose:
-        return tx.serialize(include_witness=True).hex()
+    if verbosity <= 0:
+        return found.tx.serialize(include_witness=True).hex()
 
-    # Core's key order: `in_active_chain` first, then `TxToUniv`'s keys,
-    # then the block's (`src/rpc/rawtransaction.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7)
-    out: dict[str, Any] = {}
-    active_chain = node.chainstate.block_index.active_chain
-    on_active_chain = False
-    if block_hash is not None and block_height is not None:
-        on_active_chain = (
-            block_height < len(active_chain)
-            and active_chain[block_height] == block_hash
-        )
-        out["in_active_chain"] = on_active_chain
-    out.update(_tx_to_univ(tx, node.chain.name, include_hex=True))
-    if block_hash is not None and block_height is not None:
-        out["blockhash"] = block_hash.hex()
-        out["confirmations"] = (
-            len(active_chain) - block_height if on_active_chain else -1
-        )
-    return out
+    return _raw_transaction_json(node, found, verbosity)
 
 
 # Core's own `IsHex` (`src/util/strencodings.cpp`,

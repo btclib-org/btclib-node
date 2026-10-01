@@ -84,7 +84,7 @@ def a_connection(
         # ever writes it (`__init__.py`). btclib-org/btclib-node#722
         best_height=0,
         logger=SimpleNamespace(
-            warning=warning, info=lambda *a: None, debug=lambda *a: None
+            warning=warning, info=lambda *a: None, log_debug=lambda *a: None
         ),
     )
     manager = SimpleNamespace(
@@ -395,7 +395,7 @@ def a_running_connection(
         # 0 matching a fresh `Node`'s own initial value (`__init__.py`).
         best_height=0,
         logger=SimpleNamespace(
-            warning=lambda *a: None, info=lambda *a: None, debug=lambda *a: None
+            warning=lambda *a: None, info=lambda *a: None, log_debug=lambda *a: None
         ),
     )
     discouraged, record = discourage_recorder()

@@ -20,7 +20,7 @@ import pytest
 from btclib_node import Node, cli
 from btclib_node.chains import Main, RegTest, SigNet, TestNet, TestNet4
 from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS, DEFAULT_MAX_TIP_AGE, Config
-from btclib_node.constants import MIN_PRUNE_TARGET_MIB
+from btclib_node.constants import MIN_PRUNE_TARGET_MIB, default_data_dir
 from btclib_node.rpc.auth import COOKIE_FILE, RpcAuthEntry, password_hmac, to_bytes
 from tests import (
     RPCAUTH,
@@ -3644,3 +3644,120 @@ def test_setup_environment_leaves_the_umask_on_windows(
     monkeypatch.setattr(sys, "platform", "linux")
     cli._setup_environment()
     assert calls == [0o077]
+
+
+@pytest.mark.parametrize(
+    ("argv", "categories"),
+    [
+        (["-debug"], set()),
+        (["-debug=1"], set()),
+        (["-debug=all", "-debug=net"], set()),
+        (["-debug=net"], {"net"}),
+        (["-debug=net", "-debug=rpc"], {"net", "rpc"}),
+        (["-debug=net", "-debug=none", "-debug=http"], {"http"}),
+        (["-debug=none"], set()),
+    ],
+)
+def test_build_config_keeps_the_categories_debug_names(
+    tmp_path: Path, argv: list[str], categories: set[str]
+) -> None:
+    """ISS 1322: `-debug=net` selects `net` alone, `-debug` every category.
+
+    Empty is every category where `debug` is on, as `Logger.log_debug` reads
+    it.
+    """
+    assert _build(tmp_path, *argv).debug_categories == categories
+
+
+def test_build_config_names_the_config_file_it_read(tmp_path: Path) -> None:
+    """ISS 1444: `StartLogging`'s "Config file: <path>" for a file found."""
+    config = _build(tmp_path)
+    assert config.config_file_line == (
+        f"Config file: {os.path.join(tmp_path, 'bitcoin.conf')}"  # noqa: PTH118
+    )
+
+
+def test_build_config_names_the_config_file_it_did_not_find(tmp_path: Path) -> None:
+    """ISS 1444: the default file's absence is `(not found, skipping)`."""
+    config = cli.build_config([f"-datadir={tmp_path}"])
+    assert config.config_file_line == (
+        f"Config file: {os.path.join(tmp_path, 'bitcoin.conf')} "  # noqa: PTH118
+        "(not found, skipping)"
+    )
+
+
+def test_build_config_says_no_config_file_was_read_under_noconf(
+    tmp_path: Path,
+) -> None:
+    """ISS 1444: `-noconf` is `Config file: <disabled>`."""
+    config = cli.build_config([f"-datadir={tmp_path}", "-noconf"])
+    assert config.config_file_line == "Config file: <disabled>"
+
+
+def test_main_history_log_names_the_data_directory_and_config_file(
+    tmp_path: Path,
+) -> None:
+    """ISS 1444: the lines `bitcoind`'s `debug.log` opens on, in its order.
+
+    `init::StartLogging` (`src/init/common.cpp:107-142`, at
+    bitcoin/bitcoin@9be056a8a7): "Default data directory", "Using data
+    directory", "Config file:", then `LogArgs`'s lines. A refusal after the
+    lock opens the same log, and is what reaches it here without a node.
+    """
+    with pytest.raises(SystemExit):
+        cli.main([f"-datadir={tmp_path}", "-port=abc"])
+    log_path = tmp_path / "mainnet" / "history.log"
+    lines = [
+        line.split(" ", 1)[1]
+        for line in log_path.read_text(encoding="utf-8").splitlines()[5:]
+    ]
+    assert lines[1:4] == [
+        f"Default data directory {default_data_dir()}",
+        f"Using data directory {tmp_path / 'mainnet'}",
+        (
+            f"Config file: {os.path.join(tmp_path, 'bitcoin.conf')} "  # noqa: PTH118
+            "(not found, skipping)"
+        ),
+    ]
+    assert lines[4].startswith("Command-line arg: datadir=")
+
+
+@pytest.mark.parametrize(
+    ("argv", "debug", "categories", "excluded"),
+    [
+        (["-debug=1", "-debugexclude=net"], True, set(), {"net"}),
+        (["-debug=net", "-debugexclude=rpc"], True, {"net"}, {"rpc"}),
+        (["-debugexclude=net", "-debugexclude=http"], False, set(), {"net", "http"}),
+        (["-debug", "-debugexclude=all"], True, set(), set(cli._LOG_CATEGORIES)),
+        (["-debug", "-debugexclude=1"], True, set(), set(cli._LOG_CATEGORIES)),
+        (["-debug=net", "-debugexclude=net"], True, {"net"}, {"net"}),
+    ],
+)
+def test_build_config_keeps_the_categories_debugexclude_names(
+    tmp_path: Path,
+    argv: list[str],
+    categories: set[str],
+    excluded: set[str],
+    *,
+    debug: bool,
+) -> None:
+    """ISS 1609: `SetLoggingCategories` removes them after `-debug`'s."""
+    config = _build(tmp_path, *argv)
+    assert config.debug is debug
+    assert config.debug_categories == categories
+    assert config.debug_exclude == excluded
+
+
+@pytest.mark.parametrize("category", ["bogus", "0", "none"])
+def test_build_config_refuses_a_debugexclude_category_core_does_not_know(
+    tmp_path: Path, category: str
+) -> None:
+    """ISS 1609: Core's message, `GetLogCategory` knowing no `0` or `none`."""
+    expected = re.escape(f"Unsupported logging category -debugexclude={category}.")
+    with pytest.raises(ValueError, match=f"^{expected}$"):
+        _build(tmp_path, f"-debugexclude={category}")
+
+
+def test_help_names_debugexclude_under_debug_alone() -> None:
+    """ISS 1609: `-debugexclude` is a `DEBUG_TEST` option, as `-debug` is."""
+    assert "-debugexclude=<category>" in cli._help_message(show_debug=True)

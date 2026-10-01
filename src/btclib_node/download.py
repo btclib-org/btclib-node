@@ -530,7 +530,8 @@ class DownloadManager:
             now - worst.connected_time > _MINIMUM_CONNECT_TIME
             and not worst.download_queue
         ):
-            self.logger.debug(
+            self.logger.log_debug(
+                "net",
                 "disconnecting extra outbound peer=%s "
                 "(last block announcement received at time %s)",
                 worst.id,
@@ -575,7 +576,8 @@ class DownloadManager:
             now - to_disconnect.connected_time >= _MINIMUM_CONNECT_TIME
             and not to_disconnect.download_queue
         ):
-            self.logger.debug(
+            self.logger.log_debug(
+                "net",
                 "disconnecting extra block-relay-only peer=%s "
                 "(last block received at time %s)",
                 to_disconnect.id,
@@ -1242,7 +1244,8 @@ class DownloadManager:
                 to_fetch.append(walk)
             walk = block_info.header.previous_block_hash
         if not on_the_active_chain(walk):
-            self.logger.debug(
+            self.logger.log_debug(
+                "net",
                 "Large reorg, won't direct fetch to %s (%d)",
                 last_header.hex(),
                 header_dict[last_header].index,
@@ -1254,7 +1257,8 @@ class DownloadManager:
             return
         self._request_blocks(conn, blocks, time.time())
         if len(blocks) > 1:
-            self.logger.debug(
+            self.logger.log_debug(
+                "net",
                 "Downloading blocks toward %s (%d) via headers direct fetch",
                 last_header.hex(),
                 header_dict[last_header].index,

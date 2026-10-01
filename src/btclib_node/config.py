@@ -31,7 +31,7 @@ import os
 # for any fallback at all, for every `Sequence[str]` below at once,
 # rather than trading the tenth's placeholder for an eleventh later.
 # btclib-org/btclib-node#1519
-from collections.abc import Sequence  # noqa: TC003
+from collections.abc import Collection, Sequence  # noqa: TC003
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -39,7 +39,7 @@ from typing import TYPE_CHECKING
 from btclib.fee import FeeRate
 
 from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet, TestNet4
-from btclib_node.constants import MAX_TIP_AGE
+from btclib_node.constants import MAX_TIP_AGE, default_data_dir
 from btclib_node.exceptions import InvalidChainTypeError, UnknownChainError
 from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME
 from btclib_node.rpc.auth import (
@@ -416,6 +416,11 @@ class Config:
     # and `rpc.callbacks.get_blockchain_info` both check `pruned` first.
     prune_target_mib: int | None
     debug: bool
+    # the categories `-debug` names, `log.Logger.log_debug`'s filter:
+    # empty where `debug` is on for every category
+    debug_categories: frozenset[str]
+    # the categories `-debugexclude` names, which `-debug` does not select
+    debug_exclude: frozenset[str]
     # the warnings Core buffers while it reads its settings, in order;
     # `open_history_log` logs each once its own log is open, ahead of
     # its version line
@@ -428,6 +433,10 @@ class Config:
     # file's args, then the command line's, logged after
     # `section_warning`
     config_args: tuple[str, ...]
+    # `init::StartLogging`'s "Config file:" line (`cli._config_file_line`),
+    # logged after the data directory's; `""` for a `Config` that was
+    # not built from a command line
+    config_file_line: str
     min_relay_feerate: FeeRate
     # Core's own `-incrementalrelayfee`: the extra fee a replacement pays
     # and what an eviction adds to the mempool's rolling minimum
@@ -650,6 +659,8 @@ class Config:
         pruned: bool = False,
         prune_target_mib: int | None = None,
         debug: bool = False,
+        debug_categories: Collection[str] = (),
+        debug_exclude: Collection[str] = (),
         log_path: str | None = "history.log",
         min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
         incremental_relay_feerate: FeeRate = DEFAULT_INCREMENTAL_RELAY_FEERATE,
@@ -684,6 +695,7 @@ class Config:
         log_warnings: Sequence[str] = (),
         section_warning: str = "",
         config_args: Sequence[str] = (),
+        config_file_line: str = "",
     ) -> None:
         """Resolve `chain`, `minimum_chain_work`'s own default, and ports."""
         self.chain = _resolve_chain(chain)
@@ -694,7 +706,7 @@ class Config:
         )
         self.max_tip_age = max_tip_age
 
-        data_dir = Path(data_dir) if data_dir else Path.home() / ".btclib"
+        data_dir = Path(data_dir) if data_dir else default_data_dir()
         self.data_dir = data_dir.absolute() / self.chain.name
 
         self.blocks_dir = None
@@ -809,10 +821,13 @@ class Config:
         self.prune_target_mib = prune_target_mib
 
         self.debug = debug
+        self.debug_categories = frozenset(debug_categories)
+        self.debug_exclude = frozenset(debug_exclude)
         self.log_path = log_path
         self.log_warnings = tuple(log_warnings)
         self.section_warning = section_warning
         self.config_args = tuple(config_args)
+        self.config_file_line = config_file_line
         self.min_relay_feerate = min_relay_feerate
         self.incremental_relay_feerate = incremental_relay_feerate
         self.dust_relay_feerate = dust_relay_feerate

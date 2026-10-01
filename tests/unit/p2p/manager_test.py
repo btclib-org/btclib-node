@@ -12,7 +12,6 @@ messages addressed to a connection that is no longer there.
 
 import asyncio
 import errno
-import logging
 import math
 import re
 import secrets
@@ -75,6 +74,7 @@ if TYPE_CHECKING:
     from btclib_node.p2p.eviction import EvictionCandidate
 from tests import (
     ListenerEndedError,
+    debug_recorder,
     generate_random_transaction,
     get_random_port,
     log_recorder,
@@ -254,7 +254,7 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
             chain=RegTest(),
             logger=SimpleNamespace(
                 info=lambda *a: None,
-                debug=lambda *a: None,
+                log_debug=lambda *a: None,
                 exception=lambda *a: None,
             ),
             # `broadcast_raw_transaction` no longer sends anything of its
@@ -4916,10 +4916,8 @@ def test_an_inbound_peer_past_the_limit_is_refused_until_a_slot_frees(
     """
     port = get_random_port()
     manager = a_manager(port=port, max_connections=12)
-    logged: list[str] = []
-    monkeypatch.setattr(
-        manager.logger, "debug", lambda msg, *args: logged.append(msg % args)
-    )
+    logged, record = debug_recorder()
+    monkeypatch.setattr(manager.logger, "log_debug", record)
     manager.start()
     wait_until_listening(manager)
     with closing(socket.create_connection(("127.0.0.1", port), timeout=20)):
@@ -4936,8 +4934,9 @@ def test_an_inbound_peer_past_the_limit_is_refused_until_a_slot_frees(
         assert manager.last_connection_id == 0
         assert len(manager.pending_connections) == 1
         assert (
-            "failed to find an eviction candidate - connection dropped (full)" in logged
-        )
+            "net",
+            "failed to find an eviction candidate - connection dropped (full)",
+        ) in logged
     # the first peer closed by the `with`: its `Connection` reads the close,
     # `manage_connections` lets go of it, and the slot is free again
     wait_until(lambda: not manager.pending_connections)
@@ -4965,8 +4964,8 @@ def test_a_full_manager_evicts_an_inbound_peer_to_accept_a_new_one(
     port = get_random_port()
     manager = a_manager(port=port, max_connections=32)
     assert manager.max_inbound == 21
-    logged, record = log_recorder()
-    monkeypatch.setattr(manager.logger, "debug", record)
+    logged, record = debug_recorder()
+    monkeypatch.setattr(manager.logger, "log_debug", record)
     manager.start()
     wait_until_listening(manager)
     with ExitStack() as peers:
@@ -4988,7 +4987,8 @@ def test_a_full_manager_evicts_an_inbound_peer_to_accept_a_new_one(
                 f"selected inbound connection for eviction, disconnecting peer={evicted}"
                 " peeraddr=127.0.0.1:"
             )
-            for line in logged
+            for category, line in logged
+            if category == "net"
         )
         manager.stop()
         manager.join(timeout=10)
@@ -5081,8 +5081,8 @@ def test_a_discouraged_host_is_refused_where_it_would_fill_the_last_slot(
     port = get_random_port()
     manager = a_manager(port=port, max_connections=12)
     manager.discourage(peer_address("1.2.3.4", 18444))
-    logged, record = log_recorder()
-    monkeypatch.setattr(manager.logger, "debug", record)
+    logged, record = debug_recorder()
+    monkeypatch.setattr(manager.logger, "log_debug", record)
     manager.start()
     wait_until_listening(manager)
     with ExitStack() as peers:
@@ -5091,7 +5091,7 @@ def test_a_discouraged_host_is_refused_where_it_would_fill_the_last_slot(
         # closed before `create_connection`, so nothing was sent to it
         assert refused.recv(4096) == b""
         assert manager.last_connection_id == -1
-        assert "connection from 1.2.3.4:50000 dropped (discouraged)" in logged
+        assert ("net", "connection from 1.2.3.4:50000 dropped (discouraged)") in logged
         _, accepted = land_an_inbound_peer(manager, "1.2.3.5", 50000)
         peers.enter_context(closing(accepted))
         # ISS 1504: `create_connection` increments `last_connection_id`
@@ -5155,8 +5155,8 @@ def test_a_discouraged_host_knocking_on_a_full_manager_evicts_nobody(
     manager.discourage(peer_address("1.2.3.4", 18444))
     selections: list[Iterable[EvictionCandidate]] = []
     monkeypatch.setattr(manager_module, "select_node_to_evict", selections.append)
-    logged, record = log_recorder()
-    monkeypatch.setattr(manager.logger, "debug", record)
+    logged, record = debug_recorder()
+    monkeypatch.setattr(manager.logger, "log_debug", record)
     manager.start()
     wait_until_listening(manager)
     with ExitStack() as peers:
@@ -5172,8 +5172,8 @@ def test_a_discouraged_host_knocking_on_a_full_manager_evicts_nobody(
         assert manager.last_connection_id == 1
         assert sorted(manager.pending_connections) == [0, 1]
         assert not selections
-        assert not any(line.startswith("selected inbound") for line in logged)
-        assert "connection from 1.2.3.4:50000 dropped (discouraged)" in logged
+        assert not any(line.startswith("selected inbound") for _, line in logged)
+        assert ("net", "connection from 1.2.3.4:50000 dropped (discouraged)") in logged
         manager.stop()
         manager.join(timeout=10)
 
@@ -6698,7 +6698,7 @@ def test_the_anchors_are_read_as_the_manager_runs_and_the_file_goes(
         "logger",
         SimpleNamespace(
             info=lambda fmt, *args: logged.append(fmt % args),
-            debug=lambda *a: None,
+            log_debug=lambda *a: None,
             exception=lambda *a: None,
         ),
     )
@@ -6763,7 +6763,7 @@ def test_an_anchors_file_that_cannot_be_written_is_logged(
         "logger",
         SimpleNamespace(
             info=lambda *a: None,
-            debug=lambda *a: None,
+            log_debug=lambda *a: None,
             exception=lambda *a: logged.append(a),
         ),
     )
@@ -7251,8 +7251,8 @@ def test_a_banned_host_is_refused_with_every_slot_free(
     port = get_random_port()
     manager = a_manager(port=port)
     manager.ban_man.ban(a_subnet("1.2.3.0/24"))
-    logged, record = log_recorder()
-    monkeypatch.setattr(manager.logger, "debug", record)
+    logged, record = debug_recorder()
+    monkeypatch.setattr(manager.logger, "log_debug", record)
     manager.start()
     wait_until_listening(manager)
     with ExitStack() as peers:
@@ -7260,7 +7260,7 @@ def test_a_banned_host_is_refused_with_every_slot_free(
         peers.enter_context(closing(refused))
         assert refused.recv(4096) == b""
         assert manager.last_connection_id == -1
-        assert "connection from 1.2.3.4:50000 dropped (banned)" in logged
+        assert ("net", "connection from 1.2.3.4:50000 dropped (banned)") in logged
         _, accepted = land_an_inbound_peer(manager, "1.2.4.4", 50000)
         peers.enter_context(closing(accepted))
         wait_until(lambda: manager.last_connection_id == 0)
@@ -7281,8 +7281,8 @@ def test_network_active_false_refuses_every_accepted_socket(
     port = get_random_port()
     manager = a_manager(port=port)
     manager.network_active = False
-    logged, record = log_recorder()
-    monkeypatch.setattr(manager.logger, "debug", record)
+    logged, record = debug_recorder()
+    monkeypatch.setattr(manager.logger, "log_debug", record)
     manager.start()
     wait_until_listening(manager)
     with ExitStack() as peers:
@@ -7291,9 +7291,9 @@ def test_network_active_false_refuses_every_accepted_socket(
         assert refused.recv(4096) == b""
         assert manager.last_connection_id == -1
         assert (
-            "connection from 1.2.3.4:50000 dropped: not accepting new connections"
-            in logged
-        )
+            "net",
+            "connection from 1.2.3.4:50000 dropped: not accepting new connections",
+        ) in logged
         manager.stop()
         manager.join(timeout=10)
 
@@ -7427,13 +7427,21 @@ def test_manage_connections_sweeps_a_dial_that_registers_after_the_flip(
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag) rather than once on the
     flip; `manage_connections`'s own repeated sweep, once every 0.1s
     pass, is this tree's match for it, and is what this test is for:
-    `connect` is called while still active, the flip follows at 0.1s,
-    and `dial` itself is delayed 0.5s past that, so the connection
-    registers a full four sweep passes after the flip already ran.
+    `connect` is called while still active, the flip follows once `dial`
+    has been entered, and `dial` itself is delayed 0.5s past that, so the
+    connection registers a full four sweep passes after the flip already
+    ran. The flip waits for `dial` rather than for a fixed time: a
+    manager loop that has not yet run `async_connect` when the flip
+    lands finds the network inactive, returns, and nothing ever
+    registers.
     `connect` rather than `connect_host`: this is about the sweep, not
     the resolve pipeline `async_connect_host` alone runs, and `connect`
     takes an already-resolved address straight to `dial` the way
     `async_connect`'s own docstring describes.
+
+    The connection is read off `create_connection`, not polled out of
+    `pending_connections`: the sweep removes it about 0.15s after it
+    registers, and a poll starved for that long never sees it.
 
     The final wait is bounded well under `_PEER_CONNECT_TIMEOUT`'s own
     60s, deliberately: `_prune_stale_connections` drops any
@@ -7449,20 +7457,31 @@ def test_manage_connections_sweeps_a_dial_that_registers_after_the_flip(
     """
     ours, theirs = socket.socketpair()
 
+    dialling = threading.Event()
+    registered = []
+
     async def delayed_dial(address: NetworkAddressV2) -> socket.socket:
+        dialling.set()
         await asyncio.sleep(0.5)
         return ours
 
     monkeypatch.setattr(manager_module, "dial", delayed_dial)
     manager = a_manager()
+    create_connection = manager.create_connection
+
+    def recording_create_connection(*args: Any, **kwargs: Any) -> None:
+        create_connection(*args, **kwargs)
+        registered.append(manager.pending_connections[manager.last_connection_id])
+
+    monkeypatch.setattr(manager, "create_connection", recording_create_connection)
     try:
         manager.start()
         wait_until(manager.loop.is_running)
         manager.connect(a_full_node("1.2.3.4", 8333))
-        time.sleep(0.1)
+        wait_until(dialling.is_set)
         manager.set_network_active(active=False)
-        wait_until(lambda: manager.pending_connections)
-        (conn,) = manager.pending_connections.values()
+        wait_until(lambda: registered)
+        (conn,) = registered
         wait_until(lambda: conn.status == P2pConnStatus.Closed, timeout=5)
     finally:
         manager.stop()
@@ -7653,7 +7672,7 @@ def test_the_ban_list_is_written_once_every_interval(
     than only at the next change or at stop.
     """
     path = tmp_path / "banlist.json"
-    ban_man = BanMan(path, logging.getLogger(__name__))
+    ban_man = BanMan(path, Logger())
     ban_man.ban(a_subnet("1.2.3.4"), 1_000)
     manager = a_manager()
     manager.ban_man = ban_man
