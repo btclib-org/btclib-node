@@ -1222,22 +1222,41 @@ def test_a_handshake_leaves_the_time_of_the_address_alone(tmp_path: Path) -> Non
     """ISS 1364: Core's `Good_` does not update `nTime`.
 
     "To avoid leaking information about currently-connected peers": the
-    answered row, in memory and on disk, and the known row keep the time
-    gossip gave the address, so what `get_addr` serves does not say that
-    this node has just connected to it.
+    known row keeps the time gossip gave the address, so what `get_addr`
+    serves does not say that this node has just connected to it. The
+    answered row is stamped now, Core's `m_last_success`, which nothing
+    serves.
     """
     peer_db = a_peer_db(data_dir=tmp_path)
     heard = int(time.time()) - 3 * 24 * 3600
     endpoint = peer_address("1.2.3.4", 8333, timestamp=heard)
     peer_db.add_addresses([endpoint], time_penalty=0)
-    assert peer_db.add_active_address(replace(endpoint, timestamp=int(time.time())))
+    before = int(time.time())
+    assert peer_db.add_active_address(replace(endpoint, timestamp=0))
     (answered,) = peer_db.active_addresses
-    assert answered.timestamp == heard
+    assert answered.timestamp >= before
     assert peer_db.get_addr(1000, 100) == [endpoint]
     peer_db.close()
-    reloaded = a_peer_db(data_dir=tmp_path)
-    assert {row.timestamp for row in reloaded.active_addresses} == {heard}
-    reloaded.close()
+
+
+@pytest.mark.parametrize("kind", ["old gossip", "timestamp 1"])
+def test_a_handshaken_endpoint_is_not_pruned_for_the_age_of_its_gossip(
+    kind: str,
+) -> None:
+    """ISS 1364: the prune reads `m_last_success`, not the gossiped `nTime`.
+
+    A row gossiped 40 days ago, or at time 1, answers a handshake and
+    stays in the answered table; Core never drops a tried entry as
+    terrible for its `nTime`.
+    """
+    peer_db = a_peer_db()
+    old = 1 if kind == "timestamp 1" else int(time.time()) - 40 * 24 * 3600
+    endpoint = peer_address("1.2.3.4", 8333, timestamp=old)
+    peer_db.add_addresses([endpoint], time_penalty=0)
+    peer_db.add_active_address(endpoint)
+    assert len(peer_db.get_active_addresses()) == 1
+    peer_db.add_addresses([replace(endpoint, timestamp=1)], time_penalty=0)
+    assert len(peer_db.get_active_addresses()) == 1
 
 
 def test_an_endpoint_the_table_does_not_hold_is_not_answered() -> None:
@@ -1253,23 +1272,42 @@ def test_connected_moves_a_stale_time_forward(
 ) -> None:
     """ISS 1364: Core's `Connected_` sets `nTime` to now past twenty minutes.
 
-    Both rows the endpoint has are written, in memory and on disk.
+    The known row is written, in memory and on disk; the answered row's
+    own time, `m_last_success`, is not.
     """
     peer_db = a_peer_db(data_dir=tmp_path)
     endpoint = peer_address("1.2.3.4", 8333, timestamp=int(time.time()) - 3 * 24 * 3600)
     peer_db.add_addresses([endpoint], time_penalty=0)
+    before_rows: list[NetworkAddressV2] = []
     if answered:
         peer_db.add_active_address(endpoint)
+        before_rows = list(peer_db.active_addresses)
     before = int(time.time())
     peer_db.connected(replace(endpoint, timestamp=0))
-    rows = [*peer_db.addresses, *peer_db.active_addresses]
-    assert len(rows) == 1 + answered
-    assert all(row.timestamp >= before for row in rows)
+    (known,) = peer_db.addresses
+    assert known.timestamp >= before
+    assert peer_db.active_addresses == before_rows
     peer_db.close()
     reloaded = a_peer_db(data_dir=tmp_path)
-    rows = [*reloaded.addresses, *reloaded.active_addresses]
-    assert all(row.timestamp >= before for row in rows)
+    (known,) = reloaded.addresses
+    assert known.timestamp >= before
     reloaded.close()
+
+
+def test_connected_waits_out_a_gossip_in_progress() -> None:
+    """ISS 1364: `connected` writes `addresses` under `_addresses_lock`."""
+    peer_db = a_peer_db()
+    endpoint = peer_address("1.2.3.4", 8333, timestamp=int(time.time()) - 24 * 3600)
+    peer_db.add_addresses([endpoint], time_penalty=0)
+    with peer_db._addresses_lock:
+        caller = threading.Thread(target=peer_db.connected, args=(endpoint,))
+        caller.start()
+        caller.join(timeout=0.2)
+        assert caller.is_alive()
+    caller.join(timeout=5)
+    assert not caller.is_alive()
+    (known,) = peer_db.addresses
+    assert known.timestamp > endpoint.timestamp
 
 
 def test_connected_moves_a_stale_time_of_a_table_with_no_store() -> None:
@@ -1301,16 +1339,71 @@ def test_connected_records_no_endpoint_the_table_does_not_hold() -> None:
     assert not peer_db.active_addresses
 
 
-def test_a_gossiped_time_reaches_the_answered_row_too() -> None:
-    """ISS 1364: the answered row is Core's one entry, `nTime` included."""
+def test_an_older_gossip_does_not_lower_the_time_held() -> None:
+    """ISS 1603: `AddSingle` moves `nTime` forward only."""
     peer_db = a_peer_db()
     now = int(time.time())
-    endpoint = peer_address("1.2.3.4", 8333, timestamp=now - 5 * 24 * 3600)
+    endpoint = peer_address("1.2.3.4", 8333, timestamp=now)
     peer_db.add_addresses([endpoint], time_penalty=0)
-    peer_db.add_active_address(endpoint)
-    peer_db.add_addresses([replace(endpoint, timestamp=now)], time_penalty=0)
-    (answered,) = peer_db.active_addresses
-    assert answered.timestamp == now
+    peer_db.add_addresses(
+        [replace(endpoint, timestamp=now - 20 * 24 * 3600)], time_penalty=0
+    )
+    (row,) = peer_db.addresses
+    assert row.timestamp == now
+
+
+@pytest.mark.parametrize(
+    ("newer_by", "moved"),
+    [(1800, False), (2 * 3600, True)],
+    ids=["within the hour", "past the hour"],
+)
+def test_a_newer_gossip_moves_the_time_past_the_update_interval(
+    newer_by: int, *, moved: bool
+) -> None:
+    """ISS 1603: a gossip under a day old moves a time held past an hour."""
+    peer_db = a_peer_db()
+    now = int(time.time())
+    held = now - 3 * 3600
+    peer_db.add_addresses(
+        [peer_address("1.2.3.4", 8333, timestamp=held)], time_penalty=0
+    )
+    gossip = peer_address("1.2.3.4", 8333, timestamp=held + newer_by)
+    peer_db.add_addresses([gossip], time_penalty=0)
+    (row,) = peer_db.addresses
+    assert row.timestamp == (gossip.timestamp if moved else held)
+
+
+def test_a_gossip_a_day_old_moves_the_time_past_a_day_only() -> None:
+    """ISS 1603: the interval is a day where the gossip is itself a day old."""
+    peer_db = a_peer_db()
+    now = int(time.time())
+    held = now - 10 * 24 * 3600
+    peer_db.add_addresses(
+        [peer_address("1.2.3.4", 8333, timestamp=held)], time_penalty=0
+    )
+    for newer_by, expected in ((3 * 3600, held), (2 * 24 * 3600, held + 2 * 24 * 3600)):
+        peer_db.add_addresses(
+            [peer_address("1.2.3.4", 8333, timestamp=held + newer_by)], time_penalty=0
+        )
+        (row,) = peer_db.addresses
+        assert row.timestamp == expected
+
+
+@pytest.mark.parametrize("ip", ["2002:102:304::1", "2001:0:102:304::1", "1.2.3.4"])
+def test_a_6to4_or_teredo_address_is_of_the_ipv4_class(ip: str) -> None:
+    """ISS 1443: Core's `GetNetClass` of an IPv6 address linked to IPv4."""
+    assert address_module.network_class(peer_address(ip, 8333)) == Network.IPV4
+
+
+def test_get_addr_keeps_to_the_net_class_asked_for() -> None:
+    """ISS 1443: `GetAddr_` filters on `GetNetClass`, so 6to4 is IPv4."""
+    peer_db = a_peer_db()
+    now = int(time.time())
+    linked = peer_address("2002:102:304::1", 8333, timestamp=now)
+    plain = peer_address("2a01:4f8::1", 8333, timestamp=now)
+    peer_db.add_addresses([linked, plain], time_penalty=0)
+    assert peer_db.get_addr(0, 0, Network.IPV4) == [linked]
+    assert peer_db.get_addr(0, 0, Network.IPV6) == [plain]
 
 
 def test_get_addr_draws_from_an_address_no_handshake_answered() -> None:

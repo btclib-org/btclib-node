@@ -312,3 +312,13 @@ def test_what_addpeeraddress_adds_getnodeaddresses_answers() -> None:
     add_peer_address(node, _CONN, ["2a01:4f8::1", 8333, True])
     answered = get_node_addresses(node, _CONN, [0])
     assert {entry["address"] for entry in answered} == {"1.2.3.4", "2a01:4f8::1"}
+
+
+def test_getnodeaddresses_names_a_6to4_and_teredo_address_ipv4() -> None:
+    """ISS 1443: `GetNetClass`, as bitcoind v31.1.0, in field and filter."""
+    node, peer_db = a_node()
+    known(peer_db, seen("2002:102:304::1"), seen("2001:0:102:304::1"))
+    answered = get_node_addresses(node, _CONN, [0, "ipv4"])
+    assert {entry["network"] for entry in answered} == {"ipv4"}
+    assert len(answered) == 2
+    assert get_node_addresses(node, _CONN, [0, "ipv6"]) == []

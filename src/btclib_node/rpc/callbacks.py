@@ -53,7 +53,7 @@ from btclib_node.main import (
     update_chain,
     verify_mempool_acceptance,
 )
-from btclib_node.p2p.address import SEEDS_SERVICE_FLAGS, ip_and_port
+from btclib_node.p2p.address import SEEDS_SERVICE_FLAGS, ip_and_port, network_class
 from btclib_node.p2p.banman import (
     SpecialAddress,
     Subnet,
@@ -62,7 +62,7 @@ from btclib_node.p2p.banman import (
     lookup_subnet,
 )
 from btclib_node.p2p.connection import local_services
-from btclib_node.p2p.eviction import Network, get_network, is_valid, net_class
+from btclib_node.p2p.eviction import Network, is_valid, net_class
 from btclib_node.rpc.connection import RawJSON
 from btclib_node.rpc.errors import (
     RpcError,
@@ -1844,7 +1844,7 @@ def get_node_addresses(
             "services": int(address.services),
             "address": _address_text(address),
             "port": address.port,
-            "network": get_network(address).name.lower(),
+            "network": network_class(address).name.lower(),
         }
         for address in manager.peer_db.get_addr(count, 0, network)
         if not manager.is_discouraged(address)

@@ -1565,6 +1565,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `addpeeraddress`, hidden as in Core, adds an address to it**
   (closes #1443).
 
+### A gossip moves an address's time forward only
+
+- **A gossip moves the time of an address held forward, and only past an
+  hour or a day, as Core's `AddSingle`; the answered table is pruned by
+  its own handshake time, not by that `nTime`** (closes #1603).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

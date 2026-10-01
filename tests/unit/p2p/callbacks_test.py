@@ -5924,7 +5924,8 @@ def test_a_block_relay_only_peer_is_asked_for_no_addresses_but_recorded(
     assert peer.status == P2pConnStatus.Connected
     (recorded,) = peer_db.active_addresses
     assert endpoint_key(recorded) == endpoint_key(dialled)
-    assert recorded.timestamp == heard
+    (known,) = peer_db.addresses
+    assert known.timestamp == heard
 
 
 @pytest.mark.parametrize("block_relay", [True, False])
@@ -6074,7 +6075,8 @@ def test_a_feeler_is_asked_for_addresses_recorded_and_dropped_at_its_version(
     (recorded,) = peer_db.active_addresses
     assert endpoint_key(recorded) == endpoint_key(dialled)
     assert recorded.services == ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
-    assert recorded.timestamp == heard
+    (known,) = peer_db.addresses
+    assert known.timestamp == heard
     if feeler:
         assert commands(peer) == [
             "WtxidRelay",
