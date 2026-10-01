@@ -1889,6 +1889,9 @@ def _btc_amount(sats: int) -> RawJSON:
 def get_mempool_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str, Any]:
     """Answer `getmempoolinfo` with the fields this tree backs for real.
 
+    `maxdatacarriersize` is `0` where `-datacarrier` is off, as Core's
+    `value_or(0)`.
+
     The comment below argues, field by field, why Core's own several
     others are left out rather than answered with a placeholder, and
     why `mempoolminfee`, `minrelaytxfee` and `incrementalrelayfee` are
@@ -1897,17 +1900,16 @@ def get_mempool_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     mempool = node.mempool
     # Core's own MempoolInfoToJSON (`src/rpc/mempool.cpp:1075-1086`,
     # at bitcoin/bitcoin@58a7869f86) answers several fields beyond these:
-    # `usage`, `total_fee`, `permitbaremultisig`, `maxdatacarriersize`,
-    # `limitclustercount`, `limitclustersize`, `optimal`, the deprecated
-    # `fullrbf`. Every one of those is backed by a concept this tree does
-    # not carry -- a cluster mempool graph, a persisted total fee, a
-    # bare-multisig policy knob -- and answering any of them with a
+    # `usage`, `total_fee`, `limitclustercount`, `limitclustersize`,
+    # `optimal`, the deprecated `fullrbf`. Every one of those is backed
+    # by a concept this tree does not carry -- a cluster mempool graph, a
+    # persisted total fee -- and answering any of them with a
     # placeholder would be exactly the decoration this method's own
     # sparse answer already was. `maxmempool` and `mempoolminfee` are
     # wired in because #294 gave both a real source to read,
     # `unbroadcastcount` because #1421 gave `Mempool.unbroadcast` one,
-    # and `minrelaytxfee` and `incrementalrelayfee` because `Config`
-    # holds both (btclib-org/btclib-node#1596).
+    # and the four fields the relay options set because `Config` holds
+    # those options (btclib-org/btclib-node#1497, #1596).
     # btclib-org/btclib-node#305
     #
     # `mempoolminfee` is BTC/kvB, matching Core's own
@@ -1938,6 +1940,8 @@ def get_mempool_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
             mempool.incremental_relay_feerate.sats_per_kvbyte
         ),
         "unbroadcastcount": len(mempool.unbroadcast),
+        "permitbaremultisig": node.config.permit_bare_multisig,
+        "maxdatacarriersize": node.config.max_datacarrier_bytes or 0,
     }
 
 

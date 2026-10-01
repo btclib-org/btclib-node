@@ -54,7 +54,9 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
 __all__ = [
+    "DEFAULT_DUST_RELAY_FEERATE",
     "DEFAULT_INCREMENTAL_RELAY_FEERATE",
+    "DEFAULT_MAX_DATACARRIER_BYTES",
     "DEFAULT_MAX_PEER_CONNECTIONS",
     "DEFAULT_MAX_TIP_AGE",
     "DEFAULT_MIN_RELAY_FEERATE",
@@ -74,6 +76,13 @@ DEFAULT_MIN_RELAY_FEERATE = FeeRate(sats_per_kvbyte=100)
 # `-incrementalrelayfee`. Core keeps it apart from the floor above, the two
 # merely sharing a value.
 DEFAULT_INCREMENTAL_RELAY_FEERATE = FeeRate(sats_per_kvbyte=100)
+# Core's own `DUST_RELAY_TX_FEE` (same file and sha): 3000 sat/kvB, the
+# default of `-dustrelayfee`.
+DEFAULT_DUST_RELAY_FEERATE = FeeRate(sats_per_kvbyte=3000)
+# Core's own `MAX_OP_RETURN_RELAY` (same file and sha),
+# `MAX_STANDARD_TX_WEIGHT / WITNESS_SCALE_FACTOR`: the default of
+# `-datacarriersize`, in bytes.
+DEFAULT_MAX_DATACARRIER_BYTES = 400_000 // 4
 # Core's own `-maxconnections` default, `DEFAULT_MAX_PEER_CONNECTIONS`
 # (`src/net.h`), read at the release `integration-bitcoind.yml` pins,
 # v31.1 at bitcoin/bitcoin@9be056a8a7. Core's `master` sets 200 (at
@@ -388,6 +397,17 @@ class Config:
     # and what an eviction adds to the mempool's rolling minimum
     # (`Mempool`); `MemPoolOptions::incremental_relay_feerate`
     incremental_relay_feerate: FeeRate
+    # The standardness options, `MemPoolOptions`' own `dust_relay_feerate`,
+    # `permit_bare_multisig`, `max_datacarrier_bytes` (`None` where
+    # `-datacarrier` is off) and `require_standard` (`-acceptnonstdtxn`
+    # off). `verify_mempool_acceptance` enforces none of them: that needs
+    # `btclib`'s policy module (btclib-org/btclib-node#1382), and
+    # `getmempoolinfo` reports `permit_bare_multisig` and
+    # `max_datacarrier_bytes`.
+    dust_relay_feerate: FeeRate
+    permit_bare_multisig: bool
+    max_datacarrier_bytes: int | None
+    require_standard: bool
     # Core's own `-minimumchainwork`: the chain work below which
     # `main.update_ibd_status` and the `getheaders` handler in
     # `p2p.callbacks` treat the active tip as not caught up, and below
@@ -597,6 +617,10 @@ class Config:
         log_path: str | None = "history.log",
         min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
         incremental_relay_feerate: FeeRate = DEFAULT_INCREMENTAL_RELAY_FEERATE,
+        dust_relay_feerate: FeeRate = DEFAULT_DUST_RELAY_FEERATE,
+        permit_bare_multisig: bool = True,
+        max_datacarrier_bytes: int | None = DEFAULT_MAX_DATACARRIER_BYTES,
+        require_standard: bool = True,
         minimum_chain_work: int | None = None,
         max_tip_age: int = DEFAULT_MAX_TIP_AGE,
         connect: Sequence[str] = (),
@@ -755,3 +779,7 @@ class Config:
         self.config_args = tuple(config_args)
         self.min_relay_feerate = min_relay_feerate
         self.incremental_relay_feerate = incremental_relay_feerate
+        self.dust_relay_feerate = dust_relay_feerate
+        self.permit_bare_multisig = permit_bare_multisig
+        self.max_datacarrier_bytes = max_datacarrier_bytes
+        self.require_standard = require_standard

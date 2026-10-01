@@ -1524,6 +1524,18 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 - **Both are in BTC/kvB, as Core's** (issue #1497).
 
+### `-permitbaremultisig` is an option, and `getmempoolinfo` answers it
+
+- **`-permitbaremultisig` is read, and `getmempoolinfo` answers
+  `permitbaremultisig`** (closes #1497), the configured value; nothing is
+  refused as `bare-multisig` yet (issue #1382).
+
+### The other standardness options are registered, and not yet enforced
+
+- **`-datacarrier`, `-datacarriersize`, `-dustrelayfee` and
+  `-acceptnonstdtxn` are read, and `getmempoolinfo` answers
+  `maxdatacarriersize`** (issue #1382).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

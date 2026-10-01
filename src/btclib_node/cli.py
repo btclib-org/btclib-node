@@ -27,9 +27,10 @@ default is the pinned release's rather than Core `master`'s,
 `-server` is `Config.allow_rpc`, on unless negated or set false, as
 `bitcoind` soft-sets it on (`src/bitcoind.cpp`). An RPC or P2P listener
 that cannot start stops the node, `main` below exiting `1`, as Core's
-init aborts. `-minrelaytxfee` and `-incrementalrelayfee` are BTC/kvB,
-as Core's, and `Config`'s `min_relay_feerate` and
-`incremental_relay_feerate` the same rates in sat/kvB. Two `Config` fields
+init aborts. `-minrelaytxfee`, `-incrementalrelayfee` and `-dustrelayfee`
+are BTC/kvB, as Core's, and `Config`'s `min_relay_feerate`,
+`incremental_relay_feerate` and `dust_relay_feerate` the same rates in
+sat/kvB. Two `Config` fields
 have no option here: `log_path` (this command always takes
 `Config`'s own default -- a file under the data directory -- an operator
 who wants console output can read it from there), and `allow_p2p` (the
@@ -180,7 +181,9 @@ from btclib_node import Node, install_signal_handlers
 from btclib_node.block_db import blocks_directory
 from btclib_node.chains import Main, SigNet, TestNet, TestNet4
 from btclib_node.config import (
+    DEFAULT_DUST_RELAY_FEERATE,
     DEFAULT_INCREMENTAL_RELAY_FEERATE,
+    DEFAULT_MAX_DATACARRIER_BYTES,
     DEFAULT_MAX_PEER_CONNECTIONS,
     DEFAULT_MAX_TIP_AGE,
     DEFAULT_MIN_RELAY_FEERATE,
@@ -290,6 +293,10 @@ _CONNECTION_TITLE = "Connection options:"
 _DEBUG_TEST_TITLE = "Debugging/Testing options:"
 _CHAINPARAMS_TITLE = "Chain selection options:"
 _NODE_RELAY_TITLE = "Node relay options:"
+# What the help of an option says where `verify_mempool_acceptance` does
+# not act on it: enforcing it needs `btclib`'s policy module
+# (btclib-org/btclib-node#1382)
+_NOT_YET_ENFORCED = "; not yet enforced (#1382)"
 _RPC_TITLE = "RPC server options:"
 _TITLES = (
     _OPTIONS_TITLE,
@@ -375,6 +382,13 @@ class _Option:
 
 _OPTIONS: dict[str, _Option] = {
     "?": _Option("", "", None),
+    "acceptnonstdtxn": _Option(
+        "",
+        'Relay and mine "non-standard" transactions (test networks only; '
+        f"default: 0){_NOT_YET_ENFORCED}",
+        _NODE_RELAY_TITLE,
+        debug_only=True,
+    ),
     "addnode": _Option(
         "=<ip>[:port]",
         "Add a node to connect to, alongside automatic connections. This option "
@@ -431,6 +445,18 @@ _OPTIONS: dict[str, _Option] = {
         _CONNECTION_TITLE,
         network_only=True,
     ),
+    "datacarrier": _Option(
+        "",
+        f"Relay and mine data carrier transactions (default: 1){_NOT_YET_ENFORCED}",
+        _NODE_RELAY_TITLE,
+    ),
+    "datacarriersize": _Option(
+        "=<n>",
+        "Relay and mine transactions whose data-carrying raw scriptPubKeys in "
+        "aggregate are of this size or less, allowing multiple outputs "
+        f"(default: {DEFAULT_MAX_DATACARRIER_BYTES}){_NOT_YET_ENFORCED}",
+        _NODE_RELAY_TITLE,
+    ),
     "datadir": _Option(
         "=<dir>", "Specify data directory", _OPTIONS_TITLE, disallow_negation=True
     ),
@@ -454,6 +480,16 @@ _OPTIONS: dict[str, _Option] = {
         "Query for peer addresses via DNS lookup, if low on addresses "
         "(default: 1 unless -connect used or -maxconnections=0)",
         _CONNECTION_TITLE,
+    ),
+    "dustrelayfee": _Option(
+        "=<amt>",
+        "Fee rate (in BTC/kvB) used to define dust, the value of an output such "
+        "that it will cost more than its value in fees at this fee rate to "
+        "spend it. (default: "
+        f"{_format_money(DEFAULT_DUST_RELAY_FEERATE.sats_per_kvbyte)})"
+        f"{_NOT_YET_ENFORCED}",
+        _NODE_RELAY_TITLE,
+        debug_only=True,
     ),
     "fixedseeds": _Option(
         "",
@@ -528,6 +564,12 @@ _OPTIONS: dict[str, _Option] = {
         "",
         "Serve compact block filters to peers per BIP 157 (default: 0)",
         _CONNECTION_TITLE,
+    ),
+    "permitbaremultisig": _Option(
+        "",
+        "Relay transactions creating non-P2SH multisig outputs (default: 1)"
+        f"{_NOT_YET_ENFORCED}",
+        _NODE_RELAY_TITLE,
     ),
     "port": _Option(
         "=<port>",
@@ -1619,16 +1661,23 @@ class _MempoolOptions:
 
     min_relay_feerate: FeeRate
     incremental_relay_feerate: FeeRate
+    dust_relay_feerate: FeeRate
+    permit_bare_multisig: bool
+    max_datacarrier_bytes: int | None
+    require_standard: bool
 
 
-def _get_mempool_options(settings: _Settings) -> _MempoolOptions:
+def _get_mempool_options(settings: _Settings, chain_name: str) -> _MempoolOptions:
     """Return the mempool's options, Core's `ApplyArgsManOptions`.
 
     `src/node/mempool_args.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-    tag, in its order of refusals: `-incrementalrelayfee`, then
-    `-minrelaytxfee`. `-incrementalrelayfee` above `-minrelaytxfee` raises
-    it where `-minrelaytxfee` is not given, which Core also logs; this node
-    does not, the value being in `getmempoolinfo`'s `minrelaytxfee`.
+    tag, in its order of refusals: `-incrementalrelayfee`, `-minrelaytxfee`,
+    `-dustrelayfee`, then `-acceptnonstdtxn` on a chain that is not a test
+    chain. `-incrementalrelayfee` above `-minrelaytxfee` raises it where
+    `-minrelaytxfee` is not given, which Core also logs; this node does
+    not, the value being in `getmempoolinfo`'s `minrelaytxfee`.
+    `-datacarriersize` is a signed 64-bit read stored in an unsigned
+    32-bit field, so it wraps; `-nodatacarrier` is `None`.
     """
     incremental = _get_feerate(settings, "incrementalrelayfee")
     if incremental is None:
@@ -1638,7 +1687,32 @@ def _get_mempool_options(settings: _Settings) -> _MempoolOptions:
         min_relay = DEFAULT_MIN_RELAY_FEERATE
         if incremental.sats_per_kvbyte > min_relay.sats_per_kvbyte:
             min_relay = incremental
-    return _MempoolOptions(min_relay, incremental)
+    dust = _get_feerate(settings, "dustrelayfee")
+    if dust is None:
+        dust = DEFAULT_DUST_RELAY_FEERATE
+    datacarrier = _get_bool(settings, "datacarrier")
+    max_datacarrier_bytes: int | None = None
+    if datacarrier is None or datacarrier:
+        size = _get_int(settings, "datacarriersize")
+        max_datacarrier_bytes = (
+            DEFAULT_MAX_DATACARRIER_BYTES if size is None else size % 2**32
+        )
+    permit_bare_multisig = _get_bool(settings, "permitbaremultisig")
+    require_standard = not _get_bool(settings, "acceptnonstdtxn")
+    if chain_name == "mainnet" and not require_standard:
+        err_msg = (
+            "acceptnonstdtxn is not currently supported for "
+            f"{_CHAIN_SECTION[chain_name]} chain"
+        )
+        raise ValueError(err_msg)
+    return _MempoolOptions(
+        min_relay,
+        incremental,
+        dust,
+        permit_bare_multisig is None or permit_bare_multisig,
+        max_datacarrier_bytes,
+        require_standard,
+    )
 
 
 def _prune_target_mib(prune: int) -> int:
@@ -1926,7 +2000,7 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     minimum_chain_work = _get_minimum_chain_work(settings)
     max_tip_age = _get_max_tip_age(settings)
     prune = _prune_target_mib(_get_int(settings, "prune") or 0)
-    mempool = _get_mempool_options(settings)
+    mempool = _get_mempool_options(settings, chain_name)
     return _BeforeLock(
         settings,
         base_dir,
@@ -2061,6 +2135,10 @@ def _after_lock(before: _BeforeLock) -> Config:
         alert_notify=_get_arg(settings, "alertnotify") or "",
         min_relay_feerate=before.mempool.min_relay_feerate,
         incremental_relay_feerate=before.mempool.incremental_relay_feerate,
+        dust_relay_feerate=before.mempool.dust_relay_feerate,
+        permit_bare_multisig=before.mempool.permit_bare_multisig,
+        max_datacarrier_bytes=before.mempool.max_datacarrier_bytes,
+        require_standard=before.mempool.require_standard,
         minimum_chain_work=before.minimum_chain_work,
         max_tip_age=before.max_tip_age,
         rpcauth=_get_args(settings, "rpcauth"),
