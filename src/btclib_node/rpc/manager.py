@@ -244,6 +244,10 @@ class RpcManager(threading.Thread):
         # set by `run` once it has either set `listening` or given up on
         # it, which is what `start_listener` waits on
         self._start_attempted = threading.Event()
+        # why `run` gave up, set by it before `_start_attempted`: what
+        # `wait_until_listening` names where this thread ended without
+        # listening (btclib-org/btclib-node#1231)
+        self.bind_error: str | None = None
         # Set by `interrupt`, read by every `RpcConnection.run` on this
         # manager's own loop: Core's `ThreadPool`'s own `m_interrupt`,
         # set by `InterruptHTTPServer`'s call to
@@ -701,10 +705,11 @@ class RpcManager(threading.Thread):
             self.logger.info("Starting RPC manager")
             asyncio.set_event_loop(loop)
             server_sockets = self._listen()
-        except OSError, RpcCredentialRefusedError:
+        except (OSError, RpcCredentialRefusedError) as error:
             # logged by `_listen`; `start_listener` reads the failure
             # off `listening`, so it is not raised into
             # `threading.excepthook` as well
+            self.bind_error = str(error)
             return
         finally:
             self._start_attempted.set()

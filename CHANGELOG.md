@@ -1626,6 +1626,24 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `is_libsecp256k1_serving` from `btclib_ecc.curves`**, where
   `btclib.curves` is gone from btclib 2026.9.30 (closes #1614).
 
+### `[tool.uv] required-version` is `>=0.12.18`
+
+- **`required-version` reads `>=0.12.18`, not `>=0.12.19`** (issue
+  btclib-org/.github#1482): the Dependabot service refused `0.12.19` with
+  `tool_version_not_supported`.
+
+### An RPC listener that ends before listening says why
+
+- **`RpcManager` keeps the failure that ended its thread as `bind_error`,
+  and `wait_until_listening` names it**, where it said only "see its log"
+  (closes #1231).
+
+### The sweep test reads the connection it waits for
+
+- **The test reads its connection off `create_connection`, where it polled
+  for an entry the sweep removes about 0.15s after it registers**; it failed
+  on `macos-latest` (issue #1563).
+
 ### A `getaddr` is answered from every known address
 
 - **The answer is a sample of every address the table holds, new or
