@@ -98,9 +98,9 @@ through; `rocksdict` is the store; `multiprocessing` is `Node.worker_pool`
 under a GIL interpreter.
 
 `btclib_wallet` is a required dependency: `rpc/callbacks.py` takes
-`add_checksum` and `from_address` from its `descriptors` to write the
-descriptor of a decoded script (`_infer_descriptor`), so what it returns
-reaches a caller's answer.
+`add_checksum` from its `descriptors` to write the descriptor of a
+decoded script (`_infer_descriptor`), so what it returns reaches a
+caller's answer.
 
 `ctypes` is imported by `p2p/netif.py` alone, which loads the C library
 with `CDLL(None)`, calls `getifaddrs` and reads the `ifaddrs` memory it
@@ -214,10 +214,14 @@ WAL-backed store would let a second reader in.
 CLI flag `cli.py` reads, and `bitcoin.conf` inside the datadir it names,
 are the operator's own input, not a remote party's — `cli.py`'s own
 module docstring is where each flag is named against Bitcoin Core's
-equivalent. The datadir holds the stores, `banlist.json`, `anchors.dat`
-and the log file; `-blocksdir` moves the block files, `-rpccookiefile`
-the RPC cookie, and `-conf` and `-includeconf` name the files read for
-options. Nothing under `src/` opens a file outside those.
+equivalent. The datadir holds the stores, `banlist.json`, `anchors.dat`,
+the log file and the RPC cookie `.cookie`; `-blocksdir` moves the block
+files, `-rpccookiefile` the cookie, and `-conf` and `-includeconf` name
+the files read for options. Beside these, `dirlock.py` creates a `.lock`
+file in the datadir and in the blocks directory, `rpc/auth.py` writes the
+cookie through a `.tmp` file beside it, and `p2p/anchors.py` writes
+`anchors.dat` through a temporary file beside it. Nothing under `src/`
+opens a file outside those.
 
 `PYTEST_XDIST_WORKER_COUNT` is read in any process, not only under
 pytest: `_default_worker_count` in `src/btclib_node/__init__.py` sizes
@@ -228,8 +232,8 @@ integer.
 `.github/workflows/integration-bitcoind.yml` is the one place this
 node's own answers are checked against a `bitcoind` it does not talk to
 in any other job. Blocks are checked over p2p, matching what a real peer
-would see, and `rpc_framing_test.py`, `banlist_test.py` and
-`getpeerinfo_test.py` compare RPC answers.
+would see, and `rpc_framing_test.py`, `banlist_test.py`,
+`getpeerinfo_test.py` and `rawtx_test.py` compare RPC answers.
 
 ## Secure design principles
 
