@@ -1536,6 +1536,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `-acceptnonstdtxn` are read, and `getmempoolinfo` answers
   `maxdatacarriersize`** (issue #1382).
 
+### `Dependency review` is a required check
+
+- **`REPOSITORY.md` reads `lint / Dependency review` back with the other
+  required checks** (issue btclib-org/.github#1465).
+
 ### A `vout` is Core's, `scriptPubKey` nested
 
 - **`value`, `n` and a `scriptPubKey` with `type` and `address` inside,
