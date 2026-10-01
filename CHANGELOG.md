@@ -1608,6 +1608,17 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   gets the newest version each floor admits, and `uv.lock` protects only
   an install from the checkout** (closes #1553).
 
+### A peer spec that resolves to nothing is not refused, as in Core
+
+- **A port that is no port, or an empty host, is a name resolving to
+  nothing, not refused as the ASCII-digits entry says; `-rpcbind` still
+  refuses it** (closes #1292) (closes #1608).
+
+### `addnode add` reads an onion or I2P name as an address, as in Core
+
+- **A second add of one onion or I2P address and port is refused, I2P's
+  default port being 0** (closes #1369).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

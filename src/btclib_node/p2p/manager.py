@@ -25,12 +25,12 @@ from collections import Counter, deque
 from concurrent.futures import CancelledError
 from contextlib import suppress
 from ipaddress import IPv6Address, ip_address
-from typing import TYPE_CHECKING, cast, override
+from typing import TYPE_CHECKING, Any, cast, override
 
 from btclib.p2p.address import ServiceFlags
 from btclib.p2p.addrv2 import BIP155Network, can_addrv1, network_address
 
-from btclib_node.config import split_host_port
+from btclib_node.config import lookup_host_port
 from btclib_node.constants import CLIENT_NAME, P2pConnStatus
 from btclib_node.p2p.address import (
     RECENT_TRY_SECONDS,
@@ -49,7 +49,15 @@ from btclib_node.p2p.anchors import (
     dump_anchors,
     read_anchors,
 )
-from btclib_node.p2p.banman import DUMP_BANS_INTERVAL, BanMan, Subnet
+from btclib_node.p2p.banman import (
+    DUMP_BANS_INTERVAL,
+    BanMan,
+    Host,
+    SpecialAddress,
+    Subnet,
+    is_valid_host,
+    lookup_host,
+)
 from btclib_node.p2p.callbacks import has_all_desirable_services
 from btclib_node.p2p.connection import Connection
 from btclib_node.p2p.eviction import (
@@ -406,25 +414,6 @@ def _legacy_ipv6(ip: str) -> IPv6Address:
     if isinstance(parsed, IPv6Address):
         return parsed
     return IPv6Address(b"\0" * 10 + b"\xff\xff" + parsed.packed)
-
-
-def _is_ip(host: str) -> bool:
-    """Answer whether `host` is a literal IP address rather than a name."""
-    try:
-        ip_address(host)
-    except ValueError:
-        return False
-    return True
-
-
-def _host_and_port(host: str, port: int) -> str:
-    """Return `ip_and_port`'s text for a literal IP, `host:port` for a name.
-
-    `ip_and_port` (`p2p/address.py`) raises on a hostname; every caller
-    below that logs an endpoint `async_connect_host` was given, rather
-    than one read off a live connection, goes through this instead.
-    """
-    return ip_and_port(host, port) if _is_ip(host) else f"{host}:{port}"
 
 
 # How many hosts `P2pManager.discourage` remembers. Core keeps them in
@@ -1304,6 +1293,25 @@ class P2pManager(threading.Thread):
         """Schedule `async_connect(address)` onto this manager's own loop."""
         asyncio.run_coroutine_threadsafe(self.async_connect(address), self.loop)
 
+    async def _resolve_peer_host(self, host: str, port: int) -> list[Any] | None:
+        """Return `host`'s `getaddrinfo` answers, `None` where it has none.
+
+        `LookupIntern` (`src/netbase.cpp`, at bitcoin/bitcoin@9be056a8a7,
+        the v31.1 tag) hands an empty host to `getaddrinfo(name, nullptr)`,
+        which finds no address for it: `bitcoind` v31.1.0 on macOS makes no
+        connection for `:28995` (Linux was not measured). Python's own
+        `getaddrinfo("", port)` answers loopback on macOS, so the empty
+        host is refused here, on every platform (btclib-org/btclib-node#1608).
+        """
+        if not host:
+            return None
+        try:
+            return await asyncio.get_running_loop().getaddrinfo(
+                host, port, type=socket.SOCK_STREAM
+            )
+        except socket.gaierror:
+            return None
+
     async def async_connect_host(  # noqa: PLR0913
         self,
         dest: str,
@@ -1322,9 +1330,10 @@ class P2pManager(threading.Thread):
         pre-split host and port, which is what lets a spec naming its
         own port -- `-connect=1.2.3.4:9999` -- reach `m_addr_name` with
         that port still on it, and a portless one without
-        (btclib-org/btclib-node#1493). `split_host_port` below is this
-        tree's own `SplitHostPort`, called here rather than by any
-        caller.
+        (btclib-org/btclib-node#1493). `lookup_host_port` below is this
+        tree's own `Lookup`, called here rather than by any caller: a
+        spec whose port is no port is looked up whole, as a name, and
+        resolves to nothing (btclib-org/btclib-node#1292).
 
         `OpenNetworkConnection`'s own `AlreadyConnectedToHost(pszDest)`
         (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
@@ -1372,11 +1381,9 @@ class P2pManager(threading.Thread):
                 dest,
             )
             return
-        host, port = split_host_port(dest, default_port)
-        loop = asyncio.get_running_loop()
-        try:
-            answers = await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-        except socket.gaierror:
+        host, port = lookup_host_port(dest, default_port)
+        answers = await self._resolve_peer_host(host, port)
+        if answers is None:
             return
         # `dict.fromkeys`, not a `set`: the resolver's own answer order
         # is what `std::shuffle` shuffles in `ConnectNode`, so
@@ -1687,8 +1694,8 @@ class P2pManager(threading.Thread):
 
         `GetAddedNodeInfo` (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
         the v31.1 tag) runs `LookupNumeric` on the spec first: where it
-        answers a valid `CService` -- `node_str`'s host is a literal IP,
-        `_resolved_literal` below's own question -- the spec is matched
+        answers a valid `CService` -- `node_str` names an address,
+        `_numeric_endpoint`'s own question -- the spec is matched
         against `mapConnected`, every held connection's own resolved
         address, whatever route opened it. Otherwise the spec is a name,
         matched against `mapConnectedByName`, `addr_name` alone. A
@@ -1697,12 +1704,16 @@ class P2pManager(threading.Thread):
         holds to `1.2.3.4` under a `-connect`- or `onetry`-given
         `addr_name` of its own -- `btclib-org/btclib-node#1493`'s own
         regression, `addr_name` for the first time able to differ from
-        `_resolved_literal`'s own text once a spec's own port survives
+        `_numeric_endpoint`'s own endpoint once a spec's own port survives
         onto it (btclib-org/btclib-node#1498).
         """
-        resolved = self._resolved_literal(node_str)
-        if resolved is not None:
-            return resolved in by_address
+        endpoint = self._numeric_endpoint(node_str)
+        if endpoint is not None:
+            host, port = endpoint
+            return (
+                not isinstance(host, SpecialAddress)
+                and ip_and_port(str(host), port) in by_address
+            )
         return node_str in by_name
 
     def _full_outbound_count(self) -> int:
@@ -2280,18 +2291,14 @@ class P2pManager(threading.Thread):
         `AddNode` can grow `m_added_node_params` at any later time, and
         so can `add_added_peer` here (btclib-org/btclib-node#1350).
 
-        A value `split_host_port` refuses is walked here rather than
-        skipped: Core's own loop marks `tried` and spends a grant and
-        this pass's 500ms step on a `vInfo` entry before
-        `OpenNetworkConnection` ever resolves its `pszDest`
-        (`ThreadOpenAddedConnections`, same sha), so a value that will
-        never resolve is still "tried" there, and the pass still waits
-        `_ADDNODE_RETRY_TRIED` rather than `_ADDNODE_RETRY_IDLE` after
-        it: an all-malformed list retries every minute, not every two
-        seconds. Validated here rather than left to
-        `async_connect_host`'s own internal call, so a malformed value
-        is given the plain "did not come up" line rather than a stack
-        trace off `_open_manual`'s own `except Exception`. Held by
+        A value that resolves to nothing, a port that is no port
+        included, is walked here rather than skipped: Core's own loop
+        marks `tried` and spends a grant and this pass's 500ms step on a
+        `vInfo` entry before `OpenNetworkConnection` ever resolves its
+        `pszDest` (`ThreadOpenAddedConnections`, same sha), so the pass
+        still waits `_ADDNODE_RETRY_TRIED` rather than
+        `_ADDNODE_RETRY_IDLE` after it: a list of such values retries
+        every minute, not every two seconds. Held by
         `_is_held`'s own literal/name split, a snapshot of each taken
         once per pass here -- unlike `_added_held`'s own fresh read on
         every dial below, where a peer that connects mid-pass has to
@@ -2313,51 +2320,53 @@ class P2pManager(threading.Thread):
                 if self._added_held() >= _MAX_ADDNODE_CONNECTIONS:
                     break
                 tried = True
-                try:
-                    split_host_port(node_str, port)
-                except ValueError:
-                    self.logger.info("Dial to %s did not come up", node_str)
-                else:
-                    await self._open_manual(node_str, port)
+                await self._open_manual(node_str, port)
                 await asyncio.sleep(_MANUAL_STEP)
             await asyncio.sleep(_ADDNODE_RETRY_TRIED if tried else _ADDNODE_RETRY_IDLE)
 
-    def _resolved_literal(self, node_str: str) -> str | None:
-        """`_host_and_port`'s text for `node_str`, `None` for a name.
+    def _numeric_endpoint(self, node_str: str) -> tuple[Host, int] | None:
+        """Core's `LookupNumeric` of `node_str`, `None` for no valid `CService`.
 
-        Stands in for Core's own `LookupNumeric`: it never resolves a
-        name, only reformats a literal address, and never raises on an
-        unparsable spec, answering an invalid `CService` instead --
-        `split_host_port`'s own `ValueError`, on an out-of-range port,
-        is read the same way here rather than left to propagate out of
-        `add_added_peer`.
+        No name is resolved: an IP address, an onion name or an I2P name
+        is an address, and anything else is not, whatever its port.
+        `AddNode` and `GetAddedNodeInfo` read `GetDefaultPort(node_str)`
+        as its default port (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
+        the v31.1 tag): `I2P_SAM31_PORT`, 0, for an I2P name given
+        without a port, the chain's own for every other spec.
         """
-        try:
-            host, port = split_host_port(node_str, self.node.chain.port)
-        except ValueError:
+        special = SpecialAddress.parse(node_str)
+        i2p = special is not None and special.network == BIP155Network.I2P
+        host, port = lookup_host_port(node_str, 0 if i2p else self.node.chain.port)
+        # `lookup_host` strips one more pair of brackets than `Lookup`
+        # does: `SplitHostPort` strips one and `LookupIntern` none, so
+        # `[[1.2.3.4]]` is no address there (btclib-org/btclib-node#1292).
+        if host.startswith("[") and host.endswith("]"):
             return None
-        return _host_and_port(host, port) if _is_ip(host) else None
+        address = lookup_host(host)
+        if address is None or not is_valid_host(address):
+            return None
+        return address, port
 
     def add_added_peer(self, node_str: str) -> bool:
         """Add `node_str` to the `-addnode` list, Core's own `AddNode`.
 
-        `AddNode` (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-        v31.1 tag) refuses a duplicate two ways: the identical string
-        already held, or -- where both `node_str` and an existing entry
-        are literal addresses -- the same `LookupNumeric` resolution,
-        `_resolved_literal` above. A name only ever matches the
-        identical string already caught by the first check, since
-        `_resolved_literal` answers `None` for one, so the second check
-        only ever fires between two literal addresses, exactly where
-        Core's does. Returns whether `node_str` was added, `AddNode`'s
-        own bool.
+        `AddNode` (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        tag) refuses a duplicate two ways: the identical string already
+        held, or -- where both `node_str` and an existing entry name an
+        address -- the same `LookupNumeric` resolution,
+        `_numeric_endpoint` above. A name only ever matches the
+        identical string already caught by the first check, so the
+        second check fires between two specs naming an address, an
+        onion or I2P one included, exactly where Core's does
+        (btclib-org/btclib-node#1369). Returns whether `node_str` was
+        added, `AddNode`'s own bool.
         """
-        resolved = self._resolved_literal(node_str)
+        resolved = self._numeric_endpoint(node_str)
         with self._added_peers_lock:
             if node_str in self._added_peers:
                 return False
             if resolved is not None and any(
-                self._resolved_literal(other) == resolved for other in self._added_peers
+                self._numeric_endpoint(other) == resolved for other in self._added_peers
             ):
                 return False
             self._added_peers[node_str] = None

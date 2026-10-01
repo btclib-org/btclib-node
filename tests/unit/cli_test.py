@@ -536,17 +536,22 @@ def test_build_config_an_rpcbind_port_int_would_read_is_refused(
 
 
 @pytest.mark.parametrize("option", ["connect", "addnode"])
-def test_build_config_a_peer_s_port_int_would_read_is_refused(
+def test_build_config_a_peer_s_port_int_would_read_is_a_name(
     tmp_path: Path, option: str
 ) -> None:
-    """Refused as `0x50` already is, where `int` would dial port 80.
+    """Kept whole, as a name, where `int` would dial port 80 (ISS 1292).
 
     `bitcoind` v31.1.0 starts with `-connect` or `-addnode` at
-    `127.0.0.1:+<port>` and never connects, as it does for `0x50`:
-    btclib-org/btclib-node#1264's refusal of what Core would look up.
+    `127.0.0.1:+<port>` or `127.0.0.1:0x50` and never connects.
     """
-    with pytest.raises(ValueError, match="invalid port"):
-        _build(tmp_path, "-regtest", f"-{option}=127.0.0.1:+80")
+    config = _build(
+        tmp_path, "-regtest", f"-{option}=127.0.0.1:+80", f"-{option}=127.0.0.1:0x50"
+    )
+    assert getattr(config, f"{option}_args") == ("127.0.0.1:+80", "127.0.0.1:0x50")
+    assert getattr(config, option) == (
+        ("127.0.0.1:+80", config.chain.port),
+        ("127.0.0.1:0x50", config.chain.port),
+    )
 
 
 @pytest.mark.parametrize(
