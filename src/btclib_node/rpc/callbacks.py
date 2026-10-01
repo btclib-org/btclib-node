@@ -20,17 +20,17 @@ from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import RPCErrorCode, chain_from_network
+from btclib import b32, b58
 from btclib.block import Block, median_time_past
 from btclib.exceptions import BTClibException, BTClibTypeError, BTClibValueError
 from btclib.fee import FeeRate, fee_from_vsize
 from btclib.p2p.address import ServiceFlags
 from btclib.p2p.limits import PROTOCOL_VERSION
 from btclib.script.script import script_to_dict
-from btclib.script.script_pub_key import ScriptPubKey, p2ms_m_and_keys, type_and_payload
 from btclib.script.spendability import is_unspendable
 from btclib.tx import Tx
 from btclib.tx.out_point import OutPoint
-from btclib_wallet.descriptors import add_checksum, from_address
+from btclib_wallet.descriptors import add_checksum
 
 from btclib_node.block_db import Coin
 from btclib_node.chainstate.block_index import BlockStatus, block_time
@@ -65,6 +65,7 @@ from btclib_node.rpc.errors import (
     type_errors,
 )
 from btclib_node.rpc.help import HELP_TEXT, answer_help
+from btclib_node.rpc.solver import solver
 
 if TYPE_CHECKING:
     from btclib.block import BlockHeader
@@ -840,14 +841,14 @@ def _block_json_header(
 def _parse_get_block_params(params: list[Any]) -> tuple[bytes, int]:
     """Validate `getblock`'s own two arguments; answer `(blockhash, verbosity)`.
 
-    `ParseVerbosity` (`rpc/util.cpp:89-102`, at bitcoin/bitcoin@9be056a8a7)
+    `ParseVerbosity` (`rpc/util.cpp:83-97`, at bitcoin/bitcoin@9be056a8a7)
     is what a missing argument answers with `default_verbosity`, 1 here,
     and what a JSON bool degrades to (`true` as `1`, `false` as `0`)
     under this argument's own `skip_type_check` (`:772`) -- the same
     allowance `get_raw_transaction`'s own `verbose` argument does not
-    carry, argued in that function's own missing-argument comment. Refusing
-    anything but 0, 1 or 2 is this tree's own boundary, argued in
-    `get_block`'s docstring below.
+    carry, argued in that function's own missing-argument comment. Any
+    `int` is a verbosity, and `get_block` reads one at or below 0 as 0
+    and one at or above 3 as 3, as `getblock` does.
     """
     if not params:
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["getblock"])
@@ -870,37 +871,63 @@ def _parse_get_block_params(params: list[Any]) -> tuple[bytes, int]:
         # `get_block_hash`'s own float check answers above.
         raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
     elif isinstance(verbosity_param, int):
+        # the same `getInt<int>()`: a 32-bit `int`
+        if not -(2**31) <= verbosity_param < 2**31:
+            raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
         verbosity = verbosity_param
     else:
         raise type_error(2, "verbosity", verbosity_param, "number")
-
-    if verbosity not in (0, 1, 2):
-        raise RpcError(
-            RPCErrorCode.MISC_ERROR,
-            "getblock: only verbosity 0, 1 and 2 are served here",
-        )
     return block_hash, verbosity
+
+
+def _block_undo(node: Node, block_hash: bytes, block: Block) -> list[list[Coin] | None]:
+    """Answer the coins each transaction of `block` spent, in input order.
+
+    Core's `blockToJSON` hands `TxToUniv` the `CTxUndo` of every
+    transaction but the coinbase, which has none, when the block's undo
+    data is held, and none at all where it is not
+    (`src/rpc/blockchain.cpp:223-239`, at bitcoin/bitcoin@9be056a8a7).
+    The reverse patch `UtxoIndex.add_block` files for a connected block
+    lists the coin of every input of every transaction after the
+    coinbase, in block order (`RevBlock.to_add`), so each transaction
+    takes the next `len(vin)` of them. A patch that holds another number
+    is Core's "Undo data expected but can't be read".
+    """
+    rev_block = node.block_db.get_rev_block(block_hash)
+    if rev_block is None:
+        return [None] * len(block.transactions)
+    coins = [coin for _, coin in rev_block.to_add]
+    if len(coins) != sum(len(tx.vin) for tx in block.transactions[1:]):
+        raise RpcError(
+            RPCErrorCode.INTERNAL_ERROR,
+            "Undo data expected but can't be read. This could be due to "
+            "disk corruption or a conflict with a pruning event.",
+        )
+    undo: list[list[Coin] | None] = [None]
+    start = 0
+    for tx in block.transactions[1:]:
+        undo.append(coins[start : start + len(tx.vin)])
+        start += len(tx.vin)
+    return undo
 
 
 def get_block(
     node: Node, conn: RpcConnection, params: list[Any]
 ) -> str | dict[str, Any]:
-    """Answer `getblock` at verbosity 0, 1 or 2: hex, or Core's own JSON shape.
+    """Answer `getblock`: the block's hex, or Core's own JSON shape.
 
     Core's own `getblock` (`rpc/blockchain.cpp:761-841`, calling
     `blockToJSON`, `:200-243`, at bitcoin/bitcoin@9be056a8a7) answers
-    verbosity 1 with the header fields `blockheaderToJSON` answers
-    (`get_block_header`'s own verbose branch, mirrored by
-    `_block_json_header` above) plus `strippedsize`, `size`, `weight`,
-    `coinbase_tx` and `tx` as an array of txids (`TxVerbosity::SHOW_TXID`);
-    verbosity 2 the same with `tx` as an array of decoded transactions
-    instead, `getrawtransaction`'s own verbose shape
-    (`get_raw_transaction`'s own `tx.to_dict()` plus `hex`) rather than a
-    second rendering of one call's own shape, `TxVerbosity::SHOW_DETAILS`
-    -- one field short of Core's, `tx[].fee`, which needs the block's own
-    undo data to compute even at this verbosity and not only at 3, left
-    absent along with verbosity 3 itself for the same reason
-    (btclib-org/btclib-node#1446).
+    verbosity 0 or below with the hex, and verbosity 1 with the header
+    fields `blockheaderToJSON` answers (`get_block_header`'s own verbose
+    branch, mirrored by `_block_json_header` above) plus `strippedsize`,
+    `size`, `weight`, `coinbase_tx` and `tx` as an array of txids
+    (`TxVerbosity::SHOW_TXID`). Verbosity 2 answers `tx` as an array of
+    decoded transactions instead, `getrawtransaction`'s own verbose shape
+    (`_tx_to_univ`, with `hex`) plus the `fee` of a transaction whose
+    undo data is held; verbosity 3 and above add each input's `prevout`
+    (`TxVerbosity::SHOW_DETAILS_AND_PREVOUT`). `_block_undo` is where the
+    undo data is read.
     """
     block_hash, verbosity = _parse_get_block_params(params)
 
@@ -924,7 +951,7 @@ def get_block(
             RPCErrorCode.MISC_ERROR, "Block not available (not fully downloaded)"
         )
 
-    if verbosity == 0:
+    if verbosity <= 0:
         return block.serialize(check_validity=False).hex()
 
     out = _block_json_header(
@@ -937,12 +964,17 @@ def get_block(
     if verbosity == 1:
         out["tx"] = [tx.id for tx in block.transactions]
     else:
-        txs: list[dict[str, Any]] = []
-        for tx in block.transactions:
-            tx_dict: dict[str, Any] = tx.to_dict()
-            tx_dict["hex"] = tx.serialize(include_witness=True).hex()
-            txs.append(tx_dict)
-        out["tx"] = txs
+        undo = _block_undo(node, block_hash, block)
+        out["tx"] = [
+            _tx_to_univ(
+                tx,
+                node.chain.name,
+                include_hex=True,
+                undo=undo[i],
+                prevout=verbosity >= 3,  # noqa: PLR2004
+            )
+            for i, tx in enumerate(block.transactions)
+        ]
     return out
 
 
@@ -1869,21 +1901,20 @@ def clear_banned(node: Node, conn: RpcConnection, _: list[Any]) -> None:
 
 
 def _btc_amount(sats: int) -> RawJSON:
-    """Format a non-negative satoshi amount as Core's own exact BTC string.
+    """Format a satoshi amount as Core's own exact BTC string.
 
-    Core's own `ValueFromAmount` (`src/core_io.cpp:283-293`,
-    at bitcoin/bitcoin@58a7869f86): integer `amount / COIN` and
+    Core's own `ValueFromAmount` (`src/core_io.cpp:285-296`,
+    at bitcoin/bitcoin@9be056a8a7): integer `amount / COIN` and
     `amount % COIN`, formatted `%d.%08d` -- exact at every magnitude,
     where a Python float division (`sats / 1e8`) serializes through
     `repr`, which fixes no decimal places and emits exponent notation
-    (`1e-06`) at a magnitude ordinary for a feerate. Takes a
-    non-negative amount only, and needs no sign correction Core's own
-    version applies for a negative one: every caller here is a feerate,
-    which is never negative, and Python's `//`/`%` already agree with
-    C++'s truncating division for a non-negative dividend.
+    (`1e-06`) at a magnitude ordinary for a feerate. A negative amount,
+    which a decoded output can carry (`CAmount` is signed), keeps its
+    sign in front, as Core's own version places it.
     """
-    quotient, remainder = divmod(sats, 100_000_000)
-    return RawJSON(f"{quotient}.{remainder:08d}")
+    quotient, remainder = divmod(abs(sats), 100_000_000)
+    sign = "-" if sats < 0 else ""
+    return RawJSON(f"{sign}{quotient}.{remainder:08d}")
 
 
 def get_mempool_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str, Any]:
@@ -2088,141 +2119,226 @@ def get_tx_out_set_info(
 # out rather than storing it.
 _MEMPOOL_HEIGHT = 0x7FFF_FFFF
 
-# GetTxnOutputType's own vocabulary (`src/script/solver.cpp:18-34`,
-# at bitcoin/bitcoin@9be056a8a7), keyed on this library's own
-# `type_and_payload` names (`btclib.script.script_pub_key`) -- the two
-# agree in spelling for nothing, "nulldata" being the closest case and
-# still its own key below rather than assumed. `_script_pub_key_dict`
-# below is the one place this tree renders a `scriptPubKey`'s own
-# `type` in Core's words rather than this library's; ISS 1440 is where
-# `get_raw_transaction`'s own verbose form, which answers this library's
-# names instead and at the wrong nesting level, is filed for the
-# sibling mismatch this table does not reach.
-_CORE_SCRIPT_TYPES: dict[str, str] = {
-    "p2pk": "pubkey",
-    "p2pkh": "pubkeyhash",
-    "p2sh": "scripthash",
-    "p2ms": "multisig",
-    "nulldata": "nulldata",
-    "p2wpkh": "witness_v0_keyhash",
-    "p2wsh": "witness_v0_scripthash",
-    "p2tr": "witness_v1_taproot",
-    "witness_unknown": "witness_unknown",
-    "unknown": "nonstandard",
-}
-
-# `CScript::IsPayToAnchor` (`src/script/script.cpp:207-213`,
-# at bitcoin/bitcoin@9be056a8a7): the literal four-byte P2A script, OP_1
-# followed by its own fixed two-byte push. `Solver` carves this one
-# script out of what would otherwise be `TxoutType::WITNESS_UNKNOWN`
-# (`src/script/solver.cpp:167-171`, same sha) into its own
-# `TxoutType::ANCHOR`; this library's own `type_and_payload` answers
-# "witness_unknown" for it same as any other non-p2tr version-1
-# program, making no such cut of its own.
-_ANCHOR_SCRIPT = bytes.fromhex("51024e73")
+# `ExtractDestination`'s address for each `Solver` type that has one
+# (`src/addresstype.cpp:49-105`, at bitcoin/bitcoin@9be056a8a7): the
+# `Solver` solution is the hash or program, and `EncodeDestination`
+# spells it base58 or bech32(m). "pubkey" answers none here, as
+# `ScriptToUniv`'s own `type != TxoutType::PUBKEY` says, and "multisig",
+# "nulldata" and "nonstandard" have no destination at all. "anchor" is
+# `PayToAnchor`, which `EncodeDestination` spells as the version 1
+# program `4e73`.
+_ANCHOR_PROGRAM = bytes.fromhex("4e73")
 
 
-def _core_script_type(script_pub_key: ScriptPubKey) -> str:
-    """Answer `GetTxnOutputType`'s own name for `script_pub_key`'s own type.
+def _address(script_type: str, solutions: list[bytes], network: str) -> str | None:
+    """Answer `ScriptToUniv`'s `address` for a solved script, or None."""
+    if script_type == "pubkeyhash":
+        return b58.address_from_h160("p2pkh", solutions[0], network)
+    if script_type == "scripthash":
+        return b58.address_from_h160("p2sh", solutions[0], network)
+    # the witness version and program of each type that has one
+    witness: tuple[int, bytes] | None = None
+    if script_type in {"witness_v0_keyhash", "witness_v0_scripthash"}:
+        witness = (0, solutions[0])
+    elif script_type == "witness_v1_taproot":
+        witness = (1, solutions[0])
+    elif script_type == "anchor":
+        witness = (1, _ANCHOR_PROGRAM)
+    elif script_type == "witness_unknown":
+        witness = (solutions[0][0], solutions[1])
+    if witness is None:
+        return None
+    return b32.address_from_witness(*witness, network)
 
-    `_CORE_SCRIPT_TYPES` carries every other name across one for one;
-    `"anchor"` is the one Core name with no btclib type behind it, so
-    it is matched here directly against the literal script byte for
-    byte, ahead of the table.
+
+# secp256k1's field prime, for the curve test `_is_x_only_key` makes
+_SECP256K1_P = 2**256 - 2**32 - 977
+
+
+def _is_x_only_key(x_only: bytes) -> bool:
+    """Answer `XOnlyPubKey::IsFullyValid`: `x` is on secp256k1.
+
+    The coordinate is below the field prime and `x**3 + 7` is a square
+    there, which is what `secp256k1_xonly_pubkey_parse` accepts.
     """
-    if script_pub_key.script == _ANCHOR_SCRIPT:
-        return "anchor"
-    return _CORE_SCRIPT_TYPES[script_pub_key.type]
+    x = int.from_bytes(x_only, "big")
+    if x >= _SECP256K1_P:
+        return False
+    return pow((x**3 + 7) % _SECP256K1_P, (_SECP256K1_P - 1) // 2, _SECP256K1_P) == 1
 
 
-def _infer_descriptor(script_pub_key: ScriptPubKey) -> str:
-    """Answer `gettxout`'s own `desc`, Core's `InferDescriptor` with no wallet.
+def _infer_descriptor(
+    script: bytes, script_type: str, solutions: list[bytes], address: str | None
+) -> str:
+    """Answer `ScriptToUniv`'s `desc`, Core's `InferDescriptor` with no wallet.
 
-    Core's `InferDescriptor` (`src/script/descriptor.cpp:3037`, calling
+    Core's `InferDescriptor` (`src/script/descriptor.cpp:2897`, calling
     `InferScript`, at bitcoin/bitcoin@9be056a8a7) is handed
-    `DUMMY_SIGNING_PROVIDER` here -- this node keeps no wallet keys to
-    hand it a real one either, so every branch of `InferScript` that
-    consults the provider takes its "not found" path, and what is left
-    is exactly what each standard script type answers with no provider
-    at all:
+    `DUMMY_SIGNING_PROVIDER` -- this node keeps no wallet keys to hand it
+    a real one either, so every branch of `InferScript` that consults the
+    provider takes its "not found" path. What is left, for a script
+    `Solver` has classified:
 
-    - p2pk and p2ms carry their own pubkeys in the script bytes, no
-      provider needed (`InferPubkey`, same file, :2252-2265, called
-      unconditionally once `Solver` names the type) -- `pk(...)` and
-      `multi(...)`.
-    - p2pkh, p2wpkh, p2sh and p2wsh each ask the provider for the
-      pubkey or the redeem script behind the hash and get nothing back,
-      so `InferScript` falls through every one of its own `if`s to the
-      top-level `ExtractDestination` case at the bottom of the function
-      -- `addr(...)`, `btclib_wallet.descriptors.from_address` already
-      producing that exact string. A witness program past version 0 that
-      is not p2tr
-      -- this library's own "witness_unknown", the P2A anchor output
-      among them -- reaches that identical fallback: Core's own
-      `ExtractDestination` answers a destination for both
-      `TxoutType::ANCHOR` and `TxoutType::WITNESS_UNKNOWN` the same way
-      it does for the four named above (`src/addresstype.cpp:90-93`,
-      same sha), and `ScriptPubKey.address` already answers one for
-      every such program, so `addr(...)` is what a P2A output answers
-      here too, matching a real `bitcoind` rather than diverging from
-      it -- `_core_script_type` above is what still answers `"anchor"`
-      for `scriptPubKey.type` on the same output, `Solver`'s own cut
-      this library's `type_and_payload` does not make.
-    - p2tr likewise finds no `TaprootSpendData` and falls to its own
-      narrower fallback, two branches above the general one -- `rawtr(...)`,
-      the bare x-only key.
-    - nulldata and anything else `Solver` does not classify at all
-      extract no destination and reach `RawDescriptor` -- `raw(...)`,
-      the whole script; `ScriptPubKey.address`'s own docstring names
-      p2pk, p2ms, nulldata and unknown as the four types it answers ""
-      for.
+    - "pubkey" is `pk(...)` for a compressed or uncompressed key and
+      `raw(...)` for a hybrid one: `InferPubkey` refuses it
+      (`IsValidNonHybrid`) and `ExtractDestination` answers no
+      destination for a bare key.
+    - "multisig" is `multi(...)`, or `raw(...)` where any key is hybrid.
+    - "witness_v1_taproot" is `rawtr(...)` for a program on the curve
+      (`IsFullyValid`) and the address otherwise.
+    - every other type that has an address answers `addr(...)`:
+      `InferScript` falls through to `ExtractDestination`, whose
+      destination encodes back to the same script. The hash types find no
+      key or script behind the hash, the P2A anchor and an unknown
+      witness version have nothing to infer.
+    - "nulldata" and "nonstandard" have no destination and are
+      `raw(...)`.
 
-    None of the five needs a key this node does not have; a checksum is
-    added the way `Descriptor::ToString()`'s own default argument adds
-    one (`btclib_wallet.descriptors.add_checksum`).
+    The checksum is added the way `Descriptor::ToString()`'s own default
+    argument adds one (`btclib_wallet.descriptors.add_checksum`).
     """
-    script = script_pub_key.script
-    script_type, payload = type_and_payload(script)
-    if script_type == "p2pk":
-        return add_checksum(f"pk({payload.hex()})")
-    if script_type == "p2ms":
-        threshold, keys = p2ms_m_and_keys(script)
-        key_list = ",".join(key.hex() for key in keys)
-        return add_checksum(f"multi({threshold},{key_list})")
-    if script_type == "p2tr":
-        return add_checksum(f"rawtr({payload.hex()})")
-    address = script_pub_key.address
-    if address:
-        return from_address(address)
+    if script_type == "pubkey" and solutions[0][0] in _NON_HYBRID_KEY_HEADERS:
+        return add_checksum(f"pk({solutions[0].hex()})")
+    if script_type == "multisig":
+        keys = solutions[1:-1]
+        if all(key[0] in _NON_HYBRID_KEY_HEADERS for key in keys):
+            key_list = ",".join(key.hex() for key in keys)
+            return add_checksum(f"multi({solutions[0][0]},{key_list})")
+    if script_type == "witness_v1_taproot" and _is_x_only_key(solutions[0]):
+        return add_checksum(f"rawtr({solutions[0].hex()})")
+    if address is not None:
+        return add_checksum(f"addr({address})")
     return add_checksum(f"raw({script.hex()})")
 
 
-def _script_pub_key_dict(script_pub_key: ScriptPubKey) -> dict[str, Any]:
-    """Answer `gettxout`'s own `scriptPubKey`, Core's nested shape.
+# `CPubKey::IsValidNonHybrid`'s headers (`src/pubkey.h`, same sha):
+# compressed with an even or odd y, and uncompressed
+_NON_HYBRID_KEY_HEADERS = frozenset({0x02, 0x03, 0x04})
 
-    Core's `ScriptToUniv` (`src/core_io.cpp:411-428`, at
-    bitcoin/bitcoin@9be056a8a7) nests `asm`, `desc`, `hex`, `type` and
-    `address` inside `scriptPubKey` itself, unlike this tree's own
-    `TxOut.to_dict`, which `get_raw_transaction`'s verbose form already
-    answers with and which keeps `type`/`addresses`/`network` as that
-    method's own siblings instead (ISS 1440, filed for that mismatch
-    rather than carried into this new RPC). `address` is answered only
-    where one exists, matching `ScriptToUniv`'s own `type !=
-    TxoutType::PUBKEY` exclusion -- `ScriptPubKey.address` already
-    answers `""` for p2pk without that check repeated here, `address`'s
-    own docstring naming p2pk, p2ms, nulldata and unknown as the four
-    types it has none for.
+
+def _script_pub_key_dict(script: bytes, network: str) -> dict[str, Any]:
+    """Answer a `scriptPubKey` as Core's `ScriptToUniv` does.
+
+    `ScriptToUniv` (`src/core_io.cpp:409-428`, at
+    bitcoin/bitcoin@9be056a8a7) nests `asm`, `desc`, `hex`, `address` and
+    `type`, in that order, inside `scriptPubKey` itself, which is what
+    `gettxout` and every transaction's `vout` answer here (`TxOut.to_dict` keeps
+    `type`, `addresses` and `network` beside it instead). The type is
+    `GetTxnOutputType`'s name from `solver`, the address is spelled for
+    `network`, and `address` is answered only where one exists.
     """
-    script_dict = script_to_dict(script_pub_key.script)
+    script_type, solutions = solver(script)
+    address = _address(script_type, solutions, network)
     out: dict[str, Any] = {
-        "asm": script_dict["asm"],
-        "desc": _infer_descriptor(script_pub_key),
-        "hex": script_dict["hex"],
-        "type": _core_script_type(script_pub_key),
+        "asm": script_to_dict(script)["asm"],
+        "desc": _infer_descriptor(script, script_type, solutions, address),
+        "hex": script.hex(),
     }
-    address = script_pub_key.address
-    if address:
+    if address is not None:
         out["address"] = address
+    out["type"] = script_type
+    return out
+
+
+def _vin_to_univ(
+    tx: Tx, network: str, undo: list[Coin] | None, *, prevout: bool
+) -> list[dict[str, Any]]:
+    """Answer a transaction's `vin` as `TxToUniv` does.
+
+    An ordinary input is `txid`, `vout`, `scriptSig` (`asm` and `hex`)
+    and `sequence`; a coinbase's own is `coinbase`, the script's hex,
+    where `txid`, `vout` and `scriptSig` have no meaning. `txinwitness`
+    is answered only where the witness stack is not empty
+    (`src/core_io.cpp:451-493`, at bitcoin/bitcoin@9be056a8a7), whereas
+    `TxIn.to_dict` answers `prev_out`, `scriptSig`, `sequence` and
+    `txinwitness` for every input, an empty list included. Where `undo`
+    holds the coin each input spent and `prevout` asks for it, `prevout`
+    follows the witness: `generated`, `height`, `value` and the coin's
+    `scriptPubKey`.
+    """
+    vin: list[dict[str, Any]] = []
+    for i, tx_in in enumerate(tx.vin):
+        entry: dict[str, Any] = {}
+        if tx.is_coinbase:
+            entry["coinbase"] = tx_in.script_sig.hex()
+        else:
+            entry["txid"] = tx_in.prev_out.tx_id.hex()
+            entry["vout"] = tx_in.prev_out.vout
+            entry["scriptSig"] = script_to_dict(tx_in.script_sig)
+        stack = tx_in.script_witness.stack
+        if stack:
+            entry["txinwitness"] = [item.hex() for item in stack]
+        if undo is not None and prevout:
+            coin = undo[i]
+            entry["prevout"] = {
+                "generated": coin.is_coinbase,
+                "height": coin.height,
+                "value": _btc_amount(coin.tx_out.value),
+                "scriptPubKey": _script_pub_key_dict(
+                    coin.tx_out.script_pub_key.script, network
+                ),
+            }
+        entry["sequence"] = tx_in.sequence
+        vin.append(entry)
+    return vin
+
+
+def _vout_to_univ(tx: Tx, network: str) -> list[dict[str, Any]]:
+    """Answer a transaction's `vout` as `TxToUniv` does, for `network`.
+
+    Each entry is `value`, `n` and `scriptPubKey`, in that order
+    (`src/core_io.cpp:495-519`, at bitcoin/bitcoin@9be056a8a7).
+    `ischange`, which `TxToUniv` adds for a wallet-owned output, has no
+    wallet to ask here.
+    """
+    return [
+        {
+            "value": _btc_amount(tx_out.value),
+            "n": n,
+            "scriptPubKey": _script_pub_key_dict(tx_out.script_pub_key.script, network),
+        }
+        for n, tx_out in enumerate(tx.vout)
+    ]
+
+
+def _tx_to_univ(
+    tx: Tx,
+    network: str,
+    *,
+    include_hex: bool,
+    undo: list[Coin] | None = None,
+    prevout: bool = False,
+) -> dict[str, Any]:
+    """Answer a transaction as Core's `TxToUniv` does, addresses for `network`.
+
+    `src/core_io.cpp:430-534`, at bitcoin/bitcoin@9be056a8a7, in its
+    own key order. Every field is written here rather than taken from
+    `Tx.to_dict`, whose `vin` and `vout` are btclib's own shape and
+    whose `value` cannot render a negative amount, which a decoded
+    output can carry. `hash` is the witness hash, `size` the size with
+    the witness and `vsize` the weight in virtual bytes.
+
+    `undo` is the coin each input spent, which `TxToUniv` takes as
+    `txundo`: where it is given, `fee` is those values less the outputs',
+    and `prevout` adds each input's coin to `vin`. A coinbase, or a
+    transaction whose undo data is not held, is passed none.
+    """
+    out: dict[str, Any] = {
+        "txid": tx.id.hex(),
+        "hash": tx.hash.hex(),
+        "version": tx.version,
+        "size": tx.size,
+        "vsize": tx.vsize,
+        "weight": tx.weight,
+        "locktime": tx.lock_time,
+        "vin": _vin_to_univ(tx, network, undo, prevout=prevout),
+        "vout": _vout_to_univ(tx, network),
+    }
+    if undo is not None:
+        spent = sum(coin.tx_out.value for coin in undo)
+        out["fee"] = _btc_amount(spent - sum(tx_out.value for tx_out in tx.vout))
+    if include_hex:
+        out["hex"] = tx.serialize(include_witness=True, check_validity=False).hex()
     return out
 
 
@@ -2344,7 +2460,9 @@ def get_tx_out(
         "bestblock": active_chain[-1],
         "confirmations": confirmations,
         "value": _btc_amount(coin.tx_out.value),
-        "scriptPubKey": _script_pub_key_dict(coin.tx_out.script_pub_key),
+        "scriptPubKey": _script_pub_key_dict(
+            coin.tx_out.script_pub_key.script, node.chain.name
+        ),
         "coinbase": coin.is_coinbase,
     }
 
@@ -2603,8 +2721,9 @@ def get_raw_transaction(
     # Core declares this argument NUM with allow_bool=true
     # (src/rpc/rawtransaction.cpp:286); this node answers only the
     # default and the boolean shape every other verbose flag here
-    # already takes, and not Core's 2 -- fee and prevout data come from
-    # undo data this node does not keep alongside a block
+    # already takes, and not Core's 2, whose `fee` and `prevout` are
+    # what `_block_undo` reads for `getblock`
+    # (btclib-org/btclib-node#1597)
     verbose = bool_param(params, 1, name="verbose", default=False)
     block_hash = _decode_optional_block_hash(params)
     tx, block_height = _find_transaction(node, txid, block_hash)
@@ -2612,19 +2731,20 @@ def get_raw_transaction(
     if not verbose:
         return tx.serialize(include_witness=True).hex()
 
-    # to_dict()'s own keys are Core's decoderawtransaction ones (its own
-    # docstring), str | int | list -- narrower than this callback's
-    # declared return, so the three below need the wider type spelled
-    # out, the same as get_block_header's out: dict[str, Any] above it
-    out: dict[str, Any] = tx.to_dict()
-    out["hex"] = tx.serialize(include_witness=True).hex()
+    # Core's key order: `in_active_chain` first, then `TxToUniv`'s keys,
+    # then the block's (`src/rpc/rawtransaction.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7)
+    out: dict[str, Any] = {}
+    active_chain = node.chainstate.block_index.active_chain
+    on_active_chain = False
     if block_hash is not None and block_height is not None:
-        active_chain = node.chainstate.block_index.active_chain
         on_active_chain = (
             block_height < len(active_chain)
             and active_chain[block_height] == block_hash
         )
         out["in_active_chain"] = on_active_chain
+    out.update(_tx_to_univ(tx, node.chain.name, include_hex=True))
+    if block_hash is not None and block_height is not None:
         out["blockhash"] = block_hash.hex()
         out["confirmations"] = (
             len(active_chain) - block_height if on_active_chain else -1
@@ -2808,14 +2928,11 @@ def decode_raw_transaction(
     too, the same as it decodes and displays there --
     btclib-org/btclib-node#1398, and unlike `sendrawtransaction` and
     `testmempoolaccept` above, which run `_check_transaction`.
-    `to_dict()`'s own top-level keys are Core's `decoderawtransaction`
-    ones (its own docstring, `btclib/tx/tx.py`), the same dict
-    `get_raw_transaction`'s own verbose answer builds on, minus the
-    `hex` that call adds and the `blockhash` it sometimes does: Core's
-    own `TxToUniv` call here passes `include_hex=false` and a null
-    `block_hash`, neither of which this RPC is given a block or asked
-    to serialize. `vin`/`vout`'s own nested fields are not Core's field
-    by field -- btclib-org/btclib-node#1448.
+    The answer is `_tx_to_univ`'s, the one `get_raw_transaction`'s own
+    verbose answer builds on, minus the `hex` that call adds and the
+    `blockhash` it sometimes does: Core's own `TxToUniv` call here
+    passes `include_hex=false` and a null `block_hash`, neither of
+    which this RPC is given a block or asked to serialize.
 
     `iswitness=false` refuses a witness-serialized transaction Core's
     own extended-only default would otherwise decode: Core's `DecodeTx`
@@ -2885,8 +3002,7 @@ def decode_raw_transaction(
     if iswitness is False and tx.is_segwit:
         # this function's own docstring, `iswitness=false`
         raise RpcError(RPCErrorCode.DESERIALIZATION_ERROR, "TX decode failed")
-    out: dict[str, Any] = tx.to_dict(check_validity=False)
-    return out
+    return _tx_to_univ(tx, node.chain.name, include_hex=False)
 
 
 # Core's own reason for a missing input, the one `PreChecks` gives

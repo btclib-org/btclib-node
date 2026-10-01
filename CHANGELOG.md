@@ -1541,6 +1541,22 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`REPOSITORY.md` reads `lint / Dependency review` back with the other
   required checks** (issue btclib-org/.github#1465).
 
+### A `vout` is Core's, `scriptPubKey` nested
+
+- **`value`, `n` and a `scriptPubKey` with `type` and `address` inside,
+  `type` as `Solver` names it, addresses for the node's network**
+  (closes #1440).
+
+### A `vin` is Core's, and a transaction renders as `TxToUniv`
+
+- **`txid`, `vout`, `scriptSig`, `txinwitness` only if present, or
+  `coinbase`; `asm` stays btclib's** (closes #1448).
+
+### `getblock` answers `fee` and, at verbosity 3, `prevout`
+
+- **Both come from the block's undo data and are absent without it**
+  (closes #1446).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
