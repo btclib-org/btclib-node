@@ -68,7 +68,7 @@ joins the calling job's id to the called job's own name. `docs.yml`'s
 `docs / Build the documentation`; `lint.yml`'s `lint` job calls
 `reusable-lint.yml` the same way, whose own job is still named
 `Lint and type-check`, producing `lint / Lint and type-check`
-(issue btclib-org/.github#35), and whose other job, `Dependency review`,
+(issue btclib-org/.github#35), and whose `Dependency review` job
 produces `lint / Dependency review`; `integration-bitcoind.yml`'s `regtest`
 job calls `reusable-integration-bitcoind.yml` the same way, whose own
 job is still named `Regtest against Bitcoin Core`, producing

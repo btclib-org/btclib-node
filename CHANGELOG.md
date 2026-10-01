@@ -1783,6 +1783,12 @@ that records it (issue btclib-org/.github#1362).
   does, a mined block's version and a template's `vbavailable` following
   the versionbits state; `longpollid` is refused** (closes #1427).
 
+### A `Signed-off-by:` trailer on every commit of a pull request
+
+- **Every commit of a pull request carries a `Signed-off-by:`
+  trailer** (issue btclib-org/.github#1467): *Pull requests* says how
+  to add it.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
