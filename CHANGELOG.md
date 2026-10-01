@@ -1509,6 +1509,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A deep `invalidateblock` raises no large-work warning, as Core's
   `InvalidChainFound` weighs only the block it is handed** (closes #1593).
 
+### The feefilter rounder's buckets do not follow `-minrelaytxfee`
+
+- **`feefilter` buckets start at half Core's default floor, whatever
+  `-minrelaytxfee` says**, as Core's `FeeFilterRounder` does (closes #1374).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
