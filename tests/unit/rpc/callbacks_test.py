@@ -105,6 +105,7 @@ from btclib_node.rpc.callbacks import (
     set_network_active,
     stop,
     submit_block,
+    submit_header,
 )
 
 # aliased: pytest collects a module-level `test*` as a test, and this
@@ -6484,6 +6485,107 @@ def test_disconnectnode_no_longer_checks_its_own_upper_bound() -> None:
     node, removed = a_disconnecting_node({1: a_peer()})
     disconnect_node(node, _CONN, ["", 1, None])
     assert removed == [1]
+
+
+def test_submit_header_with_no_arguments_is_answered_with_the_usage() -> None:
+    """A missing `hexdata` is Core's own `HelpResult` shape, `MISC_ERROR`."""
+    with pytest.raises(RpcError) as raised:
+        submit_header(cast("Node", None), _CONN, [])
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
+    assert raised.value.message == HELP_TEXT["submitheader"]
+
+
+def test_submit_header_refuses_a_hexdata_of_the_wrong_json_type() -> None:
+    """A non-string `hexdata` is `TYPE_ERROR`, checked before decoding."""
+    with pytest.raises(RpcError) as raised:
+        submit_header(cast("Node", None), _CONN, [1234])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+
+
+@pytest.mark.parametrize("hexdata", ["zz", "0", "00" * 79, "00 " * 80])
+def test_submit_header_refuses_what_does_not_decode(hexdata: str) -> None:
+    """Core's `DecodeHexBlockHeader` failing: not hex, or short of a header.
+
+    Measured against a regtest bitcoind v31.1.0, which answers each
+    `RPC_DESERIALIZATION_ERROR`, "Block header decode failed".
+    """
+    with pytest.raises(RpcError) as raised:
+        submit_header(cast("Node", None), _CONN, [hexdata])
+    assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
+    assert raised.value.message == "Block header decode failed"
+
+
+def test_submit_header_refuses_a_header_whose_parent_is_unknown(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Core's own `RPC_VERIFY_ERROR`, naming the parent to submit first."""
+    node = regtest_node()
+    chain = generate_random_header_chain(2, RegTest().genesis.hash)
+    with pytest.raises(RpcError) as raised:
+        submit_header(node, _CONN, [chain[1].serialize().hex()])
+    assert raised.value.code == RPCErrorCode.VERIFY_ERROR
+    assert raised.value.message == (
+        f"Must submit previous header ({chain[0].hash.hex()}) first"
+    )
+
+
+def test_submit_header_indexes_a_header_alone(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A valid header is indexed without its block: a `headers-only` tip.
+
+    Bytes after the header are ignored, as Core's `SpanReader` ignores
+    them, and a header already indexed is accepted again.
+    btclib-org/btclib-node#1533
+    """
+    node = regtest_node()
+    (header,) = generate_random_header_chain(1, RegTest().genesis.hash)
+    hexdata = header.serialize().hex()
+
+    submit_header(node, _CONN, [hexdata + "00"])
+    submit_header(node, _CONN, [hexdata])
+
+    block_index = node.chainstate.block_index
+    assert not block_index.get_block_info(header.hash).downloaded
+    tips = get_chain_tips(node, _CONN, [])
+    assert {"height": 1, "hash": header.hash, "branchlen": 1} | {
+        "status": "headers-only"
+    } in tips
+
+
+def test_submit_header_answers_the_reason_a_header_is_refused(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A refused header is `RPC_VERIFY_ERROR` with `add_headers`' reason.
+
+    `duplicate-invalid` for a header marked invalid, `bad-prevblk` for
+    one whose parent is, and the proof-of-work refusal for a hash that
+    misses its target; none of them is indexed.
+    """
+    node = regtest_node()
+    block_index = node.chainstate.block_index
+    chain = generate_random_header_chain(2, RegTest().genesis.hash)
+    block_index.add_headers(chain[:1])
+    block_index.invalidate(chain[0].hash)
+
+    for header, reason in [(chain[0], "duplicate-invalid"), (chain[1], "bad-prevblk")]:
+        with pytest.raises(RpcError) as raised:
+            submit_header(node, _CONN, [header.serialize().hex()])
+        assert raised.value.code == RPCErrorCode.VERIFY_ERROR
+        assert raised.value.message == reason
+    assert chain[1].hash not in block_index.header_dict
+
+    (unmined,) = generate_random_header_chain(1, RegTest().genesis.hash)
+    while True:
+        unmined.nonce += 1
+        try:
+            unmined.assert_valid_pow(node.chain.pow_limit_bits)
+        except BTClibValueError:
+            break
+    with pytest.raises(RpcError) as raised:
+        submit_header(node, _CONN, [unmined.serialize(check_validity=False).hex()])
+    assert raised.value.code == RPCErrorCode.VERIFY_ERROR
+    assert unmined.hash not in block_index.header_dict
 
 
 def a_block_marked_invalid(node: Node, block: Block) -> str:

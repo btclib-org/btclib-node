@@ -1521,6 +1521,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   call overriding an earlier one, nothing kept across a restart**
   (closes #1534).
 
+### `submitheader` is served
+
+- **`submitheader` indexes a header without its block, answering `null`,
+  Core's `Must submit previous header (<hash>) first` for an unknown
+  parent, and the reason for a header refused** (closes #1533).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

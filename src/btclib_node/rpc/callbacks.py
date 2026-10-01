@@ -17,10 +17,11 @@ import math
 import string
 import time
 from decimal import Decimal, InvalidOperation
+from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import RPCErrorCode, chain_from_network
-from btclib.block import Block, median_time_past
+from btclib.block import Block, BlockHeader, median_time_past
 from btclib.exceptions import BTClibException, BTClibTypeError, BTClibValueError
 from btclib.fee import FeeRate, fee_from_vsize
 from btclib.p2p.address import ServiceFlags
@@ -68,8 +69,6 @@ from btclib_node.rpc.errors import (
 from btclib_node.rpc.help import HELP_TEXT, answer_help
 
 if TYPE_CHECKING:
-    from btclib.block import BlockHeader
-
     from btclib_node import Node
     from btclib_node.chainstate.block_index import BlockIndex
     from btclib_node.p2p.block_availability import BlockAvailability
@@ -115,6 +114,7 @@ __all__ = [
     "stop",
     "stop_wait_param",
     "submit_block",
+    "submit_header",
     "test_mempool_accept",
 ]
 
@@ -1138,6 +1138,50 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     if extends_tip:
         return _validate_extending_tip(node, block_hash)
     return None
+
+
+def submit_header(node: Node, conn: RpcConnection, params: list[Any]) -> None:
+    """Answer `submitheader`: index one header alone, or refuse it.
+
+    Core's own `submitheader` (`rpc/mining.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `hexdata` is decoded as
+    `DecodeHexBlockHeader` decodes it: `_is_hex`, then the first eighty
+    bytes, any after them ignored as Core's `SpanReader` ignores them.
+    A header whose parent this index does not hold is refused before any
+    check. `BlockIndex.add_headers` then checks and indexes it, as
+    `ProcessNewBlockHeaders` does, and `None` answers a header indexed
+    now or already. A refusal answers the reason `add_headers` raises:
+    Core's word where it raises one, such as `duplicate-invalid` or
+    `bad-prevblk`, and otherwise its own message, the divergence
+    `submit_block` argues.
+    """
+    if not params:
+        raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["submitheader"])
+    if not isinstance(params[0], str):
+        raise type_error(1, "hexdata", params[0], "string")
+    decode_failed = RpcError(
+        RPCErrorCode.DESERIALIZATION_ERROR, "Block header decode failed"
+    )
+    if not _is_hex(params[0]):
+        raise decode_failed
+    try:
+        header = BlockHeader.parse(
+            BytesIO(bytes.fromhex(params[0])), check_validity=False
+        )
+    except BTClibValueError as error:
+        raise decode_failed from error
+
+    block_index = node.chainstate.block_index
+    parent = header.previous_block_hash
+    if parent not in block_index.header_dict:
+        raise RpcError(
+            RPCErrorCode.VERIFY_ERROR,
+            f"Must submit previous header ({parent.hex()}) first",
+        )
+    try:
+        block_index.add_headers([header])
+    except BTClibValueError as error:
+        raise RpcError(RPCErrorCode.VERIFY_ERROR, str(error)) from error
 
 
 def service_names(services: int) -> list[str]:
@@ -3521,6 +3565,7 @@ callbacks = {
     "reconsiderblock": reconsider_block,
     "preciousblock": precious_block,
     "submitblock": submit_block,
+    "submitheader": submit_header,
     "getpeerinfo": get_peer_info,
     "getconnectioncount": get_connection_count,
     "getnetworkinfo": get_network_info,
@@ -3567,6 +3612,7 @@ arg_names: dict[str, tuple[str, ...]] = {
     "reconsiderblock": ("blockhash",),
     "preciousblock": ("blockhash",),
     "submitblock": ("hexdata", "dummy"),
+    "submitheader": ("hexdata",),
     "getpeerinfo": (),
     "getconnectioncount": (),
     "getnetworkinfo": (),

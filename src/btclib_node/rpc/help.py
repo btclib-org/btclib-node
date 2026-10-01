@@ -660,6 +660,23 @@ _HELP_SUBMITBLOCK = (
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "submitblock", "params": ["mydata"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
+_HELP_SUBMITHEADER = (
+    'submitheader "hexdata"\n'
+    "\n"
+    "Decode the given hexdata as a header and submit it as a candidate chain tip if valid.\n"
+    "Throws when the header is invalid.\n"
+    "\n"
+    "Arguments:\n"
+    "1. hexdata    (string, required) the hex-encoded block header data\n"
+    "\n"
+    "Result:\n"
+    "null    (json null) None\n"
+    "\n"
+    "Examples:\n"
+    '> bitcoin-cli submitheader "aabbcc"\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "submitheader", "params": ["aabbcc"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
 _HELP_ADDNODE = (
     'addnode "node" "command" ( v2transport )\n'
     "\n"
@@ -1273,6 +1290,7 @@ HELP_TEXT: dict[str, str] = {
     "stop": _HELP_STOP,
     "getrpcinfo": _HELP_GETRPCINFO,
     "submitblock": _HELP_SUBMITBLOCK,
+    "submitheader": _HELP_SUBMITHEADER,
     "addnode": _HELP_ADDNODE,
     "addconnection": _HELP_ADDCONNECTION,
     "clearbanned": _HELP_CLEARBANNED,
@@ -1315,6 +1333,7 @@ CATEGORY: dict[str, str] = {
     "stop": "Control",
     "getrpcinfo": "Control",
     "submitblock": "Mining",
+    "submitheader": "Mining",
     "addnode": "Network",
     "clearbanned": "Network",
     "disconnectnode": "Network",

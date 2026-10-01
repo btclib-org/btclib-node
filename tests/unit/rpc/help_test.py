@@ -48,6 +48,7 @@ _EXPECTED_BARE_LISTING = (
     "\n"
     "== Mining ==\n"
     'submitblock "hexdata" ( "dummy" )\n'
+    'submitheader "hexdata"\n'
     "\n"
     "== Network ==\n"
     'addnode "node" "command" ( v2transport )\n'
