@@ -1857,10 +1857,13 @@ def test_an_ordinary_peer_answering_with_more_than_one_is_not_stopped() -> None:
 @pytest.mark.parametrize(
     "offset",
     [None, 24 * 3600],
-    ids=["before 1973", "a day ahead"],
+    ids=["at or before 3 March 1973", "a day ahead"],
 )
 def test_an_implausible_gossiped_time_is_five_days_back(offset: int | None) -> None:
-    """ISS 1605: Core's `ADDR` handler re-dates a time before 1973 or ahead.
+    """ISS 1605: an implausible gossiped time is re-dated.
+
+    Core's `ADDR` handler does it for a time at or before 3 March 1973,
+    or ahead of the clock.
 
     Five days back, then the two-hour penalty as for any gossip, so the
     address is not terrible and is served.
@@ -1879,6 +1882,27 @@ def test_an_implausible_gossiped_time_is_five_days_back(offset: int | None) -> N
     expected = now - 5 * 24 * 3600 - address_module._GOSSIP_TIME_PENALTY
     assert abs(row.timestamp - expected) <= 2
     assert peer_db.get_addr(0, 0) == [row]
+
+
+@pytest.mark.parametrize(
+    ("stamp", "redated"), [(100_000_000, True), (100_000_001, False)]
+)
+def test_the_gossiped_time_bound_of_1973_is_inclusive(
+    stamp: int, *, redated: bool
+) -> None:
+    """ISS 1605: Core's bound is `nTime <= 100000000`, 3 March 1973."""
+    given = [peer_address("1.2.3.5", 18444, timestamp=stamp, services=1)]
+    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+    addrv2(
+        a_handshake_node(peer_db=peer_db),
+        AddrV2(given).serialize(),
+        a_gossiping_peer(),
+    )
+    (row,) = peer_db.addresses
+    if redated:
+        assert row.timestamp > int(time.time()) - 6 * 24 * 3600
+    else:
+        assert row.timestamp == stamp - address_module._GOSSIP_TIME_PENALTY
 
 
 def test_a_gossiped_time_ten_minutes_ahead_is_kept() -> None:

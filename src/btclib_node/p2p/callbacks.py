@@ -971,8 +971,8 @@ def _store_gossip(
             ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_NETWORK_LIMITED
         ):
             continue
-        # Core re-dates a time before 1973 or ahead of the clock, ahead
-        # of the discouraged and banned check
+        # Core re-dates a time at or before 3 March 1973, or ahead of the
+        # clock, ahead of the discouraged and banned check
         dated = address
         if address.timestamp <= _GOSSIP_MIN_TIME or address.timestamp > now + 600:
             dated = replace(address, timestamp=int(now - _GOSSIP_REDATE))

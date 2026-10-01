@@ -1373,6 +1373,42 @@ def test_a_newer_gossip_moves_the_time_past_the_update_interval(
     assert row.timestamp == (gossip.timestamp if moved else held)
 
 
+@pytest.mark.parametrize(
+    ("newer_by", "moved"), [(5000, False), (11_000, True)], ids=["inside", "past"]
+)
+def test_the_update_interval_counts_the_gossip_penalty(
+    newer_by: int, *, moved: bool
+) -> None:
+    """ISS 1603: `AddSingle` moves `nTime` past `interval + time_penalty`.
+
+    With Core's two hours, a gossip under an hour and a half newer and one
+    three hours newer are either side of the hour plus the penalty.
+    """
+    now = int(time.time())
+    held = now - 20_000
+    penalty = address_module._GOSSIP_TIME_PENALTY
+    row = peer_address("1.2.3.4", 8333, timestamp=held)
+    gossip = replace(row, timestamp=held + newer_by)
+    expected = max(0, gossip.timestamp - penalty) if moved else held
+    assert address_module._held_time(row, gossip, penalty, now) == expected
+
+
+def test_the_online_window_is_read_off_the_gossiped_time_itself() -> None:
+    """ISS 1603: `currently_online` uses `addr.nTime`, not the penalised one.
+
+    A gossip 23.5 hours old is online, so an hour moves a held time; its
+    time less the two-hour penalty is more than a day old, which would
+    make the interval a day.
+    """
+    now = int(time.time())
+    penalty = address_module._GOSSIP_TIME_PENALTY
+    gossiped = now - 23 * 3600 - 1800
+    held = gossiped - 3600 - penalty - 100
+    row = peer_address("1.2.3.4", 8333, timestamp=held)
+    gossip = replace(row, timestamp=gossiped)
+    assert address_module._held_time(row, gossip, penalty, now) == gossiped - penalty
+
+
 def test_a_gossip_a_day_old_moves_the_time_past_a_day_only() -> None:
     """ISS 1603: the interval is a day where the gossip is itself a day old."""
     peer_db = a_peer_db()

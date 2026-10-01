@@ -1611,7 +1611,7 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 ### A gossiped time Core finds implausible is five days back
 
-- **A gossiped time at or before 1973, or over ten minutes ahead of the
+- **A gossiped time at or before 3 March 1973, or over ten minutes ahead of the
   clock, is replaced by five days ago before it is stored, as Core's
   `ADDR` handler does** (closes #1605).
 
