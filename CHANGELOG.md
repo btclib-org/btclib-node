@@ -1597,6 +1597,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   Core's `Must submit previous header (<hash>) first` for an unknown
   parent, and the reason for a header refused** (closes #1533).
 
+### `pypi-install.yml` imports the bindings check from `btclib_ecc`
+
+- **The `Verify the bindings serve` step imports
+  `is_libsecp256k1_serving` from `btclib_ecc.curves`**, where
+  `btclib.curves` is gone from btclib 2026.9.30 (closes #1614).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
