@@ -14,12 +14,18 @@ here are the ones [ARCHITECTURE](./ARCHITECTURE.md) describes.
 - **A block, a transaction, a script and an address this node accepts
   or builds agree with Bitcoin Core.**
   `.github/workflows/integration-bitcoind.yml` runs a disposable
-  regtest `bitcoind` against a fresh node over p2p and checks the tip,
-  `tests/integration/reorg_test.py` checks that a chain split follows
-  Core off an abandoned branch, and
-  `tests/integration/backpressure_test.py` checks that the receive
-  bound below actually engages against a real daemon serving blocks
-  faster than this node validates them.
+  regtest `bitcoind` against a fresh node over p2p, and
+  `tests/integration/bitcoind_test.py` checks the tip after a sync of
+  blocks Core mined. `tests/integration/reorg_test.py` checks that a
+  chain split follows Core off an abandoned branch,
+  `tests/integration/compact_blocks_test.py` that Core takes a
+  `cmpctblock` this node built, and
+  `tests/integration/backpressure_test.py` that the receive bound below
+  engages against a real daemon serving blocks faster than this node
+  validates them. No integration test offers Core a block, a transaction
+  or an address it rejects, so what this node refuses rests on the tests
+  and the vendored vectors under `tests/`, `tests/_data/README.md` naming
+  where each came from, and not on a run against Core.
 - **Octets from a peer or a caller either parse into what they claim to
   be or are refused, and nothing else.** `tests/property_test.py`'s own
   property — "over unconstrained octets, a declared entry point either
@@ -208,8 +214,10 @@ WAL-backed store would let a second reader in.
 CLI flag `cli.py` reads, and `bitcoin.conf` inside the datadir it names,
 are the operator's own input, not a remote party's — `cli.py`'s own
 module docstring is where each flag is named against Bitcoin Core's
-equivalent. Nothing under `src/` opens a file the operator did not name,
-directly or through the datadir.
+equivalent. The datadir holds the stores, `banlist.json`, `anchors.dat`
+and the log file; `-blocksdir` moves the block files, `-rpccookiefile`
+the RPC cookie, and `-conf` and `-includeconf` name the files read for
+options. Nothing under `src/` opens a file outside those.
 
 `PYTEST_XDIST_WORKER_COUNT` is read in any process, not only under
 pytest: `_default_worker_count` in `src/btclib_node/__init__.py` sizes
@@ -219,8 +227,9 @@ integer.
 **Bitcoin Core, as an oracle rather than a dependency.**
 `.github/workflows/integration-bitcoind.yml` is the one place this
 node's own answers are checked against a `bitcoind` it does not talk to
-in any other job, over p2p rather than over RPC, matching what a real
-peer would see.
+in any other job. Blocks are checked over p2p, matching what a real peer
+would see, and `rpc_framing_test.py`, `banlist_test.py` and
+`getpeerinfo_test.py` compare RPC answers.
 
 ## Secure design principles
 
@@ -255,10 +264,13 @@ describes.
   limitations are published; SECURITY.md states what is known rather
   than leaving it to be found again.
 - **Least privilege.** `src/` loads no RPC client of its own and no
-  transport, the census under *Threat model* shows; the only sockets
+  transport, the census under *Threat model* shows. The only sockets
   this process opens are the p2p and RPC listeners and the outbound
-  peer connections `P2pManager.connect` makes, and the only files it
-  opens are its own datadir and whatever `-conf`/`-datadir` name.
+  peer connections `P2pManager.connect` makes. Names are resolved by
+  `getaddrinfo`, for the DNS seeds (`p2p/address.py`), for `-connect`
+  and `-addnode` hosts (`p2p/manager.py`) and for `-rpcbind` hosts
+  (`rpc/manager.py`). The only files it opens are the ones *The
+  environment and the files* names.
 - **Psychological acceptability.** A malformed RPC request answers
   the HTTP status and the error `bitcoind` answers it with rather than
   closing the socket with nothing said, so a caller can tell its own
@@ -290,8 +302,8 @@ and what counters each.
   construction rather than by a runtime check in most of this tree:
   ARCHITECTURE.md's *The protocol and the RPC surface* is the argument
   for which state needs a lock, and `PeerDB`'s own two separately-taken,
-  never-nested locks are the one piece of state actually reached from
-  two threads.
+  never-nested locks are the argued example. Other state carries a lock
+  of its own, which `grep -rn 'threading\.R\?Lock()' src` lists.
 - **Uncaught exceptions on hostile input (CWE-248, CWE-755).**
   `tests/property_test.py`'s property, over the harnesses' own declared
   entry points: unconstrained octets either parse into what they claim
@@ -307,25 +319,27 @@ and what counters each.
   and the pacing beside them on the p2p surface. SECURITY.md's
   *Limitations* states what is bounded and what is not yet.
 - **Weak randomness (CWE-330, CWE-338).** `ruff`'s flake8-bandit family,
-  selected whole in `pyproject.toml`, flags a bare `random` import under
-  `src/`; `download.py`'s own trickle-relay schedule and
-  `p2p/callbacks.py`'s own address-sampling jitter draw from
-  `random.SystemRandom` rather than the default generator precisely
-  because each is a choice a peer is meant not to be able to predict,
-  and `p2p/connection.py`'s handshake and keep-alive nonces draw from
-  `secrets` directly.
+  selected whole in `pyproject.toml`, flags a call to a `random` function
+  under `src/` (S311), not the import. `download.py`'s own trickle-relay
+  schedule draws from `random.SystemRandom`, and `p2p/callbacks.py`'s
+  address-sampling jitter from `secrets.SystemRandom`, rather than the
+  default generator precisely because each is a choice a peer is meant
+  not to be able to predict. `p2p/connection.py`'s handshake and
+  keep-alive nonces draw from `secrets` directly.
 - **Improper verification of a signature or a chain (CWE-347).** Checked
-  against Bitcoin Core, not merely against this tree's own suite: the
-  regtest oracle under *What is claimed* above, and the vendored vectors
-  `.github/workflows/vendored-vectors.yml` compares with upstream on a
-  schedule.
+  against Bitcoin Core, not merely against this tree's own suite, within
+  the limits *What is claimed* above gives the regtest oracle, and by the
+  vendored vectors `.github/workflows/vendored-vectors.yml` compares with
+  upstream on a schedule.
 - **Deserialization of untrusted data (CWE-502).** `json.loads` on an
   RPC body is the only deserializer of untrusted data `src/` calls
   directly, and it is the standard library's own, bounded ahead of the
   call by `MAX_BODY_BYTES`; a p2p message is parsed by btclib rather
-  than unpickled or unmarshalled. The census under *Threat model* lists
-  neither `pickle` nor `marshal` nor `shelve`. `.github/workflows/codeql.yml`
-  analyses the code and the workflows.
+  than unpickled or unmarshalled. `rocksdict` pickles a value by
+  default, which `db.py` avoids with `raw_mode=True` on every `Options`
+  and `WriteBatch`, so no stored value is unpickled. The census under
+  *Threat model* lists neither `pickle` nor `marshal` nor `shelve`.
+  `.github/workflows/codeql.yml` analyses the code and the workflows.
 - **Type confusion (CWE-843).** mypy runs with `strict = true`
   (`pyproject.toml`) over this tree and its suite, as a hook of the lint
   gate in `.pre-commit-config.yaml`.

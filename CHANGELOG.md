@@ -1525,6 +1525,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **An exception from the download manager's step or from `update_chain`
   ends the node, and the documents say so** (closes #1551).
 
+### `ASSURANCE_CASE.md` matches the code and tests it cites
+
+- **The statements the review found stale or overstated match the code
+  and tests they cite: integration coverage, the oracle, locks, S311,
+  sockets, files and the pickle default** (closes #1554).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
