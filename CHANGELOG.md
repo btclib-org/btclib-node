@@ -1520,6 +1520,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`btclib_wallet`, `subprocess` and the `getifaddrs` FFI, a trust
   item, are named** (closes #1550).
 
+### `_step_chain` is documented as fail-stop
+
+- **An exception from the download manager's step or from `update_chain`
+  ends the node, and the documents say so** (closes #1551).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

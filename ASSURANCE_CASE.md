@@ -238,14 +238,19 @@ describes.
   (btclib-org/btclib-node#1268). A
   second process cannot silently share a datadir already open: RocksDB's
   own `LOCK` refuses it rather than allowing concurrent, uncoordinated
-  writers.
+  writers. `_step_chain` stops: an exception from `download_manager.step()`
+  or `update_chain` is logged, `run` leaves its loop, and the node closes
+  its stores and ends, as Core's `FatalError` ends its own
+  (`src/btclib_node/main.py`'s comment above `_CONTENT_FAILURE` argues the
+  split). A block's own content failing is not one: the fork is rejected
+  and the node goes on. An exception peer data could provoke there would
+  therefore stop the node.
 - **Complete mediation.** A p2p message is bounded and its magic checked
   before it is parsed at all, never after; an RPC body is bounded before
-  `json.loads` ever sees it. `_drain_message_queues` and `_step_chain`
-  (`src/btclib_node/__init__.py`) wrap every handler call in one
-  `try`/`except Exception`, so a handler that raises on input neither of
-  them expected is logged rather than silently skipping the mediation
-  around it.
+  `json.loads` ever sees it. `_drain_message_queues`
+  (`src/btclib_node/__init__.py`) wraps a pass over the handlers in one
+  `try`/`except Exception`, so a handler that raises on input none
+  expected is logged and the next pass runs.
 - **Open design.** The code, the fuzz corpus and harnesses, and the
   limitations are published; SECURITY.md states what is known rather
   than leaving it to be found again.
@@ -292,9 +297,10 @@ and what counters each.
   entry points: unconstrained octets either parse into what they claim
   to be or raise `BTClibException`, and nothing else.
   `tests/fuzz_corpus_test.py` checks that every corpus seed still
-  parses. Inside `Node`'s own loop, `_drain_message_queues` and
-  `_step_chain` catch what a handler raises and log it rather than
-  ending the process.
+  parses. Inside `Node`'s own loop, `_drain_message_queues` catches what
+  a handler raises and logs it, and the loop goes on; `_step_chain`
+  catches and logs it too, and then stops the node (*Fail-safe defaults*
+  above).
 - **Uncontrolled resource consumption (CWE-400, CWE-770).**
   `MAX_HEADER_BYTES`/`MAX_BODY_BYTES` on the RPC surface,
   `MAX_PROTOCOL_MESSAGE_LENGTH`/`MAX_QUEUED_RECV_BYTES`/`MAX_QUEUED_SEND_BYTES`
