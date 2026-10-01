@@ -6892,8 +6892,8 @@ def test_submit_header_answers_the_reason_a_header_is_refused(
     """A refused header is `RPC_VERIFY_ERROR` with `add_headers`' reason.
 
     `duplicate-invalid` for a header marked invalid, `bad-prevblk` for
-    one whose parent is, and the proof-of-work refusal for a hash that
-    misses its target; none of them is indexed.
+    one whose parent is, and `high-hash` for a hash that misses its
+    target; none of them is indexed.
     """
     node = regtest_node()
     block_index = node.chainstate.block_index
@@ -6918,6 +6918,7 @@ def test_submit_header_answers_the_reason_a_header_is_refused(
     with pytest.raises(RpcError) as raised:
         submit_header(node, _CONN, [unmined.serialize(check_validity=False).hex()])
     assert raised.value.code == RPCErrorCode.VERIFY_ERROR
+    assert raised.value.message == "high-hash"
     assert unmined.hash not in block_index.header_dict
 
 

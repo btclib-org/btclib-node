@@ -1579,12 +1579,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   and tests they cite: integration coverage, the oracle, locks, S311,
   sockets, files and the pickle default** (closes #1554).
 
-### Refusals carry Core's reasons, in Core's order
-
-- **A refused header, a script refusal and a block's refusals carry Core's
-  reasons, in Core's order, `ConnectBlock`'s accumulated fee bound
-  included** (closes #1600) (closes #1362) (closes #1587).
-  `interpreter.check_transactions` is `check_scripts`, the scripts alone.
 ### At equal work, the block that could connect first is the tip
 
 - **A block is numbered once its data and every ancestor's have arrived, as Core's
@@ -1602,6 +1596,13 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`submitheader` indexes a header without its block, answering `null`,
   Core's `Must submit previous header (<hash>) first` for an unknown
   parent, and the reason for a header refused** (closes #1533).
+
+### Refusals carry Core's reasons, in Core's order
+
+- **A refused header, a script refusal and a block's refusals carry Core's
+  reasons, in Core's order, `ConnectBlock`'s accumulated fee bound
+  included** (closes #1600) (closes #1362) (closes #1587).
+  `interpreter.check_transactions` is `check_scripts`, the scripts alone.
 
 ## v2026.9.24
 

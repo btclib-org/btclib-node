@@ -1191,10 +1191,9 @@ def submit_header(node: Node, conn: RpcConnection, params: list[Any]) -> None:
     A header whose parent this index does not hold is refused before any
     check. `BlockIndex.add_headers` then checks and indexes it, as
     `ProcessNewBlockHeaders` does, and `None` answers a header indexed
-    now or already. A refusal answers the reason `add_headers` raises:
-    Core's word where it raises one, such as `duplicate-invalid` or
-    `bad-prevblk`, and otherwise its own message, the divergence
-    `submit_block` argues.
+    now or already. A refusal answers the reason `add_headers` raises,
+    Core's word, such as `duplicate-invalid`, `bad-prevblk`,
+    `bad-diffbits` or `high-hash`.
     """
     if not params:
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["submitheader"])
