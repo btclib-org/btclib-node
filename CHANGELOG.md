@@ -1690,6 +1690,23 @@ that records it (issue btclib-org/.github#1362).
   where docs.python.org fails, so an outage there no longer fails `-W`
   (closes #1626).
 
+### A peer spec that resolves to nothing is not refused, as in Core
+
+- **A port that is no port, or an empty host, is a name resolving to
+  nothing, not refused as the ASCII-digits entry says; `-rpcbind` still
+  refuses it** (closes #1292) (closes #1608).
+
+### `addnode add` reads an onion or I2P name as an address, as in Core
+
+- **A second add of one onion or I2P address and port is refused, I2P's
+  default port being 0** (closes #1369).
+
+### Pruning flushes the chainstate before it deletes
+
+- **`prune_up_to_height` flushes the chainstate, clears `downloaded`, then
+  deletes, so a restart after a crash finds the blocks its tip needs; every
+  call costs one flush** (closes #1248).
+
 ### A `getaddr` is answered from every known address
 
 - **The answer is a sample of every address the table holds, new or

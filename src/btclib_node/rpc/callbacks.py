@@ -37,7 +37,6 @@ from btclib_wallet.descriptors import add_checksum
 
 from btclib_node.block_db import Coin
 from btclib_node.chainstate.block_index import BlockStatus, block_time
-from btclib_node.config import split_host_port
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, USER_AGENT
 from btclib_node.exceptions import MissingPrevoutError, TxRejectedError
 from btclib_node.main import (
@@ -1691,16 +1690,7 @@ def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
             )
         return
 
-    try:
-        split_host_port(node_arg, node.chain.port)
-    except ValueError as error:
-        # a malformed port alone: a hostname is no longer refused here,
-        # `connect_host` resolving one the way `P2pManager`'s own
-        # redial and `Node.run`'s startup dial do (btclib-org/btclib-node#1264)
-        raise RpcError(RPCErrorCode.INVALID_PARAMETER, str(error)) from error
-
-    # `node_arg` whole, not the `(host, port)` the check above only
-    # validated with: Core's own `onetry` passes `node_arg` itself as
+    # `node_arg` whole: Core's own `onetry` passes `node_arg` itself as
     # `pszDest` (`src/rpc/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
     # v31.1 tag), so a port the caller gave reaches `addr_name` too
     # (btclib-org/btclib-node#1493).

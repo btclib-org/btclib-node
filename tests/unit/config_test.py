@@ -17,6 +17,7 @@ from btclib_node.config import (
     DEFAULT_MIN_RELAY_FEERATE,
     Config,
     get_path_arg,
+    lookup_host_port,
     split_host_port,
 )
 from btclib_node.rpc.auth import COOKIE_FILE, RpcAuthEntry, password_hmac
@@ -389,6 +390,36 @@ def test_split_host_port_reads_ascii_digits_alone(port: str) -> None:
     """
     with pytest.raises(ValueError, match="invalid port"):
         split_host_port(f"127.0.0.1:{port}", 8333)
+
+
+@pytest.mark.parametrize(
+    ("spec", "expected"),
+    [
+        ("127.0.0.1:+80", ("127.0.0.1:+80", 8333)),
+        ("127.0.0.1:0x50", ("127.0.0.1:0x50", 8333)),
+        ("127.0.0.1: 80", ("127.0.0.1: 80", 8333)),
+        ("127.0.0.1:", ("127.0.0.1:", 8333)),
+        ("127.0.0.1:70000", ("127.0.0.1:70000", 8333)),
+        pytest.param("127.0.0.1:" + "0" * 5000 + "1", ("127.0.0.1", 1), id="zeros"),
+        pytest.param(
+            "127.0.0.1:" + "9" * 5000, ("127.0.0.1:" + "9" * 5000, 8333), id="nines"
+        ),
+        ("[::1]:+80", ("[::1]:+80", 8333)),
+        ("[::1]:0", ("::1", 0)),
+        ("127.0.0.1:0", ("127.0.0.1", 0)),
+        ("127.0.0.1:9000", ("127.0.0.1", 9000)),
+        ("[::1]", ("::1", 8333)),
+    ],
+)
+def test_lookup_host_port_reads_a_bad_port_as_part_of_the_name(
+    spec: str, expected: tuple[str, int]
+) -> None:
+    """ISS 1292: `Lookup` ignores `SplitHostPort`'s answer, keeping its host.
+
+    A port that is no `uint16_t` leaves the whole spec as the host and
+    the default port; port 0 is split off, and is not valid.
+    """
+    assert lookup_host_port(spec, 8333) == expected
 
 
 def test_split_host_port_reads_leading_zeros() -> None:
