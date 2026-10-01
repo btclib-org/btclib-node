@@ -144,6 +144,20 @@ def log_recorder() -> tuple[list[str], Callable[..., None]]:
     return entries, record
 
 
+def debug_recorder() -> tuple[list[tuple[str, str]], Callable[..., None]]:
+    """Return a list and a stand-in for `Logger.log_debug` that fills it.
+
+    Each entry is the category and the finished message, the `%` formatting
+    applied as `log_recorder` applies it.
+    """
+    entries: list[tuple[str, str]] = []
+
+    def record(category: str, msg: str, *args: object) -> None:
+        entries.append((category, msg % args if args else msg))
+
+    return entries, record
+
+
 def discourage_recorder() -> tuple[list[Any], Callable[[Any], bool]]:
     """Return a list and a stand-in for `maybe_discourage_and_disconnect`.
 

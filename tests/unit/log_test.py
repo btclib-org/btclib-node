@@ -4,16 +4,17 @@
 
 """`Logger` picks the right handler and drops it cleanly on `close`."""
 
+import ast
 import logging
 import time
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
 
-from btclib_node.log import Logger
-
-if TYPE_CHECKING:
-    from pathlib import Path
+import btclib_node
+from btclib_node import cli
+from btclib_node.constants import default_data_dir
+from btclib_node.log import Logger, open_history_log
 
 
 def test_a_log_path_is_a_file_the_lines_end_up_in(tmp_path: Path) -> None:
@@ -140,3 +141,154 @@ def test_a_line_opens_with_core_s_utc_second_and_a_space(tmp_path: Path) -> None
     finally:
         time.tzset()
         logger.close()
+
+
+def _log_lines(path: Path) -> list[str]:
+    """Return what a `Logger` wrote to `path`, each line after its time."""
+    lines = path.read_text(encoding="utf-8").splitlines()[5:]
+    return [line.split(" ", 1)[1] for line in lines]
+
+
+def test_a_debug_line_carries_its_category_as_core_s_log_does(tmp_path: Path) -> None:
+    """ISS 1322: `GetLogPrefix` writes `[net] ` for a debug line, no level.
+
+    As `bitcoind` v31.1.0's `debug.log` has it under `-debug=net`:
+    `[net] Flushed 0 banned node addresses/subnets to disk  0ms`.
+    """
+    path = tmp_path / "history.log"
+    logger = Logger(path, debug=True)
+    logger.log_debug("net", "peer=%d", 7)
+    logger.close()
+    assert _log_lines(path) == ["[net] peer=7"]
+
+
+def test_log_debug_writes_the_categories_debug_selects_and_no_others(
+    tmp_path: Path,
+) -> None:
+    """ISS 1322: `-debug=net` writes `net` and not `rpc`; none selects all."""
+    path = tmp_path / "history.log"
+    logger = Logger(path, debug=True, categories={"net"})
+    logger.log_debug("net", "n")
+    logger.log_debug("rpc", "r")
+    logger.close()
+    assert _log_lines(path) == ["[net] n"]
+    every = tmp_path / "every.log"
+    logger = Logger(every, debug=True)
+    logger.log_debug("net", "n")
+    logger.log_debug("rpc", "r")
+    logger.close()
+    assert _log_lines(every) == ["[net] n", "[rpc] r"]
+
+
+def test_log_debug_writes_nothing_where_debug_is_off(tmp_path: Path) -> None:
+    """A category alone is not `-debug`: the level is what keeps it out."""
+    path = tmp_path / "history.log"
+    logger = Logger(path, categories={"net"})
+    logger.log_debug("net", "n")
+    logger.close()
+    assert not _log_lines(path)
+
+
+def _debug_calls() -> dict[str, list[ast.Call]]:
+    """Return each source file's `.debug(` and `.log_debug(` calls."""
+    source = Path(btclib_node.__file__).parent
+    calls: dict[str, list[ast.Call]] = {}
+    for path in source.rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"debug", "log_debug"}
+            ):
+                calls.setdefault(path.relative_to(source).as_posix(), []).append(node)
+    return calls
+
+
+def test_no_call_writes_a_debug_line_with_no_category() -> None:
+    """ISS 1322: every debug line goes through `log_debug`.
+
+    `logger.debug` writes `[debug] `, which Core writes for no line.
+    """
+    assert not [
+        f"{name}:{call.lineno}"
+        for name, calls in _debug_calls().items()
+        for call in calls
+        if isinstance(call.func, ast.Attribute) and call.func.attr == "debug"
+    ]
+
+
+# the Core subsystem each file's debug lines belong to: where Core has the
+# same line, the category its `LogDebug` gives it
+_CATEGORY_OF_FILE = {
+    "chainstate/block_index.py": "validation",
+    "download.py": "net",
+    "main.py": "validation",
+    "p2p/banman.py": "net",
+    "p2p/callbacks.py": "net",
+    "p2p/connection.py": "net",
+    "p2p/main.py": "net",
+    "p2p/manager.py": "net",
+    "rpc/connection.py": "http",
+    "rpc/main.py": "rpc",
+    "rpc/manager.py": "http",
+}
+
+
+def test_every_debug_line_is_under_the_category_of_its_subsystem() -> None:
+    """ISS 1322: `net` for a peer's, `validation` for a block's, `http`, `rpc`.
+
+    A literal and one of Core's own names, so that `-debug=<category>`
+    selects it.
+    """
+    found = {
+        name: {
+            call.args[0].value if isinstance(call.args[0], ast.Constant) else None
+            for call in calls
+        }
+        for name, calls in _debug_calls().items()
+    }
+    assert found == {name: {category} for name, category in _CATEGORY_OF_FILE.items()}
+    assert set(_CATEGORY_OF_FILE.values()) <= cli._LOG_CATEGORIES
+
+
+def test_the_data_directory_and_config_file_lines_follow_the_version_line(
+    tmp_path: Path,
+) -> None:
+    """ISS 1444: `StartLogging` writes them, ahead of `LogArgs`'s lines."""
+    path = tmp_path / "history.log"
+    logger = open_history_log(
+        path,
+        debug=False,
+        data_dir=tmp_path / "regtest",
+        config_file_line="Config file: <disabled>",
+        config_args=("Command-line arg: regtest=true",),
+    )
+    logger.close()
+    assert _log_lines(path)[1:] == [
+        f"Default data directory {default_data_dir()}",
+        f"Using data directory {tmp_path / 'regtest'}",
+        "Config file: <disabled>",
+        "Command-line arg: regtest=true",
+    ]
+
+
+def test_log_debug_writes_no_excluded_category(tmp_path: Path) -> None:
+    """ISS 1609: `-debug=1 -debugexclude=net` writes every other category."""
+    path = tmp_path / "history.log"
+    logger = Logger(path, debug=True, excluded={"net"})
+    logger.log_debug("net", "n")
+    logger.log_debug("rpc", "r")
+    logger.close()
+    assert _log_lines(path) == ["[rpc] r"]
+
+
+def test_an_excluded_category_is_not_written_though_debug_names_it(
+    tmp_path: Path,
+) -> None:
+    """ISS 1609: `-debugexclude` takes priority over `-debug`."""
+    path = tmp_path / "history.log"
+    logger = Logger(path, debug=True, categories={"net", "rpc"}, excluded={"net"})
+    logger.log_debug("net", "n")
+    logger.log_debug("rpc", "r")
+    logger.close()
+    assert _log_lines(path) == ["[rpc] r"]
