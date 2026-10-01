@@ -40,9 +40,11 @@ accepting connections).
 `-debug=<category>` takes Core's logging category names
 (`LOG_CATEGORIES_BY_STR`, `src/logging.cpp`, same sha) and refuses any
 other with Core's own "Unsupported logging category" message
-(`SetLoggingCategories`, `src/init/common.cpp`). This node has no
-categories of its own, so any category turns `Config.debug` on for all
-of its logging, and `0` or `none` discards the categories before it.
+(`SetLoggingCategories`, `src/init/common.cpp`), and `0` or `none`
+discards the categories before it. Each debug line is written under
+Core's category for it (`Logger.log_debug`), and `-debug` with no
+category, `1` or `all` selects every one. `-debugexclude=<category>` takes
+a category out after `-debug`'s, refused the same way.
 
 `-blocksdir=<dir>` names the base `BlockDB` (`block_db/__init__.py`)
 writes its own files under, Core's own "default: <datadir>" applying
@@ -191,7 +193,7 @@ from btclib_node.config import (
     get_path_arg,
     split_host_port,
 )
-from btclib_node.constants import MIN_PRUNE_TARGET_MIB
+from btclib_node.constants import MIN_PRUNE_TARGET_MIB, default_data_dir
 from btclib_node.dirlock import DirectoryLock, lock_directories
 from btclib_node.exceptions import DirectoryLockError
 from btclib_node.log import open_history_log
@@ -463,11 +465,20 @@ _OPTIONS: dict[str, _Option] = {
     "debug": _Option(
         "=<category>",
         "Log at DEBUG level rather than INFO (default: -nodebug, supplying "
-        "<category> is optional). Any <category> turns it on for all of this "
-        'node\'s logging; 0 or "none" discards the categories given before it. '
+        "<category> is optional). If <category> is not supplied or if <category> "
+        'is 1 or "all", output all debug logging; 0 or "none" discards the '
+        "categories given before it. "
         "Valid values for <category> are Core's: 1, all, "
         + ", ".join(sorted(_LOG_CATEGORIES))
         + ". This option can be specified multiple times.",
+        _DEBUG_TEST_TITLE,
+    ),
+    "debugexclude": _Option(
+        "=<category>",
+        "Exclude debug logging for a category. Can be used in conjunction "
+        "with -debug=1 to output debug logging for all categories except "
+        "the specified category. This option can be specified multiple "
+        'times to exclude multiple categories. This takes priority over "-debug"',
         _DEBUG_TEST_TITLE,
     ),
     "discover": _Option(
@@ -752,6 +763,9 @@ class _Settings:
     # `_warn_unrecognized_sections`'s one warning, logged after the
     # version line; `""` where no section is unrecognised
     section_warning: str = ""
+    # `init::StartLogging`'s "Config file:" line, logged after the data
+    # directory's; `_read_settings` sets it
+    config_file_line: str = ""
 
 
 def _interpret_key(key: str) -> _KeyInfo:
@@ -1439,12 +1453,18 @@ def _chain_section(settings: _Settings) -> str:
     )
 
 
-def _resolve_debug(settings: _Settings) -> bool:
-    """Return whether any logging category is on: `SetLoggingCategories`.
+def _resolve_debug(
+    settings: _Settings,
+) -> tuple[bool, frozenset[str], frozenset[str]]:
+    """Return whether `-debug` is on, for which categories, and but for which.
 
-    `src/init/common.cpp`, at bitcoin/bitcoin@9be056a8a7: the categories
-    after the last `0` or `none`, each refused unless `GetLogCategory`
-    (`src/logging.cpp`) knows it.
+    `SetLoggingCategories` (`src/init/common.cpp`, at
+    bitcoin/bitcoin@9be056a8a7): the categories after the last `0` or
+    `none`, each refused unless `GetLogCategory` (`src/logging.cpp`)
+    knows it. The first set is empty where every category is on, `-debug`,
+    `-debug=1` or `-debug=all` being among them. The second is
+    `-debugexclude`'s, applied after `-debug`'s and refused the same way
+    for a category Core does not know; `all` excludes every one.
     """
     categories = _get_args(settings, "debug")
     discard = [i for i, category in enumerate(categories) if category in _DEBUG_NONE]
@@ -1453,7 +1473,18 @@ def _resolve_debug(settings: _Settings) -> bool:
         if category not in _DEBUG_ALL and category not in _LOG_CATEGORIES:
             err_msg = f"Unsupported logging category -debug={category}."
             raise ValueError(err_msg)
-    return bool(enabled)
+    excluded: set[str] = set()
+    for category in _get_args(settings, "debugexclude"):
+        if category in _DEBUG_ALL:
+            excluded |= _LOG_CATEGORIES
+        elif category in _LOG_CATEGORIES:
+            excluded.add(category)
+        else:
+            err_msg = f"Unsupported logging category -debugexclude={category}."
+            raise ValueError(err_msg)
+    if any(category in _DEBUG_ALL for category in enabled):
+        return True, frozenset(), frozenset(excluded)
+    return bool(enabled), frozenset(enabled), frozenset(excluded)
 
 
 def _help_message(*, show_debug: bool) -> str:
@@ -1775,7 +1806,7 @@ def _read_settings(argv: Sequence[str]) -> tuple[_Settings, Path, str]:
     # actual filesystem read and `Config` still use
     # (btclib-org/btclib-node#1273).
     datadir = _get_arg(settings, "datadir")
-    base_dir = Path.home() / ".btclib"
+    base_dir = default_data_dir()
     base_display = str(base_dir)
     if datadir:
         normalized_datadir = get_path_arg(datadir)
@@ -1789,6 +1820,7 @@ def _read_settings(argv: Sequence[str]) -> tuple[_Settings, Path, str]:
             )
         _check_datadir(base_dir, datadir)
     conf_path = None
+    settings.config_file_line = "Config file: <disabled>"
     if not _is_negated(settings, "conf"):
         conf = _get_arg(settings, "conf")
         normalized_conf = get_path_arg(conf) if conf else _DEFAULT_CONF_FILENAME
@@ -1813,6 +1845,15 @@ def _read_settings(argv: Sequence[str]) -> tuple[_Settings, Path, str]:
             # `InitConfig`'s own prefix on a `ReadConfigFiles` refusal
             err_msg = f"Error reading configuration file: {error}"
             raise ValueError(err_msg) from None
+        # `StartLogging`'s other two lines, for a directory and for a
+        # `-conf` that is absent, are refused above by `_read_conf_file`
+        # before any log is open, as `ReadConfigFiles` refuses them
+        # before `StartLogging`
+        settings.config_file_line = (
+            f"Config file: {conf_path}"
+            if os.path.exists(conf_path)  # noqa: PTH110
+            else f"Config file: {conf_path} (not found, skipping)"
+        )
     chain_name = _resolve_chain_name(settings)
     settings.network = _CHAIN_SECTION[chain_name]
     _check_ignored_conf(settings, base_dir, conf_path)
@@ -1852,6 +1893,8 @@ class _BeforeLock:
     max_connections_arg: int
     max_connections: int
     debug: bool
+    debug_categories: frozenset[str]
+    debug_exclude: frozenset[str]
     # `-minimumchainwork`'s own `None` for "not given", `Config.__init__`
     # left to default it once `chain_name` above resolves
     minimum_chain_work: int | None
@@ -1993,7 +2036,7 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
         dnsseed=dnsseed,
         forcednsseed=bool(_get_bool(settings, "forcednsseed")),
     )
-    debug = _resolve_debug(settings)
+    debug, debug_categories, debug_exclude = _resolve_debug(settings)
     # after `-debug`'s categories, where `AppInitParameterInteraction`
     # applies the chainstate manager's options, ahead of the blockmanager's
     # (`-prune`, below) and the mempool's (btclib-org/btclib-node#1332)
@@ -2009,6 +2052,8 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
         max_connections_arg,
         max_connections,
         debug,
+        debug_categories,
+        debug_exclude,
         minimum_chain_work,
         max_tip_age,
         prune,
@@ -2118,6 +2163,8 @@ def _after_lock(before: _BeforeLock) -> Config:
         pruned=bool(prune),
         prune_target_mib=prune if prune >= MIN_PRUNE_TARGET_MIB else None,
         debug=before.debug,
+        debug_categories=before.debug_categories,
+        debug_exclude=before.debug_exclude,
         connect=connect or (["0"] if connect_negated else []),
         addnode=_get_args(settings, "addnode"),
         seednode=_get_args(settings, "seednode"),
@@ -2151,6 +2198,7 @@ def _after_lock(before: _BeforeLock) -> Config:
         log_warnings=settings.log_warnings,
         section_warning=settings.section_warning,
         config_args=_log_args(settings),
+        config_file_line=settings.config_file_line,
     )
 
 
@@ -2235,6 +2283,10 @@ def main(argv: Sequence[str] | None = None) -> None:
             logger = open_history_log(
                 log_path,
                 debug=before.debug,
+                debug_categories=before.debug_categories,
+                debug_exclude=before.debug_exclude,
+                data_dir=directories.data_dir,
+                config_file_line=before.settings.config_file_line,
                 log_warnings=before.settings.log_warnings,
                 section_warning=before.settings.section_warning,
                 config_args=_log_args(before.settings),

@@ -180,7 +180,7 @@ def handle_p2p(node: Node) -> None:
                     and not conn.feeler
                 ):
                     callbacks[msg_type](node, msg, conn)
-                node.logger.debug("Finished p2p\n")
+                node.logger.log_debug("net", "Finished p2p\n")
         except Exception as e:
             # A `MisbehavingError` -- a header or a block failing a
             # consensus check, a message past Core's own size bound -- is

@@ -113,6 +113,13 @@ btclib\_node.signet module
    :members:
    :show-inheritance:
 
+btclib\_node.versionbits module
+-------------------------------
+
+.. automodule:: btclib_node.versionbits
+   :members:
+   :show-inheritance:
+
 Module contents
 ---------------
 
