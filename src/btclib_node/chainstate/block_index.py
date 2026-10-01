@@ -153,17 +153,33 @@ def block_time(header: BlockHeader) -> int:
     return int(header.time.timestamp())
 
 
+def _refusal_text(error: BaseException) -> str:
+    """Return `error`'s reason, then the detail it was raised from, for a log.
+
+    A header is refused with Core's reject reason alone, the word
+    `submitheader` and `submitblock` answer. The detail Core's reason
+    leaves out, btclib's message or the two numbers compared, is the
+    refusal's `__cause__`.
+    """
+    cause = error.__cause__
+    return str(error) if cause is None else f"{error} ({cause})"
+
+
 def _assert_valid_pow(header: BlockHeader, pow_limit_bits: bytes) -> None:
     """Assert `header`'s own proof of work, as Core's `CheckHeadersPoW`.
 
     Core calls `Misbehaving` for a header failing it
     (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-    tag), so the refusal is a `MisbehavingError`.
+    tag), so the refusal is a `MisbehavingError`. Its reason is
+    `CheckBlockHeader`'s `high-hash` (`src/validation.cpp`, same sha),
+    which Core answers for every way `CheckProofOfWork` fails, an
+    out-of-range target included.
     """
     try:
         header.assert_valid_pow(pow_limit_bits)
     except BTClibValueError as e:
-        raise MisbehavingError(str(e)) from e
+        err_msg = "high-hash"
+        raise MisbehavingError(err_msg) from e
 
 
 def check_headers_pow(headers: Sequence[BlockHeader], pow_limit_bits: bytes) -> None:
@@ -231,29 +247,45 @@ def _assert_valid_in_context(  # noqa: PLR0913, PLR0917
     not btclib's -- so it is caught and re-raised as one here, the way
     `_assert_valid_pow` already does for `assert_valid_pow`'s own.
     `time-too-new` is `BLOCK_TIME_FUTURE`, which it does not punish, so
-    btclib's own refusal is left as it is
-    (`src/validation.cpp` and `src/net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    it stays a bare `BTClibValueError` (`src/validation.cpp` and
+    `src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag).
+
+    Each is raised with Core's reject reason as its whole message, the
+    word `submitheader` answers, the detail kept as the `__cause__`
+    `_refusal_text` reads. `next_bits_required` raises the timewarp bound
+    before it answers anything, so a header breaking it and the target or
+    the median time too is refused `time-timewarp-attack`, where Core
+    reports `bad-diffbits` or `time-too-old` (btclib-org/btclib#2465).
+    The timewarp bound is the only raise of `next_bits_required` reachable
+    for a header and a parent this index holds.
     """
     try:
         required = next_bits_required(
             header, parent, parent_height, parent_of, chain.consensus
         )
     except BTClibValueError as e:
-        raise MisbehavingError(str(e)) from e
+        err_msg = "time-timewarp-attack"
+        raise MisbehavingError(err_msg) from e
     if header.bits != required:
-        err_msg = f"proof-of-work target not the required one: {header.bits.hex()}"
-        err_msg += f" instead of {required.hex()}"
-        raise MisbehavingError(err_msg)
+        detail = f"proof-of-work target not the required one: {header.bits.hex()}"
+        detail += f" instead of {required.hex()}"
+        err_msg = "bad-diffbits"
+        raise MisbehavingError(err_msg) from BTClibValueError(detail)
 
     median = median_time_past(parent, parent_height, parent_of)
     time = block_time(header)
     if time <= median:
-        err_msg = f"invalid timestamp (not after the median past): {time}"
-        err_msg += f" <= {median}"
-        raise MisbehavingError(err_msg)
+        detail = f"invalid timestamp (not after the median past): {time}"
+        detail += f" <= {median}"
+        err_msg = "time-too-old"
+        raise MisbehavingError(err_msg) from BTClibValueError(detail)
 
-    header.assert_valid_time(now)
+    try:
+        header.assert_valid_time(now)
+    except BTClibValueError as e:
+        err_msg = "time-too-new"
+        raise BTClibValueError(err_msg) from e
 
     # the least version a header may carry once each of BIP34, BIP66 and
     # BIP65 binds, and the height it binds from
@@ -1067,7 +1099,7 @@ class BlockIndex:
         try:
             check_headers_pow(headers, self.chain.pow_limit_bits)
         except BTClibValueError as e:
-            self.logger.warning("Refused a header batch: %s", e)
+            self.logger.warning("Refused a header batch: %s", _refusal_text(e))
             raise
 
     # add_headers' own indexing stage, once `_validate_header_batch`
@@ -1122,11 +1154,13 @@ class BlockIndex:
                 )
             except BTClibValueError as e:
                 self.logger.warning(
-                    "Refused a header, keeping the ones before it: %s", e
+                    "Refused a header, keeping the ones before it: %s",
+                    _refusal_text(e),
                 )
                 raise
             if not min_pow_checked:
-                self.logger.debug(
+                self.logger.log_debug(
+                    "validation",
                     "AcceptBlockHeader: not adding new block header %s, "
                     "missing anti-dos proof-of-work validation",
                     header.hash.hex(),
@@ -1169,8 +1203,10 @@ class BlockIndex:
         if known is None:
             return False
         if known.status == BlockStatus.invalid:
-            self.logger.debug(
-                "AcceptBlockHeader: block %s is marked invalid", header_hash.hex()
+            self.logger.log_debug(
+                "validation",
+                "AcceptBlockHeader: block %s is marked invalid",
+                header_hash.hex(),
             )
             err_msg = "duplicate-invalid"
             if punish_cached_invalid:
@@ -1189,7 +1225,8 @@ class BlockIndex:
         if block_info is None:
             return None
         if block_info.status == BlockStatus.invalid:
-            self.logger.debug(
+            self.logger.log_debug(
+                "validation",
                 "header %s has prev block invalid: %s",
                 header.hash.hex(),
                 header.previous_block_hash.hex(),

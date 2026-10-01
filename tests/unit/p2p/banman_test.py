@@ -21,7 +21,6 @@ bits left over, and an onion suffix in upper case.
 """
 
 import json
-import logging
 import os
 import socket
 from ipaddress import IPv4Address, IPv6Address, ip_address
@@ -32,6 +31,7 @@ from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 
 import btclib_node.p2p.banman as banman_module
 from btclib_node.constants import CLIENT_NAME
+from btclib_node.log import Logger
 from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.banman import (
     DEFAULT_MISBEHAVING_BANTIME,
@@ -50,7 +50,7 @@ _NOW = 1_700_000_000
 _ENTRY = (
     '{"version": 1, "ban_created": 1, "banned_until": 1800000000, "address": "1.2.3.4"}'
 )
-_LOGGER = logging.getLogger(__name__)
+_LOGGER = Logger()
 # Core's `net_tests` and `netbase_tests` onion, and its `net_tests` I2P
 _ONION = "pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion"
 _OTHER_ONION = "kpgvmscirrdqpekbqjsvw5teanhatztpp2gl6eee4zkowvwfxwenqaid.onion"
@@ -592,14 +592,14 @@ def test_a_list_unchanged_is_not_written_again(tmp_path: Path) -> None:
     assert path.read_text(encoding="utf-8") == "left alone"
 
 
-def test_a_failed_write_is_retried_at_the_next_dump(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_a_failed_write_is_retried_at_the_next_dump(tmp_path: Path) -> None:
     """`DumpBanlist` marks the list dirty again where the write failed."""
     path = tmp_path / "missing" / "banlist.json"
-    with caplog.at_level(logging.ERROR):
-        ban_man = BanMan(path, _LOGGER)
-    assert caplog.records
+    log_path = tmp_path / "history.log"
+    logger = Logger(log_path)
+    ban_man = BanMan(path, logger)
+    logger.close()
+    assert "[error]" in log_path.read_text(encoding="utf-8")
     path.parent.mkdir()
     ban_man.dump()
     assert read(path)["banned_nets"] == []

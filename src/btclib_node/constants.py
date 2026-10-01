@@ -15,6 +15,7 @@ than a node's knob (btclib-org/btclib#1580), and `PROTOCOL_VERSION` is
 import enum
 from datetime import timedelta
 from importlib.metadata import version
+from pathlib import Path
 
 __all__ = [
     "CLIENT_NAME",
@@ -25,6 +26,7 @@ __all__ = [
     "USER_AGENT",
     "NodeStatus",
     "P2pConnStatus",
+    "default_data_dir",
 ]
 
 # Core's own `DEFAULT_MAX_TIP_AGE` (`src/kernel/chainstatemanager_opts.h`
@@ -97,6 +99,16 @@ USER_AGENT = f"/btclib:{CLIENT_VERSION}/"
 # own version line, `LogPackageVersion` (`src/init/common.cpp:156`, same
 # sha), is `CLIENT_NAME` and `CLIENT_VERSION` the same way.
 CLIENT_NAME = "btclib-node"
+
+
+def default_data_dir() -> Path:
+    """Return the data directory this node uses where none is named.
+
+    Core's `GetDefaultDataDir` (`src/common/args.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) is `~/.bitcoin` on Linux:
+    this node's is `~/.btclib`.
+    """
+    return Path.home() / ".btclib"
 
 
 # The service bits are `btclib.p2p.address.ServiceFlags`, not a table

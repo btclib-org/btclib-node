@@ -1626,6 +1626,70 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `is_libsecp256k1_serving` from `btclib_ecc.curves`**, where
   `btclib.curves` is gone from btclib 2026.9.30 (closes #1614).
 
+### `[tool.uv] required-version` is `>=0.12.18`
+
+- **`required-version` reads `>=0.12.18`, not `>=0.12.19`** (issue
+  btclib-org/.github#1482): the Dependabot service refused `0.12.19` with
+  `tool_version_not_supported`.
+
+### An RPC listener that ends before listening says why
+
+- **`RpcManager` keeps the failure that ended its thread as `bind_error`,
+  and `wait_until_listening` names it**, where it said only "see its log"
+  (closes #1231).
+
+### The sweep test reads the connection it waits for
+
+- **The test reads its connection off `create_connection`, where it polled
+  for an entry the sweep removes about 0.15s after it registers**; it failed
+  on `macos-latest` (issue #1563).
+
+### `SECURITY.md` names the latest security review
+
+`SECURITY.md` gives the date of the latest security review and links the issue
+that records it (issue btclib-org/.github#1362).
+
+### `history.log` marks a debug line with its category
+
+- **A debug line is written under Core's category for it, `[net]` for a
+  peer's, and `-debug=<category>` selects the lines of its category**
+  (closes #1322).
+
+### `history.log` names the data directory and the configuration file
+
+- **It names the data directory and the configuration file after its
+  version line, in `debug.log`'s `Default data directory`, `Using data
+  directory` and `Config file:` lines** (closes #1444).
+
+### `-debugexclude` drops a category from `-debug`
+
+- **`-debugexclude=<category>` is read, takes priority over `-debug`, and
+  refuses an unknown category in Core's words** (closes #1609).
+
+### A version bit no deployment uses raises Core's warning
+
+- **A bit signalled at the threshold in a period is logged once locked
+  in, and once active is in `warnings` and runs `-alertnotify`**
+  (closes #1475).
+
+### `virtualenv` and `GitPython` move in the lock
+
+- **`uv.lock` pins `virtualenv` 21.14.2 and `GitPython` 3.2.0**, past
+  GHSA-94p9-xgh2-xp45, GHSA-9h9j-4vrj-gf7g and GHSA-59cr-6r3x-644w; the
+  lint and mutation groups alone reach them (closes #1620).
+
+### Refusals carry Core's reasons, in Core's order
+
+- **A refused header, a script refusal and a block's refusals carry Core's
+  reasons, in Core's order; `interpreter.check_transactions` is
+  `check_scripts`** (closes #1600) (closes #1362) (closes #1587).
+
+### The documentation build survives docs.python.org being down
+
+- **The `python` inventory falls back to `docs/source/python-objects.inv`**
+  where docs.python.org fails, so an outage there no longer fails `-W`
+  (closes #1626).
+
 ### Pruning flushes the chainstate before it deletes
 
 - **`prune_up_to_height` flushes the chainstate, clears `downloaded`, then

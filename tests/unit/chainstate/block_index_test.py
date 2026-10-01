@@ -17,7 +17,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, override
 
 import pytest
-from btclib.block import BlockHeader
+from btclib.block import BlockHeader, median_time_past
 from btclib.block.limits import MAX_TIMEWARP
 from btclib.block.proof_of_work import REGTEST_POW_LIMIT_BITS
 from btclib.exceptions import BTClibValueError
@@ -28,6 +28,7 @@ from btclib_node.chainstate.block_index import (
     BlockInfo,
     BlockStatus,
     _skip_height,
+    block_time,
     calculate_work,
 )
 from btclib_node.exceptions import (
@@ -123,7 +124,7 @@ def test_reject_header_claiming_work_it_did_not_do(
     header = unmined_header(RegTest().genesis.hash, b"\x03\x00\x00\x01")
     assert calculate_work(header) > 2**254
 
-    with pytest.raises(MisbehavingError):
+    with pytest.raises(MisbehavingError, match=r"^high-hash$"):
         block_index.add_headers([header])
     assert header.hash not in block_index.header_dict
     assert not block_index.block_candidates
@@ -149,7 +150,7 @@ def test_a_header_claiming_a_target_it_was_never_mined_to_is_refused(
     block_index = chainstate.block_index
     header = unmined_header(RegTest().genesis.hash, b"\x1d\x00\xff\xff")
 
-    with pytest.raises(MisbehavingError):
+    with pytest.raises(MisbehavingError, match=r"^high-hash$"):
         block_index.add_headers([header])
     assert len(block_index.header_dict) == 1
 
@@ -167,7 +168,7 @@ def test_reject_header_with_zero_target(
     block_index = chainstate.block_index
     header = unmined_header(RegTest().genesis.hash, b"\x01\x00\xff\xff")
 
-    with pytest.raises(MisbehavingError):
+    with pytest.raises(MisbehavingError, match=r"^high-hash$"):
         block_index.add_headers([header])
     assert len(block_index.header_dict) == 1
 
@@ -191,7 +192,7 @@ def test_a_header_failing_its_own_pow_refuses_the_whole_batch(
     chain = generate_random_header_chain(5, RegTest().genesis.hash)
     bad = unmined_header(chain[-1].hash, b"\x03\x00\x00\x01")
 
-    with pytest.raises(MisbehavingError):
+    with pytest.raises(MisbehavingError, match=r"^high-hash$"):
         block_index.add_headers([*chain, bad])
     assert len(block_index.header_dict) == 1
     # and the same batch without it is taken
@@ -229,7 +230,7 @@ def test_a_header_failing_only_its_contextual_check_leaves_the_prefix_indexed(
     )
     brute_force_nonce(bad)
 
-    with pytest.raises(MisbehavingError):
+    with pytest.raises(MisbehavingError, match=r"^time-too-old$"):
         block_index.add_headers([*chain, bad])
     assert bad.hash not in block_index.header_dict
     assert len(block_index.header_dict) == 5 + 1
@@ -267,10 +268,39 @@ def test_a_header_with_valid_pow_but_the_wrong_required_target_is_refused(
     brute_force_nonce(header)
     assert header.bits != REGTEST_POW_LIMIT_BITS
 
-    with pytest.raises(MisbehavingError):
+    with pytest.raises(MisbehavingError, match=r"^bad-diffbits$"):
         block_index.add_headers([header])
     assert header.hash not in block_index.header_dict
     assert len(block_index.header_dict) == 1
+
+
+def test_a_refused_header_keeps_its_detail_in_the_log_line(
+    a_chainstate: Callable[[Path | None], Chainstate],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """ISS 1600: the refusal is Core's word alone; the log has what follows it.
+
+    The two targets are the detail Core's `bad-diffbits` leaves out, and
+    the refusal's `__cause__` carries them.
+    """
+    block_index = a_chainstate(None).block_index
+    genesis = RegTest().genesis
+    header = BlockHeader(
+        version=70015,
+        previous_block_hash=genesis.hash,
+        merkle_root=secrets.token_bytes(32),
+        time=genesis.time + timedelta(seconds=1),
+        bits=b"\x20\x7f\xff\xfe",
+        nonce=1,
+        check_validity=False,
+    )
+    brute_force_nonce(header)
+
+    with pytest.raises(MisbehavingError) as refusal:
+        block_index.add_headers([header])
+    detail = "proof-of-work target not the required one: 207ffffe instead of 207fffff"
+    assert str(refusal.value.__cause__) == detail
+    assert f"bad-diffbits ({detail})" in capsys.readouterr().err
 
 
 def test_a_header_with_valid_pow_but_no_later_than_the_median_is_refused(
@@ -297,7 +327,7 @@ def test_a_header_with_valid_pow_but_no_later_than_the_median_is_refused(
     )
     brute_force_nonce(header)
 
-    with pytest.raises(MisbehavingError):
+    with pytest.raises(MisbehavingError, match=r"^time-too-old$"):
         block_index.add_headers([header])
     assert header.hash not in block_index.header_dict
     assert len(block_index.header_dict) == 1
@@ -353,21 +383,38 @@ def test_a_header_failing_bip94s_timewarp_bound_becomes_a_misbehaving_error(
     block_index = chainstate.block_index
     block_index.chain = _RegTestWithBip94()
     genesis = block_index.chain.genesis
-    header = BlockHeader(
-        version=1,
-        previous_block_hash=genesis.hash,
-        merkle_root=secrets.token_bytes(32),
-        time=genesis.time - timedelta(seconds=MAX_TIMEWARP + 1),
-        bits=REGTEST_POW_LIMIT_BITS,
-        nonce=0,
-        check_validity=False,
-    )
-    _mine_in_place(header, REGTEST_POW_LIMIT_BITS)
 
-    with pytest.raises(MisbehavingError, match="timewarp attack"):
+    def mined(parent: BlockHeader, seconds: int) -> BlockHeader:
+        header = BlockHeader(
+            version=4,
+            previous_block_hash=parent.hash,
+            merkle_root=secrets.token_bytes(32),
+            time=genesis.time + timedelta(seconds=seconds),
+            bits=REGTEST_POW_LIMIT_BITS,
+            nonce=0,
+            check_validity=False,
+        )
+        return _mine_in_place(header, REGTEST_POW_LIMIT_BITS)
+
+    # ten headers a second apart and a parent far later: the median time
+    # past is one of the early ones, so the header below is after it and
+    # breaks the timewarp bound alone
+    chain = [genesis]
+    for seconds in (*range(1, 11), 5000):
+        chain.append(mined(chain[-1], seconds))
+    assert block_index.add_headers(chain[1:]) == chain[-1].hash
+    header = mined(chain[-1], 5000 - MAX_TIMEWARP - 1)
+    median = median_time_past(
+        chain[-1],
+        len(chain) - 1,
+        lambda h: block_index.header_dict[h.previous_block_hash].header,
+    )
+    assert block_time(header) > median
+
+    with pytest.raises(MisbehavingError, match=r"^time-timewarp-attack$"):
         block_index.add_headers([header])
     assert header.hash not in block_index.header_dict
-    assert len(block_index.header_dict) == 1
+    assert len(block_index.header_dict) == len(chain)
 
 
 def _mine_in_place(header: BlockHeader, pow_limit_bits: bytes) -> BlockHeader:
@@ -504,7 +551,7 @@ def test_a_header_too_far_in_the_future_is_refused_without_misbehaving(
     )
     brute_force_nonce(header)
 
-    with pytest.raises(BTClibValueError) as refused:
+    with pytest.raises(BTClibValueError, match=r"^time-too-new$") as refused:
         block_index.add_headers([header])
     assert not isinstance(refused.value, MisbehavingError)
     assert header.hash not in block_index.header_dict
@@ -1375,7 +1422,7 @@ def test_a_new_header_without_the_anti_dos_check_is_too_little_chainwork(
         check_validity=False,
     )
     brute_force_nonce(stale)
-    with pytest.raises(MisbehavingError, match="not after the median past"):
+    with pytest.raises(MisbehavingError, match=r"^time-too-old$"):
         block_index.add_headers([stale], min_pow_checked=False)
 
 

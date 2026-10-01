@@ -1266,7 +1266,9 @@ class RpcConnection:
         """
         if head.method in _LIBEVENT_METHODS:
             if self.manager.interrupted.is_set():
-                self.manager.logger.debug("Rejecting request while shutting down")
+                self.manager.logger.log_debug(
+                    "http", "Rejecting request while shutting down"
+                )
                 self._refusal_reply = self._start_reply(
                     self._send_refusal(
                         _SERVICE_UNAVAILABLE,
@@ -1276,7 +1278,8 @@ class RpcConnection:
                 )
                 return True
             if not self.manager.client_allowed(self.client):
-                self.manager.logger.debug(
+                self.manager.logger.log_debug(
+                    "http",
                     "HTTP request from %s rejected: Client network is not "
                     "allowed RPC access",
                     self._peer_address(),

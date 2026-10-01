@@ -10,7 +10,6 @@ has to name the same subnets, in the same order, and the `banlist.json`
 bitcoind wrote has to load here as the list bitcoind lists.
 """
 
-import logging
 import shutil
 from typing import TYPE_CHECKING, Any
 
@@ -18,6 +17,7 @@ from bitcoin_core_rpc import RpcError
 
 from btclib_node import Node
 from btclib_node.config import Config
+from btclib_node.log import Logger
 from btclib_node.p2p.banman import BanMan
 from tests import get_random_port, rpc_client, wait_until_listening
 
@@ -110,7 +110,7 @@ def test_setban_answers_as_bitcoind_does(bitcoind: Bitcoind, tmp_path: Path) -> 
         ]
         copy = tmp_path / "banlist.json"
         shutil.copyfile(bitcoind.cookie_path.parent / "banlist.json", copy)
-        loaded = BanMan(copy, logging.getLogger(__name__))
+        loaded = BanMan(copy, Logger())
         assert [
             (str(subnet), entry.create_time, entry.ban_until)
             for subnet, entry in loaded.banned()
