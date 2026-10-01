@@ -240,7 +240,7 @@ def make_node(
     inbound: bool = True,
     addr_cache_key: tuple[int, str, int] = _A_CACHE_KEY,
 ) -> tuple[Any, Any, list[Any]]:
-    """Build a node with `peer_db` addresses active, and a peer stand-in.
+    """Build a node whose `peer_db` knows `addresses`, and a peer stand-in.
 
     `is_discouraged` answers for the hosts of `discouraged`, and the ban
     list holds the subnets of `banned`. The peer is inbound by default,
@@ -248,7 +248,7 @@ def make_node(
     """
     peer_db = PeerDB(cast("Chain", None), cast("Path", None))
     for address in addresses:
-        peer_db.active_addresses.append(address)
+        peer_db.addresses.add(address)
     sent: list[Any] = []
     conn = SimpleNamespace(
         prefer_addressv2=prefer_addressv2,
@@ -267,6 +267,13 @@ def make_node(
         )
     )
     return node, conn, sent
+
+
+def an_unsampled_table(
+    self: PeerDB, max_addresses: int, max_pct: int
+) -> list[NetworkAddressV2]:
+    """Stand in for `PeerDB.get_addr`: the whole table, in no order."""
+    return list(self.addresses)
 
 
 def test_an_ipv4_address_is_answered_in_an_addr() -> None:
@@ -297,11 +304,11 @@ def test_an_address_addr_version_1_cannot_carry_is_left_out(
     """An `Addr` answer to an addrv1 peer leaves out an address it cannot carry.
 
     An onion address has no addr version 1 entry to be built into, so
-    one of them among the active addresses would cost the whole answer.
+    one of them among the known addresses would cost the whole answer.
     The sample itself is a different test, below, so this patches it to
     the identity to isolate the addr-v1 filter it is testing.
     """
-    monkeypatch.setattr(cb, "_addresses_to_send", lambda active: active)
+    monkeypatch.setattr(PeerDB, "get_addr", an_unsampled_table)
     onion = an_address(network_id=BIP155Network.TORV3)
     ipv4 = an_address()
     ipv6 = an_address(network_id=BIP155Network.IPV6)
@@ -309,7 +316,7 @@ def test_an_address_addr_version_1_cannot_carry_is_left_out(
     getaddr(node, b"", conn)
     (answer,) = sent
     # ipv6 is carried by addr version 1, and only the network id says so
-    assert answer.addresses == (addr_entry(ipv4), addr_entry(ipv6))
+    assert set(answer.addresses) == {addr_entry(ipv4), addr_entry(ipv6)}
     answer.serialize()
 
 
@@ -322,8 +329,8 @@ def test_the_same_address_reaches_a_peer_that_can_take_it() -> None:
     assert answer.addresses == (onion,)
 
 
-def test_nothing_active_is_answered_with_nothing() -> None:
-    """A `getaddr` against an empty active table gets no answer at all."""
+def test_nothing_known_is_answered_with_nothing() -> None:
+    """A `getaddr` against an empty table gets no answer at all."""
     node, conn, sent = make_node([])
     getaddr(node, b"", conn)
     assert not sent
@@ -342,7 +349,7 @@ def test_a_getaddr_from_an_outbound_peer_is_ignored() -> None:
     assert conn.addr_relay_enabled is False
 
 
-def test_nothing_active_is_answered_with_nothing_over_addrv2_either() -> None:
+def test_nothing_known_is_answered_with_nothing_over_addrv2_either() -> None:
     """The same silence holds for an addrv2 peer, not only an addrv1 one."""
     node, conn, sent = make_node([], prefer_addressv2=True)
     getaddr(node, b"", conn)
@@ -350,7 +357,7 @@ def test_nothing_active_is_answered_with_nothing_over_addrv2_either() -> None:
 
 
 def test_a_getaddr_answer_is_a_sample_not_the_whole_table() -> None:
-    """A `getaddr` answer is a 23% sample of the active table, not all of it.
+    """A `getaddr` answer is a 23% sample of the known table, not all of it.
 
     #71: Core's own reason for not serving the live table is that doing
     so tells anyone who asks the complete set of peers this node knows
@@ -365,14 +372,14 @@ def test_a_getaddr_answer_is_a_sample_not_the_whole_table() -> None:
     assert conn.addr_relay_enabled is True
     (answer,) = sent
     assert len(answer.addresses) == 115
-    # a sample of what is active, not addresses invented for the answer
+    # a sample of what is known, not addresses invented for the answer
     assert set(answer.addresses) <= {addr_entry(address) for address in addresses}
     # drawn without replacement
     assert len(set(answer.addresses)) == len(answer.addresses)
 
 
 def test_a_getaddr_answer_is_capped_at_max_addr_to_send() -> None:
-    """A large active table is answered up to `MAX_ADDR_TO_SEND`, not 23% of it.
+    """A large table is answered up to `MAX_ADDR_TO_SEND`, not 23% of it.
 
     #71: the chunking Core itself misbehaves a peer over is right at
     1000 -- 23% of 10000 is 2300, so the cap and not the percentage is
@@ -426,11 +433,14 @@ def test_two_connections_close_together_are_answered_the_same_sample(
     """
     draws: list[list[NetworkAddressV2]] = []
 
-    def counting_sample(active: list[NetworkAddressV2]) -> list[NetworkAddressV2]:
+    def counting_sample(
+        self: PeerDB, max_addresses: int, max_pct: int
+    ) -> list[NetworkAddressV2]:
+        active = an_unsampled_table(self, max_addresses, max_pct)
         draws.append(active)
-        return list(active)
+        return active
 
-    monkeypatch.setattr(cb, "_addresses_to_send", counting_sample)
+    monkeypatch.setattr(PeerDB, "get_addr", counting_sample)
     address = an_address()
     node, conn1, sent = make_node([address])
     conn2 = another_conn(sent)
@@ -455,12 +465,15 @@ def test_two_connections_on_different_local_sockets_are_answered_independently(
     """
     calls = 0
 
-    def distinct_sample(active: list[NetworkAddressV2]) -> list[NetworkAddressV2]:
+    def distinct_sample(
+        self: PeerDB, max_addresses: int, max_pct: int
+    ) -> list[NetworkAddressV2]:
         nonlocal calls
         calls += 1
-        return [replace(active[0], port=active[0].port + calls)]
+        (only,) = self.addresses
+        return [replace(only, port=only.port + calls)]
 
-    monkeypatch.setattr(cb, "_addresses_to_send", distinct_sample)
+    monkeypatch.setattr(PeerDB, "get_addr", distinct_sample)
     address = an_address()
     node, conn1, sent = make_node([address])
     conn2 = another_conn(sent, addr_cache_key=a_different_cache_key())
@@ -478,11 +491,14 @@ def test_the_cached_sample_is_redrawn_once_it_expires(
     """Past `_ADDR_SAMPLE_LIFETIME` plus jitter, a new `getaddr` draws fresh."""
     draws: list[list[NetworkAddressV2]] = []
 
-    def counting_sample(active: list[NetworkAddressV2]) -> list[NetworkAddressV2]:
+    def counting_sample(
+        self: PeerDB, max_addresses: int, max_pct: int
+    ) -> list[NetworkAddressV2]:
+        active = an_unsampled_table(self, max_addresses, max_pct)
         draws.append(active)
-        return list(active)
+        return active
 
-    monkeypatch.setattr(cb, "_addresses_to_send", counting_sample)
+    monkeypatch.setattr(PeerDB, "get_addr", counting_sample)
     address = an_address()
     node, conn1, sent = make_node([address])
     conn2 = another_conn(sent)
@@ -507,7 +523,7 @@ def test_a_discouraged_host_is_left_out_of_a_getaddr_answer(
     Whatever port it was recorded on, and after the draw: the sample
     patched to the identity here, what is left out is only the host.
     """
-    monkeypatch.setattr(cb, "_addresses_to_send", list)
+    monkeypatch.setattr(PeerDB, "get_addr", an_unsampled_table)
     now = int(time.time())
     kept = peer_address("1.2.3.4", 18444, timestamp=now)
     discouraged = peer_address("1.2.3.5", 18444, timestamp=now)
@@ -525,7 +541,7 @@ def test_a_banned_host_is_left_out_of_a_getaddr_answer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Core's `GetAddressesUnsafe` leaves a banned host out, by subnet."""
-    monkeypatch.setattr(cb, "_addresses_to_send", list)
+    monkeypatch.setattr(PeerDB, "get_addr", an_unsampled_table)
     now = int(time.time())
     kept = peer_address("1.2.3.4", 18444, timestamp=now)
     banned = peer_address("5.6.7.8", 18444, timestamp=now)
@@ -822,21 +838,42 @@ def test_a_version_carrying_our_own_nonce_is_this_node_calling_itself() -> None:
 
 
 @pytest.mark.parametrize("inbound", [False, True], ids=["outbound", "inbound"])
-def test_an_outbound_peer_s_own_services_replace_its_row_s(*, inbound: bool) -> None:
-    """ISS 1276: Core's `SetServices` of an outbound `version`, before refusal.
+@pytest.mark.parametrize(
+    ("refused", "services"),
+    [
+        (
+            a_version(nonce=7, services=ServiceFlags.NODE_WITNESS),
+            ServiceFlags.NODE_WITNESS,
+        ),
+        (
+            a_version(
+                protocol=MIN_PEER_PROTO_VERSION - 1, services=ServiceFlags.NODE_NETWORK
+            ),
+            ServiceFlags.NODE_NETWORK,
+        ),
+        (a_version(services=ServiceFlags.NODE_NETWORK), ServiceFlags.NODE_NETWORK),
+    ],
+    ids=["self-connect", "obsolete", "no witness"],
+)
+def test_an_outbound_peer_s_own_services_replace_its_row_s(
+    refused: bytes, services: ServiceFlags, *, inbound: bool
+) -> None:
+    """ISS 1276, ISS 1326: Core's `SetServices` of an outbound `version`.
 
-    A self-connection is refused after it, so the row is written all the
-    same; an inbound peer's word is not taken.
+    Ahead of every refusal, so the row is written whether the peer is
+    dropped as a self-connection, as obsolete or for missing
+    `NODE_WITNESS`; an inbound peer's word is not taken.
     """
-    peer = a_peer(inbound=inbound)
+    peer = a_peer(inbound=inbound, automatic=True)
     full = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
     peer_db = PeerDB(cast("Chain", None), None)
     peer_db.add_addresses([replace(peer.address, services=full)])
     node = a_handshake_node(pending_outbound_nonces=[7], peer_db=peer_db)
-    version(node, a_version(nonce=7, services=ServiceFlags.NODE_WITNESS), peer)
-    assert peer.stopped == [True]
+    version(node, refused, peer)
     (row,) = peer_db.addresses
-    assert row.services == (full if inbound else ServiceFlags.NODE_WITNESS)
+    assert row.services == (full if inbound else services)
+    if not inbound:
+        assert peer.stopped == [True]
 
 
 @pytest.mark.parametrize("inbound", [True, False], ids=["inbound", "outbound"])
@@ -1815,6 +1852,71 @@ def test_an_ordinary_peer_answering_with_more_than_one_is_not_stopped() -> None:
         peer = a_gossiping_peer()
         callback(node, message.serialize(), peer)
         assert not peer.stopped
+
+
+@pytest.mark.parametrize(
+    "offset",
+    [None, 24 * 3600],
+    ids=["at or before 3 March 1973", "a day ahead"],
+)
+def test_an_implausible_gossiped_time_is_five_days_back(offset: int | None) -> None:
+    """ISS 1605: an implausible gossiped time is re-dated.
+
+    Core's `ADDR` handler does it for a time at or before 3 March 1973,
+    or ahead of the clock.
+
+    Five days back, then the two-hour penalty as for any gossip, so the
+    address is not terrible and is served.
+    """
+    now = int(time.time())
+    stamp = 50 if offset is None else now + offset
+    given = [
+        peer_address(
+            "1.2.3.5", 18444, timestamp=stamp, services=ServiceFlags.NODE_NETWORK
+        )
+    ]
+    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+    node = a_handshake_node(peer_db=peer_db)
+    addrv2(node, AddrV2(given).serialize(), a_gossiping_peer())
+    (row,) = peer_db.addresses
+    expected = now - 5 * 24 * 3600 - address_module._GOSSIP_TIME_PENALTY
+    assert abs(row.timestamp - expected) <= 2
+    assert peer_db.get_addr(0, 0) == [row]
+
+
+@pytest.mark.parametrize(
+    ("stamp", "redated"), [(100_000_000, True), (100_000_001, False)]
+)
+def test_the_gossiped_time_bound_of_1973_is_inclusive(
+    stamp: int, *, redated: bool
+) -> None:
+    """ISS 1605: Core's bound is `nTime <= 100000000`, 3 March 1973."""
+    given = [peer_address("1.2.3.5", 18444, timestamp=stamp, services=1)]
+    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+    addrv2(
+        a_handshake_node(peer_db=peer_db),
+        AddrV2(given).serialize(),
+        a_gossiping_peer(),
+    )
+    (row,) = peer_db.addresses
+    if redated:
+        assert row.timestamp > int(time.time()) - 6 * 24 * 3600
+    else:
+        assert row.timestamp == stamp - address_module._GOSSIP_TIME_PENALTY
+
+
+def test_a_gossiped_time_ten_minutes_ahead_is_kept() -> None:
+    """ISS 1605: only a time over ten minutes ahead of the clock is replaced."""
+    now = int(time.time())
+    given = [peer_address("1.2.3.5", 18444, timestamp=now + 300, services=1)]
+    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+    addrv2(
+        a_handshake_node(peer_db=peer_db),
+        AddrV2(given).serialize(),
+        a_gossiping_peer(),
+    )
+    (row,) = peer_db.addresses
+    assert row.timestamp == now + 300 - address_module._GOSSIP_TIME_PENALTY
 
 
 def test_a_discouraged_host_gossiped_is_not_stored() -> None:
@@ -5860,19 +5962,24 @@ def test_a_block_relay_only_peer_is_relayed_no_transaction(
 
 
 @pytest.mark.parametrize("block_relay", [True, False])
-def test_a_block_relay_only_peer_is_asked_for_no_addresses_nor_recorded(
+def test_a_block_relay_only_peer_is_asked_for_no_addresses_but_recorded(
     *, block_relay: bool
 ) -> None:
-    """ISS 1095: no `getaddr` to it, and its address not advertised.
+    """ISS 1095, ISS 1226: no `getaddr` to it, and its address moved to tried.
 
     `SetupAddressRelay` refuses a block-relay-only peer, at its `version`,
-    and Core never calls `AddrMan::Connected` for one at its `verack`. A
-    full-relay peer, the control, is asked and recorded.
+    and Core's `AddrMan::Good` runs for it all the same, leaving the
+    time of the address alone, so that recording it advertises nothing.
+    A full-relay peer, the control, is asked and recorded alike.
     """
-    peer = a_peer(inbound=False, automatic=True, block_relay=block_relay)
+    heard = int(time.time()) - 3 * 24 * 3600
+    dialled = peer_address("1.2.3.4", 18444, timestamp=heard)
+    peer = a_peer(
+        inbound=False, automatic=True, block_relay=block_relay, address=dialled
+    )
     peer_db = PeerDB(cast("Chain", None), cast("Path", None))
     # gossiped first: `add_active_address` records a known endpoint alone
-    peer_db.add_addresses([peer.address])
+    peer_db.add_addresses([dialled], time_penalty=0)
     node = a_handshake_node(peer_db=peer_db)
     version(node, a_version(), peer)
     assert ("GetAddr" in commands(peer)) is not block_relay
@@ -5880,7 +5987,10 @@ def test_a_block_relay_only_peer_is_asked_for_no_addresses_nor_recorded(
     assert peer.addr_token_bucket == (1.0 if block_relay else 1.0 + MAX_ADDR_TO_SEND)
     verack(node, b"", peer)
     assert peer.status == P2pConnStatus.Connected
-    assert bool(peer_db.active_addresses) is not block_relay
+    (recorded,) = peer_db.active_addresses
+    assert endpoint_key(recorded) == endpoint_key(dialled)
+    (known,) = peer_db.addresses
+    assert known.timestamp == heard
 
 
 @pytest.mark.parametrize("block_relay", [True, False])
@@ -6014,12 +6124,15 @@ def test_a_feeler_is_asked_for_addresses_recorded_and_dropped_at_its_version(
     `getaddr` after the three answers, as to a full-relay peer, then the
     address recorded as answered with the services the `version` names,
     same as a full-relay peer, the control, and only then the drop,
-    after what was sent.
+    after what was sent. ISS 1226: Core's `FinalizeNode` never calls
+    `Connected` for a feeler, so the time of the address is the one
+    gossip gave it.
     """
-    dialled = peer_address("1.2.3.4", 18444)
+    heard = int(time.time()) - 3 * 24 * 3600
+    dialled = peer_address("1.2.3.4", 18444, timestamp=heard)
     peer_db = PeerDB(cast("Chain", None), cast("Path", None))
     # gossiped first: `add_active_address` records a known endpoint alone
-    peer_db.add_addresses([dialled])
+    peer_db.add_addresses([dialled], time_penalty=0)
     peer = a_peer(inbound=False, automatic=True, feeler=feeler, address=dialled)
     version(a_handshake_node(peer_db=peer_db), a_version(), peer)
     assert not peer.stopped
@@ -6027,6 +6140,8 @@ def test_a_feeler_is_asked_for_addresses_recorded_and_dropped_at_its_version(
     (recorded,) = peer_db.active_addresses
     assert endpoint_key(recorded) == endpoint_key(dialled)
     assert recorded.services == ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
+    (known,) = peer_db.addresses
+    assert known.timestamp == heard
     if feeler:
         assert commands(peer) == [
             "WtxidRelay",

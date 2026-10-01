@@ -454,13 +454,13 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     `WTXID_RELAY_VERSION` and, to an inbound peer, this node's own
     `version` ahead of all three; setting up address relay with a peer
     this node dialled, and asking it for addresses; recording a peer
-    this node dialled as answered, right where Core calls
-    `AddrMan::Good` -- not waiting for its own `verack`, which may never
-    come (#1169); and recording whether the peer asked to have
-    transactions relayed. A feeler then has its address recorded as
-    answered, and is dropped once those are written, as Core's
-    `VERSION` handler ends one (`net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    this node dialled as answered, block-relay-only peers and feelers
+    included, right where Core calls `AddrMan::Good` -- not waiting for
+    its own `verack`, which may never come (#1169); and recording whether
+    the peer asked to have transactions relayed. A feeler is then dropped
+    once those are written, as Core's `VERSION` handler ends one
+    (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag).
     """
     if conn.version_message is not None:
         return
@@ -511,17 +511,16 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     # pending connection (btclib-org/btclib-node#1169) makes a real,
     # reachable case here. `conn.address` is what this node dialled, and
     # the socket connecting there already answered.
-    # Not a block-relay-only peer's, and not a feeler's, which `version`
-    # records below, once, at the point Core drops it: the table this
-    # writes into is what `getaddr` answers from, so recording a
-    # block-relay-only peer there would advertise the link, which Core
-    # avoids by never calling `AddrMan::Connected` for one
-    # (`FinalizeNode`); its own `AddrMan::Good`, which this table cannot
-    # record apart from that, is not reproduced (btclib-org/btclib-node#1226).
+    # Every peer this node dialled is recorded, block-relay-only ones
+    # and feelers included: Core's comment there says not moving the
+    # address to the tried table is also harmful, new-table entries being
+    # evictable on collision. `Good_` leaves `nTime` alone, so recording
+    # one advertises nothing; `AddrMan::Connected`, which does, is never
+    # called for a block-relay-only peer or a feeler (`P2pManager._finalize`).
     # An inbound peer is not recorded here or anywhere: its connection
     # proves only that it can reach this node, not that this node can
     # reach it back. btclib-org/btclib-node#1229
-    if not conn.inbound and not conn.block_relay and not conn.feeler:
+    if not conn.inbound:
         address = replace(conn.address, services=version_msg.services)
         conn.address = address
         node.p2p_manager.peer_db.add_active_address(address)
@@ -546,23 +545,19 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     # the old alert system". btclib-org/btclib-node#1205
     if common_version(conn) <= _FINAL_ALERT_VERSION:
         conn.send(FinalAlert())
-    _end_if_feeler(node, conn, version_msg.services)
+    _end_if_feeler(node, conn)
 
 
-def _end_if_feeler(node: Node, conn: Connection, services: ServiceFlags) -> None:
-    """Record a feeler's address as answered, and drop it once sent.
+def _end_if_feeler(node: Node, conn: Connection) -> None:
+    """Drop a feeler once its `version` is handled, as Core's handler ends one.
 
     Any other connection is left as it is. `SetupAddressRelay` holds
-    for a feeler, so `version` has asked it for addresses already.
-    `AddrMan::Good` is what a feeler is for; the table this records into
-    stamps the address answered now as well, which Core's `Good` does
-    not (btclib-org/btclib-node#1226). Split out of `version` for ruff's
-    complexity ceiling.
+    for a feeler, so `version` has asked it for addresses already, and
+    has recorded its address as answered. Split out of `version` for
+    ruff's complexity ceiling.
     """
     if not conn.feeler:
         return
-    address = replace(conn.address, services=services)
-    node.p2p_manager.peer_db.add_active_address(address)
     node.logger.log_debug("net", "feeler connection completed, peer=%s", conn.id)
     conn.stop_when_sent()
 
@@ -748,20 +743,8 @@ def pong(node: Node, msg: bytes, conn: Connection) -> None:
 # Core's own MAX_PCT_ADDR_TO_SEND (net_processing.cpp, 58a7869f86):
 # answering with the whole table on demand is what an observer mapping
 # the network wants, so a getaddr answer is a sample of it instead.
-# AddrManImpl::GetAddr_ (src/addrman.cpp, same sha) truncates
-# `len * pct // 100` down; `_addresses_to_send` below rounds up instead,
-# since a table of a handful of addresses -- every functional test's own
-# two-node regtest -- would otherwise be answered with none at all.
 # btclib-org/btclib-node#71
 _MAX_PCT_ADDR_TO_SEND = 23
-
-
-def _addresses_to_send(active: list[NetworkAddressV2]) -> list[NetworkAddressV2]:
-    """Return what a `getaddr` answers with: a sample, not the table."""
-    size = min(MAX_ADDR_TO_SEND, -(-len(active) * _MAX_PCT_ADDR_TO_SEND // 100))
-    if size >= len(active):
-        return active
-    return secrets.SystemRandom().sample(active, size)
 
 
 # How long a drawn sample is served again rather than redrawn: shared by
@@ -781,7 +764,7 @@ _ADDR_SAMPLE_JITTER = 3600 * 6
 
 
 def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
-    """Answer a peer's `getaddr` with a sample of known addresses, once.
+    """Answer a peer's `getaddr` with a sample of every known address, once.
 
     The sample itself is a cache, shared and redrawn only once its own
     lifetime and jitter expire -- the comment below argues why -- and
@@ -838,11 +821,11 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
         manager = node.p2p_manager
         cache.sample = [
             address
-            for address in _addresses_to_send(peer_db.get_active_addresses())
+            for address in peer_db.get_addr(MAX_ADDR_TO_SEND, _MAX_PCT_ADDR_TO_SEND)
             if not manager.is_discouraged(address)
             and not manager.ban_man.is_peer_banned(address)
         ]
-        # The sample can go on naming an endpoint `active_addresses` has
+        # The sample can go on naming an endpoint the table has
         # since aged out or dropped, for as long as this cache is still
         # good: intended, not overlooked -- the cache is not what a
         # `getaddr` answer's freshness rests on, an `addr` entry already
@@ -858,7 +841,7 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
     # Addr and AddrV2 are siblings under Payload rather than one a
     # subclass of the other, so each is built from its own list rather
     # than through a shared name of a type the other could not accept.
-    # `_addresses_to_send` already keeps this under MAX_ADDR_TO_SEND, the
+    # `PeerDB.get_addr` already keeps this under MAX_ADDR_TO_SEND, the
     # bound btclib's Addr and AddrV2 refuse a longer message than, so one
     # message is always enough.
     if conn.prefer_addressv2:
@@ -933,6 +916,14 @@ _MAX_ADDR_RATE_PER_SECOND = 0.1
 _MAX_ADDR_PROCESSING_TOKEN_BUCKET = MAX_ADDR_TO_SEND
 
 
+# `ProcessMessage`'s plausibility bounds for a gossiped time
+# (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+# tag): at or before this, or more than ten minutes ahead of the clock,
+# it is replaced by five days ago
+_GOSSIP_MIN_TIME = 100_000_000
+_GOSSIP_REDATE = 5 * 24 * 3600
+
+
 def _store_gossip(
     node: Node, conn: Connection, addresses: Iterable[NetworkAddressV2]
 ) -> None:
@@ -950,7 +941,8 @@ def _store_gossip(
     with more than one address, "to avoid disconnecting on
     self-announcements" (same loop, same sha) -- of `addresses` as
     received, ahead of every filter above, matching Core's own
-    `vAddr.size()` (btclib-org/btclib-node#1284).
+    `vAddr.size()` (btclib-org/btclib-node#1284). A time Core finds
+    implausible is replaced first (btclib-org/btclib-node#1605).
     """
     now = time.time()
     if conn.addr_token_bucket < _MAX_ADDR_PROCESSING_TOKEN_BUCKET:
@@ -979,9 +971,14 @@ def _store_gossip(
             ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_NETWORK_LIMITED
         ):
             continue
-        if manager.is_discouraged(address) or manager.ban_man.is_peer_banned(address):
+        # Core re-dates a time at or before 3 March 1973, or ahead of the
+        # clock, ahead of the discouraged and banned check
+        dated = address
+        if address.timestamp <= _GOSSIP_MIN_TIME or address.timestamp > now + 600:
+            dated = replace(address, timestamp=int(now - _GOSSIP_REDATE))
+        if manager.is_discouraged(dated) or manager.ban_man.is_peer_banned(dated):
             continue
-        kept.append(address)
+        kept.append(dated)
     conn.stats.addr_processed += len(kept)
     conn.stats.addr_rate_limited += rate_limited
     # `source=conn.address`: Core's own `m_addrman.Add(vAddrOk,

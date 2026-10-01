@@ -56,6 +56,7 @@ _EXPECTED_BARE_LISTING = (
     'disconnectnode ( "address" nodeid )\n'
     "getconnectioncount\n"
     "getnetworkinfo\n"
+    'getnodeaddresses ( count "network" )\n'
     "getpeerinfo\n"
     "listbanned\n"
     "ping\n"
@@ -211,6 +212,13 @@ def test_bare_help_is_also_answered_for_an_empty_or_null_command() -> None:
     """An explicit empty string or `null` is the argument's own default."""
     assert answer_help([""]) == _EXPECTED_BARE_LISTING
     assert answer_help([None]) == _EXPECTED_BARE_LISTING
+
+
+def test_addpeeraddress_is_hidden_from_the_bare_listing_not_from_its_own_help() -> None:
+    """Core's `{"hidden", &addpeeraddress}`, as `addconnection`'s is."""
+    assert CATEGORY["addpeeraddress"] == "hidden"
+    assert "addpeeraddress" not in answer_help([])
+    assert answer_help(["addpeeraddress"]) == HELP_TEXT["addpeeraddress"].rstrip("\n")
 
 
 def test_addconnection_is_hidden_from_the_bare_listing_not_from_its_own_help() -> None:

@@ -768,6 +768,58 @@ _HELP_ADDCONNECTION = (
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "addconnection", "params": ["192.168.0.6:8333" "outbound-full-relay" true]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
+_HELP_GETNODEADDRESSES = (
+    'getnodeaddresses ( count "network" )\n'
+    "\n"
+    "Return known addresses, after filtering for quality and recency.\n"
+    "These can potentially be used to find new peers in the network.\n"
+    "The total number of addresses known to the node may be higher.\n"
+    "\n"
+    "Arguments:\n"
+    "1. count      (numeric, optional, default=1) The maximum number of addresses to return. Specify 0 to return all known addresses.\n"
+    "2. network    (string, optional, default=all networks) Return only addresses of the specified network. Can be one of: ipv4, ipv6, onion, i2p, cjdns.\n"
+    "\n"
+    "Result:\n"
+    "[                         (json array)\n"
+    "  {                       (json object)\n"
+    '    "time" : xxx,         (numeric) The UNIX epoch time when the node was last seen\n'
+    '    "services" : n,       (numeric) The services offered by the node\n'
+    '    "address" : "str",    (string) The address of the node\n'
+    '    "port" : n,           (numeric) The port number of the node\n'
+    '    "network" : "str"     (string) The network (ipv4, ipv6, onion, i2p, cjdns) the node connected through\n'
+    "  },\n"
+    "  ...\n"
+    "]\n"
+    "\n"
+    "Examples:\n"
+    "> bitcoin-cli getnodeaddresses 8\n"
+    '> bitcoin-cli getnodeaddresses 4 "i2p"\n'
+    "> bitcoin-cli -named getnodeaddresses network=onion count=12\n"
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "getnodeaddresses", "params": [8]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "getnodeaddresses", "params": [4, "i2p"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
+_HELP_ADDPEERADDRESS = (
+    'addpeeraddress "address" port ( tried )\n'
+    "\n"
+    "Add the address of a potential peer to an address manager table. This RPC is for testing only.\n"
+    "\n"
+    "Arguments:\n"
+    "1. address    (string, required) The IP address of the peer\n"
+    "2. port       (numeric, required) The port of the peer\n"
+    "3. tried      (boolean, optional, default=false) If true, attempt to add the peer to the tried addresses table\n"
+    "\n"
+    "Result:\n"
+    "{                            (json object)\n"
+    '  "success" : true|false,    (boolean) whether the peer address was successfully added to the address manager table\n'
+    '  "error" : "str"            (string, optional) error description, if the address could not be added\n'
+    "}\n"
+    "\n"
+    "Examples:\n"
+    '> bitcoin-cli addpeeraddress "1.2.3.4" 8333 true\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "addpeeraddress", "params": ["1.2.3.4", 8333, true]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
 _HELP_GETCONNECTIONCOUNT = (
     "getconnectioncount\n"
     "\n"
@@ -1293,6 +1345,8 @@ HELP_TEXT: dict[str, str] = {
     "submitheader": _HELP_SUBMITHEADER,
     "addnode": _HELP_ADDNODE,
     "addconnection": _HELP_ADDCONNECTION,
+    "addpeeraddress": _HELP_ADDPEERADDRESS,
+    "getnodeaddresses": _HELP_GETNODEADDRESSES,
     "clearbanned": _HELP_CLEARBANNED,
     "disconnectnode": _HELP_DISCONNECTNODE,
     "setnetworkactive": _HELP_SETNETWORKACTIVE,
@@ -1340,6 +1394,7 @@ CATEGORY: dict[str, str] = {
     "setnetworkactive": "Network",
     "getconnectioncount": "Network",
     "getnetworkinfo": "Network",
+    "getnodeaddresses": "Network",
     "getpeerinfo": "Network",
     "listbanned": "Network",
     "ping": "Network",
@@ -1353,6 +1408,7 @@ CATEGORY: dict[str, str] = {
     # entry -- only the bare listing leaves it out, Core's own
     # `CRPCTable::help` skipping a `"hidden"` category the identical way.
     "addconnection": "hidden",
+    "addpeeraddress": "hidden",
     "decoderawtransaction": "Rawtransactions",
     "getrawtransaction": "Rawtransactions",
     "sendrawtransaction": "Rawtransactions",

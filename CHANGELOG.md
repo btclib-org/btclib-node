@@ -1707,6 +1707,42 @@ that records it (issue btclib-org/.github#1362).
   deletes, so a restart after a crash finds the blocks its tip needs; every
   call costs one flush** (closes #1248).
 
+### A `getaddr` is answered from every known address
+
+- **The answer is a sample of every address the table holds, new or
+  answered, sized from all of them and skipping those `IsTerrible`'s time
+  tests call terrible, as Core's `GetAddr_` draws it** (closes #1365).
+
+### A handshake leaves an address's time alone
+
+- **A handshake keeps an address's time, and `Connected` moves it to
+  now when a full outbound connection ends, as Core's `Good_` and
+  `Connected_`** (closes #1364).
+
+### A block-relay-only peer and a feeler are recorded as answered
+
+- **A block-relay-only peer and a feeler are moved to the answered
+  table at their `version`, as Core's `AddrMan::Good` does** (closes
+  #1226).
+
+### `getnodeaddresses` and `addpeeraddress` are served
+
+- **`getnodeaddresses` answers a sample of the address table, and
+  `addpeeraddress`, hidden as in Core, adds an address to it**
+  (closes #1443).
+
+### A gossip moves an address's time forward only
+
+- **A gossip moves the time of an address held forward, and only past an
+  hour or a day, as Core's `AddSingle`; the answered table is pruned by
+  its own handshake time, not by that `nTime`** (closes #1603).
+
+### A gossiped time Core finds implausible is five days back
+
+- **A gossiped time at or before 3 March 1973, or over ten minutes ahead of the
+  clock, is replaced by five days ago before it is stored, as Core's
+  `ADDR` handler does** (closes #1605).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
