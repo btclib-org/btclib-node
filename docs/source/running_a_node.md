@@ -173,13 +173,14 @@ without a whitelist even where none is set.
 
 Each mirrors the Core method of the same name: `getbestblockhash`,
 `getblockcount`, `getblockchaininfo`, `getchaintips`, `pruneblockchain`,
-`getblockhash`, `getblockheader`, `getblock`, `submitblock`,
-`getpeerinfo`, `getconnectioncount`, `getnetworkinfo`,
-`setnetworkactive`, `addnode`, `disconnectnode`, `setban`, `listbanned`,
-`clearbanned`, `getmempoolinfo`, `getmempoolentry`, `getrawmempool`,
-`getrawtransaction`, `gettxout`, `gettxoutsetinfo`, `decoderawtransaction`,
-`testmempoolaccept`, `sendrawtransaction`, `ping`, `getrpcinfo`, `stop`,
-`help`. Core's own hidden commands -- `addconnection` among them -- are
+`preciousblock`, `getblockhash`, `getblockheader`, `getblock`,
+`submitblock`, `submitheader`, `getpeerinfo`, `getconnectioncount`,
+`getnetworkinfo`, `setnetworkactive`, `addnode`, `disconnectnode`,
+`setban`, `listbanned`, `clearbanned`, `getmempoolinfo`,
+`getmempoolentry`, `getrawmempool`, `getrawtransaction`, `gettxout`,
+`gettxoutsetinfo`, `decoderawtransaction`, `testmempoolaccept`,
+`sendrawtransaction`, `ping`, `getrpcinfo`, `stop`, `help`. Core's own
+hidden commands -- `addconnection` among them -- are
 left off this list the same way `bitcoin-cli help`'s bare listing leaves
 them off. The `callbacks` table in `src/btclib_node/rpc/callbacks.py` is
 the list the node serves.

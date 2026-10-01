@@ -60,6 +60,7 @@ behind  1 revision on master; the newest at the v31.1 tag
 ```text
 repo    bitcoin/bitcoin
 path    contrib/seeds/nodes_testnet4.txt
+ref     v31.1
 commit  fec58229fa671cb870ebf795b54b73b7e22a1eb6  2026-02-25
 blob    540e64f5e9acc1270570c11637943719ef33aa8c
 pulled  2026-09-29

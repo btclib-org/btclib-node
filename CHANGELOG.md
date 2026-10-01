@@ -1557,6 +1557,46 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **Both come from the block's undo data and are absent without it**
   (closes #1446).
 
+### `ASSURANCE_CASE.md` names the fuzzing that runs
+
+- **The harnesses under `fuzz/` run weekly as ordinary atheris scripts,
+  not under ClusterFuzzLite, and the JSON body of an RPC request is not
+  fuzzed** (closes #1549).
+
+### `ASSURANCE_CASE.md`'s import census prose names what the census prints
+
+- **`btclib_wallet`, `subprocess` and the `getifaddrs` FFI, a trust
+  item, are named** (closes #1550).
+
+### `_step_chain` is documented as fail-stop
+
+- **An exception from the download manager's step or from `update_chain`
+  ends the node, and the documents say so** (closes #1551).
+
+### `ASSURANCE_CASE.md` matches the code and tests it cites
+
+- **The statements the review found stale or overstated match the code
+  and tests they cite: integration coverage, the oracle, locks, S311,
+  sockets, files and the pickle default** (closes #1554).
+
+### At equal work, the block that could connect first is the tip
+
+- **A block is numbered once its data and every ancestor's have arrived, as Core's
+  `nSequenceId`, and at equal work the lower number is the tip, so `invalidateblock`
+  can return to a displaced branch of equal work** (closes #1579).
+
+### `preciousblock` is served
+
+- **`preciousblock` makes a block of the tip's own work the tip, a later
+  call overriding an earlier one, nothing kept across a restart**
+  (closes #1534).
+
+### `submitheader` is served
+
+- **`submitheader` indexes a header without its block, answering `null`,
+  Core's `Must submit previous header (<hash>) first` for an unknown
+  parent, and the reason for a header refused** (closes #1533).
+
 ### `getrawtransaction` answers `time`, `blocktime` and verbosity 2
 
 - **Verbosity 2 adds `fee` and `prevout`, and `confirmations` is 0, not

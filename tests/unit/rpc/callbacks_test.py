@@ -96,6 +96,7 @@ from btclib_node.rpc.callbacks import (
     invalidate_block,
     list_banned,
     ping,
+    precious_block,
     prune_blockchain,
     reconsider_block,
     send_raw_transaction,
@@ -104,6 +105,7 @@ from btclib_node.rpc.callbacks import (
     set_network_active,
     stop,
     submit_block,
+    submit_header,
 )
 
 # aliased: pytest collects a module-level `test*` as a test, and this
@@ -6221,19 +6223,17 @@ def test_invalidate_block_reconnects_a_branch_it_was_previously_on(
         )
 
 
-def test_invalidate_block_does_not_reconnect_a_branch_of_equal_work(
+def test_invalidate_block_reconnects_a_branch_of_equal_work_received_first(
     regtest_node: Callable[..., Node],
 ) -> None:
-    """Pins the divergence `generate_block_candidates`'s own docstring argues.
+    """At equal work, the branch whose data arrived first is the tip.
 
     `first` (two blocks) connects, then `second` (three blocks, heavier)
     reorgs it off; invalidating `second`'s own tip reduces it to
-    `second[1]`, exactly `first`'s own work -- and Core would reorg back
-    to `first` there, by `nSequenceId`'s own lower-id tie-break
-    (`node/blockstorage.cpp:174-192`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag), `first` having completed its data first. This index
-    tracks no such order, and `work > current_work` is strict, so the
-    tip simply stays on `second[1]`: btclib-org/btclib-node#1579.
+    `second[1]`, exactly `first`'s own work. `first`'s data arrived
+    first, so Core reorgs back to it by `nSequenceId`
+    (`node/blockstorage.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag), and so does this node. btclib-org/btclib-node#1579
     """
     node = regtest_node()
     first = generate_random_chain(2, node.chain.genesis.hash)
@@ -6245,9 +6245,76 @@ def test_invalidate_block_does_not_reconnect_a_branch_of_equal_work(
 
     invalidate_block(node, _CONN, [second[-1].header.hash.hex()])
 
-    assert block_index.active_chain[-1] == second[1].header.hash
-    assert block_index.active_chain[-1] != first[-1].header.hash
-    assert not block_index.block_candidates
+    assert block_index.active_chain[1:] == [b.header.hash for b in first]
+
+
+def test_precious_block_with_no_arguments_is_answered_with_the_usage() -> None:
+    """A missing `blockhash` is Core's own `HelpResult` shape, `MISC_ERROR`."""
+    with pytest.raises(RpcError) as raised:
+        precious_block(cast("Node", None), _CONN, [])
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
+    assert raised.value.message == HELP_TEXT["preciousblock"]
+
+
+def test_precious_block_refuses_an_unknown_hash(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """An unindexed hash answers Core's own `"Block not found"`."""
+    node = regtest_node()
+    with pytest.raises(RpcError) as raised:
+        precious_block(node, _CONN, [(b"\x11" * 32).hex()])
+    assert raised.value.code == RPCErrorCode.INVALID_ADDRESS_OR_KEY
+    assert raised.value.message == "Block not found"
+
+
+def test_precious_block_switches_between_tips_of_equal_work(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Core's `rpc_preciousblock.py`: the named tip wins, and a later call too.
+
+    `first` arrives first, so it stays the tip when `second`, of the
+    same work, arrives. `preciousblock` on `second`'s tip moves the chain
+    there, and on `first`'s moves it back. A block below the tip's work
+    changes nothing. btclib-org/btclib-node#1534
+    """
+    node = regtest_node()
+    first = generate_random_chain(3, node.chain.genesis.hash)
+    connect(node, first)
+    second = generate_random_chain(3, node.chain.genesis.hash)
+    connect(node, second)
+    block_index = node.chainstate.block_index
+    assert block_index.active_chain[-1] == first[-1].header.hash
+
+    precious_block(node, _CONN, [second[-1].header.hash.hex()])
+    assert block_index.active_chain[1:] == [b.header.hash for b in second]
+
+    precious_block(node, _CONN, [first[-1].header.hash.hex()])
+    assert block_index.active_chain[1:] == [b.header.hash for b in first]
+
+    precious_block(node, _CONN, [second[1].header.hash.hex()])
+    assert block_index.active_chain[-1] == first[-1].header.hash
+
+
+def test_precious_block_below_the_tip_does_not_retry_the_chain(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A block with less work than the tip leaves even a ready candidate be.
+
+    Core's `PreciousBlock` returns before `ActivateBestChain` there
+    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
+    so `chain[2]`, downloaded and not yet connected, stays unconnected.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(3, node.chain.genesis.hash)
+    connect(node, chain[:2])
+    block_index = node.chainstate.block_index
+    block_index.add_headers([chain[2].header])
+    node.block_db.add_block(chain[2])
+    block_index.set_downloaded(chain[2].header.hash)
+
+    precious_block(node, _CONN, [chain[0].header.hash.hex()])
+
+    assert block_index.active_chain[-1] == chain[1].header.hash
 
 
 def test_invalidate_block_drops_a_disconnected_transaction_past_the_ten_block_cap(
@@ -6855,6 +6922,107 @@ def test_disconnectnode_no_longer_checks_its_own_upper_bound() -> None:
     node, removed = a_disconnecting_node({1: a_peer()})
     disconnect_node(node, _CONN, ["", 1, None])
     assert removed == [1]
+
+
+def test_submit_header_with_no_arguments_is_answered_with_the_usage() -> None:
+    """A missing `hexdata` is Core's own `HelpResult` shape, `MISC_ERROR`."""
+    with pytest.raises(RpcError) as raised:
+        submit_header(cast("Node", None), _CONN, [])
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
+    assert raised.value.message == HELP_TEXT["submitheader"]
+
+
+def test_submit_header_refuses_a_hexdata_of_the_wrong_json_type() -> None:
+    """A non-string `hexdata` is `TYPE_ERROR`, checked before decoding."""
+    with pytest.raises(RpcError) as raised:
+        submit_header(cast("Node", None), _CONN, [1234])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+
+
+@pytest.mark.parametrize("hexdata", ["zz", "0", "00" * 79, "00 " * 80])
+def test_submit_header_refuses_what_does_not_decode(hexdata: str) -> None:
+    """Core's `DecodeHexBlockHeader` failing: not hex, or short of a header.
+
+    Measured against a regtest bitcoind v31.1.0, which answers each
+    `RPC_DESERIALIZATION_ERROR`, "Block header decode failed".
+    """
+    with pytest.raises(RpcError) as raised:
+        submit_header(cast("Node", None), _CONN, [hexdata])
+    assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
+    assert raised.value.message == "Block header decode failed"
+
+
+def test_submit_header_refuses_a_header_whose_parent_is_unknown(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Core's own `RPC_VERIFY_ERROR`, naming the parent to submit first."""
+    node = regtest_node()
+    chain = generate_random_header_chain(2, RegTest().genesis.hash)
+    with pytest.raises(RpcError) as raised:
+        submit_header(node, _CONN, [chain[1].serialize().hex()])
+    assert raised.value.code == RPCErrorCode.VERIFY_ERROR
+    assert raised.value.message == (
+        f"Must submit previous header ({chain[0].hash.hex()}) first"
+    )
+
+
+def test_submit_header_indexes_a_header_alone(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A valid header is indexed without its block: a `headers-only` tip.
+
+    Bytes after the header are ignored, as Core's `SpanReader` ignores
+    them, and a header already indexed is accepted again.
+    btclib-org/btclib-node#1533
+    """
+    node = regtest_node()
+    (header,) = generate_random_header_chain(1, RegTest().genesis.hash)
+    hexdata = header.serialize().hex()
+
+    submit_header(node, _CONN, [hexdata + "00"])
+    submit_header(node, _CONN, [hexdata])
+
+    block_index = node.chainstate.block_index
+    assert not block_index.get_block_info(header.hash).downloaded
+    tips = get_chain_tips(node, _CONN, [])
+    assert {"height": 1, "hash": header.hash, "branchlen": 1} | {
+        "status": "headers-only"
+    } in tips
+
+
+def test_submit_header_answers_the_reason_a_header_is_refused(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A refused header is `RPC_VERIFY_ERROR` with `add_headers`' reason.
+
+    `duplicate-invalid` for a header marked invalid, `bad-prevblk` for
+    one whose parent is, and the proof-of-work refusal for a hash that
+    misses its target; none of them is indexed.
+    """
+    node = regtest_node()
+    block_index = node.chainstate.block_index
+    chain = generate_random_header_chain(2, RegTest().genesis.hash)
+    block_index.add_headers(chain[:1])
+    block_index.invalidate(chain[0].hash)
+
+    for header, reason in [(chain[0], "duplicate-invalid"), (chain[1], "bad-prevblk")]:
+        with pytest.raises(RpcError) as raised:
+            submit_header(node, _CONN, [header.serialize().hex()])
+        assert raised.value.code == RPCErrorCode.VERIFY_ERROR
+        assert raised.value.message == reason
+    assert chain[1].hash not in block_index.header_dict
+
+    (unmined,) = generate_random_header_chain(1, RegTest().genesis.hash)
+    while True:
+        unmined.nonce += 1
+        try:
+            unmined.assert_valid_pow(node.chain.pow_limit_bits)
+        except BTClibValueError:
+            break
+    with pytest.raises(RpcError) as raised:
+        submit_header(node, _CONN, [unmined.serialize(check_validity=False).hex()])
+    assert raised.value.code == RPCErrorCode.VERIFY_ERROR
+    assert unmined.hash not in block_index.header_dict
 
 
 def a_block_marked_invalid(node: Node, block: Block) -> str:
