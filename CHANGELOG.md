@@ -1585,6 +1585,23 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   reasons, in Core's order, `ConnectBlock`'s accumulated fee bound
   included** (closes #1600) (closes #1362) (closes #1587).
   `interpreter.check_transactions` is `check_scripts`, the scripts alone.
+### At equal work, the block that could connect first is the tip
+
+- **A block is numbered once its data and every ancestor's have arrived, as Core's
+  `nSequenceId`, and at equal work the lower number is the tip, so `invalidateblock`
+  can return to a displaced branch of equal work** (closes #1579).
+
+### `preciousblock` is served
+
+- **`preciousblock` makes a block of the tip's own work the tip, a later
+  call overriding an earlier one, nothing kept across a restart**
+  (closes #1534).
+
+### `submitheader` is served
+
+- **`submitheader` indexes a header without its block, answering `null`,
+  Core's `Must submit previous header (<hash>) first` for an unknown
+  parent, and the reason for a header refused** (closes #1533).
 
 ## v2026.9.24
 

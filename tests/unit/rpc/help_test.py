@@ -38,6 +38,7 @@ _EXPECTED_BARE_LISTING = (
     "getrawmempool ( verbose mempool_sequence )\n"
     'gettxout "txid" n ( include_mempool )\n'
     'gettxoutsetinfo ( "hash_type" hash_or_height use_index )\n'
+    'preciousblock "blockhash"\n'
     "pruneblockchain height\n"
     "\n"
     "== Control ==\n"
@@ -47,6 +48,7 @@ _EXPECTED_BARE_LISTING = (
     "\n"
     "== Mining ==\n"
     'submitblock "hexdata" ( "dummy" )\n'
+    'submitheader "hexdata"\n'
     "\n"
     "== Network ==\n"
     'addnode "node" "command" ( v2transport )\n'

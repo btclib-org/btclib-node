@@ -54,6 +54,7 @@ this check is for.
 
 import enum
 import itertools
+import math
 from collections import deque
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -483,6 +484,26 @@ class BlockIndex:
         # is the only reader, for btclib-org/btclib-node#1522.
         self.best_invalid: bytes | None = None
 
+        # Core's own `nSequenceId` (`src/chain.h`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), for each block
+        # whose data, and every ancestor's, has arrived: the tie-break
+        # beneath chainwork in `_outranks`, the lower number winning. In
+        # memory only, as in Core. `_load_sequence_ids` numbers the
+        # stored blocks 0 and 1, `_link` numbers each later arrival from
+        # 2 up, and `precious` hands out the negative numbers, Core's
+        # `nBlockReverseSequenceId` and `nLastPreciousChainwork` being its
+        # two fields below.
+        self.sequence_id: dict[bytes, int] = {}
+        self._next_sequence_id = 2
+        self._precious_sequence_id = -1
+        self._precious_chainwork = 0
+
+        # Core's own `m_blocks_unlinked` (`src/node/blockstorage.h`, same
+        # sha): each block whose data arrived while its parent had no
+        # number, under that parent and in the order its data arrived,
+        # which is the order `_link` numbers them in.
+        self._unlinked: dict[bytes, list[bytes]] = {}
+
         self.init_from_db()
 
     def init_from_db(self) -> None:
@@ -510,6 +531,7 @@ class BlockIndex:
         self.calculate_chainwork()
         self.logger.info("Start generate_active_chain")
         self.generate_active_chain()
+        self._load_sequence_ids()
         self.logger.info("Start generate_block_candidates")
         self.generate_block_candidates()
         self.logger.info("Start generate_header_index")
@@ -638,6 +660,31 @@ class BlockIndex:
         for index in sorted(chain_dict.keys()):
             self.active_chain.append(chain_dict[index])
 
+    def _load_sequence_ids(self) -> None:
+        """Give each stored block the number Core gives it on load.
+
+        `SEQ_ID_BEST_CHAIN_FROM_DISK`, 0, for the active chain, and
+        `SEQ_ID_INIT_FROM_DISK`, 1, for every other block whose data, and
+        every ancestor's, has arrived (`src/chain.h` and `LoadChainTip`
+        in `src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        tag): a tie at start-up keeps the tip. A block whose data arrived
+        and whose parent has no number goes to `_unlinked`, in height
+        order, as `BlockManager::LoadBlockIndex` puts it in
+        `m_blocks_unlinked` (`src/node/blockstorage.cpp`, same sha).
+        """
+        active_chain_set = set(self.active_chain)
+        for block_hash in self.sorted_header_dict:
+            block_info = self.header_dict[block_hash]
+            parent = block_info.header.previous_block_hash
+            if block_hash in active_chain_set:
+                self.sequence_id[block_hash] = 0
+            elif not block_info.downloaded:
+                continue
+            elif parent in self.sequence_id:
+                self.sequence_id[block_hash] = 1
+            else:
+                self._unlinked.setdefault(parent, []).append(block_hash)
+
     def generate_block_candidates(self) -> None:
         """Rebuild `block_candidates` over every `valid_header`/`valid` entry.
 
@@ -655,6 +702,9 @@ class BlockIndex:
         whatever is there, which only matters past start-up:
         `block_candidates` is empty already the one time `init_from_db`
         calls this.
+
+        `precious` calls this too, once it has renumbered a block that
+        may now outrank the tip.
 
         `valid` is offered alongside `valid_header` so that a branch a
         reorg has since displaced -- `_finalize_fork`'s own `to_remove`
@@ -676,34 +726,13 @@ class BlockIndex:
         that pre-existing, separately-argued divergence is out of
         scope here. btclib-org/btclib-node#1561
 
-        The work comparison below is `>`, strict, where Core's own
-        `setBlockIndexCandidates` -- ordered by `CBlockIndexWorkComparator`
-        (`node/blockstorage.cpp:174-192`, same commit) -- admits a
-        candidate of *equal* chainwork too, breaking the tie by
-        `nSequenceId`, assigned once the block's data, and every
-        ancestor's, has been received (`ReceivedBlockTransactions`,
-        `src/validation.cpp:3857`, same commit, where the block reaches
-        `BLOCK_VALID_TRANSACTIONS`): "sort by most total work, ... then
-        by earliest activatable time", the lower `nSequenceId` winning.
-        This is not matched, and is not merely the `downloaded` gate
-        above: this index tracks no received-order state at all, so a
-        block a reorg displaced and that is then reduced back to
-        exactly the active tip's own work is never reoffered here,
-        where Core would reorg back to whichever of the two completed
-        its data first. The effect is confined to which of two
-        equal-work chains *this node's own tip* sits on -- never a fact
-        the network disagrees about, since every honest node answers
-        the identical question against its own received order, not a
-        shared one -- but it is a real behavioural gap from Core.
-        Reaching it needs a received-order counter this index does not
-        keep, the same missing primitive #1534
-        (`preciousblock`, a manual override of the identical tie) was
-        dropped from this branch for; tracked on its own as
-        btclib-org/btclib-node#1579 rather than attempted here.
+        A block is offered where it outranks the active tip (`_outranks`),
+        so one of the tip's own work is offered where its `sequence_id`
+        is the lower.
         """
         self.block_candidates = deque()
         active_chain_set = set(self.active_chain)
-        current_work = self.chainwork[self.active_chain[-1]]
+        tip = self.active_chain[-1]
         for block_hash in sorted(
             self.header_dict, key=lambda h: self.header_dict[h].index
         ):
@@ -714,9 +743,8 @@ class BlockIndex:
                 continue
             if block_info.status not in (BlockStatus.valid_header, BlockStatus.valid):
                 continue
-            work = self.chainwork[block_hash]
-            if work > current_work:
-                self.block_candidates.append([block_hash, work])
+            if self._outranks(block_hash, tip):
+                self.block_candidates.append([block_hash, self.chainwork[block_hash]])
 
     def generate_header_index(self) -> None:
         """Rebuild `header_index`, seeded from `active_chain` then extended."""
@@ -871,12 +899,38 @@ class BlockIndex:
         counterpart to this race, since `CBlockIndex` flags are
         in-memory and `m_dirty_blockindex` is flushed whole rather than
         in halves.
+
+        A block whose data arrives here is numbered by `_link`.
         """
+        arrived = downloaded and not self.get_block_info(block_hash).downloaded
         block_info = replace(self.get_block_info(block_hash), downloaded=downloaded)
         if block_info.header.hash in self.pending:
             self._stage(block_info)
+        else:
+            self._insert_block_info(block_info)
+        if arrived:
+            self._link(block_hash)
+
+    def _link(self, block_hash: bytes) -> None:
+        """Give a block whose data arrived the next number, if it can take one.
+
+        Core's `ReceivedBlockTransactions` (`src/validation.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Where its parent has
+        no number yet, the block waits in `_unlinked`. Otherwise it takes
+        the next number, and so does each block that waited on it,
+        breadth first and, under one parent, in the order their data
+        arrived, as Core's queue over `m_blocks_unlinked` numbers them.
+        """
+        parent = self.header_dict[block_hash].header.previous_block_hash
+        if parent not in self.sequence_id:
+            self._unlinked.setdefault(parent, []).append(block_hash)
             return
-        self._insert_block_info(block_info)
+        queue = deque([block_hash])
+        while queue:
+            current = queue.popleft()
+            self.sequence_id[current] = self._next_sequence_id
+            self._next_sequence_id += 1
+            queue.extend(self._unlinked.pop(current, ()))
 
     def get_block_info(self, block_hash: bytes) -> BlockInfo:
         """Return the `BlockInfo` stored for `block_hash`."""
@@ -1277,30 +1331,83 @@ class BlockIndex:
         to_add, _ = self.get_fork_details(block_hash)
         return all(self.get_block_info(h).downloaded for h in to_add)
 
+    def _outranks(self, block_hash: bytes, other: bytes) -> bool:
+        """Answer whether `block_hash` sorts above `other`.
+
+        Core's `CBlockIndexWorkComparator` (`node/blockstorage.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag). More chainwork wins.
+        At equal chainwork the lower `sequence_id` wins, and a block
+        without one, its data or an ancestor's still missing, loses.
+        Where both tie, neither wins: Core breaks that tie by pointer
+        address, which has no counterpart here, so the block already
+        ahead stays ahead.
+        """
+        work, other_work = self.chainwork[block_hash], self.chainwork[other]
+        if work != other_work:
+            return work > other_work
+        return self.sequence_id.get(block_hash, math.inf) < self.sequence_id.get(
+            other, math.inf
+        )
+
+    def precious(self, block_hash: bytes) -> bool:
+        """Treat `block_hash` as received before its rivals: `PreciousBlock`.
+
+        `Chainstate::PreciousBlock` (`src/validation.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Nothing for a block
+        with less work than the tip, and `False`. Otherwise the block
+        takes the next negative number, counting down from -1 again
+        wherever the tip gained work since the last call,
+        `block_candidates` is rebuilt so that it is offered where it now
+        outranks the tip, and `True`.
+
+        A block whose data, or an ancestor's, is missing keeps no
+        number: Core gives it one that its data's arrival overwrites
+        before anything compares it. Core stops counting down at the
+        `int32_t` minimum, against overflow, which a Python int does not
+        have.
+        """
+        tip_work = self.chainwork[self.active_chain[-1]]
+        if self.chainwork[block_hash] < tip_work:
+            return False
+        if tip_work > self._precious_chainwork:
+            self._precious_sequence_id = -1
+        self._precious_chainwork = tip_work
+        if block_hash in self.sequence_id:
+            self.sequence_id[block_hash] = self._precious_sequence_id
+        self._precious_sequence_id -= 1
+        self.generate_block_candidates()
+        return True
+
     def get_first_candidate(self) -> BlockInfo | None:
-        """Return the first downloaded candidate outweighing the active chain.
+        """Return the first downloaded candidate outranking the active tip.
 
         Pops every stale entry (work below the active chain's own) off
         the front of `block_candidates`, then scans up to the 100 left:
-        among those still ahead on work, the first whose whole branch is
-        downloaded is returned, or the very first of them if none is,
-        or `None` if there is no candidate ahead at all.
+        among those that outrank the tip (`_outranks`), the first whose
+        whole branch is downloaded is returned, or the very first of
+        them if none is, or `None` if none outranks the tip. A later
+        downloaded entry of the same work replaces it where it outranks
+        it, which is Core's tie-break; one of more work does not, where
+        Core's `FindMostWorkChain` takes the most-work candidate.
         """
-        chainwork = self.chainwork[self.active_chain[-1]]
+        tip = self.active_chain[-1]
+        chainwork = self.chainwork[tip]
         while self.block_candidates and self.block_candidates[0][1] < chainwork:
             self.block_candidates.popleft()
-        if not self.block_candidates:
-            return None
-        best_candidate = None
+        first: bytes | None = None
+        ready: bytes | None = None
         for i in range(min(100, len(self.block_candidates))):
             block_hash, work = self.block_candidates[i]
-            if work > chainwork:
-                candidate = self.get_block_info(block_hash)
-                if not best_candidate:
-                    best_candidate = candidate
-                if self._branch_is_downloaded(block_hash):
-                    return candidate
-        return best_candidate
+            if not self._outranks(block_hash, tip):
+                continue
+            first = first or block_hash
+            if (
+                ready is None
+                or (work == self.chainwork[ready] and self._outranks(block_hash, ready))
+            ) and self._branch_is_downloaded(block_hash):
+                ready = block_hash
+        chosen = ready or first
+        return None if chosen is None else self.get_block_info(chosen)
 
     # return a list of block hashes looking at the current best chain
     def get_block_locator_hashes(self, start: bytes | None = None) -> list[bytes]:
