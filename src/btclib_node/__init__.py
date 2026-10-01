@@ -464,7 +464,7 @@ class Node(threading.Thread):
         # update_chain's own record of the most recent block its trial
         # loop refused and why: the hash failed_hash already names
         # there, paired with the exception _validate_block or
-        # check_transactions raised, rather than only the fixed line the
+        # check_scripts raised, rather than only the fixed line the
         # except block logs. Never cleared on a success, so it is the
         # last rejection this node has hit rather than this call's own
         # outcome -- read by nothing in this tree but a rejection test,
@@ -563,8 +563,8 @@ class Node(threading.Thread):
     def warm_worker_pool(self) -> None:
         """Build the worker pool now, on a thread of its own, and warm it.
 
-        `check_transactions`' own first call used to be what built and
-        warmed `worker_pool`, on whatever thread called it -- `run`'s
+        `interpreter.check_transactions`' own first call used to be what
+        built and warmed `worker_pool`, on whatever thread called it -- `run`'s
         own loop below, the same one that drains
         `p2p_manager.handshake_messages` and promotes a connection once
         its `verack` arrives. Under `_pool_factory`'s process arm, each

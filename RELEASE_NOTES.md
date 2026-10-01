@@ -117,6 +117,9 @@ on release day.
   the threshold. Headers of such a chain that an existing data directory
   already holds are kept and read as before, as Core keeps what its block
   index holds, so nothing has to be done about them.
+- **`interpreter.check_transactions` is `check_scripts(transaction_data,
+  flags, node)`, and checks the scripts alone**: a block's amounts, fees
+  and sigop cost are `main._validate_block`'s.
 
 ## v2026.9.24
 

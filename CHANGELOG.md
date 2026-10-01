@@ -1579,6 +1579,13 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   and tests they cite: integration coverage, the oracle, locks, S311,
   sockets, files and the pickle default** (closes #1554).
 
+### Refusals carry Core's reasons, in Core's order
+
+- **A refused header, a script refusal and a block's refusals carry Core's
+  reasons, in Core's order, `ConnectBlock`'s accumulated fee bound
+  included** (closes #1600) (closes #1362) (closes #1587).
+  `interpreter.check_transactions` is `check_scripts`, the scripts alone.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

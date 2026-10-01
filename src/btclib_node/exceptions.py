@@ -62,19 +62,15 @@ __all__ = [
 class BlockScriptVerifyError(BTClibValueError):
     """A candidate block's own script check failed while connecting it.
 
-    Raised only by `interpreter.check_transactions`, wrapping whatever
+    Raised only by `interpreter.check_scripts`, wrapping the `ScriptError`
     `Node.worker_pool.starmap` propagates out of `verify_input`
-    (`interpreter.f`) once a candidate's structure, its context and its
-    amounts have already passed -- `verify_amounts`'s own refusal,
-    checked separately and earlier in the same function, is not this.
+    (`interpreter.f`) once a candidate's structure, its context, its
+    amounts and its sigop cost have already passed.
     Composed as Core's own wire format for it,
     `block-script-verify-flag-failed (%s)` (`CheckInputScripts`,
     `src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
-    with btclib's own message standing in for `ScriptErrorString`:
-    `BlockValidationResult` names dozens of distinct single-word script
-    errors this tree does not reproduce, the same divergence
-    `rpc.callbacks.submit_block`'s own docstring already argues for
-    every other reject reason it has no literal word for.
+    with `ScriptErrorString`, which btclib's `ScriptError.code` carries
+    as `description`.
 
     `BTClibValueError`, so `main._resolve_trial_exception`'s own
     `_CONTENT_FAILURE` tuple keeps catching it as the fork's content
@@ -280,7 +276,7 @@ class InvalidBlockInputError(ValueError):
 
     Raised only by `UtxoIndex.add_block`, while it is walking a
     freshly-downloaded candidate block's own transactions against the
-    UTXO set for the first time -- before `check_transactions` (script
+    UTXO set for the first time -- before `check_scripts` (script
     and signature checks) even runs, per `update_chain`'s own sequence
     in `main.py`. An input spending an output this index cannot find,
     or spending one a transaction earlier in the same block already
@@ -457,7 +453,7 @@ class InvalidChainTypeError(TypeError):
 
 
 class PrevoutCountMismatchError(ValueError):
-    """`check_transactions` was handed a prevout list the wrong length."""
+    """`check_scripts` was handed a prevout list the wrong length."""
 
     def __init__(self) -> None:
         super().__init__("prevout count does not match input count")

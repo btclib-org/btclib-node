@@ -22,7 +22,7 @@ module-path = "src/btclib_node/interpreter.py"
 # `^`, the terms of that chain being disjoint bits, which leaves the
 # two operators the same function on it. Neither is a test to write,
 # a mutant computing what the original computes having nothing to
-# assert against. `check_transactions`' `len(x[0]) != len(x[1].vin)`
+# assert against. `check_scripts`' `len(x[0]) != len(x[1].vin)`
 # as `is not` is an equivalence too, small-int identity answering
 # there as `!=` does on every length the suite tries. As `<` it was
 # the gap that run found: every test reaching the line passed fewer

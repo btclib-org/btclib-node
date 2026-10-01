@@ -232,7 +232,7 @@ Measured the same day, `origin/main`
 `7da40ebcd606a7d3ef09fe2a49a2d6d63017c8b1`. Six populated blocks up to
 mainnet height 964,000, their prevouts pulled from the peer over RPC
 and handed to the same call `update_chain` itself makes
-(`interpreter.check_transactions`, no download and nothing written):
+(`interpreter.check_scripts`, no download and nothing written):
 roughly 40,000 to 65,000 inputs validated a second, at a load around
 3.0 — about 200 microseconds per input per core, one libsecp256k1
 verification and the script engine around it. A control against the
