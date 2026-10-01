@@ -1530,6 +1530,53 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **The statements the review found stale or overstated match the code
   and tests they cite: integration coverage, the oracle, locks, S311,
   sockets, files and the pickle default** (closes #1554).
+### The feefilter rounder's buckets do not follow `-minrelaytxfee`
+
+- **`feefilter` buckets start at half Core's default floor, whatever
+  `-minrelaytxfee` says**, as Core's `FeeFilterRounder` does (closes #1374).
+
+### `-incrementalrelayfee` sets the incremental relay fee, in BTC/kvB, as in Core
+
+- **A replacement's extra fee and an eviction's bump of the mempool's minimum
+  are `-incrementalrelayfee`, refused in Core's words** (closes #1596); given
+  alone and above the floor, it raises `-minrelaytxfee`, as in Core.
+
+### `getmempoolinfo` answers `minrelaytxfee` and `incrementalrelayfee`
+
+- **Both are in BTC/kvB, as Core's** (issue #1497).
+
+### `-permitbaremultisig` is an option, and `getmempoolinfo` answers it
+
+- **`-permitbaremultisig` is read, and `getmempoolinfo` answers
+  `permitbaremultisig`** (closes #1497), the configured value; nothing is
+  refused as `bare-multisig` yet (issue #1382).
+
+### The other standardness options are registered, and not yet enforced
+
+- **`-datacarrier`, `-datacarriersize`, `-dustrelayfee` and
+  `-acceptnonstdtxn` are read, and `getmempoolinfo` answers
+  `maxdatacarriersize`** (issue #1382).
+
+### `Dependency review` is a required check
+
+- **`REPOSITORY.md` reads `lint / Dependency review` back with the other
+  required checks** (issue btclib-org/.github#1465).
+
+### A `vout` is Core's, `scriptPubKey` nested
+
+- **`value`, `n` and a `scriptPubKey` with `type` and `address` inside,
+  `type` as `Solver` names it, addresses for the node's network**
+  (closes #1440).
+
+### A `vin` is Core's, and a transaction renders as `TxToUniv`
+
+- **`txid`, `vout`, `scriptSig`, `txinwitness` only if present, or
+  `coinbase`; `asm` stays btclib's** (closes #1448).
+
+### `getblock` answers `fee` and, at verbosity 3, `prevout`
+
+- **Both come from the block's undo data and are absent without it**
+  (closes #1446).
 
 ## v2026.9.24
 

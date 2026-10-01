@@ -56,7 +56,7 @@ dependencies = [
     # `permitted_difficulty_transition` (btclib-org/btclib#2418), which
     # `p2p/headers_sync.py` imports.
     "btclib[secp256k1]>=2026.9.30",
-    # `rpc/callbacks.py` imports `add_checksum`/`from_address` from
+    # `rpc/callbacks.py` imports `add_checksum` from
     # `btclib_wallet.descriptors`, where btclib's own `descriptors`
     # moved (btclib-org/btclib#2129): a runtime dependency now, not the
     # `test` group's own it used to be, carried there only for

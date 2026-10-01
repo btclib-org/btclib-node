@@ -33,7 +33,8 @@ gh api repos/btclib-org/btclib-node/branches/main/protection \
 # {"checks":[{"app_id":15368,"context":"test: every job passed"},
 #   {"app_id":15368,"context":"docs / Build the documentation"},
 #   {"app_id":15368,"context":"lint / Lint and type-check"},
-#   {"app_id":15368,"context":"regtest / Regtest against Bitcoin Core"}],
+#   {"app_id":15368,"context":"regtest / Regtest against Bitcoin Core"},
+#   {"app_id":15368,"context":"lint / Dependency review"}],
 #   "strict":true}
 gh api repos/btclib-org/btclib-node/rulesets --jq '.[].id' \
   | xargs -I{} gh api repos/btclib-org/btclib-node/rulesets/{} \
@@ -50,6 +51,7 @@ workflow that answers for it:
 | `docs / Build the documentation` | `docs.yml`, calling `reusable-docs.yml` |
 | `lint / Lint and type-check` | `lint.yml`, calling `reusable-lint.yml` |
 | `regtest / Regtest against Bitcoin Core` | `integration-bitcoind.yml` |
+| `lint / Dependency review` | `lint.yml`, calling `reusable-lint.yml` |
 
 `test.yml` has more than one job, so it is named through its aggregate,
 `test: every job passed`, so that a job added to that workflow is gated
@@ -66,7 +68,8 @@ joins the calling job's id to the called job's own name. `docs.yml`'s
 `docs / Build the documentation`; `lint.yml`'s `lint` job calls
 `reusable-lint.yml` the same way, whose own job is still named
 `Lint and type-check`, producing `lint / Lint and type-check`
-(issue btclib-org/.github#35); `integration-bitcoind.yml`'s `regtest`
+(issue btclib-org/.github#35), and whose other job, `Dependency review`,
+produces `lint / Dependency review`; `integration-bitcoind.yml`'s `regtest`
 job calls `reusable-integration-bitcoind.yml` the same way, whose own
 job is still named `Regtest against Bitcoin Core`, producing
 `regtest / Regtest against Bitcoin Core` (issue btclib-org/.github#1196).
@@ -96,7 +99,8 @@ gh api -X PATCH \
  "checks": [{"context": "test: every job passed", "app_id": 15368},
             {"context": "docs / Build the documentation", "app_id": 15368},
             {"context": "lint / Lint and type-check", "app_id": 15368},
-            {"context": "regtest / Regtest against Bitcoin Core", "app_id": 15368}]}
+            {"context": "regtest / Regtest against Bitcoin Core", "app_id": 15368},
+            {"context": "lint / Dependency review", "app_id": 15368}]}
 JSON
 ```
 

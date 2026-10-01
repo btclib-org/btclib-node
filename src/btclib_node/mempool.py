@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from btclib.fee import FeeRate, fee_from_vsize
 
+from btclib_node.config import DEFAULT_INCREMENTAL_RELAY_FEERATE
 from btclib_node.exceptions import TxRejectedError
 
 if TYPE_CHECKING:
@@ -78,15 +79,6 @@ class MempoolEntry(NamedTuple):
 # bounds is kept.
 _RECENT_REJECTS_CAPACITY = 120_000
 
-# Core's own `DEFAULT_INCREMENTAL_RELAY_FEE` (`src/policy/policy.h`,
-# at bitcoin/bitcoin@58a7869f86): what an eviction round bumps the rolling
-# minimum to, above the feerate of whatever it just evicted, so a
-# transaction does not requalify at the exact rate something was just
-# evicted for. A constant of this module and not `Config.min_relay_feerate`:
-# Core keeps the two as separate knobs, `-minrelaytxfee` and
-# `-incrementalrelayfee`, that merely share a default.
-_INCREMENTAL_RELAY_FEE_RATE = FeeRate(sats_per_kvbyte=100)
-
 # Core's own `ROLLING_FEE_HALFLIFE` (`src/txmempool.h:212`, same commit):
 # seconds for the rolling minimum to decay by half once it is decaying at
 # all, shortened as this mempool empties -- `get_min_fee_rate` below.
@@ -128,9 +120,23 @@ class Mempool:
     is read.
     """
 
-    def __init__(self, logger: Logger) -> None:
-        """Start empty, with the rolling minimum feerate at zero, undecayed."""
+    def __init__(
+        self,
+        logger: Logger,
+        incremental_relay_feerate: FeeRate = DEFAULT_INCREMENTAL_RELAY_FEERATE,
+    ) -> None:
+        """Start empty, with the rolling minimum feerate at zero, undecayed.
+
+        `incremental_relay_feerate` is `-incrementalrelayfee`
+        (`Config.incremental_relay_feerate`): what an eviction round bumps
+        the rolling minimum by, above the feerate of whatever it just
+        evicted, so a transaction does not requalify at the exact rate
+        something was just evicted for, and the extra fee a replacement
+        pays. Core keeps it apart from `-minrelaytxfee`, the two merely
+        sharing a default.
+        """
         self.logger = logger
+        self.incremental_relay_feerate = incremental_relay_feerate
 
         self.transactions: dict[bytes, Tx] = {}
         self.txid_index: dict[bytes, bytes] = {}
@@ -486,7 +492,7 @@ class Mempool:
             )
             reason = "insufficient fee"
             raise TxRejectedError(reason, details)
-        relay_fee = fee_from_vsize(vsize, _INCREMENTAL_RELAY_FEE_RATE)
+        relay_fee = fee_from_vsize(vsize, self.incremental_relay_feerate)
         if fee - original < relay_fee:
             details = (
                 f"rejecting replacement {txid}, not enough additional fees to "
@@ -917,7 +923,7 @@ class Mempool:
             package_fee = sum(self.fees[w] for w in package)
             package_vsize = sum(self.vsizes[w] for w in package)
             removed_rate = Fraction(package_fee, package_vsize) * 1000
-            removed_rate += _INCREMENTAL_RELAY_FEE_RATE.sats_per_kvbyte
+            removed_rate += self.incremental_relay_feerate.sats_per_kvbyte
             for victim in package:
                 self._pop(victim)
             self._track_package_removed(float(removed_rate))
@@ -973,7 +979,7 @@ class Mempool:
         limit -- `self.bytesize` standing in for Core's own
         `DynamicMemoryUsage()`, both being how full the mempool actually
         is rather than how many transactions it holds -- and the value
-        floored at `_INCREMENTAL_RELAY_FEE_RATE` once it decays, or
+        floored at `incremental_relay_feerate` once it decays, or
         zeroed once it decays under half of that: below that floor it is
         not a small minimum, it is none.
 
@@ -1002,7 +1008,7 @@ class Mempool:
 
             if (
                 self._rolling_min_fee_rate
-                < _INCREMENTAL_RELAY_FEE_RATE.sats_per_kvbyte / 2
+                < self.incremental_relay_feerate.sats_per_kvbyte / 2
             ):
                 self._rolling_min_fee_rate = 0.0
                 return FeeRate(sats_per_kvbyte=0)
@@ -1010,6 +1016,6 @@ class Mempool:
         return FeeRate(
             sats_per_kvbyte=max(
                 round(self._rolling_min_fee_rate),
-                _INCREMENTAL_RELAY_FEE_RATE.sats_per_kvbyte,
+                self.incremental_relay_feerate.sats_per_kvbyte,
             )
         )

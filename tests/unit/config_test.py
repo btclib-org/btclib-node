@@ -104,6 +104,16 @@ def test_min_relay_feerate_is_configurable() -> None:
     assert Config(chain="regtest", min_relay_feerate=rate).min_relay_feerate == rate
 
 
+def test_relay_policy_options_default_to_cores_own() -> None:
+    """Core's defaults, `src/policy/policy.h` at bitcoin/bitcoin@9be056a8a7."""
+    config = Config(chain="regtest")
+    assert config.incremental_relay_feerate.sats_per_kvbyte == 100
+    assert config.dust_relay_feerate.sats_per_kvbyte == 3000
+    assert config.permit_bare_multisig is True
+    assert config.max_datacarrier_bytes == 100_000
+    assert config.require_standard is True
+
+
 def test_rpc_host_defaults_to_localhost_not_every_interface() -> None:
     """`rpc_host` defaults to loopback; an explicit host still wins."""
     # #27: the rpc listener is a control plane, not a peer-to-peer

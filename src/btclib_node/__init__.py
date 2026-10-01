@@ -459,7 +459,7 @@ class Node(threading.Thread):
         self.chainstate.filter_index.catch_up(
             self.chainstate.block_index.active_chain, self.block_db
         )
-        self.mempool = Mempool(self.logger)
+        self.mempool = Mempool(self.logger, self.config.incremental_relay_feerate)
 
         # update_chain's own record of the most recent block its trial
         # loop refused and why: the hash failed_hash already names
