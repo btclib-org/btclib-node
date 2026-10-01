@@ -806,6 +806,21 @@ def test_the_fee_filter_bucket_set_starts_at_zero_and_half_the_floor() -> None:
     assert buckets[1] == 50
 
 
+def test_the_fee_filter_buckets_do_not_follow_the_configured_floor() -> None:
+    """The buckets start at half Core's default floor, not `-minrelaytxfee`'s.
+
+    Core builds its rounder from `DEFAULT_MIN_RELAY_TX_FEE`, never from the
+    option (btclib-org/btclib-node#1374); the floor only lifts what is sent.
+    """
+    manager = make_manager([], min_relay_feerate=FeeRate(sats_per_kvbyte=5000))
+    assert manager._fee_filter_buckets[:2] == [0, 50]
+    conn = a_conn(1)
+    manager = make_manager([conn], min_relay_feerate=FeeRate(sats_per_kvbyte=5000))
+    manager._send_due_feefilters()
+    (sent,) = only(conn, FeeFilter)
+    assert sent.feerate == 5000
+
+
 def test_the_fee_filter_bucket_set_never_drops_below_one_sat_per_kvb() -> None:
     """A floor of 0 or 1 still gets a real, non-zero second bucket."""
     # Core's own MakeFeeSet: max(CAmount(1), min_incremental_fee/2) --

@@ -52,10 +52,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 import pytest
+from btclib.fee import FeeRate  # noqa: TC002
 from hypothesis import settings
 
 from btclib_node import Node
-from btclib_node.config import Config
+from btclib_node.config import DEFAULT_INCREMENTAL_RELAY_FEERATE, Config
 from btclib_node.constants import NodeStatus
 from tests import get_random_port
 
@@ -616,7 +617,11 @@ def rpc_node(tmp_path: Path) -> Iterator[Node]:
 
 @contextmanager
 def unstarted_node_context(
-    tmp_path: Path, *, pruned: bool = False, prune_target_mib: int | None = None
+    tmp_path: Path,
+    *,
+    pruned: bool = False,
+    prune_target_mib: int | None = None,
+    incremental_relay_feerate: FeeRate = DEFAULT_INCREMENTAL_RELAY_FEERATE,
 ) -> Iterator[Node]:
     """Build and drive a node directly, never `start()`ed; close it on exit.
 
@@ -665,6 +670,7 @@ def unstarted_node_context(
             debug=True,
             pruned=pruned,
             prune_target_mib=prune_target_mib,
+            incremental_relay_feerate=incremental_relay_feerate,
         )
     )
     # the stores `run` would open once its RPC listener were up

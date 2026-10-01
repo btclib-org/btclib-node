@@ -1509,6 +1509,33 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A deep `invalidateblock` raises no large-work warning, as Core's
   `InvalidChainFound` weighs only the block it is handed** (closes #1593).
 
+### The feefilter rounder's buckets do not follow `-minrelaytxfee`
+
+- **`feefilter` buckets start at half Core's default floor, whatever
+  `-minrelaytxfee` says**, as Core's `FeeFilterRounder` does (closes #1374).
+
+### `-incrementalrelayfee` sets the incremental relay fee, in BTC/kvB, as in Core
+
+- **A replacement's extra fee and an eviction's bump of the mempool's minimum
+  are `-incrementalrelayfee`, refused in Core's words** (closes #1596); given
+  alone and above the floor, it raises `-minrelaytxfee`, as in Core.
+
+### `getmempoolinfo` answers `minrelaytxfee` and `incrementalrelayfee`
+
+- **Both are in BTC/kvB, as Core's** (issue #1497).
+
+### `-permitbaremultisig` is an option, and `getmempoolinfo` answers it
+
+- **`-permitbaremultisig` is read, and `getmempoolinfo` answers
+  `permitbaremultisig`** (closes #1497), the configured value; nothing is
+  refused as `bare-multisig` yet (issue #1382).
+
+### The other standardness options are registered, and not yet enforced
+
+- **`-datacarrier`, `-datacarriersize`, `-dustrelayfee` and
+  `-acceptnonstdtxn` are read, and `getmempoolinfo` answers
+  `maxdatacarriersize`** (issue #1382).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

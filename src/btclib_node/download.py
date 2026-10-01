@@ -26,6 +26,7 @@ from btclib.p2p.limits import MAX_INV_SZ
 from btclib.p2p.negotiation import FeeFilter, SendHeaders
 
 from btclib_node.chainstate.block_index import BlockStatus, block_time
+from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
 from btclib_node.constants import P2pConnStatus
 from btclib_node.p2p.block_availability import find_next_blocks_to_download
 from btclib_node.p2p.callbacks import (
@@ -151,28 +152,26 @@ _RECENT_BEST_HEADER = 24 * 60 * 60
 MAX_BLOCKS_IN_TRANSIT_PER_PEER = 16
 
 
-def _fee_filter_buckets(min_relay_feerate: int) -> list[float]:
+def _fee_filter_buckets(min_incremental_fee: int) -> list[float]:
     """Return the sat/kvB boundaries `_round_fee_filter` may round to.
 
     Core's own `MakeFeeSet` (`policy/fees/block_policy_estimator.cpp`,
     at bitcoin/bitcoin@58a7869f86): zero, then a geometric series from half
-    `min_relay_feerate` (never under 1) up to `_MAX_FILTER_FEERATE`,
+    `min_incremental_fee` (never under 1) up to `_MAX_FILTER_FEERATE`,
     spaced by `_FEE_FILTER_SPACING`. Kept as `float` and not rounded
     here: Core's own `std::set<double>` holds the raw boundary too, and
     only the value `_round_fee_filter` finally selects is ever
     truncated (`static_cast<CAmount>`) -- rounding a boundary to build
     this set would select a different sat/kvB than Core does for a
     boundary that was never an integer to begin with, 137.7 truncating
-    to 137 there against rounding to 138 here. Built once, from
-    `Config.min_relay_feerate`, rather than a module constant, since
-    that field is configurable and Core's own equivalent --
-    `-minrelaytxfee`, not the incremental fee `mempool.py`'s own
-    constant of the same default value is -- is what this set is keyed
-    to (`m_fee_filter_rounder{CFeeRate{DEFAULT_MIN_RELAY_TX_FEE}, ...}`,
+    to 137 there against rounding to 138 here. `Download` builds it from
+    `DEFAULT_MIN_RELAY_FEERATE`, as Core builds its rounder from
+    `DEFAULT_MIN_RELAY_TX_FEE` and not from `-minrelaytxfee`
+    (`m_fee_filter_rounder{CFeeRate{DEFAULT_MIN_RELAY_TX_FEE}, ...}`,
     `net_processing.cpp`).
     """
     buckets = {0.0}
-    boundary = float(max(1, min_relay_feerate // 2))
+    boundary = float(max(1, min_incremental_fee // 2))
     while boundary <= _MAX_FILTER_FEERATE:
         buckets.add(boundary)
         boundary *= _FEE_FILTER_SPACING
@@ -385,7 +384,7 @@ class DownloadManager:
         # "equal to the last element" -- always forces the round-down
         # branch. btclib-org/btclib-node#275
         self._fee_filter_buckets = _fee_filter_buckets(
-            node.config.min_relay_feerate.sats_per_kvbyte
+            DEFAULT_MIN_RELAY_FEERATE.sats_per_kvbyte
         )
         # int(), not the top bucket's own float: BIP133's wire value is
         # an integer, and every other value this module ever sends is

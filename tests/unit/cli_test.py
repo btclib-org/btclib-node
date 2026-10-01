@@ -1712,10 +1712,147 @@ def test_build_config_help_lists_minrelaytxfee_under_node_relay(
         _build(tmp_path, "-help")
     out = capsys.readouterr().out
     assert (
-        "Node relay options:\n\n  -minrelaytxfee=<amt>\n       Fees (in BTC/kvB) "
+        "\n\n  -minrelaytxfee=<amt>\n       Fees (in BTC/kvB) "
         "smaller than this are considered zero fee for\n       relaying, mining "
-        "and transaction creation (default: 0.000001)\n\nRPC server options:"
+        "and transaction creation (default: 0.000001)\n\n  -permitbaremultisig"
     ) in out
+
+
+@pytest.mark.parametrize(
+    ("option", "field", "default"),
+    [
+        ("incrementalrelayfee", "incremental_relay_feerate", 100),
+        ("dustrelayfee", "dust_relay_feerate", 3000),
+    ],
+)
+def test_build_config_a_relay_feerate_is_read_in_btc_per_kvb(
+    tmp_path: Path, option: str, field: str, default: int
+) -> None:
+    """Read as `-minrelaytxfee` is: Core's default, a value, `0`, the file.
+
+    btclib-org/btclib-node#1596 is `-incrementalrelayfee`'s.
+    """
+    assert getattr(_build(tmp_path, "-regtest"), field).sats_per_kvbyte == default
+    given = _build(tmp_path, "-regtest", f"-{option}=0.00002")
+    assert getattr(given, field).sats_per_kvbyte == 2000
+    negated = _build(tmp_path, "-regtest", f"-no{option}")
+    assert getattr(negated, field).sats_per_kvbyte == 0
+    from_file = _build(tmp_path, conf=f"regtest=1\n{option}=0.00003\n")
+    assert getattr(from_file, field).sats_per_kvbyte == 3000
+
+
+@pytest.mark.parametrize("option", ["incrementalrelayfee", "dustrelayfee"])
+def test_build_config_a_relay_feerate_that_is_no_amount_is_refused(
+    tmp_path: Path, option: str
+) -> None:
+    """`AmountErrMsg`'s words, naming the option."""
+    expected = re.escape(f"Invalid amount for -{option}=<amount>: 'abc'")
+    with pytest.raises(ValueError, match=f"^{expected}$"):
+        _build(tmp_path, "-regtest", f"-{option}=abc")
+
+
+def test_build_config_incrementalrelayfee_is_refused_before_minrelaytxfee(
+    tmp_path: Path,
+) -> None:
+    """`ApplyArgsManOptions` reads `-incrementalrelayfee` first."""
+    with pytest.raises(ValueError, match="-incrementalrelayfee"):
+        _build(tmp_path, "-regtest", "-minrelaytxfee=abc", "-incrementalrelayfee=abc")
+
+
+def test_build_config_incrementalrelayfee_raises_a_minrelaytxfee_not_given(
+    tmp_path: Path,
+) -> None:
+    """Core lets `-incrementalrelayfee` alone raise the floor, never lower it.
+
+    A `-minrelaytxfee` given, even a lower one, stays as it is.
+    """
+    raised = _build(tmp_path, "-regtest", "-incrementalrelayfee=0.00002")
+    assert raised.min_relay_feerate.sats_per_kvbyte == 2000
+    lowered = _build(tmp_path, "-regtest", "-incrementalrelayfee=0.00000050")
+    assert lowered.min_relay_feerate.sats_per_kvbyte == 100
+    given = _build(
+        tmp_path,
+        "-regtest",
+        "-incrementalrelayfee=0.00002",
+        "-minrelaytxfee=0.00001",
+    )
+    assert given.min_relay_feerate.sats_per_kvbyte == 1000
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        ((), 100_000),
+        (("-nodatacarrier",), None),
+        (("-nodatacarrier", "-datacarriersize=5"), None),
+        (("-datacarrier=1", "-datacarriersize=83"), 83),
+        (("-datacarriersize=0",), 0),
+        (("-nodatacarriersize",), 0),
+        (("-datacarriersize=-1",), 2**32 - 1),
+        (("-datacarriersize=4294967297",), 1),
+    ],
+)
+def test_build_config_datacarrier_options(
+    tmp_path: Path, argv: tuple[str, ...], expected: int | None
+) -> None:
+    """`max_datacarrier_bytes`: `None` where off, else the size mod 2**32.
+
+    Core stores `-datacarriersize`'s `int64_t` in an `unsigned int`.
+    """
+    assert _build(tmp_path, "-regtest", *argv).max_datacarrier_bytes == expected
+
+
+def test_build_config_permitbaremultisig_defaults_negates_and_reads_the_file(
+    tmp_path: Path,
+) -> None:
+    """On unless negated or set false (btclib-org/btclib-node#1497)."""
+    assert _build(tmp_path, "-regtest").permit_bare_multisig is True
+    assert (
+        _build(tmp_path, "-regtest", "-permitbaremultisig=0").permit_bare_multisig
+        is False
+    )
+    assert (
+        _build(tmp_path, "-regtest", "-nopermitbaremultisig").permit_bare_multisig
+        is False
+    )
+    from_file = _build(tmp_path, conf="regtest=1\npermitbaremultisig=0\n")
+    assert from_file.permit_bare_multisig is False
+
+
+def test_build_config_acceptnonstdtxn_is_for_test_chains_only(tmp_path: Path) -> None:
+    """`require_standard` is off on a test chain and refused on `main`."""
+    assert _build(tmp_path, "-regtest").require_standard is True
+    assert _build(tmp_path, "-regtest", "-acceptnonstdtxn").require_standard is False
+    assert (
+        _build(tmp_path, "-chain=main", "-acceptnonstdtxn=0").require_standard is True
+    )
+    expected = re.escape("acceptnonstdtxn is not currently supported for main chain")
+    with pytest.raises(ValueError, match=f"^{expected}$"):
+        _build(tmp_path, "-acceptnonstdtxn")
+
+
+def test_build_config_help_lists_the_relay_options(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`-help` shows the non-debug relay options, `-help-debug` the rest."""
+    with pytest.raises(SystemExit):
+        _build(tmp_path, "-help")
+    out = capsys.readouterr().out
+    for shown in ("-datacarrier", "-datacarriersize=<n>", "-permitbaremultisig"):
+        assert f"\n  {shown}\n" in out
+    for hidden in ("-acceptnonstdtxn", "-incrementalrelayfee", "-dustrelayfee"):
+        assert hidden not in out
+    with pytest.raises(SystemExit):
+        _build(tmp_path, "-help-debug")
+    out = capsys.readouterr().out
+    for shown in (
+        "-acceptnonstdtxn",
+        "-incrementalrelayfee=<amt>",
+        "-dustrelayfee=<amt>",
+    ):
+        assert f"\n  {shown}\n" in out
+    assert "(default: 0.000001)" in out
+    assert "(default: 0.00003)" in out
 
 
 def test_build_config_maxtipage_defaults_negates_and_reads_in_seconds(
