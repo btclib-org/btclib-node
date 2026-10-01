@@ -489,7 +489,8 @@ class RpcManager(threading.Thread):
             self.init_error = str(err)
             raise OSError(self.init_error) from None
         # `InitHTTPAllowList`'s own line, each subnet followed by a space
-        self.logger.debug(
+        self.logger.log_debug(
+            "http",
             "Allowing HTTP connections from: %s",
             "".join(f"{subnet} " for subnet in self.allowed_subnets),
         )

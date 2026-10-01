@@ -27,7 +27,7 @@ from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
-from btclib_node import Node, interpreter, main
+from btclib_node import Node, main
 from btclib_node.chains import RegTest, SigNet
 from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate import utxo_index as utxo_index_module
@@ -47,7 +47,7 @@ from btclib_node.exceptions import (
     NonStandardTxError,
     TxRejectedError,
 )
-from btclib_node.interpreter import check_transactions, get_flags
+from btclib_node.interpreter import check_scripts, get_flags
 from btclib_node.main import (
     check_fork_warning_conditions,
     update_chain,
@@ -116,7 +116,7 @@ def rejected_because(node: Node, block: Block, phrase: str) -> None:
     tells a block refused for its own rule apart from one refused for a
     different rule ranked ahead of it in the same per-block gate --
     the gap btclib-org/btclib-node#587 is about, where any raise
-    anywhere in `_validate_block`/`check_transactions` satisfied a bare
+    anywhere in `_validate_block`/`check_scripts` satisfied a bare
     `not in active_chain`. `phrase` is checked with `in` rather than
     `==`: the exact wording is btclib's or this tree's own to change,
     not an interface either promises to keep, and a substring naming
@@ -213,7 +213,7 @@ def test_reject_block_that_prints_money(node: Node) -> None:
 
     assert bad.header.hash not in block_index.active_chain
     assert len(block_index.active_chain) == connected
-    rejected_because(node, bad, "Invalid transaction amounts")
+    rejected_because(node, bad, "bad-txns-in-belowout")
 
 
 def test_reject_block_with_a_failing_script(node: Node) -> None:
@@ -327,6 +327,7 @@ def _sigop_blocks(node: Node) -> tuple[BlockIndex, Callable[..., Block]]:
         p2sh_over: bool = False,
         witness_over: bool = False,
         coinbase_over: bool = False,
+        prints_money_after: bool = False,
     ) -> Block:
         # the outputs the block spends: the last p2sh one in place of the
         # first where `p2sh_over`, and likewise for p2wsh
@@ -358,9 +359,14 @@ def _sigop_blocks(node: Node) -> tuple[BlockIndex, Callable[..., Block]]:
             *coinbase.vout,
             TxOut(0, script.serialize(["OP_CHECKSIG"] * checksigs)),
         ]
-        coinbase.vout.append(witness_commitment_output([coinbase, tx], nonce))
+        txs = [tx]
+        if prints_money_after:
+            # a coinbase `COINBASE_MATURITY` deep by this block's height
+            printed = chain[1].transactions[0]
+            txs.append(spend(printed, printed.vout[0].value + 1))
+        coinbase.vout.append(witness_commitment_output([coinbase, *txs], nonce))
         coinbase.vin[0].script_witness = Witness([nonce])
-        return build_block(fund_block.header.hash, [coinbase, tx], len(chain) + 1)
+        return build_block(fund_block.header.hash, [coinbase, *txs], len(chain) + 1)
 
     return block_index, build
 
@@ -396,6 +402,28 @@ def test_a_block_over_the_sigop_cost_limit_is_refused(
     assert block_index.get_block_info(bad.header.hash).status == BlockStatus.invalid
 
 
+def test_a_block_s_sigop_cost_is_refused_before_a_later_transaction_s_amounts(
+    node: Node,
+) -> None:
+    """The first transaction to pass the limit refuses the block, not the last.
+
+    Core's `ConnectBlock` adds each transaction's sigop cost to the
+    block's total before it checks the next one's inputs, so a block
+    whose first spend passes `MAX_BLOCK_SIGOPS_COST` and whose second
+    prints money is `bad-blk-sigops` (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Without the first
+    spend's excess the same block is refused for the second's amounts.
+    """
+    block_index, build = _sigop_blocks(node)
+    control = build(prints_money_after=True)
+    connect(node, [control])
+    rejected_because(node, control, "bad-txns-in-belowout")
+    bad = build(p2sh_over=True, prints_money_after=True)
+    connect(node, [bad])
+    assert bad.header.hash not in block_index.active_chain
+    rejected_because(node, bad, "bad-blk-sigops")
+
+
 def test_the_sigop_cost_is_counted_under_the_block_s_own_flags(
     node: Node, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -406,10 +434,111 @@ def test_the_sigop_cost_is_counted_under_the_block_s_own_flags(
     term; regtest exempts no block, so the flags are patched in.
     """
     block_index, build = _sigop_blocks(node)
-    monkeypatch.setattr(interpreter, "get_flags", lambda *_: ScriptFlag(0))
+    monkeypatch.setattr(main, "get_flags", lambda *_: ScriptFlag(0))
     over = build(p2sh_over=True, witness_over=True)
     connect(node, [over])
     assert over.header.hash in block_index.active_chain
+
+
+def test_a_block_is_refused_for_the_first_rule_in_transaction_order(
+    node: Node,
+) -> None:
+    """A spend's own rules are asked in turn, ahead of the next spend's.
+
+    ISS 1587: Core's `ConnectBlock` asks one transaction's maturity,
+    amounts, accumulated fee, BIP68 lock and sigop cost before it reads
+    the next, so a block with an immature spend first and an unmet
+    relative lock second is `bad-txns-premature-spend-of-coinbase`, and
+    with the two the other way round `bad-txns-nonfinal`
+    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    """
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, chain)
+    connected = len(block_index.active_chain)
+    # one block short of mature, and the oldest, which a lock then binds
+    young, old = chain[1].transactions[0], chain[0].transactions[0]
+    immature = spend(young, young.vout[0].value)
+    unmet = relative_locked_spend(
+        old, old.vout[0].value, sequence=COINBASE_MATURITY + 50
+    )
+
+    for transactions, reason in (
+        ([immature, unmet], "bad-txns-premature-spend-of-coinbase"),
+        ([unmet, immature], "bad-txns-nonfinal"),
+    ):
+        bad = build_block(
+            chain[-1].header.hash,
+            [generate_coinbase(height=len(chain) + 1), *transactions],
+            len(chain),
+        )
+        connect(node, [bad])
+        assert len(block_index.active_chain) == connected
+        rejected_because(node, bad, reason)
+
+
+def test_a_coinbase_paying_too_much_is_refused_before_a_failing_script(
+    node: Node,
+) -> None:
+    """`bad-cb-amount` is Core's answer where a script also fails.
+
+    ISS 1587: `ConnectBlock` checks the coinbase value after the loop
+    over the transactions and collects the script results last, so a
+    block whose spend fails its script and whose coinbase pays one
+    satoshi too much is `bad-cb-amount` (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    """
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, chain)
+    funding = chain[0].transactions[0]
+    failing = spend(
+        funding, funding.vout[0].value, script_sig=script.serialize(["OP_RETURN"])
+    )
+    subsidy_here = generate_coinbase(height=len(chain) + 1).vout[0].value
+    bad = build_block(
+        chain[-1].header.hash,
+        [generate_coinbase(subsidy_here + 1, height=len(chain) + 1), failing],
+        len(chain),
+    )
+    connect(node, [bad])
+    assert bad.header.hash not in block_index.active_chain
+    rejected_because(node, bad, "bad-cb-amount")
+
+
+@pytest.mark.parametrize(
+    ("limit_offset", "refused"), [(0, False), (-1, True)], ids=["at", "over"]
+)
+def test_the_fees_a_block_accumulates_are_bounded_by_max_money(
+    node: Node,
+    monkeypatch: pytest.MonkeyPatch,
+    limit_offset: int,
+    refused: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1587: `MoneyRange` on the accumulated fee, its bound inclusive.
+
+    No block can carry fees near 21 million bitcoin, so the bound is
+    brought down to the fees this block's two spends pay together: at it
+    the block connects, one satoshi under it, with each spend's own fee
+    well inside, is `bad-txns-accumulated-fee-outofrange`
+    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    """
+    chain = generate_random_chain(COINBASE_MATURITY + 1, RegTest().genesis.hash)
+    block_index = connect(node, chain)
+    fee = 10
+    # a coinbase `COINBASE_MATURITY` deep, and an output the last block made
+    # to be spent
+    coins_spent = [chain[1].transactions[0], chain[-1].transactions[1]]
+    spends = [spend(tx, tx.vout[0].value - fee) for tx in coins_spent]
+    subsidy_here = generate_coinbase(height=len(chain) + 1).vout[0].value
+    block = build_block(
+        chain[-1].header.hash,
+        [generate_coinbase(subsidy_here + 2 * fee, height=len(chain) + 1), *spends],
+        len(chain),
+    )
+    monkeypatch.setattr(main, "_MAX_MONEY", 2 * fee + limit_offset)
+    connect(node, [block])
+    assert (block.header.hash in block_index.active_chain) is not refused
+    if refused:
+        rejected_because(node, block, "bad-txns-accumulated-fee-outofrange")
 
 
 def test_reject_block_whose_coinbase_does_not_commit_to_its_height(
@@ -1075,7 +1204,9 @@ def test_a_mempool_candidate_is_read_against_relay_policy(node: Node) -> None:
         + b"\x4c\x02"
         + anyone_can_spend_redeem_script()
     )
-    with pytest.raises(NonStandardTxError, match="non-minimal push"):
+    with pytest.raises(
+        NonStandardTxError, match=r"\(Data push larger than necessary\)"
+    ):
         verify_mempool_acceptance(node, non_minimal)
 
     minimal = generate_random_transaction(
@@ -2362,6 +2493,54 @@ def test_blocknotify_fires_once_with_the_new_tips_hash_once_ibd_ends(
     assert calls == [f"touch {recent[-1].header.hash.hex()}"]
 
 
+def test_unknown_activations_are_not_checked_during_initial_block_download(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1475: `Chainstate::UpdateTip` asks `if (!IsInitialBlockDownload())`.
+
+    `generate_random_chain` dates every block too far back for the tip to
+    end initial block download, as `test_blocknotify_does_not_fire_during_
+    initial_block_download` above has it.
+    """
+    calls: list[tuple[Node, int]] = []
+    monkeypatch.setattr(
+        main, "check_unknown_activations", lambda *args: calls.append(args)
+    )
+    connect(node, generate_random_chain(2, RegTest().genesis.hash))
+    assert node.is_initial_block_download is True
+    assert calls == []
+
+
+def test_unknown_activations_are_checked_once_per_commit_out_of_ibd(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1475: one call, with the number of blocks the commit connected."""
+    calls: list[tuple[Node, int]] = []
+    monkeypatch.setattr(
+        main, "check_unknown_activations", lambda *args: calls.append(args)
+    )
+    recent = generate_random_chain(
+        3, RegTest().genesis.hash, tip_time=datetime.now(UTC)
+    )
+    connect(node, recent)
+    assert node.is_initial_block_download is False
+    assert calls == [(node, 1)]
+
+
+def test_a_reorganisation_checks_each_block_it_connects(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1475: the count is the blocks of the commit, here two."""
+    calls: list[tuple[Node, int]] = []
+    monkeypatch.setattr(
+        main, "check_unknown_activations", lambda *args: calls.append(args)
+    )
+    genesis = RegTest().genesis.hash
+    connect(node, generate_random_chain(1, genesis, tip_time=datetime.now(UTC)))
+    connect(node, generate_random_chain(2, genesis, tip_time=datetime.now(UTC)))
+    assert calls == [(node, 1), (node, 2)]
+
+
 def test_check_fork_warning_conditions_raises_once_and_clears_on_catch_up(
     node: Node, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2639,18 +2818,16 @@ def test_a_stop_mid_reorg_rolls_the_trial_back_without_invalidating_it(
 
     def stop_after_the_second_block(
         transaction_data: list[tuple[list[Coin], Tx]],
-        index: int,
+        flags: ScriptFlag,
         node: Node,
-        block_hash: bytes,
-        coinbase: Tx,
     ) -> None:
         nonlocal calls
         calls += 1
         if calls == 2:
             node.terminate_flag.set()
-        return check_transactions(transaction_data, index, node, block_hash, coinbase)
+        return check_scripts(transaction_data, flags, node)
 
-    monkeypatch.setattr(main, "check_transactions", stop_after_the_second_block)
+    monkeypatch.setattr(main, "check_scripts", stop_after_the_second_block)
 
     update_chain(node)
 

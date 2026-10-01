@@ -558,7 +558,7 @@ def _end_if_feeler(node: Node, conn: Connection) -> None:
     """
     if not conn.feeler:
         return
-    node.logger.debug("feeler connection completed, peer=%s", conn.id)
+    node.logger.log_debug("net", "feeler connection completed, peer=%s", conn.id)
     conn.stop_when_sent()
 
 
@@ -991,7 +991,7 @@ def _store_gossip(
     # (btclib-org/btclib-node#1380, review round 2).
     manager.peer_db.add_addresses(kept, source=conn.address)
     if conn.addr_fetch and len(received) > 1:
-        node.logger.debug("addrfetch connection completed, peer=%s", conn.id)
+        node.logger.log_debug("net", "addrfetch connection completed, peer=%s", conn.id)
         conn.stop()
 
 
@@ -1031,7 +1031,9 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
     """
     if conn.block_relay:
-        node.logger.debug("transaction sent in violation of protocol, peer=%s", conn.id)
+        node.logger.log_debug(
+            "net", "transaction sent in violation of protocol, peer=%s", conn.id
+        )
         conn.stop()
         return
     # Core's own early return in IBD, before it even parses the payload:
@@ -1380,8 +1382,8 @@ def inv(node: Node, msg: bytes, conn: Connection) -> None:
         if item.type_code == InventoryType.MSG_BLOCK:
             update_block_availability(block_index, conn.block_availability, item.hash)
     if rejected is not None:
-        node.logger.debug(
-            "transaction inv sent in violation of protocol, peer=%s", conn.id
+        node.logger.log_debug(
+            "net", "transaction inv sent in violation of protocol, peer=%s", conn.id
         )
         conn.stop()
         return
@@ -2026,7 +2028,8 @@ def _try_low_work_headers_sync(
         )
         _is_continuation_of_low_work_headers_sync(node, conn, headers)
     else:
-        node.logger.debug(
+        node.logger.log_debug(
+            "net",
             "Ignoring low-work chain (height=%d) from peer=%d",
             block_index.get_block_info(chain_start).index + len(headers),
             conn.id,
@@ -2259,7 +2262,8 @@ def _prepare_filter_request(  # noqa: PLR0913, PLR0917
     `PrepareBlockFilterRequest` calls it at (ISS 1476).
     """
     if filter_type != BlockFilterType.BASIC or not node.config.peerblockfilters:
-        node.logger.debug(
+        node.logger.log_debug(
+            "net",
             "peer requested unsupported block filter type: %s, peer=%s",
             int(filter_type),
             conn.id,
@@ -2270,7 +2274,8 @@ def _prepare_filter_request(  # noqa: PLR0913, PLR0917
     if stop_hash not in block_index.header_dict or not _block_request_allowed(
         node, stop_hash
     ):
-        node.logger.debug(
+        node.logger.log_debug(
+            "net",
             "peer requested invalid block hash: %s, peer=%s",
             stop_hash.hex(),
             conn.id,
@@ -2284,7 +2289,8 @@ def _prepare_filter_request(  # noqa: PLR0913, PLR0917
     # always parsed, so a negative start cannot arrive; `get_cfcheckpt`'s
     # own `start_height` is always zero, so this never trips for it.
     if start_height > stop_height:
-        node.logger.debug(
+        node.logger.log_debug(
+            "net",
             "peer sent invalid getcfilters/getcfheaders with start height "
             "%d and stop height %d, peer=%s",
             start_height,
@@ -2298,7 +2304,8 @@ def _prepare_filter_request(  # noqa: PLR0913, PLR0917
     # (`_NO_HEIGHT_DIFF_LIMIT` above). Strictly, so a range whose ends
     # differ by exactly the bound is one block too many.
     if stop_height - start_height >= max_height_diff:
-        node.logger.debug(
+        node.logger.log_debug(
+            "net",
             "peer requested too many cfilters/cfheaders: %d / %d, peer=%s",
             stop_height - start_height + 1,
             max_height_diff,
@@ -2633,8 +2640,8 @@ def getblocktxn(node: Node, msg: bytes, conn: Connection) -> None:
     """
     request = GetBlockTxn.parse(msg)
     if not request.indexes:
-        node.logger.debug(
-            "getblocktxn received with no transaction indexes, peer=%s", conn.id
+        node.logger.log_debug(
+            "net", "getblocktxn received with no transaction indexes, peer=%s", conn.id
         )
         conn.stop()
         return
@@ -2691,7 +2698,7 @@ def not_found(node: Node, msg: bytes, conn: Connection) -> None:
     # `notfound` is ProcessMessage's own `received: notfound (N bytes)`,
     # under `-debug=net` (net_processing.cpp, at bitcoin/bitcoin@9be056a8a7),
     # and the items are the peer's to size.
-    node.logger.debug("notfound of %d items", len(missing.items))
+    node.logger.log_debug("net", "notfound of %d items", len(missing.items))
 
 
 handshake_callbacks = {

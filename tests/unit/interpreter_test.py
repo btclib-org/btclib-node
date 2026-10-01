@@ -41,13 +41,12 @@ from btclib_node.exceptions import (
 )
 from btclib_node.interpreter import (
     STANDARD_FLAGS,
+    check_scripts,
     check_transaction,
-    check_transactions,
     f,
     get_flags,
     warm,
 )
-from tests import generate_coinbase
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -82,7 +81,7 @@ def prevout(script_pub_key: bytes | None = None, value: int = 50 * 10**8) -> TxO
 
 
 def coins(tx_outs: list[TxOut], *, is_coinbase: bool = False) -> list[Coin]:
-    """Wrap plain prevouts as `Coin`s, the shape `check_transactions` takes."""
+    """Wrap plain prevouts as `Coin`s, the shape `check_scripts` takes."""
     return [Coin(tx_out, height=1, is_coinbase=is_coinbase) for tx_out in tx_outs]
 
 
@@ -120,7 +119,7 @@ def make_node() -> Any:
     """Return a `Node` stand-in whose `worker_pool.starmap` runs in-process.
 
     Running them synchronously rather than through a real `Pool` is
-    what lets `check_transactions`'s raise reach the caller directly,
+    what lets `check_scripts`'s raise reach the caller directly,
     and what lets `monkeypatch` see calls a real process pool would
     hide inside a worker.
     """
@@ -135,14 +134,13 @@ def make_node() -> Any:
 # about the height-gated flags rather than about the exception table,
 # which is btclib's own to test
 _A_BLOCK_HASH = bytes(32)
-# the candidate block's own coinbase, which check_transactions counts
-# the sigops of and nothing else
-_COINBASE = generate_coinbase(height=1)
+# the flags `main._validate_block` hands check_scripts at height 1
+_FLAGS = RegTest().consensus.script_flags_at(1, _A_BLOCK_HASH)
 
 
 def test_nothing_to_check_is_not_an_error() -> None:
     """An empty transaction list returns without touching the pool."""
-    check_transactions([], 1, make_node(), _A_BLOCK_HASH, _COINBASE)
+    check_scripts([], _FLAGS, make_node())
 
 
 def test_a_prevout_count_that_does_not_match_the_inputs_is_refused() -> None:
@@ -150,56 +148,19 @@ def test_a_prevout_count_that_does_not_match_the_inputs_is_refused() -> None:
     # one input, no prevout for it: the caller built the pair wrong, and
     # verifying nothing would look like verifying everything
     with pytest.raises(ValueError, match="prevout count does not match input count"):
-        check_transactions([([], spend(b""))], 1, make_node(), _A_BLOCK_HASH, _COINBASE)
+        check_scripts([([], spend(b""))], _FLAGS, make_node())
 
 
 def test_a_prevout_count_that_exceeds_the_inputs_is_also_refused() -> None:
     """Fewer inputs than prevouts raises `PrevoutCountMismatchError` too."""
     # one input, two prevouts for it: `!=` catches this direction where
     # `<` would not, since a mutant comparing only for a shortfall lets
-    # a surplus prevout list through to verify_amounts and the pool
+    # a surplus prevout list through to the pool
     with pytest.raises(ValueError, match="prevout count does not match input count"):
-        check_transactions(
+        check_scripts(
             [(coins([prevout(), prevout()]), spend(b""))],
-            1,
+            _FLAGS,
             make_node(),
-            _A_BLOCK_HASH,
-            _COINBASE,
-        )
-
-
-def test_a_transaction_that_prints_money_is_refused() -> None:
-    """An output worth more than its prevout raises before script checks run."""
-    tx = spend(script.serialize([b"\x11" * 32]), value=51 * 10**8)
-    with pytest.raises(BTClibValueError, match="Invalid transaction amounts"):
-        check_transactions(
-            [(coins([prevout()]), tx)], 1, make_node(), _A_BLOCK_HASH, _COINBASE
-        )
-
-
-def test_a_block_s_sigop_cost_is_refused_before_a_later_transaction_s_amounts() -> None:
-    """The first transaction to pass the limit refuses the block, not the last.
-
-    Core's `ConnectBlock` adds each transaction's sigop cost to the
-    block's total before it checks the next one's inputs, so a block
-    whose first spend passes `MAX_BLOCK_SIGOPS_COST` and whose second
-    prints money is `bad-blk-sigops`, not an amounts refusal. The first
-    spend's 19,000 legacy sigops keep it inside `CheckBlock`'s own
-    legacy bound, and its redeem script's 51 bare `OP_CHECKMULTISIG`s,
-    20 each at four, take it past.
-    """
-    redeem = script.serialize(["OP_CHECKMULTISIG"] * 51)
-    over = spend(script.serialize([redeem]))
-    over.vout.append(TxOut(0, script.serialize(["OP_CHECKSIG"] * 19_000)))
-    prints_money = spend(script.serialize([b"\x11" * 32]), value=51 * 10**8)
-    p2sh = prevout(ScriptPubKey.p2sh(redeem).script)
-    with pytest.raises(BTClibValueError, match="bad-blk-sigops"):
-        check_transactions(
-            [(coins([p2sh]), over), (coins([prevout()]), prints_money)],
-            1,
-            make_node(),
-            _A_BLOCK_HASH,
-            _COINBASE,
         )
 
 
@@ -345,18 +306,16 @@ def _multi_input_p2wpkh_spend(n: int) -> tuple[list[TxOut], Tx]:
     return prevouts, tx
 
 
-def test_check_transactions_verifies_every_input_of_a_multi_input_transaction() -> None:
-    """`check_transactions` raises nothing when every input verifies."""
+def test_check_scripts_verifies_every_input_of_a_multi_input_transaction() -> None:
+    """`check_scripts` raises nothing when every input verifies."""
     prevouts, tx = _multi_input_p2wpkh_spend(3)
-    check_transactions(
-        [(coins(prevouts), tx)], 1, make_node(), _A_BLOCK_HASH, _COINBASE
-    )
+    check_scripts([(coins(prevouts), tx)], _FLAGS, make_node())
 
 
-def test_check_transactions_still_raises_when_one_input_does_not_verify() -> None:
+def test_check_scripts_still_raises_when_one_input_does_not_verify() -> None:
     """One tampered signature among several raises `BlockScriptVerifyError`.
 
-    `check_transactions` wraps whatever the pool raises -- `f`'s own
+    `check_scripts` wraps whatever the pool raises -- `f`'s own
     `ScriptError` here -- into Core's own wire format for a script
     check failed while connecting.
     """
@@ -365,10 +324,12 @@ def test_check_transactions_still_raises_when_one_input_does_not_verify() -> Non
     prevouts, tx = _multi_input_p2wpkh_spend(3)
     sig, pub = tx.vin[2].script_witness.stack
     tx.vin[2].script_witness = Witness([bytes([sig[0] ^ 1]) + sig[1:], pub])
-    with pytest.raises(BlockScriptVerifyError, match="block-script-verify-flag-failed"):
-        check_transactions(
-            [(coins(prevouts), tx)], 1, make_node(), _A_BLOCK_HASH, _COINBASE
-        )
+    with pytest.raises(BlockScriptVerifyError) as refusal:
+        check_scripts([(coins(prevouts), tx)], _FLAGS, make_node())
+    assert (
+        str(refusal.value)
+        == "block-script-verify-flag-failed (Non-canonical DER signature)"
+    )
 
 
 def _count_transaction_wide_serializations(
@@ -419,15 +380,15 @@ def test_a_positive_control_proves_the_counter_can_answer_non_zero(
     for i in range(n):
         # WITNESS, or verify_input treats the witness program as the
         # anyone-can-spend an unenforced BIP141 makes it and never runs
-        # segwit_v0 at all -- the flags check_transactions itself passes
+        # segwit_v0 at all -- the flags check_scripts itself passes
         btclib_verify_input(prevouts, tx, i, ("WITNESS",))
     assert count() == n * 3
 
 
-def test_check_transactions_builds_the_precomputed_data_once_per_transaction(
+def test_check_scripts_builds_the_precomputed_data_once_per_transaction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`check_transactions` re-serializes three times per tx, not per input."""
+    """`check_scripts` re-serializes three times per tx, not per input."""
     # built before the count starts, for the same reason as the positive
     # control above: building signs every input, and that signing is not
     # what this measures
@@ -440,7 +401,7 @@ def test_check_transactions_builds_the_precomputed_data_once_per_transaction(
         )
     ]
     count = _count_transaction_wide_serializations(monkeypatch)
-    check_transactions(transaction_data, 1, make_node(), _A_BLOCK_HASH, _COINBASE)
+    check_scripts(transaction_data, _FLAGS, make_node())
     # three transactions, three serializers each called once per
     # transaction by PrecomputedTxData.__init__ -- not once per input,
     # whichever of the 1, 7 or 20 inputs each transaction carries
@@ -825,9 +786,9 @@ def test_a_script_refusal_is_in_core_s_words_and_names_its_input() -> None:
     `bitcoind` v31.1 on regtest answers a bad signature
     "mempool-script-verify-flag-failed (Signature must be zero for failed
     CHECK(MULTI)SIG operation), input 0 of <txid> (wtxid <wtxid>),
-    spending <txid>:<n>"; inside the parentheses here is btclib's own
-    message (btclib-org/btclib-node#1328). The first input passes, so the
-    one named is the second.
+    spending <txid>:<n>"; the parentheses here hold `ScriptErrorString`
+    too (btclib-org/btclib-node#1328, btclib-org/btclib-node#1362). The
+    first input passes, so the one named is the second.
     """
     passes, fails = script.serialize(["OP_1"]), script.serialize(["OP_0"])
     prevouts = [TxOut(50 * 10**8, passes), TxOut(50 * 10**8, fails)]
@@ -840,14 +801,39 @@ def test_a_script_refusal_is_in_core_s_words_and_names_its_input() -> None:
         ],
         vout=[TxOut(99 * 10**8, passes)],
     )
-    with pytest.raises(BTClibValueError) as engine:
-        btclib_verify_input(prevouts, tx, 1, STANDARD_FLAGS)
     with pytest.raises(TxRejectedError) as refusal:
         check_transaction(prevouts, tx)
+    # `SCRIPT_ERR_EVAL_FALSE`'s string, src/script/script_error.cpp at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag
     assert refusal.value.reason == (
-        f"mempool-script-verify-flag-failed ({engine.value})"
+        "mempool-script-verify-flag-failed (Script evaluated without error "
+        "but finished with a false/empty top stack element)"
     )
     assert refusal.value.details == (
         f"input 1 of {tx.id.hex()} (wtxid {tx.hash.hex()}), "
         f"spending {bytes(range(32, 64)).hex()}:3"
+    )
+
+
+def test_a_failed_signature_is_refused_as_core_s_nullfail() -> None:
+    """A valid DER signature that does not verify is `SCRIPT_ERR_SIG_NULLFAIL`.
+
+    `bitcoind` v31.1 on regtest answers it "mempool-script-verify-flag-failed
+    (Signature must be zero for failed CHECK(MULTI)SIG operation)"
+    (btclib-org/btclib-node#1362).
+    """
+    prevouts = [TxOut(50 * 10**8, script.serialize([_PUB, "OP_CHECKSIG"]))]
+    tx = Tx(
+        version=1,
+        lock_time=0,
+        vin=[TxIn(OutPoint(bytes(range(32)), 7), b"", 0xFFFFFFFF)],
+        vout=[TxOut(49 * 10**8, script.serialize(["OP_1"]))],
+    )
+    signature = dsa.sign_(sha256(b"another message"), _PRV)
+    tx.vin[0].script_sig = script.serialize([signature.serialize() + b"\x01"])
+    with pytest.raises(TxRejectedError) as refusal:
+        check_transaction(prevouts, tx)
+    assert refusal.value.reason == (
+        "mempool-script-verify-flag-failed "
+        "(Signature must be zero for failed CHECK(MULTI)SIG operation)"
     )

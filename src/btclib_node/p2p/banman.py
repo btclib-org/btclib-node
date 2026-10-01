@@ -34,10 +34,11 @@ from btclib_node.constants import CLIENT_NAME
 from btclib_node.p2p.eviction import _INTERNAL, _TORV2, is_valid
 
 if TYPE_CHECKING:
-    import logging
     from pathlib import Path
 
     from btclib.p2p.addrv2 import NetworkAddressV2
+
+    from btclib_node.log import Logger
 
 __all__ = [
     "DEFAULT_MISBEHAVING_BANTIME",
@@ -402,7 +403,7 @@ class BanMan:
     def __init__(
         self,
         path: Path | None,
-        logger: logging.Logger,
+        logger: Logger,
         default_ban_time: int = DEFAULT_MISBEHAVING_BANTIME,
     ) -> None:
         """Load the list, then write it back, as Core's constructor does."""
@@ -520,7 +521,9 @@ class BanMan:
             if now > entry.ban_until:
                 del self._banned[subnet]
                 self._dirty = True
-                self.logger.debug("Removed banned node address/subnet: %s", subnet)
+                self.logger.log_debug(
+                    "net", "Removed banned node address/subnet: %s", subnet
+                )
 
     def ban(
         self, subnet: Subnet, ban_time_offset: int = 0, *, absolute: bool = False

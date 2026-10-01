@@ -11,7 +11,6 @@ message and losing the peer. The functional tests drive two cooperating
 nodes, which is the path where every message is welcome; these are the rest.
 """
 
-import logging
 import math
 import secrets
 import socket
@@ -152,6 +151,7 @@ from btclib_node.p2p.protocol_version import (
 from tests import (
     brute_force_nonce,
     build_block,
+    debug_recorder,
     discourage_recorder,
     generate_coinbase,
     generate_random_chain,
@@ -211,7 +211,7 @@ def a_version_address(services: int = 0) -> NetworkAddress:
 
 def a_ban_man(*subnets: str) -> BanMan:
     """Build a ban list, in memory, banning each of `subnets` for a day."""
-    ban_man = BanMan(None, logging.getLogger(__name__))
+    ban_man = BanMan(None, Logger())
     for text in subnets:
         subnet = lookup_subnet(text)
         assert subnet is not None
@@ -766,7 +766,7 @@ def a_handshake_node(
         logger=SimpleNamespace(
             info=lambda *a: None,
             warning=lambda *a: None,
-            debug=lambda *a: None,
+            log_debug=lambda *a: None,
             error=lambda *a: None,
         ),
     )
@@ -2160,15 +2160,15 @@ def test_a_notfound_is_logged_at_debug_as_a_count_of_its_items() -> None:
     Core logs one only under `-debug=net`; the items are the peer's to size,
     so a line carrying them is a line the peer sizes.
     """
-    logged, debug = log_recorder()
+    logged, debug = debug_recorder()
     warned, warning = log_recorder()
     node = a_handshake_node()
-    node.logger.debug = debug
+    node.logger.log_debug = debug
     node.logger.warning = warning
     peer = a_peer()
     items = [Inventory(InventoryType.MSG_TX, bytes([i]) * 32) for i in range(3)]
     not_found(node, NotFound(items).serialize(), peer)
-    assert logged == ["notfound of 3 items"]
+    assert logged == [("net", "notfound of 3 items")]
     assert not warned
     assert not peer.stopped
 
@@ -4956,7 +4956,7 @@ def a_filters_node(
         # purpose (ISS 1395's own "Background").
         config=SimpleNamespace(peerblockfilters=True),
         logger=SimpleNamespace(
-            info=lambda *a: None, warning=lambda *a: None, debug=lambda *a: None
+            info=lambda *a: None, warning=lambda *a: None, log_debug=lambda *a: None
         ),
         # written by `get_cfilters` only where `advance_cfilters` pauses;
         # empty here for every test that never trips that pacing bound
@@ -6561,7 +6561,7 @@ def test_a_released_header_failing_its_checks_is_punished(
     peer = a_peer()
     for start in (0, 3, 0):
         headers(node, Headers(chain[start : start + 3]).serialize(), peer)
-    with pytest.raises(MisbehavingError, match="not after the median past"):
+    with pytest.raises(MisbehavingError, match=r"^time-too-old$"):
         headers(node, Headers(chain[3:]).serialize(), peer)
     assert chain[3].hash in node.chainstate.block_index.header_dict
     assert stale.hash not in node.chainstate.block_index.header_dict

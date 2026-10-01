@@ -1644,6 +1644,52 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   for an entry the sweep removes about 0.15s after it registers**; it failed
   on `macos-latest` (issue #1563).
 
+### `SECURITY.md` names the latest security review
+
+`SECURITY.md` gives the date of the latest security review and links the issue
+that records it (issue btclib-org/.github#1362).
+
+### `history.log` marks a debug line with its category
+
+- **A debug line is written under Core's category for it, `[net]` for a
+  peer's, and `-debug=<category>` selects the lines of its category**
+  (closes #1322).
+
+### `history.log` names the data directory and the configuration file
+
+- **It names the data directory and the configuration file after its
+  version line, in `debug.log`'s `Default data directory`, `Using data
+  directory` and `Config file:` lines** (closes #1444).
+
+### `-debugexclude` drops a category from `-debug`
+
+- **`-debugexclude=<category>` is read, takes priority over `-debug`, and
+  refuses an unknown category in Core's words** (closes #1609).
+
+### A version bit no deployment uses raises Core's warning
+
+- **A bit signalled at the threshold in a period is logged once locked
+  in, and once active is in `warnings` and runs `-alertnotify`**
+  (closes #1475).
+
+### `virtualenv` and `GitPython` move in the lock
+
+- **`uv.lock` pins `virtualenv` 21.14.2 and `GitPython` 3.2.0**, past
+  GHSA-94p9-xgh2-xp45, GHSA-9h9j-4vrj-gf7g and GHSA-59cr-6r3x-644w; the
+  lint and mutation groups alone reach them (closes #1620).
+
+### Refusals carry Core's reasons, in Core's order
+
+- **A refused header, a script refusal and a block's refusals carry Core's
+  reasons, in Core's order; `interpreter.check_transactions` is
+  `check_scripts`** (closes #1600) (closes #1362) (closes #1587).
+
+### The documentation build survives docs.python.org being down
+
+- **The `python` inventory falls back to `docs/source/python-objects.inv`**
+  where docs.python.org fails, so an outage there no longer fails `-W`
+  (closes #1626).
+
 ### A `getaddr` is answered from every known address
 
 - **The answer is a sample of every address the table holds, new or
