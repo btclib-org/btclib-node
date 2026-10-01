@@ -78,6 +78,7 @@ from btclib_node.p2p.protocol_version import (
     common_version,
 )
 from btclib_node.signet import assert_valid_solution
+from btclib_node.versionbits import check_unknown_activations
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -106,6 +107,7 @@ __all__ = [
     "new_pow_valid_block",
     "parent_lookup",
     "passes_check_block",
+    "precious_chain",
     "prune_up_to_height",
     "reconsider_chain",
     "update_chain",
@@ -674,6 +676,9 @@ def _evict_immature_or_nonfinal(node: Node) -> None:
 # there. `check_fork_warning_conditions` is not gated on IBD, matching
 # Core calling `CheckForkWarningConditions()` unconditionally after
 # every commit (`src/validation.cpp:3318`, same sha).
+# `check_unknown_activations` is, as `UpdateTip` gates it
+# (`src/validation.cpp:2916`, same sha), and runs for each block of `to_add`,
+# as Core runs it for each block it connects.
 def _after_tip_change(
     node: Node, to_remove: list[RevBlock], to_add: list[Block]
 ) -> None:
@@ -683,6 +688,7 @@ def _after_tip_change(
     _reconcile_mempool_for_reorg(node, to_remove, to_add)
     check_fork_warning_conditions(node)
     if not node.is_initial_block_download:
+        check_unknown_activations(node, len(to_add))
         _announce_added_blocks(node, to_add)
         run_detached(
             node.logger,
@@ -712,12 +718,12 @@ def _after_tip_change(
 def _finalize_fork(node: Node, to_add: list[Block], to_remove: list[RevBlock]) -> None:
     block_index = node.chainstate.block_index
     utxo_index = node.chainstate.utxo_index
-    node.logger.debug("Start chainstate finalize")
+    node.logger.log_debug("validation", "Start chainstate finalize")
     node.block_db.finalize()
     for rev_block in to_remove:
         block_index.remove_from_active_chain(rev_block.hash)
         block_index.stage_status(rev_block.hash, BlockStatus.valid)
-        node.logger.debug("Removed block %s", rev_block.hash.hex())
+        node.logger.log_debug("validation", "Removed block %s", rev_block.hash.hex())
     for block in to_add:
         block_hash = block.header.hash
         block_index.add_to_active_chain(block_hash)
@@ -732,7 +738,7 @@ def _finalize_fork(node: Node, to_add: list[Block], to_remove: list[RevBlock]) -
     node.best_height = len(block_index.active_chain) - 1
     if utxo_index.should_flush():
         node.chainstate.flush()
-    node.logger.debug("End chainstate finalize")
+    node.logger.log_debug("validation", "End chainstate finalize")
 
 
 def prune_up_to_height(node: Node, target_height: int) -> None:
@@ -1367,7 +1373,7 @@ def update_chain(node: Node) -> None:
 
     node.logger.info("Start block validation")
 
-    node.logger.debug("Start getting blocks")
+    node.logger.log_debug("validation", "Start getting blocks")
     # Deliberately outside the try below, so a raise from either call
     # propagates out of update_chain, into Node._step_chain and out of
     # Node.run's own loop, rather than being caught and rolled back the
@@ -1404,9 +1410,9 @@ def update_chain(node: Node) -> None:
     # node's own storage, not the fork's content. btclib-org/btclib-node#452
     to_add = _blocks_to_add(node, to_add_hash)
     to_remove = _rev_blocks_to_remove(node, to_remove_hash)
-    node.logger.debug("Got all blocks")
+    node.logger.log_debug("validation", "Got all blocks")
 
-    node.logger.debug("Start chainstate test")
+    node.logger.log_debug("validation", "Start chainstate test")
 
     success = True
     # set the moment a block starts and cleared once it is fully
@@ -1461,26 +1467,26 @@ def update_chain(node: Node) -> None:
         if success:
             _finalize_fork_and_prune(node, to_add, to_remove)
         else:
-            node.logger.debug("Start chainstate rollback")
+            node.logger.log_debug("validation", "Start chainstate rollback")
             _rollback_trial(node, utxo_mark, filter_mark)
-            node.logger.debug("End chainstate rollback")
+            node.logger.log_debug("validation", "End chainstate rollback")
 
     node.logger.info("End block validation")
 
     if not success and failed_hash is not None:
-        node.logger.debug("Start updating index")
+        node.logger.log_debug("validation", "Start updating index")
         _invalidate_failed_block(node, block_index, failed_hash)
 
     if success:
         _after_tip_change(node, to_remove, to_add)
 
-    node.logger.debug("Finished main\n")
+    node.logger.log_debug("validation", "Finished main\n")
 
     if not block_index.get_first_candidate():
         settle_at_no_candidate(node)
 
 
-# invalidate_chain and reconsider_chain's own last step: Core's
+# invalidate_chain, reconsider_chain and precious_chain's own last step: Core's
 # `ActivateBestChain` (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7,
 # the v31.1 tag) loops internally until the active tip is the best one
 # `setBlockIndexCandidates` holds; this node's own `update_chain` only
@@ -1488,9 +1494,9 @@ def update_chain(node: Node) -> None:
 # operator command that means to settle the chain fully loops it here
 # rather than leaving a still-available better candidate for `Node`'s own
 # next pass to pick up. Bounded by the tip actually moving rather than by
-# a call count: each successful step strictly raises the active chain's
-# own chainwork (`_ready_fork`/`get_first_candidate` only ever offer a
-# candidate outweighing it), so there is no cycle to loop forever on, and
+# a call count: each successful step moves the tip to a block that
+# outranks it (`BlockIndex._outranks`, which `get_first_candidate`
+# offers by), so there is no cycle to loop forever on, and
 # a step that finds nothing ready -- `_ready_fork` answering `None`, a
 # candidate not fully downloaded among them -- leaves the tip exactly
 # where it was, which is what ends the loop.
@@ -1672,6 +1678,20 @@ def reconsider_chain(node: Node, block_hash: bytes) -> None:
     # that call before this function is ever entered
     node.chainstate.block_index.reconsider(block_hash)
     _activate_best_chain(node)
+
+
+def precious_chain(node: Node, block_hash: bytes) -> None:
+    """Prefer `block_hash` among the tips of its work, then retry the chain.
+
+    Core's own `Chainstate::PreciousBlock` (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `BlockIndex.precious`
+    renumbers the block, and `_activate_best_chain` is the
+    `ActivateBestChain` it ends with, skipped as in Core for a block with
+    less work than the tip. `rpc.callbacks.precious_block` is the only
+    caller, and has already refused a hash this index does not know.
+    """
+    if node.chainstate.block_index.precious(block_hash):
+        _activate_best_chain(node)
 
 
 # Core's own `MAX_STANDARD_TX_SIGOPS_COST` and `DEFAULT_BYTES_PER_SIGOP`

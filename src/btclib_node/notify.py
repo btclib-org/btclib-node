@@ -20,8 +20,7 @@ and the rest until every command it named has finished --
 
 `Warnings` is Core's `node::Warnings` (`src/node/warnings.h`/`.cpp`,
 same citation), the record of which warning this node currently raises;
-its own docstring says which of Core's warnings this tree tracks and
-why it is only the one.
+its own docstring says which of Core's warnings this tree tracks.
 """
 
 import subprocess
@@ -115,9 +114,8 @@ def alert_notify(logger: logging.Logger, command: str, message: str) -> None:
     Core's `AlertNotify` (`src/node/kernel_notifications.cpp`, same
     citation): `message` is sanitized and wrapped in single quotes
     before it replaces `%s`, "to be safe", in Core's own words, rather
-    than because this tree's own callers ever pass anything untrusted --
-    `main.check_fork_warning_conditions` is the only caller so far, and
-    its message is this node's own fixed text. Matching Core's own
+    than because this tree's own callers ever pass anything untrusted:
+    their messages are this node's own text. Matching Core's own
     unconditional quoting costs nothing here and is what this line
     does instead of relying on that.
     """
@@ -131,18 +129,12 @@ class Warnings:
     """The node-wide warnings this tree raises, Core's `node::Warnings`.
 
     (`src/node/warnings.h`/`.cpp`, same citation as the module
-    docstring.) Tracks one warning id, `"large_work_invalid_chain"` --
-    `main.py`'s `check_fork_warning_conditions`, for
-    btclib-org/btclib-node#1522 -- because it is the only one this tree
-    raises of its own. Core's other kernel warning,
-    `UNKNOWN_NEW_RULES_ACTIVATED`, needs the per-bit BIP9 threshold-state
-    cache `VersionBitsCache::CheckUnknownActivations`
-    (`src/versionbits.cpp`, same citation) keeps over every deployment
-    period; this tree tracks no version-bits deployment state at all
-    (`main.py`'s own comment on `get_flags`), so that warning is not
-    raised here -- btclib-org/btclib-node#1475 is where that gap is
-    recorded, left open rather than closed by the branch that added this
-    class. None of Core's `node::Warning` members (`CLOCK_OUT_OF_SYNC`,
+    docstring.) Tracks Core's two kernel warnings, by plain string id:
+    `"large_work_invalid_chain"`, which `main.py`'s
+    `check_fork_warning_conditions` raises, and
+    `"unknown_new_rules_activated"`, which `versionbits.py`'s
+    `check_unknown_activations` does. None of Core's `node::Warning`
+    members (`CLOCK_OUT_OF_SYNC`,
     `PRE_RELEASE_TEST_BUILD`, `FATAL_INTERNAL_ERROR`) has a counterpart
     here either, this tree raising none of them.
 

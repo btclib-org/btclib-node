@@ -566,6 +566,26 @@ _HELP_RECONSIDERBLOCK = (
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "reconsiderblock", "params": ["blockhash"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
+_HELP_PRECIOUSBLOCK = (
+    'preciousblock "blockhash"\n'
+    "\n"
+    "Treats a block as if it were received before others with the same work.\n"
+    "\n"
+    "A later preciousblock call can override the effect of an earlier one.\n"
+    "\n"
+    "The effects of preciousblock are not retained across restarts.\n"
+    "\n"
+    "Arguments:\n"
+    "1. blockhash    (string, required) the hash of the block to mark as precious\n"
+    "\n"
+    "Result:\n"
+    "null    (json null)\n"
+    "\n"
+    "Examples:\n"
+    '> bitcoin-cli preciousblock "blockhash"\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "preciousblock", "params": ["blockhash"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
 _HELP_GETRPCINFO = (
     "getrpcinfo\n"
     "\n"
@@ -638,6 +658,23 @@ _HELP_SUBMITBLOCK = (
     "Examples:\n"
     '> bitcoin-cli submitblock "mydata"\n'
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "submitblock", "params": ["mydata"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
+_HELP_SUBMITHEADER = (
+    'submitheader "hexdata"\n'
+    "\n"
+    "Decode the given hexdata as a header and submit it as a candidate chain tip if valid.\n"
+    "Throws when the header is invalid.\n"
+    "\n"
+    "Arguments:\n"
+    "1. hexdata    (string, required) the hex-encoded block header data\n"
+    "\n"
+    "Result:\n"
+    "null    (json null) None\n"
+    "\n"
+    "Examples:\n"
+    '> bitcoin-cli submitheader "aabbcc"\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "submitheader", "params": ["aabbcc"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
 _HELP_ADDNODE = (
@@ -1242,6 +1279,7 @@ HELP_TEXT: dict[str, str] = {
     "getchaintips": _HELP_GETCHAINTIPS,
     "invalidateblock": _HELP_INVALIDATEBLOCK,
     "reconsiderblock": _HELP_RECONSIDERBLOCK,
+    "preciousblock": _HELP_PRECIOUSBLOCK,
     "getmempoolentry": _HELP_GETMEMPOOLENTRY,
     "getmempoolinfo": _HELP_GETMEMPOOLINFO,
     "getrawmempool": _HELP_GETRAWMEMPOOL,
@@ -1252,6 +1290,7 @@ HELP_TEXT: dict[str, str] = {
     "stop": _HELP_STOP,
     "getrpcinfo": _HELP_GETRPCINFO,
     "submitblock": _HELP_SUBMITBLOCK,
+    "submitheader": _HELP_SUBMITHEADER,
     "addnode": _HELP_ADDNODE,
     "addconnection": _HELP_ADDCONNECTION,
     "clearbanned": _HELP_CLEARBANNED,
@@ -1283,6 +1322,7 @@ CATEGORY: dict[str, str] = {
     "getchaintips": "Blockchain",
     "invalidateblock": "hidden",
     "reconsiderblock": "hidden",
+    "preciousblock": "Blockchain",
     "getmempoolentry": "Blockchain",
     "getmempoolinfo": "Blockchain",
     "getrawmempool": "Blockchain",
@@ -1293,6 +1333,7 @@ CATEGORY: dict[str, str] = {
     "stop": "Control",
     "getrpcinfo": "Control",
     "submitblock": "Mining",
+    "submitheader": "Mining",
     "addnode": "Network",
     "clearbanned": "Network",
     "disconnectnode": "Network",

@@ -1579,6 +1579,52 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   and tests they cite: integration coverage, the oracle, locks, S311,
   sockets, files and the pickle default** (closes #1554).
 
+### At equal work, the block that could connect first is the tip
+
+- **A block is numbered once its data and every ancestor's have arrived, as Core's
+  `nSequenceId`, and at equal work the lower number is the tip, so `invalidateblock`
+  can return to a displaced branch of equal work** (closes #1579).
+
+### `preciousblock` is served
+
+- **`preciousblock` makes a block of the tip's own work the tip, a later
+  call overriding an earlier one, nothing kept across a restart**
+  (closes #1534).
+
+### `submitheader` is served
+
+- **`submitheader` indexes a header without its block, answering `null`,
+  Core's `Must submit previous header (<hash>) first` for an unknown
+  parent, and the reason for a header refused** (closes #1533).
+
+### The mutation run executes every mutant
+
+- **`mutation.yml`'s session budget is 45 minutes and its ceiling 60,
+  where 10 and 20 cut off more than half of the mutants** (closes #1557).
+
+### `history.log` marks a debug line with its category
+
+- **A debug line is written under Core's category for it, `[net]` for a
+  peer's, and `-debug=<category>` selects the lines of its category**
+  (closes #1322).
+
+### `history.log` names the data directory and the configuration file
+
+- **It names the data directory and the configuration file after its
+  version line, in `debug.log`'s `Default data directory`, `Using data
+  directory` and `Config file:` lines** (closes #1444).
+
+### `-debugexclude` drops a category from `-debug`
+
+- **`-debugexclude=<category>` is read, takes priority over `-debug`, and
+  refuses an unknown category in Core's words** (closes #1609).
+
+### A version bit no deployment uses raises Core's warning
+
+- **A bit signalled at the threshold in a period is logged once locked
+  in, and once active is in `warnings` and runs `-alertnotify`**
+  (closes #1475).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

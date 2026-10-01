@@ -1752,3 +1752,204 @@ def test_an_ancestor_far_below_is_reached_in_few_steps(
     _CountingDict.reads = 0
     block_index.last_common_ancestor(chain[-1].hash, fork[-1].hash)
     assert _CountingDict.reads < 200
+
+
+def test_a_block_is_numbered_once_its_data_and_its_ancestors_have_arrived(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """`set_downloaded` numbers blocks as Core's `ReceivedBlockTransactions`.
+
+    A block whose parent's data is missing waits unnumbered; the parent's
+    arrival numbers both, parent first. A second `set_downloaded` of a
+    block already downloaded keeps its number.
+    """
+    chainstate = a_chainstate(None)
+    block_index = chainstate.block_index
+    chain = generate_random_header_chain(3, RegTest().genesis.hash)
+    block_index.add_headers(chain)
+    assert block_index.sequence_id == {RegTest().genesis.hash: 0}
+
+    block_index.set_downloaded(chain[1].hash)
+    assert chain[1].hash not in block_index.sequence_id
+
+    block_index.set_downloaded(chain[0].hash)
+    block_index.set_downloaded(chain[2].hash)
+    block_index.set_downloaded(chain[2].hash)
+    assert [block_index.sequence_id[h.hash] for h in chain] == [2, 3, 4]
+
+
+def test_blocks_waiting_on_one_parent_are_numbered_in_data_order(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """Siblings waiting on their parent are numbered in the order data came.
+
+    Core's `m_blocks_unlinked` keeps that order (`ReceivedBlockTransactions`,
+    `src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
+    not the order the headers came in: `second`'s data arrived first, so
+    it outranks `first` once `parent` arrives.
+    """
+    chainstate = a_chainstate(None)
+    block_index = chainstate.block_index
+    (parent,) = generate_random_header_chain(1, RegTest().genesis.hash)
+    (first,) = generate_random_header_chain(1, parent.hash, parent.time)
+    (second,) = generate_random_header_chain(1, parent.hash, parent.time)
+    for header in (parent, first, second):
+        block_index.add_headers([header])
+    for header in (second, first, parent):
+        block_index.set_downloaded(header.hash)
+    assert [block_index.sequence_id[h.hash] for h in (parent, second, first)] == [
+        2,
+        3,
+        4,
+    ]
+
+    block_index.add_to_active_chain(parent.hash)
+    candidate = block_index.get_first_candidate()
+
+    assert candidate is not None
+    assert candidate.header.hash == second.hash
+
+
+def test_a_stored_block_whose_parent_has_no_data_waits_for_it(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """On load a block without its parent's data has no number, until it comes.
+
+    `BlockManager::LoadBlockIndex` puts it in `m_blocks_unlinked`
+    (`src/node/blockstorage.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag), and the parent's arrival numbers both.
+    """
+    chainstate = a_chainstate(None)
+    block_index = chainstate.block_index
+    chain = generate_random_header_chain(2, RegTest().genesis.hash)
+    block_index.add_headers(chain)
+    block_index.set_downloaded(chain[1].hash)
+    chainstate.db.close()
+
+    block_index = a_chainstate(None).block_index
+    assert chain[1].hash not in block_index.sequence_id
+
+    block_index.set_downloaded(chain[0].hash)
+    assert [block_index.sequence_id[h.hash] for h in chain] == [2, 3]
+
+
+def test_the_stored_blocks_are_numbered_zero_and_one_on_load(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """Core's `SEQ_ID_BEST_CHAIN_FROM_DISK` and `SEQ_ID_INIT_FROM_DISK`.
+
+    The active chain is 0 and a downloaded block off it is 1, so the tip
+    still outranks a block of its own work after a restart; a block
+    whose data never arrived has no number.
+    """
+    chainstate = a_chainstate(None)
+    block_index = chainstate.block_index
+    active = generate_random_header_chain(1, RegTest().genesis.hash)
+    other = generate_random_header_chain(2, RegTest().genesis.hash)
+    block_index.add_headers(active)
+    block_index.add_headers(other)
+    block_index.set_downloaded(active[0].hash)
+    block_index.set_downloaded(other[0].hash)
+    block_index.set_status(active[0].hash, BlockStatus.in_active_chain)
+    chainstate.db.close()
+
+    block_index = a_chainstate(None).block_index
+
+    assert block_index.sequence_id == {
+        RegTest().genesis.hash: 0,
+        active[0].hash: 0,
+        other[0].hash: 1,
+    }
+    assert [h for h, _ in block_index.block_candidates] == [other[1].hash]
+
+
+def test_a_candidate_of_the_tips_work_is_offered_if_its_data_came_first(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """`generate_block_candidates` breaks a tie of work by `sequence_id`.
+
+    Core's `CBlockIndexWorkComparator` (`node/blockstorage.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the block numbered first
+    outranks one of the same work. btclib-org/btclib-node#1579
+    """
+    chainstate = a_chainstate(None)
+    block_index = chainstate.block_index
+    (earlier,) = generate_random_header_chain(1, RegTest().genesis.hash)
+    (later,) = generate_random_header_chain(1, RegTest().genesis.hash)
+    block_index.add_headers([earlier])
+    block_index.add_headers([later])
+    block_index.set_downloaded(earlier.hash)
+    block_index.set_downloaded(later.hash)
+    block_index.add_to_active_chain(later.hash)
+
+    block_index.generate_block_candidates()
+    assert [h for h, _ in block_index.block_candidates] == [earlier.hash]
+
+    block_index.active_chain.pop()
+    block_index.add_to_active_chain(earlier.hash)
+    block_index.generate_block_candidates()
+    assert not block_index.block_candidates
+
+
+def test_the_first_candidate_of_equal_work_is_the_one_whose_data_came_first(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """Among downloaded candidates of one work, the lower `sequence_id` wins.
+
+    `listed_first` is ahead in `block_candidates`, but `arrived_first`'s
+    data came first, so Core's `FindMostWorkChain` takes it.
+    """
+    chainstate = a_chainstate(None)
+    block_index = chainstate.block_index
+    (listed_first,) = generate_random_header_chain(1, RegTest().genesis.hash)
+    (arrived_first,) = generate_random_header_chain(1, RegTest().genesis.hash)
+    block_index.add_headers([listed_first])
+    block_index.add_headers([arrived_first])
+    block_index.set_downloaded(arrived_first.hash)
+    block_index.set_downloaded(listed_first.hash)
+
+    candidate = block_index.get_first_candidate()
+
+    assert candidate is not None
+    assert candidate.header.hash == arrived_first.hash
+
+
+def test_precious_counts_down_and_restarts_once_the_tip_gains_work(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """`precious` hands out -1, -2, ..., and -1 again past a heavier tip.
+
+    Core's `nBlockReverseSequenceId`, reset wherever the tip's work
+    exceeds `nLastPreciousChainwork` (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). A block whose data has
+    not arrived keeps no number, and still uses one up.
+    """
+    chainstate = a_chainstate(None)
+    block_index = chainstate.block_index
+    (tip,) = generate_random_header_chain(1, RegTest().genesis.hash)
+    (rival,) = generate_random_header_chain(1, RegTest().genesis.hash)
+    (header_only,) = generate_random_header_chain(1, RegTest().genesis.hash)
+    for header in (tip, rival, header_only):
+        block_index.add_headers([header])
+    block_index.set_downloaded(tip.hash)
+    block_index.set_downloaded(rival.hash)
+    block_index.add_to_active_chain(tip.hash)
+
+    block_index.precious(rival.hash)
+    assert block_index.sequence_id[rival.hash] == -1
+    assert [h for h, _ in block_index.block_candidates] == [rival.hash]
+    block_index.precious(header_only.hash)
+    assert header_only.hash not in block_index.sequence_id
+    block_index.precious(tip.hash)
+    assert block_index.sequence_id[tip.hash] == -3
+    assert not block_index.block_candidates
+
+    block_index.precious(RegTest().genesis.hash)
+    assert block_index.sequence_id[RegTest().genesis.hash] == 0
+
+    (higher,) = generate_random_header_chain(1, tip.hash, tip.time)
+    block_index.add_headers([higher])
+    block_index.set_downloaded(higher.hash)
+    block_index.add_to_active_chain(higher.hash)
+    block_index.precious(higher.hash)
+    assert block_index.sequence_id[higher.hash] == -1

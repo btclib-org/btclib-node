@@ -1111,7 +1111,7 @@ class Connection:
         would take this connection past `MAX_QUEUED_SEND_BYTES`, which
         stops the connection.
         """
-        self.node.logger.debug("Sending message: %s", payload.command)
+        self.node.logger.log_debug("net", "Sending message: %s", payload.command)
 
         try:
             # The payload names its own command, and this is the only
