@@ -1626,6 +1626,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `is_libsecp256k1_serving` from `btclib_ecc.curves`**, where
   `btclib.curves` is gone from btclib 2026.9.30 (closes #1614).
 
+### `[tool.uv] required-version` is `>=0.12.18`
+
+- **`required-version` reads `>=0.12.18`, not `>=0.12.19`** (issue
+  btclib-org/.github#1482): the Dependabot service refused `0.12.19` with
+  `tool_version_not_supported`.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
