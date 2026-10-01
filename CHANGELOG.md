@@ -1632,6 +1632,18 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   btclib-org/.github#1482): the Dependabot service refused `0.12.19` with
   `tool_version_not_supported`.
 
+### An RPC listener that ends before listening says why
+
+- **`RpcManager` keeps the failure that ended its thread as `bind_error`,
+  and `wait_until_listening` names it**, where it said only "see its log"
+  (closes #1231).
+
+### The sweep test reads the connection it waits for
+
+- **The test reads its connection off `create_connection`, where it polled
+  for an entry the sweep removes about 0.15s after it registers**; it failed
+  on `macos-latest` (issue #1563).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
