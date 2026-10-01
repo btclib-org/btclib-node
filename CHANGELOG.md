@@ -1597,6 +1597,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   Core's `Must submit previous header (<hash>) first` for an unknown
   parent, and the reason for a header refused** (closes #1533).
 
+### An RPC listener that ends before listening says why
+
+- **`RpcManager` keeps the failure that ended its thread as `bind_error`,
+  and `wait_until_listening` names it**, where it said only "see its log"
+  (closes #1231).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
