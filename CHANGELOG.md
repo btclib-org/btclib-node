@@ -1597,6 +1597,23 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   Core's `Must submit previous header (<hash>) first` for an unknown
   parent, and the reason for a header refused** (closes #1533).
 
+### The mutation run executes every mutant
+
+- **`mutation.yml`'s session budget is 45 minutes and its ceiling 60,
+  where 10 and 20 cut off more than half of the mutants** (closes #1557).
+
+### A release ships floors, and the text says so
+
+- **A release ships dependency floors, not pins: `pip install btclib-node`
+  gets the newest version each floor admits, and `uv.lock` protects only
+  an install from the checkout** (closes #1553).
+
+### `getrawtransaction` answers `time`, `blocktime` and verbosity 2
+
+- **Verbosity 2 adds `fee` and `prevout`, and `confirmations` is 0, not
+  -1, off the active chain; a verbosity of the wrong type is Core's bare
+  error** (closes #1597).
+
 ### The Windows suite no longer errors at the solver test
 
 - **`test_solver_names_the_type_core_does` has short test ids**, where the
