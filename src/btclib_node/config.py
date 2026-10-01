@@ -10,9 +10,12 @@ tells a peer about in `feefilter` -- `DEFAULT_MIN_RELAY_FEERATE` below,
 Core's own `DEFAULT_MIN_RELAY_TX_FEE`. `_resolve_chain` is what turns a chain
 already built, or a network's name, into the `Chain` a `Config` carries.
 `split_host_port` and `lookup_host_port` split a "host[:port]": the first
-is `-rpcbind`'s, the second a peer's. `get_path_arg` is `cli.py`'s reader
-of `-datadir`, `-conf` and `-blocksdir`. All three are public here
-because other modules read them.
+is `-rpcbind`'s, the second a peer's. `lookup_service`, `parse_bind` and
+`listen_port` read an address Core's `Lookup` reads, for `-externalip`
+and `-bind`.
+`get_path_arg` is `cli.py`'s reader of `-datadir`, `-conf` and
+`-blocksdir`. All of these are public here because other modules read
+them.
 """
 
 import os
@@ -33,6 +36,7 @@ import os
 # btclib-org/btclib-node#1519
 from collections.abc import Collection, Sequence  # noqa: TC003
 from dataclasses import dataclass
+from ipaddress import IPv6Address
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -41,7 +45,7 @@ from btclib.fee import FeeRate
 from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet, TestNet4
 from btclib_node.constants import MAX_TIP_AGE, default_data_dir
 from btclib_node.exceptions import InvalidChainTypeError, UnknownChainError
-from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME
+from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME, Host, lookup_host
 from btclib_node.rpc.auth import (
     COOKIE_FILE,
     RpcAuthEntry,
@@ -60,9 +64,14 @@ __all__ = [
     "DEFAULT_MAX_PEER_CONNECTIONS",
     "DEFAULT_MAX_TIP_AGE",
     "DEFAULT_MIN_RELAY_FEERATE",
+    "BindAddress",
     "Config",
     "get_path_arg",
+    "listen_port",
     "lookup_host_port",
+    "lookup_service",
+    "parse_bind",
+    "service_text",
     "split_host_port",
 ]
 
@@ -195,6 +204,87 @@ def lookup_host_port(spec: str, default_port: int) -> tuple[str, int]:
     """
     host, port, _ = _split(spec, default_port)
     return host, port
+
+
+def lookup_service(
+    spec: str, default_port: int, *, allow_lookup: bool = False
+) -> tuple[Host, int] | None:
+    """Return the address and port `spec` names, as Core's `Lookup`, or `None`.
+
+    `Lookup` (`src/netbase.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag) splits the spec as `lookup_host_port` does and resolves the
+    host it left: a name only where `allow_lookup`, a numeric address
+    otherwise (`-bind`'s, `-externalip`'s being `-dns`'s default).
+    """
+    host, port = lookup_host_port(spec, default_port)
+    resolved = lookup_host(host, allow_lookup=allow_lookup)
+    return None if resolved is None else (resolved, port)
+
+
+def service_text(host: Host, port: int) -> str:
+    """Return `host` and `port` as `CService::ToStringAddrPort` writes them."""
+    return f"[{host}]:{port}" if isinstance(host, IPv6Address) else f"{host}:{port}"
+
+
+@dataclass(frozen=True)
+class BindAddress:
+    """One `-bind` value: where to listen, and whether it is tagged `=onion`."""
+
+    host: Host
+    port: int
+    onion: bool
+
+
+def parse_bind(arg: str, default_port: int) -> BindAddress:
+    """Return the address `-bind=<arg>` names, as `InitBinds`' caller reads it.
+
+    Core's warning for a bad port (`BadPortWarning`, same sha) is not
+    given: btclib-org/btclib-node#1645.
+
+    `AppInitMain` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag) looks a numeric address up, at `default_port` where the
+    value names none; one tagged `=onion` takes `default_port + 1`
+    instead, and any other tag resolves nothing. Raises `ValueError` in
+    Core's words where the address is none.
+    """
+    head, equals, tag = arg.rpartition("=")
+    onion = bool(equals) and tag == "onion"
+    if equals and not onion:
+        service = None
+    else:
+        port = default_port + 1 if onion else default_port
+        service = lookup_service(head if equals else arg, port)
+    if service is None:
+        err_msg = f"Cannot resolve -bind address: '{arg}'"
+        raise ValueError(err_msg)
+    return BindAddress(*service, onion)
+
+
+def listen_port(bind: Sequence[str], default_port: int) -> int:
+    """Return the port this node is said to listen on, as `GetListenPort` does.
+
+    `GetListenPort` (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag) is the port of the first `-bind` that names one, and
+    `default_port` otherwise. An `=onion` value resolves to nothing there,
+    and so is passed over.
+    """
+    for value in bind:
+        service = lookup_service(value, 0)
+        if service is not None and service[1] != 0:
+            return service[1]
+    return default_port
+
+
+def _refuse_bind_without_listen(bind: Sequence[str], *, listen: bool) -> None:
+    """Refuse a `-bind` beside `-listen=0`, in the words of Core's refusal.
+
+    `AppInitParameterInteraction` (`src/init.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), whose words name
+    `-whitebind` too.
+    """
+    if bind and not listen:
+        err_msg = "Cannot set -bind or -whitebind together with -listen=0"
+        raise ValueError(err_msg)
 
 
 def _split_peers(
@@ -345,8 +435,8 @@ class Config:
     # `127.0.0.1` both (`HTTPBindAddresses`, `src/httpserver.cpp`,
     # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag); a host a Python
     # caller names is bound alone, where `-rpcbind` and `-rpcallowip`
-    # are not both given. P2pManager.server binds every interface
-    # unconditionally, and is right to, since a peer listener is
+    # are not both given. P2pManager binds every interface unless
+    # `bind` below names some, and is right to, since a peer listener is
     # supposed to accept a stranger.
     rpc_host: str | None
     # Core's `-rpcbind` values, checked by `cli`: `RpcManager` binds
@@ -549,13 +639,24 @@ class Config:
     # port and starts no `P2pManager` at all, so nothing could dial out
     # either.
     listen: bool
+    # Core's own `-bind` values, as given: `cli` refuses a malformed one
+    # and `parse_bind` reads each. With any, `P2pManager` binds those
+    # and not every interface (`bind_on_any`, `src/init.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Core refuses one beside
+    # `-listen=0`, and its `-whitebind` is not read here.
+    bind: tuple[str, ...]
+    # Core's own `-externalip` values, each an address `lookup_service`
+    # reads without a lookup: `cli` resolves a name before it gets here.
+    # `P2pManager` records each as a local address, as `AddLocal` at
+    # `LOCAL_MANUAL` does (`src/init.cpp`, same sha).
+    externalip: tuple[str, ...]
     # Core's own `-discover`: whether `P2pManager` records this
     # machine's own interface addresses at all (`p2p.netif.local_addresses`,
     # btclib-org/btclib-node#1238). `InitParameterInteraction`
     # (`src/init.cpp:786-817`, at bitcoin/bitcoin@9be056a8a7, the v31.1
     # tag) soft-sets it off under `-proxy`, `-listen=0` or `-externalip`;
-    # this node has neither of the first and the last, so `-listen` is
-    # the only condition `__init__` reads, off `self.listen` rather than
+    # this node has no `-proxy`, so `-listen` and `externalip` are the
+    # conditions `__init__` reads, `-listen` off `self.listen` rather than
     # off the `listen` parameter, so that an explicit `-listen`'s own
     # soft-set (above) is what this one sees. `None` here is the
     # sentinel `dnsseed` above already uses for a soft default an
@@ -563,8 +664,7 @@ class Config:
     # itself goes on to succeed, as Core's `Discover()`
     # (`src/net.cpp:3376-3384`, same sha) does: `AppInitMain` calls it
     # off `bind_on_any` (`src/init.cpp:2163`, same sha), never off
-    # `fListen`, and this node has no `-bind` to make `bind_on_any`
-    # false.
+    # `fListen`, so `P2pManager` calls it unless `bind` above is given.
     discover: bool
     # Core's own `-peerblockfilters`: whether `NODE_COMPACT_FILTERS` is
     # advertised in `version` and whether a BIP157 request is answered
@@ -684,6 +784,8 @@ class Config:
         addnode: Sequence[str] = (),
         seednode: Sequence[str] = (),
         listen: bool = True,
+        bind: Sequence[str] = (),
+        externalip: Sequence[str] = (),
         discover: bool | None = None,
         peerblockfilters: bool = False,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
@@ -754,7 +856,11 @@ class Config:
         self.seednode = _split_peers(seednode, self.chain.port)
         self.seednode_args = tuple(seednode)
         self.listen = listen
-        self.discover = self.listen if discover is None else discover
+        self.bind = tuple(bind)
+        self.externalip = tuple(externalip)
+        self.discover = (
+            self.listen and not self.externalip if discover is None else discover
+        )
         self.peerblockfilters = peerblockfilters
 
         # `_dnsseed`'s own docstring has `AppInitParameterInteraction`'s
@@ -766,6 +872,8 @@ class Config:
             max_connections=max_connections,
         )
         self.forcednsseed = forcednsseed
+
+        _refuse_bind_without_listen(self.bind, listen=self.listen)
 
         if max_connections < 0:
             # Core's own wording (`AppInitParameterInteraction`, same

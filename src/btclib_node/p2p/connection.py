@@ -564,6 +564,11 @@ class Connection:
     # `getpeerinfo`; a class default for the same reason as
     # `time_received`.
     addr_relay_enabled: bool = False
+    # Core's `Peer::m_next_local_addr_send`: when `P2pManager` next tells
+    # this peer the address it is reached at, 0 for the first time.
+    # Written and read on `P2pManager`'s loop alone; a class default for
+    # the same reason as `time_received`.
+    next_local_addr_send: float = 0.0
 
     # Core's `CNodeState` block fields (`p2p/block_availability.py`),
     # here rather than in a `DownloadManager` table keyed by connection

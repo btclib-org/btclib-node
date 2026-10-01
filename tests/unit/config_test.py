@@ -5,6 +5,7 @@
 """`Config`'s chain resolution, path arithmetic, ports and feerate floor."""
 
 import os
+from ipaddress import IPv4Address, IPv6Address
 from pathlib import Path
 
 import pytest
@@ -15,9 +16,13 @@ from btclib_node.chains import Main, RegTest, SigNet, TestNet, TestNet4
 from btclib_node.config import (
     DEFAULT_MAX_PEER_CONNECTIONS,
     DEFAULT_MIN_RELAY_FEERATE,
+    BindAddress,
     Config,
     get_path_arg,
     lookup_host_port,
+    lookup_service,
+    parse_bind,
+    service_text,
     split_host_port,
 )
 from btclib_node.rpc.auth import COOKIE_FILE, RpcAuthEntry, password_hmac
@@ -219,6 +224,74 @@ def test_discover_explicit_wins_over_listen() -> None:
     """An explicit `-discover` always wins, even against `-listen=0`."""
     assert Config(chain="regtest", listen=False, discover=True).discover is True
     assert Config(chain="regtest", listen=True, discover=False).discover is False
+
+
+def test_externalip_turns_discover_off_unless_discover_is_given() -> None:
+    """ISS 1445: `InitParameterInteraction` soft-sets `-discover=0`."""
+    assert Config(chain="regtest", externalip=["8.8.8.8"]).discover is False
+    wins = Config(chain="regtest", externalip=["8.8.8.8"], discover=True)
+    assert wins.discover is True
+    assert Config(chain="regtest").externalip == ()
+
+
+def test_bind_beside_listen_0_is_refused_between_the_dnsseed_and_connections() -> None:
+    """ISS 1257: the refusal comes after `-forcednsseed`'s own."""
+    message = "Cannot set -bind or -whitebind together with -listen=0"
+    with pytest.raises(ValueError, match=message):
+        Config(chain="regtest", bind=["127.0.0.1"], listen=False)
+    assert Config(chain="regtest", bind=["127.0.0.1"]).bind == ("127.0.0.1",)
+    with pytest.raises(ValueError, match="-forcednsseed"):
+        Config(
+            chain="regtest",
+            bind=["127.0.0.1"],
+            listen=False,
+            dnsseed=False,
+            forcednsseed=True,
+        )
+    with pytest.raises(ValueError, match="-bind or -whitebind"):
+        Config(chain="regtest", bind=["127.0.0.1"], listen=False, max_connections=-1)
+
+
+@pytest.mark.parametrize(
+    ("arg", "expected"),
+    [
+        ("127.0.0.1", BindAddress(IPv4Address("127.0.0.1"), 8333, onion=False)),
+        ("127.0.0.1:99", BindAddress(IPv4Address("127.0.0.1"), 99, onion=False)),
+        ("[::1]", BindAddress(IPv6Address("::1"), 8333, onion=False)),
+        ("[::1]:99", BindAddress(IPv6Address("::1"), 99, onion=False)),
+        ("::1", BindAddress(IPv6Address("::1"), 8333, onion=False)),
+        ("127.0.0.1=onion", BindAddress(IPv4Address("127.0.0.1"), 8334, onion=True)),
+        ("127.0.0.1:99=onion", BindAddress(IPv4Address("127.0.0.1"), 99, onion=True)),
+    ],
+)
+def test_parse_bind_reads_an_address_port_and_tag(
+    arg: str, expected: BindAddress
+) -> None:
+    """ISS 1257: `-port` is the default; an `=onion` one is that plus one."""
+    assert parse_bind(arg, 8333) == expected
+
+
+@pytest.mark.parametrize(
+    "arg", ["", "localhost", "127.0.0.1=", "127.0.0.1=tor", "=onion", "127.0.0.1:x"]
+)
+def test_parse_bind_refuses_what_lookup_does_not_find(arg: str) -> None:
+    """ISS 1257: `Lookup` without DNS; any tag but `onion` is no address."""
+    message = f"Cannot resolve -bind address: '{arg}'"
+    with pytest.raises(ValueError, match=f"^{message}$"):
+        parse_bind(arg, 8333)
+
+
+def test_lookup_service_reads_an_address_and_a_port() -> None:
+    """ISS 1445: `Lookup`, with its port from the spec or the default."""
+    assert lookup_service("1.2.3.4", 8333) == (IPv4Address("1.2.3.4"), 8333)
+    assert lookup_service("[::1]:7", 8333) == (IPv6Address("::1"), 7)
+    assert lookup_service("localhost", 8333) is None
+
+
+def test_service_text_brackets_an_ipv6_host() -> None:
+    """`CService::ToStringAddrPort`."""
+    assert service_text(IPv4Address("1.2.3.4"), 7) == "1.2.3.4:7"
+    assert service_text(IPv6Address("::1"), 7) == "[::1]:7"
 
 
 def test_peerblockfilters_defaults_to_false() -> None:

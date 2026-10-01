@@ -231,6 +231,31 @@ def test_lookup_host_reads_an_address_as_set_legacy_ipv6_does() -> None:
     assert lookup_host("fd87:d87e:eb43::1") == IPv6Address("::")
 
 
+def test_lookup_host_reads_nothing_from_an_empty_text() -> None:
+    """`LookupHost` answers `{}` for an empty name, a lookup allowed or not."""
+    assert lookup_host("") is None
+    assert lookup_host("", allow_lookup=True) is None
+
+
+def test_lookup_host_asks_for_a_name_only_where_it_may(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`WrappedGetAddrInfo`: `AI_NUMERICHOST`, or `AI_ADDRCONFIG`, then none."""
+    seen: list[int] = []
+    answer = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.4.4", 0))]
+
+    def getaddrinfo(*_: object, flags: int, **__: object) -> list[Any]:
+        seen.append(flags)
+        return answer if flags == 0 else []
+
+    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+    assert lookup_host("node.example") is None
+    assert seen == [socket.AI_NUMERICHOST]
+    seen.clear()
+    assert lookup_host("node.example", allow_lookup=True) == IPv4Address("8.8.4.4")
+    assert seen == [socket.AI_ADDRCONFIG, 0]
+
+
 @_ATON
 @pytest.mark.parametrize(
     ("text", "expected"),
