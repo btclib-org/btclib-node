@@ -9,10 +9,10 @@ on which interfaces, and the feerate floor its mempool accepts at and
 tells a peer about in `feefilter` -- `DEFAULT_MIN_RELAY_FEERATE` below,
 Core's own `DEFAULT_MIN_RELAY_TX_FEE`. `_resolve_chain` is what turns a chain
 already built, or a network's name, into the `Chain` a `Config` carries.
-`split_host_port` is `cli.py`'s own splitter for `-rpcbind`'s optional
-port too, and `get_path_arg` its reader of `-datadir`, `-conf` and
-`-blocksdir`, which is why the two are public here rather than named
-with a leading underscore.
+`split_host_port` and `lookup_host_port` split a "host[:port]": the first
+is `-rpcbind`'s, the second a peer's. `get_path_arg` is `cli.py`'s reader
+of `-datadir`, `-conf` and `-blocksdir`. All three are public here
+because other modules read them.
 """
 
 import os
@@ -62,6 +62,7 @@ __all__ = [
     "DEFAULT_MIN_RELAY_FEERATE",
     "Config",
     "get_path_arg",
+    "lookup_host_port",
     "split_host_port",
 ]
 
@@ -124,38 +125,75 @@ def get_path_arg(value: str) -> str:
     return path[1:] if path.startswith("//") else path
 
 
-def split_host_port(spec: str, default_port: int) -> tuple[str, int]:
-    """Split "host[:port]" the way Core's own `SplitHostPort` does.
+_MAX_PORT = 0xFFFF
 
-    The last colon is the port separator, unless it is not the only one
-    and does not close an IPv6 literal's own `[...]` -- an IPv6 address
-    given without brackets and without a port is read whole rather than
-    split on one of its own colons, exactly what
-    `src/util/strencodings.cpp`'s `SplitHostPort` does (read at
-    bitcoin/bitcoin@ca7162cde5). `default_port` is what a spec naming
-    none falls back to: Core's own callers pre-fill the port before
-    calling `SplitHostPort`, which only overwrites it when the spec
-    actually names one (`ConnectNode`, `src/net.cpp:505-507`, same sha)
-    -- `-connect=1.2.3.4` and `-addnode=1.2.3.4` both dial the chain's
-    own default P2P port this way. The port is `ToIntegral<uint16_t>`'s
-    (`src/util/strencodings.h`, at bitcoin/bitcoin@9be056a8a7): ASCII
-    digits alone, so a sign, a space, a `_` or a non-ASCII digit, which
-    `int` would each accept, make the port invalid.
+
+def _split(spec: str, default_port: int) -> tuple[str, int, bool]:
+    """Return `spec`'s host, port and whether Core's `SplitHostPort` is true.
+
+    `SplitHostPort` (`src/util/strencodings.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) takes the last colon as
+    the port separator, unless it is not the only one and does not close
+    an IPv6 literal's own `[...]`: an IPv6 address given without
+    brackets and without a port is read whole. The port is
+    `ToIntegral<uint16_t>`'s: ASCII digits alone, so a sign, a space, a
+    `_` or a non-ASCII digit, which `int` would each accept, are no
+    port. Where there is none, the host is the whole spec and the port
+    `default_port`. Port 0 is split off and is not valid.
     """
     host = spec
     port = default_port
+    valid = True
     colon = spec.rfind(":")
     if colon != -1:
         bracketed = spec.startswith("[") and spec[:colon].endswith("]")
         multi_colon = spec.rfind(":", 0, colon) != -1
         if colon == 0 or bracketed or not multi_colon:
-            host, port_text = spec[:colon], spec[colon + 1 :]
-            port = int(port_text) if port_text.isascii() and port_text.isdigit() else -1
-            if not 0 < port <= 0xFFFF:  # noqa: PLR2004
-                err_msg = f"{spec!r} names an invalid port"
-                raise ValueError(err_msg)
+            valid = False
+            text = spec[colon + 1 :]
+            digits = text.lstrip("0")
+            if (
+                text.isascii()
+                and text.isdigit()
+                and len(digits) <= len(str(_MAX_PORT))
+                and int(digits or "0") <= _MAX_PORT
+            ):
+                host, port = spec[:colon], int(digits or "0")
+                valid = port != 0
     if host.startswith("[") and host.endswith("]"):
         host = host[1:-1]
+    return host, port, valid
+
+
+def split_host_port(spec: str, default_port: int) -> tuple[str, int]:
+    """Split "host[:port]" as `SplitHostPort` does, refusing where it is false.
+
+    `default_port` is what a spec naming none falls back to: Core's own
+    callers pre-fill the port before calling `SplitHostPort`, which only
+    overwrites it when the spec actually names one (`ConnectNode`,
+    `src/net.cpp:505-507`, at bitcoin/bitcoin@ca7162cde5) --
+    `-connect=1.2.3.4` and `-addnode=1.2.3.4` both dial the chain's own
+    default P2P port this way. This is for a caller whose option Core
+    checks at init, `-rpcbind`; a peer spec is `lookup_host_port`'s.
+    """
+    host, port, valid = _split(spec, default_port)
+    if not valid:
+        err_msg = f"{spec!r} names an invalid port"
+        raise ValueError(err_msg)
+    return host, port
+
+
+def lookup_host_port(spec: str, default_port: int) -> tuple[str, int]:
+    """Split "host[:port]" as Core's `Lookup` does, valid or not.
+
+    `Lookup` (`src/netbase.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag) ignores what `SplitHostPort` returns and looks up the host it
+    left. A spec whose port is no port is therefore a host name that
+    resolves to nothing: `bitcoind` starts with `-connect=127.0.0.1:+80`
+    and never connects. This is for every `-connect`, `-addnode` and
+    `-seednode` value and the `addnode` RPC's.
+    """
+    host, port, _ = _split(spec, default_port)
     return host, port
 
 
@@ -167,17 +205,15 @@ def _split_peers(
     Core's own `-connect`/`-addnode`/`-seednode` reach
     `CConnman::ConnectNode` as a name and resolve it via `Resolve`
     (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) at
-    every dial, same as any other peer -- so a hostname here is not an
-    error, only a value nothing resolves until then.
+    every dial, same as any other peer -- so neither a hostname nor a
+    malformed port is an error here, only a value nothing resolves
+    until then (btclib-org/btclib-node#1264,
+    btclib-org/btclib-node#1292).
     `P2pManager.async_connect_host` (`p2p/manager.py`) is this node's
     own equivalent: it resolves a host on `P2pManager`'s asyncio loop
-    right before dialling, the way `_process_addr_fetch`'s resolve of a
-    DNS seed or a `-seednode` value already did before this function
-    stopped refusing the same shape of value for `connect` and
-    `addnode` (btclib-org/btclib-node#1264). A malformed port is still
-    refused here, by `split_host_port` itself.
+    right before dialling.
     """
-    return tuple(split_host_port(spec, default_port) for spec in specs)
+    return tuple(lookup_host_port(spec, default_port) for spec in specs)
 
 
 def _read_cookie_perms(value: str) -> tuple[int | None, str | None]:

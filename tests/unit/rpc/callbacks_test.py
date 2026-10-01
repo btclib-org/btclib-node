@@ -4482,9 +4482,9 @@ def test_get_network_info_s_localservices_follows_pruned_and_peerblockfilters() 
 def test_addnode_onetry_dials_the_given_address_once() -> None:
     """`addnode "host:port" "onetry"` schedules exactly one dial.
 
-    ISS 1493: `connect_host` is given `node_arg` whole, port included --
-    `split_host_port` above only validates it -- so `18444`, this
-    chain's own default, never reaches `connect_host` here at all.
+    ISS 1493: `connect_host` is given `node_arg` whole, port included,
+    so `18444`, this chain's own default, never reaches `connect_host`
+    here at all.
     """
     dialed: list[Any] = []
     node = cast(
@@ -4653,8 +4653,8 @@ def test_addnode_onetry_takes_a_hostname() -> None:
     """A hostname, rather than a literal IP, is dialled too (ISS 1264).
 
     `connect_host` resolves it on `P2pManager`'s own loop; this node's
-    synchronous RPC path only validates the port with `split_host_port`
-    (ISS 1493), passing `node_arg` itself on to `connect_host` whole.
+    synchronous RPC path passes `node_arg` itself on to `connect_host`
+    whole (ISS 1493).
     """
     dialed: list[Any] = []
     node = cast(
@@ -4670,8 +4670,13 @@ def test_addnode_onetry_takes_a_hostname() -> None:
     assert dialed == [("example.com:9999", 18444)]
 
 
-def test_addnode_refuses_a_port_int_would_read() -> None:
-    """`127.0.0.1:+80` is refused as `127.0.0.1:0x50` is, not dialled at 80."""
+@pytest.mark.parametrize("spec", ["127.0.0.1:+80", "127.0.0.1:0x50", "127.0.0.1: 80"])
+def test_addnode_onetry_hands_a_port_int_would_read_on_whole(spec: str) -> None:
+    """ISS 1292: `onetry` answers, as `bitcoind` v31.1.0 does, and dials a name.
+
+    Not at port 80: `connect_host` is given `spec` whole, a name that
+    resolves to nothing.
+    """
     dialled: list[object] = []
     node = cast(
         "Node",
@@ -4682,10 +4687,8 @@ def test_addnode_refuses_a_port_int_would_read() -> None:
             ),
         ),
     )
-    with pytest.raises(RpcError) as raised:
-        add_node(node, _CONN, ["127.0.0.1:+80", "onetry"])
-    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert dialled == []
+    add_node(node, _CONN, [spec, "onetry"])
+    assert dialled == [(spec, 18444)]
 
 
 def test_addnode_type_checks_node_and_command() -> None:
