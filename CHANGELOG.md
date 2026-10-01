@@ -12453,3 +12453,16 @@ dereferences it, and `refs/tags/v1^{}` does the same from a checkout.
   in that suite computed for height 54503. The filter header column has
   no external source either and is computed locally, chained only
   within the new file. `tests/_data/README.md` has the full derivation.
+
+### `getrawtransaction` and `decoderawtransaction` answer Core's `TxToUniv`
+
+- **A `vout` entry is `value`, `n` and a `scriptPubKey`, as Core's
+  `TxToUniv` writes it**, with `type` and `address` inside
+  `scriptPubKey` and `type` in `GetTxnOutputType`'s words (`pubkeyhash`,
+  not `p2pkh`), where `TxOut.to_dict` put `type`, `addresses` and
+  `network` beside it; `value` is a number with eight decimals, not a
+  string (closes #1440). The type is `Solver`'s, in `rpc/solver.py`
+  until btclib releases its own, and `gettxout` answers it too: btclib's
+  own types called a nulldata past 80 bytes and a bare key off the curve
+  or hybrid `nonstandard`. An `address` is spelled for the node's
+  network, where `gettxout` spelled mainnet's.
