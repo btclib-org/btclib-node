@@ -1795,6 +1795,12 @@ that records it (issue btclib-org/.github#1362).
   what `<scratchpad>` is and names the pull** (issue
   btclib-org/.github#1500).
 
+### The `python` inventory has a copy kept in the tree
+
+- **The `python` fallback is `_inventories/python.inv`, the copy every tree
+  with a `python` mapping keeps** (issue btclib-org/.github#1508); it
+  replaces `python-objects.inv`.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

@@ -77,24 +77,20 @@ source_suffix = [".rst", ".md"]
 # 8: rpc/errors.py imports RPCErrorCode from it directly now, and the
 # package publishes its own inventory the same way btclib does
 intersphinx_mapping = {
-    "python": ("https://docs.python.org/3", (None, "python-objects.inv")),
+    "python": ("https://docs.python.org/3", (None, "_inventories/python.inv")),
     "btclib": ("https://btclib.readthedocs.io/en/latest/", None),
     "bitcoin-core-rpc": ("https://bitcoin-core-rpc.readthedocs.io/en/latest/", None),
 }
 
-# python alone has a second location, tried only where docs.python.org
-# fails: python-objects.inv beside this file, a copy of
-# https://docs.python.org/3/objects.inv taken on 2026-10-01 at Python
-# 3.14. docs.python.org answered 503 for hours that day, and with it
-# every standard-library reference warned and -W failed the build
-# (issue #1626). The primary is still first, so a name the standard
-# library removes fails the build whenever docs.python.org is reachable.
-# The copy is a tracked file, so a diff shows when it changes;
-# `python -m sphinx.ext.intersphinx docs/source/python-objects.inv`
-# lists it. The standard library's inventory moves little inside a minor
-# version, so a copy answers the same names for as long as .python-version
-# stays on that minor. Refresh it when .python-version moves to another
-# minor. btclib and bitcoin-core-rpc have no copy, for the reason below.
+# `_inventories/python.inv` is a copy of Python 3.14's inventory and no
+# cache: sphinx reads it only when `docs.python.org` fails, so a live site
+# always wins. It is the Wayback Machine's capture of 2026-08-28,
+# https://web.archive.org/web/20260828181213id_/https://docs.python.org/3/objects.inv
+# To refresh it, run this from the repository root and rewrite the version
+# and source above:
+# curl -fsSL -o docs/source/_inventories/python.inv https://docs.python.org/3/objects.inv
+# The `btclib` and `bitcoin-core-rpc` mappings have no copy, for the reason
+# below.
 #
 # every build fetches every mapped inventory, rather than reading back
 # the copy sphinx writes beside the doctrees and reuses until that copy
