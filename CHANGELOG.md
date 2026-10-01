@@ -1644,6 +1644,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   for an entry the sweep removes about 0.15s after it registers**; it failed
   on `macos-latest` (issue #1563).
 
+### `SECURITY.md` names the latest security review
+
+`SECURITY.md` gives the date of the latest security review and links the issue
+that records it (issue btclib-org/.github#1362).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
