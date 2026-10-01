@@ -1559,6 +1559,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   table at their `version`, as Core's `AddrMan::Good` does** (closes
   #1226).
 
+### `getnodeaddresses` and `addpeeraddress` are served
+
+- **`getnodeaddresses` answers a sample of the address table, and
+  `addpeeraddress`, hidden as in Core, adds an address to it**
+  (closes #1443).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

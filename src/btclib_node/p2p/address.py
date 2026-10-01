@@ -865,8 +865,10 @@ class PeerDB:
         *,
         source: NetworkAddressV2 | None = None,
         time_penalty: float = _GOSSIP_TIME_PENALTY,
-    ) -> None:
+    ) -> int:
         """Merge `addresses` into `self.addresses`, checked and deduplicated.
+
+        Returns how many endpoints the table did not hold before.
 
         An address `_storable` refuses is dropped. Every other address
         settles onto its own `endpoint_key` row, its services ORed into
@@ -914,6 +916,7 @@ class PeerDB:
         # what each endpoint kept was gossiped with, for its answered row
         gossiped: dict[bytes, ServiceFlags] = {}
         stamps: dict[bytes, int] = {}
+        added = 0
         source_host = _host(source) if source is not None else None
         with self._addresses_lock, self._write_batch() as wb:
             # `endpoint_key` is what the durable row is already keyed on --
@@ -953,6 +956,8 @@ class PeerDB:
                     break
                 if existing is not None:
                     self.addresses.discard(existing)
+                else:
+                    added += 1
                 self.addresses.add(known)
                 self._known_keys.add(key)
                 by_endpoint[key] = known
@@ -976,6 +981,7 @@ class PeerDB:
                             row, services=row.services | services, timestamp=stamps[key]
                         ),
                     )
+        return added
 
     def set_services(self, address: NetworkAddressV2, services: ServiceFlags) -> None:
         """Overwrite the services held for `address`'s endpoint.
@@ -1050,30 +1056,39 @@ class PeerDB:
         """Return when `address` was last tried, `0.0` for never or long ago."""
         return self._last_try.get(endpoint_key(address), 0.0)
 
-    def get_addr(self, max_addresses: int, max_pct: int) -> list[NetworkAddressV2]:
+    def get_addr(
+        self, max_addresses: int, max_pct: int, network: Network | None = None
+    ) -> list[NetworkAddressV2]:
         """Return a random sample of the known addresses, the terrible left out.
 
         Core's `AddrManImpl::GetAddr_` (`src/addrman.cpp`, at
         bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the answer is sized
         from every entry, new and tried -- here `addresses`, which holds
-        every answered endpoint too -- as `max_pct` percent of them, at
-        most `max_addresses`. Entries are then drawn at random, skipping
-        one `_aged_out` calls terrible, until the size is reached or the
-        table is spent, so a table of terrible entries answers less than
-        its size. The percentage rounds up where Core's rounds down: a
-        table of a handful of addresses, every functional test's own
-        two-node regtest, would otherwise answer none
+        every answered endpoint too -- as `max_pct` percent of them, `0`
+        for all, then at most `max_addresses`, `0` for no limit. Entries
+        are then drawn at random, skipping one `_aged_out` calls terrible
+        and, with `network`, one on another network, until the size is
+        reached or the table is spent, so a table of terrible entries
+        answers less than its size. The percentage rounds up where Core's
+        rounds down: a table of a handful of addresses, every functional
+        test's own two-node regtest, would otherwise answer none
         (btclib-org/btclib-node#71).
         """
         now = time.time()
         with self._addresses_lock:
             rows = list(self.addresses)
-        size = min(max_addresses, -(-len(rows) * max_pct // 100))
+        size = len(rows)
+        if max_pct:
+            size = -(-size * min(max_pct, 100) // 100)
+        if max_addresses:
+            size = min(size, max_addresses)
         secrets.SystemRandom().shuffle(rows)
         sample: list[NetworkAddressV2] = []
         for row in rows:
             if len(sample) >= size:
                 break
+            if network is not None and get_network(row) != network:
+                continue
             if not _aged_out(row, now, self.last_try(row)):
                 sample.append(row)
         return sample

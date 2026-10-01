@@ -17,6 +17,7 @@ import math
 import string
 import time
 from decimal import Decimal, InvalidOperation
+from ipaddress import ip_address
 from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import RPCErrorCode, chain_from_network
@@ -24,6 +25,7 @@ from btclib.block import Block, median_time_past
 from btclib.exceptions import BTClibException, BTClibTypeError, BTClibValueError
 from btclib.fee import FeeRate, fee_from_vsize
 from btclib.p2p.address import ServiceFlags
+from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 from btclib.p2p.limits import PROTOCOL_VERSION
 from btclib.script.script import script_to_dict
 from btclib.script.script_pub_key import ScriptPubKey, p2ms_m_and_keys, type_and_payload
@@ -51,10 +53,16 @@ from btclib_node.main import (
     update_chain,
     verify_mempool_acceptance,
 )
-from btclib_node.p2p.address import ip_and_port
-from btclib_node.p2p.banman import Subnet, is_valid_host, lookup_host, lookup_subnet
+from btclib_node.p2p.address import SEEDS_SERVICE_FLAGS, ip_and_port
+from btclib_node.p2p.banman import (
+    SpecialAddress,
+    Subnet,
+    is_valid_host,
+    lookup_host,
+    lookup_subnet,
+)
 from btclib_node.p2p.connection import local_services
-from btclib_node.p2p.eviction import Network, is_valid, net_class
+from btclib_node.p2p.eviction import Network, get_network, is_valid, net_class
 from btclib_node.rpc.connection import RawJSON
 from btclib_node.rpc.errors import (
     RpcError,
@@ -78,6 +86,7 @@ if TYPE_CHECKING:
 __all__ = [
     "add_connection",
     "add_node",
+    "add_peer_address",
     "arg_names",
     "callbacks",
     "clear_banned",
@@ -94,6 +103,7 @@ __all__ = [
     "get_mempool_entry",
     "get_mempool_info",
     "get_network_info",
+    "get_node_addresses",
     "get_peer_info",
     "get_raw_mempool",
     "get_raw_transaction",
@@ -1748,6 +1758,155 @@ def add_connection(
         reserved=connection_type,
     )
     return {"address": address, "connection_type": connection_type}
+
+
+# Core's `ParseNetwork` (`src/netbase.cpp`, at bitcoin/bitcoin@9be056a8a7,
+# the v31.1 tag): the five names `getnodeaddresses` takes
+_NETWORK_NAMES = {
+    network.name.lower(): network
+    for network in (
+        Network.IPV4,
+        Network.IPV6,
+        Network.ONION,
+        Network.I2P,
+        Network.CJDNS,
+    )
+}
+_MAX_PORT = 65535
+
+
+def _number_mismatch(
+    params: list[Any], position: int, *, name: str
+) -> tuple[int, str, object, str] | None:
+    """Return `type_errors`' mismatch for a declared `NUM` that is no number."""
+    value = params[position] if len(params) > position else None
+    if value is None or (
+        not isinstance(value, bool) and isinstance(value, (int, float))
+    ):
+        return None
+    return (position + 1, name, value, "number")
+
+
+def _integer(value: object, low: int, high: int) -> int:
+    """Read a JSON number as UniValue's `getInt` does, from `low` to `high`."""
+    if not isinstance(value, int) or not low <= value <= high:
+        raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
+    return value
+
+
+def _address_text(address: NetworkAddressV2) -> str:
+    """Return `CNetAddr::ToStringAddr` of `address`."""
+    if address.network_id in (BIP155Network.TORV3, BIP155Network.I2P):
+        return str(SpecialAddress(BIP155Network(address.network_id), address.address))
+    return str(ip_address(address.address))
+
+
+def get_node_addresses(
+    node: Node, conn: RpcConnection, params: list[Any]
+) -> list[dict[str, Any]]:
+    """Answer `getnodeaddresses`: known addresses, after quality and recency.
+
+    Core's own (`src/rpc/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag): `CConnman::GetAddressesUnsafe` of `count` and no
+    percentage, which is `PeerDB.get_addr`, a discouraged or banned host
+    left out as in a `getaddr` answer. `count` `0` answers every
+    address, a negative one is refused, and `network` is one of Core's
+    five names in any case.
+    """
+    mismatches = [
+        mismatch
+        for mismatch in (
+            _number_mismatch(params, 0, name="count"),
+            None
+            if len(params) < 2 or params[1] is None or isinstance(params[1], str)  # noqa: PLR2004
+            else (2, "network", params[1], "string"),
+        )
+        if mismatch is not None
+    ]
+    if mismatches:
+        raise type_errors(*mismatches)
+    count = 1 if len(params) < 1 or params[0] is None else params[0]
+    count = _integer(count, -(1 << 31), (1 << 31) - 1)
+    if count < 0:
+        raise RpcError(RPCErrorCode.INVALID_PARAMETER, "Address count out of range")
+    network = None
+    if len(params) > 1 and params[1] is not None:
+        network = _NETWORK_NAMES.get(params[1].lower())
+        if network is None:
+            raise RpcError(
+                RPCErrorCode.INVALID_PARAMETER,
+                f"Network not recognized: {params[1]}",
+            )
+    manager = node.p2p_manager
+    return [
+        {
+            "time": address.timestamp,
+            "services": int(address.services),
+            "address": _address_text(address),
+            "port": address.port,
+            "network": get_network(address).name.lower(),
+        }
+        for address in manager.peer_db.get_addr(count, 0, network)
+        if not manager.is_discouraged(address)
+        and not manager.ban_man.is_peer_banned(address)
+    ]
+
+
+def add_peer_address(
+    node: Node, conn: RpcConnection, params: list[Any]
+) -> dict[str, Any]:
+    """Answer `addpeeraddress`: add one address to the table, for testing.
+
+    Core's own, a hidden command (`src/rpc/net.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the address is added
+    with `NODE_NETWORK | NODE_WITNESS`, the time now, and itself as its
+    source, which is no penalty, and with `tried` moved to the answered
+    table as a handshake does. An address the table already holds, or
+    refuses, is `failed-adding-to-new`, with `tried` too. The host is
+    read as `LookupHost` does without DNS, `lookup_host`; Core flips an
+    IPv6 address in `fc00::/8` to CJDNS where `-cjdnsreachable` is set,
+    which this node has no counterpart to.
+    """
+    if len(params) < 2:  # noqa: PLR2004
+        raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["addpeeraddress"])
+    mismatches = [
+        mismatch
+        for mismatch in (
+            None if isinstance(params[0], str) else (1, "address", params[0], "string"),
+            _number_mismatch(params, 1, name="port"),
+            bool_mismatch(params, 2, name="tried"),
+        )
+        if mismatch is not None
+    ]
+    if mismatches:
+        raise type_errors(*mismatches)
+    tried = bool_param(params, 2, name="tried", default=False)
+    port = _integer(params[1], 0, _MAX_PORT)
+    host = lookup_host(params[0])
+    if host is None:
+        raise RpcError(RPCErrorCode.CLIENT_INVALID_IP_OR_SUBNET, "Invalid IP address")
+    if isinstance(host, SpecialAddress):
+        network_id, octets = host.network, host.packed
+    else:
+        network_id = (
+            BIP155Network.IPV4 if host.version == 4 else BIP155Network.IPV6  # noqa: PLR2004
+        )
+        octets = host.packed
+    address = NetworkAddressV2(
+        int(time.time()), SEEDS_SERVICE_FLAGS, network_id, octets, port
+    )
+    peer_db = node.p2p_manager.peer_db
+    result: dict[str, Any] = {}
+    success = False
+    if peer_db.add_addresses([address], source=address):
+        success = True
+        if tried and not peer_db.add_active_address(address):
+            success = False
+            result["error"] = "failed-adding-to-tried"
+    else:
+        result["error"] = "failed-adding-to-new"
+    result["success"] = success
+    return result
 
 
 def _setban_params(params: list[Any]) -> tuple[str, str, int | float | None, bool]:
@@ -3516,6 +3675,8 @@ callbacks = {
     "disconnectnode": disconnect_node,
     "setnetworkactive": set_network_active,
     "addconnection": add_connection,
+    "getnodeaddresses": get_node_addresses,
+    "addpeeraddress": add_peer_address,
     "setban": set_ban,
     "listbanned": list_banned,
     "clearbanned": clear_banned,
@@ -3561,6 +3722,8 @@ arg_names: dict[str, tuple[str, ...]] = {
     "disconnectnode": ("address", "nodeid"),
     "setnetworkactive": ("state",),
     "addconnection": ("address", "connection_type", "v2transport"),
+    "getnodeaddresses": ("count", "network"),
+    "addpeeraddress": ("address", "port", "tried"),
     "setban": ("subnet", "command", "bantime", "absolute"),
     "listbanned": (),
     "clearbanned": (),

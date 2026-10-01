@@ -396,23 +396,28 @@ def test_removing_a_connection_stops_it(a_manager: AManagerFactory) -> None:
 
 
 @pytest.mark.parametrize(
-    ("kind", "told"),
+    ("inbound", "block_relay", "feeler", "told"),
     [
-        ({}, True),
-        ({"inbound": True}, False),
-        ({"block_relay": True}, False),
-        ({"feeler": True}, False),
+        (False, False, False, True),
+        (True, False, False, False),
+        (False, True, False, False),
+        (False, False, True, False),
     ],
     ids=["full outbound", "inbound", "block-relay-only", "feeler"],
 )
 def test_a_handshaken_full_outbound_connection_is_told_to_the_table_on_leaving(
-    a_manager: AManagerFactory, kind: dict[str, bool], *, told: bool
+    a_manager: AManagerFactory,
+    *,
+    inbound: bool,
+    block_relay: bool,
+    feeler: bool,
+    told: bool,
 ) -> None:
     """ISS 1364: `FinalizeNode` calls `Connected` for a full outbound peer.
 
     Neither an inbound peer, nor a block-relay-only one, nor a feeler is.
     """
-    conn = a_conn(1, **kind)
+    conn = a_conn(1, inbound=inbound, block_relay=block_relay, feeler=feeler)
     peer_db = a_peer_db_stub(is_empty=True)
     manager = a_manager([conn], peer_db=peer_db)
     manager.remove_connection(1)
