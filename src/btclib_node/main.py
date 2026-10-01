@@ -1488,9 +1488,9 @@ def update_chain(node: Node) -> None:
 # operator command that means to settle the chain fully loops it here
 # rather than leaving a still-available better candidate for `Node`'s own
 # next pass to pick up. Bounded by the tip actually moving rather than by
-# a call count: each successful step strictly raises the active chain's
-# own chainwork (`_ready_fork`/`get_first_candidate` only ever offer a
-# candidate outweighing it), so there is no cycle to loop forever on, and
+# a call count: each successful step moves the tip to a block that
+# outranks it (`BlockIndex._outranks`, which `get_first_candidate`
+# offers by), so there is no cycle to loop forever on, and
 # a step that finds nothing ready -- `_ready_fork` answering `None`, a
 # candidate not fully downloaded among them -- leaves the tip exactly
 # where it was, which is what ends the loop.

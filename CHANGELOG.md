@@ -1509,6 +1509,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A deep `invalidateblock` raises no large-work warning, as Core's
   `InvalidChainFound` weighs only the block it is handed** (closes #1593).
 
+### At equal work, the block that could connect first is the tip
+
+- **Blocks are numbered as their data and every ancestor's is in, in data
+  order, as Core's `nSequenceId`; at equal work the lower number wins, so
+  `invalidateblock` can return to a displaced branch** (closes #1579).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
