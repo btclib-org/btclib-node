@@ -1509,6 +1509,63 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A deep `invalidateblock` raises no large-work warning, as Core's
   `InvalidChainFound` weighs only the block it is handed** (closes #1593).
 
+### The feefilter rounder's buckets do not follow `-minrelaytxfee`
+
+- **`feefilter` buckets start at half Core's default floor, whatever
+  `-minrelaytxfee` says**, as Core's `FeeFilterRounder` does (closes #1374).
+
+### `-incrementalrelayfee` sets the incremental relay fee, in BTC/kvB, as in Core
+
+- **A replacement's extra fee and an eviction's bump of the mempool's minimum
+  are `-incrementalrelayfee`, refused in Core's words** (closes #1596); given
+  alone and above the floor, it raises `-minrelaytxfee`, as in Core.
+
+### `getmempoolinfo` answers `minrelaytxfee` and `incrementalrelayfee`
+
+- **Both are in BTC/kvB, as Core's** (issue #1497).
+
+### `-permitbaremultisig` is an option, and `getmempoolinfo` answers it
+
+- **`-permitbaremultisig` is read, and `getmempoolinfo` answers
+  `permitbaremultisig`** (closes #1497), the configured value; nothing is
+  refused as `bare-multisig` yet (issue #1382).
+
+### The other standardness options are registered, and not yet enforced
+
+- **`-datacarrier`, `-datacarriersize`, `-dustrelayfee` and
+  `-acceptnonstdtxn` are read, and `getmempoolinfo` answers
+  `maxdatacarriersize`** (issue #1382).
+
+### `getrawtransaction` and `decoderawtransaction` answer Core's `TxToUniv`
+
+- **A `vout` entry is `value`, `n` and a `scriptPubKey`, as Core's
+  `TxToUniv` writes it**, with `type` and `address` inside
+  `scriptPubKey` and `type` in `GetTxnOutputType`'s words (`pubkeyhash`,
+  not `p2pkh`), where `TxOut.to_dict` put `type`, `addresses` and
+  `network` beside it; `value` is a number with eight decimals, not a
+  string (closes #1440). The type is `Solver`'s, in `rpc/solver.py`
+  until btclib releases its own, and `gettxout` answers it too: btclib's
+  own types called a nulldata past 80 bytes and a bare key off the curve
+  or hybrid `nonstandard`. An `address` is spelled for the node's
+  network, where `gettxout` spelled mainnet's.
+- **A `vin` entry is flat, as Core's `TxToUniv` writes it**: `txid`,
+  `vout`, `scriptSig` and `sequence`, or `coinbase` alone for a coinbase,
+  and `txinwitness` only where the witness is not empty; `TxIn.to_dict`
+  nested the outpoint under `prev_out` and answered `txinwitness` for
+  every input. `getrawtransaction`, `decoderawtransaction` and
+  `getblock` at verbosity 2 render a transaction the same way, and a
+  decoded output of negative value renders as Core's `CAmount` does
+  rather than failing (closes #1448).
+
+### `getblock` answers each transaction's fee and, at verbosity 3, its prevouts
+
+- **Verbosity 2 adds `fee` to each transaction after the coinbase, and
+  verbosity 3 and above add `prevout` to each input, from the block's
+  undo data** (closes #1446). Both are left out where the undo data is
+  not held, as Core leaves them out. A verbosity at or below 0 answers
+  the hex, and one outside a 32-bit integer is refused, where every
+  verbosity but 0, 1 and 2 was.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
@@ -12453,33 +12510,3 @@ dereferences it, and `refs/tags/v1^{}` does the same from a checkout.
   in that suite computed for height 54503. The filter header column has
   no external source either and is computed locally, chained only
   within the new file. `tests/_data/README.md` has the full derivation.
-
-### `getrawtransaction` and `decoderawtransaction` answer Core's `TxToUniv`
-
-- **A `vout` entry is `value`, `n` and a `scriptPubKey`, as Core's
-  `TxToUniv` writes it**, with `type` and `address` inside
-  `scriptPubKey` and `type` in `GetTxnOutputType`'s words (`pubkeyhash`,
-  not `p2pkh`), where `TxOut.to_dict` put `type`, `addresses` and
-  `network` beside it; `value` is a number with eight decimals, not a
-  string (closes #1440). The type is `Solver`'s, in `rpc/solver.py`
-  until btclib releases its own, and `gettxout` answers it too: btclib's
-  own types called a nulldata past 80 bytes and a bare key off the curve
-  or hybrid `nonstandard`. An `address` is spelled for the node's
-  network, where `gettxout` spelled mainnet's.
-- **A `vin` entry is flat, as Core's `TxToUniv` writes it**: `txid`,
-  `vout`, `scriptSig` and `sequence`, or `coinbase` alone for a coinbase,
-  and `txinwitness` only where the witness is not empty; `TxIn.to_dict`
-  nested the outpoint under `prev_out` and answered `txinwitness` for
-  every input. `getrawtransaction`, `decoderawtransaction` and
-  `getblock` at verbosity 2 render a transaction the same way, and a
-  decoded output of negative value renders as Core's `CAmount` does
-  rather than failing (closes #1448).
-
-### `getblock` answers each transaction's fee and, at verbosity 3, its prevouts
-
-- **Verbosity 2 adds `fee` to each transaction after the coinbase, and
-  verbosity 3 and above add `prevout` to each input, from the block's
-  undo data** (closes #1446). Both are left out where the undo data is
-  not held, as Core leaves them out. A verbosity at or below 0 answers
-  the hex, and one outside a 32-bit integer is refused, where every
-  verbosity but 0, 1 and 2 was.

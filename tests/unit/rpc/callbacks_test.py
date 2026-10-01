@@ -43,7 +43,7 @@ from btclib_node.block_db import Coin, RevBlock
 from btclib_node.chains import Chain, HeadersSyncParams, Main, RegTest
 from btclib_node.chainstate.block_index import BlockStatus, block_time, calculate_work
 from btclib_node.chainstate.muhash import CoinStats
-from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
+from btclib_node.config import DEFAULT_MAX_DATACARRIER_BYTES, DEFAULT_MIN_RELAY_FEERATE
 from btclib_node.constants import (
     MIN_BLOCKS_TO_KEEP,
     MIN_PRUNE_TARGET_MIB,
@@ -268,6 +268,8 @@ def a_node(
     peerblockfilters: bool = False,
     active_rpc_commands: list[tuple[str, float]] | None = None,
     log_path: str | None = None,
+    permit_bare_multisig: bool = True,
+    max_datacarrier_bytes: int | None = DEFAULT_MAX_DATACARRIER_BYTES,
 ) -> Any:
     """Build a `Node` double carrying only what these callbacks read.
 
@@ -315,6 +317,8 @@ def a_node(
             min_relay_feerate=min_relay_feerate,
             pruned=pruned,
             peerblockfilters=peerblockfilters,
+            permit_bare_multisig=permit_bare_multisig,
+            max_datacarrier_bytes=max_datacarrier_bytes,
         ),
         warnings=Warnings(),
         active_rpc_commands=(
@@ -7279,6 +7283,36 @@ def test_send_raw_transaction_marks_a_kept_transaction_unbroadcast(
 
     send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
     assert mempool.unbroadcast == {tx.id}
+
+
+def test_getmempoolinfo_reports_the_relay_options() -> None:
+    """The four fields the relay options set, in Core's units and defaults.
+
+    Rates are BTC/kvB; Core's defaults are `minrelaytxfee` 0.00000100,
+    `incrementalrelayfee` 0.00000100, `permitbaremultisig` true and
+    `maxdatacarriersize` 100000 (btclib-org/btclib-node#1497, #1596).
+    """
+    out = get_mempool_info(a_node(), _CONN, [])
+    assert out["minrelaytxfee"].text == "0.00000100"
+    assert out["incrementalrelayfee"].text == "0.00000100"
+    assert out["permitbaremultisig"] is True
+    assert out["maxdatacarriersize"] == 100_000
+
+
+def test_getmempoolinfo_reports_the_relay_options_it_was_given() -> None:
+    """A configured value is what each field answers; no datacarrier is `0`."""
+    mempool = Mempool(Logger(debug=True), FeeRate(sats_per_kvbyte=2500))
+    node = a_node(
+        mempool=mempool,
+        min_relay_feerate=FeeRate(sats_per_kvbyte=1500),
+        permit_bare_multisig=False,
+        max_datacarrier_bytes=None,
+    )
+    out = get_mempool_info(node, _CONN, [])
+    assert out["minrelaytxfee"].text == "0.00001500"
+    assert out["incrementalrelayfee"].text == "0.00002500"
+    assert out["permitbaremultisig"] is False
+    assert out["maxdatacarriersize"] == 0
 
 
 def test_get_mempool_info_answers_unbroadcastcount() -> None:

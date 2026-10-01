@@ -1920,28 +1920,28 @@ def _btc_amount(sats: int) -> RawJSON:
 def get_mempool_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str, Any]:
     """Answer `getmempoolinfo` with the fields this tree backs for real.
 
+    `maxdatacarriersize` is `0` where `-datacarrier` is off, as Core's
+    `value_or(0)`.
+
     The comment below argues, field by field, why Core's own several
     others are left out rather than answered with a placeholder, and
-    why `mempoolminfee` alone among them is BTC/kvB rather than this
-    tree's own sat/kvB.
+    why `mempoolminfee`, `minrelaytxfee` and `incrementalrelayfee` are
+    BTC/kvB rather than this tree's own sat/kvB.
     """
     mempool = node.mempool
     # Core's own MempoolInfoToJSON (`src/rpc/mempool.cpp:1075-1086`,
-    # at bitcoin/bitcoin@58a7869f86) answers several fields beyond these
-    # five: `usage`, `total_fee`, `permitbaremultisig`,
-    # `maxdatacarriersize`, `limitclustercount`, `limitclustersize`,
+    # at bitcoin/bitcoin@58a7869f86) answers several fields beyond these:
+    # `usage`, `total_fee`, `limitclustercount`, `limitclustersize`,
     # `optimal`, the deprecated `fullrbf`. Every one of those is backed
     # by a concept this tree does not carry -- a cluster mempool graph, a
-    # persisted total fee, a bare-multisig policy knob -- and answering
-    # any of them with a placeholder would be exactly the decoration
-    # this method's own sparse answer already was. `minrelaytxfee` and
-    # `incrementalrelayfee` are excluded for a different reason: both
-    # are real and cheap to answer here too (`Config.min_relay_feerate`,
-    # `mempool.py`'s own incremental-fee constant), left out only
-    # because #305 named these two fields and not those. `maxmempool`
-    # and `mempoolminfee` are wired in because #294 gave both a real
-    # source to read, and `unbroadcastcount` because #1421 gave
-    # `Mempool.unbroadcast` one. btclib-org/btclib-node#305
+    # persisted total fee -- and answering any of them with a
+    # placeholder would be exactly the decoration this method's own
+    # sparse answer already was. `maxmempool` and `mempoolminfee` are
+    # wired in because #294 gave both a real source to read,
+    # `unbroadcastcount` because #1421 gave `Mempool.unbroadcast` one,
+    # and the four fields the relay options set because `Config` holds
+    # those options (btclib-org/btclib-node#1497, #1596).
+    # btclib-org/btclib-node#305
     #
     # `mempoolminfee` is BTC/kvB, matching Core's own
     # `ValueFromAmount`-converted unit rather than this tree's own
@@ -1949,12 +1949,13 @@ def get_mempool_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     # (`Mempool.meets_fee_rate`, BIP133's own `feefilter` wire value,
     # `Config.min_relay_feerate`): a client written against Core's own
     # `getmempoolinfo` reads this field expecting BTC/kvB, and Core
-    # defines the unit on this particular surface. BIP133's own wire
-    # value is unaffected -- `_send_due_feefilters`
-    # (`src/btclib_node/download.py`) still sends sat/kvB, because BIP133
-    # says so, not because this tree chose a unit. `maxmempool` needs no
-    # such divergence: Core's own field is `m_opts.max_size_bytes`,
-    # plain bytes with no amount conversion applied to it either.
+    # defines the unit on this particular surface, `minrelaytxfee` and
+    # `incrementalrelayfee` too. BIP133's own wire value is unaffected --
+    # `_send_due_feefilters` (`src/btclib_node/download.py`) still sends
+    # sat/kvB, because BIP133 says so, not because this tree chose a
+    # unit. `maxmempool` needs no such divergence: Core's own field is
+    # `m_opts.max_size_bytes`, plain bytes with no amount conversion
+    # applied to it either.
     mempoolminfee = max(
         mempool.get_min_fee_rate().sats_per_kvbyte,
         node.config.min_relay_feerate.sats_per_kvbyte,
@@ -1965,7 +1966,13 @@ def get_mempool_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
         "bytes": mempool.bytesize,
         "maxmempool": mempool.bytesize_limit,
         "mempoolminfee": _btc_amount(mempoolminfee),
+        "minrelaytxfee": _btc_amount(node.config.min_relay_feerate.sats_per_kvbyte),
+        "incrementalrelayfee": _btc_amount(
+            mempool.incremental_relay_feerate.sats_per_kvbyte
+        ),
         "unbroadcastcount": len(mempool.unbroadcast),
+        "permitbaremultisig": node.config.permit_bare_multisig,
+        "maxdatacarriersize": node.config.max_datacarrier_bytes or 0,
     }
 
 
