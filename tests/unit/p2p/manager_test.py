@@ -160,13 +160,17 @@ def a_peer_db_stub(**attributes: Any) -> Any:
     the draw it hands back for `new_only`, a feeler's; the one not given
     refuses to be asked. `attempt` records every try in `tries`, by
     `endpoint_key`, which `last_try` reads: whether the table holds the
-    endpoint is `PeerDB`'s own test. `size` defaults to `0`, an empty
+    endpoint is `PeerDB`'s own test. `connected` records every address it
+    is told of in `connected_to`. `size` defaults to `0`, an empty
     table, so `_dns_address_seed` asks every seed at once with no wait
     unless a test overrides it.
     """
     tries: dict[bytes, float] = {}
+    connected: list[NetworkAddressV2] = []
     defaults: dict[str, Any] = {
         "get_active_addresses": list,
+        "connected": connected.append,
+        "connected_to": connected,
         "holds_network": lambda network_id: True,
         "size": 0,
         "tries": tries,
@@ -389,6 +393,55 @@ def test_removing_a_connection_stops_it(a_manager: AManagerFactory) -> None:
     manager.remove_connection(1)
     assert not manager.connections
     assert conn.stopped == [True]
+
+
+@pytest.mark.parametrize(
+    ("kind", "told"),
+    [
+        ({}, True),
+        ({"inbound": True}, False),
+        ({"block_relay": True}, False),
+        ({"feeler": True}, False),
+    ],
+    ids=["full outbound", "inbound", "block-relay-only", "feeler"],
+)
+def test_a_handshaken_full_outbound_connection_is_told_to_the_table_on_leaving(
+    a_manager: AManagerFactory, kind: dict[str, bool], *, told: bool
+) -> None:
+    """ISS 1364: `FinalizeNode` calls `Connected` for a full outbound peer.
+
+    Neither an inbound peer, nor a block-relay-only one, nor a feeler is.
+    """
+    conn = a_conn(1, **kind)
+    peer_db = a_peer_db_stub(is_empty=True)
+    manager = a_manager([conn], peer_db=peer_db)
+    manager.remove_connection(1)
+    assert peer_db.connected_to == ([conn.address] if told else [])
+
+
+def test_a_connection_short_of_its_handshake_is_not_told_to_the_table(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1364: `FinalizeNode` asks for `fSuccessfullyConnected` first."""
+    conn = a_conn(1, status=P2pConnStatus.Open)
+    peer_db = a_peer_db_stub(is_empty=True)
+    manager = a_manager(peer_db=peer_db)
+    manager.pending_connections[conn.id] = conn
+    manager.remove_connection(1)
+    assert peer_db.connected_to == []
+
+
+def test_the_connections_held_at_stop_are_told_to_the_table(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1364: `StopNodes` finalizes every node it still holds."""
+    conn = a_conn(1, address=peer_address("5.6.1.1", 1))
+    peer_db = a_peer_db_stub(is_empty=True)
+    manager = a_manager([conn], peer_db=peer_db, listen=False, max_connections=0)
+    manager.start()
+    wait_until(manager.loop.is_running)
+    manager.stop()
+    assert peer_db.connected_to == [conn.address]
 
 
 def test_removing_a_connection_still_pending_stops_it_too(

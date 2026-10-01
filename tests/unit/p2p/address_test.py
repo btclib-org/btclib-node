@@ -80,8 +80,9 @@ def test_an_address_just_seen_is_active_and_can_be_sent() -> None:
     actually needs.
     """
     peer_db = a_peer_db()
-    peer_db.add_addresses([peer_address("1.2.3.4", 18444)])
-    peer_db.add_active_address(peer_address("1.2.3.4", 18444))
+    seen = peer_address("1.2.3.4", 18444, timestamp=int(time.time()))
+    peer_db.add_addresses([seen], time_penalty=0)
+    peer_db.add_active_address(seen)
     (active,) = peer_db.get_active_addresses()
     # a whole second, because the field is four octets on the wire and a
     # float has no to_bytes: this is what serving the address needs
@@ -104,9 +105,12 @@ def test_the_table_of_active_addresses_is_bounded() -> None:
     # one row the way redialling the same endpoint does, below
     peer_db = a_peer_db()
     limit = 10000
+    now = int(time.time())
+    peer_db.addresses = {
+        peer_address("1.2.3.4", port, timestamp=now) for port in range(limit + 10)
+    }
     peer_db._known_keys |= {
-        address_module.endpoint_key(peer_address("1.2.3.4", port))
-        for port in range(limit + 10)
+        address_module.endpoint_key(address) for address in peer_db.addresses
     }
     for port in range(limit + 10):
         peer_db.add_active_address(peer_address("1.2.3.4", port))
@@ -1154,8 +1158,8 @@ def test_a_gossip_adds_its_services_to_the_answered_row_too(tmp_path: Path) -> N
     carries the same services, two records of one gossip included.
     """
     peer_db = a_peer_db(data_dir=tmp_path)
-    endpoint = peer_address("1.2.3.4", 8333)
-    peer_db.add_addresses([endpoint])
+    endpoint = peer_address("1.2.3.4", 8333, timestamp=int(time.time()))
+    peer_db.add_addresses([endpoint], time_penalty=0)
     peer_db.add_active_address(endpoint)
     peer_db.add_addresses(
         replace(endpoint, services=services)
@@ -1212,6 +1216,101 @@ def test_set_services_records_no_endpoint_the_table_does_not_hold() -> None:
     peer_db.set_services(peer_address("1.2.3.4", 8333), _FULL)
     assert peer_db.addresses == {peer_address("5.6.7.8", 8333)}
     assert not peer_db.active_addresses
+
+
+def test_a_handshake_leaves_the_time_of_the_address_alone(tmp_path: Path) -> None:
+    """ISS 1364: Core's `Good_` does not update `nTime`.
+
+    "To avoid leaking information about currently-connected peers": the
+    answered row, in memory and on disk, and the known row keep the time
+    gossip gave the address, so what `get_addr` serves does not say that
+    this node has just connected to it.
+    """
+    peer_db = a_peer_db(data_dir=tmp_path)
+    heard = int(time.time()) - 3 * 24 * 3600
+    endpoint = peer_address("1.2.3.4", 8333, timestamp=heard)
+    peer_db.add_addresses([endpoint], time_penalty=0)
+    assert peer_db.add_active_address(replace(endpoint, timestamp=int(time.time())))
+    (answered,) = peer_db.active_addresses
+    assert answered.timestamp == heard
+    assert peer_db.get_addr(1000, 100) == [endpoint]
+    peer_db.close()
+    reloaded = a_peer_db(data_dir=tmp_path)
+    assert {row.timestamp for row in reloaded.active_addresses} == {heard}
+    reloaded.close()
+
+
+def test_an_endpoint_the_table_does_not_hold_is_not_answered() -> None:
+    """ISS 1364: `Good_` finds nothing to move, and `False` says so."""
+    peer_db = a_peer_db()
+    assert not peer_db.add_active_address(peer_address("1.2.3.4", 8333))
+    assert not peer_db.active_addresses
+
+
+@pytest.mark.parametrize("answered", [False, True], ids=["known", "answered"])
+def test_connected_moves_a_stale_time_forward(
+    tmp_path: Path, *, answered: bool
+) -> None:
+    """ISS 1364: Core's `Connected_` sets `nTime` to now past twenty minutes.
+
+    Both rows the endpoint has are written, in memory and on disk.
+    """
+    peer_db = a_peer_db(data_dir=tmp_path)
+    endpoint = peer_address("1.2.3.4", 8333, timestamp=int(time.time()) - 3 * 24 * 3600)
+    peer_db.add_addresses([endpoint], time_penalty=0)
+    if answered:
+        peer_db.add_active_address(endpoint)
+    before = int(time.time())
+    peer_db.connected(replace(endpoint, timestamp=0))
+    rows = [*peer_db.addresses, *peer_db.active_addresses]
+    assert len(rows) == 1 + answered
+    assert all(row.timestamp >= before for row in rows)
+    peer_db.close()
+    reloaded = a_peer_db(data_dir=tmp_path)
+    rows = [*reloaded.addresses, *reloaded.active_addresses]
+    assert all(row.timestamp >= before for row in rows)
+    reloaded.close()
+
+
+def test_connected_moves_a_stale_time_of_a_table_with_no_store() -> None:
+    """ISS 1364: a table kept in memory alone is written all the same."""
+    peer_db = a_peer_db()
+    endpoint = peer_address("1.2.3.4", 8333, timestamp=int(time.time()) - 24 * 3600)
+    peer_db.add_addresses([endpoint], time_penalty=0)
+    before = int(time.time())
+    peer_db.connected(endpoint)
+    (row,) = peer_db.addresses
+    assert row.timestamp >= before
+
+
+def test_connected_leaves_a_time_newer_than_twenty_minutes() -> None:
+    """ISS 1364: `Connected_` moves `nTime` only where it is older than that."""
+    peer_db = a_peer_db()
+    recent = int(time.time()) - address_module._CONNECTED_UPDATE_INTERVAL + 60
+    endpoint = peer_address("1.2.3.4", 8333, timestamp=recent)
+    peer_db.add_addresses([endpoint], time_penalty=0)
+    peer_db.connected(endpoint)
+    assert peer_db.addresses == {endpoint}
+
+
+def test_connected_records_no_endpoint_the_table_does_not_hold() -> None:
+    """ISS 1364: `Connected_` bails out where `Find` finds nothing."""
+    peer_db = a_peer_db()
+    peer_db.connected(peer_address("1.2.3.4", 8333))
+    assert not peer_db.addresses
+    assert not peer_db.active_addresses
+
+
+def test_a_gossiped_time_reaches_the_answered_row_too() -> None:
+    """ISS 1364: the answered row is Core's one entry, `nTime` included."""
+    peer_db = a_peer_db()
+    now = int(time.time())
+    endpoint = peer_address("1.2.3.4", 8333, timestamp=now - 5 * 24 * 3600)
+    peer_db.add_addresses([endpoint], time_penalty=0)
+    peer_db.add_active_address(endpoint)
+    peer_db.add_addresses([replace(endpoint, timestamp=now)], time_penalty=0)
+    (answered,) = peer_db.active_addresses
+    assert answered.timestamp == now
 
 
 def test_get_addr_draws_from_an_address_no_handshake_answered() -> None:
@@ -1462,9 +1561,10 @@ def test_an_address_that_answered_survives_a_restart_and_is_drawn(
     that made it.
     """
     first = a_peer_db(data_dir=tmp_path)
-    answered = peer_address("1.2.3.4", 8333)
-    unconfirmed = peer_address("5.6.7.8", 8333)
-    first.add_addresses([answered, unconfirmed])
+    now = int(time.time())
+    answered = peer_address("1.2.3.4", 8333, timestamp=now)
+    unconfirmed = peer_address("5.6.7.8", 8333, timestamp=now)
+    first.add_addresses([answered, unconfirmed], time_penalty=0)
     first.add_active_address(answered)
     first.close()
 
@@ -1587,11 +1687,11 @@ def test_a_store_answered_a_day_ago_keeps_its_size(
     `ADDRMAN_HORIZON`, so `size` still counts the row.
     """
     first = a_peer_db(data_dir=tmp_path)
-    answered = peer_address("1.2.3.4", 8333)
     a_day_ago = time.time() - 24 * 3600
+    answered = peer_address("1.2.3.4", 8333, timestamp=int(a_day_ago))
     with monkeypatch.context() as patch:
         patch.setattr(time, "time", lambda: a_day_ago)
-        first.add_addresses([answered])
+        first.add_addresses([answered], time_penalty=0)
         first.add_active_address(answered)
     first.close()
 
@@ -1707,8 +1807,8 @@ def test_an_unroutable_peer_is_not_recorded_as_answered(
     control.
     """
     peer_db = a_peer_db()
-    routable = peer_address("1.2.3.4", 8333)
-    peer_db.add_addresses([address, routable])
+    routable = peer_address("1.2.3.4", 8333, timestamp=int(time.time()))
+    peer_db.add_addresses([address, routable], time_penalty=0)
     peer_db.add_active_address(address)
     peer_db.add_active_address(routable)
     assert [a.address for a in peer_db.get_active_addresses()] == [routable.address]
@@ -1762,8 +1862,8 @@ def test_an_answered_endpoint_not_gossiped_is_not_recorded() -> None:
     """
     peer_db = a_peer_db()
     stranger = peer_address("1.2.3.4", 8333)
-    gossiped = peer_address("5.6.7.8", 8333)
-    peer_db.add_addresses([gossiped])
+    gossiped = peer_address("5.6.7.8", 8333, timestamp=int(time.time()))
+    peer_db.add_addresses([gossiped], time_penalty=0)
     peer_db.add_active_address(stranger)
     peer_db.add_active_address(peer_address("5.6.7.8", 8333, services=1))
     assert [a.address for a in peer_db.get_active_addresses()] == [gossiped.address]
@@ -1861,9 +1961,9 @@ def test_either_table_holding_a_network_holds_it(table: str) -> None:
     if table == "addresses":
         peer_db.add_addresses([held])
     else:
-        peer_db._known_keys.add(address_module.endpoint_key(held))
+        peer_db.add_addresses([held])
         peer_db.add_active_address(held)
-        assert not peer_db.addresses
+        peer_db.addresses.clear()
     assert peer_db.holds_network(BIP155Network.IPV6)
     assert not peer_db.holds_network(BIP155Network.IPV4)
 
@@ -1954,7 +2054,7 @@ def test_a_read_that_prunes_nothing_does_not_rebuild_the_index(
     """
     peer_db = a_peer_db()
     stale = peer_address("9.9.9.9", 1, timestamp=int(time.time()) - 31 * 24 * 3600)
-    kept = peer_address("1.2.3.4", 18444)
+    kept = peer_address("1.2.3.4", 18444, timestamp=int(time.time()))
     rebuilt: list[None] = []
     real_reindex = peer_db._reindex_active
 
@@ -1965,7 +2065,7 @@ def test_a_read_that_prunes_nothing_does_not_rebuild_the_index(
     monkeypatch.setattr(peer_db, "_reindex_active", counted)
     # known first: `add_active_address` records only an endpoint
     # `addresses` holds
-    peer_db.add_addresses([kept])
+    peer_db.add_addresses([kept], time_penalty=0)
     peer_db.add_active_address(kept)
     assert peer_db.get_active_addresses() == peer_db.active_addresses
     assert rebuilt == []

@@ -1547,6 +1547,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   answered, sized from all of them and skipping those `IsTerrible`'s time
   tests call terrible, as Core's `GetAddr_` draws it** (closes #1365).
 
+### A handshake leaves an address's time alone
+
+- **A handshake keeps an address's time, and `Connected` moves it to
+  now when a full outbound connection ends, as Core's `Good_` and
+  `Connected_`** (closes #1364).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

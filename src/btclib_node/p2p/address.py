@@ -319,22 +319,21 @@ _ADDRMAN_FUTURE_SLACK = 10 * 60
 # is `AddrInfo::m_last_try`; `RECENT_TRY_SECONDS` above is a different
 # Core window, `ThreadOpenConnections`'s, not this one.
 _ADDRMAN_RECENT_TRY_GRACE = 60
+# `Connected_`'s own granularity (same file and sha): a time is moved
+# forward only where it is older than this
+_CONNECTED_UPDATE_INTERVAL = 20 * 60
 
 
 def _aged_out(address: NetworkAddressV2, now: float, last_try: float) -> bool:
-    """Whether `address`'s handshake stamp fails `IsTerrible`'s time tests.
+    """Whether `address`'s timestamp fails `IsTerrible`'s time tests.
 
     `AddrInfo::IsTerrible` (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7,
     the v31.1 tag) checks `last_try` first: tried within
     `_ADDRMAN_RECENT_TRY_GRACE`, an address is never terrible, whatever
     its timestamp says. Past that grace, its two time tests: stamped
     more than ten minutes ahead of `now`, or older than
-    `_ADDRMAN_HORIZON`. Core applies them to `nTime`, which `Good_`
-    leaves alone at the handshake and which gossip and `Connected_` move
-    instead, the latter when a full outbound peer disconnects.
-    `PeerDB.add_addresses` stores a gossiped address with timestamp 0,
-    so there is no gossip time to test, and the handshake's is tested
-    instead (btclib-org/btclib-node#1364).
+    `_ADDRMAN_HORIZON`. The timestamp is Core's `nTime`, which gossip
+    and `PeerDB.connected` move and a handshake does not.
     """
     if now - last_try <= _ADDRMAN_RECENT_TRY_GRACE:
         return False
@@ -872,8 +871,9 @@ class PeerDB:
         An address `_storable` refuses is dropped. Every other address
         settles onto its own `endpoint_key` row, its services ORed into
         those the row held, up to `_MAX_ADDRESSES` distinct endpoints,
-        past which a genuinely new one is dropped too. The services are
-        ORed into the endpoint's answered row as well, where it has one.
+        past which a genuinely new one is dropped too. The services and
+        the timestamp go to the endpoint's answered row as well, where
+        it has one.
         Takes `_addresses_lock`, then `_active_lock`, the two never
         nested.
 
@@ -913,6 +913,7 @@ class PeerDB:
         """
         # what each endpoint kept was gossiped with, for its answered row
         gossiped: dict[bytes, ServiceFlags] = {}
+        stamps: dict[bytes, int] = {}
         source_host = _host(source) if source is not None else None
         with self._addresses_lock, self._write_batch() as wb:
             # `endpoint_key` is what the durable row is already keyed on --
@@ -955,6 +956,7 @@ class PeerDB:
                 self.addresses.add(known)
                 self._known_keys.add(key)
                 by_endpoint[key] = known
+                stamps[key] = timestamp
                 gossiped[key] = (
                     gossiped.get(key, ServiceFlags.NODE_NONE) | address.services
                 )
@@ -962,14 +964,17 @@ class PeerDB:
                     value = known.serialize(check_validity=False)
                     wb.put(_KNOWN + key, value)
         # Core keeps one entry per endpoint, and `AddSingle` ORs gossip
-        # into a tried one as into a new one
+        # into a tried one as into a new one, its time included
         with self._active_lock:
             for key, services in gossiped.items():
                 position = self._active_index.get(key)
                 if position is not None:
                     row = self.active_addresses[position]
                     self._set_answered(
-                        position, replace(row, services=row.services | services)
+                        position,
+                        replace(
+                            row, services=row.services | services, timestamp=stamps[key]
+                        ),
                     )
 
     def set_services(self, address: NetworkAddressV2, services: ServiceFlags) -> None:
@@ -986,14 +991,9 @@ class PeerDB:
         """
         key = endpoint_key(address)
         with self._addresses_lock, self._write_batch() as wb:
-            if key not in self._known_keys:
+            existing = self._held(address)
+            if existing is None:
                 return
-            existing = next(
-                known
-                for known in self.addresses
-                if (known.network_id, known.address, known.port)
-                == (address.network_id, address.address, address.port)
-            )
             known = replace(existing, services=services)
             self.addresses.discard(existing)
             self.addresses.add(known)
@@ -1004,6 +1004,14 @@ class PeerDB:
             if position is not None:
                 row = self.active_addresses[position]
                 self._set_answered(position, replace(row, services=services))
+
+    def _held(self, address: NetworkAddressV2) -> NetworkAddressV2 | None:
+        """Return the known row of `address`'s endpoint, or `None`.
+
+        The caller holds `_addresses_lock`.
+        """
+        endpoint = _endpoint(address)
+        return next((a for a in self.addresses if _endpoint(a) == endpoint), None)
 
     def _set_answered(self, position: int, row: NetworkAddressV2) -> None:
         """Write `row` at `position` of `active_addresses`, and to the store.
@@ -1101,24 +1109,27 @@ class PeerDB:
                 self._reindex_active()
             return self.active_addresses
 
-    def add_active_address(self, addr: NetworkAddressV2) -> None:
-        """Record `addr` as dialled and answered, just now.
+    def add_active_address(self, addr: NetworkAddressV2) -> bool:
+        """Record `addr` as answered, and say whether it was.
 
-        A repeat handshake with an already-held endpoint settles onto
-        its one row rather than growing the table. An endpoint
-        `addresses` does not hold is not recorded, as Core's
-        `AddrManImpl::Good_` updates only an entry addrman already has
-        (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-        tag), and neither is an address `_storable` refuses, which
-        `addresses` never holds. Takes `_addresses_lock` to ask, then
-        `_active_lock` to write, the two never nested.
+        Core's `AddrManImpl::Good_` (`src/addrman.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which moves an entry
+        to the tried table and leaves `nTime` alone, "to avoid leaking
+        information about currently-connected peers": the row keeps the
+        timestamp the known row has, and `connected` is what moves it.
+        A repeat handshake with an already-held endpoint settles onto its
+        one row rather than growing the table. An endpoint `addresses`
+        does not hold is not recorded, as `Good_` updates only an entry
+        addrman already has, and neither is an address `_storable`
+        refuses, which `addresses` never holds. Takes `_addresses_lock`
+        to ask, then `_active_lock` to write, the two never nested.
         """
-        # a whole second: the field is four octets on the wire
-        answered = replace(addr, timestamp=int(time.time()))
-        key = endpoint_key(answered)
+        key = endpoint_key(addr)
         with self._addresses_lock:
-            if key not in self._known_keys:
-                return
+            existing = self._held(addr)
+        if existing is None:
+            return False
+        answered = replace(addr, timestamp=existing.timestamp)
         with self._active_lock:
             position = self._active_index.get(key)
             if position is not None:
@@ -1133,8 +1144,40 @@ class PeerDB:
                 # genuinely new one can run the table out of room,
                 # `add_addresses`'s own cap check reads the same way.
                 if len(self.active_addresses) >= _MAX_ADDRESSES:
-                    return
+                    return False
                 self._active_index[key] = len(self.active_addresses)
                 self.active_addresses.append(answered)
             if self.db is not None:
                 self.db.put(_ANSWERED + key, answered.serialize(check_validity=False))
+        return True
+
+    def connected(self, address: NetworkAddressV2) -> None:
+        """Move the time of `address`'s endpoint forward to now, if it is stale.
+
+        Core's `AddrManImpl::Connected_` (`src/addrman.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which
+        `FinalizeNode` calls for a full outbound peer alone: `nTime` moves
+        only where it is older than `_CONNECTED_UPDATE_INTERVAL`, and an
+        endpoint the table does not hold is left out. The known and the
+        answered row are both written, standing for Core's one entry.
+        Takes `_addresses_lock`, then `_active_lock`, the two never
+        nested.
+        """
+        now = int(time.time())
+        key = endpoint_key(address)
+        with self._addresses_lock, self._write_batch() as wb:
+            existing = self._held(address)
+            if existing is None or now - existing.timestamp <= (
+                _CONNECTED_UPDATE_INTERVAL
+            ):
+                return
+            known = replace(existing, timestamp=now)
+            self.addresses.discard(existing)
+            self.addresses.add(known)
+            if wb is not None:
+                wb.put(_KNOWN + key, known.serialize(check_validity=False))
+        with self._active_lock:
+            position = self._active_index.get(key)
+            if position is not None:
+                row = self.active_addresses[position]
+                self._set_answered(position, replace(row, timestamp=now))

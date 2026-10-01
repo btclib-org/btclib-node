@@ -981,13 +981,30 @@ class P2pManager(threading.Thread):
         call into `Connection` from in here does.
         """
         with self._connections_lock:
-            conn = self.connections.pop(
-                connection_id, None
-            ) or self.pending_connections.pop(connection_id, None)
+            conn = self.connections.pop(connection_id, None)
+            handshaken = conn is not None
+            if conn is None:
+                conn = self.pending_connections.pop(connection_id, None)
             if conn is not None and conn.nonce is not None:
                 self.pending_outbound_nonces.discard(conn.nonce)
         if conn is not None:
             conn.stop()
+            if handshaken:
+                self._finalize(conn)
+
+    def _finalize(self, conn: Connection) -> None:
+        """Tell the address table a handshaken connection is gone.
+
+        Core's `FinalizeNode` (`src/net_processing.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag) calls
+        `AddrMan::Connected` for a peer that completed its handshake and
+        is a full outbound one: "only change visible addrman state for
+        full outbound peers", so neither an inbound peer, nor a
+        block-relay-only one, nor a feeler, which never completes the
+        handshake there.
+        """
+        if not (conn.inbound or conn.block_relay or conn.feeler):
+            self.peer_db.connected(conn.address)
 
     def add_pending_outbound_nonce(self, nonce: int) -> None:
         """Record `nonce` as this outbound, still-unhandshaken connection's own.
@@ -3061,6 +3078,9 @@ class P2pManager(threading.Thread):
         if self.is_alive():
             self.join()
         self._dump_anchors()
+        # Core's `StopNodes` finalizes every node it still holds
+        for conn in tuple(self.connections.values()):
+            self._finalize(conn)
         # `stop_handle.cancel()` is what makes every `run_until_complete`
         # below safe, on any loop this method could possibly be handed --
         # not one more guard clause alongside `self.ident` and `pending`,
