@@ -99,6 +99,13 @@ btclib\_node.mempool module
    :members:
    :show-inheritance:
 
+btclib\_node.mining module
+---------------------------
+
+.. automodule:: btclib_node.mining
+   :members:
+   :show-inheritance:
+
 btclib\_node.notify module
 ---------------------------
 

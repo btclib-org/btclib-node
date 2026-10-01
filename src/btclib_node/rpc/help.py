@@ -30,10 +30,11 @@ function sorts `vCommands`: by category, and by
 name within it. `help_rpc` groups this node's own served commands
 under those same headings and in that same order, the way Core's own
 bare listing would if run against a `bitcoind` serving only this
-node's own method table -- `addconnection`, `invalidateblock` and
-`reconsiderblock` being this table's hidden entries, `category ==
-"hidden"` is left out of that listing the same way Core's own bare
-listing leaves a `category == "hidden"` entry out of its
+node's own method table -- `addconnection`, `generatetoaddress`,
+`generateblock`, `invalidateblock` and `reconsiderblock` being this
+table's hidden entries, `category == "hidden"` is left out of that
+listing the same way Core's own bare listing leaves a `category ==
+"hidden"` entry out of its
 (`answer_help`'s own docstring is where that check is
 argued, `_BARE_LISTING`'s own comment where it is made real). A hidden
 command's own help still answers in full for `help <command>` named
@@ -675,6 +676,152 @@ _HELP_SUBMITHEADER = (
     "Examples:\n"
     '> bitcoin-cli submitheader "aabbcc"\n'
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "submitheader", "params": ["aabbcc"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
+_HELP_GENERATETOADDRESS = (
+    'generatetoaddress nblocks "address" ( maxtries )\n'
+    "\n"
+    "Mine to a specified address and return the block hashes.\n"
+    "\n"
+    "Arguments:\n"
+    "1. nblocks     (numeric, required) How many blocks are generated.\n"
+    "2. address     (string, required) The address to send the newly generated bitcoin to.\n"
+    "3. maxtries    (numeric, optional, default=1000000) How many iterations to try.\n"
+    "\n"
+    "Result:\n"
+    "[           (json array) hashes of blocks generated\n"
+    '  "hex",    (string) blockhash\n'
+    "  ...\n"
+    "]\n"
+    "\n"
+    "Examples:\n"
+    "\n"
+    "Generate 11 blocks to myaddress\n"
+    '> bitcoin-cli generatetoaddress 11 "myaddress"\n'
+    "If you are using the Bitcoin Core wallet, you can get a new address to send the newly generated bitcoin to with:\n"
+    "> bitcoin-cli getnewaddress \n"
+)
+
+_HELP_GENERATEBLOCK = (
+    'generateblock "output" ["rawtx/txid",...] ( submit )\n'
+    "\n"
+    "Mine a set of ordered transactions to a specified address or descriptor and return the block hash.\n"
+    "\n"
+    "Arguments:\n"
+    "1. output               (string, required) The address or descriptor to send the newly generated bitcoin to.\n"
+    "2. transactions         (json array, required) An array of hex strings which are either txids or raw transactions.\n"
+    "                        Txids must reference transactions currently in the mempool.\n"
+    "                        All transactions must be valid and in valid order, otherwise the block will be rejected.\n"
+    "     [\n"
+    '       "rawtx/txid",    (string)\n'
+    "       ...\n"
+    "     ]\n"
+    "3. submit               (boolean, optional, default=true) Whether to submit the block before the RPC call returns or to return it as hex.\n"
+    "\n"
+    "Result:\n"
+    "{                    (json object)\n"
+    '  "hash" : "hex",    (string) hash of generated block\n'
+    '  "hex" : "hex"      (string, optional) hex of generated block, only present when submit=false\n'
+    "}\n"
+    "\n"
+    "Examples:\n"
+    "\n"
+    "Generate a block to myaddress, with txs rawtx and mempool_txid\n"
+    '> bitcoin-cli generateblock "myaddress" \'["rawtx", "mempool_txid"]\'\n'
+)
+
+_HELP_GETBLOCKTEMPLATE = (
+    'getblocktemplate {"mode":"str","capabilities":["str",...],"rules":["segwit","str",...],"longpollid":"str","data":"hex"}\n'
+    "\n"
+    "If the request parameters include a 'mode' key, that is used to explicitly select between the default 'template' request or a 'proposal'.\n"
+    "It returns data needed to construct a block to work on.\n"
+    "For full specification, see BIPs 22, 23, 9, and 145:\n"
+    "    https://github.com/bitcoin/bips/blob/master/bip-0022.mediawiki\n"
+    "    https://github.com/bitcoin/bips/blob/master/bip-0023.mediawiki\n"
+    "    https://github.com/bitcoin/bips/blob/master/bip-0009.mediawiki#getblocktemplate_changes\n"
+    "    https://github.com/bitcoin/bips/blob/master/bip-0145.mediawiki\n"
+    "\n"
+    "Arguments:\n"
+    "1. template_request            (json object, required) Format of the template\n"
+    "     {\n"
+    '       "mode": "str",          (string, optional) This must be set to "template", "proposal" (see BIP 23), or omitted\n'
+    '       "capabilities": [       (json array, optional) A list of strings\n'
+    "         \"str\",                (string) client side supported feature, 'longpoll', 'coinbasevalue', 'proposal', 'serverlist', 'workid'\n"
+    "         ...\n"
+    "       ],\n"
+    '       "rules": [              (json array, required) A list of strings\n'
+    '         "segwit",             (string, required) (literal) indicates client side segwit support\n'
+    '         "str",                (string) other client side supported softfork deployment\n'
+    "         ...\n"
+    "       ],\n"
+    '       "longpollid": "str",    (string, optional) delay processing request until the result would vary significantly from the "longpollid" of a prior template\n'
+    '       "data": "hex",          (string, optional) proposed block data to check, encoded in hexadecimal; valid only for mode="proposal"\n'
+    "     }\n"
+    "\n"
+    "Result (If the proposal was accepted with mode=='proposal'):\n"
+    "null    (json null)\n"
+    "\n"
+    "Result (If the proposal was not accepted with mode=='proposal'):\n"
+    '"str"    (string) According to BIP22\n'
+    "\n"
+    "Result (Otherwise):\n"
+    "{                                          (json object)\n"
+    '  "version" : n,                           (numeric) The preferred block version\n'
+    '  "rules" : [                              (json array) specific block rules that are to be enforced\n'
+    '    "str",                                 (string) name of a rule the client must understand to some extent; see BIP 9 for format\n'
+    "    ...\n"
+    "  ],\n"
+    '  "vbavailable" : {                        (json object) set of pending, supported versionbit (BIP 9) softfork deployments\n'
+    '    "rulename" : n,                        (numeric) identifies the bit number as indicating acceptance and readiness for the named softfork rule\n'
+    "    ...\n"
+    "  },\n"
+    '  "capabilities" : [                       (json array)\n'
+    "    \"str\",                                 (string) A supported feature, for example 'proposal'\n"
+    "    ...\n"
+    "  ],\n"
+    '  "vbrequired" : n,                        (numeric) bit mask of versionbits the server requires set in submissions\n'
+    '  "previousblockhash" : "str",             (string) The hash of current highest block\n'
+    '  "transactions" : [                       (json array) contents of non-coinbase transactions that should be included in the next block\n'
+    "    {                                      (json object)\n"
+    '      "data" : "hex",                      (string) transaction data encoded in hexadecimal (byte-for-byte)\n'
+    '      "txid" : "hex",                      (string) transaction hash excluding witness data, shown in byte-reversed hex\n'
+    '      "hash" : "hex",                      (string) transaction hash including witness data, shown in byte-reversed hex\n'
+    '      "depends" : [                        (json array) array of numbers\n'
+    "        n,                                 (numeric) transactions before this one (by 1-based index in 'transactions' list) that must be present in the final block if this one is\n"
+    "        ...\n"
+    "      ],\n"
+    '      "fee" : n,                           (numeric) difference in value between transaction inputs and outputs (in satoshis); for coinbase transactions, this is a negative Number of the total collected block fees (ie, not including the block subsidy); if key is not present, fee is unknown and clients MUST NOT assume there isn\'t one\n'
+    '      "sigops" : n,                        (numeric) total SigOps cost, as counted for purposes of block limits; if key is not present, sigop cost is unknown and clients MUST NOT assume it is zero\n'
+    '      "weight" : n                         (numeric) total transaction weight, as counted for purposes of block limits\n'
+    "    },\n"
+    "    ...\n"
+    "  ],\n"
+    '  "coinbaseaux" : {                        (json object) data that should be included in the coinbase\'s scriptSig content\n'
+    '    "key" : "hex",                         (string) values must be in the coinbase (keys may be ignored)\n'
+    "    ...\n"
+    "  },\n"
+    '  "coinbasevalue" : n,                     (numeric) maximum allowable input to coinbase transaction, including the generation award and transaction fees (in satoshis)\n'
+    '  "longpollid" : "str",                    (string) an id to include with a request to longpoll on an update to this template\n'
+    '  "target" : "str",                        (string) The hash target\n'
+    '  "mintime" : xxx,                         (numeric) The minimum timestamp appropriate for the next block time, expressed in UNIX epoch time. Adjusted for the proposed BIP94 timewarp rule.\n'
+    '  "mutable" : [                            (json array) list of ways the block template may be changed\n'
+    "    \"str\",                                 (string) A way the block template may be changed, e.g. 'time', 'transactions', 'prevblock'\n"
+    "    ...\n"
+    "  ],\n"
+    '  "noncerange" : "hex",                    (string) A range of valid nonces\n'
+    '  "sigoplimit" : n,                        (numeric) limit of sigops in blocks\n'
+    '  "sizelimit" : n,                         (numeric) limit of block size\n'
+    '  "weightlimit" : n,                       (numeric, optional) limit of block weight\n'
+    '  "curtime" : xxx,                         (numeric) current timestamp in UNIX epoch time. Adjusted for the proposed BIP94 timewarp rule.\n'
+    '  "bits" : "str",                          (string) compressed target of next block\n'
+    '  "height" : n,                            (numeric) The height of the next block\n'
+    '  "signet_challenge" : "hex",              (string, optional) Only on signet\n'
+    '  "default_witness_commitment" : "hex"     (string, optional) a valid witness commitment for the unmodified block template\n'
+    "}\n"
+    "\n"
+    "Examples:\n"
+    '> bitcoin-cli getblocktemplate \'{"rules": ["segwit"]}\'\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "getblocktemplate", "params": [{"rules": ["segwit"]}]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
 _HELP_ADDNODE = (
@@ -1343,6 +1490,9 @@ HELP_TEXT: dict[str, str] = {
     "getrpcinfo": _HELP_GETRPCINFO,
     "submitblock": _HELP_SUBMITBLOCK,
     "submitheader": _HELP_SUBMITHEADER,
+    "getblocktemplate": _HELP_GETBLOCKTEMPLATE,
+    "generatetoaddress": _HELP_GENERATETOADDRESS,
+    "generateblock": _HELP_GENERATEBLOCK,
     "addnode": _HELP_ADDNODE,
     "addconnection": _HELP_ADDCONNECTION,
     "addpeeraddress": _HELP_ADDPEERADDRESS,
@@ -1388,6 +1538,9 @@ CATEGORY: dict[str, str] = {
     "getrpcinfo": "Control",
     "submitblock": "Mining",
     "submitheader": "Mining",
+    "getblocktemplate": "Mining",
+    "generatetoaddress": "hidden",
+    "generateblock": "hidden",
     "addnode": "Network",
     "clearbanned": "Network",
     "disconnectnode": "Network",
@@ -1399,8 +1552,9 @@ CATEGORY: dict[str, str] = {
     "listbanned": "Network",
     "ping": "Network",
     "setban": "Network",
-    # Core's own `{"hidden", &addconnection}` (`src/rpc/net.cpp`,
-    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): no heading of its own
+    # Core's own `{"hidden", &addconnection}` (`src/rpc/net.cpp`) and
+    # `generatetoaddress` and `generateblock` (`src/rpc/mining.cpp`), at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag: no heading of its own
     # in the bare listing, `_BARE_LISTING`'s own construction excluding
     # this category rather than sorting it in alphabetically where
     # "hidden" would fall. `help addconnection` still answers its own

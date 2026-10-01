@@ -2,7 +2,7 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""The warning for version bits no deployment uses, as Core raises it.
+"""The warning for unused version bits, and the version a miner sets.
 
 `UnknownActivations` is `VersionBitsCache::CheckUnknownActivations` with
 its `WarningBitsConditionChecker` (`src/versionbits.cpp`, at
@@ -17,6 +17,12 @@ of initial block download, where `Chainstate::UpdateTip`
 (`src/validation.cpp`, same sha) asks: a bit that is `ACTIVE` sets the
 warning, which runs `-alertnotify` the first time, and one that is
 `LOCKED_IN` is logged.
+
+`UnknownActivations.status` is `ComputeBlockVersion` and `GBTStatus`
+(same file and sha): the version a block on the tip carries, and the
+deployments `getblocktemplate` reports. Core's two deployments are both
+`gbt_optional_rule`, so a client's `rules` change neither the version nor
+the answer.
 
 This node enforces no deployment by signalling, each being buried
 (`btclib.consensus`). The deployments below are the ones Core still
@@ -42,7 +48,7 @@ if TYPE_CHECKING:
     from btclib_node.chains import Chain
     from btclib_node.chainstate.block_index import BlockInfo
 
-__all__ = ["UnknownActivations", "check_unknown_activations"]
+__all__ = ["DeploymentStatus", "UnknownActivations", "check_unknown_activations"]
 
 # `VERSIONBITS_TOP_BITS`, `VERSIONBITS_TOP_MASK` and
 # `VERSIONBITS_NUM_BITS` (`src/versionbits.h`, same sha)
@@ -74,6 +80,7 @@ class _State(enum.Enum):
 class _Deployment:
     """A BIP9 deployment whose signals Core still counts: `vDeployments`."""
 
+    name: str
     bit: int
     start_time: int
     timeout: int
@@ -87,10 +94,29 @@ class _Deployment:
 _TAPROOT_BIT = 2
 _TESTDUMMY_BIT = 28
 _DEPLOYMENTS: Mapping[str, tuple[_Deployment, ...]] = {
-    "mainnet": (_Deployment(_TAPROOT_BIT, 1619222400, 1628640000, 709632),),
-    "testnet": (_Deployment(_TAPROOT_BIT, 1619222400, 1628640000, 0),),
-    "regtest": (_Deployment(_TESTDUMMY_BIT, 0, _NO_TIMEOUT, 0),),
+    "mainnet": (_Deployment("taproot", _TAPROOT_BIT, 1619222400, 1628640000, 709632),),
+    "testnet": (_Deployment("taproot", _TAPROOT_BIT, 1619222400, 1628640000, 0),),
+    "regtest": (_Deployment("testdummy", _TESTDUMMY_BIT, 0, _NO_TIMEOUT, 0),),
 }
+
+# `DEPLOYMENT_TAPROOT` is `ALWAYS_ACTIVE` on these chains
+# (`src/kernel/chainparams.cpp`, same sha), which `GBTStatus` lists as
+# active; mainnet and testnet are above, and the other `testdummy`s are
+# never active
+_TAPROOT_ALWAYS_ACTIVE = frozenset({"regtest", "signet", "testnet4"})
+
+
+class DeploymentStatus(NamedTuple):
+    """What `UnknownActivations.status` answers for a block on the tip.
+
+    `signalling` and `locked_in` map a deployment's name to its bit, and
+    `active` lists names, each in name order, as Core's `std::map` does.
+    """
+
+    version: int
+    signalling: dict[str, int]
+    locked_in: dict[str, int]
+    active: list[str]
 
 
 class _Boundary(NamedTuple):
@@ -123,7 +149,7 @@ def _advance(  # noqa: PLR0913, PLR0917
     return state
 
 
-_WARNING_DEPLOYMENT = _Deployment(-1, 0, _NO_TIMEOUT, 0)
+_WARNING_DEPLOYMENT = _Deployment("", -1, 0, _NO_TIMEOUT, 0)
 
 
 class UnknownActivations:
@@ -143,6 +169,9 @@ class UnknownActivations:
         self._threshold = 1815 if chain.name == "mainnet" else self._period * 3 // 4
         self._min_height = chain.min_bip9_warning_height
         self._deployments = _DEPLOYMENTS.get(chain.name, ())
+        self._always_active = (
+            ["taproot"] if chain.name in _TAPROOT_ALWAYS_ACTIVE else []
+        )
         # the genesis block's predecessor, which is `DEFINED` by definition
         self._cache: dict[bytes | None, _Boundary] = {
             None: _Boundary(
@@ -163,6 +192,52 @@ class UnknownActivations:
         `CheckUnknownActivations`' own answer. The state is that of the
         period the next block is in, `GetStateFor` of that block.
         """
+        warning = self._boundary(active_chain, header_dict, height).warning
+        return [
+            (bit, state is _State.ACTIVE)
+            for bit, state in enumerate(warning)
+            if state in {_State.ACTIVE, _State.LOCKED_IN}
+        ]
+
+    def status(
+        self, active_chain: list[bytes], header_dict: Mapping[bytes, BlockInfo]
+    ) -> DeploymentStatus:
+        """Return the version and deployments of a block on the tip.
+
+        The states are those of the period the next block is in, as
+        `ComputeBlockVersion` and `GBTStatus` read them: the version sets
+        the bit of each deployment that is `STARTED` or `LOCKED_IN`.
+        """
+        boundary = self._boundary(active_chain, header_dict, None)
+        found: dict[str, tuple[_Deployment, _State]] = {
+            deployment.name: (deployment, state)
+            for deployment, state in zip(
+                self._deployments, boundary.deployments, strict=True
+            )
+        }
+        version = _TOP_BITS
+        signalling: dict[str, int] = {}
+        locked_in: dict[str, int] = {}
+        active = list(self._always_active)
+        for name in sorted(found):
+            deployment, state = found[name]
+            if state in {_State.STARTED, _State.LOCKED_IN}:
+                version |= 1 << deployment.bit
+            if state is _State.STARTED:
+                signalling[name] = deployment.bit
+            elif state is _State.LOCKED_IN:
+                locked_in[name] = deployment.bit
+            elif state is _State.ACTIVE:
+                active.append(name)
+        return DeploymentStatus(version, signalling, locked_in, sorted(active))
+
+    def _boundary(
+        self,
+        active_chain: list[bytes],
+        header_dict: Mapping[bytes, BlockInfo],
+        height: int | None,
+    ) -> _Boundary:
+        """Return the states in effect after the block at `height`."""
         if height is None:
             height = len(active_chain) - 1
         last = height - ((height + 1) % self._period)
@@ -175,12 +250,7 @@ class UnknownActivations:
             self._cache[active_chain[end]] = self._period_ending_at(
                 end, active_chain, header_dict
             )
-        warning = self._cache[active_chain[last] if last >= 0 else None].warning
-        return [
-            (bit, state is _State.ACTIVE)
-            for bit, state in enumerate(warning)
-            if state in {_State.ACTIVE, _State.LOCKED_IN}
-        ]
+        return self._cache[active_chain[last] if last >= 0 else None]
 
     def _period_ending_at(
         self,

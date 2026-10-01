@@ -1026,6 +1026,8 @@ ignore = [
 # registered handlers, none a free helper mistaken for one.
 "src/btclib_node/p2p/callbacks.py" = ["ARG001"]
 "src/btclib_node/rpc/callbacks.py" = ["ARG001"]
+# handlers registered in rpc/callbacks.py
+"src/btclib_node/rpc/mining.py" = ["ARG001"]
 # socket.socket.setblocking is a C-level method taking no keyword
 # arguments at all (verified directly: socket().setblocking(flag=False)
 # raises "takes no keyword arguments"), so the every-call-site half of

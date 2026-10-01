@@ -109,6 +109,7 @@ __all__ = [
     "precious_chain",
     "prune_up_to_height",
     "reconsider_chain",
+    "try_connect_block",
     "update_chain",
     "verify_mempool_acceptance",
 ]
@@ -278,8 +279,9 @@ def new_pow_valid_block(node: Node, block: Block) -> None:
     kept in `node.most_recent_block`, whether or not any peer was sent them.
 
     `callbacks.block` and `submitblock` call this with a block that passed
-    `Block.assert_valid`. A block failing `contextual_check_block` is not
-    announced, and `update_chain` refuses it when it reaches it.
+    `Block.assert_valid`, and `mining.accept_block` with one that passed
+    `mining.check_block_validity`. A block failing `contextual_check_block`
+    is not announced, and `update_chain` refuses it when it reaches it.
     """
     block_index = node.chainstate.block_index
     previous_hash = block.header.previous_block_hash
@@ -1951,3 +1953,24 @@ def _check_fee_rate(node: Node, vsize: int, fee: int) -> None:
     if fee < min_relay_fee:
         reason, details = "min relay fee not met", f"{fee} < {min_relay_fee}"
         raise TxRejectedError(reason, details)
+
+
+def try_connect_block(node: Node, block: Block, index: int) -> None:
+    """Raise what connecting `block` at `index` would, then undo the connection.
+
+    The `ConnectBlock(..., fJustCheck=true)` of Core's `TestBlockValidity`
+    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
+    the same `add_block` and `_validate_block` pair `update_chain` runs
+    per block, over the staged UTXO set, and the staging is undone
+    whether they raise or not. The block index, the block store and the
+    filter index are not touched, so nothing of `block` is stored.
+    """
+    utxo_index = node.chainstate.utxo_index
+    mark = utxo_index.trial_mark()
+    try:
+        transactions, _ = utxo_index.add_block(
+            block, index, check_bip30=_check_bip30(node, index, block.header.hash)
+        )
+        _validate_block(node, block, transactions, index)
+    finally:
+        utxo_index.rollback(mark)

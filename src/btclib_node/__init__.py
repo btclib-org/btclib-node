@@ -388,8 +388,8 @@ class Node(threading.Thread):
         # `main.check_fork_warning_conditions` and
         # `versionbits.check_unknown_activations` write it
         self.warnings = Warnings()
-        # reached by `update_chain`, which runs on this thread alone
-        # (ARCHITECTURE.md), so it needs no lock
+        # reached by `update_chain` and the mining RPCs, which run on this
+        # thread alone (ARCHITECTURE.md), so it needs no lock
         self.unknown_activations = UnknownActivations(self.chain)
         # `main.new_pow_valid_block`'s height of the last block it sent to
         # high-bandwidth peers: Core's `m_highest_fast_announce{0}`

@@ -165,6 +165,24 @@ def test_main_counts_taproot_s_bit_as_a_known_one() -> None:
         assert found == expected, (name, length)
 
 
+def test_taproot_is_active_where_core_has_it_always_active() -> None:
+    """`GBTStatus`: main's taproot is tracked, signet's is always active."""
+    active_chain, header_dict = a_chain([_TOP] * 2016)
+    found = {}
+    for name in ("mainnet", "testnet", "signet", "testnet4", "regtest"):
+        chain = cast("Chain", SimpleNamespace(name=name, min_bip9_warning_height=0))
+        found[name] = UnknownActivations(chain).status(active_chain, header_dict)
+
+    assert found["mainnet"].active == []
+    assert found["mainnet"].signalling == {"taproot": 2}
+    assert found["testnet"].active == []
+    assert found["signet"].active == ["taproot"]
+    assert found["testnet4"].active == ["taproot"]
+    assert found["regtest"].active == ["taproot"]
+    assert found["regtest"].signalling == {"testdummy": 28}
+    assert found["signet"].version == found["testnet4"].version == _TOP
+
+
 def test_a_fork_is_answered_from_its_own_blocks_after_the_chain_it_left() -> None:
     """A state is cached by its boundary block: a reorganisation reads its own.
 
@@ -295,7 +313,7 @@ def test_a_deployment_stays_known_until_its_activation_height(
     minimum. The minimum one above that height is what keeps it known.
     """
     deployment = versionbits._Deployment(
-        _UNKNOWN, 0, versionbits._NO_TIMEOUT, min_activation_height
+        "unknown", _UNKNOWN, 0, versionbits._NO_TIMEOUT, min_activation_height
     )
     monkeypatch.setitem(versionbits._DEPLOYMENTS, "regtest", (deployment,))
     versions = periods(0, bit(_UNKNOWN), bit(_UNKNOWN), bit(_UNKNOWN))

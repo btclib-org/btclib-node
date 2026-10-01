@@ -190,7 +190,7 @@ class UtxoIndex:
 
         Taken before `add_block`/`apply_rev_block` are ever called for
         that trial; `rollback` undoes back to exactly this point,
-        `main.update_chain`'s own docstring above being the one caller.
+        `main.update_chain` and `main.try_connect_block` being its callers.
         """
         return len(self._undo_log)
 
