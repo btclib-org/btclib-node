@@ -64,7 +64,7 @@ from btclib_node.main import (
 )
 from btclib_node.mempool import format_money
 from btclib_node.p2p.block_availability import BlockAvailability
-from btclib_node.p2p.compact_block import compact_block
+from btclib_node.p2p.compact_block import MostRecentBlock, compact_block
 from tests import (
     anyone_can_spend,
     anyone_can_spend_redeem_script,
@@ -3901,6 +3901,14 @@ def test_a_new_block_is_sent_to_a_high_bandwidth_peer_before_connecting(
         assert not sent
     recorded = case not in ("ibd", "not-on-tip", "bad-cb-height")
     assert node.highest_fast_announce == (2 if recorded else 0)
+    # kept past every gate, announced to a peer or not, as Core's
+    # `NewPoWValidBlock` stores it ahead of its `ForEachNode`
+    kept = recorded and case not in ("announced-before", "pre-segwit")
+    recent = node.most_recent_block
+    assert (recent is not None) == kept
+    if recent is not None:
+        assert recent.block == block
+        assert recent.hash == block.header.hash
 
 
 def test_a_block_sent_before_connecting_is_not_announced_again(node: Node) -> None:
@@ -3949,6 +3957,54 @@ def test_every_high_bandwidth_peer_is_sent_one_and_the_same_cmpctblock(
     main.new_pow_valid_block(node, chain[1])
     (first,) = sent[1]
     assert sent[2] == [first]
+
+
+def test_the_cmpctblock_sent_before_connecting_is_the_one_sent_after(
+    node: Node,
+) -> None:
+    """ISS 1336: `SendMessages` sends `m_most_recent_compact_block` as it is.
+
+    A high-bandwidth peer that lacked the parent when the block arrived
+    hears of it once it is connected, under the nonce the others got.
+    """
+    chain = generate_random_chain(2, RegTest().genesis.hash, tip_time=datetime.now(UTC))
+    connect(node, chain[:1])
+    node.is_initial_block_download = False
+    parent = chain[0].header.hash
+    early: list[Any] = []
+    late: list[Any] = []
+    node.p2p_manager.connections[1] = a_fast_peer(
+        early, BlockAvailability(best_known=parent)
+    )
+    behind = BlockAvailability(best_known=None)
+    node.p2p_manager.connections[2] = a_fast_peer(late, behind)
+    node.chainstate.block_index.add_headers([chain[1].header])
+    main.new_pow_valid_block(node, chain[1])
+    (first,) = early
+    assert not late
+
+    behind.best_known = parent
+    connect(node, chain[1:])
+    assert late == [first]
+
+
+def test_a_cmpctblock_of_another_block_than_the_most_recent_is_built_again(
+    node: Node,
+) -> None:
+    """ISS 1336: Core builds one where `m_most_recent_block_hash` differs."""
+    chain = generate_random_chain(2, RegTest().genesis.hash, tip_time=datetime.now(UTC))
+    connect(node, chain[:1])
+    node.is_initial_block_download = False
+    stale = compact_block(chain[0], 99)
+    node.most_recent_block = MostRecentBlock(chain[0], stale)
+    sent: list[Any] = []
+    node.p2p_manager.connections[1] = a_peer(
+        sent, BlockAvailability(best_known=chain[0].header.hash), high_bandwidth=True
+    )
+    connect(node, chain[1:])
+    (message,) = sent
+    assert isinstance(message, CmpctBlock)
+    assert message.header.hash == chain[1].header.hash
 
 
 def test_a_block_whose_header_is_unknown_or_valid_is_not_cached_invalid(

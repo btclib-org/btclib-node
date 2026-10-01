@@ -1460,17 +1460,20 @@ def _block_answer(node: Node, item: Inventory, block: Block) -> BlockMsg | Cmpct
     """Answer a block item as Core's `ProcessGetBlockData` does.
 
     A `MSG_CMPCT_BLOCK` for a block at most `MAX_CMPCTBLOCK_DEPTH` below
-    a recent tip gets a `cmpctblock` under a fresh nonce; one for an
-    older block gets the full block with witnesses, "we're almost
-    guaranteed they won't have a useful mempool to match against".
+    a recent tip gets a `cmpctblock`, the one `new_pow_valid_block` built
+    where the block is `node.most_recent_block` and one under a fresh
+    nonce otherwise; one for an older block gets the full block with
+    witnesses, "we're almost guaranteed they won't have a useful mempool
+    to match against".
     """
     if item.type_code == InventoryType.MSG_CMPCT_BLOCK:
         block_index = node.chainstate.block_index
         height = block_index.header_dict[item.hash].index
         tip_height = len(block_index.active_chain) - 1
         if _can_direct_fetch(node) and height >= tip_height - MAX_CMPCTBLOCK_DEPTH:
-            # a fresh nonce, where Core answers the most recent block with
-            # the one it announced (btclib-org/btclib-node#1336)
+            recent = node.most_recent_block
+            if recent is not None and recent.hash == item.hash:
+                return recent.compact
             return compact_block(block, secrets.randbits(64))
         include_witness = True
     else:
@@ -1641,7 +1644,13 @@ def _serve_getdata_item(
         if node.config.pruned and _below_prune_threshold(node, item.hash):
             conn.stop()
             return not_found_bytes
-        block = node.block_db.get_block(item.hash)
+        # Core's `a_recent_block`, ahead of the read
+        recent = node.most_recent_block
+        block = (
+            recent.block
+            if recent is not None and recent.hash == item.hash
+            else node.block_db.get_block(item.hash)
+        )
         if block:
             conn.send(_block_answer(node, item, block))
     # else: neither family, popped and otherwise ignored -- see the
@@ -2621,11 +2630,11 @@ def getblocktxn(node: Node, msg: bytes, conn: Connection) -> None:
 
     Core's `GETBLOCKTXN` handling (`net_processing.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag): silence for a block not
-    held; a `blocktxn` for one at most `MAX_BLOCKTXN_DEPTH` below the
-    tip, an index past its last transaction being misbehaviour; and for
-    an older one the full block, queued as a `MSG_WITNESS_BLOCK` item of
-    this connection's own `getdata`, whose serving pays for the disk
-    read the request cost.
+    held; a `blocktxn` for `node.most_recent_block`, ahead of any lookup,
+    or for one at most `MAX_BLOCKTXN_DEPTH` below the tip, an index past
+    its last transaction being misbehaviour; and for an older one the
+    full block, queued as a `MSG_WITNESS_BLOCK` item of this connection's
+    own `getdata`, whose serving pays for the disk read the request cost.
 
     An empty `indexes` is dropped, undiscouraged, ahead of any lookup:
     Core commit 28641fd195db2a175fd43fee2e32758aef9816a6 ("p2p: reject
@@ -2645,6 +2654,11 @@ def getblocktxn(node: Node, msg: bytes, conn: Connection) -> None:
         )
         conn.stop()
         return
+    recent = node.most_recent_block
+    if recent is not None and recent.hash == request.block_hash:
+        # Core answers from `m_most_recent_block` ahead of the lookups below
+        _send_block_transactions(conn, request, recent.block)
+        return
     block_index = node.chainstate.block_index
     block_info = block_index.header_dict.get(request.block_hash)
     if block_info is None:
@@ -2661,6 +2675,13 @@ def getblocktxn(node: Node, msg: bytes, conn: Connection) -> None:
     block = node.block_db.get_block(request.block_hash)
     if block is None:
         return
+    _send_block_transactions(conn, request, block)
+
+
+def _send_block_transactions(
+    conn: Connection, request: GetBlockTxn, block: Block
+) -> None:
+    """Answer `request` from `block`, Core's `SendBlockTransactions`."""
     transactions = block.transactions
     if any(index >= len(transactions) for index in request.indexes):
         err_msg = "getblocktxn with out-of-bounds tx indices"

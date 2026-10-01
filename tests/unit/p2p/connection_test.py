@@ -1416,6 +1416,7 @@ def test_a_realistic_getdata_burst_and_cfilters_headroom_are_not_dropped() -> No
         loop = asyncio.get_running_loop()
         connection = a_running_connection(loop, socket.socket())
         connection.node.block_db = SimpleNamespace(get_block=blocks.get)  # type: ignore[assignment]
+        connection.node.most_recent_block = None
         connection.node.chainstate = a_chainstate_holding(blocks)
         connection.node.mempool = SimpleNamespace(get_tx=lambda *a, **k: None)  # type: ignore[assignment]
         connection.node.pending_getdata = {}
@@ -1475,6 +1476,7 @@ def _blocks_served_behind(in_flight_bytes: int) -> tuple[int, int]:
         loop = asyncio.get_running_loop()
         connection = a_running_connection(loop, socket.socket())
         connection.node.block_db = SimpleNamespace(get_block=blocks.get)  # type: ignore[assignment]
+        connection.node.most_recent_block = None
         connection.node.chainstate = a_chainstate_holding(blocks)
         connection.node.mempool = SimpleNamespace(get_tx=lambda *a, **k: None)  # type: ignore[assignment]
         connection.node.pending_getdata = {}
@@ -1601,6 +1603,7 @@ def test_a_getdata_answer_paces_on_what_it_has_already_handed_over() -> None:
         loop = asyncio.get_running_loop()
         connection = a_running_connection(loop, socket.socket())
         connection.node.block_db = SimpleNamespace(get_block=blocks.get)  # type: ignore[assignment]
+        connection.node.most_recent_block = None
         connection.node.chainstate = a_chainstate_holding(blocks)
         connection.node.mempool = SimpleNamespace(get_tx=lambda *a, **k: None)  # type: ignore[assignment]
         connection.node.pending_getdata = {}
@@ -1659,6 +1662,7 @@ def test_a_getdata_of_mostly_misses_does_not_drop_the_connection() -> None:
         loop = asyncio.get_running_loop()
         connection = a_running_connection(loop, socket.socket())
         connection.node.block_db = SimpleNamespace(get_block=blocks.get)  # type: ignore[assignment]
+        connection.node.most_recent_block = None
         connection.node.chainstate = a_chainstate_holding(blocks)
         connection.node.mempool = SimpleNamespace(get_tx=lambda *a, **k: None)  # type: ignore[assignment]
         connection.node.pending_getdata = {}
