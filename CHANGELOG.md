@@ -1557,6 +1557,28 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **Both come from the block's undo data and are absent without it**
   (closes #1446).
 
+### `ASSURANCE_CASE.md` names the fuzzing that runs
+
+- **The harnesses under `fuzz/` run weekly as ordinary atheris scripts,
+  not under ClusterFuzzLite, and the JSON body of an RPC request is not
+  fuzzed** (closes #1549).
+
+### `ASSURANCE_CASE.md`'s import census prose names what the census prints
+
+- **`btclib_wallet`, `subprocess` and the `getifaddrs` FFI, a trust
+  item, are named** (closes #1550).
+
+### `_step_chain` is documented as fail-stop
+
+- **An exception from the download manager's step or from `update_chain`
+  ends the node, and the documents say so** (closes #1551).
+
+### `ASSURANCE_CASE.md` matches the code and tests it cites
+
+- **The statements the review found stale or overstated match the code
+  and tests they cite: integration coverage, the oracle, locks, S311,
+  sockets, files and the pickle default** (closes #1554).
+
 ### At equal work, the block that could connect first is the tip
 
 - **A block is numbered once its data and every ancestor's have arrived, as Core's

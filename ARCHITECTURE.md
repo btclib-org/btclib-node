@@ -15,8 +15,8 @@ expectations hold is the [assurance case](./ASSURANCE_CASE.md).
 drains the handshake queue, then a share of the RPC queue and a share of
 the peer-to-peer queue, then steps the download manager and extends the
 chain. A message that raises is logged and the loop continues; a failure
-under `update_chain` leaves it, because the databases below have to be
-closed on the way out.
+in the download manager's step or in `update_chain` is logged and ends
+the node, the databases below being closed on the way out.
 
 ## The protocol and the RPC surface
 
