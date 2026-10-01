@@ -1536,35 +1536,21 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `-acceptnonstdtxn` are read, and `getmempoolinfo` answers
   `maxdatacarriersize`** (issue #1382).
 
-### `getrawtransaction` and `decoderawtransaction` answer Core's `TxToUniv`
+### A `vout` is Core's, `scriptPubKey` nested
 
-- **A `vout` entry is `value`, `n` and a `scriptPubKey`, as Core's
-  `TxToUniv` writes it**, with `type` and `address` inside
-  `scriptPubKey` and `type` in `GetTxnOutputType`'s words (`pubkeyhash`,
-  not `p2pkh`), where `TxOut.to_dict` put `type`, `addresses` and
-  `network` beside it; `value` is a number with eight decimals, not a
-  string (closes #1440). The type is `Solver`'s, in `rpc/solver.py`
-  until btclib releases its own, and `gettxout` answers it too: btclib's
-  own types called a nulldata past 80 bytes and a bare key off the curve
-  or hybrid `nonstandard`. An `address` is spelled for the node's
-  network, where `gettxout` spelled mainnet's.
-- **A `vin` entry is flat, as Core's `TxToUniv` writes it**: `txid`,
-  `vout`, `scriptSig` and `sequence`, or `coinbase` alone for a coinbase,
-  and `txinwitness` only where the witness is not empty; `TxIn.to_dict`
-  nested the outpoint under `prev_out` and answered `txinwitness` for
-  every input. `getrawtransaction`, `decoderawtransaction` and
-  `getblock` at verbosity 2 render a transaction the same way, and a
-  decoded output of negative value renders as Core's `CAmount` does
-  rather than failing (closes #1448).
+- **`value`, `n` and a `scriptPubKey` with `type` and `address` inside,
+  `type` as `Solver` names it, addresses for the node's network**
+  (closes #1440).
 
-### `getblock` answers each transaction's fee and, at verbosity 3, its prevouts
+### A `vin` is Core's, and a transaction renders as `TxToUniv`
 
-- **Verbosity 2 adds `fee` to each transaction after the coinbase, and
-  verbosity 3 and above add `prevout` to each input, from the block's
-  undo data** (closes #1446). Both are left out where the undo data is
-  not held, as Core leaves them out. A verbosity at or below 0 answers
-  the hex, and one outside a 32-bit integer is refused, where every
-  verbosity but 0, 1 and 2 was.
+- **`txid`, `vout`, `scriptSig`, `txinwitness` only if present, or
+  `coinbase`; `asm` stays btclib's** (closes #1448).
+
+### `getblock` answers `fee` and, at verbosity 3, `prevout`
+
+- **Both come from the block's undo data and are absent without it**
+  (closes #1446).
 
 ## v2026.9.24
 
