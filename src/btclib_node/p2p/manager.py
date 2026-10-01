@@ -1512,12 +1512,10 @@ class P2pManager(threading.Thread):
     def _maybe_prune_active_addresses(self, now: float) -> None:
         if now - self._last_active_prune < _ACTIVE_PRUNE_INTERVAL:
             return
-        # The only other caller of `get_active_addresses` is `getaddr`,
-        # answered once per connection and never again -- `address_sampler`
-        # reads `active_addresses` unfiltered instead
-        # (btclib-org/btclib-node#1434) -- so a node with enough peers
-        # that nobody asks a `getaddr` would otherwise never prune a
-        # stale row. btclib-org/btclib-node#71
+        # Nothing else calls `get_active_addresses`: `address_sampler`
+        # reads `active_addresses` unfiltered
+        # (btclib-org/btclib-node#1434), so without this a stale row is
+        # pruned at start-up alone. btclib-org/btclib-node#71
         self._last_active_prune = now
         try:
             # get_active_addresses deletes every aged-out row

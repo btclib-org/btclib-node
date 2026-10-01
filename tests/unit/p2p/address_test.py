@@ -1214,6 +1214,59 @@ def test_set_services_records_no_endpoint_the_table_does_not_hold() -> None:
     assert not peer_db.active_addresses
 
 
+def test_get_addr_draws_from_an_address_no_handshake_answered() -> None:
+    """ISS 1365: Core's `GetAddr_` draws from every entry, new and tried.
+
+    The table here holds one gossiped address, answered by no handshake,
+    and one answered address, and the draw is not limited to either.
+    """
+    peer_db = a_peer_db()
+    now = int(time.time())
+    gossiped = peer_address("1.2.3.4", 8333, timestamp=now)
+    answered = peer_address("5.6.7.8", 8333, timestamp=now)
+    peer_db.add_addresses([gossiped, answered], time_penalty=0)
+    peer_db.add_active_address(answered)
+    assert set(peer_db.get_addr(1000, 100)) == {gossiped, answered}
+
+
+def test_get_addr_sizes_its_answer_from_every_entry_and_skips_a_terrible_one() -> None:
+    """ISS 1365: a terrible entry is counted in the size, not drawn.
+
+    Ten entries, four of them terrible (timestamp 0), at 30%: the size
+    is three, drawn from the six that are not terrible. Sized from those
+    six, it would be two.
+    """
+    peer_db = a_peer_db()
+    now = int(time.time())
+    fresh = [peer_address(f"1.2.3.{n}", 8333, timestamp=now) for n in range(1, 7)]
+    terrible = [peer_address(f"1.2.4.{n}", 8333) for n in range(1, 5)]
+    peer_db.add_addresses([*fresh, *terrible], time_penalty=0)
+    for _ in range(20):
+        sample = peer_db.get_addr(1000, 30)
+        assert len(sample) == 3
+        assert set(sample) <= set(fresh)
+
+
+def test_get_addr_answers_less_where_the_table_is_terrible() -> None:
+    """ISS 1365: a table of terrible entries answers nothing, as Core's does."""
+    peer_db = a_peer_db()
+    peer_db.add_addresses(
+        [peer_address(f"1.2.3.{n}", 8333) for n in range(1, 5)], time_penalty=0
+    )
+    assert peer_db.get_addr(1000, 100) == []
+
+
+def test_get_addr_is_capped_at_the_most_it_may_answer() -> None:
+    """ISS 1365: the answer is at most `max_addresses`, whatever the share."""
+    peer_db = a_peer_db()
+    now = int(time.time())
+    peer_db.add_addresses(
+        [peer_address(f"1.2.3.{n}", 8333, timestamp=now) for n in range(1, 11)],
+        time_penalty=0,
+    )
+    assert len(peer_db.get_addr(4, 100)) == 4
+
+
 def test_updating_an_endpoint_already_known_does_not_spend_the_cap() -> None:
     """Updating an endpoint already at the cap does not push another one out.
 

@@ -1541,6 +1541,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`REPOSITORY.md` reads `lint / Dependency review` back with the other
   required checks** (issue btclib-org/.github#1465).
 
+### A `getaddr` is answered from every known address
+
+- **The answer is a sample of every address the table holds, new or
+  answered, sized from all of them and skipping those `IsTerrible`'s time
+  tests call terrible, as Core's `GetAddr_` draws it** (closes #1365).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

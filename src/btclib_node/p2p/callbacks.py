@@ -748,20 +748,8 @@ def pong(node: Node, msg: bytes, conn: Connection) -> None:
 # Core's own MAX_PCT_ADDR_TO_SEND (net_processing.cpp, 58a7869f86):
 # answering with the whole table on demand is what an observer mapping
 # the network wants, so a getaddr answer is a sample of it instead.
-# AddrManImpl::GetAddr_ (src/addrman.cpp, same sha) truncates
-# `len * pct // 100` down; `_addresses_to_send` below rounds up instead,
-# since a table of a handful of addresses -- every functional test's own
-# two-node regtest -- would otherwise be answered with none at all.
 # btclib-org/btclib-node#71
 _MAX_PCT_ADDR_TO_SEND = 23
-
-
-def _addresses_to_send(active: list[NetworkAddressV2]) -> list[NetworkAddressV2]:
-    """Return what a `getaddr` answers with: a sample, not the table."""
-    size = min(MAX_ADDR_TO_SEND, -(-len(active) * _MAX_PCT_ADDR_TO_SEND // 100))
-    if size >= len(active):
-        return active
-    return secrets.SystemRandom().sample(active, size)
 
 
 # How long a drawn sample is served again rather than redrawn: shared by
@@ -781,7 +769,7 @@ _ADDR_SAMPLE_JITTER = 3600 * 6
 
 
 def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
-    """Answer a peer's `getaddr` with a sample of known addresses, once.
+    """Answer a peer's `getaddr` with a sample of every known address, once.
 
     The sample itself is a cache, shared and redrawn only once its own
     lifetime and jitter expire -- the comment below argues why -- and
@@ -838,11 +826,11 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
         manager = node.p2p_manager
         cache.sample = [
             address
-            for address in _addresses_to_send(peer_db.get_active_addresses())
+            for address in peer_db.get_addr(MAX_ADDR_TO_SEND, _MAX_PCT_ADDR_TO_SEND)
             if not manager.is_discouraged(address)
             and not manager.ban_man.is_peer_banned(address)
         ]
-        # The sample can go on naming an endpoint `active_addresses` has
+        # The sample can go on naming an endpoint the table has
         # since aged out or dropped, for as long as this cache is still
         # good: intended, not overlooked -- the cache is not what a
         # `getaddr` answer's freshness rests on, an `addr` entry already
@@ -858,7 +846,7 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
     # Addr and AddrV2 are siblings under Payload rather than one a
     # subclass of the other, so each is built from its own list rather
     # than through a shared name of a type the other could not accept.
-    # `_addresses_to_send` already keeps this under MAX_ADDR_TO_SEND, the
+    # `PeerDB.get_addr` already keeps this under MAX_ADDR_TO_SEND, the
     # bound btclib's Addr and AddrV2 refuse a longer message than, so one
     # message is always enough.
     if conn.prefer_addressv2:

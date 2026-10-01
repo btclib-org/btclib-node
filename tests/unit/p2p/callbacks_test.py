@@ -240,7 +240,7 @@ def make_node(
     inbound: bool = True,
     addr_cache_key: tuple[int, str, int] = _A_CACHE_KEY,
 ) -> tuple[Any, Any, list[Any]]:
-    """Build a node with `peer_db` addresses active, and a peer stand-in.
+    """Build a node whose `peer_db` knows `addresses`, and a peer stand-in.
 
     `is_discouraged` answers for the hosts of `discouraged`, and the ban
     list holds the subnets of `banned`. The peer is inbound by default,
@@ -248,7 +248,7 @@ def make_node(
     """
     peer_db = PeerDB(cast("Chain", None), cast("Path", None))
     for address in addresses:
-        peer_db.active_addresses.append(address)
+        peer_db.addresses.add(address)
     sent: list[Any] = []
     conn = SimpleNamespace(
         prefer_addressv2=prefer_addressv2,
@@ -267,6 +267,13 @@ def make_node(
         )
     )
     return node, conn, sent
+
+
+def an_unsampled_table(
+    self: PeerDB, max_addresses: int, max_pct: int
+) -> list[NetworkAddressV2]:
+    """Stand in for `PeerDB.get_addr`: the whole table, in no order."""
+    return list(self.addresses)
 
 
 def test_an_ipv4_address_is_answered_in_an_addr() -> None:
@@ -297,11 +304,11 @@ def test_an_address_addr_version_1_cannot_carry_is_left_out(
     """An `Addr` answer to an addrv1 peer leaves out an address it cannot carry.
 
     An onion address has no addr version 1 entry to be built into, so
-    one of them among the active addresses would cost the whole answer.
+    one of them among the known addresses would cost the whole answer.
     The sample itself is a different test, below, so this patches it to
     the identity to isolate the addr-v1 filter it is testing.
     """
-    monkeypatch.setattr(cb, "_addresses_to_send", lambda active: active)
+    monkeypatch.setattr(PeerDB, "get_addr", an_unsampled_table)
     onion = an_address(network_id=BIP155Network.TORV3)
     ipv4 = an_address()
     ipv6 = an_address(network_id=BIP155Network.IPV6)
@@ -309,7 +316,7 @@ def test_an_address_addr_version_1_cannot_carry_is_left_out(
     getaddr(node, b"", conn)
     (answer,) = sent
     # ipv6 is carried by addr version 1, and only the network id says so
-    assert answer.addresses == (addr_entry(ipv4), addr_entry(ipv6))
+    assert set(answer.addresses) == {addr_entry(ipv4), addr_entry(ipv6)}
     answer.serialize()
 
 
@@ -322,8 +329,8 @@ def test_the_same_address_reaches_a_peer_that_can_take_it() -> None:
     assert answer.addresses == (onion,)
 
 
-def test_nothing_active_is_answered_with_nothing() -> None:
-    """A `getaddr` against an empty active table gets no answer at all."""
+def test_nothing_known_is_answered_with_nothing() -> None:
+    """A `getaddr` against an empty table gets no answer at all."""
     node, conn, sent = make_node([])
     getaddr(node, b"", conn)
     assert not sent
@@ -342,7 +349,7 @@ def test_a_getaddr_from_an_outbound_peer_is_ignored() -> None:
     assert conn.addr_relay_enabled is False
 
 
-def test_nothing_active_is_answered_with_nothing_over_addrv2_either() -> None:
+def test_nothing_known_is_answered_with_nothing_over_addrv2_either() -> None:
     """The same silence holds for an addrv2 peer, not only an addrv1 one."""
     node, conn, sent = make_node([], prefer_addressv2=True)
     getaddr(node, b"", conn)
@@ -350,7 +357,7 @@ def test_nothing_active_is_answered_with_nothing_over_addrv2_either() -> None:
 
 
 def test_a_getaddr_answer_is_a_sample_not_the_whole_table() -> None:
-    """A `getaddr` answer is a 23% sample of the active table, not all of it.
+    """A `getaddr` answer is a 23% sample of the known table, not all of it.
 
     #71: Core's own reason for not serving the live table is that doing
     so tells anyone who asks the complete set of peers this node knows
@@ -365,14 +372,14 @@ def test_a_getaddr_answer_is_a_sample_not_the_whole_table() -> None:
     assert conn.addr_relay_enabled is True
     (answer,) = sent
     assert len(answer.addresses) == 115
-    # a sample of what is active, not addresses invented for the answer
+    # a sample of what is known, not addresses invented for the answer
     assert set(answer.addresses) <= {addr_entry(address) for address in addresses}
     # drawn without replacement
     assert len(set(answer.addresses)) == len(answer.addresses)
 
 
 def test_a_getaddr_answer_is_capped_at_max_addr_to_send() -> None:
-    """A large active table is answered up to `MAX_ADDR_TO_SEND`, not 23% of it.
+    """A large table is answered up to `MAX_ADDR_TO_SEND`, not 23% of it.
 
     #71: the chunking Core itself misbehaves a peer over is right at
     1000 -- 23% of 10000 is 2300, so the cap and not the percentage is
@@ -426,11 +433,14 @@ def test_two_connections_close_together_are_answered_the_same_sample(
     """
     draws: list[list[NetworkAddressV2]] = []
 
-    def counting_sample(active: list[NetworkAddressV2]) -> list[NetworkAddressV2]:
+    def counting_sample(
+        self: PeerDB, max_addresses: int, max_pct: int
+    ) -> list[NetworkAddressV2]:
+        active = an_unsampled_table(self, max_addresses, max_pct)
         draws.append(active)
-        return list(active)
+        return active
 
-    monkeypatch.setattr(cb, "_addresses_to_send", counting_sample)
+    monkeypatch.setattr(PeerDB, "get_addr", counting_sample)
     address = an_address()
     node, conn1, sent = make_node([address])
     conn2 = another_conn(sent)
@@ -455,12 +465,15 @@ def test_two_connections_on_different_local_sockets_are_answered_independently(
     """
     calls = 0
 
-    def distinct_sample(active: list[NetworkAddressV2]) -> list[NetworkAddressV2]:
+    def distinct_sample(
+        self: PeerDB, max_addresses: int, max_pct: int
+    ) -> list[NetworkAddressV2]:
         nonlocal calls
         calls += 1
-        return [replace(active[0], port=active[0].port + calls)]
+        (only,) = self.addresses
+        return [replace(only, port=only.port + calls)]
 
-    monkeypatch.setattr(cb, "_addresses_to_send", distinct_sample)
+    monkeypatch.setattr(PeerDB, "get_addr", distinct_sample)
     address = an_address()
     node, conn1, sent = make_node([address])
     conn2 = another_conn(sent, addr_cache_key=a_different_cache_key())
@@ -478,11 +491,14 @@ def test_the_cached_sample_is_redrawn_once_it_expires(
     """Past `_ADDR_SAMPLE_LIFETIME` plus jitter, a new `getaddr` draws fresh."""
     draws: list[list[NetworkAddressV2]] = []
 
-    def counting_sample(active: list[NetworkAddressV2]) -> list[NetworkAddressV2]:
+    def counting_sample(
+        self: PeerDB, max_addresses: int, max_pct: int
+    ) -> list[NetworkAddressV2]:
+        active = an_unsampled_table(self, max_addresses, max_pct)
         draws.append(active)
-        return list(active)
+        return active
 
-    monkeypatch.setattr(cb, "_addresses_to_send", counting_sample)
+    monkeypatch.setattr(PeerDB, "get_addr", counting_sample)
     address = an_address()
     node, conn1, sent = make_node([address])
     conn2 = another_conn(sent)
@@ -507,7 +523,7 @@ def test_a_discouraged_host_is_left_out_of_a_getaddr_answer(
     Whatever port it was recorded on, and after the draw: the sample
     patched to the identity here, what is left out is only the host.
     """
-    monkeypatch.setattr(cb, "_addresses_to_send", list)
+    monkeypatch.setattr(PeerDB, "get_addr", an_unsampled_table)
     now = int(time.time())
     kept = peer_address("1.2.3.4", 18444, timestamp=now)
     discouraged = peer_address("1.2.3.5", 18444, timestamp=now)
@@ -525,7 +541,7 @@ def test_a_banned_host_is_left_out_of_a_getaddr_answer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Core's `GetAddressesUnsafe` leaves a banned host out, by subnet."""
-    monkeypatch.setattr(cb, "_addresses_to_send", list)
+    monkeypatch.setattr(PeerDB, "get_addr", an_unsampled_table)
     now = int(time.time())
     kept = peer_address("1.2.3.4", 18444, timestamp=now)
     banned = peer_address("5.6.7.8", 18444, timestamp=now)

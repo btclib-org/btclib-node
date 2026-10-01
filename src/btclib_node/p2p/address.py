@@ -566,8 +566,9 @@ class PeerDB:
         # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `attempt` writes it
         # from `P2pManager`'s thread alone. `last_try` reads it from
         # there too, and from `get_active_addresses`'s own call into
-        # `_aged_out`'s grace check, reachable from `Node`'s thread
-        # through `callbacks.getaddr` (btclib-org/btclib-node#1435).
+        # `_aged_out`'s grace check, and `get_addr`'s, reachable from
+        # `Node`'s thread through `callbacks.getaddr`
+        # (btclib-org/btclib-node#1435).
         # Unlocked on purpose: `attempt`'s reassignment of this dict is
         # one step, not a read-modify-write of the attribute itself, so
         # a concurrent `last_try` sees the whole old dict or the whole
@@ -1040,6 +1041,34 @@ class PeerDB:
     def last_try(self, address: NetworkAddressV2) -> float:
         """Return when `address` was last tried, `0.0` for never or long ago."""
         return self._last_try.get(endpoint_key(address), 0.0)
+
+    def get_addr(self, max_addresses: int, max_pct: int) -> list[NetworkAddressV2]:
+        """Return a random sample of the known addresses, the terrible left out.
+
+        Core's `AddrManImpl::GetAddr_` (`src/addrman.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the answer is sized
+        from every entry, new and tried -- here `addresses`, which holds
+        every answered endpoint too -- as `max_pct` percent of them, at
+        most `max_addresses`. Entries are then drawn at random, skipping
+        one `_aged_out` calls terrible, until the size is reached or the
+        table is spent, so a table of terrible entries answers less than
+        its size. The percentage rounds up where Core's rounds down: a
+        table of a handful of addresses, every functional test's own
+        two-node regtest, would otherwise answer none
+        (btclib-org/btclib-node#71).
+        """
+        now = time.time()
+        with self._addresses_lock:
+            rows = list(self.addresses)
+        size = min(max_addresses, -(-len(rows) * max_pct // 100))
+        secrets.SystemRandom().shuffle(rows)
+        sample: list[NetworkAddressV2] = []
+        for row in rows:
+            if len(sample) >= size:
+                break
+            if not _aged_out(row, now, self.last_try(row)):
+                sample.append(row)
+        return sample
 
     def get_active_addresses(self) -> list[NetworkAddressV2]:
         """Return `active_addresses`, pruned of every entry `_aged_out` names.
