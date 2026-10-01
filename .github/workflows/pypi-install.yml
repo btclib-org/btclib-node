@@ -269,7 +269,7 @@ jobs:
         shell: bash
         run: |
           uv run --no-project python -c "from importlib.metadata import version; \
-            from btclib.curves import is_libsecp256k1_serving; \
+            from btclib_ecc.curves import is_libsecp256k1_serving; \
             print('installed version:', version('btclib-node')); \
             assert is_libsecp256k1_serving(), \
               'btclib[secp256k1] resolved, the bindings do not serve'"

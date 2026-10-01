@@ -1674,18 +1674,20 @@ def test_a_transaction_is_read_out_of_the_block_named() -> None:
     assert verbose["blockhash"] == header.hash.hex()
     assert verbose["in_active_chain"] is True
     assert verbose["confirmations"] == 1
+    assert verbose["time"] == verbose["blocktime"] == int(header.time.timestamp())
     # Core's order: `in_active_chain`, `TxToUniv`'s keys, then the block's
     keys = list(verbose)
     assert keys[0] == "in_active_chain"
     assert keys[1] == "txid"
-    assert keys[-3:] == ["hex", "blockhash", "confirmations"]
+    assert keys[-5:] == ["hex", "blockhash", "confirmations", "time", "blocktime"]
 
 
 def test_a_transaction_off_the_active_chain_is_named_but_not_confirmed() -> None:
     """`getrawtransaction` verbose reports an off-chain transaction unconfirmed.
 
-    `in_active_chain` is false and `confirmations` is -1 for a block that
-    holds the transaction but is not on the active chain.
+    `in_active_chain` is false and `confirmations` is 0, with no `time`
+    or `blocktime`, for a block that holds the transaction but is not on
+    the active chain (`TxToJSON`, `src/rpc/rawtransaction.cpp`).
     """
     tx = a_tx()
     header = generate_random_header_chain(1, RegTest().genesis.hash)[0]
@@ -1700,7 +1702,107 @@ def test_a_transaction_off_the_active_chain_is_named_but_not_confirmed() -> None
     verbose = get_raw_transaction(node, _CONN, [tx.id.hex(), True, header.hash.hex()])
     assert isinstance(verbose, dict)
     assert verbose["in_active_chain"] is False
-    assert verbose["confirmations"] == -1
+    assert verbose["confirmations"] == 0
+    assert "time" not in verbose
+    assert "blocktime" not in verbose
+
+
+@pytest.mark.parametrize("verbosity", [2, 3, 2**31 - 1])
+def test_getrawtransaction_verbosity_2_answers_fee_and_prevout(
+    regtest_node: Callable[..., Node], verbosity: int
+) -> None:
+    """Verbosity 2 and above answer `fee` and each input's `prevout`.
+
+    From the block's undo data, as `getblock` does: `fee` before `hex`,
+    then the block's keys (`src/rpc/rawtransaction.cpp`).
+    """
+    node, block, _ = a_node_with_a_paying_spend(regtest_node)
+    paying = block.transactions[1]
+
+    answer = get_raw_transaction(
+        node, _CONN, [paying.id.hex(), verbosity, block.header.hash.hex()]
+    )
+
+    assert isinstance(answer, dict)
+    assert answer["fee"].text == "0.00005000"
+    assert answer["vin"][0]["prevout"]["height"] == 1
+    assert list(answer)[-6:] == [
+        "fee",
+        "hex",
+        "blockhash",
+        "confirmations",
+        "time",
+        "blocktime",
+    ]
+
+
+def test_getrawtransaction_verbosity_1_answers_neither_fee_nor_prevout(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Verbosity 1 names no `fee` and no `prevout`, undo data held or not."""
+    node, block, _ = a_node_with_a_paying_spend(regtest_node)
+
+    answer = get_raw_transaction(
+        node, _CONN, [block.transactions[1].id.hex(), 1, block.header.hash.hex()]
+    )
+
+    assert isinstance(answer, dict)
+    assert "fee" not in answer
+    assert "prevout" not in answer["vin"][0]
+
+
+def test_getrawtransaction_verbosity_2_of_a_coinbase_has_no_fee(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A coinbase has no undo data, so verbosity 2 answers it without `fee`.
+
+    Whether or not the block's patch is held.
+    """
+    node, block, _ = a_node_with_a_paying_spend(regtest_node)
+    monkeypatch.setattr(node.block_db, "get_rev_block", lambda _hash: None)
+
+    answer = get_raw_transaction(
+        node, _CONN, [block.transactions[0].id.hex(), 2, block.header.hash.hex()]
+    )
+
+    assert isinstance(answer, dict)
+    assert "fee" not in answer
+    assert "prevout" not in answer["vin"][0]
+
+
+def test_getrawtransaction_verbosity_2_of_a_mempool_transaction_has_no_fee() -> None:
+    """A mempool transaction is in no block, so has no undo data to read."""
+    tx = a_tx()
+    node = a_tx_lookup_node(mempool_txs=[tx])
+
+    answer = get_raw_transaction(node, _CONN, [tx.id.hex(), 2])
+
+    assert isinstance(answer, dict)
+    assert "fee" not in answer
+    assert "blockhash" not in answer
+
+
+@pytest.mark.parametrize("patch", ["missing", "mismatched"])
+def test_getrawtransaction_verbosity_2_refuses_undo_data_it_cannot_read(
+    regtest_node: Callable[..., Node],
+    monkeypatch: pytest.MonkeyPatch,
+    patch: str,
+) -> None:
+    """A patch missing, or not matching the block, is Core's "can't be read"."""
+    node, block, _ = a_node_with_a_paying_spend(regtest_node)
+    rev = (
+        None
+        if patch == "missing"
+        else RevBlock(block.header.hash, to_add=[], to_remove=[])
+    )
+    monkeypatch.setattr(node.block_db, "get_rev_block", lambda _hash: rev)
+
+    with pytest.raises(RpcError) as raised:
+        get_raw_transaction(
+            node, _CONN, [block.transactions[1].id.hex(), 2, block.header.hash.hex()]
+        )
+    assert raised.value.code == RPCErrorCode.INTERNAL_ERROR
+    assert raised.value.message.startswith("Undo data expected but can't be read.")
 
 
 def test_a_transaction_the_named_block_does_not_hold_is_refused() -> None:
@@ -1860,26 +1962,27 @@ def test_a_null_blockhash_is_the_same_as_none_given() -> None:
     )
 
 
-def test_a_verbose_of_the_wrong_json_type_is_named() -> None:
-    """`getrawtransaction`'s verbose of the wrong JSON type is named."""
+def test_a_verbosity_of_the_wrong_json_type_is_named() -> None:
+    """`getrawtransaction`'s verbosity is `skip_type_check`: a bare message."""
     node = a_tx_lookup_node()
     with pytest.raises(RpcError) as raised:
         get_raw_transaction(node, _CONN, ["11" * 32, "true"])
     assert raised.value.code == RPCErrorCode.TYPE_ERROR
     assert raised.value.message == (
-        'Wrong type passed:\n{\n    "Position 2 (verbose)": "JSON value of '
-        'type string is not of expected type bool"\n}'
+        "JSON value of type string is not of expected type number"
     )
 
 
 def test_getrawtransaction_names_every_wrongly_typed_argument_at_once() -> None:
-    """ISS 1293: txid, verbose and blockhash wrong at once are all named.
+    """ISS 1293: txid and blockhash wrong at once are both named.
+
+    The wrong verbosity beside them is not: it is read after this check,
+    as `ParseVerbosity` reads it.
 
     Also proves the value-level checks -- the genesis exception, the
     two hex decodes -- do not run ahead of this: a wrong-typed txid
     would otherwise never reach `bytes.fromhex` for the genesis
-    comparison to run at all, so reaching one `TYPE_ERROR` naming all
-    three shows every declared argument's type is checked first.
+    comparison to run at all.
     """
     node = a_tx_lookup_node()
     with pytest.raises(RpcError) as raised:
@@ -1890,8 +1993,6 @@ def test_getrawtransaction_names_every_wrongly_typed_argument_at_once() -> None:
         "{\n"
         '    "Position 1 (txid)": "JSON value of type number is not of'
         ' expected type string",\n'
-        '    "Position 2 (verbose)": "JSON value of type string is not'
-        ' of expected type bool",\n'
         '    "Position 3 (blockhash)": "JSON value of type number is not'
         ' of expected type string"\n'
         "}"
@@ -5467,6 +5568,9 @@ def test_get_block_refuses_a_verbosity_of_the_wrong_json_type(
     with pytest.raises(RpcError) as raised:
         get_block(node, _CONN, [chain[0].header.hash.hex(), "1"])
     assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert raised.value.message == (
+        "JSON value of type string is not of expected type number"
+    )
 
 
 def test_get_block_verbosity_false_and_2_are_not_confused_with_each_other(

@@ -55,15 +55,20 @@ concurrency:
 
 jobs:
   # one profile per scope, each a cell of the matrix the callee loops
-  # over. The ceiling is the job's own former timeout-minutes, carried
-  # over unchanged, and the session budget is the `timeout --signal=INT`
-  # the former single-job step ran under, and the headers sync takes the
-  # same pair
+  # over. The session budget is the `timeout --signal=INT` a session
+  # runs under, and a mutant it cuts off has no verdict
+  # (btclib-org/btclib-node#1557), so it is sized to run every mutant. At
+  # about 2.7 s each, run 36826347052, the headers sync's 499 take 23
+  # minutes and the interpreter's 186 take 6. 45 minutes is nearly twice
+  # the longer, and the ceiling adds 15 for the checkout, the install, the
+  # baseline and the reports, both far under a job's 6 hours.
+  # A run that prints `never run N` has outgrown the budget: resize it
+  # from the rate above.
   mutation:
     uses: btclib-org/.github/.github/workflows/reusable-mutation.yml@main
     with:
       profiles: >-
         [{"profile": "the consensus entry point", "slug": "interpreter",
-        "ceiling": 20, "sessions": "interpreter.toml 10m"},
+        "ceiling": 60, "sessions": "interpreter.toml 45m"},
         {"profile": "the low-work headers sync", "slug": "headers-sync",
-        "ceiling": 20, "sessions": "headers_sync.toml 10m"}]
+        "ceiling": 60, "sessions": "headers_sync.toml 45m"}]
