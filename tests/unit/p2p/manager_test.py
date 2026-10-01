@@ -7315,13 +7315,21 @@ def test_manage_connections_sweeps_a_dial_that_registers_after_the_flip(
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag) rather than once on the
     flip; `manage_connections`'s own repeated sweep, once every 0.1s
     pass, is this tree's match for it, and is what this test is for:
-    `connect` is called while still active, the flip follows at 0.1s,
-    and `dial` itself is delayed 0.5s past that, so the connection
-    registers a full four sweep passes after the flip already ran.
+    `connect` is called while still active, the flip follows once `dial`
+    has been entered, and `dial` itself is delayed 0.5s past that, so the
+    connection registers a full four sweep passes after the flip already
+    ran. The flip waits for `dial` rather than for a fixed time: a
+    manager loop that has not yet run `async_connect` when the flip
+    lands finds the network inactive, returns, and nothing ever
+    registers.
     `connect` rather than `connect_host`: this is about the sweep, not
     the resolve pipeline `async_connect_host` alone runs, and `connect`
     takes an already-resolved address straight to `dial` the way
     `async_connect`'s own docstring describes.
+
+    The connection is read off `create_connection`, not polled out of
+    `pending_connections`: the sweep removes it about 0.15s after it
+    registers, and a poll starved for that long never sees it.
 
     The final wait is bounded well under `_PEER_CONNECT_TIMEOUT`'s own
     60s, deliberately: `_prune_stale_connections` drops any
@@ -7337,20 +7345,31 @@ def test_manage_connections_sweeps_a_dial_that_registers_after_the_flip(
     """
     ours, theirs = socket.socketpair()
 
+    dialling = threading.Event()
+    registered = []
+
     async def delayed_dial(address: NetworkAddressV2) -> socket.socket:
+        dialling.set()
         await asyncio.sleep(0.5)
         return ours
 
     monkeypatch.setattr(manager_module, "dial", delayed_dial)
     manager = a_manager()
+    create_connection = manager.create_connection
+
+    def recording_create_connection(*args: Any, **kwargs: Any) -> None:
+        create_connection(*args, **kwargs)
+        registered.append(manager.pending_connections[manager.last_connection_id])
+
+    monkeypatch.setattr(manager, "create_connection", recording_create_connection)
     try:
         manager.start()
         wait_until(manager.loop.is_running)
         manager.connect(a_full_node("1.2.3.4", 8333))
-        time.sleep(0.1)
+        wait_until(dialling.is_set)
         manager.set_network_active(active=False)
-        wait_until(lambda: manager.pending_connections)
-        (conn,) = manager.pending_connections.values()
+        wait_until(lambda: registered)
+        (conn,) = registered
         wait_until(lambda: conn.status == P2pConnStatus.Closed, timeout=5)
     finally:
         manager.stop()
