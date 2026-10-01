@@ -1672,6 +1672,12 @@ that records it (issue btclib-org/.github#1362).
   in, and once active is in `warnings` and runs `-alertnotify`**
   (closes #1475).
 
+### The documentation build survives docs.python.org being down
+
+- **The `python` inventory falls back to `docs/source/python-objects.inv`**
+  where docs.python.org fails, so an outage there no longer fails `-W`
+  (closes #1626).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
