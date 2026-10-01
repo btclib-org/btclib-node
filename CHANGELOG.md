@@ -1559,9 +1559,9 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 ### At equal work, the block that could connect first is the tip
 
-- **Blocks are numbered as their data and every ancestor's is in, in data
-  order, as Core's `nSequenceId`; at equal work the lower number wins, so
-  `invalidateblock` can return to a displaced branch** (closes #1579).
+- **A block is numbered once its data and every ancestor's have arrived, as Core's
+  `nSequenceId`, and at equal work the lower number is the tip, so `invalidateblock`
+  can return to a displaced branch of equal work** (closes #1579).
 
 ### `preciousblock` is served
 
