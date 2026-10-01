@@ -17,12 +17,13 @@ import math
 import string
 import time
 from decimal import Decimal, InvalidOperation
+from io import BytesIO
 from ipaddress import ip_address
 from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import RPCErrorCode, chain_from_network
 from btclib import b32, b58
-from btclib.block import Block, median_time_past
+from btclib.block import Block, BlockHeader, median_time_past
 from btclib.exceptions import BTClibException, BTClibTypeError, BTClibValueError
 from btclib.fee import FeeRate, fee_from_vsize
 from btclib.p2p.address import ServiceFlags
@@ -48,6 +49,7 @@ from btclib_node.main import (
     new_pow_valid_block,
     parent_lookup,
     passes_check_block,
+    precious_chain,
     prune_up_to_height,
     reconsider_chain,
     update_chain,
@@ -76,8 +78,6 @@ from btclib_node.rpc.help import HELP_TEXT, answer_help
 from btclib_node.rpc.solver import solver
 
 if TYPE_CHECKING:
-    from btclib.block import BlockHeader
-
     from btclib_node import Node
     from btclib_node.chainstate.block_index import BlockIndex
     from btclib_node.p2p.block_availability import BlockAvailability
@@ -115,6 +115,7 @@ __all__ = [
     "invalidate_block",
     "list_banned",
     "ping",
+    "precious_block",
     "prune_blockchain",
     "reconsider_block",
     "send_raw_transaction",
@@ -124,6 +125,7 @@ __all__ = [
     "stop",
     "stop_wait_param",
     "submit_block",
+    "submit_header",
     "test_mempool_accept",
 ]
 
@@ -726,19 +728,20 @@ def get_chain_tips(
 def _known_block_hash(node: Node, params: list[Any], method: str) -> bytes:
     """Validate `invalidateblock`/`reconsiderblock`'s own single `blockhash`.
 
-    Both take Core's own one required `STR_HEX` argument and answer the
-    same two refusals in the same order: a missing one is `method`'s own
-    full help text under `RPC_MISC_ERROR`, the shape `get_block_hash`'s
-    own missing-argument comment already argues; a wrongly typed or
-    wrongly shaped one is `type_error`/`_parse_hash_v`, exactly as
-    `get_block_header`'s own `"hash"`-labelled argument is checked
-    (`ParseHashV`, same label this index's own callers use for it); and a
-    64-character hex string this index does not know is
-    `RPC_INVALID_ADDRESS_OR_KEY`, `"Block not found"` -- Core's own
-    `LookupBlockIndex` failure in both `InvalidateBlock` and
-    `ReconsiderBlock` (`rpc/blockchain.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag), matching `get_block`/`get_block_header`'s own
-    identical refusal for the identical failure above.
+    `preciousblock`'s too. Each takes Core's own one required `STR_HEX`
+    argument and answers the same refusals in the same order: a missing
+    one is `method`'s own full help text under `RPC_MISC_ERROR`, the
+    shape `get_block_hash`'s own missing-argument comment already
+    argues; a wrongly typed or wrongly shaped one is
+    `type_error`/`_parse_hash_v`, exactly as `get_block_header`'s own
+    `"hash"`-labelled argument is checked (`ParseHashV`, same label this
+    index's own callers use for it); and a 64-character hex string this
+    index does not know is `RPC_INVALID_ADDRESS_OR_KEY`,
+    `"Block not found"` -- Core's own `LookupBlockIndex` failure in
+    `InvalidateBlock`, `ReconsiderBlock` and `preciousblock`
+    (`rpc/blockchain.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag), matching `get_block`/`get_block_header`'s own identical
+    refusal for the identical failure above.
     """
     if not params:
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT[method])
@@ -783,6 +786,21 @@ def reconsider_block(node: Node, conn: RpcConnection, params: list[Any]) -> None
     """
     block_hash = _known_block_hash(node, params, "reconsiderblock")
     reconsider_chain(node, block_hash)
+
+
+def precious_block(node: Node, conn: RpcConnection, params: list[Any]) -> None:
+    """Answer `preciousblock`, Core's own single `blockhash` argument.
+
+    Core's own `preciousblock` (`rpc/blockchain.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `_known_block_hash` checks
+    the argument, and `main.precious_chain` prefers the block and
+    retries the chain. Core answers `RPC_DATABASE_ERROR` where
+    `ActivateBestChain` fails on its own storage; here that failure
+    raises out of `update_chain`, and `rpc.main._execute` answers
+    `INTERNAL_ERROR`, as for `invalidate_block`.
+    """
+    block_hash = _known_block_hash(node, params, "preciousblock")
+    precious_chain(node, block_hash)
 
 
 def _coinbase_tx_dict(coinbase: Tx) -> dict[str, Any]:
@@ -1162,6 +1180,50 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     if extends_tip:
         return _validate_extending_tip(node, block_hash)
     return None
+
+
+def submit_header(node: Node, conn: RpcConnection, params: list[Any]) -> None:
+    """Answer `submitheader`: index one header alone, or refuse it.
+
+    Core's own `submitheader` (`rpc/mining.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `hexdata` is decoded as
+    `DecodeHexBlockHeader` decodes it: `_is_hex`, then the first eighty
+    bytes, any after them ignored as Core's `SpanReader` ignores them.
+    A header whose parent this index does not hold is refused before any
+    check. `BlockIndex.add_headers` then checks and indexes it, as
+    `ProcessNewBlockHeaders` does, and `None` answers a header indexed
+    now or already. A refusal answers the reason `add_headers` raises:
+    Core's word where it raises one, such as `duplicate-invalid` or
+    `bad-prevblk`, and otherwise its own message, the divergence
+    `submit_block` argues.
+    """
+    if not params:
+        raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["submitheader"])
+    if not isinstance(params[0], str):
+        raise type_error(1, "hexdata", params[0], "string")
+    decode_failed = RpcError(
+        RPCErrorCode.DESERIALIZATION_ERROR, "Block header decode failed"
+    )
+    if not _is_hex(params[0]):
+        raise decode_failed
+    try:
+        header = BlockHeader.parse(
+            BytesIO(bytes.fromhex(params[0])), check_validity=False
+        )
+    except BTClibValueError as error:
+        raise decode_failed from error
+
+    block_index = node.chainstate.block_index
+    parent = header.previous_block_hash
+    if parent not in block_index.header_dict:
+        raise RpcError(
+            RPCErrorCode.VERIFY_ERROR,
+            f"Must submit previous header ({parent.hex()}) first",
+        )
+    try:
+        block_index.add_headers([header])
+    except BTClibValueError as error:
+        raise RpcError(RPCErrorCode.VERIFY_ERROR, str(error)) from error
 
 
 def service_names(services: int) -> list[str]:
@@ -3783,7 +3845,9 @@ callbacks = {
     "getchaintips": get_chain_tips,
     "invalidateblock": invalidate_block,
     "reconsiderblock": reconsider_block,
+    "preciousblock": precious_block,
     "submitblock": submit_block,
+    "submitheader": submit_header,
     "getpeerinfo": get_peer_info,
     "getconnectioncount": get_connection_count,
     "getnetworkinfo": get_network_info,
@@ -3830,7 +3894,9 @@ arg_names: dict[str, tuple[str, ...]] = {
     "getchaintips": (),
     "invalidateblock": ("blockhash",),
     "reconsiderblock": ("blockhash",),
+    "preciousblock": ("blockhash",),
     "submitblock": ("hexdata", "dummy"),
+    "submitheader": ("hexdata",),
     "getpeerinfo": (),
     "getconnectioncount": (),
     "getnetworkinfo": (),
