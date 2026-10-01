@@ -1597,6 +1597,53 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   Core's `Must submit previous header (<hash>) first` for an unknown
   parent, and the reason for a header refused** (closes #1533).
 
+### The mutation run executes every mutant
+
+- **`mutation.yml`'s session budget is 45 minutes and its ceiling 60,
+  where 10 and 20 cut off more than half of the mutants** (closes #1557).
+
+### A release ships floors, and the text says so
+
+- **A release ships dependency floors, not pins: `pip install btclib-node`
+  gets the newest version each floor admits, and `uv.lock` protects only
+  an install from the checkout** (closes #1553).
+
+### `getrawtransaction` answers `time`, `blocktime` and verbosity 2
+
+- **Verbosity 2 adds `fee` and `prevout`, and `confirmations` is 0, not
+  -1, off the active chain; a verbosity of the wrong type is Core's bare
+  error** (closes #1597).
+
+### The Windows suite no longer errors at the solver test
+
+- **`test_solver_names_the_type_core_does` has short test ids**, where the
+  largest was 280206 characters and Windows refuses an environment
+  variable over 32767, which is where pytest puts it (closes #1613).
+
+### `pypi-install.yml` imports the bindings check from `btclib_ecc`
+
+- **The `Verify the bindings serve` step imports
+  `is_libsecp256k1_serving` from `btclib_ecc.curves`**, where
+  `btclib.curves` is gone from btclib 2026.9.30 (closes #1614).
+
+### `[tool.uv] required-version` is `>=0.12.18`
+
+- **`required-version` reads `>=0.12.18`, not `>=0.12.19`** (issue
+  btclib-org/.github#1482): the Dependabot service refused `0.12.19` with
+  `tool_version_not_supported`.
+
+### An RPC listener that ends before listening says why
+
+- **`RpcManager` keeps the failure that ended its thread as `bind_error`,
+  and `wait_until_listening` names it**, where it said only "see its log"
+  (closes #1231).
+
+### The sweep test reads the connection it waits for
+
+- **The test reads its connection off `create_connection`, where it polled
+  for an entry the sweep removes about 0.15s after it registers**; it failed
+  on `macos-latest` (issue #1563).
+
 ### Refusals carry Core's reasons, in Core's order
 
 - **A refused header, a script refusal and a block's refusals carry Core's

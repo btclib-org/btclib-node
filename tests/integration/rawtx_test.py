@@ -214,6 +214,33 @@ def _spend(inputs: list[tuple[bytes, TxIn]], outputs: list[TxOut]) -> Tx:
     return Tx(2, 0, [tx_in for _, tx_in in inputs], outputs, check_validity=False)
 
 
+def _assert_getblock_agrees(client: Any, bitcoind: Bitcoind, tip: int) -> None:
+    """Assert both nodes answer `getblock` 2 and 3 alike for every block."""
+    for height in range(tip + 1):
+        block_hash = bitcoind.rpc("getblockhash", [height])
+        for verbosity in (2, 3):
+            ours = client.call("getblock", [block_hash, verbosity])
+            theirs = bitcoind.rpc("getblock", [block_hash, verbosity])
+            ours, theirs = _without_asm(ours), _without_asm(theirs)
+            # one double, spelled with 16 digits by one and 17 by the other
+            assert ours.pop("difficulty") == pytest.approx(theirs.pop("difficulty"))
+            assert _key_order(ours) == _key_order(theirs)
+            assert ours == theirs, (height, verbosity)
+
+
+def _assert_getrawtransaction_agrees(
+    client: Any, bitcoind: Bitcoind, txs: list[Tx], block_hash: str
+) -> None:
+    """Assert both nodes answer `getrawtransaction` alike at each verbosity."""
+    for tx in txs:
+        for verbosity in (True, 1, 2, 3):
+            args: list[object] = [tx.id.hex(), verbosity, block_hash]
+            ours = _without_asm(client.call("getrawtransaction", args))
+            theirs = _without_asm(bitcoind.rpc("getrawtransaction", args))
+            assert _key_order(ours) == _key_order(theirs), verbosity
+            assert ours == theirs, verbosity
+
+
 def test_getblock_and_getrawtransaction_answer_as_bitcoind_does(
     bitcoind: Bitcoind, tmp_path: Path
 ) -> None:
@@ -222,10 +249,11 @@ def test_getblock_and_getrawtransaction_answer_as_bitcoind_does(
     The first three blocks pay anyone-can-spend outputs of three kinds
     (P2WSH, P2SH and bare `OP_TRUE`), and a fourth spends them once
     they mature, with one of its own outputs spent again in the same
-    block. `getblock` at verbosity 2 and 3 and `getrawtransaction` with
-    its block named are then asked of both, for every block, `asm` aside
-    and, for `getrawtransaction`, `time` and `blocktime`, which this node
-    does not answer.
+    block. `getblock` at verbosity 2 and 3 is then asked of both, for
+    every block, and `getrawtransaction` at verbosity 1 to 3 with its
+    block named, `asm` aside. Last the spending block is invalidated and
+    replaced, and the same transactions are asked for in the block that
+    is off the active chain.
     """
     op_true = b"\x51"
     p2wsh = bytes.fromhex("0020") + sha256(op_true)
@@ -298,28 +326,26 @@ def test_getblock_and_getrawtransaction_answer_as_bitcoind_does(
         wait_until(lambda: node.status == NodeStatus.BlockSynced)
         client = rpc_client(node)
 
-        for height in range(tip + 1):
-            block_hash = bitcoind.rpc("getblockhash", [height])
-            for verbosity in (2, 3):
-                ours = client.call("getblock", [block_hash, verbosity])
-                theirs = bitcoind.rpc("getblock", [block_hash, verbosity])
-                ours, theirs = _without_asm(ours), _without_asm(theirs)
-                # one double, spelled with 16 digits by one and 17 by the other
-                assert ours.pop("difficulty") == pytest.approx(theirs.pop("difficulty"))
-                assert _key_order(ours) == _key_order(theirs)
-                assert ours == theirs, (height, verbosity)
-
+        _assert_getblock_agrees(client, bitcoind, tip)
         spending = cast("dict[str, Any]", bitcoind.rpc("getblock", [spending_block, 3]))
         assert all("fee" in tx for tx in spending["tx"][1:])
         assert all("prevout" in vin for tx in spending["tx"][1:] for vin in tx["vin"])
-        for tx in (first, second):
-            args = [tx.id.hex(), True, spending_block]
-            ours = _without_asm(client.call("getrawtransaction", args))
-            theirs = _without_asm(bitcoind.rpc("getrawtransaction", args))
-            for key in ("time", "blocktime"):
-                theirs.pop(key)
-            assert _key_order(ours) == _key_order(theirs)
-            assert ours == theirs
+
+        txs = [first, second]
+        _assert_getrawtransaction_agrees(client, bitcoind, txs, spending_block)
+        on_chain = client.call("getrawtransaction", [first.id.hex(), 2, spending_block])
+        assert on_chain["confirmations"] == 3
+        assert {"time", "blocktime"} <= set(on_chain)
+
+        bitcoind.rpc("invalidateblock", [spending_block])
+        bitcoind.rpc("generatetodescriptor", [4, burial])
+        wait_until(lambda: len(node.chainstate.block_index.active_chain) == tip + 2)
+        off_chain = client.call(
+            "getrawtransaction", [first.id.hex(), 2, spending_block]
+        )
+        assert off_chain["in_active_chain"] is False
+        assert off_chain["confirmations"] == 0
+        _assert_getrawtransaction_agrees(client, bitcoind, txs, spending_block)
     finally:
         node.stop()
         node.join()

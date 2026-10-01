@@ -39,7 +39,7 @@ def test_a_listener_that_cannot_bind_is_reported_at_once(tmp_path: Path) -> None
     `taken_loopbacks` -- `::1` and `127.0.0.1` both, as the listener
     itself binds -- and its manager's thread ends: waiting the twenty
     seconds out would report the failure as a listener too slow to come
-    up.
+    up. The failure names the manager's `bind_error` (ISS 1231).
     """
     with taken_loopbacks() as port:
         node = Node(
@@ -50,7 +50,10 @@ def test_a_listener_that_cannot_bind_is_reported_at_once(tmp_path: Path) -> None
         node.start()
         start = time.monotonic()
         try:
-            with pytest.raises(ListenerEndedError, match=f"port {port} ended"):
+            with pytest.raises(
+                ListenerEndedError,
+                match=f"port {port} ended .*: Unable to bind any endpoint",
+            ):
                 wait_until_listening(node.rpc_manager)
         finally:
             node.stop()
