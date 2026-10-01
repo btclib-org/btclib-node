@@ -1541,6 +1541,44 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`REPOSITORY.md` reads `lint / Dependency review` back with the other
   required checks** (issue btclib-org/.github#1465).
 
+### A `vout` is Core's, `scriptPubKey` nested
+
+- **`value`, `n` and a `scriptPubKey` with `type` and `address` inside,
+  `type` as `Solver` names it, addresses for the node's network**
+  (closes #1440).
+
+### A `vin` is Core's, and a transaction renders as `TxToUniv`
+
+- **`txid`, `vout`, `scriptSig`, `txinwitness` only if present, or
+  `coinbase`; `asm` stays btclib's** (closes #1448).
+
+### `getblock` answers `fee` and, at verbosity 3, `prevout`
+
+- **Both come from the block's undo data and are absent without it**
+  (closes #1446).
+
+### `ASSURANCE_CASE.md` names the fuzzing that runs
+
+- **The harnesses under `fuzz/` run weekly as ordinary atheris scripts,
+  not under ClusterFuzzLite, and the JSON body of an RPC request is not
+  fuzzed** (closes #1549).
+
+### `ASSURANCE_CASE.md`'s import census prose names what the census prints
+
+- **`btclib_wallet`, `subprocess` and the `getifaddrs` FFI, a trust
+  item, are named** (closes #1550).
+
+### `_step_chain` is documented as fail-stop
+
+- **An exception from the download manager's step or from `update_chain`
+  ends the node, and the documents say so** (closes #1551).
+
+### `ASSURANCE_CASE.md` matches the code and tests it cites
+
+- **The statements the review found stale or overstated match the code
+  and tests they cite: integration coverage, the oracle, locks, S311,
+  sockets, files and the pickle default** (closes #1554).
+
 ### A `getaddr` is answered from every known address
 
 - **The answer is a sample of every address the table holds, new or

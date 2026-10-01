@@ -14,18 +14,29 @@ here are the ones [ARCHITECTURE](./ARCHITECTURE.md) describes.
 - **A block, a transaction, a script and an address this node accepts
   or builds agree with Bitcoin Core.**
   `.github/workflows/integration-bitcoind.yml` runs a disposable
-  regtest `bitcoind` against a fresh node over p2p and checks the tip,
-  `tests/integration/reorg_test.py` checks that a chain split follows
-  Core off an abandoned branch, and
-  `tests/integration/backpressure_test.py` checks that the receive
-  bound below actually engages against a real daemon serving blocks
-  faster than this node validates them.
+  regtest `bitcoind` against a fresh node over p2p, and
+  `tests/integration/bitcoind_test.py` checks the tip after a sync of
+  blocks Core mined. `tests/integration/reorg_test.py` checks that a
+  chain split follows Core off an abandoned branch,
+  `tests/integration/compact_blocks_test.py` that Core takes a
+  `cmpctblock` this node built, and
+  `tests/integration/backpressure_test.py` that the receive bound below
+  engages against a real daemon serving blocks faster than this node
+  validates them. No integration test offers Core a block, a transaction
+  or an address it rejects, so what this node refuses rests on the tests
+  and the vendored vectors under `tests/`, `tests/_data/README.md` naming
+  where each came from, and not on a run against Core.
 - **Octets from a peer or a caller either parse into what they claim to
   be or are refused, and nothing else.** `tests/property_test.py`'s own
   property — "over unconstrained octets, a declared entry point either
   returns or raises `BTClibException`, and nothing else" — is checked by
-  Hypothesis over the domain it describes and extended by the harnesses
-  under `fuzz/`, run under ClusterFuzzLite in `.github/workflows/fuzz.yml`.
+  Hypothesis over the domain it describes, for `frame_message_bytes` and
+  `parse_request_head`, and extended by the atheris harnesses under
+  `fuzz/`. `.github/workflows/fuzz.yml` runs them weekly as ordinary
+  scripts, not under ClusterFuzzLite, from the committed seeds and with
+  no corpus kept between runs. `fuzz_process_message.py` reaches the
+  handlers of `p2p/callbacks.py` through a `Node`, which the property
+  test leaves out. Nothing here fuzzes the `json.loads` of an RPC body.
 - **What one connection may cost this node, and how many inbound
   connections it holds, are bounded.** A single peer cannot commit this
   node past `MAX_QUEUED_SEND_BYTES`, a fixed sum of a block's and a
@@ -59,8 +70,9 @@ btclib-node is an application, not a library: it opens sockets of its
 own, on both surfaces ARCHITECTURE.md's *The protocol and the RPC
 surface* describes, and it writes to a datadir on disk. The command
 below lists the top-level name of every module `src/` imports, at any
-depth and in any spelling of the statement — `bitcoin_core_rpc` and
-`rocksdict` beside btclib itself, and otherwise the standard library.
+depth and in any spelling of the statement — `bitcoin_core_rpc`,
+`btclib_wallet` and `rocksdict` beside btclib itself, and otherwise the
+standard library.
 
 ```shell
 python3 - <<'EOF'
@@ -84,6 +96,21 @@ and only `tests/` (never shipped) asks for. `asyncio` and `socket` are
 what `P2pManager` and `RpcManager` open their listeners and connections
 through; `rocksdict` is the store; `multiprocessing` is `Node.worker_pool`
 under a GIL interpreter.
+
+`btclib_wallet` is a required dependency: `rpc/callbacks.py` takes
+`add_checksum` from its `descriptors` to write the descriptor of a
+decoded script (`_infer_descriptor`), so what it returns reaches a
+caller's answer.
+
+`ctypes` is imported by `p2p/netif.py` alone, which loads the C library
+with `CDLL(None)`, calls `getifaddrs` and reads the `ifaddrs` memory it
+returns, the standard library having no binding of it. That is a trust
+item: the C library and the layout `_IfAddrs` declares are
+trusted without a check, and what is read is this machine's own interface
+table, never a peer's.
+
+`subprocess` runs an operator's `-*notify` command through the shell
+(`notify.py`).
 
 **What is defended.**
 
@@ -187,8 +214,14 @@ WAL-backed store would let a second reader in.
 CLI flag `cli.py` reads, and `bitcoin.conf` inside the datadir it names,
 are the operator's own input, not a remote party's — `cli.py`'s own
 module docstring is where each flag is named against Bitcoin Core's
-equivalent. Nothing under `src/` opens a file the operator did not name,
-directly or through the datadir.
+equivalent. The datadir holds the stores, `banlist.json`, `anchors.dat`,
+the log file and the RPC cookie `.cookie`; `-blocksdir` moves the block
+files, `-rpccookiefile` the cookie, and `-conf` and `-includeconf` name
+the files read for options. Beside these, `dirlock.py` creates a `.lock`
+file in the datadir and in the blocks directory, `rpc/auth.py` writes the
+cookie through a `.tmp` file beside it, and `p2p/anchors.py` writes
+`anchors.dat` through a temporary file beside it. Nothing under `src/`
+opens a file outside those.
 
 `PYTEST_XDIST_WORKER_COUNT` is read in any process, not only under
 pytest: `_default_worker_count` in `src/btclib_node/__init__.py` sizes
@@ -198,8 +231,9 @@ integer.
 **Bitcoin Core, as an oracle rather than a dependency.**
 `.github/workflows/integration-bitcoind.yml` is the one place this
 node's own answers are checked against a `bitcoind` it does not talk to
-in any other job, over p2p rather than over RPC, matching what a real
-peer would see.
+in any other job. Blocks are checked over p2p, matching what a real peer
+would see, and `rpc_framing_test.py`, `banlist_test.py`,
+`getpeerinfo_test.py` and `rawtx_test.py` compare RPC answers.
 
 ## Secure design principles
 
@@ -217,22 +251,30 @@ describes.
   (btclib-org/btclib-node#1268). A
   second process cannot silently share a datadir already open: RocksDB's
   own `LOCK` refuses it rather than allowing concurrent, uncoordinated
-  writers.
+  writers. `_step_chain` stops: an exception from `download_manager.step()`
+  or `update_chain` is logged, `run` leaves its loop, and the node closes
+  its stores and ends, as Core's `FatalError` ends its own
+  (`src/btclib_node/main.py`'s comment above `_CONTENT_FAILURE` argues the
+  split). A block's own content failing is not one: the fork is rejected
+  and the node goes on. An exception peer data could provoke there would
+  therefore stop the node.
 - **Complete mediation.** A p2p message is bounded and its magic checked
   before it is parsed at all, never after; an RPC body is bounded before
-  `json.loads` ever sees it. `_drain_message_queues` and `_step_chain`
-  (`src/btclib_node/__init__.py`) wrap every handler call in one
-  `try`/`except Exception`, so a handler that raises on input neither of
-  them expected is logged rather than silently skipping the mediation
-  around it.
+  `json.loads` ever sees it. `_drain_message_queues`
+  (`src/btclib_node/__init__.py`) wraps a pass over the handlers in one
+  `try`/`except Exception`, so a handler that raises on input none
+  expected is logged and the next pass runs.
 - **Open design.** The code, the fuzz corpus and harnesses, and the
   limitations are published; SECURITY.md states what is known rather
   than leaving it to be found again.
 - **Least privilege.** `src/` loads no RPC client of its own and no
-  transport, the census under *Threat model* shows; the only sockets
+  transport, the census under *Threat model* shows. The only sockets
   this process opens are the p2p and RPC listeners and the outbound
-  peer connections `P2pManager.connect` makes, and the only files it
-  opens are its own datadir and whatever `-conf`/`-datadir` name.
+  peer connections `P2pManager.connect` makes. Names are resolved by
+  `getaddrinfo`, for the DNS seeds (`p2p/address.py`), for `-connect`
+  and `-addnode` hosts (`p2p/manager.py`) and for `-rpcbind` hosts
+  (`rpc/manager.py`). The only files it opens are the ones *The
+  environment and the files* names.
 - **Psychological acceptability.** A malformed RPC request answers
   the HTTP status and the error `bitcoind` answers it with rather than
   closing the socket with nothing said, so a caller can tell its own
@@ -264,41 +306,44 @@ and what counters each.
   construction rather than by a runtime check in most of this tree:
   ARCHITECTURE.md's *The protocol and the RPC surface* is the argument
   for which state needs a lock, and `PeerDB`'s own two separately-taken,
-  never-nested locks are the one piece of state actually reached from
-  two threads.
+  never-nested locks are the argued example. Other state carries a lock
+  of its own, which `grep -rn 'threading\.R\?Lock()' src` lists.
 - **Uncaught exceptions on hostile input (CWE-248, CWE-755).**
   `tests/property_test.py`'s property, over the harnesses' own declared
   entry points: unconstrained octets either parse into what they claim
   to be or raise `BTClibException`, and nothing else.
   `tests/fuzz_corpus_test.py` checks that every corpus seed still
-  parses. Inside `Node`'s own loop, `_drain_message_queues` and
-  `_step_chain` catch what a handler raises and log it rather than
-  ending the process.
+  parses. Inside `Node`'s own loop, `_drain_message_queues` catches what
+  a handler raises and logs it, and the loop goes on; `_step_chain`
+  catches and logs it too, and then stops the node (*Fail-safe defaults*
+  above).
 - **Uncontrolled resource consumption (CWE-400, CWE-770).**
   `MAX_HEADER_BYTES`/`MAX_BODY_BYTES` on the RPC surface,
   `MAX_PROTOCOL_MESSAGE_LENGTH`/`MAX_QUEUED_RECV_BYTES`/`MAX_QUEUED_SEND_BYTES`
   and the pacing beside them on the p2p surface. SECURITY.md's
   *Limitations* states what is bounded and what is not yet.
 - **Weak randomness (CWE-330, CWE-338).** `ruff`'s flake8-bandit family,
-  selected whole in `pyproject.toml`, flags a bare `random` import under
-  `src/`; `download.py`'s own trickle-relay schedule and
-  `p2p/callbacks.py`'s own address-sampling jitter draw from
-  `random.SystemRandom` rather than the default generator precisely
-  because each is a choice a peer is meant not to be able to predict,
-  and `p2p/connection.py`'s handshake and keep-alive nonces draw from
-  `secrets` directly.
+  selected whole in `pyproject.toml`, flags a call to a `random` function
+  under `src/` (S311), not the import. `download.py`'s own trickle-relay
+  schedule draws from `random.SystemRandom`, and `p2p/callbacks.py`'s
+  address-sampling jitter from `secrets.SystemRandom`, rather than the
+  default generator precisely because each is a choice a peer is meant
+  not to be able to predict. `p2p/connection.py`'s handshake and
+  keep-alive nonces draw from `secrets` directly.
 - **Improper verification of a signature or a chain (CWE-347).** Checked
-  against Bitcoin Core, not merely against this tree's own suite: the
-  regtest oracle under *What is claimed* above, and the vendored vectors
-  `.github/workflows/vendored-vectors.yml` compares with upstream on a
-  schedule.
+  against Bitcoin Core, not merely against this tree's own suite, within
+  the limits *What is claimed* above gives the regtest oracle, and by the
+  vendored vectors `.github/workflows/vendored-vectors.yml` compares with
+  upstream on a schedule.
 - **Deserialization of untrusted data (CWE-502).** `json.loads` on an
   RPC body is the only deserializer of untrusted data `src/` calls
   directly, and it is the standard library's own, bounded ahead of the
   call by `MAX_BODY_BYTES`; a p2p message is parsed by btclib rather
-  than unpickled or unmarshalled. The census under *Threat model* lists
-  neither `pickle` nor `marshal` nor `shelve`. `.github/workflows/codeql.yml`
-  analyses the code and the workflows.
+  than unpickled or unmarshalled. `rocksdict` pickles a value by
+  default, which `db.py` avoids with `raw_mode=True` on every `Options`
+  and `WriteBatch`, so no stored value is unpickled. The census under
+  *Threat model* lists neither `pickle` nor `marshal` nor `shelve`.
+  `.github/workflows/codeql.yml` analyses the code and the workflows.
 - **Type confusion (CWE-843).** mypy runs with `strict = true`
   (`pyproject.toml`) over this tree and its suite, as a hook of the lint
   gate in `.pre-commit-config.yaml`.

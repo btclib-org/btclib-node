@@ -27,7 +27,7 @@ from btclib.fee import FeeRate
 from btclib.key import PrvKeyData
 from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.p2p.limits import PROTOCOL_VERSION
-from btclib.script import script
+from btclib.script import script, script_to_dict
 from btclib.script.script_pub_key import ScriptPubKey, p2ms_m_and_keys, type_and_payload
 from btclib.script.witness import Witness
 from btclib.tx.limits import COINBASE_MATURITY
@@ -39,7 +39,7 @@ from btclib_wallet.descriptors import add_checksum, from_address
 
 import btclib_node.p2p.banman as banman_module
 import btclib_node.rpc.callbacks as cb
-from btclib_node.block_db import Coin
+from btclib_node.block_db import Coin, RevBlock
 from btclib_node.chains import Chain, HeadersSyncParams, Main, RegTest
 from btclib_node.chainstate.block_index import BlockStatus, block_time, calculate_work
 from btclib_node.chainstate.muhash import CoinStats
@@ -290,6 +290,8 @@ def a_node(
     known = heights if heights is not None else {}
     confirmed = confirmed_outpoints if confirmed_outpoints is not None else frozenset()
     return SimpleNamespace(
+        # the network `decoderawtransaction` spells its addresses for
+        chain=RegTest(),
         chainstate=SimpleNamespace(
             block_index=SimpleNamespace(
                 get_block_info=lambda block_hash: SimpleNamespace(
@@ -1347,7 +1349,7 @@ def test_get_tx_out_answers_core_s_nested_scriptpubkey_for_a_p2pkh_coin(
     connect(node, chain)
 
     raw_script = bytes.fromhex("76a914") + b"\x11" * 20 + bytes.fromhex("88ac")
-    script_pub_key = ScriptPubKey(raw_script)
+    script_pub_key = ScriptPubKey(raw_script, "regtest")
     out_point = OutPoint(b"\x22" * 32, 0)
     coin = Coin(TxOut(1234, script_pub_key), height=1, is_coinbase=False)
     node.chainstate.utxo_index.updated_utxo_set[
@@ -1360,7 +1362,9 @@ def test_get_tx_out_answers_core_s_nested_scriptpubkey_for_a_p2pkh_coin(
     script_pub_key_dict = answer["scriptPubKey"]
     assert script_pub_key_dict["type"] == "pubkeyhash"
     assert script_pub_key_dict["hex"] == raw_script.hex()
+    # the node's own network, regtest here, not btclib's mainnet default
     assert script_pub_key_dict["address"] == script_pub_key.address
+    assert script_pub_key_dict["address"].startswith(("m", "n"))
     assert script_pub_key_dict["desc"] == from_address(script_pub_key.address)
 
 
@@ -1467,12 +1471,13 @@ def test_get_tx_out_answers_anchor_type_and_addr_desc_for_a_p2a_coin(
     node = regtest_node()
     chain = generate_random_chain(1, node.chain.genesis.hash)
     connect(node, chain)
-    script_pub_key = ScriptPubKey(bytes.fromhex("51024e73"))
+    script_pub_key = ScriptPubKey(bytes.fromhex("51024e73"), "regtest")
 
     script_pub_key_dict = _stage_coin_and_get_tx_out(node, script_pub_key)
 
     assert script_pub_key_dict["type"] == "anchor"
     assert script_pub_key_dict["address"] == script_pub_key.address
+    assert script_pub_key_dict["address"].startswith("bcrt1p")
     assert script_pub_key_dict["desc"] == from_address(script_pub_key.address)
 
 
@@ -1667,6 +1672,11 @@ def test_a_transaction_is_read_out_of_the_block_named() -> None:
     assert verbose["blockhash"] == header.hash.hex()
     assert verbose["in_active_chain"] is True
     assert verbose["confirmations"] == 1
+    # Core's order: `in_active_chain`, `TxToUniv`'s keys, then the block's
+    keys = list(verbose)
+    assert keys[0] == "in_active_chain"
+    assert keys[1] == "txid"
+    assert keys[-3:] == ["hex", "blockhash", "confirmations"]
 
 
 def test_a_transaction_off_the_active_chain_is_named_but_not_confirmed() -> None:
@@ -2744,16 +2754,217 @@ def test_amount_reject_reason_answers_none_when_nothing_violates() -> None:
 
 
 def test_decoderawtransaction_answers_the_dict_shape_and_no_more() -> None:
-    """`decoderawtransaction` answers `to_dict()`, no `hex` and no `blockhash`.
+    """`decoderawtransaction` answers `TxToUniv`'s keys, no `hex`.
 
     Unlike `getrawtransaction`'s own verbose answer, which adds both.
     """
     tx = a_tx()
     raw = tx.serialize(include_witness=True).hex()
     out = cb.decode_raw_transaction(a_node(), _CONN, [raw])
-    assert out == tx.to_dict()
-    assert "hex" not in out
-    assert "blockhash" not in out
+    assert set(out) == set(tx.to_dict())
+    assert out["txid"] == tx.id.hex()
+
+
+@pytest.mark.parametrize(
+    ("script_hex", "prefix"),
+    [
+        ("76a914" + "11" * 20 + "88ac", "m"),
+        ("a914" + "11" * 20 + "87", "2"),
+        ("0014" + "11" * 20, "bcrt1q"),
+        ("0020" + "11" * 32, "bcrt1q"),
+        ("5120" + "11" * 32, "bcrt1p"),
+        ("5202abcd", "bcrt1z"),
+    ],
+)
+def test_an_address_type_answers_its_address_and_addr_desc(
+    script_hex: str, prefix: str
+) -> None:
+    """A type with a destination has its `address`, and `desc` is `addr()`.
+
+    The network is the node's own: regtest.
+    """
+    entry = cb._script_pub_key_dict(bytes.fromhex(script_hex), "regtest")
+    assert list(entry) == ["asm", "desc", "hex", "address", "type"]
+    assert entry["address"].startswith(prefix)
+    assert entry["desc"] == add_checksum(f"addr({entry['address']})")
+
+
+@pytest.mark.parametrize(
+    ("script_hex", "script_type"),
+    [
+        # a hybrid key `InferPubkey` refuses, and a bare key has no destination
+        ("41" + "06" + "11" * 64 + "ac", "pubkey"),
+        ("5141" + "07" + "11" * 64 + "51ae", "multisig"),
+        ("6a026869", "nulldata"),
+    ],
+)
+def test_a_script_with_no_key_or_destination_infers_raw(
+    script_hex: str, script_type: str
+) -> None:
+    """`InferScript` ends at `raw(...)` where no key or address fits."""
+    entry = cb._script_pub_key_dict(bytes.fromhex(script_hex), "regtest")
+    assert entry["type"] == script_type
+    assert entry["desc"] == add_checksum(f"raw({script_hex})")
+    assert "address" not in entry
+
+
+@pytest.mark.parametrize(
+    ("x", "on_curve"),
+    [
+        (1, True),
+        (5, False),
+        (cb._SECP256K1_P + 1, False),
+    ],
+)
+def test_an_x_only_key_is_on_the_curve_when_xonlypubkey_says_so(
+    x: int, *, on_curve: bool
+) -> None:
+    """`_is_x_only_key` answers `XOnlyPubKey::IsFullyValid`.
+
+    1 is the x of a point (the generator's is another), 5 has no point
+    above it, and the prime plus 1, which is 1 in the field, is no
+    coordinate for all that.
+    """
+    assert cb._is_x_only_key(x.to_bytes(32, "big")) is on_curve
+
+
+def test_an_off_curve_taproot_program_is_an_address_not_rawtr() -> None:
+    """A program off the curve is `addr(...)`: `rawtr` refuses it."""
+    script_bytes = bytes.fromhex("5120" + "00" * 31 + "05")
+    entry = cb._script_pub_key_dict(script_bytes, "regtest")
+    assert entry["type"] == "witness_v1_taproot"
+    assert entry["desc"] == add_checksum(f"addr({entry['address']})")
+
+
+def test_a_vout_entry_is_core_s_nested_shape() -> None:
+    """A `vout` entry is `value`, `n` and a `scriptPubKey` nesting its `type`.
+
+    `TxOut.to_dict` answers `type`, `addresses` and `network` beside
+    `scriptPubKey` and `type` in btclib's own words; `TxToUniv` nests
+    `type` and `address` inside it, in `GetTxnOutputType`'s words
+    (btclib-org/btclib-node#1440).
+    """
+    p2pkh = bytes.fromhex("76a914") + bytes(20) + bytes.fromhex("88ac")
+    nulldata = bytes.fromhex("6a026869")
+    tx = Tx(
+        version=1,
+        lock_time=0,
+        vin=a_tx().vin,
+        vout=[
+            TxOut(1000, ScriptPubKey(p2pkh)),
+            TxOut(0, ScriptPubKey(nulldata)),
+        ],
+        check_validity=False,
+    )
+    raw = tx.serialize(include_witness=True, check_validity=False).hex()
+    first, second = cb.decode_raw_transaction(a_node(), _CONN, [raw])["vout"]
+
+    assert first["value"].text == "0.00001000"
+    assert first["n"] == 0
+    assert set(first) == {"value", "n", "scriptPubKey"}
+    assert list(first["scriptPubKey"]) == ["asm", "desc", "hex", "address", "type"]
+    assert first["scriptPubKey"]["type"] == "pubkeyhash"
+    assert first["scriptPubKey"]["address"] == "mfWxJ45yp2SFn7UciZyNpvDKrzbhyfKrY8"
+    assert first["scriptPubKey"]["hex"] == p2pkh.hex()
+
+    assert second["value"].text == "0.00000000"
+    assert second["n"] == 1
+    assert second["scriptPubKey"]["type"] == "nulldata"
+    assert "address" not in second["scriptPubKey"]
+
+
+def test_a_vin_entry_is_core_s_flat_shape() -> None:
+    """A `vin` entry is `txid`, `vout`, `scriptSig`, `txinwitness`, `sequence`.
+
+    `TxIn.to_dict` nests the first two under `prev_out` and answers
+    `txinwitness` for every input; `TxToUniv` flattens them and omits
+    `txinwitness` where the witness stack is empty
+    (btclib-org/btclib-node#1448).
+    """
+    tx = a_tx()
+    with_witness = tx.vin[0]
+    without = replace(with_witness, script_witness=Witness([]))
+    mixed = Tx(
+        version=1,
+        lock_time=0,
+        vin=[with_witness, without],
+        vout=tx.vout,
+        check_validity=False,
+    )
+    raw = mixed.serialize(include_witness=True, check_validity=False).hex()
+    first, second = cb.decode_raw_transaction(a_node(), _CONN, [raw])["vin"]
+
+    assert list(first) == ["txid", "vout", "scriptSig", "txinwitness", "sequence"]
+    assert first["txid"] == with_witness.prev_out.tx_id.hex()
+    assert first["vout"] == 0
+    assert first["scriptSig"] == {
+        "asm": script_to_dict(with_witness.script_sig)["asm"],
+        "hex": with_witness.script_sig.hex(),
+    }
+    assert first["txinwitness"] == [(b"\x11" * 8).hex()]
+    assert first["sequence"] == 0xFFFFFFFF
+    assert list(second) == ["txid", "vout", "scriptSig", "sequence"]
+
+
+def test_a_coinbase_vin_entry_is_its_script_alone() -> None:
+    """A coinbase input answers `coinbase` and no `txid`, `vout` or `scriptSig`.
+
+    Its witness, the BIP141 nonce, still answers `txinwitness`.
+    """
+    coinbase = generate_segwit_block().transactions[0]
+    raw = coinbase.serialize(include_witness=True, check_validity=False).hex()
+    (entry,) = cb.decode_raw_transaction(a_node(), _CONN, [raw])["vin"]
+
+    assert list(entry) == ["coinbase", "txinwitness", "sequence"]
+    assert entry["coinbase"] == coinbase.vin[0].script_sig.hex()
+
+
+def test_a_transaction_is_core_s_txtouniv_key_for_key() -> None:
+    """The top-level keys are `TxToUniv`'s, in its order, `hex` last.
+
+    `decoderawtransaction` passes `include_hex=false`; `getrawtransaction`
+    adds the block fields after.
+    """
+    tx = a_tx()
+    keys = ["txid", "hash", "version", "size", "vsize", "weight", "locktime"]
+    keys += ["vin", "vout"]
+    decoded = cb.decode_raw_transaction(
+        a_node(), _CONN, [tx.serialize(include_witness=True).hex()]
+    )
+    assert list(decoded) == keys
+    assert decoded["hash"] == tx.hash.hex()
+    assert (decoded["size"], decoded["vsize"], decoded["weight"]) == (
+        tx.size,
+        tx.vsize,
+        tx.weight,
+    )
+
+    verbose = get_raw_transaction(
+        a_tx_lookup_node(mempool_txs=[tx]), _CONN, [tx.id.hex(), True]
+    )
+    assert isinstance(verbose, dict)
+    assert list(verbose) == [*keys, "hex"]
+
+
+def test_decoderawtransaction_renders_a_negative_output_value() -> None:
+    """An output of negative value decodes, as `CAmount` is signed in Core."""
+    script_pub_key = a_tx().vout[0].script_pub_key
+    tx = a_malformed_tx(vout=[TxOut(-1, script_pub_key, check_validity=False)])
+    raw = tx.serialize(include_witness=True, check_validity=False).hex()
+    (entry,) = cb.decode_raw_transaction(a_node(), _CONN, [raw])["vout"]
+    assert entry["value"].text == "-0.00000001"
+
+
+def test_getrawtransaction_verbose_vout_is_core_s_nested_shape() -> None:
+    """`getrawtransaction` verbose answers the same `vout` entries."""
+    tx = a_tx()
+    node = a_tx_lookup_node(mempool_txs=[tx])
+    out = get_raw_transaction(node, _CONN, [tx.id.hex(), True])
+    assert isinstance(out, dict)
+    (entry,) = out["vout"]
+    assert set(entry) == {"value", "n", "scriptPubKey"}
+    assert entry["value"].text == "1.00000000"
+    assert entry["scriptPubKey"]["type"] == "nonstandard"
 
 
 def test_decoderawtransaction_decodes_what_it_would_later_refuse() -> None:
@@ -2849,7 +3060,7 @@ def test_decoderawtransaction_iswitness_true_still_decodes_a_legacy_tx() -> None
     assert not tx.is_segwit
     raw = tx.serialize(include_witness=True).hex()
     out = cb.decode_raw_transaction(a_node(), _CONN, [raw, True])
-    assert out == tx.to_dict()
+    assert out["txid"] == tx.id.hex()
 
 
 def test_decoderawtransaction_iswitness_false_still_decodes_a_legacy_tx() -> None:
@@ -2861,7 +3072,7 @@ def test_decoderawtransaction_iswitness_false_still_decodes_a_legacy_tx() -> Non
     tx = a_legacy_tx()
     raw = tx.serialize(include_witness=True).hex()
     out = cb.decode_raw_transaction(a_node(), _CONN, [raw, False])
-    assert out == tx.to_dict()
+    assert out["txid"] == tx.id.hex()
 
 
 def test_decoderawtransaction_that_does_not_decode_is_core_s_bare_message() -> None:
@@ -5006,25 +5217,143 @@ def test_get_block_refuses_a_hash_this_node_has_never_indexed(
     assert raised.value.message == "Block not found"
 
 
-def test_get_block_refuses_verbosity_past_2(
+def test_get_block_reads_a_verbosity_at_or_below_zero_as_the_hex(
     regtest_node: Callable[..., Node],
 ) -> None:
-    """Verbosity 3 (Core's own prevout detail) and past it are still refused.
+    """`getblock` serves any `int`: at or below 0 is the hex, as Core's.
 
-    Verbosity 1 and 2 are answered now; the tests below cover them.
+    `blockToJSON` is reached only from 1 up; `getblock`'s own
+    `verbosity <= 0` answers the hex first.
     """
     node = regtest_node()
     chain = generate_random_chain(1, node.chain.genesis.hash)
     connect(node, chain)
-    block_hash_hex = chain[0].header.hash.hex()
 
-    for params in ([block_hash_hex, 3], [block_hash_hex, -1]):
-        with pytest.raises(RpcError) as raised:
-            get_block(node, _CONN, params)
-        assert raised.value.code == RPCErrorCode.MISC_ERROR
-        assert raised.value.message == (
-            "getblock: only verbosity 0, 1 and 2 are served here"
-        )
+    answer = get_block(node, _CONN, [chain[0].header.hash.hex(), -1])
+
+    assert answer == chain[0].serialize(check_validity=False).hex()
+
+
+@pytest.mark.parametrize("verbosity", [2**31, -(2**31) - 1])
+def test_get_block_refuses_a_verbosity_past_an_int(
+    regtest_node: Callable[..., Node], verbosity: int
+) -> None:
+    """`getInt<int>()`'s own range: 32 bits, past which Core refuses."""
+    node = regtest_node()
+    chain = generate_random_chain(1, node.chain.genesis.hash)
+    connect(node, chain)
+
+    with pytest.raises(RpcError) as raised:
+        get_block(node, _CONN, [chain[0].header.hash.hex(), verbosity])
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
+    assert raised.value.message == "JSON integer out of range"
+
+
+_FEE = 5000
+
+
+def a_node_with_a_paying_spend(
+    regtest_node: Callable[..., Node],
+) -> tuple[Node, Block, Tx]:
+    """Return a node holding a block whose second transaction pays `_FEE`.
+
+    The first `COINBASE_MATURITY` blocks carry only a coinbase each, and
+    the next one spends the first of them, paying less than it was worth.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(COINBASE_MATURITY, node.chain.genesis.hash)
+    funding = chain[0].transactions[0]
+    paying = generate_random_transaction(funding.id, value=funding.vout[0].value - _FEE)
+    block = build_block(
+        chain[-1].header.hash,
+        [generate_coinbase(height=COINBASE_MATURITY + 1), paying],
+        COINBASE_MATURITY,
+    )
+    connect(node, [*chain, block])
+    return node, block, funding
+
+
+def test_get_block_verbosity_2_answers_the_fee_of_a_spend(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Verbosity 2 answers `fee` from the block's undo data, no `prevout`.
+
+    The coinbase has no undo data and so no `fee`
+    (btclib-org/btclib-node#1446).
+    """
+    node, block, _ = a_node_with_a_paying_spend(regtest_node)
+
+    answer = get_block(node, _CONN, [block.header.hash.hex(), 2])
+
+    assert isinstance(answer, dict)
+    coinbase, paying = answer["tx"]
+    assert "fee" not in coinbase
+    assert paying["fee"].text == "0.00005000"
+    assert list(paying)[-2:] == ["fee", "hex"]
+    assert "prevout" not in paying["vin"][0]
+
+
+@pytest.mark.parametrize("verbosity", [3, 4, 2**31 - 1])
+def test_get_block_verbosity_3_answers_each_input_s_prevout(
+    regtest_node: Callable[..., Node], verbosity: int
+) -> None:
+    """Verbosity 3 and above nest the spent coin under `vin[].prevout`.
+
+    `generated`, `height`, `value` and the coin's own `scriptPubKey`, in
+    that order, between `txinwitness` and `sequence`.
+    """
+    node, block, funding = a_node_with_a_paying_spend(regtest_node)
+
+    answer = get_block(node, _CONN, [block.header.hash.hex(), verbosity])
+
+    assert isinstance(answer, dict)
+    coinbase, paying = answer["tx"]
+    assert "prevout" not in coinbase["vin"][0]
+    (vin,) = paying["vin"]
+    assert list(vin) == ["txid", "vout", "scriptSig", "prevout", "sequence"]
+    prevout = vin["prevout"]
+    assert list(prevout) == ["generated", "height", "value", "scriptPubKey"]
+    assert prevout["generated"] is True
+    assert prevout["height"] == 1
+    assert prevout["value"].text == "50.00000000"
+    assert prevout["scriptPubKey"] == cb._script_pub_key_dict(
+        funding.vout[0].script_pub_key.script, "regtest"
+    )
+    assert paying["fee"].text == "0.00005000"
+
+
+def test_get_block_answers_neither_fee_nor_prevout_without_undo_data(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A block with no undo data held answers as verbosity 2 without it.
+
+    Core's `fee` is "omitted if block undo data is not available", and
+    `prevout` is "only if undo information is available".
+    """
+    node, block, _ = a_node_with_a_paying_spend(regtest_node)
+    monkeypatch.setattr(node.block_db, "get_rev_block", lambda _hash: None)
+
+    answer = get_block(node, _CONN, [block.header.hash.hex(), 3])
+
+    assert isinstance(answer, dict)
+    _, paying = answer["tx"]
+    assert "fee" not in paying
+    assert "prevout" not in paying["vin"][0]
+    assert paying["txid"] == block.transactions[1].id.hex()
+
+
+def test_get_block_refuses_undo_data_that_does_not_match_the_block(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A patch with another number of coins is Core's own "can't be read"."""
+    node, block, _ = a_node_with_a_paying_spend(regtest_node)
+    emptied = RevBlock(block.header.hash, to_add=[], to_remove=[])
+    monkeypatch.setattr(node.block_db, "get_rev_block", lambda _hash: emptied)
+
+    with pytest.raises(RpcError) as raised:
+        get_block(node, _CONN, [block.header.hash.hex(), 2])
+    assert raised.value.code == RPCErrorCode.INTERNAL_ERROR
+    assert raised.value.message.startswith("Undo data expected but can't be read.")
 
 
 def test_get_block_verbosity_1_answers_the_header_plus_size_and_txids(
