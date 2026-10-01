@@ -71,7 +71,7 @@ from btclib_node.p2p.block_availability import (
     peer_has_header,
     process_block_availability,
 )
-from btclib_node.p2p.compact_block import compact_block
+from btclib_node.p2p.compact_block import MostRecentBlock, compact_block
 from btclib_node.p2p.protocol_version import (
     INVALID_CB_NO_BAN_VERSION,
     common_version,
@@ -232,10 +232,13 @@ def _announce_added_blocks(node: Node, blocks: list[Block]) -> None:
     block_index = node.chainstate.block_index
     headers = [block.header for block in blocks[-_MAX_BLOCKS_TO_ANNOUNCE:]]
     tip_hash = headers[-1].hash
-    # one nonce for every peer, as Core's `m_most_recent_compact_block`
-    # gives where it holds the block; this node keeps none between calls
-    # (btclib-org/btclib-node#1336)
-    compact: CmpctBlock | None = None
+    # the block's `cmpctblock` as `new_pow_valid_block` built it, as
+    # Core's `m_most_recent_compact_block`; one fresh nonce for every peer
+    # where it holds another block, a block it never announced early
+    recent = node.most_recent_block
+    compact: CmpctBlock | None = (
+        recent.compact if recent is not None and recent.hash == tip_hash else None
+    )
     for conn in node.p2p_manager.connections.copy().values():
         state = conn.block_availability
         process_block_availability(block_index, state)
@@ -271,7 +274,8 @@ def new_pow_valid_block(node: Node, block: Block) -> None:
     connected peer from `INVALID_CB_NO_BAN_VERSION` up that asked for high
     bandwidth, has the parent and lacks the block. That peer then counts
     as having the block, so `_announce_added_blocks` does not send it
-    again once the block is connected.
+    again once the block is connected. The block and its `cmpctblock` are
+    kept in `node.most_recent_block`, whether or not any peer was sent them.
 
     `callbacks.block` and `submitblock` call this with a block that passed
     `Block.assert_valid`. A block failing `contextual_check_block` is not
@@ -292,10 +296,11 @@ def new_pow_valid_block(node: Node, block: Block) -> None:
     node.highest_fast_announce = height
     if height < node.chain.consensus.segwit_height:
         return
-    # one nonce for every peer, as Core's `pcmpctblock`, which Core also
-    # keeps for later requests and this node does not
-    # (btclib-org/btclib-node#1336)
-    compact: CmpctBlock | None = None
+    # built before any peer is looked at and kept for later requests, as
+    # Core's `pcmpctblock` and `m_most_recent_compact_block`, whose nonce
+    # every peer and every later request of the block share
+    compact = compact_block(block, secrets.randbits(64))
+    node.most_recent_block = MostRecentBlock(block, compact)
     for conn in node.p2p_manager.connections.copy().values():
         if (
             conn.status != P2pConnStatus.Connected
@@ -309,8 +314,6 @@ def new_pow_valid_block(node: Node, block: Block) -> None:
             and not peer_has_header(block_index, state, block_hash)
             and peer_has_header(block_index, state, previous_hash)
         ):
-            if compact is None:
-                compact = compact_block(block, secrets.randbits(64))
             conn.send(compact)
             state.best_header_sent = block_hash
 

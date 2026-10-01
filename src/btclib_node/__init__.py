@@ -57,6 +57,7 @@ if TYPE_CHECKING:
 
     from btclib.p2p.inventory import Inventory
 
+    from btclib_node.p2p.compact_block import MostRecentBlock
     from btclib_node.p2p.connection import Connection
 
 # Everything above this line is imported for `Node` to build on, not to
@@ -394,6 +395,16 @@ class Node(threading.Thread):
         # (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the
         # v31.1 tag). btclib-org/btclib-node#1315
         self.highest_fast_announce = 0
+        # `main.new_pow_valid_block`'s last block and its `cmpctblock`,
+        # Core's `m_most_recent_block` and `m_most_recent_compact_block`,
+        # kept so that a later `cmpctblock` of the block carries the same
+        # nonce (btclib-org/btclib-node#1336). Core guards them with
+        # `m_most_recent_block_mutex`. No lock here: the one writer,
+        # `new_pow_valid_block`, and the readers, `_announce_added_blocks`,
+        # `callbacks._serve_getdata_item` and `getblocktxn`, all run on
+        # `Node`'s own loop, never on `P2pManager`'s or `RpcManager`'s
+        # thread.
+        self.most_recent_block: MostRecentBlock | None = None
 
         self.p2p_port: int | None
         if config.p2p_port:

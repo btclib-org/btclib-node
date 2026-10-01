@@ -10,6 +10,7 @@ sends one to a high-bandwidth peer. `callbacks` imports `main`, so the
 function cannot live there.
 """
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from btclib.p2p.compact_blocks import CmpctBlock, PrefilledTransaction
@@ -17,7 +18,25 @@ from btclib.p2p.compact_blocks import CmpctBlock, PrefilledTransaction
 if TYPE_CHECKING:
     from btclib.block import Block
 
-__all__ = ["compact_block"]
+__all__ = ["MostRecentBlock", "compact_block"]
+
+
+@dataclass(frozen=True, slots=True)
+class MostRecentBlock:
+    """The block `new_pow_valid_block` last kept, and its `cmpctblock`.
+
+    Core's `m_most_recent_block` and `m_most_recent_compact_block`
+    (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag), which `m_most_recent_block_hash` names.
+    """
+
+    block: Block
+    compact: CmpctBlock
+
+    @property
+    def hash(self) -> bytes:
+        """Return the block's hash, Core's `m_most_recent_block_hash`."""
+        return self.block.header.hash
 
 
 def compact_block(block: Block, nonce: int) -> CmpctBlock:

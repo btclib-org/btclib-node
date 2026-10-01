@@ -1748,6 +1748,12 @@ that records it (issue btclib-org/.github#1362).
 - **The prune tests image the data directory without its `LOCK` files**,
   which RocksDB holds open and Windows refuses to copy (closes #1638).
 
+### A block's `cmpctblock` keeps its nonce while it is the most recent, as in Core
+
+- **`new_pow_valid_block` keeps the block and its `cmpctblock`; the announcement
+  and a `cmpctblock` `getdata` resend that one, a block `getdata` and
+  `getblocktxn` use the kept block** (closes #1336) (closes #1612).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

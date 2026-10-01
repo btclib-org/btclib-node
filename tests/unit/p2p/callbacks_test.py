@@ -2237,6 +2237,8 @@ def a_data_node(
     # `new_pow_valid_block`'s own high-water mark, Core's
     # `m_highest_fast_announce`, zero until a call moves it
     node.highest_fast_announce = 0
+    # `main.new_pow_valid_block`'s last block, Core's `m_most_recent_block`
+    node.most_recent_block = None
     node.block_db = block_db
     node.download_manager = SimpleNamespace(
         received_txs=[],
@@ -3906,6 +3908,93 @@ def test_a_cmpct_block_item_is_answered_as_core_answers_it(
         assert answer == BlockMsg(block, include_witness=True, check_validity=False)
 
 
+def a_most_recent(block: Block, block_hash: bytes) -> Any:
+    """Build a `node.most_recent_block` double for `block` under `block_hash`.
+
+    Its `cmpctblock` carries the nonce 99, which a fresh one is not
+    expected to draw.
+    """
+    return SimpleNamespace(
+        block=block, hash=block_hash, compact=compact_block(block, 99)
+    )
+
+
+@pytest.mark.parametrize("recent", [True, False])
+def test_a_cmpct_block_item_of_the_most_recent_block_is_the_one_announced(
+    *, recent: bool
+) -> None:
+    """ISS 1336: Core resends `m_most_recent_compact_block`, nonce included.
+
+    Any other block is built again, under a fresh nonce.
+    """
+    length = MAX_CMPCTBLOCK_DEPTH + 10
+    block_index = a_recent_block_index(length)
+    block = a_block_with_transactions(2)
+    node = a_data_node(
+        block_index=block_index, block_db=SimpleNamespace(get_block=lambda h: block)
+    )
+    wanted = block_index.active_chain[length - 1]
+    node.most_recent_block = a_most_recent(
+        block, wanted if recent else block_index.active_chain[length - 2]
+    )
+    peer = a_peer()
+    getdata(
+        node,
+        GetData([Inventory(InventoryType.MSG_CMPCT_BLOCK, wanted)]).serialize(),
+        peer,
+    )
+    (answer,) = peer.sent
+    assert isinstance(answer, CmpctBlock)
+    assert (answer.nonce == 99) == recent
+
+
+def test_a_cmpct_block_item_past_the_depth_is_the_block_whatever_was_cached() -> None:
+    """ISS 1336: Core tests the depth before it looks at the cache."""
+    length = MAX_CMPCTBLOCK_DEPTH + 10
+    block_index = a_recent_block_index(length)
+    block = a_block_with_transactions(2)
+    node = a_data_node(
+        block_index=block_index, block_db=SimpleNamespace(get_block=lambda h: block)
+    )
+    wanted = block_index.active_chain[length - 2 - MAX_CMPCTBLOCK_DEPTH]
+    node.most_recent_block = a_most_recent(block, wanted)
+    peer = a_peer()
+    getdata(
+        node,
+        GetData([Inventory(InventoryType.MSG_CMPCT_BLOCK, wanted)]).serialize(),
+        peer,
+    )
+    assert peer.sent == [BlockMsg(block, include_witness=True, check_validity=False)]
+
+
+@pytest.mark.parametrize("recent", [True, False])
+def test_a_block_item_of_the_most_recent_block_is_not_read_from_the_store(
+    *, recent: bool
+) -> None:
+    """ISS 1612: Core serves `a_recent_block` ahead of the disk read."""
+    length = 5
+    block_index = a_recent_block_index(length)
+    block = a_block_with_transactions(2)
+    reads: list[bytes] = []
+
+    def get_block(block_hash: bytes) -> Block:
+        reads.append(block_hash)
+        return block
+
+    node = a_data_node(
+        block_index=block_index, block_db=SimpleNamespace(get_block=get_block)
+    )
+    wanted = block_index.active_chain[length - 1]
+    node.most_recent_block = a_most_recent(
+        block, wanted if recent else block_index.active_chain[length - 2]
+    )
+    peer = a_peer()
+    item = Inventory(InventoryType.MSG_WITNESS_BLOCK, wanted)
+    getdata(node, GetData([item]).serialize(), peer)
+    assert peer.sent == [BlockMsg(block, include_witness=True, check_validity=False)]
+    assert reads == ([] if recent else [wanted])
+
+
 def a_block_store(block: Block | None) -> Any:
     """Build a `block_db` holding `block` under every hash, or nothing."""
     return SimpleNamespace(
@@ -3924,6 +4013,38 @@ def test_getblocktxn_is_answered_with_the_transactions_asked_for() -> None:
     getblocktxn(node, GetBlockTxn(wanted, [1, 3]).serialize(), peer)
     (answer,) = peer.sent
     assert answer == BlockTxn(wanted, [block.transactions[1], block.transactions[3]])
+
+
+def test_getblocktxn_for_the_most_recent_block_needs_no_lookup() -> None:
+    """ISS 1336: Core answers from `m_most_recent_block` ahead of any lookup.
+
+    Neither the index nor the store holds the block here; a request for
+    another hash is silent, as for any block not held.
+    """
+    block = a_block_with_transactions(3)
+    node = a_data_node(block_index=a_tall_block_index(3), block_db=a_block_store(None))
+    wanted = block.header.hash
+    node.most_recent_block = a_most_recent(block, wanted)
+    peer = a_peer()
+    getblocktxn(node, GetBlockTxn(wanted, [1, 3]).serialize(), peer)
+    assert peer.sent == [
+        BlockTxn(wanted, [block.transactions[1], block.transactions[3]])
+    ]
+    other = a_peer()
+    getblocktxn(node, GetBlockTxn(b"\x07" * 32, [1]).serialize(), other)
+    assert not other.sent
+
+
+def test_getblocktxn_for_the_most_recent_block_checks_its_indexes() -> None:
+    """ISS 1336: an index past the last transaction is misbehaviour here too."""
+    block = a_block_with_transactions(1)
+    node = a_data_node(block_index=a_tall_block_index(3), block_db=a_block_store(None))
+    node.most_recent_block = a_most_recent(block, block.header.hash)
+    peer = a_peer()
+    request = GetBlockTxn(block.header.hash, [2])
+    with pytest.raises(MisbehavingError, match="out-of-bounds"):
+        getblocktxn(node, request.serialize(), peer)
+    assert not peer.sent
 
 
 def test_getblocktxn_with_no_indexes_drops_the_peer_undiscouraged() -> None:
