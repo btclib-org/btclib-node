@@ -3437,6 +3437,11 @@ def _crash_after(calls: int, original: Callable[..., Any]) -> Callable[..., Any]
     return wrapper
 
 
+# RocksDB holds `LOCK` open and creates it afresh on every open, so an
+# image without it is what a restart finds; Windows refuses to copy it.
+_WITHOUT_LOCK = shutil.ignore_patterns("LOCK")
+
+
 def _assert_restartable(image: Path, chain: list[bytes]) -> int:
     """Open a crashed data directory and check no block it needs is gone.
 
@@ -3504,7 +3509,7 @@ def test_pruning_flushes_the_chainstate_before_it_deletes(
     node, chain, tip_height = _a_pruned_chain(regtest_node)
     prune_up_to_height(node, 19)
     image = tmp_path_factory.mktemp("image") / "data"
-    shutil.copytree(node.data_dir, image)
+    shutil.copytree(node.data_dir, image, ignore=_WITHOUT_LOCK)
     assert _assert_restartable(image, chain) == tip_height
 
 
@@ -3525,7 +3530,7 @@ def test_a_crash_while_pruning_leaves_nothing_a_restart_needs_missing(
     with pytest.raises(_CrashError):
         prune_up_to_height(node, 19)
     image = tmp_path_factory.mktemp("image") / "data"
-    shutil.copytree(node.data_dir, image)
+    shutil.copytree(node.data_dir, image, ignore=_WITHOUT_LOCK)
     _assert_restartable(image, chain)
 
 
