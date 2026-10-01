@@ -1597,6 +1597,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   Core's `Must submit previous header (<hash>) first` for an unknown
   parent, and the reason for a header refused** (closes #1533).
 
+### The mutation run executes every mutant
+
+- **`mutation.yml`'s session budget is 45 minutes and its ceiling 60,
+  where 10 and 20 cut off more than half of the mutants** (closes #1557).
+
 ### `getrawtransaction` answers `time`, `blocktime` and verbosity 2
 
 - **Verbosity 2 adds `fee` and `prevout`, and `confirmations` is 0, not

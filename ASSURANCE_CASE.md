@@ -352,7 +352,10 @@ and what counters each.
   `.github/mutation/interpreter.toml`, run by `.github/workflows/mutation.yml`,
   asks whether the suite notices a wrong line inside
   `src/btclib_node/interpreter.py`, the consensus entry point
-  ARCHITECTURE.md's *Validation* names.
+  ARCHITECTURE.md's *Validation* names. Each weekly run executes every
+  mutant of that file, and of `p2p/headers_sync.py` through
+  `headers_sync.toml`; a survivor is a test to write or an
+  equivalent mutant `interpreter.toml` explains.
 - **Supply chain.** SECURITY.md's *Supported versions* describes the
   attestations. `uv.lock` pins every dependency, and the suite and the
   lint gate install with `--locked` (`CONTRIBUTING.md`'s own commands);
