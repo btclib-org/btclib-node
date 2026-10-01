@@ -838,21 +838,42 @@ def test_a_version_carrying_our_own_nonce_is_this_node_calling_itself() -> None:
 
 
 @pytest.mark.parametrize("inbound", [False, True], ids=["outbound", "inbound"])
-def test_an_outbound_peer_s_own_services_replace_its_row_s(*, inbound: bool) -> None:
-    """ISS 1276: Core's `SetServices` of an outbound `version`, before refusal.
+@pytest.mark.parametrize(
+    ("refused", "services"),
+    [
+        (
+            a_version(nonce=7, services=ServiceFlags.NODE_WITNESS),
+            ServiceFlags.NODE_WITNESS,
+        ),
+        (
+            a_version(
+                protocol=MIN_PEER_PROTO_VERSION - 1, services=ServiceFlags.NODE_NETWORK
+            ),
+            ServiceFlags.NODE_NETWORK,
+        ),
+        (a_version(services=ServiceFlags.NODE_NETWORK), ServiceFlags.NODE_NETWORK),
+    ],
+    ids=["self-connect", "obsolete", "no witness"],
+)
+def test_an_outbound_peer_s_own_services_replace_its_row_s(
+    refused: bytes, services: ServiceFlags, *, inbound: bool
+) -> None:
+    """ISS 1276, ISS 1326: Core's `SetServices` of an outbound `version`.
 
-    A self-connection is refused after it, so the row is written all the
-    same; an inbound peer's word is not taken.
+    Ahead of every refusal, so the row is written whether the peer is
+    dropped as a self-connection, as obsolete or for missing
+    `NODE_WITNESS`; an inbound peer's word is not taken.
     """
-    peer = a_peer(inbound=inbound)
+    peer = a_peer(inbound=inbound, automatic=True)
     full = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
     peer_db = PeerDB(cast("Chain", None), None)
     peer_db.add_addresses([replace(peer.address, services=full)])
     node = a_handshake_node(pending_outbound_nonces=[7], peer_db=peer_db)
-    version(node, a_version(nonce=7, services=ServiceFlags.NODE_WITNESS), peer)
-    assert peer.stopped == [True]
+    version(node, refused, peer)
     (row,) = peer_db.addresses
-    assert row.services == (full if inbound else ServiceFlags.NODE_WITNESS)
+    assert row.services == (full if inbound else services)
+    if not inbound:
+        assert peer.stopped == [True]
 
 
 @pytest.mark.parametrize("inbound", [True, False], ids=["inbound", "outbound"])
