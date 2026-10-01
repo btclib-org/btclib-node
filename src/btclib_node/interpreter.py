@@ -5,7 +5,7 @@
 """Script and transaction validation, dispatched across `Node.worker_pool`.
 
 `get_flags` is `Config.chain.consensus.script_flags_at`, Bitcoin Core's
-own `GetBlockScriptFlags`: `check_transactions` fans a block's inputs out
+own `GetBlockScriptFlags`: `check_scripts` fans a block's inputs out
 across the worker pool and `warm` is what a fresh worker process runs
 once, under `Node.worker_pool`'s process arm, on `Node.warm_worker_pool`'s
 dispatch, so the cost of importing `btclib.script.engine` is paid before
@@ -18,11 +18,8 @@ pay for.
 
 from typing import TYPE_CHECKING
 
-from btclib.block.limits import MAX_BLOCK_SIGOPS_COST
-from btclib.exceptions import BTClibException, BTClibValueError
+from btclib.exceptions import BTClibValueError, ScriptError
 from btclib.script.engine import (
-    sig_op_cost,
-    verify_amounts,
     verify_input,
     verify_transaction,
 )
@@ -49,8 +46,8 @@ if TYPE_CHECKING:
 
 __all__ = [
     "STANDARD_FLAGS",
+    "check_scripts",
     "check_transaction",
-    "check_transactions",
     "f",
     "get_flags",
     "warm",
@@ -133,7 +130,7 @@ def warm() -> None:
     `Node.warm_worker_pool` dispatches several of these across the pool
     so that every worker pays the import of this module -- and of
     `btclib.script.engine` above, the expensive part of it -- before
-    `check_transactions` below ever needs one of them for real
+    `check_scripts` below ever needs one of them for real
     (btclib-org/btclib-node#262). Only a genuine cost under
     `Node.worker_pool`'s process arm: a worker thread shares the one
     import its own process already paid, so the dispatch reaches it too
@@ -183,82 +180,48 @@ def _tasks(
         yield from ((tx_outs, tx, i, flags, precomputed) for i in range(len(tx_outs)))
 
 
-def check_transactions(
-    transaction_data: list[tuple[list[Coin], Tx]],
-    index: int,
-    node: Node,
-    block_hash: bytes,
-    coinbase: Tx,
+def check_scripts(
+    transaction_data: list[tuple[list[Coin], Tx]], flags: ScriptFlag, node: Node
 ) -> None:
-    """Verify a candidate block's own transactions, fanned out across the pool.
+    """Verify a candidate block's own scripts, fanned out across the pool.
 
     Raises on the first bad input `node.worker_pool.starmap` reaches --
     `main.update_chain`'s own caller is what rolls the chainstate back
-    and leaves the block off the active chain once this does. Amounts
-    are checked here, per transaction and outside the pool, since
-    script validation alone never reads them, and so is the block's
-    sigop cost, `coinbase` included. `transaction_data` carries each
-    prevout as a `Coin` -- what `main._validate_block`'s own
-    `btclib.tx.tx_context.assert_coinbase_maturity` call needs of it --
-    and every btclib call here wants a bare `TxOut`, so each is unwrapped
-    where it is used rather than threaded through as two parallel lists.
-    `block_hash` is the candidate block's own --
-    `main._validate_block`'s caller already has it -- so `get_flags`
-    below can answer for the handful of blocks the buried heights alone
-    get wrong.
+    and leaves the block off the active chain once this does. Core reads
+    the script results only after the loop over the transactions and the
+    coinbase value, its check threads being the default, which is why
+    `main._validate_block` calls this last, `flags` being the ones it
+    counted the sigops under. `transaction_data` carries each prevout as
+    a `Coin`, and every btclib call here wants a bare `TxOut`, so each is
+    unwrapped where it is used rather than threaded through as two
+    parallel lists.
 
-    A failure the pool itself raises is re-raised as
+    A `ScriptError` the pool raises is re-raised as
     `BlockScriptVerifyError`, Core's own wire format for a script
-    check failed while connecting; `verify_amounts`'s own refusal below
-    is not that -- it fails, unwrapped, before the pool ever runs.
+    check failed while connecting.
     """
     if not transaction_data:
         return
     if any(len(x[0]) != len(x[1].vin) for x in transaction_data):
         raise PrevoutCountMismatchError
 
-    flags = get_flags(node.config, index, block_hash)
-
-    # Script validation never reads the amounts except through the
-    # sig_hash, so a block's transactions have to be checked against
-    # their prevouts separately or a block may print money. Per
-    # transaction, and cheap, so it stays out of the worker pool.
-    #
-    # Core's ConnectBlock checks each transaction's amounts, then adds
-    # its sigop cost to the block's running total and refuses the block
-    # once that passes MAX_BLOCK_SIGOPS_COST, the coinbase counted
-    # first; the scripts come after (src/validation.cpp,
-    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The checks
-    # main._validate_block makes before this one each run over the whole
-    # block first, where Core's run per transaction:
-    # btclib-org/btclib-node#1587.
-    # A coinbase-only block returned above: its cost is its legacy
-    # count, which CheckBlock already bounds.
-    cost = sig_op_cost([], coinbase, flags)
-    for prevouts, tx in transaction_data:
-        tx_outs = [coin.tx_out for coin in prevouts]
-        verify_amounts(tx_outs, tx)
-        cost += sig_op_cost(tx_outs, tx, flags)
-        if cost > MAX_BLOCK_SIGOPS_COST:
-            err_msg = "bad-blk-sigops"
-            raise BTClibValueError(err_msg)
-
     # Raising is the point: an input that does not verify has to reach
     # main.update_chain, which rolls the chainstate back and leaves the
     # block off the active chain.
     try:
         node.worker_pool.starmap(f, _tasks(transaction_data, flags))
-    except BTClibException as error:
-        raise BlockScriptVerifyError(str(error)) from error
+    except ScriptError as error:
+        raise BlockScriptVerifyError(error.code.description) from error
 
 
 def _consensus_accepts(prevouts: list[TxOut], tx: Tx) -> bool:
     """Answer whether `ALL_FLAGS` takes a transaction `STANDARD_FLAGS` refused.
 
     Which separates a candidate a block may carry from one no chain
-    will hold, and btclib's engine does not: every rule it enforces is
-    refused with the same `BTClibValueError`, so the flag set a refusal
-    was produced under is all there is to read it by. A second run is
+    will hold, and a refusal does not say which: its `ScriptError.code`
+    names the rule broken, not whether a block's flags would enforce it,
+    so the flag set a refusal was produced under is all there is to read
+    it by. A second run is
     what that costs, and it is paid only where the candidate is already
     refused.
 
@@ -281,7 +244,7 @@ def _consensus_accepts(prevouts: list[TxOut], tx: Tx) -> bool:
 def check_transaction(prevouts: list[TxOut], tx: Tx) -> None:
     """Verify one mempool candidate against its prevouts, on this thread.
 
-    Not routed through `Node.worker_pool`, unlike `check_transactions`
+    Not routed through `Node.worker_pool`, unlike `check_scripts`
     above: this runs once per mempool acceptance rather than once per
     block's worth of inputs, so the pool's own process-pickling cost
     would outweigh what it buys here.
@@ -296,7 +259,7 @@ def check_transaction(prevouts: list[TxOut], tx: Tx) -> None:
     Core follows that call with `ConsensusScriptChecks` (`:1152-1183`,
     same commit) and this does not. That second call fills the script
     execution cache `ConnectBlock` reads later, which is not a structure
-    this tree has -- `check_transactions` above verifies every input of
+    this tree has -- `check_scripts` above verifies every input of
     every block transaction, mempool or not. What is left of it is an
     assertion: `STANDARD_FLAGS` is a superset of every set `get_flags`
     can answer, so a candidate this accepts is one the consensus rules
@@ -318,10 +281,11 @@ def check_transaction(prevouts: list[TxOut], tx: Tx) -> None:
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the reason
     "mempool-script-verify-flag-failed (...)" and the details naming the
     input, its transaction and the outpoint it spends. Inside the
-    parentheses is btclib's message, where Core's is `ScriptErrorString`:
-    btclib-org/btclib-node#1362. Each input is verified in turn, as
-    Core's own loop does, to name the first that fails; the amounts are
-    `main.verify_mempool_acceptance`'s to check, before this.
+    parentheses is `ScriptErrorString`, which btclib's `ScriptError.code`
+    carries as `description`: btclib-org/btclib-node#1362. Each input is
+    verified in turn, as Core's own loop does, to name the first that
+    fails; the amounts are `main.verify_mempool_acceptance`'s to check,
+    before this.
     """
     # No copy: btclib's engine leaves the transaction alone -- sig_hash
     # builds the blanked transaction each preimage commits to rather
@@ -331,8 +295,8 @@ def check_transaction(prevouts: list[TxOut], tx: Tx) -> None:
     for i, tx_in in enumerate(tx.vin):
         try:
             verify_input(prevouts, tx, i, STANDARD_FLAGS, precomputed)
-        except BTClibValueError as refusal:
-            reason = f"mempool-script-verify-flag-failed ({refusal})"
+        except ScriptError as refusal:
+            reason = f"mempool-script-verify-flag-failed ({refusal.code.description})"
             prev_out = tx_in.prev_out
             details = (
                 f"input {i} of {tx.id.hex()} (wtxid {tx.hash.hex()}), "

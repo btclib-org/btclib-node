@@ -1678,6 +1678,12 @@ that records it (issue btclib-org/.github#1362).
   GHSA-94p9-xgh2-xp45, GHSA-9h9j-4vrj-gf7g and GHSA-59cr-6r3x-644w; the
   lint and mutation groups alone reach them (closes #1620).
 
+### Refusals carry Core's reasons, in Core's order
+
+- **A refused header, a script refusal and a block's refusals carry Core's
+  reasons, in Core's order; `interpreter.check_transactions` is
+  `check_scripts`** (closes #1600) (closes #1362) (closes #1587).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

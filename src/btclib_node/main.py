@@ -5,7 +5,7 @@
 """`update_chain`, called once per pass of `Node`'s own loop.
 
 Builds a fork's contextual detail, validates it block by block through
-`interpreter.check_transactions`, reconciles the mempool across
+`_validate_block`, reconciles the mempool across
 whatever it adds and removes, and announces the added blocks to every
 connected peer that lacks them once the node is out of initial block
 download.
@@ -34,7 +34,6 @@ from btclib.script.engine import sig_op_cost
 from btclib.script.engine.flags import ScriptFlag
 from btclib.tx.limits import COINBASE_MATURITY
 from btclib.tx.tx_context import (
-    assert_coinbase_maturity,
     assert_coinbase_value,
     assert_sequence_locks,
     is_final,
@@ -62,8 +61,8 @@ from btclib_node.exceptions import (
 )
 from btclib_node.interpreter import (
     STANDARD_FLAGS,
+    check_scripts,
     check_transaction,
-    check_transactions,
     get_flags,
 )
 from btclib_node.mempool import format_money
@@ -1082,23 +1081,27 @@ def is_cached_invalid(block_index: BlockIndex, block: Block) -> bool:
 
 
 # update_chain's own per-block gate, once a candidate's spends and
-# creations are staged and its own height is known: every transaction's
-# own finality via btclib.tx.tx_context.is_final (BIP113-aware) and its
-# BIP68 relative lock via btclib.tx.tx_context.assert_sequence_locks,
-# the two rules a height and a clock decide on their own through
-# Block.assert_valid_contextual -- time-too-new, already checked on the
-# header path (chainstate/block_index.py's own header validation), and
-# bad-cb-height, wherever BIP34 binds (Chain.consensus.bip34_height, per
-# network) -- a spend of a coinbase not yet COINBASE_MATURITY deep via
-# btclib.tx.tx_context.assert_coinbase_maturity, this block's own
-# amounts, sigop cost and scripts via interpreter.check_transactions, and a
-# coinbase paying more than subsidy plus fees via
-# btclib.tx.tx_context.assert_coinbase_value. BIP30 runs earlier still,
-# inside utxo_index.add_block, before this is ever called: its own
-# docstring is where that ordering and the two 2010 exceptions are
-# argued. A function of its own rather than statements inline:
-# update_chain's own trial loop is already long enough that PLR0915
-# counts every statement gained here against it.
+# creations are staged and its own height is known: Core's `ConnectBlock`
+# (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
+# one loop over the transactions, each asked in turn
+# `_check_tx_inputs` (maturity, then amounts), the accumulated fee range,
+# its BIP68 relative lock via btclib.tx.tx_context.assert_sequence_locks
+# and the block's running sigop cost, then the coinbase value, then the
+# scripts, whose results Core reads only after the loop and the coinbase
+# value. So, past an input missing or already spent, which
+# utxo_index.add_block refuses for every transaction first, the rule a
+# block breaks first in transaction order is the one refused, and a
+# coinbase paying too much is refused before a failing script
+# (btclib-org/btclib-node#1587). What comes before it is
+# `contextual_check_block`'s, Core's `ContextualCheckBlock`: every
+# transaction's finality, and bad-cb-height wherever BIP34 binds
+# (Chain.consensus.bip34_height, per network), via
+# Block.assert_valid_contextual. BIP30 runs earlier still, inside
+# utxo_index.add_block, before this is ever called: its own docstring is
+# where that ordering and the two 2010 exceptions are argued. A function
+# of its own rather than statements inline: update_chain's own trial loop
+# is already long enough that PLR0915 counts every statement gained here
+# against it.
 def _validate_block(
     node: Node, block: Block, transactions: list[tuple[list[Coin], Tx]], index: int
 ) -> None:
@@ -1114,22 +1117,37 @@ def _validate_block(
         header = header_at_height(parent_header, parent_height, height, parent_of)
         return median_time_past(header, height, parent_of)
 
-    if bip113_active:
-        for prevouts, tx in transactions:
+    flags = get_flags(node.config, index, block_hash)
+    coinbase = block.transactions[0]
+    # A coinbase-only block has no loop to run: its cost is its legacy
+    # count, which CheckBlock already bounds
+    cost = sig_op_cost([], coinbase, flags)
+    fees = 0
+    for prevouts, tx in transactions:
+        _check_tx_inputs(prevouts, tx, index)
+        tx_outs = [coin.tx_out for coin in prevouts]
+        fees += sum(x.value for x in tx_outs) - sum(x.value for x in tx.vout)
+        if fees > _MAX_MONEY:
+            err_msg = "bad-txns-accumulated-fee-outofrange"
+            raise BTClibValueError(err_msg)
+        if bip113_active:
             assert_sequence_locks(
                 tx, prevouts, index, parent_mtp, ancestor_median_time_past
             )
+        cost += sig_op_cost(tx_outs, tx, flags)
+        if cost > MAX_BLOCK_SIGOPS_COST:
+            err_msg = "bad-blk-sigops"
+            raise BTClibValueError(err_msg)
 
-    for prevouts, _tx in transactions:
-        assert_coinbase_maturity(prevouts, index)
-    check_transactions(transactions, index, node, block_hash, block.transactions[0])
-
-    fees = sum(
-        sum(coin.tx_out.value for coin in prevouts) - sum(x.value for x in tx.vout)
-        for prevouts, tx in transactions
-    )
     block_subsidy = subsidy(index, node.chain.consensus.subsidy_halving_interval)
-    assert_coinbase_value(block.transactions[0], block_subsidy, fees)
+    assert_coinbase_value(coinbase, block_subsidy, fees)
+    check_scripts(transactions, flags, node)
+
+
+# Core's own `MAX_MONEY` (`src/consensus/amount.h`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag), the bound `MoneyRange` puts
+# on the fees a block accumulates
+_MAX_MONEY = 21_000_000 * 100_000_000
 
 
 def contextual_check_block(node: Node, block: Block, index: int) -> tuple[int, bool]:
@@ -1216,8 +1234,8 @@ def _record_rejection(node: Node, failed_hash: bytes, exc: BaseException) -> Non
 # candidate's own content is bad, and nothing else: InvalidBlockInputError
 # is utxo_index.add_block's own two checks (BIP30, a double spend inside
 # the same block); PrevoutCountMismatchError and BTClibValueError are
-# check_transactions and everything _validate_block calls -- amounts,
-# scripts, coinbase value and maturity, finality, sequence locks, and
+# _validate_block and everything it calls -- amounts, scripts,
+# coinbase value and maturity, finality, sequence locks, and
 # Block.assert_valid_contextual, all of which raise BTClibValueError,
 # btclib's own worker_pool.starmap round trip included, since
 # btclib.exceptions' own docstring is why a btclib exception survives a
@@ -1384,7 +1402,7 @@ def update_chain(node: Node) -> None:
     # failing to give back what it wrote (a corrupt file, a disk error,
     # get_block/get_rev_block finding block_db's index disagreeing with
     # chainstate's), never the fork's content turning out bad: that
-    # question is check_transactions', inside the try, and is answered
+    # question is check_scripts', inside the try, and is answered
     # by rejecting the fork rather than by stopping the node.
     #
     # Bitcoin Core's own split (src/validation.cpp,
@@ -1430,7 +1448,7 @@ def update_chain(node: Node) -> None:
         for rev_block in to_remove:
             utxo_index.apply_rev_block(rev_block)
         for block_hash, block in zip(to_add_hash, to_add, strict=True):
-            # checked between blocks and not inside one: check_transactions
+            # checked between blocks and not inside one: check_scripts
             # below is the blocking worker_pool.starmap over a whole
             # block's inputs, thousands of signature checks on mainnet,
             # and it is what makes a wait for this loop scale with the
@@ -1878,8 +1896,9 @@ def _check_tx_inputs(prevout_coins: list[Coin], tx: Tx, spend_height: int) -> No
 
     Core's own `Consensus::CheckTxInputs` (`src/consensus/tx_verify.cpp`,
     at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), in its order and its
-    words. A mempool parent's output is never a coinbase's: a coinbase
-    is never held. btclib-org/btclib-node#1328
+    words, for a mempool candidate and for each transaction of a block,
+    `_validate_block`. A mempool parent's output is never a coinbase's:
+    a coinbase is never held. btclib-org/btclib-node#1328
     """
     for coin in prevout_coins:
         depth = spend_height - coin.height
