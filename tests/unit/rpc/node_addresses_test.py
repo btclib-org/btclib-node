@@ -4,7 +4,6 @@
 
 """`getnodeaddresses` and `addpeeraddress`, Core's RPCs over the table."""
 
-import logging
 import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
@@ -14,6 +13,7 @@ from bitcoin_core_rpc import RPCErrorCode
 from btclib.p2p.address import ServiceFlags
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 
+from btclib_node.log import Logger
 from btclib_node.p2p.address import PeerDB, peer_address
 from btclib_node.p2p.banman import BanMan, lookup_subnet
 from btclib_node.rpc.callbacks import (
@@ -43,7 +43,7 @@ def a_node(
 ) -> tuple[Node, PeerDB]:
     """Build a node double holding a table, and a ban list banning `banned`."""
     peer_db = PeerDB(cast("Chain", None), cast("Path", None))
-    ban_man = BanMan(None, logging.getLogger(__name__))
+    ban_man = BanMan(None, Logger())
     if banned is not None:
         subnet = lookup_subnet(banned)
         assert subnet is not None
