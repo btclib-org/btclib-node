@@ -759,6 +759,33 @@ def test_get_min_fee_rate_zeroes_out_below_half_the_incremental_fee() -> None:
     assert mempool._rolling_min_fee_rate == 0.0
 
 
+def test_the_incremental_relay_fee_is_the_one_given_at_construction() -> None:
+    """`-incrementalrelayfee` is what the eviction bump and the decay read.
+
+    Neither is a fixed 100 sat/kvB (btclib-org/btclib-node#1596).
+    """
+    incremental = FeeRate(sats_per_kvbyte=1000)
+    mempool = Mempool(Logger(debug=True), incremental)
+    assert mempool.incremental_relay_feerate == incremental
+
+    victim = generate_random_transaction()
+    keeper = generate_random_transaction()
+    mempool.add_tx(victim, 0)
+    mempool.bytesize_limit = mempool.bytesize + keeper.vsize - 1
+    mempool.add_tx(keeper, 10_000)
+    assert mempool._rolling_min_fee_rate == 1000
+
+    mempool.bytesize_limit = 1000
+    mempool.bytesize = 999
+    mempool._rolling_min_fee_rate = 1500.0
+    mempool._block_since_last_rolling_fee_bump = True
+    mempool._last_rolling_fee_update = time.time() - 60 * 60 * 12  # 1500 -> 750
+    assert mempool.get_min_fee_rate() == incremental
+    mempool._rolling_min_fee_rate = 1000.0
+    mempool._last_rolling_fee_update = time.time() - 60 * 60 * 12 * 2  # 1000 -> 250
+    assert mempool.get_min_fee_rate() == FeeRate(sats_per_kvbyte=0)
+
+
 def a_spend_of(outpoints: list[tuple[bytes, int]], value: int = 1) -> Tx:
     """Return a transaction spending exactly `outpoints`."""
     return Tx(
@@ -845,7 +872,7 @@ def test_a_conflict_not_paying_its_own_relay_is_insufficient() -> None:
     """Core's rule 4: the increase has to cover the incremental relay fee."""
     mempool, coin, _, _ = a_mempool_with_a_conflict()
     candidate = a_spend_of([coin])
-    relay = fee_from_vsize(candidate.vsize, mempool_module._INCREMENTAL_RELAY_FEE_RATE)
+    relay = fee_from_vsize(candidate.vsize, mempool.incremental_relay_feerate)
     assert relay > 0
     for fee in (12_000, 12_000 + relay - 1):
         with pytest.raises(TxRejectedError) as refused:
@@ -866,10 +893,26 @@ def test_the_relay_increase_is_priced_by_the_vsize_given() -> None:
     """
     mempool, coin, _, _ = a_mempool_with_a_conflict()
     candidate = a_spend_of([coin])
-    rate = mempool_module._INCREMENTAL_RELAY_FEE_RATE
+    rate = mempool.incremental_relay_feerate
     enough = 12_000 + fee_from_vsize(candidate.vsize, rate)
     with pytest.raises(TxRejectedError, match="not enough additional fees"):
         mempool.check_replacement(candidate, enough, 10 * candidate.vsize)
+
+
+def test_a_replacement_pays_the_incremental_relay_fee_it_was_given() -> None:
+    """Rule 4 prices the increase at `-incrementalrelayfee`.
+
+    An increase that covers the default rate falls short of a higher one
+    (btclib-org/btclib-node#1596).
+    """
+    mempool, coin, _, _ = a_mempool_with_a_conflict()
+    candidate = a_spend_of([coin])
+    fee = 12_000 + fee_from_vsize(candidate.vsize, mempool.incremental_relay_feerate)
+    with pytest.raises(TxRejectedError, match="bip125-replacement-disallowed"):
+        mempool.check_replacement(candidate, fee, candidate.vsize)
+    mempool.incremental_relay_feerate = FeeRate(sats_per_kvbyte=1_000_000)
+    with pytest.raises(TxRejectedError, match="not enough additional fees"):
+        mempool.check_replacement(candidate, fee, candidate.vsize)
 
 
 def test_a_conflict_paying_for_what_it_replaces_is_still_refused() -> None:
@@ -880,7 +923,7 @@ def test_a_conflict_paying_for_what_it_replaces_is_still_refused() -> None:
     """
     mempool, coin, held, child = a_mempool_with_a_conflict()
     candidate = a_spend_of([coin])
-    relay = fee_from_vsize(candidate.vsize, mempool_module._INCREMENTAL_RELAY_FEE_RATE)
+    relay = fee_from_vsize(candidate.vsize, mempool.incremental_relay_feerate)
     with pytest.raises(TxRejectedError) as refused:
         mempool.check_replacement(candidate, 12_000 + relay, candidate.vsize)
     assert refused.value.reason == "bip125-replacement-disallowed"

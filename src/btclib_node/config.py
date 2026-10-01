@@ -54,6 +54,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
 __all__ = [
+    "DEFAULT_INCREMENTAL_RELAY_FEERATE",
     "DEFAULT_MAX_PEER_CONNECTIONS",
     "DEFAULT_MAX_TIP_AGE",
     "DEFAULT_MIN_RELAY_FEERATE",
@@ -68,6 +69,11 @@ __all__ = [
 # (btclib-org/btclib-node#1245), and the one this node tells a peer about
 # in `feefilter` (btclib-org/btclib-node#94).
 DEFAULT_MIN_RELAY_FEERATE = FeeRate(sats_per_kvbyte=100)
+# Core's own `DEFAULT_INCREMENTAL_RELAY_FEE` (`src/policy/policy.h`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): 100 sat/kvB, the default of
+# `-incrementalrelayfee`. Core keeps it apart from the floor above, the two
+# merely sharing a value.
+DEFAULT_INCREMENTAL_RELAY_FEERATE = FeeRate(sats_per_kvbyte=100)
 # Core's own `-maxconnections` default, `DEFAULT_MAX_PEER_CONNECTIONS`
 # (`src/net.h`), read at the release `integration-bitcoind.yml` pins,
 # v31.1 at bitcoin/bitcoin@9be056a8a7. Core's `master` sets 200 (at
@@ -378,6 +384,10 @@ class Config:
     # `section_warning`
     config_args: tuple[str, ...]
     min_relay_feerate: FeeRate
+    # Core's own `-incrementalrelayfee`: the extra fee a replacement pays
+    # and what an eviction adds to the mempool's rolling minimum
+    # (`Mempool`); `MemPoolOptions::incremental_relay_feerate`
+    incremental_relay_feerate: FeeRate
     # Core's own `-minimumchainwork`: the chain work below which
     # `main.update_ibd_status` and the `getheaders` handler in
     # `p2p.callbacks` treat the active tip as not caught up, and below
@@ -586,6 +596,7 @@ class Config:
         debug: bool = False,
         log_path: str | None = "history.log",
         min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
+        incremental_relay_feerate: FeeRate = DEFAULT_INCREMENTAL_RELAY_FEERATE,
         minimum_chain_work: int | None = None,
         max_tip_age: int = DEFAULT_MAX_TIP_AGE,
         connect: Sequence[str] = (),
@@ -743,3 +754,4 @@ class Config:
         self.section_warning = section_warning
         self.config_args = tuple(config_args)
         self.min_relay_feerate = min_relay_feerate
+        self.incremental_relay_feerate = incremental_relay_feerate

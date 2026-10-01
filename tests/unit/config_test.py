@@ -104,6 +104,12 @@ def test_min_relay_feerate_is_configurable() -> None:
     assert Config(chain="regtest", min_relay_feerate=rate).min_relay_feerate == rate
 
 
+def test_incremental_relay_feerate_defaults_to_cores_own() -> None:
+    """Core's `DEFAULT_INCREMENTAL_RELAY_FEE`: 100 sat/kvB."""
+    config = Config(chain="regtest")
+    assert config.incremental_relay_feerate.sats_per_kvbyte == 100
+
+
 def test_rpc_host_defaults_to_localhost_not_every_interface() -> None:
     """`rpc_host` defaults to loopback; an explicit host still wins."""
     # #27: the rpc listener is a control plane, not a peer-to-peer

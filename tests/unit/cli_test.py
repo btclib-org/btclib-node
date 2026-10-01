@@ -1718,6 +1718,74 @@ def test_build_config_help_lists_minrelaytxfee_under_node_relay(
     ) in out
 
 
+def test_build_config_incrementalrelayfee_is_read_in_btc_per_kvb(
+    tmp_path: Path,
+) -> None:
+    """Read as `-minrelaytxfee` is: Core's default, a value, `0`, the file."""
+    config = _build(tmp_path, "-regtest")
+    assert config.incremental_relay_feerate.sats_per_kvbyte == 100
+    given = _build(tmp_path, "-regtest", "-incrementalrelayfee=0.00002")
+    assert given.incremental_relay_feerate.sats_per_kvbyte == 2000
+    negated = _build(tmp_path, "-regtest", "-noincrementalrelayfee")
+    assert negated.incremental_relay_feerate.sats_per_kvbyte == 0
+    from_file = _build(tmp_path, conf="regtest=1\nincrementalrelayfee=0.00003\n")
+    assert from_file.incremental_relay_feerate.sats_per_kvbyte == 3000
+
+
+def test_build_config_incrementalrelayfee_that_is_no_amount_is_refused(
+    tmp_path: Path,
+) -> None:
+    """`AmountErrMsg`'s words, naming the option."""
+    expected = re.escape("Invalid amount for -incrementalrelayfee=<amount>: 'abc'")
+    with pytest.raises(ValueError, match=f"^{expected}$"):
+        _build(tmp_path, "-regtest", "-incrementalrelayfee=abc")
+
+
+def test_build_config_help_lists_incrementalrelayfee_in_help_debug_only(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Core flags it `DEBUG_ONLY`: `-help-debug` shows it, in Core's words."""
+    with pytest.raises(SystemExit):
+        _build(tmp_path, "-help")
+    assert "-incrementalrelayfee" not in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        _build(tmp_path, "-help-debug")
+    out = capsys.readouterr().out
+    assert (
+        "\n  -incrementalrelayfee=<amt>\n       Fee rate (in BTC/kvB) used to "
+        "define cost of relay, used for mempool\n       limiting and replacement "
+        "policy. (default: 0.000001)\n"
+    ) in out
+
+
+def test_build_config_incrementalrelayfee_is_refused_before_minrelaytxfee(
+    tmp_path: Path,
+) -> None:
+    """`ApplyArgsManOptions` reads `-incrementalrelayfee` first."""
+    with pytest.raises(ValueError, match="-incrementalrelayfee"):
+        _build(tmp_path, "-regtest", "-minrelaytxfee=abc", "-incrementalrelayfee=abc")
+
+
+def test_build_config_incrementalrelayfee_raises_a_minrelaytxfee_not_given(
+    tmp_path: Path,
+) -> None:
+    """Core lets `-incrementalrelayfee` alone raise the floor, never lower it.
+
+    A `-minrelaytxfee` given, even a lower one, stays as it is.
+    """
+    raised = _build(tmp_path, "-regtest", "-incrementalrelayfee=0.00002")
+    assert raised.min_relay_feerate.sats_per_kvbyte == 2000
+    lowered = _build(tmp_path, "-regtest", "-incrementalrelayfee=0.00000050")
+    assert lowered.min_relay_feerate.sats_per_kvbyte == 100
+    given = _build(
+        tmp_path,
+        "-regtest",
+        "-incrementalrelayfee=0.00002",
+        "-minrelaytxfee=0.00001",
+    )
+    assert given.min_relay_feerate.sats_per_kvbyte == 1000
+
+
 def test_build_config_maxtipage_defaults_negates_and_reads_in_seconds(
     tmp_path: Path,
 ) -> None:

@@ -6952,6 +6952,25 @@ def test_send_raw_transaction_marks_a_kept_transaction_unbroadcast(
     assert mempool.unbroadcast == {tx.id}
 
 
+def test_getmempoolinfo_reports_the_relay_fees() -> None:
+    """`minrelaytxfee` and `incrementalrelayfee`, in BTC/kvB, Core's defaults.
+
+    Both default to 0.00000100 (btclib-org/btclib-node#1596).
+    """
+    out = get_mempool_info(a_node(), _CONN, [])
+    assert out["minrelaytxfee"].text == "0.00000100"
+    assert out["incrementalrelayfee"].text == "0.00000100"
+
+
+def test_getmempoolinfo_reports_the_relay_fees_it_was_given() -> None:
+    """A configured value is what each field answers."""
+    mempool = Mempool(Logger(debug=True), FeeRate(sats_per_kvbyte=2500))
+    node = a_node(mempool=mempool, min_relay_feerate=FeeRate(sats_per_kvbyte=1500))
+    out = get_mempool_info(node, _CONN, [])
+    assert out["minrelaytxfee"].text == "0.00001500"
+    assert out["incrementalrelayfee"].text == "0.00002500"
+
+
 def test_get_mempool_info_answers_unbroadcastcount() -> None:
     """`getmempoolinfo`'s `unbroadcastcount` is `Mempool.unbroadcast`'s size."""
     mempool = Mempool(Logger(debug=True))

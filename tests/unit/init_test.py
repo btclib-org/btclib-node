@@ -30,6 +30,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast, override
 
 import pytest
+from btclib.fee import FeeRate
 
 import btclib_node
 from btclib_node import Node, install_signal_handlers
@@ -257,6 +258,15 @@ def test_pending_cfilters_starts_empty(tmp_path: Path) -> None:
     """A fresh node has nothing registered on `pending_cfilters`."""
     with unstarted_node_context(tmp_path) as node:
         assert node.pending_cfilters == {}
+
+
+def test_the_mempool_is_built_with_the_configured_incremental_relay_fee(
+    tmp_path: Path,
+) -> None:
+    """`-incrementalrelayfee` reaches `Mempool` (ISS 1596)."""
+    rate = FeeRate(sats_per_kvbyte=777)
+    with unstarted_node_context(tmp_path, incremental_relay_feerate=rate) as node:
+        assert node.mempool.incremental_relay_feerate == rate
 
 
 def test_pending_getdata_starts_empty(tmp_path: Path) -> None:

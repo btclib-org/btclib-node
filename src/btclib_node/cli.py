@@ -27,8 +27,9 @@ default is the pinned release's rather than Core `master`'s,
 `-server` is `Config.allow_rpc`, on unless negated or set false, as
 `bitcoind` soft-sets it on (`src/bitcoind.cpp`). An RPC or P2P listener
 that cannot start stops the node, `main` below exiting `1`, as Core's
-init aborts. `-minrelaytxfee` is BTC/kvB, as Core's, and
-`Config.min_relay_feerate` the same rate in sat/kvB. Two `Config` fields
+init aborts. `-minrelaytxfee` and `-incrementalrelayfee` are BTC/kvB,
+as Core's, and `Config`'s `min_relay_feerate` and
+`incremental_relay_feerate` the same rates in sat/kvB. Two `Config` fields
 have no option here: `log_path` (this command always takes
 `Config`'s own default -- a file under the data directory -- an operator
 who wants console output can read it from there), and `allow_p2p` (the
@@ -179,6 +180,7 @@ from btclib_node import Node, install_signal_handlers
 from btclib_node.block_db import blocks_directory
 from btclib_node.chains import Main, SigNet, TestNet, TestNet4
 from btclib_node.config import (
+    DEFAULT_INCREMENTAL_RELAY_FEERATE,
     DEFAULT_MAX_PEER_CONNECTIONS,
     DEFAULT_MAX_TIP_AGE,
     DEFAULT_MIN_RELAY_FEERATE,
@@ -477,6 +479,14 @@ _OPTIONS: dict[str, _Option] = {
         "Specify additional configuration file, relative to the -datadir path "
         "(only usable from configuration file, not command line)",
         _OPTIONS_TITLE,
+    ),
+    "incrementalrelayfee": _Option(
+        "=<amt>",
+        "Fee rate (in BTC/kvB) used to define cost of relay, used for mempool "
+        "limiting and replacement policy. (default: "
+        f"{_format_money(DEFAULT_INCREMENTAL_RELAY_FEERATE.sats_per_kvbyte)})",
+        _NODE_RELAY_TITLE,
+        debug_only=True,
     ),
     "listen": _Option(
         "",
@@ -1583,22 +1593,52 @@ def _get_max_tip_age(settings: _Settings) -> int:
     return DEFAULT_MAX_TIP_AGE if value is None else value
 
 
-def _get_min_relay_feerate(settings: _Settings) -> FeeRate:
-    """Return `-minrelaytxfee` as a rate, Core's `ApplyArgsManOptions`.
+def _get_feerate(settings: _Settings, name: str) -> FeeRate | None:
+    """Return `-name` as a rate, `None` where it is not given.
 
-    `src/node/mempool_args.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-    tag: BTC/kvB through `ParseMoney`, refused with `AmountErrMsg`'s
-    words; a negation reads as `0`. Core's `-incrementalrelayfee` raising
-    this floor where it is not given has no option here to do so.
+    BTC/kvB through `ParseMoney`, refused with `AmountErrMsg`'s words
+    (`src/common/messages.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag); a negation reads as `0`.
     """
-    value = _get_arg(settings, "minrelaytxfee")
+    value = _get_arg(settings, name)
     if value is None:
-        return DEFAULT_MIN_RELAY_FEERATE
+        return None
     amount = _parse_money(value)
     if amount is None:
-        err_msg = f"Invalid amount for -minrelaytxfee=<amount>: '{value}'"
+        err_msg = f"Invalid amount for -{name}=<amount>: '{value}'"
         raise ValueError(err_msg)
     return FeeRate(sats_per_kvbyte=amount)
+
+
+@dataclass(frozen=True)
+class _MempoolOptions:
+    """The `MemPoolOptions` this node carries.
+
+    The fields are `Config`'s of the same names.
+    """
+
+    min_relay_feerate: FeeRate
+    incremental_relay_feerate: FeeRate
+
+
+def _get_mempool_options(settings: _Settings) -> _MempoolOptions:
+    """Return the mempool's options, Core's `ApplyArgsManOptions`.
+
+    `src/node/mempool_args.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag, in its order of refusals: `-incrementalrelayfee`, then
+    `-minrelaytxfee`. `-incrementalrelayfee` above `-minrelaytxfee` raises
+    it where `-minrelaytxfee` is not given, which Core also logs; this node
+    does not, the value being in `getmempoolinfo`'s `minrelaytxfee`.
+    """
+    incremental = _get_feerate(settings, "incrementalrelayfee")
+    if incremental is None:
+        incremental = DEFAULT_INCREMENTAL_RELAY_FEERATE
+    min_relay = _get_feerate(settings, "minrelaytxfee")
+    if min_relay is None:
+        min_relay = DEFAULT_MIN_RELAY_FEERATE
+        if incremental.sats_per_kvbyte > min_relay.sats_per_kvbyte:
+            min_relay = incremental
+    return _MempoolOptions(min_relay, incremental)
 
 
 def _prune_target_mib(prune: int) -> int:
@@ -1743,7 +1783,7 @@ class _BeforeLock:
     minimum_chain_work: int | None
     max_tip_age: int
     prune: int
-    min_relay_feerate: FeeRate
+    mempool: _MempoolOptions
     directories: Config
 
 
@@ -1843,7 +1883,7 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     categories, `-minimumchainwork`, `-maxtipage` (the order
     `node::ApplyArgsManOptions`'s own chainstate-manager options are
     read in, `src/node/chainstatemanager_args.cpp`, same sha), `-prune`,
-    `-minrelaytxfee`.
+    the mempool's options.
     """
     settings, base_dir, chain_name = _read_settings(argv)
     _check_network_only_args(settings)
@@ -1882,12 +1922,11 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     debug = _resolve_debug(settings)
     # after `-debug`'s categories, where `AppInitParameterInteraction`
     # applies the chainstate manager's options, ahead of the blockmanager's
-    # (`-prune`, below) and the mempool's (`-minrelaytxfee`,
-    # btclib-org/btclib-node#1332)
+    # (`-prune`, below) and the mempool's (btclib-org/btclib-node#1332)
     minimum_chain_work = _get_minimum_chain_work(settings)
     max_tip_age = _get_max_tip_age(settings)
     prune = _prune_target_mib(_get_int(settings, "prune") or 0)
-    min_relay_feerate = _get_min_relay_feerate(settings)
+    mempool = _get_mempool_options(settings)
     return _BeforeLock(
         settings,
         base_dir,
@@ -1899,7 +1938,7 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
         minimum_chain_work,
         max_tip_age,
         prune,
-        min_relay_feerate,
+        mempool,
         directories,
     )
 
@@ -2020,7 +2059,8 @@ def _after_lock(before: _BeforeLock) -> Config:
         startup_notify=_get_arg(settings, "startupnotify") or "",
         shutdown_notify=_get_args(settings, "shutdownnotify"),
         alert_notify=_get_arg(settings, "alertnotify") or "",
-        min_relay_feerate=before.min_relay_feerate,
+        min_relay_feerate=before.mempool.min_relay_feerate,
+        incremental_relay_feerate=before.mempool.incremental_relay_feerate,
         minimum_chain_work=before.minimum_chain_work,
         max_tip_age=before.max_tip_age,
         rpcauth=_get_args(settings, "rpcauth"),
