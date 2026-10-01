@@ -64,8 +64,9 @@ btclib-node is an application, not a library: it opens sockets of its
 own, on both surfaces ARCHITECTURE.md's *The protocol and the RPC
 surface* describes, and it writes to a datadir on disk. The command
 below lists the top-level name of every module `src/` imports, at any
-depth and in any spelling of the statement — `bitcoin_core_rpc` and
-`rocksdict` beside btclib itself, and otherwise the standard library.
+depth and in any spelling of the statement — `bitcoin_core_rpc`,
+`btclib_wallet` and `rocksdict` beside btclib itself, and otherwise the
+standard library.
 
 ```shell
 python3 - <<'EOF'
@@ -89,6 +90,21 @@ and only `tests/` (never shipped) asks for. `asyncio` and `socket` are
 what `P2pManager` and `RpcManager` open their listeners and connections
 through; `rocksdict` is the store; `multiprocessing` is `Node.worker_pool`
 under a GIL interpreter.
+
+`btclib_wallet` is a required dependency: `rpc/callbacks.py` takes
+`add_checksum` and `from_address` from its `descriptors` to write the
+descriptor of a decoded script (`_infer_descriptor`), so what it returns
+reaches a caller's answer.
+
+`ctypes` is imported by `p2p/netif.py` alone, which loads the C library
+with `CDLL(None)`, calls `getifaddrs` and reads the `ifaddrs` memory it
+returns, the standard library having no binding of it. That is a trust
+item: the C library and the layout `_IfAddrs` declares are
+trusted without a check, and what is read is this machine's own interface
+table, never a peer's.
+
+`subprocess` runs an operator's `-*notify` command through the shell
+(`notify.py`).
 
 **What is defended.**
 

@@ -1515,6 +1515,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   not under ClusterFuzzLite, and the JSON body of an RPC request is not
   fuzzed** (closes #1549).
 
+### `ASSURANCE_CASE.md`'s import census prose names what the census prints
+
+- **`btclib_wallet`, `subprocess` and the `getifaddrs` FFI, a trust
+  item, are named** (closes #1550).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
