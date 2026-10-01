@@ -24,6 +24,13 @@ def _push(data: bytes) -> bytes:
     return bytes([len(data)]) + data
 
 
+def _script_id(value: object) -> str | None:
+    # The default id is the script's repr, 280 kB for the largest, and
+    # Windows refuses an environment variable over 32767 characters, which
+    # is where pytest puts the id (PYTEST_CURRENT_TEST).
+    return f"{value[:8].hex()}-{len(value)}" if isinstance(value, bytes) else None
+
+
 def _multisig(m: bytes, keys: list[bytes], n: bytes) -> bytes:
     return m + b"".join(_push(key) for key in keys) + n + b"\xae"
 
@@ -89,6 +96,7 @@ def _multisig(m: bytes, keys: list[bytes], n: bytes) -> bytes:
         ),
         (_multisig(b"\xac", [_KEY], b"\x51"), "nonstandard"),
     ],
+    ids=_script_id,
 )
 def test_solver_names_the_type_core_does(script: bytes, script_type: str) -> None:
     """`solver` answers `GetTxnOutputType`'s name for `script`."""

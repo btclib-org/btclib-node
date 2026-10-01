@@ -1608,6 +1608,24 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   gets the newest version each floor admits, and `uv.lock` protects only
   an install from the checkout** (closes #1553).
 
+### `getrawtransaction` answers `time`, `blocktime` and verbosity 2
+
+- **Verbosity 2 adds `fee` and `prevout`, and `confirmations` is 0, not
+  -1, off the active chain; a verbosity of the wrong type is Core's bare
+  error** (closes #1597).
+
+### The Windows suite no longer errors at the solver test
+
+- **`test_solver_names_the_type_core_does` has short test ids**, where the
+  largest was 280206 characters and Windows refuses an environment
+  variable over 32767, which is where pytest puts it (closes #1613).
+
+### `pypi-install.yml` imports the bindings check from `btclib_ecc`
+
+- **The `Verify the bindings serve` step imports
+  `is_libsecp256k1_serving` from `btclib_ecc.curves`**, where
+  `btclib.curves` is gone from btclib 2026.9.30 (closes #1614).
+
 ### A `getaddr` is answered from every known address
 
 - **The answer is a sample of every address the table holds, new or
