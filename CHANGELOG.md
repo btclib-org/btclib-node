@@ -1743,6 +1743,11 @@ that records it (issue btclib-org/.github#1362).
   clock, is replaced by five days ago before it is stored, as Core's
   `ADDR` handler does** (closes #1605).
 
+### The Windows suite passes the prune crash tests
+
+- **The prune tests image the data directory without its `LOCK` files**,
+  which RocksDB holds open and Windows refuses to copy (closes #1638).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
