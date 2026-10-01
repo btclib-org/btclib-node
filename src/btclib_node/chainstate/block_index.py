@@ -457,10 +457,14 @@ class BlockIndex:
         # whose data, and every ancestor's, has arrived: the tie-break
         # beneath chainwork in `_outranks`, the lower number winning. In
         # memory only, as in Core. `_load_sequence_ids` numbers the
-        # stored blocks 0 and 1, and `_link` numbers each later arrival
-        # from 2 up.
+        # stored blocks 0 and 1, `_link` numbers each later arrival from
+        # 2 up, and `precious` hands out the negative numbers, Core's
+        # `nBlockReverseSequenceId` and `nLastPreciousChainwork` being its
+        # two fields below.
         self.sequence_id: dict[bytes, int] = {}
         self._next_sequence_id = 2
+        self._precious_sequence_id = -1
+        self._precious_chainwork = 0
 
         # Core's own `m_blocks_unlinked` (`src/node/blockstorage.h`, same
         # sha): each block whose data arrived while its parent had no
@@ -666,6 +670,9 @@ class BlockIndex:
         whatever is there, which only matters past start-up:
         `block_candidates` is empty already the one time `init_from_db`
         calls this.
+
+        `precious` calls this too, once it has renumbered a block that
+        may now outrank the tip.
 
         `valid` is offered alongside `valid_header` so that a branch a
         reorg has since displaced -- `_finalize_fork`'s own `to_remove`
@@ -1308,6 +1315,35 @@ class BlockIndex:
         return self.sequence_id.get(block_hash, math.inf) < self.sequence_id.get(
             other, math.inf
         )
+
+    def precious(self, block_hash: bytes) -> bool:
+        """Treat `block_hash` as received before its rivals: `PreciousBlock`.
+
+        `Chainstate::PreciousBlock` (`src/validation.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Nothing for a block
+        with less work than the tip, and `False`. Otherwise the block
+        takes the next negative number, counting down from -1 again
+        wherever the tip gained work since the last call,
+        `block_candidates` is rebuilt so that it is offered where it now
+        outranks the tip, and `True`.
+
+        A block whose data, or an ancestor's, is missing keeps no
+        number: Core gives it one that its data's arrival overwrites
+        before anything compares it. Core stops counting down at the
+        `int32_t` minimum, against overflow, which a Python int does not
+        have.
+        """
+        tip_work = self.chainwork[self.active_chain[-1]]
+        if self.chainwork[block_hash] < tip_work:
+            return False
+        if tip_work > self._precious_chainwork:
+            self._precious_sequence_id = -1
+        self._precious_chainwork = tip_work
+        if block_hash in self.sequence_id:
+            self.sequence_id[block_hash] = self._precious_sequence_id
+        self._precious_sequence_id -= 1
+        self.generate_block_candidates()
+        return True
 
     def get_first_candidate(self) -> BlockInfo | None:
         """Return the first downloaded candidate outranking the active tip.

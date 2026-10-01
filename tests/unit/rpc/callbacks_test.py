@@ -96,6 +96,7 @@ from btclib_node.rpc.callbacks import (
     invalidate_block,
     list_banned,
     ping,
+    precious_block,
     prune_blockchain,
     reconsider_block,
     send_raw_transaction,
@@ -5807,6 +5808,75 @@ def test_invalidate_block_reconnects_a_branch_of_equal_work_received_first(
     invalidate_block(node, _CONN, [second[-1].header.hash.hex()])
 
     assert block_index.active_chain[1:] == [b.header.hash for b in first]
+
+
+def test_precious_block_with_no_arguments_is_answered_with_the_usage() -> None:
+    """A missing `blockhash` is Core's own `HelpResult` shape, `MISC_ERROR`."""
+    with pytest.raises(RpcError) as raised:
+        precious_block(cast("Node", None), _CONN, [])
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
+    assert raised.value.message == HELP_TEXT["preciousblock"]
+
+
+def test_precious_block_refuses_an_unknown_hash(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """An unindexed hash answers Core's own `"Block not found"`."""
+    node = regtest_node()
+    with pytest.raises(RpcError) as raised:
+        precious_block(node, _CONN, [(b"\x11" * 32).hex()])
+    assert raised.value.code == RPCErrorCode.INVALID_ADDRESS_OR_KEY
+    assert raised.value.message == "Block not found"
+
+
+def test_precious_block_switches_between_tips_of_equal_work(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Core's `rpc_preciousblock.py`: the named tip wins, and a later call too.
+
+    `first` arrives first, so it stays the tip when `second`, of the
+    same work, arrives. `preciousblock` on `second`'s tip moves the chain
+    there, and on `first`'s moves it back. A block below the tip's work
+    changes nothing. btclib-org/btclib-node#1534
+    """
+    node = regtest_node()
+    first = generate_random_chain(3, node.chain.genesis.hash)
+    connect(node, first)
+    second = generate_random_chain(3, node.chain.genesis.hash)
+    connect(node, second)
+    block_index = node.chainstate.block_index
+    assert block_index.active_chain[-1] == first[-1].header.hash
+
+    precious_block(node, _CONN, [second[-1].header.hash.hex()])
+    assert block_index.active_chain[1:] == [b.header.hash for b in second]
+
+    precious_block(node, _CONN, [first[-1].header.hash.hex()])
+    assert block_index.active_chain[1:] == [b.header.hash for b in first]
+
+    precious_block(node, _CONN, [second[1].header.hash.hex()])
+    assert block_index.active_chain[-1] == first[-1].header.hash
+
+
+def test_precious_block_below_the_tip_does_not_retry_the_chain(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A block with less work than the tip leaves even a ready candidate be.
+
+    Core's `PreciousBlock` returns before `ActivateBestChain` there
+    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
+    so `chain[2]`, downloaded and not yet connected, stays unconnected.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(3, node.chain.genesis.hash)
+    connect(node, chain[:2])
+    block_index = node.chainstate.block_index
+    block_index.add_headers([chain[2].header])
+    node.block_db.add_block(chain[2])
+    block_index.set_downloaded(chain[2].header.hash)
+
+    precious_block(node, _CONN, [chain[0].header.hash.hex()])
+
+    assert block_index.active_chain[-1] == chain[1].header.hash
 
 
 def test_invalidate_block_drops_a_disconnected_transaction_past_the_ten_block_cap(

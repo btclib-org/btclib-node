@@ -566,6 +566,26 @@ _HELP_RECONSIDERBLOCK = (
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "reconsiderblock", "params": ["blockhash"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
+_HELP_PRECIOUSBLOCK = (
+    'preciousblock "blockhash"\n'
+    "\n"
+    "Treats a block as if it were received before others with the same work.\n"
+    "\n"
+    "A later preciousblock call can override the effect of an earlier one.\n"
+    "\n"
+    "The effects of preciousblock are not retained across restarts.\n"
+    "\n"
+    "Arguments:\n"
+    "1. blockhash    (string, required) the hash of the block to mark as precious\n"
+    "\n"
+    "Result:\n"
+    "null    (json null)\n"
+    "\n"
+    "Examples:\n"
+    '> bitcoin-cli preciousblock "blockhash"\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "preciousblock", "params": ["blockhash"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
 _HELP_GETRPCINFO = (
     "getrpcinfo\n"
     "\n"
@@ -1242,6 +1262,7 @@ HELP_TEXT: dict[str, str] = {
     "getchaintips": _HELP_GETCHAINTIPS,
     "invalidateblock": _HELP_INVALIDATEBLOCK,
     "reconsiderblock": _HELP_RECONSIDERBLOCK,
+    "preciousblock": _HELP_PRECIOUSBLOCK,
     "getmempoolentry": _HELP_GETMEMPOOLENTRY,
     "getmempoolinfo": _HELP_GETMEMPOOLINFO,
     "getrawmempool": _HELP_GETRAWMEMPOOL,
@@ -1283,6 +1304,7 @@ CATEGORY: dict[str, str] = {
     "getchaintips": "Blockchain",
     "invalidateblock": "hidden",
     "reconsiderblock": "hidden",
+    "preciousblock": "Blockchain",
     "getmempoolentry": "Blockchain",
     "getmempoolinfo": "Blockchain",
     "getrawmempool": "Blockchain",

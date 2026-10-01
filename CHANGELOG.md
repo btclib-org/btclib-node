@@ -1515,6 +1515,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   order, as Core's `nSequenceId`; at equal work the lower number wins, so
   `invalidateblock` can return to a displaced branch** (closes #1579).
 
+### `preciousblock` is served
+
+- **`preciousblock` makes a block of the tip's own work the tip, a later
+  call overriding an earlier one, nothing kept across a restart**
+  (closes #1534).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

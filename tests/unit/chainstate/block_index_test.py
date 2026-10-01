@@ -1912,3 +1912,44 @@ def test_the_first_candidate_of_equal_work_is_the_one_whose_data_came_first(
 
     assert candidate is not None
     assert candidate.header.hash == arrived_first.hash
+
+
+def test_precious_counts_down_and_restarts_once_the_tip_gains_work(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """`precious` hands out -1, -2, ..., and -1 again past a heavier tip.
+
+    Core's `nBlockReverseSequenceId`, reset wherever the tip's work
+    exceeds `nLastPreciousChainwork` (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). A block whose data has
+    not arrived keeps no number, and still uses one up.
+    """
+    chainstate = a_chainstate(None)
+    block_index = chainstate.block_index
+    (tip,) = generate_random_header_chain(1, RegTest().genesis.hash)
+    (rival,) = generate_random_header_chain(1, RegTest().genesis.hash)
+    (header_only,) = generate_random_header_chain(1, RegTest().genesis.hash)
+    for header in (tip, rival, header_only):
+        block_index.add_headers([header])
+    block_index.set_downloaded(tip.hash)
+    block_index.set_downloaded(rival.hash)
+    block_index.add_to_active_chain(tip.hash)
+
+    block_index.precious(rival.hash)
+    assert block_index.sequence_id[rival.hash] == -1
+    assert [h for h, _ in block_index.block_candidates] == [rival.hash]
+    block_index.precious(header_only.hash)
+    assert header_only.hash not in block_index.sequence_id
+    block_index.precious(tip.hash)
+    assert block_index.sequence_id[tip.hash] == -3
+    assert not block_index.block_candidates
+
+    block_index.precious(RegTest().genesis.hash)
+    assert block_index.sequence_id[RegTest().genesis.hash] == 0
+
+    (higher,) = generate_random_header_chain(1, tip.hash, tip.time)
+    block_index.add_headers([higher])
+    block_index.set_downloaded(higher.hash)
+    block_index.add_to_active_chain(higher.hash)
+    block_index.precious(higher.hash)
+    assert block_index.sequence_id[higher.hash] == -1

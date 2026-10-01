@@ -173,8 +173,8 @@ without a whitelist even where none is set.
 
 Each mirrors the Core method of the same name: `getbestblockhash`,
 `getblockcount`, `getblockchaininfo`, `getchaintips`, `pruneblockchain`,
-`getblockhash`, `getblockheader`, `getblock`, `submitblock`,
-`getpeerinfo`, `getconnectioncount`, `getnetworkinfo`,
+`preciousblock`, `getblockhash`, `getblockheader`, `getblock`,
+`submitblock`, `getpeerinfo`, `getconnectioncount`, `getnetworkinfo`,
 `setnetworkactive`, `addnode`, `disconnectnode`, `setban`, `listbanned`,
 `clearbanned`, `getmempoolinfo`, `getmempoolentry`, `getrawmempool`,
 `getrawtransaction`, `gettxout`, `gettxoutsetinfo`, `decoderawtransaction`,

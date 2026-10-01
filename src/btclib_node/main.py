@@ -106,6 +106,7 @@ __all__ = [
     "new_pow_valid_block",
     "parent_lookup",
     "passes_check_block",
+    "precious_chain",
     "prune_up_to_height",
     "reconsider_chain",
     "update_chain",
@@ -1480,7 +1481,7 @@ def update_chain(node: Node) -> None:
         settle_at_no_candidate(node)
 
 
-# invalidate_chain and reconsider_chain's own last step: Core's
+# invalidate_chain, reconsider_chain and precious_chain's own last step: Core's
 # `ActivateBestChain` (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7,
 # the v31.1 tag) loops internally until the active tip is the best one
 # `setBlockIndexCandidates` holds; this node's own `update_chain` only
@@ -1672,6 +1673,20 @@ def reconsider_chain(node: Node, block_hash: bytes) -> None:
     # that call before this function is ever entered
     node.chainstate.block_index.reconsider(block_hash)
     _activate_best_chain(node)
+
+
+def precious_chain(node: Node, block_hash: bytes) -> None:
+    """Prefer `block_hash` among the tips of its work, then retry the chain.
+
+    Core's own `Chainstate::PreciousBlock` (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `BlockIndex.precious`
+    renumbers the block, and `_activate_best_chain` is the
+    `ActivateBestChain` it ends with, skipped as in Core for a block with
+    less work than the tip. `rpc.callbacks.precious_block` is the only
+    caller, and has already refused a hash this index does not know.
+    """
+    if node.chainstate.block_index.precious(block_hash):
+        _activate_best_chain(node)
 
 
 # Core's own `MAX_STANDARD_TX_SIGOPS_COST` and `DEFAULT_BYTES_PER_SIGOP`

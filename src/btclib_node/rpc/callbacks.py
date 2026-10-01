@@ -46,6 +46,7 @@ from btclib_node.main import (
     new_pow_valid_block,
     parent_lookup,
     passes_check_block,
+    precious_chain,
     prune_up_to_height,
     reconsider_chain,
     update_chain,
@@ -104,6 +105,7 @@ __all__ = [
     "invalidate_block",
     "list_banned",
     "ping",
+    "precious_block",
     "prune_blockchain",
     "reconsider_block",
     "send_raw_transaction",
@@ -715,19 +717,20 @@ def get_chain_tips(
 def _known_block_hash(node: Node, params: list[Any], method: str) -> bytes:
     """Validate `invalidateblock`/`reconsiderblock`'s own single `blockhash`.
 
-    Both take Core's own one required `STR_HEX` argument and answer the
-    same two refusals in the same order: a missing one is `method`'s own
-    full help text under `RPC_MISC_ERROR`, the shape `get_block_hash`'s
-    own missing-argument comment already argues; a wrongly typed or
-    wrongly shaped one is `type_error`/`_parse_hash_v`, exactly as
-    `get_block_header`'s own `"hash"`-labelled argument is checked
-    (`ParseHashV`, same label this index's own callers use for it); and a
-    64-character hex string this index does not know is
-    `RPC_INVALID_ADDRESS_OR_KEY`, `"Block not found"` -- Core's own
-    `LookupBlockIndex` failure in both `InvalidateBlock` and
-    `ReconsiderBlock` (`rpc/blockchain.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag), matching `get_block`/`get_block_header`'s own
-    identical refusal for the identical failure above.
+    `preciousblock`'s too. Each takes Core's own one required `STR_HEX`
+    argument and answers the same refusals in the same order: a missing
+    one is `method`'s own full help text under `RPC_MISC_ERROR`, the
+    shape `get_block_hash`'s own missing-argument comment already
+    argues; a wrongly typed or wrongly shaped one is
+    `type_error`/`_parse_hash_v`, exactly as `get_block_header`'s own
+    `"hash"`-labelled argument is checked (`ParseHashV`, same label this
+    index's own callers use for it); and a 64-character hex string this
+    index does not know is `RPC_INVALID_ADDRESS_OR_KEY`,
+    `"Block not found"` -- Core's own `LookupBlockIndex` failure in
+    `InvalidateBlock`, `ReconsiderBlock` and `preciousblock`
+    (`rpc/blockchain.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag), matching `get_block`/`get_block_header`'s own identical
+    refusal for the identical failure above.
     """
     if not params:
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT[method])
@@ -772,6 +775,21 @@ def reconsider_block(node: Node, conn: RpcConnection, params: list[Any]) -> None
     """
     block_hash = _known_block_hash(node, params, "reconsiderblock")
     reconsider_chain(node, block_hash)
+
+
+def precious_block(node: Node, conn: RpcConnection, params: list[Any]) -> None:
+    """Answer `preciousblock`, Core's own single `blockhash` argument.
+
+    Core's own `preciousblock` (`rpc/blockchain.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `_known_block_hash` checks
+    the argument, and `main.precious_chain` prefers the block and
+    retries the chain. Core answers `RPC_DATABASE_ERROR` where
+    `ActivateBestChain` fails on its own storage; here that failure
+    raises out of `update_chain`, and `rpc.main._execute` answers
+    `INTERNAL_ERROR`, as for `invalidate_block`.
+    """
+    block_hash = _known_block_hash(node, params, "preciousblock")
+    precious_chain(node, block_hash)
 
 
 def _coinbase_tx_dict(coinbase: Tx) -> dict[str, Any]:
@@ -3501,6 +3519,7 @@ callbacks = {
     "getchaintips": get_chain_tips,
     "invalidateblock": invalidate_block,
     "reconsiderblock": reconsider_block,
+    "preciousblock": precious_block,
     "submitblock": submit_block,
     "getpeerinfo": get_peer_info,
     "getconnectioncount": get_connection_count,
@@ -3546,6 +3565,7 @@ arg_names: dict[str, tuple[str, ...]] = {
     "getchaintips": (),
     "invalidateblock": ("blockhash",),
     "reconsiderblock": ("blockhash",),
+    "preciousblock": ("blockhash",),
     "submitblock": ("hexdata", "dummy"),
     "getpeerinfo": (),
     "getconnectioncount": (),
