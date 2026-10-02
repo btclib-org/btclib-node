@@ -200,6 +200,7 @@ from btclib_node.constants import MIN_PRUNE_TARGET_MIB, default_data_dir
 from btclib_node.dirlock import DirectoryLock, lock_directories
 from btclib_node.exceptions import DirectoryLockError
 from btclib_node.log import open_history_log
+from btclib_node.p2p.address import BAD_PORTS
 from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME, is_valid_host
 from btclib_node.p2p.permissions import NET_PERMISSIONS_DOC
 from btclib_node.rpc.connection import REQUEST_TIMEOUT
@@ -2157,15 +2158,40 @@ def _resolve_externalip(values: list[str], default_port: int) -> list[str]:
     return resolved
 
 
-def _check_bind(values: list[str], default_port: int) -> None:
+def _warn_bad_port(option: str, port: int) -> None:
+    """Warn of a port other services listen on, as `BadPortWarning` does.
+
+    `InitWarning` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7) prints
+    `Warning: ` and the text on stderr, as `noui_ThreadSafeMessageBox`
+    does. Core logs it too, which is not done here.
+    """
+    if port in BAD_PORTS:
+        sys.stderr.write(
+            f"Warning: {option} request to listen on port {port}. This port is "
+            'considered "bad" and thus it is unlikely that any peer will '
+            "connect to it. See doc/p2p-bad-ports.md for details and a full "
+            "list.\n"
+        )
+
+
+def _check_bind(values: list[str], default_port: int, port: int | None) -> None:
     """Refuse a `-bind` that resolves to nothing, or one named twice.
 
     `AppInitMain`'s `-bind` loop and `CheckBindingConflicts`
     (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7), which sees the
     plain binds before the `=onion` ones and compares address and port.
-    Core's warning for a bad port is not given: btclib-org/btclib-node#1645.
+    The loop warns of each plain `-bind` on a bad port, and then of
+    `-port` where it is given and no `-bind` is, `-port` being ignored
+    otherwise. `-whitebind` is not read: btclib-org/btclib-node#1625.
     """
-    parsed = [parse_bind(value, default_port) for value in values]
+    parsed = []
+    for value in values:
+        address = parse_bind(value, default_port)
+        if not address.onion:
+            _warn_bad_port("-bind", address.port)
+        parsed.append(address)
+    if not values and port is not None:
+        _warn_bad_port("-port", port)
     seen = set()
     for address in sorted(parsed, key=lambda a: a.onion):
         key = (str(address.host).partition("%")[0], address.port)
@@ -2210,7 +2236,7 @@ def _after_lock(before: _BeforeLock) -> Config:
     externalip = _resolve_externalip(
         _get_args(settings, "externalip"), listen_port(bind, default_port)
     )
-    _check_bind(bind, default_port)
+    _check_bind(bind, default_port, p2p_port)
 
     connect = _get_args(settings, "connect")
     # `-noconnect` is Core's `-connect=0`: no automatic connection, and

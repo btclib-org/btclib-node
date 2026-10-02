@@ -201,15 +201,6 @@ def an_address(
     )
 
 
-def a_version_address(services: int = 0) -> NetworkAddress:
-    """Build an unroutable `NetworkAddress`, the shape a `version` carries.
-
-    A `version` message's own address field has no timestamp, unlike
-    `NetworkAddressV2`.
-    """
-    return NetworkAddress(services, "0.0.0.0", 18444)  # noqa: S104
-
-
 def a_ban_man(*subnets: str) -> BanMan:
     """Build a ban list, in memory, banning each of `subnets` for a day."""
     ban_man = BanMan(None, Logger())
@@ -563,9 +554,11 @@ def a_version(
     nonce: int = 7,
     relay: bool | None = True,
     addr_from_port: int = 18444,
+    addr_recv: str = "0.0.0.0",  # noqa: S104
 ) -> bytes:
     """Build a serialized `version`, as the `version` callback receives one."""
     return a_parsed_version(
+        addr_recv=addr_recv,
         protocol=protocol,
         services=services,
         nonce=nonce,
@@ -581,13 +574,14 @@ def a_parsed_version(
     nonce: int = 7,
     relay: bool | None = True,
     addr_from_port: int = 18444,
+    addr_recv: str = "0.0.0.0",  # noqa: S104
 ) -> Version:
     """Return the parsed `Version` `a_version` serializes, for field reads."""
     return Version(
         version=protocol,
         services=services,
         timestamp=1,
-        addr_recv=a_version_address(),
+        addr_recv=NetworkAddress(0, addr_recv, 18444),
         addr_from=NetworkAddress(services, "5.6.7.8", addr_from_port),
         nonce=nonce,
         user_agent=b"/Btclib/",
@@ -734,6 +728,7 @@ def a_handshake_node(
     block (btclib-org/btclib-node#1522).
     """
     discouraged, record = discourage_recorder()
+    seen: list[Any] = []
     discouraged_keys = {host_key(peer_address(host, 0)) for host in discouraged_hosts}
     own_nonces = set(pending_outbound_nonces)
     return SimpleNamespace(
@@ -756,6 +751,7 @@ def a_handshake_node(
             discouraged=discouraged,
             is_discouraged=lambda address: host_key(address) in discouraged_keys,
             ban_man=a_ban_man(*banned),
+            seen_local=seen.append,
         ),
         chainstate=SimpleNamespace(
             block_index=SimpleNamespace(
@@ -773,6 +769,7 @@ def a_handshake_node(
             log_debug=lambda *a: None,
             error=lambda *a: None,
         ),
+        seen_local_hosts=seen,
     )
 
 
@@ -895,6 +892,37 @@ def test_an_inbound_peer_is_answered_with_this_node_s_version(*, inbound: bool) 
     else:
         # the `getaddr` of ISS 1178
         assert commands(peer) == [*expected, "GetAddr"]
+
+
+@pytest.mark.parametrize(
+    ("inbound", "address", "seen"),
+    [
+        (True, "8.8.8.8", ["8.8.8.8"]),
+        (True, "192.168.1.2", []),
+        (True, "0.0.0.0", []),  # noqa: S104
+        (False, "8.8.8.8", []),
+    ],
+    ids=["routable", "private", "unspecified", "outbound"],
+)
+def test_a_version_raises_the_score_of_the_address_an_inbound_peer_saw(
+    *, inbound: bool, address: str, seen: list[str]
+) -> None:
+    """ISS 1646: Core's `SeenLocal`, of a routable `addrMe`, inbound only."""
+    node = a_handshake_node()
+    version(node, a_version(addr_recv=address), a_peer(inbound=inbound))
+    assert [str(host) for host in node.seen_local_hosts] == seen
+
+
+def test_a_version_refused_does_not_raise_a_score() -> None:
+    """ISS 1646: `SeenLocal` follows every refusal of the `version` handler."""
+    node = a_handshake_node()
+    peer = a_peer(inbound=True)
+    version(
+        node,
+        a_version(protocol=MIN_PEER_PROTO_VERSION - 1, addr_recv="8.8.8.8"),
+        peer,
+    )
+    assert node.seen_local_hosts == []
 
 
 @pytest.mark.parametrize(

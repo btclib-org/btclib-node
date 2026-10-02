@@ -24,6 +24,7 @@ import time
 from collections import Counter, deque
 from concurrent.futures import CancelledError
 from contextlib import suppress
+from dataclasses import replace
 from ipaddress import IPv4Address, IPv6Address, ip_address
 from typing import TYPE_CHECKING, Any, cast, override
 
@@ -45,6 +46,7 @@ from btclib_node.config import (
 )
 from btclib_node.constants import CLIENT_NAME, P2pConnStatus
 from btclib_node.p2p.address import (
+    BAD_PORTS,
     RECENT_TRY_SECONDS,
     PeerDB,
     can_connect,
@@ -257,99 +259,6 @@ _ADDED_NODES_BOUND = 24
 # non-internal one, is what this cap alone drops
 # (btclib-org/btclib-node#1466).
 _MAX_RESOLVED_ADDRESSES = 256
-
-# Core's `IsBadPort` (`src/netbase.cpp`, at bitcoin/bitcoin@9be056a8a7,
-# the v31.1 tag): ports other services listen on, which an automatic
-# dial passes over while `_BAD_PORT_DRAWS` has not been reached.
-_BAD_PORTS = frozenset(
-    {
-        1,
-        7,
-        9,
-        11,
-        13,
-        15,
-        17,
-        19,
-        20,
-        21,
-        22,
-        23,
-        25,
-        37,
-        42,
-        43,
-        53,
-        69,
-        77,
-        79,
-        87,
-        95,
-        101,
-        102,
-        103,
-        104,
-        109,
-        110,
-        111,
-        113,
-        115,
-        117,
-        119,
-        123,
-        135,
-        137,
-        139,
-        143,
-        161,
-        179,
-        389,
-        427,
-        465,
-        512,
-        513,
-        514,
-        515,
-        526,
-        530,
-        531,
-        532,
-        540,
-        548,
-        554,
-        556,
-        563,
-        587,
-        601,
-        636,
-        989,
-        990,
-        993,
-        995,
-        1719,
-        1720,
-        1723,
-        2049,
-        3306,
-        3389,
-        3659,
-        4045,
-        5060,
-        5061,
-        5432,
-        5900,
-        6000,
-        6566,
-        6665,
-        6666,
-        6667,
-        6668,
-        6669,
-        6697,
-        10080,
-        27017,
-    }
-)
 
 # Core's `EXTRA_BLOCK_RELAY_ONLY_PEER_INTERVAL` (`src/net.h`, same sha):
 # the mean of the exponential draw between two extra block-relay-only
@@ -814,13 +723,17 @@ class P2pManager(threading.Thread):
         # Core's `mapLocalHost` as `IsLocal` reads it: this node's own
         # addresses, by `host_key`, the map being keyed by `CNetAddr`,
         # so `IsLocal` compares no port (`src/net.h`, `src/net.cpp`,
-        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `_discover`
-        # fills it ahead of the bind. Written before `manage_connections`
-        # is scheduled and read only by it, on this thread.
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `_add_local`
+        # fills it. Written before `manage_connections` is scheduled and
+        # read only by it, on this thread.
         self.local_addresses: frozenset[bytes] = frozenset()
         # `mapLocalHost` with its values, by the same key: the port and
-        # score `_maybe_send_local_addr` chooses what to announce by
+        # score `_maybe_send_local_addr` chooses what to announce by.
+        # `_local_lock` is `g_maplocalhost_mutex`: `_add_local` runs on this
+        # thread, `seen_local` and `getnetworkinfo` on `Node`'s, so every
+        # reach of `local_info` takes it, a reader through `local_snapshot`.
         self.local_info: dict[bytes, LocalService] = {}
+        self._local_lock = threading.Lock()
         # set by `run` once it has bound, given up on binding, or been
         # told not to bind by `-listen=0`, which is what
         # `start_listener` waits on
@@ -1590,7 +1503,7 @@ class P2pManager(threading.Thread):
                 # an outbound peer cannot see the listening port
                 seen_as = (seen_ip, seen.port if conn.inbound else None)
         chosen = address_for_peer(
-            self.local_info,
+            self.local_snapshot(),
             peer,
             routable=is_routable(conn.address),
             listen_port=self._listen_port(),
@@ -2301,7 +2214,7 @@ class P2pManager(threading.Thread):
         elif not has_all_desirable_services(self.node, address.services):
             return True
         # Core's `IsIPv4() || IsIPv6()` holds of every draw, as above
-        if tries < _BAD_PORT_DRAWS and address.port in _BAD_PORTS:
+        if tries < _BAD_PORT_DRAWS and address.port in BAD_PORTS:
             return True
         return self._added_node(address)
 
@@ -2787,14 +2700,36 @@ class P2pManager(threading.Thread):
             return False
         self.logger.info("AddLocal(%s,%i)", service_text(host, port), score)
         key = host_key(address)
-        known = self.local_info.get(key)
-        if known is None:
-            self.local_info[key] = LocalService(ip, port, score)
-        elif score >= known.score:
-            known.port = port
-            known.score = score + 1
-        self.local_addresses = frozenset(self.local_info)
+        with self._local_lock:
+            known = self.local_info.get(key)
+            if known is None:
+                self.local_info[key] = LocalService(ip, port, score)
+            elif score >= known.score:
+                known.port = port
+                known.score = score + 1
+            self.local_addresses = frozenset(self.local_info)
         return True
+
+    def seen_local(self, host: IPv4Address | IPv6Address) -> bool:
+        """Raise the score of `host`, one of our own, as `SeenLocal` does.
+
+        `SeenLocal` (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+        v31.1 tag) adds one to the score of a known address, by host
+        alone, and answers whether it knew it. Called from `Node`'s
+        thread: `local_info` is under `_local_lock` for that.
+        """
+        key = host_key(peer_address(str(host), 0))
+        with self._local_lock:
+            known = self.local_info.get(key)
+            if known is None:
+                return False
+            known.score += 1
+            return True
+
+    def local_snapshot(self) -> dict[bytes, LocalService]:
+        """Return a copy of `local_info` that no other thread changes."""
+        with self._local_lock:
+            return {key: replace(info) for key, info in self.local_info.items()}
 
     def _add_externalip(self) -> None:
         """Record every `-externalip` as a local address, as `AppInitMain` does.
