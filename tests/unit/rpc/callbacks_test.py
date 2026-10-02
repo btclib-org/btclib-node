@@ -15,6 +15,7 @@ import math
 import time
 from collections import Counter
 from dataclasses import replace
+from ipaddress import ip_address
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, cast, override
 
@@ -70,6 +71,7 @@ from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.connection import PeerStats
 from btclib_node.p2p.headers_sync import ChainStart, HeadersSyncState, State
 from btclib_node.p2p.permissions import NetPermissionFlags
+from btclib_node.p2p.selfannounce import LocalService
 from btclib_node.rpc.callbacks import (
     add_connection,
     add_node,
@@ -275,6 +277,7 @@ def a_node(
     log_path: str | None = None,
     permit_bare_multisig: bool = True,
     max_datacarrier_bytes: int | None = DEFAULT_MAX_DATACARRIER_BYTES,
+    local_addresses: dict[bytes, LocalService] | None = None,
 ) -> Any:
     """Build a `Node` double carrying only what these callbacks read.
 
@@ -316,6 +319,7 @@ def a_node(
             connections=peers if peers is not None else {},
             pending_connections=pending if pending is not None else {},
             ping_all=lambda: None,
+            local_snapshot=lambda: local_addresses or {},
         ),
         mempool=mempool if mempool is not None else Mempool(Logger(debug=True)),
         config=SimpleNamespace(
@@ -3815,6 +3819,22 @@ def test_blockchain_info_s_warnings_is_node_warnings_get_messages() -> None:
     assert get_blockchain_info(node, _CONN, [])["warnings"] == ["a warning"]
 
 
+def test_network_info_lists_the_local_addresses_in_core_s_order() -> None:
+    """ISS 1647: each with its port and score, IPv4 before IPv6, by octets."""
+    held = [
+        LocalService(ip_address("2606:4700::1"), 8333, 1),
+        LocalService(ip_address("9.9.9.9"), 18444, 5),
+        LocalService(ip_address("8.8.8.8"), 8333, 2),
+    ]
+    node = a_node(local_addresses={bytes(i.address.packed): i for i in held})
+    assert get_network_info(node, _CONN, [])["localaddresses"] == [
+        {"address": "8.8.8.8", "port": 8333, "score": 2},
+        {"address": "9.9.9.9", "port": 18444, "score": 5},
+        {"address": "2606:4700::1", "port": 8333, "score": 1},
+    ]
+    assert get_network_info(a_node(), _CONN, [])["localaddresses"] == []
+
+
 def test_network_info_s_warnings_is_node_warnings_get_messages() -> None:
     """ISS 1522: the same array `get_blockchain_info`'s own `warnings` field."""
     node = a_node()
@@ -4460,6 +4480,7 @@ def test_get_network_info_answers_this_node_s_own_subversion_and_protocol() -> N
         "protocolversion": PROTOCOL_VERSION,
         "localservices": f"{ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_NETWORK_LIMITED | ServiceFlags.NODE_WITNESS:016x}",
         "localservicesnames": ["NETWORK", "WITNESS", "NETWORK_LIMITED"],
+        "localaddresses": [],
         "warnings": [],
     }
 

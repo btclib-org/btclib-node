@@ -104,7 +104,7 @@ from btclib_node.main import (
     passes_check_block,
     verify_mempool_acceptance,
 )
-from btclib_node.p2p.address import AddrResponseCache, ip_and_port
+from btclib_node.p2p.address import AddrResponseCache, ip_and_port, peer_address
 from btclib_node.p2p.block_availability import (
     remove_block_request,
     update_block_availability,
@@ -114,6 +114,7 @@ from btclib_node.p2p.chain_sync import (
     protect_if_caught_up,
 )
 from btclib_node.p2p.compact_block import compact_block
+from btclib_node.p2p.eviction import is_routable
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 from btclib_node.p2p.headers_sync import (
     ChainStart,
@@ -438,6 +439,20 @@ def _refuses(node: Node, conn: Connection, version_msg: Version) -> bool:
     )
 
 
+def _see_local(node: Node, conn: Connection, version_msg: Version) -> None:
+    """Raise the score of the address an inbound peer says it reached us at.
+
+    Core's `SeenLocal` of a routable `addrMe`, ahead of `PushNodeVersion`
+    (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag).
+    """
+    if conn.inbound:
+        seen = version_msg.addr_recv
+        seen_ip = seen.ip.ipv4_mapped or seen.ip
+        if is_routable(peer_address(str(seen_ip), seen.port)):
+            node.p2p_manager.seen_local(seen_ip)
+
+
 def version(node: Node, msg: bytes, conn: Connection) -> None:
     """Handle a peer's `version`: refuse an incompatible peer, else continue.
 
@@ -477,6 +492,8 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     if _refuses(node, conn, version_msg):
         conn.stop()
         return
+
+    _see_local(node, conn, version_msg)
 
     # Core's `PushNodeVersion` for an inbound peer: its `version` is
     # answered only once every check above has kept it

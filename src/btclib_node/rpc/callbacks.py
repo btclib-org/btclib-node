@@ -1579,13 +1579,26 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     does (`:740`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag -- not
     `bb529657` above, this paragraph's own citation), so the two RPCs
     never disagree here either.
+
+    `localaddresses` is what `P2pManager.local_snapshot` holds, as Core's
+    `mapLocalHost` is read under its mutex (`rpc/net.cpp:728-738`, same
+    sha), in the order of its `std::map` of `CNetAddr`: IPv4 before IPv6,
+    then by octets.
     """
     services = local_services(node.config)
+    local = sorted(
+        node.p2p_manager.local_snapshot().values(),
+        key=lambda info: (info.address.version, info.address.packed),
+    )
     return {
         "subversion": USER_AGENT,
         "protocolversion": PROTOCOL_VERSION,
         "localservices": f"{services:016x}",
         "localservicesnames": service_names(services),
+        "localaddresses": [
+            {"address": str(info.address), "port": info.port, "score": info.score}
+            for info in local
+        ],
         "warnings": node.warnings.get_messages(),
     }
 

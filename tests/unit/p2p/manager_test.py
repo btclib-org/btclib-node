@@ -2127,6 +2127,58 @@ def test_a_known_local_address_takes_a_new_port_and_a_higher_score(
     assert manager.local_info[key] == LocalService(host, 2, LOCAL_MANUAL + 1)
 
 
+def test_seen_local_raises_the_score_of_a_known_host_whatever_its_port(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1646: `SeenLocal` adds one by host, and says whether it knew it."""
+    manager = a_manager()
+    host = ip_address("8.8.8.8")
+    manager._add_local(host, 7, LOCAL_BIND)
+    assert manager.seen_local(host)
+    assert manager.seen_local(host)
+    assert manager.local_info[host_key(peer_address("8.8.8.8", 0))] == LocalService(
+        host, 7, LOCAL_BIND + 2
+    )
+    assert not manager.seen_local(ip_address("8.8.4.4"))
+
+
+def test_the_snapshot_is_a_copy_no_later_score_reaches(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1647: what `getnetworkinfo` reads is not changed by `seen_local`."""
+    manager = a_manager()
+    host = ip_address("8.8.8.8")
+    manager._add_local(host, 7, LOCAL_BIND)
+    snapshot = manager.local_snapshot()
+    manager.seen_local(host)
+    assert [info.score for info in snapshot.values()] == [LOCAL_BIND]
+    assert [info.score for info in manager.local_snapshot().values()] == [
+        LOCAL_BIND + 1
+    ]
+
+
+@pytest.mark.parametrize("reach", ["add", "seen", "snapshot"])
+def test_every_reach_of_the_local_table_waits_for_its_lock(
+    a_manager: AManagerFactory, reach: str
+) -> None:
+    """ISS 1646: `Node`'s thread and this manager's share `local_info`."""
+    manager = a_manager()
+    host = ip_address("8.8.8.8")
+    manager._add_local(host, 7, LOCAL_BIND)
+    calls = {
+        "add": lambda: manager._add_local(host, 7, LOCAL_MANUAL),
+        "seen": lambda: manager.seen_local(host),
+        "snapshot": manager.local_snapshot,
+    }
+    worker = threading.Thread(target=calls[reach])
+    with manager._local_lock:
+        worker.start()
+        worker.join(timeout=0.3)
+        assert worker.is_alive()
+    worker.join(timeout=10)
+    assert not worker.is_alive()
+
+
 def test_externalip_without_a_port_takes_the_first_bind_ports(
     a_manager: AManagerFactory,
 ) -> None:

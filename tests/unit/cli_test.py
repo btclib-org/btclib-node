@@ -2975,6 +2975,37 @@ def test_build_config_externalip_turns_discover_off() -> None:
     assert wins.discover is True
 
 
+def _bad_port_warning(option: str, port: int) -> str:
+    return (
+        f"Warning: {option} request to listen on port {port}. This port is "
+        'considered "bad" and thus it is unlikely that any peer will connect '
+        "to it. See doc/p2p-bad-ports.md for details and a full list.\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["-port=22"], _bad_port_warning("-port", 22)),
+        (["-port=8333"], ""),
+        (["-bind=127.0.0.1:22"], _bad_port_warning("-bind", 22)),
+        (["-port=22", "-bind=127.0.0.1"], _bad_port_warning("-bind", 22)),
+        (["-port=22", "-bind=127.0.0.1:8333"], ""),
+        (["-bind=127.0.0.1:22=onion"], ""),
+        (
+            ["-bind=127.0.0.1:22", "-bind=127.0.0.2:25"],
+            _bad_port_warning("-bind", 22) + _bad_port_warning("-bind", 25),
+        ),
+    ],
+)
+def test_build_config_warns_of_a_bad_port_as_core_does(
+    argv: list[str], expected: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 1645: each plain `-bind`, and `-port` only where no `-bind` is."""
+    cli.build_config(["-regtest", *argv])
+    assert capsys.readouterr().err == expected
+
+
 def test_build_config_externalip_is_a_list_at_dash_port() -> None:
     """ISS 1445: each value is looked up at `-port`; its own port wins."""
     argv = ["-regtest", "-port=99", "-externalip=8.8.8.8", "-externalip=[2001::1]:7"]

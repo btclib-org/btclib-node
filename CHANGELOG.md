@@ -1830,6 +1830,22 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
   `c_str()`** (closes #1377), where it raised an uncaught `ValueError`
   that left the sockets already bound open.
 
+### A bad `-port` or `-bind` port is warned of, as in Core
+
+- **Each plain `-bind` on a port Core's `IsBadPort` lists, and `-port` where
+  no `-bind` is given, draws Core's warning on stderr** (closes #1645).
+
+### An inbound peer's view of this node's address raises its score
+
+- **A routable address an inbound peer's `version` says it reached this node
+  at adds one to the score of that local address, as Core's `SeenLocal`
+  does** (closes #1646).
+
+### `getnetworkinfo` lists the local addresses
+
+- **`localaddresses` lists each local address with its port and score, as
+  Core's does** (closes #1647).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
