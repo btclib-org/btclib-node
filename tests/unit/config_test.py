@@ -722,3 +722,11 @@ def test_a_leading_double_slash_is_collapsed_as_lexically_normal_does(
     assert get_path_arg(f"//{tmp_path}/c") == f"{tmp_path}/c"
     config = Config(chain="regtest", data_dir=tmp_path, rpccookiefile=f"/{tmp_path}/c")
     assert str(config.rpc_cookie_file) == f"{tmp_path}/c"
+
+
+def test_assume_valid_is_off_unless_given() -> None:
+    """ISS 1576: `None` is off, a hash is kept as given."""
+    assert Config(chain="regtest").assume_valid is None
+    assert Config(chain="regtest", assume_valid=b"\x01" * 32).assume_valid == (
+        b"\x01" * 32
+    )

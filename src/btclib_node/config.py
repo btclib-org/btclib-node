@@ -562,6 +562,11 @@ class Config:
     # return (`src/validation.h`, at bitcoin/bitcoin@9be056a8a7, the
     # v31.1 tag).
     minimum_chain_work: int
+    # Core's own `-assumevalid`: the hash of a block whose ancestors
+    # script verification may skip, `None` where it is off (`0`,
+    # `-noassumevalid`, or not given: Core's default per network is not
+    # read yet, btclib-org/btclib-node#1576). Nothing reads it yet.
+    assume_valid: bytes | None
     # Core's own `-maxtipage`, in seconds rather than as a `timedelta`
     # for the same reason `ban_time` above is an `int`: the value is an
     # `int64_t` in Core (`ChainstateManagerOpts::max_tip_age`,
@@ -779,6 +784,7 @@ class Config:
         max_datacarrier_bytes: int | None = DEFAULT_MAX_DATACARRIER_BYTES,
         require_standard: bool = True,
         minimum_chain_work: int | None = None,
+        assume_valid: bytes | None = None,
         max_tip_age: int = DEFAULT_MAX_TIP_AGE,
         connect: Sequence[str] = (),
         addnode: Sequence[str] = (),
@@ -816,6 +822,7 @@ class Config:
             if minimum_chain_work is None
             else minimum_chain_work
         )
+        self.assume_valid = assume_valid
         self.max_tip_age = max_tip_age
 
         data_dir = Path(data_dir) if data_dir else default_data_dir()

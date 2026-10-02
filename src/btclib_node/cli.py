@@ -352,6 +352,14 @@ _MIN_CHAIN_WORK_TESTNET4 = TestNet4().consensus.minimum_chain_work
 _MIN_CHAIN_WORK_SIGNET = SigNet().consensus.minimum_chain_work
 
 
+# What `-assumevalid` defaults to until btclib's `ConsensusParams` carries
+# Core's own per network (btclib-org/btclib-node#1576, a later pull
+# request): no block, which Core's `GetHex` of a zero hash prints as these
+# digits. Core's `-help` lists the default per network here; that listing
+# is what that pull request fills in.
+_ASSUME_VALID_NONE = "0" * _MIN_WORK_HEX_DIGITS
+
+
 def _parse_hex_uint256(value: str) -> int | None:
     """Return Core's `uint256::FromUserHex` of `value`, `None` where it fails.
 
@@ -412,6 +420,14 @@ _OPTIONS: dict[str, _Option] = {
         "",
         f"For backwards compatibility, treat an unused {_DEFAULT_CONF_FILENAME} "
         "file in the datadir as a warning, not an error.",
+        _OPTIONS_TITLE,
+    ),
+    "assumevalid": _Option(
+        "=<hex>",
+        "If this block is in the chain assume that it and its ancestors are "
+        "valid and potentially skip their script verification (0 to verify "
+        f"all, default: {_ASSUME_VALID_NONE}, testnet3: {_ASSUME_VALID_NONE}, "
+        f"testnet4: {_ASSUME_VALID_NONE}, signet: {_ASSUME_VALID_NONE})",
         _OPTIONS_TITLE,
     ),
     "bantime": _Option(
@@ -1699,6 +1715,30 @@ def _get_minimum_chain_work(settings: _Settings) -> int | None:
     return work
 
 
+def _get_assume_valid(settings: _Settings) -> bytes | None:
+    """Return `-assumevalid` as a block hash, `None` where it is off.
+
+    `node::ApplyArgsManOptions` (`src/node/chainstatemanager_args.cpp`,
+    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `uint256::FromUserHex`
+    through `_parse_hex_uint256`, refused in Core's own words. Zero --
+    `0`, `-noassumevalid`, a bare `-assumevalid` -- is Core's "verify all",
+    and is `None` here, as is a value not given, until Core's default
+    per network is read (btclib-org/btclib-node#1576, a later pull
+    request). Nothing reads the value yet.
+    """
+    value = _get_arg(settings, "assumevalid")
+    if value is None:
+        return None
+    block_hash = _parse_hex_uint256(value)
+    if block_hash is None:
+        err_msg = (
+            f"Invalid assumevalid block hash specified ({value}), must be up "
+            f"to {_MIN_WORK_HEX_DIGITS} hex digits (or 0 to disable)"
+        )
+        raise ValueError(err_msg)
+    return block_hash.to_bytes(_MIN_WORK_HEX_DIGITS // 2) if block_hash else None
+
+
 def _get_max_tip_age(settings: _Settings) -> int:
     """Return `-maxtipage` in seconds, Core's `ApplyArgsManOptions`.
 
@@ -1943,6 +1983,7 @@ class _BeforeLock:
     # `-minimumchainwork`'s own `None` for "not given", `Config.__init__`
     # left to default it once `chain_name` above resolves
     minimum_chain_work: int | None
+    assume_valid: bytes | None
     max_tip_age: int
     prune: int
     mempool: _MempoolOptions
@@ -2058,7 +2099,7 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     only in the default section off `main`, the warning about a section
     naming no chain, a missing blocks directory, `-forcednsseed` beside
     a `-dnsseed` that is off, a negative `-maxconnections`, `-debug`'s
-    categories, `-minimumchainwork`, `-maxtipage` (the order
+    categories, `-minimumchainwork`, `-assumevalid`, `-maxtipage` (the order
     `node::ApplyArgsManOptions`'s own chainstate-manager options are
     read in, `src/node/chainstatemanager_args.cpp`, same sha), `-prune`,
     the mempool's options.
@@ -2104,6 +2145,7 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     # applies the chainstate manager's options, ahead of the blockmanager's
     # (`-prune`, below) and the mempool's (btclib-org/btclib-node#1332)
     minimum_chain_work = _get_minimum_chain_work(settings)
+    assume_valid = _get_assume_valid(settings)
     max_tip_age = _get_max_tip_age(settings)
     prune = _prune_target_mib(_get_int(settings, "prune") or 0)
     mempool = _get_mempool_options(settings, chain_name)
@@ -2118,6 +2160,7 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
         debug_categories,
         debug_exclude,
         minimum_chain_work,
+        assume_valid,
         max_tip_age,
         prune,
         mempool,
@@ -2333,6 +2376,7 @@ def _after_lock(before: _BeforeLock) -> Config:
         max_datacarrier_bytes=before.mempool.max_datacarrier_bytes,
         require_standard=before.mempool.require_standard,
         minimum_chain_work=before.minimum_chain_work,
+        assume_valid=before.assume_valid,
         max_tip_age=before.max_tip_age,
         rpcauth=_get_args(settings, "rpcauth"),
         rpcuser=_get_arg(settings, "rpcuser") or "",
