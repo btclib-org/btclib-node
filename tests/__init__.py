@@ -55,7 +55,7 @@ from btclib_node.rpc import manager as rpc_manager
 from btclib_node.rpc.auth import COOKIE_FILE, password_hmac
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Generator, Iterator
 
     from btclib.p2p.addrv2 import NetworkAddressV2
 
@@ -686,6 +686,26 @@ def wait_until(func: Callable[[], object], timeout: float = 60) -> None:
         f"did not hold within {timeout} seconds (waited {elapsed:.2f}s)"
     )
     raise WaitTimeoutError(err_msg)
+
+
+def finish[T](job: Generator[bool, None, T]) -> T:
+    """Step `job`, a waiting RPC method's generator, until it returns.
+
+    What `rpc.main.resume_rpc` does over passes of `Node`'s loop, here on
+    the test's own thread.
+    """
+    while True:
+        try:
+            next(job)
+        except StopIteration as done:
+            value: T = done.value
+            return value
+
+
+def answer[T](value: T) -> Generator[bool, None, T]:
+    """Return a job that answers `value` at its first step, for a fake."""
+    yield from ()
+    return value
 
 
 def wait_until_listening(manager: _ListensOnAPort, timeout: float = 20) -> None:

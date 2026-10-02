@@ -82,6 +82,23 @@ Waits are bounded by half the timeout the helper is given, not by seconds,
 and a parse by a reference timed beside it over the same input, in
 `tests/unit/` and `tests/functional/rpc/` (issue btclib-org/.github#1587).
 
+### `generatetoaddress` and `generateblock` leave the node serving while they search
+
+- **The nonce search runs a chunk at a time on the node's loop, so peers,
+  other calls and `stop` are served between chunks, and `stop` ends it, as
+  in Core** (closes #1622).
+
+### A long poll and `waitforblockheight` are served
+
+- **`getblocktemplate` waits on a `longpollid`, and `waitforblockheight` on
+  the tip, as Core's do; the counter a `longpollid` names counts each block
+  connected or disconnected too, as Core's** (closes #1606).
+
+### Waiting and searching requests are bounded as Core's are
+
+- **16 run at once and 64 queue; a request past that is answered `503`
+  "Work queue depth exceeded"**, as with Core's defaults (issue #1622).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on

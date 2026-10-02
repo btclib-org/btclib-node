@@ -1210,6 +1210,7 @@ def test_a_ping_ahead_of_verack_is_not_answered_by_one_drain_pass(
     node = SimpleNamespace(
         p2p_manager=manager,
         rpc_manager=SimpleNamespace(messages=deque()),
+        pending_rpc=deque(),
         pending_cfilters={},
         pending_getdata={},
         tx_checks=TxChecks(),

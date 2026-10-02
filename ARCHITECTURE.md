@@ -13,11 +13,12 @@ expectations hold is the [assurance case](./ASSURANCE_CASE.md).
 
 `Node` (`src/btclib_node/__init__.py`) is a thread running one loop: it
 drains the handshake queue, then a share of the RPC queue and a share of
-the peer-to-peer queue, moves the script checks of relayed transactions
-along, then steps the download manager and extends the chain. A message
-that raises is logged and the loop continues; a failure in the download
-manager's step or in `update_chain` is logged and ends the node, the
-databases below being closed on the way out.
+the peer-to-peer queue, steps the RPC requests still waiting, moves the
+script checks of relayed transactions along, then steps the download
+manager and extends the chain. A message that raises is logged and the
+loop continues; a failure in the download manager's step or in
+`update_chain` is logged and ends the node, the databases below being
+closed on the way out.
 
 ## The protocol and the RPC surface
 
@@ -44,6 +45,12 @@ book above, is not so lucky: `add_active_address` arrives from the
 gossip on one thread, a DNS answer on the other. It carries two locks
 for that reason, one per table, taken separately and never nested, and
 a third, taken first, that a move between the tables holds throughout.
+
+Core answers each RPC request on an HTTP worker thread, so a call that
+waits for the tip, or searches nonces, holds only that thread. Here such
+a call stays on `Node`'s thread, which owns the state it reads: it is a
+generator, and the loop runs it a step at a time, serving peers and
+other requests between steps. `src/btclib_node/rpc/main.py` has how.
 
 ## The transport
 

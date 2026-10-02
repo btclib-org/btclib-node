@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any, cast, override
 
 from bitcoin_core_rpc import RPCErrorCode
 
+from btclib_node.constants import RPC_WORK_QUEUE
 from btclib_node.exceptions import (
     IncompleteRequestHeadError,
     MalformedRequestHeadError,
@@ -1121,6 +1122,9 @@ class RpcConnection:
                         self._send_shutdown_refusal()
                     )
                     return
+                if len(self.manager.messages) >= RPC_WORK_QUEUE:
+                    self._refusal_reply = self._start_reply(self._send_queue_refusal())
+                    return
                 self._queue(head, body_bytes)
         # deliberately blind (BLE001), not for the event loop's own
         # sake: `run` is scheduled through `run_coroutine_threadsafe`,
@@ -1484,6 +1488,23 @@ class RpcConnection:
         fields = self._write_reply_fields()
         await self._write(self._frame(status, body.encode(), fields, page=page))
 
+    async def _send_queue_refusal(self) -> None:
+        """Answer a request that arrives with `RPC_WORK_QUEUE` already waiting.
+
+        `http_request_cb`'s own answer (`src/httpserver.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a warning, then 503
+        "Work queue depth exceeded", before the credential is read.
+        `constants.RPC_THREADS` has what plays the queue here. The warning
+        leaves out Core's pointer to `-rpcworkqueue`, which is not read.
+        """
+        self.manager.logger.warning(
+            "Request rejected because http work queue depth exceeded"
+        )
+        body = b"Work queue depth exceeded"
+        await self._write(
+            self._frame(_SERVICE_UNAVAILABLE, body, self._write_reply_fields())
+        )
+
     async def _send_shutdown_refusal(self) -> None:
         """Answer a request `manager.interrupted` stopped from being queued.
 
@@ -1589,7 +1610,7 @@ class RpcConnection:
     def send_and_wait(self, reply: HttpReply) -> None:
         """Like `send`, but block up to 2 seconds for the write to finish.
 
-        `handle_rpc`'s own `stop` request is the only caller: the client
+        `rpc.main._step` is the only caller, for a `stop` request: the client
         has to see its own reply before `node.stop()` starts tearing
         `loop` down under it. Writes `Connection: close` and closes,
         whatever the request asked for -- `RpcManager.stop`, called right
@@ -1603,7 +1624,7 @@ class RpcConnection:
     def send_and_close_after(self, reply: HttpReply, delay: float) -> None:
         """Write `reply` `delay` seconds from now, on this connection's loop.
 
-        `rpc.main.handle_rpc` is the only caller, for a `stop` carrying
+        `rpc.main._step` is the only caller, for a `stop` carrying
         a positive `wait` (btclib-org/btclib-node#1467), and returns at
         once to set `Node.terminate_flag`, as Core's own `stop` requests
         shutdown before it sleeps. The wait runs on `loop`, and

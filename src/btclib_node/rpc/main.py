@@ -2,17 +2,31 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""`handle_rpc`, called once per pass of `Node`'s loop.
+"""`handle_rpc` and `resume_rpc`, called on each pass of `Node`'s loop.
 
-Pops one decoded request body off `RpcManager.messages`, reads it the
-way Core's `HTTPReq_JSONRPC` does (`src/httprpc.cpp`, at
+`handle_rpc` pops one decoded request body off `RpcManager.messages`,
+reads it the way Core's `HTTPReq_JSONRPC` does (`src/httprpc.cpp`, at
 bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and dispatches each request
 through `rpc.callbacks.callbacks` by method name. `rpc.jsonrpc` is
 where a request is parsed and where the answer's envelope and HTTP
 status come from.
+
+Core runs each request on an HTTP worker thread of its own, so a method
+that waits for the tip, or searches nonces, holds that thread alone.
+Here every method runs on `Node`'s thread, which owns the state it
+reads (`ARCHITECTURE.md`). Such a method returns a generator instead of
+its result: each step yields `True` where it did work and `False` where
+it only checked whether to go on waiting, and the generator returns the
+result. `handle_rpc` runs a request's first step; a request not answered
+by then waits in `Node.pending_rpc`, and `resume_rpc` runs one step of
+each such request on every pass, so the loop goes on serving peers,
+other requests and `stop` between steps. Once `Node.terminate_flag` is
+set, each of these methods ends at its next step, as Core's ends on
+`m_interrupt`.
 """
 
 import time
+from collections.abc import Generator
 from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import RPCErrorCode
@@ -35,7 +49,11 @@ if TYPE_CHECKING:
     from btclib_node.rpc.connection import RpcConnection
     from btclib_node.rpc.manager import RpcManager
 
-__all__ = ["get_connection", "handle_rpc"]
+__all__ = ["Job", "get_connection", "handle_rpc", "resume_rpc"]
+
+# A request being answered: it yields as a waiting method does, and
+# returns the reply, whether to stop the node and the delay before it.
+type Job = Generator[bool, None, tuple[HttpReply, bool, float]]
 
 
 def get_connection(manager: RpcManager, connection_id: int) -> RpcConnection | None:
@@ -46,7 +64,9 @@ def get_connection(manager: RpcManager, connection_id: int) -> RpcConnection | N
         return None
 
 
-def _execute(node: Node, conn: RpcConnection, request: JsonRpcRequest) -> object:
+def _execute(
+    node: Node, conn: RpcConnection, request: JsonRpcRequest
+) -> Generator[bool, None, object]:
     """Run `request`'s method as `CRPCTable::execute` does, or raise `RpcError`.
 
     A callback raising anything but `RpcError` is a fault of this node:
@@ -75,6 +95,9 @@ def _execute(node: Node, conn: RpcConnection, request: JsonRpcRequest) -> object
     turned into `RPC_MISC_ERROR` carrying the method's own full help
     text, matching `disconnect_node`'s own such check before this
     function carried it for every method (btclib-org/btclib-node#1424).
+
+    A method that waits returns a generator, which this runs to its end,
+    yielding as it yields (the module docstring).
     """
     callback = callbacks.get(request.method)
     if callback is None:
@@ -87,7 +110,10 @@ def _execute(node: Node, conn: RpcConnection, request: JsonRpcRequest) -> object
     # (`src/rpc/server.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
     # tag) -- the argument-count refusal below included, `HandleRequest`
     # throwing its own `HelpResult` from inside that same guard's scope.
-    node.active_rpc_commands.append((request.method, time.monotonic()))
+    # Removed by value, since a waiting request can end after one that
+    # started later; two equal entries are interchangeable.
+    command = (request.method, time.monotonic())
+    node.active_rpc_commands.append(command)
     try:
         params = request.params
         if isinstance(params, dict):
@@ -95,26 +121,29 @@ def _execute(node: Node, conn: RpcConnection, request: JsonRpcRequest) -> object
         if len(params) > len(arg_names[request.method]):
             raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT[request.method])
         try:
-            return callback(node, conn, params)
+            result = callback(node, conn, params)
+            if isinstance(result, Generator):
+                result = yield from result
         except RpcError:
             raise
         except Exception as e:
             node.logger.exception("Exception occurred")
             raise RpcError(RPCErrorCode.INTERNAL_ERROR, "Internal Error") from e
+        return result
     finally:
-        node.active_rpc_commands.pop()
+        node.active_rpc_commands.remove(command)
 
 
 def _exec(
     node: Node, conn: RpcConnection, request: JsonRpcRequest, *, catch_errors: bool
-) -> dict[str, Any]:
+) -> Generator[bool, None, dict[str, Any]]:
     """Answer `request` as `JSONRPCExec` does.
 
     Where `catch_errors` does not hold, an error is raised to the caller,
     which answers it with an HTTP error status.
     """
     try:
-        result = _execute(node, conn, request)
+        result = yield from _execute(node, conn, request)
     except RpcError as error:
         if not catch_errors:
             raise
@@ -141,9 +170,7 @@ def _stop_delay_seconds(request: JsonRpcRequest) -> float:
     return 0.0 if wait_ms is None else max(0, wait_ms) / 1000
 
 
-def _answer_one(
-    node: Node, conn: RpcConnection, body: dict[str, Any]
-) -> tuple[HttpReply, bool, float]:
+def _answer_one(node: Node, conn: RpcConnection, body: dict[str, Any]) -> Job:
     """Answer a lone request object, and say whether -- and how late -- to stop.
 
     Legacy errors are an HTTP error status; 2.0 errors are HTTP 200, and
@@ -164,7 +191,7 @@ def _answer_one(
     request = JsonRpcRequest()
     try:
         request.parse(body)
-        reply = _exec(node, conn, request, catch_errors=request.v2)
+        reply = yield from _exec(node, conn, request, catch_errors=request.v2)
     except RpcError as error:
         # Core's `JSONErrorReply` `Assume`s this is never a 2.0 request,
         # which a release build does not enforce, and a 2.0 request
@@ -182,9 +209,7 @@ def _answer_one(
     return HttpReply(OK, reply), stop, delay
 
 
-def _answer_batch(
-    node: Node, conn: RpcConnection, body: list[Any]
-) -> tuple[HttpReply, bool, float]:
+def _answer_batch(node: Node, conn: RpcConnection, body: list[Any]) -> Job:
     """Answer a batch, and say whether -- and how late -- to stop.
 
     Every member is answered inside HTTP 200, whatever its version. One
@@ -200,6 +225,12 @@ def _answer_batch(
     that method's own reply. `stop` latches: once one member has set it,
     a later member's own `wait` -- or refusal -- is never read, the same
     way a later member's method name never was before it either.
+
+    Members run in order, as Core runs them on one worker: a member that
+    waits holds back the ones after it, and the reply. Where `stop`
+    latches, `terminate_flag` is set at once, so a later member that
+    waits ends at its next step, as `bitcoind` answers both together
+    and exits; `_step` still sends the reply and calls `node.stop()`.
     """
     request = JsonRpcRequest()
     replies: list[dict[str, Any]] = []
@@ -208,18 +239,48 @@ def _answer_batch(
     for member in body:
         try:
             request.parse(member)
-            response = _exec(node, conn, request, catch_errors=True)
+            response = yield from _exec(node, conn, request, catch_errors=True)
         except RpcError as error:
             response = request.reply(error=error)
         else:
             if not stop and request.method == "stop" and response.get("error") is None:
                 stop = True
                 delay = _stop_delay_seconds(request)
+                # a later member that waits ends at its next step
+                node.terminate_flag.set()
         if not request.is_notification:
             replies.append(response)
     if body and not replies:
         return HttpReply(NO_CONTENT, None), stop, delay
     return HttpReply(OK, replies), stop, delay
+
+
+def _answer(node: Node, conn: RpcConnection, body: object) -> Job:
+    """Answer a request body: an object, an array, or neither."""
+    if isinstance(body, dict):
+        return (yield from _answer_one(node, conn, body))
+    if isinstance(body, list):
+        return (yield from _answer_batch(node, conn, body))
+    reply = error_reply(RPCErrorCode.PARSE_ERROR, "Top-level object parse error")
+    return reply, False, 0.0
+
+
+def _step(node: Node, conn: RpcConnection, job: Job) -> bool | None:
+    """Run `job` one step: `None` once it is answered, else what it yielded."""
+    try:
+        return next(job)
+    except StopIteration as done:
+        reply, stop, delay = done.value
+    if stop:
+        if delay:
+            conn.send_and_close_after(reply, delay)
+        else:
+            conn.send_and_wait(reply)
+        node.stop()
+    else:
+        conn.send(reply)
+    node.logger.log_debug("rpc", "Finished rpc\n")
+    return None
 
 
 def handle_rpc(node: Node) -> None:
@@ -235,6 +296,9 @@ def handle_rpc(node: Node) -> None:
     own `stop` requests shutdown before it sleeps
     (btclib-org/btclib-node#1467).
 
+    A request still waiting after its first step goes to
+    `node.pending_rpc`, for `resume_rpc`.
+
     `conn_id` is left in `manager.connections`: `RpcConnection.async_send`
     removes it, on the branch that closes `conn`, once `conn` is done
     answering. `conn.send` below only schedules that reply, so a pop here
@@ -248,22 +312,28 @@ def handle_rpc(node: Node) -> None:
         return
 
     node.logger.log_debug("rpc", "Received rpc message: %s", conn_id)
+    job = _answer(node, conn, body)
+    if _step(node, conn, job) is not None:
+        node.pending_rpc.append((conn, job))
 
-    if isinstance(body, dict):
-        reply, stop, delay = _answer_one(node, conn, body)
-    elif isinstance(body, list):
-        reply, stop, delay = _answer_batch(node, conn, body)
-    else:
-        reply = error_reply(RPCErrorCode.PARSE_ERROR, "Top-level object parse error")
-        stop = False
-        delay = 0.0
 
-    if stop:
-        if delay:
-            conn.send_and_close_after(reply, delay)
+def resume_rpc(node: Node) -> bool:
+    """Run each request in `node.pending_rpc` one step, answering those done.
+
+    Answers whether any step did work, an answer included, which keeps
+    `Node`'s loop from sleeping. Each answer pushes `rpc_manager`'s reply
+    deadline forward, as `Node._drain_message_queues` does for a request
+    `handle_rpc` answers (btclib-org/btclib-node#1651). A step that raises
+    drops its request, which is taken off the queue first.
+    """
+    worked = False
+    for _ in range(len(node.pending_rpc)):
+        conn, job = node.pending_rpc.popleft()
+        step = _step(node, conn, job)
+        if step is None:
+            node.rpc_manager.extend_reply_deadline(time.monotonic())
+            worked = True
         else:
-            conn.send_and_wait(reply)
-        node.stop()
-    else:
-        conn.send(reply)
-    node.logger.log_debug("rpc", "Finished rpc\n")
+            node.pending_rpc.append((conn, job))
+            worked = worked or step
+    return worked
