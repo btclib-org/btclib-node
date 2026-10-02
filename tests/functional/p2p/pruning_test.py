@@ -75,11 +75,6 @@ class _RecordingDeque(deque[_Message]):
         self.seen.append(item)
         super().append(item)
 
-    @override
-    def appendleft(self, item: _Message) -> None:
-        self.seen.append(item)
-        super().appendleft(item)
-
 
 @pytest.fixture
 def pruned_server_and_client(

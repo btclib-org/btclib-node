@@ -91,11 +91,6 @@ class RecordingDeque(deque[Message]):
         self.seen.append(item)
         super().append(item)
 
-    @override
-    def appendleft(self, item: Message) -> None:
-        self.seen.append(item)
-        super().appendleft(item)
-
 
 @pytest.fixture(scope="module")
 def peers(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Peers]:

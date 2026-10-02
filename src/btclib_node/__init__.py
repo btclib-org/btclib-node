@@ -658,8 +658,7 @@ class Node(threading.Thread):
         connection already at the bound still adds whatever that pass
         completed, up to `MAX_PROTOCOL_MESSAGE_LENGTH` for the single
         message that crossed it -- so what can sit ahead of a paused
-        connection is the other connections' caps and whatever
-        `ping`/`pong` arrives after it.
+        connection is the other connections' caps.
         `tests/unit/init_test.py` measures the wait in passes of this
         loop against the number of busy connections.
         btclib-org/btclib-node#490
