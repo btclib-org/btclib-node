@@ -116,6 +116,16 @@ btclib-node -regtest -datadir=<dir> -rpcport=<port> \
   -connect=127.0.0.1:<the peer node p2p port>
 ```
 
+## Choosing the addresses it listens on and calls its own
+
+`-bind=<ip>[:port]`, repeatable, listens on the addresses named instead
+of every interface, at `-port` where one names no port. It turns
+`-listen` on, and `-nolisten` beside it is refused. A name is not looked
+up. `-externalip=<ip or name>[:port]`, repeatable, tells the node an
+address it is reached at, at the port of the first `-bind` that names
+one, or `-port`. The node keeps it as its own, which its automatic
+outbound draw skips, tells its peers of it, and turns `-discover` off.
+
 ## Reading progress
 
 `getblockchaininfo` answers `headers` (the height of the best header

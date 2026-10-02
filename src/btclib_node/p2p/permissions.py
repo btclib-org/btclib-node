@@ -10,7 +10,7 @@
 all read at bitcoin/bitcoin@9be056a8a7, the v31.1 tag. A value is read by
 `lookup_subnet`, the ban list's `LookupSubNet`.
 
-`-whitebind` is not read: this node has no `-bind` to build it on.
+`-whitebind` is not read: btclib-org/btclib-node#1625.
 
 Each permission does here what it does in Core, wherever this node has
 the behaviour it changes: `NO_BAN` (ban, discouragement, eviction, the

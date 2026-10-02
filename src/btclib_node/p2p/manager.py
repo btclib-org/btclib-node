@@ -24,13 +24,25 @@ import time
 from collections import Counter, deque
 from concurrent.futures import CancelledError
 from contextlib import suppress
-from ipaddress import IPv6Address, ip_address
+from ipaddress import IPv4Address, IPv6Address, ip_address
 from typing import TYPE_CHECKING, Any, cast, override
 
-from btclib.p2p.address import ServiceFlags
-from btclib.p2p.addrv2 import BIP155Network, can_addrv1, network_address
+from btclib.p2p.address import Addr, ServiceFlags
+from btclib.p2p.addrv2 import (
+    AddrV2,
+    BIP155Network,
+    addr_entry,
+    can_addrv1,
+    network_address,
+)
 
-from btclib_node.config import lookup_host_port
+from btclib_node.config import (
+    listen_port,
+    lookup_host_port,
+    lookup_service,
+    parse_bind,
+    service_text,
+)
 from btclib_node.constants import CLIENT_NAME, P2pConnStatus
 from btclib_node.p2p.address import (
     RECENT_TRY_SECONDS,
@@ -59,7 +71,7 @@ from btclib_node.p2p.banman import (
     lookup_host,
 )
 from btclib_node.p2p.callbacks import has_all_desirable_services
-from btclib_node.p2p.connection import Connection
+from btclib_node.p2p.connection import Connection, local_services
 from btclib_node.p2p.eviction import (
     EvictionCandidate,
     Network,
@@ -76,6 +88,13 @@ from btclib_node.p2p.eviction import (
 from btclib_node.p2p.netif import local_addresses
 from btclib_node.p2p.permissions import NetPermissionFlags, Whitelist
 from btclib_node.p2p.protocol_version import BIP0031_VERSION, common_version
+from btclib_node.p2p.selfannounce import (
+    LOCAL_BIND,
+    LOCAL_IF,
+    LOCAL_MANUAL,
+    LocalService,
+    address_for_peer,
+)
 
 if TYPE_CHECKING:
     from concurrent.futures import Future
@@ -203,6 +222,10 @@ _SEEDNODE_POLL_INTERVAL = 0.5
 # proxy, SAM bridge or `-cjdnsreachable` is given (`src/init.cpp`, same
 # sha), and `dial` opens a socket for IPv4 and IPv6 alone.
 _REACHABLE_NETWORKS = (BIP155Network.IPV4, BIP155Network.IPV6)
+
+# Core's `AVG_LOCAL_ADDRESS_BROADCAST_INTERVAL` (`src/net_processing.cpp`,
+# same sha): the mean wait between two self-announcements to one peer.
+_LOCAL_ADDR_INTERVAL = 24 * 3600
 
 # How many addresses `_maybe_dial_more_peers` draws in one pass before
 # giving up until the next: `ThreadOpenConnections`'s `nTries > 100`
@@ -517,6 +540,10 @@ class P2pManager(threading.Thread):
         # reason: whether `_discover` below runs at all, independent of
         # `self.listen` (btclib-org/btclib-node#1330's own "Expected").
         self.discover = node.config.discover
+        # Core's `-bind` and `-externalip`, as given and read the same
+        # way: `_bind` and `_add_externalip` parse them when `run` starts
+        self.bind = node.config.bind
+        self.externalip = node.config.externalip
         # Core's own `fNetworkActive` (`src/net.h`,
         # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), always true at
         # construction there (`CConnman`'s own constructor passes
@@ -791,6 +818,9 @@ class P2pManager(threading.Thread):
         # fills it ahead of the bind. Written before `manage_connections`
         # is scheduled and read only by it, on this thread.
         self.local_addresses: frozenset[bytes] = frozenset()
+        # `mapLocalHost` with its values, by the same key: the port and
+        # score `_maybe_send_local_addr` chooses what to announce by
+        self.local_info: dict[bytes, LocalService] = {}
         # set by `run` once it has bound, given up on binding, or been
         # told not to bind by `-listen=0`, which is what
         # `start_listener` waits on
@@ -1514,6 +1544,7 @@ class P2pManager(threading.Thread):
                 continue
             if now - conn.last_receive > _IDLE_TIMEOUT:
                 self._ping_or_drop_idle(conn, now)
+            self._maybe_send_local_addr(conn, now)
         for conn in self.pending_connections.copy().values():
             # Dropped `_PEER_CONNECT_TIMEOUT` after connecting, quiet or
             # not, as Core's `InactivityCheck` drops a connection short
@@ -1527,6 +1558,56 @@ class P2pManager(threading.Thread):
                 or conn.connected_time + _PEER_CONNECT_TIMEOUT < now
             ):
                 self.remove_connection(conn.id)
+
+    def _maybe_send_local_addr(self, conn: Connection, now: float) -> None:
+        """Tell `conn` where this node is reached, as `MaybeSendAddr` does.
+
+        `MaybeSendAddr` and `GetLocalAddrForPeer` (`src/net_processing.cpp`
+        and `src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
+        to a peer that takes part in address relay, while listening and
+        out of initial block download, once its turn has come -- at once
+        for a new connection, then after an exponential wait of 24 hours
+        on average. Core queues a later announcement with the other
+        addresses it relays; this node relays none, so each is sent alone.
+        Nothing is announced where `address_for_peer` finds no address.
+        """
+        if (
+            not conn.addr_relay_enabled
+            or not self.listen
+            or self.node.is_initial_block_download
+            or now < conn.next_local_addr_send
+        ):
+            return
+        conn.next_local_addr_send = now + _exponential_delay(_LOCAL_ADDR_INTERVAL)
+        peer = ip_address(conn.address.address)
+        seen_as = None
+        version = conn.version_message
+        if self.discover and version is not None and is_routable(conn.address):
+            seen = version.addr_recv
+            seen_ip = seen.ip.ipv4_mapped or seen.ip
+            seen_address = peer_address(str(seen_ip), seen.port)
+            if is_routable(seen_address):
+                # an outbound peer cannot see the listening port
+                seen_as = (seen_ip, seen.port if conn.inbound else None)
+        chosen = address_for_peer(
+            self.local_info,
+            peer,
+            routable=is_routable(conn.address),
+            listen_port=self._listen_port(),
+            seen_as=seen_as,
+        )
+        if chosen is None:
+            return
+        host, port = chosen
+        services = local_services(self.node.config)
+        address = peer_address(str(host), port, int(now), int(services))
+        self.logger.log_debug(
+            "net", "Advertising address %s to peer=%s", address, conn.id
+        )
+        if conn.prefer_addressv2:
+            conn.send(AddrV2([address]))
+        else:
+            conn.send(Addr([addr_entry(address)]))
 
     def _ping_or_drop_idle(self, conn: Connection, now: float) -> None:
         """Ping or drop `conn`, quiet for `_IDLE_TIMEOUT`, as argued there."""
@@ -2608,8 +2689,12 @@ class P2pManager(threading.Thread):
             await self._process_addr_fetch()
             await asyncio.sleep(_MANUAL_STEP)
 
-    def _bind_one(self, family: socket.AddressFamily, host: str) -> socket.socket:
-        """Bind and listen on one family, synchronously.
+    def _bind_one(
+        self, family: socket.AddressFamily, host: str, port: int | None = None
+    ) -> socket.socket:
+        """Bind and listen on one address, synchronously.
+
+        `port` is this manager's own where none is given.
 
         Not the coroutine below: a coroutine handed to
         `run_coroutine_threadsafe` runs on the loop's own thread, behind a
@@ -2628,7 +2713,8 @@ class P2pManager(threading.Thread):
         """
         # Core's `CService::ToStringAddrPort`, brackets around an IPv6 host
         address = f"[{host}]" if family == socket.AF_INET6 else host
-        address = f"{address}:{self.port}"
+        port = self.port if port is None else port
+        address = f"{address}:{port}"
         try:
             server_socket = socket.socket(family, socket.SOCK_STREAM)
         except OSError as error:
@@ -2649,7 +2735,7 @@ class P2pManager(threading.Thread):
                 # "::" listener for the same reason (net.cpp, 58a7869f86).
                 server_socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
             try:
-                server_socket.bind((host, self.port))
+                server_socket.bind((host, port))
             except OSError as error:
                 if error.errno == errno.EADDRINUSE:
                     msg = (
@@ -2679,33 +2765,75 @@ class P2pManager(threading.Thread):
             raise
         return server_socket
 
+    def _listen_port(self) -> int:
+        """Return `GetListenPort`: what local addresses are recorded at."""
+        # set wherever `run` binds, which is where it calls this
+        return listen_port(self.bind, cast("int", self.port))
+
+    def _add_local(self, host: Host, port: int, score: int) -> bool:
+        """Keep `host` as one of this node's own addresses, as `AddLocal` does.
+
+        `AddLocal` (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+        v31.1 tag) keeps a routable address on a reachable network, and
+        under `-discover=0` only a `LOCAL_MANUAL` one. A known address
+        takes the new port and a score one above the new one, where that
+        is not lower than its own.
+        """
+        if isinstance(host, SpecialAddress):
+            return False
+        ip = ip_address(str(host).partition("%")[0])
+        address = peer_address(str(ip), port)
+        if not is_routable(address) or (not self.discover and score < LOCAL_MANUAL):
+            return False
+        self.logger.info("AddLocal(%s,%i)", service_text(host, port), score)
+        key = host_key(address)
+        known = self.local_info.get(key)
+        if known is None:
+            self.local_info[key] = LocalService(ip, port, score)
+        elif score >= known.score:
+            known.port = port
+            known.score = score + 1
+        self.local_addresses = frozenset(self.local_info)
+        return True
+
+    def _add_externalip(self) -> None:
+        """Record every `-externalip` as a local address, as `AppInitMain` does.
+
+        Each is looked up at `_listen_port` (`src/init.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), as `cli` has already
+        resolved it. An address `AddLocal` refuses is skipped without
+        a word, there as here; since bitcoin/bitcoin@8c87e32bd3, not in
+        v31.1, Core also keeps one on a network `-onlynet` leaves
+        unreachable, which only an onion or I2P address can be here.
+        """
+        for value in self.externalip:
+            service = lookup_service(value, self._listen_port())
+            if service is None or not is_valid_host(service[0]):
+                err_msg = f"Cannot resolve -externalip address: '{value}'"
+                raise ValueError(err_msg)
+            self._add_local(*service, LOCAL_MANUAL)
+
     def _discover(self) -> None:
         """Record this machine's routable addresses, as Core's `Discover` does.
 
         `AppInitMain` calls `Discover` (`src/net.cpp:3376-3384`, at
         bitcoin/bitcoin@9be056a8a7, the v31.1 tag) off `bind_on_any`
         (`src/init.cpp:2163`, `:2193-2196`, same sha) -- whether the
-        node would bind every interface, which is unconditional here,
-        this node having no `-bind` -- never off `fListen`, which is
-        why `run` below calls this off `self.discover` rather than off
-        `self.listen`: an explicit `-discover=1` still records these
-        addresses under `-listen=0` (btclib-org/btclib-node#1330).
-        `self.discover` is itself Core's own soft `-discover=0` under
-        `-listen=0`, `-proxy` or `-externalip` (`Config.discover`'s own
-        comment; this node has neither of the last two). Each address
-        goes to `AddLocal` at the listening port, which keeps a
-        routable one on a reachable network; IPv4 and IPv6 are both
-        reachable here.
+        node would bind every interface, which is to say no `-bind` was
+        given -- never off `fListen`, which is why `run` below calls this
+        off `self.discover` rather than off `self.listen`: an explicit
+        `-discover=1` still records these addresses under `-listen=0`
+        (btclib-org/btclib-node#1330). `self.discover` is itself Core's
+        own soft `-discover=0` under `-listen=0` or `-externalip`
+        (`Config.discover`'s own comment; this node has no `-proxy`).
+        Each address goes to `AddLocal` at the listening port, which
+        keeps a routable one on a reachable network; IPv4 and IPv6 are
+        both reachable here.
         """
-        # set wherever `run` binds, which is where it calls this
-        port = cast("int", self.port)
-        local = set()
+        port = self._listen_port()
         for ip in local_addresses():
-            address = peer_address(str(ip), port)
-            if is_routable(address):
+            if self._add_local(ip, port, LOCAL_IF):
                 self.logger.info("Discover: %s", ip)
-                local.add(host_key(address))
-        self.local_addresses = frozenset(local)
 
     def _bind(self) -> list[socket.socket]:
         """Bind every listener this node has, the IPv4 one required.
@@ -2717,19 +2845,63 @@ class P2pManager(threading.Thread):
         "Don't consider errors to bind on IPv6 '::' fatal because the
         host OS may not have IPv6 support" (net.cpp, 58a7869f86) -- while
         a failure to bind "0.0.0.0" is `BF_REPORT_ERROR` there too.
+
+        With a `-bind` it is those addresses alone that are bound, the
+        plain ones before the `=onion` ones as `InitBinds` has it, each
+        required: a failure of any ends `run`, the sockets already bound
+        closed. An `=onion` listener is bound but not tagged: a connection
+        it accepts is an ordinary inbound one, where Core's
+        `ConnectedThroughNetwork` answers `NET_ONION` for it
+        (`m_inbound_onion`, `src/net.cpp`, same sha).
         """
-        # All interfaces, by design: a P2P listener accepts inbound
-        # peers from anywhere.
-        sockets = [self._bind_one(socket.AF_INET, "0.0.0.0")]  # noqa: S104
-        try:
-            sockets.append(self._bind_one(socket.AF_INET6, "::"))
-        except OSError:
-            self.logger.info("No IPv6 P2P listener on port %s", self.port)
+        if self.bind:
+            sockets = self._bind_given()
+        else:
+            # All interfaces, by design: a P2P listener accepts
+            # inbound peers from anywhere.
+            sockets = [self._bind_one(socket.AF_INET, "0.0.0.0")]  # noqa: S104
+            try:
+                sockets.append(self._bind_one(socket.AF_INET6, "::"))
+            except OSError:
+                self.logger.info("No IPv6 P2P listener on port %s", self.port)
         # kept ahead of `listening`, which is what a waiting thread reads
         # them after (btclib-org/btclib-node#1325)
         self._server_sockets = sockets
         self.listening.set()
         self.ever_listened.set()
+        return sockets
+
+    def _bind_given(self) -> list[socket.socket]:
+        """Bind every `-bind` address, `CConnman::Bind` for each.
+
+        A bound address `AddLocal` keeps is recorded at `LOCAL_BIND`
+        unless it is tagged `=onion`, which `BF_DONT_ADVERTISE` keeps out.
+        """
+        addresses = sorted(
+            (parse_bind(value, cast("int", self.port)) for value in self.bind),
+            key=lambda address: address.onion,
+        )
+        sockets: list[socket.socket] = []
+        try:
+            for address in addresses:
+                host = address.host
+                if isinstance(host, SpecialAddress):
+                    # Core's `BindListenPort`, for an address with no sockaddr
+                    err_msg = (
+                        "Bind address family for "
+                        f"{service_text(host, address.port)} not supported"
+                    )
+                    raise OSError(err_msg)  # noqa: TRY301
+                family = (
+                    socket.AF_INET if isinstance(host, IPv4Address) else socket.AF_INET6
+                )
+                sockets.append(self._bind_one(family, str(host), address.port))
+                if self.discover and not address.onion:
+                    self._add_local(host, address.port, LOCAL_BIND)
+        except OSError:
+            for server_socket in sockets:
+                server_socket.close()
+            raise
         return sockets
 
     def start_listener(self) -> bool:
@@ -2740,9 +2912,16 @@ class P2pManager(threading.Thread):
         what `Node.run` turns into Core's "Failed to listen on any port",
         where `start` alone would leave the node running with neither a
         listener nor the dialling `run` schedules only after the bind.
+        A `bind_error` is a failure under `-listen=0` too, where `run`
+        ended on an `-externalip` it could not read. `cli` refuses that
+        ahead of any manager, as Core does before `CConnman::Start`, so
+        "Failed to listen on any port" follows it only for a `Config`
+        built by hand.
         """
         self.start()
         self._start_attempted.wait()
+        if self.bind_error is not None:
+            return False
         return not self.listen or self.listening.is_set()
 
     async def _accept_loop(
@@ -3034,11 +3213,12 @@ class P2pManager(threading.Thread):
         try:
             self.logger.info("Starting P2P manager")
             asyncio.set_event_loop(loop)
-            if self.discover:
+            self._add_externalip()
+            if self.discover and not self.bind:
                 self._discover()
             if self.listen:
                 server_sockets = self._bind()
-        except OSError as error:
+        except (OSError, ValueError) as error:
             # `start_listener` reads the failure off `listening`, so it
             # is not raised into `threading.excepthook` as well; nothing
             # is scheduled, as Core's `CConnman::Start` returns before

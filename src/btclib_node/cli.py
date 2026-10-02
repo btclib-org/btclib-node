@@ -127,8 +127,7 @@ reach it, and a negation in the default section still does. The
 Ignored is not silent: `_check_network_only_args` refuses to start
 where that leaves such an option set only in the default section, as
 `AppInitParameterInteraction` refuses it (btclib-org/btclib-node#1327).
-`-bind` is `NETWORK_ONLY` in Core too and is not among `_OPTIONS` at
-all, a gap of its own this does not close.
+`-bind` is `NETWORK_ONLY` in Core too, and is among `_OPTIONS`.
 
 `includeconf=<file>`, resolved relative to the data directory the way
 Core resolves it, is read from the root file's section for the chain it
@@ -191,13 +190,17 @@ from btclib_node.config import (
     DEFAULT_MIN_RELAY_FEERATE,
     Config,
     get_path_arg,
+    listen_port,
+    lookup_service,
+    parse_bind,
+    service_text,
     split_host_port,
 )
 from btclib_node.constants import MIN_PRUNE_TARGET_MIB, default_data_dir
 from btclib_node.dirlock import DirectoryLock, lock_directories
 from btclib_node.exceptions import DirectoryLockError
 from btclib_node.log import open_history_log
-from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME
+from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME, is_valid_host
 from btclib_node.p2p.permissions import NET_PERMISSIONS_DOC
 from btclib_node.rpc.connection import REQUEST_TIMEOUT
 
@@ -416,6 +419,15 @@ _OPTIONS: dict[str, _Option] = {
         f"{DEFAULT_MISBEHAVING_BANTIME})",
         _CONNECTION_TITLE,
     ),
+    "bind": _Option(
+        "=<addr>[:<port>][=onion]",
+        "Bind to given address and always listen on it (default: 0.0.0.0). "
+        "Use [host]:port notation for IPv6. Append =onion to bind a further "
+        "listener, at <port> + 1 by default, whose connections this node "
+        "does not tag as Tor. This option can be specified multiple times",
+        _CONNECTION_TITLE,
+        network_only=True,
+    ),
     "blocknotify": _Option(
         "=<cmd>",
         "Execute command when the best block changes (%s in cmd is replaced "
@@ -484,7 +496,7 @@ _OPTIONS: dict[str, _Option] = {
     ),
     "discover": _Option(
         "",
-        "Discover own IP addresses (default: 1 when listening)",
+        "Discover own IP addresses (default: 1 when listening and no -externalip)",
         _CONNECTION_TITLE,
     ),
     "dnsseed": _Option(
@@ -502,6 +514,11 @@ _OPTIONS: dict[str, _Option] = {
         f"{_NOT_YET_ENFORCED}",
         _NODE_RELAY_TITLE,
         debug_only=True,
+    ),
+    "externalip": _Option(
+        "=<ip>",
+        "Specify your own public address. This option can be specified multiple times",
+        _CONNECTION_TITLE,
     ),
     "fixedseeds": _Option(
         "",
@@ -1931,6 +1948,24 @@ class _BeforeLock:
     directories: Config
 
 
+def _resolve_listen(settings: _Settings, max_connections_arg: int) -> bool:
+    """Return `-listen` as `InitParameterInteraction` leaves it.
+
+    `src/init.cpp`, at bitcoin/bitcoin@9be056a8a7: a `-bind` soft-sets it
+    on, ahead of `-connect` or a `-maxconnections` of zero or less
+    soft-setting it off, and an explicit value wins over both.
+    """
+    listen = _get_bool(settings, "listen")
+    if listen is None:
+        connect = _get_args(settings, "connect")
+        listen = bool(_get_args(settings, "bind")) or (
+            not connect
+            and not _is_negated(settings, "connect")
+            and max_connections_arg > 0
+        )
+    return listen
+
+
 def _unsuitable_section_only_args(settings: _Settings) -> list[str]:
     """Return Core's `GetUnsuitableSectionOnlyArgs` (`common/args.cpp:134`).
 
@@ -1979,9 +2014,7 @@ def _check_network_only_args(settings: _Settings) -> None:
     around this refusal is what turns a single line's own trailing
     newline into the blank line `bitcoind` v31.1.0 shows after it
     (btclib-org/btclib-node#1327). `-bind` is among Core's own
-    `NETWORK_ONLY` options and is not among this node's -- `_OPTIONS`
-    has no such entry -- so it is never named here, a gap of its own and
-    not what this fixes.
+    `NETWORK_ONLY` options, as it is among this node's.
     """
     names = _unsuitable_section_only_args(settings)
     if not names:
@@ -2062,6 +2095,8 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
         max_connections=max_connections,
         dnsseed=dnsseed,
         forcednsseed=bool(_get_bool(settings, "forcednsseed")),
+        listen=_resolve_listen(settings, max_connections_arg),
+        bind=_get_args(settings, "bind"),
     )
     debug, debug_categories, debug_exclude = _resolve_debug(settings)
     # after `-debug`'s categories, where `AppInitParameterInteraction`
@@ -2104,27 +2139,78 @@ def _lock(directories: Config) -> tuple[DirectoryLock, ...]:
     return lock_directories(directories.data_dir, blocks_dir)
 
 
+def _resolve_externalip(values: list[str], default_port: int) -> list[str]:
+    """Return every `-externalip` value as an address and port, looked up.
+
+    `AppInitMain` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7): each
+    value is looked up at `-port`, names allowed (`-dns`'s default), and
+    refused where nothing answers or the address is not valid. The port
+    is `GetListenPort`'s, which `listen_port` reads.
+    """
+    resolved: list[str] = []
+    for value in values:
+        service = lookup_service(value, default_port, allow_lookup=True)
+        if service is None or not is_valid_host(service[0]):
+            err_msg = f"Cannot resolve -externalip address: '{value}'"
+            raise ValueError(err_msg)
+        resolved.append(service_text(*service))
+    return resolved
+
+
+def _check_bind(values: list[str], default_port: int) -> None:
+    """Refuse a `-bind` that resolves to nothing, or one named twice.
+
+    `AppInitMain`'s `-bind` loop and `CheckBindingConflicts`
+    (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7), which sees the
+    plain binds before the `=onion` ones and compares address and port.
+    Core's warning for a bad port is not given: btclib-org/btclib-node#1645.
+    """
+    parsed = [parse_bind(value, default_port) for value in values]
+    seen = set()
+    for address in sorted(parsed, key=lambda a: a.onion):
+        key = (str(address.host).partition("%")[0], address.port)
+        if key in seen:
+            err_msg = (
+                "Duplicate binding configuration for address "
+                f"{service_text(address.host, address.port)}. Please check "
+                "your -bind, -bind=...=onion and -whitebind settings."
+            )
+            raise ValueError(err_msg)
+        seen.add(key)
+
+
 def _after_lock(before: _BeforeLock) -> Config:
     """Refuse what Core refuses after its lock, and return the `Config`.
 
     `AppInitMain` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7) in its
-    order: `CheckHostPortOptions`'s `-port`, `-rpcport` and `-rpcbind`.
+    order: `CheckHostPortOptions`'s `-port`, `-rpcport`, `-bind` and
+    `-rpcbind`, then the `-externalip` and `-bind` values nothing
+    resolves, and a `-bind` named twice.
     `-rpccookieperms` and `-rpcauth` are refused later, by
     `RpcAuth.start`, as `StartHTTPRPC` refuses them.
     """
     settings = before.settings
     p2p_port = _get_port(settings, "port")
     rpc_port = _get_port(settings, "rpcport")
-    # Every `-rpcbind` value is checked, as `CheckHostPortOptions` checks
-    # it; `RpcManager` binds them beside `-rpcallowip`, as
+    # Every `-bind` and `-rpcbind` value is checked, as
+    # `CheckHostPortOptions` checks it, `-bind`'s without its `=onion`
+    # tag; `RpcManager` binds the second beside `-rpcallowip`, as
     # `HTTPBindAddresses` (`src/httpserver.cpp`, same sha) does
+    bind = _get_args(settings, "bind")
     rpcbind = _get_args(settings, "rpcbind")
-    for value in rpcbind:
-        try:
-            split_host_port(value, 0)
-        except ValueError:
-            err_msg = f"Invalid port specified in -rpcbind: '{value}'"
-            raise ValueError(err_msg) from None
+    for name, values in (("bind", bind), ("rpcbind", rpcbind)):
+        for value in values:
+            head, tagged, _ = value.rpartition("=")
+            try:
+                split_host_port(head if tagged and name == "bind" else value, 0)
+            except ValueError:
+                err_msg = f"Invalid port specified in -{name}: '{value}'"
+                raise ValueError(err_msg) from None
+    default_port = p2p_port or before.directories.chain.port
+    externalip = _resolve_externalip(
+        _get_args(settings, "externalip"), listen_port(bind, default_port)
+    )
+    _check_bind(bind, default_port)
 
     connect = _get_args(settings, "connect")
     # `-noconnect` is Core's `-connect=0`: no automatic connection, and
@@ -2132,9 +2218,7 @@ def _after_lock(before: _BeforeLock) -> Config:
     connect_negated = _is_negated(settings, "connect")
     # `InitParameterInteraction`'s soft-set, which an explicit value wins
     # over (`src/init.cpp`, same sha)
-    listen = _get_bool(settings, "listen")
-    if listen is None:
-        listen = not connect and not connect_negated and before.max_connections_arg > 0
+    listen = _resolve_listen(settings, before.max_connections_arg)
     # The same `if` as `-listen`'s soft-set, over the same `int64_t`
     # (ISS 1324: `before.max_connections_arg`, not the 32-bit-narrowed
     # `before.max_connections` `Config`'s own fallback for a `None`
@@ -2188,6 +2272,8 @@ def _after_lock(before: _BeforeLock) -> Config:
         p2p_port=p2p_port,
         rpc_port=rpc_port,
         rpcbind=tuple(rpcbind),
+        bind=bind,
+        externalip=externalip,
         rpcallowip=_get_args(settings, "rpcallowip"),
         whitelist=_get_args(settings, "whitelist"),
         whitelist_relay=whitelist_relay,

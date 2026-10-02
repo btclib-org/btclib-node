@@ -819,7 +819,7 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag) keys
     `m_addr_response_caches` by `requestor.m_network_key`, itself keyed
     by the connection's network (onion for an inbound onion listener,
-    which this node has none of yet -- btclib-org/btclib-node#1257) and
+    which this node does not tag -- btclib-org/btclib-node#1644) and
     the local bind address and port the peer reached it on
     (`CreateNodeFromAcceptedSocket`, same file and sha): "Addr responses
     stored in different caches per (network, local socket) prevent

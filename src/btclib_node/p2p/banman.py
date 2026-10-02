@@ -176,37 +176,50 @@ class SpecialAddress:
 type Host = IPv4Address | IPv6Address | SpecialAddress
 
 
-def lookup_host(text: str) -> Host | None:
-    """Core's `LookupHost` without DNS, of the first address it answers.
+def lookup_host(text: str, *, allow_lookup: bool = False) -> Host | None:
+    """Core's `LookupHost` of the first address it answers.
 
     Brackets around the address are stripped. An onion or I2P name is
-    `SetSpecial`'s. Anything else is what `getaddrinfo` with
-    `AI_NUMERICHOST` reads, as `WrappedGetAddrInfo` asks it, handed the
-    octets as Core hands them: forms such as `1.2.3` and a scope id are
-    the platform's to accept. An IPv6 address keeps its numeric scope.
+    `SetSpecial`'s. Anything else is what `getaddrinfo` reads, as
+    `WrappedGetAddrInfo` asks it, handed the octets as Core hands them:
+    with `AI_NUMERICHOST` where `allow_lookup` is false, so that only a
+    numeric address is read, and with `AI_ADDRCONFIG`, retried without
+    it, where it is true. Forms such as `1.2.3` and a scope id are the
+    platform's to accept. An IPv6 address keeps its numeric scope.
     An IPv4 address mapped into IPv6 is IPv4, an address under Core's
     internal prefix is dropped, and one under the Tor v2 prefix is the
     unspecified address, as `CNetAddr::SetLegacyIPv6` reads them.
     """
-    if "\0" in text:
+    if not text or "\0" in text:
         return None
     if text.startswith("[") and text.endswith("]"):
         text = text[1:-1]
-    return SpecialAddress.parse(text) or _numeric_host(text)
+    return SpecialAddress.parse(text) or _resolved_host(text, allow_lookup=allow_lookup)
 
 
-def _numeric_host(text: str) -> IPv4Address | IPv6Address | None:
-    """`WrappedGetAddrInfo` of `text`, as `lookup_host` reads it."""
+def _getaddrinfo(text: str, flags: int) -> list[Any]:
+    """Return `getaddrinfo`'s answers for `text`, none where it fails."""
     try:
-        answers = socket.getaddrinfo(
+        return socket.getaddrinfo(
             text.encode(),
             None,
             type=socket.SOCK_STREAM,
             proto=socket.IPPROTO_TCP,
-            flags=socket.AI_NUMERICHOST,
+            flags=flags,
         )
     except OSError, UnicodeError:
-        return None
+        return []
+
+
+def _resolved_host(
+    text: str, *, allow_lookup: bool
+) -> IPv4Address | IPv6Address | None:
+    """`WrappedGetAddrInfo` of `text`, as `lookup_host` reads it."""
+    if allow_lookup:
+        # AI_ADDRCONFIG may exclude loopback-only addresses on some systems
+        answers = _getaddrinfo(text, socket.AI_ADDRCONFIG) or _getaddrinfo(text, 0)
+    else:
+        answers = _getaddrinfo(text, socket.AI_NUMERICHOST)
     for family, _, _, _, sockaddr in answers:
         if family == socket.AF_INET:
             return IPv4Address(sockaddr[0])

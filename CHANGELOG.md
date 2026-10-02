@@ -1806,6 +1806,24 @@ that records it (issue btclib-org/.github#1362).
 `release.yml` calls `reusable-build.yml`, which signs the files before the
 publish jobs wait for approval (issue btclib-org/.github#1506).
 
+### `-bind` narrows the P2P listener, as in Core
+
+- **`-bind=<addr>[:port][=onion]`, repeatable, binds those addresses and
+  not every interface, turns `-listen` on and is refused beside `-listen=0`;
+  an `=onion` listener is bound, its connections not tagged** (closes #1257).
+
+### `-externalip` names the node's own address, as in Core
+
+- **`-externalip=<ip>[:port]`, repeatable, looks a name up, records the
+  address as local at `LOCAL_MANUAL` and turns `-discover` off; the port
+  defaults to the first `-bind` port, else `-port`** (closes #1445).
+
+### A node tells its peers the address it is reached at
+
+- **A listening node out of initial block download tells each peer that
+  relays addresses its best local address, at once and then about daily,
+  as Core's `MaybeSendAddr` does** (closes #1641).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

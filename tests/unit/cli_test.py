@@ -9,6 +9,7 @@ import io
 import os
 import re
 import runpy
+import socket
 import stat
 import sys
 from contextlib import redirect_stderr, suppress
@@ -1078,7 +1079,9 @@ def test_build_config_refuses_a_port_as_check_host_port_options(
         _build(tmp_path, *argv, conf=conf)
 
 
-@pytest.mark.parametrize("name", ["port", "rpcport", "rpcbind", "connect", "addnode"])
+@pytest.mark.parametrize(
+    "name", ["port", "rpcport", "rpcbind", "bind", "connect", "addnode"]
+)
 def test_build_config_refuses_every_network_only_option_off_main(
     tmp_path: Path, name: str
 ) -> None:
@@ -1089,7 +1092,7 @@ def test_build_config_refuses_every_network_only_option_off_main(
     each, `AppInitParameterInteraction`'s `GetUnsuitableSectionOnlyArgs`
     loop (`src/init.cpp:936-950`, at bitcoin/bitcoin@9be056a8a7).
     """
-    value = "127.0.0.1:99999" if name == "rpcbind" else "1"
+    value = "127.0.0.1:99999" if name == "rpcbind" else "127.0.0.1"
     message = (
         f"Config setting for -{name} only applied on regtest network "
         "when in [regtest] section.\n"
@@ -2897,6 +2900,127 @@ def test_build_config_discover_wins_over_listen_0() -> None:
     config = cli.build_config(["-regtest", "-connect=10.0.0.1", "-discover=1"])
     assert config.listen is False
     assert config.discover is True
+
+
+def test_build_config_bind_is_read_as_a_list_and_turns_listen_on() -> None:
+    """ISS 1257: `-bind` soft-sets `-listen` on, ahead of `-connect`."""
+    argv = ["-regtest", "-connect=10.0.0.1", "-bind=127.0.0.1", "-bind=[::1]:99"]
+    config = cli.build_config(argv)
+    assert config.bind == ("127.0.0.1", "[::1]:99")
+    assert config.listen is True
+
+
+def test_build_config_bind_is_empty_by_default() -> None:
+    """ISS 1257: no `-bind` is every interface."""
+    assert cli.build_config(["-regtest"]).bind == ()
+
+
+def test_build_config_bind_beside_listen_0_is_refused() -> None:
+    """ISS 1257: `AppInitParameterInteraction`'s refusal, in Core's words."""
+    message = "Cannot set -bind or -whitebind together with -listen=0"
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        cli.build_config(["-regtest", "-bind=127.0.0.1", "-nolisten"])
+
+
+@pytest.mark.parametrize("value", ["127.0.0.1:0", "127.0.0.1:x", "[::1]:", ":+1"])
+@pytest.mark.parametrize("tag", ["", "=onion"])
+def test_build_config_a_bind_with_no_port_is_refused(value: str, tag: str) -> None:
+    """ISS 1257: `CheckHostPortOptions` reads the value without its tag."""
+    message = f"Invalid port specified in -bind: '{value}{tag}'"
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        cli.build_config(["-regtest", f"-bind={value}{tag}"])
+
+
+@pytest.mark.parametrize("value", ["localhost", "1.2.3.4=tor", "", "=onion"])
+def test_build_config_a_bind_that_is_no_numeric_address_is_refused(value: str) -> None:
+    """ISS 1257: `Lookup(addr, port, fAllowLookup=false)` answers nothing."""
+    message = f"Cannot resolve -bind address: '{value}'"
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        cli.build_config(["-regtest", f"-bind={value}"])
+
+
+@pytest.mark.parametrize(
+    ("argv", "duplicate"),
+    [
+        (["-bind=1.2.3.4", "-bind=1.2.3.4:18444"], "1.2.3.4:18444"),
+        (["-bind=[::1]:7", "-bind=[0::1]:7"], "[::1]:7"),
+        (["-bind=1.2.3.4:18445=onion", "-bind=1.2.3.4=onion"], "1.2.3.4:18445"),
+        (["-bind=1.2.3.4:18445", "-bind=1.2.3.4=onion"], "1.2.3.4:18445"),
+    ],
+)
+def test_build_config_a_bind_named_twice_is_refused(
+    argv: list[str], duplicate: str
+) -> None:
+    """ISS 1257: `CheckBindingConflicts`; `=onion` defaults to `-port` + 1."""
+    message = (
+        f"Duplicate binding configuration for address {duplicate}. Please check "
+        "your -bind, -bind=...=onion and -whitebind settings."
+    )
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        cli.build_config(["-regtest", *argv])
+
+
+def test_build_config_a_bind_defaults_its_port_to_dash_port() -> None:
+    """ISS 1257: `default_bind_port` is `-port`: these are one address."""
+    with pytest.raises(ValueError, match="Duplicate binding configuration"):
+        cli.build_config(["-regtest", "-port=9", "-bind=1.2.3.4:9", "-bind=1.2.3.4"])
+
+
+def test_build_config_externalip_turns_discover_off() -> None:
+    """ISS 1445: the soft-set yields to an explicit value."""
+    config = cli.build_config(["-regtest", "-externalip=8.8.8.8"])
+    assert config.externalip == ("8.8.8.8:18444",)
+    assert config.discover is False
+    wins = cli.build_config(["-regtest", "-externalip=8.8.8.8", "-discover=1"])
+    assert wins.discover is True
+
+
+def test_build_config_externalip_is_a_list_at_dash_port() -> None:
+    """ISS 1445: each value is looked up at `-port`; its own port wins."""
+    argv = ["-regtest", "-port=99", "-externalip=8.8.8.8", "-externalip=[2001::1]:7"]
+    assert cli.build_config(argv).externalip == ("8.8.8.8:99", "[2001::1]:7")
+
+
+def test_build_config_externalip_looks_a_name_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1445: `Lookup` with `-dns`'s default, so a name is resolved here."""
+    asked: list[bytes] = []
+
+    def getaddrinfo(host: bytes, *_: object, **__: object) -> list[Any]:
+        asked.append(host)
+        return [(2, 1, 6, "", ("8.8.4.4", 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+    config = cli.build_config(["-regtest", "-externalip=node.example"])
+    assert config.externalip == ("8.8.4.4:18444",)
+    assert asked == [b"node.example"]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "0.0.0.0",  # noqa: S104
+        "::",
+        "255.255.255.255",
+        "2001:db8::1",
+    ],
+)
+def test_build_config_an_invalid_externalip_is_refused(value: str) -> None:
+    """ISS 1445: `Lookup` finds it, `CNetAddr::IsValid` refuses it."""
+    message = f"Cannot resolve -externalip address: '{value}'"
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        cli.build_config(["-regtest", f"-externalip={value}"])
+
+
+def test_build_config_an_externalip_that_resolves_to_nothing_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1445: Core's `ResolveErrMsg`, naming the value as given."""
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *_, **__: [])
+    message = "Cannot resolve -externalip address: 'nowhere.invalid'"
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        cli.build_config(["-regtest", "-externalip=nowhere.invalid"])
 
 
 def test_build_config_peerblockfilters_defaults_to_false() -> None:

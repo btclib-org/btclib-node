@@ -31,7 +31,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from bitcoin_core_rpc import RPCErrorCode
-from btclib.p2p.address import ServiceFlags
+from btclib.p2p.address import Addr, ServiceFlags
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 from btclib.p2p.keepalive import Ping
 from btclib.p2p.limits import PROTOCOL_VERSION
@@ -58,10 +58,12 @@ from btclib_node.p2p.banman import (
     Subnet,
     lookup_subnet,
 )
+from btclib_node.p2p.connection import local_services
 from btclib_node.p2p.eviction import Network, net_group
 from btclib_node.p2p.main import handle_p2p_handshake
 from btclib_node.p2p.manager import P2pManager
 from btclib_node.p2p.permissions import NetPermissionFlags, Whitelist
+from btclib_node.p2p.selfannounce import LOCAL_BIND, LOCAL_MANUAL, LocalService
 from btclib_node.rpc.callbacks import add_connection
 from btclib_node.rpc.errors import RpcError
 
@@ -127,12 +129,18 @@ def a_conn(
         nonce=nonce,
         inbound=inbound,
         automatic=automatic,
-        version_message=SimpleNamespace(version=protocol),
+        version_message=SimpleNamespace(
+            version=protocol,
+            addr_recv=SimpleNamespace(ip=ip_address("::"), port=0),
+        ),
         block_relay=block_relay,
         feeler=feeler,
         addr_fetch=addr_fetch,
         permissions=permissions,
         addr_name=addr_name,
+        addr_relay_enabled=False,
+        next_local_addr_send=0.0,
+        prefer_addressv2=True,
         sent=[],
         stopped=[],
     )
@@ -212,6 +220,8 @@ class AManagerFactory(Protocol):
         addnode_args: Sequence[str] = (),
         seednode: Sequence[str] = (),
         listen: bool = True,
+        bind: Sequence[str] = (),
+        externalip: Sequence[str] = (),
         discover: bool | None = None,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
         forcednsseed: bool = False,
@@ -242,6 +252,8 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
         addnode_args: Sequence[str] = (),
         seednode: Sequence[str] = (),
         listen: bool = True,
+        bind: Sequence[str] = (),
+        externalip: Sequence[str] = (),
         discover: bool | None = None,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
         forcednsseed: bool = False,
@@ -259,6 +271,7 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
         node = SimpleNamespace(
             status=status,
             chain=RegTest(),
+            is_initial_block_download=False,
             logger=SimpleNamespace(
                 info=lambda *a: None,
                 log_debug=lambda *a: None,
@@ -290,10 +303,13 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
                 seednode=seednode,
                 seednode_args=tuple(seednode),
                 listen=listen,
+                bind=tuple(bind),
+                externalip=tuple(externalip),
                 # `Config.__init__`'s own sentinel: `discover=None`
-                # follows `listen`, an explicit value winning over it,
-                # exactly as `Config.discover` itself resolves.
-                discover=listen if discover is None else discover,
+                # follows `listen` and `externalip`, an explicit value
+                # winning over them, exactly as `Config.discover` itself
+                # resolves.
+                discover=(listen and not externalip) if discover is None else discover,
                 max_connections=max_connections,
                 dnsseed=not connect and max_connections > 0,
                 forcednsseed=forcednsseed,
@@ -894,6 +910,7 @@ def test_a_pong_landing_between_the_idle_check_and_its_reread_does_not_drop_the_
         # call in the same pass this test drives
         inbound = False
         version_message = SimpleNamespace(version=PROTOCOL_VERSION)
+        addr_relay_enabled = False
 
         @property
         def ping_sent(self) -> float:
@@ -1927,6 +1944,319 @@ def test_run_discovers_under_listen_0_discover_1(
     finally:
         manager.stop()
         manager.join(timeout=10)
+
+
+def an_onion_host() -> str:
+    """Return the name of a valid onion v3 address, which nothing can bind."""
+    return str(SpecialAddress(BIP155Network.TORV3, bytes(32)))
+
+
+def test_bind_binds_the_addresses_given_and_no_other(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1257: `-bind` replaces every interface, at `-port` without one."""
+    port, other = get_random_port(), get_random_port()
+    manager = a_manager(port=port, bind=["127.0.0.1", f"127.0.0.1:{other}"])
+    sockets = manager._bind()
+    try:
+        assert [s.getsockname()[:2] for s in sockets] == [
+            ("127.0.0.1", port),
+            ("127.0.0.1", other),
+        ]
+        assert manager.listening.is_set()
+    finally:
+        for server_socket in sockets:
+            server_socket.close()
+
+
+def test_bind_binds_an_onion_tagged_address_after_the_plain_ones(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1257: `InitBinds` binds `vBinds` and then `onion_binds`."""
+    tagged, plain = get_random_port(), get_random_port()
+    manager = a_manager(bind=[f"127.0.0.1:{tagged}=onion", f"127.0.0.1:{plain}"])
+    sockets = manager._bind()
+    try:
+        assert [s.getsockname()[1] for s in sockets] == [plain, tagged]
+    finally:
+        for server_socket in sockets:
+            server_socket.close()
+
+
+def test_a_bind_that_fails_closes_the_listeners_bound_before_it(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1257: each explicit bind is `BF_REPORT_ERROR`, and ends `_bind`.
+
+    The second address has no sockaddr, as `BindListenPort` words it.
+    """
+    port = get_random_port()
+    manager = a_manager(bind=[f"127.0.0.1:{port}", f"{an_onion_host()}:{port}"])
+    # `excinfo` keeps the failed call's frames, and any socket they still
+    # hold, alive past the block: the port is free only where it was closed
+    with pytest.raises(OSError, match=r"Bind address family for .* not supported"):
+        manager._bind()
+    assert not manager.listening.is_set()
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", port))
+
+
+def test_a_manager_whose_bind_names_nothing_ends_like_a_failed_bind(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1257: a `Config` built by hand can carry a `-bind` `cli` refused."""
+    manager = a_manager(bind=["localhost"])
+    assert not manager.start_listener()
+    wait_until(lambda: not manager.is_alive())
+    assert manager.bind_error == "Cannot resolve -bind address: 'localhost'"
+
+
+def test_run_with_bind_listens_where_asked_and_discovers_nothing(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1257: `Discover()` follows `bind_on_any`, so not under `-bind`."""
+    monkeypatch.setattr(
+        manager_module, "local_addresses", lambda: [ip_address("1.2.3.4")]
+    )
+    port = get_random_port()
+    manager = a_manager(port=port, bind=[f"127.0.0.1:{port}"])
+    try:
+        assert manager.start_listener()
+        wait_until(manager.loop.is_running)
+        assert manager.local_addresses == frozenset()
+        with closing(socket.create_connection(("127.0.0.1", port), timeout=10)):
+            pass
+    finally:
+        manager.stop()
+        manager.join(timeout=10)
+
+
+@pytest.mark.parametrize("discover", [True, False])
+def test_a_bound_routable_address_is_a_local_one_under_discover(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, *, discover: bool
+) -> None:
+    """ISS 1257: `Bind` calls `AddLocal` at `LOCAL_BIND`, but not for `=onion`.
+
+    Nothing here owns a routable address, so the listener is a stand-in.
+    """
+    manager = a_manager(
+        bind=["8.8.8.8:5", "8.8.4.4:6=onion", "192.168.1.2:7"], discover=discover
+    )
+    monkeypatch.setattr(manager, "_bind_one", lambda *_: socket.socket())
+    for server_socket in manager._bind():
+        server_socket.close()
+    expected = {host_key(peer_address("8.8.8.8", 0))} if discover else set()
+    assert manager.local_addresses == expected
+
+
+def test_externalip_is_a_local_address_whether_or_not_it_discovers(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1445: `AddLocal(addr, LOCAL_MANUAL)`, which `-discover=0` keeps.
+
+    A private address is not routable, and an onion name has no network
+    this node reaches: `AddLocal` refuses both, silently.
+    """
+    manager = a_manager(
+        externalip=["8.8.8.8:7", "192.168.1.2:7", f"{an_onion_host()}:7"],
+        discover=False,
+    )
+    manager._add_externalip()
+    assert manager.local_addresses == {host_key(peer_address("8.8.8.8", 0))}
+
+
+def test_discover_keeps_what_it_finds_only_under_discover(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1445: `AddLocal` at `LOCAL_IF` is refused under `-discover=0`."""
+    monkeypatch.setattr(
+        manager_module, "local_addresses", lambda: [ip_address("1.2.3.4")]
+    )
+    manager = a_manager(discover=False)
+    manager._discover()
+    assert manager.local_addresses == frozenset()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "nowhere.invalid",
+        "0.0.0.0",  # noqa: S104
+        "",
+    ],
+)
+@pytest.mark.parametrize("listen", [True, False])
+def test_a_manager_whose_externalip_names_nothing_ends_like_a_failed_bind(
+    a_manager: AManagerFactory, value: str, *, listen: bool
+) -> None:
+    """ISS 1445: a `Config` built by hand can carry one `cli` would refuse."""
+    manager = a_manager(externalip=[value], listen=listen)
+    assert not manager.start_listener()
+    wait_until(lambda: not manager.is_alive())
+    assert manager.bind_error == f"Cannot resolve -externalip address: '{value}'"
+
+
+def test_run_records_externalip_and_discovers_nothing_else(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1445: `-externalip` turns `-discover` off, and is a local address."""
+    monkeypatch.setattr(
+        manager_module, "local_addresses", lambda: [ip_address("1.2.3.4")]
+    )
+    manager = a_manager(externalip=["8.8.8.8"])
+    try:
+        assert manager.start_listener()
+        wait_until(manager.loop.is_running)
+        assert manager.local_addresses == {host_key(peer_address("8.8.8.8", 0))}
+    finally:
+        manager.stop()
+        manager.join(timeout=10)
+
+
+def test_a_known_local_address_takes_a_new_port_and_a_higher_score(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1445: `AddLocal` scores a known address one above the new score."""
+    manager = a_manager()
+    host = ip_address("8.8.8.8")
+    key = host_key(peer_address("8.8.8.8", 0))
+    assert manager._add_local(host, 1, LOCAL_BIND)
+    assert manager._add_local(host, 2, LOCAL_MANUAL)
+    assert manager.local_info[key] == LocalService(host, 2, LOCAL_MANUAL + 1)
+    assert manager._add_local(host, 3, LOCAL_BIND)
+    assert manager.local_info[key] == LocalService(host, 2, LOCAL_MANUAL + 1)
+
+
+def test_externalip_without_a_port_takes_the_first_bind_ports(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1445: `GetListenPort` is the first `-bind` naming a port."""
+    manager = a_manager(
+        port=1,
+        bind=["127.0.0.1=onion", "127.0.0.1", "127.0.0.2:77"],
+        externalip=["8.8.8.8"],
+    )
+    manager._add_externalip()
+    assert manager.local_info[host_key(peer_address("8.8.8.8", 0))].port == 77
+    plain = a_manager(port=1, externalip=["8.8.8.8"])
+    plain._add_externalip()
+    assert plain.local_info[host_key(peer_address("8.8.8.8", 0))].port == 1
+
+
+def an_announcing_manager(
+    a_manager: AManagerFactory, **options: Any
+) -> tuple[P2pManager, Any]:
+    """Return a manager that knows 8.8.8.8:7 as its own, and a peer to tell."""
+    manager = a_manager(externalip=["8.8.8.8:7"], **options)
+    manager._add_externalip()
+    conn = a_conn(1)
+    conn.addr_relay_enabled = True
+    return manager, conn
+
+
+def test_a_relaying_peer_is_told_the_local_address_once_in_a_while(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1641: `MaybeSendAddr` tells a new peer at once, then draws a wait."""
+    manager, conn = an_announcing_manager(a_manager)
+    monkeypatch.setattr(secrets.SystemRandom, "expovariate", lambda self, rate: 100.0)
+    manager._maybe_send_local_addr(conn, 1000.0)
+    [announced] = conn.sent
+    assert announced.addresses == (
+        peer_address("8.8.8.8", 7, 1000, int(local_services(manager.node.config))),
+    )
+    assert conn.next_local_addr_send == 1100.0
+    manager._maybe_send_local_addr(conn, 1099.0)
+    assert len(conn.sent) == 1
+    manager._maybe_send_local_addr(conn, 1100.0)
+    assert len(conn.sent) == 2
+
+
+def test_a_peer_wanting_addr_version_1_is_told_in_an_addr_message(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1641: `MaybeSendAddr` sends `ADDR` to a peer not asking `ADDRV2`."""
+    manager, conn = an_announcing_manager(a_manager)
+    conn.prefer_addressv2 = False
+    manager._maybe_send_local_addr(conn, 1000.0)
+    [announced] = conn.sent
+    assert isinstance(announced, Addr)
+    [entry] = announced.addresses
+    assert (str(entry.address.ip), entry.address.port) == ("::ffff:8.8.8.8", 7)
+    assert entry.timestamp == 1000
+
+
+@pytest.mark.parametrize(
+    "reason", ["no relay", "not listening", "initial block download"]
+)
+def test_a_peer_is_not_told_where_core_does_not_tell_it(
+    a_manager: AManagerFactory, reason: str
+) -> None:
+    """ISS 1641: `MaybeSendAddr` needs address relay, `fListen` and no IBD."""
+    manager, conn = an_announcing_manager(a_manager)
+    if reason == "no relay":
+        conn.addr_relay_enabled = False
+    elif reason == "not listening":
+        manager.listen = False
+    else:
+        manager.node.is_initial_block_download = True
+    manager._maybe_send_local_addr(conn, 1000.0)
+    assert conn.sent == []
+    assert conn.next_local_addr_send == 0.0
+
+
+def test_a_peer_is_told_nothing_where_the_node_has_no_address(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1641: `GetLocalAddrForPeer` finds none; the wait is still drawn."""
+    manager = a_manager()
+    conn = a_conn(1)
+    conn.addr_relay_enabled = True
+    manager._maybe_send_local_addr(conn, 1000.0)
+    assert conn.sent == []
+    assert conn.next_local_addr_send > 1000.0
+
+
+def test_manage_connections_pass_tells_a_relaying_peer(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1641: the announcement is made from the per-connection pass."""
+    manager, conn = an_announcing_manager(a_manager)
+    manager.connections[conn.id] = conn
+    manager._prune_stale_connections(time.time())
+    assert len(conn.sent) == 1
+
+
+def test_the_address_a_peer_sees_is_told_under_discover_when_nothing_is_held(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1641: `IsPeerAddrLocalGood` lets an inbound peer's view stand in."""
+    manager = a_manager()
+    conn = a_conn(1, address=peer_address("9.9.9.9", 5), inbound=True)
+    conn.addr_relay_enabled = True
+    conn.version_message = SimpleNamespace(
+        addr_recv=SimpleNamespace(ip=ip_address("::ffff:5.6.7.8"), port=1234)
+    )
+    manager._maybe_send_local_addr(conn, 1000.0)
+    [announced] = conn.sent
+    [seen] = announced.addresses
+    assert (seen.address, seen.port) == (ip_address("5.6.7.8").packed, 1234)
+
+
+def test_an_outbound_peer_is_told_the_listening_port_not_its_own(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1641: an outbound peer cannot see the listening port."""
+    manager = a_manager(port=9)
+    conn = a_conn(1, address=peer_address("9.9.9.9", 5), inbound=False)
+    conn.addr_relay_enabled = True
+    conn.version_message = SimpleNamespace(
+        addr_recv=SimpleNamespace(ip=ip_address("::ffff:5.6.7.8"), port=1234)
+    )
+    manager._maybe_send_local_addr(conn, 1000.0)
+    [announced] = conn.sent
+    [seen] = announced.addresses
+    assert (seen.address, seen.port) == (ip_address("5.6.7.8").packed, 9)
 
 
 def test_a_pass_draws_a_hundred_times_at_most(a_manager: AManagerFactory) -> None:

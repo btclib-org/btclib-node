@@ -124,6 +124,13 @@ btclib\_node.p2p.protocol\_version module
    :members:
    :show-inheritance:
 
+btclib\_node.p2p.selfannounce module
+--------------------------------------
+
+.. automodule:: btclib_node.p2p.selfannounce
+   :members:
+   :show-inheritance:
+
 Module contents
 ---------------
 
