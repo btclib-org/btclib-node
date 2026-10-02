@@ -10,7 +10,8 @@
 all read at bitcoin/bitcoin@9be056a8a7, the v31.1 tag. A value is read by
 `lookup_subnet`, the ban list's `LookupSubNet`.
 
-`-whitebind` is not read: btclib-org/btclib-node#1625.
+`-whitebind`'s permissions are read by `parse_permissions` too, and a listener
+grants them as `Whitelist.flags`' `granted`.
 
 Each permission does here what it does in Core, wherever this node has
 the behaviour it changes: `NO_BAN` (ban, discouragement, eviction, the
@@ -41,6 +42,7 @@ __all__ = [
     "NetPermissionFlags",
     "Whitelist",
     "WhitelistEntry",
+    "parse_permissions",
     "permission_names",
 ]
 
@@ -121,11 +123,15 @@ class WhitelistEntry:
     flags: NetPermissionFlags
 
 
-def _parse(text: str) -> tuple[WhitelistEntry, bool, bool]:
-    """Read one `-whitelist` value, as Core's `TryParse` does.
+def parse_permissions(
+    text: str, *, whitebind: bool = False
+) -> tuple[NetPermissionFlags, bool, bool, int]:
+    """Read the `perm1,perm2@` prefix of a value, as `TryParsePermissionFlags`.
 
-    Returns the entry and whether it applies to incoming and to outgoing
-    connections. Raises `ValueError` with Core's message.
+    Returns the flags, whether the value applies to incoming and to
+    outgoing connections, and where its address starts. A `-whitebind`
+    value is refused where it names `out`. Raises `ValueError` with
+    Core's message.
     """
     flags = NetPermissionFlags.NONE
     incoming = outgoing = False
@@ -138,6 +144,12 @@ def _parse(text: str) -> tuple[WhitelistEntry, bool, bool]:
                 flags |= _BY_NAME[name]
             elif name == "in":
                 incoming = True
+            elif name == "out" and whitebind:
+                msg = (
+                    "whitebind may only be used for incoming connections"
+                    ' ("out" was passed)'
+                )
+                raise ValueError(msg)
             elif name == "out":
                 outgoing = True
             elif name:
@@ -149,7 +161,17 @@ def _parse(text: str) -> tuple[WhitelistEntry, bool, bool]:
     elif flags == NetPermissionFlags.NONE:
         msg = f"Only direction was set, no permissions: '{text}'"
         raise ValueError(msg)
-    network = text[at + 1 :]
+    return flags, incoming, outgoing, at + 1
+
+
+def _parse(text: str) -> tuple[WhitelistEntry, bool, bool]:
+    """Read one `-whitelist` value, as Core's `TryParse` does.
+
+    Returns the entry and whether it applies to incoming and to outgoing
+    connections. Raises `ValueError` with Core's message.
+    """
+    flags, incoming, outgoing, start = parse_permissions(text)
+    network = text[start:]
     subnet = lookup_subnet(network)
     if subnet is None:
         msg = f"Invalid netmask specified in -whitelist: '{network}'"
@@ -190,11 +212,21 @@ class Whitelist:
         return cls(tuple(incoming), tuple(outgoing), relay, force_relay)
 
     def flags(
-        self, address: NetworkAddressV2, *, inbound: bool, manual: bool = False
+        self,
+        address: NetworkAddressV2 | None,
+        *,
+        inbound: bool,
+        manual: bool = False,
+        granted: NetPermissionFlags = NetPermissionFlags.NONE,
     ) -> NetPermissionFlags:
         """Return what a peer at `address` is granted.
 
-        Core's `AddWhitelistPermissionFlags`.
+        Core's `AddWhitelistPermissionFlags`, on top of `granted`: what
+        the listener it was accepted on grants (`-whitebind`). `address`
+        is `None` where it says nothing of the peer, a Tor connection's
+        being the local end of the Tor proxy: no value matches, and only
+        `granted` and the default set for a value naming no permission
+        remain.
 
         An inbound peer is matched against the incoming values and a
         manual outbound one against the outgoing values; no other
@@ -206,9 +238,9 @@ class Whitelist:
             entries = self.outgoing
         else:
             return NetPermissionFlags.NONE
-        flags = NetPermissionFlags.NONE
+        flags = granted
         for entry in entries:
-            if entry.subnet.matches_peer(address):
+            if address is not None and entry.subnet.matches_peer(address):
                 flags |= entry.flags
         if NetPermissionFlags.IMPLICIT in flags:
             flags &= ~NetPermissionFlags.IMPLICIT

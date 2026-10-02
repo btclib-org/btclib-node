@@ -5,6 +5,7 @@
 """`Config`'s chain resolution, path arithmetic, ports and feerate floor."""
 
 import os
+import re
 from ipaddress import IPv4Address, IPv6Address
 from pathlib import Path
 
@@ -19,12 +20,15 @@ from btclib_node.config import (
     BindAddress,
     Config,
     get_path_arg,
+    listen_port,
     lookup_host_port,
     lookup_service,
     parse_bind,
+    parse_whitebind,
     service_text,
     split_host_port,
 )
+from btclib_node.p2p.permissions import permission_names
 from btclib_node.rpc.auth import COOKIE_FILE, RpcAuthEntry, password_hmac
 from tests import RPCAUTH
 
@@ -722,3 +726,70 @@ def test_a_leading_double_slash_is_collapsed_as_lexically_normal_does(
     assert get_path_arg(f"//{tmp_path}/c") == f"{tmp_path}/c"
     config = Config(chain="regtest", data_dir=tmp_path, rpccookiefile=f"/{tmp_path}/c")
     assert str(config.rpc_cookie_file) == f"{tmp_path}/c"
+
+
+@pytest.mark.parametrize(
+    ("arg", "host", "port", "names"),
+    [
+        ("127.0.0.1:99", "127.0.0.1", 99, []),
+        ("noban@127.0.0.1:99", "127.0.0.1", 99, ["noban", "download"]),
+        ("relay,in@[::1]:7", "::1", 7, ["relay"]),
+        ("@127.0.0.1:99", "127.0.0.1", 99, []),
+    ],
+)
+def test_parse_whitebind_reads_permissions_an_address_and_a_port(
+    arg: str, host: str, port: int, names: list[str]
+) -> None:
+    """ISS 1625: `NetWhitebindPermissions::TryParse`."""
+    parsed = parse_whitebind(arg)
+    assert (str(parsed.host), parsed.port) == (host, port)
+    assert permission_names(parsed.flags) == names
+
+
+@pytest.mark.parametrize(
+    ("arg", "message"),
+    [
+        ("127.0.0.1", "Need to specify a port with -whitebind: '127.0.0.1'"),
+        ("noban@[::1]", "Need to specify a port with -whitebind: '[::1]'"),
+        ("localhost:7", "Cannot resolve -whitebind address: 'localhost:7'"),
+        ("999.1.1.1:5", "Cannot resolve -whitebind address: '999.1.1.1:5'"),
+        (
+            "out@127.0.0.1:7",
+            'whitebind may only be used for incoming connections ("out" was passed)',
+        ),
+        ("bogus@127.0.0.1:7", "Invalid P2P permission: 'bogus'"),
+        ("in@127.0.0.1:7", "Only direction was set, no permissions: 'in@127.0.0.1:7'"),
+    ],
+)
+def test_parse_whitebind_refuses_in_core_s_words(arg: str, message: str) -> None:
+    """ISS 1625: the texts are those of `bitcoind` v31.1.0."""
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        parse_whitebind(arg)
+
+
+def test_listen_port_takes_the_first_whitebind_that_grants_no_noban() -> None:
+    """ISS 1625: `GetListenPort` skips a `noban` one and what is refused."""
+    whitebind = [
+        "bogus@1.2.3.4:5",
+        "noban@1.2.3.4:6",
+        "download@1.2.3.4:7",
+        "1.2.3.4:8",
+    ]
+    assert listen_port([], 100, whitebind) == 7
+    assert listen_port(["1.2.3.4:9"], 100, whitebind) == 9
+    assert listen_port([], 100, whitebind[:2]) == 100
+
+
+def test_a_value_naming_no_permission_is_a_listen_port_though_it_is_noban() -> None:
+    """ISS 1625: the defaults are added after `GetListenPort` looks."""
+    assert listen_port([], 100, ["1.2.3.4:8"]) == 8
+
+
+def test_config_refuses_whitebind_beside_listen_0() -> None:
+    """ISS 1625: Core's one refusal covers `-bind` and `-whitebind`."""
+    message = "Cannot set -bind or -whitebind together with -listen=0"
+    with pytest.raises(ValueError, match=message):
+        Config(chain="regtest", whitebind=["127.0.0.1:9"], listen=False)
+    config = Config(chain="regtest", whitebind=["127.0.0.1:9"])
+    assert config.whitebind == ("127.0.0.1:9",)
+    assert Config(chain="regtest").whitebind == ()

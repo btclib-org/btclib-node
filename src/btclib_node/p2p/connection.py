@@ -649,10 +649,17 @@ class Connection:
         # count the first two kinds, and not a feeler.
         # `P2pManager.create_connection` sets it.
         self.automatic: bool = False
-        # Core's `CNode::m_permission_flags`: what `-whitelist` grants this
-        # peer, decided where the connection is accepted or dialled
-        # (`P2pManager.create_connection`) and kept.
+        # Core's `CNode::m_permission_flags`: what `-whitelist` and, for an
+        # inbound one, its listener's `-whitebind` grant this peer, decided
+        # where the connection is accepted or dialled
+        # (`P2pManager.server`, `P2pManager.create_connection`) and kept.
         self.permissions: NetPermissionFlags = NetPermissionFlags.NONE
+        # Core's `CNode::m_inbound_onion`: whether this connection was
+        # accepted on a `-bind=<addr>=onion` listener, which is to say that
+        # it comes through Tor and the address it came from is Tor's, not
+        # the peer's. `P2pManager.create_connection` sets it, once, before
+        # any other thread can reach this connection.
+        self.inbound_onion: bool = False
         # Core's `CNode::m_prefer_evict`: whether this peer was accepted
         # from a discouraged host, which `select_node_to_evict` reads.
         # `P2pManager.server` decides it on accept and
@@ -661,7 +668,8 @@ class Connection:
         # Core's `CNode::m_network_key` (`src/net.h`, at
         # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the key
         # `callbacks.getaddr` caches its answer under -- this node's own
-        # network id, local bind host and local bind port, standing in
+        # network id (Tor's for an `inbound_onion` one), local bind host
+        # and local bind port, standing in
         # for Core's own SipHash-keyed `uint64_t` of the same three
         # (`CreateNodeFromAcceptedSocket`, same file and sha). `None`
         # for an outbound connection, which `getaddr` never answers.

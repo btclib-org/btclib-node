@@ -111,7 +111,8 @@ section over the default section; within the command line the last
 value, within a file the first, the chain selectors aside; and a
 negation discarding every value named before it at its own level.
 `-connect`, `-addnode`, `-seednode`, `-rpcauth`, `-rpcwhitelist`,
-`-rpcbind`, `-rpcallowip`, `-whitelist`, `-debug` and `-shutdownnotify` are
+`-rpcbind`, `-rpcallowip`, `-whitelist`, `-whitebind`, `-debug` and
+`-shutdownnotify` are
 lists, every value from every level applying -- `-shutdownnotify` alone among
 the four notify options below, Core reading it with `GetArgs` rather
 than the `GetArg` the other three are read with (`notify.py`'s own
@@ -188,11 +189,14 @@ from btclib_node.config import (
     DEFAULT_MAX_PEER_CONNECTIONS,
     DEFAULT_MAX_TIP_AGE,
     DEFAULT_MIN_RELAY_FEERATE,
+    BindAddress,
     Config,
+    WhitebindAddress,
     get_path_arg,
     listen_port,
     lookup_service,
     parse_bind,
+    parse_whitebind,
     service_text,
     split_host_port,
 )
@@ -424,8 +428,9 @@ _OPTIONS: dict[str, _Option] = {
         "=<addr>[:<port>][=onion]",
         "Bind to given address and always listen on it (default: 0.0.0.0). "
         "Use [host]:port notation for IPv6. Append =onion to bind a further "
-        "listener, at <port> + 1 by default, whose connections this node "
-        "does not tag as Tor. This option can be specified multiple times",
+        "listener, at <port> + 1 by default, whose connections are tagged as "
+        "incoming Tor connections. This option can be specified multiple "
+        "times",
         _CONNECTION_TITLE,
         network_only=True,
     ),
@@ -733,6 +738,15 @@ _OPTIONS: dict[str, _Option] = {
         "",
         "Use the testnet4 chain. Equivalent to -chain=testnet4.",
         _CHAINPARAMS_TITLE,
+    ),
+    "whitebind": _Option(
+        "=<[permissions@]addr>",
+        "Bind to the given address and add permission flags to the peers "
+        "connecting to it. Use [host]:port notation for IPv6. Allowed "
+        "permissions: " + ", ".join(NET_PERMISSIONS_DOC) + ". Specify "
+        "multiple permissions separated by commas (default: "
+        "download,noban,mempool,relay). Can be specified multiple times.",
+        _CONNECTION_TITLE,
     ),
     "whitelist": _Option(
         "=<[permissions@]IP address or network>",
@@ -1952,17 +1966,22 @@ class _BeforeLock:
 def _resolve_listen(settings: _Settings, max_connections_arg: int) -> bool:
     """Return `-listen` as `InitParameterInteraction` leaves it.
 
-    `src/init.cpp`, at bitcoin/bitcoin@9be056a8a7: a `-bind` soft-sets it
-    on, ahead of `-connect` or a `-maxconnections` of zero or less
-    soft-setting it off, and an explicit value wins over both.
+    `src/init.cpp`, at bitcoin/bitcoin@9be056a8a7: a `-bind` or a
+    `-whitebind` soft-sets it on, ahead of `-connect` or a
+    `-maxconnections` of zero or less soft-setting it off, and an explicit
+    value wins over both.
     """
     listen = _get_bool(settings, "listen")
     if listen is None:
         connect = _get_args(settings, "connect")
-        listen = bool(_get_args(settings, "bind")) or (
-            not connect
-            and not _is_negated(settings, "connect")
-            and max_connections_arg > 0
+        listen = (
+            bool(_get_args(settings, "bind"))
+            or bool(_get_args(settings, "whitebind"))
+            or (
+                not connect
+                and not _is_negated(settings, "connect")
+                and max_connections_arg > 0
+            )
         )
     return listen
 
@@ -2098,6 +2117,7 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
         forcednsseed=bool(_get_bool(settings, "forcednsseed")),
         listen=_resolve_listen(settings, max_connections_arg),
         bind=_get_args(settings, "bind"),
+        whitebind=_get_args(settings, "whitebind"),
     )
     debug, debug_categories, debug_exclude = _resolve_debug(settings)
     # after `-debug`'s categories, where `AppInitParameterInteraction`
@@ -2174,15 +2194,18 @@ def _warn_bad_port(option: str, port: int) -> None:
         )
 
 
-def _check_bind(values: list[str], default_port: int, port: int | None) -> None:
-    """Refuse a `-bind` that resolves to nothing, or one named twice.
+def _check_bind(
+    values: list[str], whitebind: list[str], default_port: int, port: int | None
+) -> None:
+    """Refuse a `-bind` or `-whitebind` that is none, or an address named twice.
 
-    `AppInitMain`'s `-bind` loop and `CheckBindingConflicts`
-    (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7), which sees the
-    plain binds before the `=onion` ones and compares address and port.
-    The loop warns of each plain `-bind` on a bad port, and then of
-    `-port` where it is given and no `-bind` is, `-port` being ignored
-    otherwise. `-whitebind` is not read: btclib-org/btclib-node#1625.
+    `AppInitMain`'s `-bind` and `-whitebind` loops and
+    `CheckBindingConflicts` (`src/init.cpp`, at
+    bitcoin/bitcoin@9be056a8a7), which sees the `-whitebind` ones, then
+    the plain binds, then the `=onion` ones, and compares address and
+    port. The loop warns of each plain `-bind` on a bad port, and then of
+    `-port` where it is given and neither is, `-port` being ignored
+    otherwise.
     """
     parsed = []
     for value in values:
@@ -2190,15 +2213,20 @@ def _check_bind(values: list[str], default_port: int, port: int | None) -> None:
         if not address.onion:
             _warn_bad_port("-bind", address.port)
         parsed.append(address)
-    if not values and port is not None:
+    whitebound = [parse_whitebind(value) for value in whitebind]
+    if not values and not whitebind and port is not None:
         _warn_bad_port("-port", port)
     seen = set()
-    for address in sorted(parsed, key=lambda a: a.onion):
-        key = (str(address.host).partition("%")[0], address.port)
+    ordered: list[BindAddress | WhitebindAddress] = [
+        *whitebound,
+        *sorted(parsed, key=lambda a: a.onion),
+    ]
+    for bound in ordered:
+        key = (str(bound.host).partition("%")[0], bound.port)
         if key in seen:
             err_msg = (
                 "Duplicate binding configuration for address "
-                f"{service_text(address.host, address.port)}. Please check "
+                f"{service_text(bound.host, bound.port)}. Please check "
                 "your -bind, -bind=...=onion and -whitebind settings."
             )
             raise ValueError(err_msg)
@@ -2209,22 +2237,28 @@ def _after_lock(before: _BeforeLock) -> Config:
     """Refuse what Core refuses after its lock, and return the `Config`.
 
     `AppInitMain` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7) in its
-    order: `CheckHostPortOptions`'s `-port`, `-rpcport`, `-bind` and
-    `-rpcbind`, then the `-externalip` and `-bind` values nothing
-    resolves, and a `-bind` named twice.
+    order: `CheckHostPortOptions`'s `-port`, `-rpcport`, `-bind`,
+    `-rpcbind` and `-whitebind`, then the `-externalip` and `-bind` values
+    nothing resolves, a `-whitebind` it refuses, and an address bound
+    twice.
     `-rpccookieperms` and `-rpcauth` are refused later, by
     `RpcAuth.start`, as `StartHTTPRPC` refuses them.
     """
     settings = before.settings
     p2p_port = _get_port(settings, "port")
     rpc_port = _get_port(settings, "rpcport")
-    # Every `-bind` and `-rpcbind` value is checked, as
+    # Every `-bind`, `-rpcbind` and `-whitebind` value is checked, as
     # `CheckHostPortOptions` checks it, `-bind`'s without its `=onion`
     # tag; `RpcManager` binds the second beside `-rpcallowip`, as
     # `HTTPBindAddresses` (`src/httpserver.cpp`, same sha) does
     bind = _get_args(settings, "bind")
     rpcbind = _get_args(settings, "rpcbind")
-    for name, values in (("bind", bind), ("rpcbind", rpcbind)):
+    whitebind = _get_args(settings, "whitebind")
+    for name, values in (
+        ("bind", bind),
+        ("rpcbind", rpcbind),
+        ("whitebind", whitebind),
+    ):
         for value in values:
             head, tagged, _ = value.rpartition("=")
             try:
@@ -2234,9 +2268,9 @@ def _after_lock(before: _BeforeLock) -> Config:
                 raise ValueError(err_msg) from None
     default_port = p2p_port or before.directories.chain.port
     externalip = _resolve_externalip(
-        _get_args(settings, "externalip"), listen_port(bind, default_port)
+        _get_args(settings, "externalip"), listen_port(bind, default_port, whitebind)
     )
-    _check_bind(bind, default_port, p2p_port)
+    _check_bind(bind, whitebind, default_port, p2p_port)
 
     connect = _get_args(settings, "connect")
     # `-noconnect` is Core's `-connect=0`: no automatic connection, and
@@ -2299,6 +2333,7 @@ def _after_lock(before: _BeforeLock) -> Config:
         rpc_port=rpc_port,
         rpcbind=tuple(rpcbind),
         bind=bind,
+        whitebind=whitebind,
         externalip=externalip,
         rpcallowip=_get_args(settings, "rpcallowip"),
         whitelist=_get_args(settings, "whitelist"),

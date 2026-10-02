@@ -2966,6 +2966,78 @@ def test_build_config_a_bind_defaults_its_port_to_dash_port() -> None:
         cli.build_config(["-regtest", "-port=9", "-bind=1.2.3.4:9", "-bind=1.2.3.4"])
 
 
+def test_build_config_whitebind_is_a_list_and_turns_listen_on() -> None:
+    """ISS 1625: `-whitebind` soft-sets `-listen` on, ahead of `-connect`."""
+    argv = ["-regtest", "-connect=10.0.0.1", "-whitebind=noban@127.0.0.1:7"]
+    config = cli.build_config([*argv, "-whitebind=[::1]:8"])
+    assert config.whitebind == ("noban@127.0.0.1:7", "[::1]:8")
+    assert config.listen is True
+    assert cli.build_config(["-regtest"]).whitebind == ()
+
+
+def test_build_config_whitebind_beside_listen_0_is_refused() -> None:
+    """ISS 1625: the one refusal of `-bind` and `-whitebind`."""
+    message = "Cannot set -bind or -whitebind together with -listen=0"
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        cli.build_config(["-regtest", "-whitebind=127.0.0.1:7", "-nolisten"])
+
+
+@pytest.mark.parametrize("value", ["127.0.0.1:0", "noban@127.0.0.1:0", "[::1]:x"])
+def test_build_config_a_whitebind_with_a_bad_port_is_refused(value: str) -> None:
+    """ISS 1625: `CheckHostPortOptions` reads the value with its permissions."""
+    message = f"Invalid port specified in -whitebind: '{value}'"
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        cli.build_config(["-regtest", f"-whitebind={value}"])
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ("127.0.0.1", "Need to specify a port with -whitebind: '127.0.0.1'"),
+        ("localhost:7", "Cannot resolve -whitebind address: 'localhost:7'"),
+        (
+            "out@127.0.0.1:7",
+            'whitebind may only be used for incoming connections ("out" was passed)',
+        ),
+        ("bogus@127.0.0.1:7", "Invalid P2P permission: 'bogus'"),
+    ],
+)
+def test_build_config_a_whitebind_core_refuses_is_refused_in_its_words(
+    value: str, message: str
+) -> None:
+    """ISS 1625: `NetWhitebindPermissions::TryParse`'s errors."""
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        cli.build_config(["-regtest", f"-whitebind={value}"])
+
+
+@pytest.mark.parametrize(
+    ("argv", "duplicate"),
+    [
+        (["-whitebind=1.2.3.4:7", "-whitebind=noban@1.2.3.4:7"], "1.2.3.4:7"),
+        (["-whitebind=1.2.3.4:7", "-bind=1.2.3.4:7"], "1.2.3.4:7"),
+        (["-whitebind=1.2.3.4:18445", "-bind=1.2.3.4=onion"], "1.2.3.4:18445"),
+    ],
+)
+def test_build_config_an_address_bound_twice_with_a_whitebind_is_refused(
+    argv: list[str], duplicate: str
+) -> None:
+    """ISS 1625: `CheckBindingConflicts` sees the `-whitebind` ones first."""
+    message = (
+        f"Duplicate binding configuration for address {duplicate}. Please check "
+        "your -bind, -bind=...=onion and -whitebind settings."
+    )
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        cli.build_config(["-regtest", *argv])
+
+
+def test_build_config_whitebind_stops_the_bad_port_warning_of_dash_port(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """ISS 1625: `-port` is ignored beside `-whitebind`, as in Core."""
+    cli.build_config(["-regtest", "-port=22", "-whitebind=127.0.0.1:8333"])
+    assert capsys.readouterr().err == ""
+
+
 def test_build_config_externalip_turns_discover_off() -> None:
     """ISS 1445: the soft-set yields to an explicit value."""
     config = cli.build_config(["-regtest", "-externalip=8.8.8.8"])

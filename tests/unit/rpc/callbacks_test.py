@@ -213,6 +213,7 @@ def a_peer(
     addr_fetch: bool = False,
     permissions: NetPermissionFlags = NetPermissionFlags.NONE,
     versioned: bool = True,
+    inbound_onion: bool = False,
 ) -> Any:
     """Build a `P2pManager.connections` entry `get_peer_info` can read.
 
@@ -250,6 +251,7 @@ def a_peer(
         feeler=feeler,
         addr_fetch=addr_fetch,
         permissions=permissions,
+        inbound_onion=inbound_onion,
         stats=PeerStats(),
         block_availability=BlockAvailability(),
         tx_announce_queue=[],
@@ -543,6 +545,18 @@ def test_the_network_is_core_s_net_class(peer: str, network: str) -> None:
     """`network` is `GetNetClass` of the peer, not the BIP155 id it came by."""
     (info,) = get_peer_info(a_node({7: a_peer(peer=peer)}), _CONN, [])
     assert info["network"] == network
+
+
+def test_a_peer_accepted_on_an_onion_listener_is_on_the_onion_network() -> None:
+    """ISS 1644: `ConnectedThroughNetwork` answers `NET_ONION` for the tag."""
+    plain, tagged = a_peer(peer="1.2.3.4"), a_peer(peer="1.2.3.4", inbound_onion=True)
+    infos = get_peer_info(a_node({7: plain, 8: tagged}), _CONN, [])
+    assert [info["network"] for info in infos] == ["ipv4", "onion"]
+    # not what the peer's own address says
+    (local,) = get_peer_info(
+        a_node({7: a_peer(peer="127.0.0.1", inbound_onion=True)}), _CONN, []
+    )
+    assert local["network"] == "onion"
 
 
 # addresses a peer names, none of them bound to

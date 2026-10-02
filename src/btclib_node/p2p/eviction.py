@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 __all__ = [
     "EvictionCandidate",
     "Network",
+    "connected_through_network",
     "get_network",
     "is_internal",
     "is_local",
@@ -399,6 +400,16 @@ def net_class(address: NetworkAddressV2) -> Network:
     if _linked_ipv4(ip) is not None:
         return Network.IPV4
     return Network.IPV6
+
+
+def connected_through_network(address: NetworkAddressV2, *, onion: bool) -> Network:
+    """Core's `CNode::ConnectedThroughNetwork`, what `m_network` is read from.
+
+    (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag.) Tor for
+    a connection accepted on an `=onion` listener, whatever `address` is:
+    that of Tor's end of it. The class of `address` otherwise.
+    """
+    return Network.ONION if onion else net_class(address)
 
 
 # `CNetAddr::m_net` of each BIP155 id `is_routable` can answer for

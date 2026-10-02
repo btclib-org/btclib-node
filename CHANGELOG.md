@@ -1857,6 +1857,18 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
   `inv` of up to 500 blocks after the fork otherwise, with Core's pruned stop
   and `m_continuation_block`**; it was dropped unanswered (closes #1385).
 
+### `-whitebind` grants the peers of a listener Core's permissions
+
+- **`-whitebind=<[permissions@]addr>`, repeatable, binds the address, grants
+  its peers the permissions and turns `-listen` on** (closes #1625); a value
+  naming none grants `download,noban,mempool,relay`.
+
+### A connection accepted on a `-bind=...=onion` listener is tagged as Tor
+
+- **Such a peer is on the `onion` network for `getpeerinfo`, the `getaddr`
+  cache and eviction, no `-whitelist` value applies to it and no local
+  address is announced to it** (closes #1644); the default bind is #1666.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

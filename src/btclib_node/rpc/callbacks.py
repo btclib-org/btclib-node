@@ -63,7 +63,7 @@ from btclib_node.p2p.banman import (
     lookup_subnet,
 )
 from btclib_node.p2p.connection import local_services
-from btclib_node.p2p.eviction import Network, is_valid, net_class
+from btclib_node.p2p.eviction import Network, connected_through_network, is_valid
 from btclib_node.p2p.permissions import permission_names
 from btclib_node.rpc.connection import RawJSON
 from btclib_node.rpc.errors import (
@@ -1338,10 +1338,9 @@ def _peer_entry(
     if version_message is not None and is_valid(version_message.addr_recv.ip):
         addr_recv = version_message.addr_recv
         entry["addrlocal"] = ip_and_port(str(addr_recv.ip), addr_recv.port)
-    # `ConnectedThroughNetwork`, which is `GetNetClass` of the peer's
-    # address, this node having no Tor listener to take an onion
-    # inbound on.
-    entry["network"] = _network_name(net_class(p2p_conn.address))
+    entry["network"] = _network_name(
+        connected_through_network(p2p_conn.address, onion=p2p_conn.inbound_onion)
+    )
     entry["services"] = f"{services:016x}"
     entry["servicesnames"] = service_names(services)
     entry["relaytxes"] = relays
