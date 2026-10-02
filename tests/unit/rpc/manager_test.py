@@ -368,6 +368,11 @@ ADDRCONFIG = socket.AI_PASSIVE | socket.AI_ADDRCONFIG
         ("fe80::1%1x", True, ADDRCONFIG),
         ("fe80::1%no-such-interface", True, ADDRCONFIG),
         ("1.2.3", True, ADDRCONFIG),
+        ("::1\0x", True, PASSIVE),
+        ("127.0.0.1\0", True, PASSIVE),
+        ("fe80::1%1\0x", True, PASSIVE),
+        ("localhost\0::1", True, ADDRCONFIG),
+        ("\0::1", True, ADDRCONFIG),
         ("", False, ADDRCONFIG),
     ],
 )
