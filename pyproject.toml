@@ -351,7 +351,7 @@ docs = [
 ]
 # the distribution files are built and published by uv itself; what this
 # group holds is what inspects them, before an upload consumes the
-# version release.yml's `dist` job checks. Named check, not build, for
+# version test.yml's `dist` job checks. Named check, not build, for
 # the reason bitcoin-core-rpc's own pyproject.toml gives: `--only-group
 # build` would mean one thing here and a wheel-building group in a
 # repository that compiles one

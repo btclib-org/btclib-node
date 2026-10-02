@@ -134,8 +134,8 @@ on:
     # landing rather than left to finish on a branch nobody will look at
     # again -- the same reasoning, and the same list, as lint.yml
     types: [opened, reopened, synchronize, ready_for_review, closed]
-  # allows release.yml to reuse the whole build/test pipeline, so a tag
-  # or a rehearsal runs the identical suite and dist build rather than a
+  # allows release.yml to reuse the whole test pipeline, so a tag or a
+  # rehearsal runs the identical suite and dist checks rather than a
   # second copy of either
   workflow_call:
     inputs:
@@ -145,32 +145,13 @@ on:
           caller that passes one. See the group below.
         type: string
         default: ""
-      version-suffix:
+      use-signed-dist:
         description: >
-          Appended to the version in pyproject.toml before the `dist`
-          job builds anything, by the dev-version composite action --
-          this is what lets that job's own build be the one a rehearsal
-          publishes, rather than a second build checked separately. A
-          release passes nothing and ships the version the tree
-          declares; a rehearsal passes a .dev suffix, which is how it
-          reaches TestPyPI with a version that index has not already
-          consumed.
-        type: string
-        default: ""
-      disable-dist-cache:
-        description: >
-          Whether the `dist` job's own Setup uv step fetches its
-          dependencies afresh instead of from cache. Only release.yml's
-          call sets this: a cache entry written by one run is read by
-          another through GitHub's branch/PR cache scoping, so the job
-          whose output actually reaches an index -- a tag's upload or a
-          rehearsal's TestPyPI one, both routed through this same call --
-          is the one build that must not risk a poisoned cache reaching
-          the wheel it ships. An ordinary pull request or push to main
-          builds a copy this job throws away, so caching it is harmless,
-          and a flat `enable-cache: false` here would only
-          cache-penalize every one of them for a property only
-          release.yml's call needs.
+          Whether the `dist` job checks the files the caller's build job
+          uploaded, instead of building and uploading its own. Only
+          release.yml's call sets this: the files it publishes are the
+          ones reusable-build.yml signed, and a second upload of `dist`
+          or `sbom` in the same run would collide with that job's.
         type: boolean
         default: false
   # the escape hatch, for a branch whose pull request is not open yet
@@ -406,13 +387,12 @@ jobs:
   # the packaging metadata is checked on every pull request, not only on
   # the tag that ships it: a release is the one place where finding a
   # problem is too late, a version being consumed by the upload that
-  # carries it and then only yankable. This job is also what
-  # release.yml's publish jobs download from: they build nothing of
-  # their own, so a tag and a rehearsal both publish exactly the files
-  # checked here, `version-suffix` being how a rehearsal's build carries
-  # the version it publishes under
+  # carries it and then only yankable. A pull request builds its own
+  # files here; a release checks the ones reusable-build.yml built,
+  # signed and uploaded, which is what release.yml's publish jobs
+  # download
   dist:
-    name: Build the distribution files, check them, install one
+    name: Check the distribution files, install one
     if: >-
       ${{ !github.event.pull_request.draft
       && github.event.action != 'closed'
@@ -425,12 +405,17 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # caching off only when release.yml calls this workflow: see
-      # disable-dist-cache's own description above
       - name: Setup uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          enable-cache: ${{ !inputs.disable-dist-cache }}
+          enable-cache: true
+      # the files the checks below read, from the signed build
+      - name: Download the distribution files
+        if: inputs.use-signed-dist
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist/
       # what the sdist normalizer and the bill-of-materials generator
       # below read. uv_build itself ignores it and stamps a fixed
       # timestamp into both archives, so nothing in this job is
@@ -440,34 +425,23 @@ jobs:
       # shallow clone reads the tip, which is the commit the tag points
       # at, and a lightweight tag has no date of its own to prefer
       - name: Pin the build timestamp to the commit
+        if: ${{ !inputs.use-signed-dist }}
         run: echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> "$GITHUB_ENV"
-      # empty on every trigger but a release rehearsal: `inputs` is unset
-      # outside a workflow_call, so a direct run of this workflow --
-      # a pull request or a push to main -- skips this and ships the
-      # version the tree declares, same as a real release does.
-      # TestPyPI refuses a version it has already seen, which is what
-      # the suffix is for; release.yml's version-check job computes it
-      # once and passes it down, so every job this workflow runs during
-      # one dispatch agrees on it
-      - name: Make the version unique for TestPyPI (rehearsal only)
-        if: inputs.version-suffix != ''
-        uses: ./.github/actions/dev-version # zizmor: ignore[self-repository]
-        with:
-          suffix: ${{ inputs.version-suffix }}
       # uv build builds the sdist first and then the wheel from it, not
       # both from the source tree, so what is checked below is what a
-      # user installing from source would get, and what a rehearsal
-      # ships is built from the tree the step above just re-locked.
-      # That the sdist is complete in the first place is check-sdist's
-      # job, a pre-commit hook, gated by the lint workflow
+      # user installing from source would get. That the sdist is complete
+      # in the first place is check-sdist's job, a pre-commit hook, gated
+      # by the lint workflow
       - name: Build the distribution files
+        if: ${{ !inputs.use-signed-dist }}
         run: uv build
       # the member metadata of the sdist, rewritten to the epoch above
       # so that a rebuild of this commit answers with these bytes
       # whatever backend it runs. --no-project, so this runs on the
       # interpreter uv already fetched and installs nothing into the
-      # tree it is about to publish
+      # tree it is about to check
       - name: Make the sdist's determinism this tree's
+        if: ${{ !inputs.use-signed-dist }}
         run: |
           uv run --no-project --python 3.14 \
             .github/scripts/normalize_sdist.py dist/
@@ -475,6 +449,7 @@ jobs:
       # served from `main`. It goes under a `path:` and after the build, so
       # it is not among the files `uv build` packed
       - name: Check out the script that writes the bill of materials
+        if: ${{ !inputs.use-signed-dist }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: btclib-org/.github
@@ -482,39 +457,30 @@ jobs:
           path: btclib-org-github
           persist-credentials: false
           sparse-checkout: .github/scripts
-      # a CycloneDX bill of materials naming the distribution, its
-      # licence and every dependency the wheel's own metadata declares
-      # -- what an attestation vouches for the bytes of and says nothing
-      # about the contents of. After the sdist normalizer, whose rewrite
-      # changes the digest this script records into the document
       - name: Write the bill of materials
+        if: ${{ !inputs.use-signed-dist }}
         run: |
           uv run --no-project --python 3.14 \
             btclib-org-github/.github/scripts/generate_sbom.py dist/ sbom/
       - name: Checksum the distribution files
+        if: ${{ !inputs.use-signed-dist }}
         run: sha256sum dist/* sbom/*
-      # before anything is installed, and that ordering is the point: a
-      # step below runs third-party code -- twine, check-wheel-contents
-      # and pyroma come from a group uv installs, and a `.pth` file in a
-      # dependency executes at interpreter startup, before the first
-      # import -- while dist/ is a writable directory on the same
-      # runner. Uploading first freezes what release.yml's publish jobs
-      # will download, so the worst a compromised dependency can do here
-      # is fail this job, which stops them from ever seeing what it built
+      # before anything is installed: a step below runs third-party code, so
+      # the worst a compromised dependency can do here is fail this job
       - name: Upload the distribution files
+        if: ${{ !inputs.use-signed-dist }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dist
           path: dist/
       - name: Upload the bill of materials
+        if: ${{ !inputs.use-signed-dist }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sbom
           path: sbom/
       # the same validation PyPI applies on upload: broken metadata, or a
-      # README that does not render, cannot be fixed by reuploading.
-      # After the upload above rather than before it, for the reason
-      # given there
+      # README that does not render, cannot be fixed by reuploading
       - name: Check the metadata and the long description
         run: uv run --locked --only-group check twine check --strict dist/*
       # what twine does not look at: where the files land once
@@ -546,10 +512,7 @@ jobs:
       # imports unconditionally, so no floor this table could declare
       # would let an ordinary install resolve, and the fuller form below
       # would have failed on every run for a reason no floor bump here
-      # could fix. #381's own "Done when" is what this step now clears.
-      # After the upload too, for the reason its own comment gives:
-      # installing a dependency executes its code, and a compromised one
-      # must not reach a `dist/` that still has to be handed on
+      # could fix. #381's own "Done when" is what this step now clears
       - name: Smoke-test the wheel, installed on its own
         run: |
           cd "$RUNNER_TEMP"

@@ -354,7 +354,9 @@ mapping, or a quoted key or value — is outside that answer.
 `release.yml` takes `contents: write` on `github-release`, which is the
 one token in this repository that writes to it, and `id-token: write` on
 `publish-pypi` and `publish-testpypi` for the OIDC token each index
-trusts, with `attestations: write` beside it on `attest`.
+trusts. `build`, the job that calls `reusable-build.yml`, takes
+`id-token: write` and `attestations: write` for the callee's `attest`
+job.
 `claude-review.yml` takes `pull-requests: write` to post a comment and
 `id-token: write` for the token the action mints at startup, on the
 `claude` job that calls `btclib-org/.github`'s

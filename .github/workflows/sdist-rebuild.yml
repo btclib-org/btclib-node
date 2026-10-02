@@ -4,9 +4,10 @@ name: sdist-rebuild
 # the sentinel on what the attestation vouches for: the latest release's
 # tag, rebuilt the way RELEASING.md's *Rebuild a release from its tag*
 # rebuilds it, and `gh attestation verify` over the rebuilt sdist, which
-# passes only where its digest is one `reusable-attest.yml` signed --
-# this tree's `release.yml` `attest` job calls it, and an attestation
-# made inside a called workflow names the callee as its signer (issue
+# passes only where its digest is one btclib-org/.github's
+# `reusable-build.yml` signed (`reusable-attest.yml` for a release made
+# before this tree's `release.yml` called it) -- an attestation made
+# inside a called workflow names the callee as its signer (issue
 # btclib-org/.github#1311).
 #
 # The release lookup, the checkout, the build, the normalizer and the

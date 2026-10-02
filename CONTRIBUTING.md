@@ -443,10 +443,11 @@ same form, applied to the file rather than to a running process.
 
 ### Building the distribution and checking it
 
-`test.yml`'s `dist` job builds the sdist and the wheel and reads them
-with the `check` dependency group, and `release.yml`'s publish jobs
-download what that job built rather than building again. Running the
-same commands here answers before a pull request does.
+`test.yml`'s `dist` job reads the sdist and the wheel with the `check`
+dependency group. A pull request builds its own files there; on a
+release the job reads the ones `reusable-build.yml` built and signed,
+which `release.yml`'s publish jobs download. Running the same commands
+here answers before a pull request does.
 
 ```shell
 export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)

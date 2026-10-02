@@ -125,6 +125,11 @@ on release day.
   category's lines** (closes #1322). A start with `-debug=rpc` no longer
   logs the peer lines; `-debug`, `-debug=1` or `-debug=all` still logs
   every one, and `-debugexclude=<category>` drops one (closes #1609).
+- **Verifying a release's attestation names a new signer and the tag.**
+  `gh attestation verify` takes
+  `--signer-workflow btclib-org/.github/.github/workflows/reusable-build.yml@refs/heads/main`
+  and `--source-ref refs/tags/v<version>`; SECURITY.md names the signer of
+  an earlier release.
 
 ## v2026.9.24
 
