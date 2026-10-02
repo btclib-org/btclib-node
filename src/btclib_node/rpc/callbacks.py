@@ -80,6 +80,12 @@ from btclib_node.rpc.mining import (
     generate_to_address,
     get_block_template,
 )
+from btclib_node.rpc.signing import (
+    combine_raw_transaction,
+    sign_message_with_privkey,
+    sign_raw_transaction_with_key,
+    verify_message,
+)
 from btclib_node.rpc.solver import solver
 
 if TYPE_CHECKING:
@@ -3936,6 +3942,10 @@ callbacks = {
     "decoderawtransaction": decode_raw_transaction,
     "testmempoolaccept": test_mempool_accept,
     "sendrawtransaction": send_raw_transaction,
+    "signmessagewithprivkey": sign_message_with_privkey,
+    "verifymessage": verify_message,
+    "signrawtransactionwithkey": sign_raw_transaction_with_key,
+    "combinerawtransaction": combine_raw_transaction,
     "ping": ping,
     "stop": stop,
     "help": help_rpc,
@@ -3988,6 +3998,10 @@ arg_names: dict[str, tuple[str, ...]] = {
     "decoderawtransaction": ("hexstring", "iswitness"),
     "testmempoolaccept": ("rawtxs", "maxfeerate"),
     "sendrawtransaction": ("hexstring", "maxfeerate", "maxburnamount"),
+    "signmessagewithprivkey": ("privkey", "message"),
+    "verifymessage": ("address", "signature", "message"),
+    "signrawtransactionwithkey": ("hexstring", "privkeys", "prevtxs", "sighashtype"),
+    "combinerawtransaction": ("txs",),
     "ping": (),
     "stop": ("wait",),
     "help": ("command",),

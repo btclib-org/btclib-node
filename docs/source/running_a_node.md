@@ -190,6 +190,8 @@ Each mirrors the Core method of the same name: `getbestblockhash`,
 `clearbanned`, `getmempoolinfo`, `getmempoolentry`, `getrawmempool`,
 `getrawtransaction`, `gettxout`, `gettxoutsetinfo`,
 `decoderawtransaction`, `testmempoolaccept`, `sendrawtransaction`,
+`signrawtransactionwithkey`, `combinerawtransaction`,
+`signmessagewithprivkey`, `verifymessage`,
 `ping`, `getrpcinfo`, `stop`, `help`. Core's own hidden commands --
 `addconnection`, `generatetoaddress` and `generateblock` among them --
 are left off this list the same way `bitcoin-cli help`'s bare listing

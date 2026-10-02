@@ -1863,6 +1863,18 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
   btclib-org/.github#1527): *The review* says a local review of a named
   sha by a reviewer other than the author stands in for it.
 
+### `signmessagewithprivkey` and `verifymessage` are served
+
+- **`signmessagewithprivkey` signs a message with a WIF key and
+  `verifymessage` checks it against a P2PKH address, as Core's do**
+  (closes #1538).
+
+### `signrawtransactionwithkey` and `combinerawtransaction` are served
+
+- **`signrawtransactionwithkey` signs the inputs its keys unlock and
+  `combinerawtransaction` merges copies of one transaction, as Core's do**
+  (closes #1400).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
