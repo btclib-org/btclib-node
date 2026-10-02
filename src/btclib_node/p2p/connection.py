@@ -1437,9 +1437,12 @@ class Connection:
         two passes -- what the size on this queue's own items is for,
         argued beside `consumed` below. btclib-org/btclib-node#482
 
-        An item of `messages` carries a fifth element, the time it was
-        read off the socket, for `callbacks.pong`
-        (`P2pManager.messages`'s own comment).
+        A fifth element is the time it was read off the socket, for
+        `callbacks.pong` (`P2pManager.messages`'s own comment).
+        A handshake command goes to `handshake_messages`, and so does
+        anything else read while the connection is still `Open`, so that
+        no message overtakes the `verack` that precedes it.
+        btclib-org/btclib-node#1657
 
         Core's `ReceiveMsgBytes` (`src/net.cpp`, at
         bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the transport refusing
@@ -1474,17 +1477,28 @@ class Connection:
                 received = self.last_receive = time.time()
                 consumed += message.size
                 self._count_received(message.command, message.size)
-                if message.command in handshake_callbacks:
-                    self.manager.handshake_messages.append(
-                        (message.command, message.payload, self.id, message.size)
-                    )
-                    continue
-                # Every message to the back, `ping` and `pong` included: Core
-                # splices them onto the end of `m_msg_process_queue`
+                # `handshake_messages` is drained whole ahead of
+                # `messages`, so what a connection sends while still `Open`
+                # is queued there behind its handshake commands, so none
+                # overtakes its `verack`. Two messages after the `verack`
+                # can swap, once per connection, in the window between
+                # `status` being read here and set on `Node`'s thread:
+                # not worth a lock.
+                # btclib-org/btclib-node#1657
+                #
+                # Every other message to the back of `messages`, `ping` and
+                # `pong` included: Core splices them onto the end of
+                # `m_msg_process_queue`
                 # (`CNode::MarkReceivedMsgsForProcessing`), so a peer's
                 # `pong` follows the answer to what it sent before the
                 # `ping`. btclib-org/btclib-node#1410
-                self.manager.messages.append(
+                queue = (
+                    self.manager.handshake_messages
+                    if message.command in handshake_callbacks
+                    or self.status == P2pConnStatus.Open
+                    else self.manager.messages
+                )
+                queue.append(
                     (
                         message.command,
                         message.payload,

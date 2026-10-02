@@ -124,7 +124,7 @@ def test_a_handshake_message_reaches_its_callback(
 
     monkeypatch.setitem(handshake_callbacks, "verack", a_callback)
     node, stopped = make_node(
-        "handshake_messages", ("verack", b"", 0, 1), status=P2pConnStatus.Open
+        "handshake_messages", ("verack", b"", 0, 1, 0.0), status=P2pConnStatus.Open
     )
     handle_p2p_handshake(node)
     assert seen == [b""]
@@ -147,7 +147,7 @@ def test_a_feeler_past_its_version_is_read_no_further(
         handshake_callbacks, "verack", lambda node, msg, conn: seen.append("verack")
     )
     node, stopped = make_node(
-        "handshake_messages", ("verack", b"", 0, 1), status=P2pConnStatus.Open
+        "handshake_messages", ("verack", b"", 0, 1, 0.0), status=P2pConnStatus.Open
     )
     conn = node.p2p_manager.connections[0]
     conn.feeler = True
@@ -168,7 +168,7 @@ def test_a_handshake_message_on_a_closed_connection_is_dropped() -> None:
     a second `stop`.
     """
     node, stopped = make_node(
-        "handshake_messages", ("verack", b"", 0, 1), status=P2pConnStatus.Closed
+        "handshake_messages", ("verack", b"", 0, 1, 0.0), status=P2pConnStatus.Closed
     )
     handle_p2p_handshake(node)
     assert not stopped
@@ -189,7 +189,7 @@ def test_a_handshake_message_on_a_connected_one_discourages_nobody(
     without discouraging it.
     """
     node, stopped = make_node(
-        "handshake_messages", (command, b"", 0, 1), status=P2pConnStatus.Connected
+        "handshake_messages", (command, b"", 0, 1, 0.0), status=P2pConnStatus.Connected
     )
     handle_p2p_handshake(node)
     assert stopped == ([True] if dropped else [])
@@ -210,7 +210,7 @@ def test_a_handshake_callback_that_raises_keeps_the_peer(
 
     monkeypatch.setitem(handshake_callbacks, "verack", boom)
     node, stopped = make_node(
-        "handshake_messages", ("verack", b"", 0, 1), status=P2pConnStatus.Open
+        "handshake_messages", ("verack", b"", 0, 1, 0.0), status=P2pConnStatus.Open
     )
     handle_p2p_handshake(node)
     assert stopped == []
@@ -231,7 +231,7 @@ def test_a_handshake_callback_that_raises_a_btclib_exception_costs_the_peer(
 
     monkeypatch.setitem(handshake_callbacks, "verack", boom)
     node, stopped = make_node(
-        "handshake_messages", ("verack", b"", 0, 1), status=P2pConnStatus.Open
+        "handshake_messages", ("verack", b"", 0, 1, 0.0), status=P2pConnStatus.Open
     )
     handle_p2p_handshake(node)
     assert stopped == [True]
@@ -247,7 +247,7 @@ def test_a_handshake_message_for_a_connection_that_is_gone_is_dropped() -> None:
     """
     node, stopped = make_node(
         "handshake_messages",
-        ("verack", b"", 7, 1),
+        ("verack", b"", 7, 1, 0.0),
         status=P2pConnStatus.Open,
         present=False,
     )
@@ -272,7 +272,7 @@ def test_a_handshake_message_reaches_a_connection_still_pending(
     monkeypatch.setitem(handshake_callbacks, "verack", a_callback)
     node, stopped = make_node(
         "handshake_messages",
-        ("verack", b"", 0, 1),
+        ("verack", b"", 0, 1, 0.0),
         status=P2pConnStatus.Open,
         pending=True,
     )
@@ -295,7 +295,7 @@ def test_handle_p2p_handshake_weighs_the_message_off_the_connections_own_queued_
     monkeypatch.setitem(handshake_callbacks, "verack", lambda *_a: None)
     node, stopped = make_node(
         "handshake_messages",
-        ("verack", b"", 0, 1_000),
+        ("verack", b"", 0, 1_000, 0.0),
         status=P2pConnStatus.Open,
         queued_recv_bytes=1_500,
     )
@@ -315,7 +315,7 @@ def test_handle_p2p_handshake_resumes_a_connection_back_under_the_bound(
     monkeypatch.setitem(handshake_callbacks, "verack", lambda *_a: None)
     node, stopped = make_node(
         "handshake_messages",
-        ("verack", b"", 0, 1),
+        ("verack", b"", 0, 1, 0.0),
         status=P2pConnStatus.Open,
         queued_recv_bytes=MAX_QUEUED_RECV_BYTES + 1,
     )
@@ -337,7 +337,7 @@ def test_handle_p2p_handshake_does_not_resume_a_connection_still_over_the_bound(
     monkeypatch.setitem(handshake_callbacks, "verack", lambda *_a: None)
     node, stopped = make_node(
         "handshake_messages",
-        ("verack", b"", 0, 1),
+        ("verack", b"", 0, 1, 0.0),
         status=P2pConnStatus.Open,
         queued_recv_bytes=MAX_QUEUED_RECV_BYTES + 2,
     )
@@ -414,6 +414,34 @@ def test_a_message_before_the_handshake_is_over_is_ignored(
     assert conn.queued_recv_bytes == 500
 
 
+def test_a_message_queued_behind_the_handshake_ones_is_dispatched_in_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`handle_p2p_handshake` runs a non-handshake item as `handle_p2p` does.
+
+    A `ping` on `handshake_messages` is ignored on an `Open` connection and
+    reaches its callback, with its receive time, once `Connected`.
+    btclib-org/btclib-node#1657
+    """
+    seen: list[tuple[bytes, float]] = []
+
+    def a_callback(node: Node, msg: bytes, conn: Connection) -> None:
+        seen.append((msg, conn.time_received))
+
+    monkeypatch.setitem(callbacks, "ping", a_callback)
+    for status, expected in (
+        (P2pConnStatus.Open, []),
+        (P2pConnStatus.Connected, [(b"x", 3.5)]),
+    ):
+        seen.clear()
+        node, stopped = make_node(
+            "handshake_messages", ("ping", b"x", 0, 1, 3.5), status=status
+        )
+        handle_p2p_handshake(node)
+        assert seen == expected
+        assert not stopped
+
+
 @pytest.mark.parametrize("versioned", [True, False])
 def test_a_sendheaders_ahead_of_verack_is_recorded_once_version_is_in(
     versioned: bool,  # noqa: FBT001
@@ -422,10 +450,10 @@ def test_a_sendheaders_ahead_of_verack_is_recorded_once_version_is_in(
 
     Core's `ProcessMessage` sets `m_prefers_headers` for a `sendheaders`
     once `version` is in, before the handshake completes, and ignores one
-    ahead of `version`. Reachable here: `verack` is queued on
-    `handshake_messages` and `sendheaders` on `messages`, and one read can
-    frame both between `Node._drain_message_queues`' two drains, so the
-    `sendheaders` is handled while the connection is still `Open`.
+    ahead of `version`. Reachable here: a `sendheaders` read
+    while the connection is still `Open` is queued behind its `version`
+    on `handshake_messages`, and handled before the `verack` that follows
+    it.
     """
     node, stopped = make_node(
         "messages", ("sendheaders", b"", 0, 1, 0.0), status=P2pConnStatus.Open
@@ -564,7 +592,7 @@ def test_a_message_that_does_not_parse_costs_the_peer_nothing(
     )
     if handshake:
         monkeypatch.setitem(handshake_callbacks, "version", boom)
-        item: tuple[Any, ...] = ("version", b"", 0, 1)
+        item: tuple[Any, ...] = ("version", b"", 0, 1, 0.0)
         node, stopped = make_node(
             "handshake_messages", item, status=P2pConnStatus.Open, logger=logger
         )
@@ -1092,7 +1120,7 @@ def test_handle_p2p_handshake_log_line_distinguishes_the_verdict(
         monkeypatch.setitem(handshake_callbacks, "verack", raiser)
         node, _stopped = make_node(
             "handshake_messages",
-            ("verack", b"", 0, 1),
+            ("verack", b"", 0, 1, 0.0),
             status=P2pConnStatus.Open,
             logger=logger,
         )

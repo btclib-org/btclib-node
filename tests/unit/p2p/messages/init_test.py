@@ -126,7 +126,7 @@ def make_connection() -> Connection:
     conn.manager = cast("P2pManager", manager)
     conn.node = manager.node
     conn.transport = V1Transport(MAGIC)
-    conn.status = P2pConnStatus.Open
+    conn.status = P2pConnStatus.Connected
     conn.last_receive = 0
     conn._ping_lock = threading.Lock()
     # a peer past BIP0031_VERSION, which `send_ping` pings with a nonce
@@ -179,6 +179,30 @@ def test_several_messages_in_one_read() -> None:
     conn = make_connection()
     conn.parse_messages(framed(Ping(1)) + framed(Mempool()) + framed(Ping(2)))
     assert [item[0] for item in conn.manager.messages] == ["ping", "mempool", "ping"]
+
+
+def test_a_message_read_while_open_follows_the_handshake_ones() -> None:
+    """Everything read before `verack` is processed shares `handshake_messages`.
+
+    A `verack`, a `ping` and a `verack` keep their order, as Core
+    processes them, and a connection already `Connected` queues the
+    `ping` on `messages`.
+    btclib-org/btclib-node#1657
+    """
+    wire = framed(Ping(1))
+    conn = make_connection()
+    conn.status = P2pConnStatus.Open
+    conn.parse_messages(framed(Verack()) + wire + framed(Verack()))
+    assert [item[0] for item in conn.manager.handshake_messages] == [
+        "verack",
+        "ping",
+        "verack",
+    ]
+    assert not conn.manager.messages
+    conn = make_connection()
+    conn.parse_messages(wire)
+    assert [item[0] for item in conn.manager.messages] == ["ping"]
+    assert not conn.manager.handshake_messages
 
 
 def test_a_handshake_message_goes_to_its_own_queue() -> None:
