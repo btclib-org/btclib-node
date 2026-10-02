@@ -22,7 +22,14 @@ from btclib.consensus import MAX_BLOCK_WEIGHT
 from btclib.exceptions import BTClibValueError
 from btclib.fee import FeeRate, fee_from_vsize
 from btclib.p2p.compact_blocks import CmpctBlock
-from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
+from btclib.p2p.inventory import (
+    GetBlocks,
+    Headers,
+    Inv,
+    Inventory,
+    InventoryType,
+)
+from btclib.p2p.limits import PROTOCOL_VERSION
 from btclib.script import script
 from btclib.script.engine.flags import ScriptFlag
 from btclib.script.script_pub_key import ScriptPubKey
@@ -64,6 +71,7 @@ from btclib_node.main import (
 )
 from btclib_node.mempool import format_money
 from btclib_node.p2p.block_availability import BlockAvailability
+from btclib_node.p2p.callbacks import getblocks
 from btclib_node.p2p.compact_block import MostRecentBlock, compact_block
 from tests import (
     anyone_can_spend,
@@ -151,6 +159,29 @@ def test_chain(node: Node) -> None:
     for _ in range(len(chain)):
         update_chain(node)
     assert len(block_index.active_chain) == length + 1
+
+
+def test_a_getblocks_activates_the_best_chain_first(node: Node) -> None:
+    """A block downloaded and not yet connected is in the `inv` it asks for.
+
+    `callbacks.block` announces a block from `new_pow_valid_block`, and
+    `update_chain` connects it only after the loop's p2p share, so a
+    `getblocks` processed between the two would otherwise be answered
+    without it, as Core's `ActivateBestChain` call prevents.
+    """
+    chain = generate_random_chain(2, RegTest().genesis.hash)
+    block_index = node.chainstate.block_index
+    block_index.add_headers([block.header for block in chain])
+    for block in chain:
+        block_index.set_downloaded(block.header.hash)
+        node.block_db.add_block(block)
+    assert len(block_index.active_chain) == 1
+    sent: list[Any] = []
+    peer = SimpleNamespace(send=sent.append, stop=lambda: None, continuation_block=None)
+    request = GetBlocks(PROTOCOL_VERSION, [RegTest().genesis.hash]).serialize()
+    getblocks(node, request, cast("Connection", peer))
+    (answer,) = sent
+    assert [item.hash for item in answer.items] == [b.header.hash for b in chain]
 
 
 def spend(prevout_tx: Tx, value: int, script_sig: bytes | None = None) -> Tx:

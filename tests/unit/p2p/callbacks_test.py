@@ -60,6 +60,7 @@ from btclib.p2p.data import BlockPayload as BlockMsg
 from btclib.p2p.data import TxPayload as TxMsg
 from btclib.p2p.handshake import Verack, Version
 from btclib.p2p.inventory import (
+    GetBlocks,
     GetData,
     GetHeaders,
     Headers,
@@ -118,6 +119,7 @@ from btclib_node.p2p.callbacks import (
     get_cfheaders,
     get_cfilters,
     getaddr,
+    getblocks,
     getblocktxn,
     getdata,
     getheaders,
@@ -624,6 +626,7 @@ def a_peer(**attributes: Any) -> Any:
         download_queue=[],
         tx_requested={},
         ping_sent=0,
+        continuation_block=None,
         ping_nonce=0,
         latency=0,
         # what `handle_p2p` sets before each callback, from the queue
@@ -6013,6 +6016,174 @@ def test_a_getheaders_locator_past_the_bound_drops_the_peer(
     getheaders(node, payload, peer)
     assert bool(peer.stopped) is dropped
     assert bool(peer.sent) is not dropped
+
+
+def ask_getblocks(
+    node: Any, locator: list[bytes], stop: bytes = _NO_STOP
+) -> tuple[list[bytes], Any]:
+    """Send `getblocks`, returning the block hashes of the `inv` answered."""
+    peer = a_peer()
+    getblocks(node, GetBlocks(PROTOCOL_VERSION, locator, stop).serialize(), peer)
+    hashes = []
+    for sent in peer.sent:
+        assert isinstance(sent, Inv)
+        assert {item.type_code for item in sent.items} == {InventoryType.MSG_BLOCK}
+        hashes += [item.hash for item in sent.items]
+    return hashes, peer
+
+
+@pytest.mark.parametrize(
+    ("count", "dropped"), [(MAX_LOCATOR_SZ + 1, True), (MAX_LOCATOR_SZ, False)]
+)
+def test_a_getblocks_locator_past_the_bound_drops_the_peer(
+    an_index: BlockIndex, count: int, *, dropped: bool
+) -> None:
+    """ISS 1385: Core disconnects for a locator past `MAX_LOCATOR_SZ`.
+
+    The bound itself is the control, and is answered.
+    """
+    activated(an_index, generate_random_header_chain(3, _GENESIS))
+    node = a_data_node(block_index=an_index)
+    peer = a_peer()
+    payload = (
+        PROTOCOL_VERSION.to_bytes(4, "little")
+        + var_int.serialize(count)
+        + b"\x11" * 32 * count
+        + b"\x00" * 32
+    )
+    getblocks(node, payload, peer)
+    assert bool(peer.stopped) is dropped
+    assert bool(peer.sent) is not dropped
+
+
+def test_a_getblocks_is_dispatched_to_its_callback() -> None:
+    """ISS 1385: `handle_p2p` runs only what the `callbacks` table names."""
+    assert cb.callbacks["getblocks"] is getblocks
+
+
+def test_a_getblocks_whose_activation_fails_stops_the_node(
+    an_index: BlockIndex, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1385: a failure activating the best chain stops `Node`, unswallowed.
+
+    The shape `rpc.callbacks._validate_extending_tip` gives its
+    `update_chain` call: `terminate_flag` is set first, then the error is
+    raised.
+    """
+    activated(an_index, generate_random_header_chain(3, _GENESIS))
+    node = a_data_node(block_index=an_index)
+    node.terminate_flag = threading.Event()
+
+    def boom(_node: object) -> None:
+        err_msg = "boom"
+        raise OSError(err_msg)
+
+    monkeypatch.setattr(cb, "activate_best_chain", boom)
+
+    with pytest.raises(OSError, match="boom"):
+        ask_getblocks(node, [_GENESIS])
+    assert node.terminate_flag.is_set()
+
+
+def test_a_getblocks_is_answered_with_an_inv_after_the_fork(
+    an_index: BlockIndex,
+) -> None:
+    """ISS 1385: the active chain after the locator's block, to the tip."""
+    active = activated(an_index, generate_random_header_chain(5, _GENESIS))
+    node = a_data_node(block_index=an_index)
+    assert ask_getblocks(node, [_GENESIS])[0] == active
+    assert ask_getblocks(node, [b"\x11" * 32, active[1]])[0] == active[2:]
+    hashes, peer = ask_getblocks(node, [active[-1]])
+    assert hashes == []
+    assert not peer.sent
+
+
+def test_a_getblocks_stops_before_its_hash_stop(an_index: BlockIndex) -> None:
+    """ISS 1385: the stop block itself is not sent, as in Core."""
+    active = activated(an_index, generate_random_header_chain(5, _GENESIS))
+    node = a_data_node(block_index=an_index)
+    assert ask_getblocks(node, [_GENESIS], active[3])[0] == active[:3]
+
+
+def test_a_getblocks_cut_at_the_limit_is_continued_by_the_getdata_of_its_last(
+    an_index: BlockIndex,
+) -> None:
+    """ISS 1385: 500 blocks, then an `inv` of the tip after the last."""
+    active = activated(an_index, generate_random_header_chain(502, _GENESIS))
+    node = a_data_node(
+        block_index=an_index, block_db=SimpleNamespace(get_block=lambda h: a_block())
+    )
+    hashes, peer = ask_getblocks(node, [_GENESIS])
+    assert hashes == active[:500]
+    assert peer.continuation_block == active[499]
+
+    peer.sent.clear()
+    getdata(
+        node, GetData([Inventory(InventoryType.MSG_BLOCK, active[0])]).serialize(), peer
+    )
+    assert [type(sent) for sent in peer.sent] == [BlockMsg]
+    peer.sent.clear()
+    getdata(
+        node,
+        GetData([Inventory(InventoryType.MSG_BLOCK, active[499])]).serialize(),
+        peer,
+    )
+    assert [type(sent) for sent in peer.sent] == [BlockMsg, Inv]
+    assert peer.sent[1].items == (Inventory(InventoryType.MSG_BLOCK, active[-1]),)
+    assert peer.continuation_block is None
+
+
+def test_a_block_with_no_data_gets_no_continuation_inv(an_index: BlockIndex) -> None:
+    """ISS 1385: a block with no data returns before the continuation."""
+    active = activated(an_index, generate_random_header_chain(502, _GENESIS))
+    node = a_data_node(
+        block_index=an_index, block_db=SimpleNamespace(get_block=lambda h: None)
+    )
+    _, peer = ask_getblocks(node, [_GENESIS])
+    peer.sent.clear()
+    getdata(
+        node,
+        GetData([Inventory(InventoryType.MSG_BLOCK, active[499])]).serialize(),
+        peer,
+    )
+    assert not peer.sent
+    assert peer.continuation_block == active[499]
+
+
+def test_a_getblocks_within_the_limit_sets_no_continuation(
+    an_index: BlockIndex,
+) -> None:
+    """ISS 1385: only an answer cut at 500 blocks leaves the peer's mark."""
+    activated(an_index, generate_random_header_chain(500, _GENESIS))
+    node = a_data_node(block_index=an_index)
+    hashes, peer = ask_getblocks(node, [_GENESIS])
+    assert peer.continuation_block == hashes[-1]
+    hashes, peer = ask_getblocks(node, [hashes[0]])
+    assert len(hashes) == 499
+    assert peer.continuation_block is None
+
+
+def test_a_pruned_node_stops_a_getblocks_at_a_block_it_cannot_keep(
+    an_index: BlockIndex,
+) -> None:
+    """ISS 1385: no block without data, none deeper than Core's likely window.
+
+    `MIN_BLOCKS_TO_KEEP` less an hour of regtest blocks (6) is 282 behind
+    the tip of 300; heights 18 and below are not announced.
+    """
+    active = activated(an_index, generate_random_header_chain(300, _GENESIS))
+    for block_hash in active:
+        an_index.set_downloaded(block_hash)
+    node = a_data_node(block_index=an_index)
+    assert ask_getblocks(node, [_GENESIS])[0] == active
+
+    node.config.pruned = True
+    assert ask_getblocks(node, [_GENESIS])[0] == []
+    assert ask_getblocks(node, [active[16]])[0] == []
+    assert ask_getblocks(node, [active[17]])[0] == active[18:]
+
+    an_index.set_downloaded(active[-3], downloaded=False)
+    assert ask_getblocks(node, [active[-10]])[0] == active[-9:-3]
 
 
 def test_a_block_that_does_not_parse_is_only_a_parse_failure() -> None:

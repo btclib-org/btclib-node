@@ -175,16 +175,14 @@ def test_a_queued_message_carries_the_time_it_was_read() -> None:
 def test_several_messages_in_one_read() -> None:
     """One read carrying several messages queues every one of them.
 
-    `ping`/`pong` are pushed to the front of `messages` rather than the
-    back, so a `ping` arriving between two other messages still ends up
-    ahead of the one that arrived before it.
+    In the order received, `ping` included, as Core processes a peer's
+    messages (ISS 1410).
     """
     conn = make_connection()
     conn.buffer = bytearray(framed(Ping(1)) + framed(Mempool()) + framed(Ping(2)))
     conn.parse_messages()
     assert not conn.buffer
-    # ping jumps the queue, mempool does not
-    assert [item[0] for item in conn.manager.messages] == ["ping", "ping", "mempool"]
+    assert [item[0] for item in conn.manager.messages] == ["ping", "mempool", "ping"]
 
 
 def test_a_handshake_message_goes_to_its_own_queue() -> None:

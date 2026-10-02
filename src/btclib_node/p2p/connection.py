@@ -601,6 +601,13 @@ class Connection:
     # thread; a class default for the reason `time_received` gives.
     headers_sync: HeadersSyncState | None = None
 
+    # Core's `Peer::m_continuation_block`: the last block of a `getblocks`
+    # answer cut at its limit, whose `getdata` is answered with an `inv`
+    # of the tip. Written by `callbacks.getblocks` and read by
+    # `callbacks.getdata`, both on `Node`'s thread; a class default for
+    # the reason `time_received` gives.
+    continuation_block: bytes | None = None
+
     # Core's `CNodeState::m_chain_sync` (`p2p/chain_sync.py`), here for
     # the same reasons as `block_availability` above.
     @cached_property
@@ -1321,7 +1328,7 @@ class Connection:
 
         Leaves a trailing partial message in `buffer` for the next
         read, and routes each parsed one to `handshake_messages` or
-        `messages` -- `ping`/`pong` pushed to the front of the latter.
+        `messages`.
         Every item carries its own wire size alongside it, a fourth
         tuple element `handle_p2p` or `handle_p2p_handshake`
         (`p2p/main.py`) weighs back off `queued_recv_bytes` once it is
@@ -1402,11 +1409,14 @@ class Connection:
                         (message.command, message.payload, self.id, size)
                     )
                     continue
-                item = (message.command, message.payload, self.id, size, received)
-                if message.command in ("ping", "pong"):
-                    self.manager.messages.appendleft(item)
-                else:
-                    self.manager.messages.append(item)
+                # Every message to the back, `ping` and `pong` included: Core
+                # splices them onto the end of `m_msg_process_queue`
+                # (`CNode::MarkReceivedMsgsForProcessing`), so a peer's
+                # `pong` follows the answer to what it sent before the
+                # `ping`. btclib-org/btclib-node#1410
+                self.manager.messages.append(
+                    (message.command, message.payload, self.id, size, received)
+                )
         finally:
             # `queued_recv_bytes` first, ahead of `self.buffer` below: the
             # two are independent bookkeeping over the same call, and

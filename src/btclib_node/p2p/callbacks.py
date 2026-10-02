@@ -57,6 +57,7 @@ from btclib.p2p.data import BlockPayload as BlockMsg
 from btclib.p2p.data import TxPayload as TxMsg
 from btclib.p2p.handshake import Verack, Version
 from btclib.p2p.inventory import (
+    GetBlocks,
     GetData,
     GetHeaders,
     Headers,
@@ -95,6 +96,7 @@ from btclib_node.exceptions import (
     MissingPrevoutError,
 )
 from btclib_node.main import (
+    activate_best_chain,
     assert_valid_block,
     check_fork_warning_conditions,
     is_block_failed,
@@ -160,6 +162,7 @@ __all__ = [
     "get_cfheaders",
     "get_cfilters",
     "getaddr",
+    "getblocks",
     "getblocktxn",
     "getdata",
     "getheaders",
@@ -1702,6 +1705,12 @@ def _serve_getdata_item(
         )
         if block:
             conn.send(_block_answer(node, item, block))
+            # Core's `m_continuation_block`, right after the block and even
+            # where redundant; a block with no data returns before it
+            if item.hash == conn.continuation_block:
+                tip = node.chainstate.block_index.active_chain[-1]
+                conn.send(Inv([Inventory(InventoryType.MSG_BLOCK, tip)]))
+                conn.continuation_block = None
     # else: neither family, popped and otherwise ignored -- see the
     # comment beside _GETDATA_TX_TYPES above.
     return not_found_bytes
@@ -2243,6 +2252,67 @@ def getheaders(node: Node, msg: bytes, conn: Connection) -> None:
             [block_index.get_block_info(block_hash).header for block_hash in to_send]
         )
     )
+
+
+# Core's `nLimit` in the `GETBLOCKS` branch of `ProcessMessage`: how many
+# blocks one `getblocks` is answered with.
+_GETBLOCKS_LIMIT = 500
+
+
+def getblocks(node: Node, msg: bytes, conn: Connection) -> None:
+    """Answer a peer's `getblocks` with an `inv`, as Core does.
+
+    The `GETBLOCKS` branch of Core's `ProcessMessage`
+    (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag). A locator past `MAX_LOCATOR_SZ` drops the peer, undiscouraged.
+    Any other first activates the best chain, so that a block just
+    announced is on it, and is answered with the `MSG_BLOCK` hashes of the
+    active chain
+    after `_find_fork_in_global_index`'s block, up to `_GETBLOCKS_LIMIT`
+    of them and up to `hash_stop`, which is not sent. A pruned node also
+    stops at a block it holds no data for, or one so deep that a peer
+    could soon find it gone: `MIN_BLOCKS_TO_KEEP` less an hour's blocks
+    behind the tip. The last block sent at the limit
+    is the peer's `continuation_block`, which `_serve_getdata_item`
+    answers with an `inv` of the tip, for the peer's next `getblocks`.
+    Core sends the `inv` on its next `SendMessages`; here it is sent
+    at once, nothing else being queued ahead of it.
+    """
+    if _count_past(msg[:-_HASH_SIZE], MAX_LOCATOR_SZ, _HASH_SIZE, offset=4):
+        conn.stop()
+        return
+    request = GetBlocks.parse(msg)
+    # Core's `ActivateBestChain(a_recent_block)`: a block announced from
+    # `block` is connected only in `update_chain`, after this share of the
+    # loop, so without it the `inv` would leave out the block this node
+    # has just announced. A failure ends the node, as in `rpc.callbacks`.
+    try:
+        activate_best_chain(node)
+    except Exception:
+        node.terminate_flag.set()
+        raise
+    block_index = node.chainstate.block_index
+    active_chain = block_index.active_chain
+    fork = _find_fork_in_global_index(node, request.locator)
+    start = block_index.get_block_info(fork).index + 1
+    tip_height = len(active_chain) - 1
+    keep = MIN_BLOCKS_TO_KEEP - 3600 // node.chain.consensus.pow_target_spacing
+    inventory: list[Inventory] = []
+    for height in range(start, tip_height + 1):
+        block_hash = active_chain[height]
+        if block_hash == request.hash_stop:
+            break
+        if node.config.pruned and (
+            not block_index.get_block_info(block_hash).downloaded
+            or height <= tip_height - keep
+        ):
+            break
+        inventory.append(Inventory(InventoryType.MSG_BLOCK, block_hash))
+        if len(inventory) == _GETBLOCKS_LIMIT:
+            conn.continuation_block = block_hash
+            break
+    if inventory:
+        conn.send(Inv(inventory))
 
 
 def _height_on_the_active_chain(node: Node, block_hash: bytes) -> int | None:
@@ -2790,6 +2860,7 @@ callbacks = {
     "block": block,
     "getdata": getdata,
     "getblocktxn": getblocktxn,
+    "getblocks": getblocks,
     "getheaders": getheaders,
     "headers": headers,
     "addr": addr,

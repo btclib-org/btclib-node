@@ -96,6 +96,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "MempoolAcceptance",
+    "activate_best_chain",
     "assert_valid_block",
     "check_fork_warning_conditions",
     "contextual_check_block",
@@ -1520,12 +1521,13 @@ def update_chain(node: Node) -> None:
         settle_at_no_candidate(node)
 
 
-# invalidate_chain, reconsider_chain and precious_chain's own last step: Core's
-# `ActivateBestChain` (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7,
-# the v31.1 tag) loops internally until the active tip is the best one
+# invalidate_chain, reconsider_chain, precious_chain and callbacks.getblocks
+# call this as Core calls `ActivateBestChain`
+# (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+# `ActivateBestChain` loops internally until the active tip is the best one
 # `setBlockIndexCandidates` holds; this node's own `update_chain` only
-# ever takes one step -- one candidate, its whole fork -- per call, so an
-# operator command that means to settle the chain fully loops it here
+# ever takes one step -- one candidate, its whole fork -- per call, so a
+# caller that means to settle the chain fully loops it here
 # rather than leaving a still-available better candidate for `Node`'s own
 # next pass to pick up. Bounded by the tip actually moving rather than by
 # a call count: each successful step moves the tip to a block that
@@ -1534,7 +1536,8 @@ def update_chain(node: Node) -> None:
 # a step that finds nothing ready -- `_ready_fork` answering `None`, a
 # candidate not fully downloaded among them -- leaves the tip exactly
 # where it was, which is what ends the loop.
-def _activate_best_chain(node: Node) -> None:
+def activate_best_chain(node: Node) -> None:
+    """Run `update_chain` until the active tip stops moving."""
     block_index = node.chainstate.block_index
     while True:
         tip = block_index.active_chain[-1]
@@ -1660,7 +1663,7 @@ def invalidate_chain(node: Node, block_hash: bytes) -> None:
     # the disconnect is done and before `ActivateBestChain`
     check_fork_warning_conditions(node)
 
-    _activate_best_chain(node)
+    activate_best_chain(node)
 
 
 def reconsider_chain(node: Node, block_hash: bytes) -> None:
@@ -1674,7 +1677,7 @@ def reconsider_chain(node: Node, block_hash: bytes) -> None:
     folded into the one call here since this index carries no `m_best_header`
     pointer apart from `header_index` itself, and `reconsider` already
     rebuilds that the same way `invalidate` conditionally does.
-    `_activate_best_chain` is this tree's own `ActivateBestChain`, run
+    `activate_best_chain` is this tree's own `ActivateBestChain`, run
     unconditionally the way Core's own `ReconsiderBlock` runs it.
 
     A large-work-invalid-chain warning already raised is not cleared
@@ -1690,7 +1693,7 @@ def reconsider_chain(node: Node, block_hash: bytes) -> None:
     lookup failure). Reconsidering a `block_hash` this index knows but
     never marked invalid is a no-op the way Core's own loop is: nothing
     in `header_dict` carries the mark `reconsider`'s own filter looks
-    for, so nothing is cleared, and `_activate_best_chain` finds the tip
+    for, so nothing is cleared, and `activate_best_chain` finds the tip
     already best.
 
     `BlockStatus` carries no counterpart to Core's own separate
@@ -1711,7 +1714,7 @@ def reconsider_chain(node: Node, block_hash: bytes) -> None:
     # in practice, rpc.callbacks.reconsider_block having already refused
     # that call before this function is ever entered
     node.chainstate.block_index.reconsider(block_hash)
-    _activate_best_chain(node)
+    activate_best_chain(node)
 
 
 def precious_chain(node: Node, block_hash: bytes) -> None:
@@ -1719,13 +1722,13 @@ def precious_chain(node: Node, block_hash: bytes) -> None:
 
     Core's own `Chainstate::PreciousBlock` (`src/validation.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `BlockIndex.precious`
-    renumbers the block, and `_activate_best_chain` is the
+    renumbers the block, and `activate_best_chain` is the
     `ActivateBestChain` it ends with, skipped as in Core for a block with
     less work than the tip. `rpc.callbacks.precious_block` is the only
     caller, and has already refused a hash this index does not know.
     """
     if node.chainstate.block_index.precious(block_hash):
-        _activate_best_chain(node)
+        activate_best_chain(node)
 
 
 # Core's own `MAX_STANDARD_TX_SIGOPS_COST` and `DEFAULT_BYTES_PER_SIGOP`

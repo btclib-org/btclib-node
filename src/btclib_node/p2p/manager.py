@@ -639,7 +639,7 @@ class P2pManager(threading.Thread):
         # belongs to, is multiplexed onto this one thread's asyncio loop
         # -- and popped only from `Node`'s, through
         # `Node._drain_message_queues`. Unlocked on both ends:
-        # `deque.append`, `.appendleft` and `.popleft` are each wrapped
+        # `deque.append` and `.popleft` are each wrapped
         # in their own `Py_BEGIN_CRITICAL_SECTION`/
         # `Py_END_CRITICAL_SECTION` (`Modules/_collectionsmodule.c` and
         # its clinic-generated wrapper, at python/cpython@f54fd2ab6e),

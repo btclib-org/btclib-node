@@ -1846,6 +1846,17 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
 - **`localaddresses` lists each local address with its port and score, as
   Core's does** (closes #1647).
 
+### A `ping` is answered after the messages its peer sent before it, as in Core
+
+- **`parse_messages` queues `ping` and `pong` at the back like the rest**; they
+  went to the front, so a `pong` left before an earlier answer (closes #1410).
+
+### A `getblocks` is answered with an `inv`, as in Core
+
+- **`callbacks.getblocks` drops a locator past `MAX_LOCATOR_SZ` and sends an
+  `inv` of up to 500 blocks after the fork otherwise, with Core's pruned stop
+  and `m_continuation_block`**; it was dropped unanswered (closes #1385).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
