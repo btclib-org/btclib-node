@@ -472,6 +472,8 @@ class PortPool:
             self._offset = (self._offset + 1) % len(self.ports)
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
                 try:
+                    # every interface, as `P2pManager` binds: a port held
+                    # on any of them is not one a node can take
                     sock.bind(("", port))
                 except OSError:
                     continue

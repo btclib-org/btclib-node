@@ -5720,6 +5720,8 @@ def test_a_manager_that_cannot_bind_never_says_it_is_listening(
     `wait_until_listening` reports at once (btclib-org/btclib-node#1361).
     """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
+        # every interface: Windows lets `P2pManager`'s every-interface
+        # bind succeed beside a socket that holds only loopback
         taken.bind(("", 0))
         taken.listen()
         manager = a_manager(port=taken.getsockname()[1])
@@ -5751,6 +5753,8 @@ def test_a_manager_that_cannot_bind_stops_being_alive(
     """
     logged: list[str] = []
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
+        # every interface: Windows lets `P2pManager`'s every-interface
+        # bind succeed beside a socket that holds only loopback
         taken.bind(("", 0))
         taken.listen()
         port = taken.getsockname()[1]
@@ -6345,6 +6349,8 @@ def test_stop_does_not_raise_where_start_was_called_but_run_never_reached_run_fo
     the same caller shape #368's own test above builds.
     """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
+        # every interface: Windows lets `P2pManager`'s every-interface
+        # bind succeed beside a socket that holds only loopback
         taken.bind(("", 0))
         taken.listen()
         manager = a_manager(port=taken.getsockname()[1])
