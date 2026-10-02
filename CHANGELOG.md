@@ -1857,6 +1857,12 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
   `inv` of up to 500 blocks after the fork otherwise, with Core's pruned stop
   and `m_continuation_block`**; it was dropped unanswered (closes #1385).
 
+### While the bot review is off, `CONTRIBUTING.md` says what stands in for the ack
+
+- **There is no ack of record while `claude-review.yml` is off** (issue
+  btclib-org/.github#1527): *The review* says a local review of a named
+  sha by a reviewer other than the author stands in for it.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
