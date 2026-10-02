@@ -620,9 +620,9 @@ class P2pManager(threading.Thread):
         # given up. Guarded by `_connections_lock`; that method's
         # docstring says why the caps count them.
         self._reserved_outbound: Counter[str | None] = Counter()
-        # (command, payload, connection id, wire size), and for
-        # `messages` a receive time after that, below -- the size,
-        # `Connection.parse_messages`'s own addition since #462, is what
+        # (command, payload, connection id, wire size, receive time) --
+        # the size, `Connection.parse_messages`'s own addition since
+        # #462, is what
         # `handle_p2p`/`handle_p2p_handshake` (`p2p/main.py`) weigh back
         # off `queued_recv_bytes`, `MAX_QUEUED_RECV_BYTES`'s own comment
         # (`p2p/connection.py`) arguing why. `handshake_messages` is
@@ -658,9 +658,11 @@ class P2pManager(threading.Thread):
         # `ProcessMessage` takes as `time_received` and reads only in its
         # `pong` handling (`src/net_processing.cpp`,
         # at bitcoin/bitcoin@9be056a8a7), as only `callbacks.pong` reads it
-        # here. `handshake_messages` carries no `pong`, and no time.
+        # here. `handshake_messages` carries the same, for what a
+        # connection sends before its `verack` is processed
+        # (`Connection.parse_messages`).
         self.messages: deque[tuple[str, bytes, int, int, float]] = deque()
-        self.handshake_messages: deque[tuple[str, bytes, int, int]] = deque()
+        self.handshake_messages: deque[tuple[str, bytes, int, int, float]] = deque()
         # Every nonce `add_pending_outbound_nonce` (below) has recorded
         # for an outbound connection still short of its own `verack` --
         # `promote_connection` and `remove_connection` below each

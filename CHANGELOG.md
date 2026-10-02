@@ -1857,6 +1857,12 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
   `inv` of up to 500 blocks after the fork otherwise, with Core's pruned stop
   and `m_continuation_block`**; it was dropped unanswered (closes #1385).
 
+### A message sent before `verack` is ignored, as in Core
+
+- **`parse_messages` queues what an `Open` connection sends behind its
+  handshake commands**; a `ping` between `version` and `verack` was handled
+  after the `verack` and answered (closes #1657).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

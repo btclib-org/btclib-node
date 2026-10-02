@@ -69,6 +69,12 @@ def _drop(manager: P2pManager, conn: Connection, e: Exception) -> bool:
 def handle_p2p_handshake(node: Node) -> None:
     """Pop one queued handshake message and dispatch it, or drop the peer.
 
+    A message of another command is here too, queued behind the
+    handshake commands of a connection that was still `Open` when it was
+    read: it is dispatched as `handle_p2p` would, so a connection's
+    messages are handled in the order received, as Core does.
+    btclib-org/btclib-node#1657
+
     Once `verack` has promoted the connection, a second `version` or
     `verack` is ignored and a `wtxidrelay` or `sendaddrv2` drops the
     peer undiscouraged, as Core's `ProcessMessage` answers each
@@ -80,7 +86,9 @@ def handle_p2p_handshake(node: Node) -> None:
     below and for the same reason -- argued there.
     btclib-org/btclib-node#482
     """
-    msg_type, msg, conn_id, size = node.p2p_manager.handshake_messages.popleft()
+    msg_type, msg, conn_id, size, received = (
+        node.p2p_manager.handshake_messages.popleft()
+    )
     manager = node.p2p_manager
     # a connection still finishing its handshake, which is where every
     # one of these four commands is answered, or one already promoted
@@ -95,6 +103,10 @@ def handle_p2p_handshake(node: Node) -> None:
         if resume:
             conn.loop.call_soon_threadsafe(conn._recv_resume.set)  # noqa: SLF001
         node.logger.info("Received p2p message: %s, %s", msg_type, conn_id)
+        if msg_type not in handshake_callbacks:
+            conn.time_received = received
+            _dispatch(node, conn, conn_id, msg_type, msg)
+            return
         try:
             # A feeler past its `version` is being dropped, and Core's
             # `ProcessMessages` reads nothing more of a peer once
@@ -135,6 +147,47 @@ def handle_p2p_handshake(node: Node) -> None:
             )
 
 
+def _dispatch(
+    node: Node, conn: Connection, conn_id: int, msg_type: str, msg: bytes
+) -> None:
+    """Run the `callbacks` entry for `msg_type`, or ignore it ahead of `verack`.
+
+    A callback that raises is `_drop`'s, the comment below arguing its
+    split.
+    """
+    manager = node.p2p_manager
+    try:
+        if msg_type in callbacks:
+            if conn.status == P2pConnStatus.Connected or (
+                msg_type in _BEFORE_VERACK
+                and conn.status == P2pConnStatus.Open
+                and conn.version_message is not None
+                and not conn.feeler
+            ):
+                callbacks[msg_type](node, msg, conn)
+            node.logger.log_debug("net", "Finished p2p\n")
+    except Exception as e:
+        # A `MisbehavingError` -- a header or a block failing a
+        # consensus check, a message past Core's own size bound -- is
+        # where Core calls `Misbehaving`, so the peer is discouraged.
+        # Anything else, a payload that does not parse or this node's
+        # own code failing on content that was fine, is logged and the
+        # peer kept: Core's `ProcessMessages` catches every exception
+        # out of `ProcessMessage`, `catch (...)` included, logs it and
+        # keeps the peer (`src/net_processing.cpp`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag;
+        # btclib-org/btclib-node#1170, btclib-org/btclib-node#1233).
+        discourage = _drop(manager, conn, e)
+        # `conn_id`, not `conn.address`: same reasoning as
+        # `handle_p2p_handshake` above (#526)
+        node.logger.exception(
+            "Handling %s from connection %s failed, %s",
+            msg_type,
+            conn_id,
+            "peer discouraged" if discourage else "peer not discouraged",
+        )
+
+
 def handle_p2p(node: Node) -> None:
     """Pop one queued message and dispatch it, once its handshake is done.
 
@@ -171,36 +224,7 @@ def handle_p2p(node: Node) -> None:
             conn.loop.call_soon_threadsafe(conn._recv_resume.set)  # noqa: SLF001
         node.logger.info("Received p2p message: %s, %s", msg_type, conn_id)
         conn.time_received = received
-        try:
-            if msg_type in callbacks:
-                if conn.status == P2pConnStatus.Connected or (
-                    msg_type in _BEFORE_VERACK
-                    and conn.status == P2pConnStatus.Open
-                    and conn.version_message is not None
-                    and not conn.feeler
-                ):
-                    callbacks[msg_type](node, msg, conn)
-                node.logger.log_debug("net", "Finished p2p\n")
-        except Exception as e:
-            # A `MisbehavingError` -- a header or a block failing a
-            # consensus check, a message past Core's own size bound -- is
-            # where Core calls `Misbehaving`, so the peer is discouraged.
-            # Anything else, a payload that does not parse or this node's
-            # own code failing on content that was fine, is logged and the
-            # peer kept: Core's `ProcessMessages` catches every exception
-            # out of `ProcessMessage`, `catch (...)` included, logs it and
-            # keeps the peer (`src/net_processing.cpp`,
-            # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag;
-            # btclib-org/btclib-node#1170, btclib-org/btclib-node#1233).
-            discourage = _drop(manager, conn, e)
-            # `conn_id`, not `conn.address`: same reasoning as
-            # `handle_p2p_handshake` above (#526)
-            node.logger.exception(
-                "Handling %s from connection %s failed, %s",
-                msg_type,
-                conn_id,
-                "peer discouraged" if discourage else "peer not discouraged",
-            )
+        _dispatch(node, conn, conn_id, msg_type, msg)
 
 
 def resume_cfilters(node: Node) -> bool:

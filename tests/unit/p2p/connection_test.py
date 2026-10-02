@@ -31,6 +31,7 @@ from btclib.p2p.keepalive import Ping, Pong
 from btclib.p2p.limits import MAX_INV_SZ, MAX_PROTOCOL_MESSAGE_LENGTH, PROTOCOL_VERSION
 from btclib.p2p.message import Message
 
+from btclib_node import Node
 from btclib_node.chains import RegTest
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.download import MAX_BLOCKS_IN_TRANSIT_PER_PEER
@@ -39,7 +40,9 @@ from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.callbacks import (
     MAX_CFILTERS_INFLIGHT_BYTES,
     MAX_GETDATA_INFLIGHT_BYTES,
+    callbacks,
     getdata,
+    handshake_callbacks,
     pong,
 )
 from btclib_node.p2p.connection import Connection
@@ -505,6 +508,8 @@ def test_a_bad_checksum_keeps_the_peer() -> None:
         ours, theirs = socket.socketpair()
         ours.setblocking(False)
         connection = a_running_connection(loop, ours)
+        # past its handshake, or the `ping` would wait on `handshake_messages`
+        connection.status = P2pConnStatus.Connected
         # `shutdown`, not `close`, for the reason
         # `test_run_counts_every_octet_it_reads` gives: on Windows a closed
         # peer answers `run`'s own `version` with a reset.
@@ -975,6 +980,52 @@ def _wire_verack() -> bytes:
     return Message(RegTest().magic, "verack", Verack().serialize()).serialize()
 
 
+def test_a_ping_ahead_of_verack_is_not_answered_by_one_drain_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`version`, `ping`, `verack` in one read leave the `ping` unanswered.
+
+    Core processes a peer's messages in the order received, and a `ping`
+    ahead of `verack` meets "Unsupported message prior to verack"
+    (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7).
+    btclib-org/btclib-node#1657
+    """
+    connection, _ = a_connection()
+    manager = cast("Any", connection.manager)
+    manager.connections = {}
+    manager.pending_connections = {0: connection}
+    connection.loop = cast(
+        "asyncio.AbstractEventLoop",
+        SimpleNamespace(call_soon_threadsafe=lambda fn: fn()),
+    )
+
+    def promote(node: Any, msg: bytes, conn: Connection) -> None:
+        conn.status = P2pConnStatus.Connected
+
+    answered: list[bytes] = []
+    monkeypatch.setitem(handshake_callbacks, "version", lambda node, msg, conn: None)
+    monkeypatch.setitem(handshake_callbacks, "verack", promote)
+    monkeypatch.setitem(callbacks, "ping", lambda node, msg, conn: answered.append(msg))
+    node = SimpleNamespace(
+        p2p_manager=manager,
+        rpc_manager=SimpleNamespace(messages=deque()),
+        pending_cfilters={},
+        pending_getdata={},
+        logger=connection.node.logger,
+    )
+    with connection.client:
+        for command, payload in (
+            ("version", b""),
+            ("ping", Ping(1).serialize()),
+            ("verack", Verack().serialize()),
+        ):
+            connection.buffer += Message(RegTest().magic, command, payload).serialize()
+        connection.parse_messages()
+    Node._drain_message_queues(cast("Node", node))
+    assert connection.status == P2pConnStatus.Connected
+    assert not answered
+
+
 def test_parse_messages_weighs_a_queued_message_against_the_recv_bound() -> None:
     """A `messages`-bound item adds its own wire size to `queued_recv_bytes`.
 
@@ -983,6 +1034,7 @@ def test_parse_messages_weighs_a_queued_message_against_the_recv_bound() -> None
     are what check the pause it feeds.
     """
     connection, _ = a_connection()
+    connection.status = P2pConnStatus.Connected
     with connection.client:
         wire = _wire_ping()
         connection.buffer += wire
@@ -1075,7 +1127,7 @@ def test_parse_messages_weighs_a_handshake_message_too() -> None:
         connection.buffer += wire
         connection.parse_messages()
     (item,) = connection.manager.handshake_messages
-    assert item == ("verack", Verack().serialize(), 0, len(wire))
+    assert item[:4] == ("verack", Verack().serialize(), 0, len(wire))
     assert connection.queued_recv_bytes == len(wire)
     assert connection._recv_resume.is_set()
 

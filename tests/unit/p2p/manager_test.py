@@ -5219,7 +5219,7 @@ def test_a_connections_id_still_resolves_to_its_address_when_the_handshake_fails
 
     with ours, theirs:
         conn = manager.loop.run_until_complete(create())
-        manager.handshake_messages.append(("version", b"garbage", conn.id, 7))
+        manager.handshake_messages.append(("version", b"garbage", conn.id, 7, 0.0))
         handle_p2p_handshake(manager.node)
     logger.close()
 
