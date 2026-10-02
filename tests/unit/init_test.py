@@ -1385,6 +1385,8 @@ def test_a_node_whose_p2p_port_is_taken_stops_and_frees_its_rpc_port(
     """
     rpc_port = get_random_port()
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
+        # every interface: Windows lets `P2pManager`'s every-interface
+        # bind succeed beside a socket that holds only loopback
         taken.bind(("", 0))
         taken.listen()
         p2p_port = taken.getsockname()[1]
@@ -1445,6 +1447,8 @@ def test_a_node_under_listen_0_runs_whatever_holds_its_p2p_port(
     With no bind asked for, the port being taken is not a failure.
     """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
+        # every interface: Windows lets `P2pManager`'s every-interface
+        # bind succeed beside a socket that holds only loopback
         taken.bind(("", 0))
         taken.listen()
         node = Node(

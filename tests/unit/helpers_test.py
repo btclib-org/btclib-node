@@ -56,6 +56,7 @@ def test_the_port_offered_is_one_that_can_be_bound() -> None:
     """`get_random_port` returns a bindable port, different each call."""
     port = get_random_port()
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        # every interface, as `get_random_port` probes it
         sock.bind(("", port))
     assert 1024 <= port <= 65535
     # and a second caller is not handed the first one: two nodes in one
@@ -72,7 +73,7 @@ def test_no_port_the_kernel_picks_is_a_test_port() -> None:
     with socket.create_server(("127.0.0.1", 0)) as server:
         for _ in range(64):
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.bind(("", 0))
+                sock.bind(("127.0.0.1", 0))
                 assert sock.getsockname()[1] not in TEST_PORTS
             with socket.create_connection(server.getsockname()) as client:
                 accepted, _ = server.accept()
@@ -104,6 +105,8 @@ def test_a_held_port_is_passed_over() -> None:
         socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock,
         socket.socket(socket.AF_INET, socket.SOCK_STREAM) as other,
     ):
+        # every interface: Windows lets the pool's own every-interface
+        # probe bind a port that a loopback socket holds
         sock.bind(("", 0))
         held = sock.getsockname()[1]
         low, high = sorted((free, held))
