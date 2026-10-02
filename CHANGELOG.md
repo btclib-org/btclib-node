@@ -1824,6 +1824,12 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
   relays addresses its best local address, at once and then about daily,
   as Core's `MaybeSendAddr` does** (closes #1641).
 
+### A `-rpcbind` host with a NUL byte is read up to it on Windows
+
+- **`_libevent_literal` stops at the NUL, as libevent does on Core's
+  `c_str()`** (closes #1377), where it raised an uncaught `ValueError`
+  that left the sockets already bound open.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

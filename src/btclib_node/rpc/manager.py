@@ -77,8 +77,10 @@ def _libevent_literal(host: str) -> bool:
     `evutil_getaddrinfo_common_` tries `evutil_inet_pton_scope` for IPv6,
     whose zone after `%` is an interface name or a number `strtoul`
     reads to its end, then `evutil_inet_pton` for IPv4 (`evutil.c`, at
-    libevent 2.1.12-stable).
+    libevent 2.1.12-stable). libevent is handed `c_str()`, which ends at
+    a NUL byte, so `host` is read up to it (ISS 1377).
     """
+    host = host.partition("\0")[0]
     address, percent, zone = host.partition("%")
     try:
         socket.inet_pton(socket.AF_INET6, address)
