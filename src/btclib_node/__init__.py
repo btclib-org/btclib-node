@@ -5,10 +5,11 @@
 """`Node`, the thread that drives everything else in this package.
 
 One loop: drain the handshake queue, then a share of the RPC queue and
-a share of the peer-to-peer queue, then step the download manager and
-extend the chain. A message that raises is logged and the loop
-continues; a failure under `update_chain` leaves the loop, because the
-databases the submodules below open have to be closed on the way out.
+a share of the peer-to-peer queue, then step the requests still waiting,
+then step the download manager and extend the chain. A message that
+raises is logged and the loop continues; a failure under `update_chain`
+leaves the loop, because the databases the submodules below open have
+to be closed on the way out.
 
 `P2pManager` and `RpcManager` are each a thread of their own, running
 an asyncio loop of their own; this module is what calls into them and
@@ -21,6 +22,7 @@ import signal
 import sys
 import threading
 import time
+from collections import deque
 from contextlib import ExitStack
 from math import log2
 from multiprocessing.pool import Pool, ThreadPool
@@ -48,18 +50,19 @@ from btclib_node.p2p.main import (
 )
 from btclib_node.p2p.manager import P2pManager
 from btclib_node.p2p.permissions import Whitelist
-from btclib_node.rpc.main import handle_rpc
+from btclib_node.rpc.main import handle_rpc, resume_rpc
 from btclib_node.rpc.manager import RpcManager
 from btclib_node.versionbits import UnknownActivations
 
 if TYPE_CHECKING:
-    from collections import deque
     from types import FrameType
 
     from btclib.p2p.inventory import Inventory
 
     from btclib_node.p2p.compact_block import MostRecentBlock
     from btclib_node.p2p.connection import Connection
+    from btclib_node.rpc.connection import RpcConnection
+    from btclib_node.rpc.main import Job
 
 # Everything above this line is imported for `Node` to build on, not to
 # be handed to a caller: `handle_p2p`, `RpcManager` and the rest are
@@ -391,6 +394,10 @@ class Node(threading.Thread):
         # reached by `update_chain` and the mining RPCs, which run on this
         # thread alone (ARCHITECTURE.md), so it needs no lock
         self.unknown_activations = UnknownActivations(self.chain)
+        # the mempool's counter when `getblocktemplate` last built a
+        # template, Core's `nTransactionsUpdatedLast`, which a long poll
+        # without a string `longpollid` waits past
+        self.template_transactions_updated = 0
         # `main.new_pow_valid_block`'s height of the last block it sent to
         # high-bandwidth peers: Core's `m_highest_fast_announce{0}`
         # (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the
@@ -419,6 +426,10 @@ class Node(threading.Thread):
         else:
             self.rpc_port = None
         self.rpc_manager = RpcManager(self, self.rpc_port)
+        # The requests `rpc.main.handle_rpc` started and did not answer,
+        # each with its connection, for `rpc.main.resume_rpc` to step on
+        # every pass; both run on this thread alone.
+        self.pending_rpc: deque[tuple[RpcConnection, Job]] = deque()
         # `rpc.callbacks.get_rpc_info`'s own `active_commands`: the
         # method and `time.monotonic()` start of every RPC call
         # `rpc.main._execute` is currently running, in call order.
@@ -635,10 +646,11 @@ class Node(threading.Thread):
         they did not expect -- and leaving `run`'s own loop by exception
         skips every close below it, so the databases would stay open.
 
-        `resume_cfilters` and `resume_getdata` are last and unconditional,
-        not one more queue to size a share from: nothing is queued to
-        trigger either, a paused `getcfilters` or `getdata` answer being
-        owed regardless of what else this pass finds waiting.
+        `resume_rpc`, `resume_cfilters` and `resume_getdata` are last and
+        unconditional, not one more queue to size a share from: nothing is
+        queued to trigger any of them, a waiting request or a paused
+        `getcfilters` or `getdata` answer being owed regardless of what
+        else this pass finds waiting.
 
         A connection paused on `MAX_QUEUED_RECV_BYTES`
         (`p2p/connection.py`) waits here and nowhere of its own: what
@@ -674,6 +686,8 @@ class Node(threading.Thread):
             for _ in range(int(log2(len(self.p2p_manager.messages) + 1))):
                 handle_p2p(self)
                 wait = False
+            if resume_rpc(self):
+                wait = False
             if resume_cfilters(self):
                 wait = False
             if resume_getdata(self):
@@ -683,12 +697,17 @@ class Node(threading.Thread):
         return wait
 
     def _step_chain(self) -> bool:
-        """Advance the chain one step, and answer whether `run` should stop."""
+        """Advance the chain one step, and answer whether `run` should stop.
+
+        A failure sets `terminate_flag`, so that `_drain_rpc_queue` ends
+        each request still waiting rather than serve it for ever.
+        """
         try:
             self.download_manager.step()
             update_chain(self)
         except Exception:
             self.logger.exception("Exception occurred")
+            self.terminate_flag.set()
             return True
         return False
 
@@ -813,6 +832,11 @@ class Node(threading.Thread):
         cancel it, as it does every reply its loop has begun
         (btclib-org/btclib-node#1539).
 
+        A request in `pending_rpc` is answered here too: with
+        `terminate_flag` set, `resume_rpc` ends each at its next step, as
+        Core's waiting and mining calls end on `m_interrupt` before
+        `StopHTTPServer` joins their workers.
+
         `handle_rpc` pops one message per call and never raises in the
         ordinary case -- `rpc.main._execute` turns a callback's own
         exception into `RpcError(INTERNAL_ERROR)` before it can
@@ -821,12 +845,19 @@ class Node(threading.Thread):
         reply must not leave the rest of the queue unanswered.
         """
         self.rpc_manager.interrupt()
-        while self.rpc_manager.messages:
+        while self.rpc_manager.messages or self.pending_rpc:
+            waiting = len(self.pending_rpc)
             try:
-                handle_rpc(self)
+                if self.rpc_manager.messages:
+                    waiting += 1
+                    handle_rpc(self)
+                else:
+                    resume_rpc(self)
             except Exception:
                 self.logger.exception("Exception occurred answering a queued rpc")
-            self.rpc_manager.extend_reply_deadline(time.monotonic())
+            # a request answered; never a step that left it waiting
+            if len(self.pending_rpc) < waiting:
+                self.rpc_manager.extend_reply_deadline(time.monotonic())
 
     def _stop_managers_and_close_stores(self) -> None:
         """Stop both managers and close the stores, those `load` opened."""
@@ -966,7 +997,7 @@ class Node(threading.Thread):
         out, rather than once, and the last read is enough because:
 
         - a deadline is recorded only on this node's thread: by
-          `handle_rpc`, which sets `terminate_flag` itself right after,
+          `rpc.main._step`, which sets `terminate_flag` itself right after,
           and, once the flag is set, by `_drain_rpc_queue` for each
           request it answers and by `rpc_manager.stop` before it waits
           for the replies still being written

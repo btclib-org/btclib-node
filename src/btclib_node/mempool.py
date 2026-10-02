@@ -251,6 +251,15 @@ class Mempool:
         # answer for zero events, and what keeps every later answer at
         # Core's own N+1 after N add/remove events rather than N.
         self.sequence: int = 1
+        # Core's `nTransactionsUpdated` (`src/txmempool.h`, at
+        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which a
+        # `getblocktemplate` long poll waits on: one per transaction added
+        # or removed, as `sequence`, and one per block connected or
+        # disconnected, through `add_transactions_updated`. Core counts
+        # genesis too where it connects it into a fresh data directory;
+        # here genesis is seeded at every start, so this starts at 0, as
+        # Core's does after a restart.
+        self.transactions_updated: int = 0
 
         # Core's own `rollingMinimumFeeRate`/`lastRollingFeeUpdate`/
         # `blockSinceLastRollingFeeBump` (`src/txmempool.h`, same commit):
@@ -419,6 +428,7 @@ class Mempool:
         self.size += 1
         self.bytesize += self.vsizes[wtxid]
         self.sequence += 1
+        self.transactions_updated += 1
         # `self.sequence`, already bumped once above and unique to this
         # call -- it never repeats and only ever grows -- is this heap's
         # own tie-breaker too, so a second counter kept only for this is
@@ -638,6 +648,7 @@ class Mempool:
         self.size -= 1
         self.bytesize -= vsize
         self.sequence += 1
+        self.transactions_updated += 1
         # Bounds the heap at twice the size it would be with no stale
         # entries in it at all: a wtxid removed here without its own
         # heap entry ever being popped (every removal but the one
@@ -939,6 +950,15 @@ class Mempool:
         if rate_per_kvbyte > self._rolling_min_fee_rate:
             self._rolling_min_fee_rate = rate_per_kvbyte
             self._block_since_last_rolling_fee_bump = False
+
+    def add_transactions_updated(self, count: int) -> None:
+        """Count `count` tip changes in `transactions_updated`.
+
+        Core's `AddTransactionsUpdated`, which `UpdateTip` calls once per
+        block connected or disconnected (`src/validation.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+        """
+        self.transactions_updated += count
 
     def note_block_connected(self) -> None:
         """Restart the rolling minimum's decay clock for one connected block.

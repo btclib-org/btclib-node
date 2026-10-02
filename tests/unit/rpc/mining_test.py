@@ -11,6 +11,7 @@ add where Core has no rule to copy.
 """
 
 import json
+from collections.abc import Generator
 from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -37,15 +38,17 @@ from btclib_node.rpc.callbacks import arg_names, callbacks
 from btclib_node.rpc.errors import RpcError
 from btclib_node.rpc.help import CATEGORY, HELP_TEXT
 from btclib_node.rpc.mining import (
-    generate_block,
-    generate_to_address,
+    _long_poll_id,
     get_block_template,
+    wait_for_block_height,
 )
 from btclib_node.signet import SIGNET_CHALLENGE
 from btclib_node.versionbits import UnknownActivations
 from tests import (
+    answer,
     anyone_can_spend,
     anyone_can_spend_script_sig,
+    finish,
     generate_random_transaction,
 )
 
@@ -100,6 +103,26 @@ def funded(node: Node) -> Node:
     return node
 
 
+def generate_to_address(
+    node: Node, conn: RpcConnection, params: list[Any]
+) -> list[bytes]:
+    """`rpc.mining.generate_to_address`, run to its answer."""
+    return finish(rpc_mining.generate_to_address(node, conn, params))
+
+
+def generate_block(
+    node: Node, conn: RpcConnection, params: list[Any]
+) -> dict[str, Any]:
+    """`rpc.mining.generate_block`, run to its answer."""
+    return finish(rpc_mining.generate_block(node, conn, params))
+
+
+def finish_template(node: Node, request: dict[str, Any]) -> object:
+    """Answer `getblocktemplate` for `request`, run to its answer."""
+    result = get_block_template(node, CONN, [request])
+    return finish(result) if isinstance(result, Generator) else result
+
+
 def refusal(call: Callable[[], object]) -> tuple[int, str]:
     """Run `call`, and return the code and message it is refused with."""
     with pytest.raises(RpcError) as caught:
@@ -136,8 +159,8 @@ def coinbase_txid(node: Node, at: int) -> bytes:
 
 def test_the_methods_are_served_as_core_names_them() -> None:
     """Each is in the table, with Core's argument names and category."""
-    assert callbacks["generatetoaddress"] is generate_to_address
-    assert callbacks["generateblock"] is generate_block
+    assert callbacks["generatetoaddress"] is rpc_mining.generate_to_address
+    assert callbacks["generateblock"] is rpc_mining.generate_block
     assert callbacks["getblocktemplate"] is get_block_template
     assert arg_names["generatetoaddress"] == ("nblocks", "address", "maxtries")
     assert arg_names["generateblock"] == ("output", "transactions", "submit")
@@ -259,10 +282,12 @@ def test_generatetoaddress_stops_where_the_tries_are_spent(
     solved = iter([True, False])
     real = solve_block
 
-    def solve(node_: Node, block: Block, tries: int) -> tuple[Block | None, int]:
+    def solve(
+        node_: Node, block: Block, tries: int
+    ) -> Generator[bool, None, tuple[Block | None, int]]:
         if next(solved):
             return real(node_, block, tries)
-        return None, 0
+        return answer((None, 0))
 
     monkeypatch.setattr(rpc_mining, "solve_block", solve)
 
@@ -280,16 +305,29 @@ def test_generatetoaddress_builds_another_block_where_the_nonces_run_out(
     real = solve_block
     tries_given: list[int] = []
 
-    def solve(node_: Node, block: Block, tries: int) -> tuple[Block | None, int]:
+    def solve(
+        node_: Node, block: Block, tries: int
+    ) -> Generator[bool, None, tuple[Block | None, int]]:
         tries_given.append(tries)
         if next(answers):
             return real(node_, block, tries)
-        return None, tries - 7
+        return answer((None, tries - 7))
 
     monkeypatch.setattr(rpc_mining, "solve_block", solve)
 
     assert len(generate_to_address(node, CONN, [1, ADDRESS, 100])) == 1
     assert tries_given == [100, 93]
+
+
+def test_generatetoaddress_hands_the_thread_back_after_each_block(
+    node: Node,
+) -> None:
+    """One step mines one block at most, so the loop runs between two."""
+    job = rpc_mining.generate_to_address(node, CONN, [2, ADDRESS])
+
+    assert next(job) is True
+    assert height(node) == 1
+    assert finish(job) == node.chainstate.block_index.active_chain[1:]
 
 
 def test_generatetoaddress_stops_when_the_node_does(node: Node) -> None:
@@ -304,9 +342,11 @@ def test_generatetoaddress_stops_when_the_node_does_mid_search(
 ) -> None:
     """A search that was interrupted returns what was mined and no more."""
 
-    def solve(node_: Node, block: Block, tries: int) -> tuple[Block | None, int]:
+    def solve(
+        node_: Node, block: Block, tries: int
+    ) -> Generator[bool, None, tuple[Block | None, int]]:
         node_.terminate_flag.set()
-        return None, tries
+        return answer((None, tries))
 
     monkeypatch.setattr(rpc_mining, "solve_block", solve)
 
@@ -570,7 +610,7 @@ def test_generateblock_fails_where_no_nonce_solves_the_block(
     node: Node, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Core's `Failed to make block.`."""
-    monkeypatch.setattr(rpc_mining, "solve_block", lambda *_: (None, 0))
+    monkeypatch.setattr(rpc_mining, "solve_block", lambda *_: answer((None, 0)))
 
     assert refusal(lambda: generate_block(node, CONN, [ADDRESS, []])) == (
         -1,
@@ -620,7 +660,7 @@ def test_a_proposal_leaves_the_utxo_set_as_it_was(funded: Node) -> None:
 
 def solved(node: Node, block: Block) -> Block:
     """Return `block` solved."""
-    result, _ = solve_block(node, block, 10_000)
+    result, _ = finish(solve_block(node, block, 10_000))
     assert result is not None
     return result
 
@@ -729,17 +769,41 @@ def test_a_proposal_that_is_not_one_is_refused_as_core_refuses(node: Node) -> No
             -3,
             "JSON value of type number is not of expected type string",
         ),
-        ({"rules": ["segwit"], "longpollid": "x"}, -1, "longpollid is not supported"),
+        (
+            {"rules": ["segwit"], "longpollid": "x"},
+            -8,
+            "longpollid must be of length 64 (not 1, for 'x')",
+        ),
+        (
+            {"rules": ["segwit"], "longpollid": "zz" * 32},
+            -8,
+            f"longpollid must be hexadecimal string (not '{'zz' * 32}')",
+        ),
+        # the first 64 bytes, not characters
+        (
+            {"rules": ["segwit"], "longpollid": "\u00e9" * 10},
+            -8,
+            f"longpollid must be of length 64 (not 20, for '{'\u00e9' * 10}')",
+        ),
+        (
+            {"rules": ["segwit"], "longpollid": "\u00e9" * 40},
+            -8,
+            f"longpollid must be hexadecimal string (not '{'\u00e9' * 32}')",
+        ),
+        # read before the rules, and waited on before them
+        ({"longpollid": "x"}, -8, "longpollid must be of length 64 (not 1, for 'x')"),
+        (
+            {"longpollid": "00" * 32},
+            -8,
+            'getblocktemplate must be called with the segwit rule set (call with {"rules": ["segwit"]})',
+        ),
     ],
 )
 def test_getblocktemplate_refuses_what_core_refuses(
     node: Node, request_: dict[str, Any], code: int, message: str
 ) -> None:
-    """The codes and messages are `bitcoind`'s, but for the long poll."""
-    assert refusal(lambda: get_block_template(node, CONN, [request_])) == (
-        code,
-        message,
-    )
+    """The codes and messages are `bitcoind` v31.1.0's."""
+    assert refusal(lambda: finish_template(node, request_)) == (code, message)
 
 
 def test_getblocktemplate_needs_its_argument_as_an_object(node: Node) -> None:
@@ -803,7 +867,7 @@ def test_the_template_has_the_keys_of_core_s_in_its_order(funded: Node) -> None:
     assert template["height"] == height(funded) + 1
     assert template["curtime"] >= template["mintime"]
     assert template["longpollid"] == tip(funded).hex() + str(
-        funded.mempool.sequence - 1
+        funded.mempool.transactions_updated
     )
     assert [tx["txid"] for tx in template["transactions"]] == [
         parent.id.hex(),
@@ -847,7 +911,8 @@ def stub(
                 )
             ),
             unknown_activations=UnknownActivations(chain),
-            mempool=SimpleNamespace(sequence=5),
+            mempool=SimpleNamespace(transactions_updated=5),
+            template_transactions_updated=0,
         ),
     )
 
@@ -1006,3 +1071,281 @@ def test_a_signet_template_names_the_signet_rule_and_its_challenge(
     assert (
         list(template).index("signet_challenge") == list(template).index("height") + 1
     )
+
+
+TEMPLATE = {"rules": ["segwit"]}
+
+
+class Clock:
+    """A `monotonic` the test moves by hand."""
+
+    def __init__(self) -> None:
+        """Start at an arbitrary moment."""
+        self.now = 1_000.0
+
+    def __call__(self) -> float:
+        """Answer the moment the test last set."""
+        return self.now
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> Clock:
+    """Give `rpc.mining` a clock that moves only when the test moves it."""
+    clock = Clock()
+    monkeypatch.setattr(rpc_mining, "monotonic", clock)
+    return clock
+
+
+def template(node: Node) -> dict[str, Any]:
+    """Return a template, without a long poll."""
+    answer_ = get_block_template(node, CONN, [TEMPLATE])
+    assert isinstance(answer_, dict)
+    return answer_
+
+
+def long_poll(node: Node, long_poll_id: object) -> Generator[bool, None, Any]:
+    """Return the job of a long poll on `long_poll_id`."""
+    job = get_block_template(node, CONN, [{**TEMPLATE, "longpollid": long_poll_id}])
+    assert isinstance(job, Generator)
+    return job
+
+
+def add_spend(node: Node) -> Tx:
+    """Add to the mempool a transaction spending the first coinbase."""
+    tx = spend(coinbase_txid(node, 1), SUBSIDY - 1_000)
+    assert node.mempool.add_tx(tx, 1_000)
+    return tx
+
+
+def test_a_long_poll_answers_once_the_tip_changes(node: Node, clock: Clock) -> None:
+    """Core's `waitTipChanged`, looked at on every step."""
+    job = long_poll(node, template(node)["longpollid"])
+    assert next(job) is False
+    assert next(job) is False
+
+    [mined] = generate_to_address(node, CONN, [1, ADDRESS])
+
+    assert finish(job)["previousblockhash"] == mined
+
+
+def test_a_long_poll_sees_the_mempool_only_after_a_minute(
+    funded: Node, clock: Clock
+) -> None:
+    """Core's first `checktxtime` is one minute."""
+    job = long_poll(funded, template(funded)["longpollid"])
+    tx = add_spend(funded)
+    clock.now += 59
+    assert next(job) is False
+
+    clock.now += 1
+
+    assert [t["txid"] for t in finish(job)["transactions"]] == [tx.id.hex()]
+
+
+def test_a_long_poll_looks_at_the_mempool_every_ten_seconds_after_that(
+    funded: Node, clock: Clock
+) -> None:
+    """A change after the first look is seen ten seconds after it."""
+    job = long_poll(funded, template(funded)["longpollid"])
+    clock.now += 60
+    assert next(job) is False
+    add_spend(funded)
+    clock.now += 9
+    assert next(job) is False
+
+    clock.now += 1
+
+    assert len(finish(job)["transactions"]) == 1
+
+
+def test_a_long_poll_on_another_tip_answers_at_once(node: Node, clock: Clock) -> None:
+    """A hash that is not the tip, a block or not, has already changed."""
+    job = long_poll(node, "00" * 32 + "0")
+
+    with pytest.raises(StopIteration) as done:
+        next(job)
+    assert done.value.value["previousblockhash"] == tip(node)
+
+
+def test_a_long_poll_id_that_is_not_a_string_waits_past_the_last_template(
+    funded: Node, clock: Clock
+) -> None:
+    """Core reads the tip, and the counter of the last template it built."""
+    template(funded)
+    add_spend(funded)
+    job = long_poll(funded, 5)
+    assert next(job) is False
+
+    clock.now += 60
+
+    with pytest.raises(StopIteration) as done:
+        next(job)
+    assert len(done.value.value["transactions"]) == 1
+
+
+def test_a_long_poll_answers_shutting_down_once_the_node_stops(
+    node: Node, clock: Clock
+) -> None:
+    """Core's `RPC_CLIENT_NOT_CONNECTED`, once `IsRPCRunning` is false."""
+    job = long_poll(node, template(node)["longpollid"])
+    assert next(job) is False
+
+    node.terminate_flag.set()
+
+    assert refusal(lambda: finish(job)) == (-9, "Shutting down")
+
+
+@pytest.mark.parametrize(
+    ("suffix", "counter"),
+    [
+        ("", 0),
+        ("7", 7),
+        ("+7", 7),
+        (" \t7x", 7),
+        ("+-7", 0),
+        ("x7", 0),
+        ("-1", 2**32 - 1),
+        ("4294967297", 1),
+        ("9" * 20, 2**32 - 1),
+        ("-" + "9" * 20, 0),
+    ],
+)
+def test_a_long_poll_id_is_read_as_core_reads_it(
+    node: Node, suffix: str, counter: int
+) -> None:
+    """`LocaleIndependentAtoi<int64_t>`, kept as an `unsigned int`."""
+    assert _long_poll_id(node, tip(node).hex().upper() + suffix) == (
+        tip(node),
+        counter,
+    )
+
+
+def test_the_long_poll_counter_starts_at_zero_and_counts_each_block(
+    node: Node,
+) -> None:
+    """As `bitcoind` v31.1.0's after a restart: 0, then one per block."""
+    assert template(node)["longpollid"] == tip(node).hex() + "0"
+
+    generate_to_address(node, CONN, [3, ADDRESS])
+
+    assert template(node)["longpollid"] == tip(node).hex() + "3"
+
+
+def test_the_long_poll_counter_counts_transactions_and_disconnections(
+    funded: Node,
+) -> None:
+    """One per transaction added or removed, and one per tip change."""
+    before = funded.mempool.transactions_updated
+    add_spend(funded)
+    [mined] = generate_to_address(funded, CONN, [1, ADDRESS])
+    assert funded.mempool.transactions_updated == before + 3
+
+    callbacks["invalidateblock"](funded, CONN, [mined.hex()])
+
+    assert funded.mempool.size == 1
+    assert funded.mempool.transactions_updated == before + 5
+
+
+def test_waitforblockheight_is_served_as_core_names_it() -> None:
+    """In the table, with Core's argument names and category."""
+    assert callbacks["waitforblockheight"] is wait_for_block_height
+    assert arg_names["waitforblockheight"] == ("height", "timeout")
+    assert CATEGORY["waitforblockheight"] == "Blockchain"
+
+
+def wrong_type(*positions: tuple[int, str, str]) -> str:
+    """Return Core's `Wrong type passed` message for `positions`."""
+    lines = ",\n".join(
+        f'    "Position {position} ({name})": "JSON value of type {kind} '
+        'is not of expected type number"'
+        for position, name, kind in positions
+    )
+    return "Wrong type passed:\n{\n" + lines + "\n}"
+
+
+@pytest.mark.parametrize(
+    ("params", "code", "message"),
+    [
+        ([], -1, HELP_TEXT["waitforblockheight"]),
+        (["x"], -3, wrong_type((1, "height", "string"))),
+        ([None], -3, wrong_type((1, "height", "null"))),
+        ([True], -3, wrong_type((1, "height", "bool"))),
+        (
+            ["x", "y"],
+            -3,
+            wrong_type((1, "height", "string"), (2, "timeout", "string")),
+        ),
+        ([1.5, "y"], -3, wrong_type((2, "timeout", "string"))),
+        ([1.5], -1, "JSON integer out of range"),
+        ([2**31], -1, "JSON integer out of range"),
+        ([0, 1.5], -1, "JSON integer out of range"),
+        ([0, 2**31], -1, "JSON integer out of range"),
+        ([0, -1], -1, "Negative timeout"),
+    ],
+)
+def test_waitforblockheight_refuses_what_core_refuses(
+    node: Node, params: list[Any], code: int, message: str
+) -> None:
+    """The codes and messages are `bitcoind` v31.1.0's, on regtest."""
+    assert refusal(lambda: wait_for_block_height(node, CONN, params)) == (
+        code,
+        message,
+    )
+
+
+@pytest.mark.parametrize("params", [[0], [-1], [0, 10], [0, None]])
+def test_waitforblockheight_answers_at_once_at_or_past_its_height(
+    node: Node, params: list[Any]
+) -> None:
+    """The tip, with no step that waits."""
+    with pytest.raises(StopIteration) as done:
+        next(wait_for_block_height(node, CONN, params))
+    assert done.value.value == {"hash": tip(node), "height": 0}
+
+
+def test_waitforblockheight_answers_once_the_tip_reaches_its_height(
+    node: Node,
+) -> None:
+    """A block below the height is not enough."""
+    job = wait_for_block_height(node, CONN, [2])
+    assert next(job) is False
+    generate_to_address(node, CONN, [1, ADDRESS])
+    assert next(job) is False
+
+    generate_to_address(node, CONN, [1, ADDRESS])
+
+    assert finish(job) == {"hash": tip(node), "height": 2}
+
+
+@pytest.mark.parametrize("timeout", [0, None])
+def test_waitforblockheight_without_a_timeout_waits_on(
+    node: Node, clock: Clock, timeout: int | None
+) -> None:
+    """0, its default, is no timeout."""
+    job = wait_for_block_height(node, CONN, [1, timeout])
+    clock.now += 10**6
+
+    assert next(job) is False
+
+
+def test_waitforblockheight_answers_the_tip_at_its_timeout(
+    node: Node, clock: Clock
+) -> None:
+    """The timeout is in milliseconds."""
+    job = wait_for_block_height(node, CONN, [1, 1_000])
+    clock.now += 0.75
+    assert next(job) is False
+
+    clock.now += 0.25
+
+    assert finish(job) == {"hash": tip(node), "height": 0}
+
+
+def test_waitforblockheight_answers_the_tip_once_the_node_stops(node: Node) -> None:
+    """As Core's answers it on shutdown."""
+    job = wait_for_block_height(node, CONN, [1])
+    assert next(job) is False
+
+    node.terminate_flag.set()
+
+    assert finish(job) == {"hash": tip(node), "height": 0}

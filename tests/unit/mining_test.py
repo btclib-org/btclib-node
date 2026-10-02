@@ -17,7 +17,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import timedelta
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from btclib.block import Block, witness_commitment_output
@@ -41,11 +41,16 @@ from btclib_node.mining import (
     create_new_block,
     solve_block,
 )
+from btclib_node.rpc.callbacks import callbacks
 from tests import (
     anyone_can_spend,
     anyone_can_spend_script_sig,
+    finish,
     generate_random_transaction,
 )
+
+if TYPE_CHECKING:
+    from btclib_node.rpc.connection import RpcConnection
 
 SCRIPT = ScriptPubKey(anyone_can_spend(), "regtest")
 
@@ -74,7 +79,7 @@ def mine(node: Node, count: int) -> list[bytes]:
 
 def mine_template(node: Node, block: Block) -> Block:
     """Solve `block`, accept it, and return it."""
-    solved, _ = solve_block(node, block, DEFAULT_MAX_TRIES)
+    solved, _ = finish(solve_block(node, block, DEFAULT_MAX_TRIES))
     assert solved is not None
     assert accept_block(node, solved) is None
     return solved
@@ -444,7 +449,7 @@ def test_solving_counts_the_nonces_it_spent(node: Node) -> None:
     block = create_new_block(node, SCRIPT).block
     nonce = block.header.nonce
 
-    solved, left = solve_block(node, block, 1_000)
+    solved, left = finish(solve_block(node, block, 1_000))
 
     assert solved is block
     assert block.header.hash <= block.header.target
@@ -458,7 +463,7 @@ def test_solving_stops_where_the_tries_are_spent(
     monkeypatch.setattr(mining, "_NONCE_CHUNK", 4)
     block = unsolvable(node)
 
-    solved, left = solve_block(node, block, 11)
+    solved, left = finish(solve_block(node, block, 11))
 
     assert (solved, left) == (None, 0)
     assert block.header.nonce == 11
@@ -472,7 +477,7 @@ def test_solving_starts_over_where_the_nonces_run_out(
     block = unsolvable(node)
     block.header.nonce = NONCE_SPACE - 6
 
-    solved, left = solve_block(node, block, 100)
+    solved, left = finish(solve_block(node, block, 100))
 
     assert (solved, left) == (None, 94)
     assert block.header.nonce == 0
@@ -482,13 +487,76 @@ def test_solving_stops_when_the_node_is_stopping(node: Node) -> None:
     """A node asked to stop gives back what it was given."""
     block = create_new_block(node, SCRIPT).block
 
-    solved, left = solve_block(
-        _Interrupt(),  # type: ignore[arg-type]
-        block,
-        1_000,
+    solved, left = finish(
+        solve_block(
+            _Interrupt(),  # type: ignore[arg-type]
+            block,
+            1_000,
+        )
     )
 
     assert (solved, left) == (None, 1_000)
+
+
+def test_solving_hands_the_thread_back_after_each_chunk(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One step searches one chunk, so the loop runs between two of them."""
+    monkeypatch.setattr(mining, "_NONCE_CHUNK", 4)
+    block = unsolvable(node)
+    search = solve_block(node, block, 11)
+
+    assert next(search) is True
+    assert block.header.nonce == 4
+    assert next(search) is True
+    assert block.header.nonce == 8
+    assert finish(search) == (None, 0)
+    assert block.header.nonce == 11
+
+
+def test_solving_ends_at_the_next_chunk_once_the_node_stops(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's `GenerateBlock` looks at `m_interrupt` on every try."""
+    monkeypatch.setattr(mining, "_NONCE_CHUNK", 4)
+    block = unsolvable(node)
+    search = solve_block(node, block, 11)
+    assert next(search) is True
+
+    node.terminate_flag.set()
+
+    assert finish(search) == (None, 7)
+    assert block.header.nonce == 4
+
+
+def test_a_block_whose_parent_was_invalidated_meanwhile_is_refused(
+    node: Node,
+) -> None:
+    """Core's `AcceptBlockHeader` refuses it `bad-prevblk`."""
+    mine(node, 1)
+    block = create_new_block(node, SCRIPT).block
+    tip = node.chainstate.block_index.active_chain[-1]
+    callbacks["invalidateblock"](node, cast("RpcConnection", None), [tip.hex()])
+    solved, _ = finish(solve_block(node, block, DEFAULT_MAX_TRIES))
+    assert solved is not None
+
+    assert accept_block(node, solved) == "bad-prevblk"
+    assert solved.header.hash not in node.chainstate.block_index.header_dict
+
+
+def test_a_block_whose_tip_moved_on_meanwhile_is_stored_on_its_branch(
+    node: Node,
+) -> None:
+    """As Core's `ProcessNewBlock` stores it: the first block seen stays tip."""
+    other = ScriptPubKey(bytes.fromhex("0014" + "00" * 20), "regtest")
+    block = create_new_block(node, other).block
+    [first] = mine(node, 1)
+    solved, _ = finish(solve_block(node, block, DEFAULT_MAX_TRIES))
+    assert solved is not None
+
+    assert accept_block(node, solved) is None
+    assert node.chainstate.block_index.active_chain[-1] == first
+    assert node.block_db.get_block(solved.header.hash) is not None
 
 
 def rebuilt(block: Block) -> Block:
@@ -820,7 +888,7 @@ def test_a_block_that_fails_to_connect_is_answered_with_the_reason(
     block = create_new_block(funded, SCRIPT).block
     block.transactions.append(generate_random_transaction())
     rebuilt(block)
-    solved, _ = solve_block(funded, block, DEFAULT_MAX_TRIES)
+    solved, _ = finish(solve_block(funded, block, DEFAULT_MAX_TRIES))
     assert solved is not None
 
     assert accept_block(funded, solved) == "prevout not found"
@@ -836,7 +904,7 @@ def test_a_refusal_with_details_is_answered_with_the_reason_alone(
         spend([OutPoint(coinbases(funded, 1)[0].id, 0)], [SUBSIDY + 1])
     )
     rebuilt(block)
-    solved, _ = solve_block(funded, block, DEFAULT_MAX_TRIES)
+    solved, _ = finish(solve_block(funded, block, DEFAULT_MAX_TRIES))
     assert solved is not None
 
     assert accept_block(funded, solved) == "bad-txns-in-belowout"
@@ -852,7 +920,7 @@ def test_a_failure_of_the_node_stops_it_and_is_not_an_answer(
 
     monkeypatch.setattr(mining, "update_chain", broken)
     block = create_new_block(node, SCRIPT).block
-    solved, _ = solve_block(node, block, DEFAULT_MAX_TRIES)
+    solved, _ = finish(solve_block(node, block, DEFAULT_MAX_TRIES))
     assert solved is not None
 
     with pytest.raises(OSError, match="disk"):

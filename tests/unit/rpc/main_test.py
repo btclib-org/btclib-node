@@ -10,6 +10,7 @@ answer has to end the request rather than the node. The answers are
 a request names (`rpc.jsonrpc`).
 """
 
+import threading
 from collections import deque
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, cast
@@ -24,10 +25,11 @@ from btclib_node.rpc.callbacks import arg_names, callbacks
 from btclib_node.rpc.errors import RpcError
 from btclib_node.rpc.help import HELP_TEXT
 from btclib_node.rpc.jsonrpc import NO_CONTENT, OK, HttpReply, decode
-from btclib_node.rpc.main import get_connection, handle_rpc
+from btclib_node.rpc.main import get_connection, handle_rpc, resume_rpc
 from tests import generate_random_transaction
 
 if TYPE_CHECKING:
+    from collections.abc import Generator
     from pathlib import Path
 
     from btclib_node.rpc.manager import RpcManager
@@ -82,11 +84,13 @@ def make_node(
         else SimpleNamespace(log_debug=lambda *a: None, exception=lambda *a: None),
         stop=lambda: stopped.append(True),
         p2p_manager=SimpleNamespace(ping_all=callback or (lambda: None)),
-        # `_execute`'s own `RPCCommandExecution` span, popped again
+        # `_execute`'s own `RPCCommandExecution` span, removed again
         # before this function returns whatever it dispatched to
         active_rpc_commands=(
             active_rpc_commands if active_rpc_commands is not None else []
         ),
+        pending_rpc=deque(),
+        terminate_flag=threading.Event(),
     )
     return node, sent, waited, stopped
 
@@ -104,7 +108,7 @@ def test_a_request_is_answered() -> None:
 
 
 def test_active_rpc_commands_holds_the_call_only_while_it_runs() -> None:
-    """`_execute` appends to `active_rpc_commands`, and pops once it returns.
+    """`_execute` appends to `active_rpc_commands`, and removes it on return.
 
     `rpc.callbacks.get_rpc_info`'s own `active_commands`: the entry --
     `ping`, a `time.monotonic()` start -- is there while `ping_all` runs,
@@ -601,6 +605,40 @@ def test_stop_is_asked_of_the_batch_not_of_its_last_request() -> None:
     assert not sent
 
 
+def test_a_stop_in_a_batch_ends_a_later_member_that_waits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`terminate_flag` is set as `stop` latches, not once the batch ends.
+
+    The member after `stop` waits until the flag is set, as
+    `waitforblockheight` does; without the flag set at once the batch
+    never ends and `stop` is never carried out.
+    """
+
+    def waits_for_the_flag(node: Any, _conn: object, _params: list[Any]) -> Any:
+        def job() -> Generator[bool, None, object]:
+            while not node.terminate_flag.is_set():
+                yield False
+            return "ended"
+
+        return job()
+
+    monkeypatch.setitem(callbacks, "ping", waits_for_the_flag)
+    stop = {"jsonrpc": "2.0", "id": "a", "method": "stop"}
+    node, sent, waited, stopped = make_node([stop, PING])
+
+    handle_rpc(node)
+
+    assert stopped == [True]
+    assert not node.pending_rpc
+    [reply] = waited
+    assert [member["result"] for member in reply.body] == [
+        "Btclib node stopping",
+        "ended",
+    ]
+    assert not sent
+
+
 def test_a_lone_stop_waits_for_its_reply() -> None:
     """A lone `stop` is answered by `send_and_wait`, then the node stops."""
     node, sent, waited, stopped = make_node({"id": "a", "method": "stop"})
@@ -756,3 +794,108 @@ def test_get_connection_answers_none_rather_than_raising() -> None:
     """get_connection answers None for a connection id not in the table."""
     manager = cast("RpcManager", SimpleNamespace(connections={}))
     assert get_connection(manager, 0) is None
+
+
+def waiting_ping(gate: list[object], *, worked: bool = False) -> Any:
+    """Return a `ping` callback that waits until `gate` holds something.
+
+    Each step yields `worked`; the answer is `gate`'s first item.
+    """
+
+    def callback(_node: object, _conn: object, _params: list[Any]) -> Any:
+        def job() -> Generator[bool, None, object]:
+            while not gate:
+                yield worked
+            return gate[0]
+
+        return job()
+
+    return callback
+
+
+def test_a_request_that_waits_is_answered_by_resume_rpc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`handle_rpc` keeps it in `pending_rpc`; `resume_rpc` answers it."""
+    gate: list[object] = []
+    monkeypatch.setitem(callbacks, "ping", waiting_ping(gate))
+    node, sent, _, _ = make_node(PING)
+
+    handle_rpc(node)
+    assert sent == []
+    assert len(node.pending_rpc) == 1
+    assert resume_rpc(node) is False
+    assert sent == []
+
+    gate.append(7)
+    assert resume_rpc(node) is False
+    assert sent == [HttpReply(OK, {"jsonrpc": "2.0", "result": 7, "id": "a"})]
+    assert not node.pending_rpc
+
+
+def test_resume_answers_whether_a_step_worked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A step that worked keeps `Node`'s loop from sleeping."""
+    monkeypatch.setitem(callbacks, "ping", waiting_ping([], worked=True))
+    node, _, _, _ = make_node(PING)
+    handle_rpc(node)
+
+    assert resume_rpc(node) is True
+
+
+def test_a_member_that_waits_holds_back_the_rest_of_its_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Members run in order, as on Core's one worker, and the reply is one."""
+    gate: list[object] = []
+    monkeypatch.setitem(callbacks, "ping", waiting_ping(gate))
+    count = {"jsonrpc": "2.0", "id": "b", "method": "getrpcinfo"}
+    node, sent, _, _ = make_node([PING, count])
+    node.log_path = None
+
+    handle_rpc(node)
+    assert sent == []
+
+    gate.append(7)
+    resume_rpc(node)
+    [reply] = sent
+    assert [member["id"] for member in reply.body] == ["a", "b"]
+    assert reply.body[0]["result"] == 7
+    # the second member ran after the first ended, so it saw only itself
+    assert [c["method"] for c in reply.body[1]["result"]["active_commands"]] == [
+        "getrpcinfo"
+    ]
+
+
+def test_a_request_that_ends_first_takes_its_own_entry_off_active_commands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Of two waiting requests, the earlier can end first; the later stays."""
+    first: list[object] = []
+    second: list[object] = []
+    monkeypatch.setitem(callbacks, "ping", waiting_ping(first))
+    node, _, _, _ = make_node(PING)
+    handle_rpc(node)
+    monkeypatch.setitem(callbacks, "ping", waiting_ping(second))
+    node.rpc_manager.messages.append((PING, 0))
+    handle_rpc(node)
+    [_, (_, started_second)] = node.active_rpc_commands
+
+    first.append(1)
+    resume_rpc(node)
+
+    assert node.active_rpc_commands == [("ping", started_second)]
+
+
+def test_a_step_that_raises_drops_its_request() -> None:
+    """It is taken off `pending_rpc` before it runs, so it is not run again."""
+
+    def broken() -> Generator[bool, None, Any]:
+        yield from ()
+        raise RuntimeError
+
+    node, _, _, _ = make_node(PING)
+    node.pending_rpc.append((None, broken()))
+
+    with pytest.raises(RuntimeError):
+        resume_rpc(node)
+    assert not node.pending_rpc

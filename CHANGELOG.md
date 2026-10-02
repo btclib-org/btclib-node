@@ -1869,6 +1869,18 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
   where it is `0`, `-noassumevalid` or not given**, refused as Core refuses
   it. Nothing reads it yet (issue #1576).
 
+### `generatetoaddress` and `generateblock` leave the node serving while they search
+
+- **The nonce search runs a chunk at a time on the node's loop, so peers,
+  other calls and `stop` are served between chunks, and `stop` ends it, as
+  in Core** (closes #1622).
+
+### A long poll and `waitforblockheight` are served
+
+- **`getblocktemplate` waits on a `longpollid`, and `waitforblockheight` on
+  the tip, as Core's do; the counter a `longpollid` names counts each block
+  connected or disconnected too, as Core's** (closes #1606).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

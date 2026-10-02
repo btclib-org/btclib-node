@@ -1589,7 +1589,7 @@ class RpcConnection:
     def send_and_wait(self, reply: HttpReply) -> None:
         """Like `send`, but block up to 2 seconds for the write to finish.
 
-        `handle_rpc`'s own `stop` request is the only caller: the client
+        `rpc.main._step` is the only caller, for a `stop` request: the client
         has to see its own reply before `node.stop()` starts tearing
         `loop` down under it. Writes `Connection: close` and closes,
         whatever the request asked for -- `RpcManager.stop`, called right
@@ -1603,7 +1603,7 @@ class RpcConnection:
     def send_and_close_after(self, reply: HttpReply, delay: float) -> None:
         """Write `reply` `delay` seconds from now, on this connection's loop.
 
-        `rpc.main.handle_rpc` is the only caller, for a `stop` carrying
+        `rpc.main._step` is the only caller, for a `stop` carrying
         a positive `wait` (btclib-org/btclib-node#1467), and returns at
         once to set `Node.terminate_flag`, as Core's own `stop` requests
         shutdown before it sleeps. The wait runs on `loop`, and

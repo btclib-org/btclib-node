@@ -741,6 +741,7 @@ def _finalize_fork(node: Node, to_add: list[Block], to_remove: list[RevBlock]) -
     # argued -- this call is the "tip changed" moment that comment cites.
     # btclib-org/btclib-node#722
     node.best_height = len(block_index.active_chain) - 1
+    node.mempool.add_transactions_updated(len(to_remove) + len(to_add))
     if utxo_index.should_flush():
         node.chainstate.flush()
     node.logger.log_debug("validation", "End chainstate finalize")

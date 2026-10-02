@@ -11,10 +11,9 @@ the v31.1 tag. `rpc.mining` is the RPC surface over them.
 
 Everything here runs on `Node`'s own thread, `ARCHITECTURE.md`'s *The
 loop*, which is what lets it read the mempool and the staged UTXO set
-without a lock. That thread is held for the whole nonce search, up to
-`maxtries` hashes, and for a negative one, read as 2**64 - 1, until the
-block is found; nothing, `stop` included, is served meanwhile
-(btclib-org/btclib-node#1622).
+without a lock. `solve_block` searches `_NONCE_CHUNK` nonces at a time
+and hands the thread back to the loop between chunks, where Core
+searches on an RPC thread of its own.
 
 Where this module differs from Core:
 
@@ -83,6 +82,8 @@ from btclib_node.main import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Generator
+
     from btclib.block.header_context import ParentOf
     from btclib.script.script_pub_key import ScriptPubKey
 
@@ -126,7 +127,9 @@ _MIN_FEERATE = Fraction(1, 1000)
 # a transaction's sigop-adjusted weight
 _BYTES_PER_SIGOP = 20
 
-# nonces tried between two looks at `Node.terminate_flag`
+# nonces `solve_block` tries in one step. A pass of the loop runs one step
+# of each search in progress, so it grows by one chunk per search, with no
+# bound like Core's `-rpcthreads` and `-rpcworkqueue`.
 _NONCE_CHUNK = 1 << 14
 
 # the connect-time checks that raise no `TxRejectedError`, and Core's reason
@@ -444,14 +447,17 @@ def block_with_transactions(
     ).block
 
 
-def solve_block(node: Node, block: Block, max_tries: int) -> tuple[Block | None, int]:
-    """Search `block`'s nonces, and answer the solved block with the tries left.
+def solve_block(
+    node: Node, block: Block, max_tries: int
+) -> Generator[bool, None, tuple[Block | None, int]]:
+    """Search `block`'s nonces, and return the solved block with the tries left.
 
     Core's `GenerateBlock`: one try per nonce, from the header's own. The
     block is `None` where the tries ran out, or `Node.terminate_flag`
     was set, with the tries left; and where the nonces ran out first,
     `max_tries` is what is left and `block` is `None` too, so the caller
-    builds another block.
+    builds another block. Yields `True` after each `_NONCE_CHUNK` that
+    found nothing, for `rpc.main` to resume it on `Node`'s loop.
     """
     header = block.header
     remaining = max_tries
@@ -468,6 +474,7 @@ def solve_block(node: Node, block: Block, max_tries: int) -> tuple[Block | None,
         if header.nonce == NONCE_SPACE:
             header.nonce = 0
             return None, remaining
+        yield True
     return None, remaining
 
 
@@ -629,20 +636,26 @@ def check_block_validity(
 
 
 def accept_block(node: Node, block: Block) -> str | None:
-    """Store a block this node just built on the tip and connect it.
+    """Store a block this node built on the tip, and connect it.
 
     Core's `ProcessNewBlock` for the block a mining RPC solved
-    (`src/rpc/mining.cpp`). Answers why `update_chain` refused the
-    block, or `None`. `rpc.callbacks.submit_block` is the same hand-over
-    for a block from outside; this block, built on the tip and checked,
-    needs none of its refusals.
+    (`src/rpc/mining.cpp`). Answers why the block was refused, or `None`.
+    `rpc.callbacks.submit_block` is the same hand-over for a block from
+    outside; this block, built on the tip and checked, needs none of its
+    refusals but one. The search can end after the tip it was built on is
+    invalidated, and then its header is refused `bad-prevblk`, as Core's
+    `AcceptBlockHeader` refuses it. A tip that only moved on leaves the
+    block stored on its branch, as in Core.
 
     A failure that is not a verdict on the block stops `Node.run`, as
     `rpc.callbacks._validate_extending_tip` argues.
     """
     block_index = node.chainstate.block_index
     block_hash = block.header.hash
-    block_index.add_headers([block.header])
+    try:
+        block_index.add_headers([block.header])
+    except BTClibException as error:
+        return str(error)
     node.block_db.add_block(block)
     block_index.set_downloaded(block_hash)
     new_pow_valid_block(node, block)

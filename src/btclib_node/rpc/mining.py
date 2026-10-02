@@ -2,26 +2,27 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""The mining RPCs: `generatetoaddress`, `generateblock` and `getblocktemplate`.
+"""The mining RPCs, and `waitforblockheight`, which waits on the same tip.
 
-Core's `src/rpc/mining.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-tag. Each handler has `rpc.callbacks`' signature and runs on `Node`'s
-thread, so it may build a block and hand it to `update_chain` without a
-lock (`ARCHITECTURE.md`). `btclib_node.mining` builds and checks the
-blocks.
+Core's `generatetoaddress`, `generateblock` and `getblocktemplate` are in
+`src/rpc/mining.cpp`, and `waitforblockheight` in `src/rpc/blockchain.cpp`,
+where it waits through the mining interface's `waitTipChanged`, at
+bitcoin/bitcoin@9be056a8a7, the v31.1 tag. Each handler has
+`rpc.callbacks`' signature and runs on `Node`'s thread, so it may build a
+block and hand it to `update_chain` without a lock (`ARCHITECTURE.md`).
+`btclib_node.mining` builds and checks the blocks.
 
-`getblocktemplate` serves `proposal` mode and `template` mode without
-`longpollid`: a long poll waits for a new tip, and nothing here may wait
-on `Node`'s thread. The nonce search of `generatetoaddress` and
-`generateblock` does hold it, up to `maxtries` hashes (see
-`btclib_node.mining`), where Core's RPC threads leave its message loop
-free.
+The nonce search of `generatetoaddress` and `generateblock`, a
+`getblocktemplate` long poll and `waitforblockheight` are generators that
+`rpc.main` resumes on each pass of `Node`'s loop, where Core runs them on
+an RPC thread of their own.
 """
 
 from __future__ import annotations
 
 import re
 import string
+from time import monotonic
 from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import RPCErrorCode
@@ -56,10 +57,17 @@ from btclib_node.rpc.help import HELP_TEXT
 from btclib_node.signet import SIGNET_CHALLENGE
 
 if TYPE_CHECKING:
+    from collections.abc import Generator
+
     from btclib_node import Node
     from btclib_node.rpc.connection import RpcConnection
 
-__all__ = ["generate_block", "generate_to_address", "get_block_template"]
+__all__ = [
+    "generate_block",
+    "generate_to_address",
+    "get_block_template",
+    "wait_for_block_height",
+]
 
 _HEX_DIGITS = frozenset(string.hexdigits)
 
@@ -71,6 +79,20 @@ _UINT64_MASK = 2**64 - 1
 # `MAX_BLOCK_SERIALIZED_SIZE` (`src/consensus/consensus.h`, at
 # bitcoin/bitcoin@9be056a8a7), which `btclib.block.limits` leaves out
 _MAX_BLOCK_SERIALIZED_SIZE = 4_000_000
+
+# A long poll's first look at the mempool, and every one after it, in
+# seconds (`getblocktemplate`, `src/rpc/mining.cpp`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+_LONG_POLL_FIRST_CHECK = 60
+_LONG_POLL_CHECK = 10
+
+# `unsigned int`, the type Core keeps the long poll's counter in
+_UINT32_MASK = 2**32 - 1
+
+# what `TrimStringView` trims, and what `std::from_chars` reads
+_ATOI_SPACE = " \f\n\r\t\v"
+_ATOI_DIGITS = re.compile(r"-?[0-9]+")
+_INT64_MIN, _INT64_MAX = -(2**63), 2**63 - 1
 
 
 def _is_number(value: object) -> bool:
@@ -188,16 +210,15 @@ def _submit(node: Node, block: Block) -> None:
 
 def generate_to_address(
     node: Node, conn: RpcConnection, params: list[Any]
-) -> list[bytes]:
+) -> Generator[bool, None, list[bytes]]:
     """Answer `generatetoaddress`: mine `nblocks` blocks paying `address`.
 
     Core's `generateBlocks` (`src/rpc/mining.cpp`): each block holds what
     the mempool offers, and mining stops early where `maxtries` is spent,
-    answering the hashes of the blocks found. A negative `maxtries` is
-    read as the unsigned number it converts to, as Core's `uint64_t` does.
-    Core refuses no chain. Here a search holds `Node`'s thread for up to
-    `maxtries` hashes, and until a block is found for a negative one
-    (btclib-org/btclib-node#1622).
+    or the node stops, answering the hashes of the blocks found. A
+    negative `maxtries` is read as the unsigned number it converts to, as
+    Core's `uint64_t` does. Core refuses no chain. The arguments are
+    checked here, and the mining is the generator returned.
     """
     if len(params) < 2:  # noqa: PLR2004
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["generatetoaddress"])
@@ -220,11 +241,17 @@ def generate_to_address(
     script_pub_key = _address_script(node, address)
     if script_pub_key is None:
         raise RpcError(RPCErrorCode.INVALID_ADDRESS_OR_KEY, "Error: Invalid address")
+    return _generate_blocks(node, script_pub_key, remaining, tries)
 
+
+def _generate_blocks(
+    node: Node, script_pub_key: ScriptPubKey, remaining: int, tries: int
+) -> Generator[bool, None, list[bytes]]:
+    """Mine `remaining` blocks, `tries` hashes at most, yielding after each."""
     hashes: list[bytes] = []
     while remaining > 0 and not node.terminate_flag.is_set():
         template = _new_block(node, script_pub_key)
-        block, tries = solve_block(node, template.block, tries)
+        block, tries = yield from solve_block(node, template.block, tries)
         if block is None:
             if tries == 0 or node.terminate_flag.is_set():
                 break
@@ -232,6 +259,7 @@ def generate_to_address(
         _submit(node, block)
         remaining -= 1
         hashes.append(block.header.hash)
+        yield True
     return hashes
 
 
@@ -306,7 +334,7 @@ def _output_script(node: Node, output: str) -> ScriptPubKey:
 
 def generate_block(
     node: Node, conn: RpcConnection, params: list[Any]
-) -> dict[str, Any]:
+) -> Generator[bool, None, dict[str, Any]]:
     """Answer `generateblock`: mine one block of exactly the given transactions.
 
     Core's `generateblock` (`src/rpc/mining.cpp`): the block pays the
@@ -318,6 +346,7 @@ def generate_block(
     reason is left off: `check_block_validity` answers the reason alone,
     as BIP22 does, where Core's `ToString` adds the debug text here. It
     is submitted unless `submit` is false, and answered as `hex` then too.
+    The block is checked here, and the search is the generator returned.
     """
     if len(params) < 2:  # noqa: PLR2004
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["generateblock"])
@@ -339,7 +368,14 @@ def generate_block(
     reason = check_block_validity(node, block, check_merkle_root=False)
     if reason is not None:
         raise RpcError(RPCErrorCode.VERIFY_ERROR, f"TestBlockValidity failed: {reason}")
-    solved, _ = solve_block(node, block, DEFAULT_MAX_TRIES)
+    return _generate_block(node, block, submit=submit)
+
+
+def _generate_block(
+    node: Node, block: Block, *, submit: bool
+) -> Generator[bool, None, dict[str, Any]]:
+    """Solve `block`, and submit it where `submit` holds."""
+    solved, _ = yield from solve_block(node, block, DEFAULT_MAX_TRIES)
     if solved is None:
         raise RpcError(RPCErrorCode.MISC_ERROR, "Failed to make block.")
     if submit:
@@ -413,6 +449,8 @@ def _template(node: Node, client_rules: set[str]) -> dict[str, Any]:
             '(call with {"rules": ["segwit"]})',
         )
 
+    # Core's `nTransactionsUpdatedLast`, read before the block is built
+    updated = node.template_transactions_updated = _transactions_updated(node)
     # Core passes no output script: the template names only its value
     template = _new_block(node, ScriptPubKey(b"", node.chain.name))
     block = template.block
@@ -462,7 +500,7 @@ def _template(node: Node, client_rules: set[str]) -> dict[str, Any]:
         "transactions": transactions,
         "coinbaseaux": {},
         "coinbasevalue": block.transactions[0].vout[0].value,
-        "longpollid": header.previous_block_hash.hex() + str(node.mempool.sequence - 1),
+        "longpollid": header.previous_block_hash.hex() + str(updated),
         "target": header.target.hex(),
         "mintime": template.min_time,
         "mutable": ["time", "transactions", "prevblock"],
@@ -483,20 +521,85 @@ def _template(node: Node, client_rules: set[str]) -> dict[str, Any]:
     return result
 
 
+def _transactions_updated(node: Node) -> int:
+    """Return the mempool's counter as Core's `unsigned int` holds it."""
+    return node.mempool.transactions_updated & _UINT32_MASK
+
+
+def _atoi(text: str) -> int:
+    """Core's `LocaleIndependentAtoi<int64_t>`: the leading integer, else 0."""
+    digits = text.strip(_ATOI_SPACE)
+    if digits.startswith("+"):
+        if digits.startswith("+-"):
+            return 0
+        digits = digits[1:]
+    match = _ATOI_DIGITS.match(digits)
+    if match is None:
+        return 0
+    return min(max(int(match.group()), _INT64_MIN), _INT64_MAX)
+
+
+def _long_poll_id(node: Node, long_poll_id: object) -> tuple[bytes, int]:
+    """Return the tip and the counter a `longpollid` asks to wait past.
+
+    Core's reading: a string is a tip hash, read by `ParseHashV` from its
+    first 64 bytes, then the counter, read by `LocaleIndependentAtoi` and
+    kept as an `unsigned int`. Anything else names the tip and the
+    counter of the last template.
+    """
+    if not isinstance(long_poll_id, str):
+        tip = node.chainstate.block_index.active_chain[-1]
+        return tip, node.template_transactions_updated
+    raw = long_poll_id.encode()
+    head = raw[:64].decode(errors="replace")
+    if len(raw) < 64:  # noqa: PLR2004
+        raise RpcError(
+            RPCErrorCode.INVALID_PARAMETER,
+            f"longpollid must be of length 64 (not {len(raw)}, for '{head}')",
+        )
+    if not _is_hex(head):
+        raise RpcError(
+            RPCErrorCode.INVALID_PARAMETER,
+            f"longpollid must be hexadecimal string (not '{head}')",
+        )
+    counter = _atoi(raw[64:].decode(errors="replace")) & _UINT32_MASK
+    return bytes.fromhex(head), counter
+
+
+def _long_poll(
+    node: Node, client_rules: set[str], watched: bytes, counter: int, check_at: float
+) -> Generator[bool, None, dict[str, Any]]:
+    """Wait as Core's long poll waits, then answer the template.
+
+    Until the tip is no longer `watched`, or the mempool's counter is no
+    longer `counter`, looked at from `check_at` on and every ten seconds
+    after each look. A node that stops meanwhile answers Core's
+    `RPC_CLIENT_NOT_CONNECTED`.
+    """
+    while not node.terminate_flag.is_set():
+        if node.chainstate.block_index.active_chain[-1] != watched:
+            break
+        if monotonic() >= check_at:
+            if _transactions_updated(node) != counter:
+                break
+            check_at = monotonic() + _LONG_POLL_CHECK
+        yield False
+    if node.terminate_flag.is_set():
+        raise RpcError(RPCErrorCode.CLIENT_NOT_CONNECTED, "Shutting down")
+    return _template(node, client_rules)
+
+
 def get_block_template(
     node: Node, conn: RpcConnection, params: list[Any]
-) -> dict[str, Any] | str | None:
+) -> dict[str, Any] | str | Generator[bool, None, dict[str, Any]] | None:
     """Answer `getblocktemplate`: a template, or a verdict on a block.
 
     Core's `getblocktemplate` (`src/rpc/mining.cpp`, BIPs 22 and 23). With
     `mode` `"proposal"` the block in `data` is checked on top of the tip
     and not stored, answered null where valid. Otherwise the answer is a
     template built from the mempool, which on mainnet needs a peer and a
-    node out of initial block download.
-
-    A `longpollid` is refused: Core's call waits for a new tip or a
-    changed mempool, and here nothing may wait on `Node`'s own thread
-    (btclib-org/btclib-node#1606).
+    node out of initial block download. With a `longpollid`, the answer
+    is `_long_poll`, the generator that waits before building it.
     """
     if not params:
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["getblocktemplate"])
@@ -518,6 +621,53 @@ def get_block_template(
     if mode != "template":
         raise RpcError(RPCErrorCode.INVALID_PARAMETER, "Invalid mode")
     _check_template_readiness(node)
-    if request.get("longpollid") is not None:
-        raise RpcError(RPCErrorCode.MISC_ERROR, "longpollid is not supported")
-    return _template(node, client_rules)
+    long_poll_id = request.get("longpollid")
+    if long_poll_id is None:
+        return _template(node, client_rules)
+    watched, counter = _long_poll_id(node, long_poll_id)
+    check_at = monotonic() + _LONG_POLL_FIRST_CHECK
+    return _long_poll(node, client_rules, watched, counter, check_at)
+
+
+def wait_for_block_height(
+    node: Node, conn: RpcConnection, params: list[Any]
+) -> Generator[bool, None, dict[str, Any]]:
+    """Answer `waitforblockheight`: the tip, once it is at `height` or above.
+
+    Core's `waitforblockheight`: `timeout` is in milliseconds, 0 for
+    none, and the tip is answered at the timeout too, and once the node
+    stops. The arguments are checked here, and the wait is the generator
+    returned.
+    """
+    if not params:
+        raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["waitforblockheight"])
+    height = params[0]
+    timeout = params[1] if len(params) > 1 else None
+    mismatches: list[tuple[int, str, object, str]] = []
+    if not _is_number(height):
+        mismatches.append((1, "height", height, "number"))
+    if timeout is not None and not _is_number(timeout):
+        mismatches.append((2, "timeout", timeout, "number"))
+    if mismatches:
+        raise type_errors(*mismatches)
+    target = _int_param(height)
+    milliseconds = 0 if timeout is None else _int_param(timeout)
+    if milliseconds < 0:
+        raise RpcError(RPCErrorCode.MISC_ERROR, "Negative timeout")
+    deadline = monotonic() + milliseconds / 1000 if milliseconds else None
+    return _wait_for_height(node, target, deadline)
+
+
+def _wait_for_height(
+    node: Node, height: int, deadline: float | None
+) -> Generator[bool, None, dict[str, Any]]:
+    """Wait for the tip to reach `height`, until `deadline` if there is one."""
+    block_index = node.chainstate.block_index
+    while len(block_index.active_chain) <= height:
+        if node.terminate_flag.is_set() or (
+            deadline is not None and monotonic() >= deadline
+        ):
+            break
+        yield False
+    active_chain = block_index.active_chain
+    return {"hash": active_chain[-1], "height": len(active_chain) - 1}
