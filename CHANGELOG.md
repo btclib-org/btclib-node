@@ -1863,6 +1863,12 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
   btclib-org/.github#1527): *The review* says a local review of a named
   sha by a reviewer other than the author stands in for it.
 
+### `-assumevalid=<hex>` is read, and nothing acts on it yet
+
+- **`Config.assume_valid` is the block hash `-assumevalid` names, `None`
+  where it is `0`, `-noassumevalid` or not given**, refused as Core refuses
+  it. Nothing reads it yet (issue #1576).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

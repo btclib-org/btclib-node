@@ -1974,6 +1974,61 @@ def test_build_config_minimumchainwork_is_debug_only(
     assert "-minimumchainwork=<hex>" in capsys.readouterr().out
 
 
+def test_build_config_assumevalid_is_off_when_not_given(tmp_path: Path) -> None:
+    """ISS 1576: until Core's default per network is read, it is off."""
+    assert _build(tmp_path, "-regtest").assume_valid is None
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("1", "00" * 31 + "01"),
+        ("0x10", "00" * 31 + "10"),
+        ("0000000000000000000" + "1" * 45, "0000000000000000000" + "1" * 45),
+        ("f" * 64, "ff" * 32),
+    ],
+)
+def test_build_config_assumevalid_reads_the_block_hash_as_displayed(
+    tmp_path: Path, value: str, expected: str
+) -> None:
+    """`uint256::FromUserHex`: an optional `0x`, short values padded."""
+    config = _build(tmp_path, "-regtest", f"-assumevalid={value}")
+    assert config.assume_valid == bytes.fromhex(expected.rjust(64, "0"))
+
+
+@pytest.mark.parametrize("arg", ["-assumevalid=0", "-assumevalid=", "-noassumevalid"])
+def test_build_config_assumevalid_zero_is_off(tmp_path: Path, arg: str) -> None:
+    """`0`, empty and a negation all read as zero: Core's "verify all"."""
+    assert _build(tmp_path, "-regtest", arg).assume_valid is None
+
+
+@pytest.mark.parametrize("value", ["z" * 10, "0xgg", "0X10", "a" * 65])
+def test_build_config_assumevalid_that_is_not_valid_hex_is_refused(
+    tmp_path: Path, value: str
+) -> None:
+    """Core's own words, refused past 64 hex digits or on a non-hex one."""
+    expected = re.escape(
+        f"Invalid assumevalid block hash specified ({value}), must be up to "
+        "64 hex digits (or 0 to disable)"
+    )
+    with pytest.raises(ValueError, match=f"^{expected}$"):
+        _build(tmp_path, "-regtest", f"-assumevalid={value}")
+
+
+def test_build_config_assumevalid_help_is_cores(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`-help` lists `-assumevalid=<hex>` as Core does."""
+    with pytest.raises(SystemExit):
+        _build(tmp_path, "-help")
+    out = " ".join(capsys.readouterr().out.split())
+    assert (
+        "-assumevalid=<hex> If this block is in the chain assume that it and "
+        "its ancestors are valid and potentially skip their script "
+        "verification (0 to verify all, default: " + "0" * 64
+    ) in out
+
+
 def test_build_config_rpcauth_from_the_command_line_and_the_file(
     tmp_path: Path,
 ) -> None:
