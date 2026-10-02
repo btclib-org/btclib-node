@@ -1801,6 +1801,11 @@ that records it (issue btclib-org/.github#1362).
   with a `python` mapping keeps** (issue btclib-org/.github#1508); it
   replaces `python-objects.inv`.
 
+### The release's attestation is signed by `reusable-build.yml`, at SLSA Build L3
+
+`release.yml` calls `reusable-build.yml`, which signs the files before the
+publish jobs wait for approval (issue btclib-org/.github#1506).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

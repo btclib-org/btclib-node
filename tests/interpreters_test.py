@@ -85,6 +85,11 @@ _FREE_THREADING_CLASSIFIER = "Programming Language :: Python :: Free Threading"
 _VERSION = r"[\w.+-]+"
 _NAMED = re.compile(rf'python-version: ("[^"\n]*"|\[[^]\n]*\])|--python ({_VERSION})')
 _QUOTED = re.compile(rf'"({_VERSION})"')
+# the interpreter release.yml hands reusable-build.yml, which normalizes
+# the sdist that is published: `python: "3.14"` under the `with:` of its
+# `build` job. Read beside `_NAMED`, whose `--python` arm sees a command
+# line and not an input
+_NAMED_INPUT = re.compile(rf'^ +python: "({_VERSION})"', re.MULTILINE)
 # the shape a caller of `os-macos.yml` and `os-ubuntu.yml`'s own
 # reusable-os-suite.yml carries (btclib-org/.github#35):
 # reusable-deps-oldest.yml's own five callers already established the
@@ -185,17 +190,16 @@ _NAME = re.compile(r'^    name: "?(?P<name>[^"\n]*)"?', re.MULTILINE)
 # upstream lets that step fail without reddening the job, which is
 # `free-threaded`'s own suite step, its sync failing on every run today
 # (issue #723); and a step keyed on the run's own context is skipped
-# whenever the context does not hold, which is `dist`'s call to
-# `./.github/actions/dev-version`, gated `if: inputs.version-suffix
-# != ''` and so run on a release rehearsal and on nothing else --
-# neither a pull request nor a push to `main`, as `test.yml`'s own
-# comment beside it says.
+# whenever the context does not hold, which is each of `dist`'s build
+# steps, gated `if: ${{ !inputs.use-signed-dist }}` and so run on a pull
+# request and on a push to `main`, and skipped when release.yml calls
+# this workflow to check the files reusable-build.yml built.
 #
 # So the rule is one rule: a conditioned step is not shown to have run,
 # and what it names or reaches is not this read's business. `3.14t`
 # named in `free-threaded`'s unconditioned setup step is refused for
 # that reason (issue #750), and an interpreter reached only through
-# `dist`'s rehearsal-only step is refused for the same one. Erring this
+# one of `dist`'s build steps is refused for the same one. Erring this
 # way costs nothing that matters: an interpreter dropped is a claim of
 # support this tree does not make, where an interpreter counted in is a
 # claim that the gate exercises what it does not -- the "it passed
@@ -206,14 +210,14 @@ _NAME = re.compile(r'^    name: "?(?P<name>[^"\n]*)"?', re.MULTILINE)
 # unconditioned step of a gating job calls is read too, the
 # repository's own file and no network fetch, the same way `_CI` above
 # reads every composite action. Issue #757 is what closes that gap.
-# **No job the gate waits on is shaped that way today** -- the gate's
-# only local-action call is the conditioned step above, and the tree has
-# no other -- so the follow is held by a unit test on job text of its own rather
-# than by the real workflow, which is what a walk that currently finds
-# nothing has to be. A `uses:` pinned to a third party's own commit is
-# not read this way at all: fetching it would be the network call this
-# test does not make, so an interpreter such an action hard-codes
-# outside the inputs its caller passes stays outside this read's reach.
+# **No job the gate waits on is shaped that way today** -- the gate
+# calls no local action -- so the follow is held by a unit test on job
+# text of its own rather than by the real workflow, which is what a walk
+# that currently finds nothing has to be. A `uses:` pinned to a third
+# party's own commit is not read this way at all: fetching it would be
+# the network call this test does not make, so an interpreter such an
+# action hard-codes outside the inputs its caller passes stays outside
+# this read's reach.
 _UNCOMMENTED = re.compile(r"(?:^|\s)#.*$", re.MULTILINE)
 # one step of a job: the list marker's own line, then whatever it
 # indents under, a blank line included since a multi-line `run: |`
@@ -417,12 +421,15 @@ _NAMES_ONE = (
     # project's `requires-python`, so it names the one uv resolves
     # (btclib-org/btclib-node#502)
     ".github/workflows/pypi-install.yml",
-    # release.yml's `documented` job used to run the read the docs wait
-    # through `uv run --no-project`, naming the interpreter on its own
-    # command line (btclib-org/.github#644); that wait is
-    # btclib-org/.github's reusable-documented.yml now, called at @main,
-    # and the interpreter it names lives in that file rather than in
-    # this one (btclib-org/.github#35)
+    # release.yml's `build` job passes reusable-build.yml the interpreter
+    # that normalizes the sdist it publishes, as `python: "3.14"`. Its
+    # `documented` job used to run the read the docs wait through
+    # `uv run --no-project`, naming the interpreter on its own command
+    # line (btclib-org/.github#644); that wait is btclib-org/.github's
+    # reusable-documented.yml now, called at @main, and the interpreter
+    # it names lives in that file rather than in this one
+    # (btclib-org/.github#35)
+    ".github/workflows/release.yml",
     # sdist-rebuild.yml's `rebuild` job used to run the tag's sdist
     # normalizer through `uv run --no-project --python 3.14` on its own
     # command line, as test.yml's dist job does; the job is now a call to
@@ -436,8 +443,10 @@ _NAMES_ONE = (
 def _named(text: str) -> set[str]:
     """Return every interpreter version one CI file names literally.
 
-    `_NAMED`'s own two arms, and `_NAMED_CALLER`'s: the JSON-encoded list
-    a caller of `reusable-os-suite.yml` carries (btclib-org/.github#35).
+    `_NAMED`'s own two arms, `_NAMED_CALLER`'s: the JSON-encoded list
+    a caller of `reusable-os-suite.yml` carries (btclib-org/.github#35),
+    and `_NAMED_INPUT`'s: the `python:` input release.yml passes
+    `reusable-build.yml`.
     `_QUOTED` extracts the versions there too -- a JSON array of quoted
     strings is, textually, the same shape as the flow sequence `_NAMED`'s
     own bracket arm already reads.
@@ -448,6 +457,7 @@ def _named(text: str) -> set[str]:
         found.update(_QUOTED.findall(value) if value else [bare])
     for match in _NAMED_CALLER.finditer(text):
         found.update(_QUOTED.findall(match["block"]))
+    found.update(_NAMED_INPUT.findall(text))
     return found
 
 
@@ -857,10 +867,9 @@ def test_found_follows_a_local_action_regardless(
 ) -> None:
     """A `uses: ./...` a job calls names an interpreter of its own.
 
-    `dist` is the one job shaped this way in the real gate, calling
-    `./.github/actions/dev-version` -- built here on a directory of its
-    own instead, so the assertion is about `_found` rather than about
-    that action's own file staying at `--python 3.14`.
+    No job of the real gate is shaped this way, so the action is built
+    here on a directory of its own, and the assertion is about `_found`
+    rather than about any action's own file.
 
     *Regardless* is what the caller here is shaped to exercise: its own
     pytest step is gated, so `_runs_the_suite` refuses the `3.14` the
@@ -906,12 +915,12 @@ def test_found_refuses_a_step_conditioned_on_its_own_dash_line() -> None:
     of its own.
     """
     dash = (
-        "      - if: inputs.version-suffix != ''\n"
+        "      - if: inputs.use-signed-dist\n"
         "        name: A step\n"
         "        run: uv run --no-project --python 3.14t true\n"
     )
     assert _found({"caller": dash}, {"caller"}) == set()
-    always = dash.replace("      - if: inputs.version-suffix != ''\n", "      - ")
+    always = dash.replace("      - if: inputs.use-signed-dist\n", "      - ")
     assert _found({"caller": always}, {"caller"}) == {"3.14t"}
 
 
@@ -958,12 +967,12 @@ def test_found_refuses_an_interpreter_a_conditioned_step_names() -> None:
         "        run: >\n"
         "          uv run --locked --no-default-groups --group test pytest\n"
         "      - name: Rehearsal only\n"
-        "        if: inputs.version-suffix != ''\n"
+        "        if: inputs.use-signed-dist\n"
         "        run: uv run --no-project --python 3.14t true\n"
     )
     assert _found({"caller": job}, {"caller"}) == set()
     # the control: the same line with nothing gating it is read
-    always = job.replace("        if: inputs.version-suffix != ''\n", "")
+    always = job.replace("        if: inputs.use-signed-dist\n", "")
     assert _found({"caller": always}, {"caller"}) == {"3.14t"}
 
 
@@ -972,14 +981,12 @@ def test_found_refuses_a_local_action_a_conditioned_step_calls(
 ) -> None:
     """A `uses:` on a step carrying an `if:` is not evidence of anything.
 
-    This is the real gate's own shape and the reason issue #757 closes
-    on the test above rather than on the workflow: `dist` calls
-    `./.github/actions/dev-version` from a step gated
-    `if: inputs.version-suffix != ''`, which holds on a release
-    rehearsal and on neither a pull request nor a push to `main`. Read
-    unconditionally, the interpreter that action pins would count as
-    one the merge gate runs, which is the claim issue #750 refuses one
-    scope up.
+    This is the shape issue #757 closes on the test above rather than
+    on the workflow: a step gated `if: inputs.use-signed-dist`, which
+    holds on a release and on neither a pull request nor a push to
+    `main`. Read unconditionally, the interpreter the action it calls
+    pins would count as one the merge gate runs, which is the claim
+    issue #750 refuses one scope up.
     """
     (tmp_path / "action").mkdir()
     (tmp_path / "action" / "action.yml").write_text(
@@ -990,7 +997,7 @@ def test_found_refuses_a_local_action_a_conditioned_step_calls(
     monkeypatch.setattr(sys.modules[__name__], "_ROOT", tmp_path)
     rehearsal = (
         "      - name: A step\n"
-        "        if: inputs.version-suffix != ''\n"
+        "        if: inputs.use-signed-dist\n"
         "        uses: ./action\n"
     )
     assert _found({"caller": rehearsal}, {"caller"}) == set()
