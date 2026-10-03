@@ -1947,7 +1947,7 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
 
 ### The maintainer's bypass is for emergencies
 
-- **Every pull request, the maintainer's included, lands with an owner's
+- **Every pull request, the maintainer's included, lands with another person's
   approval** (issue btclib-org/.github#1362), `CONTRIBUTING.md` and
   this tree's prose saying so. The bypass stays, for emergencies.
 

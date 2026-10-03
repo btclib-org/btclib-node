@@ -415,7 +415,7 @@ this release included.
    runs again on the tag, `-W`, `-n` and all — checked here too, ahead of
    a tag, rather than trusted to a run this step already duplicates.
 
-1. Merge it the way every other pull request here lands: once an owner
+1. Merge it the way every other pull request here lands: once somebody
    other than its author has approved the head and the checks are in,
    "Squash and merge", or auto-merge. `gh pr merge <n> --squash
    --match-head-commit <head> --body-file <path> --subject <title>` is the

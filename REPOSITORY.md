@@ -198,7 +198,7 @@ gh api repos/btclib-org/btclib-node/rulesets --jq '.[].id' \
 **The bypass mode is the whole of the design.** `pull_request` excuses
 its holder from the rule while merging a pull request and at no other
 time, so it answers the one thing an emergency cannot wait for — an
-approving review from another owner — and answers nothing else. The
+approving review from somebody else — and answers nothing else. The
 bypass carries no condition; policy limits its use to emergencies, and
 every other pull request, the maintainer's included, waits for that
 approval.
