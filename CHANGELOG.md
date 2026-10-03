@@ -1945,6 +1945,18 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
   with neither `NODE_P2P_V2` nor a seed's exact services, and a failed v2
   dial gets no v1 retry**, unless `-v1transport=1` or `-v2transport=0` (closes #1190).
 
+### The maintainer's bypass is for emergencies
+
+- **`CONTRIBUTING.md`, `REVIEWING.md`, `REPOSITORY.md` and `RELEASING.md` say
+  every pull request lands with an approving review from somebody other than
+  its author; the bypass is for emergencies** (issue btclib-org/.github#1362).
+
+### Earlier entries on how a pull request lands
+
+- Entries above that have the maintainer landing without another person's
+  approval describe the rule before issue btclib-org/.github#1362 (issue
+  btclib-org/.github#1569).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

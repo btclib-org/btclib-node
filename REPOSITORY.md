@@ -164,9 +164,9 @@ gh api repos/btclib-org/btclib-node/branches/main/protection \
 #  "force":false,"linear":true,"reviews":1,"signatures":false}
 ```
 
-`enforce_admins: false` is not a relaxation but what makes a solo merge
-possible at all: the ruleset bypass below reaches the ruleset's own rule
-and nothing else.
+`enforce_admins: false` is not a relaxation but what makes a merge
+through the bypass possible at all: the ruleset bypass below reaches the
+ruleset's own rule and nothing else.
 
 `signatures: false` is classic protection's own copy of the rule
 `main-integrity` below carries: [section 11 states that value for every
@@ -197,8 +197,11 @@ gh api repos/btclib-org/btclib-node/rulesets --jq '.[].id' \
 
 **The bypass mode is the whole of the design.** `pull_request` excuses
 its holder from the rule while merging a pull request and at no other
-time, so it answers the one thing a one-maintainer repository cannot —
-an approving review from somebody else — and answers nothing else.
+time, so it answers the one thing an emergency cannot wait for — an
+approving review from somebody else — and answers nothing else. The
+bypass carries no condition; policy limits its use to emergencies, and
+every other pull request, the maintainer's included, waits for that
+approval.
 `always` in that field would mean a direct push to `main` had become
 possible for its holder, which is the drift the command above exists to
 catch.
