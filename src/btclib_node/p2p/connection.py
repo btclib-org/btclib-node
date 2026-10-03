@@ -1077,7 +1077,8 @@ class Connection:
                     # Core's wording for a v2 transport error
                     # (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
                     # v31.1 tag), for what `-v1transport` refuses: no
-                    # discouragement.
+                    # discouragement. SECURITY.md's *Where this node
+                    # departs from Bitcoin Core* argues the refusal.
                     self.node.logger.log_debug(
                         "net",
                         "V2 transport error: V1 peer refused (see -v1transport), peer=%d",

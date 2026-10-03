@@ -752,7 +752,7 @@ _OPTIONS: dict[str, _Option] = {
     ),
     "v1transport": _Option(
         "",
-        "Support v1 transport (default: 1)",
+        "Support v1 transport (default: 0)",
         _CONNECTION_TITLE,
     ),
     "v2transport": _Option(

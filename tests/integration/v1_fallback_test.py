@@ -120,6 +120,8 @@ def test_this_node_falls_back_to_v1_when_dialling_bitcoind(
             rpc_port=get_random_port(),
             # the retry is a debug line
             debug=True,
+            # the retry is v1
+            v1transport=True,
         )
     )
     node.start()

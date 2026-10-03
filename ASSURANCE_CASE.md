@@ -128,6 +128,10 @@ table, never a peer's.
   `-rpcbind` decides who can reach it, `-rpcallowip` which sources it
   answers, the credentials it accepts who it answers, and
   `-rpcwhitelist` which methods each of them may call.
+- The content of peer-to-peer traffic, against an observer on the path,
+  under BIP324's v2 transport, which this node requires except where
+  SECURITY.md's *Where this node departs from Bitcoin Core* says
+  otherwise.
 
 **The adversaries.**
 
@@ -139,6 +143,8 @@ table, never a peer's.
   a closed connection for a request the listener does not read whole;
   for one it does, a 501, a 405 or a 404 for a method or a path it
   refuses, as from `bitcoind`, and otherwise a 401.
+- A party on the path of a p2p connection, reading or rewriting its
+  traffic.
 - A party tampering with the medium the datadir sits on, or opening the
   same datadir from a second process.
 - A party tampering with a distribution between this tree and the user.
@@ -149,6 +155,9 @@ vulnerabilities*:
 - the JSON-RPC listener, against a caller holding an accepted
   credential, who may call every method `-rpcwhitelist` leaves it, and
   against whoever can read the plain HTTP it is sent over
+- a p2p peer's identity, against a party in the middle of a v2
+  handshake: BIP324 does not authenticate it
+- the timing and sizes of p2p packets, against an observer on the path
 - anything SECURITY.md attributes to btclib rather than to this tree —
   the constant-time properties of the arithmetic btclib's own
   [assurance case](https://github.com/btclib-org/btclib/blob/main/ASSURANCE_CASE.md)
@@ -191,7 +200,11 @@ belongs upstream* says where each kind of defect is reported.
 in, ahead of btclib's wire codec: `V1Transport` reads a header's own
 length field before taking anything from it, bounds it by
 `MAX_PROTOCOL_MESSAGE_LENGTH` and checks the magic against the chain this
-node runs, and the connection bounds what it will buffer in either
+node runs. `V2Transport` (`p2p/v2transport.py`) refuses a handshake whose
+garbage is longer than `MAX_GARBAGE_LEN`, 4095 bytes, before its
+terminator, a packet whose length field exceeds a message's largest
+contents before it decrypts the contents, and a packet that does not
+authenticate. The connection bounds what it will buffer in either
 direction — `MAX_QUEUED_RECV_BYTES` on what may sit unprocessed,
 `MAX_QUEUED_SEND_BYTES` on what this node will queue back out —
 `getdata` and `getcfilters` paced against that last bound, checked
