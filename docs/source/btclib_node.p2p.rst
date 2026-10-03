@@ -131,6 +131,13 @@ btclib\_node.p2p.selfannounce module
    :members:
    :show-inheritance:
 
+btclib\_node.p2p.transport module
+-----------------------------------
+
+.. automodule:: btclib_node.p2p.transport
+   :members:
+   :show-inheritance:
+
 Module contents
 ---------------
 

@@ -736,6 +736,8 @@ def a_handshake_node(
     own_nonces = set(pending_outbound_nonces)
     return SimpleNamespace(
         status=status,
+        # what a `Connection` frames with, `V1Transport` taking its magic
+        chain=RegTest(),
         config=SimpleNamespace(
             min_relay_feerate=min_relay_feerate,
             pruned=False,
@@ -2267,7 +2269,6 @@ def a_data_node(
     node = a_handshake_node(status=status)
     node.is_initial_block_download = is_initial_block_download
     node.mempool = mempool if mempool is not None else Mempool(Logger(debug=True))
-    node.chain = RegTest()
     node.config.chain = node.chain
     # `new_pow_valid_block`'s own high-water mark, Core's
     # `m_highest_fast_announce`, zero until a call moves it

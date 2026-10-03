@@ -140,8 +140,8 @@ this tree's own `fuzz.yml` has no per-target corpus to key one on: Core
 samples a command from the same twelve raw octets a `CMessageHeader`
 carries, landing on one `ALL_NET_MESSAGE_TYPES` recognizes only by
 chance, `LIMIT_TO_MESSAGE_TYPE` existing so OSS-Fuzz's own per-target
-corpora can each hold that chance fixed at 1 instead. `frame_message`
-(`p2p/connection.py`) and `Message.parse` are `fuzz_framing.py`'s own
+corpora can each hold that chance fixed at 1 instead. `V1Transport`
+(`p2p/transport.py`) and `Message.parse` are `fuzz_framing.py`'s own
 target already, so refuzzing a header's magic, length and checksum
 here would only retest that harness under a different name, at the
 cost of every command missing it by chance the way Core's own raw
@@ -357,8 +357,7 @@ def dispatch(data: bytes) -> None:
     del _capture.escaped[:]
     del _capture.refused[:]
     try:
-        conn.buffer += message.serialize()
-        conn.parse_messages()
+        conn.parse_messages(message.serialize())
         if manager.handshake_messages:
             handle_p2p_handshake(node)
         elif manager.messages:

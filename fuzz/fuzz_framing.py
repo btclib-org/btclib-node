@@ -4,34 +4,33 @@
 
 """An atheris harness fuzzing this node's own p2p framing loop.
 
-`Connection.parse_messages` peeks a header's own `length` field before
-building a stream at all, then loops `Message.parse` over whatever
-whole messages the buffer already holds and checks each one's magic
-against the chain this node runs -- hostile-input arithmetic of this
-tree's own, ahead of `btclib`'s own wire codec, that
-btclib-org/btclib-node#516 asks this directory to cover.
+`V1Transport` (`p2p/transport.py`) reads a header's own `length` field
+and checks its magic against the chain this node runs, then takes the
+payload and runs `Message.parse` over the whole message --
+hostile-input arithmetic of this tree's own, ahead of `btclib`'s own
+wire codec, that btclib-org/btclib-node#516 asks this directory to
+cover.
 
-`p2p.connection.frame_message_bytes` is that arithmetic pulled into a
-function of octets alone -- `p2p.connection`'s own module docstring is
-where the extraction is argued against
-`p2p_transport_serialization.cpp`, Core's matching fuzz target for its
-own `V1Transport` (at bitcoin/bitcoin@ca7162cde5): a transport object
-built with no socket, fed raw bytes directly, is the shape a framing
-loop's own fuzz target takes there, and is what `Connection.run` itself
-cannot be reduced to without first owning a socket, a manager and a
-node -- issue #516's own three-way split, and why this harness stops
+`p2p.transport.frame_message_bytes` is that arithmetic pulled into a
+function of octets alone -- `p2p.transport`'s own module docstring is
+where the transport is argued against Core's, and its own docstring
+against `p2p_transport_serialization.cpp`, Core's matching fuzz target
+for its own `V1Transport` (at bitcoin/bitcoin@ca7162cde5): a transport
+object built with no socket, fed raw bytes directly, is the shape a
+framing loop's own fuzz target takes there, and is what `Connection.run`
+itself cannot be reduced to without first owning a socket, a manager and
+a node -- issue #516's own three-way split, and why this harness stops
 at framing rather than reaching `Connection.run`.
 
-`BTClibException` is the whole family `frame_message` refuses a peer's
-octets with: `IncompleteMessageError` for a message `stream` does not
+`BTClibException` is the whole family `V1Transport` refuses a peer's
+octets with: `IncompleteMessageError` for a message the octets do not
 yet hold whole, `WrongNetworkMagicError` for a header whose magic names
-a chain other than the one this node runs, whatever `Message.parse`
-refused a header with where its length is past the bound, and
-`RejectedMessageError` for a whole message whose checksum or command is
-wrong. Suppressing that family alone is what makes this harness report:
-what leaves `fuzz_target` below is then either a crash or a refusal
-outside the family `Connection.parse_messages` answers a peer's octets
-with, and each is a finding.
+a chain other than the one this node runs, `BTClibValueError` for a
+length past the bound, and `RejectedMessageError` for a whole message
+whose checksum or command is wrong. Suppressing that family alone is
+what makes this harness report: what leaves `fuzz_target` below is then
+either a crash or a refusal outside the family `Connection.parse_messages`
+answers a peer's octets with, and each is a finding.
 
 `fuzz.yml` runs this file as an ordinary script under the interpreter
 `.python-version` pins, and its own header is where that is argued
@@ -46,13 +45,13 @@ import sys
 import atheris
 from btclib.exceptions import BTClibException
 
-from btclib_node.p2p.connection import frame_message_bytes
+from btclib_node.p2p.transport import frame_message_bytes
 
 # tests/fuzz_corpus_test.py reads this with ast.literal_eval rather than
 # by importing this module: atheris above is installed only by the
 # `fuzz` dependency group, which nothing but fuzz.yml asks for, so the
 # suite must not execute this file
-ENTRY_POINTS = ("btclib_node.p2p.connection:frame_message_bytes",)
+ENTRY_POINTS = ("btclib_node.p2p.transport:frame_message_bytes",)
 
 
 def fuzz_target(data: bytes) -> None:

@@ -4,11 +4,12 @@
 
 """`Connection`, one peer-to-peer socket and the messages framed over it.
 
-Reads `btclib.p2p.message.Message`s off the wire and hands each one to
-`P2pManager`, writes what `Node`'s own thread queues back out, and
-bounds what it will buffer in either direction -- `MAX_PROTOCOL_MESSAGE_LENGTH`
-on what any one message may claim to be, `MAX_QUEUED_RECV_BYTES` on how
-much of what this connection has already handed to `P2pManager.messages`
+Feeds what it reads off the wire to its `Transport` (`p2p/transport.py`,
+which frames the octets and bounds what any one message may claim to be)
+and hands each message that comes out to `P2pManager`, writes what
+`Node`'s own thread queues back out through the same transport, and
+bounds what it will buffer in either direction -- `MAX_QUEUED_RECV_BYTES`
+on how much of what this connection has already handed to `P2pManager.messages`
 or `P2pManager.handshake_messages` may sit there unprocessed before this
 connection's own `run` stops reading any further, and a send buffer
 capped the way Core's own `-maxsendbuffer` caps one, per the comments
@@ -24,20 +25,17 @@ import time
 from collections import Counter
 from dataclasses import dataclass, field
 from functools import cached_property
-from io import SEEK_END, BytesIO
 from typing import TYPE_CHECKING, cast, override
 
-from btclib.exceptions import BTClibValueError, IncompleteMessageError
+from btclib.exceptions import BTClibRuntimeError, BTClibValueError
 from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.p2p.addrv2 import network_address
 from btclib.p2p.handshake import Version
 from btclib.p2p.keepalive import Ping
 from btclib.p2p.limits import MAX_PROTOCOL_MESSAGE_LENGTH, PROTOCOL_VERSION
-from btclib.p2p.message import Message
 
-from btclib_node.chains import RegTest
 from btclib_node.constants import USER_AGENT, P2pConnStatus
-from btclib_node.exceptions import RejectedMessageError, WrongNetworkMagicError
+from btclib_node.exceptions import RejectedMessageError
 from btclib_node.p2p.address import ip_and_port
 from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.callbacks import (
@@ -49,6 +47,12 @@ from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 from btclib_node.p2p.messages import NoncelessPing
 from btclib_node.p2p.permissions import NetPermissionFlags
 from btclib_node.p2p.protocol_version import BIP0031_VERSION, common_version
+from btclib_node.p2p.transport import (
+    HEADER_SIZE,
+    SerializedMessage,
+    Transport,
+    V1Transport,
+)
 
 if TYPE_CHECKING:
     import socket
@@ -67,8 +71,6 @@ __all__ = [
     "MAX_QUEUED_SEND_BYTES",
     "Connection",
     "PeerStats",
-    "frame_message",
-    "frame_message_bytes",
     "local_services",
 ]
 
@@ -125,8 +127,8 @@ __all__ = [
 # with everything it has in a single message, bounded by
 # `MAX_HEADERS_RESULTS` and `MAX_ADDR_TO_SEND` respectively -- a full
 # `headers` message some 162,000 wire octets, an `addr` 30,027 --
-# each a real `Message` built the way `_queue` below builds one rather
-# than the bare payload -- and infrequent enough, once per peer's own
+# each a whole message as `V1Transport` frames it rather than the bare
+# payload -- and infrequent enough, once per peer's own
 # header sync and once per `getaddr`, that the room below covers either
 # without a pacing point of its own.
 #
@@ -273,18 +275,6 @@ MAX_QUEUED_SEND_BYTES = int(
 # btclib-org/btclib-node#490
 MAX_QUEUED_RECV_BYTES = 5 * 1000 * 1000
 
-# The wire header's own layout -- `btclib.p2p.message`'s module docstring
-# argues it against Core's `CMessageHeader` (`src/protocol.h`): magic (4
-# octets) and command (12) ahead of a little-endian `length` (4), then a
-# checksum (4). `btclib.p2p.message` keeps the matching constants private,
-# so `parse_messages` and `_count_sent` below repeat what they need to peek
-# the header themselves, rather than reach into another module's
-# underscored names.
-_COMMAND_OFFSET = 4
-_HEADER_SIZE = 24
-_LENGTH_OFFSET = 16
-_LENGTH_SIZE = 4
-
 # Core's `ALL_NET_MESSAGE_TYPES` (`src/protocol.h`,
 # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the commands
 # `bytes_recv_per_msg` keys by name, every other one being counted under
@@ -342,71 +332,18 @@ _MESSAGE_TYPE_OTHER = "*other*"
 _USER_AGENT = USER_AGENT.encode()
 
 
-def frame_message(stream: BytesIO, magic: bytes) -> Message:
-    """Parse one whole message off `stream`, checking it against `magic`.
+# Chunks one message may take from a transport; `V1Transport` takes two.
+_MAX_CHUNKS = 16
 
-    Split out of `parse_messages`'s own loop so `fuzz/fuzz_framing.py`
-    can drive it directly -- matching
-    Core's own `p2p_transport_serialization.cpp` fuzz target, which
-    likewise feeds raw octets to a `V1Transport` constructed with no
-    wider node context (at bitcoin/bitcoin@ca7162cde5): the framing is
-    a separable step, fed octets rather than a whole peer connection.
 
-    Raises `IncompleteMessageError`, with `stream` rewound to the start
-    of the message, where `stream` does not yet hold a whole one.
+def _queued_size(message: SerializedMessage) -> int:
+    """Return what `queued_send_bytes` counts for `message`: its v1 framing.
 
-    The rest is Core's `V1Transport` split (`src/net.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `readHeader` refuses a
-    magic other than `magic`, raised here as `WrongNetworkMagicError`
-    once the header is whole, and a length past
-    `MAX_PROTOCOL_MESSAGE_LENGTH`, which `Message.parse` refuses; the
-    connection is dropped for either. `GetReceivedMessage` rejects a
-    whole message whose checksum or command is wrong, raised here as
-    `RejectedMessageError` with `stream` moved past it, and the
-    connection goes on to the next.
+    One number for every transport, so that `_queue` and `_deliver` agree
+    on it without asking one. `stats.bytes_sent` counts the octets
+    actually written.
     """
-    start = stream.tell()
-    header = stream.read(_HEADER_SIZE)
-    stream.seek(start)
-    if len(header) == _HEADER_SIZE and header[:_COMMAND_OFFSET] != magic:
-        raise WrongNetworkMagicError(header[:_COMMAND_OFFSET])
-    try:
-        return Message.parse(stream)
-    except BTClibValueError as e:
-        length = int.from_bytes(
-            header[_LENGTH_OFFSET : _LENGTH_OFFSET + _LENGTH_SIZE], "little"
-        )
-        if length > MAX_PROTOCOL_MESSAGE_LENGTH:
-            raise
-        # A command is refused before its payload is read, so the
-        # payload may still be on its way.
-        end = start + _HEADER_SIZE + length
-        available = stream.seek(0, SEEK_END)
-        if available < end:
-            stream.seek(start)
-            err_msg = "incomplete message payload"
-            raise IncompleteMessageError(err_msg, end - available) from e
-        stream.seek(end)
-        raise RejectedMessageError(end - start) from e
-
-
-def frame_message_bytes(data: bytes) -> Message:
-    """Return the one-argument, octet-only shape `fuzz/fuzz_framing.py` drives.
-
-    `RegTest`'s own magic -- this tree's cheapest chain to construct,
-    a bare no-argument `Chain` (`chains.py`) -- rather than a magic
-    threaded through the entry point: a bare magic mismatch is exactly
-    the one check `frame_message` makes beyond `Message.parse` itself,
-    and is worth fuzzing on its own footing rather than fixed away.
-
-    Trailing octets past the one message framed are left unread, the
-    same way `parse_messages` leaves them in `self.buffer` for the next
-    read rather than treating them as this message's own problem -- not
-    a refusal, so a seed exercised by `tests/fuzz_corpus_test.py`'s own
-    round-trip check (`frame_message_bytes(seed).serialize() == seed`)
-    must not carry any.
-    """
-    return frame_message(BytesIO(data), RegTest().magic)
+    return HEADER_SIZE + len(message.payload)
 
 
 def local_services(config: Config) -> ServiceFlags:
@@ -461,7 +398,7 @@ class PeerStats:
     The rest are Core's `nSendBytes`, `nRecvBytes` and their per-command
     tables: the octets written to and read off the socket, the tables by
     whole message, header included. Each is written on this connection's
-    loop alone, by `_send` and `run`, and read from `Node`'s thread,
+    loop alone, by `_deliver` and `run`, and read from `Node`'s thread,
     which copies a table before iterating it.
     """
 
@@ -632,10 +569,11 @@ class Connection:
         self.loop = manager.loop
         self.client: socket.socket = client
         self.address: NetworkAddressV2 = address
-        # A `bytearray`, not `bytes`: `run`'s own `+=` below is an
-        # in-place, amortised extend on this type and a full copy of
-        # everything held so far on the other -- btclib-org/btclib-node#438.
-        self.buffer = bytearray()
+        # What frames this connection's octets: `parse_messages` feeds the
+        # receiving half on this connection's loop, and `_deliver` the
+        # sending half under `_write_lock`, `p2p/transport.py` being where
+        # each is argued.
+        self.transport: Transport = V1Transport(self.node.chain.magic)
         self.task: Future[None] | None = None
 
         self.status: P2pConnStatus = P2pConnStatus.Open
@@ -981,7 +919,7 @@ class Connection:
         in `queued_send_bytes`, until `P2pManager.stop`'s own sweep
         cancels it or the collector frees it pending. Cancelling it here
         ends it on the next step of this loop, and each `_deliver` behind
-        it then reaches a closed socket, whose `OSError` `_send`
+        it then reaches a closed socket, whose `OSError` `_deliver`
         suppresses. On a proactor loop the close alone would end that
         write, `sock_sendall` there being one overlapped `WSASend` on the
         socket's own handle; the cancel ends it first, and comes before
@@ -1041,9 +979,9 @@ class Connection:
                 await self._recv_resume.wait()
                 # 64 KB, matching Core's own read buffer (`pchBuf`,
                 # `src/net.cpp`) rather than the 1024 this had no
-                # argument for: fewer syscalls, and -- quadratically,
-                # through `parse_messages`'s own gate below -- far fewer
-                # bytes copied per message. btclib-org/btclib-node#438
+                # argument for: fewer syscalls, and fewer reads for the
+                # transport to take one large message from.
+                # btclib-org/btclib-node#438
                 try:
                     data = await self.loop.sock_recv(self.client, 65536)
                 except OSError:
@@ -1070,8 +1008,7 @@ class Connection:
                     return self.stop(cancel_task=False)
                 self.stats.bytes_recv += len(data)
                 try:
-                    self.buffer += data
-                    self.parse_messages()
+                    self.parse_messages(data)
                 # deliberately blind (BLE001), not for the event loop's
                 # own sake: `run` reaches this coroutine through
                 # `run_coroutine_threadsafe`, whose own Future nothing
@@ -1086,7 +1023,7 @@ class Connection:
                 # `finally` by coincidence with nothing having looked at
                 # it
                 except Exception:  # noqa: BLE001
-                    # `frame_message` refusing a header -- another
+                    # the transport refusing a header -- another
                     # network's magic, an oversized length -- or this
                     # node's own bug. Core's `ReceiveMsgBytes` answers
                     # the first by dropping the connection and
@@ -1097,26 +1034,60 @@ class Connection:
             self.stop(cancel_task=False)
 
     async def _send(self, data: bytes) -> None:
+        """Write `data`, raising `OSError` where the socket cannot take it."""
         self._writing = asyncio.current_task()
         try:
-            with contextlib.suppress(OSError):  # probably connection dropped
-                await self.loop.sock_sendall(self.client, data)
-                self._count_sent(data)
+            await self.loop.sock_sendall(self.client, data)
         finally:
             self._writing = None
 
-    def _count_sent(self, data: bytes) -> None:
-        """Add one whole framed message the socket took to `bytes_sent`.
+    def _count_sent(self, sent: list[tuple[str, int]]) -> None:
+        """Add the octets the socket took to `bytes_sent`, by message.
 
         Core's `SocketSendData` counts what the socket took, by the
-        command the message was pushed under, read here off the header.
+        command the octets were sent on behalf of.
         """
-        self.stats.bytes_sent += len(data)
-        command = data[_COMMAND_OFFSET:_LENGTH_OFFSET].rstrip(b"\0").decode("ascii")
-        self.stats.bytes_sent_per_msg[command] += len(data)
+        for command, size in sent:
+            self.stats.bytes_sent += size
+            self.stats.bytes_sent_per_msg[command] += size
 
-    def _queue(self, payload: Payload) -> bytes | None:
-        """Frame `payload` and count it, or refuse and return `None`.
+    def _frame(self, message: SerializedMessage) -> tuple[bytes, list[tuple[str, int]]]:
+        """Frame `message` into one write, with what each octet is sent for.
+
+        Core's `SocketSendData` loop, run to the end of the message and
+        joined into one write: a header and a payload sent apart can wait
+        on each other under Nagle, which Core answers with `MSG_MORE`,
+        and `sock_sendall` has no such flag. `mark_bytes_sent` is called
+        before the write rather than after it, which loses nothing: the
+        write takes every octet or the connection is dropped, and nothing
+        resumes half a message.
+
+        Raises `BTClibValueError` for a message the transport cannot
+        frame, and `BTClibRuntimeError` for one that does not finish.
+        Called under `_write_lock`, the only place the sending half of
+        the transport is touched.
+        """
+        if not self.transport.set_message_to_send(message):
+            err_msg = "the transport takes no message now"
+            raise BTClibRuntimeError(err_msg)
+        chunks: list[memoryview] = []
+        sent: list[tuple[str, int]] = []
+        for _ in range(_MAX_CHUNKS):
+            to_send, more, command = self.transport.get_bytes_to_send(
+                have_next_message=False
+            )
+            chunks.append(to_send)
+            sent.append((command, len(to_send)))
+            self.transport.mark_bytes_sent(len(to_send))
+            if not more:
+                return b"".join(chunks), sent
+        # this loop never yields, so a transport that does not advance
+        # would freeze the whole loop
+        err_msg = "the transport does not finish a message"
+        raise BTClibRuntimeError(err_msg)
+
+    def _queue(self, payload: Payload) -> SerializedMessage | None:
+        """Serialize `payload` and count it, or refuse and return `None`.
 
         The whole of what a send commits to before anything reaches the
         loop, so that `queued_send_bytes` is true of this connection the
@@ -1131,25 +1102,21 @@ class Connection:
         self.node.logger.log_debug("net", "Sending message: %s", payload.command)
 
         try:
-            # The payload names its own command, and this is the only
-            # place the magic is applied.
+            # The payload names its own command.
             #
             # Its octets are not re-checked on the way out: this node
             # built them from state it has already validated, and
             # btclib's block payload would ask CheckBlock of them
             # against mainnet's pow limit, which no regtest or signet
-            # block meets. The envelope still is: that check is about
-            # the octets this node emits being well formed -- a magic of
-            # four octets, a command of at most twelve printable ones, a
-            # length under the protocol's. It says nothing about whether
-            # the command is one any peer answers to; the test over every
-            # payload's `command` is what says that.
-            message = Message(
-                self.node.chain.magic,
-                payload.command,
-                payload.serialize(check_validity=False),
+            # block meets. The envelope still is, by the transport in
+            # `_frame`: that check is about the octets this node emits
+            # being well formed -- a command of at most twelve printable
+            # octets, a length under the protocol's. It says nothing about
+            # whether the command is one any peer answers to; the test over
+            # every payload's `command` is what says that.
+            message = SerializedMessage(
+                payload.command, payload.serialize(check_validity=False)
             )
-            data = message.serialize()
         # deliberately blind (BLE001): this is called for every message
         # this node ever sends, callers throughout src/btclib_node/p2p and
         # src/btclib_node/download.py among them, so a bug serializing one
@@ -1160,9 +1127,10 @@ class Connection:
             return None
 
         with self._send_lock:
-            over_bound = self.queued_send_bytes + len(data) > MAX_QUEUED_SEND_BYTES
+            size = _queued_size(message)
+            over_bound = self.queued_send_bytes + size > MAX_QUEUED_SEND_BYTES
             if not over_bound:
-                self.queued_send_bytes += len(data)
+                self.queued_send_bytes += size
         if over_bound:
             # Not queued at all, so this message never reaches
             # `queued_send_bytes`: a peer already over budget gets
@@ -1184,16 +1152,28 @@ class Connection:
             )
             self.stop()
             return None
-        return data
+        return message
 
-    async def _deliver(self, data: bytes) -> None:
-        """Write what `_queue` counted, and take it off the books after."""
+    async def _deliver(self, message: SerializedMessage) -> None:
+        """Write what `_queue` counted, and take it off the books after.
+
+        The transport frames `message` under `_write_lock`, so the order
+        of the octets on the wire is the order the transport produced
+        them in, whatever it does to them.
+        """
         try:
             async with self._write_lock:
-                await self._send(data)
+                try:
+                    data, sent = self._frame(message)
+                except BTClibValueError as e:
+                    self.node.logger.warning("error in serializing message: %s", e)
+                    return
+                with contextlib.suppress(OSError):  # probably connection dropped
+                    await self._send(data)
+                    self._count_sent(sent)
         finally:
             with self._send_lock:
-                self.queued_send_bytes -= len(data)
+                self.queued_send_bytes -= _queued_size(message)
         self.last_send = time.time()
 
     async def async_send(self, payload: Payload) -> None:
@@ -1204,33 +1184,33 @@ class Connection:
         reads anything back. Every other sender in this tree reaches `send`
         below instead.
         """
-        data = self._queue(payload)
-        if data is not None:
-            await self._deliver(data)
+        message = self._queue(payload)
+        if message is not None:
+            await self._deliver(message)
 
     def send(self, msg: Payload) -> None:
-        """Frame and count `msg` here, and schedule its write onto the loop.
+        """Serialize and count `msg` here, and schedule its write onto the loop.
 
         The synchronous entry point, safe to call from any thread:
         `run_coroutine_threadsafe` is what lets both `Node`'s own thread
         (through the `p2p.callbacks` handlers) and `P2pManager`'s own
         (through `send_ping`) reach the loop without ever awaiting
-        directly. Only the write is scheduled: `_queue` runs here, on
-        the caller's own thread, so that a caller sending several
-        messages in a row -- `advance_getdata` (`p2p/callbacks.py`)
+        directly. Only the framing and the write are scheduled: `_queue`
+        runs here, on the caller's own thread, so that a caller sending
+        several messages in a row -- `advance_getdata` (`p2p/callbacks.py`)
         serving one block per turn of its own loop and pacing on
         `queued_send_bytes` between two of them -- reads its own
         hand-off back rather than a count the loop has yet to make.
 
-        Serializing here rather than on the loop is what that costs, and
-        it is paid by the thread that asked for the message: for the
-        largest of them, a block, that is the thread which has just
+        Serializing the payload here rather than on the loop is what that
+        costs, and it is paid by the thread that asked for the message:
+        for the largest of them, a block, that is the thread which has just
         parsed the same block out of `block_db` to build the payload at
-        all.
+        all. The transport adds the header, and its checksum, on the loop.
         """
-        data = self._queue(msg)
-        if data is not None:
-            asyncio.run_coroutine_threadsafe(self._deliver(data), self.loop)
+        message = self._queue(msg)
+        if message is not None:
+            asyncio.run_coroutine_threadsafe(self._deliver(message), self.loop)
 
     def own_version(self) -> Version:
         """Build this node's own `version` message, recording its nonce.
@@ -1323,11 +1303,11 @@ class Connection:
             self.ping_nonce = ping_msg.nonce
         self.send(ping_msg)
 
-    def parse_messages(self) -> None:
-        """Parse every whole message in `buffer`, queueing each on the manager.
+    def parse_messages(self, data: bytes) -> None:
+        """Feed `data` to the transport, queueing each message it completes.
 
-        Leaves a trailing partial message in `buffer` for the next
-        read, and routes each parsed one to `handshake_messages` or
+        A trailing partial message stays in the transport for the next
+        read, and each complete one is routed to `handshake_messages` or
         `messages`.
         Every item carries its own wire size alongside it, a fourth
         tuple element `handle_p2p` or `handle_p2p_handshake`
@@ -1343,37 +1323,11 @@ class Connection:
         read off the socket, for `callbacks.pong`
         (`P2pManager.messages`'s own comment).
 
-        Peeks the header's own `length` field in `buffer` before
-        building a stream or calling `Message.parse` at all: a chunk
-        that does not yet complete even the first message in `buffer`
-        returns here without copying anything. That is the common case
-        on a connection carrying one large message over many reads --
-        a block during initial block download chief among them -- and
-        it is what keeps such a message copied a constant number of
-        times overall rather than once per chunk. btclib-org/btclib-node#438
+        Core's `ReceiveMsgBytes` (`src/net.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the transport refusing
+        octets raises, and the connection is dropped by `run`. A message
+        it rejects is counted and the connection goes on.
         """
-        if len(self.buffer) < _HEADER_SIZE:
-            return
-        length = int.from_bytes(
-            self.buffer[_LENGTH_OFFSET : _LENGTH_OFFSET + _LENGTH_SIZE],
-            byteorder="little",
-        )
-        # A header `frame_message` refuses -- another network's magic, or
-        # `length` above the protocol's own bound -- falls through instead
-        # of waiting for however many further octets it claims, and is
-        # refused the moment the header is whole, as Core's `readHeader`
-        # refuses it.
-        if (
-            self.buffer[:_COMMAND_OFFSET] == self.node.chain.magic
-            and length <= MAX_PROTOCOL_MESSAGE_LENGTH
-            and len(self.buffer) < _HEADER_SIZE + length
-        ):
-            return
-
-        # A stream and not the bytes: Message.parse consumes one message
-        # and leaves the position after it, so several whole messages in
-        # one read are taken one at a time, and a partial one rewinds.
-        stream = BytesIO(self.buffer)
         # Bytes handed to either queue this call, added to
         # `queued_recv_bytes` once, below, rather than once per message:
         # the same shape Core's own `MarkReceivedMsgsForProcessing`
@@ -1385,15 +1339,14 @@ class Connection:
         # drains it pauses this connection's reads exactly as flooding
         # `messages` already does. btclib-org/btclib-node#482
         consumed = 0
+        remaining = memoryview(data)
         try:
-            while True:
-                start = stream.tell()
+            while remaining:
+                remaining = self.transport.received_bytes(remaining)
+                if not self.transport.received_message_complete():
+                    continue
                 try:
-                    message = frame_message(stream, self.node.chain.magic)
-                except IncompleteMessageError:
-                    # the only refusal more octets can answer, and the
-                    # stream is back at the start of the partial message
-                    return
+                    message = self.transport.get_received_message()
                 except RejectedMessageError as e:
                     # counted where Core's `ReceiveMsgBytes` counts a
                     # rejected message, and the peer kept
@@ -1401,12 +1354,11 @@ class Connection:
                     self._count_received(_MESSAGE_TYPE_OTHER, e.size)
                     continue
                 received = self.last_receive = time.time()
-                size = stream.tell() - start
-                consumed += size
-                self._count_received(message.command, size)
+                consumed += message.size
+                self._count_received(message.command, message.size)
                 if message.command in handshake_callbacks:
                     self.manager.handshake_messages.append(
-                        (message.command, message.payload, self.id, size)
+                        (message.command, message.payload, self.id, message.size)
                     )
                     continue
                 # Every message to the back, `ping` and `pong` included: Core
@@ -1415,26 +1367,19 @@ class Connection:
                 # `pong` follows the answer to what it sent before the
                 # `ping`. btclib-org/btclib-node#1410
                 self.manager.messages.append(
-                    (message.command, message.payload, self.id, size, received)
+                    (
+                        message.command,
+                        message.payload,
+                        self.id,
+                        message.size,
+                        received,
+                    )
                 )
         finally:
-            # `queued_recv_bytes` first, ahead of `self.buffer` below: the
-            # two are independent bookkeeping over the same call, and
-            # this order is what leaves the buffer rewind as the last
-            # statement of the function, the shape every other exit path
-            # above already relies on -- nothing here depends on which
-            # runs first. Split into its own method rather than inlined
-            # here: `parse_messages` is already at this file's own
-            # complexity ceiling (`ruff`'s `complex-structure`) without
-            # it.
+            # Split into its own method rather than inlined here:
+            # `parse_messages` is already at this file's own complexity
+            # ceiling (`ruff`'s `complex-structure`) without it.
             self._weigh_against_recv_bound(consumed)
-            # whatever the loop did not consume, partial message
-            # included. The gate above already returned without
-            # touching `stream` for a read that completes no message at
-            # all, so this only copies the (typically short) remainder
-            # once a message has actually been taken off the front.
-            if stream.tell():
-                self.buffer = bytearray(stream.read())
 
     def _count_received(self, command: str, size: int) -> None:
         """Add one whole message to `bytes_recv_per_msg`, as Core keys it.

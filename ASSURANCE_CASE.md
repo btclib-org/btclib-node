@@ -185,15 +185,16 @@ A flaw in the arithmetic or the parsing on the far side of this boundary
 is btclib's to fix, and SECURITY.md's *What belongs here, and what
 belongs upstream* says where each kind of defect is reported.
 
-**Octets from the network.** `src/btclib_node/p2p/connection.py` is
-where a peer's own bytes cross in, ahead of btclib's wire codec:
-`Connection.parse_messages` peeks a header's own length field before
-building anything from it, checks the magic against the chain this node
-runs, and bounds what it will buffer in either direction —
-`MAX_PROTOCOL_MESSAGE_LENGTH` on what one message may claim to be,
-`MAX_QUEUED_RECV_BYTES` on what may sit unprocessed, `MAX_QUEUED_SEND_BYTES`
-on what this node will queue back out — `getdata` and `getcfilters`
-paced against that last bound, checked before every item rather than
+**Octets from the network.** `src/btclib_node/p2p/transport.py` and
+`src/btclib_node/p2p/connection.py` are where a peer's own bytes cross
+in, ahead of btclib's wire codec: `V1Transport` reads a header's own
+length field before taking anything from it, bounds it by
+`MAX_PROTOCOL_MESSAGE_LENGTH` and checks the magic against the chain this
+node runs, and the connection bounds what it will buffer in either
+direction — `MAX_QUEUED_RECV_BYTES` on what may sit unprocessed,
+`MAX_QUEUED_SEND_BYTES` on what this node will queue back out —
+`getdata` and `getcfilters` paced against that last bound, checked
+before every item rather than
 once a whole answer is built, and `headers` and `addr` sized into
 headroom of their own since each answers a request in one message and
 neither is frequent enough to need a pacing point, the module's own
