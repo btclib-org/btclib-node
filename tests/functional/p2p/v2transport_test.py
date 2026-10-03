@@ -10,6 +10,7 @@ advertises, so a case says whether the dialled address carries
 `NODE_P2P_V2`.
 """
 
+import re
 from typing import TYPE_CHECKING
 
 import pytest
@@ -19,7 +20,7 @@ from btclib.p2p.keepalive import Ping, Pong
 from btclib_node.constants import P2pConnStatus
 from btclib_node.p2p.callbacks import callbacks
 from btclib_node.p2p.transport import TransportProtocolType
-from tests import local_addr, wait_until, wait_until_listening
+from tests import LogLines, local_addr, wait_until, wait_until_listening
 from tests.conftest import node_context
 
 if TYPE_CHECKING:
@@ -37,7 +38,7 @@ _REKEY_INTERVAL = 224
 def _connected(node: Node) -> Connection:
     """Wait for `node`'s one connection to pass its handshake, and return it."""
     wait_until(lambda: len(node.p2p_manager.connections) == 1)
-    conn = node.p2p_manager.connections[0]
+    (conn,) = node.p2p_manager.connections.values()
     wait_until(lambda: conn.status == P2pConnStatus.Connected)
     return conn
 
@@ -92,26 +93,46 @@ def test_the_transport_follows_what_both_ends_offer(
             assert listening.transport.get_info().session_id == session_id
 
 
-def test_a_v2_dialler_is_dropped_by_a_node_without_v2transport(tmp_path: Path) -> None:
-    """A node that does not offer v2 reads the key as a bad header and drops it.
+@pytest.mark.parametrize("by_name", [False, True], ids=["by address", "by name"])
+def test_a_v2_dialler_retries_with_v1_against_a_node_without_v2transport(
+    tmp_path: Path,
+    *,
+    by_name: bool,
+) -> None:
+    """The listener drops the key as a bad header; the dialler retries in v1.
 
-    The attempt only ends: the reconnection with v1 is a later step of
-    issue #1190.
+    Core's `DisconnectNodes` logs the retry, and the reconnection speaks
+    v1 on both ends. A dial by name resolves the name again.
     """
     with (
         node_context(tmp_path / "node1", allow_rpc=False, v2transport=False) as node1,
         node_context(tmp_path / "node2", allow_rpc=False) as node2,
     ):
         wait_until_listening(node1.p2p_manager)
-        node2.p2p_manager.connect(local_addr(node1.p2p_port, services=_V2))
-        wait_until(lambda: node2.p2p_manager.last_connection_id >= 0)
+        lines = LogLines()
+        node2.logger.addHandler(lines)
+        if by_name:
+            assert node2.p2p_manager.add_added_peer(
+                f"127.0.0.1:{node1.p2p_port}", use_v2transport=True
+            )
+        else:
+            node2.p2p_manager.connect(local_addr(node1.p2p_port, services=_V2))
+        listening = _connected(node1)
+        dialling = _connected(node2)
         wait_until(
-            lambda: (
-                not node2.p2p_manager.pending_connections
-                and not node2.p2p_manager.connections
+            lambda: re.search(
+                r"retrying with v1 transport protocol for peer=\d+",
+                "\n".join(lines.messages),
             )
         )
-        assert not node1.p2p_manager.connections
+        assert listening.transport.get_info().transport_type is (
+            TransportProtocolType.V1
+        )
+        assert dialling.transport.get_info().transport_type is (
+            TransportProtocolType.V1
+        )
+        assert sum("retrying with v1" in m for m in lines.messages) == 1
+        assert node2.p2p_manager.last_connection_id == 1
 
 
 def test_messages_cross_the_rekey_in_both_directions(
