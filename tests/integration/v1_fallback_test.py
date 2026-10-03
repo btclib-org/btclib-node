@@ -2,9 +2,9 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""A bitcoind that dials this node with v2 falls back to v1 on its own.
+"""A bitcoind that dials a node without `-v2transport` falls back to v1.
 
-This node speaks v1 only. A v2-capable bitcoind dialling it first sends
+That node speaks v1 only. A v2-capable bitcoind dialling it first sends
 its 64-byte ellswift key, which this node cannot parse and drops;
 bitcoind's `ShouldReconnectV1` then has it redial the same address with
 v1 (btclib-org/btclib-node#1197).
@@ -34,6 +34,7 @@ def test_bitcoind_falls_back_to_v1_when_dialling_this_node(
             data_dir=tmp_path / "node",
             p2p_port=get_random_port(),
             rpc_port=get_random_port(),
+            v2transport=False,
         )
     )
     node.start()

@@ -30,6 +30,13 @@ name: claude-review
 # grants the commands it names. The two travel together -- a paragraph
 # telling a reviewer to run a command it may not run buys a refusal.
 #
+# Each grant is the read the prompt asks for and no wider: `git:*` runs
+# any command through `git -c alias.x='!cmd' x`, and `gh api:*` lets a
+# diff's prompt injection post an approval as the App. The `gh api` rule
+# ends in `*`, not `:*`, which matches `contents/` and `contents/ <args>`
+# and refuses the read itself. No rule here can refuse `--output=`
+# on `git log` and `git diff`, or `-X` after the `gh api` path.
+#
 # The paragraph goes where the called workflow puts every caller's,
 # between the verdict paragraph and the instruction not to run the gates.
 # Nothing in it turns on the position, its subject being the checkout and
@@ -127,4 +134,6 @@ jobs:
         `origin/${{ github.event.pull_request.base.ref }}`.
       # no leading comma: the called workflow writes the one that joins
       # this to its own list
-      extra-allowed-tools: "Bash(git:*),Bash(gh issue view:*),Bash(gh api:*)"
+      extra-allowed-tools: "Bash(git fetch origin:*),Bash(git log:*),\
+        Bash(git diff:*),Bash(gh issue view:*),\
+        Bash(gh api repos/btclib-org/btclib-node/contents/*)"

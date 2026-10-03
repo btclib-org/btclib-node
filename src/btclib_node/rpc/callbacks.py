@@ -1308,6 +1308,21 @@ def _connection_type(p2p_conn: Connection) -> str:
     return "outbound-full-relay" if p2p_conn.automatic else "manual"
 
 
+def _transport_fields(p2p_conn: Connection) -> dict[str, str]:
+    """Return `getpeerinfo`'s `transport_protocol_type` and `session_id`.
+
+    Core's `Transport::Info`: "detecting" until a responder has told v1
+    from v2, and no session id for anything but v2. Read from this
+    thread while the connection's loop writes it, which `V2Transport`'s
+    own locks are for.
+    """
+    info = p2p_conn.transport.get_info()
+    return {
+        "transport_protocol_type": str(info.transport_type),
+        "session_id": "" if info.session_id is None else info.session_id.hex(),
+    }
+
+
 def _peer_entry(
     node: Node, connection_id: int, p2p_conn: Connection, addr: str, addrbind: str
 ) -> dict[str, Any]:
@@ -1422,9 +1437,7 @@ def _peer_entry(
         sorted(p2p_conn.stats.bytes_recv_per_msg.copy().items())
     )
     entry["connection_type"] = _connection_type(p2p_conn)
-    # No BIP324: every connection is v1, which has no session id.
-    entry["transport_protocol_type"] = "v1"
-    entry["session_id"] = ""
+    entry.update(_transport_fields(p2p_conn))
     return entry
 
 
@@ -1616,8 +1629,13 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
 _ADDNODE_COMMANDS = ("add", "remove", "onetry")
 
 
-def _parsed_addnode_args(params: list[Any]) -> tuple[str, str]:
-    """Return `addnode`'s own `(node, command)`, or raise as Core's parser does.
+def _parsed_addnode_args(node: Node, params: list[Any]) -> tuple[str, str, bool]:
+    """Return `addnode`'s `(node, command, v2transport)`, or raise as Core does.
+
+    `v2transport` is the argument, or whether this node supports v2 where
+    it is omitted or null, and `true` without the support is refused:
+    `rpc/net.cpp`'s own check, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag, which `remove` meets too.
 
     Split out of `add_node` below so that function's own three-command
     dispatch stays under `ruff`'s complexity floor; the checks
@@ -1649,13 +1667,21 @@ def _parsed_addnode_args(params: list[Any]) -> tuple[str, str]:
         # "1.2.3.4" "bogus"` answers it byte for byte) rather than the
         # one-line usage string this used to raise
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["addnode"])
-    bool_param(params, 2, name="v2transport", default=False)
 
     if not node_arg.strip():
         raise RpcError(
             RPCErrorCode.INVALID_PARAMETER, "Error: Node address cannot be empty"
         )
-    return node_arg, command
+    node_v2transport = bool(local_services(node.config) & ServiceFlags.NODE_P2P_V2)
+    use_v2transport = bool_param(
+        params, 2, name="v2transport", default=node_v2transport
+    )
+    if use_v2transport and not node_v2transport:
+        raise RpcError(
+            RPCErrorCode.INVALID_PARAMETER,
+            "Error: v2transport requested but not enabled (see -v2transport)",
+        )
+    return node_arg, command, use_v2transport
 
 
 def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
@@ -1687,14 +1713,15 @@ def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
     disagree on. Matching the release instead would mean knowingly
     carrying a defect Core itself already fixed, only to undo that the
     moment the pin advances past it -- issue #1010 is closed on this
-    reasoning. `v2transport` is read and type-checked, matching Core's
-    own optional third argument, and otherwise unused: BIP324 is not a
-    transport this node speaks yet.
+    reasoning. `v2transport` is Core's own optional third argument, kept
+    with an added peer and passed to a `onetry` dial.
     """
-    node_arg, command = _parsed_addnode_args(params)
+    node_arg, command, use_v2transport = _parsed_addnode_args(node, params)
 
     if command == "add":
-        if not node.p2p_manager.add_added_peer(node_arg):
+        if not node.p2p_manager.add_added_peer(
+            node_arg, use_v2transport=use_v2transport
+        ):
             raise RpcError(
                 RPCErrorCode.CLIENT_NODE_ALREADY_ADDED, "Error: Node already added"
             )
@@ -1712,7 +1739,9 @@ def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
     # `pszDest` (`src/rpc/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
     # v31.1 tag), so a port the caller gave reaches `addr_name` too
     # (btclib-org/btclib-node#1493).
-    node.p2p_manager.connect_host(node_arg, node.chain.port)
+    node.p2p_manager.connect_host(
+        node_arg, node.chain.port, use_v2transport=use_v2transport
+    )
 
 
 # `UniValue::getInt<int64_t>`'s own range, past which it throws "JSON
@@ -1817,10 +1846,8 @@ def add_connection(
     `RPC_INVALID_PARAMETER` carrying this method's own full help text,
     `self.ToString()`'s shape (measured against a real bitcoind
     v31.1.0). `v2transport` true is refused the same way Core refuses it
-    lacking `NODE_P2P_V2` (`connman.GetLocalServices() & NODE_P2P_V2`):
-    `local_services` (`p2p/connection.py`) never sets that bit, this
-    node speaking v1 only, so every `true` here is refused regardless of
-    chain or address.
+    lacking `NODE_P2P_V2` (`connman.GetLocalServices() & NODE_P2P_V2`),
+    which `local_services` (`p2p/connection.py`) sets with `-v2transport`.
 
     Both of `CConnman::AddConnection`'s capacity checks, the per-type
     cap and the shared `semOutbound` pool, are
@@ -1885,6 +1912,7 @@ def add_connection(
         feeler=connection_type == "feeler",
         addr_fetch=connection_type == "addr-fetch",
         reserved=connection_type,
+        use_v2transport=v2transport,
     )
     return {"address": address, "connection_type": connection_type}
 

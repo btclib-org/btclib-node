@@ -152,8 +152,9 @@ vulnerabilities*:
 - anything SECURITY.md attributes to btclib rather than to this tree —
   the constant-time properties of the arithmetic btclib's own
   [assurance case](https://github.com/btclib-org/btclib/blob/main/ASSURANCE_CASE.md)
-  states, since btclib-node holds no private key of its own and calls
-  btclib only for verification, never for signing
+  states, since btclib-node holds no long-lived private key, and calls
+  btclib for verification and, for a v2 connection's ephemeral key, the
+  key exchange and key derivation, never for signing
 
 Nor is the interpreter, the operating system, or the RocksDB build this
 node runs on: an application shares its process with all three and has

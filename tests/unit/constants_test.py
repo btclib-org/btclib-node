@@ -30,7 +30,9 @@ def test_the_wire_user_agent_and_getnetworkinfo_s_subversion_are_one_constant() 
     node = cast(
         "Any",
         SimpleNamespace(
-            config=SimpleNamespace(pruned=False, peerblockfilters=False),
+            config=SimpleNamespace(
+                pruned=False, peerblockfilters=False, v2transport=False
+            ),
             p2p_manager=SimpleNamespace(local_snapshot=dict),
             warnings=Warnings(),
         ),

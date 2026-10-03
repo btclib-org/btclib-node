@@ -64,6 +64,7 @@ from btclib_node.p2p.main import handle_p2p_handshake
 from btclib_node.p2p.manager import P2pManager
 from btclib_node.p2p.permissions import NetPermissionFlags, Whitelist
 from btclib_node.p2p.selfannounce import LOCAL_BIND, LOCAL_MANUAL, LocalService
+from btclib_node.p2p.v2transport import V2Transport
 from btclib_node.rpc.callbacks import add_connection
 from btclib_node.rpc.errors import RpcError
 
@@ -226,6 +227,7 @@ class AManagerFactory(Protocol):
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
         forcednsseed: bool = False,
         fixed_seeds: bool = True,
+        v2transport: bool = False,
     ) -> P2pManager:
         """Build a `P2pManager` seeded with `conns`, `peer_db` and `status`."""
         ...
@@ -258,6 +260,7 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
         forcednsseed: bool = False,
         fixed_seeds: bool = True,
+        v2transport: bool = False,
     ) -> P2pManager:
         # `18444` is regtest's own well-known port -- binding it for
         # real, as a plain default would, collides with a second suite
@@ -321,6 +324,7 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
                 # `AttributeError` and closes before its first
                 # `sock_recv`.
                 peerblockfilters=False,
+                v2transport=v2transport,
             ),
             # `Connection.own_version`'s own `start_height`
             # (btclib-org/btclib-node#722), 0 matching a fresh `Node`'s
@@ -3251,6 +3255,7 @@ def test_process_addr_fetch_resolves_a_queued_host_held_by_no_connection(
             "automatic": False,
             "block_relay": False,
             "feeler": False,
+            "use_v2transport": False,
             "addr_fetch": True,
             "addr_name": "seed.example",
         }
@@ -3289,6 +3294,7 @@ def test_process_addr_fetch_keeps_a_port_when_the_dest_names_one(
             "automatic": False,
             "block_relay": False,
             "feeler": False,
+            "use_v2transport": False,
             "addr_fetch": True,
             "addr_name": "seed.example:9999",
         }
@@ -3464,6 +3470,7 @@ def test_process_addr_fetch_dials_and_marks_the_connection_addr_fetch(
             "automatic": False,
             "block_relay": False,
             "feeler": False,
+            "use_v2transport": False,
             "addr_fetch": True,
             "addr_name": "seed.example",
         }
@@ -3502,6 +3509,7 @@ def test_process_addr_fetch_tries_the_next_candidate_when_the_first_never_connec
             "automatic": False,
             "block_relay": False,
             "feeler": False,
+            "use_v2transport": False,
             "addr_fetch": True,
             "addr_name": "seed.example",
         }
@@ -3571,7 +3579,9 @@ def test_manage_connections_does_not_touch_the_addr_fetch_queue(
     manager._addr_fetches.append(("seed.example", 18444))
     gate = asyncio.Event()
 
-    async def hangs(host: str, port: int, *, addr_fetch: bool = False) -> None:
+    async def hangs(
+        host: str, port: int, *, addr_fetch: bool = False, use_v2transport: bool
+    ) -> None:
         await gate.wait()  # pragma: no cover -- unreached, which is the assertion
 
     monkeypatch.setattr(manager, "async_connect_host", hangs)
@@ -3679,17 +3689,21 @@ def run_a_manual_loop(
     manager: P2pManager,
     monkeypatch: pytest.MonkeyPatch,
     sleeps: int,
+    v2: list[bool] | None = None,
 ) -> tuple[list[tuple[str, int]], list[float]]:
     """Run one of the manual-peer loops until its `sleeps`-th sleep.
 
     Answer what it dialled, through `async_connect_host`, and how long
-    each sleep was, in order.
+    each sleep was, in order. `v2` is given the `use_v2transport` of each
+    dial.
     """
     dialled: list[tuple[str, int]] = []
     slept: list[float] = []
 
-    async def record_dial(host: str, port: int) -> None:
+    async def record_dial(host: str, port: int, *, use_v2transport: bool) -> None:
         dialled.append((host, port))
+        if v2 is not None:
+            v2.append(use_v2transport)
 
     async def sleep(seconds: float) -> None:
         slept.append(seconds)
@@ -3731,9 +3745,9 @@ def test_add_added_peer_grows_the_list_once(
     """ISS 1350: `add_added_peer` appends, and refuses the same string twice."""
     manager = a_manager()
     assert manager.add_added_peer("1.2.3.4:9999") is True
-    assert manager._added_peers == {"1.2.3.4:9999": None}
+    assert manager._added_peers == {"1.2.3.4:9999": False}
     assert manager.add_added_peer("1.2.3.4:9999") is False
-    assert manager._added_peers == {"1.2.3.4:9999": None}
+    assert manager._added_peers == {"1.2.3.4:9999": False}
 
 
 def test_add_added_peer_refuses_the_same_resolved_literal(
@@ -3770,7 +3784,7 @@ def test_add_added_peer_accepts_a_value_with_an_out_of_range_port(
     """
     manager = a_manager()
     assert manager.add_added_peer("1.2.3.4:99999") is True
-    assert manager._added_peers == {"1.2.3.4:99999": None}
+    assert manager._added_peers == {"1.2.3.4:99999": False}
 
 
 def test_the_added_loop_dials_a_value_with_no_valid_port_as_a_name(
@@ -3932,7 +3946,7 @@ def test_remove_added_peer_matches_the_exact_string_alone(
     """ISS 1350: `remove_added_peer` is Core's `RemoveAddedNode`, by text."""
     manager = a_manager(addnode_args=["1.2.3.4:9999"])
     assert manager.remove_added_peer("1.2.3.4") is False
-    assert manager._added_peers == {"1.2.3.4:9999": None}
+    assert manager._added_peers == {"1.2.3.4:9999": False}
     assert manager.remove_added_peer("1.2.3.4:9999") is True
     assert manager._added_peers == {}
     assert manager.remove_added_peer("1.2.3.4:9999") is False
@@ -4068,7 +4082,7 @@ def test_a_manual_dial_that_raises_is_logged_and_the_loop_goes_on(
     )
     monkeypatch.setattr(manager.logger, "exception", logged.append)
 
-    async def raises(host: str, port: int) -> NoReturn:
+    async def raises(host: str, port: int, *, use_v2transport: bool) -> NoReturn:
         raise RuntimeError(host)
 
     slept: list[float] = []
@@ -4148,6 +4162,7 @@ def test_open_connect_peers_resolves_a_hostname(
             "automatic": False,
             "block_relay": False,
             "feeler": False,
+            "use_v2transport": False,
             "addr_fetch": False,
             "addr_name": "peer.example:8333",
         }
@@ -4189,6 +4204,7 @@ def test_open_connect_peers_keeps_a_portless_hostname_without_one(
             "automatic": False,
             "block_relay": False,
             "feeler": False,
+            "use_v2transport": False,
             "addr_fetch": False,
             "addr_name": "peer.example",
         }
@@ -4239,6 +4255,7 @@ def test_open_added_peers_resolves_a_hostname(
             "automatic": False,
             "block_relay": False,
             "feeler": False,
+            "use_v2transport": False,
             "addr_fetch": False,
             "addr_name": "peer.example",
         }
@@ -4279,6 +4296,7 @@ def test_open_added_peers_keeps_a_port_when_given(
             "automatic": False,
             "block_relay": False,
             "feeler": False,
+            "use_v2transport": False,
             "addr_fetch": False,
             "addr_name": "peer.example:9999",
         }
@@ -4493,6 +4511,7 @@ def test_async_connect_host_caps_the_resolved_list_at_256_before_dialling(
             "automatic": False,
             "block_relay": False,
             "feeler": False,
+            "use_v2transport": False,
             "addr_fetch": False,
             "addr_name": "seed.example",
         }
@@ -4553,6 +4572,7 @@ def test_async_connect_host_drops_an_internal_answer_before_counting_to_256(
             "automatic": False,
             "block_relay": False,
             "feeler": False,
+            "use_v2transport": False,
             "addr_fetch": False,
             "addr_name": "seed.example",
         }
@@ -4803,7 +4823,13 @@ def test_block_relay_only_peers_are_dialled_once_full_relay_ones_are_met(
     with ours, theirs:
         asyncio.run(manager._maybe_dial_more_peers())
     assert made == [
-        {"inbound": False, "automatic": True, "block_relay": kind, "feeler": False}
+        {
+            "inbound": False,
+            "automatic": True,
+            "block_relay": kind,
+            "feeler": False,
+            "use_v2transport": False,
+        }
     ]
 
 
@@ -6733,7 +6759,13 @@ def test_a_feeler_is_dialled_once_both_targets_are_met(
     manager, made = a_feeler_manager(a_manager, monkeypatch, new)
     asyncio.run(manager._maybe_dial_more_peers())
     assert made == [
-        {"inbound": False, "automatic": True, "block_relay": False, "feeler": True}
+        {
+            "inbound": False,
+            "automatic": True,
+            "block_relay": False,
+            "feeler": True,
+            "use_v2transport": False,
+        }
     ]
     assert manager._next_feeler > time.time()
     asyncio.run(manager._maybe_dial_more_peers())
@@ -7069,7 +7101,13 @@ def test_an_anchor_short_of_any_left_draws_from_the_table(
     assert made == [
         (
             drawn,
-            {"inbound": False, "automatic": True, "block_relay": True, "feeler": False},
+            {
+                "inbound": False,
+                "automatic": True,
+                "block_relay": True,
+                "feeler": False,
+                "use_v2transport": False,
+            },
         )
     ]
     assert manager.anchors == []
@@ -7099,7 +7137,13 @@ def test_an_anchor_is_dialled_block_relay_only_with_the_table_empty(
     assert made == [
         (
             ANCHOR,
-            {"inbound": False, "automatic": True, "block_relay": True, "feeler": False},
+            {
+                "inbound": False,
+                "automatic": True,
+                "block_relay": True,
+                "feeler": False,
+                "use_v2transport": False,
+            },
         )
     ]
 
@@ -7313,6 +7357,7 @@ FULL_RELAY = {
     "automatic": True,
     "block_relay": False,
     "feeler": False,
+    "use_v2transport": False,
 }
 
 
@@ -8314,3 +8359,171 @@ def test_only_a_manual_dial_is_granted_what_out_names(
     with ours, theirs:
         permissions = manager.loop.run_until_complete(create())
     assert (NetPermissionFlags.NO_BAN in permissions) is granted
+
+
+_P2P_V2 = ServiceFlags.NODE_P2P_V2
+
+
+@pytest.mark.parametrize(
+    ("offered", "services", "expected"),
+    [
+        (True, _P2P_V2, True),
+        (True, ServiceFlags.NODE_NETWORK, False),
+        (False, _P2P_V2, False),
+        (False, ServiceFlags.NODE_NETWORK, False),
+    ],
+)
+def test_an_address_is_dialled_with_v2_where_both_ends_offer_it(
+    a_manager: AManagerFactory,
+    offered: bool,  # noqa: FBT001
+    services: ServiceFlags,
+    expected: bool,  # noqa: FBT001
+) -> None:
+    """Core's `addrConnect.nServices & GetLocalServices() & NODE_P2P_V2`."""
+    manager = a_manager(v2transport=offered)
+    address = peer_address("1.2.3.4", 18444, services=int(services))
+    assert manager._use_v2transport_for(address) is expected
+    assert manager.supports_v2transport() is offered
+
+
+@pytest.mark.parametrize("advertised", [True, False])
+@pytest.mark.parametrize("offered", [True, False])
+def test_a_drawn_peer_is_dialled_with_v2_by_its_services(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    offered: bool,  # noqa: FBT001
+    advertised: bool,  # noqa: FBT001
+) -> None:
+    """`_dial_one_draw` asks the drawn address's own services."""
+    services = SEEDS_SERVICE_FLAGS | (_P2P_V2 if advertised else ServiceFlags(0))
+    drawn = peer_address("9.9.9.9", 18444, services=int(services))
+    manager = a_manager(
+        peer_db=a_peer_db_stub(random_address=lambda: drawn), v2transport=offered
+    )
+    made: list[dict[str, Any]] = []
+
+    async def answers(address: NetworkAddressV2) -> bool:
+        return True
+
+    monkeypatch.setattr(manager_module, "dial", answers)
+    monkeypatch.setattr(
+        manager, "create_connection", lambda sock, address, **kw: made.append(kw)
+    )
+    asyncio.run(manager._dial_one_draw(set(), set(), manager_module._Outbound.NETWORK))
+    assert [kw["use_v2transport"] for kw in made] == [offered and advertised]
+
+
+@pytest.mark.parametrize("offered", [True, False])
+def test_connect_dials_with_v2_by_the_address_s_services(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    offered: bool,  # noqa: FBT001
+) -> None:
+    """`async_connect` dials a resolved address and decides as a draw does."""
+    manager = a_manager(v2transport=offered)
+    made: list[dict[str, Any]] = []
+
+    async def answers(address: NetworkAddressV2) -> bool:
+        return True
+
+    monkeypatch.setattr(manager_module, "dial", answers)
+    monkeypatch.setattr(
+        manager, "create_connection", lambda sock, address, **kw: made.append(kw)
+    )
+    asyncio.run(
+        manager.async_connect(peer_address("1.2.3.4", 18444, services=int(_P2P_V2)))
+    )
+    asyncio.run(manager.async_connect(peer_address("1.2.3.5", 18444)))
+    assert [kw["use_v2transport"] for kw in made] == [offered, False]
+
+
+@pytest.mark.parametrize("offered", [True, False])
+def test_the_connect_loop_dials_with_v2_where_this_node_offers_it(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    offered: bool,  # noqa: FBT001
+) -> None:
+    """`-connect` attempts v2 whenever this node offers it, as Core's does."""
+    manager = a_manager(connect=["1.2.3.4:8333"], v2transport=offered)
+    v2: list[bool] = []
+    run_a_manual_loop(manager._open_connect_peers, manager, monkeypatch, 2, v2)
+    assert set(v2) == {offered}
+
+
+def test_the_added_loop_dials_each_peer_by_the_choice_kept_with_it(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`-addnode` values take the node's offer, an `addnode` call its own."""
+    manager = a_manager(addnode_args=["1.2.3.4:8333"], v2transport=True)
+    assert manager.add_added_peer("1.2.3.5:8333", use_v2transport=False)
+    assert manager.add_added_peer("1.2.3.6:8333", use_v2transport=True)
+    assert manager._added_peers == {
+        "1.2.3.4:8333": True,
+        "1.2.3.5:8333": False,
+        "1.2.3.6:8333": True,
+    }
+    v2: list[bool] = []
+    run_a_manual_loop(manager._open_added_peers, manager, monkeypatch, 3, v2)
+    assert v2 == [True, False, True]
+
+
+@pytest.mark.parametrize("offered", [True, False])
+def test_addr_fetch_dials_with_v2_where_this_node_offers_it(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    offered: bool,  # noqa: FBT001
+) -> None:
+    """Core attempts v2 for an addr-fetch whenever it offers it."""
+    manager = a_manager(v2transport=offered)
+    used: list[bool] = []
+
+    async def record(
+        host: str, port: int, *, addr_fetch: bool, use_v2transport: bool
+    ) -> None:
+        used.append(use_v2transport)
+
+    monkeypatch.setattr(manager, "async_connect_host", record)
+    manager._addr_fetches.append(("seed.example", 18444))
+    asyncio.run(manager._process_addr_fetch())
+    assert used == [offered]
+
+
+def test_a_dialled_name_is_given_the_choice_its_caller_made(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A name has no services: `async_connect_host` passes on the choice."""
+    ours, theirs = socket.socketpair()
+
+    async def connects(address: NetworkAddressV2) -> socket.socket:
+        return ours
+
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: _NamedLoop(["5.6.7.8"]))
+    monkeypatch.setattr(manager_module, "dial", connects)
+    manager = a_manager()
+    made: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        manager, "create_connection", lambda *args, **kw: made.append(kw)
+    )
+    asyncio.run(manager.async_connect_host("peer.example", 18444, use_v2transport=True))
+    assert [kw["use_v2transport"] for kw in made] == [True]
+    theirs.close()
+
+
+@pytest.mark.parametrize("offered", [True, False])
+def test_an_accepted_connection_is_v2_where_this_node_offers_it(
+    a_manager: AManagerFactory,
+    offered: bool,  # noqa: FBT001
+) -> None:
+    """An inbound peer gets a `V2Transport`, which falls back to v1 itself."""
+    port = get_random_port()
+    manager = a_manager(port=port, v2transport=offered)
+    manager.start()
+    try:
+        wait_until_listening(manager)
+        with socket.create_connection(("127.0.0.1", port)):
+            wait_until(lambda: manager.pending_connections)
+            (conn,) = manager.pending_connections.values()
+            assert isinstance(conn.transport, V2Transport) is offered
+    finally:
+        manager.stop()
+        manager.join(timeout=10)

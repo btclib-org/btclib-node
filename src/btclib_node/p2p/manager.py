@@ -556,14 +556,16 @@ class P2pManager(threading.Thread):
         # the `addnode` RPC's own `add` (`add_added_peer`, reached from
         # `rpc/callbacks.py`) has appended and `remove`
         # (`remove_added_peer`) not yet taken back out. `dict[str,
-        # None]`, not a `set`, for the same insertion-order reason
+        # bool]`, not a `set`, for the same insertion-order reason
         # `_discouraged` (above) is one: `GetAddedNodeInfo` dials this
         # list in the order `AddNode`'s own `push_back` built it,
         # oldest first. Read by `_open_added_peers` (the dial loop) and
         # by `_added_node` (`_should_pass_over_draw`'s own bound check),
         # each on this manager's own thread; written by
         # `add_added_peer`/`remove_added_peer`, reached from
-        # `RpcManager`'s. `_added_peers_lock` is what makes a read and a
+        # `RpcManager`'s. The value is Core's
+        # `AddedNodeParams::m_use_v2transport`: whether this peer is dialled
+        # with BIP324. `_added_peers_lock` is what makes a read and a
         # write one step (btclib-org/btclib-node#1350). A `dict` collapses
         # an identical `-addnode` value repeated on the command line into
         # one entry, where Core's own vector keeps both -- a divergence
@@ -573,7 +575,11 @@ class P2pManager(threading.Thread):
         # since the dedup is also what gives `add_added_peer` its own
         # O(1) "already added" check, string equality alone, the same
         # one Core's `AddNode` makes with a linear scan.
-        self._added_peers: dict[str, None] = dict.fromkeys(node.config.addnode_args)
+        # Core attempts v2 for every `-addnode` value if it supports v2
+        # (`CConnman::Init`, `src/net.h`, same sha).
+        self._added_peers: dict[str, bool] = dict.fromkeys(
+            node.config.addnode_args, self.supports_v2transport()
+        )
         self._added_peers_lock = threading.Lock()
 
         self.connections: dict[int, Connection] = {}
@@ -794,6 +800,25 @@ class P2pManager(threading.Thread):
         self._next_extra_network_peer = math.inf
         self._preferred_network = Network.IPV4
 
+    def supports_v2transport(self) -> bool:
+        """Return whether `NODE_P2P_V2` is among the services this node offers.
+
+        Core's `GetLocalServices() & NODE_P2P_V2`, which every site that
+        picks a transport asks (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
+        the v31.1 tag).
+        """
+        return bool(local_services(self.node.config) & ServiceFlags.NODE_P2P_V2)
+
+    def _use_v2transport_for(self, address: NetworkAddressV2) -> bool:
+        """Return whether to dial `address` with BIP324: both sides offer it.
+
+        Core's `addrConnect.nServices & GetLocalServices() & NODE_P2P_V2`,
+        for a dial of an address rather than of a name.
+        """
+        return self.supports_v2transport() and bool(
+            address.services & ServiceFlags.NODE_P2P_V2
+        )
+
     # One keyword per fact a connection starts with and keeps, none of
     # them a knob of another, and every caller passes them by name.
     def create_connection(  # noqa: PLR0913
@@ -809,8 +834,14 @@ class P2pManager(threading.Thread):
         addr_fetch: bool = False,
         addr_name: str | None = None,
         local_address: tuple[str, int] | None = None,
+        use_v2transport: bool = False,
     ) -> None:
         """Build a `Connection` for `client`, hold it pending, and start it.
+
+        `use_v2transport` is Core's own `NodeOptions` field: the caller
+        decides it, as `supports_v2transport` below and each dial site
+        say. A failed v2 attempt is dropped, nothing more here: the
+        reconnection with v1 is a later step of issue #1190.
 
         Logs the id this connection is given beside the address it was
         accepted from or dialled to -- the one point every path into a
@@ -862,7 +893,12 @@ class P2pManager(threading.Thread):
             self.last_connection_id,
         )
         conn = Connection(
-            self, client, address, self.last_connection_id, inbound=inbound
+            self,
+            client,
+            address,
+            self.last_connection_id,
+            inbound=inbound,
+            use_v2transport=use_v2transport,
         )
         conn.automatic = automatic
         conn.permissions = self.whitelist.flags(
@@ -1198,6 +1234,7 @@ class P2pManager(threading.Thread):
         feeler: bool = False,
         addr_fetch: bool = False,
         reserved: str | None = None,
+        use_v2transport: bool = False,
     ) -> None:
         """Schedule `async_connect_host` on this manager's own loop.
 
@@ -1219,6 +1256,7 @@ class P2pManager(threading.Thread):
                     automatic=automatic,
                     block_relay=block_relay,
                     feeler=feeler,
+                    use_v2transport=use_v2transport,
                 )
             finally:
                 if reserved is not None:
@@ -1254,7 +1292,12 @@ class P2pManager(threading.Thread):
         # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
         self.peer_db.attempt(address)
         if client:
-            self.create_connection(client, address, inbound=False)
+            self.create_connection(
+                client,
+                address,
+                inbound=False,
+                use_v2transport=self._use_v2transport_for(address),
+            )
         else:
             endpoint = network_address(address)
             self.logger.info(
@@ -1294,8 +1337,12 @@ class P2pManager(threading.Thread):
         automatic: bool = False,
         block_relay: bool = False,
         feeler: bool = False,
+        use_v2transport: bool = False,
     ) -> None:
         """Resolve `dest` and dial what it names, `ConnectNode`'s `pszDest` arm.
+
+        `use_v2transport` is the caller's, as Core's `OpenNetworkConnection`
+        takes it: a name has no services to ask.
 
         `dest` is Core's own `pszDest`, kept whole rather than split
         ahead of the call: `ConnectNode` itself resolves `Lookup(pszDest,
@@ -1426,15 +1473,21 @@ class P2pManager(threading.Thread):
                     feeler=feeler,
                     addr_fetch=addr_fetch,
                     addr_name=dest,
+                    use_v2transport=use_v2transport,
                 )
                 return
         if not addr_fetch:
             self.logger.info("Dial to %s did not come up", dest)
 
-    def connect_host(self, dest: str, default_port: int) -> None:
+    def connect_host(
+        self, dest: str, default_port: int, *, use_v2transport: bool = False
+    ) -> None:
         """Schedule `async_connect_host` on this manager's own loop."""
         asyncio.run_coroutine_threadsafe(
-            self.async_connect_host(dest, default_port), self.loop
+            self.async_connect_host(
+                dest, default_port, use_v2transport=use_v2transport
+            ),
+            self.loop,
         )
 
     def _prune_stale_connections(self, now: float) -> None:
@@ -1466,6 +1519,10 @@ class P2pManager(threading.Thread):
             # handshake has to clear before it is sent as `inv` or `tx`
             # is (#131). The idle bound above is not asked here, being
             # longer: a connection quiet that long is past this one.
+            # A v2 outbound attempt a v1-only peer refuses ends here, as a
+            # `Closed` pending connection: Core's `DisconnectNodes` is where
+            # it reads `ShouldReconnectV1`, and the reconnection with v1 is
+            # a later step of issue #1190.
             if (
                 conn.status == P2pConnStatus.Closed
                 or conn.connected_time + _PEER_CONNECT_TIMEOUT < now
@@ -2014,6 +2071,7 @@ class P2pManager(threading.Thread):
                 automatic=True,
                 block_relay=kind in {_Outbound.BLOCK_RELAY, _Outbound.ANCHOR},
                 feeler=feeler,
+                use_v2transport=self._use_v2transport_for(address),
             )
 
     def _pop_anchor(self, outbound_net_groups: set[bytes]) -> NetworkAddressV2 | None:
@@ -2238,7 +2296,9 @@ class P2pManager(threading.Thread):
         host = with_port.rsplit(":", 1)[0].removeprefix("[").removesuffix("]")
         return host in added or with_port in added
 
-    async def _open_manual(self, dest: str, default_port: int) -> None:
+    async def _open_manual(
+        self, dest: str, default_port: int, *, use_v2transport: bool
+    ) -> None:
         """Dial a `-connect` or `-addnode` peer, logging what it raises.
 
         Both loops below run as their own standing task
@@ -2248,7 +2308,9 @@ class P2pManager(threading.Thread):
         already gives for its own `try`.
         """
         try:
-            await self.async_connect_host(dest, default_port)
+            await self.async_connect_host(
+                dest, default_port, use_v2transport=use_v2transport
+            )
         except Exception:
             self.logger.exception("Exception occurred")
 
@@ -2267,7 +2329,9 @@ class P2pManager(threading.Thread):
         passes = 0
         while True:
             for node_str in self._connect_peers:
-                await self._open_manual(node_str, port)
+                await self._open_manual(
+                    node_str, port, use_v2transport=self.supports_v2transport()
+                )
                 await asyncio.sleep(_MANUAL_STEP * min(passes, _CONNECT_MAX_STEPS))
             await asyncio.sleep(_MANUAL_STEP)
             passes += 1
@@ -2338,6 +2402,7 @@ class P2pManager(threading.Thread):
             by_name = self._held_addr_names()
             with self._added_peers_lock:
                 raw = tuple(self._added_peers)
+                v2 = dict(self._added_peers)
             port = self.node.chain.port
             tried = False
             for node_str in raw:
@@ -2346,7 +2411,7 @@ class P2pManager(threading.Thread):
                 if self._added_held() >= _MAX_ADDNODE_CONNECTIONS:
                     break
                 tried = True
-                await self._open_manual(node_str, port)
+                await self._open_manual(node_str, port, use_v2transport=v2[node_str])
                 await asyncio.sleep(_MANUAL_STEP)
             await asyncio.sleep(_ADDNODE_RETRY_TRIED if tried else _ADDNODE_RETRY_IDLE)
 
@@ -2373,7 +2438,7 @@ class P2pManager(threading.Thread):
             return None
         return address, port
 
-    def add_added_peer(self, node_str: str) -> bool:
+    def add_added_peer(self, node_str: str, *, use_v2transport: bool = False) -> bool:
         """Add `node_str` to the `-addnode` list, Core's own `AddNode`.
 
         `AddNode` (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
@@ -2385,7 +2450,8 @@ class P2pManager(threading.Thread):
         second check fires between two specs naming an address, an
         onion or I2P one included, exactly where Core's does
         (btclib-org/btclib-node#1369). Returns whether `node_str` was
-        added, `AddNode`'s own bool.
+        added, `AddNode`'s own bool. `use_v2transport` is kept with it, as
+        `AddedNodeParams` keeps it, for the dial loop.
         """
         resolved = self._numeric_endpoint(node_str)
         with self._added_peers_lock:
@@ -2395,7 +2461,7 @@ class P2pManager(threading.Thread):
                 self._numeric_endpoint(other) == resolved for other in self._added_peers
             ):
                 return False
-            self._added_peers[node_str] = None
+            self._added_peers[node_str] = use_v2transport
             return True
 
     def remove_added_peer(self, node_str: str) -> bool:
@@ -2542,7 +2608,12 @@ class P2pManager(threading.Thread):
         if self.reserve_automatic_slot() is None:
             return
         try:
-            await self.async_connect_host(dest, default_port, addr_fetch=True)
+            await self.async_connect_host(
+                dest,
+                default_port,
+                addr_fetch=True,
+                use_v2transport=self.supports_v2transport(),
+            )
         except Exception:
             self.logger.exception("Exception occurred")
         finally:
@@ -3084,6 +3155,9 @@ class P2pManager(threading.Thread):
                         inbound=True,
                         prefer_evict=discouraged,
                         local_address=local_address,
+                        # the v2 transport falls back to v1 on its own, so
+                        # it serves every inbound peer, as Core's does
+                        use_v2transport=self.supports_v2transport(),
                     )
             finally:
                 # Already cancelled directly by `stop`'s own sweep
