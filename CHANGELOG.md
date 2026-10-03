@@ -1881,6 +1881,12 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
   `parse_messages(data)` takes the octets read, `buffer` and `frame_message`
   are gone, and `frame_message_bytes` is in `p2p.transport` (issue #1190).
 
+### `REPOSITORY.md` reads back the web sign-off setting
+
+- **`REPOSITORY.md` reads `web_commit_signoff_required` back** (issue
+  btclib-org/.github#1540): section 11 of the standard states the
+  organization setting.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
