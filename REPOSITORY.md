@@ -841,8 +841,7 @@ call that reports nothing. Webhooks are not among them: *Read
 the Docs* above reads that endpoint back, an empty answer there being
 what says the integration is the GitHub App rather than a hook of this
 repository's. The repository's Actions variables are not among them
-either: *A switch this repository does not set* below reads that store,
-its zero being half of what records the review switch's off state.
+either: *A switch this repository does not set* below reads that store.
 
 **A credential the organization holds.** `claude-review.yml` runs on
 `CLAUDE_CODE_OAUTH_TOKEN`, an organization secret visible to every
@@ -867,29 +866,16 @@ than a credential it lacks, and it is why the Dependabot store is here
 rather than among the facilities above: an empty store there is where the
 standard's decision shows, not a facility nobody reached for.
 
-**A switch this repository does not set.** The jobs `claude-review.yml`
-calls are guarded by `vars.CLAUDE_REVIEW_ENABLED`, and neither variable
-store holds it:
+**A switch this repository does not set.** `claude-review.yml` calls
+`btclib-org/.github`'s `reusable-claude-review.yml`, whose jobs guard on
+`vars.CLAUDE_REVIEW_ENABLED`; a variable set here would take precedence
+over one of the same name on the organization, so the repository's own
+store is read too:
 
 ```shell
-gh api repos/btclib-org/btclib-node/actions/variables --jq '.total_count'
-# 0
-gh api orgs/btclib-org/actions/variables --jq '.variables[].name'
-#
-gh api orgs/btclib-org/actions/variables --jq '.total_count'
+gh api repos/btclib-org/btclib-node/actions/variables --jq .total_count
 # 0
 ```
-
-The organization secret above answering with a name is what makes these
-zeros absences rather than an endpoint that answers empty for everyone.
-The variable store prints nothing at all when it answers, so its own
-`total_count` of `0` is what shows the call reached it: one that does not
-reach it prints an error and exits non-zero. Section 11 reads that empty
-name list as `vars.CLAUDE_REVIEW_ENABLED`'s off state, an undefined
-`vars.X` being the empty string. Both stores are read because a variable
-set here would take precedence over one of the same name set on the
-organization, so the organization's answer alone would not show the
-switch off for this tree.
 
 The price of the scope is a silent flip. A change to any of the above
 shows up in nothing here, and what would find it is somebody reading the
