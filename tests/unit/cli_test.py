@@ -3119,6 +3119,20 @@ def test_build_config_peerblockfilters_reads_the_flag() -> None:
     assert cli.build_config(["-regtest", "-peerblockfilters"]).peerblockfilters is True
 
 
+def test_build_config_v2transport_defaults_to_true() -> None:
+    """Core's own `DEFAULT_V2_TRANSPORT`."""
+    assert cli.build_config(["-regtest"]).v2transport is True
+
+
+@pytest.mark.parametrize(
+    ("flag", "expected"),
+    [("-v2transport=0", False), ("-nov2transport", False), ("-v2transport", True)],
+)
+def test_build_config_v2transport_reads_the_flag(flag: str, expected: bool) -> None:  # noqa: FBT001
+    """`-v2transport` is a boolean flag, `-nov2transport` its negation."""
+    assert cli.build_config(["-regtest", flag]).v2transport is expected
+
+
 def test_build_config_seednode_reaches_config() -> None:
     """`-seednode` on the command line resolves through to `Config`."""
     config = cli.build_config(

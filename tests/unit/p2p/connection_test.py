@@ -46,7 +46,14 @@ from btclib_node.p2p.callbacks import (
 from btclib_node.p2p.connection import Connection
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 from btclib_node.p2p.messages import NoncelessPing
-from btclib_node.p2p.transport import BytesToSend, SerializedMessage, V1Transport
+from btclib_node.p2p.transport import (
+    BytesToSend,
+    NetMessage,
+    SerializedMessage,
+    TransportProtocolType,
+    V1Transport,
+)
+from btclib_node.p2p.v2transport import V2Transport
 from tests import discourage_recorder, log_recorder, wait_until
 
 if TYPE_CHECKING:
@@ -70,6 +77,9 @@ class Unserializable:
 
 def a_connection(
     client: socket.socket | None = None,
+    *,
+    use_v2transport: bool = False,
+    inbound: bool = False,
 ) -> tuple[Connection, list[str]]:
     """Build a `Connection` over `client`, or a fresh unconnected socket.
 
@@ -80,7 +90,7 @@ def a_connection(
     logged, warning = log_recorder()
     node = SimpleNamespace(
         chain=RegTest(),
-        config=SimpleNamespace(pruned=False, peerblockfilters=False),
+        config=SimpleNamespace(pruned=False, peerblockfilters=False, v2transport=False),
         # what `own_version` now carries as `start_height`: 0, matching
         # a fresh `Node`'s own initial value before `main._finalize_fork`
         # ever writes it (`__init__.py`). btclib-org/btclib-node#722
@@ -101,7 +111,8 @@ def a_connection(
         client if client is not None else socket.socket(),
         peer_address("1.2.3.4", 18444),
         0,
-        inbound=False,
+        inbound=inbound,
+        use_v2transport=use_v2transport,
     )
     return connection, logged
 
@@ -151,13 +162,119 @@ def test_a_message_the_transport_cannot_frame_is_logged_and_dropped() -> None:
     assert "error in serializing message" in line
 
 
-def test_a_transport_that_takes_no_message_is_an_error_not_a_drop() -> None:
-    """A transport refusing a message in `_deliver` raises, not drops."""
-    connection, _ = a_connection()
-    transport = cast("V1Transport", connection.transport)
-    transport.set_message_to_send(SerializedMessage("ping", b"\x01" * 8))
-    with connection.client, pytest.raises(BTClibRuntimeError):
-        asyncio.run(connection._deliver(SerializedMessage("pong", b"")))
+@pytest.mark.parametrize("offered", [True, False])
+def test_local_services_names_p2p_v2_where_v2transport_is_on(
+    offered: bool,  # noqa: FBT001
+) -> None:
+    """Core's `-v2transport` adds `NODE_P2P_V2` to the local services."""
+    config = SimpleNamespace(pruned=False, peerblockfilters=False, v2transport=offered)
+    services = connection_module.local_services(cast("Any", config))
+    assert bool(services & ServiceFlags.NODE_P2P_V2) is offered
+
+
+def _peer_reads(peer: V2Transport, data: bytes) -> list[NetMessage]:
+    """Return every message `peer` takes out of `data`."""
+    read: list[NetMessage] = []
+    remaining = memoryview(data)
+    while remaining:
+        remaining = peer.received_bytes(remaining)
+        if peer.received_message_complete():
+            read.append(peer.get_received_message())
+    return read
+
+
+def _peer_writes(peer: V2Transport) -> bytes:
+    """Return, and mark sent, what `peer` holds to send."""
+    to_send, _, _ = peer.get_bytes_to_send(have_next_message=False)
+    peer.mark_bytes_sent(len(to_send))
+    return bytes(to_send)
+
+
+def test_a_v2_connection_holds_messages_until_the_handshake_gives_it_a_cipher() -> None:
+    """Messages queued before the key arrives go out after it, in order.
+
+    The handshake octets go out with no message queued, and the three
+    messages stay queued, and counted, until the peer's key is read.
+    """
+    magic = RegTest().magic
+    connection, _ = a_connection(use_v2transport=True)
+    peer = V2Transport(magic, V1Transport(magic), initiating=False)
+    sent: list[bytes] = []
+
+    async def _send(data: bytes) -> None:
+        sent.append(data)
+
+    connection._send = _send  # type: ignore[method-assign]
+    messages = [SerializedMessage("ping", Ping(n).serialize()) for n in (1, 2, 3)]
+    size = sum(connection_module._queued_size(m) for m in messages)
+    connection.queued_send_bytes = size
+
+    async def drive() -> None:
+        for message in messages:
+            await connection._deliver(message)
+        assert len(sent) == 1
+        assert not _peer_reads(peer, sent[0])
+        assert len(connection._outbox) == 3
+        assert connection.queued_send_bytes == size
+        connection.parse_messages(_peer_writes(peer))
+        await connection._drain_outbox()
+
+    with connection.client:
+        asyncio.run(drive())
+    assert not connection._outbox
+    assert connection.queued_send_bytes == 0
+    assert [(m.command, m.payload) for m in _peer_reads(peer, b"".join(sent[1:]))] == [
+        (m.command, m.payload) for m in messages
+    ]
+
+
+def test_a_v2_connection_answers_a_v1_peer_in_v1() -> None:
+    """A v1 `version`'s first 16 octets make the transport v1, as in Core."""
+    connection, _ = a_connection(use_v2transport=True, inbound=True)
+    # the payload is not read here: only that the message is framed in v1
+    wire = Message(RegTest().magic, "version", b"\x01" * 8).serialize()
+    with connection.client:
+        connection.parse_messages(wire)
+    assert connection.transport.get_info().transport_type is TransportProtocolType.V1
+    ((command, payload, *_),) = connection.manager.handshake_messages
+    assert (command, payload) == ("version", b"\x01" * 8)
+
+
+def test_run_finishes_a_v2_handshake_the_peer_sends_in_small_reads() -> None:
+    """`run` drains the outbox after every read, until the handshake is done.
+
+    The peer's handshake reaches `run` seven octets at a time, so the key,
+    the terminator and the version packet each arrive over several reads.
+    The `version` that waited for the cipher must still reach the peer.
+    """
+    magic = RegTest().magic
+    peer = V2Transport(magic, V1Transport(magic), initiating=False, garbage=b"")
+
+    async def drive() -> list[NetMessage]:
+        loop = asyncio.get_running_loop()
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        theirs.setblocking(False)
+        connection = a_running_connection(loop, ours, use_v2transport=True)
+        task = asyncio.ensure_future(connection.run())
+        read: list[NetMessage] = []
+        try:
+            async with asyncio.timeout(10):
+                while not read:
+                    data = await loop.sock_recv(theirs, 65536)
+                    read += _peer_reads(peer, data)
+                    out = _peer_writes(peer)
+                    for at in range(0, len(out), 7):
+                        await loop.sock_sendall(theirs, out[at : at + 7])
+                        await asyncio.sleep(0.005)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            theirs.close()
+        return read
+
+    (version, *_) = asyncio.run(drive())
+    assert version.command == "version"
 
 
 def test_a_transport_that_does_not_advance_is_an_error_not_a_freeze() -> None:
@@ -422,7 +539,10 @@ def test_a_connection_whose_socket_is_gone_says_so() -> None:
 
 
 def a_running_connection(
-    loop: asyncio.AbstractEventLoop, client: socket.socket
+    loop: asyncio.AbstractEventLoop,
+    client: socket.socket,
+    *,
+    use_v2transport: bool = False,
 ) -> Connection:
     """Build a `Connection` with enough manager state for `run` to actually run.
 
@@ -435,7 +555,7 @@ def a_running_connection(
     node = SimpleNamespace(
         chain=RegTest(),
         status=NodeStatus.Starting,
-        config=SimpleNamespace(pruned=False, peerblockfilters=False),
+        config=SimpleNamespace(pruned=False, peerblockfilters=False, v2transport=False),
         # `own_version`'s own `start_height` (btclib-org/btclib-node#722),
         # 0 matching a fresh `Node`'s own initial value (`__init__.py`).
         best_height=0,
@@ -463,6 +583,7 @@ def a_running_connection(
         peer_address("127.0.0.1", 18444),
         0,
         inbound=False,
+        use_v2transport=use_v2transport,
     )
 
 
@@ -1028,9 +1149,12 @@ def test_a_message_is_framed_into_one_write_counted_by_chunk() -> None:
     """
     connection, _ = a_connection()
     with connection.client:
-        data, sent = connection._frame(SerializedMessage("ping", Ping(1).serialize()))
+        data, sent, taken = connection._frame(
+            SerializedMessage("ping", Ping(1).serialize())
+        )
     assert data == _wire_ping()
     assert sent == [("ping", 24), ("ping", 8)]
+    assert taken
 
 
 def test_parse_messages_weighs_a_queued_message_against_the_recv_bound() -> None:

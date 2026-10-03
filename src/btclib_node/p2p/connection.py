@@ -22,7 +22,7 @@ import math
 import secrets
 import threading
 import time
-from collections import Counter
+from collections import Counter, deque
 from dataclasses import dataclass, field
 from functools import cached_property
 from typing import TYPE_CHECKING, cast, override
@@ -51,8 +51,10 @@ from btclib_node.p2p.transport import (
     HEADER_SIZE,
     SerializedMessage,
     Transport,
+    TransportProtocolType,
     V1Transport,
 )
+from btclib_node.p2p.v2transport import V2Transport
 
 if TYPE_CHECKING:
     import socket
@@ -332,7 +334,8 @@ _MESSAGE_TYPE_OTHER = "*other*"
 _USER_AGENT = USER_AGENT.encode()
 
 
-# Chunks one message may take from a transport; `V1Transport` takes two.
+# Chunks one message may take from a transport; `V1Transport` takes two,
+# and `V2Transport` one beside the handshake octets still unsent.
 _MAX_CHUNKS = 16
 
 
@@ -344,6 +347,13 @@ def _queued_size(message: SerializedMessage) -> int:
     actually written.
     """
     return HEADER_SIZE + len(message.payload)
+
+
+def _make_transport(magic: bytes, *, inbound: bool, use_v2transport: bool) -> Transport:
+    """Return Core's `MakeTransport`: v2 with a v1 fallback, or v1."""
+    if use_v2transport:
+        return V2Transport(magic, V1Transport(magic), initiating=not inbound)
+    return V1Transport(magic)
 
 
 def local_services(config: Config) -> ServiceFlags:
@@ -373,12 +383,19 @@ def local_services(config: Config) -> ServiceFlags:
     The filter index is caught up before the node starts listening and
     kept up as blocks connect, so the promise holds whenever
     `peerblockfilters` is on.
+
+    `NODE_P2P_V2` is set where `Config.v2transport` is, as Core's
+    `-v2transport` sets it (`src/init.cpp:987-990`, same sha): it says
+    that a connection to this node may use BIP324, which `Connection`
+    then does (`use_v2transport`).
     """
     services = ServiceFlags.NODE_WITNESS | ServiceFlags.NODE_NETWORK_LIMITED
     if not config.pruned:
         services |= ServiceFlags.NODE_NETWORK
     if config.peerblockfilters:
         services |= ServiceFlags.NODE_COMPACT_FILTERS
+    if config.v2transport:
+        services |= ServiceFlags.NODE_P2P_V2
     return services
 
 
@@ -519,9 +536,22 @@ class Connection:
         """What this peer is known to have of the block chain."""
         return BlockAvailability()
 
+    # What `_deliver` has queued and the transport has not yet taken,
+    # in the order queued. Read and written on this connection's own
+    # loop alone. Messages wait here while a `V2Transport` has no
+    # cipher. Built on first read, for the ceiling `block_availability`
+    # gives.
+    @cached_property
+    def _outbox(self) -> deque[SerializedMessage]:
+        return deque()
+
+    # Whether `run` is to drain `_outbox` after each read, until
+    # `get_info` leaves "detecting". Set by `run`.
+    _handshaking: bool = False
+
     # The task awaiting `_send`'s own `sock_sendall`, for `_close` to
     # cancel: it removes the writer that would have completed that wait.
-    # One at a time, `_deliver` holding `_write_lock` across `_send`; a
+    # One at a time, `_drain_outbox` holding `_write_lock` across `_send`; a
     # class default for the reason `time_received` gives.
     # btclib-org/btclib-node#1164
     _writing: asyncio.Task[object] | None = None
@@ -552,7 +582,7 @@ class Connection:
         """Whether this peer is behind this node's tip, and since when."""
         return ChainSyncTimeoutState()
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         manager: P2pManager,
         client: socket.socket,
@@ -560,8 +590,14 @@ class Connection:
         connection_id: int,
         *,
         inbound: bool,
+        use_v2transport: bool = False,
     ) -> None:
-        """Set every field a fresh connection starts with, before `run`."""
+        """Set every field a fresh connection starts with, before `run`.
+
+        `use_v2transport` is Core's own: a `V2Transport` that initiates
+        where this node dialled and responds where it accepted, falling
+        back to v1 on its own where a responder is spoken to in v1.
+        """
         self.id = connection_id
         self.manager = manager
         self.node: Node = manager.node
@@ -573,7 +609,9 @@ class Connection:
         # receiving half on this connection's loop, and `_deliver` the
         # sending half under `_write_lock`, `p2p/transport.py` being where
         # each is argued.
-        self.transport: Transport = V1Transport(self.node.chain.magic)
+        self.transport: Transport = _make_transport(
+            self.node.chain.magic, inbound=inbound, use_v2transport=use_v2transport
+        )
         self.task: Future[None] | None = None
 
         self.status: P2pConnStatus = P2pConnStatus.Open
@@ -881,7 +919,7 @@ class Connection:
         not carry the same guard, which is why the traceback in the
         issue only ever appears with a writer sharing the descriptor.
         `_send`'s own `sock_sendall` is that writer -- `async_send`
-        reaches it through `_deliver`, two frames up -- so a peer not
+        reaches it through `_deliver` and `_drain_outbox` -- so a peer not
         draining its send queue at the moment this closes is exactly
         the case that used to raise.
         Closing the fd before either callback has had a chance to run
@@ -919,7 +957,7 @@ class Connection:
         in `queued_send_bytes`, until `P2pManager.stop`'s own sweep
         cancels it or the collector frees it pending. Cancelling it here
         ends it on the next step of this loop, and each `_deliver` behind
-        it then reaches a closed socket, whose `OSError` `_deliver`
+        it then reaches a closed socket, whose `OSError` `_drain_outbox`
         suppresses. On a proactor loop the close alone would end that
         write, `sock_sendall` there being one overlapped `WSASend` on the
         socket's own handle; the cancel ends it first, and comes before
@@ -964,7 +1002,10 @@ class Connection:
         # stop() is idempotent on an already-closed connection, so this
         # costs nothing on every other path, which already called it.
         try:
+            self._handshaking = isinstance(self.transport, V2Transport)
             if not self.inbound:
+                # a v2 initiator's handshake octets go out ahead of it, and
+                # the `version` waits in `_outbox` for the cipher
                 await self.async_send(self.own_version())
             while self.status < P2pConnStatus.Closed:
                 # Cleared by `parse_messages` once `queued_recv_bytes`
@@ -1009,6 +1050,12 @@ class Connection:
                 self.stats.bytes_recv += len(data)
                 try:
                     self.parse_messages(data)
+                    if self._handshaking:
+                        await self._drain_outbox()
+                        self._handshaking = (
+                            self.transport.get_info().transport_type
+                            is TransportProtocolType.DETECTING
+                        )
                 # deliberately blind (BLE001), not for the event loop's
                 # own sake: `run` reaches this coroutine through
                 # `run_coroutine_threadsafe`, whose own Future nothing
@@ -1051,40 +1098,70 @@ class Connection:
             self.stats.bytes_sent += size
             self.stats.bytes_sent_per_msg[command] += size
 
-    def _frame(self, message: SerializedMessage) -> tuple[bytes, list[tuple[str, int]]]:
-        """Frame `message` into one write, with what each octet is sent for.
+    def _collect_octets(
+        self, chunks: list[memoryview], sent: list[tuple[str, int]]
+    ) -> None:
+        """Take every octet the transport holds, with what each is sent for.
 
-        Core's `SocketSendData` loop, run to the end of the message and
-        joined into one write: a header and a payload sent apart can wait
-        on each other under Nagle, which Core answers with `MSG_MORE`,
-        and `sock_sendall` has no such flag. `mark_bytes_sent` is called
-        before the write rather than after it, which loses nothing: the
-        write takes every octet or the connection is dropped, and nothing
-        resumes half a message.
+        Core's `SocketSendData` loop, run to the end of what the
+        transport holds: a handshake not yet sent, or a message just set.
+        `mark_bytes_sent` is called before the write rather than after
+        it, which loses nothing: the write takes every octet or the
+        connection is dropped, and nothing resumes half a message.
 
-        Raises `BTClibValueError` for a message the transport cannot
-        frame, and `BTClibRuntimeError` for one that does not finish.
-        Called under `_write_lock`, the only place the sending half of
-        the transport is touched.
+        Raises `BTClibRuntimeError` for a transport that does not finish.
         """
-        if not self.transport.set_message_to_send(message):
-            err_msg = "the transport takes no message now"
-            raise BTClibRuntimeError(err_msg)
-        chunks: list[memoryview] = []
-        sent: list[tuple[str, int]] = []
         for _ in range(_MAX_CHUNKS):
             to_send, more, command = self.transport.get_bytes_to_send(
                 have_next_message=False
             )
-            chunks.append(to_send)
-            sent.append((command, len(to_send)))
-            self.transport.mark_bytes_sent(len(to_send))
+            if to_send:
+                chunks.append(to_send)
+                sent.append((command, len(to_send)))
+                self.transport.mark_bytes_sent(len(to_send))
             if not more:
-                return b"".join(chunks), sent
+                return
         # this loop never yields, so a transport that does not advance
         # would freeze the whole loop
         err_msg = "the transport does not finish a message"
         raise BTClibRuntimeError(err_msg)
+
+    def _frame(
+        self, message: SerializedMessage | None
+    ) -> tuple[bytes, list[tuple[str, int]], bool]:
+        """Return one write, what each octet is sent for, and if `message` went.
+
+        What the transport already holds, a handshake, comes first, so
+        the octets are on the wire in the order the transport made them.
+        `message`, the head of `_outbox` or `None`, is set after it and
+        joined into the same write: a header and a payload sent apart can
+        wait on each other under Nagle, which Core answers with
+        `MSG_MORE`, and `sock_sendall` has no such flag.
+
+        `message` is not taken where the transport cannot send yet, a
+        `V2Transport` short of its cipher. One the transport cannot frame
+        is logged and counted taken, which drops it.
+
+        Raises `BTClibRuntimeError` for a transport that does not finish.
+        Called under `_write_lock`. A `V2Transport`'s receiving half
+        also adds handshake octets on this loop, between two calls; they
+        go out first, since the transport takes no message while it holds
+        octets.
+        """
+        chunks: list[memoryview] = []
+        sent: list[tuple[str, int]] = []
+        self._collect_octets(chunks, sent)
+        taken = False
+        if message is not None:
+            try:
+                taken = self.transport.set_message_to_send(message)
+            except BTClibValueError as e:
+                self.node.logger.warning("error in serializing message: %s", e)
+                taken = True
+            else:
+                if taken:
+                    self._collect_octets(chunks, sent)
+        return b"".join(chunks), sent, taken
 
     def _queue(self, payload: Payload) -> SerializedMessage | None:
         """Serialize `payload` and count it, or refuse and return `None`.
@@ -1155,26 +1232,38 @@ class Connection:
         return message
 
     async def _deliver(self, message: SerializedMessage) -> None:
-        """Write what `_queue` counted, and take it off the books after.
+        """Queue what `_queue` counted, and write it unless the transport waits.
 
-        The transport frames `message` under `_write_lock`, so the order
-        of the octets on the wire is the order the transport produced
-        them in, whatever it does to them.
+        A `V2Transport` takes no message before it has a cipher, and
+        `message` then stays in `_outbox` until `run` finds one. Others
+        queued meanwhile stay behind it, in the order they were queued.
         """
-        try:
-            async with self._write_lock:
-                try:
-                    data, sent = self._frame(message)
-                except BTClibValueError as e:
-                    self.node.logger.warning("error in serializing message: %s", e)
+        self._outbox.append(message)
+        await self._drain_outbox()
+
+    async def _drain_outbox(self) -> None:
+        """Write the transport's own octets, then each message it takes.
+
+        The transport frames and, for BIP324, encrypts each message
+        under `_write_lock`, so the order of the octets on the wire is
+        the order the transport produced them in, and the cipher's
+        counter agrees with it. A message is taken off the books once
+        written. Stops at the first the transport does not take yet.
+        """
+        async with self._write_lock:
+            while True:
+                data, sent, taken = self._frame(
+                    self._outbox[0] if self._outbox else None
+                )
+                if data:
+                    with contextlib.suppress(OSError):  # probably connection dropped
+                        await self._send(data)
+                        self._count_sent(sent)
+                if not taken:
                     return
-                with contextlib.suppress(OSError):  # probably connection dropped
-                    await self._send(data)
-                    self._count_sent(sent)
-        finally:
-            with self._send_lock:
-                self.queued_send_bytes -= _queued_size(message)
-        self.last_send = time.time()
+                with self._send_lock:
+                    self.queued_send_bytes -= _queued_size(self._outbox.popleft())
+                self.last_send = time.time()
 
     async def async_send(self, payload: Payload) -> None:
         """Frame `payload` and send it, dropping the connection past the bound.
