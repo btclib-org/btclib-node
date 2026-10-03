@@ -24,7 +24,7 @@ import time
 from collections import Counter, deque
 from concurrent.futures import CancelledError
 from contextlib import suppress
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from ipaddress import IPv4Address, IPv6Address, ip_address
 from typing import TYPE_CHECKING, Any, cast, override
 
@@ -312,6 +312,27 @@ class _Outbound(enum.Enum):
     ANCHOR = enum.auto()
     # an `OUTBOUND_FULL_RELAY` dial Core makes with `preferred_net` set
     NETWORK = enum.auto()
+
+
+@dataclass(frozen=True)
+class _Reconnection:
+    """What a v1 retry needs of the connection it replaces.
+
+    Core's `ReconnectionInfo` (`src/net.h`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag). `holds_slot` says the dropped connection held an
+    outbound slot, which `_reserved_outbound` keeps under
+    `connection_type` until the retry concludes: Core's `grant`, moved
+    to the entry.
+    """
+
+    address: NetworkAddressV2
+    addr_name: str | None
+    automatic: bool
+    block_relay: bool
+    feeler: bool
+    addr_fetch: bool
+    holds_slot: bool
+    connection_type: str | None
 
 
 def _outbound_type_counts(automatic: list[Connection]) -> tuple[int, int]:
@@ -610,9 +631,13 @@ class P2pManager(threading.Thread):
         # read both dicts as of one instant rather than two
         # (btclib-org/btclib-node#355). Held only across the dict
         # operations themselves in every case above -- never across an
-        # `await` or a call into `Connection` -- so nothing here blocks
-        # `Node`'s thread for longer than an in-memory pop or a write
-        # takes.
+        # `await`, and never across a call into `Connection` but one:
+        # `_reconnection_for` asks the dropped connection's transport
+        # `should_reconnect_v1`, which takes the transport's own two
+        # locks, as Core's `DisconnectNodes` does under `m_nodes_mutex`.
+        # The transport takes no lock of this manager, so the two cannot
+        # deadlock. Nothing here blocks `Node`'s thread for longer than
+        # a dict operation, or than the transport holds its own locks.
         #
         # `stop()`'s own closing sweep (below) reads this same pair
         # unlocked, on purpose: it runs only after `join()`, and its own
@@ -626,6 +651,15 @@ class P2pManager(threading.Thread):
         # given up. Guarded by `_connections_lock`; that method's
         # docstring says why the caps count them.
         self._reserved_outbound: Counter[str | None] = Counter()
+        # Core's `m_reconnections` and its mutex: the v1 retries
+        # `remove_connection` queues, from whichever thread drops the
+        # connection, and `_perform_reconnections` drains on this
+        # manager's loop. `_retrying` holds the entries being dialled,
+        # no longer queued and still holding their slot. Never held
+        # with `_connections_lock`.
+        self._reconnections: deque[_Reconnection] = deque()
+        self._retrying: list[_Reconnection] = []
+        self._reconnections_lock = threading.Lock()
         # (command, payload, connection id, wire size), and for
         # `messages` a receive time after that, below -- the size,
         # `Connection.parse_messages`'s own addition since #462, is what
@@ -840,8 +874,7 @@ class P2pManager(threading.Thread):
 
         `use_v2transport` is Core's own `NodeOptions` field: the caller
         decides it, as `supports_v2transport` below and each dial site
-        say. A failed v2 attempt is dropped, nothing more here: the
-        reconnection with v1 is a later step of issue #1190.
+        say. A failed v2 attempt is retried with v1 by `remove_connection`.
 
         Logs the id this connection is given beside the address it was
         accepted from or dialled to -- the one point every path into a
@@ -955,7 +988,12 @@ class P2pManager(threading.Thread):
         too, so its own nonce is discarded inside the same locked block,
         the same reason `promote_connection` above does it there rather
         than after. `conn.stop()` stays outside the lock, as every other
-        call into `Connection` from in here does.
+        call into `Connection` from in here does, bar the one
+        `_reconnection_for` makes, which `__init__` argues.
+
+        Queues the retry with v1 of an outbound connection whose
+        transport asks for one (`_reconnection_for`), and logs it as Core
+        does.
         """
         with self._connections_lock:
             conn = self.connections.pop(connection_id, None)
@@ -964,10 +1002,152 @@ class P2pManager(threading.Thread):
                 conn = self.pending_connections.pop(connection_id, None)
             if conn is not None and conn.nonce is not None:
                 self.pending_outbound_nonces.discard(conn.nonce)
+            reconnection = self._reconnection_for(conn) if conn is not None else None
         if conn is not None:
             conn.stop()
             if handshaken:
                 self._finalize(conn)
+            if reconnection is not None:
+                self.logger.log_debug(
+                    "net", "retrying with v1 transport protocol for peer=%s", conn.id
+                )
+                with self._reconnections_lock:
+                    self._reconnections.append(reconnection)
+
+    def _reconnection_for(self, conn: Connection) -> _Reconnection | None:
+        """Return the v1 retry of `conn`, or `None`; `_connections_lock` held.
+
+        Core's `DisconnectNodes` (`src/net.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag) queues one for every
+        connection it drops, of any type, while the network is active
+        and `ShouldReconnectV1` holds. It moves the node's grant to the
+        entry. Here the slot an automatic or addr-fetch connection held
+        is reserved again, in the same critical section that dropped the
+        connection, so no cap check finds it free before the retry
+        concludes; `_perform_reconnections` releases it.
+        """
+        if not self.network_active or not conn.transport.should_reconnect_v1():
+            return None
+        holds_slot = conn.automatic or conn.addr_fetch
+        connection_type = None
+        if not (conn.feeler or conn.addr_fetch):
+            connection_type = (
+                "block-relay-only" if conn.block_relay else "outbound-full-relay"
+            )
+        if holds_slot:
+            self._reserved_outbound[connection_type] += 1
+        return _Reconnection(
+            conn.address,
+            conn.addr_name,
+            conn.automatic,
+            conn.block_relay,
+            conn.feeler,
+            conn.addr_fetch,
+            holds_slot,
+            connection_type,
+        )
+
+    async def _perform_reconnections(self) -> None:
+        """Retry each queued connection with v1, as `PerformReconnections` does.
+
+        Called by `_open_addr_fetches`, this tree's `ThreadOpenConnections`
+        arm, and by `_open_added_peers`, its `ThreadOpenAddedConnections`,
+        and never by `manage_connections`: a retry by name resolves
+        the name and dials each answer, which can take seconds, and a
+        step of the housekeeping loop that awaited it would hold up every
+        pass' `_prune_stale_connections` (btclib-org/btclib-node#1366).
+        Core drains `m_reconnections` on its connection threads, never on
+        the one that disconnects (`src/net.cpp`, same sha). An entry
+        leaves the queue before its dial, and its slot is released once
+        the dial has concluded: `create_connection` has registered the new
+        connection by then.
+        """
+        while True:
+            with self._reconnections_lock:
+                if not self._reconnections:
+                    return
+                item = self._reconnections.popleft()
+                self._retrying.append(item)
+            try:
+                await self._reconnect_v1(item)
+            except Exception:
+                self.logger.exception("Exception occurred")
+            finally:
+                with self._reconnections_lock:
+                    self._retrying.remove(item)
+                if item.holds_slot:
+                    self.release_automatic_slot(item.connection_type)
+
+    def _held_for_added(self) -> tuple[set[str], set[str]]:
+        """Return the held addresses and names, those of retries too.
+
+        A retry queued or being dialled counts as held for `-addnode`'s
+        own check: Core moves the `semAddnode` grant into the entry, so
+        the added peer keeps its slot. Not in `_held_addr_names` itself,
+        which the retry's own `async_connect_host` asks.
+        """
+        by_address = self._held_resolved_addresses()
+        by_name = self._held_addr_names()
+        with self._reconnections_lock:
+            retries = (*self._reconnections, *self._retrying)
+        for item in retries:
+            if item.addr_name is not None:
+                by_name.add(item.addr_name)
+            if can_connect(item.address):
+                endpoint = network_address(item.address)
+                by_address.add(ip_and_port(str(endpoint.ip), item.address.port))
+        return by_address, by_name
+
+    async def _reconnect_v1(self, item: _Reconnection) -> None:
+        """Dial `item`'s peer again with v1, with the flags of the first dial.
+
+        `OpenNetworkConnection`'s own refusals apply: an inactive
+        network, and an address already held, discouraged or banned.
+        A name is resolved again, as `ConnectNode` does for `m_dest`.
+        This tree's address book counts no failed dial, so there is no
+        `fCountFailure` to hold false; `attempt` only stamps the time,
+        as Core's `Attempt(addr, false)` does.
+        """
+        if not self.network_active:
+            return
+        if item.addr_name is not None:
+            await self.async_connect_host(
+                item.addr_name,
+                self.node.chain.port,
+                addr_fetch=item.addr_fetch,
+                automatic=item.automatic,
+                block_relay=item.block_relay,
+                feeler=item.feeler,
+                use_v2transport=False,
+            )
+            return
+        with self._connections_lock:
+            held = {
+                host_key(conn.address)
+                for conn in (
+                    *self.connections.values(),
+                    *self.pending_connections.values(),
+                )
+            }
+        if (
+            host_key(item.address) in held
+            or self.is_discouraged(item.address)
+            or self.ban_man.is_peer_banned(item.address)
+        ):
+            return
+        sock = await dial(item.address)
+        self.peer_db.attempt(item.address)
+        if sock:
+            self.create_connection(
+                sock,
+                item.address,
+                inbound=False,
+                automatic=item.automatic,
+                block_relay=item.block_relay,
+                feeler=item.feeler,
+                addr_fetch=item.addr_fetch,
+                use_v2transport=False,
+            )
 
     def _finalize(self, conn: Connection) -> None:
         """Tell the address table a handshaken connection is gone.
@@ -1520,9 +1700,8 @@ class P2pManager(threading.Thread):
             # is (#131). The idle bound above is not asked here, being
             # longer: a connection quiet that long is past this one.
             # A v2 outbound attempt a v1-only peer refuses ends here, as a
-            # `Closed` pending connection: Core's `DisconnectNodes` is where
-            # it reads `ShouldReconnectV1`, and the reconnection with v1 is
-            # a later step of issue #1190.
+            # `Closed` pending connection: `remove_connection` is Core's
+            # `DisconnectNodes`, where it reads `ShouldReconnectV1`.
             if (
                 conn.status == P2pConnStatus.Closed
                 or conn.connected_time + _PEER_CONNECT_TIMEOUT < now
@@ -2362,8 +2541,7 @@ class P2pManager(threading.Thread):
         """
         with self._added_peers_lock:
             raw = tuple(self._added_peers)
-        by_address = self._held_resolved_addresses()
-        by_name = self._held_addr_names()
+        by_address, by_name = self._held_for_added()
         return sum(self._is_held(node_str, by_address, by_name) for node_str in raw)
 
     async def _open_added_peers(self) -> None:
@@ -2398,8 +2576,7 @@ class P2pManager(threading.Thread):
         rather than by `addr_name` alone (btclib-org/btclib-node#1498).
         """
         while True:
-            by_address = self._held_resolved_addresses()
-            by_name = self._held_addr_names()
+            by_address, by_name = self._held_for_added()
             with self._added_peers_lock:
                 raw = tuple(self._added_peers)
                 v2 = dict(self._added_peers)
@@ -2413,6 +2590,11 @@ class P2pManager(threading.Thread):
                 tried = True
                 await self._open_manual(node_str, port, use_v2transport=v2[node_str])
                 await asyncio.sleep(_MANUAL_STEP)
+            # `ThreadOpenAddedConnections` drains `m_reconnections` too,
+            # so an addr-fetch stuck on a slow name does not hold a retry
+            # up; the pop under `_reconnections_lock` keeps two drains
+            # from running one entry twice
+            await self._perform_reconnections()
             await asyncio.sleep(_ADDNODE_RETRY_TRIED if tried else _ADDNODE_RETRY_IDLE)
 
     def _numeric_endpoint(self, node_str: str) -> tuple[Host, int] | None:
@@ -2668,9 +2850,13 @@ class P2pManager(threading.Thread):
         `_open_connect_peers`/`_open_added_peers`, rather than a step
         inside `manage_connections`'s own loop -- `manage_connections`'s
         own docstring above argues why (btclib-org/btclib-node#1366).
+
+        It also drains the v1 retries, `PerformReconnections`' place in
+        the same Core loop, `_perform_reconnections` arguing why here.
         """
         while True:
             await self._process_addr_fetch()
+            await self._perform_reconnections()
             await asyncio.sleep(_MANUAL_STEP)
 
     def _bind_one(
@@ -3301,6 +3487,9 @@ class P2pManager(threading.Thread):
         if self.is_alive():
             self.join()
         self._dump_anchors()
+        # Core's `StopNodes` clears `m_reconnections`
+        with self._reconnections_lock:
+            self._reconnections.clear()
         # Core's `StopNodes` finalizes every node it still holds
         for conn in tuple(self.connections.values()):
             self._finalize(conn)

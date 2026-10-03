@@ -107,8 +107,11 @@ def a_conn(
     addr_fetch: bool = False,
     permissions: NetPermissionFlags = NetPermissionFlags.NONE,
     addr_name: str | None = None,
+    reconnect_v1: bool = False,
 ) -> Any:
     """Build a `Connection` double: no socket, its own `sent`/`stopped` logs.
+
+    `reconnect_v1` is what its transport answers `should_reconnect_v1`.
 
     `send_ping` on this double does not send a real ping: it records
     one and backdates `ping_sent` well past the idle bound, standing in
@@ -139,6 +142,7 @@ def a_conn(
         addr_fetch=addr_fetch,
         permissions=permissions,
         addr_name=addr_name,
+        transport=SimpleNamespace(should_reconnect_v1=lambda: reconnect_v1),
         addr_relay_enabled=False,
         next_local_addr_send=0.0,
         prefer_addressv2=True,
@@ -8527,3 +8531,443 @@ def test_an_accepted_connection_is_v2_where_this_node_offers_it(
     finally:
         manager.stop()
         manager.join(timeout=10)
+
+
+# The v1 retry of a v2 outbound connection, as Core's `DisconnectNodes`
+# queues it: `remove_connection` queues it where the transport asks and
+# the network is active, whatever the connection's type, and keeps the
+# slot the connection held reserved. `manage_connections` drains the
+# queue, and the slot is free again once the retry concludes.
+
+_FULL = "outbound-full-relay"
+_BLOCK = "block-relay-only"
+
+
+@pytest.mark.parametrize(
+    ("flags", "held", "reserved"),
+    [
+        ({"automatic": True}, True, _FULL),
+        ({"automatic": True, "block_relay": True}, True, _BLOCK),
+        ({"automatic": True, "feeler": True}, True, None),
+        ({"addr_fetch": True}, True, None),
+        ({}, False, _FULL),
+    ],
+    ids=["full-relay", "block-relay-only", "feeler", "addr-fetch", "manual"],
+)
+def test_a_connection_asking_for_v1_is_queued_with_its_slot(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    flags: dict[str, Any],
+    held: bool,  # noqa: FBT001
+    reserved: str | None,
+) -> None:
+    """Every type is queued, and an automatic one keeps its slot reserved.
+
+    The slot is reserved under the type the connection held, so a cap
+    check sees it held while the connection is gone.
+    """
+    conn = a_conn(
+        7,
+        reconnect_v1=True,
+        addr_name="peer.example",
+        address=peer_address("1.2.3.4", 18444),
+        **flags,
+    )
+    manager = a_manager([conn])
+    logged, record = debug_recorder()
+    monkeypatch.setattr(manager.logger, "log_debug", record)
+    manager.remove_connection(7)
+    (item,) = manager._reconnections
+    assert item.address == conn.address
+    assert item.addr_name == "peer.example"
+    assert item.holds_slot is held
+    assert item.connection_type == reserved
+    assert manager._reserved_outbound[reserved] == (1 if held else 0)
+    assert manager._reserved_outbound.total() == (1 if held else 0)
+    assert logged == [("net", "retrying with v1 transport protocol for peer=7")]
+
+
+@pytest.mark.parametrize(
+    ("asks", "active"),
+    [(False, True), (True, False), (False, False)],
+    ids=["transport does not ask", "network inactive", "neither"],
+)
+def test_a_retry_needs_the_transport_to_ask_and_the_network_to_be_active(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    asks: bool,  # noqa: FBT001
+    active: bool,  # noqa: FBT001
+) -> None:
+    """Without both, nothing is queued, logged or reserved."""
+    conn = a_conn(7, automatic=True, reconnect_v1=asks)
+    manager = a_manager([conn])
+    manager.network_active = active
+    logged, record = debug_recorder()
+    monkeypatch.setattr(manager.logger, "log_debug", record)
+    manager.remove_connection(7)
+    assert not manager._reconnections
+    assert not logged
+    assert manager._reserved_outbound.total() == 0
+
+
+def test_removing_what_is_not_held_queues_nothing(a_manager: AManagerFactory) -> None:
+    """An id nobody holds has no transport to ask."""
+    manager = a_manager([a_conn(7, automatic=True, reconnect_v1=True)])
+    manager.remove_connection(8)
+    assert not manager._reconnections
+    assert manager._reserved_outbound.total() == 0
+
+
+def _queue_one(manager: P2pManager, **flags: Any) -> None:
+    """Queue the retry of a connection of `manager`, as `remove_connection`."""
+    conn = a_conn(
+        manager.last_connection_id + 100,
+        reconnect_v1=True,
+        address=peer_address("1.2.3.4", 18444),
+        **flags,
+    )
+    manager.connections[conn.id] = conn
+    manager.remove_connection(conn.id)
+
+
+async def _a_live_socket() -> socket.socket:
+    """Return a socket `create_connection` can take, its peer closed."""
+    ours, theirs = socket.socketpair()
+    theirs.close()
+    return ours
+
+
+def test_the_retry_is_a_v1_connection_with_the_flags_of_the_first(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dial is of the same address, v1, and the slot is free after it."""
+    manager = a_manager()
+    dialled: list[NetworkAddressV2] = []
+    seen_during: list[int] = []
+    made: list[dict[str, Any]] = []
+
+    async def dial(address: NetworkAddressV2) -> socket.socket:
+        dialled.append(address)
+        seen_during.append(manager._reserved_outbound.total())
+        return await _a_live_socket()
+
+    monkeypatch.setattr(manager_module, "dial", dial)
+
+    def create_connection(
+        sock: socket.socket, address: NetworkAddressV2, **kwargs: Any
+    ) -> None:
+        made.append(kwargs)
+        sock.close()
+
+    monkeypatch.setattr(manager, "create_connection", create_connection)
+    _queue_one(manager, automatic=True, block_relay=True)
+    asyncio.run(manager._perform_reconnections())
+    assert dialled == [peer_address("1.2.3.4", 18444)]
+    assert seen_during == [1]
+    (kwargs,) = made
+    assert kwargs["use_v2transport"] is False
+    assert kwargs["inbound"] is False
+    assert kwargs["automatic"] is True
+    assert kwargs["block_relay"] is True
+    assert kwargs["feeler"] is False
+    assert kwargs["addr_fetch"] is False
+    assert not manager._reconnections
+    assert manager._reserved_outbound.total() == 0
+
+
+def test_the_slot_is_released_when_the_retry_does_not_come_up(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dial that fails ends the retry, and the slot goes back."""
+
+    async def dial(address: NetworkAddressV2) -> None:
+        return None
+
+    monkeypatch.setattr(manager_module, "dial", dial)
+    manager = a_manager()
+    _queue_one(manager, automatic=True)
+    asyncio.run(manager._perform_reconnections())
+    assert not manager.connections
+    assert not manager.pending_connections
+    assert manager._reserved_outbound.total() == 0
+
+
+def test_the_slot_is_released_when_the_retry_raises(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A retry that raises is logged, frees its slot, and the next one runs."""
+
+    async def dial(address: NetworkAddressV2) -> None:
+        raise OSError
+
+    monkeypatch.setattr(manager_module, "dial", dial)
+    manager = a_manager()
+    logged: list[str] = []
+    monkeypatch.setattr(manager.logger, "exception", logged.append)
+    _queue_one(manager, automatic=True)
+    _queue_one(manager, automatic=True, block_relay=True)
+    asyncio.run(manager._perform_reconnections())
+    assert logged == ["Exception occurred"] * 2
+    assert not manager._reconnections
+    assert manager._reserved_outbound.total() == 0
+
+
+def test_a_slot_held_for_a_retry_keeps_the_caps_full(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """While the retry dials, `reserve_automatic_slot` finds no room.
+
+    With one automatic slot, held by the retry, a second reservation
+    is refused; once the retry concludes it succeeds.
+    """
+    manager = a_manager()
+    manager.max_automatic_outbound = 1
+    answers: list[bool] = []
+
+    async def dial(address: NetworkAddressV2) -> None:
+        answers.append(manager.reserve_automatic_slot() is not None)
+
+    monkeypatch.setattr(manager_module, "dial", dial)
+    _queue_one(manager, automatic=True)
+    asyncio.run(manager._perform_reconnections())
+    assert answers == [False]
+    assert manager.reserve_automatic_slot() is not None
+
+
+def test_a_manual_retry_takes_no_slot(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `-connect` or `-addnode` peer held no outbound slot, and has none."""
+    manager = a_manager()
+    answers: list[int] = []
+
+    async def dial(address: NetworkAddressV2) -> None:
+        answers.append(manager._reserved_outbound.total())
+
+    monkeypatch.setattr(manager_module, "dial", dial)
+    _queue_one(manager)
+    asyncio.run(manager._perform_reconnections())
+    assert answers == [0]
+
+
+def test_a_retry_by_name_resolves_the_name_again_in_v1(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A connection dialled by name is retried by name, as `m_dest` is."""
+    manager = a_manager()
+    calls: list[tuple[Any, ...]] = []
+
+    async def connect_host(*args: Any, **kwargs: Any) -> None:
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr(manager, "async_connect_host", connect_host)
+    _queue_one(manager, automatic=True, feeler=True, addr_name="peer.example")
+    asyncio.run(manager._perform_reconnections())
+    ((args, kwargs),) = calls
+    assert args == ("peer.example", manager.node.chain.port)
+    assert kwargs == {
+        "addr_fetch": False,
+        "automatic": True,
+        "block_relay": False,
+        "feeler": True,
+        "use_v2transport": False,
+    }
+
+
+@pytest.mark.parametrize("refusal", ["inactive", "held", "discouraged", "banned"])
+def test_a_retry_is_refused_as_opening_a_connection_is(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, refusal: str
+) -> None:
+    """An inactive network, a held, discouraged or banned address: no dial."""
+
+    async def dial(address: NetworkAddressV2) -> None:
+        # unreached unless the refusal under test is skipped
+        pytest.fail("dialled")  # pragma: no cover -- see above
+
+    monkeypatch.setattr(manager_module, "dial", dial)
+    manager = a_manager()
+    _queue_one(manager, automatic=True)
+    address = peer_address("1.2.3.4", 18444)
+    if refusal == "inactive":
+        manager.network_active = False
+    elif refusal == "held":
+        manager.connections[1] = a_conn(1, address=peer_address("1.2.3.4", 9))
+    elif refusal == "discouraged":
+        manager.discourage(address)
+    else:
+        monkeypatch.setattr(manager.ban_man, "is_peer_banned", lambda _: True)
+    asyncio.run(manager._perform_reconnections())
+    assert manager._reserved_outbound.total() == 0
+    assert not manager._reconnections
+
+
+def test_the_retries_run_in_the_order_they_were_queued(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The queue is first in, first out."""
+    order: list[bytes] = []
+
+    async def dial(address: NetworkAddressV2) -> None:
+        order.append(address.address)
+
+    monkeypatch.setattr(manager_module, "dial", dial)
+    manager = a_manager()
+    for last in (1, 2, 3):
+        conn = a_conn(
+            50 + last,
+            reconnect_v1=True,
+            automatic=True,
+            address=peer_address(f"1.2.3.{last}", 18444),
+        )
+        manager.connections[conn.id] = conn
+        manager.remove_connection(conn.id)
+    asyncio.run(manager._perform_reconnections())
+    assert [o[-1] for o in order] == [1, 2, 3]
+
+
+def test_the_addr_fetch_loop_drains_the_queue(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pass of `_open_addr_fetches` runs the queued retries."""
+    dialled: list[NetworkAddressV2] = []
+
+    async def dial(address: NetworkAddressV2) -> None:
+        dialled.append(address)
+
+    monkeypatch.setattr(manager_module, "dial", dial)
+    manager = a_manager()
+    monkeypatch.setattr(manager, "_process_addr_fetch", AsyncMock())
+    _queue_one(manager, automatic=True)
+
+    async def one_step() -> None:
+        task = asyncio.ensure_future(manager._open_addr_fetches())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(one_step())
+    assert len(dialled) == 1
+    assert not manager._reconnections
+
+
+def test_a_name_retry_that_hangs_does_not_stop_the_housekeeping(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A name takes seconds to resolve and dial; pruning goes on (#1366)."""
+    manager = a_manager()
+    started: list[bool] = []
+    pruned: list[float] = []
+
+    async def hangs(*args: Any, **kwargs: Any) -> None:
+        started.append(True)
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(manager, "async_connect_host", hangs)
+    monkeypatch.setattr(manager, "_process_addr_fetch", AsyncMock())
+    monkeypatch.setattr(manager, "_prune_stale_connections", pruned.append)
+    _queue_one(manager, automatic=True, addr_name="peer.example")
+
+    async def run() -> None:
+        tasks = [
+            asyncio.ensure_future(manager.manage_connections()),
+            asyncio.ensure_future(manager._open_addr_fetches()),
+        ]
+        await asyncio.sleep(0.8)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    asyncio.run(run())
+    assert started == [True]
+    assert len(pruned) >= 4
+    assert manager._reserved_outbound.total() == 0
+
+
+def test_a_retry_stamps_the_attempt_and_counts_no_failure(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`fCountFailure=false`: `attempt` is called and only stamps the time."""
+
+    async def dial(address: NetworkAddressV2) -> None:
+        return None
+
+    monkeypatch.setattr(manager_module, "dial", dial)
+    peer_db = a_peer_db_stub()
+    manager = a_manager(peer_db=peer_db)
+    _queue_one(manager, automatic=True)
+    asyncio.run(manager._perform_reconnections())
+    assert list(peer_db.tries) == [endpoint_key(peer_address("1.2.3.4", 18444))]
+
+
+def test_a_manual_retry_counts_as_held_for_addnode(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core moves the `semAddnode` grant into the entry: the peer stays held."""
+    manager = a_manager()
+    manager.add_added_peer("1.2.3.4:18444")
+    manager.add_added_peer("peer.example")
+    _queue_one(manager)
+    _queue_one(manager, addr_name="peer.example")
+    seen: list[int] = []
+
+    async def look(*args: Any, **kwargs: Any) -> None:
+        seen.append(manager._added_held())
+
+    monkeypatch.setattr(manager, "async_connect_host", look)
+    monkeypatch.setattr(manager_module, "dial", lambda address: look())
+    assert manager._added_held() == 2
+    asyncio.run(manager._perform_reconnections())
+    assert seen == [2, 2]
+    assert manager._added_held() == 0
+
+
+def test_stopping_clears_the_queue(a_manager: AManagerFactory) -> None:
+    """Core's `StopNodes` clears `m_reconnections`."""
+    manager = a_manager()
+    _queue_one(manager, automatic=True)
+    manager.stop()
+    assert not manager._reconnections
+
+
+def test_a_retry_of_an_address_on_no_reachable_network_holds_no_endpoint(
+    a_manager: AManagerFactory,
+) -> None:
+    """`_held_for_added` skips an address `ip_and_port` cannot name."""
+    manager = a_manager()
+    conn = a_conn(7, reconnect_v1=True, automatic=True, address=_ONION)
+    manager.connections[7] = conn
+    manager.remove_connection(7)
+    assert manager._held_for_added() == (set(), set())
+
+
+def test_a_retry_runs_while_the_addr_fetch_arm_hangs(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_open_added_peers` drains the queue too."""
+    manager = a_manager()
+    dialled: list[NetworkAddressV2] = []
+
+    async def hangs() -> None:
+        await asyncio.sleep(30)
+
+    async def dial(address: NetworkAddressV2) -> None:
+        dialled.append(address)
+
+    monkeypatch.setattr(manager, "_process_addr_fetch", hangs)
+    monkeypatch.setattr(manager_module, "dial", dial)
+    _queue_one(manager, automatic=True)
+
+    async def run() -> None:
+        tasks = [
+            asyncio.ensure_future(manager._open_addr_fetches()),
+            asyncio.ensure_future(manager._open_added_peers()),
+        ]
+        await asyncio.sleep(0.3)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    asyncio.run(run())
+    assert len(dialled) == 1
+    assert manager._reserved_outbound.total() == 0

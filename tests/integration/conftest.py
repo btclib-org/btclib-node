@@ -15,6 +15,7 @@ import os
 import shutil
 import subprocess
 import time
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 import pytest
@@ -138,9 +139,13 @@ def _wait_for_rpc(node: Bitcoind, process: subprocess.Popen[bytes]) -> None:
     pytest.fail(f"bitcoind did not answer within {_STARTUP_TIMEOUT}s")
 
 
-@pytest.fixture
-def bitcoind(bitcoind_path: str, tmp_path: Path) -> Iterator[Bitcoind]:
+@contextmanager
+def _started_bitcoind(
+    bitcoind_path: str, tmp_path: Path, *args: str
+) -> Iterator[Bitcoind]:
     """Start a disposable regtest bitcoind, and stop it once the test is done.
+
+    `args` are further command-line options.
 
     Its own datadir, under pytest's own `tmp_path`, and both of its ports
     drawn the way every other fixture in this suite that starts a
@@ -164,6 +169,7 @@ def bitcoind(bitcoind_path: str, tmp_path: Path) -> Iterator[Bitcoind]:
             "-rpcallowip=127.0.0.1",
             "-daemon=0",
             "-printtoconsole=0",
+            *args,
         ],
     )
     node = Bitcoind(rpc_port, p2p_port, cookie_path_from_chain("regtest", datadir))
@@ -174,3 +180,17 @@ def bitcoind(bitcoind_path: str, tmp_path: Path) -> Iterator[Bitcoind]:
         node.close()
         process.terminate()
         process.wait(timeout=_STARTUP_TIMEOUT)
+
+
+@pytest.fixture
+def bitcoind(bitcoind_path: str, tmp_path: Path) -> Iterator[Bitcoind]:
+    """Give a started regtest bitcoind; `_started_bitcoind` has the details."""
+    with _started_bitcoind(bitcoind_path, tmp_path) as node:
+        yield node
+
+
+@pytest.fixture
+def bitcoind_v1_only(bitcoind_path: str, tmp_path: Path) -> Iterator[Bitcoind]:
+    """Give a started regtest bitcoind that does not offer BIP324."""
+    with _started_bitcoind(bitcoind_path, tmp_path, "-v2transport=0") as node:
+        yield node

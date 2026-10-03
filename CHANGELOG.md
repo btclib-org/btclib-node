@@ -1927,6 +1927,12 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
   adds `NODE_P2P_V2`**, as in Core; a v1-only peer's refusal is not
   retried yet (issue #1190).
 
+### A v2 outbound connection the peer drops is retried with v1
+
+- **`remove_connection` queues a v1 retry, as Core's `DisconnectNodes` does,
+  with the dropped connection's outbound slot reserved until the retry ends**;
+  `_open_addr_fetches` and `_open_added_peers` drain the queue (issue #1190).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

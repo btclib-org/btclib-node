@@ -21,6 +21,7 @@ functions the tests import directly, in `tests/unit/`,
 
 import base64
 import json
+import logging
 import os
 import re
 import secrets
@@ -32,7 +33,7 @@ import time
 from contextlib import ExitStack, contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, override
 
 from bitcoin_core_rpc import BitcoinCoreRpcClient, http_request
 from btclib.block import Block, BlockHeader, build, witness_commitment_output
@@ -142,6 +143,24 @@ def log_recorder() -> tuple[list[str], Callable[..., None]]:
         entries.append(msg % args if args else msg)
 
     return entries, record
+
+
+class LogLines(logging.Handler):
+    """Collect what a node's logger emits; `caplog` sees none of it.
+
+    `Node.logger` has no parent, so no record reaches the root logger
+    `caplog` listens on: add one of these to `node.logger` instead.
+    """
+
+    def __init__(self) -> None:
+        """Start empty, taking every level."""
+        super().__init__(logging.DEBUG)
+        self.messages: list[str] = []
+
+    @override
+    def emit(self, record: logging.LogRecord) -> None:
+        """Keep the finished message."""
+        self.messages.append(record.getMessage())
 
 
 def debug_recorder() -> tuple[list[tuple[str, str]], Callable[..., None]]:
