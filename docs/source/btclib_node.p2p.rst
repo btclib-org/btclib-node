@@ -138,6 +138,13 @@ btclib\_node.p2p.transport module
    :members:
    :show-inheritance:
 
+btclib\_node.p2p.v2transport module
+--------------------------------------
+
+.. automodule:: btclib_node.p2p.v2transport
+   :members:
+   :show-inheritance:
+
 Module contents
 ---------------
 

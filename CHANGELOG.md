@@ -1893,6 +1893,22 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
   merge** (issue btclib-org/.github#1550): `lint / Sign-off` is a required
   check.
 
+### `p2p/v2transport.py` is BIP324's v2 transport, and nothing uses it yet
+
+- **`V2Transport` is Core's `V2Transport` as a `Transport`**, on
+  `btclib.p2p.bip324`, under `btclib[secp256k1,bip324]>=2026.10.3` (issue #1190).
+
+### BIP94's timewarp bound is checked after the target and the median time
+
+- **`assert_not_timewarp` is called after `bad-diffbits` and `time-too-old`,
+  in Core's order**: btclib 2026.10.3's `next_bits_required` does not check
+  the bound (btclib-org/btclib#2465) (issue #1190).
+
+### `cryptography` is a runtime dependency
+
+- **`btclib-node` depends on `cryptography`**, through `btclib[bip324]`, and
+  PyPI serves it no wheel for macOS on x86_64 or Windows on ARM (issue #1190).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

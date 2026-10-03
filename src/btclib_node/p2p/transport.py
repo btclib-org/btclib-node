@@ -7,9 +7,10 @@
 `Transport` is Core's class of that name (`src/net.h`) and `V1Transport`
 is its `V1Transport` (`src/net.cpp`), both read at
 bitcoin/bitcoin@9be056a8a7, the v31.1 tag, with the names in snake case.
-A transport does no I/O and holds no lock: `Connection` feeds it what the
-socket read and writes what it hands back. A BIP324 transport implements the
-same methods.
+A transport does no I/O: `Connection` feeds it what the socket read and
+writes what it hands back. `V1Transport` holds no lock;
+`p2p.v2transport`'s docstring says why `V2Transport` holds two. A BIP324
+transport implements the same methods.
 
 **Threads.** The receiving half is touched on the connection's own loop
 alone, by `Connection.parse_messages`. The sending half is touched on

@@ -49,6 +49,7 @@ from typing import TYPE_CHECKING, NamedTuple
 from btclib.block import (
     Block,
     BlockHeader,
+    assert_not_timewarp,
     coinbase_witness_commitment,
     median_time_past,
     next_bits_required,
@@ -520,20 +521,14 @@ def _contextual_header_reason(node: Node, header: BlockHeader) -> str | None:
     tip_header = block_index.header_dict[block_index.active_chain[-1]].header
     consensus = node.chain.consensus
     parent_of: ParentOf = parent_lookup(node)
-    timewarp = False
-    try:
-        required = next_bits_required(
-            header, tip_header, tip_height, parent_of, consensus
-        )
-    except BTClibValueError:
-        # BIP94's bound, which btclib asks before it answers a target
-        required = header.bits
-        timewarp = True
+    required = next_bits_required(header, tip_header, tip_height, parent_of, consensus)
     if header.bits != required:
         return "bad-diffbits"
     if block_time(header) <= median_time_past(tip_header, tip_height, parent_of):
         return "time-too-old"
-    if timewarp:
+    try:
+        assert_not_timewarp(header, tip_header, tip_height, consensus)
+    except BTClibValueError:
         return "time-timewarp-attack"
     try:
         header.assert_valid_time(datetime.now(UTC))

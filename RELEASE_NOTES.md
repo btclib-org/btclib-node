@@ -130,6 +130,11 @@ on release day.
   `--signer-workflow btclib-org/.github/.github/workflows/reusable-build.yml@refs/heads/main`
   and `--source-ref refs/tags/v<version>`; SECURITY.md names the signer of
   an earlier release.
+- **`btclib-node` depends on `cryptography`**, through `btclib[bip324]` (issue
+  #1190). PyPI serves no `cryptography` wheel for macOS on x86_64 or Windows
+  on ARM, so there `pip install btclib-node` builds it from source, which
+  needs a C compiler, Rust and OpenSSL: cryptography's installation guide has
+  the steps.
 
 ## v2026.9.24
 

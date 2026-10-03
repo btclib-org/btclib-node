@@ -56,7 +56,11 @@ dependencies = [
     # `PubKeyData`, unchanged since 2026.9.24. 2026.9.30 also carries
     # `permitted_difficulty_transition` (btclib-org/btclib#2418), which
     # `p2p/headers_sync.py` imports.
-    "btclib[secp256k1]>=2026.9.30",
+    #
+    # The `bip324` extra, which brings `cryptography`, and 2026.10.3, the
+    # first release carrying `btclib.p2p.bip324`, which
+    # `p2p/v2transport.py` imports (issue #1190).
+    "btclib[secp256k1,bip324]>=2026.10.3",
     # `rpc/callbacks.py` imports `add_checksum` from
     # `btclib_wallet.descriptors`, where btclib's own `descriptors`
     # moved (btclib-org/btclib#2129): a runtime dependency now, not the

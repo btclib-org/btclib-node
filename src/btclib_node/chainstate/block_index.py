@@ -54,6 +54,7 @@ from btclib import var_int
 from btclib.block import (
     BlockHeader,
     ParentOf,
+    assert_not_timewarp,
     median_time_past,
     next_bits_required,
 )
@@ -241,10 +242,10 @@ def _assert_valid_in_context(  # noqa: PLR0913, PLR0917
     bound are Core's `bad-diffbits`, `time-too-old`, `bad-version` and
     `time-timewarp-attack`, every one of them `BLOCK_INVALID_HEADER`,
     which Core's `MaybePunishNodeForBlock` answers with `Misbehaving`, so
-    they raise `MisbehavingError`. `next_bits_required` raises a bare
-    `BTClibValueError` for the timewarp bound, having no
-    `MisbehavingError` of its own to raise -- this tree's exception and
-    not btclib's -- so it is caught and re-raised as one here, the way
+    they raise `MisbehavingError`. `assert_not_timewarp` raises a bare
+    `BTClibValueError`, having no `MisbehavingError` of its own to raise
+    -- this tree's exception and not btclib's -- so it is caught and
+    re-raised as one here, the way
     `_assert_valid_pow` already does for `assert_valid_pow`'s own.
     `time-too-new` is `BLOCK_TIME_FUTURE`, which it does not punish, so
     it stays a bare `BTClibValueError` (`src/validation.cpp` and
@@ -253,20 +254,12 @@ def _assert_valid_in_context(  # noqa: PLR0913, PLR0917
 
     Each is raised with Core's reject reason as its whole message, the
     word `submitheader` answers, the detail kept as the `__cause__`
-    `_refusal_text` reads. `next_bits_required` raises the timewarp bound
-    before it answers anything, so a header breaking it and the target or
-    the median time too is refused `time-timewarp-attack`, where Core
-    reports `bad-diffbits` or `time-too-old` (btclib-org/btclib#2465).
-    The timewarp bound is the only raise of `next_bits_required` reachable
-    for a header and a parent this index holds.
+    `_refusal_text` reads. The checks are in Core's order: the target,
+    the median time, the timewarp bound.
     """
-    try:
-        required = next_bits_required(
-            header, parent, parent_height, parent_of, chain.consensus
-        )
-    except BTClibValueError as e:
-        err_msg = "time-timewarp-attack"
-        raise MisbehavingError(err_msg) from e
+    required = next_bits_required(
+        header, parent, parent_height, parent_of, chain.consensus
+    )
     if header.bits != required:
         detail = f"proof-of-work target not the required one: {header.bits.hex()}"
         detail += f" instead of {required.hex()}"
@@ -280,6 +273,12 @@ def _assert_valid_in_context(  # noqa: PLR0913, PLR0917
         detail += f" <= {median}"
         err_msg = "time-too-old"
         raise MisbehavingError(err_msg) from BTClibValueError(detail)
+
+    try:
+        assert_not_timewarp(header, parent, parent_height, chain.consensus)
+    except BTClibValueError as e:
+        err_msg = "time-timewarp-attack"
+        raise MisbehavingError(err_msg) from e
 
     try:
         header.assert_valid_time(now)

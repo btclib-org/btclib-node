@@ -718,6 +718,16 @@ def test_a_period_start_dated_before_its_parent_is_a_timewarp_attack(
     assert check_block_validity(funded, block, check_merkle_root=True) == (
         "time-timewarp-attack"
     )
+    # Core asks the target and the median time first
+    block.header.bits = bytes.fromhex("1d00ffff")
+    assert check_block_validity(funded, block, check_merkle_root=True) == (
+        "bad-diffbits"
+    )
+    block.header.bits = tip.bits
+    block.header.time = tip.time - timedelta(seconds=10_000)
+    assert check_block_validity(funded, block, check_merkle_root=True) == (
+        "time-too-old"
+    )
 
 
 def test_a_block_with_nothing_in_it_has_the_null_merkle_root(node: Node) -> None:
