@@ -1909,6 +1909,12 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
 - **`btclib-node` depends on `cryptography`**, through `btclib[bip324]`, and
   PyPI serves it no wheel for macOS on x86_64 or Windows on ARM (issue #1190).
 
+### The review's `git` and `gh api` tools are narrowed to the reads it asks for
+
+- **`claude-review.yml` grants `git fetch origin`, `git log`, `git diff` and
+  `gh api` on `contents/`**, not every `git` and `gh api` command, which an
+  alias or a POST turned into a write (closes #1658).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
