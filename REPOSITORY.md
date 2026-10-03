@@ -413,6 +413,18 @@ organization's call above answers it; for the token's two values section
 default reads this repository back afterwards rather than assuming it
 moved.
 
+## Sign-off on web commits
+
+```shell
+gh api repos/btclib-org/btclib-node --jq .web_commit_signoff_required
+# true
+gh api orgs/btclib-org --jq .web_commit_signoff_required
+# true
+```
+
+Set at the organization level, [for the reason section 11
+gives](https://github.com/btclib-org/.github/blob/main/README.md#signatures).
+
 ## Security and analysis
 
 ```shell
@@ -769,19 +781,19 @@ here reads those back.
 **A field the standard states no rule about, and no call above answers
 alongside one it does.** `allow_forking`, `allow_update_branch`,
 `archived`, `description`, `has_discussions`, `has_downloads`,
-`has_pull_requests`, `is_template`, `pull_request_creation_policy` and
-`web_commit_signoff_required` are in the repository document and in none
-of the `--jq` objects here:
+`has_pull_requests`, `is_template` and `pull_request_creation_policy`
+are in the repository document and in none of the `--jq` objects here:
 
 ```shell
 std=$(gh api repos/btclib-org/.github/contents/README.md --jq .content \
   | base64 -d)
-for f in allow_forking allow_update_branch archived has_discussions \
-         has_downloads has_pull_requests is_template \
-         pull_request_creation_policy web_commit_signoff_required; do
+for f in allow_forking allow_update_branch has_discussions has_downloads \
+         has_pull_requests is_template pull_request_creation_policy; do
   printf '%s %s\n' "$f" "$(printf '%s' "$std" | grep -c -- "$f")"
 done
 # each name, then 0
+printf '%s' "$std" | grep -c '\.archived'
+# 0
 printf '%s' "$std" | grep -c '\.description'
 # 0
 printf '%s' "$std" | grep -c 'default branch'
@@ -790,12 +802,13 @@ printf '%s' "$std" | grep -c '\.homepage'
 # not 0
 ```
 
-`description` is asked with its field spelling, the bare word being
-ordinary prose in that file, and `\.homepage` is the control for that
-same shape. The two controls are what make the zeros absences rather than
-a pattern that cannot match, and feeding the loop `topics` answers
-non-zero, which is what says it can still fail. Recording a field on no
-rule grows this file with GitHub's API rather than with the standard.
+`archived` and `description` are asked with their field spelling, the
+bare words being ordinary prose in that file, and `\.homepage` is the
+control for that same shape. The two controls are what make the zeros
+absences rather than a pattern that cannot match, and feeding the loop
+`topics` answers non-zero, which is what says it can still fail.
+Recording a field on no rule grows this file with GitHub's API rather
+than with the standard.
 
 `merge_commit_title` and `merge_commit_message` are the same case reached
 from the other end: they compose a merge commit *Merge methods* above
