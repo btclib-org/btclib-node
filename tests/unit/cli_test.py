@@ -3133,9 +3133,9 @@ def test_build_config_v2transport_reads_the_flag(flag: str, expected: bool) -> N
     assert cli.build_config(["-regtest", flag]).v2transport is expected
 
 
-def test_build_config_v1transport_defaults_to_true() -> None:
-    """F1: v1 stays on unless refused."""
-    assert cli.build_config(["-regtest"]).v1transport is True
+def test_build_config_v1transport_defaults_to_false() -> None:
+    """v1 is off unless asked for."""
+    assert cli.build_config(["-regtest"]).v1transport is False
 
 
 @pytest.mark.parametrize(
@@ -3161,7 +3161,7 @@ def test_build_config_refuses_both_transports_off() -> None:
 def test_help_names_v1transport() -> None:
     """The option is listed beside `-v2transport`, in Core's shape."""
     message = " ".join(cli._help_message(show_debug=False).split())
-    assert "Support v1 transport (default: 1)" in message
+    assert "Support v1 transport (default: 0)" in message
 
 
 def test_build_config_seednode_reaches_config() -> None:

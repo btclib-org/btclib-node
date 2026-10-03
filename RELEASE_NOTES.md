@@ -141,6 +141,18 @@ on release day.
   advertises it. `-nov2transport` turns it off. A `-connect`, `-addnode` or
   `addnode` peer that speaks v1 only is dropped, and not yet retried in v1:
   `-nov2transport` or `addnode "<node>" "onetry" false` reaches it.
+- **The node speaks BIP324 v2 alone unless started with `-v1transport=1`**
+  (closes #1190). A v1 peer connecting to it is dropped, an automatic
+  outbound connection goes only to an address advertising `NODE_P2P_V2`
+  or carrying exactly a seed's services, a v2 dial the peer drops is not
+  retried with v1, and `addnode` or `addconnection` with `v2transport`
+  false is refused.
+  Bitcoin Core accepts v1; SECURITY.md's *Where this node departs from
+  Bitcoin Core* says why this node does not. `-v2transport=0` turns v1 on
+  by itself, and `-v2transport=0 -v1transport=0` is refused at start. This
+  replaces the last sentence of the entry above: `-v1transport=1`, which
+  also restores the v1 retry, or `-nov2transport` reaches a v1-only peer
+  or a light client.
 
 ## v2026.9.24
 

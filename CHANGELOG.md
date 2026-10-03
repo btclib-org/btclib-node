@@ -1939,6 +1939,12 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
   `addconnection` and the v1 retry. On by default; `-v2transport=0` alone
   switches it on, and with both explicitly off the node will not start (issue #1190).
 
+### v1 transport is off unless `-v1transport=1`
+
+- **An inbound v1 peer is dropped, an automatic dial skips an address
+  with neither `NODE_P2P_V2` nor a seed's exact services, and a failed v2
+  dial gets no v1 retry**, unless `-v1transport=1` or `-v2transport=0` (closes #1190).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

@@ -305,9 +305,9 @@ def test_v2transport_defaults_to_true() -> None:
     assert Config(chain="regtest").v2transport is True
 
 
-def test_v1transport_defaults_to_true() -> None:
-    """F1's default: v1 stays on."""
-    assert Config(chain="regtest").v1transport is True
+def test_v1transport_defaults_to_false() -> None:
+    """This node's own departure from Core, which has no such option."""
+    assert Config(chain="regtest").v1transport is False
 
 
 def test_v2transport_off_alone_switches_v1_on() -> None:

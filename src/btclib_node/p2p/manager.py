@@ -868,7 +868,8 @@ class P2pManager(threading.Thread):
         those flags is exempt too, and a v1-only one among them is dialled
         with v2 and dropped: the price of a fresh node finding any peer.
         Core has no such filter; it is this node's, for refusing v1
-        (btclib-org/btclib-node#1190).
+        (btclib-org/btclib-node#1190), argued in SECURITY.md's *Where
+        this node departs from Bitcoin Core*.
         """
         return not (
             self.node.config.v1transport
@@ -897,7 +898,8 @@ class P2pManager(threading.Thread):
 
         `use_v2transport` is Core's own `NodeOptions` field: the caller
         decides it, as `supports_v2transport` below and each dial site
-        say. A failed v2 attempt is retried with v1 by `remove_connection`.
+        say. A failed v2 attempt is retried with v1 by `remove_connection`
+        where `-v1transport` allows.
 
         Logs the id this connection is given beside the address it was
         accepted from or dialled to -- the one point every path into a

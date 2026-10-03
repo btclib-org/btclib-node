@@ -394,9 +394,10 @@ def _dnsseed(
     return dnsseed
 
 
-# `-v1transport`'s default where `-v2transport` is on. `_v1transport`
-# is the one place that reads it.
-_DEFAULT_V1_TRANSPORT = True
+# `-v1transport`'s default where `-v2transport` is on: off, a departure
+# from Core argued in SECURITY.md's *Where this node departs from Bitcoin
+# Core*. `_v1transport` is the one place that reads it.
+_DEFAULT_V1_TRANSPORT = False
 
 
 def _v1transport(*, v1transport: bool | None, v2transport: bool) -> bool:

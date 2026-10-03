@@ -244,7 +244,9 @@ def a_served_node(tmp_path: Path, chain: list[Block]) -> Iterator[Node]:
     """Give a started node holding `chain` in its store, stopped on exit.
 
     `peerblockfilters=True`: `deaf_peer` below feeds a BIP157 test, and
-    `-peerblockfilters` is off by default (ISS 1395).
+    `-peerblockfilters` is off by default (ISS 1395). `v1transport=True`:
+    the peer below speaks v1 on a raw socket, which a node without it
+    drops.
     """
     node = Node(
         config=Config(
@@ -254,6 +256,7 @@ def a_served_node(tmp_path: Path, chain: list[Block]) -> Iterator[Node]:
             allow_rpc=False,
             debug=True,
             peerblockfilters=True,
+            v1transport=True,
         )
     )
     node.start()

@@ -42,6 +42,17 @@ book above, is not so lucky: `add_active_address` arrives from the
 gossip on one thread, a DNS answer on the other. It carries two locks
 for that reason, one per table, taken separately and never nested.
 
+## The transport
+
+`src/btclib_node/p2p/transport.py` frames messages for v1 and
+`src/btclib_node/p2p/v2transport.py` for BIP324's v2, both Core's
+`Transport` without I/O. A `Connection` holds one and feeds it from its
+own loop, and `p2p/transport.py`'s module docstring says which thread
+touches each half. A `V2Transport` that accepted a connection tells v1
+from v2 by the first 16 bytes. With `-v1transport=0`, the default, it has
+no v1 transport to hand them to, and the connection is dropped.
+SECURITY.md's *Where this node departs from Bitcoin Core* says why.
+
 ## The chain state and the store
 
 - `src/btclib_node/chainstate/` is the block index, the UTXO set and the

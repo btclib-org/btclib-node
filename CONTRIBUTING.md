@@ -544,12 +544,16 @@ release goes wrong; it is not repeated here.
 
 Where this tree reimplements something Bitcoin Core also does — a
 constant, an eviction order, the error an RPC answers a refusal with —
-it **matches Core's behaviour, always**, and the comment beside it names
-the commit Core was read at. The only licence to differ is the
+it **matches Core's behaviour**, and the comment beside it names the
+commit Core was read at. It may differ in two ways. The first is the
 language: Python-native, fluent or efficient in Python where Core's own
 line is shaped by C++, never a design weighed against Core's on its own
-merits. What differs from Core in consensus or in relay is a difference
-the network sees, so the default is not a matter of taste.
+merits. The second is a departure the maintainer decided, which
+SECURITY.md's *Where this node departs from Bitcoin Core* lists and
+argues, and which the code it changes cites. Refusing v1 by default is
+one (btclib-org/btclib-node#1190). What differs from Core in consensus or
+in relay is a difference the network sees, so the default is not a matter
+of taste.
 
 Write the citation as `at bitcoin/bitcoin@<sha>` with `at` on the same
 physical line as the sha: ruff's `ERA001` reads a comment line at a
