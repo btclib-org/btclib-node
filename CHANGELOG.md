@@ -1869,6 +1869,12 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
   where it is `0`, `-noassumevalid` or not given**, refused as Core refuses
   it. Nothing reads it yet (issue #1576).
 
+### `dependabot.yml` does not say that every workflow passes `--locked`
+
+- **`.github/dependabot.yml` says the workflows install from `uv.lock` with
+  `--locked`, bar the jobs that re-lock without committing or install a
+  published or built package** (issue btclib-org/.github#1538).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

@@ -51,14 +51,14 @@ updates:
     cooldown:
       default-days: 7
 
-  # uv.lock is committed and every workflow installs from it with
-  # --locked, so this is the one thing that moves it: the uv-lock
-  # pre-commit hook re-locks what pyproject.toml changed, it does not
-  # upgrade. Unlike the sibling libraries, part of what it moves is
-  # runtime rather than tooling -- btclib is the consensus code this node
-  # validates blocks with -- which is the other reason these arrive as a
-  # pull request the suite
-  # runs on rather than as a lock somebody refreshes locally
+  # uv.lock is committed and the workflows install from it with --locked, bar
+  # the jobs that re-lock without committing or install a published or built
+  # package, so this is the one thing that moves it: the uv-lock pre-commit hook
+  # re-locks what pyproject.toml changed, it does not upgrade. Unlike the
+  # sibling libraries, part of what it moves is runtime rather than tooling --
+  # btclib is the consensus code this node validates blocks with -- which is the
+  # other reason these arrive as a pull request the suite runs on rather than as
+  # a lock somebody refreshes locally
   - package-ecosystem: uv
     directory: /
     schedule:
