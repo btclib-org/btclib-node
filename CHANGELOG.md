@@ -1915,6 +1915,12 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
   `gh api` on `contents/`**, not every `git` and `gh api` command, which an
   alias or a POST turned into a write (closes #1658).
 
+### `CONTRIBUTING.md` says the ack of record is a bot's
+
+- **The maintainer's own landing leaves `two_person_review` unmet** (issue
+  btclib-org/.github#452): the criterion asks for a person other than the
+  author.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
