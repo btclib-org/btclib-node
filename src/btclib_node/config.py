@@ -394,6 +394,27 @@ def _dnsseed(
     return dnsseed
 
 
+# `-v1transport`'s default where `-v2transport` is on. `_v1transport`
+# is the one place that reads it.
+_DEFAULT_V1_TRANSPORT = True
+
+
+def _v1transport(*, v1transport: bool | None, v2transport: bool) -> bool:
+    """Return `-v1transport`; `-v2transport=0` alone switches it on.
+
+    A node with neither transport would speak to nobody, so an explicit
+    `-v1transport=0` with `-v2transport=0` is refused, as `_dnsseed`
+    refuses its own contradiction. Core has no `-v1transport`; it is this
+    node's, for refusing v1 (btclib-org/btclib-node#1190).
+    """
+    if v1transport is None:
+        return not v2transport or _DEFAULT_V1_TRANSPORT
+    if not v1transport and not v2transport:
+        err_msg = "Cannot set -v1transport to false when setting -v2transport to false."
+        raise ValueError(err_msg)
+    return v1transport
+
+
 @dataclass
 class Config:
     """Every setting one `Node` is built from, flat and keyword-only.
@@ -686,6 +707,11 @@ class Config:
     # speaks BIP324 and says so with `NODE_P2P_V2`
     # (`p2p.connection.local_services`).
     v2transport: bool
+    # Whether this node speaks BIP324's predecessor, the v1 transport:
+    # an inbound v1 peer is refused and no outbound v1 dial is made where
+    # it is false. Core has no such option; it is this node's, for refusing
+    # v1 (btclib-org/btclib-node#1190). `_v1transport` resolves it.
+    v1transport: bool
     # Core's own `-maxconnections`: the automatic connections this node
     # holds at once, inbound and outbound together. It does not limit a
     # `-connect` or `-addnode` dial, which Core makes as a manual
@@ -800,6 +826,7 @@ class Config:
         discover: bool | None = None,
         peerblockfilters: bool = False,
         v2transport: bool = True,
+        v1transport: bool | None = None,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
         dnsseed: bool | None = None,
         forcednsseed: bool = False,
@@ -876,6 +903,9 @@ class Config:
         )
         self.peerblockfilters = peerblockfilters
         self.v2transport = v2transport
+        self.v1transport = _v1transport(
+            v1transport=v1transport, v2transport=v2transport
+        )
 
         # `_dnsseed`'s own docstring has `AppInitParameterInteraction`'s
         # order, ahead of the `-maxconnections` refusal below.

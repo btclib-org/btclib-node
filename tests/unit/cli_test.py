@@ -3133,6 +3133,37 @@ def test_build_config_v2transport_reads_the_flag(flag: str, expected: bool) -> N
     assert cli.build_config(["-regtest", flag]).v2transport is expected
 
 
+def test_build_config_v1transport_defaults_to_true() -> None:
+    """F1: v1 stays on unless refused."""
+    assert cli.build_config(["-regtest"]).v1transport is True
+
+
+@pytest.mark.parametrize(
+    ("flag", "expected"),
+    [("-v1transport=0", False), ("-nov1transport", False), ("-v1transport", True)],
+)
+def test_build_config_v1transport_reads_the_flag(flag: str, expected: bool) -> None:  # noqa: FBT001
+    """`-v1transport` is a boolean flag, `-nov1transport` its negation."""
+    assert cli.build_config(["-regtest", flag]).v1transport is expected
+
+
+def test_build_config_v2transport_off_alone_leaves_v1_on() -> None:
+    """`-v2transport=0` alone switches v1 on."""
+    assert cli.build_config(["-regtest", "-v2transport=0"]).v1transport is True
+
+
+def test_build_config_refuses_both_transports_off() -> None:
+    """The refusal reaches `build_config`'s caller in its own words."""
+    with pytest.raises(ValueError, match="Cannot set -v1transport to false"):
+        cli.build_config(["-regtest", "-v2transport=0", "-v1transport=0"])
+
+
+def test_help_names_v1transport() -> None:
+    """The option is listed beside `-v2transport`, in Core's shape."""
+    message = " ".join(cli._help_message(show_debug=False).split())
+    assert "Support v1 transport (default: 1)" in message
+
+
 def test_build_config_seednode_reaches_config() -> None:
     """`-seednode` on the command line resolves through to `Config`."""
     config = cli.build_config(

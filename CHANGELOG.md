@@ -1933,6 +1933,12 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
   with the dropped connection's outbound slot reserved until the retry ends**;
   `_open_addr_fetches` and `_open_added_peers` drain the queue (issue #1190).
 
+### `-v1transport` is the option that refuses v1
+
+- **`-v1transport=0` refuses v1 on every path**: inbound, the draw, `addnode`,
+  `addconnection` and the v1 retry. On by default; `-v2transport=0` alone
+  switches it on, and with both explicitly off the node will not start (issue #1190).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

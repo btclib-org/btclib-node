@@ -38,6 +38,7 @@ from btclib_node.p2p.v2transport import (
     MAX_GARBAGE_LEN,
     RecvState,
     SendState,
+    V1PeerRefusedError,
     V2Transport,
     V2TransportError,
 )
@@ -688,3 +689,26 @@ def test_the_states_after_a_handshake() -> None:
     tester.send_garbage(3)
     assert tester.interact() == []
     assert states(tester.transport) == (SendState.READY, RecvState.GARB_GARBTERM)
+
+
+def test_a_responder_without_a_fallback_refuses_the_v1_prefix_at_16_bytes() -> None:
+    """Nothing is raised before the 16th byte, and then `V1PeerRefusedError`."""
+    transport = V2Transport(MAGIC, None, initiating=False)
+    prefix = MAGIC + b"version\x00\x00\x00\x00\x00"
+    assert feed(transport, prefix[:15]) == 15
+    assert transport.get_info() == TransportInfo(TransportProtocolType.DETECTING)
+    with pytest.raises(V1PeerRefusedError, match="V1 peer refused"):
+        feed(transport, prefix[15:])
+
+
+def test_a_refused_v1_peer_is_a_v2_transport_error() -> None:
+    """A caller that catches the family catches the refusal too."""
+    assert issubclass(V1PeerRefusedError, V2TransportError)
+
+
+def test_a_responder_without_a_fallback_still_takes_a_v2_peer() -> None:
+    """A byte off the v1 prefix is the start of a key, fallback or not."""
+    transport = V2Transport(MAGIC, None, initiating=False, prv_key=1, garbage=b"")
+    prefix = MAGIC + b"version\x00\x00\x00\x00\x00"
+    assert feed(transport, prefix[:-1] + b"X") == 16
+    assert len(to_send(transport)) == KEY_LEN

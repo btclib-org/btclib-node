@@ -64,7 +64,7 @@ from btclib_node.p2p.main import handle_p2p_handshake
 from btclib_node.p2p.manager import P2pManager
 from btclib_node.p2p.permissions import NetPermissionFlags, Whitelist
 from btclib_node.p2p.selfannounce import LOCAL_BIND, LOCAL_MANUAL, LocalService
-from btclib_node.p2p.v2transport import V2Transport
+from btclib_node.p2p.v2transport import V1PeerRefusedError, V2Transport
 from btclib_node.rpc.callbacks import add_connection
 from btclib_node.rpc.errors import RpcError
 
@@ -232,6 +232,7 @@ class AManagerFactory(Protocol):
         forcednsseed: bool = False,
         fixed_seeds: bool = True,
         v2transport: bool = False,
+        v1transport: bool = True,
     ) -> P2pManager:
         """Build a `P2pManager` seeded with `conns`, `peer_db` and `status`."""
         ...
@@ -265,6 +266,7 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
         forcednsseed: bool = False,
         fixed_seeds: bool = True,
         v2transport: bool = False,
+        v1transport: bool = True,
     ) -> P2pManager:
         # `18444` is regtest's own well-known port -- binding it for
         # real, as a plain default would, collides with a second suite
@@ -329,6 +331,7 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
                 # `sock_recv`.
                 peerblockfilters=False,
                 v2transport=v2transport,
+                v1transport=v1transport,
             ),
             # `Connection.own_version`'s own `start_height`
             # (btclib-org/btclib-node#722), 0 matching a fresh `Node`'s
@@ -8971,3 +8974,177 @@ def test_a_retry_runs_while_the_addr_fetch_arm_hangs(
     asyncio.run(run())
     assert len(dialled) == 1
     assert manager._reserved_outbound.total() == 0
+
+
+# `-v1transport` off: what the draw leaves out, what is dialled with v2, and
+# what a v1 retry or an inbound v1 peer meets.
+
+_NOT_V2_BUT_FULL = FULL_NODE | ServiceFlags.NODE_BLOOM
+
+
+@pytest.mark.parametrize(
+    ("v1transport", "services", "expected"),
+    [
+        (True, _NOT_V2_BUT_FULL, False),
+        (False, _NOT_V2_BUT_FULL, True),
+        (False, FULL_NODE | _P2P_V2, False),
+        # a seed's recorded services are exempt, and nothing else is
+        (False, SEEDS_SERVICE_FLAGS, False),
+        (True, SEEDS_SERVICE_FLAGS, False),
+        (False, SEEDS_SERVICE_FLAGS | ServiceFlags.NODE_NETWORK_LIMITED, True),
+    ],
+)
+def test_v1_only_is_an_address_without_p2p_v2_unless_it_is_a_seed(
+    a_manager: AManagerFactory,
+    v1transport: bool,  # noqa: FBT001
+    services: ServiceFlags,
+    expected: bool,  # noqa: FBT001
+) -> None:
+    """Without `-v1transport` only `NODE_P2P_V2` or a seed's flags dial."""
+    manager = a_manager(v2transport=True, v1transport=v1transport)
+    address = peer_address("1.2.3.4", 18444, services=int(services))
+    assert manager._v1_only(address) is expected
+
+
+@pytest.mark.parametrize("feeler", [True, False])
+@pytest.mark.parametrize(("v1transport", "passed_over"), [(False, True), (True, False)])
+def test_the_draw_passes_over_a_v1_only_address_without_v1transport(
+    a_manager: AManagerFactory,
+    v1transport: bool,  # noqa: FBT001
+    passed_over: bool,  # noqa: FBT001
+    feeler: bool,  # noqa: FBT001
+) -> None:
+    """`_passed_over` leaves out what only speaks v1, a feeler's draw too."""
+    manager = a_manager(v2transport=True, v1transport=v1transport)
+    address = peer_address("1.2.3.4", 18444, services=int(_NOT_V2_BUT_FULL))
+    assert manager._passed_over(address, 0, time.time(), feeler=feeler) is passed_over
+
+
+@pytest.mark.parametrize("v1transport", [True, False])
+def test_the_draw_does_not_pass_over_a_seed_or_a_v2_address(
+    a_manager: AManagerFactory,
+    v1transport: bool,  # noqa: FBT001
+) -> None:
+    """The seed exemption and `NODE_P2P_V2` hold with v1 off."""
+    manager = a_manager(v2transport=True, v1transport=v1transport)
+    for services in (SEEDS_SERVICE_FLAGS, FULL_NODE | _P2P_V2):
+        address = peer_address("1.2.3.4", 18444, services=int(services))
+        assert not manager._passed_over(address, 0, time.time(), feeler=False)
+
+
+@pytest.mark.parametrize(
+    ("v1transport", "popped"), [(False, ANCHOR), (True, "v1-only")]
+)
+def test_an_anchor_that_only_speaks_v1_is_passed_over_without_v1transport(
+    a_manager: AManagerFactory,
+    v1transport: bool,  # noqa: FBT001
+    popped: Any,
+) -> None:
+    """`_pop_anchor` drops it for good, as it does any refused anchor."""
+    manager = a_manager(v2transport=True, v1transport=v1transport)
+    v1_only = peer_address("7.8.1.1", 18444, services=int(_NOT_V2_BUT_FULL))
+    manager.anchors = [ANCHOR, v1_only]
+    expected = v1_only if popped == "v1-only" else popped
+    assert manager._pop_anchor({net_group(peer_address("7.7.2.2", 1))}) == expected
+
+
+@pytest.mark.parametrize(
+    ("v2transport", "v1transport", "services", "expected"),
+    [
+        (True, True, FULL_NODE, False),
+        (True, True, FULL_NODE | _P2P_V2, True),
+        # without v1 every dial is v2, a seed's included
+        (True, False, FULL_NODE, True),
+        (True, False, _NOT_V2_BUT_FULL, True),
+        (False, True, FULL_NODE | _P2P_V2, False),
+    ],
+)
+def test_every_dial_is_v2_without_v1transport(
+    a_manager: AManagerFactory,
+    v2transport: bool,  # noqa: FBT001
+    v1transport: bool,  # noqa: FBT001
+    services: ServiceFlags,
+    expected: bool,  # noqa: FBT001
+) -> None:
+    """`_use_v2transport_for`, with v1 on as before and with it off."""
+    manager = a_manager(v2transport=v2transport, v1transport=v1transport)
+    address = peer_address("1.2.3.4", 18444, services=int(services))
+    assert manager._use_v2transport_for(address) is expected
+
+
+@pytest.mark.parametrize(("v1transport", "expected"), [(False, True), (True, False)])
+def test_a_drawn_seed_is_dialled_with_v2_without_v1transport(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    v1transport: bool,  # noqa: FBT001
+    expected: bool,  # noqa: FBT001
+) -> None:
+    """A fresh node's only addresses carry no `NODE_P2P_V2`, and are dialled."""
+    drawn = peer_address("9.9.9.9", 18444, services=int(SEEDS_SERVICE_FLAGS))
+    manager = a_manager(
+        peer_db=a_peer_db_stub(random_address=lambda: drawn),
+        v2transport=True,
+        v1transport=v1transport,
+    )
+    made: list[dict[str, Any]] = []
+
+    async def answers(address: NetworkAddressV2) -> bool:
+        return True
+
+    monkeypatch.setattr(manager_module, "dial", answers)
+    monkeypatch.setattr(
+        manager, "create_connection", lambda sock, address, **kw: made.append(kw)
+    )
+    asyncio.run(manager._dial_one_draw(set(), set(), manager_module._Outbound.NETWORK))
+    assert [kw["use_v2transport"] for kw in made] == [expected]
+
+
+def test_a_v2_attempt_is_not_retried_with_v1_without_v1transport(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal is logged in `net`; the slot is not held for a retry."""
+    conn = a_conn(
+        7,
+        reconnect_v1=True,
+        automatic=True,
+        address=peer_address("1.2.3.4", 18444),
+    )
+    manager = a_manager([conn], v2transport=True, v1transport=False)
+    logged, record = debug_recorder()
+    monkeypatch.setattr(manager.logger, "log_debug", record)
+    manager.remove_connection(7)
+    assert not manager._reconnections
+    assert manager._reserved_outbound.total() == 0
+    assert conn.stopped == [True]
+    assert logged == [
+        (
+            "net",
+            "not retrying with v1 transport protocol for peer=7 (see -v1transport)",
+        )
+    ]
+
+
+@pytest.mark.parametrize("v1transport", [True, False])
+def test_an_accepted_connection_refuses_a_v1_peer_without_v1transport(
+    a_manager: AManagerFactory,
+    v1transport: bool,  # noqa: FBT001
+) -> None:
+    """`create_connection` passes `allow_v1` to the responder it builds."""
+    port = get_random_port()
+    manager = a_manager(port=port, v2transport=True, v1transport=v1transport)
+    manager.start()
+    try:
+        wait_until_listening(manager)
+        with socket.create_connection(("127.0.0.1", port)):
+            wait_until(lambda: manager.pending_connections)
+            (conn,) = manager.pending_connections.values()
+            prefix = RegTest().magic + b"version\x00\x00\x00\x00\x00"
+            transport = conn.transport
+            if v1transport:
+                transport.received_bytes(memoryview(prefix))
+            else:
+                with pytest.raises(V1PeerRefusedError):
+                    transport.received_bytes(memoryview(prefix))
+    finally:
+        manager.stop()
+        manager.join(timeout=10)

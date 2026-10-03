@@ -54,7 +54,7 @@ from btclib_node.p2p.transport import (
     TransportProtocolType,
     V1Transport,
 )
-from btclib_node.p2p.v2transport import V2Transport
+from btclib_node.p2p.v2transport import V1PeerRefusedError, V2Transport
 
 if TYPE_CHECKING:
     import socket
@@ -349,10 +349,21 @@ def _queued_size(message: SerializedMessage) -> int:
     return HEADER_SIZE + len(message.payload)
 
 
-def _make_transport(magic: bytes, *, inbound: bool, use_v2transport: bool) -> Transport:
-    """Return Core's `MakeTransport`: v2 with a v1 fallback, or v1."""
+def _make_transport(
+    magic: bytes, *, inbound: bool, use_v2transport: bool, allow_v1: bool
+) -> Transport:
+    """Return Core's `MakeTransport`: v2 with a v1 fallback, or v1.
+
+    Without `allow_v1` the v2 responder has no fallback and refuses a v1
+    peer. Core has no such option; it is this node's, for refusing v1
+    (btclib-org/btclib-node#1190).
+    """
     if use_v2transport:
-        return V2Transport(magic, V1Transport(magic), initiating=not inbound)
+        return V2Transport(
+            magic,
+            V1Transport(magic) if allow_v1 else None,
+            initiating=not inbound,
+        )
     return V1Transport(magic)
 
 
@@ -591,12 +602,15 @@ class Connection:
         *,
         inbound: bool,
         use_v2transport: bool = False,
+        allow_v1: bool = True,
     ) -> None:
         """Set every field a fresh connection starts with, before `run`.
 
         `use_v2transport` is Core's own: a `V2Transport` that initiates
         where this node dialled and responds where it accepted, falling
         back to v1 on its own where a responder is spoken to in v1.
+        Without `allow_v1` (`Config.v1transport`) that responder refuses
+        the v1 peer instead, and `run` stops.
         """
         self.id = connection_id
         self.manager = manager
@@ -610,7 +624,10 @@ class Connection:
         # sending half under `_write_lock`, `p2p/transport.py` being where
         # each is argued.
         self.transport: Transport = _make_transport(
-            self.node.chain.magic, inbound=inbound, use_v2transport=use_v2transport
+            self.node.chain.magic,
+            inbound=inbound,
+            use_v2transport=use_v2transport,
+            allow_v1=allow_v1,
         )
         self.task: Future[None] | None = None
 
@@ -1056,6 +1073,17 @@ class Connection:
                             self.transport.get_info().transport_type
                             is TransportProtocolType.DETECTING
                         )
+                except V1PeerRefusedError:
+                    # Core's wording for a v2 transport error
+                    # (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+                    # v31.1 tag), for what `-v1transport` refuses: no
+                    # discouragement.
+                    self.node.logger.log_debug(
+                        "net",
+                        "V2 transport error: V1 peer refused (see -v1transport), peer=%d",
+                        self.id,
+                    )
+                    return self.stop(cancel_task=False)
                 # deliberately blind (BLE001), not for the event loop's
                 # own sake: `run` reaches this coroutine through
                 # `run_coroutine_threadsafe`, whose own Future nothing

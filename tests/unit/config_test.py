@@ -12,6 +12,7 @@ import pytest
 from bitcoin_core_rpc import rpc_port_from_chain
 from btclib.fee import FeeRate
 
+from btclib_node import config as config_module
 from btclib_node.chains import Main, RegTest, SigNet, TestNet, TestNet4
 from btclib_node.config import (
     DEFAULT_MAX_PEER_CONNECTIONS,
@@ -302,6 +303,49 @@ def test_peerblockfilters_defaults_to_false() -> None:
 def test_v2transport_defaults_to_true() -> None:
     """Core's own `DEFAULT_V2_TRANSPORT`."""
     assert Config(chain="regtest").v2transport is True
+
+
+def test_v1transport_defaults_to_true() -> None:
+    """F1's default: v1 stays on."""
+    assert Config(chain="regtest").v1transport is True
+
+
+def test_v2transport_off_alone_switches_v1_on() -> None:
+    """A node without v2 still speaks v1, whatever the default."""
+    assert Config(chain="regtest", v2transport=False).v1transport is True
+
+
+@pytest.mark.parametrize("default", [True, False])
+@pytest.mark.parametrize(
+    ("v2transport", "given", "expected"),
+    [
+        (True, None, None),  # the default
+        (False, None, True),
+        (True, True, True),
+        (True, False, False),
+        (False, True, True),
+    ],
+)
+def test_v1transport_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+    default: bool,  # noqa: FBT001
+    v2transport: bool,  # noqa: FBT001
+    given: bool | None,  # noqa: FBT001
+    expected: bool | None,  # noqa: FBT001
+) -> None:
+    """The default is read from one place, and `-v2transport=0` overrides it."""
+    monkeypatch.setattr(config_module, "_DEFAULT_V1_TRANSPORT", default)
+    config = Config(chain="regtest", v2transport=v2transport, v1transport=given)
+    assert config.v1transport is (default if expected is None else expected)
+
+
+def test_v1transport_off_beside_v2transport_off_is_refused() -> None:
+    """Neither transport would leave the node speaking to nobody."""
+    with pytest.raises(
+        ValueError,
+        match=r"Cannot set -v1transport to false when setting -v2transport to false\.",
+    ):
+        Config(chain="regtest", v2transport=False, v1transport=False)
 
 
 def test_connect_resolves_to_the_chains_own_default_port() -> None:
