@@ -1933,6 +1933,12 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
   with the dropped connection's outbound slot reserved until the retry ends**;
   `_open_addr_fetches` and `_open_added_peers` drain the queue (issue #1190).
 
+### The maintainer's bypass is for emergencies
+
+- **Every pull request, the maintainer's included, lands with an owner's
+  approval** (issue btclib-org/.github#1362), `CONTRIBUTING.md` and
+  this tree's prose saying so. The bypass stays, for emergencies.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

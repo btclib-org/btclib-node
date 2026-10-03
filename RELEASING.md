@@ -415,14 +415,13 @@ this release included.
    runs again on the tag, `-W`, `-n` and all — checked here too, ahead of
    a tag, rather than trusted to a run this step already duplicates.
 
-1. Merge it, with the button, the way every other pull request here
-   lands: "Squash and merge", pressed by auto-merge once the review and
-   the checks are in. `REPOSITORY.md`'s "Branch protection" is the pair
-   that lets an admin bypass a review that will not arrive on a
-   solo-maintainer repository — `gh pr merge <n> --squash --admin
-   --body-file <path> --subject <title>` is the form that names the
-   release commit explicitly rather than leaving it to
-   `squash_merge_commit_message`'s repository default.
+1. Merge it the way every other pull request here lands: once an owner
+   other than its author has approved the head and the checks are in,
+   "Squash and merge", or auto-merge. `gh pr merge <n> --squash
+   --match-head-commit <head> --body-file <path> --subject <title>` is the
+   form that names the release commit explicitly rather than leaving it to
+   `squash_merge_commit_message`'s repository default. `--admin` is the
+   emergency path, which a release does not need.
 
    Then read `lint` and `test` on the commit `main` ends up at before
    tagging, rather than trust the pull request's own green run:
