@@ -1887,6 +1887,12 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
   btclib-org/.github#1540): section 11 of the standard states the
   organization setting.
 
+### The `Sign-off` check is required
+
+- **A pull request whose commits lack the `Signed-off-by:` trailer cannot
+  merge** (issue btclib-org/.github#1550): `lint / Sign-off` is a required
+  check.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
