@@ -66,6 +66,48 @@ def test_bitcoind_falls_back_to_v1_when_dialling_this_node(
         node.join()
 
 
+def test_bitcoind_dialling_in_v1_is_refused_without_v1transport(
+    bitcoind: Bitcoind, tmp_path: Path
+) -> None:
+    """`addnode onetry false` is dropped and logged, and no peer is made."""
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path / "node",
+            p2p_port=get_random_port(),
+            rpc_port=get_random_port(),
+            v1transport=False,
+            # the refusal is a debug line
+            debug=True,
+        )
+    )
+    node.start()
+    try:
+        wait_until_listening(node.p2p_manager)
+        lines = LogLines()
+        node.logger.addHandler(lines)
+        bitcoind.rpc("addnode", [f"127.0.0.1:{node.config.p2p_port}", "onetry", False])
+        wait_until(
+            lambda: any(
+                "V2 transport error: V1 peer refused (see -v1transport)" in line
+                for line in lines.messages
+            ),
+            timeout=30,
+        )
+        assert not node.p2p_manager.connections
+        # a refused connection waits `Closed` for the housekeeping loop
+        wait_until(
+            lambda: all(
+                c.status is P2pConnStatus.Closed
+                for c in node.p2p_manager.pending_connections.values()
+            )
+        )
+        assert bitcoind.rpc("getpeerinfo") == []
+    finally:
+        node.stop()
+        node.join()
+
+
 def test_this_node_falls_back_to_v1_when_dialling_bitcoind(
     bitcoind_v1_only: Bitcoind, tmp_path: Path
 ) -> None:
@@ -78,6 +120,8 @@ def test_this_node_falls_back_to_v1_when_dialling_bitcoind(
             rpc_port=get_random_port(),
             # the retry is a debug line
             debug=True,
+            # the retry is v1
+            v1transport=True,
         )
     )
     node.start()

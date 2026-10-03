@@ -88,6 +88,41 @@ release that carries that name instead, so `--bundle <that file>` runs the
 same check reading it from disk instead of asking GitHub for it; one
 attestation covers the wheel, the sdist and the bill of materials.
 
+## Where this node departs from Bitcoin Core
+
+This node speaks BIP324's v2 transport to its peers and refuses v1 unless
+started with `-v1transport=1` (btclib-org/btclib-node#1190). Bitcoin Core
+accepts v1, and falls back to it for a peer that does not offer v2.
+
+v1 is plaintext. An observer on the path reads every message. v1's
+checksum is not a key: a party on the path can rewrite a message and
+recompute it, and the peer cannot tell. v2 encrypts and authenticates
+every packet, so reading the traffic takes an active attacker in the
+middle of the handshake, and a changed packet ends the connection.
+
+BIP324 has a v2 node accept inbound v1 "to minimize risk of network
+partitions", and retry with v1 a dial that a false `NODE_P2P_V2` in addr
+relay sent to a v1-only peer. Core does both. This node does neither,
+and the cost is peers:
+
+- an automatic outbound connection, a feeler included, goes only to an
+  address advertising `NODE_P2P_V2` or carrying exactly
+  `SEEDS_SERVICE_FLAGS`, as every seed does. It chooses from fewer
+  candidates, which makes it easier to surround with peers of one party,
+  and a v1-only seed, or a v1-only peer falsely advertised as
+  `NODE_P2P_V2`, is dialled and lost;
+- an inbound v1 peer, a light client among them, is dropped on the first
+  16 bytes of its `version` message, so those peers have fewer nodes to
+  reach;
+- an `-addnode`, `-connect` or `-seednode` peer that speaks v1 alone is
+  never reached: it is dialled with v2, drops the connection, and is not
+  retried with v1. `addnode` and `addconnection` with `v2transport` false
+  are refused.
+
+`-v1transport=1` restores Bitcoin Core's behaviour. `-v2transport=0`
+turns v1 on by itself, and `-v2transport=0 -v1transport=0` is refused at
+start.
+
 ## Limitations, not vulnerabilities
 
 The [assurance case](./ASSURANCE_CASE.md) is the threat model these are
@@ -106,7 +141,11 @@ Known and recorded, rather than something to report again.
   (btclib-org/btclib-node#27), and `-rpcbind` binds elsewhere only beside
   `-rpcallowip`, which then decides which sources are answered at all, as
   in Core: do not widen either past a network whose traffic you trust.
+- **BIP324 does not authenticate the peer.** A party in the middle of the
+  handshake reads and relays everything; comparing `getpeerinfo`'s
+  `session_id` with the peer's operator over another channel is what
+  detects it. Nor does v2 hide the timing and sizes of the packets.
 - **`Development Status :: 3 - Alpha` is the claim `pyproject.toml`
-  makes**, and it is the right one to read the limitation above against: this
+  makes**, and it is the right one to read the limitations above against: this
   node has downloaded and validated the chain, which is not the same as
   having been run against somebody trying to make it do otherwise.

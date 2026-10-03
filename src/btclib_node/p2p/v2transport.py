@@ -12,7 +12,8 @@ follows. The cipher, the key schedule and the short message ids are
 
 A responder that receives the first 16 bytes of a v1 `version` message
 falls back to the `v1_fallback` it was given, which then takes over every
-call.
+call. Where it was given `None`, the responder raises `V1PeerRefusedError`
+at that same match.
 
 `V2Transport` holds a lock for each half, taken receive before send, as
 Core's does: the receiving half's key processing writes the sending
@@ -24,7 +25,7 @@ from __future__ import annotations
 import secrets
 from enum import Enum, auto
 from threading import Lock
-from typing import override
+from typing import cast, override
 
 from btclib.exceptions import BTClibValueError, IncompleteMessageError
 from btclib.p2p.bip324 import (
@@ -53,6 +54,7 @@ __all__ = [
     "MAX_GARBAGE_LEN",
     "RecvState",
     "SendState",
+    "V1PeerRefusedError",
     "V2Transport",
     "V2TransportError",
 ]
@@ -75,6 +77,10 @@ _MAX_CONTENTS_LEN = 1 + 12 + MAX_PROTOCOL_MESSAGE_LENGTH
 
 class V2TransportError(BTClibValueError):
     """Bytes received are invalid: the transport cannot be used anymore."""
+
+
+class V1PeerRefusedError(V2TransportError):
+    """A v1 peer spoke to a responder that has no v1 fallback."""
 
 
 class RecvState(Enum):
@@ -106,7 +112,7 @@ class V2Transport(Transport):
     def __init__(
         self,
         magic: bytes,
-        v1_fallback: Transport,
+        v1_fallback: Transport | None,
         *,
         initiating: bool,
         prv_key: int | None = None,
@@ -114,7 +120,8 @@ class V2Transport(Transport):
     ) -> None:
         """Start a transport on the network whose message start is `magic`.
 
-        `v1_fallback` takes over when a responder is spoken to in v1.
+        `v1_fallback` takes over when a responder is spoken to in v1;
+        where it is `None`, the responder raises `V1PeerRefusedError`.
         `prv_key` and `garbage` are random unless given, which only tests
         do: `garbage` is at most `MAX_GARBAGE_LEN` bytes.
         """
@@ -127,7 +134,9 @@ class V2Transport(Transport):
             raise ValueError(err_msg)
         self._magic = magic
         self._initiating = initiating
-        self._v1 = v1_fallback
+        self._allow_v1 = v1_fallback is not None
+        # reached only once `_allow_v1` let the v1 state begin
+        self._v1 = cast("Transport", v1_fallback)
         self._prv_key = prv_key
         self._ell_ours = ellswift.create_var(prv_key)
 
@@ -242,6 +251,9 @@ class V2Transport(Transport):
                 self._send_state = SendState.AWAITING_KEY
                 self._start_sending_handshake()
         elif len(self._recv_buffer) == _V1_PREFIX_LEN:
+            if not self._allow_v1:
+                err_msg = "V1 peer refused"
+                raise V1PeerRefusedError(err_msg)
             with self._send_lock:
                 self._v1.received_bytes(memoryview(bytes(self._recv_buffer)))
                 self._recv_state = RecvState.V1

@@ -1933,6 +1933,18 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
   with the dropped connection's outbound slot reserved until the retry ends**;
   `_open_addr_fetches` and `_open_added_peers` drain the queue (issue #1190).
 
+### `-v1transport` is the option that refuses v1
+
+- **`-v1transport=0` refuses v1 on every path**: inbound, the draw, `addnode`,
+  `addconnection` and the v1 retry. On by default; `-v2transport=0` alone
+  switches it on, and with both explicitly off the node will not start (issue #1190).
+
+### v1 transport is off unless `-v1transport=1`
+
+- **An inbound v1 peer is dropped, an automatic dial skips an address
+  with neither `NODE_P2P_V2` nor a seed's exact services, and a failed v2
+  dial gets no v1 retry**, unless `-v1transport=1` or `-v2transport=0` (closes #1190).
+
 ### The maintainer's bypass is for emergencies
 
 - **Every pull request, the maintainer's included, lands with an owner's

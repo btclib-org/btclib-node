@@ -44,32 +44,41 @@ def _connected(node: Node) -> Connection:
 
 
 @pytest.mark.parametrize(
-    ("dialler_v2", "advertised", "expected"),
+    ("dialler_v2", "advertised", "v1transport", "expected"),
     [
         # both ends offer it, and the address says so
-        (True, _V2, TransportProtocolType.V2),
+        (True, _V2, True, TransportProtocolType.V2),
         # the address does not advertise it, so the dialler asks for v1
-        (True, 0, TransportProtocolType.V1),
+        (True, 0, True, TransportProtocolType.V1),
         # the dialler does not offer it, though the address does
-        (False, _V2, TransportProtocolType.V1),
+        (False, _V2, True, TransportProtocolType.V1),
         # neither the dialler nor the address offers it
-        (False, 0, TransportProtocolType.V1),
+        (False, 0, True, TransportProtocolType.V1),
+        # without v1, the dialler asks for v2 whatever the address says
+        (True, 0, False, TransportProtocolType.V2),
     ],
 )
 def test_the_transport_follows_what_both_ends_offer(
     tmp_path: Path,
     dialler_v2: bool,  # noqa: FBT001
     advertised: int,
+    v1transport: bool,  # noqa: FBT001
     expected: TransportProtocolType,
 ) -> None:
-    """The dialler picks v2 only where both it and the address offer it.
+    """The dialler picks v2 where both offer it, or where it has no v1.
 
-    The listener always offers v2, and answers a v1 dialler in v1.
+    Both ends have `-v1transport` as the case says. The listener always
+    offers v2, and answers a v1 dialler in v1 where it has v1.
     """
     with (
-        node_context(tmp_path / "node1", allow_rpc=False) as node1,
         node_context(
-            tmp_path / "node2", allow_rpc=False, v2transport=dialler_v2
+            tmp_path / "node1", allow_rpc=False, v1transport=v1transport
+        ) as node1,
+        node_context(
+            tmp_path / "node2",
+            allow_rpc=False,
+            v2transport=dialler_v2,
+            v1transport=v1transport,
         ) as node2,
     ):
         wait_until_listening(node1.p2p_manager)
@@ -106,7 +115,7 @@ def test_a_v2_dialler_retries_with_v1_against_a_node_without_v2transport(
     """
     with (
         node_context(tmp_path / "node1", allow_rpc=False, v2transport=False) as node1,
-        node_context(tmp_path / "node2", allow_rpc=False) as node2,
+        node_context(tmp_path / "node2", allow_rpc=False, v1transport=True) as node2,
     ):
         wait_until_listening(node1.p2p_manager)
         lines = LogLines()
@@ -133,6 +142,66 @@ def test_a_v2_dialler_retries_with_v1_against_a_node_without_v2transport(
         )
         assert sum("retrying with v1" in m for m in lines.messages) == 1
         assert node2.p2p_manager.last_connection_id == 1
+
+
+def test_a_listener_without_v1transport_refuses_a_v1_peer(tmp_path: Path) -> None:
+    """The v1 dialler is dropped and the refusal logged; a v2 one is taken.
+
+    Neither is discouraged: `node1` keeps no ban or discouragement of the
+    loopback host, as the v2 dialler that follows connects.
+    """
+    with (
+        node_context(tmp_path / "node1", allow_rpc=False, v1transport=False) as node1,
+        node_context(tmp_path / "node2", allow_rpc=False, v2transport=False) as node2,
+        node_context(tmp_path / "node3", allow_rpc=False) as node3,
+    ):
+        wait_until_listening(node1.p2p_manager)
+        lines = LogLines()
+        node1.logger.addHandler(lines)
+        node2.p2p_manager.connect(local_addr(node1.p2p_port))
+        wait_until(
+            lambda: any(
+                "V2 transport error: V1 peer refused (see -v1transport)" in line
+                for line in lines.messages
+            )
+        )
+        wait_until(lambda: not node2.p2p_manager.connections)
+        assert not node1.p2p_manager.connections
+        node3.p2p_manager.connect(local_addr(node1.p2p_port, services=_V2))
+        listening = _connected(node1)
+        dialling = _connected(node3)
+        wait_until(
+            lambda: (
+                listening.transport.get_info().transport_type
+                is TransportProtocolType.V2
+            )
+        )
+        assert dialling.transport.get_info().transport_type is TransportProtocolType.V2
+
+
+def test_a_v2_dialler_without_v1transport_does_not_retry_with_v1(
+    tmp_path: Path,
+) -> None:
+    """The refusal is logged, and the node makes no second connection."""
+    with (
+        node_context(tmp_path / "node1", allow_rpc=False, v2transport=False) as node1,
+        node_context(tmp_path / "node2", allow_rpc=False, v1transport=False) as node2,
+    ):
+        wait_until_listening(node1.p2p_manager)
+        lines = LogLines()
+        node2.logger.addHandler(lines)
+        node2.p2p_manager.connect(local_addr(node1.p2p_port, services=_V2))
+        wait_until(
+            lambda: re.search(
+                r"not retrying with v1 transport protocol for peer=\d+"
+                r" \(see -v1transport\)",
+                "\n".join(lines.messages),
+            )
+        )
+        wait_until(lambda: not node2.p2p_manager.connections)
+        assert not node1.p2p_manager.connections
+        assert not any(line.startswith("retrying with v1") for line in lines.messages)
+        assert sum("Dialled" in line for line in lines.messages) == 1
 
 
 def test_messages_cross_the_rekey_in_both_directions(

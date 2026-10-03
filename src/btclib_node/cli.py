@@ -750,6 +750,11 @@ _OPTIONS: dict[str, _Option] = {
         "Use the testnet4 chain. Equivalent to -chain=testnet4.",
         _CHAINPARAMS_TITLE,
     ),
+    "v1transport": _Option(
+        "",
+        "Support v1 transport (default: 0)",
+        _CONNECTION_TITLE,
+    ),
     "v2transport": _Option(
         "",
         "Support v2 transport (default: 1)",
@@ -2316,6 +2321,8 @@ def _after_lock(before: _BeforeLock) -> Config:
     v2transport = _get_bool(settings, "v2transport")
     if v2transport is None:
         v2transport = True
+    # `Config` resolves an unset `-v1transport`
+    v1transport = _get_bool(settings, "v1transport")
     # `DEFAULT_WHITELISTRELAY` (true) where `-whitelistrelay` is not given
     whitelist_relay = _get_bool(settings, "whitelistrelay")
     if whitelist_relay is None:
@@ -2370,6 +2377,7 @@ def _after_lock(before: _BeforeLock) -> Config:
         discover=discover,
         peerblockfilters=peerblockfilters,
         v2transport=v2transport,
+        v1transport=v1transport,
         max_connections=before.max_connections,
         dnsseed=dnsseed,
         forcednsseed=bool(_get_bool(settings, "forcednsseed")),

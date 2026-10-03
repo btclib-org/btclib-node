@@ -132,8 +132,8 @@ def test_bitcoind_dials_this_node_over_v2(bitcoind: Bitcoind, tmp_path: Path) ->
 def test_bitcoind_dials_this_node_over_v1_where_it_is_asked_to(
     bitcoind: Bitcoind, tmp_path: Path
 ) -> None:
-    """A v1 peer of a node that offers v2 is answered in v1, as Core's is."""
-    node = _node(tmp_path)
+    """A v1 peer of a node with `-v1transport` is answered in v1."""
+    node = _node(tmp_path, v1transport=True)
     try:
         address = f"127.0.0.1:{node.config.p2p_port}"
         bitcoind.rpc("addnode", [address, "onetry", False])
