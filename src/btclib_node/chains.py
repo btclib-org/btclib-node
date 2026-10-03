@@ -362,7 +362,7 @@ class TestNet4(Chain):
     `btclib.consensus.CONSENSUS_PARAMS["testnet4"]` is the one row this
     package's four other chains all leave at its default,
     `enforce_bip94=True`: the timewarp mitigation BIP94 was written for
-    this network, and `btclib.block.header_context.next_bits_required`
+    this network, and `btclib.block.header_context.assert_not_timewarp`
     reads that flag generically, off `Chain.consensus` like every other
     field, so nothing here has to know about it.
     """

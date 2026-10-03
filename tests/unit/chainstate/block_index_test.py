@@ -362,12 +362,12 @@ class _RegTestWithBip94(RegTest):
 def test_a_header_failing_bip94s_timewarp_bound_becomes_a_misbehaving_error(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
-    """ISS 1442: `next_bits_required`'s own timewarp refusal, translated.
+    """ISS 1442: `assert_not_timewarp`'s own refusal, translated.
 
     Core's `time-timewarp-attack` is `BLOCK_INVALID_HEADER`, punished by
     `MaybePunishNodeForBlock` exactly as `bad-diffbits` is
     (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-    tag), but btclib's own `next_bits_required` raises a bare
+    tag), but btclib's own `assert_not_timewarp` raises a bare
     `BTClibValueError` for it, having no `MisbehavingError` of its own
     to raise -- this tree's exception, not btclib's. Before this,
     `_assert_valid_in_context` let that bare exception through
@@ -415,6 +415,28 @@ def test_a_header_failing_bip94s_timewarp_bound_becomes_a_misbehaving_error(
         block_index.add_headers([header])
     assert header.hash not in block_index.header_dict
     assert len(block_index.header_dict) == len(chain)
+
+    # a header that is also not after the median time past is refused
+    # `time-too-old`, which Core asks first
+    too_old = mined(chain[-1], 1)
+    assert block_time(too_old) <= median
+    with pytest.raises(MisbehavingError, match=r"^time-too-old$"):
+        block_index.add_headers([too_old])
+
+    # and one with a target other than the required one, `bad-diffbits`,
+    # which Core asks before either
+    harder = BlockHeader(
+        version=4,
+        previous_block_hash=chain[-1].hash,
+        merkle_root=secrets.token_bytes(32),
+        time=header.time,
+        bits=bytes.fromhex("1f7fffff"),
+        nonce=0,
+        check_validity=False,
+    )
+    _mine_in_place(harder, harder.bits)
+    with pytest.raises(MisbehavingError, match=r"^bad-diffbits$"):
+        block_index.add_headers([harder])
 
 
 def _mine_in_place(header: BlockHeader, pow_limit_bits: bytes) -> BlockHeader:
