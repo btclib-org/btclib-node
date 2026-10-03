@@ -1875,6 +1875,12 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
   `--locked`, bar the jobs that re-lock without committing or install a
   published or built package** (issue btclib-org/.github#1538).
 
+### The v1 framing is behind Core's `Transport`
+
+- **`Connection` frames through `p2p/transport.py`, Core's `Transport`**:
+  `parse_messages(data)` takes the octets read, `buffer` and `frame_message`
+  are gone, and `frame_message_bytes` is in `p2p.transport` (issue #1190).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

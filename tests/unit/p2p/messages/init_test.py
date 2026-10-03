@@ -10,7 +10,7 @@ being sent and never received. What is this node's is those two, the
 octets Core sends a peer too old for the rest; `callbacks` and
 `handshake_callbacks`, two hand-written tables of string literals,
 checked here against every command a real payload carries; which queue
-a command lands in; how much of the buffer survives a partial message;
+a command lands in; how a partial message is held until the rest arrives;
 and what becomes of a peer whose octets do not decode.
 """
 
@@ -38,6 +38,7 @@ from btclib_node.exceptions import WrongNetworkMagicError
 from btclib_node.p2p.callbacks import callbacks, handshake_callbacks
 from btclib_node.p2p.connection import Connection, PeerStats
 from btclib_node.p2p.messages import FinalAlert, NoncelessPing
+from btclib_node.p2p.transport import V1Transport
 
 if TYPE_CHECKING:
     from btclib.p2p.handshake import Version
@@ -124,7 +125,7 @@ def make_connection() -> Connection:
     conn.id = 0
     conn.manager = cast("P2pManager", manager)
     conn.node = manager.node
-    conn.buffer = bytearray()
+    conn.transport = V1Transport(MAGIC)
     conn.status = P2pConnStatus.Open
     conn.last_receive = 0
     conn._ping_lock = threading.Lock()
@@ -144,15 +145,13 @@ def framed(payload: Payload, magic: bytes = MAGIC) -> bytes:
 
 
 def test_one_message_is_dispatched() -> None:
-    """A single, complete message is fully consumed off the buffer.
+    """A single, complete message is queued whole.
 
     Parsed back out of the queue it lands in, its payload comes back
     with the field it was built with, not just the right command.
     """
     conn = make_connection()
-    conn.buffer = bytearray(framed(Ping(7)))
-    conn.parse_messages()
-    assert not conn.buffer
+    conn.parse_messages(framed(Ping(7)))
     assert [item[0] for item in conn.manager.messages] == ["ping"]
     assert Ping.parse(conn.manager.messages[0][1]).nonce == 7
 
@@ -163,9 +162,8 @@ def test_a_queued_message_carries_the_time_it_was_read() -> None:
     What `callbacks.pong` measures a round trip to (`P2pManager.messages`).
     """
     conn = make_connection()
-    conn.buffer = bytearray(framed(Ping(7)))
     before = time.time()
-    conn.parse_messages()
+    conn.parse_messages(framed(Ping(7)))
     after = time.time()
     (item,) = conn.manager.messages
     assert before <= item[4] <= after
@@ -179,9 +177,7 @@ def test_several_messages_in_one_read() -> None:
     messages (ISS 1410).
     """
     conn = make_connection()
-    conn.buffer = bytearray(framed(Ping(1)) + framed(Mempool()) + framed(Ping(2)))
-    conn.parse_messages()
-    assert not conn.buffer
+    conn.parse_messages(framed(Ping(1)) + framed(Mempool()) + framed(Ping(2)))
     assert [item[0] for item in conn.manager.messages] == ["ping", "mempool", "ping"]
 
 
@@ -193,8 +189,7 @@ def test_a_handshake_message_goes_to_its_own_queue() -> None:
     stays empty.
     """
     conn = make_connection()
-    conn.buffer = bytearray(framed(Verack()))
-    conn.parse_messages()
+    conn.parse_messages(framed(Verack()))
     assert [item[0] for item in conn.manager.handshake_messages] == ["verack"]
     assert not conn.manager.messages
 
@@ -204,40 +199,33 @@ def test_a_partial_message_is_held_whole() -> None:
 
     Tried at five cut points -- inside the 24-byte header (1, 10, 23),
     exactly at its boundary (24), and inside the payload (`len - 1`) --
-    because `parse_messages` rewinds on `IncompleteMessageError`, and a
-    rewind that lands wrong would only show up at one of those
-    boundaries, not at an arbitrary cut.
+    because the transport changes from the header to the payload at
+    one of those boundaries, which would only show up there, not at an
+    arbitrary cut.
     """
     whole = framed(Ping(1))
     # inside the header, at its boundary, and inside the payload
     for cut in (1, 10, 23, 24, len(whole) - 1):
         conn = make_connection()
-        conn.buffer = bytearray(whole[:cut])
-        conn.parse_messages()
-        assert not conn.manager.messages
-        assert conn.buffer == whole[:cut], f"cut at {cut}"
+        conn.parse_messages(whole[:cut])
+        assert not conn.manager.messages, f"cut at {cut}"
         # and it completes once the rest arrives
-        conn.buffer += whole[cut:]
-        conn.parse_messages()
+        conn.parse_messages(whole[cut:])
         assert [item[0] for item in conn.manager.messages] == ["ping"]
-        assert not conn.buffer
 
 
 def test_a_message_fed_one_octet_at_a_time_reassembles_identically() -> None:
     """A message split across as many chunks as it has octets still parses.
 
-    #438: `parse_messages` peeks the header's own `length` field before
-    it ever builds a stream, so this drives the read loop the way a
-    real socket read would, one octet per call rather than one cut --
-    the gate has to survive being asked, and answering "not yet",
-    dozens of times running rather than once.
+    #438: this drives the read loop the way a real socket read would,
+    one octet per call rather than one cut -- the transport has to
+    survive being asked, and answering "not yet", dozens of times
+    running rather than once.
     """
     whole = framed(Ping(424242))
     conn = make_connection()
     for i in range(len(whole)):
-        conn.buffer += whole[i : i + 1]
-        conn.parse_messages()
-    assert not conn.buffer
+        conn.parse_messages(whole[i : i + 1])
     assert [item[0] for item in conn.manager.messages] == ["ping"]
     assert Ping.parse(conn.manager.messages[0][1]).nonce == 424242
 
@@ -247,36 +235,33 @@ def test_a_declared_length_short_of_arrived_never_parses_early() -> None:
 
     Distinct from `test_a_partial_message_is_held_whole`'s cut points: a
     message is fed one payload octet at a time after its header, and at
-    every single step short of the last, `buffer` must hold exactly
-    what has arrived and nothing must be queued -- not only at one
-    chosen cut, so a gate that gets the bound wrong by one for some
+    every single step short of the last nothing must be queued -- not
+    only at one chosen cut, so a bound that is wrong by one for some
     lengths but not others cannot pass by luck of the cut chosen.
     """
     whole = framed(Ping(1))  # 24-byte header + 8-byte nonce payload
     conn = make_connection()
-    conn.buffer += whole[:24]  # the header, none of the payload
-    for i in range(24, len(whole)):
-        conn.parse_messages()
-        assert conn.buffer == whole[:i]
+    conn.parse_messages(whole[:24])  # the header, none of the payload
+    for i in range(24, len(whole) - 1):
+        conn.parse_messages(whole[i : i + 1])
         assert not conn.manager.messages
-        conn.buffer += whole[i : i + 1]
-    conn.parse_messages()
-    assert not conn.buffer
+    conn.parse_messages(whole[-1:])
     assert [item[0] for item in conn.manager.messages] == ["ping"]
 
 
 def test_a_whole_message_before_a_partial_one_is_still_taken() -> None:
     """The first of two messages in one read is queued despite the second.
 
-    Stopping to rewind on the trailing partial message must not also
-    undo the complete one already parsed ahead of it.
+    Holding the trailing partial message must not also hold back the
+    complete one ahead of it, and the partial one is completed by the
+    rest of it.
     """
     conn = make_connection()
     second = framed(Ping(2))
-    conn.buffer = bytearray(framed(Ping(1)) + second[:8])
-    conn.parse_messages()
-    assert [item[0] for item in conn.manager.messages] == ["ping"]
-    assert conn.buffer == second[:8]
+    conn.parse_messages(framed(Ping(1)) + second[:8])
+    assert [Ping.parse(item[1]).nonce for item in conn.manager.messages] == [1]
+    conn.parse_messages(second[8:])
+    assert [Ping.parse(item[1]).nonce for item in conn.manager.messages] == [1, 2]
 
 
 def test_a_bad_checksum_drops_the_message_and_keeps_reading() -> None:
@@ -284,20 +269,18 @@ def test_a_bad_checksum_drops_the_message_and_keeps_reading() -> None:
 
     Core's `GetReceivedMessage` rejects the message and `ReceiveMsgBytes`
     counts it under `*other*` and goes on. The message after it is
-    queued, so the buffer was moved past the rejected one rather than
-    retried or abandoned.
+    queued, so the transport moved past the rejected one rather than
+    retrying or abandoning it.
     """
     conn = make_connection()
     tampered = bytearray(framed(Ping(1)))
     tampered[20] ^= 0xFF  # a checksum byte
-    conn.buffer = tampered + framed(Ping(2))
-    conn.parse_messages()
+    conn.parse_messages(bytes(tampered) + framed(Ping(2)))
     assert [Ping.parse(item[1]).nonce for item in conn.manager.messages] == [2]
     assert conn.stats.bytes_recv_per_msg == {
         "*other*": len(tampered),
         "ping": len(framed(Ping(2))),
     }
-    assert not conn.buffer
 
 
 def a_message_with_an_invalid_command(payload: bytes) -> bytes:
@@ -315,12 +298,10 @@ def test_an_invalid_command_drops_the_message_and_keeps_reading() -> None:
     """
     conn = make_connection()
     rejected = a_message_with_an_invalid_command(b"\x00" * 8)
-    conn.buffer = bytearray(framed(Ping(1)) + rejected + framed(Ping(2)))
-    conn.parse_messages()
+    conn.parse_messages(framed(Ping(1)) + rejected + framed(Ping(2)))
     # a `ping` goes to the front of the queue, so the order is not asked
     assert sorted(Ping.parse(item[1]).nonce for item in conn.manager.messages) == [1, 2]
     assert conn.stats.bytes_recv_per_msg["*other*"] == len(rejected)
-    assert not conn.buffer
 
 
 def test_an_invalid_command_waits_for_its_payload() -> None:
@@ -332,27 +313,24 @@ def test_an_invalid_command_waits_for_its_payload() -> None:
     conn = make_connection()
     rejected = a_message_with_an_invalid_command(b"\x00" * 8)
     first = framed(Ping(1))
-    conn.buffer = bytearray(first + rejected[:-3])
-    conn.parse_messages()
+    conn.parse_messages(first + rejected[:-3])
     assert len(conn.manager.messages) == 1
-    assert conn.buffer == rejected[:-3]
-    conn.buffer += rejected[-3:]
-    conn.parse_messages()
+    assert "*other*" not in conn.stats.bytes_recv_per_msg
+    conn.parse_messages(rejected[-3:])
     assert conn.stats.bytes_recv_per_msg["*other*"] == len(rejected)
-    assert not conn.buffer
 
 
 def test_a_message_for_another_network_is_refused() -> None:
     """A message stamped with mainnet's magic is refused on regtest.
 
-    `parse_messages` compares the message's own magic against
+    The transport compares the header's own magic against
     `self.node.chain.magic`, so a peer on the wrong network is caught
     at that check rather than by a command it happens not to recognise.
     """
     conn = make_connection()
-    conn.buffer = bytearray(framed(Ping(1), magic=bytes.fromhex("f9beb4d9")))  # mainnet
+    mainnet = framed(Ping(1), magic=bytes.fromhex("f9beb4d9"))
     with pytest.raises(BTClibValueError):
-        conn.parse_messages()
+        conn.parse_messages(mainnet)
     assert not conn.manager.messages
 
 
@@ -364,24 +342,23 @@ def test_another_network_s_magic_is_refused_off_the_header() -> None:
     """
     conn = make_connection()
     mainnet = framed(Ping(2), magic=bytes.fromhex("f9beb4d9"))
-    conn.buffer = bytearray(framed(Ping(1)) + mainnet[:24])
     with pytest.raises(WrongNetworkMagicError):
-        conn.parse_messages()
+        conn.parse_messages(framed(Ping(1)) + mainnet[:24])
     assert len(conn.manager.messages) == 1
 
 
 def test_another_network_s_magic_first_in_the_buffer_is_refused_off_the_header() -> (
     None
 ):
-    """A wrong magic heading the buffer is refused before its payload arrives.
+    """A wrong magic heading the octets is refused before its payload arrives.
 
     Only the header of a mainnet `ping` is in: its declared payload never
     comes, and `parse_messages` does not wait for it.
     """
     conn = make_connection()
-    conn.buffer = bytearray(framed(Ping(2), magic=bytes.fromhex("f9beb4d9"))[:24])
+    mainnet = framed(Ping(2), magic=bytes.fromhex("f9beb4d9"))
     with pytest.raises(WrongNetworkMagicError):
-        conn.parse_messages()
+        conn.parse_messages(mainnet[:24])
     assert not conn.manager.messages
 
 
@@ -397,9 +374,8 @@ def test_an_oversized_payload_is_refused_before_it_is_allocated() -> None:
     header = Message(MAGIC, "ping", b"").serialize()[:24]
     # rewrite the length field with something no peer would honour
     forged = header[:16] + (0xFFFFFFF0).to_bytes(4, "little") + header[20:]
-    conn.buffer = bytearray(forged)
     with pytest.raises(BTClibValueError):
-        conn.parse_messages()
+        conn.parse_messages(forged)
     assert not conn.manager.messages
 
 

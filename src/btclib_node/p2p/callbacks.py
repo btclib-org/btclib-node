@@ -2572,7 +2572,7 @@ def advance_cfilters(node: Node, conn: Connection, block_hashes: deque[bytes]) -
     it, and what the read can still miss is a drain, which only ever
     makes this pause sooner. `conn.status` beside it is read the same
     way: seen one turn late it costs a filter serialized for a socket
-    already closed, which `Connection._send` suppresses.
+    already closed, which `Connection._deliver` suppresses.
     """
     filter_index = node.chainstate.filter_index
     while block_hashes:

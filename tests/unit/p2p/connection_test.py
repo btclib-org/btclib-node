@@ -22,6 +22,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 import pytest
+from btclib.exceptions import BTClibRuntimeError
 from btclib.hashes import hash256
 from btclib.p2p.address import ServiceFlags
 from btclib.p2p.block_filters import BlockFilterType, CFilter
@@ -45,6 +46,7 @@ from btclib_node.p2p.callbacks import (
 from btclib_node.p2p.connection import Connection
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 from btclib_node.p2p.messages import NoncelessPing
+from btclib_node.p2p.transport import BytesToSend, SerializedMessage, V1Transport
 from tests import discourage_recorder, log_recorder, wait_until
 
 if TYPE_CHECKING:
@@ -124,6 +126,49 @@ def test_a_message_that_will_not_serialize_is_logged_and_dropped() -> None:
     assert not sent
     (line,) = logged
     assert "error in serializing message" in line
+
+
+def test_a_message_the_transport_cannot_frame_is_logged_and_dropped() -> None:
+    """An envelope the transport refuses is logged, and costs that message.
+
+    The payload serializes, so `_queue` counts it; the transport refuses
+    it under `_write_lock`, and `_deliver` takes it off the books again.
+    """
+    connection, logged = a_connection()
+    sent: list[bytes] = []
+
+    async def _send(data: bytes) -> None:
+        sent.append(data)  # pragma: no cover -- the message is never framed
+
+    connection._send = _send  # type: ignore[method-assign]
+    message = SerializedMessage("a" * 13, b"")
+    connection.queued_send_bytes = connection_module._queued_size(message)
+    with connection.client:
+        asyncio.run(connection._deliver(message))
+    assert not sent
+    assert connection.queued_send_bytes == 0
+    (line,) = logged
+    assert "error in serializing message" in line
+
+
+def test_a_transport_that_takes_no_message_is_an_error_not_a_drop() -> None:
+    """A transport refusing a message in `_deliver` raises, not drops."""
+    connection, _ = a_connection()
+    transport = cast("V1Transport", connection.transport)
+    transport.set_message_to_send(SerializedMessage("ping", b"\x01" * 8))
+    with connection.client, pytest.raises(BTClibRuntimeError):
+        asyncio.run(connection._deliver(SerializedMessage("pong", b"")))
+
+
+def test_a_transport_that_does_not_advance_is_an_error_not_a_freeze() -> None:
+    """`_frame` raises where a transport always has more to send."""
+    connection, _ = a_connection()
+    transport = cast("V1Transport", connection.transport)
+    transport.get_bytes_to_send = lambda *, have_next_message: BytesToSend(  # type: ignore[method-assign]
+        memoryview(b"x"), True, ""
+    )
+    with connection.client, pytest.raises(BTClibRuntimeError):
+        connection._frame(SerializedMessage("ping", b""))
 
 
 def test_own_version_records_this_connections_own_nonce() -> None:
@@ -534,7 +579,7 @@ def test_a_bug_of_this_node_s_own_in_parsing_drops_the_peer_but_not_discouraged(
         ours.setblocking(False)
         connection = a_running_connection(loop, ours)
 
-        def boom() -> None:
+        def boom(data: bytes) -> None:
             raise RuntimeError("no")
 
         connection.parse_messages = boom  # type: ignore[method-assign]
@@ -879,12 +924,12 @@ def test_stop_ends_every_delivery_the_peer_never_drained() -> None:
     thread.start()
     ours, theirs = socket.socketpair()
     ours.setblocking(False)
-    data = b"x" * (16 * 1024 * 1024)
+    message = SerializedMessage("block", b"x" * MAX_PROTOCOL_MESSAGE_LENGTH)
     try:
         connection = a_running_connection(loop, ours)
-        connection.queued_send_bytes = 2 * len(data)
-        first = asyncio.run_coroutine_threadsafe(connection._deliver(data), loop)
-        second = asyncio.run_coroutine_threadsafe(connection._deliver(data), loop)
+        connection.queued_send_bytes = 2 * connection_module._queued_size(message)
+        first = asyncio.run_coroutine_threadsafe(connection._deliver(message), loop)
+        second = asyncio.run_coroutine_threadsafe(connection._deliver(message), loop)
         time.sleep(0.15)
         connection.stop()
         wait_until(lambda: first.done() and second.done(), timeout=10)
@@ -975,6 +1020,19 @@ def _wire_verack() -> bytes:
     return Message(RegTest().magic, "verack", Verack().serialize()).serialize()
 
 
+def test_a_message_is_framed_into_one_write_counted_by_chunk() -> None:
+    """`_frame` joins a header and a payload into the one write.
+
+    What is counted is each chunk's octets under the command, which
+    sum to what `Message.serialize` gives.
+    """
+    connection, _ = a_connection()
+    with connection.client:
+        data, sent = connection._frame(SerializedMessage("ping", Ping(1).serialize()))
+    assert data == _wire_ping()
+    assert sent == [("ping", 24), ("ping", 8)]
+
+
 def test_parse_messages_weighs_a_queued_message_against_the_recv_bound() -> None:
     """A `messages`-bound item adds its own wire size to `queued_recv_bytes`.
 
@@ -985,8 +1043,7 @@ def test_parse_messages_weighs_a_queued_message_against_the_recv_bound() -> None
     connection, _ = a_connection()
     with connection.client:
         wire = _wire_ping()
-        connection.buffer += wire
-        connection.parse_messages()
+        connection.parse_messages(wire)
     (item,) = connection.manager.messages
     assert item == ("ping", Ping(1).serialize(), 0, len(wire), connection.last_receive)
     assert connection.queued_recv_bytes == len(wire)
@@ -999,8 +1056,7 @@ def test_parse_messages_counts_each_message_under_core_s_key() -> None:
     with connection.client:
         ping = _wire_ping()
         unknown = Message(RegTest().magic, "invented", b"").serialize()
-        connection.buffer += ping + ping + unknown
-        connection.parse_messages()
+        connection.parse_messages(ping + ping + unknown)
     assert connection.stats.bytes_recv_per_msg == {
         "ping": 2 * len(ping),
         "*other*": len(unknown),
@@ -1072,8 +1128,7 @@ def test_parse_messages_weighs_a_handshake_message_too() -> None:
     connection, _ = a_connection()
     with connection.client:
         wire = _wire_verack()
-        connection.buffer += wire
-        connection.parse_messages()
+        connection.parse_messages(wire)
     (item,) = connection.manager.handshake_messages
     assert item == ("verack", Verack().serialize(), 0, len(wire))
     assert connection.queued_recv_bytes == len(wire)
@@ -1093,8 +1148,7 @@ def test_parse_messages_clears_recv_resume_once_over_the_bound() -> None:
         connection.queued_recv_bytes = (
             connection_module.MAX_QUEUED_RECV_BYTES - len(wire) + 1
         )
-        connection.buffer += wire
-        connection.parse_messages()
+        connection.parse_messages(wire)
     assert connection.queued_recv_bytes == connection_module.MAX_QUEUED_RECV_BYTES + 1
     assert not connection._recv_resume.is_set()
 
@@ -1112,8 +1166,7 @@ def test_parse_messages_leaves_recv_resume_set_landing_exactly_on_the_bound() ->
         connection.queued_recv_bytes = connection_module.MAX_QUEUED_RECV_BYTES - len(
             wire
         )
-        connection.buffer += wire
-        connection.parse_messages()
+        connection.parse_messages(wire)
     assert connection.queued_recv_bytes == connection_module.MAX_QUEUED_RECV_BYTES
     assert connection._recv_resume.is_set()
 

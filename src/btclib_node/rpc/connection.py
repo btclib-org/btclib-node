@@ -582,7 +582,7 @@ class RequestHead:
 
     `raw` is the octets read for it, which `serialize` gives back -- the
     same round-trip `tests/fuzz_corpus_test.py` already holds
-    `p2p.connection.frame_message_bytes` to. `consumed` is its length.
+    `p2p.transport.frame_message_bytes` to. `consumed` is its length.
 
     `method` and `target` are the request line's first part and its
     middle, `b""` where the line did not split, and `version` is `None`
