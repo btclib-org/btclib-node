@@ -34,7 +34,8 @@ gh api repos/btclib-org/btclib-node/branches/main/protection \
 #   {"app_id":15368,"context":"docs / Build the documentation"},
 #   {"app_id":15368,"context":"lint / Lint and type-check"},
 #   {"app_id":15368,"context":"regtest / Regtest against Bitcoin Core"},
-#   {"app_id":15368,"context":"lint / Dependency review"}],
+#   {"app_id":15368,"context":"lint / Dependency review"},
+#   {"app_id":15368,"context":"lint / Sign-off"}],
 #   "strict":true}
 gh api repos/btclib-org/btclib-node/rulesets --jq '.[].id' \
   | xargs -I{} gh api repos/btclib-org/btclib-node/rulesets/{} \
@@ -52,6 +53,7 @@ workflow that answers for it:
 | `lint / Lint and type-check` | `lint.yml`, calling `reusable-lint.yml` |
 | `regtest / Regtest against Bitcoin Core` | `integration-bitcoind.yml` |
 | `lint / Dependency review` | `lint.yml`, calling `reusable-lint.yml` |
+| `lint / Sign-off` | `lint.yml`, calling `reusable-lint.yml` |
 
 `test.yml` has more than one job, so it is named through its aggregate,
 `test: every job passed`, so that a job added to that workflow is gated
@@ -68,8 +70,9 @@ joins the calling job's id to the called job's own name. `docs.yml`'s
 `docs / Build the documentation`; `lint.yml`'s `lint` job calls
 `reusable-lint.yml` the same way, whose own job is still named
 `Lint and type-check`, producing `lint / Lint and type-check`
-(issue btclib-org/.github#35), and whose `Dependency review` job
-produces `lint / Dependency review`; `integration-bitcoind.yml`'s `regtest`
+(issue btclib-org/.github#35), and whose `Dependency review` and
+`Sign-off` jobs produce `lint / Dependency review` and `lint / Sign-off`;
+`integration-bitcoind.yml`'s `regtest`
 job calls `reusable-integration-bitcoind.yml` the same way, whose own
 job is still named `Regtest against Bitcoin Core`, producing
 `regtest / Regtest against Bitcoin Core` (issue btclib-org/.github#1196).
@@ -100,7 +103,8 @@ gh api -X PATCH \
             {"context": "docs / Build the documentation", "app_id": 15368},
             {"context": "lint / Lint and type-check", "app_id": 15368},
             {"context": "regtest / Regtest against Bitcoin Core", "app_id": 15368},
-            {"context": "lint / Dependency review", "app_id": 15368}]}
+            {"context": "lint / Dependency review", "app_id": 15368},
+            {"context": "lint / Sign-off", "app_id": 15368}]}
 JSON
 ```
 
@@ -117,7 +121,7 @@ than only documented.
 
 Re-run the first command above to confirm the checks still hold, each
 with its `app_id` — its answer, not this paragraph, is what is true
-today. A read of `.contexts[]` cannot tell: it answers the same four
+today. A read of `.contexts[]` cannot tell: it answers the same
 names whether or not each is bound to an app, which is why the record
 above reads `.checks[]`.
 
