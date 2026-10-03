@@ -54,7 +54,7 @@ from btclib_node.p2p.transport import (
     V1Transport,
 )
 from btclib_node.p2p.v2transport import V2Transport
-from tests import discourage_recorder, log_recorder, wait_until
+from tests import debug_recorder, discourage_recorder, log_recorder, wait_until
 
 if TYPE_CHECKING:
     import concurrent.futures
@@ -90,7 +90,12 @@ def a_connection(
     logged, warning = log_recorder()
     node = SimpleNamespace(
         chain=RegTest(),
-        config=SimpleNamespace(pruned=False, peerblockfilters=False, v2transport=False),
+        config=SimpleNamespace(
+            pruned=False,
+            peerblockfilters=False,
+            v2transport=False,
+            v1transport=True,
+        ),
         # what `own_version` now carries as `start_height`: 0, matching
         # a fresh `Node`'s own initial value before `main._finalize_fork`
         # ever writes it (`__init__.py`). btclib-org/btclib-node#722
@@ -167,7 +172,9 @@ def test_local_services_names_p2p_v2_where_v2transport_is_on(
     offered: bool,  # noqa: FBT001
 ) -> None:
     """Core's `-v2transport` adds `NODE_P2P_V2` to the local services."""
-    config = SimpleNamespace(pruned=False, peerblockfilters=False, v2transport=offered)
+    config = SimpleNamespace(
+        pruned=False, peerblockfilters=False, v2transport=offered, v1transport=True
+    )
     services = connection_module.local_services(cast("Any", config))
     assert bool(services & ServiceFlags.NODE_P2P_V2) is offered
 
@@ -543,6 +550,9 @@ def a_running_connection(
     client: socket.socket,
     *,
     use_v2transport: bool = False,
+    inbound: bool = False,
+    allow_v1: bool = True,
+    log_debug: Any = None,
 ) -> Connection:
     """Build a `Connection` with enough manager state for `run` to actually run.
 
@@ -555,12 +565,19 @@ def a_running_connection(
     node = SimpleNamespace(
         chain=RegTest(),
         status=NodeStatus.Starting,
-        config=SimpleNamespace(pruned=False, peerblockfilters=False, v2transport=False),
+        config=SimpleNamespace(
+            pruned=False,
+            peerblockfilters=False,
+            v2transport=False,
+            v1transport=True,
+        ),
         # `own_version`'s own `start_height` (btclib-org/btclib-node#722),
         # 0 matching a fresh `Node`'s own initial value (`__init__.py`).
         best_height=0,
         logger=SimpleNamespace(
-            warning=lambda *a: None, info=lambda *a: None, log_debug=lambda *a: None
+            warning=lambda *a: None,
+            info=lambda *a: None,
+            log_debug=log_debug if log_debug is not None else lambda *a: None,
         ),
     )
     discouraged, record = discourage_recorder()
@@ -582,8 +599,9 @@ def a_running_connection(
         client,
         peer_address("127.0.0.1", 18444),
         0,
-        inbound=False,
+        inbound=inbound,
         use_v2transport=use_v2transport,
+        allow_v1=allow_v1,
     )
 
 
@@ -2034,3 +2052,51 @@ def test_stop_when_sent_writes_what_was_sent_first() -> None:
     commands, closed = asyncio.run(main())
     assert commands == ["inv", "verack"]
     assert closed
+
+
+def _run_inbound_v2_connection_spoken_to_in_v1(
+    *, allow_v1: bool
+) -> tuple[Connection, list[tuple[str, str]]]:
+    """Run an inbound v2 connection sent a v1 `version`, then hung up on."""
+    entries, record = debug_recorder()
+
+    async def drive() -> Connection:
+        loop = asyncio.get_running_loop()
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        connection = a_running_connection(
+            loop,
+            ours,
+            use_v2transport=True,
+            inbound=True,
+            allow_v1=allow_v1,
+            log_debug=record,
+        )
+        theirs.sendall(RegTest().magic + b"version\x00\x00\x00\x00\x00" + bytes(8))
+        theirs.shutdown(socket.SHUT_WR)
+        try:
+            async with asyncio.timeout(10):
+                await connection.run()
+        finally:
+            theirs.close()
+        return connection
+
+    return asyncio.run(drive()), entries
+
+
+def test_an_inbound_v1_peer_is_refused_without_allow_v1_and_not_discouraged() -> None:
+    """`run` logs the refusal in `net`, stops, and discourages nobody."""
+    connection, entries = _run_inbound_v2_connection_spoken_to_in_v1(allow_v1=False)
+    assert connection.status == P2pConnStatus.Closed
+    assert not discouraged_of(connection)
+    assert entries == [
+        ("net", "V2 transport error: V1 peer refused (see -v1transport), peer=0")
+    ]
+    assert connection.stats.bytes_recv == 24
+
+
+def test_an_inbound_v1_peer_is_taken_with_allow_v1() -> None:
+    """The control: the same bytes with the fallback leave the transport v1."""
+    connection, entries = _run_inbound_v2_connection_spoken_to_in_v1(allow_v1=True)
+    assert connection.transport.get_info().transport_type is TransportProtocolType.V1
+    assert entries == []

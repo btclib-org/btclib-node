@@ -279,6 +279,7 @@ def a_node(
     pruned: bool = False,
     peerblockfilters: bool = False,
     v2transport: bool = True,
+    v1transport: bool = True,
     active_rpc_commands: list[tuple[str, float]] | None = None,
     log_path: str | None = None,
     permit_bare_multisig: bool = True,
@@ -333,6 +334,7 @@ def a_node(
             pruned=pruned,
             peerblockfilters=peerblockfilters,
             v2transport=v2transport,
+            v1transport=v1transport,
             permit_bare_multisig=permit_bare_multisig,
             max_datacarrier_bytes=max_datacarrier_bytes,
         ),
@@ -4531,7 +4533,9 @@ def test_get_network_info_s_localservices_follows_pruned_and_peerblockfilters() 
 
 
 # what `Config` defaults to: `-v2transport` on
-A_V2_CONFIG = SimpleNamespace(pruned=False, peerblockfilters=False, v2transport=True)
+A_V2_CONFIG = SimpleNamespace(
+    pruned=False, peerblockfilters=False, v2transport=True, v1transport=True
+)
 
 
 def test_addnode_onetry_dials_the_given_address_once() -> None:
@@ -4578,7 +4582,9 @@ def test_addnode_falls_back_to_the_chain_s_own_default_port() -> None:
     assert dialed == [("127.0.0.1", 18444)]
 
 
-def an_addnode_node(*, v2transport: bool) -> tuple[Any, list[tuple[str, bool]]]:
+def an_addnode_node(
+    *, v2transport: bool, v1transport: bool = True
+) -> tuple[Any, list[tuple[str, bool]]]:
     """Build a node double that records what `addnode` adds and dials."""
     seen: list[tuple[str, bool]] = []
 
@@ -4590,7 +4596,10 @@ def an_addnode_node(*, v2transport: bool) -> tuple[Any, list[tuple[str, bool]]]:
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
             config=SimpleNamespace(
-                pruned=False, peerblockfilters=False, v2transport=v2transport
+                pruned=False,
+                peerblockfilters=False,
+                v2transport=v2transport,
+                v1transport=v1transport,
             ),
             p2p_manager=SimpleNamespace(
                 add_added_peer=add,
@@ -4638,6 +4647,27 @@ def test_addnode_refuses_v2transport_without_the_option(command: str) -> None:
         "Error: v2transport requested but not enabled (see -v2transport)"
     )
     assert seen == []
+
+
+@pytest.mark.parametrize("command", ["add", "onetry", "remove"])
+def test_addnode_refuses_v1transport_without_the_option(command: str) -> None:
+    """`false` is refused once `-v1transport` is off, before the dispatch."""
+    node, seen = an_addnode_node(v2transport=True, v1transport=False)
+    with pytest.raises(RpcError) as raised:
+        add_node(node, _CONN, ["1.2.3.4", command, False])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert raised.value.message == (
+        "Error: v1transport requested but not enabled (see -v1transport)"
+    )
+    assert seen == []
+
+
+@pytest.mark.parametrize("params", [[], [None], [True]])
+def test_addnode_without_v1transport_still_takes_v2(params: list[Any]) -> None:
+    """Omitted, null or `true`, the dial is v2."""
+    node, seen = an_addnode_node(v2transport=True, v1transport=False)
+    add_node(node, _CONN, ["1.2.3.4", "onetry", *params])
+    assert seen == [("1.2.3.4", True)]
 
 
 def test_addnode_add_persists_instead_of_dialling() -> None:
@@ -4946,7 +4976,11 @@ def test_setnetworkactive_type_checks_state() -> None:
 
 
 def an_addconnection_node(
-    *, chain: Chain | None = None, full: bool = False, v2transport: bool = False
+    *,
+    chain: Chain | None = None,
+    full: bool = False,
+    v2transport: bool = False,
+    v1transport: bool = True,
 ) -> tuple[Any, list[tuple[Any, ...]]]:
     """Build a node double `add_connection` dials through, recording each dial.
 
@@ -4958,7 +4992,10 @@ def an_addconnection_node(
     node = SimpleNamespace(
         chain=chain if chain is not None else RegTest(),
         config=SimpleNamespace(
-            pruned=False, peerblockfilters=False, v2transport=v2transport
+            pruned=False,
+            peerblockfilters=False,
+            v2transport=v2transport,
+            v1transport=v1transport,
         ),
         p2p_manager=SimpleNamespace(
             reserve_automatic_slot=lambda connection_type: None if full else [],
@@ -5101,6 +5138,27 @@ def test_addconnection_refuses_v2transport() -> None:
         "init flag to be set."
     )
     assert dialled == []
+
+
+def test_addconnection_refuses_v1transport_without_the_option() -> None:
+    """`false` is refused once `-v1transport` is off."""
+    node, dialled = an_addconnection_node(v2transport=True, v1transport=False)
+    with pytest.raises(RpcError) as raised:
+        add_connection(node, _CONN, ["1.2.3.4:8333", "outbound-full-relay", False])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert raised.value.message == (
+        "Error: Adding v1transport connections requires -v1transport "
+        "init flag to be set."
+    )
+    assert dialled == []
+
+
+def test_addconnection_without_v1transport_still_takes_v2() -> None:
+    """`true` reaches the dial."""
+    node, dialled = an_addconnection_node(v2transport=True, v1transport=False)
+    add_connection(node, _CONN, ["1.2.3.4:8333", "outbound-full-relay", True])
+    ((_, _, kwargs),) = dialled
+    assert kwargs["use_v2transport"] is True
 
 
 @pytest.mark.parametrize(

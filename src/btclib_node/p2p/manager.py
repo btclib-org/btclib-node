@@ -48,6 +48,7 @@ from btclib_node.constants import CLIENT_NAME, P2pConnStatus
 from btclib_node.p2p.address import (
     BAD_PORTS,
     RECENT_TRY_SECONDS,
+    SEEDS_SERVICE_FLAGS,
     PeerDB,
     can_connect,
     dial,
@@ -847,10 +848,32 @@ class P2pManager(threading.Thread):
         """Return whether to dial `address` with BIP324: both sides offer it.
 
         Core's `addrConnect.nServices & GetLocalServices() & NODE_P2P_V2`,
-        for a dial of an address rather than of a name.
+        for a dial of an address rather than of a name. Without
+        `-v1transport` every dial is v2, whatever the address says: the
+        draw has already left out what only speaks v1 (`_v1_only`), and
+        a seed's recorded services never name `NODE_P2P_V2`.
         """
-        return self.supports_v2transport() and bool(
-            address.services & ServiceFlags.NODE_P2P_V2
+        return self.supports_v2transport() and (
+            not self.node.config.v1transport
+            or bool(address.services & ServiceFlags.NODE_P2P_V2)
+        )
+
+    def _v1_only(self, address: NetworkAddressV2) -> bool:
+        """Return whether, without `-v1transport`, `address` is left undialled.
+
+        An address that does not advertise `NODE_P2P_V2` speaks v1 only,
+        except one with exactly `SEEDS_SERVICE_FLAGS`, how a seed and a
+        fixed seed are recorded: a fresh node has nothing else to dial,
+        so it is dialled with v2. An address gossiped or added with exactly
+        those flags is exempt too, and a v1-only one among them is dialled
+        with v2 and dropped: the price of a fresh node finding any peer.
+        Core has no such filter; it is this node's, for refusing v1
+        (btclib-org/btclib-node#1190).
+        """
+        return not (
+            self.node.config.v1transport
+            or address.services & ServiceFlags.NODE_P2P_V2
+            or address.services == SEEDS_SERVICE_FLAGS
         )
 
     # One keyword per fact a connection starts with and keeps, none of
@@ -932,6 +955,7 @@ class P2pManager(threading.Thread):
             self.last_connection_id,
             inbound=inbound,
             use_v2transport=use_v2transport,
+            allow_v1=self.node.config.v1transport,
         )
         conn.automatic = automatic
         conn.permissions = self.whitelist.flags(
@@ -1024,9 +1048,19 @@ class P2pManager(threading.Thread):
         entry. Here the slot an automatic or addr-fetch connection held
         is reserved again, in the same critical section that dropped the
         connection, so no cap check finds it free before the retry
-        concludes; `_perform_reconnections` releases it.
+        concludes; `_perform_reconnections` releases it. Without
+        `-v1transport` there is no retry: Core has no such option, and
+        this one is this node's, for refusing v1 (btclib-org/btclib-node#1190).
         """
         if not self.network_active or not conn.transport.should_reconnect_v1():
+            return None
+        if not self.node.config.v1transport:
+            # the attempt was made and counted; only the retry is refused
+            self.logger.log_debug(
+                "net",
+                "not retrying with v1 transport protocol for peer=%d (see -v1transport)",
+                conn.id,
+            )
             return None
         holds_slot = conn.automatic or conn.addr_fetch
         connection_type = None
@@ -2259,8 +2293,8 @@ class P2pManager(threading.Thread):
         Passed over, as Core's loop `continue`s ahead of counting a try:
         one this node cannot dial, one `CNetAddr::IsValid` refuses, one
         this node's own by `local_addresses`, one short of the desirable
-        services, and one in a network group an outbound peer already
-        holds.
+        services, one `_v1_only` refuses, and one in a network group an
+        outbound peer already holds.
         """
         while self.anchors:
             anchor = self.anchors.pop()
@@ -2269,6 +2303,7 @@ class P2pManager(threading.Thread):
                 and is_valid(network_address(anchor).ip)
                 and host_key(anchor) not in self.local_addresses
                 and has_all_desirable_services(self.node, anchor.services)
+                and not self._v1_only(anchor)
                 and not (
                     can_addrv1(anchor) and net_group(anchor) in outbound_net_groups
                 )
@@ -2449,6 +2484,8 @@ class P2pManager(threading.Thread):
             if not _may_have_useful_address_db(address):
                 return True
         elif not has_all_desirable_services(self.node, address.services):
+            return True
+        if self._v1_only(address):
             return True
         # Core's `IsIPv4() || IsIPv6()` holds of every draw, as above
         if tries < _BAD_PORT_DRAWS and address.port in BAD_PORTS:
@@ -3341,8 +3378,8 @@ class P2pManager(threading.Thread):
                         inbound=True,
                         prefer_evict=discouraged,
                         local_address=local_address,
-                        # the v2 transport falls back to v1 on its own, so
-                        # it serves every inbound peer, as Core's does
+                        # the v2 transport falls back to v1 on its own where
+                        # -v1transport allows, as Core's always does
                         use_v2transport=self.supports_v2transport(),
                     )
             finally:

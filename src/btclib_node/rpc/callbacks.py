@@ -1635,7 +1635,9 @@ def _parsed_addnode_args(node: Node, params: list[Any]) -> tuple[str, str, bool]
     `v2transport` is the argument, or whether this node supports v2 where
     it is omitted or null, and `true` without the support is refused:
     `rpc/net.cpp`'s own check, at bitcoin/bitcoin@9be056a8a7, the v31.1
-    tag, which `remove` meets too.
+    tag, which `remove` meets too. `false` without `-v1transport` is
+    refused the same way, as this node's own mirror of it, for refusing
+    v1 (btclib-org/btclib-node#1190).
 
     Split out of `add_node` below so that function's own three-command
     dispatch stays under `ruff`'s complexity floor; the checks
@@ -1680,6 +1682,11 @@ def _parsed_addnode_args(node: Node, params: list[Any]) -> tuple[str, str, bool]
         raise RpcError(
             RPCErrorCode.INVALID_PARAMETER,
             "Error: v2transport requested but not enabled (see -v2transport)",
+        )
+    if not use_v2transport and not node.config.v1transport:
+        raise RpcError(
+            RPCErrorCode.INVALID_PARAMETER,
+            "Error: v1transport requested but not enabled (see -v1transport)",
         )
     return node_arg, command, use_v2transport
 
@@ -1830,6 +1837,22 @@ _ADDCONNECTION_TYPES = (
 )
 
 
+def _refuse_unoffered_transport(node: Node, *, v2transport: bool) -> None:
+    """Refuse the `v2transport` of `addconnection` this node does not offer."""
+    if v2transport and not (local_services(node.config) & ServiceFlags.NODE_P2P_V2):
+        raise RpcError(
+            RPCErrorCode.INVALID_PARAMETER,
+            "Error: Adding v2transport connections requires -v2transport "
+            "init flag to be set.",
+        )
+    if not v2transport and not node.config.v1transport:
+        raise RpcError(
+            RPCErrorCode.INVALID_PARAMETER,
+            "Error: Adding v1transport connections requires -v1transport "
+            "init flag to be set.",
+        )
+
+
 def add_connection(
     node: Node, conn: RpcConnection, params: list[Any]
 ) -> dict[str, Any]:
@@ -1848,6 +1871,8 @@ def add_connection(
     v31.1.0). `v2transport` true is refused the same way Core refuses it
     lacking `NODE_P2P_V2` (`connman.GetLocalServices() & NODE_P2P_V2`),
     which `local_services` (`p2p/connection.py`) sets with `-v2transport`.
+    `v2transport` false is refused without `-v1transport`, this node's own
+    mirror of that, for refusing v1 (btclib-org/btclib-node#1190).
 
     Both of `CConnman::AddConnection`'s capacity checks, the per-type
     cap and the shared `semOutbound` pool, are
@@ -1891,12 +1916,7 @@ def add_connection(
         )
     if connection_type not in _ADDCONNECTION_TYPES:
         raise RpcError(RPCErrorCode.INVALID_PARAMETER, HELP_TEXT["addconnection"])
-    if v2transport and not (local_services(node.config) & ServiceFlags.NODE_P2P_V2):
-        raise RpcError(
-            RPCErrorCode.INVALID_PARAMETER,
-            "Error: Adding v2transport connections requires -v2transport "
-            "init flag to be set.",
-        )
+    _refuse_unoffered_transport(node, v2transport=v2transport)
     manager = node.p2p_manager
     if manager.reserve_automatic_slot(connection_type) is None:
         raise RpcError(

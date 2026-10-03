@@ -168,6 +168,33 @@ def test_addnode_onetry_dials_and_connects_the_other_node(tmp_path: Path) -> Non
         )
 
 
+def test_addnode_and_addconnection_refuse_v1_without_v1transport(
+    tmp_path: Path,
+) -> None:
+    """Over a real RPC socket, `false` is refused without `-v1transport`."""
+    with node_context(tmp_path / "node", allow_p2p=False, v1transport=False) as node:
+        wait_until_listening(node.rpc_manager)
+        client = rpc_client(node)
+        _, body = client.call_raw(
+            "addnode", ["127.0.0.1:1", "onetry", False], jsonrpc="1.0"
+        )
+        assert body["error"] == {
+            "code": -8,
+            "message": "Error: v1transport requested but not enabled "
+            "(see -v1transport)",
+        }
+        _, body = client.call_raw(
+            "addconnection",
+            ["127.0.0.1:1", "outbound-full-relay", False],
+            jsonrpc="1.0",
+        )
+        assert body["error"] == {
+            "code": -8,
+            "message": "Error: Adding v1transport connections requires "
+            "-v1transport init flag to be set.",
+        }
+
+
 def test_disconnectnode_drops_a_live_connection_by_address(tmp_path: Path) -> None:
     """`disconnectnode "address"`, live, closes the real socket both sides.
 
