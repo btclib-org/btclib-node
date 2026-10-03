@@ -574,8 +574,12 @@ def node_context(
     allow_p2p: bool = True,
     allow_rpc: bool = True,
     max_tip_age: int | None = None,
+    v2transport: bool | None = None,
 ) -> Iterator[Node]:
     """Start a regtest node with each enabled server on a random port.
+
+    `v2transport` is `Config`'s own `-v2transport`, left at its default
+    where `None`.
 
     `allow_p2p` and `allow_rpc` toggle which of the two servers actually
     binds one; `rpc_node` below is this with `allow_p2p=False`, for a
@@ -589,6 +593,8 @@ def node_context(
     config_kwargs: dict[str, Any] = {}
     if max_tip_age is not None:
         config_kwargs["max_tip_age"] = max_tip_age
+    if v2transport is not None:
+        config_kwargs["v2transport"] = v2transport
     node = Node(
         config=Config(
             chain="regtest",

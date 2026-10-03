@@ -72,6 +72,7 @@ from btclib_node.p2p.connection import PeerStats
 from btclib_node.p2p.headers_sync import ChainStart, HeadersSyncState, State
 from btclib_node.p2p.permissions import NetPermissionFlags
 from btclib_node.p2p.selfannounce import LocalService
+from btclib_node.p2p.transport import TransportInfo, TransportProtocolType
 from btclib_node.rpc.callbacks import (
     add_connection,
     add_node,
@@ -213,6 +214,7 @@ def a_peer(
     addr_fetch: bool = False,
     permissions: NetPermissionFlags = NetPermissionFlags.NONE,
     versioned: bool = True,
+    transport_info: TransportInfo | None = None,
 ) -> Any:
     """Build a `P2pManager.connections` entry `get_peer_info` can read.
 
@@ -250,6 +252,9 @@ def a_peer(
         feeler=feeler,
         addr_fetch=addr_fetch,
         permissions=permissions,
+        transport=SimpleNamespace(
+            get_info=lambda: transport_info or TransportInfo(TransportProtocolType.V1)
+        ),
         stats=PeerStats(),
         block_availability=BlockAvailability(),
         tx_announce_queue=[],
@@ -273,6 +278,7 @@ def a_node(
     confirmed_outpoints: frozenset[bytes] | None = None,
     pruned: bool = False,
     peerblockfilters: bool = False,
+    v2transport: bool = True,
     active_rpc_commands: list[tuple[str, float]] | None = None,
     log_path: str | None = None,
     permit_bare_multisig: bool = True,
@@ -289,8 +295,8 @@ def a_node(
     False)`) `send_raw_transaction`'s own `_already_confirmed` reads as
     already in the UTXO set; empty by default, so nothing here answers
     already confirmed. btclib-org/btclib-node#1373. `pruned` and
-    `peerblockfilters` are `p2p.connection.local_services`'s own, off by
-    default here as `Config`'s own defaults are, for
+    `peerblockfilters` and `v2transport` are `p2p.connection.local_services`'s
+    own, with `Config`'s own defaults, for
     `get_network_info`'s `localservices`/`localservicesnames`.
     `active_rpc_commands` and `log_path` are `get_rpc_info`'s own, empty
     and unset by default -- nothing else here reads either.
@@ -326,6 +332,7 @@ def a_node(
             min_relay_feerate=min_relay_feerate,
             pruned=pruned,
             peerblockfilters=peerblockfilters,
+            v2transport=v2transport,
             permit_bare_multisig=permit_bare_multisig,
             max_datacarrier_bytes=max_datacarrier_bytes,
         ),
@@ -737,11 +744,31 @@ def test_the_synced_heights_are_the_peer_s_best_known_and_last_common_blocks(
 
 
 def test_the_fields_this_node_has_no_state_for_answer_core_s_value() -> None:
-    """No high-bandwidth peer chosen or BIP324 here."""
+    """No high-bandwidth peer chosen here."""
     (info,) = get_peer_info(a_node({7: a_peer()}), _CONN, [])
     assert info["bip152_hb_to"] is False
-    assert info["transport_protocol_type"] == "v1"
-    assert info["session_id"] == ""
+
+
+@pytest.mark.parametrize(
+    ("transport_info", "protocol", "session_id"),
+    [
+        (TransportInfo(TransportProtocolType.V1), "v1", ""),
+        (TransportInfo(TransportProtocolType.DETECTING), "detecting", ""),
+        (
+            TransportInfo(TransportProtocolType.V2, bytes(range(32))),
+            "v2",
+            bytes(range(32)).hex(),
+        ),
+    ],
+)
+def test_getpeerinfo_names_the_transport_and_the_session(
+    transport_info: TransportInfo, protocol: str, session_id: str
+) -> None:
+    """`transport_protocol_type` and `session_id` are the transport's own."""
+    peer = a_peer(transport_info=transport_info)
+    (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
+    assert info["transport_protocol_type"] == protocol
+    assert info["session_id"] == session_id
 
 
 def state_of(sync: HeadersSyncState) -> State:
@@ -4470,16 +4497,15 @@ def test_get_network_info_answers_this_node_s_own_subversion_and_protocol() -> N
     `connect_nodes`'s own read is `subversion` alone
     (`test_framework.py:568-594`, at bitcoin/bitcoin@bb529657);
     `protocolversion` is included beside it as a real, cheaply-answered
-    constant rather than as decoration. `NODE_NETWORK_LIMITED |
-    NODE_WITNESS` is `Config`'s own defaults, unpruned and with
-    `-peerblockfilters` off.
+    constant rather than as decoration. `NETWORK | WITNESS |
+    NETWORK_LIMITED | P2P_V2` is what `Config`'s defaults give.
     """
     result = get_network_info(a_node(), _CONN, [])
     assert result == {
         "subversion": USER_AGENT,
         "protocolversion": PROTOCOL_VERSION,
-        "localservices": f"{ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_NETWORK_LIMITED | ServiceFlags.NODE_WITNESS:016x}",
-        "localservicesnames": ["NETWORK", "WITNESS", "NETWORK_LIMITED"],
+        "localservices": f"{ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_NETWORK_LIMITED | ServiceFlags.NODE_WITNESS | ServiceFlags.NODE_P2P_V2:016x}",
+        "localservicesnames": ["NETWORK", "WITNESS", "NETWORK_LIMITED", "P2P_V2"],
         "localaddresses": [],
         "warnings": [],
     }
@@ -4491,7 +4517,9 @@ def test_get_network_info_s_localservices_follows_pruned_and_peerblockfilters() 
     The same `local_services` `own_version` sends, so the two never
     disagree about what this node advertises (ISS 1394's own "Fix").
     """
-    result = get_network_info(a_node(pruned=True, peerblockfilters=True), _CONN, [])
+    result = get_network_info(
+        a_node(pruned=True, peerblockfilters=True, v2transport=False), _CONN, []
+    )
     assert result["localservices"] == (
         f"{ServiceFlags.NODE_NETWORK_LIMITED | ServiceFlags.NODE_WITNESS | ServiceFlags.NODE_COMPACT_FILTERS:016x}"
     )
@@ -4500,6 +4528,10 @@ def test_get_network_info_s_localservices_follows_pruned_and_peerblockfilters() 
         "COMPACT_FILTERS",
         "NETWORK_LIMITED",
     ]
+
+
+# what `Config` defaults to: `-v2transport` on
+A_V2_CONFIG = SimpleNamespace(pruned=False, peerblockfilters=False, v2transport=True)
 
 
 def test_addnode_onetry_dials_the_given_address_once() -> None:
@@ -4514,8 +4546,9 @@ def test_addnode_onetry_dials_the_given_address_once() -> None:
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
+            config=A_V2_CONFIG,
             p2p_manager=SimpleNamespace(
-                connect_host=lambda h, p: dialed.append((h, p))
+                connect_host=lambda h, p, *, use_v2transport: dialed.append((h, p))
             ),
         ),
     )
@@ -4535,13 +4568,76 @@ def test_addnode_falls_back_to_the_chain_s_own_default_port() -> None:
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
+            config=A_V2_CONFIG,
             p2p_manager=SimpleNamespace(
-                connect_host=lambda h, p: dialed.append((h, p))
+                connect_host=lambda h, p, *, use_v2transport: dialed.append((h, p))
             ),
         ),
     )
     add_node(node, _CONN, ["127.0.0.1", "onetry"])
     assert dialed == [("127.0.0.1", 18444)]
+
+
+def an_addnode_node(*, v2transport: bool) -> tuple[Any, list[tuple[str, bool]]]:
+    """Build a node double that records what `addnode` adds and dials."""
+    seen: list[tuple[str, bool]] = []
+
+    def add(node_str: str, *, use_v2transport: bool) -> bool:
+        seen.append((node_str, use_v2transport))
+        return True
+
+    return (
+        SimpleNamespace(
+            chain=SimpleNamespace(port=18444),
+            config=SimpleNamespace(
+                pruned=False, peerblockfilters=False, v2transport=v2transport
+            ),
+            p2p_manager=SimpleNamespace(
+                add_added_peer=add,
+                connect_host=lambda host, port, *, use_v2transport: seen.append(
+                    (host, use_v2transport)
+                ),
+            ),
+        ),
+        seen,
+    )
+
+
+@pytest.mark.parametrize(
+    ("offered", "params", "expected"),
+    [
+        (True, [], True),
+        (True, [None], True),
+        (True, [False], False),
+        (True, [True], True),
+        (False, [], False),
+        (False, [False], False),
+    ],
+)
+@pytest.mark.parametrize("command", ["add", "onetry"])
+def test_addnode_v2transport_defaults_to_what_this_node_offers(
+    command: str,
+    offered: bool,  # noqa: FBT001
+    params: list[Any],
+    expected: bool,  # noqa: FBT001
+) -> None:
+    """Core's `MaybeArg<bool>("v2transport").value_or(node_v2transport)`."""
+    node, seen = an_addnode_node(v2transport=offered)
+    add_node(node, _CONN, ["1.2.3.4", command, *params])
+    assert seen == [("1.2.3.4", expected)]
+
+
+@pytest.mark.parametrize("command", ["add", "onetry", "remove"])
+def test_addnode_refuses_v2transport_without_the_option(command: str) -> None:
+    """Core's refusal, before the command is dispatched."""
+    node, seen = an_addnode_node(v2transport=False)
+    with pytest.raises(RpcError) as raised:
+        add_node(node, _CONN, ["1.2.3.4", command, True])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert raised.value.message == (
+        "Error: v2transport requested but not enabled (see -v2transport)"
+    )
+    assert seen == []
 
 
 def test_addnode_add_persists_instead_of_dialling() -> None:
@@ -4554,7 +4650,7 @@ def test_addnode_add_persists_instead_of_dialling() -> None:
     """
     added: list[str] = []
 
-    def record_add(node_str: str) -> bool:
+    def record_add(node_str: str, *, use_v2transport: bool) -> bool:
         added.append(node_str)
         return True
 
@@ -4562,9 +4658,12 @@ def test_addnode_add_persists_instead_of_dialling() -> None:
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
+            config=A_V2_CONFIG,
             p2p_manager=SimpleNamespace(
                 add_added_peer=record_add,
-                connect_host=lambda h, p: pytest.fail("add must not dial"),
+                connect_host=lambda h, p, *, use_v2transport: pytest.fail(
+                    "add must not dial"
+                ),
             ),
         ),
     )
@@ -4578,7 +4677,10 @@ def test_addnode_add_refuses_a_duplicate() -> None:
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
-            p2p_manager=SimpleNamespace(add_added_peer=lambda node_str: False),
+            config=A_V2_CONFIG,
+            p2p_manager=SimpleNamespace(
+                add_added_peer=lambda node_str, *, use_v2transport: False
+            ),
         ),
     )
     with pytest.raises(RpcError) as raised:
@@ -4597,6 +4699,7 @@ def test_addnode_remove_answers_not_added_every_time() -> None:
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
+            config=A_V2_CONFIG,
             p2p_manager=SimpleNamespace(remove_added_peer=lambda node_str: False),
         ),
     )
@@ -4620,6 +4723,7 @@ def test_addnode_remove_succeeds_once_added() -> None:
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
+            config=A_V2_CONFIG,
             p2p_manager=SimpleNamespace(remove_added_peer=record_remove),
         ),
     )
@@ -4633,7 +4737,10 @@ def test_addnode_refuses_an_empty_node_address() -> None:
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
-            p2p_manager=SimpleNamespace(connect_host=lambda host, port: None),
+            config=A_V2_CONFIG,
+            p2p_manager=SimpleNamespace(
+                connect_host=lambda host, port, *, use_v2transport: None
+            ),
         ),
     )
     with pytest.raises(RpcError) as raised:
@@ -4648,7 +4755,10 @@ def test_addnode_refuses_an_unknown_command() -> None:
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
-            p2p_manager=SimpleNamespace(connect_host=lambda host, port: None),
+            config=A_V2_CONFIG,
+            p2p_manager=SimpleNamespace(
+                connect_host=lambda host, port, *, use_v2transport: None
+            ),
         ),
     )
     with pytest.raises(RpcError) as raised:
@@ -4663,7 +4773,10 @@ def test_addnode_with_no_arguments_is_answered_with_the_usage() -> None:
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
-            p2p_manager=SimpleNamespace(connect_host=lambda host, port: None),
+            config=A_V2_CONFIG,
+            p2p_manager=SimpleNamespace(
+                connect_host=lambda host, port, *, use_v2transport: None
+            ),
         ),
     )
     with pytest.raises(RpcError) as raised:
@@ -4684,8 +4797,9 @@ def test_addnode_onetry_takes_a_hostname() -> None:
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
+            config=A_V2_CONFIG,
             p2p_manager=SimpleNamespace(
-                connect_host=lambda h, p: dialed.append((h, p))
+                connect_host=lambda h, p, *, use_v2transport: dialed.append((h, p))
             ),
         ),
     )
@@ -4705,8 +4819,9 @@ def test_addnode_onetry_hands_a_port_int_would_read_on_whole(spec: str) -> None:
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
+            config=A_V2_CONFIG,
             p2p_manager=SimpleNamespace(
-                connect_host=lambda h, p: dialled.append((h, p))
+                connect_host=lambda h, p, *, use_v2transport: dialled.append((h, p))
             ),
         ),
     )
@@ -4720,7 +4835,10 @@ def test_addnode_type_checks_node_and_command() -> None:
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
-            p2p_manager=SimpleNamespace(connect_host=lambda host, port: None),
+            config=A_V2_CONFIG,
+            p2p_manager=SimpleNamespace(
+                connect_host=lambda host, port, *, use_v2transport: None
+            ),
         ),
     )
     with pytest.raises(RpcError) as raised:
@@ -4828,7 +4946,7 @@ def test_setnetworkactive_type_checks_state() -> None:
 
 
 def an_addconnection_node(
-    *, chain: Chain | None = None, full: bool = False
+    *, chain: Chain | None = None, full: bool = False, v2transport: bool = False
 ) -> tuple[Any, list[tuple[Any, ...]]]:
     """Build a node double `add_connection` dials through, recording each dial.
 
@@ -4839,7 +4957,9 @@ def an_addconnection_node(
     dialled: list[tuple[Any, ...]] = []
     node = SimpleNamespace(
         chain=chain if chain is not None else RegTest(),
-        config=SimpleNamespace(pruned=False, peerblockfilters=False),
+        config=SimpleNamespace(
+            pruned=False, peerblockfilters=False, v2transport=v2transport
+        ),
         p2p_manager=SimpleNamespace(
             reserve_automatic_slot=lambda connection_type: None if full else [],
             connect_typed=lambda address, port, **kw: dialled.append(
@@ -4861,6 +4981,7 @@ def an_addconnection_node(
                 "feeler": False,
                 "addr_fetch": False,
                 "reserved": "outbound-full-relay",
+                "use_v2transport": False,
             },
         ),
         (
@@ -4871,6 +4992,7 @@ def an_addconnection_node(
                 "feeler": False,
                 "addr_fetch": False,
                 "reserved": "block-relay-only",
+                "use_v2transport": False,
             },
         ),
         (
@@ -4881,6 +5003,7 @@ def an_addconnection_node(
                 "feeler": False,
                 "addr_fetch": True,
                 "reserved": "addr-fetch",
+                "use_v2transport": False,
             },
         ),
         (
@@ -4894,6 +5017,7 @@ def an_addconnection_node(
                 "feeler": True,
                 "addr_fetch": False,
                 "reserved": "feeler",
+                "use_v2transport": False,
             },
         ),
     ],
@@ -4930,6 +5054,7 @@ def test_addconnection_trims_connection_type_like_core(padded: str) -> None:
                 "feeler": True,
                 "addr_fetch": False,
                 "reserved": "feeler",
+                "use_v2transport": False,
             },
         )
     ]
@@ -4957,8 +5082,16 @@ def test_addconnection_refuses_an_unknown_connection_type() -> None:
     assert dialled == []
 
 
+def test_addconnection_dials_with_v2transport_where_asked_and_offered() -> None:
+    """`v2transport` true reaches the dial of a node offering `NODE_P2P_V2`."""
+    node, dialled = an_addconnection_node(v2transport=True)
+    add_connection(node, _CONN, ["1.2.3.4:8333", "outbound-full-relay", True])
+    ((_, _, kwargs),) = dialled
+    assert kwargs["use_v2transport"] is True
+
+
 def test_addconnection_refuses_v2transport() -> None:
-    """This node never sets `NODE_P2P_V2`, so `v2transport` true is refused."""
+    """Without `NODE_P2P_V2`, `v2transport` true is refused."""
     node, dialled = an_addconnection_node()
     with pytest.raises(RpcError) as raised:
         add_connection(node, _CONN, ["1.2.3.4:8333", "outbound-full-relay", True])

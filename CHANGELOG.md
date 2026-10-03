@@ -1921,6 +1921,12 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
   btclib-org/.github#452): the criterion asks for a person other than the
   author.
 
+### `Connection` speaks BIP324 v2, and `-v2transport` is on by default
+
+- **A connection runs a `V2Transport`, and `-v2transport`, on by default,
+  adds `NODE_P2P_V2`**, as in Core; a v1-only peer's refusal is not
+  retried yet (issue #1190).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

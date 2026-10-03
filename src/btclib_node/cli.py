@@ -750,6 +750,11 @@ _OPTIONS: dict[str, _Option] = {
         "Use the testnet4 chain. Equivalent to -chain=testnet4.",
         _CHAINPARAMS_TITLE,
     ),
+    "v2transport": _Option(
+        "",
+        "Support v2 transport (default: 1)",
+        _CONNECTION_TITLE,
+    ),
     "whitelist": _Option(
         "=<[permissions@]IP address or network>",
         "Add permission flags to the peers using the given IP address (e.g. "
@@ -2307,6 +2312,10 @@ def _after_lock(before: _BeforeLock) -> Config:
     # `-listen=0` condition here
     discover = _get_bool(settings, "discover")
     peerblockfilters = bool(_get_bool(settings, "peerblockfilters"))
+    # `DEFAULT_V2_TRANSPORT` (true) where `-v2transport` is not given
+    v2transport = _get_bool(settings, "v2transport")
+    if v2transport is None:
+        v2transport = True
     # `DEFAULT_WHITELISTRELAY` (true) where `-whitelistrelay` is not given
     whitelist_relay = _get_bool(settings, "whitelistrelay")
     if whitelist_relay is None:
@@ -2360,6 +2369,7 @@ def _after_lock(before: _BeforeLock) -> Config:
         listen=listen,
         discover=discover,
         peerblockfilters=peerblockfilters,
+        v2transport=v2transport,
         max_connections=before.max_connections,
         dnsseed=dnsseed,
         forcednsseed=bool(_get_bool(settings, "forcednsseed")),

@@ -14,9 +14,12 @@ transport implements the same methods.
 
 **Threads.** The receiving half is touched on the connection's own loop
 alone, by `Connection.parse_messages`. The sending half is touched on
-that loop too, under `Connection._write_lock`, which is what makes the
-order of the octets on the wire the order the transport produced them
-in. `get_info` and `should_reconnect_v1` read what the other methods
+that loop too, by `Connection._drain_outbox` under `_write_lock`, which
+is what makes the order of the octets on the wire the order the
+transport produced them in. A `V2Transport`'s receiving half also adds
+handshake octets to the sending half, on that loop, between two calls;
+they go out first, since the transport takes no message while it holds
+octets. `get_info` and `should_reconnect_v1` read what the other methods
 write and may be called from another thread, `V1Transport`'s answers
 being constants.
 

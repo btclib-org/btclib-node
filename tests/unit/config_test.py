@@ -299,6 +299,11 @@ def test_peerblockfilters_defaults_to_false() -> None:
     assert Config(chain="regtest").peerblockfilters is False
 
 
+def test_v2transport_defaults_to_true() -> None:
+    """Core's own `DEFAULT_V2_TRANSPORT`."""
+    assert Config(chain="regtest").v2transport is True
+
+
 def test_connect_resolves_to_the_chains_own_default_port() -> None:
     """A spec naming no port falls back to the chain's own P2P port."""
     config = Config(chain="regtest", connect=["127.0.0.1"])

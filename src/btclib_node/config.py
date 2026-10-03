@@ -681,6 +681,11 @@ class Config:
     # (`chainstate.filter_index.FilterIndex`), so that refusal never
     # applies here.
     peerblockfilters: bool
+    # Core's own `-v2transport`, `DEFAULT_V2_TRANSPORT` (`src/net.h`, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) true: whether this node
+    # speaks BIP324 and says so with `NODE_P2P_V2`
+    # (`p2p.connection.local_services`).
+    v2transport: bool
     # Core's own `-maxconnections`: the automatic connections this node
     # holds at once, inbound and outbound together. It does not limit a
     # `-connect` or `-addnode` dial, which Core makes as a manual
@@ -794,6 +799,7 @@ class Config:
         externalip: Sequence[str] = (),
         discover: bool | None = None,
         peerblockfilters: bool = False,
+        v2transport: bool = True,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
         dnsseed: bool | None = None,
         forcednsseed: bool = False,
@@ -869,6 +875,7 @@ class Config:
             self.listen and not self.externalip if discover is None else discover
         )
         self.peerblockfilters = peerblockfilters
+        self.v2transport = v2transport
 
         # `_dnsseed`'s own docstring has `AppInitParameterInteraction`'s
         # order, ahead of the `-maxconnections` refusal below.

@@ -135,6 +135,12 @@ on release day.
   on ARM, so there `pip install btclib-node` builds it from source, which
   needs a C compiler, Rust and OpenSSL: cryptography's installation guide has
   the steps.
+- **Peers now speak BIP324 v2 with this node by default** (issue #1190).
+  `-v2transport` is on, as in Core, so the node advertises `NODE_P2P_V2`,
+  accepts a v2 or a v1 peer on one port, and dials v2 where the address
+  advertises it. `-nov2transport` turns it off. A `-connect`, `-addnode` or
+  `addnode` peer that speaks v1 only is dropped, and not yet retried in v1:
+  `-nov2transport` or `addnode "<node>" "onetry" false` reaches it.
 
 ## v2026.9.24
 
