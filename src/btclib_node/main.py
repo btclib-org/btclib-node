@@ -35,6 +35,7 @@ from btclib.policy import (
     MIN_STANDARD_TX_NONWITNESS_SIZE,
     are_inputs_standard,
     assert_standard_tx,
+    dust_outputs,
     is_witness_standard,
 )
 from btclib.script.engine import sig_op_cost
@@ -1842,6 +1843,11 @@ def pre_verify_mempool_acceptance(
     outpoint a mempool transaction already spends,
     `Mempool.check_replacement` saying in whose words.
 
+    Where `Config.require_standard` holds, refuses "dust" a candidate with
+    a dust output that pays a fee, `bypass_limits` or not, after the
+    inputs and before the sigop ceiling and the fee floors (Core's
+    `PreCheckEphemeralTx`, btclib-org/btclib-node#1594).
+
     Refuses a fee below the mempool's own rolling minimum or
     `Config.min_relay_feerate` for the transaction's vsize, Core's own
     `CheckFeeRate`, unless `bypass_limits` -- Core's own flag, set where
@@ -1941,6 +1947,7 @@ def pre_verify_mempool_acceptance(
     _check_tx_inputs(prevout_coins, tx, spend_height)
     _check_standard_inputs(node, prev_outputs, tx)
     fee = sum(x.value for x in prev_outputs) - sum(x.value for x in tx.vout)
+    _check_ephemeral_dust(node, tx, fee)
     vsize = _sigop_adjusted_vsize(tx, prev_outputs)
     if not bypass_limits:
         _check_fee_and_truc(node, tx, vsize, fee)
@@ -2000,6 +2007,30 @@ def _check_tx_size(tx: Tx) -> None:
     ):
         reason = "tx-size-small"
         raise TxRejectedError(reason)
+
+
+def _check_ephemeral_dust(node: Node, tx: Tx, fee: int) -> None:
+    """Refuse "dust" a candidate paying a fee with a dust output.
+
+    Core's `PreCheckEphemeralTx` (`src/policy/ephemeral_policy.cpp`), which
+    `PreChecks` (`src/validation.cpp`) asks of every candidate unless
+    `-acceptnonstdtxn`, `bypass_limits` or not, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag, and at bitcoin/bitcoin@66776840be, master: a dust output
+    is held only by a transaction that pays nothing, which no miner has a
+    reason to mine alone. `IsStandardTx` has already allowed one. Core
+    tests the base and the modified fee; `prioritisetransaction` is not
+    implemented here, so the two are one number
+    (btclib-org/btclib-node#1502).
+    btclib-org/btclib-node#1594
+    """
+    config = node.config
+    if (
+        config.require_standard
+        and fee != 0
+        and dust_outputs(tx, dust_relay_fee=config.dust_relay_feerate)
+    ):
+        reason, details = "dust", "tx with dust output must be 0-fee"
+        raise TxRejectedError(reason, details)
 
 
 def _check_standard_inputs(node: Node, prev_outputs: list[TxOut], tx: Tx) -> None:

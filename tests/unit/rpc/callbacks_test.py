@@ -126,7 +126,7 @@ from tests import (
     generate_random_transaction,
     generate_segwit_block,
 )
-from tests.unit.main_test import connect, locked_spend, spend
+from tests.unit.main_test import a_dusty_spend, connect, locked_spend, spend
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -4358,6 +4358,32 @@ def test_a_fee_refusal_is_reported_with_core_s_reason_and_details(
     assert result["allowed"] is False
     assert result["reject-reason"] == "min relay fee not met"
     assert result["reject-details"] == "min relay fee not met, 0 < 11"
+
+
+DUST_REFUSAL = "dust, tx with dust output must be 0-fee"
+
+
+def test_a_dust_output_that_pays_a_fee_is_refused_by_both_calls(
+    regtest_node: Callable[[], Node],
+) -> None:
+    """`testmempoolaccept` and `sendrawtransaction` answer Core's "dust".
+
+    Core's `PreCheckEphemeralTx` reason and string; `sendrawtransaction`
+    adds the `-26` code (btclib-org/btclib-node#1594).
+    """
+    node = regtest_node()
+    dusty = a_dusty_spend(node, 1_000)
+    raw = dusty.serialize(include_witness=True).hex()
+    (answer,) = mempool_accept(node, _CONN, [[raw]])
+    assert answer["allowed"] is False
+    assert answer["reject-reason"] == "dust"
+    assert answer["reject-details"] == DUST_REFUSAL
+
+    with pytest.raises(RpcError) as raised:
+        send_raw_transaction(node, _CONN, [raw])
+    assert raised.value.code == RPCErrorCode.VERIFY_REJECTED
+    assert raised.value.message == DUST_REFUSAL
+    assert not node.mempool.contains_tx(dusty)
 
 
 def a_node_holding(

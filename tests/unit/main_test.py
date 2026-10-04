@@ -20,7 +20,7 @@ import pytest
 from btclib.block import Block, witness_commitment_output
 from btclib.consensus import MAX_BLOCK_WEIGHT
 from btclib.exceptions import BTClibValueError
-from btclib.fee import FeeRate, fee_from_vsize
+from btclib.fee import FeeRate, dust_threshold, fee_from_vsize
 from btclib.p2p.compact_blocks import CmpctBlock
 from btclib.p2p.inventory import (
     GetBlocks,
@@ -1636,6 +1636,70 @@ def test_the_standardness_options_are_read(node: Node) -> None:
     assert verify_mempool_acceptance(node, dust).fee == FEE
 
 
+def a_dusty_spend(node: Node, fee: int) -> Tx:
+    """Return a standard spend paying `fee` with one dust output."""
+    return with_outputs(a_funded_spend(node, fee), TxOut(0, anyone_can_spend()))
+
+
+def test_a_dust_output_that_pays_a_fee_is_refused_in_core_s_words(node: Node) -> None:
+    """`PreCheckEphemeralTx` refuses "dust", reorg re-add or not.
+
+    A dust output is held only by a transaction paying nothing. One dust
+    output passes `IsStandardTx`, which allows one, so it is this rule
+    that refuses. Each way out is taken in turn: no fee, `-acceptnonstdtxn`
+    and a dust rate under which the output is no longer dust
+    (btclib-org/btclib-node#1594).
+    """
+    spend = a_dusty_spend(node, FEE)
+    for bypass_limits in (False, True):
+        refused_with(
+            node,
+            spend,
+            "dust",
+            "tx with dust output must be 0-fee",
+            bypass_limits=bypass_limits,
+        )
+    # ahead of the fee floor, which 1 satoshi is under
+    cheap = replace(
+        spend,
+        vout=[
+            replace(spend.vout[0], value=spend.vout[0].value + FEE - 1),
+            spend.vout[1],
+        ],
+    )
+    refused_with(node, cheap, "dust", "tx with dust output must be 0-fee")
+    free = replace(
+        spend,
+        vout=[replace(spend.vout[0], value=spend.vout[0].value + FEE), spend.vout[1]],
+    )
+    assert verify_mempool_acceptance(node, free, bypass_limits=True).fee == 0
+
+    node.config.require_standard = False
+    assert verify_mempool_acceptance(node, spend).fee == FEE
+    node.config.require_standard = True
+    node.config.dust_relay_feerate = FeeRate(sats_per_kvbyte=0)
+    assert verify_mempool_acceptance(node, spend).fee == FEE
+
+
+def test_an_output_at_the_dust_threshold_is_no_dust(node: Node) -> None:
+    """An output worth the threshold is not dust, so a fee is allowed.
+
+    `IsDust` is "under the threshold", and the same spend with 1 satoshi
+    less is refused (btclib-org/btclib-node#1594).
+    """
+    spend = a_dusty_spend(node, FEE)
+    threshold = dust_threshold(
+        spend.vout[1].script_pub_key.script, node.config.dust_relay_feerate
+    )
+    funded = replace(spend, vout=[spend.vout[0], TxOut(threshold, anyone_can_spend())])
+    assert verify_mempool_acceptance(node, funded).fee == FEE - threshold
+    under = replace(
+        funded,
+        vout=[funded.vout[0], TxOut(threshold - 1, spend.vout[1].script_pub_key)],
+    )
+    refused_with(node, under, "dust", "tx with dust output must be 0-fee")
+
+
 def test_a_coinbase_is_refused_before_anything_else(node: Node) -> None:
     """`PreChecks` refuses a loose coinbase "coinbase", ahead of the rest."""
     with pytest.raises(TxRejectedError) as refused:
@@ -2692,6 +2756,47 @@ def test_a_reorg_still_resurrects_a_transaction_its_prevout_survives(
     assert block_index.active_chain[1:] == hashes(heavier)
 
     assert node.mempool.contains_tx(resurrectable)
+
+
+@pytest.mark.parametrize("fee", [0, FEE])
+def test_a_reorg_re_adds_a_dust_spend_only_if_it_pays_no_fee(
+    node: Node, fee: int
+) -> None:
+    """`bypass_limits` skips the fee floors but not `PreCheckEphemeralTx`.
+
+    A confirmed spend with a dust output comes back after a reorg when it
+    paid nothing and stays out when it paid a fee, as bitcoin-node-tests'
+    `mempool_ephemeral_dust` asserts of Core (btclib-org/btclib-node#1594).
+    """
+    common = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, common)
+    funding = common[0].transactions[0]
+    dusty = with_outputs(
+        generate_random_transaction(funding.id, value=funding.vout[0].value - fee),
+        TxOut(0, anyone_can_spend()),
+    )
+    abandoned = build_block(
+        common[-1].header.hash,
+        [generate_coinbase(height=len(common) + 1), dusty],
+        len(common),
+    )
+    fork = [*common, abandoned]
+    block_index.add_headers([block.header for block in fork])
+    for block in fork:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+    settle(node)
+    assert block_index.active_chain[1:] == hashes(fork)
+
+    heavier = [*common, *_extend(common[-1].header.hash, len(common), 2)]
+    block_index.add_headers([block.header for block in heavier[1:]])
+    for block in heavier[1:]:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+    settle(node)
+    assert block_index.active_chain[1:] == hashes(heavier)
+
+    assert node.mempool.contains_tx(dusty) == (fee == 0)
 
 
 def test_a_reorg_re_adds_abandoned_transactions_parent_first(
