@@ -30,6 +30,8 @@ keeps whichever shape it was written in.
 
 ## Unreleased
 
+## v2026.10.4
+
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on
 
 - **`RELEASING.md`, `SECURITY.md` and `sdist-rebuild.yml` name the

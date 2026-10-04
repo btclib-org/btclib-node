@@ -290,7 +290,7 @@ wheels = [
 
 [[package]]
 name = "btclib-node"
-version = "2026.10"
+version = "2026.10.4"
 source = { editable = "." }
 dependencies = [
     { name = "bitcoin-core-rpc" },

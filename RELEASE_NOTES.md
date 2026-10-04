@@ -24,11 +24,25 @@ rather than a digit.
 
 ## Unreleased
 
-The `2026.10` cycle is open and nothing has been cut from it. This
+The `2026.11` cycle is open and nothing has been cut from it. This
 section fills in one landed change at a time — what a user of the
 release below would have to act on to move past it — and
 `RELEASING.md`'s *Release to PyPI* is what retitles it to the version
 on release day.
+
+## v2026.10.4
+
+**The fourth release.** Everything below is measured against `v2026.9.24`:
+what changed since, and what it costs to move past it.
+`CHANGELOG.md`'s own `v2026.10.4` section is the record of everything
+that went into it.
+
+The RPC surface and the options grew too: `getmempoolentry`, `getchaintips`,
+`gettxout`, `help`, `invalidateblock`, `generatetoaddress` and
+`setnetworkactive` are among the methods now served, and `-bind`,
+`-externalip`, `-whitelist`, `-testnet4` and the `-*notify` options are read.
+The data directory gains `banlist.json` and `anchors.dat`. This is additive
+and costs nothing to move past.
 
 ### Breaking changes
 
@@ -109,7 +123,7 @@ on release day.
 - **`btclib-node` now depends on `btclib-wallet` directly** (closes
   #1508): btclib 2026.9.29 moved `descriptors` out to it
   (btclib-org/btclib#2129), so an unlocked install resolving that
-  release or later needs `btclib-wallet>=2026.9.30` alongside it, which
+  release or later needs `btclib-wallet` alongside it, which
   `pip install btclib-node` now pulls in on its own.
 - **Headers a peer serves on a chain with less work than Core's anti-DoS
   threshold are no longer stored** (closes #1246): they are counted,
@@ -130,17 +144,20 @@ on release day.
   `--signer-workflow btclib-org/.github/.github/workflows/reusable-build.yml@refs/heads/main`
   and `--source-ref refs/tags/v<version>`; SECURITY.md names the signer of
   an earlier release.
+- **The attestation bundle is attached as `v2026.10.4.intoto.jsonl`**, where
+  earlier releases attach `v<version>.attestation.jsonl`. A script that
+  downloads it by name, or passes it to `gh attestation verify --bundle`, uses
+  the new name.
 - **`btclib-node` depends on `cryptography`**, through `btclib[bip324]` (issue
   #1190). PyPI serves no `cryptography` wheel for macOS on x86_64 or Windows
   on ARM, so there `pip install btclib-node` builds it from source, which
   needs a C compiler, Rust and OpenSSL: cryptography's installation guide has
   the steps.
 - **Peers now speak BIP324 v2 with this node by default** (issue #1190).
-  `-v2transport` is on, as in Core, so the node advertises `NODE_P2P_V2`,
-  accepts a v2 or a v1 peer on one port, and dials v2 where the address
-  advertises it. `-nov2transport` turns it off. A `-connect`, `-addnode` or
-  `addnode` peer that speaks v1 only is dropped, and not yet retried in v1:
-  `-nov2transport` or `addnode "<node>" "onetry" false` reaches it.
+  `-v2transport` is on, as in Core, so the node advertises `NODE_P2P_V2` and
+  dials v2 where the address advertises it. `-nov2transport` turns it off. A
+  peer that speaks v1 only is refused unless the node starts with
+  `-v1transport=1`; the next entry has the rest.
 - **The node speaks BIP324 v2 alone unless started with `-v1transport=1`**
   (closes #1190). A v1 peer connecting to it is dropped, an automatic
   outbound connection goes only to an address advertising `NODE_P2P_V2`
@@ -149,10 +166,9 @@ on release day.
   false is refused.
   Bitcoin Core accepts v1; SECURITY.md's *Where this node departs from
   Bitcoin Core* says why this node does not. `-v2transport=0` turns v1 on
-  by itself, and `-v2transport=0 -v1transport=0` is refused at start. This
-  replaces the last sentence of the entry above: `-v1transport=1`, which
-  also restores the v1 retry, or `-nov2transport` reaches a v1-only peer
-  or a light client.
+  by itself, and `-v2transport=0 -v1transport=0` is refused at start. To
+  reach a v1-only peer or a light client, start with `-v1transport=1`, which
+  also restores the v1 retry, or with `-nov2transport`.
 - **The mempool refuses a transaction Core's `IsStandardTx`,
   `AreInputsStandard` or `IsWitnessStandard` refuses** (closes #1382). An
   output script of no standard type, more than one dust output, a bare
@@ -168,6 +184,108 @@ on release day.
   closes #1383, closes #1687). `sendrawtransaction` and
   `testmempoolaccept` answer `TRUC-violation`, `too-large-cluster` or
   `tx-size-small`, and the transaction is not relayed.
+- **The JSON-RPC listener answers a source outside loopback only where
+  `-rpcallowip` names it, and `-rpcbind` alone widens nothing** (closes
+  #1211, closes #1268, closes #1269, closes #1281, closes #1291,
+  closes #1288). It binds `::1` and `127.0.0.1`. A request from any
+  other source gets a bare 403, as `bitcoind` answers it, and `-rpcbind` is
+  ignored without `-rpcallowip`. A client on another host needs both, e.g.
+  `-rpcallowip=<subnet>` and `-rpcbind=<address>`.
+- **`btclib-node` sets the umask to 0077 on POSIX** (closes #1198): the
+  chain's data directory is 0700 and `history.log` 0600, as `bitcoind`
+  leaves them. A job of another account that read either, a backup or a
+  monitor, runs as the node's user or is given access.
+- **A `history.log` line is stamped and marked as `debug.log` stamps it**
+  (closes #1297, closes #1280). The time is UTC ISO 8601 to the second, then
+  one space, where it was local time with milliseconds and ` - `. A warning
+  is marked `[warning]` and an error `[error]`. The file opens on five blank
+  lines and a version line (closes #1309, closes #1305, closes #1306). A
+  reader of the file has to parse the new shape.
+- **An integer option is read as `bitcoind` reads it, and a port is ASCII
+  digits alone** (closes #1313, closes #1324, closes #1285). A value that is
+  not an integer was refused; its leading digits are read now, so
+  `-maxconnections=12x` reads 12. `-rpcbind`, `-connect`, `-addnode` and
+  `addnode` refuse a port with a sign, a space, a `_` or a non-ASCII digit.
+  Check the values you pass.
+- **A transaction's JSON is Core's `TxToUniv`** (closes #1440, closes #1448,
+  closes #1446). A `vout` is `value`, `n` and a `scriptPubKey` that nests
+  `asm`, `desc`, `hex`, `address` (where one exists) and `type`, where
+  btclib's `to_dict` kept `type` and `addresses` beside it. A `vin` is
+  `txid`, `vout`, `scriptSig` and `sequence`, or `coinbase` and `sequence`,
+  with `txinwitness` only when the witness stack is not empty; `asm` stays
+  btclib's. `getblock` answers `fee` and, at verbosity 3, `prevout`. A client
+  written against the earlier shape has to read these.
+- **`submitblock` answers a reason where it answered `null`** (closes #1335,
+  closes #1390, closes #1339). A tip block failing `bad-cb-height` or `bad-txns-nonfinal`
+  answers that reason, and failing scripts answer a reason beginning
+  `block-script-verify-flag-failed`. A caller that took `null` for
+  acceptance has to read the answer.
+- **An RPC call is refused where Core refuses it** (closes #1424, closes
+  #1293, closes #1294, closes #1168, closes #1457, closes #1372,
+  closes #1405). More
+  positional arguments than the method declares, or two or more of the wrong
+  type, are refused with the method's full help. A `params` object is mapped
+  onto positions, and a name repeated, unknown or given both ways is refused
+  with `RPC_INVALID_PARAMETER`. A hex `txid` or `blockhash` of the wrong
+  length is refused, and so is a `rawtx` with whitespace. A bare
+  `gettxoutsetinfo` answers `muhash` (closes #1387).
+- **`sendrawtransaction` and `testmempoolaccept` answer Core's reject reason
+  and details, in the order Core checks them** (closes #1328, closes #1375,
+  closes #1371, closes #1373, closes #1447). They apply `maxfeerate` and `maxburnamount`,
+  and answer `-27` for a confirmed resubmission where they answered `-25`. A
+  caller matching on a message has to read the reason.
+- **The mempool refuses a spend of an outpoint a held transaction spends, a
+  fee under the rolling minimum or `min_relay_feerate`, and a transaction of
+  more than 16000 sigops** (closes #1244, closes #1245, closes #1357,
+  closes #1332, closes #1252).
+  Replacing is not ported (issue #1334), so a conflicting spend is refused
+  whatever it pays. A reorg's re-added transactions are exempt from the fee
+  floor. `-minrelaytxfee` sets the floor, in BTC/kvB.
+- **`Connection.parse_messages` takes the octets read, and
+  `Connection.buffer`, `p2p.connection.frame_message` and
+  `p2p.connection.frame_message_bytes` are gone** (issue #1190):
+  `Connection` frames through `p2p/transport.py`, which holds
+  `frame_message_bytes`. A caller that drove a `Connection` by hand passes it
+  the octets and imports `frame_message_bytes` from there.
+- **The dependency floors rise** (closes #1684, issue #1685). `pip install
+  btclib-node` takes `btclib>=2026.10.5`, `btclib-wallet>=2026.10.4` and
+  `bitcoin-core-rpc>=2026.10.4`, and upgrading installs btclib-ecc 2026.10.2
+  and btclib-secp256k1 0.8.0.10 with them. An install that pins any of these
+  lower has to move. `generateblock` refuses a WIF of another chain, as Core
+  does, which btclib-wallet 2026.10.4 makes possible.
+- **`-datadir`, `-conf`, `-blocksdir` and `-rpccookiefile` are read lexically
+  normal** (closes #1187), as Core reads them: a `..` takes the component
+  before it off whether that component is missing or a symbolic link, so
+  `link/..` names the directory holding the link, not the link target's
+  parent. A path written that way lands elsewhere than before.
+- **`testmempoolaccept` ends the call at the first bad `rawtx`** (closes
+  #1329), as Core does: an array of fewer than 1 or more than 25 is refused
+  with `-8`, and the first element of the wrong type (`-3`) or that does not
+  decode (`-22`) ends the call, where it answered one entry per element.
+
+### Worth knowing, though nothing raises
+
+- **A received message is logged under the `net` debug category, as Core logs
+  it, and a payload that does not parse is one `net` line without a
+  traceback.** `-logratelimit`, on by default, caps each source location's
+  non-debug lines in `history.log` at 1 MiB an hour, as Core does; debug lines
+  are never capped, and `-nologratelimit` removes the cap.
+- **A relayed transaction's scripts are checked on `Node.worker_pool`, not on
+  `Node`'s thread** (issue #1685), so peers keep being served while they run.
+  One check is in flight at a time and a peer's next `tx` waits. A check with
+  no verdict after 300 seconds is dropped and logged. `sendrawtransaction`,
+  `testmempoolaccept` and a reorg's re-added transactions are still checked on
+  `Node`'s thread.
+- **The address table is Core's addrman** (closes #1308): new and tried
+  buckets, test-before-evict, and failed attempts counted. The 10,000-address
+  bound is replaced by Core's bucket capacity. A terrible answered address
+  stays in the tried table until another takes its slot. On the first start
+  over a store written by an earlier release, its rows are placed again, each
+  as its own source, and a row with no free slot is deleted (about 1% of
+  10,000 answered rows, by the PR's own measurement).
+- **A block whose legacy, P2SH and witness sigops together cost more than
+  `MAX_BLOCK_SIGOPS_COST` is refused `bad-blk-sigops`** (closes #1585), as
+  Core's `ConnectBlock` refuses it.
 
 ## v2026.9.24
 
