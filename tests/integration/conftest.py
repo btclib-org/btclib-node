@@ -22,6 +22,7 @@ import pytest
 from bitcoin_core_rpc import (
     BitcoinCoreRpcClient,
     FetchError,
+    RpcError,
     SessionTransport,
     cookie_path_from_chain,
 )
@@ -40,6 +41,10 @@ if TYPE_CHECKING:
 # call took under two seconds on an otherwise idle machine -- so this
 # bounds the failure rather than the ordinary case.
 _STARTUP_TIMEOUT = 30.0
+
+# How many lines of bitcoind's debug.log a failed call carries. The log is
+# not uploaded, and `-printtoconsole=0` keeps it off the test output.
+_LOG_TAIL_LINES = 80
 
 # The two switches this module's skip message names: whether to run at
 # all, and where the daemon is, read separately so that turning the
@@ -105,8 +110,30 @@ class Bitcoind:
         )
 
     def rpc(self, method: str, params: list[object] | None = None) -> object:
-        """Call `method` over bitcoind's JSON-RPC, and return its result."""
-        return self._client.call(method, params)
+        """Call `method` over bitcoind's JSON-RPC, and return its result.
+
+        A call that got no answer -- a timeout, a refused connection --
+        raises the client's own `FetchError`, with the end of bitcoind's
+        `debug.log` added as a note, which pytest prints under the error.
+        An `RpcError` is an answer, and carries none.
+        """
+        try:
+            return self._client.call(method, params)
+        except RpcError:
+            raise
+        except FetchError as exc:
+            exc.add_note(f"bitcoind's debug.log, last lines:\n{self._log_tail()}")
+            raise
+
+    def _log_tail(self) -> str:
+        """Return the last lines of this bitcoind's `debug.log`, or why not."""
+        # `cookie_path_from_chain` puts the cookie in the chain's directory
+        log = self.cookie_path.parent / "debug.log"
+        try:
+            lines = log.read_text(errors="replace").splitlines()
+        except OSError as exc:
+            return f"({log}: {exc})"
+        return "\n".join(lines[-_LOG_TAIL_LINES:])
 
     def close(self) -> None:
         """Close the pooled connection `SessionTransport` kept open.
@@ -169,6 +196,12 @@ def _started_bitcoind(
             "-rpcallowip=127.0.0.1",
             "-daemon=0",
             "-printtoconsole=0",
+            # what the tail of a failed call shows of the HTTP server and
+            # the RPC dispatch: a request received, a method started
+            "-debug=http",
+            "-debug=rpc",
+            "-logtimemicros",
+            "-logthreadnames",
             *args,
         ],
     )

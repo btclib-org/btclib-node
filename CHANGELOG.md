@@ -175,6 +175,11 @@ request is not answered `-28` (closes #1729).
   handshake on bitcoind's side, and `_still_listed` checks that a fresh
   `getpeerinfo` still lists it** (closes #1730).
 
+### A failed call to the integration tests' `bitcoind` shows its log
+
+A call that got no answer carries the end of that `bitcoind`'s `debug.log`
+as a note, and its `http` and `rpc` categories are logged (issue #1307).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on
