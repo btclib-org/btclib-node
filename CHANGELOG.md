@@ -140,6 +140,11 @@ and a parse by a reference timed beside it over the same input, in
   coin in Core's order, where it answered `muhash`; the scan runs on a
   thread of its own and `stop` ends it** (closes #1598).
 
+### The getaddr cache is keyed by the accepted socket's address
+
+- **A wildcard listener keeps one `getaddr` cache per local address a peer
+  reached, not one for all, as Core's `m_network_key` does** (closes #1722).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on

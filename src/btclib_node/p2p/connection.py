@@ -666,13 +666,14 @@ class Connection:
         # Core's `CNode::m_network_key` (`src/net.h`, at
         # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the key
         # `callbacks.getaddr` caches its answer under -- the BIP155 id of
-        # the peer's network (Tor's for an `inbound_onion` one), the local
-        # bind host and the local bind port, standing in
+        # the peer's network (Tor's for an `inbound_onion` one) and the
+        # host and port of the accepted socket's local address, which on
+        # a wildcard listener is the one the peer reached, standing in
         # for Core's own SipHash-keyed `uint64_t` of the same three
         # (`CreateNodeFromAcceptedSocket`, same file and sha). `None`
         # for an outbound connection, which `getaddr` never answers.
-        # `P2pManager.server` knows the local bind address it accepted
-        # on; `P2pManager.create_connection` sets this from it.
+        # `P2pManager.server` reads that address off the accepted socket;
+        # `P2pManager.create_connection` sets this from it.
         self.addr_cache_key: tuple[int, str, int] | None = None
 
         # Set by `own_version`, below, to what it drew: `None` until
