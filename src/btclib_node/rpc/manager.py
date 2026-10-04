@@ -329,14 +329,15 @@ class RpcManager(threading.Thread):
 
         Called on `Node`'s thread alone: by
         `RpcConnection.send_and_close_after` for a `stop` RPC's delayed
-        reply (btclib-org/btclib-node#1467), by `Node._drain_rpc_queue`
-        once per request it answers, and by `stop` for the replies it
-        finishes. Each is progress exactly as the others are, and
-        `Node.stop`'s wait loop reads `latest_reply_deadline` without
-        caring which moved it. `deadline` is the caller's own
-        `time.monotonic()` reading, taken on its own thread rather than
-        this method's, so that a caller answering several requests in a
-        row times each push at the moment that request actually finished.
+        reply (btclib-org/btclib-node#1467), by `Node._drain_message_queues`
+        and `Node._drain_rpc_queue` once per request they answer, and by
+        `stop` for the replies it finishes. Each is progress exactly as
+        the others are, and `Node.stop`'s wait loop reads
+        `latest_reply_deadline` without caring which moved it.
+        `deadline` is the caller's own `time.monotonic()` reading, taken
+        on its own thread rather than this method's, so that a caller
+        answering several requests in a row times each push at the
+        moment that request actually finished.
         """
         with self._reply_deadline_lock:
             latest = self._latest_reply_deadline

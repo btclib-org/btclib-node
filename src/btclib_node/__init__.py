@@ -640,6 +640,12 @@ class Node(threading.Thread):
         trigger either, a paused `getcfilters` or `getdata` answer being
         owed regardless of what else this pass finds waiting.
 
+        Each request answered here pushes `rpc_manager`'s reply deadline
+        forward, as `_drain_rpc_queue` does for each it answers. A pass
+        can answer several requests after `Node.stop` has been called,
+        and without the push `stop`'s bound would run out on them before
+        the drain's first request (btclib-org/btclib-node#1651).
+
         A connection paused on `MAX_QUEUED_RECV_BYTES`
         (`p2p/connection.py`) waits here and nowhere of its own: what
         resumes it is `handle_p2p` popping enough of that connection's
@@ -670,6 +676,7 @@ class Node(threading.Thread):
                 wait = False
             for _ in range(int(log2(len(self.rpc_manager.messages) + 1))):
                 handle_rpc(self)
+                self.rpc_manager.extend_reply_deadline(time.monotonic())
                 wait = False
             for _ in range(int(log2(len(self.p2p_manager.messages) + 1))):
                 handle_p2p(self)
@@ -967,11 +974,13 @@ class Node(threading.Thread):
 
         - a deadline is recorded only on this node's thread: by
           `handle_rpc`, which sets `terminate_flag` itself right after,
-          and, once the flag is set, by `_drain_rpc_queue` for each
-          request it answers and by `rpc_manager.stop` before it waits
+          by `_drain_message_queues` and `_drain_rpc_queue` for each
+          request they answer, and by `rpc_manager.stop` before it waits
           for the replies still being written
-          (btclib-org/btclib-node#1539); so none predates the shutdown it
-          bounds, and one can be recorded after this method's first read;
+          (btclib-org/btclib-node#1539); one whose value falls
+          before this call is ignored, the bound starting at the later
+          of the two, and one can be recorded after this method's first
+          read;
         - the value is never lowered, so a read sees every deadline
           recorded before it, a reply already sent included, while this
           thread still closes the stores behind it;

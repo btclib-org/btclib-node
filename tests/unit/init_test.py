@@ -478,6 +478,77 @@ def test_drain_progress_extends_stop_s_wait_past_stop_timeout(
     assert not node.is_alive()
 
 
+def test_requests_answered_by_the_loop_after_stop_extend_stop_s_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`stop` called mid-pass is not outlasted by the pass's other requests.
+
+    The loop answers `log2(queued + 1)` requests per pass, and `stop`
+    can arrive during the first. Here the pass answers a second one
+    ahead of `_drain_rpc_queue`, which answers the third. The three
+    finish 0.3, 0.6 and 0.9 seconds after the call, and `STOP_TIMEOUT`
+    is 0.6. Measured from the call alone, the wait runs out before the
+    drain's answer; with every answer pushing the deadline forward, no
+    gap is longer than 0.3 seconds (btclib-org/btclib-node#1651).
+    """
+    monkeypatch.setattr(btclib_node, "STOP_TIMEOUT", 0.6)
+    in_first = threading.Event()
+    hold_first = threading.Event()
+    in_pass = threading.Event()
+    hold_pass = threading.Event()
+    original_get_best_block_hash = callbacks["getbestblockhash"]
+    original_get_block_count = callbacks["getblockcount"]
+
+    def held_get_best_block_hash(node: Node, conn: Any, params: Any) -> Any:
+        in_first.set()
+        hold_first.wait(10)
+        return original_get_best_block_hash(node, conn, params)
+
+    def slow_get_block_count(node: Node, conn: Any, params: Any) -> Any:
+        in_pass.set()
+        hold_pass.wait(10)
+        time.sleep(0.3)
+        return original_get_block_count(node, conn, params)
+
+    monkeypatch.setitem(callbacks, "getbestblockhash", held_get_best_block_hash)
+    monkeypatch.setitem(callbacks, "getblockcount", slow_get_block_count)
+
+    node = a_stopping_rpc_node(tmp_path)
+    # held in a pass of its own, so the next pass starts with all three
+    # queued and answers two of them
+    first = threading.Thread(
+        target=lambda: rpc_client(node).call_raw("getbestblockhash"), daemon=True
+    )
+    first.start()
+    assert in_first.wait(30)
+
+    queued = 3
+    callers = [
+        threading.Thread(
+            target=lambda: rpc_client(node, timeout=30).call_raw("getblockcount"),
+            daemon=True,
+        )
+        for _ in range(queued)
+    ]
+    for caller in callers:
+        caller.start()
+    wait_until(lambda: len(node.rpc_manager.messages) == queued)
+    hold_first.set()
+    assert in_pass.wait(30)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        stopping = pool.submit(node.stop)
+        wait_until(node.terminate_flag.is_set)
+        hold_pass.set()
+        # re-raises NodeShutdownTimeoutError here if this regresses
+        stopping.result(timeout=30)
+
+    for caller in callers:
+        caller.join(timeout=10)
+    first.join(timeout=10)
+    assert not node.is_alive()
+
+
 # How many items one busy connection's own queued bytes are split into,
 # and what one of them weighs. Equal sizes are what make a pass's own
 # share countable, and this many of them leaves the watched connection
