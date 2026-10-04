@@ -104,7 +104,7 @@ from btclib_node.main import (
     is_cached_invalid,
     new_pow_valid_block,
     passes_check_block,
-    verify_mempool_acceptance,
+    pre_verify_mempool_acceptance,
 )
 from btclib_node.p2p.address import AddrResponseCache, ip_and_port, peer_address
 from btclib_node.p2p.block_availability import (
@@ -133,14 +133,17 @@ from btclib_node.p2p.protocol_version import (
     WTXID_RELAY_VERSION,
     common_version,
 )
+from btclib_node.p2p.tx_checks import TxCheck
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
     from btclib.block import Block, BlockHeader
+    from btclib.tx.tx import Tx
 
     from btclib_node import Node
     from btclib_node.chainstate.block_index import BlockIndex
+    from btclib_node.main import MempoolCandidate
     from btclib_node.p2p.connection import Connection
 
 __all__ = [
@@ -155,6 +158,7 @@ __all__ = [
     "addrv2",
     "advance_cfilters",
     "advance_getdata",
+    "already_judged",
     "block",
     "callbacks",
     "feefilter",
@@ -177,6 +181,7 @@ __all__ = [
     "sendaddrv2",
     "sendcmpct",
     "sendheaders",
+    "settle_tx",
     "tx",
     "verack",
     "version",
@@ -1057,12 +1062,13 @@ def feefilter(node: Node, msg: bytes, conn: Connection) -> None:
 
 
 def tx(node: Node, msg: bytes, conn: Connection) -> None:
-    """Validate an unsolicited transaction and queue it for announcement.
+    """Check an unsolicited transaction, and queue its scripts to be checked.
 
-    A no-op in initial block download, if the mempool
-    already holds this wtxid or has recently refused it, if the
-    transaction fails a relay or a consensus check, or if `add_tx`
-    itself declines to keep it.
+    A no-op in initial block download, if the mempool already holds this
+    wtxid or has recently refused it, or if the transaction fails a
+    check other than its scripts. Otherwise its scripts are queued in
+    `node.tx_checks` (`p2p/tx_checks.py`), and `settle_tx` decides it
+    once they are checked.
 
     A block-relay-only peer sending one is disconnected, and not
     discouraged, as Core's `TX` handler does first of all where
@@ -1087,15 +1093,21 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
         return
     tx = TxMsg.parse(msg).tx
     # Core's `ReceivedTx` completes the sender's announcement first of all,
-    # whatever becomes of the transaction.
+    # whatever becomes of the transaction, a script check included.
     node.download_manager.received_tx_response(conn.id, tx.id, tx.hash)
-    # Both checks answer for a candidate this node has already judged,
-    # without paying `verify_mempool_acceptance` a second time to learn
-    # that again: `contains_tx` for one this mempool kept,
-    # `was_recently_rejected` for one it refused. `Mempool` is reached
-    # from this thread alone (its own module docstring), so nothing
-    # between this check and the `except` below can change either
-    # answer out from under it.
+    if already_judged(node, tx, conn):
+        return
+    candidate = _pre_verify(node, tx)
+    if candidate is not None:
+        node.tx_checks.queue(TxCheck(conn, tx, candidate.prev_outputs))
+
+
+def already_judged(node: Node, tx: Tx, conn: Connection) -> bool:
+    """Answer whether the mempool holds `tx` or has recently refused it.
+
+    Either way it is not verified again. `Mempool` is reached from
+    `Node`'s thread alone (its own module docstring), as this is.
+    """
     if node.mempool.contains_tx(tx) or node.mempool.was_recently_rejected(tx.hash):
         # a `FORCE_RELAY` peer's transaction is announced to the others
         # all the same, where the mempool holds it, as Core's
@@ -1106,9 +1118,14 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
         # btclib-org/btclib-node#1630
         if NetPermissionFlags.FORCE_RELAY in conn.permissions:
             node.download_manager.received_txs.append((conn.id, tx.hash))
-        return
+        return True
+    return False
+
+
+def _pre_verify(node: Node, tx: Tx) -> MempoolCandidate | None:
+    """Run every mempool check but the scripts; record a refusal of `tx`."""
     try:
-        fee, vsize = verify_mempool_acceptance(node, tx)
+        return pre_verify_mempool_acceptance(node, tx)
     except MissingPrevoutError:
         # An input neither the UTXO set nor the mempool has: its parent
         # is unknown, or held without that output
@@ -1121,9 +1138,10 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
         # a parent was itself rejected. An unknown parent can still arrive
         # with no block connecting first; a held one never gains the
         # output, and Core leaves it out of the cache all the same.
-        return
+        return None
     except BTClibValueError:
-        # Every other refusal `verify_mempool_acceptance` can make, each
+        # Every other refusal `pre_verify_mempool_acceptance` can make,
+        # and a script refusal `settle_tx` reads, each
         # a `TxRejectedError` and so a `BTClibValueError` -- a
         # relay-policy-only one (`NonStandardTxError`, or a fee below
         # either floor) exactly as much as a genuine consensus one
@@ -1145,7 +1163,31 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
         # argues the resubmission cost this answers and the gap it
         # leaves open. btclib-org/btclib-node#845
         node.mempool.mark_rejected(tx.hash)
+        return None
+
+
+def settle_tx(node: Node, check: TxCheck, refusal: Exception | None) -> None:
+    """Keep and announce a transaction whose scripts pass, or record why not.
+
+    On `Node`'s thread, once its scripts are checked: `refusal` is what
+    the check raised, if anything. The chain and the mempool
+    may have moved while the scripts ran, so every other check runs
+    again first, against them as they are now. The scripts' verdict
+    still holds if they pass: a prevout is fixed by its outpoint, and
+    `interpreter.STANDARD_FLAGS` reads no height.
+    """
+    tx, conn = check.tx, check.conn
+    if already_judged(node, tx, conn):
         return
+    candidate = _pre_verify(node, tx)
+    if candidate is None:
+        return
+    if isinstance(refusal, BTClibValueError):
+        # recorded and the peer kept, `_pre_verify`'s comment says why
+        node.mempool.mark_rejected(tx.hash)
+        return
+    if refusal is not None:
+        raise refusal
     # `add_tx`'s own return value is the gate: a silent no-op for one
     # `Mempool._evict_to_limit` (btclib-org/btclib-node#294) takes right
     # back out for being the worst transaction held once its own add put
@@ -1154,7 +1196,7 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
     # that then asks for it getting `notfound` for its trouble.
     # btclib-org/btclib-node#277
     tip_height = len(node.chainstate.block_index.active_chain) - 1
-    if node.mempool.add_tx(tx, fee, vsize, height=tip_height):
+    if node.mempool.add_tx(tx, candidate.fee, candidate.vsize, height=tip_height):
         # novel and accepted into the mempool: what Core's own
         # `m_last_tx_time` records for eviction (`net_processing.cpp`'s
         # `ProcessMessage`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)

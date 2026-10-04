@@ -10,8 +10,9 @@ whatever it adds and removes, and announces the added blocks to every
 connected peer that lacks them once the node is out of initial block
 download.
 `verify_mempool_acceptance` is the same validation path
-entered from a single transaction instead, for the RPC and p2p callbacks
-that relay one.
+entered from a single transaction instead, for the RPC callbacks;
+`p2p.callbacks.tx` runs its two halves apart, the scripts off `Node`'s
+thread.
 """
 
 import secrets
@@ -102,6 +103,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "MempoolAcceptance",
+    "MempoolCandidate",
     "activate_best_chain",
     "assert_valid_block",
     "check_fork_warning_conditions",
@@ -113,6 +115,7 @@ __all__ = [
     "new_pow_valid_block",
     "parent_lookup",
     "passes_check_block",
+    "pre_verify_mempool_acceptance",
     "precious_chain",
     "prune_up_to_height",
     "reconsider_chain",
@@ -520,6 +523,11 @@ def _reconcile_mempool_for_reorg(
                 # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a
                 # transaction a block already carried is not held to the
                 # feerate floor a newcomer is. btclib-org/btclib-node#1245
+                #
+                # Scripts included, on this thread, as Core runs this
+                # under `cs_main`: what is re-added came out of blocks
+                # the active chain carried, each paid for with its proof
+                # of work.
                 fee, vsize = verify_mempool_acceptance(node, tx, bypass_limits=True)
             except MissingPrevoutError, BTClibValueError:
                 # Rejected on re-add, whether for a prevout this walk's
@@ -1757,10 +1765,37 @@ class MempoolAcceptance(NamedTuple):
     vsize: int
 
 
+class MempoolCandidate(NamedTuple):
+    """What `pre_verify_mempool_acceptance` answers for a candidate it passes.
+
+    `fee` and `vsize` as `MempoolAcceptance`, and `prev_outputs` the
+    outputs its inputs spend, aligned with `tx.vin`: what
+    `interpreter.check_transaction` verifies the scripts against.
+    """
+
+    fee: int
+    vsize: int
+    prev_outputs: list[TxOut]
+
+
 def verify_mempool_acceptance(
     node: Node, tx: Tx, *, bypass_limits: bool = False
 ) -> MempoolAcceptance:
-    """Verify a transaction against its prevouts, return its fee and vsize.
+    """Verify a transaction and its scripts, return its fee and vsize.
+
+    `pre_verify_mempool_acceptance`, then `interpreter.check_transaction`,
+    both on the calling thread. `p2p.callbacks.tx` runs the two apart,
+    the scripts on `Node.worker_pool`.
+    """
+    candidate = pre_verify_mempool_acceptance(node, tx, bypass_limits=bypass_limits)
+    check_transaction(candidate.prev_outputs, tx)
+    return MempoolAcceptance(candidate.fee, candidate.vsize)
+
+
+def pre_verify_mempool_acceptance(
+    node: Node, tx: Tx, *, bypass_limits: bool = False
+) -> MempoolCandidate:
+    """Verify a transaction against its prevouts, all but its scripts.
 
     The fee is the sum of the inputs less the sum of the outputs, Core's
     own `CheckTxInputs` tally, refused where it is negative.
@@ -1913,14 +1948,12 @@ def verify_mempool_acceptance(
     # `CheckMemPoolPolicyLimits` (btclib-org/btclib-node#1383)
     _check_replacement_and_cluster(mempool, tx, vsize, fee)
 
-    # Checked last, after the cheap finality and sequence-lock checks
-    # above: Core defers its own script checks the same way, to spend no
-    # signature verification on a candidate a comparison of two integers
-    # already refuses (`PolicyScriptChecks`, `src/validation.cpp:1378`,
+    # The scripts are checked after all of this, by the caller: Core
+    # defers its own script checks the same way, to spend no signature
+    # verification on a candidate a comparison of two integers already
+    # refuses (`PolicyScriptChecks`, `src/validation.cpp:1378`,
     # at bitcoin/bitcoin@4519933391).
-    check_transaction(prev_outputs, tx)
-
-    return MempoolAcceptance(fee, vsize)
+    return MempoolCandidate(fee, vsize, prev_outputs)
 
 
 def _check_standard_tx(node: Node, tx: Tx) -> None:

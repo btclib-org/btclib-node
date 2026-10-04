@@ -242,12 +242,12 @@ def _consensus_accepts(prevouts: list[TxOut], tx: Tx) -> bool:
 
 
 def check_transaction(prevouts: list[TxOut], tx: Tx) -> None:
-    """Verify one mempool candidate against its prevouts, on this thread.
+    """Verify one mempool candidate against its prevouts, on one thread.
 
-    Not routed through `Node.worker_pool`, unlike `check_scripts`
+    Not fanned out across `Node.worker_pool`, unlike `check_scripts`
     above: this runs once per mempool acceptance rather than once per
-    block's worth of inputs, so the pool's own process-pickling cost
-    would outweigh what it buys here.
+    block's worth of inputs. `p2p.tx_checks` runs it as one task on that
+    pool, for a transaction a peer relayed.
 
     `STANDARD_FLAGS` and not `get_flags`, which is Core's
     `PolicyScriptChecks` (`src/validation.cpp:1129-1150`,

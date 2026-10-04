@@ -36,6 +36,7 @@ from btclib_node.p2p.main import (
     resume_cfilters,
     resume_getdata,
 )
+from btclib_node.p2p.tx_checks import TxChecks
 from tests import discourage_recorder, generate_random_transaction, log_recorder
 
 if TYPE_CHECKING:
@@ -699,7 +700,7 @@ def test_a_consensus_invalid_transaction_costs_the_peer_nothing(
         err_msg = "bad-txns-nonfinal"
         raise BTClibValueError(err_msg)
 
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", consensus_invalid)
+    monkeypatch.setattr(cb, "pre_verify_mempool_acceptance", consensus_invalid)
     transaction = generate_random_transaction()
     payload = TxMsg(transaction, include_witness=True).serialize()
     node, stopped = make_node(
@@ -711,6 +712,7 @@ def test_a_consensus_invalid_transaction_costs_the_peer_nothing(
     node.mempool = Mempool(Logger(debug=True))
     node.download_manager = SimpleNamespace(received_tx_response=lambda *_: None)
     node.p2p_manager.connections[0].id = 0
+    node.tx_checks = TxChecks()
     handle_p2p(node)
     # the real callback reached the verification, and did not fail before
     assert refused == [True]

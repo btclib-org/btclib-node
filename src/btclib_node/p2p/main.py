@@ -2,7 +2,7 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""`handle_p2p`, `handle_p2p_handshake`, `resume_cfilters` and `resume_getdata`.
+"""`handle_p2p`, `handle_p2p_handshake` and the three `resume_` functions.
 
 The first two pop one message off their own queue -- `P2pManager.messages`
 or `P2pManager.handshake_messages` -- and dispatch it through
@@ -27,8 +27,12 @@ and `node.pending_getdata`, the connections `p2p.callbacks.get_cfilters`
 and `p2p.callbacks.getdata` paused mid-answer rather than scheduling ahead
 of what a peer has drained -- nothing queued triggers either, so both are
 called once every pass of `run`'s own loop regardless.
+
+`resume_tx_checks` moves `node.tx_checks` (`p2p/tx_checks.py`) along,
+also once every pass.
 """
 
+from collections import deque
 from typing import TYPE_CHECKING
 
 from btclib.exceptions import BTClibValueError
@@ -38,17 +42,26 @@ from btclib_node.exceptions import MisbehavingError
 from btclib_node.p2p.callbacks import (
     advance_cfilters,
     advance_getdata,
+    already_judged,
     callbacks,
     handshake_callbacks,
+    settle_tx,
 )
 from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES
+from btclib_node.p2p.tx_checks import TX_CHECK_DEADLINE
 
 if TYPE_CHECKING:
     from btclib_node import Node
     from btclib_node.p2p.connection import Connection
     from btclib_node.p2p.manager import P2pManager
 
-__all__ = ["handle_p2p", "handle_p2p_handshake", "resume_cfilters", "resume_getdata"]
+__all__ = [
+    "handle_p2p",
+    "handle_p2p_handshake",
+    "resume_cfilters",
+    "resume_getdata",
+    "resume_tx_checks",
+]
 
 # Core's `ProcessMessage` handles `sendheaders`, `sendcmpct`, `wtxidrelay`,
 # `sendaddrv2` and `sendtxrcncl` after `version` and before `verack`
@@ -74,6 +87,35 @@ def _drop(manager: P2pManager, conn: Connection, e: Exception) -> bool:
 def _verdict(*, discourage: bool) -> str:
     """Return the end of a failure's line: what became of the peer."""
     return "peer discouraged" if discourage else "peer not discouraged"
+
+
+def _weigh_off(conn: Connection, size: int) -> None:
+    """Take a handled message's `size` off `conn.queued_recv_bytes`.
+
+    Resuming the connection's reads once it is back under the bound.
+    `Connection`'s own backpressure pair, crossed from this thread on
+    purpose: connection.py argues both where it defines them.
+    """
+    with conn._recv_lock:  # noqa: SLF001
+        conn.queued_recv_bytes -= size
+        resume = conn.queued_recv_bytes <= MAX_QUEUED_RECV_BYTES
+    if resume:
+        conn.loop.call_soon_threadsafe(conn._recv_resume.set)  # noqa: SLF001
+
+
+def _wait_for_tx_check(
+    node: Node, msg_type: str, conn_id: int, held: tuple[bytes, int, float]
+) -> bool:
+    """Hold a `tx` back while the peer's last one is still being checked.
+
+    Answers whether it did. `held` is the payload, its wire size and the
+    time it was read; it stays weighed against the peer's
+    `queued_recv_bytes` until `resume_tx_checks` reads it.
+    """
+    if msg_type != "tx" or not node.tx_checks.busy(conn_id):
+        return False
+    node.tx_checks.waiting.setdefault(conn_id, deque()).append(held)
+    return True
 
 
 def handle_p2p_handshake(node: Node) -> None:
@@ -105,13 +147,9 @@ def handle_p2p_handshake(node: Node) -> None:
     # that a peer sent a second version/verack/wtxidrelay/sendaddrv2 to
     conn = manager.pending_connections.get(conn_id) or manager.connections.get(conn_id)
     if conn is not None:
-        # Connection's own backpressure pair, crossed from this thread on
-        # purpose: connection.py argues both where it defines them
-        with conn._recv_lock:  # noqa: SLF001
-            conn.queued_recv_bytes -= size
-            resume = conn.queued_recv_bytes <= MAX_QUEUED_RECV_BYTES
-        if resume:
-            conn.loop.call_soon_threadsafe(conn._recv_resume.set)  # noqa: SLF001
+        if _wait_for_tx_check(node, msg_type, conn_id, (msg, size, received)):
+            return
+        _weigh_off(conn, size)
         node.logger.log_debug(
             "net", "received: %s (%d bytes) peer=%d", msg_type, len(msg), conn_id
         )
@@ -247,6 +285,10 @@ def handle_p2p(node: Node) -> None:
     rather than a direct `set()`, from `Node`'s own thread onto the
     connection's (`Connection.__init__`'s own comment on `_recv_resume`
     argues why the indirection is required). btclib-org/btclib-node#462
+
+    A `tx` held back by `_wait_for_tx_check` is the exception: it is
+    weighed off when `resume_tx_checks` reads it, being unprocessed
+    until then.
     """
     msg_type, msg, conn_id, size, received = node.p2p_manager.messages.popleft()
     manager = node.p2p_manager
@@ -255,13 +297,9 @@ def handle_p2p(node: Node) -> None:
     # below before being ignored
     conn = manager.connections.get(conn_id) or manager.pending_connections.get(conn_id)
     if conn is not None:
-        # the same backpressure pair as handle_p2p_handshake above, for
-        # the same reason
-        with conn._recv_lock:  # noqa: SLF001
-            conn.queued_recv_bytes -= size
-            resume = conn.queued_recv_bytes <= MAX_QUEUED_RECV_BYTES
-        if resume:
-            conn.loop.call_soon_threadsafe(conn._recv_resume.set)  # noqa: SLF001
+        if _wait_for_tx_check(node, msg_type, conn_id, (msg, size, received)):
+            return
+        _weigh_off(conn, size)
         node.logger.log_debug(
             "net", "received: %s (%d bytes) peer=%d", msg_type, len(msg), conn_id
         )
@@ -383,4 +421,81 @@ def resume_getdata(node: Node) -> bool:
             progressed = True
     for conn_id in done:
         del node.pending_getdata[conn_id]
+    return progressed
+
+
+def resume_tx_checks(node: Node) -> bool:
+    """Settle the check in flight, read held `tx` messages, start the next.
+
+    Answers whether anything moved. Each step runs on `Node`'s thread:
+
+    - a check whose verdict is in goes to `p2p.callbacks.settle_tx`;
+    - a check past `TX_CHECK_DEADLINE` is dropped and logged, its worker
+      presumed gone;
+    - each peer with nothing queued has its oldest held `tx` read, one
+      per peer per pass, as Core's message handler reads one message
+      per peer per pass;
+    - with no check in flight, the oldest candidate queued is handed to
+      `node.worker_pool`, or dropped if its peer is gone or the mempool
+      has judged it meanwhile, a copy from another peer included.
+
+    One check in flight at a time, so a block's
+    `interpreter.check_scripts`, which shares the pool, does not wait
+    behind a queue of them; one dropped at its deadline may still be
+    running.
+
+    An exception out of `settle_tx` or out of a held `tx` is handled as
+    `handle_p2p`'s own is.
+    """
+    checks = node.tx_checks
+    manager = node.p2p_manager
+    progressed = False
+    done = checks.finish()
+    if done is not None:
+        progressed = True
+        check, refusal = done
+        try:
+            settle_tx(node, check, refusal)
+        except Exception as e:
+            discourage = _drop(manager, check.conn, e)
+            node.logger.exception(
+                "Settling tx from connection %s failed, %s",
+                check.conn.id,
+                _verdict(discourage=discourage),
+            )
+    overdue = checks.drop_overdue()
+    if overdue is not None:
+        progressed = True
+        node.logger.warning(
+            "Script check of tx %s from connection %s gave no verdict in %ss, dropped",
+            overdue.tx.hash.hex(),
+            overdue.conn.id,
+            TX_CHECK_DEADLINE,
+        )
+    for conn_id, waiting in list(checks.waiting.items()):
+        if conn_id in checks.queued:
+            continue
+        progressed = True
+        conn = manager.connections.get(conn_id)
+        if conn is None or conn.status == P2pConnStatus.Closed:
+            del checks.waiting[conn_id]
+            continue
+        msg, size, received = waiting.popleft()
+        if not waiting:
+            del checks.waiting[conn_id]
+        _weigh_off(conn, size)
+        node.logger.log_debug(
+            "net", "received: %s (%d bytes) peer=%d", "tx", len(msg), conn_id
+        )
+        conn.time_received = received
+        _dispatch(node, conn, conn_id, "tx", msg)
+    while not checks.checking and checks.queued:
+        progressed = True
+        check = next(iter(checks.queued.values()))
+        if check.conn.status == P2pConnStatus.Closed or already_judged(
+            node, check.tx, check.conn
+        ):
+            checks.unqueue(check.conn.id)
+            continue
+        checks.start(node, check)
     return progressed

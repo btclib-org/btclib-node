@@ -281,7 +281,7 @@ class Mempool:
         # at bitcoin/bitcoin@4519933391): every wtxid `mark_rejected`
         # below has recorded, oldest first, so a resubmission is dropped
         # before it reaches `interpreter.check_transaction`'s own
-        # two-flag-set verification again -- `p2p.callbacks.tx` is the
+        # two-flag-set verification again -- `p2p.callbacks` is the
         # only caller. `_recent_rejects_order` is what makes the set
         # bounded: a plain `set` has no eviction of its own, and
         # `deque(maxlen=...)` would silently drop the wtxid that falls
@@ -328,9 +328,9 @@ class Mempool:
     def mark_rejected(self, wtxid: bytes) -> None:
         """Record a mempool candidate's own refusal, oldest evicted first.
 
-        `p2p.callbacks.tx` calls this from its own `except
-        BTClibValueError`, for every refusal `verify_mempool_acceptance`
-        can make except `MissingPrevoutError` -- a relay-policy-only one
+        `p2p.callbacks` calls this for every refusal
+        `verify_mempool_acceptance`'s two halves can make except
+        `MissingPrevoutError` -- a relay-policy-only one
         exactly as much as a genuine consensus one, since Core bounds a
         resubmission of either the same way. `note_block_connected`
         below clears the whole cache, the same trigger Core's own
