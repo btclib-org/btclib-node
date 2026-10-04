@@ -49,12 +49,25 @@ def test_a_banned_whitelisted_peer_connects_holding_noban(
         def peers() -> list[dict[str, Any]]:
             return cast("list[dict[str, Any]]", client.call("getpeerinfo"))
 
-        wait_until(lambda: len(peers()) == 1)
-        (peer,) = peers()
+        seen: list[dict[str, Any]] = []
+
+        def handshaken() -> bool:
+            seen[:] = peers()
+            return (
+                len(seen) == 1
+                and seen[0]["version"] != 0
+                and seen[0]["transport_protocol_type"] != "detecting"
+            )
+
+        wait_until(handshaken)
+        (peer,) = seen
         assert set(peer["permissions"]) == {"noban", "download", "relay", "mempool"}
         assert [entry["address"] for entry in client.call("listbanned")] == [
             "127.0.0.1/32"
         ]
+        assert [entry["id"] for entry in peers()] == [peer["id"]], (
+            "the whitelisted peer was dropped"
+        )
     finally:
         node.stop()
         node.join()

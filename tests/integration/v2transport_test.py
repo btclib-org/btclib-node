@@ -60,10 +60,21 @@ def _connected(node: Node) -> Connection:
 
 
 def _their_peer(bitcoind: Bitcoind) -> dict[str, Any]:
-    """Return bitcoind's one peer, once it has one."""
-    wait_until(lambda: len(cast("list[Any]", bitcoind.rpc("getpeerinfo"))) == 1)
-    (peer,) = cast("list[dict[str, Any]]", bitcoind.rpc("getpeerinfo"))
-    return peer
+    """Return bitcoind's one peer, once it has finished the handshake."""
+    seen: list[dict[str, Any]] = []
+
+    def handshaken() -> bool:
+        seen[:] = cast("list[dict[str, Any]]", bitcoind.rpc("getpeerinfo"))
+        return len(seen) == 1 and seen[0]["version"] != 0
+
+    wait_until(handshaken)
+    return seen[0]
+
+
+def _still_listed(bitcoind: Bitcoind, peer: dict[str, Any]) -> None:
+    """Fail as a drop if bitcoind no longer lists the peer."""
+    now = cast("list[dict[str, Any]]", bitcoind.rpc("getpeerinfo"))
+    assert [entry["id"] for entry in now] == [peer["id"]], "the peer was dropped"
 
 
 def _agree_on_v2(bitcoind: Bitcoind, conn: Connection) -> None:
@@ -76,7 +87,9 @@ def _agree_on_v2(bitcoind: Bitcoind, conn: Connection) -> None:
     session_id = conn.transport.get_info().session_id
     assert session_id is not None
     wait_until(lambda: _their_peer(bitcoind)["transport_protocol_type"] == "v2")
-    assert _their_peer(bitcoind)["session_id"] == session_id.hex()
+    peer = _their_peer(bitcoind)
+    assert peer["session_id"] == session_id.hex()
+    _still_listed(bitcoind, peer)
 
 
 def _cross_the_rekey(bitcoind: Bitcoind, conn: Connection) -> None:
@@ -138,9 +151,11 @@ def test_bitcoind_dials_this_node_over_v1_where_it_is_asked_to(
         address = f"127.0.0.1:{node.config.p2p_port}"
         bitcoind.rpc("addnode", [address, "onetry", False])
         conn = _connected(node)
-        assert _their_peer(bitcoind)["transport_protocol_type"] == "v1"
+        peer = _their_peer(bitcoind)
+        assert peer["transport_protocol_type"] == "v1"
         assert conn.transport.get_info().transport_type is TransportProtocolType.V1
-        assert _their_peer(bitcoind)["session_id"] == ""
+        assert peer["session_id"] == ""
+        _still_listed(bitcoind, peer)
     finally:
         node.stop()
         node.join()
