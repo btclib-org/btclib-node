@@ -2002,6 +2002,23 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
 - **It runs after the build job and publishes nothing**, on a release
   (issue #1558).
 
+### A version-3 transaction is held to BIP431, as in Core
+
+- **`SingleTRUCChecks` is applied**: 10,000 vbytes, 1,000 as a child, one
+  held parent and one child per parent, no spending across versions,
+  refused `TRUC-violation` (closes #1399).
+
+### A cluster past Core's limits is refused `too-large-cluster`
+
+- **A candidate whose cluster would pass 64 transactions or 101,000
+  vbytes is refused**, summing the mempool's vsizes where Core sums
+  sigop-adjusted weights (closes #1383).
+
+### A transaction under 65 non-witness bytes is refused `tx-size-small`
+
+- **`PreChecks`' `tx-size-small` is applied**, `-acceptnonstdtxn` or not
+  (closes #1687).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

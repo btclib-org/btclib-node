@@ -37,6 +37,20 @@ __all__ = ["Mempool", "MempoolEntry", "format_money"]
 # bound, an input below it opting a transaction into BIP125 replacement.
 _MAX_BIP125_RBF_SEQUENCE = 0xFFFFFFFE
 
+# BIP431's TRUC policy (`src/policy/truc_policy.h`, same commit): the
+# version it applies to and the sizes it bounds. Core's
+# `SingleTRUCChecks` is specialized for an ancestor and a descendant limit
+# of two, a parent and one child, and so is `Mempool.check_truc`.
+_TRUC_VERSION = 3
+_TRUC_MAX_VSIZE = 10_000
+_TRUC_CHILD_MAX_VSIZE = 1_000
+
+# `DEFAULT_CLUSTER_LIMIT` and `DEFAULT_CLUSTER_SIZE_LIMIT_KVB`
+# (`src/policy/policy.h`, same commit): the most transactions, and
+# thousands of vbytes, one cluster may hold. btclib-org/btclib-node#1383
+_CLUSTER_LIMIT = 64
+_CLUSTER_VSIZE_LIMIT = 101 * 1000
+
 
 class MempoolEntry(NamedTuple):
     """One held transaction's own `getmempoolentry` accounting.
@@ -455,12 +469,7 @@ class Mempool:
         (`src/policy/rbf.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
         tag).
         """
-        outpoints = ((vin.prev_out.tx_id, vin.prev_out.vout) for vin in tx.vin)
-        conflicts = {
-            self.outpoint_spender[outpoint]
-            for outpoint in outpoints
-            if outpoint in self.outpoint_spender
-        }
+        conflicts = self._direct_conflicts(tx)
         return set().union(*(self._descendants(wtxid) for wtxid in conflicts))
 
     def check_replacement(self, tx: Tx, fee: int, vsize: int) -> None:
@@ -502,6 +511,134 @@ class Mempool:
             raise TxRejectedError(reason, details)
         reason = "bip125-replacement-disallowed"
         raise TxRejectedError(reason)
+
+    def _parents(self, tx: Tx) -> list[bytes]:
+        """Return the wtxids of the held transactions `tx` spends, each once.
+
+        Core's `CTxMemPool::GetParents`, in input order.
+        """
+        return list(
+            dict.fromkeys(
+                parent
+                for vin in tx.vin
+                if (parent := self.txid_index.get(vin.prev_out.tx_id)) is not None
+            )
+        )
+
+    def check_truc(self, tx: Tx, vsize: int) -> None:
+        """Refuse `tx` if BIP431 does, "TRUC-violation" in Core's words.
+
+        Core's `SingleTRUCChecks` (`src/policy/truc_policy.cpp`,
+        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), called from
+        `PreChecks` with the held parents and the held direct conflicts: a
+        version-3 transaction spends only from version-3 ones and the
+        reverse, is at most 10,000 vbytes, has at most one held parent
+        that has no held parent of its own, is then at most 1,000 vbytes,
+        and is the only child its parent has.
+
+        A second child is refused even where it pays to replace the first,
+        which Core's sibling eviction would try: this mempool replaces
+        nothing, `check_replacement`. `PackageTRUCChecks` has no caller:
+        this node accepts no package. btclib-org/btclib-node#1399
+        """
+        reason = "TRUC-violation"
+        parents = self._parents(tx)
+        truc = tx.version == _TRUC_VERSION
+        who = f"tx {tx.id.hex()} (wtxid={tx.hash.hex()})"
+        for parent in parents:
+            parent_tx = self.transactions[parent]
+            held = f"tx {parent_tx.id.hex()} (wtxid={parent_tx.hash.hex()})"
+            if truc and parent_tx.version != _TRUC_VERSION:
+                details = f"version=3 {who} cannot spend from non-version=3 {held}"
+                raise TxRejectedError(reason, details)
+            if not truc and parent_tx.version == _TRUC_VERSION:
+                details = f"non-version=3 {who} cannot spend from version=3 {held}"
+                raise TxRejectedError(reason, details)
+        if not truc:
+            return
+        if vsize > _TRUC_MAX_VSIZE:
+            details = (
+                f"version=3 {who} is too big: {vsize} > {_TRUC_MAX_VSIZE} virtual bytes"
+            )
+            raise TxRejectedError(reason, details)
+        if not parents:
+            return
+        parent = parents[0]
+        if len(parents) > 1 or len(self._ancestors(parent)) > 1:
+            details = f"{who} would have too many ancestors"
+            raise TxRejectedError(reason, details)
+        if vsize > _TRUC_CHILD_MAX_VSIZE:
+            details = (
+                f"version=3 child {who} is too big: {vsize} > "
+                f"{_TRUC_CHILD_MAX_VSIZE} virtual bytes"
+            )
+            raise TxRejectedError(reason, details)
+        # a child this candidate conflicts with is not counted: whether it
+        # pays to replace it is `check_replacement`'s to say
+        siblings = self._descendants(parent) - {parent}
+        if siblings and not siblings & self._direct_conflicts(tx):
+            parent_tx = self.transactions[parent]
+            details = (
+                f"tx {parent_tx.id.hex()} (wtxid={parent_tx.hash.hex()}) "
+                "would exceed descendant count limit"
+            )
+            raise TxRejectedError(reason, details)
+
+    def _direct_conflicts(self, tx: Tx) -> set[bytes]:
+        """Return the wtxids of the held spenders of what `tx` spends."""
+        outpoints = ((vin.prev_out.tx_id, vin.prev_out.vout) for vin in tx.vin)
+        return {
+            self.outpoint_spender[outpoint]
+            for outpoint in outpoints
+            if outpoint in self.outpoint_spender
+        }
+
+    def cluster(
+        self, seeds: Iterable[bytes], *, max_count: int, max_vsize: int
+    ) -> tuple[set[bytes], int]:
+        """Return the held transactions connected to `seeds`, with their vsize.
+
+        A cluster is a connected component of the graph whose edges are
+        the spends among held transactions, followed up through each
+        input's parent and down through `spent_by`. The walk stops at the
+        first transaction past `max_count` transactions or `max_vsize`
+        vbytes, so a caller tests `len(members) > max_count or vsize >
+        max_vsize` and a cluster past a limit costs no more than the
+        limit. btclib-org/btclib-node#1383
+        """
+        members: set[bytes] = set()
+        vsize = 0
+        frontier = list(seeds)
+        while frontier and len(members) <= max_count and vsize <= max_vsize:
+            wtxid = frontier.pop()
+            if wtxid in members:
+                continue
+            members.add(wtxid)
+            vsize += self.vsizes[wtxid]
+            tx = self.transactions[wtxid]
+            frontier.extend(self.spent_by.get(tx.id, ()))
+            frontier.extend(self._parents(tx))
+        return members, vsize
+
+    def check_cluster(self, tx: Tx, vsize: int) -> None:
+        """Refuse `tx` if its cluster would pass Core's limits.
+
+        Core's `CheckMemPoolPolicyLimits` (`src/validation.cpp`,
+        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), "too-large-cluster"
+        for more than 64 transactions or 101,000 vbytes in the cluster
+        `tx` would join. Core sizes a cluster by sigop-adjusted weight and
+        this mempool keeps the vsize that weight rounds up to, so a
+        cluster within less than four weight units per transaction of the
+        limit is refused here and accepted there. btclib-org/btclib-node#1383
+        """
+        max_count = _CLUSTER_LIMIT - 1
+        max_vsize = _CLUSTER_VSIZE_LIMIT - vsize
+        members, size = self.cluster(
+            self._parents(tx), max_count=max_count, max_vsize=max_vsize
+        )
+        if len(members) > max_count or size > max_vsize:
+            reason = "too-large-cluster"
+            raise TxRejectedError(reason)
 
     def remove_conflicts(self, tx: Tx) -> None:
         """Remove what spends an outpoint `tx` spends, with its descendants.

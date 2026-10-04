@@ -31,6 +31,7 @@ from btclib.exceptions import BTClibException, BTClibValueError
 from btclib.fee import fee_from_vsize
 from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
 from btclib.policy import (
+    MIN_STANDARD_TX_NONWITNESS_SIZE,
     are_inputs_standard,
     assert_standard_tx,
     is_witness_standard,
@@ -70,7 +71,7 @@ from btclib_node.interpreter import (
     check_transaction,
     get_flags,
 )
-from btclib_node.mempool import format_money
+from btclib_node.mempool import Mempool, format_money
 from btclib_node.notify import alert_notify, run_detached
 from btclib_node.p2p.block_availability import (
     peer_has_header,
@@ -1790,6 +1791,16 @@ def verify_mempool_acceptance(
     `IsWitnessStandard` ("bad-witness-nonstandard"). `bypass_limits`
     skips none of them. `btclib.policy` is that code.
 
+    Refuses a candidate under `MIN_STANDARD_TX_NONWITNESS_SIZE`
+    non-witness bytes "tx-size-small", right after `IsStandardTx`, whether
+    or not `Config.require_standard` holds (btclib-org/btclib-node#1687).
+    Refuses with "TRUC-violation" what BIP431 refuses
+    (`Mempool.check_truc`), after the fee floors and unless
+    `bypass_limits`, and with "too-large-cluster" a candidate whose
+    cluster would pass Core's limits (`Mempool.check_cluster`), after the
+    replacement checks, `bypass_limits` or not (btclib-org/btclib-node#1399,
+    btclib-org/btclib-node#1383).
+
     Refuses a candidate whose txid the mempool already holds, as Core's
     `PreChecks` does ahead of its conflict checks, and one spending an
     outpoint a mempool transaction already spends,
@@ -1896,10 +1907,11 @@ def verify_mempool_acceptance(
     fee = sum(x.value for x in prev_outputs) - sum(x.value for x in tx.vout)
     vsize = _sigop_adjusted_vsize(tx, prev_outputs)
     if not bypass_limits:
-        _check_fee_rate(node, vsize, fee)
+        _check_fee_and_truc(node, tx, vsize, fee)
     # Core's own `ReplacementChecks`, after `PreChecks` and before the
-    # scripts, `bypass_limits` or not. btclib-org/btclib-node#1244
-    mempool.check_replacement(tx, fee, vsize)
+    # scripts, `bypass_limits` or not (btclib-org/btclib-node#1244), then
+    # `CheckMemPoolPolicyLimits` (btclib-org/btclib-node#1383)
+    _check_replacement_and_cluster(mempool, tx, vsize, fee)
 
     # Checked last, after the cheap finality and sequence-lock checks
     # above: Core defers its own script checks the same way, to spend no
@@ -1912,31 +1924,48 @@ def verify_mempool_acceptance(
 
 
 def _check_standard_tx(node: Node, tx: Tx) -> None:
-    """Refuse a coinbase, then what Core's `IsStandardTx` refuses.
+    """Refuse a coinbase, what `IsStandardTx` refuses, and `tx-size-small`.
 
     `PreChecks` (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the
     v31.1 tag) refuses a coinbase "coinbase", then asks `IsStandardTx`
     with the mempool's `-datacarriersize`, `-permitbaremultisig` and
     `-dustrelayfee`, unless `-acceptnonstdtxn`.
     `btclib.policy.assert_standard_tx` raises Core's reason as its
-    message. btclib-org/btclib-node#1382
+    message. `_check_tx_size` follows whether or not it is required.
+    btclib-org/btclib-node#1382
     """
     if tx.is_coinbase:
         reason = "coinbase"
         raise TxRejectedError(reason)
     config = node.config
-    if not config.require_standard:
-        return
-    try:
-        assert_standard_tx(
-            tx,
-            max_datacarrier_bytes=config.max_datacarrier_bytes,
-            permit_bare_multisig=config.permit_bare_multisig,
-            dust_relay_fee=config.dust_relay_feerate,
-        )
-    except BTClibValueError as refusal:
-        reason = str(refusal)
-        raise TxRejectedError(reason) from refusal
+    if config.require_standard:
+        try:
+            assert_standard_tx(
+                tx,
+                max_datacarrier_bytes=config.max_datacarrier_bytes,
+                permit_bare_multisig=config.permit_bare_multisig,
+                dust_relay_fee=config.dust_relay_feerate,
+            )
+        except BTClibValueError as refusal:
+            reason = str(refusal)
+            raise TxRejectedError(reason) from refusal
+    _check_tx_size(tx)
+
+
+def _check_tx_size(tx: Tx) -> None:
+    """Refuse a transaction under 65 non-witness bytes, "tx-size-small".
+
+    `PreChecks` (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag) asks it right after `IsStandardTx`, `-acceptnonstdtxn` or
+    not, "to mitigate CVE-2017-12842". btclib has no public non-witness
+    size: a weight is three times it plus the whole size.
+    btclib-org/btclib-node#1687
+    """
+    if (tx.weight - tx.size) // (WITNESS_SCALE_FACTOR - 1) < (
+        MIN_STANDARD_TX_NONWITNESS_SIZE
+    ):
+        reason = "tx-size-small"
+        raise TxRejectedError(reason)
 
 
 def _check_standard_inputs(node: Node, prev_outputs: list[TxOut], tx: Tx) -> None:
@@ -1999,6 +2028,28 @@ def _check_tx_inputs(prevout_coins: list[Coin], tx: Tx, spend_height: int) -> No
             f"value out ({format_money(value_out)})"
         )
         raise TxRejectedError(reason, details)
+
+
+def _check_fee_and_truc(node: Node, tx: Tx, vsize: int, fee: int) -> None:
+    """Refuse a fee under either floor, then what BIP431 refuses.
+
+    The last of `PreChecks`, skipped for a disconnected block's
+    transactions. btclib-org/btclib-node#1399
+    """
+    _check_fee_rate(node, vsize, fee)
+    node.mempool.check_truc(tx, vsize)
+
+
+def _check_replacement_and_cluster(
+    mempool: Mempool, tx: Tx, vsize: int, fee: int
+) -> None:
+    """Refuse a conflict, then a cluster past Core's limits.
+
+    `ReplacementChecks`, then `CheckMemPoolPolicyLimits`.
+    btclib-org/btclib-node#1383
+    """
+    mempool.check_replacement(tx, fee, vsize)
+    mempool.check_cluster(tx, vsize)
 
 
 def _check_fee_rate(node: Node, vsize: int, fee: int) -> None:
