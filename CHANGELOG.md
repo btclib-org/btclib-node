@@ -157,6 +157,12 @@ and a parse by a reference timed beside it over the same input, in
   one and keeps the first whose scripts pass `CheckTxScriptsSanity`, as Core
   does: a transaction with no input decodes** (closes #1458).
 
+### Tests wait out a node's warmup
+
+`wait_until_listening` on a started node's `RpcManager` returns once the
+node has left warmup, as Core's `wait_for_rpc_connection` does, so a first
+request is not answered `-28` (closes #1729).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on
