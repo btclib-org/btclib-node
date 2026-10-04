@@ -162,6 +162,12 @@ on release day.
   relayed. `-acceptnonstdtxn` on a test chain accepts them.
   `-datacarrier`, `-datacarriersize`, `-permitbaremultisig` and
   `-dustrelayfee` set the limits.
+- **The mempool refuses a `version=3` transaction BIP431 refuses, a
+  transaction that would make a cluster of more than 64 transactions or
+  101000 vbytes, and one under 65 non-witness bytes** (closes #1399,
+  closes #1383, closes #1687). `sendrawtransaction` and
+  `testmempoolaccept` answer `TRUC-violation`, `too-large-cluster` or
+  `tx-size-small`, and the transaction is not relayed.
 
 ## v2026.9.24
 

@@ -1438,7 +1438,7 @@ def a_candidate_heavier_than_standard(node: Node) -> Tx:
     """
     spend = a_funded_spend(node, 1_000_000)
     spend.vin[0].script_sig = script.serialize([b"\x11" * 32])
-    spend.vout += [TxOut(0, anyone_can_spend())] * 3_300
+    spend.vout += [TxOut(0, anyone_can_spend())] * 3_130
     assert spend.weight > 400_000
     return spend
 
@@ -1668,6 +1668,381 @@ def test_a_witness_over_the_standard_limits_is_refused(node: Node) -> None:
     assert str(refused.value) == "bad-witness-nonstandard"
 
     assert verify_mempool_acceptance(node, a_witness_spend(node, 80)).fee == FEE
+
+
+def funded_spends(node: Node, count: int) -> list[Tx]:
+    """Connect a mature chain and return a spend of each of `count` coinbases.
+
+    The chain's last block spends the first coinbase, so the spends are of
+    the second on.
+    """
+    chain = generate_random_chain(COINBASE_MATURITY + count, RegTest().genesis.hash)
+    connect(node, chain)
+    return [
+        generate_random_transaction(
+            block.transactions[0].id, value=block.transactions[0].vout[0].value - FEE
+        )
+        for block in chain[1 : count + 1]
+    ]
+
+
+def hold(node: Node, tx: Tx) -> Tx:
+    """Accept `tx` as the mempool does, keep it, and return it."""
+    accepted = verify_mempool_acceptance(node, tx)
+    assert node.mempool.add_tx(tx, accepted.fee, accepted.vsize)
+    return tx
+
+
+def child_of(parent: Tx, vout: int = 0, *, version: int = 1) -> Tx:
+    """Return a spend of output `vout` of `parent`, paying `FEE`."""
+    child = generate_random_transaction(parent.id, value=parent.vout[vout].value - FEE)
+    child.vin[0] = replace(child.vin[0], prev_out=OutPoint(parent.id, vout))
+    return replace(child, version=version)
+
+
+def with_two_outputs(spend: Tx) -> Tx:
+    """Return `spend` paying its value as two equal outputs."""
+    half = spend.vout[0].value // 2
+    return replace(spend, vout=[TxOut(half, anyone_can_spend())] * 2)
+
+
+def padded(spend: Tx, vsize: int) -> Tx:
+    """Return `spend` grown to exactly `vsize` vbytes, its fee unchanged.
+
+    Outputs of 1,000 satoshi, above dust, make the size and a push the
+    `script_sig` drops makes up the last bytes.
+    """
+    count = (vsize - spend.vsize) // 32 - 4
+    outputs = [
+        TxOut(spend.vout[0].value - 1_000 * count, anyone_can_spend()),
+        *[TxOut(1_000, anyone_can_spend())] * count,
+    ]
+    candidates = (
+        replace(
+            spend,
+            vin=[
+                replace(
+                    spend.vin[0],
+                    script_sig=script.serialize(
+                        [b"\x11" * pad, anyone_can_spend_redeem_script()]
+                    ),
+                )
+            ],
+            vout=outputs,
+        )
+        for pad in range(80, 400)
+    )
+    return next(candidate for candidate in candidates if candidate.vsize == vsize)
+
+
+def a_tx_of_nonwitness_size(parent: Tx, size: int) -> Tx:
+    """Return a spend of `parent`'s first output of `size` non-witness bytes.
+
+    Its empty `script_sig` spends an `OP_1` output, and its one output is
+    a standard `OP_RETURN` carrying `size - 61` bytes.
+    """
+    data = bytes(size - 62)
+    return Tx(
+        2,
+        2_000_000_000,
+        [TxIn(OutPoint(parent.id, 0), b"", 0)],
+        [TxOut(0, b"\x6a" + bytes([len(data)]) + data)],
+    )
+
+
+def an_op_1_parent(node: Node) -> Tx:
+    """Hold a spend whose only output `OP_1` an empty `script_sig` spends."""
+    parent = funded_spends(node, 1)[0]
+    parent.vout[0] = TxOut(parent.vout[0].value, script.serialize(["OP_1"]))
+    assert node.mempool.add_tx(parent, FEE, parent.vsize)
+    return parent
+
+
+def ids(tx: Tx) -> str:
+    """Return `tx` as Core's TRUC reasons name it."""
+    return f"tx {tx.id.hex()} (wtxid={tx.hash.hex()})"
+
+
+def refused_with(
+    node: Node, tx: Tx, reason: str, details: str = "", **kwargs: bool
+) -> None:
+    """Assert `tx` is refused with `reason` and `details`."""
+    with pytest.raises(TxRejectedError) as refused:
+        verify_mempool_acceptance(node, tx, **kwargs)
+    assert refused.value.reason == reason
+    assert refused.value.details == details
+
+
+def test_a_transaction_under_65_nonwitness_bytes_is_refused_tx_size_small(
+    node: Node,
+) -> None:
+    """`PreChecks` refuses 64 bytes and takes 65, `-acceptnonstdtxn` or not.
+
+    The 64-byte one is also non-final, so the refusal comes ahead of the
+    finality check. The reason is `bitcoind` v31.1's
+    (btclib-org/btclib-node#1687).
+    """
+    parent = an_op_1_parent(node)
+    small = a_tx_of_nonwitness_size(parent, 64)
+    assert (small.weight - small.size) // 3 == 64
+    for require_standard in (True, False):
+        node.config.require_standard = require_standard
+        for bypass_limits in (False, True):
+            refused_with(node, small, "tx-size-small", bypass_limits=bypass_limits)
+
+    big_enough = replace(a_tx_of_nonwitness_size(parent, 65), lock_time=0)
+    assert (big_enough.weight - big_enough.size) // 3 == 65
+    node.config.require_standard = False
+    assert verify_mempool_acceptance(node, big_enough).fee == parent.vout[0].value
+
+
+def test_a_version_3_transaction_over_10000_vbytes_is_refused(node: Node) -> None:
+    """`SingleTRUCChecks` refuses 10,001 vbytes and takes 10,000.
+
+    The same size at version 2 is accepted, which says the version is
+    what refuses it; a disconnected block's transaction is not held to
+    it (`bypass_limits`). The words are `bitcoind` v31.1's
+    (btclib-org/btclib-node#1399).
+    """
+    spend = funded_spends(node, 1)[0]
+    cheap = replace(padded(spend, 10_001), version=3)
+    base = replace(
+        spend,
+        vout=[TxOut(spend.vout[0].value - 100_000, spend.vout[0].script_pub_key)],
+    )
+    at_limit = replace(padded(base, 10_000), version=3)
+    over = replace(padded(base, 10_001), version=3)
+
+    assert verify_mempool_acceptance(node, at_limit).vsize == 10_000
+    assert verify_mempool_acceptance(node, replace(over, version=2)).vsize == 10_001
+    assert verify_mempool_acceptance(node, over, bypass_limits=True).vsize == 10_001
+    refused_with(
+        node,
+        over,
+        "TRUC-violation",
+        f"version=3 {ids(over)} is too big: 10001 > 10000 virtual bytes",
+    )
+    # the fee floor is asked first, as `PreChecks` asks it
+    refused_with(node, cheap, "min relay fee not met", "1000 < 1001")
+
+
+@pytest.mark.parametrize(
+    ("parent_version", "child_version", "refusal"),
+    [
+        (3, 2, "non-version=3 {child} cannot spend from version=3 {parent}"),
+        (2, 3, "version=3 {child} cannot spend from non-version=3 {parent}"),
+        (3, 3, None),
+        (2, 2, None),
+    ],
+)
+def test_truc_and_other_transactions_do_not_spend_from_each_other(
+    node: Node, parent_version: int, child_version: int, refusal: str | None
+) -> None:
+    """A held parent and its child are both version 3 or neither is."""
+    parent = replace(funded_spends(node, 1)[0], version=parent_version)
+    hold(node, parent)
+    child = child_of(parent, version=child_version)
+    if refusal is None:
+        assert verify_mempool_acceptance(node, child).fee == FEE
+        return
+    details = refusal.format(child=ids(child), parent=ids(parent))
+    refused_with(node, child, "TRUC-violation", details)
+
+
+def test_a_version_3_child_over_1000_vbytes_is_refused(node: Node) -> None:
+    """A version-3 transaction with a held parent is at most 1,000 vbytes."""
+    parent = hold(node, replace(funded_spends(node, 1)[0], version=3))
+    child = child_of(parent, version=3)
+    child.vout[0] = TxOut(child.vout[0].value - 100_000, child.vout[0].script_pub_key)
+    at_limit, over = padded(child, 1_000), padded(child, 1_001)
+
+    assert verify_mempool_acceptance(node, at_limit).vsize == 1_000
+    refused_with(
+        node,
+        over,
+        "TRUC-violation",
+        f"version=3 child {ids(over)} is too big: 1001 > 1000 virtual bytes",
+    )
+
+
+def test_a_version_3_transaction_has_one_parent_and_no_grandparent(
+    node: Node,
+) -> None:
+    """A second held parent, or a held grandparent, is refused."""
+    first, second = (replace(spend, version=3) for spend in funded_spends(node, 2))
+    hold(node, first)
+    hold(node, second)
+    two_parents = child_of(first, version=3)
+    two_parents.vin.append(replace(child_of(second, version=3).vin[0]))
+    refused_with(
+        node,
+        two_parents,
+        "TRUC-violation",
+        f"{ids(two_parents)} would have too many ancestors",
+    )
+
+    child = hold(node, child_of(first, version=3))
+    grandchild = child_of(child, version=3)
+    refused_with(
+        node,
+        grandchild,
+        "TRUC-violation",
+        f"{ids(grandchild)} would have too many ancestors",
+    )
+
+
+def test_a_version_3_parent_has_one_child(node: Node) -> None:
+    """A second child is refused, unless it conflicts with the first.
+
+    A conflicting one is not counted twice, and reaches
+    `check_replacement`, which refuses it in the words of its own. A
+    disconnected block's transaction is not held to the rule.
+    """
+    parent = hold(node, with_two_outputs(replace(funded_spends(node, 1)[0], version=3)))
+    hold(node, child_of(parent, 0, version=3))
+    second = child_of(parent, 1, version=3)
+    refused_with(
+        node,
+        second,
+        "TRUC-violation",
+        f"{ids(parent)} would exceed descendant count limit",
+    )
+    assert verify_mempool_acceptance(node, second, bypass_limits=True).fee == FEE
+
+    conflicting = child_of(parent, 0, version=3)
+    conflicting.vout[0] = TxOut(conflicting.vout[0].value - 2 * FEE, anyone_can_spend())
+    refused_with(node, conflicting, "bip125-replacement-disallowed")
+
+
+def a_cluster(node: Node, root: Tx, count: int) -> list[Tx]:
+    """Hold a chain of `count` transactions spending `root`, and return it."""
+    chain = [root]
+    for _ in range(count - 1):
+        chain.append(child_of(chain[-1]))
+    for tx in chain:
+        assert node.mempool.add_tx(tx, FEE, tx.vsize)
+    return chain
+
+
+def refused_reason(node: Node, tx: Tx) -> str:
+    """Return the reason `verify_mempool_acceptance` refuses `tx` with."""
+    with pytest.raises(TxRejectedError) as refused:
+        verify_mempool_acceptance(node, tx)
+    return refused.value.reason
+
+
+def test_a_cluster_of_more_than_64_transactions_is_refused(node: Node) -> None:
+    """A candidate that makes a 65th transaction in its cluster is refused.
+
+    A disconnected block's transaction is held to it too
+    (btclib-org/btclib-node#1383).
+    """
+    root, unrelated = funded_spends(node, 2)
+    chain = a_cluster(node, root, 63)
+    assert verify_mempool_acceptance(node, child_of(chain[-1])).fee == FEE
+    last = hold(node, child_of(chain[-1]))
+    for bypass_limits in (False, True):
+        refused_with(
+            node,
+            child_of(last),
+            "too-large-cluster",
+            bypass_limits=bypass_limits,
+        )
+    # a conflict is judged first, as `ReplacementChecks` precedes the limits
+    conflicting = child_of(chain[0])
+    assert refused_reason(node, conflicting) == "insufficient fee"
+    assert verify_mempool_acceptance(node, unrelated).fee == FEE
+
+
+def test_a_cluster_is_walked_up_and_down_and_across(node: Node) -> None:
+    """The cluster counts a candidate's parent's other children and parents.
+
+    One parent with 63 children is a full cluster, so a child of the
+    parent and a child of one of its children are both the 65th.
+    With 62 children both make the 64th.
+    """
+    root = funded_spends(node, 1)[0]
+    root.vout = [TxOut(root.vout[0].value // 64, anyone_can_spend())] * 64
+    assert node.mempool.add_tx(root, FEE, root.vsize)
+    children = [child_of(root, vout) for vout in range(62)]
+    for child in children:
+        assert node.mempool.add_tx(child, FEE, child.vsize)
+    for candidate in (child_of(root, 62), child_of(children[0])):
+        assert verify_mempool_acceptance(node, candidate).fee == FEE
+    hold(node, child_of(root, 62))
+    for candidate in (child_of(root, 63), child_of(children[0])):
+        refused_with(node, candidate, "too-large-cluster")
+
+
+@pytest.mark.parametrize(("right_count", "accepted"), [(31, True), (32, False)])
+def test_the_clusters_of_two_parents_are_added(
+    node: Node, right_count: int, *, accepted: bool
+) -> None:
+    """A candidate joining two clusters is counted over both."""
+    first, second = funded_spends(node, 2)
+    left = a_cluster(node, first, 32)
+    right = a_cluster(node, second, right_count)
+    both = child_of(left[-1])
+    both.vin.append(child_of(right[-1]).vin[0])
+    if accepted:
+        assert verify_mempool_acceptance(node, both).vsize == both.vsize
+    else:
+        refused_with(node, both, "too-large-cluster")
+
+
+@pytest.mark.parametrize(("extra", "accepted"), [(0, True), (1, False)])
+def test_a_cluster_is_limited_in_vbytes_too(
+    node: Node, extra: int, *, accepted: bool
+) -> None:
+    """A cluster of 101,000 vbytes is full, and one more vbyte is refused."""
+    parent = funded_spends(node, 1)[0]
+    candidate = child_of(parent)
+    assert node.mempool.add_tx(parent, FEE, 101_000 - candidate.vsize + extra)
+    if accepted:
+        assert verify_mempool_acceptance(node, candidate).fee == FEE
+    else:
+        refused_with(node, candidate, "too-large-cluster")
+
+
+def test_a_candidate_over_101000_vbytes_alone_is_refused(node: Node) -> None:
+    """A lone transaction past the size limit is a cluster past it."""
+    base = funded_spends(node, 1)[0]
+    base.vout[0] = TxOut(base.vout[0].value - 100_000, base.vout[0].script_pub_key)
+    node.config.require_standard = False
+    assert verify_mempool_acceptance(node, padded(base, 101_000)).vsize == 101_000
+    refused_with(node, padded(base, 101_001), "too-large-cluster")
+
+
+def test_truc_cluster_and_size_refusals_precede_every_script(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """None of the three refusals evaluates a script, which a clean one does.
+
+    `PolicyScriptChecks` runs last in `AcceptSingleTransactionInternal`
+    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    """
+    parent = an_op_1_parent(node)
+    small = a_tx_of_nonwitness_size(parent, 64)
+    first, second = funded_spends(node, 2)
+    base = replace(second, version=3)
+    base.vout[0] = TxOut(base.vout[0].value - 100_000, base.vout[0].script_pub_key)
+    huge = padded(base, 10_001)
+    chain = a_cluster(node, first, 64)
+    crowded = child_of(chain[-1])
+    calls = record_calls(monkeypatch, {"check_transaction": None})
+
+    refused_with(node, small, "tx-size-small")
+    assert verify_mempool_acceptance(node, base).fee == FEE + 100_000
+    assert calls == ["check_transaction"]
+    calls.clear()
+    refused_with(
+        node,
+        huge,
+        "TRUC-violation",
+        f"version=3 {ids(huge)} is too big: 10001 > 10000 virtual bytes",
+    )
+    refused_with(node, crowded, "too-large-cluster")
+    assert calls == []
 
 
 def test_a_second_spend_of_a_held_outpoint_is_refused_as_core_refuses_it(
