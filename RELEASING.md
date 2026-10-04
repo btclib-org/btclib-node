@@ -522,8 +522,10 @@ this release included.
    `btclib_node-<version>.cdx.json`: a CycloneDX 1.6 document naming the
    distribution, its licence, the two files with their SHA-256 under
    `metadata.component.externalReferences`, and **one component per
-   `Requires-Dist` line the wheel declares** — which today is one,
-   `btclib`, carrying `btclib[secp256k1]>=<floor>` as a property.
+   dependency the wheel declares in `Requires-Dist`**. Each component
+   carries its `Requires-Dist` lines whole, as `btclib:requires-dist`
+   properties, so the document can be compared with the wheel's own
+   metadata, which the check below does:
 
    ```shell
    version=<the released version>
@@ -531,22 +533,43 @@ this release included.
 
    ```shell
    gh release download "v${version:?}" --repo btclib-org/btclib-node \
-     --pattern '*.cdx.json' &&
-   python3 -c "import json,sys; d=json.load(open(sys.argv[1])); \
-     print(len(d['components']), 'components'); \
-     print('git+https:// present:', 'git+https://' in json.dumps(d))" \
-     "btclib_node-${version:?}.cdx.json"
-   # 1 components
+     --pattern '*.cdx.json' --pattern '*.whl' &&
+   python3 - "btclib_node-${version:?}-py3-none-any.whl" \
+     "btclib_node-${version:?}.cdx.json" <<'PY'
+   import email
+   import json
+   import sys
+   import zipfile
+
+   wheel, sbom = sys.argv[1:]
+   with zipfile.ZipFile(wheel) as archive:
+       name = next(n for n in archive.namelist() if n.endswith(".dist-info/METADATA"))
+       declared = set(email.message_from_bytes(archive.read(name)).get_all("Requires-Dist"))
+   document = json.load(open(sbom))
+   listed = {
+       p["value"]
+       for c in document["components"]
+       for p in c["properties"]
+       if p["name"] == "btclib:requires-dist"
+   }
+   print("Requires-Dist lines:", "match" if declared == listed else "MISMATCH")
+   print("git+https:// present:", "git+https://" in json.dumps(document))
+   sys.exit(declared != listed)
+   PY
+   # Requires-Dist lines: match
    # git+https:// present: False
    ```
+
+   `MISMATCH` means the document and the wheel disagree about what the
+   wheel declares, and the check exits 1.
 
    **A resolved version is not in it, deliberately**, and this is where
    a reader is most likely to think the document is broken.
    The docstring of btclib-org/.github's `generate_sbom.py` is the argument:
    what a user's installer resolves is not a fact about these files, so
    a resolved version recorded here would be a claim the wheel does not
-   make. A requirement pinned with `==` gets a `version`; anything else
-   gets its specifier as a property and none. A vendored submodule
+   make. Every `Requires-Dist` line is a property, pinned or not, and a
+   requirement pinned with `==` also gets a `version`. A vendored submodule
    would get a component of its own with the gitlink's sha — this tree
    vendors none.
 

@@ -180,6 +180,12 @@ request is not answered `-28` (closes #1729).
 A call that got no answer carries the end of that `bitcoind`'s `debug.log`
 as a note, and its `http` and `rpc` categories are logged (issue #1307).
 
+### The bill-of-materials check compares the document with the wheel
+
+- **`RELEASING.md`'s check compares the wheel's `Requires-Dist` lines with
+  the document's, in place of a component count that had gone stale**
+  (closes #1733).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on
