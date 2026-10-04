@@ -1968,6 +1968,12 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
   GHSA-r5pw-9wrg-m3mj, GHSA-m38m-987v-j55h and GHSA-8h6f-34jj-7p6c**,
   and `generateblock` refuses a WIF of another chain (closes #1684).
 
+### The review's `git fetch` grant names the base ref
+
+- **`claude-review.yml` grants `git fetch origin <base ref>` and nothing
+  after it**, where `git fetch origin:*` admitted `--upload-pack=<cmd>` and
+  `--upl=<cmd>`, which git runs (closes #1679).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
