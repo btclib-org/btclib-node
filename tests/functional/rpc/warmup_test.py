@@ -52,7 +52,7 @@ def test_a_request_during_the_load_is_answered_in_warmup(
     starter = threading.Thread(target=node.start)
     starter.start()
     try:
-        wait_until_listening(node.rpc_manager)
+        wait_until_listening(node.rpc_manager, past_warmup=False)
         assert opening.wait(30)
 
         for method in ("getblockcount", "help", "stop", "nosuchmethod"):

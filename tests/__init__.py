@@ -759,7 +759,9 @@ def answer[T](value: T) -> Generator[bool, None, T]:
     return value
 
 
-def wait_until_listening(manager: _ListensOnAPort, timeout: float = 20) -> None:
+def wait_until_listening(
+    manager: _ListensOnAPort, timeout: float = 20, *, past_warmup: bool = True
+) -> None:
     """Wait for a manager's socket to be bound, not for its thread.
 
     `wait_until(manager.is_alive)` is `threading.Thread.is_alive`, which
@@ -772,10 +774,19 @@ def wait_until_listening(manager: _ListensOnAPort, timeout: float = 20) -> None:
 
     A manager whose thread has ended without listening, a failed bind
     among the reasons, raises `ListenerEndedError` at once.
+
+    An `RpcManager` of a started `Node` is in warmup from before it
+    binds until the node has loaded, and answers -28 meanwhile (ISS
+    1729). It is waited on past that, as Core's test framework does in
+    `wait_for_rpc_connection`, unless `past_warmup` is False, for a test
+    that sends its request in warmup. A manager driven alone never enters
+    warmup.
     """
     start = time.monotonic()
     while time.monotonic() - start < timeout:
-        if manager.listening.is_set():
+        if manager.listening.is_set() and not (
+            past_warmup and getattr(manager, "in_warmup", False) is True
+        ):
             return
         if _ended_without_listening(manager):
             # a failed bind ends the manager's thread at once: waiting
@@ -795,7 +806,8 @@ def wait_until_listening(manager: _ListensOnAPort, timeout: float = 20) -> None:
     # several managers would be told nothing about which. The manager
     # and its port are what tell them apart.
     err_msg = f"{type(manager).__name__} on port {manager.port} was not "
-    err_msg += f"listening within {timeout} seconds (waited {elapsed:.2f}s)"
+    err_msg += "listening" if not manager.listening.is_set() else "out of warmup"
+    err_msg += f" within {timeout} seconds (waited {elapsed:.2f}s)"
     raise WaitTimeoutError(err_msg)
 
 
