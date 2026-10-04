@@ -54,6 +54,11 @@ because uv can answer from a cached index and miss a version just published
 required checks too, and `REVIEWING.md`'s "hold the merge" excepts it
 (issue btclib-org/.github#1597).
 
+### CodeQL runs the `security-extended` suite
+
+`codeql.yml` passes `queries: security-extended` to the shared analysis for a
+one-month trial (issue btclib-org/.github#1505).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on
