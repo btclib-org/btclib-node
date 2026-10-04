@@ -82,6 +82,7 @@ def make_node(
             connections={0: conn},
             deadlines=deadlines,
             extend_reply_deadline=deadlines.append,
+            in_warmup=False,
         ),
         logger=logger
         if logger is not None

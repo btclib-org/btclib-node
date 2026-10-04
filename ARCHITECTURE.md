@@ -46,6 +46,14 @@ gossip on one thread, a DNS answer on the other. It carries two locks
 for that reason, one per table, taken separately and never nested, and
 a third, taken first, that a move between the tables holds throughout.
 
+While `Node.load` opens the stores, `Node`'s thread reads no queue.
+`RpcManager` is then in warmup: `RpcConnection.run` answers each request
+on the manager's thread with `RPC_IN_WARMUP` and the current init message,
+as Core's `CRPCTable::execute` does, and queues none. `Node.run` ends
+warmup once both listeners are up. `queue_lock` is held from reading the
+flag to queuing or answering, so a request is answered in warmup or queued
+after it, never both.
+
 Core answers each RPC request on an HTTP worker thread, so a call that
 waits for the tip, or searches nonces, holds only that thread. Here such
 a call stays on `Node`'s thread, which owns the state it reads: it is a

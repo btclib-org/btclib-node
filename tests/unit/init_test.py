@@ -120,6 +120,26 @@ class AManager:
         # times `run`'s shutdown dumped it, as Core's `~BanMan` does
         self.ban_list_dumps = 0
         self.ban_man = SimpleNamespace(dump=self._dump_ban_list)
+        # `RpcManager`'s warmup: what `run` did to it, in order, as
+        # "start", each status set and "finish"
+        self.warmup: list[str] = []
+
+    def start_warmup(self) -> None:
+        """Record that `run` started warmup."""
+        self.warmup.append("start")
+
+    def set_warmup_status(self, status: str) -> None:
+        """Record the status `run` set."""
+        self.warmup.append(status)
+
+    def finish_warmup(self) -> None:
+        """Record that `run` ended warmup."""
+        self.warmup.append("finish")
+
+    @property
+    def in_warmup(self) -> bool:
+        """Whether `run` started warmup and has not ended it."""
+        return bool(self.warmup) and self.warmup[-1] != "finish"
 
     def _dump_ban_list(self) -> None:
         self.ban_list_dumps += 1
@@ -1669,6 +1689,59 @@ def test_a_p2p_listener_failing_with_no_reason_stops_the_node_all_the_same(
     node.start()
     wait_until(lambda: not node.is_alive())
     assert node.init_errors == [btclib_node.P2P_INIT_ERROR]
+
+
+def test_warmup_ends_once_both_listeners_are_up(a_networked_node: Node) -> None:
+    """ISS 1317: `SetRPCWarmupFinished` follows `CConnman::Start`'s message."""
+    node = a_networked_node
+    rpc_manager = cast("AManager", node.rpc_manager)
+    node.start()
+    wait_until(lambda: rpc_manager.warmup[-1:] == ["finish"])
+    assert rpc_manager.warmup == ["start", "Starting network threads…", "finish"]
+
+
+def test_a_start_that_ends_in_an_error_stays_in_warmup(
+    a_networked_node: Node,
+) -> None:
+    """ISS 1317: as Core, which never calls `SetRPCWarmupFinished` there."""
+
+    class Refuses(AManager):
+        bind_error = None
+
+        @override
+        def start_listener(self) -> bool:
+            self.start()
+            return False
+
+    node = a_networked_node
+    rpc_manager = cast("AManager", node.rpc_manager)
+    node.p2p_manager = Refuses()  # type: ignore[assignment]
+    node.start()
+    wait_until(lambda: not node.is_alive())
+    assert rpc_manager.warmup == ["start", "Starting network threads…"]
+    assert rpc_manager.in_warmup
+
+
+def test_load_sets_the_init_messages_core_shows_for_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1317: step 6's addrman and banlist, then step 7's block index."""
+    node = Node(
+        config=Config(
+            chain="regtest", data_dir=tmp_path, allow_p2p=False, allow_rpc=False
+        )
+    )
+    statuses: list[str] = []
+    monkeypatch.setattr(node.rpc_manager, "set_warmup_status", statuses.append)
+    node.start()
+    node.stop()
+    assert statuses == [
+        "Loading P2P addresses…",
+        "Loading banlist…",
+        "Loading block index…",
+        "Starting network threads…",
+    ]
+    assert not node.rpc_manager.in_warmup
 
 
 def test_a_node_under_listen_0_runs_whatever_holds_its_p2p_port(

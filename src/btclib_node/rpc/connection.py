@@ -959,6 +959,8 @@ class RpcConnection:
         self._unauthorized_reply: asyncio.Task[None] | None = None
         # A `_refusal`'s own reply, kept for the same reason
         self._refusal_reply: asyncio.Task[None] | None = None
+        # A warmup answer, kept for the same reason
+        self._warmup_reply: asyncio.Task[None] | None = None
 
     def close(self) -> None:
         """Close `client`.
@@ -1156,7 +1158,9 @@ class RpcConnection:
         """Answer what Core refuses at or past the credential; queue the rest.
 
         `run` calls this holding `manager.queue_lock`, `manager.interrupted`
-        unset.
+        unset. While `manager.in_warmup` holds, a request that passes every
+        check is answered `RPC_IN_WARMUP` here and not queued: `Node`'s
+        thread is opening the stores.
         """
         # Core's `HTTPReq_JSONRPC`: no `Authorization` at all is a
         # 401 at once, one it does not accept a 401 after
@@ -1246,6 +1250,14 @@ class RpcConnection:
                 self.manager.logger.warning(*whitelist_refusal.warning)
             self._whitelist_reply = self._start_reply(
                 self._send_whitelist_refusal(whitelist_refusal)
+            )
+            return
+        if self.manager.in_warmup:
+            self._warmup_reply = self._start_reply(
+                self.async_send(
+                    self.manager.answer_warmup(self, body),
+                    close=self._shutting_down(),
+                )
             )
             return
         self.manager.messages.append((body, self.id))

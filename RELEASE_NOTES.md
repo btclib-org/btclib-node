@@ -59,6 +59,9 @@ on release day.
   request past that gets `503` "Work queue depth exceeded", so a client
   holding many `waitforblockheight` or long-poll calls open has to keep
   them under 80.
+- **A request sent while the node starts is answered `-28`**, as in Core
+  (closes #1317). A client that waits for the node by sending a request
+  retries on `-28`, as it does for `bitcoind`.
 
 ## v2026.10.4
 

@@ -320,6 +320,7 @@ def exchange(auth: RpcAuth, requests: list[Any]) -> tuple[bytes, list[Any], list
             # (btclib-org/btclib-node#1515)
             interrupted=threading.Event(),
             queue_lock=threading.Lock(),
+            in_warmup=False,
             # what `RpcManager.stop` would finish, never called here
             track_reply=lambda reply, due: None,
             reply_ended=lambda reply: None,

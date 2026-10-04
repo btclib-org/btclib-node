@@ -473,14 +473,22 @@ class Node(threading.Thread):
         """
         if self.loaded:
             return
+        # Core's init messages, which `RpcManager.warmup_status` answers
+        # a request with while this runs (`src/init.cpp:1396` and `1636`,
+        # `src/banman.cpp:33`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        # tag)
+        warmup = self.rpc_manager.set_warmup_status
+        warmup("Loading P2P addresses…")
         peer_db = PeerDB(self.chain, self.data_dir)
         self._opened.callback(peer_db.close)
+        warmup("Loading banlist…")
         # Core's `banlist.json`, in the chain's own directory
         ban_man = BanMan(
             self.data_dir / "banlist.json", self.logger, self.config.ban_time
         )
         self.p2p_manager = P2pManager(self, self.p2p_port, peer_db, ban_man)
         self._opened.callback(self.p2p_manager.loop.close)
+        warmup("Loading block index…")
         self.chainstate = Chainstate(self.data_dir, self.chain, self.logger)
         self._opened.callback(self.chainstate.close)
         self.block_db = BlockDB(self.data_dir, self.logger, self.config.blocks_dir)
@@ -916,6 +924,11 @@ class Node(threading.Thread):
         # this assignment has run yet, and a write racing it here can
         # put `status` back below `HeaderSynced` for good (#398).
         self.status = NodeStatus.SyncingHeaders
+        # Core's RPC server starts in warmup and leaves it near the end of
+        # `AppInitMain` (`src/init.cpp:2293`, at bitcoin/bitcoin@9be056a8a7):
+        # a request that arrives while the stores load is answered
+        # `RPC_IN_WARMUP`, not held for the load.
+        self.rpc_manager.start_warmup()
         # The RPC listener first, and waited on: Core's `AppInitMain`
         # starts its HTTP server at step 4a, before step 12 starts
         # `connman`, and aborts where it cannot (`src/init.cpp:1558-1561`,
@@ -930,6 +943,9 @@ class Node(threading.Thread):
         # index, before step 12 (`src/init.cpp:1887-1890`, same sha).
         started = self._start_rpc_and_load() and not self.terminate_flag.is_set()
         started = started and self._read_whitelist()
+        if started:
+            # `CConnman::Start`'s message (`src/net.cpp:3528`, same sha)
+            self.rpc_manager.set_warmup_status("Starting network threads…")
         if started and self.p2p_port and not self.p2p_manager.start_listener():
             # the bind's own reason first, as Core's `CConnman::Bind`
             # shows it before `CConnman::Start` shows its own
@@ -941,6 +957,9 @@ class Node(threading.Thread):
                 [P2P_INIT_ERROR] if bind_error is None else [bind_error, P2P_INIT_ERROR]
             )
         if not self.terminate_flag.is_set():
+            # Core's `SetRPCWarmupFinished()`, step 13, once both listeners
+            # are up; a start that ended before this stays in warmup
+            self.rpc_manager.finish_warmup()
             # Core's own `StartupNotify(args)`, the last line of
             # `AppInitServers` -- called once both listeners are up and
             # `SetRPCWarmupFinished()`/`uiInterface.InitMessage("Done
