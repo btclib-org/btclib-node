@@ -14,7 +14,7 @@ import pytest
 import btclib_node
 from btclib_node import cli
 from btclib_node.constants import default_data_dir
-from btclib_node.log import Logger, open_history_log
+from btclib_node.log import Logger, LogRateLimiter, open_history_log
 
 
 def test_a_log_path_is_a_file_the_lines_end_up_in(tmp_path: Path) -> None:
@@ -292,3 +292,138 @@ def test_an_excluded_category_is_not_written_though_debug_names_it(
     logger.log_debug("rpc", "r")
     logger.close()
     assert _log_lines(path) == ["[rpc] r"]
+
+
+class _Clock:
+    """A clock the test moves by hand."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _noisy(logger: Logger, text: str) -> None:
+    """Log `text` from one source location, whatever the caller's own."""
+    logger.info(text)
+
+
+def _whole_lines(path: Path) -> list[str]:
+    """Return what a `Logger` wrote to `path`, each line whole."""
+    return path.read_text(encoding="utf-8").splitlines()[5:]
+
+
+def test_a_source_location_past_its_budget_is_silenced_until_the_window_ends(
+    tmp_path: Path,
+) -> None:
+    """Core's `LogRateLimiter`: warn once, stay silent, then warn and resume.
+
+    A line from another source location is written throughout, and every
+    line written while one is silenced starts with `[*] `.
+    """
+    path = tmp_path / "history.log"
+    clock = _Clock()
+    logger = Logger(path)
+    # each line is 52 bytes: the 20-byte time, a space, 30 characters and
+    # the newline; the budget is two lines short of three
+    logger.rate_limiter = LogRateLimiter(100, 60, clock)
+    for i in range(5):
+        _noisy(logger, str(i) * 30)
+    logger.info("elsewhere")
+    clock.now += 61
+    _noisy(logger, "after")
+    logger.close()
+    first, notice, second, elsewhere, restart, after = _whole_lines(path)
+    assert first.endswith(" " + "0" * 30)
+    assert not first.startswith("[*]")
+    assert notice.startswith("[*] ")
+    assert "[warning] Excessive logging detected from " in notice
+    assert "(_noisy): >100 bytes logged during the last time window of 60s." in notice
+    assert notice.endswith("Last log entry.")
+    assert second.startswith("[*] ")
+    assert second.endswith(" " + "1" * 30)
+    assert elsewhere.startswith("[*] ")
+    assert elsewhere.endswith(" elsewhere")
+    # the line that went over the budget and the three after it
+    assert restart.endswith("(_noisy): 208 bytes were dropped during the last 60s.")
+    assert "[warning] Restarting logging from " in restart
+    assert not restart.startswith("[*]")
+    assert after.endswith(" after")
+    assert not after.startswith("[*]")
+
+
+def test_a_second_window_limits_again(tmp_path: Path) -> None:
+    """The budget is a window's own: each window starts with it whole."""
+    path = tmp_path / "history.log"
+    clock = _Clock()
+    logger = Logger(path)
+    logger.rate_limiter = LogRateLimiter(100, 60, clock)
+    for _ in range(3):
+        for i in range(4):
+            _noisy(logger, str(i) * 30)
+        clock.now += 60
+    logger.close()
+    written = [line for line in _whole_lines(path) if "[warning]" not in line]
+    # two lines written per window, the third and fourth dropped
+    assert len(written) == 3 * 2
+
+
+def test_a_stream_is_not_rate_limited() -> None:
+    """Core limits what goes to the file and leaves the console be."""
+    logger = Logger()
+    assert logger.rate_limiter is None
+    logger.close()
+
+
+def test_no_rate_limit_leaves_a_file_unlimited(tmp_path: Path) -> None:
+    """`-nologratelimit`: a `Logger` built without it has no limiter."""
+    logger = Logger(tmp_path / "history.log", rate_limit=False)
+    assert logger.rate_limiter is None
+    logger.close()
+
+
+def test_a_file_is_rate_limited_with_core_s_budget(tmp_path: Path) -> None:
+    """`RATELIMIT_MAX_BYTES` a `RATELIMIT_WINDOW`, `-logratelimit`'s default."""
+    logger = Logger(tmp_path / "history.log")
+    limiter = logger.rate_limiter
+    assert limiter is not None
+    assert (limiter.max_bytes, limiter.reset_window) == (1024 * 1024, 3600)
+    logger.close()
+
+
+def _debug_noisy(logger: Logger, text: str) -> None:
+    """Log `text` as two debug lines, from one source location each."""
+    logger.log_debug("net", text)
+    logger.debug(text)
+
+
+def test_a_debug_line_is_not_limited_while_info_is(tmp_path: Path) -> None:
+    """Core's `LogDebug` passes no rate limit; `LogInfo` does.
+
+    A debug line written while a location is silenced still starts with
+    `[*] `, as every line Core writes then does.
+    """
+    path = tmp_path / "history.log"
+    logger = Logger(path, debug=True)
+    logger.rate_limiter = LogRateLimiter(100, 60, _Clock())
+    for i in range(5):
+        _debug_noisy(logger, str(i) * 30)
+        _noisy(logger, str(i) * 30)
+    logger.close()
+    lines = _whole_lines(path)
+    (notice,) = [line for line in lines if "Excessive" in line]
+    assert "(_noisy)" in notice
+    debug = [line for line in lines if "[net]" in line or "[debug]" in line]
+    assert len(debug) == 2 * 5
+    assert debug[-1].startswith("[*] ")
+    info = [line for line in lines if line not in debug and line != notice]
+    assert len(info) == 2
+
+
+def test_rate_limiting_disabled_is_logged(tmp_path: Path) -> None:
+    """`-nologratelimit` logs "Log rate limiting disabled", as `AppInitMain`."""
+    path = tmp_path / "history.log"
+    logger = open_history_log(path, debug=False, data_dir=tmp_path, rate_limit=False)
+    logger.close()
+    assert _log_lines(path)[-1] == "Log rate limiting disabled"

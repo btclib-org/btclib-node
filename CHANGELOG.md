@@ -2053,6 +2053,12 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
 - **`pyproject.toml` requires btclib 2026.10.5**, the release fixing
   GHSA-9r97-9x22-2pp4 and GHSA-rw95-w37r-537w (issue #1685).
 
+### `history.log` follows Core's logging
+
+- **A received message and a payload that does not parse are logged under
+  the `net` debug category, and `-logratelimit` (on by default) limits each
+  source location's non-debug lines to 1 MiB an hour, as Core does.**
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

@@ -114,7 +114,9 @@ attached directly to `node.logger` -- the one way `CLAUDE.md`'s own
 than through `logging.getLogger()`, so nothing propagates to a root
 handler such as `caplog`'s own -- reading `record.exc_info` off every
 `node.logger.exception(...)` call `handle_p2p`/`handle_p2p_handshake`
-themselves make, and sorting it on this harness's own axis,
+themselves make, or the exception among the arguments of the `net`
+debug line they write for a `BTClibValueError`, and sorting it on this
+harness's own axis,
 `isinstance(exc, BTClibException)`: btclib refusing `data` into
 `refused`, anything else, a bug, into `escaped` -- `handle_p2p`
 returning nothing for either, neither shows in what it returns. What
@@ -239,8 +241,14 @@ class _CrashCapture(logging.Handler):
 
     @override
     def emit(self, record: logging.LogRecord) -> None:
-        """Sort `record.exc_info`'s own exception onto `refused`/`escaped`."""
+        """Sort the record's own exception onto `refused`/`escaped`.
+
+        A `BTClibValueError` is logged as a `net` debug line with no
+        `exc_info`, the exception among its arguments.
+        """
         exc = record.exc_info[1] if record.exc_info else None
+        if exc is None and isinstance(record.args, tuple):
+            exc = next((a for a in record.args if isinstance(a, BaseException)), None)
         if exc is None:
             return
         if isinstance(exc, BTClibException):

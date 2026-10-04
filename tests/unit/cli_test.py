@@ -4003,6 +4003,17 @@ def test_build_config_keeps_the_categories_debugexclude_names(
     assert config.debug_exclude == excluded
 
 
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [([], True), (["-logratelimit"], True), (["-nologratelimit"], False)],
+)
+def test_build_config_reads_logratelimit(
+    tmp_path: Path, argv: list[str], *, expected: bool
+) -> None:
+    """`-logratelimit` is on unless `-nologratelimit` (Core's default)."""
+    assert _build(tmp_path, *argv).log_rate_limit is expected
+
+
 @pytest.mark.parametrize("category", ["bogus", "0", "none"])
 def test_build_config_refuses_a_debugexclude_category_core_does_not_know(
     tmp_path: Path, category: str
