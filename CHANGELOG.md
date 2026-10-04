@@ -1974,6 +1974,12 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
   after it**, where `git fetch origin:*` admitted `--upload-pack=<cmd>` and
   `--upl=<cmd>`, which git runs (closes #1679).
 
+### A message sent before `verack` is ignored, as in Core
+
+- **A `ping` or other message a peer sends before its `verack` is ignored**
+  (`sendheaders` and `sendcmpct` after `version` excepted, as in Core); the
+  `verack` was processed first and the message then answered (closes #1657).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
