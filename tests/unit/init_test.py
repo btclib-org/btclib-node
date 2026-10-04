@@ -593,12 +593,14 @@ def test_requests_answered_by_the_loop_after_stop_extend_stop_s_wait(
     The loop answers `log2(queued + 1)` requests per pass, and `stop`
     can arrive during the first. Here the pass answers a second one
     ahead of `_drain_rpc_queue`, which answers the third. The three
-    finish 0.3, 0.6 and 0.9 seconds after the call, and `STOP_TIMEOUT`
-    is 0.6. Measured from the call alone, the wait runs out before the
-    drain's answer; with every answer pushing the deadline forward, no
-    gap is longer than 0.3 seconds (btclib-org/btclib-node#1651).
+    finish 1, 2 and 3 seconds after the call, and `STOP_TIMEOUT` is 2.5.
+    Measured from the call alone, the wait runs out before the drain's
+    answer; with every answer pushing the deadline forward, no gap is
+    longer than 1 second. A runner may stall for up to 1.5 seconds
+    before the wait runs out, and a stall only makes the unpushed wait
+    fail sooner (btclib-org/btclib-node#1651, #1712).
     """
-    monkeypatch.setattr(btclib_node, "STOP_TIMEOUT", 0.6)
+    monkeypatch.setattr(btclib_node, "STOP_TIMEOUT", 2.5)
     in_first = threading.Event()
     hold_first = threading.Event()
     in_pass = threading.Event()
@@ -614,7 +616,7 @@ def test_requests_answered_by_the_loop_after_stop_extend_stop_s_wait(
     def slow_get_block_count(node: Node, conn: Any, params: Any) -> Any:
         in_pass.set()
         hold_pass.wait(10)
-        time.sleep(0.3)
+        time.sleep(1)
         return original_get_block_count(node, conn, params)
 
     monkeypatch.setitem(callbacks, "getbestblockhash", held_get_best_block_hash)

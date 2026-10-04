@@ -117,6 +117,12 @@ and a parse by a reference timed beside it over the same input, in
   output must be 0-fee", a reorg's re-add included, as Core's
   `PreCheckEphemeralTx` refuses it** (closes #1594).
 
+### The stop-wait test stops flaking on a slow runner
+
+- **`test_requests_answered_by_the_loop_after_stop_extend_stop_s_wait`
+  answers a second apart under a `STOP_TIMEOUT` of 2.5, not 0.3 apart
+  under 0.6** (closes #1712).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on
