@@ -1958,44 +1958,44 @@ def test_a_content_length_past_strtoll_is_refused_as_libevent_refuses_it(
 # took seconds that way, and take about a millisecond read by one. Past
 # what `MAX_HEADER_BYTES` lets a header section hold, so each parser is
 # driven directly; a chunk-size line is bounded by `MAX_BODY_BYTES` alone.
-LONG_ZEROS = b"0" * 60000
+ZEROS = 60000
 
 
 @pytest.mark.parametrize(
     ("read", "expected"),
     [
         (
-            lambda: connection_module._is_proxy_request(
-                b"POST", b"http://h:" + LONG_ZEROS + b"x/"
+            lambda zeros: connection_module._is_proxy_request(
+                b"POST", b"http://h:" + zeros + b"x/"
             ),
             MalformedRequestHeadError,
         ),
         (
-            lambda: connection_module._is_proxy_request(
-                b"POST", b"http://h:" + LONG_ZEROS + b"80/"
+            lambda zeros: connection_module._is_proxy_request(
+                b"POST", b"http://h:" + zeros + b"80/"
             ),
             True,
         ),
         (
-            lambda: connection_module._is_proxy_request(
-                b"CONNECT", b"h:" + LONG_ZEROS + b"x"
+            lambda zeros: connection_module._is_proxy_request(
+                b"CONNECT", b"h:" + zeros + b"x"
             ),
             MalformedRequestHeadError,
         ),
         (
-            lambda: connection_module._content_length(" " + "0" * 60000 + "x"),
+            lambda zeros: connection_module._content_length(" " + zeros.decode() + "x"),
             MalformedRequestHeadError,
         ),
-        (lambda: connection_module._content_length("0" * 60000), 0),
+        (lambda zeros: connection_module._content_length(zeros.decode()), 0),
         (
-            lambda: connection_module._content_length("-" + "0" * 60000 + "3"),
+            lambda zeros: connection_module._content_length("-" + zeros.decode() + "3"),
             MalformedRequestHeadError,
         ),
         (
-            lambda: connection_module._chunk_size(LONG_ZEROS + b"x"),
+            lambda zeros: connection_module._chunk_size(zeros + b"x"),
             OversizedRequestBodyError,
         ),
-        (lambda: connection_module._chunk_size(b" " + LONG_ZEROS + b"21"), 0x21),
+        (lambda zeros: connection_module._chunk_size(b" " + zeros + b"21"), 0x21),
     ],
     ids=[
         "port-then-x",
@@ -2009,22 +2009,41 @@ LONG_ZEROS = b"0" * 60000
     ],
 )
 def test_a_long_run_of_zeros_is_read_in_linear_time(
-    read: Callable[[], object], expected: object
+    read: Callable[[bytes], object], expected: object
 ) -> None:
     """A port, a length or a chunk size of leading zeros is read at once.
 
     The head is read before any credential, on the listener's one loop,
     so a parse that takes seconds is a stall any client can cause. The
-    bound is generous: it is there to fail a quadratic parse, not to
-    measure a linear one.
+    bound is a hundred Python-level passes over the run, timed beside
+    it: a parse that reads each octet once takes a few passes, a
+    quadratic one tens of thousands. It is there to fail the second.
     """
-    start = time.perf_counter()
+    zeros = b"0" * ZEROS
+
+    def one_pass() -> None:
+        for _ in zeros:
+            pass
+
+    assert _fastest(lambda: _check(read, zeros, expected)) < 100 * _fastest(one_pass)
+
+
+def _check(read: Callable[[bytes], object], zeros: bytes, expected: object) -> None:
     if isinstance(expected, type):
         with pytest.raises(expected):
-            read()
+            read(zeros)
     else:
-        assert read() == expected
-    assert time.perf_counter() - start < 2
+        assert read(zeros) == expected
+
+
+def _fastest(run: Callable[[], object], runs: int = 3) -> float:
+    """Return the shortest of `runs` timings of `run`, in seconds."""
+    fastest = float("inf")
+    for _ in range(runs):
+        start = time.perf_counter()
+        run()
+        fastest = min(fastest, time.perf_counter() - start)
+    return fastest
 
 
 def test_a_negative_zero_content_length_is_zero() -> None:
@@ -2825,17 +2844,23 @@ def test_a_size_line_arriving_in_pieces_is_searched_once() -> None:
     """A line feed is searched for in each octet once, however it arrives.
 
     A size line is bounded by `MAX_BODY_BYTES` alone: searched again from
-    its start at every read, the one here would take tens of seconds. The
-    bound is generous: it is there to fail that, not to measure this.
+    its start at every read, the one here would take tens of seconds.
+    The bound is a hundred times the same pieces appended and not read,
+    timed beside it: a read that searches each octet once takes a few
+    times that, a search from the start thousands. It is there to fail
+    the second.
     """
     head = parse_request_head(b"POST / HTTP/1.1\r\n" + CHUNKED_FIELD + b"\r\n")
-    buffer = bytearray()
-    reader = connection_module._ChunkedReader(buffer, head)
-    start = time.perf_counter()
-    for _ in range(4 * 1024 * 1024 // 64):
-        buffer += b"0" * 64
-        assert not reader.read()
-    assert time.perf_counter() - start < 2
+
+    def feed(*, read: bool) -> None:
+        buffer = bytearray()
+        reader = connection_module._ChunkedReader(buffer, head)
+        for _ in range(4 * 1024 * 1024 // 64):
+            buffer += b"0" * 64
+            if read:
+                assert not reader.read()
+
+    assert _fastest(lambda: feed(read=True)) < 100 * _fastest(lambda: feed(read=False))
 
 
 @pytest.mark.parametrize(
