@@ -120,6 +120,13 @@ btclib\_node.signet module
    :members:
    :show-inheritance:
 
+btclib\_node.txrequest module
+------------------------------
+
+.. automodule:: btclib_node.txrequest
+   :members:
+   :show-inheritance:
+
 btclib\_node.versionbits module
 -------------------------------
 

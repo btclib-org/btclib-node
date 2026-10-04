@@ -624,7 +624,6 @@ def a_peer(**attributes: Any) -> Any:
         # what Connection sets, and what the version callback overwrites
         relay_tx=True,
         download_queue=[],
-        tx_requested={},
         ping_sent=0,
         continuation_block=None,
         ping_nonce=0,
@@ -2200,6 +2199,7 @@ def test_a_notfound_is_logged_at_debug_as_a_count_of_its_items() -> None:
     logged, debug = debug_recorder()
     warned, warning = log_recorder()
     node = a_handshake_node()
+    node.download_manager = SimpleNamespace(received_not_found=lambda *_: None)
     node.logger.log_debug = debug
     node.logger.warning = warning
     peer = a_peer()
@@ -2210,31 +2210,25 @@ def test_a_notfound_is_logged_at_debug_as_a_count_of_its_items() -> None:
     assert not peer.stopped
 
 
-def test_a_notfound_frees_the_transaction_it_names_to_be_asked_of_someone_else() -> (
-    None
-):
-    """A `notfound` clears the tx entry named, leaving a block entry alone.
+def test_a_notfound_hands_the_items_to_the_download_manager() -> None:
+    """Every item of a `notfound` is passed on, with the peer that sent it.
 
-    `DownloadManager.tx_download`'s own in-flight table, so an ask this peer
-    will not answer is not held against it forever; a `MSG_BLOCK` item carries
-    no such bookkeeping to clear, blocks never having been requested through a
-    mechanism a `notfound` could complete.
+    `DownloadManager.received_not_found` is what picks the transaction
+    items out and completes their announcements.
     """
-    # `DownloadManager.tx_download`'s own in-flight table, so an ask
-    # this peer will not answer is not held against it forever
     node = a_handshake_node()
-    peer = a_peer(tx_requested={b"\x11" * 32: 0.0, b"\x22" * 32: 0.0})
-    not_found(
-        node,
-        NotFound(
-            [
-                Inventory(InventoryType.MSG_WTX, b"\x11" * 32),
-                Inventory(InventoryType.MSG_BLOCK, b"\x22" * 32),
-            ]
-        ).serialize(),
-        peer,
+    handed: list[Any] = []
+    node.download_manager = SimpleNamespace(
+        received_not_found=lambda conn_id, items: handed.append(
+            (conn_id, [(item.type_code, item.hash) for item in items])
+        )
     )
-    assert peer.tx_requested == {b"\x22" * 32: 0.0}
+    items = [
+        Inventory(InventoryType.MSG_WTX, b"\x11" * 32),
+        Inventory(InventoryType.MSG_BLOCK, b"\x22" * 32),
+    ]
+    not_found(node, NotFound(items).serialize(), a_peer(id=5))
+    assert handed == [(5, [(item.type_code, item.hash) for item in items])]
 
 
 def a_transaction() -> Tx:
@@ -2279,12 +2273,17 @@ def a_data_node(
     node.download_manager = SimpleNamespace(
         received_txs=[],
         inv_txs=[],
+        # every (peer, txid, wtxid) `tx` completed an announcement for
+        tx_responses=[],
         headers_sync_timeouts={},
         inv_triggered_getheaders=set(),
         last_block_inv_triggering_headers_sync=None,
         last_getheaders_timestamps={},
         # every (peer, header) `headers` asked to direct-fetch towards
         direct_fetches=[],
+    )
+    node.download_manager.received_tx_response = lambda conn_id, txid, wtxid: (
+        node.download_manager.tx_responses.append((conn_id, txid, wtxid))
     )
     node.download_manager.headers_direct_fetch = lambda conn, last_header: (
         node.download_manager.direct_fetches.append((conn.id, last_header))
@@ -2319,6 +2318,48 @@ def test_a_transaction_that_verifies_is_kept_and_reported(
     assert node.download_manager.received_txs == [(3, transaction.hash)]
     # a novel transaction the mempool took: what eviction reads (ISS 1064)
     assert peer.last_novel_tx_time > 0
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [None, MissingPrevoutError, BTClibValueError],
+    ids=["accepted", "missing-parents", "refused"],
+)
+def test_a_transaction_completes_the_senders_announcement_whatever_becomes_of_it(
+    monkeypatch: pytest.MonkeyPatch, refusal: type[Exception] | None
+) -> None:
+    """Core's `ReceivedTx` answers the sender's announcement before judging it.
+
+    So the next peer to have announced the transaction is asked for it at
+    once, instead of when the request times out, whether the sender's copy
+    was kept or not.
+    """
+
+    def verify(node: Any, transaction: Any) -> MempoolAcceptance:
+        if refusal is not None:
+            raise refusal
+        return MempoolAcceptance(0, 999)
+
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", verify)
+    transaction = a_transaction()
+    node = a_data_node()
+    tx(node, TxMsg(transaction, include_witness=True).serialize(), a_peer(id=3))
+    assert node.download_manager.tx_responses == [(3, transaction.id, transaction.hash)]
+
+
+def test_a_transaction_from_a_block_relay_only_peer_completes_nothing() -> None:
+    """A peer disconnected for sending one has no announcement to complete."""
+    node = a_data_node()
+    peer = a_peer(id=3, block_relay=True)
+    tx(node, TxMsg(a_transaction(), include_witness=True).serialize(), peer)
+    assert node.download_manager.tx_responses == []
+
+
+def test_a_transaction_in_initial_block_download_completes_nothing() -> None:
+    """Core drops it before `ReceivedTx`, with nothing asked for yet."""
+    node = a_data_node(is_initial_block_download=True)
+    tx(node, TxMsg(a_transaction(), include_witness=True).serialize(), a_peer(id=3))
+    assert node.download_manager.tx_responses == []
 
 
 def test_a_transaction_whose_parents_are_missing_is_not_kept(

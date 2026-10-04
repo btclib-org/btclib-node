@@ -1086,6 +1086,9 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
     if node.is_initial_block_download:
         return
     tx = TxMsg.parse(msg).tx
+    # Core's `ReceivedTx` completes the sender's announcement first of all,
+    # whatever becomes of the transaction.
+    node.download_manager.received_tx_response(conn.id, tx.id, tx.hash)
     # Both checks answer for a candidate this node has already judged,
     # without paying `verify_mempool_acceptance` a second time to learn
     # that again: `contains_tx` for one this mempool kept,
@@ -2814,30 +2817,21 @@ def _send_block_transactions(
 
 
 def not_found(node: Node, msg: bytes, conn: Connection) -> None:
-    """Clear the in-flight record for a transaction the peer could not answer.
+    """Complete the announcements of the transactions the peer could not answer.
 
-    A block item carries no such bookkeeping to clear -- the comment
+    A block item carries no such bookkeeping to complete -- the comment
     below argues why.
     """
     missing = NotFound.parse(msg)
     # `TxDownloadManagerImpl::ReceivedNotFound`, net_processing.cpp
-    # (at bitcoin/bitcoin@58a7869f86): a `notfound` for a transaction this
-    # node asked for is what tells it the ask will go unanswered, so the
-    # peer's own entry in `DownloadManager.tx_download`'s in-flight
-    # table (`conn.tx_requested`, which is what keeps that ask from
-    # being repeated while it is outstanding) is cleared early rather
-    # than sitting there until it would otherwise be overwritten by a
-    # fresh one. A block item carries no such bookkeeping to clear here:
-    # Core's own `NOTFOUND` handling reads only `IsGenTxMsg` items too,
-    # `MSG_BLOCK` never having been requested through a mechanism a
-    # `notfound` could complete. btclib-org/btclib-node#144
-    for item in missing.items:
-        if item.type_code in (
-            InventoryType.MSG_TX,
-            InventoryType.MSG_WTX,
-            InventoryType.MSG_WITNESS_TX,
-        ):
-            conn.tx_requested.pop(item.hash, None)
+    # (at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a `notfound` for a
+    # transaction this node asked for completes that announcement, so the
+    # next announcer is asked instead of the node waiting out the request.
+    # `DownloadManager.received_not_found` reads only the transaction
+    # items, as Core's `IsGenTxMsg` does: `MSG_BLOCK` was never requested
+    # through a mechanism a `notfound` could complete.
+    # btclib-org/btclib-node#144
+    node.download_manager.received_not_found(conn.id, missing.items)
     # A count at debug rather than the items: Core's one line for a
     # `notfound` is ProcessMessage's own `received: notfound (N bytes)`,
     # under `-debug=net` (net_processing.cpp, at bitcoin/bitcoin@9be056a8a7),

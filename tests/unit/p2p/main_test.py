@@ -685,8 +685,10 @@ def test_a_consensus_invalid_transaction_costs_the_peer_nothing(
     the same claim for the standardness-only half, by calling `tx`
     directly rather than through this dispatch. btclib-org/btclib-node#843
     """
+    refused: list[bool] = []
 
     def consensus_invalid(node: Node, transaction: Any) -> None:
+        refused.append(True)
         err_msg = "bad-txns-nonfinal"
         raise BTClibValueError(err_msg)
 
@@ -700,7 +702,11 @@ def test_a_consensus_invalid_transaction_costs_the_peer_nothing(
     )
     node.is_initial_block_download = False
     node.mempool = Mempool(Logger(debug=True))
+    node.download_manager = SimpleNamespace(received_tx_response=lambda *_: None)
+    node.p2p_manager.connections[0].id = 0
     handle_p2p(node)
+    # the real callback reached the verification, and did not fail before
+    assert refused == [True]
     assert not stopped
     assert not node.p2p_manager.discouraged
 

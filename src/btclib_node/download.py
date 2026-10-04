@@ -41,8 +41,11 @@ from btclib_node.p2p.protocol_version import (
     SENDHEADERS_VERSION,
     common_version,
 )
+from btclib_node.txrequest import TxRequestTracker
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 
     from btclib_node import Node
@@ -63,25 +66,31 @@ __all__ = ["DownloadManager"]
 _INBOUND_TX_ANNOUNCE_INTERVAL = 5.0
 _OUTBOUND_TX_ANNOUNCE_INTERVAL = 2.0
 
-# Core's own `GETDATA_TX_INTERVAL` (`node/txdownloadman.h`, 60s): the
-# `TxRequestTracker` bound on how long a `getdata` a peer has not
-# answered still holds that peer's slot before another candidate is
-# tried. `Connection.tx_requested` here is a simpler, per-connection-only
-# table with no second candidate to fall back to, but the same problem
-# applies to it: with no expiry at all, a peer that neither answers nor
-# sends `notfound` blocks this node from ever asking it again for that
-# hash, permanently, since `tx_download`'s own `wanted` filter reads the
-# entry as still outstanding. Reusing Core's own bound rather than a
-# fresh one is a lower-risk choice, not evidence the two trackers behave
-# alike beyond this one number. btclib-org/btclib-node#289
-_TX_REQUEST_TIMEOUT = 60.0
-
-# Core's `MAX_PEER_TX_ANNOUNCEMENTS` (`src/node/txdownloadman.h`) and
-# `MAX_GETDATA_SZ` (`src/net_processing.cpp`), at bitcoin/bitcoin@9be056a8a7,
-# the v31.1 tag: the announcements tracked per peer, and the items in one
-# `getdata`
+# Core's transaction download constants, `node/txdownloadman.h` and
+# `net_processing.cpp` at bitcoin/bitcoin@9be056a8a7, the v31.1 tag:
+# - `MAX_PEER_TX_ANNOUNCEMENTS`, the announcements tracked per peer;
+# - `MAX_GETDATA_SZ`, the items in one `getdata`;
+# - `GETDATA_TX_INTERVAL`, in seconds, how long a request holds before
+#   the next announcer is asked;
+# - `MAX_PEER_TX_REQUEST_IN_FLIGHT`, the requests to a peer past which
+#   `OVERLOADED_PEER_TX_DELAY` applies to its announcements;
+# - `NONPREF_PEER_TX_DELAY`, `TXID_RELAY_DELAY` and
+#   `OVERLOADED_PEER_TX_DELAY`, in seconds, the delays before an
+#   announcement may be asked for.
 _MAX_PEER_TX_ANNOUNCEMENTS = 5000
 _MAX_GETDATA_SZ = 1000
+_GETDATA_TX_INTERVAL = 60.0
+_MAX_PEER_TX_REQUEST_IN_FLIGHT = 100
+_NONPREF_PEER_TX_DELAY = 2.0
+_TXID_RELAY_DELAY = 2.0
+_OVERLOADED_PEER_TX_DELAY = 2.0
+
+# the inventory types a `notfound` names a transaction by
+_TX_INVENTORY_TYPES = (
+    InventoryType.MSG_TX,
+    InventoryType.MSG_WTX,
+    InventoryType.MSG_WITNESS_TX,
+)
 
 # Core's own `AVG_FEEFILTER_BROADCAST_INTERVAL` (10min) and
 # `MAX_FEEFILTER_CHANGE_DELAY` (5min), `net_processing.cpp`, same commit:
@@ -371,6 +380,11 @@ class DownloadManager:
         # own by which path carried it. btclib-org/btclib-node#141
         self.received_txs: list[tuple[int | None, bytes]] = []
         self.inv_txs: list[tuple[int, bytes]] = []
+        # Core's `m_txrequest`: which of the peers that announced a
+        # transaction is asked for it, and when. `inv_txs` feeds it in
+        # `_request_wanted_txs`; the `tx` and `notfound` callbacks and
+        # `_queue_announcements_for_received_txs` retire what it holds.
+        self.tx_requests = TxRequestTracker()
 
         # Core's `m_next_inv_to_inbounds_per_network_key`
         # (net_processing.cpp, the same commit): one schedule per
@@ -652,13 +666,13 @@ class DownloadManager:
                 still_wanted.append((conn_id, announced))
         self.inv_txs = still_wanted
 
-        for conn in self.node.p2p_manager.connections.copy().values():
-            # the tx is in the mempool now: nobody is still owed an
-            # answer to a `getdata` this node already sent for it,
-            # by whichever hash the request loop below asked it by.
-            for asked in answers:
-                conn.tx_requested.pop(asked, None)
+        # the tx is in the mempool now: nobody is still to be asked for
+        # it, by whichever hash it was announced under, and nobody is
+        # owed an answer to a `getdata` already sent.
+        for announced_hash in answers:
+            self.tx_requests.forget_tx_hash(announced_hash)
 
+        for conn in self.node.p2p_manager.connections.copy().values():
             # what the peer's version asked for. An answer nothing
             # consults is the same peer told the same thing whatever
             # it said, which is what #76 is about, so every send
@@ -703,59 +717,120 @@ class DownloadManager:
             _extend_tx_announce_queue(conn, new_for_conn)
 
     def _request_wanted_txs(self) -> None:
-        if not self.inv_txs:
-            return
-        invs: dict[int, list[bytes]] = {}
-        for conn_id, announced in self.inv_txs:
-            invs.setdefault(conn_id, []).append(announced)
+        """Track what peers announced, and ask each peer for what is its turn.
 
-        for conn_id, inv in invs.items():
-            target = self.node.p2p_manager.connections.get(conn_id)
-            if not target:
+        Core's `AddTxAnnouncement` for every announcement in `inv_txs`,
+        then `GetRequestsToSend` and the `getdata` of `SendMessages` for
+        every peer (`node/txdownloadman_impl.cpp` and
+        `net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        tag). A transaction is asked for of one announcer at a time, and
+        of the next only after the request expires or is answered with a
+        `notfound`.
+
+        The announcements of a connection no longer connected are
+        forgotten here, where Core's `FinalizeNode` does it.
+        """
+        connections = self.node.p2p_manager.connections.copy()
+        for peer in self.tx_requests.peers():
+            if peer not in connections:
+                self.tx_requests.disconnected_peer(peer)
+        now = time.time()
+        wtxid_peers = sum(conn.wtxidrelay_received for conn in connections.values())
+        for conn_id, announced in self.inv_txs:
+            conn = connections.get(conn_id)
+            if conn is not None:
+                self._add_tx_announcement(conn, announced, now, wtxid_peers)
+        for conn in connections.values():
+            self._send_tx_requests(conn, now)
+
+    def _add_tx_announcement(
+        self, conn: Connection, announced: bytes, now: float, wtxid_peers: int
+    ) -> None:
+        """Track `announced` by `conn`, to be asked for after Core's delays.
+
+        Core's `AddTxAnnouncement` (`node/txdownloadman_impl.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): dropped once the peer
+        has `MAX_PEER_TX_ANNOUNCEMENTS` tracked, unless it holds `RELAY`.
+        Otherwise its `reqtime` is delayed by `NONPREF_PEER_TX_DELAY` where
+        the peer is not preferred, by `TXID_RELAY_DELAY` where it
+        announced a txid while a wtxid-relay peer is connected, and by
+        `OVERLOADED_PEER_TX_DELAY` where it already has
+        `MAX_PEER_TX_REQUEST_IN_FLIGHT` requests outstanding and no
+        `RELAY`. Core's orphan resolution, which the first lines of that
+        function serve, has nothing here to resolve.
+        """
+        relay = NetPermissionFlags.RELAY in conn.permissions
+        if not relay and self.tx_requests.count(conn.id) >= _MAX_PEER_TX_ANNOUNCEMENTS:
+            return
+        preferred = _is_preferred_download(conn)
+        delay = 0.0
+        if not preferred:
+            delay += _NONPREF_PEER_TX_DELAY
+        if not conn.wtxidrelay_received and wtxid_peers > 0:
+            delay += _TXID_RELAY_DELAY
+        if (
+            not relay
+            and self.tx_requests.count_in_flight(conn.id)
+            >= _MAX_PEER_TX_REQUEST_IN_FLIGHT
+        ):
+            delay += _OVERLOADED_PEER_TX_DELAY
+        self.tx_requests.received_inv(
+            conn.id, announced, preferred=preferred, reqtime=now + delay
+        )
+
+    def _send_tx_requests(self, conn: Connection, now: float) -> None:
+        """Send `conn` the `getdata`s for the transactions it is to be asked.
+
+        Core's `GetRequestsToSend` (`node/txdownloadman_impl.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a transaction already
+        held, or recently rejected, is forgotten instead; the others are
+        requested until `GETDATA_TX_INTERVAL` has passed. They go in
+        `getdata`s of at most `MAX_GETDATA_SZ` items.
+        """
+        requestable, _expired = self.tx_requests.get_requestable(conn.id, now)
+        mempool = self.node.mempool
+        by_wtxid = conn.wtxidrelay_received
+        wanted: list[bytes] = []
+        for announced in requestable:
+            if not mempool.get_missing([announced], wtxid=by_wtxid) or (
+                mempool.was_recently_rejected(announced)
+            ):
+                self.tx_requests.forget_tx_hash(announced)
                 continue
-            now = time.time()
-            # an ask outstanding longer than a peer could plausibly
-            # still be about to answer is no longer treated as
-            # outstanding: a peer that neither sends the transaction
-            # nor answers `notfound` would otherwise block every
-            # future request to it for this hash, permanently.
-            # btclib-org/btclib-node#289
-            for announced, asked_at in list(target.tx_requested.items()):
-                if now - asked_at > _TX_REQUEST_TIMEOUT:
-                    del target.tx_requested[announced]
-            # a peer that announced the same transaction twice is
-            # asked for it once, and a peer already asked for a
-            # transaction is not asked again while that ask is still
-            # outstanding: `not_found` is what clears it early, the
-            # tx itself arriving is what clears it above.
-            wanted = [
-                announced
-                for announced in dict.fromkeys(inv)
-                if announced not in target.tx_requested
-            ]
-            # Core's `MAX_PEER_TX_ANNOUNCEMENTS`: an announcement past it
-            # is dropped, the ones already tracked counting against it.
-            # Everything this pass queued is asked for in this pass, so
-            # what is tracked is what is outstanding plus these.
-            # A peer holding `RELAY` has no such limit.
-            room = (
-                len(wanted)
-                if NetPermissionFlags.RELAY in target.permissions
-                else max(_MAX_PEER_TX_ANNOUNCEMENTS - len(target.tx_requested), 0)
+            wanted.append(announced)
+            self.tx_requests.requested_tx(
+                conn.id, announced, now + _GETDATA_TX_INTERVAL
             )
-            wanted = wanted[:room]
-            if not wanted:
-                continue
-            for announced in wanted:
-                target.tx_requested[announced] = now
-            # Core's `TXID_RELAY_DELAY` for a txid announcement is one of
-            # `TxRequestTracker`'s delays, none of which this node applies
-            # (btclib-org/btclib-node#1196).
-            fetch_type = _tx_fetch_type(target)
-            # in `getdata`s of at most Core's `MAX_GETDATA_SZ` items
-            for start in range(0, len(wanted), _MAX_GETDATA_SZ):
-                batch = wanted[start : start + _MAX_GETDATA_SZ]
-                target.send(GetData([Inventory(fetch_type, h) for h in batch]))
+        fetch_type = _tx_fetch_type(conn)
+        for start in range(0, len(wanted), _MAX_GETDATA_SZ):
+            batch = wanted[start : start + _MAX_GETDATA_SZ]
+            conn.send(GetData([Inventory(fetch_type, h) for h in batch]))
+
+    def received_tx_response(self, conn_id: int, txid: bytes, wtxid: bytes) -> None:
+        """Complete `conn_id`'s announcement of a transaction it sent.
+
+        Core's `ReceivedTx` (`node/txdownloadman_impl.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), whether or not the
+        transaction is then accepted: the peer answered, so it is not
+        waited for, and another announcer may be asked.
+        """
+        self.tx_requests.received_response(conn_id, txid)
+        self.tx_requests.received_response(conn_id, wtxid)
+
+    def received_not_found(self, conn_id: int, items: Sequence[Inventory]) -> None:
+        """Complete `conn_id`'s announcements of the transactions it lacks.
+
+        Core's `ReceivedNotFound` (`node/txdownloadman_impl.cpp`), which
+        `net_processing.cpp` calls with nothing where the message has more
+        than `MAX_PEER_TX_ANNOUNCEMENTS` and `MAX_BLOCKS_IN_TRANSIT_PER_PEER`
+        items together (both at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+        Block items are left alone, as Core's `IsGenTxMsg` leaves them.
+        """
+        if len(items) > _MAX_PEER_TX_ANNOUNCEMENTS + MAX_BLOCKS_IN_TRANSIT_PER_PEER:
+            return
+        for item in items:
+            if item.type_code in _TX_INVENTORY_TYPES:
+                self.tx_requests.received_response(conn_id, item.hash)
 
     def _send_due_announcements(self) -> None:
         # Core's `TxRelay::m_next_inv_send_time`/`m_tx_inventory_to_send`
