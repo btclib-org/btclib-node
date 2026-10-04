@@ -163,6 +163,18 @@ and a parse by a reference timed beside it over the same input, in
 node has left warmup, as Core's `wait_for_rpc_connection` does, so a first
 request is not answered `-28` (closes #1729).
 
+### The whitelist test waits for a finished handshake
+
+- **`test_a_banned_whitelisted_peer_connects_holding_noban` waits for one
+  peer past its handshake, asserts on that list, and then checks the peer
+  is still listed** (issue #1653).
+
+### The v2 transport test waits for a finished handshake
+
+- **`_their_peer` in `v2transport_test.py` waits for one peer past its
+  handshake on bitcoind's side, and `_still_listed` checks that a fresh
+  `getpeerinfo` still lists it** (closes #1730).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on
