@@ -190,11 +190,16 @@ class Whitelist:
         return cls(tuple(incoming), tuple(outgoing), relay, force_relay)
 
     def flags(
-        self, address: NetworkAddressV2, *, inbound: bool, manual: bool = False
+        self,
+        address: NetworkAddressV2 | None,
+        *,
+        inbound: bool,
+        manual: bool = False,
     ) -> NetPermissionFlags:
         """Return what a peer at `address` is granted.
 
-        Core's `AddWhitelistPermissionFlags`.
+        Core's `AddWhitelistPermissionFlags`, whose address is empty for
+        a peer on an `=onion` listener: `None` matches no entry.
 
         An inbound peer is matched against the incoming values and a
         manual outbound one against the outgoing values; no other
@@ -208,7 +213,7 @@ class Whitelist:
             return NetPermissionFlags.NONE
         flags = NetPermissionFlags.NONE
         for entry in entries:
-            if entry.subnet.matches_peer(address):
+            if address is not None and entry.subnet.matches_peer(address):
                 flags |= entry.flags
         if NetPermissionFlags.IMPLICIT in flags:
             flags &= ~NetPermissionFlags.IMPLICIT

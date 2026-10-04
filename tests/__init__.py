@@ -471,12 +471,28 @@ def generate_random_chain(
 TEST_PORTS = range(11000, 11000 + 3 * 5000)
 
 
+def _is_free(port: int) -> bool:
+    """Whether `port` binds on every interface, as `P2pManager` binds.
+
+    A port held on any interface is not one a node can take.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind(("", port))
+        except OSError:
+            return False
+    return True
+
+
 class PortPool:
     """Hand out `ports` in turn, beginning `start` places in.
 
     A port something holds is passed over, whoever holds it: another
     program on the machine, or a listener of this process still open when
-    the walk comes round to it again.
+    the walk comes round to it again. So is a port whose next one is held,
+    that being where a node with no `-bind` listens for Tor
+    (`P2pManager._bind`), and `worker_ports` keeps that next one out of
+    `ports`.
     """
 
     def __init__(self, ports: range, start: int) -> None:
@@ -489,14 +505,8 @@ class PortPool:
         for _ in self.ports:
             port = self.ports[self._offset]
             self._offset = (self._offset + 1) % len(self.ports)
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                try:
-                    # every interface, as `P2pManager` binds: a port held
-                    # on any of them is not one a node can take
-                    sock.bind(("", port))
-                except OSError:
-                    continue
-            return port
+            if all(_is_free(candidate) for candidate in (port, port + 1)):
+                return port
         msg = f"every port of {self.ports} is held"
         raise OSError(msg)
 
@@ -512,11 +522,14 @@ def worker_ports(worker: str, count: int) -> range:
     has. From the one after, the index wraps and a replacement shares a
     slice with a live worker, the two kept apart only by their PIDs'
     offsets and the bind check `PortPool` makes.
+
+    Every other port is left out of the slice, for the Tor listener a node
+    binds one port above its own.
     """
     slices = 2 * count
-    width = len(TEST_PORTS) // slices
+    width = len(TEST_PORTS) // slices // 2 * 2
     first = TEST_PORTS.start + int(worker.removeprefix("gw")) % slices * width
-    return range(first, first + width)
+    return range(first, first + width, 2)
 
 
 # xdist sets both variables before a worker imports this module; the

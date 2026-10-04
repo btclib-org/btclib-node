@@ -844,9 +844,9 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag) keys
     `m_addr_response_caches` by `requestor.m_network_key`, itself keyed
     by the connection's network (onion for an inbound onion listener,
-    which this node does not tag -- btclib-org/btclib-node#1644) and
-    the local bind address and port the peer reached it on
-    (`CreateNodeFromAcceptedSocket`, same file and sha): "Addr responses
+    `Connection.inbound_onion`) and the local bind address and port the
+    peer reached it on (`CreateNodeFromAcceptedSocket`, same file and
+    sha): "Addr responses
     stored in different caches per (network, local socket) prevent
     cross-network node identification. If a node for example is
     multi-homed under Tor and IPv6, a single cache (or no cache at all)

@@ -47,6 +47,7 @@ from btclib_node.p2p.callbacks import (
     pong,
 )
 from btclib_node.p2p.connection import Connection
+from btclib_node.p2p.eviction import Network
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 from btclib_node.p2p.messages import NoncelessPing
 from btclib_node.p2p.transport import (
@@ -124,6 +125,18 @@ def a_connection(
         use_v2transport=use_v2transport,
     )
     return connection, logged
+
+
+@pytest.mark.parametrize(
+    ("inbound_onion", "network"), [(True, Network.ONION), (False, Network.IPV4)]
+)
+def test_a_connection_is_reached_over_the_network_of_its_listener(
+    *, inbound_onion: bool, network: Network
+) -> None:
+    """ISS 1644: `ConnectedThroughNetwork` is onion for an `=onion` listener."""
+    connection, _ = a_connection(inbound=True)
+    connection.inbound_onion = inbound_onion
+    assert connection.connected_through_network == network
 
 
 def test_a_message_that_will_not_serialize_is_logged_and_dropped() -> None:

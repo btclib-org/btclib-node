@@ -93,8 +93,12 @@ def test_each_worker_hands_out_ports_of_its_own(count: int) -> None:
     for index, ports in enumerate(slices):
         assert ports
         assert ports <= set(TEST_PORTS)
+        # a node binds the port above its own for Tor
+        assert {port + 1 for port in ports} <= set(TEST_PORTS)
+        assert not {port + 1 for port in ports} & ports
         for other in slices[index + 1 :]:
             assert not ports & other
+            assert not {port + 1 for port in ports} & other
     assert worker_ports(f"gw{2 * count}", count) == worker_ports("gw0", count)
 
 
@@ -119,6 +123,15 @@ def test_a_held_port_is_passed_over() -> None:
         other.bind(("", free))
         with pytest.raises(OSError, match="is held"):
             pool.draw()
+
+
+def test_a_port_whose_next_one_is_held_is_passed_over() -> None:
+    """The next port is the Tor listener's, which a node needs to start."""
+    first = get_random_port()
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("", first + 1))
+        pool = PortPool(range(first, first + 3, 2), start=0)
+        assert pool.draw() == first + 2
 
 
 def test_a_condition_that_holds_is_not_waited_for() -> None:

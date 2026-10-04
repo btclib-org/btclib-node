@@ -24,7 +24,7 @@ from concurrent.futures import Future
 from contextlib import ExitStack, closing, suppress
 from dataclasses import replace
 from functools import partial
-from ipaddress import ip_address
+from ipaddress import IPv4Address, ip_address
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast, override
 from unittest.mock import AsyncMock
@@ -60,7 +60,7 @@ from btclib_node.p2p.banman import (
     lookup_subnet,
 )
 from btclib_node.p2p.connection import local_services
-from btclib_node.p2p.eviction import Network, net_group
+from btclib_node.p2p.eviction import Network, get_network, net_group
 from btclib_node.p2p.main import handle_p2p_handshake
 from btclib_node.p2p.manager import P2pManager
 from btclib_node.p2p.permissions import NetPermissionFlags, Whitelist
@@ -109,6 +109,7 @@ def a_conn(
     permissions: NetPermissionFlags = NetPermissionFlags.NONE,
     addr_name: str | None = None,
     reconnect_v1: bool = False,
+    inbound_onion: bool = False,
 ) -> Any:
     """Build a `Connection` double: no socket, its own `sent`/`stopped` logs.
 
@@ -121,10 +122,11 @@ def a_conn(
     `version` yet -- `promote_connection` and `remove_connection` both
     read it back to clear `pending_outbound_nonces`.
     """
+    default_address = peer_address("1.2.3.4", 18444)
     conn = SimpleNamespace(
         id=conn_id,
         status=status,
-        address=address or peer_address("1.2.3.4", 18444),
+        address=address or default_address,
         last_receive=time.time() if last_receive is None else last_receive,
         ping_start=ping_start,
         connected_time=int(time.time()) if connected_time is None else connected_time,
@@ -133,6 +135,12 @@ def a_conn(
         feefilter=feefilter,
         nonce=nonce,
         inbound=inbound,
+        inbound_onion=inbound_onion,
+        # `get_network`, which answers for the onion address some tests
+        # give a double, where `net_class` raises
+        connected_through_network=(
+            Network.ONION if inbound_onion else get_network(address or default_address)
+        ),
         automatic=automatic,
         version_message=SimpleNamespace(
             version=protocol,
@@ -1948,6 +1956,89 @@ def test_bind_binds_an_onion_tagged_address_after_the_plain_ones(
             server_socket.close()
 
 
+def test_bind_binds_the_loopback_onion_listener_where_no_bind_is_given(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1666: `AppInitMain` adds `127.0.0.1:<port + 1>=onion`, first."""
+    port = get_random_port()
+    manager = a_manager(port=port)
+    sockets = manager._bind()
+    try:
+        assert [s.getsockname()[:2] for s in sockets[:2]] == [
+            ("127.0.0.1", port + 1),
+            ("0.0.0.0", port),  # noqa: S104
+        ]
+        assert manager._onion_binds == {(IPv4Address("127.0.0.1"), port + 1)}
+    finally:
+        for server_socket in sockets:
+            server_socket.close()
+
+
+def test_bind_adds_no_onion_listener_beside_a_bind(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1666: `-bind` of either kind is what `AppInitMain` looks for."""
+    port, other = get_random_port(), get_random_port()
+    manager = a_manager(port=port, bind=[f"127.0.0.1:{other}"])
+    sockets = manager._bind()
+    try:
+        assert [s.getsockname()[1] for s in sockets] == [other]
+        assert manager._onion_binds == set()
+    finally:
+        for server_socket in sockets:
+            server_socket.close()
+
+
+def test_a_failed_default_onion_bind_ends_the_bind(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1666: the default onion bind is `BF_REPORT_ERROR` too.
+
+    Nothing is bound past it, and `listening` is never set.
+    """
+    port = get_random_port()
+    manager = a_manager(port=port)
+    tried: list[tuple[str, int | None]] = []
+
+    def refuse(family: int, host: str, port: int | None = None) -> socket.socket:
+        tried.append((host, port))
+        msg = "refused"
+        raise OSError(msg)
+
+    monkeypatch.setattr(manager, "_bind_one", refuse)
+    with pytest.raises(OSError, match="refused"):
+        manager._bind()
+    assert tried == [("127.0.0.1", port + 1)]
+    assert not manager.listening.is_set()
+
+
+def test_a_taken_port_closes_the_default_onion_listener(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1666: the IPv4 bind fails after the onion one, which is closed.
+
+    The sockets are read back rather than probed: an open one that nothing
+    refers to is closed by its own finalizer, which hides the leak.
+    """
+    port = get_random_port()
+    manager = a_manager(port=port)
+    bound: list[socket.socket] = []
+    bind_one = manager._bind_one
+
+    def recording(*args: Any) -> socket.socket:
+        bound.append(bind_one(*args))
+        return bound[-1]
+
+    monkeypatch.setattr(manager, "_bind_one", recording)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
+        taken.bind(("", port))
+        taken.listen()
+        with pytest.raises(OSError, match=r"Unable to bind to 0\.0\.0\.0"):
+            manager._bind()
+    assert [server_socket.fileno() for server_socket in bound] == [-1]
+    assert not manager.listening.is_set()
+
+
 def test_a_bind_that_fails_closes_the_listeners_bound_before_it(
     a_manager: AManagerFactory,
 ) -> None:
@@ -2220,6 +2311,17 @@ def test_a_peer_is_not_told_where_core_does_not_tell_it(
     manager._maybe_send_local_addr(conn, 1000.0)
     assert conn.sent == []
     assert conn.next_local_addr_send == 0.0
+
+
+def test_a_peer_on_an_onion_listener_is_told_no_local_address(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1644: `GetLocal` keeps other networks' addresses from a Tor peer."""
+    manager, conn = an_announcing_manager(a_manager)
+    conn.inbound_onion = True
+    manager._maybe_send_local_addr(conn, 1000.0)
+    assert conn.sent == []
+    assert conn.next_local_addr_send > 1000.0
 
 
 def test_a_peer_is_told_nothing_where_the_node_has_no_address(
@@ -5424,6 +5526,15 @@ def test_a_full_manager_evicts_an_inbound_peer_to_accept_a_new_one(
         manager.join(timeout=10)
 
 
+def public_listener(manager: P2pManager) -> socket.socket:
+    """Return the listener bound on every IPv4 interface, not the onion one."""
+    return next(
+        s
+        for s in manager._server_sockets
+        if s.getsockname()[0] == "0.0.0.0"  # noqa: S104
+    )
+
+
 def land_an_inbound_peer(
     manager: P2pManager, host: str, port: int
 ) -> tuple[socket.socket, socket.socket]:
@@ -5431,11 +5542,15 @@ def land_an_inbound_peer(
 
     Through `P2pManager._accept_queues`, since a peer the suite can
     really connect from is a local one, which is never discouraged.
-    Returns the pair, the second being the peer's own end.
+    The socket is one end of a loopback connection, as `server` reads the
+    address it is bound to. Returns the pair, the second being the peer's
+    own end.
     """
-    server_socket = manager._server_sockets[0]
+    server_socket = public_listener(manager)
     wait_until(lambda: server_socket in manager._accept_queues)
-    ours, theirs = socket.socketpair()
+    with socket.create_server(("127.0.0.1", 0)) as pair_listener:
+        theirs = socket.create_connection(pair_listener.getsockname())
+        ours, _ = pair_listener.accept()
     manager.loop.call_soon_threadsafe(
         manager._accept_queues[server_socket].put_nowait, (ours, (host, port))
     )
@@ -5457,7 +5572,7 @@ def test_an_inbound_connection_s_cache_key_is_its_own_local_socket(
     manager = a_manager(port=port)
     manager.start()
     wait_until_listening(manager)
-    server_socket = manager._server_sockets[0]
+    server_socket = public_listener(manager)
     local_host, local_port = server_socket.getsockname()[:2]
     with ExitStack() as peers:
         _, first = land_an_inbound_peer(manager, "1.2.3.4", 50000)
@@ -5472,6 +5587,73 @@ def test_an_inbound_connection_s_cache_key_is_its_own_local_socket(
                 local_host,
                 local_port,
             )
+        manager.stop()
+        manager.join(timeout=10)
+
+
+@pytest.mark.parametrize("onion", [True, False])
+def test_a_connection_is_tagged_by_the_listener_it_reached(
+    a_manager: AManagerFactory, *, onion: bool
+) -> None:
+    """ISS 1644: `inbound_onion` is whether the bind is among `m_onion_binds`.
+
+    The tag moves the peer's network, and with it the `getaddr` cache key,
+    and takes `-whitelist` from it, a Tor peer arriving from the daemon's
+    address.
+    """
+    tagged, plain = get_random_port(), get_random_port()
+    manager = a_manager(bind=[f"127.0.0.1:{tagged}=onion", f"127.0.0.1:{plain}"])
+    manager.whitelist = Whitelist.parse(["127.0.0.1"])
+    manager.start()
+    wait_until_listening(manager)
+    reached = tagged if onion else plain
+    with closing(socket.create_connection(("127.0.0.1", reached), timeout=20)):
+        wait_until(lambda: 0 in manager.pending_connections)
+        conn = manager.pending_connections[0]
+        assert conn.inbound_onion is onion
+        assert conn.connected_through_network == (
+            Network.ONION if onion else Network.UNROUTABLE
+        )
+        assert conn.addr_cache_key == (
+            BIP155Network.TORV3 if onion else BIP155Network.IPV4,
+            "127.0.0.1",
+            reached,
+        )
+        assert (NetPermissionFlags.NO_BAN in conn.permissions) is not onion
+        manager.stop()
+        manager.join(timeout=10)
+
+
+def test_a_wildcard_onion_bind_tags_nothing(a_manager: AManagerFactory) -> None:
+    """ISS 1644: the tag is read off the accepted socket's own address.
+
+    Core looks `GetBindAddress(*sock)` up in `m_onion_binds`; it is a
+    concrete address, never the `0.0.0.0` the listener is bound to.
+    """
+    tagged = get_random_port()
+    manager = a_manager(bind=[f"0.0.0.0:{tagged}=onion"])
+    manager.start()
+    wait_until_listening(manager)
+    with closing(socket.create_connection(("127.0.0.1", tagged), timeout=20)):
+        wait_until(lambda: 0 in manager.pending_connections)
+        assert manager.pending_connections[0].inbound_onion is False
+        manager.stop()
+        manager.join(timeout=10)
+
+
+def test_a_whitelisted_host_on_an_onion_listener_is_refused_where_banned(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1644: no `-whitelist` entry is read for a peer on an onion bind."""
+    tagged = get_random_port()
+    manager = a_manager(bind=[f"127.0.0.1:{tagged}=onion"])
+    manager.ban_man.ban(a_subnet("127.0.0.1"))
+    manager.whitelist = Whitelist.parse(["127.0.0.1"])
+    manager.start()
+    wait_until_listening(manager)
+    with closing(socket.create_connection(("127.0.0.1", tagged), timeout=20)) as peer:
+        assert peer.recv(4096) == b""
+        assert manager.last_connection_id == -1
         manager.stop()
         manager.join(timeout=10)
 
@@ -6198,7 +6380,7 @@ def test_stop_closes_a_connection_queued_when_the_drain_begins(
     manager = a_manager(port=port)
     manager.start()
     wait_until_listening(manager)
-    server_socket = manager._server_sockets[0]
+    server_socket = public_listener(manager)
     wait_until(lambda: server_socket in manager._accept_queues)
 
     ours, theirs = socket.socketpair()
@@ -8246,6 +8428,29 @@ def test_an_eviction_candidate_is_no_ban_where_its_peer_holds_the_permission() -
     assert not manager_module._eviction_candidate(conn).noban
     conn.permissions = NetPermissionFlags.NO_BAN
     assert manager_module._eviction_candidate(conn).noban
+
+
+@pytest.mark.parametrize(
+    ("onion", "network"), [(True, Network.ONION), (False, Network.IPV4)]
+)
+def test_an_eviction_candidate_is_on_the_network_its_peer_is_reached_over(
+    *, onion: bool, network: Network
+) -> None:
+    """ISS 1644: `m_network` is `ConnectedThroughNetwork`, onion if tagged."""
+    conn = a_conn(
+        1, inbound=True, inbound_onion=onion, address=peer_address("1.2.3.4", 1)
+    )
+    conn.__dict__.update(
+        connected_time=0,
+        min_ping_time=0.0,
+        last_novel_block_time=0,
+        last_novel_tx_time=0,
+        has_all_wanted_services=False,
+        keyed_net_group=0,
+        prefer_evict=False,
+        version_message=None,
+    )
+    assert manager_module._eviction_candidate(conn).network == network
 
 
 def test_a_banned_host_holding_no_ban_is_accepted_with_its_permissions(

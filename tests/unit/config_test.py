@@ -19,9 +19,11 @@ from btclib_node.config import (
     DEFAULT_MIN_RELAY_FEERATE,
     BindAddress,
     Config,
+    default_onion_bind,
     get_path_arg,
     lookup_host_port,
     lookup_service,
+    onion_port,
     parse_bind,
     service_text,
     split_host_port,
@@ -270,6 +272,24 @@ def test_parse_bind_reads_an_address_port_and_tag(
 ) -> None:
     """ISS 1257: `-port` is the default; an `=onion` one is that plus one."""
     assert parse_bind(arg, 8333) == expected
+
+
+@pytest.mark.parametrize(
+    ("port", "expected"), [(8333, 8334), (65534, 65535), (65535, 0)]
+)
+def test_the_onion_port_is_the_next_one_in_sixteen_bits(
+    port: int, expected: int
+) -> None:
+    """ISS 1666: `AppInitMain` holds `port + 1` in a `uint16_t`."""
+    assert onion_port(port) == expected
+    assert parse_bind("127.0.0.1=onion", port).port == expected
+
+
+def test_the_default_onion_bind_is_the_loopback_one_port_up() -> None:
+    """ISS 1666: `DefaultOnionServiceTarget` at `-port` + 1."""
+    assert default_onion_bind(8333) == BindAddress(
+        IPv4Address("127.0.0.1"), 8334, onion=True
+    )
 
 
 @pytest.mark.parametrize(

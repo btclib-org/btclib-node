@@ -434,9 +434,10 @@ _OPTIONS: dict[str, _Option] = {
     "bind": _Option(
         "=<addr>[:<port>][=onion]",
         "Bind to given address and always listen on it (default: 0.0.0.0). "
-        "Use [host]:port notation for IPv6. Append =onion to bind a further "
-        "listener, at <port> + 1 by default, whose connections this node "
-        "does not tag as Tor. This option can be specified multiple times",
+        "Use [host]:port notation for IPv6. Append =onion to tag any "
+        "incoming connections to that address and port as incoming Tor "
+        "connections (default: 127.0.0.1:<port + 1>=onion, where no -bind "
+        "is given). This option can be specified multiple times",
         _CONNECTION_TITLE,
         network_only=True,
     ),

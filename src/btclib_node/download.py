@@ -21,6 +21,7 @@ from random import SystemRandom
 from typing import TYPE_CHECKING
 
 from btclib.p2p.address import ServiceFlags
+from btclib.p2p.addrv2 import BIP155Network
 from btclib.p2p.inventory import GetData, Inv, Inventory, InventoryType
 from btclib.p2p.limits import MAX_INV_SZ
 from btclib.p2p.negotiation import FeeFilter, SendHeaders
@@ -45,8 +46,6 @@ from btclib_node.txrequest import TxRequestTracker
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-
-    from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 
     from btclib_node import Node
     from btclib_node.log import Logger
@@ -209,7 +208,7 @@ def _round_fee_filter(rate: int, buckets: list[float]) -> int:
     return int(buckets[index])
 
 
-def _inbound_net_class(address: NetworkAddressV2) -> BIP155Network | int:
+def _inbound_net_class(conn: Connection) -> BIP155Network | int:
     """Return the key an inbound peer's schedule is shared across.
 
     `CNode::m_network_key` (net.h:755) is what `NextInvToInbounds`
@@ -228,10 +227,11 @@ def _inbound_net_class(address: NetworkAddressV2) -> BIP155Network | int:
     schedule for that family, regardless of its own subnet. IPv4 and
     IPv6 are the only two `btclib_node.p2p.address.can_connect` ever
     hands a connection here, so returning the BIP155 network id itself
-    is enough of a stand-in for Core's hash: there is nothing here for
-    Core's Tor, I2P, CJDNS or bind-address component to do.
+    is enough of a stand-in for Core's hash. Tor's id stands in for a
+    connection on an `=onion` listener (`inbound_onion`). There is
+    nothing here for Core's I2P, CJDNS or bind-address component to do.
     """
-    return address.network_id
+    return BIP155Network.TORV3 if conn.inbound_onion else conn.address.network_id
 
 
 def _can_serve_blocks(conn: Connection) -> bool:
@@ -939,9 +939,7 @@ class DownloadManager:
             # cadence the comment above relies on.
             if not conn.tx_announce_queue:
                 if conn.inbound:
-                    conn.next_inv_send_time = self._next_inbound_inv_time(
-                        conn.address, now
-                    )
+                    conn.next_inv_send_time = self._next_inbound_inv_time(conn, now)
                 else:
                     conn.next_inv_send_time = now + _rng.expovariate(
                         1 / _OUTBOUND_TX_ANNOUNCE_INTERVAL
@@ -1092,8 +1090,8 @@ class DownloadManager:
                     0, _MAX_FEEFILTER_CHANGE_DELAY
                 )
 
-    def _next_inbound_inv_time(self, address: NetworkAddressV2, now: float) -> float:
-        """Return the schedule this address's net class currently shares.
+    def _next_inbound_inv_time(self, conn: Connection, now: float) -> float:
+        """Return the schedule this connection's net class currently shares.
 
         `NextInvToInbounds` (net_processing.cpp, the same commit): redrawn
         only once the class's own timer has already passed, so every
@@ -1102,7 +1100,7 @@ class DownloadManager:
         its own independent draw instead, `_send_due_announcements`'s
         other branch.
         """
-        net_class = _inbound_net_class(address)
+        net_class = _inbound_net_class(conn)
         due = self._next_inv_to_inbounds.get(net_class, 0.0)
         if due < now:
             due = now + _rng.expovariate(1 / _INBOUND_TX_ANNOUNCE_INTERVAL)
