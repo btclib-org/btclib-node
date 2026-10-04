@@ -61,8 +61,9 @@ dependencies = [
     # first release carrying `btclib.p2p.bip324`, which
     # `p2p/v2transport.py` imports (issue #1190).
     #
-    # The floor is 2026.10.4, the release fixing GHSA-9fr5-46w5-5f9r.
-    "btclib[secp256k1,bip324]>=2026.10.4",
+    # The floor is 2026.10.5, the release fixing GHSA-9r97-9x22-2pp4 and
+    # GHSA-rw95-w37r-537w. 2026.10.4 fixed GHSA-9fr5-46w5-5f9r.
+    "btclib[secp256k1,bip324]>=2026.10.5",
     # `rpc/callbacks.py` imports `add_checksum` from
     # `btclib_wallet.descriptors`, where btclib's own `descriptors`
     # moved (btclib-org/btclib#2129): a runtime dependency now, not the
