@@ -48,6 +48,7 @@ from btclib_node.p2p.address import (
     endpoint_key,
     fixed_seed_addresses,
     host_key,
+    internal_source,
     peer_address,
 )
 from btclib_node.p2p.anchors import dump_anchors, read_anchors
@@ -171,34 +172,42 @@ def a_full_node(ip: str, port: int) -> NetworkAddressV2:
 def a_peer_db_stub(**attributes: Any) -> Any:
     """Build a `PeerDB` double good enough for `manage_connections`'s own loop.
 
-    `get_active_addresses` is on every one of them: the loop calls it
-    once `_ACTIVE_PRUNE_INTERVAL` has passed regardless of what else a
-    test's own scenario does, btclib-org/btclib-node#71, so a peer db
-    missing it fails a test on an `AttributeError` the test is not
-    about. `holds_network` is too, answering that every network is
-    held, so that no fixed seed is added where a test is not about them.
+    `holds_network` is on every one of them, answering that every
+    network is held, so that no fixed seed is added where a test is not
+    about them. `resolve_collisions` is too, a no-op counted in
+    `resolved`, and `select_tried_collision` answers no collision.
     A `random_address` given is the draw `address_sampler` hands back,
     so each call of it is one draw of the pass, and a `random_new_address`
     the draw it hands back for `new_only`, a feeler's; the one not given
     refuses to be asked. `attempt` records every try in `tries`, by
-    `endpoint_key`, which `last_try` reads: whether the table holds the
+    `endpoint_key`, which `last_try` reads, and its `count_failure` in
+    `counted`: whether the table holds the
     endpoint is `PeerDB`'s own test. `connected` records every address it
     is told of in `connected_to`. `size` defaults to `0`, an empty
     table, so `_dns_address_seed` asks every seed at once with no wait
     unless a test overrides it.
     """
     tries: dict[bytes, float] = {}
+    counted: list[bool] = []
+
+    def attempt(address: NetworkAddressV2, *, count_failure: bool = False) -> None:
+        tries[endpoint_key(address)] = time.time()
+        counted.append(count_failure)
+
+    resolved: list[None] = []
     connected: list[NetworkAddressV2] = []
     defaults: dict[str, Any] = {
-        "get_active_addresses": list,
+        "resolve_collisions": lambda: resolved.append(None),
+        "resolved": resolved,
+        "select_tried_collision": lambda: None,
+        "add_active_address": lambda address: None,
         "connected": connected.append,
         "connected_to": connected,
         "holds_network": lambda network_id: True,
         "size": 0,
         "tries": tries,
-        "attempt": lambda address: tries.__setitem__(
-            endpoint_key(address), time.time()
-        ),
+        "attempt": attempt,
+        "counted": counted,
         "last_try": lambda address: tries.get(endpoint_key(address), 0.0),
     }
     if "random_address" in attributes or "random_new_address" in attributes:
@@ -998,56 +1007,6 @@ def test_a_connected_peer_outlives_the_handshake_timeout(
     assert conn.id in manager.connections
 
 
-def a_counting_prune() -> tuple[list[None], Any]:
-    """Build a `get_active_addresses` stub recording every call it answers."""
-    calls: list[None] = []
-
-    def get_active_addresses() -> list[Any]:
-        calls.append(None)
-        return []
-
-    return calls, get_active_addresses
-
-
-def test_the_active_table_is_pruned_without_being_asked(
-    a_manager: AManagerFactory,
-) -> None:
-    """The active table is pruned once per pass, whether or not it is asked.
-
-    #71: `get_active_addresses`'s own prune only ever ran behind
-    something that already called it -- `random_address`, which this
-    loop stops reaching for once it has enough connections, and
-    `getaddr`, answered once per connection and never again -- so a
-    well-connected node nobody asks a `getaddr` would otherwise never
-    prune a stale row.
-    """
-    calls, get_active_addresses = a_counting_prune()
-    peer_db = a_peer_db_stub(is_empty=True, get_active_addresses=get_active_addresses)
-    manager = a_manager(peer_db=peer_db)
-    asyncio.run(one_pass(manager))
-    asyncio.run(one_pass(manager))
-    assert len(calls) == 1
-
-
-def test_the_active_table_prune_repeats_once_the_interval_passes(
-    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A second prune runs once `_ACTIVE_PRUNE_INTERVAL` elapses, not sooner.
-
-    The previous test checks that two passes inside the interval prune only
-    once; this pushes the clock forward past the interval between two passes and
-    checks the count goes from one to two.
-    """
-    calls, get_active_addresses = a_counting_prune()
-    peer_db = a_peer_db_stub(is_empty=True, get_active_addresses=get_active_addresses)
-    manager = a_manager(peer_db=peer_db)
-    asyncio.run(one_pass(manager))
-    future = time.time() + manager_module._ACTIVE_PRUNE_INTERVAL + 1
-    monkeypatch.setattr(time, "time", lambda: future)
-    asyncio.run(one_pass(manager))
-    assert len(calls) == 2
-
-
 async def _dial_call_count_over(manager: P2pManager, real_seconds: float) -> int:
     """Run `manage_connections` as one continuous task for `real_seconds`.
 
@@ -1119,29 +1078,6 @@ def test_the_automatic_dial_pass_repeats_once_its_interval_passes_again(
     """
     manager = a_manager()
     assert asyncio.run(_dial_call_count_over(manager, 1.2)) == 2
-
-
-def raises_pruning() -> NoReturn:
-    """Stand in for a `get_active_addresses` whose own `db.delete` raised."""
-    raise RuntimeError("no")
-
-
-def test_a_peer_db_that_raises_pruning_does_not_stop_the_housekeeping(
-    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A `get_active_addresses` that raises while pruning logs, not crashes.
-
-    Whatever `get_active_addresses`'s own `db.delete` ever raised, and
-    `manage_connections`'s own future is never awaited, so letting one
-    out unhandled would end the loop for the rest of this node's life
-    rather than only this one pass -- btclib-org/btclib-node#71.
-    """
-    logged: list[str] = []
-    peer_db = a_peer_db_stub(is_empty=True, get_active_addresses=raises_pruning)
-    manager = a_manager(peer_db=peer_db)
-    monkeypatch.setattr(manager.logger, "exception", logged.append)
-    assert asyncio.run(one_pass(manager)) is True
-    assert logged
 
 
 def test_a_pending_connection_still_within_the_window_is_left_alone(
@@ -1590,6 +1526,24 @@ def test_the_fixed_seeds_of_every_empty_network_are_added_after_a_minute(
     manager._next_fixed_seeds_check = 0.0
     asyncio.run(manager._maybe_dial_more_peers())
     assert len(added) == 1
+
+
+def test_the_fixed_seeds_have_one_internal_source(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`ThreadOpenConnections` passes `SetInternal("fixedseeds")` to `Add`."""
+    peer_db = PeerDB(cast("Any", None), None)
+    sources: list[NetworkAddressV2 | None] = []
+    monkeypatch.setattr(
+        peer_db,
+        "add_addresses",
+        lambda _addresses, *, source, **_: sources.append(source),
+    )
+    manager = a_manager(peer_db=peer_db)
+    manager.node.chain = Main()
+    manager._dial_start = time.time() - 61
+    manager._maybe_add_fixed_seeds()
+    assert sources == [internal_source("fixedseeds")]
 
 
 def test_a_fixed_seed_s_own_backdating_is_not_penalized_again(
@@ -2365,7 +2319,7 @@ def test_a_pass_dials_once_and_draws_no_more(
 
 
 def refuses_to_be_asked() -> NoReturn:
-    """Stand in for `random_address`/`get_active_addresses`, unreachable."""
+    """Stand in for `random_address`, unreachable."""
     raise RuntimeError("no")
 
 
@@ -2918,10 +2872,10 @@ class _PeerDbSizeDrops:
 
     A real `PeerDB.size` is not cached: `_dns_address_seed` reads it
     fresh at every batch boundary, so a value that drops between two of
-    those reads -- `_maybe_prune_active_addresses` aging out the last
-    active row while this coroutine's own wait sleeps, on the same
-    event loop -- answers `0` where the boundary before it answered
-    more, without the table ever having started empty (ISS 1265).
+    those reads -- the table losing its last row while this coroutine's
+    own wait sleeps, on the same event loop -- answers `0` where the
+    boundary before it answered more, without the table ever having
+    started empty (ISS 1265).
     """
 
     def __init__(self, sizes: list[int], query_dns_seed: object) -> None:
@@ -3556,8 +3510,8 @@ def test_process_addr_fetch_logs_and_continues_on_a_dial_that_raises(
 ) -> None:
     """A dial that raises is logged, like every other housekeeping step.
 
-    `_open_addr_fetches` never awaits this coroutine's own future, the
-    same reason `_maybe_prune_active_addresses` guards its own call.
+    `_open_addr_fetches` never awaits this coroutine's own future, so
+    an exception left unhandled would end its loop.
     """
     logged: list[str] = []
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: _NamedLoop(["1.2.3.4"]))
@@ -6726,6 +6680,7 @@ def a_feeler_manager(
     monkeypatch: pytest.MonkeyPatch,
     new: NetworkAddressV2 | None,
     conns: Sequence[Any] = (),
+    **attributes: Any,
 ) -> tuple[P2pManager, list[dict[str, Any]]]:
     """Build a manager whose next dial is a feeler to `new`, recording it.
 
@@ -6743,7 +6698,9 @@ def a_feeler_manager(
     made: list[dict[str, Any]] = []
     monkeypatch.setattr(manager_module, "dial", answers)
     monkeypatch.setattr(manager_module, "_FEELER_SLEEP_WINDOW", 0)
-    peer_db = a_peer_db_stub(is_empty=False, random_new_address=lambda: new)
+    peer_db = a_peer_db_stub(
+        is_empty=False, random_new_address=lambda: new, **attributes
+    )
     manager = a_manager(peer_db=peer_db)
     for conn in conns or automatic_conns(8, 2):
         conn.address = conn.address if conns else peer_address(f"10.{conn.id}.0.1", 1)
@@ -7104,7 +7061,11 @@ def test_an_anchor_short_of_any_left_draws_from_the_table(
         "create_connection",
         lambda sock, address, **kwargs: made.append((address, kwargs)),
     )
-    asyncio.run(manager._dial_one_draw(set(), set(), manager_module._Outbound.ANCHOR))
+    asyncio.run(
+        manager._dial_one_draw(
+            set(), set(), manager_module._Outbound.ANCHOR, count_failures=False
+        )
+    )
     assert made == [
         (
             drawn,
@@ -7169,7 +7130,11 @@ def test_an_anchor_dial_records_its_try(
     monkeypatch.setattr(manager_module, "dial", refuses)
     manager = a_manager(peer_db=a_peer_db_stub())
     manager.anchors = [ANCHOR]
-    asyncio.run(manager._dial_one_draw(set(), set(), manager_module._Outbound.ANCHOR))
+    asyncio.run(
+        manager._dial_one_draw(
+            set(), set(), manager_module._Outbound.ANCHOR, count_failures=False
+        )
+    )
     assert list(tries_of(manager)) == [endpoint_key(ANCHOR)]
 
 
@@ -7383,7 +7348,11 @@ def network_dials(
         "create_connection",
         lambda sock, address, **kwargs: made.append((address, kwargs)),
     )
-    asyncio.run(manager._dial_one_draw(set(), groups, manager_module._Outbound.NETWORK))
+    asyncio.run(
+        manager._dial_one_draw(
+            set(), groups, manager_module._Outbound.NETWORK, count_failures=False
+        )
+    )
     return made
 
 
@@ -8416,7 +8385,11 @@ def test_a_drawn_peer_is_dialled_with_v2_by_its_services(
     monkeypatch.setattr(
         manager, "create_connection", lambda sock, address, **kw: made.append(kw)
     )
-    asyncio.run(manager._dial_one_draw(set(), set(), manager_module._Outbound.NETWORK))
+    asyncio.run(
+        manager._dial_one_draw(
+            set(), set(), manager_module._Outbound.NETWORK, count_failures=False
+        )
+    )
     assert [kw["use_v2transport"] for kw in made] == [offered and advertised]
 
 
@@ -9095,7 +9068,11 @@ def test_a_drawn_seed_is_dialled_with_v2_without_v1transport(
     monkeypatch.setattr(
         manager, "create_connection", lambda sock, address, **kw: made.append(kw)
     )
-    asyncio.run(manager._dial_one_draw(set(), set(), manager_module._Outbound.NETWORK))
+    asyncio.run(
+        manager._dial_one_draw(
+            set(), set(), manager_module._Outbound.NETWORK, count_failures=False
+        )
+    )
     assert [kw["use_v2transport"] for kw in made] == [expected]
 
 
@@ -9221,3 +9198,146 @@ def test_a_lookup_answering_after_its_caller_is_cancelled_is_dropped(
     release.set()
     lookup.join(timeout=10)
     assert not lookup.is_alive()
+
+
+def a_counting_manager(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    conns: list[Any],
+    *,
+    max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
+    **attributes: Any,
+) -> tuple[P2pManager, list[NetworkAddressV2]]:
+    """Build a manager whose next pass dials `drawn` and records the dial."""
+    dialled: list[NetworkAddressV2] = []
+
+    async def records(address: NetworkAddressV2) -> None:
+        dialled.append(address)
+
+    monkeypatch.setattr(manager_module, "dial", records)
+    peer_db = a_peer_db_stub(
+        is_empty=False,
+        random_address=lambda: a_full_node("5.6.7.8", 18444),
+        **attributes,
+    )
+    manager = a_manager(conns, peer_db=peer_db, max_connections=max_connections)
+    return manager, dialled
+
+
+@pytest.mark.parametrize(
+    ("addresses", "max_connections", "counts"),
+    [
+        pytest.param([], DEFAULT_MAX_PEER_CONNECTIONS, False, id="no-peer"),
+        pytest.param(["11.1.0.1"], DEFAULT_MAX_PEER_CONNECTIONS, False, id="one-group"),
+        pytest.param(
+            ["11.1.0.1", "11.1.0.2"],
+            DEFAULT_MAX_PEER_CONNECTIONS,
+            False,
+            id="two-peers-one-group",
+        ),
+        pytest.param(
+            ["11.1.0.1", "12.2.0.1"],
+            DEFAULT_MAX_PEER_CONNECTIONS,
+            True,
+            id="two-groups",
+        ),
+        pytest.param(["11.1.0.1"], 2, True, id="one-group-of-two-connections"),
+    ],
+)
+def test_a_failed_attempt_is_counted_once_enough_groups_are_connected(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    addresses: list[str],
+    max_connections: int,
+    *,
+    counts: bool,
+) -> None:
+    """`ThreadOpenConnections`' `count_failures`: not while the node is offline.
+
+    The groups of the outbound IPv4 and IPv6 peers, plus the peers on
+    Tor, I2P and CJDNS, reach `min(m_max_automatic_connections - 1, 2)`.
+    """
+    conns = [
+        a_conn(i, automatic=True, address=peer_address(ip, 18444))
+        for i, ip in enumerate(addresses)
+    ]
+    manager, dialled = a_counting_manager(
+        a_manager, monkeypatch, conns, max_connections=max_connections
+    )
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert dialled
+    assert cast("Any", manager.peer_db).counted == [counts]
+
+
+def test_a_peer_on_a_privacy_network_counts_as_a_group_of_its_own(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core adds one to the count for each Tor, I2P or CJDNS peer."""
+    onion = NetworkAddressV2(0, 0, BIP155Network.TORV3, b"\x11" * 32, 8333)
+    conns = [
+        a_conn(0, automatic=True, address=peer_address("11.1.0.1", 18444)),
+        a_conn(1, automatic=True, address=onion),
+    ]
+    manager, _ = a_counting_manager(a_manager, monkeypatch, conns)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert cast("Any", manager.peer_db).counted == [True]
+
+
+def test_a_feeler_does_not_hold_a_group_against_the_count(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A feeler and an addr-fetch connection are outside the groups counted."""
+    conns = [
+        a_conn(0, automatic=True, address=peer_address("11.1.0.1", 18444)),
+        a_conn(1, automatic=True, feeler=True, address=peer_address("12.2.0.1", 1)),
+        a_conn(2, addr_fetch=True, address=peer_address("13.3.0.1", 1)),
+    ]
+    manager, _ = a_counting_manager(a_manager, monkeypatch, conns)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert cast("Any", manager.peer_db).counted == [False]
+
+
+def test_collisions_are_resolved_before_each_draw(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core calls `ResolveCollisions` once a pass has settled what to open."""
+    manager, dialled = a_counting_manager(a_manager, monkeypatch, [])
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert dialled
+    assert len(cast("Any", manager.peer_db).resolved) == 1
+
+
+def test_a_feeler_dials_the_old_entry_of_a_tried_collision(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`SelectTriedCollision` is asked first, and its address dialled."""
+    old = a_full_node("9.9.9.9", 18444)
+    new = a_full_node("5.6.7.8", 18444)
+    manager, made = a_feeler_manager(
+        a_manager, monkeypatch, new, select_tried_collision=lambda: old
+    )
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert list(tries_of(manager)) == [endpoint_key(old)]
+    assert len(made) == 1
+
+
+def test_a_feeler_marks_good_a_collision_it_is_connected_to(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Already connected: `Good` it, and draw from the new table instead."""
+    old = a_full_node("9.9.9.9", 18444)
+    new = a_full_node("5.6.7.8", 18444)
+    marked: list[NetworkAddressV2] = []
+    conns = automatic_conns(8, 2)
+    conns[0].address = old
+    manager, _ = a_feeler_manager(
+        a_manager,
+        monkeypatch,
+        new,
+        conns,
+        select_tried_collision=lambda: old,
+        add_active_address=marked.append,
+    )
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert marked == [old]
+    assert list(tries_of(manager)) == [endpoint_key(new)]
