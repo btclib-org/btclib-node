@@ -2048,6 +2048,11 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
   each RPC request it answers**, so `stop` called mid-pass does not raise
   `NodeShutdownTimeoutError` on a node still answering (closes #1651).
 
+### The btclib floor is the release fixing its sighash advisories
+
+- **`pyproject.toml` requires btclib 2026.10.5**, the release fixing
+  GHSA-9r97-9x22-2pp4 and GHSA-rw95-w37r-537w (issue #1685).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
