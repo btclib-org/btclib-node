@@ -15,6 +15,7 @@ call every entry, `stop` included, unless `-rpcwhitelistdefault` holds.
 
 import math
 import re
+import threading
 import time
 from io import BytesIO
 from ipaddress import ip_address
@@ -84,8 +85,11 @@ from btclib_node.rpc.mining import (
 from btclib_node.rpc.solver import solver
 
 if TYPE_CHECKING:
+    from collections.abc import Generator, Iterator
+
     from btclib_node import Node
     from btclib_node.chainstate.block_index import BlockIndex
+    from btclib_node.chainstate.utxo_index import UtxoIndex
     from btclib_node.p2p.block_availability import BlockAvailability
     from btclib_node.p2p.connection import Connection
     from btclib_node.rpc.connection import RpcConnection
@@ -2277,26 +2281,16 @@ def get_mempool_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     }
 
 
-# ParseHashType's own two names this tree can answer
-# (src/rpc/blockchain.cpp:977-987, at bitcoin/bitcoin@ca7162cde5).
-# "hash_serialized_3" is a third name Core itself accepts but this tree
-# does not implement -- get_tx_out_set_info's own docstring is where
-# that refusal, reusing ParseHashType's own error text for a value Core
-# would otherwise accept, is argued.
-_TX_OUT_SET_HASH_TYPES = {"muhash", "none"}
-
-# Core's own default is "hash_serialized_3"
-# (`RPCArg::Default{"hash_serialized_3"}`, `src/rpc/blockchain.cpp:1054`,
-# at bitcoin/bitcoin@9be056a8a7); this tree's own default is
-# `get_tx_out_set_info`'s own one hash type it can actually answer
-# without a live scan -- that docstring is where the departure, and
-# what would remove it, is argued.
-_DEFAULT_TX_OUT_SET_HASH_TYPE = "muhash"
+# ParseHashType's three names (src/rpc/blockchain.cpp:967-978, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and Core's own default
+# (`RPCArg::Default{"hash_serialized_3"}`, same file, line 1017)
+_TX_OUT_SET_HASH_TYPES = {"hash_serialized_3", "muhash", "none"}
+_DEFAULT_TX_OUT_SET_HASH_TYPE = "hash_serialized_3"
 
 
 def get_tx_out_set_info(
     node: Node, conn: RpcConnection, params: list[Any]
-) -> dict[str, Any]:
+) -> dict[str, Any] | Generator[bool, None, dict[str, Any]]:
     """Answer `gettxoutsetinfo` from `UtxoIndex`'s own running `CoinStats`.
 
     Core's own default path recomputes every field from a live scan of
@@ -2305,10 +2299,9 @@ def get_tx_out_set_info(
     incrementally-maintained `CoinStatsIndex` answers instead
     (`index/coinstatsindex.cpp`) -- `chainstate/muhash.py`'s own module
     docstring is where `CoinStats` is argued as this tree's equivalent
-    of that second path, the only one it implements. `height`,
-    `bestblock`, `txouts`, `bogosize`, `total_amount` and (for
-    `hash_type: "muhash"`) `muhash` are Core's own field names and
-    units, `total_amount` in BTC through `_btc_amount` the way
+    of that second path. `height`, `bestblock`, `txouts`, `bogosize`,
+    `total_amount` and `muhash` come from it, and are Core's own field
+    names and units, `total_amount` in BTC through `_btc_amount` the way
     `get_mempool_info`'s own `mempoolminfee` already is; `muhash` itself
     is the raw digest bytes reversed before this returns, matching
     `uint256::GetHex()`'s own convention rather than this class's
@@ -2316,34 +2309,17 @@ def get_tx_out_set_info(
     `is_bip30_unspendable` is where that reversal is confirmed against
     the well-known genesis hash rather than assumed).
 
-    `hash_type: "hash_serialized_3"` -- Core's own default, the legacy
-    double-SHA256 scan -- is refused with `ParseHashType`'s own error
-    text (`RPC_INVALID_PARAMETER`, `'%s' is not a valid hash_type`),
-    reused here for a value Core itself accepts but this tree has no
-    accumulator for: `ApplyHash`/`TxOutSer` (`kernel/coinstats.cpp`)
-    fold every coin into one incremental hash in the coins-view
-    cursor's own order, by txid as the store's own keys sort it and
-    then by vout, and answering it here would mean a live, ordered
-    walk of every `utxo-` record on every call -- `KeyValueStore`'s own
-    `__iter__` (`db.py`) is the one full-store scan this tree carries,
-    reads every column family whole into memory, in one array, and
-    carries no prefix or streaming cursor a caller could narrow to
-    `utxo-` alone. This node answers only from `CoinStats`, the
-    incrementally-maintained accumulator `-coinstatsindex` puts in
-    front of that same scan on a real `bitcoind`, and building the
-    ordered scan `hash_serialized_3` needs beside it, on the tree's own
-    ordered store rather than through that one whole-store `__iter__`,
-    is its own issue rather than this one's.
-
-    So where Core's own default answers, this one refuses -- the
-    departure this docstring argues rather than leaves silent -- and
-    where a caller asks for nothing at all, `_DEFAULT_TX_OUT_SET_HASH_TYPE`
-    is what this tree answers instead: `"muhash"`, the one hash type
-    `CoinStats` already keeps running, so a bare `gettxoutsetinfo`
-    answers something rather than the error Core's own unreachable
-    default would otherwise still produce here. `hash_type: "none"`
-    answers every field but `muhash` itself, the way Core's own
-    `CoinStatsHashType::NONE` does.
+    `hash_type: "hash_serialized_3"`, Core's default, is the legacy
+    double-SHA256 over every coin, which no accumulator keeps: it is a
+    scan of the `utxo-` records, `UtxoIndex.serialized_hash`. The
+    chainstate is flushed first, as Core's `ForceFlushStateToDisk` does,
+    and the cursor is opened on `Node`'s thread together with the other
+    fields, so the answer is one set's. The scan is the generator
+    `_serialized_hash_job`, on a thread of its own as Core's is on an
+    HTTP worker, and `Node`'s loop serves other requests meanwhile. A
+    stored record that does not parse is `RPC_INTERNAL_ERROR` "Unable to
+    read UTXO set", as in Core. `hash_type: "none"` answers every field
+    but a hash, the way Core's own `CoinStatsHashType::NONE` does.
 
     `hash_or_height` is refused the way an ordinary `bitcoind`, run
     without `-coinstatsindex`, already refuses it -- `!g_coin_stats_index`
@@ -2395,18 +2371,78 @@ def get_tx_out_set_info(
     # docstring argues why
     bool_param(params, 2, name="use_index", default=True)
 
+    if hash_type == "hash_serialized_3":
+        node.chainstate.flush()
     active_chain = node.chainstate.block_index.active_chain
-    coin_stats = node.chainstate.utxo_index.coin_stats
+    utxo_index = node.chainstate.utxo_index
+    coin_stats = utxo_index.coin_stats
     result: dict[str, Any] = {
         "height": len(active_chain) - 1,
         "bestblock": active_chain[-1],
         "txouts": coin_stats.transaction_output_count,
         "bogosize": coin_stats.bogo_size,
     }
+    total_amount = _btc_amount(coin_stats.total_amount)
+    if hash_type == "hash_serialized_3":
+        return _serialized_hash_job(
+            utxo_index, utxo_index.cursor(), node, result, total_amount
+        )
     if hash_type == "muhash":
         result["muhash"] = coin_stats.digest[::-1]
-    result["total_amount"] = _btc_amount(coin_stats.total_amount)
+    result["total_amount"] = total_amount
     return result
+
+
+def _serialized_hash_job(
+    utxo_index: UtxoIndex,
+    cursor: Iterator[tuple[bytes, bytes]],
+    node: Node,
+    result: dict[str, Any],
+    total_amount: RawJSON,
+) -> Generator[bool, None, dict[str, Any]]:
+    """Hash `cursor`'s coins on a thread of its own, and answer when it ends.
+
+    `result` and `cursor` are taken together on `Node`'s thread, so the
+    answer is one set's. The thread touches no state of `Node`'s but
+    `terminate_flag`, and the store through `cursor`, whose view is
+    fixed. A thread, not `Node.worker_pool`: the pool is processes under
+    a GIL build, and a cursor cannot cross into one.
+
+    Core's `interruption_point` runs once per coin and, once the RPC
+    server stops, throws `RPC_CLIENT_NOT_CONNECTED` "Shutting down"
+    (`RpcInterruptionPoint`, `src/rpc/server.cpp`); so does this one, on
+    `terminate_flag`, and the thread ends within a coin. A job dropped
+    before its thread ends sets `abandoned`, which interrupts the same
+    way, and is joined.
+    """
+    abandoned = threading.Event()
+
+    def interruption_point() -> None:
+        if node.terminate_flag.is_set() or abandoned.is_set():
+            raise RpcError(RPCErrorCode.CLIENT_NOT_CONNECTED, "Shutting down")
+
+    outcome: list[bytes | BaseException | None] = []
+
+    def scan() -> None:
+        try:
+            outcome.append(utxo_index.serialized_hash(cursor, interruption_point))
+        except BaseException as exc:  # noqa: BLE001
+            outcome.append(exc)
+
+    thread = threading.Thread(target=scan, name="gettxoutsetinfo", daemon=True)
+    thread.start()
+    try:
+        while thread.is_alive():
+            yield False
+    finally:
+        abandoned.set()
+        thread.join()
+    [done] = outcome
+    if isinstance(done, BaseException):
+        raise done
+    if done is None:
+        raise RpcError(RPCErrorCode.INTERNAL_ERROR, "Unable to read UTXO set")
+    return {**result, "hash_serialized_3": done[::-1], "total_amount": total_amount}
 
 
 # Core's own literal sentinel, `MEMPOOL_HEIGHT` (`src/txmempool.h:50`,

@@ -5,11 +5,11 @@
 """The ordered key-value store every index of this node is kept in.
 
 Read a key, write one, delete one, write several as one, walk the whole
-store in key order, and close: that is everything any index here asks
-of it. They are behind one class so that what implements them is one
-decision in one file -- `src/btclib_node/db.py` -- rather than a library
-named in as many modules as import it. None of that surface moved with
-this file's own implementation, below.
+store or one prefix of it in key order, and close: that is everything any
+index here asks of it. They are behind one class so that what implements
+them is one decision in one file -- `src/btclib_node/db.py` -- rather than
+a library named in as many modules as import it. None of that surface
+moved with this file's own implementation, below.
 
 The implementation is RocksDB, through `rocksdict`, and the reason is
 not speed, even though it is markedly faster
@@ -402,6 +402,8 @@ from btclib_node.exceptions import (
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from rocksdict import RdictIter
+
 __all__ = ["KeyValueStore"]
 
 # What this store itself wrote before this class existed, and this one
@@ -728,6 +730,44 @@ class KeyValueStore:
                 self._raise_if_corrupted(exc)
                 raise
             return iter(rows)
+
+    def scan_prefix(self, prefix: bytes) -> Iterator[tuple[bytes, bytes]]:
+        """Walk the pairs whose key starts with `prefix`, in key order.
+
+        The one live iterator this store hands out, for a prefix as
+        large as the UTXO set, which `__iter__` above would read into
+        memory whole. RocksDB fixes an iterator's view when it is
+        created, here, under the lock: what is written, flushed or
+        compacted afterwards is not seen by the walk, whichever thread
+        walks it. That is the cursor Core's `ComputeUTXOStats` reads, and
+        the lock is not held while it is walked.
+
+        The iterator holds the directory `LOCK` (the module docstring's
+        "The lock stays, for a different reason than before") until the
+        walk ends or the generator is dropped, so a caller finishes or
+        drops it before `close()`.
+        """
+        with self._lock:
+            self._ensure_open()
+            iterator = self._db.iter(read_opt=_ITER_READ_OPTIONS)
+        iterator.seek(prefix)
+        return self._walk(iterator, prefix)
+
+    def _walk(
+        self, iterator: RdictIter, prefix: bytes
+    ) -> Iterator[tuple[bytes, bytes]]:
+        """Yield `iterator`'s pairs while their keys start with `prefix`."""
+        while iterator.valid():
+            key = iterator.key()
+            if not key.startswith(prefix):
+                return
+            yield key, iterator.value()
+            iterator.next()
+        try:
+            iterator.status()
+        except Exception as exc:
+            self._raise_if_corrupted(exc)
+            raise
 
     @contextmanager
     def write_batch(self) -> Iterator[KeyValueStore]:

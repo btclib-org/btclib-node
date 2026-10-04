@@ -11,11 +11,15 @@ node did not follow, a peer that goes away mid-lookup, or a transaction
 the mempool refuses.
 """
 
+import json
 import math
+import threading
 import time
 from collections import Counter
+from collections.abc import Generator
 from dataclasses import replace
 from ipaddress import ip_address
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, cast, override
 
@@ -42,6 +46,7 @@ import btclib_node.p2p.banman as banman_module
 import btclib_node.rpc.callbacks as cb
 from btclib_node.block_db import Coin, RevBlock
 from btclib_node.chains import Chain, HeadersSyncParams, Main, RegTest
+from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.block_index import BlockStatus, block_time, calculate_work
 from btclib_node.chainstate.muhash import CoinStats
 from btclib_node.config import DEFAULT_MAX_DATACARRIER_BYTES, DEFAULT_MIN_RELAY_FEERATE
@@ -1108,19 +1113,86 @@ def _a_coin_stats_coin(value: int = 1000) -> tuple[bytes, Coin]:
     return out_point_bytes, Coin(tx_out, height=1, is_coinbase=False)
 
 
-def a_coin_stats_node(coin_stats: CoinStats, chain: list[bytes]) -> Any:
+type _Scan = Callable[[object, Callable[[], None]], bytes | None]
+
+
+def a_coin_stats_node(
+    coin_stats: CoinStats,
+    chain: list[bytes],
+    *,
+    scan: _Scan | None = None,
+    calls: list[str] | None = None,
+) -> Any:
     """Build a node whose chainstate carries a real `CoinStats`.
 
     `get_tx_out_set_info` reads `chainstate.block_index.active_chain`
     for `height`/`bestblock` and `chainstate.utxo_index.coin_stats` for
     everything else, matching `a_chain_index_node`'s own minimal shape.
+    `hash_serialized_3` is the scan `scan` stands in for, called with the
+    cursor `utxo_index.cursor` returns and the interruption point; it
+    answers 32 zero bytes unless given. `flush`, `cursor` and the scan
+    append their names to `calls`.
     """
+    calls = [] if calls is None else calls
+
+    def cursor() -> object:
+        calls.append("cursor")
+        return _CURSOR
+
+    def serialized_hash(
+        cursor: object, interruption_point: Callable[[], None]
+    ) -> bytes | None:
+        calls.append("serialized_hash")
+        if scan is None:
+            return b"\x00" * 32
+        return scan(cursor, interruption_point)
+
     return SimpleNamespace(
+        terminate_flag=threading.Event(),
         chainstate=SimpleNamespace(
             block_index=SimpleNamespace(active_chain=chain),
-            utxo_index=SimpleNamespace(coin_stats=coin_stats),
-        )
+            utxo_index=SimpleNamespace(
+                coin_stats=coin_stats,
+                cursor=cursor,
+                serialized_hash=serialized_hash,
+            ),
+            flush=lambda: calls.append("flush"),
+        ),
     )
+
+
+# what `utxo_index.cursor()` hands the scan, which only `scan` looks at
+_CURSOR = object()
+
+
+def a_coinbase_block() -> Any:
+    """Build the shape `UtxoIndex.add_block` reads, of one coinbase."""
+    coinbase = Tx(
+        version=1,
+        lock_time=0,
+        vin=[TxIn(prev_out=OutPoint(), script_sig=b"ab", sequence=0xFFFFFFFF)],
+        vout=[TxOut(value=50 * 10**8, script_pub_key=script.serialize(["OP_1"]))],
+    )
+    return SimpleNamespace(
+        header=SimpleNamespace(hash=b"\x77" * 32), transactions=[coinbase]
+    )
+
+
+def finish_scan(answer: object) -> dict[str, Any]:
+    """Run a `gettxoutsetinfo` answer to its end: a dict, or its generator."""
+    if not isinstance(answer, Generator):
+        return cast("dict[str, Any]", answer)
+    while True:
+        time.sleep(0.001)
+        try:
+            next(answer)
+        except StopIteration as done:
+            return cast("dict[str, Any]", done.value)
+
+
+def scan_threads() -> list[threading.Thread]:
+    """Return the `gettxoutsetinfo` scan threads still running."""
+    return [t for t in threading.enumerate() if t.name == "gettxoutsetinfo"]
 
 
 def test_tx_out_set_info_answers_core_s_own_field_names() -> None:
@@ -1135,7 +1207,7 @@ def test_tx_out_set_info_answers_core_s_own_field_names() -> None:
     chain = [b"\x11" * 32, b"\x22" * 32]
     node = a_coin_stats_node(coin_stats, chain)
 
-    result = get_tx_out_set_info(node, _CONN, ["muhash"])
+    result = finish_scan(get_tx_out_set_info(node, _CONN, ["muhash"]))
     assert result["height"] == 1
     assert result["bestblock"] == chain[-1]
     assert result["txouts"] == 1
@@ -1150,42 +1222,224 @@ def test_tx_out_set_info_hash_type_none_omits_the_muhash_field() -> None:
     coin_stats.insert(*_a_coin_stats_coin())
     node = a_coin_stats_node(coin_stats, [b"\x11" * 32])
 
-    result = get_tx_out_set_info(node, _CONN, ["none"])
+    result = finish_scan(get_tx_out_set_info(node, _CONN, ["none"]))
     assert "muhash" not in result
     assert result["txouts"] == 1
 
 
-def test_tx_out_set_info_defaults_to_muhash_not_hash_serialized_3() -> None:
-    """With no `hash_type` given, a bare call answers `muhash`, not Core's own.
+def test_tx_out_set_info_defaults_to_hash_serialized_3() -> None:
+    """With no `hash_type` given, a bare call answers Core's own default.
 
-    This tree answers only from `CoinStats`, never from a live scan, so
-    `hash_serialized_3` -- Core's own default -- has nothing to compute
-    it from; the departure is this tree's own default, argued in
-    `get_tx_out_set_info`'s own docstring.
+    The hash is the digest the scan returns, reversed for hex as
+    `uint256::GetHex()` prints it. The chainstate is flushed before the
+    cursor is opened, as Core's `ForceFlushStateToDisk` runs before its
+    own, and the scan reads that cursor.
     """
     coin_stats = CoinStats()
     coin_stats.insert(*_a_coin_stats_coin())
-    node = a_coin_stats_node(coin_stats, [b"\x11" * 32])
+    calls: list[str] = []
+    digest = bytes(range(32))
+    cursors: list[object] = []
 
-    bare = get_tx_out_set_info(node, _CONN, [])
-    explicit = get_tx_out_set_info(node, _CONN, ["muhash"])
-    bare["total_amount"] = bare["total_amount"].text
-    explicit["total_amount"] = explicit["total_amount"].text
+    def scan(cursor: object, _: Callable[[], None]) -> bytes:
+        cursors.append(cursor)
+        return digest
+
+    node = a_coin_stats_node(coin_stats, [b"\x11" * 32], scan=scan, calls=calls)
+
+    bare = finish_scan(get_tx_out_set_info(node, _CONN, []))
+    explicit = finish_scan(get_tx_out_set_info(node, _CONN, ["hash_serialized_3"]))
+    for answer in (bare, explicit):
+        answer["total_amount"] = answer["total_amount"].text
     assert bare == explicit
-    assert "muhash" in bare
+    assert bare["hash_serialized_3"] == digest[::-1]
+    assert "muhash" not in bare
+    assert calls == ["flush", "cursor", "serialized_hash"] * 2
+    assert cursors == [_CURSOR, _CURSOR]
+    assert list(bare) == [
+        "height",
+        "bestblock",
+        "txouts",
+        "bogosize",
+        "hash_serialized_3",
+        "total_amount",
+    ]
+    assert scan_threads() == []
 
 
-def test_tx_out_set_info_still_refuses_hash_serialized_3_asked_for_by_name() -> None:
-    """Asking for `hash_serialized_3` explicitly is refused as before.
-
-    Only the *default* moved; the hash type itself is still one this
-    tree has no accumulator for.
-    """
+def test_tx_out_set_info_use_index_changes_nothing_for_hash_serialized_3() -> None:
+    """There is no index for the legacy hash, so `use_index` is moot."""
     node = a_coin_stats_node(CoinStats(), [b"\x11" * 32])
+    with_index = finish_scan(get_tx_out_set_info(node, _CONN, [None, None, True]))
+    without_index = finish_scan(get_tx_out_set_info(node, _CONN, [None, None, False]))
+    for answer in (with_index, without_index):
+        answer["total_amount"] = answer["total_amount"].text
+    assert with_index == without_index
+    assert with_index["hash_serialized_3"] == b"\x00" * 32
+
+
+def test_tx_out_set_info_muhash_and_none_scan_nothing() -> None:
+    """Only `hash_serialized_3` reads the stored coins."""
+    calls: list[str] = []
+    node = a_coin_stats_node(CoinStats(), [b"\x11" * 32], calls=calls)
+    get_tx_out_set_info(node, _CONN, ["muhash"])
+    get_tx_out_set_info(node, _CONN, ["none"])
+    assert calls == []
+
+
+def test_tx_out_set_info_answers_an_internal_error_where_the_set_is_unreadable() -> (
+    None
+):
+    """A stored coin that does not parse is Core's "Unable to read UTXO set"."""
+    node = a_coin_stats_node(CoinStats(), [b"\x11" * 32], scan=lambda *_: None)
     with pytest.raises(RpcError) as raised:
-        get_tx_out_set_info(node, _CONN, ["hash_serialized_3"])
+        finish_scan(get_tx_out_set_info(node, _CONN, []))
+    assert raised.value.code == RPCErrorCode.INTERNAL_ERROR
+    assert raised.value.message == "Unable to read UTXO set"
+
+
+def test_tx_out_set_info_scan_that_fails_otherwise_fails_the_request() -> None:
+    """What the scan thread raises is raised by the request, not lost."""
+
+    def scan(*_: object) -> bytes:
+        err_msg = "the store broke"
+        raise RuntimeError(err_msg)
+
+    node = a_coin_stats_node(CoinStats(), [b"\x11" * 32], scan=scan)
+    with pytest.raises(RuntimeError, match="the store broke"):
+        finish_scan(get_tx_out_set_info(node, _CONN, []))
+    assert scan_threads() == []
+
+
+def test_tx_out_set_info_scan_waits_without_holding_the_caller() -> None:
+    """While the scan runs, each step answers `False` and returns at once.
+
+    That is what lets `Node`'s loop go on serving: `resume_rpc` steps the
+    request once a pass, and this step does not wait for the thread.
+    """
+    release = threading.Event()
+
+    def scan(*_: object) -> bytes:
+        release.wait(30)
+        return b"\x01" * 32
+
+    node = a_coin_stats_node(CoinStats(), [b"\x11" * 32], scan=scan)
+    job = get_tx_out_set_info(node, _CONN, [])
+    assert isinstance(job, Generator)
+
+    assert [next(job) for _ in range(3)] == [False, False, False]
+    assert len(scan_threads()) == 1
+
+    release.set()
+    answer = finish_scan(job)
+    assert answer["hash_serialized_3"] == (b"\x01" * 32)[::-1]
+    assert scan_threads() == []
+
+
+def test_tx_out_set_info_scan_ends_once_the_node_stops() -> None:
+    """`terminate_flag` interrupts the scan: Core's `Shutting down`, -9.
+
+    The scan calls the interruption point as Core's loop does once per
+    coin, and the request ends with the thread joined.
+    """
+    walking = threading.Event()
+
+    def scan(_: object, interruption_point: Callable[[], None]) -> bytes:
+        walking.set()
+        while True:
+            interruption_point()
+            time.sleep(0.001)
+
+    node = a_coin_stats_node(CoinStats(), [b"\x11" * 32], scan=scan)
+    job = get_tx_out_set_info(node, _CONN, [])
+    assert isinstance(job, Generator)
+    assert next(job) is False
+    assert walking.wait(30)
+
+    node.terminate_flag.set()
+
+    with pytest.raises(RpcError) as raised:
+        finish_scan(job)
+    assert raised.value.code == RPCErrorCode.CLIENT_NOT_CONNECTED
+    assert raised.value.message == "Shutting down"
+    assert scan_threads() == []
+
+
+def test_tx_out_set_info_scan_ends_with_a_request_dropped_meanwhile() -> None:
+    """Closing the request interrupts its scan and waits for the thread."""
+    walking = threading.Event()
+
+    def scan(_: object, interruption_point: Callable[[], None]) -> bytes:
+        walking.set()
+        while True:
+            interruption_point()
+            time.sleep(0.001)
+
+    node = a_coin_stats_node(CoinStats(), [b"\x11" * 32], scan=scan)
+    job = get_tx_out_set_info(node, _CONN, [])
+    assert isinstance(job, Generator)
+    assert next(job) is False
+    assert walking.wait(30)
+
+    job.close()
+
+    assert scan_threads() == []
+
+
+def test_tx_out_set_info_refuses_a_specific_block_before_scanning() -> None:
+    """`hash_serialized_3` with a height is refused the way `muhash` is."""
+    calls: list[str] = []
+    node = a_coin_stats_node(CoinStats(), [b"\x11" * 32], calls=calls)
+    with pytest.raises(RpcError) as raised:
+        get_tx_out_set_info(node, _CONN, ["hash_serialized_3", 5])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert raised.value.message == "'hash_serialized_3' is not a valid hash_type"
+    assert calls == []
+
+
+def test_tx_out_set_info_answers_core_s_hash_over_a_real_chainstate(
+    tmp_path: Path,
+) -> None:
+    """A bare call over a real chainstate answers what Core's did.
+
+    `regtest_hash_serialized_3.json` is Core v31.1.0's own answer to
+    `gettxoutsetinfo`, `hash_serialized_3` and `muhash`, over the blocks
+    the chainstate is fed, none of them yet written: the flush the call
+    makes is what puts them in the store.
+
+    The cursor is opened at the call, before the job is stepped, so a
+    block connected and written between the two is not in the answer: a
+    further block is connected and flushed while the request waits, and
+    the answer is still the vector's.
+    """
+    vector = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "chainstate"
+            / "_data"
+            / "regtest_hash_serialized_3.json"
+        ).read_text()
+    )
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    for height, block_hex in enumerate(vector["blocks"], start=1):
+        block = Block.parse(bytes.fromhex(block_hex), check_validity=False)
+        chainstate.utxo_index.add_block(block, height)
+    # the genesis block at index 0, then one hash per block fed above
+    chainstate.block_index.active_chain = [b"\x00" * 32] * (len(vector["blocks"]) + 1)
+    node: Any = SimpleNamespace(chainstate=chainstate, terminate_flag=threading.Event())
+
+    pending = get_tx_out_set_info(node, _CONN, [])
+    muhash = finish_scan(get_tx_out_set_info(node, _CONN, ["muhash"]))
+    chainstate.utxo_index.add_block(a_coinbase_block(), len(vector["blocks"]) + 1)
+    chainstate.flush()
+    bare = finish_scan(pending)
+    chainstate.close()
+
+    expected = vector["gettxoutsetinfo"]
+    assert bare["hash_serialized_3"].hex() == expected["hash_serialized_3"]
+    assert muhash["muhash"].hex() == expected["muhash"]
+    assert bare["height"] == muhash["height"] == expected["height"]
+    assert bare["txouts"] == expected["txouts"]
+    assert bare["bogosize"] == expected["bogosize"]
 
 
 def test_tx_out_set_info_refuses_an_unknown_hash_type_by_name() -> None:
@@ -1254,8 +1508,8 @@ def test_tx_out_set_info_use_index_is_type_checked_but_changes_nothing() -> None
     coin_stats.insert(*_a_coin_stats_coin())
     node = a_coin_stats_node(coin_stats, [b"\x11" * 32])
 
-    with_index = get_tx_out_set_info(node, _CONN, ["none", None, True])
-    without_index = get_tx_out_set_info(node, _CONN, ["none", None, False])
+    with_index = finish_scan(get_tx_out_set_info(node, _CONN, ["none", None, True]))
+    without_index = finish_scan(get_tx_out_set_info(node, _CONN, ["none", None, False]))
     with_index["total_amount"] = with_index["total_amount"].text
     without_index["total_amount"] = without_index["total_amount"].text
     assert with_index == without_index

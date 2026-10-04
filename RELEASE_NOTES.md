@@ -47,6 +47,9 @@ on release day.
   for a Tor onion service, and stops where that port is taken** (closes
   #1666). Free the port or move `-port`. A `-bind` turns the default off, and
   the node then listens on the addresses it names alone.
+- **A bare `gettxoutsetinfo` answers `hash_serialized_3`, not `muhash`**
+  (closes #1598). Pass `"muhash"` to get the old answer. The call scans every
+  stored coin, as Core's does, so it takes longer the larger the set.
 
 ### Worth knowing, though nothing raises
 

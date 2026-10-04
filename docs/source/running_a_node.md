@@ -223,10 +223,10 @@ transaction's own `nLockTime` together with its BIP68 relative lock
 five of those were open questions this tracker carried and are now
 closed.
 
-Pruning is honoured, as *Pruning* above says. The
-UTXO set carries no commitment a caller can audit against
-([#639](https://github.com/btclib-org/btclib-node/issues/639)), and
-this node answers no `gettxoutsetinfo` of its own.
+Pruning is honoured, as *Pruning* above says. A caller can audit the
+UTXO set against `gettxoutsetinfo`, which answers `hash_serialized_3`,
+Core's default, and `muhash`
+([#639](https://github.com/btclib-org/btclib-node/issues/639)).
 
 ## What a sync costs
 

@@ -617,5 +617,71 @@ def test_a_non_corruption_exception_is_never_reclassified(
         patched.setattr(RdictIter, "status", boom)
         with pytest.raises(RuntimeError, match="boom"):
             list(store)
+        with pytest.raises(RuntimeError, match="boom"):
+            list(store.scan_prefix(b"k"))
 
     store.close()
+
+
+def test_scan_prefix_walks_the_prefix_alone_in_key_order(tmp_path: Path) -> None:
+    """Only keys under the prefix come back, ascending."""
+    store = a_store(tmp_path)
+    for key in (b"a-1", b"c-1", *(b"b-%d" % i for i in (5, 3, 1, 7, 2, 6, 4))):
+        store.put(key, b"v" + key)
+    walked = list(store.scan_prefix(b"b-"))
+    assert walked == [(b"b-%d" % i, b"vb-%d" % i) for i in range(1, 8)]
+    assert list(store.scan_prefix(b"nothing-")) == []
+    store.close()
+
+
+def test_scan_prefix_is_the_store_as_it_was_when_it_was_opened(
+    tmp_path: Path,
+) -> None:
+    """A write, a flush and a compaction after the call are not in the walk.
+
+    The walk starts on another thread, as the UTXO scan's does, and still
+    sees the view of the call.
+    """
+    store = a_store(tmp_path)
+    for i in range(5):
+        store.put(b"b-%d" % i, b"old")
+    walk = store.scan_prefix(b"b-")
+
+    store.put(b"b-9", b"new")
+    store.put(b"b-0", b"changed")
+    store.delete(b"b-1")
+    store._db.flush()
+    store._db.compact_range(None, None)
+
+    walked: list[tuple[bytes, bytes]] = []
+    thread = threading.Thread(target=walked.extend, args=(walk,))
+    thread.start()
+    thread.join()
+    assert walked == [(b"b-%d" % i, b"old") for i in range(5)]
+    del walk
+    store.close()
+    a_store(tmp_path).close()
+
+
+def test_a_flipped_bit_is_caught_by_scan_prefix_too(tmp_path: Path) -> None:
+    """A corrupted block raises out of `scan_prefix` as out of `__iter__`."""
+    store = a_store(tmp_path)
+    value = b"V" * 39
+    for i in range(2000):
+        store.put(i.to_bytes(4, "big"), value + i.to_bytes(4, "big"))
+    store._db.flush()
+    store.close()
+
+    flip_a_bit_of(tmp_path / "store", value)
+    reopened = KeyValueStore(tmp_path / "store")
+
+    with pytest.raises(StoreCorruptionError, match="Corruption"):
+        list(reopened.scan_prefix(b""))
+
+
+def test_scan_prefix_on_a_closed_store_raises(tmp_path: Path) -> None:
+    """A closed store refuses the scan like any other read."""
+    store = a_store(tmp_path)
+    store.close()
+    with pytest.raises(StoreClosedError):
+        store.scan_prefix(b"b-")

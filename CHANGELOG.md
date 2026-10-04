@@ -134,6 +134,12 @@ and a parse by a reference timed beside it over the same input, in
 - **The loopback `=onion` listener Core adds is bound and tagged, and a
   taken port ends the start** (closes #1666).
 
+### `gettxoutsetinfo` answers `hash_serialized_3`, Core's default
+
+- **A bare call answers `hash_serialized_3`, the SHA256d of every stored
+  coin in Core's order, where it answered `muhash`; the scan runs on a
+  thread of its own and `stop` ends it** (closes #1598).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on
