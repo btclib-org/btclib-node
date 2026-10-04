@@ -30,6 +30,11 @@ from btclib.consensus import MAX_BLOCK_WEIGHT, WITNESS_SCALE_FACTOR, subsidy
 from btclib.exceptions import BTClibException, BTClibValueError
 from btclib.fee import fee_from_vsize
 from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
+from btclib.policy import (
+    are_inputs_standard,
+    assert_standard_tx,
+    is_witness_standard,
+)
 from btclib.script.engine import sig_op_cost
 from btclib.script.engine.flags import ScriptFlag
 from btclib.tx.limits import COINBASE_MATURITY
@@ -1776,6 +1781,15 @@ def verify_mempool_acceptance(
     `MissingPrevoutError`, which each caller answers for itself.
     btclib-org/btclib-node#1328
 
+    Where `Config.require_standard` holds, refuses what Core's relay
+    policy refuses (btclib-org/btclib-node#1382): `IsStandardTx` ahead of
+    everything else but a coinbase, so a candidate over
+    `MAX_STANDARD_TX_WEIGHT` is refused "tx-size" before its inputs are
+    read or any script runs; then, after `CheckTxInputs`,
+    `AreInputsStandard` ("bad-txns-nonstandard-inputs") and
+    `IsWitnessStandard` ("bad-witness-nonstandard"). `bypass_limits`
+    skips none of them. `btclib.policy` is that code.
+
     Refuses a candidate whose txid the mempool already holds, as Core's
     `PreChecks` does ahead of its conflict checks, and one spending an
     outpoint a mempool transaction already spends,
@@ -1787,6 +1801,10 @@ def verify_mempool_acceptance(
     a disconnected block's transactions rejoin the mempool.
     btclib-org/btclib-node#1245
     """
+    # Core's own `PreChecks` order again: a coinbase, then `IsStandardTx`,
+    # ahead of the finality check, the inputs and every script
+    _check_standard_tx(node, tx)
+
     prev_outputs: list[TxOut] = []
     # every prevout, coinbase or mempool-parented alike, aligned with
     # tx.vin one for one -- what assert_sequence_locks below needs.
@@ -1874,6 +1892,7 @@ def verify_mempool_acceptance(
         raise TxRejectedError(reason) from refusal
 
     _check_tx_inputs(prevout_coins, tx, spend_height)
+    _check_standard_inputs(node, prev_outputs, tx)
     fee = sum(x.value for x in prev_outputs) - sum(x.value for x in tx.vout)
     vsize = _sigop_adjusted_vsize(tx, prev_outputs)
     if not bypass_limits:
@@ -1890,6 +1909,52 @@ def verify_mempool_acceptance(
     check_transaction(prev_outputs, tx)
 
     return MempoolAcceptance(fee, vsize)
+
+
+def _check_standard_tx(node: Node, tx: Tx) -> None:
+    """Refuse a coinbase, then what Core's `IsStandardTx` refuses.
+
+    `PreChecks` (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag) refuses a coinbase "coinbase", then asks `IsStandardTx`
+    with the mempool's `-datacarriersize`, `-permitbaremultisig` and
+    `-dustrelayfee`, unless `-acceptnonstdtxn`.
+    `btclib.policy.assert_standard_tx` raises Core's reason as its
+    message. btclib-org/btclib-node#1382
+    """
+    if tx.is_coinbase:
+        reason = "coinbase"
+        raise TxRejectedError(reason)
+    config = node.config
+    if not config.require_standard:
+        return
+    try:
+        assert_standard_tx(
+            tx,
+            max_datacarrier_bytes=config.max_datacarrier_bytes,
+            permit_bare_multisig=config.permit_bare_multisig,
+            dust_relay_fee=config.dust_relay_feerate,
+        )
+    except BTClibValueError as refusal:
+        reason = str(refusal)
+        raise TxRejectedError(reason) from refusal
+
+
+def _check_standard_inputs(node: Node, prev_outputs: list[TxOut], tx: Tx) -> None:
+    """Refuse inputs Core's `AreInputsStandard` or `IsWitnessStandard` refuses.
+
+    `PreChecks` (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag) asks the first after `CheckTxInputs`, and the second only
+    of a transaction with a witness, unless `-acceptnonstdtxn`.
+    btclib-org/btclib-node#1382
+    """
+    if not node.config.require_standard:
+        return
+    if not are_inputs_standard(prev_outputs, tx):
+        reason = "bad-txns-nonstandard-inputs"
+        raise TxRejectedError(reason)
+    if tx.is_segwit and not is_witness_standard(prev_outputs, tx):
+        reason = "bad-witness-nonstandard"
+        raise TxRejectedError(reason)
 
 
 def _sigop_adjusted_vsize(tx: Tx, prev_outputs: list[TxOut]) -> int:

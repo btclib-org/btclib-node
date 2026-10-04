@@ -153,6 +153,15 @@ on release day.
   replaces the last sentence of the entry above: `-v1transport=1`, which
   also restores the v1 retry, or `-nov2transport` reaches a v1-only peer
   or a light client.
+- **The mempool refuses a transaction Core's `IsStandardTx`,
+  `AreInputsStandard` or `IsWitnessStandard` refuses** (closes #1382). An
+  output script of no standard type, more than one dust output, a bare
+  multisig of more than 3 keys, a script or witness over Core's limits,
+  or a transaction over 400000 weight is answered with Core's reject
+  reason by `sendrawtransaction` and `testmempoolaccept`, and not
+  relayed. `-acceptnonstdtxn` on a test chain accepts them.
+  `-datacarrier`, `-datacarriersize`, `-permitbaremultisig` and
+  `-dustrelayfee` set the limits.
 
 ## v2026.9.24
 

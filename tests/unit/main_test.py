@@ -1030,7 +1030,7 @@ def test_a_nonfinal_unverifiable_mempool_spend_is_refused_as_nonfinal(
         funding.vout[0].value,
         lock_time=2_000_000_000,
         sequence=0,
-        script_sig=script.serialize(["OP_RETURN"]),
+        script_sig=script.serialize([b"\x11" * 32]),
     )
     with pytest.raises(TxRejectedError, match=r"^non-final$"):
         verify_mempool_acceptance(node, nonfinal_and_unverifiable)
@@ -1427,6 +1427,247 @@ def test_a_spend_of_more_than_its_inputs_is_refused_for_that_not_its_fee(
         f"bad-txns-in-belowout, value in ({format_money(value_out - 1)}) "
         f"< value out ({format_money(value_out)})"
     )
+
+
+def a_candidate_heavier_than_standard(node: Node) -> Tx:
+    """Return a funded spend over `MAX_STANDARD_TX_WEIGHT`.
+
+    Its `script_sig` is push-only and fails, so a script check that ran
+    would refuse it for another reason. The outputs that weigh it down
+    are standard and worth nothing.
+    """
+    spend = a_funded_spend(node, 1_000_000)
+    spend.vin[0].script_sig = script.serialize([b"\x11" * 32])
+    spend.vout += [TxOut(0, anyone_can_spend())] * 3_300
+    assert spend.weight > 400_000
+    return spend
+
+
+def record_calls(
+    monkeypatch: pytest.MonkeyPatch, answers: dict[str, object]
+) -> list[str]:
+    """Replace each named `main` function by one that records its call.
+
+    The replacement answers `answers[name]`. The list it appends to is
+    returned.
+    """
+    calls: list[str] = []
+
+    def recorder(name: str) -> Callable[..., object]:
+        def record(*args: object, **kwargs: object) -> object:
+            calls.append(name)
+            return answers[name]
+
+        return record
+
+    for name in answers:
+        monkeypatch.setattr(main, name, recorder(name))
+    return calls
+
+
+def test_standardness_is_judged_before_any_script_runs(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transaction over `MAX_STANDARD_TX_WEIGHT` is refused "tx-size" first.
+
+    `PreChecks` (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag) asks `IsStandardTx` before it reads the inputs and runs
+    the scripts last, in `PolicyScriptChecks`. Each function here that
+    evaluates a script records its call. With `require_standard` off the
+    same candidate reaches them, which says the recorders are in its
+    path (btclib-org/btclib-node#1382).
+    """
+    spend = a_candidate_heavier_than_standard(node)
+    calls = record_calls(
+        monkeypatch,
+        {
+            "check_transaction": None,
+            "sig_op_cost": 0,
+            "are_inputs_standard": True,
+            "is_witness_standard": True,
+        },
+    )
+
+    for bypass_limits in (False, True):
+        with pytest.raises(TxRejectedError) as refused:
+            verify_mempool_acceptance(node, spend, bypass_limits=bypass_limits)
+        assert str(refused.value) == "tx-size"
+        assert calls == []
+
+    node.config.require_standard = False
+    verify_mempool_acceptance(node, spend)
+    assert calls == ["sig_op_cost", "check_transaction"]
+
+
+def test_the_inputs_are_judged_standard_before_any_script_runs(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`AreInputsStandard` refuses ahead of the sigop count and the scripts."""
+    parent = a_funded_spend(node, FEE)
+    parent.vout[0] = TxOut(parent.vout[0].value, script.serialize(["OP_NOP", "OP_1"]))
+    node.mempool.add_tx(parent, FEE, parent.vsize)
+    child = generate_random_transaction(parent.id, value=parent.vout[0].value - FEE)
+    child.vin[0].script_sig = b""
+    calls = record_calls(monkeypatch, {"check_transaction": None, "sig_op_cost": 0})
+
+    with pytest.raises(TxRejectedError) as refused:
+        verify_mempool_acceptance(node, child)
+    assert str(refused.value) == "bad-txns-nonstandard-inputs"
+    assert calls == []
+
+
+def a_multisig_script(keys: int) -> bytes:
+    """Return a bare `keys`-of-`keys` multisig script_pub_key."""
+    pubkeys = [b"\x02" + bytes([k]) * 32 for k in range(1, keys + 1)]
+    return script.serialize([f"OP_{keys}", *pubkeys, f"OP_{keys}", "OP_CHECKMULTISIG"])
+
+
+def a_data_output(size: int) -> TxOut:
+    """Return an output of a nulldata script_pub_key of `size` bytes."""
+    data = bytes(size - 3)
+    return TxOut(0, b"\x6a\x4c" + bytes([len(data)]) + data)
+
+
+def with_script_sig(spend: Tx, script_sig: bytes) -> Tx:
+    """Return `spend` with `script_sig` for its only input's."""
+    return replace(spend, vin=[replace(spend.vin[0], script_sig=script_sig)])
+
+
+def with_outputs(spend: Tx, *extra: TxOut) -> Tx:
+    """Return `spend` paying `extra` as well."""
+    return replace(spend, vout=[*spend.vout, *extra])
+
+
+@pytest.mark.parametrize(
+    ("reason", "change", "permit_bare_multisig", "scripts_pass"),
+    [
+        ("version", lambda tx: replace(tx, version=4), True, True),
+        (
+            "scriptsig-size",
+            lambda tx: with_script_sig(tx, script.serialize([b"\x11" * 500] * 4)),
+            True,
+            False,
+        ),
+        (
+            "scriptsig-not-pushonly",
+            lambda tx: with_script_sig(tx, script.serialize(["OP_NOP"])),
+            True,
+            False,
+        ),
+        (
+            "scriptpubkey",
+            lambda tx: with_outputs(tx, TxOut(0, script.serialize(["OP_NOP"]))),
+            True,
+            True,
+        ),
+        (
+            "scriptpubkey",
+            lambda tx: with_outputs(tx, TxOut(0, a_multisig_script(4))),
+            True,
+            True,
+        ),
+        ("datacarrier", lambda tx: with_outputs(tx, a_data_output(84)), True, True),
+        (
+            "dust",
+            lambda tx: with_outputs(tx, *[TxOut(0, anyone_can_spend())] * 2),
+            True,
+            True,
+        ),
+        (
+            "bare-multisig",
+            lambda tx: with_outputs(tx, TxOut(0, a_multisig_script(1))),
+            False,
+            True,
+        ),
+    ],
+)
+def test_a_nonstandard_candidate_is_refused_in_core_s_words(
+    node: Node,
+    reason: str,
+    change: Callable[[Tx], Tx],
+    *,
+    permit_bare_multisig: bool,
+    scripts_pass: bool,
+) -> None:
+    """Each `IsStandardTx` rule refuses with its reason, reorg re-add or not.
+
+    With `require_standard` off the same candidate is accepted, which
+    says the rule is what refused it. The two that change the
+    `script_sig` fail their script instead (btclib-org/btclib-node#1382).
+    """
+    node.config.max_datacarrier_bytes = 83
+    node.config.permit_bare_multisig = permit_bare_multisig
+    spend = change(a_funded_spend(node, FEE))
+    for bypass_limits in (False, True):
+        with pytest.raises(TxRejectedError) as refused:
+            verify_mempool_acceptance(node, spend, bypass_limits=bypass_limits)
+        assert str(refused.value) == reason
+
+    node.config.require_standard = False
+    if scripts_pass:
+        assert verify_mempool_acceptance(node, spend).fee == FEE
+    else:
+        with pytest.raises(TxRejectedError, match=r"^mempool-script-verify-flag"):
+            verify_mempool_acceptance(node, spend)
+
+
+def test_the_standardness_options_are_read(node: Node) -> None:
+    """The data carrier size and the dust rate bound what is relayed.
+
+    The size is shared by the data outputs taken together, as Core
+    shares it; `-nodatacarrier` allows none; a dust rate of zero makes
+    no output dust (btclib-org/btclib-node#1382).
+    """
+    funded = a_funded_spend(node, FEE)
+    spend = with_outputs(funded, a_data_output(50), a_data_output(50))
+    node.config.max_datacarrier_bytes = 100
+    assert verify_mempool_acceptance(node, spend).fee == FEE
+    node.config.max_datacarrier_bytes = 99
+    with pytest.raises(TxRejectedError, match=r"^datacarrier$"):
+        verify_mempool_acceptance(node, spend)
+    node.config.max_datacarrier_bytes = None
+    with pytest.raises(TxRejectedError, match=r"^datacarrier$"):
+        verify_mempool_acceptance(node, spend)
+
+    dust = with_outputs(funded, *[TxOut(0, anyone_can_spend())] * 2)
+    with pytest.raises(TxRejectedError, match=r"^dust$"):
+        verify_mempool_acceptance(node, dust)
+    node.config.dust_relay_feerate = FeeRate(sats_per_kvbyte=0)
+    assert verify_mempool_acceptance(node, dust).fee == FEE
+
+
+def test_a_coinbase_is_refused_before_anything_else(node: Node) -> None:
+    """`PreChecks` refuses a loose coinbase "coinbase", ahead of the rest."""
+    with pytest.raises(TxRejectedError) as refused:
+        verify_mempool_acceptance(node, generate_coinbase())
+    assert str(refused.value) == "coinbase"
+
+
+def a_witness_spend(node: Node, item: int) -> Tx:
+    """Return a spend of a held P2WSH output, its witness item `item` bytes."""
+    witness_script = script.serialize(["OP_DROP", "OP_1"])
+    parent = a_funded_spend(node, FEE)
+    parent.vout[0] = TxOut(
+        parent.vout[0].value, ScriptPubKey.p2wsh(witness_script, network="regtest")
+    )
+    node.mempool.add_tx(parent, FEE, parent.vsize)
+    value = parent.vout[0].value - FEE
+    witness = Witness([b"\x11" * item, witness_script])
+    return Tx(
+        2,
+        0,
+        [TxIn(OutPoint(parent.id, 0), b"", 0xFFFFFFFF, witness)],
+        [TxOut(value, anyone_can_spend())],
+    )
+
+
+def test_a_witness_over_the_standard_limits_is_refused(node: Node) -> None:
+    """`IsWitnessStandard` refuses a P2WSH item of 81 bytes and passes 80."""
+    with pytest.raises(TxRejectedError) as refused:
+        verify_mempool_acceptance(node, a_witness_spend(node, 81))
+    assert str(refused.value) == "bad-witness-nonstandard"
+
+    assert verify_mempool_acceptance(node, a_witness_spend(node, 80)).fee == FEE
 
 
 def test_a_second_spend_of_a_held_outpoint_is_refused_as_core_refuses_it(

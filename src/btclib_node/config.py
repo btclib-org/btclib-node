@@ -564,10 +564,9 @@ class Config:
     # The standardness options, `MemPoolOptions`' own `dust_relay_feerate`,
     # `permit_bare_multisig`, `max_datacarrier_bytes` (`None` where
     # `-datacarrier` is off) and `require_standard` (`-acceptnonstdtxn`
-    # off). `verify_mempool_acceptance` enforces none of them: that needs
-    # `btclib`'s policy module (btclib-org/btclib-node#1382), and
-    # `getmempoolinfo` reports `permit_bare_multisig` and
-    # `max_datacarrier_bytes`.
+    # off), which `verify_mempool_acceptance` enforces
+    # (btclib-org/btclib-node#1382); `getmempoolinfo` reports
+    # `permit_bare_multisig` and `max_datacarrier_bytes`.
     dust_relay_feerate: FeeRate
     permit_bare_multisig: bool
     max_datacarrier_bytes: int | None

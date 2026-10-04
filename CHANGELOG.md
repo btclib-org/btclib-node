@@ -1980,6 +1980,12 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
   (`sendheaders` and `sendcmpct` after `version` excepted, as in Core); the
   `verack` was processed first and the message then answered (closes #1657).
 
+### The mempool applies Core's standardness rules
+
+- **`IsStandardTx`, `AreInputsStandard` and `IsWitnessStandard` are applied,
+  and `-datacarrier`, `-datacarriersize`, `-permitbaremultisig` and
+  `-dustrelayfee` enforced** (closes #1382).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
