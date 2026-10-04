@@ -1962,6 +1962,12 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
 - **The file reads only this repository's own variable store**, the
   switch being the organization's (issue btclib-org/.github#1560).
 
+### The dependency floors are the releases fixing the sibling advisories
+
+- **`pyproject.toml` requires the releases fixing GHSA-9fr5-46w5-5f9r,
+  GHSA-r5pw-9wrg-m3mj, GHSA-m38m-987v-j55h and GHSA-8h6f-34jj-7p6c**,
+  and `generateblock` refuses a WIF of another chain (closes #1684).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
