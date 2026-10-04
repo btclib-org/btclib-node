@@ -80,7 +80,9 @@ dependencies = [
     # on what is imported rather than rest on what a sibling happens to
     # declare. The floor is 2026.9.3, the release `RPCErrorCode` first
     # ships in (btclib-org/btclib-node#801).
-    "bitcoin-core-rpc>=2026.9.3",
+    #
+    # The floor is 2026.10.4, the security release (issue #1685).
+    "bitcoin-core-rpc>=2026.10.4",
 ]
 # What this repository is about, in the order a reader ranks them:
 # PyPI shows keywords as the metadata gives them, and GitHub sorts its
@@ -296,7 +298,9 @@ test = [
     # functional rpc suite's own hand-rolled envelope posts are built
     # through the first two where they express the case, and the
     # integration client is a `SessionTransport` now.
-    "bitcoin-core-rpc>=2026.8.29",
+    #
+    # The floor is 2026.10.4, the security release (issue #1685).
+    "bitcoin-core-rpc>=2026.10.4",
     # tests/unit/interpreter_test.py builds signatures through
     # `btclib_ecc.ecc.dsa`/`ssa` directly rather than through btclib's own
     # re-export, ahead of btclib dropping that re-export

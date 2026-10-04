@@ -2037,6 +2037,11 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
   asyncio's default executor, whose threads Python joins at exit: a slow
   lookup of `dummySeed.invalid.` held the process after `SIGTERM` (issue #1274).
 
+### The `bitcoin-core-rpc` floor is the security release
+
+- **`pyproject.toml` requires `bitcoin-core-rpc>=2026.10.4`**, at runtime
+  and in the `test` group (issue #1685).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

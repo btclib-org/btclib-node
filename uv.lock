@@ -232,11 +232,11 @@ wheels = [
 
 [[package]]
 name = "bitcoin-core-rpc"
-version = "2026.9.29"
+version = "2026.10.4"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/d4/bf/1cd9bbc64a1eb395b4cbcb432ef0e73b6695e6f04fd5cbaca0eca4e37c06/bitcoin_core_rpc-2026.9.29.tar.gz", hash = "sha256:fbe9321e12558107bcf14339044c9b2197afa8d9bf3f9cdcc79d33e00098d73a", size = 579660, upload-time = "2026-09-29T08:41:01.179Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/97/f0/3fde0c480f63a64bcdd7cd4456c77d951a6fd89b655d46a048ae1aba48ab/bitcoin_core_rpc-2026.10.4.tar.gz", hash = "sha256:6764c8a880e23a5b71806082308afb00eab1e683763aefbbf41c423134521c9f", size = 753125, upload-time = "2026-10-04T09:24:52.133Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/3e/1f/b7e661d287a99b6c20eec03eaef3ce604eabaca54572d568973dbaea3ac1/bitcoin_core_rpc-2026.9.29-py3-none-any.whl", hash = "sha256:5d5321b90524a41622e4a9943e9f4f2cd3b8dfe9a600d5a127163761fb042fdc", size = 70936, upload-time = "2026-09-29T08:40:59.896Z" },
+    { url = "https://files.pythonhosted.org/packages/ca/2d/18fd3e287a13289d84b2c882a6a552a040696978d3dd317a352405e95520/bitcoin_core_rpc-2026.10.4-py3-none-any.whl", hash = "sha256:0c86750c62e5439159077f82327783b7e9b30c248e37bfbcf45d8b56292abadf", size = 73996, upload-time = "2026-10-04T09:24:50.846Z" },
 ]
 
 [[package]]
@@ -371,7 +371,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "bitcoin-core-rpc", specifier = ">=2026.9.3" },
+    { name = "bitcoin-core-rpc", specifier = ">=2026.10.4" },
     { name = "btclib", extras = ["secp256k1", "bip324"], specifier = ">=2026.10.4" },
     { name = "btclib-wallet", specifier = ">=2026.10.4" },
     { name = "rocksdict", specifier = ">=0.3.29" },
@@ -387,7 +387,7 @@ check = [
 ]
 dev = [
     { name = "atheris", marker = "sys_platform == 'linux'", specifier = ">=3.1.0" },
-    { name = "bitcoin-core-rpc", specifier = ">=2026.8.29" },
+    { name = "bitcoin-core-rpc", specifier = ">=2026.10.4" },
     { name = "btclib-ecc", specifier = ">=2026.10.2" },
     { name = "btclib-secp256k1", specifier = ">=0.8.0.10" },
     { name = "check-sdist", specifier = ">=1.6.0" },
@@ -431,7 +431,7 @@ lint = [
 ]
 mutation = [{ name = "cosmic-ray", specifier = ">=8.7.0" }]
 test = [
-    { name = "bitcoin-core-rpc", specifier = ">=2026.8.29" },
+    { name = "bitcoin-core-rpc", specifier = ">=2026.10.4" },
     { name = "btclib-ecc", specifier = ">=2026.10.2" },
     { name = "btclib-secp256k1", specifier = ">=0.8.0.10" },
     { name = "hypothesis", specifier = ">=6.140.3" },
