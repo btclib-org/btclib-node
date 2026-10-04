@@ -18,6 +18,7 @@ import random
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
+from bitcoin_core_rpc import RpcError
 from btclib.hashes import hash160, sha256
 from btclib.script import script
 from btclib.script.witness import Witness
@@ -30,9 +31,16 @@ from btclib_node import Node
 from btclib_node.config import Config
 from btclib_node.constants import NodeStatus
 from btclib_node.p2p.address import peer_address
-from tests import get_random_port, rpc_client, wait_until, wait_until_listening
+from tests import (
+    ambiguous_tx,
+    get_random_port,
+    rpc_client,
+    wait_until,
+    wait_until_listening,
+)
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from tests.integration.conftest import Bitcoind
@@ -198,6 +206,55 @@ def test_decoderawtransaction_answers_as_bitcoind_does(
                     ours_out["n"]
                 ].script_pub_key.script.hex()
             assert ours == theirs
+    finally:
+        node.stop()
+        node.join()
+
+
+def _decoded(
+    call: Callable[[str, list[object]], object], params: list[object]
+) -> tuple[object, ...]:
+    """Return a decode's txid and counts, or the error it answered."""
+    try:
+        decoded = cast("dict[str, Any]", call("decoderawtransaction", params))
+    except RpcError as error:
+        return (error.code, str(error.args[0]).rsplit(": ", 1)[-1])
+    return (decoded["txid"], len(decoded["vin"]), len(decoded["vout"]))
+
+
+def test_decoderawtransaction_chooses_a_reading_as_bitcoind_does(
+    bitcoind: Bitcoind, tmp_path: Path
+) -> None:
+    """Octets that read with and without the marker are answered alike.
+
+    The first is a transaction of no input and one output, which only
+    the legacy reading reads. The others read both ways, and differ in
+    which reading passes `CheckTxScriptsSanity`. Each is asked with
+    `iswitness` omitted, `true` and `false`.
+    """
+    # version 1, 00 01, an output of value 0 and an empty script, lock time 0
+    no_input = bytes.fromhex("01000000000100000000000000000000000000")
+    raws = [
+        no_input,
+        ambiguous_tx(),
+        ambiguous_tx(b"\xba"),
+        ambiguous_tx(b"\xba", legacy_insane=True),
+        ambiguous_tx(legacy_insane=True),
+        _transactions()[0].serialize(include_witness=True, check_validity=False),
+    ]
+    node = _a_node(tmp_path)
+    try:
+        client = rpc_client(node)
+        for raw in raws:
+            asks: list[list[object]] = [
+                [raw.hex()],
+                [raw.hex(), True],
+                [raw.hex(), False],
+            ]
+            for params in asks:
+                ours = _decoded(client.call, params)
+                theirs = _decoded(bitcoind.rpc, params)
+                assert ours == theirs, params
     finally:
         node.stop()
         node.join()

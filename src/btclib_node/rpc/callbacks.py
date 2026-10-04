@@ -13,6 +13,7 @@ once `rpc.connection.RpcConnection.run` has accepted its credential and
 call every entry, `stop` included, unless `-rpcwhitelistdefault` holds.
 """
 
+import contextlib
 import math
 import re
 import threading
@@ -24,12 +25,13 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from bitcoin_core_rpc import RPCErrorCode, chain_from_network
 from btclib import b32, b58
 from btclib.block import Block, BlockHeader, median_time_past
+from btclib.consensus import MAX_SCRIPT_ELEMENT_SIZE, MAX_SCRIPT_SIZE
 from btclib.exceptions import BTClibException, BTClibTypeError, BTClibValueError
 from btclib.fee import FeeRate, fee_from_vsize
 from btclib.p2p.address import ServiceFlags
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 from btclib.p2p.limits import PROTOCOL_VERSION
-from btclib.script.script import script_to_dict
+from btclib.script.script import op_code_spans, script_to_dict
 from btclib.script.spendability import is_unspendable
 from btclib.tx import Tx
 from btclib.tx.out_point import OutPoint
@@ -3108,8 +3110,11 @@ def get_raw_transaction(
     return _raw_transaction_json(node, found, verbosity)
 
 
-def _decode_hex_tx(rawtx: str) -> Tx:
+def _decode_hex_tx(rawtx: str, *, iswitness: bool | None = True) -> Tx:
     """Decode `rawtx` as Core's `DecodeHexTx` does.
+
+    `iswitness` is `_decode_tx`'s. The default, `True`, is `DecodeHexTx`'s
+    own: the extended reading alone.
 
     `is_hex` refuses any character that is not a hex digit -- a space
     included -- and an odd or zero length, ahead of `ParseHex`
@@ -3126,7 +3131,78 @@ def _decode_hex_tx(rawtx: str) -> Tx:
     if not is_hex(rawtx):
         err_msg = f"invalid hex string: {rawtx!r}"
         raise BTClibValueError(err_msg)
-    return Tx.parse(bytes.fromhex(rawtx), check_validity=False)
+    return _decode_tx(bytes.fromhex(rawtx), iswitness=iswitness)
+
+
+# Core's `MAX_OPCODE`, `OP_NOP10` (`src/script/script.h`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the highest opcode
+# `CScript::HasValidOps` accepts. btclib-org/btclib-node#1458
+_MAX_OPCODE = 0xB9
+# the octets that follow OP_PUSHDATA1, OP_PUSHDATA2 and OP_PUSHDATA4
+# for the length of the push
+_PUSHDATA_LENGTH_OCTETS = {0x4C: 1, 0x4D: 2, 0x4E: 4}
+
+
+def _has_valid_ops(script: bytes) -> bool:
+    """Answer `CScript::HasValidOps` (`src/script/script.cpp`, same tag).
+
+    Every op reads, none is above `_MAX_OPCODE`, and no push carries more
+    than `MAX_SCRIPT_ELEMENT_SIZE` bytes. `op_code_spans` stops where an
+    op cannot be read, so a script that reads whole is one whose last
+    span ends at its end.
+    """
+    end = 0
+    for op_code, start, end in op_code_spans(script):
+        header = 1 + _PUSHDATA_LENGTH_OCTETS.get(op_code, 0)
+        if op_code > _MAX_OPCODE or end - start - header > MAX_SCRIPT_ELEMENT_SIZE:
+            return False
+    return end == len(script)
+
+
+def _check_tx_scripts_sanity(tx: Tx) -> bool:
+    """Answer `CheckTxScriptsSanity` (`src/core_io.cpp`, same tag).
+
+    Each output script, and each input script unless `tx` is a
+    coinbase, has valid ops and at most `MAX_SCRIPT_SIZE` bytes.
+    """
+    scripts = [tx_out.script_pub_key.script for tx_out in tx.vout]
+    if not tx.is_coinbase:
+        scripts += [tx_in.script_sig for tx_in in tx.vin]
+    return all(
+        len(script) <= MAX_SCRIPT_SIZE and _has_valid_ops(script) for script in scripts
+    )
+
+
+def _decode_tx(data: bytes, *, iswitness: bool | None) -> Tx:
+    """Decode `data` as Core's `DecodeTx` does (`src/core_io.cpp`, same tag).
+
+    `iswitness` picks the readings as the handler does: `None` tries
+    both, `True` the extended alone, `False` the legacy alone. The
+    extended reading is `Tx.parse`, the legacy one is
+    `Tx.parse_without_witness`; each is kept only if it consumes `data`
+    whole, which both refuse otherwise. The first reading to pass
+    `_check_tx_scripts_sanity` wins, extended before legacy; where none
+    does, the first to read wins in the same order. `BTClibValueError`
+    where neither reads.
+    btclib-org/btclib-node#1458
+    """
+    extended = legacy = None
+    if iswitness is not False:
+        with contextlib.suppress(BTClibException):
+            extended = Tx.parse(data, check_validity=False)
+    if extended is not None and _check_tx_scripts_sanity(extended):
+        return extended
+    if iswitness is not True:
+        with contextlib.suppress(BTClibException):
+            legacy = Tx.parse_without_witness(data, check_validity=False)
+    if legacy is not None and _check_tx_scripts_sanity(legacy):
+        return legacy
+    if extended is not None:
+        return extended
+    if legacy is not None:
+        return legacy
+    err_msg = "transaction decodes under neither reading"
+    raise BTClibValueError(err_msg)
 
 
 # Core's own `MAX_MONEY` (`src/consensus/amount.h`,
@@ -3272,35 +3348,9 @@ def decode_raw_transaction(
     passes `include_hex=false` and a null `block_hash`, neither of
     which this RPC is given a block or asked to serialize.
 
-    `iswitness=false` refuses a witness-serialized transaction Core's
-    own extended-only default would otherwise decode: Core's `DecodeTx`
-    (`src/core_io.cpp`, same tag) disables the extended (marker-aware)
-    reading for `iswitness=false` and tries the legacy one alone, which
-    reads the wire with no marker check at all, so the segwit marker
-    and flag are read as an input count and a following output count
-    instead -- the real input and output bytes that follow almost never
-    happen to leave the legacy reading having consumed exactly the
-    remaining bytes, `ssData.empty()`, so it fails and `DecodeHexTx`
-    answers `false`. `Tx.parse` (`btclib/tx/tx.py`) has no mode that
-    skips the marker check the way that legacy reading does, so this
-    reproduces the same practical outcome -- refusal, whenever the
-    decoded transaction turns out to carry a witness -- without
-    replaying Core's own byte-for-byte algorithm on the raw bytes; the
-    one case that could differ, a legacy reading of witness-serialized
-    bytes that coincidentally consumes them all and passes
-    `CheckTxScriptsSanity`, is not reproduced.
+    `iswitness` picks the readings `_decode_tx` tries, as Core's handler
+    does (`src/rpc/rawtransaction.cpp`, same tag).
     btclib-org/btclib-node#1458
-
-    `iswitness=true` disables only the legacy fallback and tries the
-    extended (marker-aware) reading alone -- exactly what `Tx.parse`
-    already and unconditionally does, witness-serialized or not, so
-    this changes nothing for it. `iswitness` omitted tries both, extended
-    preferred when it succeeds at all (`DecodeTx`'s own comment,
-    same file): the one case that additionally differs from a bare
-    `Tx.parse` is an ambiguous zero-input legacy encoding only the
-    legacy fallback can read, `Tx.parse` having none to fall back to
-    either -- the same gap `iswitness=false` above has, and not
-    reproduced for the same reason.
     """
     if not params:
         # the same mechanism get_block_hash's own missing-argument case
@@ -3327,7 +3377,7 @@ def decode_raw_transaction(
             raise type_error(2, "iswitness", params[1], "bool")
         iswitness = params[1]
     try:
-        tx = _decode_hex_tx(hexstring)
+        tx = _decode_hex_tx(hexstring, iswitness=iswitness)
     except BTClibException as error:
         # Core's own bare message, with none of sendrawtransaction's
         # "Make sure the tx has at least one input.": decoderawtransaction's
@@ -3337,9 +3387,6 @@ def decode_raw_transaction(
         raise RpcError(
             RPCErrorCode.DESERIALIZATION_ERROR, "TX decode failed"
         ) from error
-    if iswitness is False and tx.is_segwit:
-        # this function's own docstring, `iswitness=false`
-        raise RpcError(RPCErrorCode.DESERIALIZATION_ERROR, "TX decode failed")
     return _tx_to_univ(tx, node.chain.name, include_hex=False)
 
 

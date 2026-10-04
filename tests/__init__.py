@@ -303,6 +303,44 @@ def generate_random_transaction(
     )
 
 
+def ambiguous_tx(spk: bytes = b"", *, legacy_insane: bool = False) -> bytes:
+    """Return octets that read as a witness transaction and as a legacy one.
+
+    Read with the BIP144 marker, they are a transaction of one input and
+    one output paying `spk`, with a witness. Read without it, `00 01`
+    are an input count and an output count, so they are a transaction of
+    no input and one output, whose script runs to the lock time: its
+    length is the eighth octet of the input's txid, and its value is the
+    input count and the first seven of the txid.
+
+    The legacy script reads as valid ops, its last a push over the
+    output script's length, `spk` and the witness: `spk` is swallowed, so
+    it does not make the legacy reading unsound. `legacy_insane` puts an
+    octet above `OP_NOP10` in the legacy script.
+    """
+    txid = bytearray(b"\x51" * 32)
+    txid[7] = 45 + len(spk)  # the legacy script's length
+    if legacy_insane:
+        txid[10] = 0xFF
+    value = bytearray(b"\x51" * 8)
+    value[7] = 3 + len(spk)  # a push over the script length, `spk` and witness
+    return (
+        b"\x01\x00\x00\x00"  # version
+        b"\x00\x01"  # marker and flag
+        b"\x01"  # one input
+        + bytes(txid)
+        + b"\x51" * 4  # the input's vout
+        + b"\x00"  # an empty script_sig
+        + b"\x51" * 4  # the input's sequence
+        + b"\x01"  # one output
+        + bytes(value)
+        + bytes([len(spk)])
+        + spk
+        + b"\x01\x00"  # the witness: one empty item
+        + b"\x00" * 4  # lock time
+    )
+
+
 def generate_coinbase(value: int | None = None, height: int | None = None) -> Tx:
     """Return a coinbase transaction paying `value`, the subsidy by default.
 

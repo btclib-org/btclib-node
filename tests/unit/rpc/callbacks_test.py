@@ -125,6 +125,7 @@ from btclib_node.rpc.connection import RawJSON
 from btclib_node.rpc.errors import RpcError
 from btclib_node.rpc.help import HELP_TEXT, answer_help
 from tests import (
+    ambiguous_tx,
     build_block,
     generate_coinbase,
     generate_random_chain,
@@ -3437,10 +3438,10 @@ def a_legacy_tx() -> Tx:
 def test_decoderawtransaction_iswitness_false_refuses_a_witness_tx() -> None:
     """`iswitness=false` refuses a witness-serialized tx, as Core's `DecodeTx`.
 
-    `bitcoind` v31.1 on regtest: the same rawtx decodes with `iswitness`
+    `bitcoind` v31.1.0 on regtest: the same rawtx decodes with `iswitness`
     omitted or `true`, and answers `-22` "TX decode failed" with
-    `iswitness=false`. Not run end to end: read from `core_io.cpp`, the
-    same reasoning `decode_raw_transaction`'s own docstring gives.
+    `iswitness=false`, the legacy reading of its octets not consuming
+    them whole.
     """
     tx = a_tx()
     assert tx.is_segwit
@@ -3477,6 +3478,116 @@ def test_decoderawtransaction_iswitness_false_still_decodes_a_legacy_tx() -> Non
     raw = tx.serialize(include_witness=True).hex()
     out = cb.decode_raw_transaction(a_node(), _CONN, [raw, False])
     assert out["txid"] == tx.id.hex()
+
+
+def decoded_with(raw: bytes, *, iswitness: bool | None) -> dict[str, Any]:
+    """Answer `decoderawtransaction` for `raw`; `None` omits `iswitness`."""
+    params: list[Any] = [raw.hex()] if iswitness is None else [raw.hex(), iswitness]
+    return cb.decode_raw_transaction(a_node(), _CONN, params)
+
+
+def test_decoderawtransaction_reads_a_transaction_without_inputs() -> None:
+    """The legacy reading answers where the extended one cannot.
+
+    `01000000 00 01 <value 0> 00 00000000` is a transaction of no input
+    and one output. `bitcoind` v31.1.0 on regtest decodes it with
+    `iswitness` omitted or `false`, and answers `-22` "TX decode
+    failed" with `true`. btclib-org/btclib#2462
+    """
+    # version 1, 00 01, an output of value 0 and an empty script, lock time 0
+    raw = bytes.fromhex("01000000000100000000000000000000000000")
+    for iswitness in (None, False):
+        out = decoded_with(raw, iswitness=iswitness)
+        assert out["vin"] == []
+        assert len(out["vout"]) == 1
+    with pytest.raises(RpcError) as raised:
+        decoded_with(raw, iswitness=True)
+    assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
+    assert raised.value.message == "TX decode failed"
+
+
+@pytest.mark.parametrize(
+    ("spk", "legacy_insane", "omitted", "witness_only", "no_witness_only"),
+    [
+        # `bitcoind` v31.1.0 on regtest, `vin` of each answer: the extended
+        # reading is sound, so it is kept without trying the legacy one
+        (b"", False, 1, 1, 0),
+        # the extended reading is unsound and the legacy one is not
+        (b"\xba", False, 0, 1, 0),
+        # neither is sound: the extended one is kept
+        (b"\xba", True, 1, 1, 0),
+        # only the extended reading is sound
+        (b"", True, 1, 1, 0),
+    ],
+    ids=["both sound", "legacy sound", "neither sound", "extended sound"],
+)
+def test_decoderawtransaction_chooses_between_two_readings_as_core_does(
+    spk: bytes,
+    *,
+    legacy_insane: bool,
+    omitted: int,
+    witness_only: int,
+    no_witness_only: int,
+) -> None:
+    """Octets that read both ways are answered as `DecodeTx` answers them.
+
+    `iswitness` omitted tries the extended reading, then the legacy one;
+    `true` the extended alone; `false` the legacy alone. A reading is
+    sound if it passes `CheckTxScriptsSanity`, and the first sound one
+    wins, the extended one when none is. The numbers are the inputs each
+    answer carries, as `bitcoind` v31.1.0 on regtest gives them.
+    """
+    raw = ambiguous_tx(spk, legacy_insane=legacy_insane)
+    assert len(decoded_with(raw, iswitness=None)["vin"]) == omitted
+    assert len(decoded_with(raw, iswitness=True)["vin"]) == witness_only
+    assert len(decoded_with(raw, iswitness=False)["vin"]) == no_witness_only
+
+
+@pytest.mark.parametrize(
+    ("script", "sound"),
+    [
+        pytest.param(b"", True, id="empty"),
+        pytest.param(b"\x51\xb9", True, id="up to OP_NOP10"),
+        pytest.param(b"\xba", False, id="above OP_NOP10"),
+        pytest.param(b"\x4b" + b"\x00" * 75, True, id="push of 75"),
+        pytest.param(b"\x4b" + b"\x00" * 74, False, id="push cut short"),
+        pytest.param(b"\x4c", False, id="OP_PUSHDATA1 without a length"),
+        pytest.param(b"\x4c\x02\x00", False, id="OP_PUSHDATA1 over the end"),
+        pytest.param(b"\x4c\xff" + b"\x00" * 255, True, id="OP_PUSHDATA1 of 255"),
+        pytest.param(b"\x4d\x08\x02" + b"\x00" * 520, True, id="OP_PUSHDATA2 of 520"),
+        pytest.param(b"\x4d\x09\x02" + b"\x00" * 521, False, id="OP_PUSHDATA2 of 521"),
+        pytest.param(
+            b"\x4e\x08\x02\x00\x00" + b"\x00" * 520, True, id="OP_PUSHDATA4 of 520"
+        ),
+        pytest.param(
+            b"\x4e\x09\x02\x00\x00" + b"\x00" * 521, False, id="OP_PUSHDATA4 of 521"
+        ),
+        pytest.param(b"\x51" * 10_000, True, id="10000 octets"),
+        pytest.param(b"\x51" * 10_001, False, id="10001 octets"),
+    ],
+)
+def test_check_tx_scripts_sanity_asks_core_s_questions(
+    script: bytes, *, sound: bool
+) -> None:
+    """An output script and an input script are each held to `HasValidOps`.
+
+    The bounds are `MAX_OPCODE`, `MAX_SCRIPT_ELEMENT_SIZE` and
+    `MAX_SCRIPT_SIZE` (`src/script/script.h`, at v31.1).
+    """
+    tx = a_tx()
+    as_output = replace(tx, vout=[TxOut(0, script_pub_key=ScriptPubKey(script))])
+    as_input = replace(tx, vin=[replace(tx.vin[0], script_sig=script)])
+    assert cb._check_tx_scripts_sanity(as_output) is sound
+    assert cb._check_tx_scripts_sanity(as_input) is sound
+
+
+def test_check_tx_scripts_sanity_skips_a_coinbase_s_input() -> None:
+    """`CheckTxScriptsSanity` leaves a coinbase's `script_sig` be."""
+    coinbase = Tx(
+        1, 0, [TxIn(OutPoint(), b"\xba", 0xFFFFFFFF)], [], check_validity=False
+    )
+    assert coinbase.is_coinbase
+    assert cb._check_tx_scripts_sanity(coinbase)
 
 
 def test_decoderawtransaction_that_does_not_decode_is_core_s_bare_message() -> None:
