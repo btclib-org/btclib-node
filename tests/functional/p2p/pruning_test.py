@@ -245,7 +245,10 @@ def test_a_client_never_asks_the_pruned_server_for_a_block_past_its_depth(
     after the call: a block the server holds can come back over the real
     socket, and `callbacks.block` takes it out of `download_queue` on the
     client's own thread. One call to `block_download` on this otherwise
-    idle connection sends exactly one `GetData`.
+    idle connection sends exactly one `GetData`. Only `GetData` is
+    counted: the server runs its own header sync against the client, and
+    the client's empty `headers` answer to its `getheaders` goes out on
+    the client's thread at any moment (ISS 1694).
 
     Asking for heights 1 to 8, which the server pruned, would have it
     drop the connection, as the test above shows by hand; the
@@ -270,7 +273,8 @@ def test_a_client_never_asks_the_pruned_server_for_a_block_past_its_depth(
     client.is_initial_block_download = False
     client.download_manager.block_download()
 
-    (getdata,) = sent  # exactly the one request, not withheld and not more
+    # exactly the one request, not withheld and not more
+    (getdata,) = (msg for msg in sent if isinstance(msg, GetData))
     assert isinstance(getdata, GetData)
     assert getdata.items
     block_index = client.chainstate.block_index
