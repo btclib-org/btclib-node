@@ -2042,6 +2042,12 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
 - **`pyproject.toml` requires `bitcoin-core-rpc>=2026.10.4`**, at runtime
   and in the `test` group (issue #1685).
 
+### `Node.stop` waits for the requests the loop answers after it is called
+
+- **`Node._drain_message_queues` pushes the reply deadline forward for
+  each RPC request it answers**, so `stop` called mid-pass does not raise
+  `NodeShutdownTimeoutError` on a node still answering (closes #1651).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
