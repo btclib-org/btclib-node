@@ -126,7 +126,7 @@ def test_a_condition_that_holds_is_not_waited_for() -> None:
     timeout = 10
     start = time.monotonic()
     wait_until(lambda: True, timeout=timeout)
-    assert time.monotonic() - start < timeout
+    assert time.monotonic() - start < timeout / 2
 
 
 def test_a_condition_that_never_holds_is_given_up_on() -> None:
@@ -147,9 +147,10 @@ def test_a_manager_that_is_listening_is_not_waited_for() -> None:
     """`wait_until_listening` returns immediately once `listening` is set."""
     listening = SimpleNamespace(listening=threading.Event(), port=18444)
     listening.listening.set()
+    timeout = 10
     start = time.monotonic()
-    wait_until_listening(listening, timeout=10)
-    assert time.monotonic() - start < 10
+    wait_until_listening(listening, timeout=timeout)
+    assert time.monotonic() - start < timeout / 2
 
 
 def test_a_manager_that_never_binds_is_given_up_on() -> None:
@@ -186,10 +187,11 @@ def test_a_manager_whose_thread_ended_is_not_waited_for(
     manager.start()
     manager.join()
     reason = "see its log" if bind_error is None else bind_error
+    timeout = 10
     start = time.monotonic()
     with pytest.raises(ListenerEndedError, match=f"18444 ended .*{reason}"):
-        wait_until_listening(manager, timeout=10)
-    assert time.monotonic() - start < 10
+        wait_until_listening(manager, timeout=timeout)
+    assert time.monotonic() - start < timeout / 2
 
 
 def test_a_manager_not_yet_started_is_waited_for() -> None:
@@ -271,10 +273,11 @@ def test_a_manager_that_listened_and_was_stopped_is_not_misdiagnosed() -> None:
     manager = _AManagerThatWasStoppedCleanly()
     manager.start()
     manager.join()
+    timeout = 0.2
     start = time.monotonic()
-    with pytest.raises(WaitTimeoutError, match=r"within 0\.2 seconds"):
-        wait_until_listening(manager, timeout=0.2)
-    assert time.monotonic() - start >= 0.2
+    with pytest.raises(WaitTimeoutError, match=f"within {timeout} seconds"):
+        wait_until_listening(manager, timeout=timeout)
+    assert time.monotonic() - start >= timeout
 
 
 def test_a_bounded_call_hands_back_what_it_returned() -> None:

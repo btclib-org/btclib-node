@@ -76,6 +76,12 @@ one-month trial (issue btclib-org/.github#1505).
 - **A lone surrogate escape, or its UTF-8 bytes, in a string or a key
   is answered `-32700`**, as Core answers it (closes #1665).
 
+### Tests bound a wait by the timeout of what they test
+
+Waits are bounded by half the timeout the helper is given, not by seconds,
+and a parse by a reference timed beside it over the same input, in
+`tests/unit/` and `tests/functional/rpc/` (issue btclib-org/.github#1587).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on
