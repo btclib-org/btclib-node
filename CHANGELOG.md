@@ -105,6 +105,12 @@ and a parse by a reference timed beside it over the same input, in
   `local_addresses()`, not at collection** (closes #1618). A network
   change between the two no longer fails it.
 
+### A transaction of the most recent block is served
+
+- **A `getdata` for one is answered from the block, as Core's
+  `FindTxForGetData` does from `m_most_recent_block_txs`**, by txid or by
+  wtxid, where it was `notfound` once the mempool dropped it (closes #1607).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on
