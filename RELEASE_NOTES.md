@@ -43,6 +43,10 @@ on release day.
   calls them directly drives the generator, as `rpc.main` does. A JSON-RPC
   client needs no change: `getblocktemplate` waits on a `longpollid` and
   `waitforblockheight` is served, both refused before.
+- **A node given no `-bind` also listens on `127.0.0.1:<port + 1>`, a target
+  for a Tor onion service, and stops where that port is taken** (closes
+  #1666). Free the port or move `-port`. A `-bind` turns the default off, and
+  the node then listens on the addresses it names alone.
 
 ### Worth knowing, though nothing raises
 

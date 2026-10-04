@@ -123,6 +123,17 @@ and a parse by a reference timed beside it over the same input, in
   answers a second apart under a `STOP_TIMEOUT` of 2.5, not 0.3 apart
   under 0.6** (closes #1712).
 
+### A connection on an `=onion` listener is tagged as Tor
+
+- **A connection on an `=onion` listener is tagged as Tor, as in Core:
+  `getpeerinfo` says `onion`, and `getaddr`, the inv schedule, eviction,
+  `-whitelist` and the self-announcement follow** (closes #1644).
+
+### A node with no `-bind` listens on `127.0.0.1:<port + 1>` for Tor
+
+- **The loopback `=onion` listener Core adds is bound and tagged, and a
+  taken port ends the start** (closes #1666).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on

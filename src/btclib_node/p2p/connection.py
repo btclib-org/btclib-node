@@ -43,6 +43,7 @@ from btclib_node.p2p.callbacks import (
     handshake_callbacks,
 )
 from btclib_node.p2p.chain_sync import ChainSyncTimeoutState
+from btclib_node.p2p.eviction import Network, net_class
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 from btclib_node.p2p.messages import NoncelessPing
 from btclib_node.p2p.permissions import NetPermissionFlags
@@ -534,6 +535,17 @@ class Connection:
     # Written and read on `P2pManager`'s loop alone; a class default for
     # the same reason as `time_received`.
     next_local_addr_send: float = 0.0
+    # Core's `CNode::m_inbound_onion` (`src/net.h`, same sha): whether
+    # this peer reached an `=onion` listener. Set by
+    # `P2pManager.create_connection` before the task is scheduled, and
+    # never changed after; a class default for the same reason as
+    # `time_received`.
+    inbound_onion: bool = False
+
+    @property
+    def connected_through_network(self) -> Network:
+        """Core's `CNode::ConnectedThroughNetwork`: the network of the peer."""
+        return Network.ONION if self.inbound_onion else net_class(self.address)
 
     # Core's `CNodeState` block fields (`p2p/block_availability.py`),
     # here rather than in a `DownloadManager` table keyed by connection
@@ -653,8 +665,9 @@ class Connection:
         self.prefer_evict: bool = False
         # Core's `CNode::m_network_key` (`src/net.h`, at
         # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the key
-        # `callbacks.getaddr` caches its answer under -- this node's own
-        # network id, local bind host and local bind port, standing in
+        # `callbacks.getaddr` caches its answer under -- the BIP155 id of
+        # the peer's network (Tor's for an `inbound_onion` one), the local
+        # bind host and the local bind port, standing in
         # for Core's own SipHash-keyed `uint64_t` of the same three
         # (`CreateNodeFromAcceptedSocket`, same file and sha). `None`
         # for an outbound connection, which `getaddr` never answers.

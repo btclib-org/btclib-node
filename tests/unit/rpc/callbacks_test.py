@@ -69,6 +69,7 @@ from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.banman import BanEntry, BanMan, lookup_subnet
 from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.connection import PeerStats
+from btclib_node.p2p.eviction import Network, net_class
 from btclib_node.p2p.headers_sync import ChainStart, HeadersSyncState, State
 from btclib_node.p2p.permissions import NetPermissionFlags
 from btclib_node.p2p.selfannounce import LocalService
@@ -208,6 +209,7 @@ def a_peer(
     ping_sent: float = 0,
     relay: bool = True,
     inbound: bool = True,
+    inbound_onion: bool = False,
     automatic: bool = False,
     block_relay: bool = False,
     feeler: bool = False,
@@ -247,6 +249,9 @@ def a_peer(
         min_ping_time=min_ping_time,
         ping_sent=ping_sent,
         inbound=inbound,
+        connected_through_network=(
+            Network.ONION if inbound_onion else net_class(peer_address(peer, 8333))
+        ),
         automatic=automatic,
         block_relay=block_relay,
         feeler=feeler,
@@ -552,6 +557,13 @@ def test_the_network_is_core_s_net_class(peer: str, network: str) -> None:
     """`network` is `GetNetClass` of the peer, not the BIP155 id it came by."""
     (info,) = get_peer_info(a_node({7: a_peer(peer=peer)}), _CONN, [])
     assert info["network"] == network
+
+
+def test_a_peer_on_an_onion_listener_is_on_the_onion_network() -> None:
+    """ISS 1644: `network` is `ConnectedThroughNetwork`, not the address's."""
+    peers = {7: a_peer(peer="127.0.0.1", inbound_onion=True)}
+    (info,) = get_peer_info(a_node(peers), _CONN, [])
+    assert info["network"] == "onion"
 
 
 # addresses a peer names, none of them bound to

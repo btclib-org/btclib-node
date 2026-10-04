@@ -70,6 +70,7 @@ def a_conn(
     relay_tx: bool = True,
     feefilter: int = 0,
     inbound: bool = True,
+    inbound_onion: bool = False,
     address: NetworkAddressV2 | None = None,
     status: Any = P2pConnStatus.Connected,
     feefilter_sent: int = 0,
@@ -106,6 +107,7 @@ def a_conn(
         relay_tx=relay_tx,
         feefilter=feefilter,
         inbound=inbound,
+        inbound_onion=inbound_onion,
         address=address if address is not None else peer_address("10.0.0.1", 8333),
         download_queue=queue if queue is not None else [],
         stop=lambda: stopped.append(True),
@@ -709,6 +711,21 @@ def test_an_inbound_ipv4_peer_and_an_inbound_ipv6_peer_can_differ(
     manager = make_manager([first, second])
     manager.tx_download()
     assert first.next_inv_send_time != second.next_inv_send_time
+
+
+def test_an_inbound_onion_peer_has_a_schedule_of_its_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1644: `m_network_key` hashes `NET_ONION` for an `=onion` listener."""
+    draws = iter([1.0, 2.0])
+    monkeypatch.setattr(download_module._rng, "expovariate", lambda lambd: next(draws))
+    first = a_conn(1, address=peer_address("10.0.1.1", 8333))
+    onion = a_conn(2, address=peer_address("127.0.0.1", 8333), inbound_onion=True)
+    third = a_conn(3, address=peer_address("11.0.1.1", 8333))
+    manager = make_manager([first, onion, third])
+    manager.tx_download()
+    assert first.next_inv_send_time == third.next_inv_send_time
+    assert first.next_inv_send_time != onion.next_inv_send_time
 
 
 def test_a_transaction_this_node_originated_is_announced_like_any_other() -> None:

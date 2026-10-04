@@ -156,9 +156,10 @@ def protect_eviction_candidates_by_ratio(candidates: list[EvictionCandidate]) ->
     """Protect half of `candidates` by uptime, a quarter by network first.
 
     Core's `ProtectEvictionCandidatesByRatio`, removing in place what it
-    protects. Onion, I2P and CJDNS peers never reach it from this node,
-    which dials and listens on IPv4 and IPv6 alone, so of the four
-    disadvantaged networks only localhost ever holds one of its peers.
+    protects. I2P and CJDNS peers never reach it from this node, which
+    dials and listens on IPv4 and IPv6 alone, so of the four
+    disadvantaged networks only localhost and an `=onion` listener's
+    peers ever hold one.
     """
     initial_size = len(candidates)
     total_protect_size = initial_size // 2

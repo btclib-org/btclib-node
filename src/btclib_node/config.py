@@ -36,7 +36,7 @@ import os
 # btclib-org/btclib-node#1519
 from collections.abc import Collection, Sequence  # noqa: TC003
 from dataclasses import dataclass
-from ipaddress import IPv6Address
+from ipaddress import IPv4Address, IPv6Address
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -66,10 +66,12 @@ __all__ = [
     "DEFAULT_MIN_RELAY_FEERATE",
     "BindAddress",
     "Config",
+    "default_onion_bind",
     "get_path_arg",
     "listen_port",
     "lookup_host_port",
     "lookup_service",
+    "onion_port",
     "parse_bind",
     "service_text",
     "split_host_port",
@@ -235,6 +237,25 @@ class BindAddress:
     onion: bool
 
 
+def onion_port(default_port: int) -> int:
+    """Return the port an `=onion` bind takes where it names none.
+
+    `AppInitMain` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag) holds `default_port + 1` in a `uint16_t`, so `-port=65535` gives 0,
+    which binds a port the kernel picks.
+    """
+    return (default_port + 1) % 0x10000
+
+
+def default_onion_bind(default_port: int) -> BindAddress:
+    """Return the bind `AppInitMain` adds where no `-bind` is given.
+
+    `DefaultOnionServiceTarget` (`src/torcontrol.cpp`, same sha): the
+    loopback at `onion_port`, a target for a Tor onion service.
+    """
+    return BindAddress(IPv4Address("127.0.0.1"), onion_port(default_port), onion=True)
+
+
 def parse_bind(arg: str, default_port: int) -> BindAddress:
     """Return the address `-bind=<arg>` names, as `InitBinds`' caller reads it.
 
@@ -243,16 +264,16 @@ def parse_bind(arg: str, default_port: int) -> BindAddress:
 
     `AppInitMain` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7, the
     v31.1 tag) looks a numeric address up, at `default_port` where the
-    value names none; one tagged `=onion` takes `default_port + 1`
-    instead, and any other tag resolves nothing. Raises `ValueError` in
-    Core's words where the address is none.
+    value names none; one tagged `=onion` takes `onion_port` instead, and
+    any other tag resolves nothing. Raises `ValueError` in Core's words
+    where the address is none.
     """
     head, equals, tag = arg.rpartition("=")
     onion = bool(equals) and tag == "onion"
     if equals and not onion:
         service = None
     else:
-        port = default_port + 1 if onion else default_port
+        port = onion_port(default_port) if onion else default_port
         service = lookup_service(head if equals else arg, port)
     if service is None:
         err_msg = f"Cannot resolve -bind address: '{arg}'"

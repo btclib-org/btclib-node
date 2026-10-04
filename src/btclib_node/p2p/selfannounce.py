@@ -7,7 +7,8 @@
 `reachability` is `CNetAddr::GetReachabilityFrom` (`src/netaddress.cpp`)
 and `address_for_peer` is `GetLocal` and `GetLocalAddrForPeer`
 (`src/net.cpp`), both read at bitcoin/bitcoin@9be056a8a7, the v31.1 tag.
-Only IPv4 and IPv6 are held here, so no privacy network is weighed.
+Only IPv4 and IPv6 are held here, so no local address is on a privacy
+network, and `GetLocal` skips every one of them for a peer that is.
 """
 
 import secrets
@@ -92,17 +93,20 @@ def reachability(
     return _ours(ours)
 
 
-def address_for_peer(
+def address_for_peer(  # noqa: PLR0913
     local: dict[bytes, LocalService],
     peer: IPv4Address | IPv6Address,
     *,
     routable: bool,
     listen_port: int,
     seen_as: tuple[IPv4Address | IPv6Address, int | None] | None,
+    inbound_onion: bool = False,
 ) -> tuple[IPv4Address | IPv6Address, int] | None:
     """Return the address and port to tell `peer`, or `None`.
 
-    The best of `local` by reachability from `peer`, then by score. Where
+    The best of `local` by reachability from `peer`, then by score; none
+    of it where `inbound_onion` says `peer` reached an `=onion` listener,
+    `GetLocal` keeping an address of another network from a Tor peer. Where
     `seen_as` is given -- the address `peer` says it reaches this node at,
     the caller having found it routable and `-discover` on -- it replaces
     that, always where nothing is held and otherwise at random, one time
@@ -113,7 +117,7 @@ def address_for_peer(
     """
     best = None
     best_rank = (-1, -1)
-    for service in local.values():
+    for service in () if inbound_onion else local.values():
         rank = (reachability(service.address, peer, routable=routable), service.score)
         if rank > best_rank:
             best, best_rank = service, rank

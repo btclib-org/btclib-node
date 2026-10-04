@@ -95,6 +95,13 @@ def test_a_network_grants_every_host_it_holds_and_no_other() -> None:
     assert _names(whitelist, "5.6.7.8", inbound=True) == ["relay"]
 
 
+def test_a_peer_with_no_address_is_granted_nothing() -> None:
+    """ISS 1644: Core passes an empty address for a peer on an onion bind."""
+    whitelist = Whitelist.parse(["noban@1.2.3.4"])
+    assert whitelist.flags(None, inbound=True) == NetPermissionFlags.NONE
+    assert _names(whitelist, "1.2.3.4", inbound=True) == ["noban", "download"]
+
+
 def test_every_value_holding_the_host_adds_to_what_it_is_granted() -> None:
     """`AddWhitelistPermissionFlags` ORs the flags of every match."""
     whitelist = Whitelist.parse(["mempool@1.2.3.4", "addr@1.2.3.0/24", "relay@9.9.9.9"])

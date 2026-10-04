@@ -39,6 +39,7 @@ from btclib.p2p.addrv2 import (
 )
 
 from btclib_node.config import (
+    default_onion_bind,
     listen_port,
     lookup_host_port,
     lookup_service,
@@ -86,7 +87,6 @@ from btclib_node.p2p.eviction import (
     is_routable,
     is_valid,
     keyed_net_group,
-    net_class,
     net_group,
     select_node_to_evict,
 )
@@ -823,6 +823,10 @@ class P2pManager(threading.Thread):
         # concurrently -- `run` sets it once, from this thread, before
         # `stop` could possibly be reached by another.
         self._server_sockets: list[socket.socket] = []
+        # Core's `m_onion_binds`: the address and port of each `=onion`
+        # listener, which `server` finds a socket's own among. Filled by
+        # `_bind` and read by `server`, both on this manager's thread.
+        self._onion_binds: set[tuple[Host, int]] = set()
         # `server`'s own accept queue, one per listening socket, kept
         # here rather than only local to `server`'s own frame so the two
         # `manager_test.py` tests naming btclib-org/btclib-node#386 can
@@ -919,6 +923,7 @@ class P2pManager(threading.Thread):
         addr_fetch: bool = False,
         addr_name: str | None = None,
         local_address: tuple[str, int] | None = None,
+        inbound_onion: bool = False,
         use_v2transport: bool = False,
     ) -> None:
         """Build a `Connection` for `client`, hold it pending, and start it.
@@ -967,6 +972,10 @@ class P2pManager(threading.Thread):
         path, `server` below, is the only caller that ever passes one.
         `conn.addr_cache_key`'s own docstring (`connection.py`) is
         where the key built from it is argued.
+
+        `inbound_onion` is Core's own: the connection reached an `=onion`
+        listener. Its peer's address is then the Tor daemon's, so no
+        `-whitelist` entry is matched against it.
         """
         client.settimeout(0.0)
         self.last_connection_id += 1
@@ -987,8 +996,9 @@ class P2pManager(threading.Thread):
             allow_v1=self.node.config.v1transport,
         )
         conn.automatic = automatic
+        conn.inbound_onion = inbound_onion
         conn.permissions = self.whitelist.flags(
-            address,
+            None if inbound_onion else address,
             inbound=inbound,
             manual=not (automatic or addr_fetch),
         )
@@ -999,7 +1009,8 @@ class P2pManager(threading.Thread):
         conn.addr_name = addr_name
         conn.keyed_net_group = keyed_net_group(self._net_group_key, address)
         if local_address is not None:
-            conn.addr_cache_key = (address.network_id, *local_address)
+            network_id = BIP155Network.TORV3 if inbound_onion else address.network_id
+            conn.addr_cache_key = (network_id, *local_address)
         self.pending_connections[self.last_connection_id] = conn
         task = asyncio.run_coroutine_threadsafe(conn.run(), self.loop)
         conn.task = task
@@ -1807,6 +1818,7 @@ class P2pManager(threading.Thread):
             routable=is_routable(conn.address),
             listen_port=self._listen_port(),
             seen_as=seen_as,
+            inbound_onion=conn.inbound_onion,
         )
         if chosen is None:
             return
@@ -3118,17 +3130,25 @@ class P2pManager(threading.Thread):
         With a `-bind` it is those addresses alone that are bound, the
         plain ones before the `=onion` ones as `InitBinds` has it, each
         required: a failure of any ends `run`, the sockets already bound
-        closed. An `=onion` listener is bound but not tagged: a connection
-        it accepts is an ordinary inbound one, where Core's
-        `ConnectedThroughNetwork` answers `NET_ONION` for it
-        (`m_inbound_onion`, `src/net.cpp`, same sha).
+        closed. Without one, the loopback `=onion` listener
+        `default_onion_bind` names comes first, as there, and is
+        required too (btclib-org/btclib-node#1666). A connection an
+        `=onion` listener accepts is tagged `inbound_onion`
+        (btclib-org/btclib-node#1644).
         """
         if self.bind:
             sockets = self._bind_given()
         else:
-            # All interfaces, by design: a P2P listener accepts
-            # inbound peers from anywhere.
-            sockets = [self._bind_one(socket.AF_INET, "0.0.0.0")]  # noqa: S104
+            onion = default_onion_bind(cast("int", self.port))
+            sockets = [self._bind_one(socket.AF_INET, str(onion.host), onion.port)]
+            self._onion_binds.add((onion.host, onion.port))
+            try:
+                # All interfaces, by design: a P2P listener accepts
+                # inbound peers from anywhere.
+                sockets.append(self._bind_one(socket.AF_INET, "0.0.0.0"))  # noqa: S104
+            except OSError:
+                sockets[0].close()
+                raise
             try:
                 sockets.append(self._bind_one(socket.AF_INET6, "::"))
             except OSError:
@@ -3165,7 +3185,9 @@ class P2pManager(threading.Thread):
                     socket.AF_INET if isinstance(host, IPv4Address) else socket.AF_INET6
                 )
                 sockets.append(self._bind_one(family, str(host), address.port))
-                if self.discover and not address.onion:
+                if address.onion:
+                    self._onion_binds.add((host, address.port))
+                elif self.discover:
                     self._add_local(host, address.port, LOCAL_BIND)
         except OSError:
             for server_socket in sockets:
@@ -3357,6 +3379,15 @@ class P2pManager(threading.Thread):
                     # `query_dns_seed`'s own sockaddr comment being
                     # where that is argued
                     address = peer_address(*sockaddr[:2])
+                    # `CreateNodeFromAcceptedSocket`'s `inbound_onion`: the
+                    # accepted socket's own address, concrete where the
+                    # listener is bound to every interface, is looked up
+                    # in `m_onion_binds` (`GetBindAddress`, same sha)
+                    bound = sock.getsockname()[:2]
+                    inbound_onion = (
+                        ip_address(bound[0]),
+                        bound[1],
+                    ) in self._onion_binds
                     # Core's `CreateNodeFromAcceptedSocket` (`src/net.cpp`,
                     # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), on one
                     # count of the inbound peers: `fNetworkActive` false
@@ -3379,7 +3410,9 @@ class P2pManager(threading.Thread):
                         )
                         sock.close()
                         continue
-                    permissions = self.whitelist.flags(address, inbound=True)
+                    permissions = self.whitelist.flags(
+                        None if inbound_onion else address, inbound=True
+                    )
                     no_ban = NetPermissionFlags.NO_BAN in permissions
                     if not no_ban and self.ban_man.is_peer_banned(address):
                         endpoint = network_address(address)
@@ -3418,6 +3451,7 @@ class P2pManager(threading.Thread):
                         inbound=True,
                         prefer_evict=discouraged,
                         local_address=local_address,
+                        inbound_onion=inbound_onion,
                         # the v2 transport falls back to v1 on its own where
                         # -v1transport allows, as Core's always does
                         use_v2transport=self.supports_v2transport(),
@@ -3807,8 +3841,6 @@ def _eviction_candidate(conn: Connection) -> EvictionCandidate:
     the value that protects nobody:
 
     - `fBloomFilter`: this node answers no BIP37 `filterload`.
-    - an onion peer's `m_network`: this node has no Tor listener, so
-      `net_class` answers from the address alone.
 
     `m_relay_txs` is the peer's `version` relay flag once that message
     has arrived and false before it, as Core's `m_relays_txs` is. It is
@@ -3829,7 +3861,7 @@ def _eviction_candidate(conn: Connection) -> EvictionCandidate:
         keyed_net_group=conn.keyed_net_group,
         prefer_evict=conn.prefer_evict,
         is_local=is_local(conn.address),
-        network=net_class(conn.address),
+        network=conn.connected_through_network,
         noban=NetPermissionFlags.NO_BAN in conn.permissions,
         inbound=conn.inbound,
     )

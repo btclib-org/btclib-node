@@ -61,6 +61,7 @@ def _tell(
     peer: str = "9.9.9.9",
     *,
     seen_as: tuple[IPv4Address | IPv6Address, int | None] | None = None,
+    inbound_onion: bool = False,
 ) -> tuple[IPv4Address | IPv6Address, int] | None:
     return address_for_peer(
         held,
@@ -68,12 +69,20 @@ def _tell(
         routable=True,
         listen_port=8333,
         seen_as=seen_as,
+        inbound_onion=inbound_onion,
     )
 
 
 def test_nothing_is_told_where_nothing_is_held() -> None:
     """ISS 1641: no local address and no view of the peer, no announcement."""
     assert _tell({}) is None
+
+
+def test_a_peer_on_an_onion_listener_is_told_none_of_the_held_addresses() -> None:
+    """ISS 1644: `GetLocal` skips a local address not on the peer's network."""
+    held = _held(LocalService(V4, 2, LOCAL_BIND), LocalService(V6, 1, LOCAL_MANUAL))
+    assert _tell(held) == (V4, 2)
+    assert _tell(held, inbound_onion=True) is None
 
 
 def test_the_best_reachable_address_then_the_best_score_is_told() -> None:
