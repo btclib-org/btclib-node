@@ -2065,6 +2065,12 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
   checked on `Node.worker_pool`**, one at a time, a peer's next `tx`
   waiting; RPC and reorg acceptance check on `Node`'s thread.
 
+### The address table is Core's addrman, new and tried buckets
+
+- **`PeerDB` holds what Core's new and tried buckets hold**, in place of the
+  10,000-address bound. A terrible answered address keeps its slot until
+  another takes it. An older store's rows with no free slot are deleted.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

@@ -12,6 +12,7 @@ is btclib's own and is tested there (btclib-org/btclib#1581).
 """
 
 import asyncio
+import hashlib
 import secrets
 import socket
 import threading
@@ -25,8 +26,8 @@ from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2, is_embedded_ipv6
 
 import btclib_node.p2p.address as address_module
+from btclib_node.db import KeyValueStore
 from btclib_node.p2p.address import (
-    RECENT_TRY_SECONDS,
     SEEDS_SERVICE_FLAGS,
     PeerDB,
     can_connect,
@@ -35,7 +36,7 @@ from btclib_node.p2p.address import (
     ip_and_port,
     peer_address,
 )
-from btclib_node.p2p.eviction import Network
+from btclib_node.p2p.eviction import Network, net_class, net_group
 from tests import call_within
 
 if TYPE_CHECKING:
@@ -50,9 +51,48 @@ _A_V4_MAPPED_ADDRESS = "::ffff:1.2.3.4"
 _AN_ONIONCAT_ADDRESS = "fd87:d87e:eb43::1"
 
 
+# `tests/conftest.py` replaces `_roll` for every test; this is the function
+_REAL_ROLL = address_module._roll
+
+
 def a_peer_db(chain: Any = None, data_dir: Path | None = None) -> PeerDB:
     """Build a `PeerDB`, in memory unless `data_dir` names a store on disk."""
     return PeerDB(cast("Chain", chain), data_dir)
+
+
+def table_keys(peer_db: PeerDB) -> set[bytes]:
+    """Return the keys of the known and answered rows a store holds."""
+    assert peer_db.db is not None
+    return {key for key, _ in peer_db.db if key.startswith((b"known-", b"answered-"))}
+
+
+def slots_of(peer_db: PeerDB) -> dict[tuple[int, bytes, int], frozenset[Any]]:
+    """Return the new-table slots each endpoint holds."""
+    return {endpoint: frozenset(slots) for endpoint, slots in peer_db._slots.items()}
+
+
+def buckets_used(peer_db: PeerDB) -> set[int]:
+    """Return the new-table buckets that hold something."""
+    return {slot[0] for slots in peer_db._slots.values() for slot in slots}
+
+
+def packed(group: bytes) -> bytes:
+    """Return a net group as the store keeps it."""
+    return bytes([len(group)]) + group
+
+
+def plant_answered(
+    peer_db: PeerDB, address: NetworkAddressV2, *, at: float | None = None
+) -> None:
+    """Hold `address` as answered at `at`, in the tried table, untried since."""
+    peer_db.add_addresses([address], time_penalty=0)
+    peer_db._good(address, time.time() if at is None else at, test_before_evict=False)
+    peer_db._last_try.pop(address_module.endpoint_key(address), None)
+
+
+def side_rows(side: Any) -> list[NetworkAddressV2]:
+    """Return the addresses a `_Side` holds."""
+    return [side.row_of(item) for item in side.occupant.values()]
 
 
 def an_onion_address(port: int = 8333) -> NetworkAddressV2:
@@ -83,7 +123,7 @@ def test_an_address_just_seen_is_active_and_can_be_sent() -> None:
     seen = peer_address("1.2.3.4", 18444, timestamp=int(time.time()))
     peer_db.add_addresses([seen], time_penalty=0)
     peer_db.add_active_address(seen)
-    (active,) = peer_db.get_active_addresses()
+    (active,) = peer_db.active_addresses
     # a whole second, because the field is four octets on the wire and a
     # float has no to_bytes: this is what serving the address needs
     assert isinstance(active.timestamp, int)
@@ -91,30 +131,26 @@ def test_an_address_just_seen_is_active_and_can_be_sent() -> None:
 
 
 def test_the_table_of_active_addresses_is_bounded() -> None:
-    """`active_addresses` stops growing past its own cap of distinct endpoints.
+    """One group's answered addresses take the buckets they map to, no more.
 
-    A distinct port each time means every call is a genuinely new
-    endpoint -- the case `test_redialling_the_same_endpoint...` below
-    is not -- so the table's own count runs one step closer to the cap
-    per call rather than settling onto a single row. `addresses` holds
-    no more endpoints than this cap, so the known endpoints are written
-    straight into its index here, past what `add_addresses` would take.
+    Core's `ADDRMAN_TRIED_BUCKETS_PER_GROUP` buckets of 64 positions: the
+    ports of one address, offered by many sources and each answered,
+    leave 512 positions at most, whatever the test before an eviction
+    would have kept waiting.
     """
-    # #71: the cap is on distinct endpoints, so this many distinct ports
-    # each run the table a step closer to it rather than settling onto
-    # one row the way redialling the same endpoint does, below
     peer_db = a_peer_db()
-    limit = 10000
     now = int(time.time())
-    peer_db.addresses = {
-        peer_address("1.2.3.4", port, timestamp=now) for port in range(limit + 10)
-    }
-    peer_db._known_keys |= {
-        address_module.endpoint_key(address) for address in peer_db.addresses
-    }
-    for port in range(limit + 10):
-        peer_db.add_active_address(peer_address("1.2.3.4", port))
-    assert len(peer_db.active_addresses) == limit
+    for source in range(60):
+        peer_db.add_addresses(
+            [peer_address("1.2.3.4", port, timestamp=now) for port in range(1000)],
+            source=peer_address(f"{source + 20}.1.1.1", 8333),
+            time_penalty=0,
+        )
+    assert len(peer_db.addresses) > 512
+    for address in list(peer_db.addresses):
+        peer_db.add_active_address(address, test_before_evict=False)
+    assert 64 < len(peer_db.active_addresses) <= 512
+    assert len({slot[0] for slot in peer_db._tried_occupant}) <= 8
 
 
 def test_redialling_the_same_endpoint_settles_onto_its_one_row() -> None:
@@ -163,72 +199,57 @@ def test_redialling_the_same_endpoint_many_times_still_holds_one_row() -> None:
     assert len(peer_db.active_addresses) == 1
 
 
-def test_add_active_address_waits_out_a_prune_already_in_progress(
+def test_add_active_address_waits_out_a_move_already_in_progress(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`add_active_address` blocks while `get_active_addresses` is mid-prune.
+    """`add_active_address` blocks while another is mid-move between tables.
 
-    A review finding on #71's own timer: `add_active_address` reads
-    `_active_index` and then writes into `active_addresses` at the
-    position found, and `get_active_addresses` reassigns the list and
-    then rebuilds the index against it -- both two statements, not one,
-    reachable respectively from `callbacks.version` on `Node`'s thread
-    and `manage_connections` on `P2pManager`'s. `_reindex_active` is
-    paused here, after the list has already been reassigned but before
-    the index is rebuilt, which is the exact gap the finding traced --
-    a deliberate pause rather than a race against real timing.
+    A handshake moves an entry out of the new table and its evicted
+    neighbour back in, in several steps, and `callbacks.version` on
+    `Node`'s thread and `P2pManager`'s dial loop each reach them.
+    `_return_to_new` is paused here, after the evicted entry has left the
+    tried table and before it is put back, which is the gap `_move_lock`
+    closes -- a deliberate pause rather than a race against real timing.
     """
-    # A review finding on #71's own timer: add_active_address reads
-    # _active_index and then writes into active_addresses at the
-    # position found, and get_active_addresses reassigns the list and
-    # then rebuilds the index -- both two statements, not one, and
-    # reachable from two different threads (callbacks.version on Node's,
-    # manage_connections on P2pManager's). Paused mid-prune here rather
-    # than raced on timing: `_reindex_active` is where the pause is
-    # forced, after the list has already been reassigned but before the
-    # index is rebuilt against it, which is the exact gap the finding
-    # traced.
     peer_db = a_peer_db()
-    stale = peer_address("9.9.9.9", 1, timestamp=int(time.time()) - 31 * 24 * 3600)
-    peer_db.active_addresses.append(stale)
+    now = int(time.time())
+    old = peer_address("1.2.3.4", 8333, timestamp=now)
+    other = a_tried_collision(peer_db, old)
+    third = peer_address("5.6.7.8", 8333, timestamp=now)
+    peer_db.add_addresses([old, other, third], time_penalty=0)
+    peer_db.add_active_address(old, test_before_evict=False)
 
-    entered_prune = threading.Event()
-    release_prune = threading.Event()
-    real_reindex = peer_db._reindex_active
+    entered = threading.Event()
+    release = threading.Event()
+    real_return = peer_db._return_to_new
 
-    def paused_reindex() -> None:
-        entered_prune.set()
-        assert release_prune.wait(timeout=5)
-        real_reindex()
+    def paused_return(row: NetworkAddressV2) -> None:
+        entered.set()
+        assert release.wait(timeout=5)
+        real_return(row)
 
-    monkeypatch.setattr(peer_db, "_reindex_active", paused_reindex)
-    # known ahead of the prune: `add_addresses` takes `_active_lock` too,
-    # for the answered row a gossip reaches
-    peer_db.add_addresses([peer_address("1.2.3.4", 18444)])
-
-    pruner = threading.Thread(target=peer_db.get_active_addresses)
-    pruner.start()
-    assert entered_prune.wait(timeout=5)
-
-    adder = threading.Thread(
-        target=peer_db.add_active_address, args=(peer_address("1.2.3.4", 18444),)
+    monkeypatch.setattr(peer_db, "_return_to_new", paused_return)
+    evictor = threading.Thread(
+        target=peer_db.add_active_address,
+        args=(other,),
+        kwargs={"test_before_evict": False},
     )
+    evictor.start()
+    assert entered.wait(timeout=5)
+
+    adder = threading.Thread(target=peer_db.add_active_address, args=(third,))
     adder.start()
-    # the lock is what this proves: without it, add_active_address's own
-    # list.append/index write does not wait on anything and this join
-    # returns well inside the bound below
+    # the lock is what this proves: without it, add_active_address does
+    # not wait on anything and this join returns well inside the bound
     adder.join(timeout=0.2)
     assert adder.is_alive()
 
-    release_prune.set()
-    pruner.join(timeout=5)
+    release.set()
+    evictor.join(timeout=5)
     adder.join(timeout=5)
     assert not adder.is_alive()
-    # a corrupted list -- an IndexError inside add_active_address, or
-    # the stale row surviving the prune it raced -- fails one of these
-    # two rather than passing on the wrong data
-    (active,) = peer_db.active_addresses
-    assert active.port == 18444
+    assert {a.port for a in peer_db.active_addresses} == {other.port, third.port}
+    assert address_module._endpoint(old) in peer_db._slots
 
 
 def test_add_addresses_and_random_address_do_not_interleave(
@@ -289,62 +310,36 @@ def test_add_addresses_and_random_address_do_not_interleave(
     assert known.port == 8333
 
 
+def test_a_terrible_answered_address_stays_in_the_tried_table() -> None:
+    """Core keeps a terrible tried entry until another takes its slot.
+
+    `GetAddr_` leaves it out of an answer, but it holds its tried slot,
+    where a test before an eviction can still find it, and `Select_`
+    can still draw it.
+    """
+    peer_db = a_peer_db()
+    old = int(time.time()) - 31 * 86400
+    stale = peer_address("1.2.3.4", 18444, timestamp=old)
+    plant_answered(peer_db, stale, at=old)
+    assert peer_db.active_addresses == [stale]
+    assert peer_db.get_addr(0, 0) == []
+    assert address_module._endpoint(stale) in peer_db._tried_endpoints
+
+
 @pytest.mark.parametrize(
-    ("age", "kept"),
+    ("since_try", "terrible"),
     [
-        pytest.param(3600 * 4, True, id="four-hours"),
-        pytest.param(30 * 24 * 3600 - 60, True, id="inside-the-horizon"),
-        pytest.param(30 * 24 * 3600 + 60, False, id="past-the-horizon"),
-        pytest.param(-9 * 60, True, id="nine-minutes-ahead"),
-        pytest.param(-11 * 60, False, id="eleven-minutes-ahead"),
+        pytest.param(30, False, id="tried-just-now"),
+        pytest.param(61, True, id="tried-a-minute-ago"),
     ],
 )
-def test_an_answered_address_is_kept_until_is_terrible_ages_it_out(
-    *, age: int, kept: bool
+def test_the_recent_try_grace_expires_after_a_minute(
+    since_try: int, *, terrible: bool
 ) -> None:
-    """ISS 1318: `IsTerrible`'s horizon and its future bound.
-
-    Not merely hidden: checked twice, the answer excludes an aged-out
-    row and the table itself no longer holds it -- a read that filtered
-    it out without pruning would pass the first assertion and fail the
-    second.
-    """
-    peer_db = a_peer_db()
-    now = int(time.time())
-    fresh = peer_address("1.2.3.4", 18444, timestamp=now - 3600)
-    other = peer_address("5.6.7.8", 18444, timestamp=now - age)
-    peer_db.active_addresses += [fresh, other]
-    expected = [fresh, other] if kept else [fresh]
-    assert peer_db.get_active_addresses() == expected
-    assert peer_db.active_addresses == expected
-
-
-def test_a_row_tried_within_the_last_minute_is_never_aged_out() -> None:
-    """ISS 1435: `IsTerrible`'s `m_last_try` guard runs ahead of its time tests.
-
-    `terrible`'s own stamp is 31 days old, past `_ADDRMAN_HORIZON`, but
-    `attempt` marks it tried just now, and the grace keeps it regardless.
-    """
-    peer_db = a_peer_db()
-    now = int(time.time())
-    terrible = peer_address("1.2.3.4", 18444, timestamp=now - 31 * 24 * 3600)
-    peer_db.add_addresses([terrible])
-    peer_db.active_addresses.append(terrible)
-    peer_db.attempt(terrible)
-    assert peer_db.get_active_addresses() == [terrible]
-    assert peer_db.active_addresses == [terrible]
-
-
-def test_the_recent_try_grace_expires_after_a_minute() -> None:
-    """ISS 1435: past the grace, `terrible`'s own time tests apply again."""
-    peer_db = a_peer_db()
+    """ISS 1435: `IsTerrible`'s `m_last_try` guard comes first."""
     now = time.time()
-    terrible = peer_address("1.2.3.4", 18444, timestamp=int(now) - 31 * 24 * 3600)
-    peer_db.add_addresses([terrible])
-    peer_db.active_addresses.append(terrible)
-    peer_db._last_try[address_module.endpoint_key(terrible)] = now - 61
-    assert peer_db.get_active_addresses() == []
-    assert peer_db.active_addresses == []
+    address = peer_address("1.2.3.4", 18444, timestamp=int(now) - 31 * 24 * 3600)
+    assert address_module._aged_out(address, now, now - since_try) is terrible
 
 
 def test_the_two_ip_networks_are_told_apart_by_the_text_of_the_address() -> None:
@@ -753,8 +748,39 @@ def test_a_seed_answering_past_the_cap_is_taken_only_up_to_it(
     ips = [f"1.2.{i}.4" for i in range(40)]
     loop = FakeLoop({a_seed_host("many.example"): ips})
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
+    taken: list[NetworkAddressV2] = []
+    monkeypatch.setattr(
+        peer_db, "add_addresses", lambda addresses, **_: taken.extend(addresses)
+    )
     assert asyncio.run(peer_db.query_dns_seed("many.example")) is None
-    assert len(peer_db.addresses) == 32
+    assert len(taken) == 32
+
+
+def test_a_dns_seed_s_answer_has_the_seed_as_its_internal_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Core's `ThreadDNSAddressSeed` passes `SetInternal(host)` to `Add`."""
+    peer_db = a_peer_db(a_chain(["one.example"]))
+    loop = FakeLoop({a_seed_host("one.example"): ["1.2.3.4"]})
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
+    sources: list[NetworkAddressV2 | None] = []
+    monkeypatch.setattr(
+        peer_db,
+        "add_addresses",
+        lambda _addresses, *, source, **_: sources.append(source),
+    )
+    assert asyncio.run(peer_db.query_dns_seed("one.example")) is None
+    assert sources == [address_module.internal_source(a_seed_host("one.example"))]
+
+
+def test_an_internal_source_is_cores_set_internal() -> None:
+    """`CNetAddr::SetInternal`: ten octets of the name's SHA-256, prefixed."""
+    source = address_module.internal_source("fixedseeds")
+    digest = hashlib.sha256(b"fixedseeds").digest()
+    assert source.address == bytes.fromhex("fd6b88c08724") + digest[:10]
+    assert net_class(source) == Network.INTERNAL
+    assert net_group(source) == bytes([Network.INTERNAL]) + digest[:10]
+    assert net_group(address_module.internal_source("other")) != net_group(source)
 
 
 def test_a_dns_seed_s_answer_is_backdated_with_no_extra_penalty(
@@ -840,7 +866,7 @@ def test_an_address_is_drawn_from_the_ones_that_can_be_dialled() -> None:
     """
     peer_db = a_peer_db()
     dialable = peer_address("1.2.3.4", 8333)
-    peer_db.addresses.add(dialable)
+    peer_db.add_addresses([dialable])
     peer_db.addresses.add(an_onion_address())
     for _ in range(20):
         assert peer_db.random_address() == dialable
@@ -886,22 +912,394 @@ def test_the_draw_reaches_every_address_that_can_be_dialled() -> None:
     # ipv4 and ipv6 are both dialled, not only the first
     peer_db = a_peer_db()
     dialable = {peer_address(f"1.2.3.{host}", 8333) for host in range(1, 4)}
-    dialable.add(peer_address("2001:db8::1", 8333))
-    peer_db.addresses |= dialable
+    dialable.add(peer_address("2a01:4f8::1", 8333))
+    peer_db.add_addresses(dialable)
     peer_db.addresses.add(an_onion_address())
     assert {peer_db.random_address() for _ in range(80)} == dialable
 
 
-def test_the_table_of_known_addresses_is_bounded() -> None:
-    """`add_addresses` stops growing `addresses` past its own cap.
+def a_group_of_addresses(
+    prefix: str, count: int, *, now: int
+) -> list[NetworkAddressV2]:
+    """Return `count` addresses of one `/16`, `prefix` being its two octets."""
+    return [
+        peer_address(f"{prefix}.{n // 250}.{n % 250 + 1}", 8333, now)
+        for n in range(count)
+    ]
 
-    Ten more entries than the cap are offered in one call, and the
-    table still holds exactly the cap's worth after it.
+
+def a_colliding_address(
+    peer_db: PeerDB, held: NetworkAddressV2, source: NetworkAddressV2
+) -> NetworkAddressV2:
+    """Return an address of `held`'s group in `held`'s slot of the new table."""
+    group = net_group(source)
+    slot = address_module._new_slot(peer_db._bucket_key, held, group)
+    return next(
+        other
+        for other in (replace(held, port=port) for port in range(held.port + 1, 60000))
+        if address_module._new_slot(peer_db._bucket_key, other, group) == slot
+    )
+
+
+def test_one_group_holds_only_the_bucket_it_maps_to() -> None:
+    """A group's addresses from one source take the one bucket they map to.
+
+    A `/16` gossiped by a peer of one group maps to the one bucket of 64
+    positions, however many addresses it is gossiped as, so the table
+    has room left and an address of another group from another source is
+    stored.
     """
     peer_db = a_peer_db()
-    limit = 10000
-    peer_db.add_addresses([peer_address("1.2.3.4", port) for port in range(limit + 10)])
-    assert len(peer_db.addresses) == limit
+    now = int(time.time())
+    source = peer_address("44.0.0.1", 8333)
+    crowd = a_group_of_addresses("44.0", 10000, now=now)
+    peer_db.add_addresses(crowd, source=source)
+    assert 0 < len(peer_db.addresses) <= 64
+    other = peer_address("8.8.8.8", 8333, timestamp=now)
+    assert peer_db.add_addresses([other], source=peer_address("9.9.9.9", 8333)) == 1
+    assert other.address in {a.address for a in peer_db.addresses}
+
+
+def test_a_source_group_spreads_over_a_bounded_number_of_buckets() -> None:
+    """The addresses of every group from one source map to 64 buckets at most.
+
+    Core's `ADDRMAN_NEW_BUCKETS_PER_SOURCE_GROUP`: the groups of a `/8`
+    gossiped from a single `/16` take no more of the table than that
+    many buckets hold, and a second source's gossip of the same groups
+    has buckets of its own.
+    """
+    peer_db = a_peer_db()
+    now = int(time.time())
+    groups = [
+        peer_address(f"44.{group}.{n}.1", 8333, now)
+        for group in range(256)
+        for n in range(4)
+    ]
+    peer_db.add_addresses(groups, source=peer_address("44.0.0.1", 8333))
+    buckets = buckets_used(peer_db)
+    assert 1 < len(buckets) <= 64
+    first = len(peer_db.addresses)
+    peer_db.add_addresses(groups, source=peer_address("45.0.0.1", 8333))
+    assert len(peer_db.addresses) > first
+
+
+def test_a_group_with_most_addresses_is_drawn_as_one_bucket() -> None:
+    """A bucket is drawn before an address, so a full bucket weighs as one.
+
+    The `/16` holding as many addresses as its bucket takes and an
+    address of another group each weigh a bucket, as Core's
+    `Select_` has it, and neither is drawn alone.
+    """
+    peer_db = a_peer_db()
+    now = int(time.time())
+    peer_db.add_addresses(
+        a_group_of_addresses("44.0", 1000, now=now),
+        source=peer_address("44.0.0.1", 8333),
+    )
+    peer_db.add_addresses(
+        [peer_address("8.8.8.8", 8333, now)], source=peer_address("9.9.9.9", 8333)
+    )
+    draw = peer_db.address_sampler()
+    drawn = [draw() for _ in range(400)]
+    other = sum(1 for a in drawn if a is not None and a.address == bytes([8, 8, 8, 8]))
+    assert 100 < other < 300
+
+
+def test_the_table_of_known_addresses_keeps_to_its_buckets_on_reopening(
+    tmp_path: Path,
+) -> None:
+    """The stored rows keep their slots on a restart.
+
+    The rows of the first run are the rows of the second, and gossip
+    from the same group and the same source after the restart still
+    leaves room for another group's.
+    """
+    now = int(time.time())
+    source = peer_address("44.0.0.1", 8333)
+    first = a_peer_db(data_dir=tmp_path)
+    first.add_addresses(a_group_of_addresses("44.0", 10000, now=now), source=source)
+    other = peer_address("8.8.8.8", 8333, timestamp=now)
+    first.add_addresses([other], source=peer_address("9.9.9.9", 8333))
+    rows = set(first.addresses)
+    slots = slots_of(first)
+    first.close()
+
+    second = a_peer_db(data_dir=tmp_path)
+    assert second.addresses == rows
+    assert slots_of(second) == slots
+    second.add_addresses(a_group_of_addresses("44.0", 10000, now=now), source=source)
+    assert len(second.addresses) <= len(rows) + 1
+    other = peer_address("7.7.7.7", 8333, timestamp=now)
+    assert second.add_addresses([other], source=peer_address("6.6.6.6", 8333)) == 1
+    second.close()
+
+
+def test_the_key_placing_the_known_addresses_is_stored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A restart places the rows by the key stored, not by a new one."""
+    monkeypatch.setattr(
+        address_module, "_new_bucket_key", lambda: secrets.token_bytes(32)
+    )
+    first = a_peer_db(data_dir=tmp_path)
+    key = first._bucket_key
+    first.close()
+    second = a_peer_db(data_dir=tmp_path)
+    assert second._bucket_key == key
+    second.close()
+
+
+def test_a_slot_of_an_address_that_is_not_terrible_is_kept() -> None:
+    """Core's `AddSingle`: a slot's holder stays, the newcomer is dropped."""
+    peer_db = a_peer_db()
+    now = int(time.time())
+    source = peer_address("9.9.9.9", 8333)
+    held = peer_address("1.2.3.4", 8333, timestamp=now)
+    newcomer = a_colliding_address(peer_db, held, source)
+    assert peer_db.add_addresses([held], source=source, time_penalty=0) == 1
+    assert peer_db.add_addresses([newcomer], source=source, time_penalty=0) == 0
+    assert peer_db.addresses == {held}
+
+
+def test_a_slot_of_a_terrible_address_goes_to_the_newcomer(tmp_path: Path) -> None:
+    """Core's `AddSingle` overwrites a slot whose holder `IsTerrible` names.
+
+    The holder's rows are gone from the store with it, and from the
+    index of the table.
+    """
+    peer_db = a_peer_db(data_dir=tmp_path)
+    now = int(time.time())
+    source = peer_address("9.9.9.9", 8333)
+    held = peer_address("1.2.3.4", 8333, timestamp=now - 31 * 24 * 3600)
+    newcomer = replace(a_colliding_address(peer_db, held, source), timestamp=now)
+    peer_db.add_addresses([held], source=source, time_penalty=0)
+    assert peer_db.add_addresses([newcomer], source=source, time_penalty=0) == 1
+    assert peer_db.addresses == {newcomer}
+    assert table_keys(peer_db) == {b"known-" + address_module.endpoint_key(newcomer)}
+    assert list(peer_db._slots) == [address_module._endpoint(newcomer)]
+    peer_db.close()
+
+
+def test_an_answered_address_holds_no_slot_of_the_new_table() -> None:
+    """`Good_` moves an address out of its buckets: another takes the slot."""
+    peer_db = a_peer_db()
+    now = int(time.time())
+    source = peer_address("9.9.9.9", 8333)
+    held = peer_address("1.2.3.4", 8333, timestamp=now - 31 * 24 * 3600)
+    newcomer = replace(a_colliding_address(peer_db, held, source), timestamp=now)
+    peer_db.add_addresses([held], source=source, time_penalty=0)
+    assert peer_db.add_active_address(held)
+    assert address_module._endpoint(held) not in peer_db._slots
+    assert peer_db.add_addresses([newcomer], source=source, time_penalty=0) == 1
+    assert peer_db.addresses == {held, newcomer}
+
+
+def test_an_overlay_address_is_placed_by_its_own_group() -> None:
+    """A Tor, an I2P and a CJDNS address each take a slot of the new table."""
+    peer_db = a_peer_db()
+    overlay = [
+        an_onion_address(),
+        NetworkAddressV2(0, 0, BIP155Network.I2P, b"\xa5" * 32, 8333),
+        a_cjdns_address(),
+    ]
+    assert peer_db.add_addresses(overlay) == len(overlay)
+    assert len(peer_db._slots) == len(overlay)
+
+
+def test_a_draw_takes_a_bucket_before_an_address() -> None:
+    """`_select` weighs a bucket of one address as it does a bucket of many."""
+    one = peer_address("1.2.3.4", 8333)
+    peer_db = a_peer_db()
+    peer_db.add_addresses([one])
+    peer_db.add_addresses(
+        [peer_address("5.6.7.8", position) for position in range(40)],
+        source=peer_address("9.9.9.9", 1),
+    )
+    draw = peer_db.address_sampler(new_only=True)
+    drawn = [draw() for _ in range(400)]
+    assert 80 < sum(1 for a in drawn if a == one) < 320
+
+
+@pytest.mark.parametrize(("start", "index"), [(0, 0), (11, 1), (12, 1), (13, 0)])
+def test_a_draw_takes_the_first_address_from_a_position_on(
+    monkeypatch: pytest.MonkeyPatch, start: int, index: int
+) -> None:
+    """The first position from the one drawn, looping round, as `Select_`."""
+    rows = [peer_address("1.2.3.4", 1), peer_address("1.2.3.4", 2)]
+    side = address_module._Side(
+        {(5, 3): rows[0], (5, 12): rows[1]},
+        [5],
+        lambda row: row,
+        lambda _row: True,
+        lambda _row: 1.0,
+    )
+    monkeypatch.setattr(
+        secrets, "choice", lambda seq: start if isinstance(seq, range) else seq[0]
+    )
+    monkeypatch.setattr(address_module, "_roll", lambda _factor: True)
+    assert address_module._select(None, side) == rows[index]
+
+
+def test_a_held_address_is_updated_where_its_bucket_is_full() -> None:
+    """Gossip for an address already held keeps its slot and takes no other."""
+    peer_db = a_peer_db()
+    now = int(time.time())
+    source = peer_address("44.0.0.1", 8333)
+    peer_db.add_addresses(a_group_of_addresses("44.0", 1000, now=now), source=source)
+    held = next(iter(peer_db.addresses))
+    size = len(peer_db.addresses)
+    slots = slots_of(peer_db)[address_module._endpoint(held)]
+    assert (
+        peer_db.add_addresses(
+            [replace(held, services=ServiceFlags.NODE_BLOOM)], source=source
+        )
+        == 0
+    )
+    assert len(peer_db.addresses) == size
+    assert {
+        a.services
+        for a in peer_db.addresses
+        if a.address == held.address and a.port == held.port
+    } == {held.services | ServiceFlags.NODE_BLOOM}
+    assert slots_of(peer_db)[address_module._endpoint(held)] == slots
+
+
+def test_a_store_of_an_earlier_release_is_placed_on_load(tmp_path: Path) -> None:
+    """Rows with no source or key stored are placed as their own source's.
+
+    A `/16` stored beyond what one bucket holds is cut down to it, the
+    rows over it deleted, and an address of another group is kept.
+    """
+    now = int(time.time())
+    store = KeyValueStore(tmp_path / "peers")
+    crowd = a_group_of_addresses("44.0", 1000, now=now)
+    other = peer_address("8.8.8.8", 8333, timestamp=now)
+    for row in (*crowd, other):
+        store.put(
+            b"known-" + address_module.endpoint_key(row),
+            row.serialize(check_validity=False),
+        )
+    store.close()
+
+    second = a_peer_db(data_dir=tmp_path)
+    assert other in second.addresses
+    assert 1 < len(second.addresses) <= 64 + 1
+    assert table_keys(second) == {
+        b"known-" + address_module.endpoint_key(row) for row in second.addresses
+    }
+    second.close()
+
+
+def test_a_row_stored_without_a_source_is_its_own_source(tmp_path: Path) -> None:
+    """Each group of an earlier release's rows has buckets of its own."""
+    now = int(time.time())
+    store = KeyValueStore(tmp_path / "peers")
+    for group in range(200):
+        row = peer_address(f"44.{group}.0.1", 8333, timestamp=now)
+        store.put(
+            b"known-" + address_module.endpoint_key(row),
+            row.serialize(check_validity=False),
+        )
+    store.close()
+
+    peer_db = a_peer_db(data_dir=tmp_path)
+    assert len(peer_db.addresses) > 150
+    assert len(buckets_used(peer_db)) > 64
+    peer_db.close()
+
+
+def test_a_source_row_with_no_known_row_is_dropped_on_load(tmp_path: Path) -> None:
+    """A stored source group with no known row to belong to is deleted."""
+    first = a_peer_db(data_dir=tmp_path)
+    assert first.db is not None
+    orphan = b"source-" + address_module.endpoint_key(peer_address("1.2.3.4", 8333))
+    first.db.put(orphan, b"\x01\x01\x02")
+    first.close()
+    second = a_peer_db(data_dir=tmp_path)
+    assert second.db is not None
+    assert orphan not in {key for key, _ in second.db}
+    second.close()
+
+
+def test_a_terrible_holder_keeps_its_slot_on_load(tmp_path: Path) -> None:
+    """`Unserialize` keeps the first holder of a slot, terrible or not."""
+    now = int(time.time())
+    source = peer_address("9.9.9.9", 8333)
+    first = a_peer_db(data_dir=tmp_path)
+    held = peer_address("1.2.3.4", 8333, timestamp=now - 31 * 24 * 3600)
+    newcomer = replace(a_colliding_address(first, held, source), timestamp=now)
+    first.add_addresses([held], source=source, time_penalty=0)
+    assert first.db is not None
+    first.db.put(
+        b"known-" + address_module.endpoint_key(newcomer),
+        newcomer.serialize(check_validity=False),
+    )
+    first.db.put(
+        b"source-" + address_module.endpoint_key(newcomer),
+        packed(net_group(source)) + packed(net_group(source)),
+    )
+    first.close()
+
+    second = a_peer_db(data_dir=tmp_path)
+    assert second.addresses == {held}
+    keys = {key for key, _ in second.db} if second.db is not None else set()
+    assert b"known-" + address_module.endpoint_key(newcomer) not in keys
+    second.close()
+
+
+def test_a_row_whose_stored_slot_is_held_is_tried_at_its_first_source(
+    tmp_path: Path,
+) -> None:
+    """`Unserialize`: a held slot sends the row once to its first source's."""
+    now = int(time.time())
+    source = peer_address("9.9.9.9", 8333)
+    primary = net_group(peer_address("7.7.7.7", 1))
+    first = a_peer_db(data_dir=tmp_path)
+    held = peer_address("1.2.3.4", 8333, timestamp=now)
+    newcomer = a_colliding_address(first, held, source)
+    first.add_addresses([held], source=source, time_penalty=0)
+    assert first.db is not None
+    suffix = address_module.endpoint_key(newcomer)
+    first.db.put(b"known-" + suffix, newcomer.serialize(check_validity=False))
+    first.db.put(b"source-" + suffix, packed(primary) + packed(net_group(source)))
+    first.close()
+
+    second = a_peer_db(data_dir=tmp_path)
+    slot = address_module._new_slot(second._bucket_key, newcomer, primary)
+    assert second._slots[address_module._endpoint(newcomer)] == {slot: primary}
+    assert second._source[address_module._endpoint(newcomer)] == primary
+    assert second.db is not None
+    assert second.db.get(b"source-" + suffix) == packed(primary) + packed(primary)
+    second.close()
+
+
+def test_a_row_dropped_on_load_is_deleted_from_the_store(tmp_path: Path) -> None:
+    """A row whose slot is held by another is deleted, with its source."""
+    now = int(time.time())
+    source = peer_address("9.9.9.9", 8333)
+    first = a_peer_db(data_dir=tmp_path)
+    held = peer_address("1.2.3.4", 8333, timestamp=now)
+    other = a_colliding_address(first, held, source)
+    first.add_addresses([held], source=source, time_penalty=0)
+    assert first.db is not None
+    first.db.put(
+        b"known-" + address_module.endpoint_key(other),
+        other.serialize(check_validity=False),
+    )
+    first.db.put(
+        b"source-" + address_module.endpoint_key(other), packed(net_group(source))
+    )
+    first.close()
+
+    second = a_peer_db(data_dir=tmp_path)
+    assert second.db is not None
+    (survivor,) = second.addresses
+    survivor_key = address_module.endpoint_key(survivor)
+    assert {key for key, _ in second.db if key.startswith((b"known-", b"source-"))} == {
+        b"known-" + survivor_key,
+        b"source-" + survivor_key,
+    }
+    second.close()
 
 
 def test_a_v4_mapped_ipv6_record_is_not_kept() -> None:
@@ -1254,9 +1652,9 @@ def test_a_handshaken_endpoint_is_not_pruned_for_the_age_of_its_gossip(
     endpoint = peer_address("1.2.3.4", 8333, timestamp=old)
     peer_db.add_addresses([endpoint], time_penalty=0)
     peer_db.add_active_address(endpoint)
-    assert len(peer_db.get_active_addresses()) == 1
+    assert len(peer_db.active_addresses) == 1
     peer_db.add_addresses([replace(endpoint, timestamp=1)], time_penalty=0)
-    assert len(peer_db.get_active_addresses()) == 1
+    assert len(peer_db.active_addresses) == 1
 
 
 def test_an_endpoint_the_table_does_not_hold_is_not_answered() -> None:
@@ -1495,25 +1893,6 @@ def test_get_addr_is_capped_at_the_most_it_may_answer() -> None:
     assert len(peer_db.get_addr(4, 100)) == 4
 
 
-def test_updating_an_endpoint_already_known_does_not_spend_the_cap() -> None:
-    """Updating an endpoint already at the cap does not push another one out.
-
-    A second gossip for an endpoint the table already holds is not a
-    new endpoint, so it must not be turned away as though the cap had
-    run out on it: the table starts already full, at exactly the cap,
-    and the update still lands.
-    """
-    # a second gossip for an endpoint the table already holds is not a
-    # new endpoint, so it must not be turned away as though the cap had
-    # run out on it
-    peer_db = a_peer_db()
-    peer_db.addresses = {peer_address("1.2.3.4", port) for port in range(10000)}
-    peer_db.add_addresses([peer_address("1.2.3.4", 0, services=1)])
-    assert len(peer_db.addresses) == 10000
-    (updated,) = [addr for addr in peer_db.addresses if addr.port == 0]
-    assert updated.services == 1
-
-
 @pytest.mark.parametrize(("coin", "table"), [(1, "answered"), (0, "gossiped")])
 def test_a_coin_decides_between_the_answered_and_the_gossiped_table(
     monkeypatch: pytest.MonkeyPatch, coin: int, table: str
@@ -1553,24 +1932,24 @@ def test_an_answered_endpoint_is_drawn_from_the_answered_table_alone() -> None:
     peer_db.add_active_address(answered)
     # a `functools.partial` over `_select`, whose two tables are its args
     tried, new = cast("Any", peer_db.address_sampler()).args
-    assert [a.address for a in tried] == [answered.address]
-    assert [a.address for a in new] == [gossiped.address]
+    assert [a.address for a in side_rows(tried)] == [answered.address]
+    assert [a.address for a in side_rows(new)] == [gossiped.address]
 
 
 def test_the_tried_side_draws_a_row_terrible_by_age_as_select_does() -> None:
     """ISS 1434: Core's `Select_` never calls `IsTerrible`, unlike `GetAddr_`.
 
     `terrible`'s stamp is 31 days old, past `_ADDRMAN_HORIZON`: excluded
-    from `get_active_addresses`'s own pruned answer, as `getaddr` would
-    see it, but still drawable from the tried side of `address_sampler`.
+    from a `getaddr` answer but still drawable from the tried side of
+    `address_sampler`.
     """
     peer_db = a_peer_db()
     now = int(time.time())
     terrible = peer_address("1.2.3.4", 8333, timestamp=now - 31 * 24 * 3600)
-    peer_db.active_addresses.append(terrible)
+    plant_answered(peer_db, terrible, at=terrible.timestamp)
     tried, _ = cast("Any", peer_db.address_sampler()).args
-    assert [a.address for a in tried] == [terrible.address]
-    assert peer_db.get_active_addresses() == []
+    assert [a.address for a in side_rows(tried)] == [terrible.address]
+    assert peer_db.get_addr(0, 0) == []
 
 
 @pytest.mark.parametrize(
@@ -1592,7 +1971,7 @@ def test_the_gossiped_side_leaves_out_the_answered_endpoint_alone(
     peer_db.add_addresses([answered, other])
     peer_db.add_active_address(answered)
     _, new = cast("Any", peer_db.address_sampler()).args
-    assert new == [other]
+    assert side_rows(new) == [other]
 
 
 @pytest.mark.parametrize("table", ["answered", "gossiped"])
@@ -1632,13 +2011,13 @@ def test_a_try_is_recorded_for_an_endpoint_a_table_holds(table: str) -> None:
 
 
 def test_a_try_too_old_to_read_is_forgotten(monkeypatch: pytest.MonkeyPatch) -> None:
-    """ISS 1277: a try `RECENT_TRY_SECONDS` old is dropped at the next one."""
+    """ISS 1277: a try `_ADDRMAN_REPLACEMENT` old is dropped at the next one."""
     peer_db = a_peer_db()
     old = peer_address("1.2.3.4", 8333)
     new = peer_address("5.6.7.8", 8333)
     peer_db.add_addresses([old, new])
     now = time.time()
-    monkeypatch.setattr(time, "time", lambda: now - RECENT_TRY_SECONDS)
+    monkeypatch.setattr(time, "time", lambda: now - address_module._ADDRMAN_REPLACEMENT)
     peer_db.attempt(old)
     monkeypatch.setattr(time, "time", lambda: now)
     peer_db.attempt(new)
@@ -1782,31 +2161,6 @@ def test_size_stays_put_across_a_handshake_with_a_gossiped_endpoint(
     peer_db.close()
 
 
-def test_a_stale_answered_address_no_longer_counts_towards_size(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An active row past the horizon is pruned before `size` reads it.
-
-    `time.time` is patched to 31 days in the past only for the
-    `add_active_address` call, so the row is written stale rather than
-    aged after the fact; `__init__` (`get_active_addresses`, above)
-    prunes it before construction returns, so only the endpoint's own
-    gossiped row is left to count.
-    """
-    first = a_peer_db(data_dir=tmp_path)
-    stale = peer_address("1.2.3.4", 8333)
-    past_the_horizon = time.time() - 31 * 24 * 3600
-    with monkeypatch.context() as patch:
-        patch.setattr(time, "time", lambda: past_the_horizon)
-        first.add_addresses([stale])
-        first.add_active_address(stale)
-    first.close()
-
-    second = a_peer_db(data_dir=tmp_path)
-    assert second.size == 1
-    second.close()
-
-
 def test_a_store_answered_a_day_ago_keeps_its_size(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1826,66 +2180,7 @@ def test_a_store_answered_a_day_ago_keeps_its_size(
 
     second = a_peer_db(data_dir=tmp_path)
     assert second.size == 1
-    assert [a.address for a in second.get_active_addresses()] == [answered.address]
-    second.close()
-
-
-def test_get_active_addresses_deletes_a_stale_row_from_the_store(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """`get_active_addresses` prunes a stale row from the durable store too.
-
-    #253: nothing in `add_active_address` ever bounded the durable
-    `answered-` rows the way `add_addresses`'s 10000-entry cap bounds
-    `known-` ones, so pruning on read is what keeps the store itself
-    from growing without bound -- checked here directly against
-    `peer_db.db`, not only against the in-memory `active_addresses`.
-    """
-    # #253: nothing in `add_active_address` ever bounded the durable
-    # `answered-` rows the way `add_addresses`'s 10000-entry cap bounds
-    # `known-` ones
-    peer_db = a_peer_db(data_dir=tmp_path)
-    stale = peer_address("1.2.3.4", 8333)
-    past_the_horizon = time.time() - 31 * 24 * 3600
-    with monkeypatch.context() as patch:
-        patch.setattr(time, "time", lambda: past_the_horizon)
-        peer_db.add_addresses([stale])
-        peer_db.add_active_address(stale)
-    assert peer_db.db is not None
-    answered_rows = [key for key, _ in peer_db.db if key.startswith(b"answered-")]
-    assert answered_rows
-    peer_db.get_active_addresses()
-    assert not [key for key, _ in peer_db.db if key.startswith(b"answered-")]
-    peer_db.close()
-
-
-def test_a_stale_answered_row_does_not_survive_a_restart(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A stale active row is gone from the store by the time a restart returns.
-
-    `__init__` already calls `get_active_addresses` once, so the pruning
-    `test_get_active_addresses_deletes_a_stale_row_from_the_store`
-    checks explicitly also happens as a side effect of just opening a
-    second `PeerDB` on the same store.
-    """
-    first = a_peer_db(data_dir=tmp_path)
-    stale = peer_address("1.2.3.4", 8333)
-    past_the_horizon = time.time() - 31 * 24 * 3600
-    with monkeypatch.context() as patch:
-        patch.setattr(time, "time", lambda: past_the_horizon)
-        first.add_addresses([stale])
-        first.add_active_address(stale)
-    first.close()
-
-    second = a_peer_db(data_dir=tmp_path)
-    # `__init__` already calls `get_active_addresses` once, so the row
-    # is gone from the store by the time construction returns, where
-    # the gossiped row it was known by stays
-    assert second.db is not None
-    assert [key for key, _ in second.db] == [
-        b"known-" + address_module.endpoint_key(stale)
-    ]
+    assert [a.address for a in second.active_addresses] == [answered.address]
     second.close()
 
 
@@ -1940,7 +2235,7 @@ def test_an_unroutable_peer_is_not_recorded_as_answered(
     peer_db.add_addresses([address, routable], time_penalty=0)
     peer_db.add_active_address(address)
     peer_db.add_active_address(routable)
-    assert [a.address for a in peer_db.get_active_addresses()] == [routable.address]
+    assert [a.address for a in peer_db.active_addresses] == [routable.address]
 
 
 @pytest.mark.parametrize("prefix", [b"known-", b"answered-"])
@@ -1975,8 +2270,7 @@ def test_an_unroutable_row_is_dropped_from_the_store_on_load(
     second = a_peer_db(data_dir=tmp_path)
     loaded = second.addresses if prefix == b"known-" else second.active_addresses
     assert [a.address for a in loaded] == [routable.address]
-    assert second.db is not None
-    assert {key for key, _ in second.db} == kept
+    assert table_keys(second) == kept
     second.close()
 
 
@@ -1995,7 +2289,7 @@ def test_an_answered_endpoint_not_gossiped_is_not_recorded() -> None:
     peer_db.add_addresses([gossiped], time_penalty=0)
     peer_db.add_active_address(stranger)
     peer_db.add_active_address(peer_address("5.6.7.8", 8333, services=1))
-    assert [a.address for a in peer_db.get_active_addresses()] == [gossiped.address]
+    assert [a.address for a in peer_db.active_addresses] == [gossiped.address]
 
 
 def test_an_answered_row_with_no_known_row_is_dropped_on_load(
@@ -2022,8 +2316,7 @@ def test_an_answered_row_with_no_known_row_is_dropped_on_load(
 
     second = a_peer_db(data_dir=tmp_path)
     assert [a.address for a in second.active_addresses] == [held.address]
-    assert second.db is not None
-    assert {key for key, _ in second.db} == {
+    assert table_keys(second) == {
         b"answered-" + address_module.endpoint_key(held),
         b"known-" + address_module.endpoint_key(held),
     }
@@ -2168,40 +2461,519 @@ def test_a_draw_on_no_network_never_calls_get_network(
     assert peer_db.address_sampler()() is not None
     assert asked == []
     assert peer_db.address_sampler(network=Network.IPV4)() is not None
-    assert len(asked) == 2
+    assert asked
 
 
-def test_a_read_that_prunes_nothing_does_not_rebuild_the_index(
+def sha256d(data: bytes) -> bytes:
+    """Return the double SHA-256 `HashWriter::GetHash` is."""
+    return hashlib.sha256(hashlib.sha256(data).digest()).digest()
+
+
+def test_the_buckets_are_those_cores_own_tests_expect() -> None:
+    """The hashes are Core's: `addrman_tests.cpp`'s `caddrinfo_get_*_bucket`.
+
+    With `nKey1 = (HashWriter{} << 1).GetHash()`, tried bucket 40 for
+    250.1.1.1:8333 and new bucket 786 for 250.1.2.1:8333 from a source of
+    its own address (`src/test/addrman_tests.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and a different key
+    puts them elsewhere.
+    """
+    key1 = sha256d((1).to_bytes(4, "little"))
+    key2 = sha256d((2).to_bytes(4, "little"))
+    tried = peer_address("250.1.1.1", 8333)
+    new = peer_address("250.1.2.1", 8333)
+    assert address_module._tried_slot(key1, tried)[0] == 40
+    assert address_module._new_slot(key1, new, net_group(new))[0] == 786
+    assert address_module._tried_slot(key2, tried)[0] != 40
+    assert address_module._new_slot(key2, new, net_group(new))[0] != 786
+
+
+def test_an_address_gossiped_again_may_take_a_further_bucket(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """ISS 1217: `get_active_addresses` rebuilds its index only after a prune.
-
-    Every row kept keeps its position, so a read that prunes nothing
-    leaves the index as it is. A stale row is the control: pruned, the
-    rows behind it move, and the index is rebuilt, so a repeat handshake
-    with the kept endpoint still settles onto its own row.
-    """
+    """`AddSingle`: a newer gossip, at odds of one to two to the slots held."""
     peer_db = a_peer_db()
-    stale = peer_address("9.9.9.9", 1, timestamp=int(time.time()) - 31 * 24 * 3600)
-    kept = peer_address("1.2.3.4", 18444, timestamp=int(time.time()))
-    rebuilt: list[None] = []
-    real_reindex = peer_db._reindex_active
+    now = int(time.time())
+    address = peer_address("1.2.3.4", 8333, timestamp=now - 7200)
+    peer_db.add_addresses([address], source=peer_address("9.9.9.9", 1))
+    endpoint = address_module._endpoint(address)
+    newer = replace(address, timestamp=now)
+    # the odds do not come up
+    peer_db.add_addresses([newer], source=peer_address("8.8.8.8", 1))
+    assert len(peer_db._slots[endpoint]) == 1
+    monkeypatch.setattr(address_module, "_roll", lambda _factor: True)
+    # an older gossip does not even draw
+    peer_db.add_addresses([address], source=peer_address("7.7.7.7", 1))
+    assert len(peer_db._slots[endpoint]) == 1
+    for octet in range(10, 40):
+        peer_db.add_addresses([newer], source=peer_address(f"{octet}.1.1.1", 1))
+        newer = replace(newer, timestamp=newer.timestamp + 1)
+    assert 1 < len(peer_db._slots[endpoint]) <= 8
+    assert len(peer_db.addresses) == 1
 
-    def counted() -> None:
-        rebuilt.append(None)
-        real_reindex()
 
-    monkeypatch.setattr(peer_db, "_reindex_active", counted)
-    # known first: `add_active_address` records only an endpoint
-    # `addresses` holds
-    peer_db.add_addresses([kept], time_penalty=0)
-    peer_db.add_active_address(kept)
-    assert peer_db.get_active_addresses() == peer_db.active_addresses
-    assert rebuilt == []
-    peer_db.active_addresses.insert(0, stale)
-    real_reindex()
-    peer_db.get_active_addresses()
-    assert rebuilt == [None]
-    peer_db.add_active_address(kept)
-    (active,) = peer_db.active_addresses
-    assert active.port == kept.port
+def test_a_slot_of_an_address_held_twice_goes_to_one_held_nowhere() -> None:
+    """`AddSingle` overwrites a holder of other buckets, for a stranger."""
+    peer_db = a_peer_db()
+    now = int(time.time())
+    source = peer_address("9.9.9.9", 8333)
+    held = peer_address("1.2.3.4", 8333, timestamp=now)
+    peer_db.add_addresses([held], source=source, time_penalty=0)
+    endpoint = address_module._endpoint(held)
+    # a second bucket for it, from another source group
+    group = net_group(peer_address("8.8.8.8", 1))
+    peer_db._insert_new(held, group, time.time(), None)
+    assert len(peer_db._slots[endpoint]) == 2
+    stranger = a_colliding_address(peer_db, held, source)
+    assert peer_db.add_addresses([stranger], source=source) == 1
+    assert len(peer_db._slots[endpoint]) == 1
+    # held once, it keeps its slot against the next newcomer
+    other = next(
+        o
+        for o in (
+            replace(stranger, port=port) for port in range(stranger.port + 1, 60000)
+        )
+        if address_module._new_slot(peer_db._bucket_key, o, net_group(source))
+        == address_module._new_slot(peer_db._bucket_key, stranger, net_group(source))
+    )
+    assert peer_db.add_addresses([other], source=source) == 0
+
+
+def a_tried_collision(peer_db: PeerDB, held: NetworkAddressV2) -> NetworkAddressV2:
+    """Return an address that maps to `held`'s slot of the tried table."""
+    slot = address_module._tried_slot(peer_db._bucket_key, held)
+    return next(
+        other
+        for other in (replace(held, port=port) for port in range(held.port + 1, 60000))
+        if address_module._tried_slot(peer_db._bucket_key, other) == slot
+    )
+
+
+def a_waiting_pair(peer_db: PeerDB) -> tuple[NetworkAddressV2, NetworkAddressV2]:
+    """Answer one address, and let another that maps to its slot wait for it."""
+    old = peer_address("1.2.3.4", 8333, timestamp=int(time.time()))
+    waiting = a_tried_collision(peer_db, old)
+    peer_db.add_addresses([old, waiting], time_penalty=0)
+    assert peer_db.add_active_address(old)
+    assert not peer_db.add_active_address(waiting)
+    return old, waiting
+
+
+def test_an_answered_address_leaves_the_new_table_for_the_tried_one() -> None:
+    """`Good_`: out of every bucket of the new table, into its tried slot."""
+    peer_db = a_peer_db()
+    address = peer_address("1.2.3.4", 8333, timestamp=int(time.time()))
+    peer_db.add_addresses([address], time_penalty=0)
+    endpoint = address_module._endpoint(address)
+    assert peer_db.add_active_address(address)
+    assert endpoint not in peer_db._slots
+    assert endpoint in peer_db._tried_endpoints
+    assert peer_db._tried_occupant == {
+        address_module._tried_slot(peer_db._bucket_key, address): (
+            address_module.endpoint_key(address)
+        )
+    }
+    assert not peer_db.add_active_address(address)
+    assert len(peer_db.active_addresses) == 1
+
+
+def test_an_entry_evicted_from_the_tried_table_goes_back_to_the_new_one() -> None:
+    """`MakeTried`: the evicted entry takes its slot of the new table again."""
+    peer_db = a_peer_db()
+    old = peer_address("1.2.3.4", 8333, timestamp=int(time.time()))
+    other = a_tried_collision(peer_db, old)
+    peer_db.add_addresses([old, other], time_penalty=0)
+    assert peer_db.add_active_address(old, test_before_evict=False)
+    assert peer_db.add_active_address(other, test_before_evict=False)
+    assert [a.port for a in peer_db.active_addresses] == [other.port]
+    assert address_module._endpoint(old) in peer_db._slots
+    assert address_module._endpoint(old) not in peer_db._tried_endpoints
+    assert old in peer_db.addresses
+
+
+def test_an_entry_that_would_evict_waits_for_a_test_of_the_old_one() -> None:
+    """`Good` with `test_before_evict` keeps a collision, acting on none."""
+    peer_db = a_peer_db()
+    old, waiting = a_waiting_pair(peer_db)
+    assert peer_db.active_addresses == [
+        replace(old, timestamp=peer_db.active_addresses[0].timestamp)
+    ]
+    assert peer_db._collisions == {address_module._endpoint(waiting)}
+    assert peer_db.select_tried_collision() == peer_db.active_addresses[0]
+
+
+def test_no_collision_names_no_address_to_test() -> None:
+    """`SelectTriedCollision` names nothing where nothing waits."""
+    peer_db = a_peer_db()
+    assert peer_db.select_tried_collision() is None
+    old, waiting = a_waiting_pair(peer_db)
+    with peer_db._addresses_lock:
+        del peer_db._rows[address_module._endpoint(waiting)]
+    assert peer_db.select_tried_collision() is None
+    assert peer_db._collisions == set()
+    peer_db._collisions.add(address_module._endpoint(old))
+    peer_db._tried_remove(address_module.endpoint_key(old))
+    assert peer_db.select_tried_collision() is None
+
+
+def test_only_so_many_collisions_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`ADDRMAN_SET_TRIED_COLLISION_SIZE`: past it a collision is dropped."""
+    monkeypatch.setattr(address_module, "_SET_TRIED_COLLISION_SIZE", 1)
+    peer_db = a_peer_db()
+    old = peer_address("1.2.3.4", 8333, timestamp=int(time.time()))
+    slot = address_module._tried_slot(peer_db._bucket_key, old)
+    waiting = [
+        a
+        for a in (replace(old, port=port) for port in range(1, 60000))
+        if address_module._tried_slot(peer_db._bucket_key, a) == slot
+    ]
+    assert len(waiting) >= 3
+    peer_db.add_addresses([old, *waiting], time_penalty=0)
+    assert peer_db.add_active_address(waiting[0])
+    for address in waiting[1:]:
+        assert not peer_db.add_active_address(address)
+    assert len(peer_db._collisions) == 1
+
+
+@pytest.mark.parametrize(
+    ("old_success", "old_try", "waiting_success", "replaced", "settled"),
+    [
+        pytest.param(60, None, 7200, False, True, id="old-answered-recently"),
+        pytest.param(None, 600, 7200, True, True, id="old-tried-and-failed"),
+        pytest.param(None, 30, 7200, False, False, id="old-tried-just-now"),
+        pytest.param(
+            None, None, 7200, True, True, id="old-idle-and-new-answered-long-ago"
+        ),
+        pytest.param(None, None, 600, False, False, id="old-idle-and-new-too-recent"),
+    ],
+)
+def test_a_collision_is_resolved_as_core_does(
+    *,
+    old_success: int | None,
+    old_try: int | None,
+    waiting_success: int,
+    replaced: bool,
+    settled: bool,
+) -> None:
+    """`ResolveCollisions_`: the old entry stays, or the waiting one wins."""
+    peer_db = a_peer_db()
+    old, waiting = a_waiting_pair(peer_db)
+    now = time.time()
+    old_endpoint = address_module._endpoint(old)
+    waiting_endpoint = address_module._endpoint(waiting)
+    peer_db._stats[old_endpoint].last_success = now - (old_success or 86400)
+    peer_db._stats[waiting_endpoint].last_success = now - waiting_success
+    peer_db._last_try.pop(address_module.endpoint_key(old), None)
+    if old_try is not None:
+        peer_db._last_try[address_module.endpoint_key(old)] = now - old_try
+    peer_db.resolve_collisions()
+    assert (waiting_endpoint in peer_db._tried_endpoints) is replaced
+    assert (old_endpoint in peer_db._tried_endpoints) is not replaced
+    assert (waiting_endpoint not in peer_db._collisions) is settled
+
+
+def test_a_collision_with_a_vanished_old_entry_or_waiting_one_is_dropped() -> None:
+    """The slot free, or the waiting endpoint gone: nothing left to wait for."""
+    peer_db = a_peer_db()
+    old, waiting = a_waiting_pair(peer_db)
+    peer_db._tried_remove(address_module.endpoint_key(old))
+    peer_db.resolve_collisions()
+    assert address_module._endpoint(waiting) in peer_db._tried_endpoints
+    peer_db = a_peer_db()
+    old, waiting = a_waiting_pair(peer_db)
+    with peer_db._addresses_lock:
+        del peer_db._rows[address_module._endpoint(waiting)]
+    peer_db.resolve_collisions()
+    assert peer_db._collisions == set()
+
+
+@pytest.mark.parametrize(
+    ("since_try", "attempts", "expected"),
+    [
+        pytest.param(3600, 0, 1.0, id="idle"),
+        pytest.param(60, 0, 0.01, id="tried-just-now"),
+        pytest.param(3600, 2, 0.66**2, id="two-failures"),
+        pytest.param(3600, 20, 0.66**8, id="failures-are-capped-at-eight"),
+    ],
+)
+def test_the_chance_of_a_draw_is_cores(
+    since_try: int, attempts: int, expected: float
+) -> None:
+    """`AddrInfo::GetChance`."""
+    now = 1_000_000.0
+    assert address_module._chance(now, now - since_try, attempts) == pytest.approx(
+        expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("attempts", "last_success_ago", "terrible"),
+    [
+        pytest.param(3, None, True, id="three-tries-and-never-answered"),
+        pytest.param(2, None, False, id="two-tries"),
+        pytest.param(10, 8 * 86400, True, id="ten-failures-over-a-week"),
+        pytest.param(10, 6 * 86400, False, id="ten-failures-within-a-week"),
+        pytest.param(9, 8 * 86400, False, id="nine-failures"),
+    ],
+)
+def test_failed_attempts_make_an_address_terrible_as_core_counts(
+    attempts: int, last_success_ago: int | None, *, terrible: bool
+) -> None:
+    """`IsTerrible`'s `ADDRMAN_RETRIES` and `ADDRMAN_MAX_FAILURES` tests."""
+    now = time.time()
+    address = peer_address("1.2.3.4", 8333, timestamp=int(now))
+    stats = address_module._Stats(
+        last_success=0.0 if last_success_ago is None else now - last_success_ago,
+        attempts=attempts,
+    )
+    assert address_module._aged_out(address, now, 0.0, stats) is terrible
+
+
+def test_a_failed_attempt_is_counted_once_between_two_answers() -> None:
+    """`Attempt_`: `fCountFailure` counts once for each `Good_`."""
+    peer_db = a_peer_db()
+    address = peer_address("1.2.3.4", 8333, timestamp=int(time.time()))
+    peer_db.add_addresses([address], time_penalty=0)
+    endpoint = address_module._endpoint(address)
+    # `m_last_good` starts at one, so a first failure is counted
+    assert peer_db._last_good == 1.0
+    peer_db.attempt(address, count_failure=True)
+    peer_db.attempt(address, count_failure=True)
+    peer_db.attempt(address)
+    assert peer_db._stats[endpoint].attempts == 1
+    peer_db.add_active_address(address)
+    assert peer_db._stats[endpoint].attempts == 0
+    peer_db._stats[endpoint].last_count_attempt = peer_db._last_good - 1
+    peer_db.attempt(address, count_failure=True)
+    assert peer_db._stats[endpoint].attempts == 1
+
+
+def test_an_answer_from_an_unknown_endpoint_still_moves_last_good() -> None:
+    """`Good_` sets `m_last_good` ahead of its `Find`, so a miss moves it."""
+    peer_db = a_peer_db()
+    stranger = peer_address("9.9.9.9", 8333)
+    assert not peer_db.add_active_address(stranger)
+    assert peer_db._last_good > 1.0
+    assert address_module._endpoint(stranger) not in peer_db._tried_endpoints
+
+
+def test_a_slot_taken_over_leaves_the_first_source_of_its_holder() -> None:
+    """Core's `AddrInfo::source` never changes, whatever buckets are lost."""
+    peer_db = a_peer_db()
+    now = int(time.time())
+    first_source = peer_address("9.9.9.9", 1)
+    held = peer_address("1.2.3.4", 8333, timestamp=now)
+    peer_db.add_addresses([held], source=first_source, time_penalty=0)
+    endpoint = address_module._endpoint(held)
+    second_group = net_group(peer_address("8.8.8.8", 1))
+    peer_db._insert_new(held, second_group, time.time(), None)
+    stranger = a_colliding_address(peer_db, held, first_source)
+    assert peer_db.add_addresses([stranger], source=first_source) == 1
+    assert list(peer_db._slots[endpoint].values()) == [second_group]
+    assert peer_db._source[endpoint] == net_group(first_source)
+
+
+def test_the_draw_keeps_an_address_by_its_chance() -> None:
+    """`Select_` keeps an address with the probability `GetChance` gives."""
+    peer_db = a_peer_db()
+    idle = peer_address("1.2.3.4", 8333, timestamp=int(time.time()))
+    tried = peer_address("5.6.7.8", 8333, timestamp=int(time.time()))
+    peer_db.add_addresses(
+        [idle, tried], time_penalty=0, source=peer_address("9.9.9.9", 1)
+    )
+    peer_db.attempt(tried)
+    draw = peer_db.address_sampler(new_only=True)
+    drawn = [draw() for _ in range(300)]
+    assert sum(1 for a in drawn if a == idle) > 250
+
+
+def test_a_stored_table_comes_back_with_its_tried_entries_and_counts(
+    tmp_path: Path,
+) -> None:
+    """The tried table, sources, attempts and key survive a restart."""
+    first = a_peer_db(data_dir=tmp_path)
+    now = int(time.time())
+    kept = peer_address("1.2.3.4", 8333, timestamp=now)
+    failing = peer_address("5.6.7.8", 8333, timestamp=now)
+    first.add_addresses(
+        [kept, failing], time_penalty=0, source=peer_address("9.9.9.9", 1)
+    )
+    first.add_active_address(kept)
+    first.add_active_address(peer_address("1.2.3.4", 8333, timestamp=now))
+    first.attempt(failing, count_failure=True)
+    first._stats[address_module._endpoint(failing)].last_count_attempt = 0
+    first.attempt(failing, count_failure=True)
+    slots = slots_of(first)
+    attempts = first._stats[address_module._endpoint(failing)].attempts
+    first.close()
+    second = a_peer_db(data_dir=tmp_path)
+    assert slots_of(second) == slots
+    assert [a.port for a in second.active_addresses] == [8333]
+    assert second._stats[address_module._endpoint(failing)].attempts == attempts
+    assert second._bucket_key == first._bucket_key
+    assert second._source == first._source
+    second.close()
+
+
+def test_gossip_through_the_source_that_gave_a_slot_takes_no_other(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A further bucket drawn to the slot the endpoint holds adds nothing."""
+    peer_db = a_peer_db()
+    now = int(time.time())
+    source = peer_address("9.9.9.9", 1)
+    address = peer_address("1.2.3.4", 8333, timestamp=now - 7200)
+    peer_db.add_addresses([address], source=source)
+    monkeypatch.setattr(address_module, "_roll", lambda _factor: True)
+    again = replace(address, timestamp=now)
+    assert peer_db.add_addresses([again], source=source) == 0
+    assert len(peer_db._slots[address_module._endpoint(address)]) == 1
+
+
+def test_an_evicted_entry_takes_back_its_slot_of_the_new_table(
+    tmp_path: Path,
+) -> None:
+    """`MakeTried` clears what holds the slot, and the store follows."""
+    peer_db = a_peer_db(data_dir=tmp_path)
+    now = int(time.time())
+    source = peer_address("9.9.9.9", 1)
+    old = peer_address("1.2.3.4", 8333, timestamp=now)
+    other = a_tried_collision(peer_db, old)
+    peer_db.add_addresses([old, other], source=source, time_penalty=0)
+    peer_db.add_active_address(old, test_before_evict=False)
+    stranger = a_colliding_address(peer_db, old, source)
+    assert peer_db.add_addresses([stranger], source=source, time_penalty=0) == 1
+    peer_db.add_active_address(other, test_before_evict=False)
+    assert old in peer_db.addresses
+    assert stranger not in peer_db.addresses
+    peer_db.close()
+    again = a_peer_db(data_dir=tmp_path)
+    assert [a.port for a in again.active_addresses] == [other.port]
+    assert old in again.addresses
+    assert stranger not in again.addresses
+    again.close()
+
+
+def test_a_position_is_the_hash_core_takes_of_the_bucket_and_the_endpoint() -> None:
+    """`GetBucketPosition`: `N` or `K`, the bucket, and the endpoint's key."""
+    key = sha256d((1).to_bytes(4, "little"))
+    # `GetAddrBytes` gives an IPv4 address mapped into sixteen octets
+    octets = b"\x00" * 10 + b"\xff\xff" + bytes([250, 1, 1, 1])
+    octets += (8333).to_bytes(2, "big")
+    for tag in (b"N", b"K"):
+        digest = sha256d(
+            key + tag + (7).to_bytes(4, "little") + bytes([len(octets)]) + octets
+        )
+        assert address_module._position(key, tag, 7, octets) == (
+            int.from_bytes(digest[:8], "little") % 64
+        )
+
+
+def test_a_draw_grows_its_acceptance_with_every_address_it_declines() -> None:
+    """`Select_`: the factor grows by a fifth, so a rare address is reached."""
+    peer_db = a_peer_db()
+    address = peer_address("1.2.3.4", 8333, timestamp=int(time.time()))
+    peer_db.add_addresses([address], time_penalty=0)
+    peer_db.attempt(address)
+    calls: list[None] = []
+
+    def random() -> float:
+        calls.append(None)
+        assert len(calls) < 100
+        return 0.5
+
+    draw = peer_db.address_sampler()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(address_module, "_RNG", SimpleNamespace(random=random))
+        assert draw() == address
+    # 1.2 ** 22 * 0.01 is the first to pass one half
+    assert len(calls) == 23
+
+
+def test_a_holder_of_several_slots_keeps_them_on_load(tmp_path: Path) -> None:
+    """`Unserialize` gives a slot to the first row that asks for it."""
+    first = a_peer_db(data_dir=tmp_path)
+    now = int(time.time())
+    source = peer_address("9.9.9.9", 1)
+    held = peer_address("1.2.3.4", 8333, timestamp=now)
+    first.add_addresses([held], source=source, time_penalty=0)
+    first._insert_new(held, net_group(peer_address("8.8.8.8", 1)), time.time(), None)
+    first._put_sources(address_module._endpoint(held), first.db)
+    stranger = a_colliding_address(first, held, source)
+    assert first.db is not None
+    first.db.put(
+        b"known-" + address_module.endpoint_key(stranger),
+        stranger.serialize(check_validity=False),
+    )
+    first.db.put(
+        b"source-" + address_module.endpoint_key(stranger), packed(net_group(source))
+    )
+    first.close()
+    second = a_peer_db(data_dir=tmp_path)
+    assert second.addresses == {held}
+    assert len(second._slots[address_module._endpoint(held)]) == 2
+    second.close()
+
+
+def test_the_odds_of_a_further_bucket_are_a_draw_of_one_in_a_power_of_two() -> None:
+    """`_roll(factor)` is `randrange(factor) == 0`."""
+    draws: list[int] = []
+
+    def randrange(factor: int) -> int:
+        draws.append(factor)
+        return 0
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(address_module, "_RNG", SimpleNamespace(randrange=randrange))
+        assert _REAL_ROLL(4)
+    assert draws == [4]
+
+
+def test_a_tried_row_whose_slot_is_held_goes_to_the_new_table_on_load(
+    tmp_path: Path,
+) -> None:
+    """`MakeTried` sends a displaced entry to its first source's slot."""
+    first = a_peer_db(data_dir=tmp_path)
+    now = int(time.time())
+    source = peer_address("9.9.9.9", 1)
+    old = peer_address("1.2.3.4", 8333, timestamp=now)
+    other = a_tried_collision(first, old)
+    first.add_addresses([old, other], source=source, time_penalty=0)
+    first.add_active_address(old, test_before_evict=False)
+    assert first.db is not None
+    suffix = address_module.endpoint_key(other)
+    first.db.put(b"answered-" + suffix, other.serialize(check_validity=False))
+    first.close()
+
+    second = a_peer_db(data_dir=tmp_path)
+    assert second.addresses == {old, other}
+    assert [a.port for a in second.active_addresses] == [old.port]
+    endpoint = address_module._endpoint(other)
+    slot = address_module._new_slot(second._bucket_key, other, net_group(source))
+    assert second._slots[endpoint] == {slot: net_group(source)}
+    assert endpoint not in second._tried_endpoints
+    assert second.db is not None
+    assert b"answered-" + suffix not in {key for key, _ in second.db}
+    second.close()
+
+    third = a_peer_db(data_dir=tmp_path)
+    assert third._stats[endpoint].last_success == other.timestamp
+    third.close()
+
+
+def test_a_stored_row_takes_no_more_slots_than_core_allows(tmp_path: Path) -> None:
+    """`Unserialize` stops at `ADDRMAN_NEW_BUCKETS_PER_ADDRESS` buckets."""
+    first = a_peer_db(data_dir=tmp_path)
+    address = peer_address("1.2.3.4", 8333, timestamp=int(time.time()))
+    first.add_addresses([address], time_penalty=0)
+    assert first.db is not None
+    groups = [net_group(peer_address(f"{octet}.1.1.1", 1)) for octet in range(20, 32)]
+    first.db.put(
+        b"source-" + address_module.endpoint_key(address),
+        b"".join(packed(group) for group in groups),
+    )
+    first.close()
+
+    second = a_peer_db(data_dir=tmp_path)
+    assert len(second._slots[address_module._endpoint(address)]) == 8
+    second.close()

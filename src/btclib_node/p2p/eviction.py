@@ -423,6 +423,20 @@ def get_network(address: NetworkAddressV2) -> Network:
     return _NETWORK_OF_ID[address.network_id]
 
 
+def _overlay_group(address: NetworkAddressV2) -> bytes:
+    """Return `net_group` of an address that is not an IP one."""
+    network = get_network(address)
+    if network not in (Network.ONION, Network.I2P, Network.CJDNS):
+        return bytes([network])
+    whole, rest = divmod(12 if network == Network.CJDNS else 4, 8)
+    octets = address.address
+    return (
+        bytes([network])
+        + octets[:whole]
+        + bytes([octets[whole] | ((1 << (8 - rest)) - 1)])
+    )
+
+
 def net_group(address: NetworkAddressV2) -> bytes:
     """Core's `NetGroupManager::GetGroup` with no asmap: the peer's netgroup.
 
@@ -433,7 +447,12 @@ def net_group(address: NetworkAddressV2) -> bytes:
     address is a group of its own, the ten octets after its prefix. Core
     buckets by autonomous system instead where `-asmap` is given, which
     this node has no counterpart to.
+
+    A Tor or I2P address is the net class and the first four bits of its
+    octets, a CJDNS one the first twelve, the rest of the last octet set.
     """
+    if not can_addrv1(address):
+        return _overlay_group(address)
     ip = _ip(address)
     group = bytes([net_class(address)])
     if ip in _INTERNAL:

@@ -38,10 +38,12 @@ thread and no other, its `add_tx` and `remove_tx` being called from the
 p2p callbacks, the rpc callbacks and `update_chain`: its own "handled in
 same thread" comment needs no lock to back it. `PeerDB`, the address
 book above, is not so lucky: `add_active_address` arrives from the
-`version` callback on `Node`'s thread, `get_active_addresses` from
-`manage_connections` on `P2pManager`'s, and `add_addresses` from both —
+`version` callback on `Node`'s thread and from a feeler's draw on
+`P2pManager`'s, `resolve_collisions` from `manage_connections` on
+`P2pManager`'s, and `add_addresses` from both —
 gossip on one thread, a DNS answer on the other. It carries two locks
-for that reason, one per table, taken separately and never nested.
+for that reason, one per table, taken separately and never nested, and
+a third, taken first, that a move between the tables holds throughout.
 
 ## The transport
 

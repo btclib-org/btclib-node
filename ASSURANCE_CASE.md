@@ -304,7 +304,8 @@ describes.
 lock, not which callback names it.** ARCHITECTURE.md's *The protocol and
 the RPC surface* is the argument in full: `Mempool` is reached from one
 thread only and carries no lock, and `PeerDB` is reached from two and
-carries two, taken separately and never nested. A change that moves a
+carries two, taken separately and never nested, and a third, taken first,
+that a move between its tables holds throughout. A change that moves a
 callback across that boundary without re-reading this argument is what
 `REVIEWING.md` asks a reviewer to check for.
 
@@ -321,8 +322,9 @@ and what counters each.
 - **Race conditions on shared state (CWE-362).** Countered by
   construction rather than by a runtime check in most of this tree:
   ARCHITECTURE.md's *The protocol and the RPC surface* is the argument
-  for which state needs a lock, and `PeerDB`'s own two separately-taken,
-  never-nested locks are the argued example. Other state carries a lock
+  for which state needs a lock, and `PeerDB`'s own locks, two taken
+  separately and a third, taken first, held across a move, are the argued
+  example. Other state carries a lock
   of its own, which `grep -rn 'threading\.R\?Lock()' src` lists.
 - **Uncaught exceptions on hostile input (CWE-248, CWE-755).**
   `tests/property_test.py`'s property, over the harnesses' own declared

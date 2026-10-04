@@ -56,6 +56,7 @@ from btclib_node.p2p.address import (
     endpoint_key,
     fixed_seed_addresses,
     host_key,
+    internal_source,
     ip_and_port,
     peer_address,
 )
@@ -108,16 +109,6 @@ if TYPE_CHECKING:
     from btclib_node import Node
 
 __all__ = ["P2pManager"]
-
-# How often `manage_connections`' own loop prunes the active-address
-# table on its own rather than only as a side effect of something asking
-# for it. Not tied to the loop's own sleep below -- an O(n) walk of
-# `active_addresses` every pass buys nothing a run every few minutes
-# does not -- but far enough under `get_active_addresses`'s own horizon
-# that an aged-out row does not linger long past it, however rarely this
-# node is asked for its table.
-# btclib-org/btclib-node#71
-_ACTIVE_PRUNE_INTERVAL = 300
 
 # How often `manage_connections`' own loop calls `_maybe_dial_more_peers`,
 # the "draw a candidate and dial it" arm of Core's `ThreadOpenConnections`
@@ -545,6 +536,8 @@ class P2pManager(threading.Thread):
         # below being the one place they are gathered.
         self.max_automatic_outbound = min(automatic_outbound, max_connections)
         self.max_outbound_block_relay = block_relay
+        # Core's `m_max_automatic_connections`, `-maxconnections`
+        self._max_automatic_connections = max_connections
         self._init_outbound_timers()
         # Core's `m_anchors`, which `run` reads from `anchors.dat` and
         # each anchor dial pops from the back, and its
@@ -774,10 +767,6 @@ class P2pManager(threading.Thread):
         # not land between.
         self._discouraged: dict[bytes, None] = {}
         self._discouraged_lock = threading.Lock()
-        # 0.0, not `time.time()`: the first pass of `manage_connections`
-        # prunes on the spot rather than waiting a full
-        # `_ACTIVE_PRUNE_INTERVAL` after this manager was constructed.
-        self._last_active_prune = 0.0
         # Overwritten by `_arm_dial_loop` before any loop ever reads it
         # (`manage_connections` calls it first thing); the value here is
         # dead until then.
@@ -1178,9 +1167,9 @@ class P2pManager(threading.Thread):
         `OpenNetworkConnection`'s own refusals apply: an inactive
         network, and an address already held, discouraged or banned.
         A name is resolved again, as `ConnectNode` does for `m_dest`.
-        This tree's address book counts no failed dial, so there is no
-        `fCountFailure` to hold false; `attempt` only stamps the time,
-        as Core's `Attempt(addr, false)` does.
+        The retry counts no failed dial: `attempt` only stamps the time,
+        as `PerformReconnections`' `fCountFailure=false` does (`src/net.cpp`,
+        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
         """
         if not self.network_active:
             return
@@ -1853,30 +1842,6 @@ class P2pManager(threading.Thread):
         elif now - ping_sent > _IDLE_TIMEOUT:
             self.remove_connection(conn.id)
 
-    def _maybe_prune_active_addresses(self, now: float) -> None:
-        if now - self._last_active_prune < _ACTIVE_PRUNE_INTERVAL:
-            return
-        # Nothing else calls `get_active_addresses`: `address_sampler`
-        # reads `active_addresses` unfiltered
-        # (btclib-org/btclib-node#1434), so without this a stale row is
-        # pruned at start-up alone. btclib-org/btclib-node#71
-        self._last_active_prune = now
-        try:
-            # get_active_addresses deletes every aged-out row
-            # from the store, real I/O and not a pure read, and
-            # this coroutine's own future is never awaited
-            # (`run`, below) -- the same failure mode
-            # `_bind_one`'s own docstring names for a coroutine
-            # scheduled that way. Unguarded, whatever `db.delete`
-            # ever raised would end this loop's pinging, eviction
-            # and dialling for the rest of this node's life
-            # rather than only this one prune, the same reason
-            # the dial below is already inside a `try` of its
-            # own.
-            self.peer_db.get_active_addresses()
-        except Exception:
-            self.logger.exception("Exception occurred")
-
     def _maybe_add_fixed_seeds(self) -> None:
         """Add the chain's fixed seeds for every reachable network held empty.
 
@@ -1929,7 +1894,9 @@ class P2pManager(threading.Thread):
         # (btclib-org/btclib-node#1571); the flat 2h penalty is
         # `net_processing.cpp`'s own explicit argument on the gossip
         # path alone, not `Add`'s default.
-        self.peer_db.add_addresses(seeds, time_penalty=0)
+        self.peer_db.add_addresses(
+            seeds, source=internal_source("fixedseeds"), time_penalty=0
+        )
         self.add_fixed_seeds = False
         self.logger.info("Added %s fixed seeds from reachable networks.", len(seeds))
 
@@ -2253,16 +2220,30 @@ class P2pManager(threading.Thread):
             # no group, as Core adds none for Tor, I2P or CJDNS
             # (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
             # tag).
-            outbound_net_groups = {
-                net_group(conn.address)
+            outbound = [
+                conn.address
                 for conn in connected
-                if not conn.inbound
-                and not conn.feeler
-                and not conn.addr_fetch
-                and can_addrv1(conn.address)
+                if not conn.inbound and not conn.feeler and not conn.addr_fetch
+            ]
+            outbound_net_groups = {
+                net_group(address) for address in outbound if can_addrv1(address)
             }
+            # Core records a failed attempt only once the node holds
+            # enough outbound peers to be online: the groups of its
+            # IPv4 and IPv6 peers plus its Tor, I2P and CJDNS ones reach
+            # `min(m_max_automatic_connections - 1, 2)`
+            # (`CConnman::ThreadOpenConnections`, same sha). A node whose
+            # peers are all in one group, a local network's, is not.
+            count_failures = len(outbound_net_groups) + sum(
+                not can_addrv1(address) for address in outbound
+            ) >= min(self._max_automatic_connections - 1, 2)
             try:
-                await self._dial_one_draw(already_connected, outbound_net_groups, kind)
+                await self._dial_one_draw(
+                    already_connected,
+                    outbound_net_groups,
+                    kind,
+                    count_failures=count_failures,
+                )
             except Exception:
                 self.logger.exception("Exception occurred")
         finally:
@@ -2273,6 +2254,8 @@ class P2pManager(threading.Thread):
         already_connected: set[bytes],
         outbound_net_groups: set[bytes],
         kind: _Outbound,
+        *,
+        count_failures: bool,
     ) -> None:
         """Take an anchor or draw from the table, and dial at most once.
 
@@ -2281,12 +2264,20 @@ class P2pManager(threading.Thread):
         ceiling; that method's own `try` guards it.
         """
         feeler = kind is _Outbound.FEELER
+        # Core's `addrman.get().ResolveCollisions()`, ahead of the draw
+        # and of an anchor alike (`CConnman::ThreadOpenConnections`)
+        self.peer_db.resolve_collisions()
         address = None
         if kind is _Outbound.ANCHOR:
             address = self._pop_anchor(outbound_net_groups)
         if address is None:
             network = self._preferred_network if kind is _Outbound.NETWORK else None
-            address = self._draw(outbound_net_groups, feeler=feeler, network=network)
+            address = self._draw(
+                outbound_net_groups,
+                already_connected,
+                feeler=feeler,
+                network=network,
+            )
         if address is None:
             return
         if feeler:
@@ -2314,8 +2305,9 @@ class P2pManager(threading.Thread):
         ):
             return
         sock = await dial(address)
-        # an anchor's dial too, `ConnectNode` calling `Attempt` for each
-        self.peer_db.attempt(address)
+        # an anchor's dial too, `ConnectNode` calling `Attempt` for each,
+        # with the `fCountFailure` `ThreadOpenConnections` passes
+        self.peer_db.attempt(address, count_failure=count_failures)
         if sock:
             self.create_connection(
                 sock,
@@ -2360,6 +2352,7 @@ class P2pManager(threading.Thread):
     def _draw(
         self,
         outbound_net_groups: set[bytes],
+        already_connected: set[bytes],
         *,
         feeler: bool,
         network: Network | None,
@@ -2374,8 +2367,12 @@ class P2pManager(threading.Thread):
         (btclib-org/btclib-node#1434), standing in for Core's
         `Select(true, ...)` of the new table. It is held to no network
         group, and wants only `MayHaveUsefulAddressDB` of what it draws.
-        Core's `SelectTriedCollision`, asked first, has nothing to answer
-        here, this table keeping no tried buckets to collide in.
+        Each draw of a feeler asks `select_tried_collision` first, as
+        Core's loop asks `SelectTriedCollision`: the old entry it names is
+        dialled, and its handshake is what `Good_` reads as an answer. One
+        this node is already connected to is marked good instead, since
+        that connection cannot be made, and the feeler draws from the
+        new table.
         """
         # A draw in the group of an outbound peer, or a feeler's draw of
         # an address with no useful address table, is followed by
@@ -2386,7 +2383,12 @@ class P2pManager(threading.Thread):
         now = time.time()
         # Core's `nTries`, which counts the draw it is about to make
         for tries in range(1, _MAX_DRAWS_PER_PASS + 1):
-            address = draw()
+            address = self.peer_db.select_tried_collision() if feeler else None
+            if address is not None and host_key(address) in already_connected:
+                self.peer_db.add_active_address(address)
+                address = None
+            if address is None:
+                address = draw()
             # `is_empty` answers whether the table holds anything,
             # not whether it holds anything this node can dial, so
             # `_maybe_dial_more_peers`'s guard lets a table of ipv6
@@ -2852,9 +2854,8 @@ class P2pManager(threading.Thread):
         up on quietly, `ADDR_FETCH` having no retry of its own
         (btclib-org/btclib-node#1284).
 
-        Wrapped in its own `try`, for the reason
-        `_maybe_prune_active_addresses` already gives for its own:
-        `_open_addr_fetches`' own future, the caller below, is never
+        Wrapped in its own `try`: `_open_addr_fetches`' own future, the
+        caller below, is never
         awaited by anything (`run`, below), so an unguarded raise here
         would end that standing loop for the rest of this node's life
         rather than only this one addr-fetch pass -- `manage_connections`'s
@@ -2879,11 +2880,11 @@ class P2pManager(threading.Thread):
             self.release_automatic_slot()
 
     async def manage_connections(self) -> None:
-        """Prune, prune some more, maybe dial, sleep -- forever, every 0.1s.
+        """Prune, maybe dump, maybe dial, sleep -- forever, every 0.1s.
 
         `_prune_stale_connections` pings or drops an idle peer every
-        pass; `_maybe_prune_active_addresses` and `_maybe_dump_banlist`
-        run far less often; `_disconnect_if_inactive` repeats
+        pass; `_maybe_dump_banlist` runs far less often;
+        `_disconnect_if_inactive` repeats
         `set_network_active`'s own one-shot sweep every pass for as long
         as `network_active` stays false, its own docstring arguing why a
         one-shot call is not enough; `_maybe_dial_more_peers` dials one
@@ -2908,7 +2909,6 @@ class P2pManager(threading.Thread):
         while True:
             now = time.time()
             self._prune_stale_connections(now)
-            self._maybe_prune_active_addresses(now)
             self._maybe_dump_banlist(now)
             self._disconnect_if_inactive()
             if now - self._last_dial_pass >= _AUTOMATIC_DIAL_INTERVAL:

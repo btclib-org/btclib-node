@@ -531,6 +531,27 @@ def test_net_group(ip: str, cls: Network, group: str, local: bool) -> None:  # n
     assert is_local(address) is local
 
 
+@pytest.mark.parametrize(
+    ("address", "group"),
+    [
+        (NetworkAddressV2(0, 0, BIP155Network.TORV3, b"\x11" * 32, 1), "031f"),
+        (NetworkAddressV2(0, 0, BIP155Network.I2P, b"\xa5" * 32, 1), "04af"),
+        (
+            NetworkAddressV2(0, 0, BIP155Network.CJDNS, b"\xfc\x12" + bytes(14), 1),
+            "05fc1f",
+        ),
+        # a CJDNS address outside Core's prefix is unroutable
+        (NetworkAddressV2(0, 0, BIP155Network.CJDNS, b"\x01\x12" + bytes(14), 1), "00"),
+    ],
+    ids=["tor", "i2p", "cjdns", "cjdns-unroutable"],
+)
+def test_the_net_group_of_an_overlay_address(
+    address: NetworkAddressV2, group: str
+) -> None:
+    """Tor and I2P by four bits, CJDNS by twelve, the rest of the byte set."""
+    assert net_group(address).hex() == group
+
+
 # (the sixteen octets of an `addr` v1 field, `CNetAddr::IsValid` of them)
 VALID_CASES = [
     ("::ffff:1.2.3.4", True),

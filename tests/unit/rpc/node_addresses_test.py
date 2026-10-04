@@ -123,7 +123,7 @@ def test_getnodeaddresses_names_an_ipv6_onion_and_i2p_address() -> None:
 def test_getnodeaddresses_count_zero_answers_every_address() -> None:
     """ISS 1443: `GetAddr_` of `max_addresses` and `max_pct` `0` draws all."""
     node, peer_db = a_node()
-    known(peer_db, *(seen(f"1.2.3.{n}") for n in range(1, 21)))
+    known(peer_db, *(seen(f"{n}.2.3.4") for n in range(21, 41)))
     assert len(get_node_addresses(node, _CONN, [0])) == 20
     assert len(get_node_addresses(node, _CONN, [7])) == 7
 

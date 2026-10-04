@@ -19,6 +19,7 @@ answer to it are this node's.
 """
 
 import asyncio
+import hashlib
 import secrets
 import socket
 import threading
@@ -28,7 +29,7 @@ from dataclasses import dataclass, field, replace
 from functools import partial
 from io import BytesIO
 from ipaddress import IPv4Address, IPv6Address, ip_address
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from btclib import var_int
 from btclib.p2p.address import ServiceFlags
@@ -42,7 +43,7 @@ from btclib.p2p.addrv2 import (
 
 from btclib_node.db import KeyValueStore
 from btclib_node.exceptions import UnsupportedAddressTypeError
-from btclib_node.p2p.eviction import get_network, is_routable, net_class
+from btclib_node.p2p.eviction import get_network, is_routable, net_class, net_group
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
@@ -62,6 +63,7 @@ __all__ = [
     "endpoint_key",
     "fixed_seed_addresses",
     "host_key",
+    "internal_source",
     "ip_and_port",
     "network_class",
     "peer_address",
@@ -161,6 +163,10 @@ BAD_PORTS = frozenset(
     }
 )
 
+# Core's `INTERNAL_IN_IPV6_PREFIX` (`src/netaddress.h`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+_INTERNAL_PREFIX = bytes.fromhex("fd6b88c08724")
+
 # the two networks this node has a dial for, and the whole of what
 # `dial` below opens a socket for. `can_connect`'s own docstring is
 # where this is told apart from `btclib.p2p.addrv2.can_addrv1`
@@ -237,6 +243,20 @@ def fixed_seed_addresses(seeds: bytes) -> list[NetworkAddressV2]:
             )
         )
     return addresses
+
+
+def internal_source(name: str) -> NetworkAddressV2:
+    """Return the source Core gives what it learns from `name`: `SetInternal`.
+
+    `CNetAddr::SetInternal` (`src/netaddress.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) is the first ten octets of
+    the SHA-256 of `name`, held in IPv6 under `INTERNAL_IN_IPV6_PREFIX`.
+    `ThreadDNSAddressSeed` passes one per DNS seed, and
+    `ThreadOpenConnections` one named `fixedseeds`, to `addrman.Add`, so
+    what a seed gives is placed as one source group's.
+    """
+    octets = _INTERNAL_PREFIX + hashlib.sha256(name.encode()).digest()[:10]
+    return NetworkAddressV2(0, 0, BIP155Network.IPV6, octets, 0)
 
 
 def can_connect(address: NetworkAddressV2) -> bool:
@@ -382,26 +402,46 @@ async def dial(address: NetworkAddressV2) -> socket.socket | None:
     return client
 
 
-# Two record kinds share the one store `PeerDB` opens, so `init_from_db`
-# below walks it whole and dispatches on the prefix rather than stopping
-# at the first key without one -- `src/btclib_node/db.py`'s own docstring
-# names that shape as `BlockDB`'s, next to the other one, `BlockIndex`'s,
-# that a store of one record kind can use instead.
+# Several record kinds share the one store `PeerDB` opens, so
+# `init_from_db` below walks it whole and dispatches on the prefix rather
+# than stopping at the first key without one -- `src/btclib_node/db.py`'s
+# own docstring names that shape as `BlockDB`'s, next to the other one,
+# `BlockIndex`'s, that a store of one record kind can use instead.
+# `_SOURCE` holds the net groups of the sources a known row was placed
+# from, and `_STATS` its `m_last_success` and `nAttempts`; with
+# `_BUCKET_KEY`, in the store's meta column family, they are what places
+# the row again. A store without them, as an earlier release wrote it, is
+# placed as `init_from_db` says.
 _KNOWN = b"known-"
 _ANSWERED = b"answered-"
+_SOURCE = b"source-"
+_STATS = b"stats-"
+_BUCKET_KEY = b"bucket-key"
 
-# The bound both tables are kept under: an address a peer gossiped, and
-# an address this node has itself confirmed reachable. The cap is on
-# distinct endpoints, not on handshakes: `add_active_address` settles a
-# repeat handshake with the same endpoint onto the one row already held
-# for it (#270), the way `add_addresses`'s own `by_endpoint` already
-# does for `self.addresses`.
-_MAX_ADDRESSES = 10000
+# Core's addrman geometry (`src/addrman_impl.h` and `src/addrman.cpp`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a bucket holds
+# `ADDRMAN_BUCKET_SIZE` positions, the new table has
+# `ADDRMAN_NEW_BUCKET_COUNT` buckets and the tried table
+# `ADDRMAN_TRIED_BUCKET_COUNT`. What one source group gives spreads over
+# `ADDRMAN_NEW_BUCKETS_PER_SOURCE_GROUP` new buckets, what one group has
+# tried over `ADDRMAN_TRIED_BUCKETS_PER_GROUP` tried ones, and an address
+# is in up to `ADDRMAN_NEW_BUCKETS_PER_ADDRESS` new buckets.
+_NEW_BUCKET_COUNT = 1024
+_TRIED_BUCKET_COUNT = 256
+_BUCKET_SIZE = 64
+_NEW_BUCKETS_PER_SOURCE_GROUP = 64
+_TRIED_BUCKETS_PER_GROUP = 8
+_NEW_BUCKETS_PER_ADDRESS = 8
+# the same file and sha: how many tried-table collisions are kept to
+# test, how long an address tried this recently keeps its tried slot, and
+# how long a collision may wait before the old address is evicted anyway
+_SET_TRIED_COLLISION_SIZE = 10
+_ADDRMAN_REPLACEMENT = 4 * 3600
+_ADDRMAN_TEST_WINDOW = 40 * 60
 
 # `ThreadOpenConnections`' own window (`src/net.cpp`,
 # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a draw tried less than
-# this long ago is passed over. The longest any reader of
-# `PeerDB.last_try` looks back, so it is also how long a try is kept.
+# this long ago is passed over, and `GetChance` weighs it down.
 RECENT_TRY_SECONDS = 10 * 60
 
 # Core's `ADDRMAN_HORIZON` (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7,
@@ -410,11 +450,23 @@ _ADDRMAN_HORIZON = 30 * 24 * 3600
 # how far ahead of the clock a timestamp may be before it is terrible,
 # `IsTerrible`'s "flying DeLorean" (same file and sha)
 _ADDRMAN_FUTURE_SLACK = 10 * 60
-# `IsTerrible`'s own grace, ahead of both tests above (same file and
+# `IsTerrible`'s own grace, ahead of the tests below (same file and
 # sha): "never remove things tried in the last minute". `PeerDB._last_try`
 # is `AddrInfo::m_last_try`; `RECENT_TRY_SECONDS` above is a different
 # Core window, `ThreadOpenConnections`'s, not this one.
 _ADDRMAN_RECENT_TRY_GRACE = 60
+# `IsTerrible`'s tests of failures (same file and sha): never answered and
+# tried this many times, or this many failures since an answer longer ago
+# than the minimum
+_ADDRMAN_RETRIES = 3
+_ADDRMAN_MAX_FAILURES = 10
+_ADDRMAN_MIN_FAIL = 7 * 24 * 3600
+# `GetChance`'s own weights (same file and sha)
+_RECENT_TRY_CHANCE = 0.01
+_ATTEMPT_CHANCE = 0.66
+_MAX_CHANCE_ATTEMPTS = 8
+# `Select_`'s growth of the factor on a rejected draw (same file and sha)
+_CHANCE_FACTOR_GROWTH = 1.2
 # `Connected_`'s own granularity (same file and sha): a time is moved
 # forward only where it is older than this
 _CONNECTED_UPDATE_INTERVAL = 20 * 60
@@ -424,24 +476,75 @@ _ONLINE_WINDOW = 24 * 3600
 _ONLINE_UPDATE_INTERVAL = 3600
 _OFFLINE_UPDATE_INTERVAL = 24 * 3600
 
+_RNG = secrets.SystemRandom()
 
-def _aged_out(address: NetworkAddressV2, now: float, last_try: float) -> bool:
-    """Whether `address`'s timestamp fails `IsTerrible`'s time tests.
+
+@dataclass(slots=True)
+class _Stats:
+    """The members of Core's `AddrInfo` that an address has no field for.
+
+    `m_last_success`, `nAttempts` and `m_last_count_attempt`, which
+    `Good_` and `Attempt_` keep (`src/addrman_impl.h`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `m_last_count_attempt` is
+    not in `peers.dat`, nor is it here.
+    """
+
+    last_success: float = 0.0
+    attempts: int = 0
+    last_count_attempt: float = 0.0
+
+
+def _roll(factor: int) -> bool:
+    """Whether a one-in-`factor` draw comes up: `randrange(factor) == 0`."""
+    return _RNG.randrange(factor) == 0
+
+
+def _aged_out(
+    address: NetworkAddressV2,
+    now: float,
+    last_try: float,
+    stats: _Stats | None = None,
+) -> bool:
+    """Whether `address` is terrible, `AddrInfo::IsTerrible`.
 
     `AddrInfo::IsTerrible` (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7,
     the v31.1 tag) checks `last_try` first: tried within
     `_ADDRMAN_RECENT_TRY_GRACE`, an address is never terrible, whatever
     its timestamp says. Past that grace, its two time tests: stamped
     more than ten minutes ahead of `now`, or older than
-    `_ADDRMAN_HORIZON`. `get_addr` tests a known row's timestamp, Core's
+    `_ADDRMAN_HORIZON`. Then its two tests of `stats`, where it is given:
+    tried `_ADDRMAN_RETRIES` times and never answered, or
+    `_ADDRMAN_MAX_FAILURES` failures and no answer within
+    `_ADDRMAN_MIN_FAIL`. `get_addr` tests a known row's timestamp, Core's
     `nTime`, which gossip and `PeerDB.connected` move and a handshake
-    does not. `get_active_addresses` tests an answered row's, the time
-    of its last handshake, Core's `m_last_success`.
+    does not.
     """
     if now - last_try <= _ADDRMAN_RECENT_TRY_GRACE:
         return False
     age = now - address.timestamp
-    return age < -_ADDRMAN_FUTURE_SLACK or age > _ADDRMAN_HORIZON
+    if age < -_ADDRMAN_FUTURE_SLACK or age > _ADDRMAN_HORIZON:
+        return True
+    if stats is None:
+        return False
+    if not stats.last_success and stats.attempts >= _ADDRMAN_RETRIES:
+        return True
+    return (
+        now - stats.last_success > _ADDRMAN_MIN_FAIL
+        and stats.attempts >= _ADDRMAN_MAX_FAILURES
+    )
+
+
+def _chance(now: float, last_try: float, attempts: int) -> float:
+    """Return `AddrInfo::GetChance`: how likely a draw of the address is kept.
+
+    `src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag: a
+    hundredth for an address tried in the last ten minutes, and
+    two thirds of that for each failed attempt, the eighth the last.
+    """
+    chance = 1.0
+    if now - last_try < RECENT_TRY_SECONDS:
+        chance *= _RECENT_TRY_CHANCE
+    return chance * _ATTEMPT_CHANCE ** min(attempts, _MAX_CHANCE_ATTEMPTS)
 
 
 def network_class(address: NetworkAddressV2) -> Network:
@@ -529,26 +632,66 @@ def _fixed_seed_timestamp() -> int:
     return int(now - age)
 
 
-def _select(
-    answered: list[NetworkAddressV2], known: list[NetworkAddressV2]
-) -> NetworkAddressV2 | None:
+@dataclass(slots=True)
+class _Side:
+    """One table as `_select` draws from it: Core's `vvNew` or `vvTried`.
+
+    `occupant` is what a slot holds, `buckets` those with something in
+    them, `row_of` the address of what a slot holds, `fits` whether this
+    draw can use it, and `chance` its `GetChance`.
+    """
+
+    occupant: dict[tuple[int, int], Any]
+    buckets: list[int]
+    row_of: Callable[[Any], NetworkAddressV2]
+    fits: Callable[[NetworkAddressV2], bool]
+    chance: Callable[[NetworkAddressV2], float]
+    usable: bool | None = None
+
+    def is_usable(self) -> bool:
+        """Whether some address of the table fits, asked once."""
+        if self.usable is None:
+            self.usable = any(
+                self.fits(self.row_of(item)) for item in self.occupant.values()
+            )
+        return self.usable
+
+    def scan(self, bucket: int) -> NetworkAddressV2 | None:
+        """Return the first fit from a random place in `bucket`."""
+        start = secrets.choice(range(_BUCKET_SIZE))
+        for step in range(_BUCKET_SIZE):
+            item = self.occupant.get((bucket, (start + step) % _BUCKET_SIZE))
+            if item is not None:
+                row = self.row_of(item)
+                if self.fits(row):
+                    return row
+        return None
+
+
+def _select(tried: _Side | None, new: _Side | None) -> NetworkAddressV2 | None:
     """Draw from one table, a fair coin deciding where both hold something.
 
     Core's `AddrManImpl::Select_` (`src/addrman.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag) searches the tried table
-    or the new table with `randbool()` when both are non-empty, and
-    whichever one is not empty otherwise. `answered` stands for tried,
-    and `known` for new.
+    or the new table with `randbool()` when both hold an address that
+    fits, and whichever one does otherwise. In the table it draws a
+    bucket, then the first address that fits from a random position in it,
+    looping around, and keeps it with the probability `GetChance` gives,
+    times a factor that grows by a fifth with every address it does not
+    keep. Core draws among all buckets and starts over on an empty one,
+    which is a draw among the non-empty ones.
     """
-    if not answered and not known:
+    sides = [side for side in (new, tried) if side is not None and side.is_usable()]
+    if not sides:
         return None
-    if not known:
-        table = answered
-    elif not answered:
-        table = known
-    else:
-        table = answered if secrets.randbelow(2) else known
-    return secrets.choice(table)
+    side = sides[secrets.randbelow(2)] if len(sides) == 2 else sides[0]  # noqa: PLR2004
+    factor = 1.0
+    while True:
+        row = side.scan(secrets.choice(side.buckets))
+        if row is not None and _RNG.random() < factor * side.chance(row):
+            return row
+        if row is not None:
+            factor *= _CHANCE_FACTOR_GROWTH
 
 
 def endpoint_key(address: NetworkAddressV2) -> bytes:
@@ -606,6 +749,130 @@ def host_key(address: NetworkAddressV2) -> bytes:
     return address.address
 
 
+def _new_bucket_key() -> bytes:
+    """Return a new secret for placing addresses, Core's `rand256()`.
+
+    Core's `AddrMan` takes `uint256{1}` instead where it is built
+    `deterministic`, which its own tests do; `tests/conftest.py` does as
+    much here, by replacing this function.
+    """
+    return secrets.token_bytes(32)
+
+
+def _cheap_hash(*fields: bytes) -> int:
+    """Return `(HashWriter{} << fields...).GetCheapHash()`.
+
+    `src/hash.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag: the first
+    eight octets, little-endian, of the double SHA-256 of what was
+    written. `fields` are already serialized.
+    """
+    digest = hashlib.sha256(hashlib.sha256(b"".join(fields)).digest()).digest()
+    return int.from_bytes(digest[:8], "little")
+
+
+def _vector(octets: bytes) -> bytes:
+    """Return `octets` as a `std::vector<unsigned char>` serializes."""
+    return var_int.serialize(len(octets)) + octets
+
+
+def _address_key(address: NetworkAddressV2) -> bytes:
+    """Return `CService::GetKey`: the address octets, then the port."""
+    return host_key(address) + address.port.to_bytes(2, "big")
+
+
+def _position(key: bytes, tag: bytes, bucket: int, address_key: bytes) -> int:
+    """Return `AddrInfo::GetBucketPosition`: `N` is new, `K` is tried.
+
+    `address_key` is the address's `_address_key`.
+    """
+    return (
+        _cheap_hash(key, tag, bucket.to_bytes(4, "little"), _vector(address_key))
+        % _BUCKET_SIZE
+    )
+
+
+def _new_slot(
+    key: bytes,
+    address: NetworkAddressV2,
+    source_group: bytes,
+    *,
+    own: tuple[bytes, bytes] | None = None,
+) -> tuple[int, int]:
+    """Return the bucket and position of the new table that `address` maps to.
+
+    Core's `AddrInfo::GetNewBucket` and `GetBucketPosition`
+    (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
+    the address's group and its source's group pick one of
+    `_NEW_BUCKETS_PER_SOURCE_GROUP` buckets out of the source group's own,
+    and the endpoint picks the position in it. `key` is Core's `nKey`, this
+    table's own. `own` is the address's `net_group` and `_address_key`,
+    for a caller that places one address many times.
+    """
+    group, address_key = own or (net_group(address), _address_key(address))
+    source = _vector(source_group)
+    spread = _cheap_hash(key, _vector(group), source) % _NEW_BUCKETS_PER_SOURCE_GROUP
+    bucket = _cheap_hash(key, source, spread.to_bytes(8, "little")) % _NEW_BUCKET_COUNT
+    return bucket, _position(key, b"N", bucket, address_key)
+
+
+def _tried_slot(key: bytes, address: NetworkAddressV2) -> tuple[int, int]:
+    """Return the bucket and position of the tried table that `address` maps to.
+
+    Core's `AddrInfo::GetTriedBucket` and `GetBucketPosition`
+    (`src/addrman.cpp`, same sha): the endpoint picks one of
+    `_TRIED_BUCKETS_PER_GROUP` buckets out of its group's own.
+    """
+    address_key = _address_key(address)
+    spread = _cheap_hash(key, _vector(address_key)) % _TRIED_BUCKETS_PER_GROUP
+    bucket = (
+        _cheap_hash(key, _vector(net_group(address)), spread.to_bytes(8, "little"))
+        % _TRIED_BUCKET_COUNT
+    )
+    return bucket, _position(key, b"K", bucket, address_key)
+
+
+class _Pending:
+    """The writes `init_from_db` stages, in order, to put in one batch."""
+
+    def __init__(self) -> None:
+        self.operations: dict[bytes, bytes | None] = {}
+
+    def put(self, key: bytes, value: bytes) -> None:
+        """Stage a write."""
+        self.operations[key] = value
+
+    def delete(self, key: bytes) -> None:
+        """Stage a deletion."""
+        self.operations[key] = None
+
+    def apply(self, wb: KeyValueStore) -> None:
+        """Write what was staged."""
+        for key, value in self.operations.items():
+            if value is None:
+                wb.delete(key)
+            else:
+                wb.put(key, value)
+
+
+# Where a change to the table is written: `None` for a table kept in memory.
+_Sink = KeyValueStore | _Pending | None
+
+
+def _pack_groups(groups: list[bytes]) -> bytes:
+    """Return net groups as stored: each behind its length."""
+    return b"".join(bytes([len(group)]) + group for group in groups)
+
+
+def _unpack_groups(raw: bytes) -> list[bytes]:
+    """Return the net groups `_pack_groups` stored."""
+    groups: list[bytes] = []
+    at = 0
+    while at < len(raw):
+        groups.append(raw[at + 1 : at + 1 + raw[at]])
+        at += 1 + raw[at]
+    return groups
+
+
 @dataclass
 class AddrResponseCache:
     """One `getaddr` cache entry: a sample, and until when it is good for.
@@ -627,11 +894,18 @@ class AddrResponseCache:
 class PeerDB:
     """The table of addresses this node knows of, gossiped and self-confirmed.
 
-    `addresses` is every address heard about; `active_addresses` is the
-    subset this node has itself dialled and heard back from recently.
-    Each is behind its own lock, taken separately and never nested --
-    the comment beside each lock's own field says which thread reaches
-    it and why sharing the other lock was declined.
+    Core's addrman (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag). `addresses` is its `mapInfo`, every address heard about,
+    and `active_addresses` is its tried table, the subset this node has
+    itself dialled and heard back from. Each is behind its own lock,
+    taken separately and never nested -- the comment beside each lock's
+    own field says which thread reaches it and why sharing the other lock
+    was declined -- and a move between the two holds a third around the
+    other two.
+
+    An address is in the new table, in up to `_NEW_BUCKETS_PER_ADDRESS`
+    buckets (`_insert_new`), or in the tried table (`_make_tried`), as in
+    Core.
     """
 
     def __init__(self, chain: Chain, data_dir: Path | None) -> None:
@@ -644,6 +918,25 @@ class PeerDB:
         # before this object is shared, so `_held` answers an endpoint
         # the table does not hold without walking the set.
         self._known_keys: set[bytes] = set()
+        # Core's `mapInfo` and `vvNew`, under `_addresses_lock` and loaded
+        # by `init_from_db`: the known row of each endpoint, the secret
+        # that places an address, the new-table slots an endpoint holds
+        # with the group of the source each was given by, the endpoint
+        # each slot holds, the group of the first source (Core's
+        # `AddrInfo::source`), `m_last_success` and `nAttempts`, the
+        # endpoints in the tried table, Core's `m_tried_collisions`, and
+        # `m_last_good`. An endpoint held in the tried table holds no slot
+        # of the new one.
+        self._rows: dict[tuple[int, bytes, int], NetworkAddressV2] = {}
+        self._bucket_key = _new_bucket_key()
+        self._slots: dict[tuple[int, bytes, int], dict[tuple[int, int], bytes]] = {}
+        self._occupant: dict[tuple[int, int], tuple[int, bytes, int]] = {}
+        self._source: dict[tuple[int, bytes, int], bytes] = {}
+        self._stats: dict[tuple[int, bytes, int], _Stats] = {}
+        self._tried_endpoints: set[tuple[int, bytes, int]] = set()
+        self._collisions: set[tuple[int, bytes, int]] = set()
+        # Core's `m_last_good{1}`, so that a first failure is counted
+        self._last_good = 1.0
         # A lock of its own, not `_active_lock` below: `add_addresses`
         # reaches this set from both threads too (#298) -- gossip
         # through `callbacks.addr`/`addrv2` on `Node`'s, DNS seed
@@ -666,24 +959,27 @@ class PeerDB:
         # endpoint bytes -> its position in `active_addresses`, so
         # `add_active_address` can find a repeat endpoint's row in O(1)
         # rather than by scanning the list it is called once per
-        # handshake against (#270). Rebuilt rather than kept in step
-        # wherever something else reshapes the list instead --
-        # `init_from_db`'s bulk load, and `get_active_addresses` where
-        # its prune removed a row, both already O(n) over it.
+        # handshake against (#270).
         self._active_index: dict[bytes, int] = {}
-        # `add_active_address` reads this index and then writes into
-        # `active_addresses` at the position it found -- two statements, not one
-        # -- and `get_active_addresses`, where its prune removed a row,
-        # reassigns the list and then rebuilds the index against it -- likewise
-        # two. The first runs on `Node`'s own thread, off `callbacks.version`;
-        # the second runs on `P2pManager`'s, off `manage_connections`, which
-        # calls it every few minutes regardless of what else that loop is doing
-        # (#71). Interleaved without a lock, a position read before a prune can
-        # be written after it, into a list the prune already reshaped: one
+        # `add_addresses` and `set_services` read this index and then write
+        # into `active_addresses` at the position found -- two statements,
+        # not one -- while a move between the tables, on either thread,
+        # reshapes the list. Interleaved without a lock, a
+        # position read before a move can be written after it: one
         # endpoint's row silently holding another endpoint's data, or an
-        # `IndexError`. `KeyValueStore` has its own lock for the store; this one
-        # is for these two in-memory structures alone, and is not the same lock.
+        # `IndexError`. `KeyValueStore` has its own lock for the store;
+        # this one is for these in-memory structures alone.
         self._active_lock = threading.Lock()
+        # Core's `vvTried`, under `_active_lock`: the slot of each answered
+        # endpoint, by `endpoint_key`, and the endpoint each slot holds.
+        self._tried_slot_of: dict[bytes, tuple[int, int]] = {}
+        self._tried_occupant: dict[tuple[int, int], bytes] = {}
+        # A third lock, taken first and held while a move between the two
+        # tables takes the other two in turn: `Good_` and
+        # `ResolveCollisions_` each read one table and write the other,
+        # from `Node`'s thread and `P2pManager`'s. Of the three, it is the
+        # only one held across a take of another.
+        self._move_lock = threading.Lock()
         # What `callbacks.getaddr` last answered with, keyed the way
         # Core's own `m_addr_response_caches` is: one cache per
         # `Connection.addr_cache_key`, network and local socket, rather
@@ -703,15 +999,15 @@ class PeerDB:
         # `m_last_try` out of `peers.dat` (`src/addrman_impl.h`,
         # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `attempt` writes it
         # from `P2pManager`'s thread alone. `last_try` reads it from
-        # there too, and from `get_active_addresses`'s own call into
-        # `_aged_out`'s grace check, and `get_addr`'s, reachable from
+        # there too, and from `get_addr`'s call into
+        # `_aged_out`'s grace check, reachable from
         # `Node`'s thread through `callbacks.getaddr`
         # (btclib-org/btclib-node#1435).
-        # Unlocked on purpose: `attempt`'s reassignment of this dict is
-        # one step, not a read-modify-write of the attribute itself, so
-        # a concurrent `last_try` sees the whole old dict or the whole
-        # new one, never a partial one -- at worst one `attempt` stale,
-        # the same imprecision `is_empty` already accepts.
+        # Written under `_addresses_lock`, by `attempt` and `_good`, and
+        # read without it on purpose: a write is one step, an item set
+        # or a reassignment of the whole dict, so a concurrent `last_try`
+        # sees a whole dict -- at worst one write stale, the same
+        # imprecision `is_empty` already accepts.
         self._last_try: dict[bytes, float] = {}
 
         # `None` is a table kept in memory only, which is what every
@@ -722,66 +1018,304 @@ class PeerDB:
         self.db = KeyValueStore(data_dir / "peers") if data_dir is not None else None
 
         self.init_from_db()
-        # `get_active_addresses` also deletes an `_aged_out` row from the
-        # durable store (#253); called here so a restart's store is
-        # already pruned by the time construction returns, rather than
-        # only once whatever reaches it first runs.
-        self.get_active_addresses()
 
     def init_from_db(self) -> None:
         """Load every stored address into `addresses` or `active_addresses`.
 
-        One store keyed by two prefixes (the comment on `_KNOWN` and
-        `_ANSWERED` above argues why), so this walks it whole and
+        One store keyed by several prefixes (the comment on `_KNOWN` and
+        its neighbours above argues why), so this walks it whole and
         dispatches on the prefix rather than stopping at the first key
         without one. A row `_storable` refuses is deleted rather than
         loaded, as Core's addrman holds no such address, and so is an
         answered row whose endpoint no known row holds, as Core's tried
         table holds nothing addrman does not.
+
+        Rows are placed again as Core places what it reads from
+        `peers.dat` (`_place_stored`). A row with no stored source, as an
+        earlier release wrote them, is its own source: the rows of one
+        group share its one bucket, and those over its room are dropped.
         """
         if self.db is None:
             return
-        refused: list[bytes] = []
-        answered: list[tuple[bytes, NetworkAddressV2]] = []
-        for key, value in self.db:
-            if key.startswith(_KNOWN):
-                known = True
-            elif key.startswith(_ANSWERED):
-                known = False
-            else:
-                continue
-            address = NetworkAddressV2.parse(value, check_validity=False)
-            if not _storable(address):
-                refused.append(key)
-            elif known:
-                self.addresses.add(address)
-                self._known_keys.add(endpoint_key(address))
-            else:
-                answered.append((key, address))
-        # after the walk: the store is sorted, and `answered-` rows come
-        # ahead of the `known-` rows they are checked against
-        for key, address in answered:
-            if endpoint_key(address) in self._known_keys:
-                self.active_addresses.append(address)
-            else:
-                refused.append(key)
+        self._load_bucket_key(self.db)
+        pending = _Pending()
+        known, answered, sources, stats = self._read_store(self.db, pending)
+        self._place_stored(known, sources, stats, answered, pending)
+        for suffix in answered.keys() - self._known_keys:
+            pending.delete(_ANSWERED + suffix)
+        for orphans, prefix in ((sources, _SOURCE), (stats, _STATS)):
+            for suffix in orphans:
+                pending.delete(prefix + suffix)
         with self.db.write_batch() as wb:
-            for key in refused:
-                wb.delete(key)
-        self._reindex_active()
+            pending.apply(wb)
 
-    def _reindex_active(self) -> None:
-        """Rebuild the endpoint index over the current `active_addresses`.
+    def _read_store(
+        self, db: KeyValueStore, pending: _Pending
+    ) -> tuple[
+        list[tuple[bytes, NetworkAddressV2]],
+        dict[bytes, NetworkAddressV2],
+        dict[bytes, list[bytes]],
+        dict[bytes, bytes],
+    ]:
+        """Read the store whole: known rows, answered rows, sources, stats.
 
-        O(n), the same order `get_active_addresses`'s own prune already
-        walks the list at -- called from there and from `init_from_db`,
-        the two places that reshape the list itself rather than through
-        `add_active_address`.
+        Each is by the `endpoint_key` its key ends in. A row `_storable`
+        refuses is staged for deletion in `pending`.
         """
-        self._active_index = {
-            endpoint_key(address): position
-            for position, address in enumerate(self.active_addresses)
-        }
+        known: list[tuple[bytes, NetworkAddressV2]] = []
+        answered: dict[bytes, NetworkAddressV2] = {}
+        sources: dict[bytes, list[bytes]] = {}
+        stats: dict[bytes, bytes] = {}
+        for key, value in db:
+            if key.startswith(_SOURCE):
+                sources[key[len(_SOURCE) :]] = _unpack_groups(value)
+            elif key.startswith(_STATS):
+                stats[key[len(_STATS) :]] = value
+            elif key.startswith((_KNOWN, _ANSWERED)):
+                address = NetworkAddressV2.parse(value, check_validity=False)
+                if not _storable(address):
+                    pending.delete(key)
+                elif key.startswith(_KNOWN):
+                    known.append((key[len(_KNOWN) :], address))
+                else:
+                    answered[key[len(_ANSWERED) :]] = address
+        return known, answered, sources, stats
+
+    def _load_bucket_key(self, db: KeyValueStore) -> None:
+        """Take the key the store holds, or store the one this table has."""
+        stored = db.get_meta(_BUCKET_KEY)
+        if stored is None:
+            db.put_meta(_BUCKET_KEY, self._bucket_key)
+        else:
+            self._bucket_key = stored
+
+    def _place_stored(
+        self,
+        known: list[tuple[bytes, NetworkAddressV2]],
+        sources: dict[bytes, list[bytes]],
+        stats: dict[bytes, bytes],
+        answered: dict[bytes, NetworkAddressV2],
+        pending: _Pending,
+    ) -> None:
+        """Place the stored known rows as `AddrManImpl::Unserialize` does.
+
+        An answered row takes its tried slot. Where another holds it, the
+        row goes to the new table at its first source's slot, as `MakeTried`
+        sends the entry it displaces, and is lost only if that is held too.
+        Core's own file never meets this: one `peers.dat` holds no two tried
+        entries for a slot, so it is no divergence on a path Core reaches.
+        Here it is the first start over an earlier release's store, whose
+        answered rows were never placed by slot.
+
+        A row of the new table takes the slot of each group it was
+        given a slot by, up to `_NEW_BUCKETS_PER_ADDRESS`; where another
+        holds that slot, it is tried once more at the slot of its first
+        source, and is not placed where that is held too. A row left with
+        no slot is lost, and so are its other rows, which are staged in
+        `pending` for deletion. What is read out of `sources` and `stats`
+        is removed from them, the rest being left for the caller to delete.
+        """
+        for suffix, address in known:
+            endpoint = _endpoint(address)
+            own = (net_group(address), _address_key(address))
+            groups = sources.pop(suffix, None) or [own[0]]
+            primary = groups[0]
+            entry = _Stats()
+            raw = stats.pop(suffix, None)
+            if raw is not None:
+                entry.last_success = int.from_bytes(raw[:8], "little")
+                entry.attempts = int.from_bytes(raw[8:12], "little")
+            tried = answered.get(suffix)
+            if tried is not None:
+                entry.last_success = tried.timestamp
+                slot = _tried_slot(self._bucket_key, address)
+                if slot not in self._tried_occupant:
+                    self._stats[endpoint] = entry
+                    self._adopt(address, primary)
+                    self._tried_endpoints.add(endpoint)
+                    self._tried_insert(suffix, tried, slot)
+                    continue
+                self._restore_slot(address, endpoint, primary, primary, own)
+                pending.delete(_ANSWERED + suffix)
+            else:
+                for group in groups[1:] or [primary]:
+                    self._restore_slot(address, endpoint, group, primary, own)
+            if endpoint in self._slots:
+                self._stats[endpoint] = entry
+                self._adopt(address, primary)
+                if groups != [primary, *dict.fromkeys(self._slots[endpoint].values())]:
+                    self._put_sources(endpoint, pending)
+                if tried is not None:
+                    self._put_stats(endpoint, pending)
+            else:
+                for prefix in (_KNOWN, _SOURCE, _STATS, _ANSWERED):
+                    pending.delete(prefix + suffix)
+
+    def _restore_slot(
+        self,
+        address: NetworkAddressV2,
+        endpoint: tuple[int, bytes, int],
+        group: bytes,
+        primary: bytes,
+        own: tuple[bytes, bytes],
+    ) -> None:
+        """Give a stored row the slot of `group`, or of `primary` if held.
+
+        `Unserialize`'s own rule for the new table: a free slot is taken,
+        and a held one sends the row once to its first source's slot. The
+        table is not yet shared.
+        """
+        if len(self._slots.get(endpoint, ())) >= _NEW_BUCKETS_PER_ADDRESS:
+            return
+        slot = _new_slot(self._bucket_key, address, group, own=own)
+        if slot in self._occupant:
+            group = primary
+            slot = _new_slot(self._bucket_key, address, primary, own=own)
+            if slot in self._occupant:
+                return
+        self._occupant[slot] = endpoint
+        self._slots.setdefault(endpoint, {})[slot] = group
+
+    def _adopt(self, address: NetworkAddressV2, group: bytes) -> None:
+        """Hold `address` as a known row from the source of `group`.
+
+        The caller holds `_addresses_lock`, or the table is not yet shared.
+        """
+        endpoint = _endpoint(address)
+        self._rows[endpoint] = address
+        self.addresses.add(address)
+        self._known_keys.add(endpoint_key(address))
+        self._source[endpoint] = group
+
+    def _tried_insert(
+        self, key: bytes, row: NetworkAddressV2, slot: tuple[int, int]
+    ) -> None:
+        """Put `row` in the tried slot, in memory.
+
+        The caller holds `_active_lock`, or the table is not yet shared.
+        """
+        self._active_index[key] = len(self.active_addresses)
+        self.active_addresses.append(row)
+        self._tried_slot_of[key] = slot
+        self._tried_occupant[slot] = key
+
+    def _tried_remove(self, key: bytes) -> NetworkAddressV2:
+        """Take the row of `key` out of the tried table, in memory.
+
+        The last row takes its place in `active_addresses`. The caller
+        holds `_active_lock`.
+        """
+        position = self._active_index.pop(key)
+        last = self.active_addresses.pop()
+        removed = last
+        if position < len(self.active_addresses):
+            removed = self.active_addresses[position]
+            self.active_addresses[position] = last
+            self._active_index[endpoint_key(last)] = position
+        del self._tried_occupant[self._tried_slot_of.pop(key)]
+        return removed
+
+    def _insert_new(
+        self,
+        address: NetworkAddressV2,
+        group: bytes,
+        now: float,
+        wb: _Sink,
+    ) -> bool:
+        """Give an endpoint a slot of the new table from `group`, if it can.
+
+        Core's slot insertion in `AddrManImpl::AddSingle` (`src/addrman.cpp`,
+        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), answering whether it
+        did. A slot the endpoint holds already is not a new insertion. A
+        slot another endpoint holds goes to this one if its holder is
+        terrible, or is in several buckets and this endpoint in none;
+        otherwise it stays with its holder. The caller holds
+        `_addresses_lock`, and puts a new endpoint in `addresses`,
+        `_known_keys` and `_rows` (`_adopt`) when this answers `True`.
+        """
+        endpoint = _endpoint(address)
+        slot = _new_slot(self._bucket_key, address, group)
+        holder = self._occupant.get(slot)
+        if holder == endpoint:
+            return False
+        if holder is not None:
+            old = self._rows[holder]
+            held_elsewhere = len(self._slots[holder]) > 1
+            if not (
+                _aged_out(old, now, self.last_try(old), self._stats.get(holder))
+                or (held_elsewhere and endpoint not in self._slots)
+            ):
+                return False
+            self._clear_slot(slot, wb)
+        self._occupant[slot] = endpoint
+        self._slots.setdefault(endpoint, {})[slot] = group
+        return True
+
+    def _clear_slot(self, slot: tuple[int, int], wb: _Sink) -> None:
+        """Empty a slot of the new table: Core's `ClearNew`.
+
+        An endpoint left with no slot is forgotten. The caller holds
+        `_addresses_lock`.
+        """
+        holder = self._occupant.pop(slot)
+        slots = self._slots[holder]
+        del slots[slot]
+        if slots:
+            self._put_sources(holder, wb)
+        else:
+            del self._slots[holder]
+            self._forget(holder, wb)
+
+    def _forget(self, endpoint: tuple[int, bytes, int], wb: _Sink) -> None:
+        """Drop an endpoint from the table: Core's `Delete`.
+
+        The caller holds `_addresses_lock`.
+        """
+        row = self._rows.pop(endpoint)
+        key = endpoint_key(row)
+        self.addresses.discard(row)
+        self._known_keys.discard(key)
+        del self._source[endpoint]
+        self._stats.pop(endpoint, None)
+        self._collisions.discard(endpoint)
+        if wb is not None:
+            for prefix in (_KNOWN, _SOURCE, _STATS):
+                wb.delete(prefix + key)
+
+    def _put_sources(self, endpoint: tuple[int, bytes, int], wb: _Sink) -> None:
+        """Write the groups of an endpoint's first source and of its slots.
+
+        The first source is Core's `AddrInfo::source`, which never changes
+        and is where an entry goes when it is returned to the new table.
+        The caller holds `_addresses_lock`.
+        """
+        if wb is not None:
+            groups = [
+                self._source[endpoint],
+                *dict.fromkeys(self._slots.get(endpoint, {}).values()),
+            ]
+            wb.put(_SOURCE + endpoint_key(self._rows[endpoint]), _pack_groups(groups))
+
+    def _put_stats(self, endpoint: tuple[int, bytes, int], wb: _Sink) -> None:
+        """Write `m_last_success` and `nAttempts`, or delete them if none.
+
+        The answered row's time is `m_last_success` of an endpoint in the
+        tried table, so only the attempts of that one are kept. The caller
+        holds `_addresses_lock`.
+        """
+        if wb is None:
+            return
+        entry = self._stats[endpoint]
+        key = _STATS + endpoint_key(self._rows[endpoint])
+        tried = endpoint in self._tried_endpoints
+        if entry.attempts or (entry.last_success and not tried):
+            wb.put(
+                key,
+                int(entry.last_success).to_bytes(8, "little")
+                + entry.attempts.to_bytes(4, "little"),
+            )
+        else:
+            wb.delete(key)
 
     @contextmanager
     def _write_batch(self) -> Iterator[KeyValueStore | None]:
@@ -865,6 +1399,7 @@ class PeerDB:
                 )
                 for ip, port in endpoints
             ),
+            source=internal_source(host),
             time_penalty=0,
         )
         return None
@@ -879,15 +1414,14 @@ class PeerDB:
         the new table to the tried one rather than copying it -- the two
         never hold the one address at once there. This table's own
         `active_addresses` is not `addresses` with one row moved out: an
-        answered endpoint is left in `addresses` too (`address_sampler`'s
-        own comment above says so, and is what lets a repeat gossip for
-        an already-answered endpoint still update its known row). A bare
+        answered endpoint is left in `addresses` too (`_good` leaves the
+        known row in place). A bare
         `len(self.addresses) + len(self.active_addresses)` therefore
         counted every answered endpoint twice.
         The honest count is `addresses`' own size plus whatever
         `active_addresses` holds that `addresses` does not -- read as
         `_known_keys`, kept in step with `addresses` by `add_addresses`
-        (never shrunk: nothing in this class discards a known key), and
+        (a slot taken over by a newcomer drops its holder's key), and
         `_active_index`, kept in step with `active_addresses` the same
         way, so counting keys rather than walking either table answers
         without a stale-row's own fields mattering. Locked, unlike
@@ -944,59 +1478,65 @@ class PeerDB:
         """Return a draw over the dialable addresses of both tables, as of now.
 
         Each call of what this returns is one `_select`, between the
-        answered table and the gossiped one, so `P2pManager` can draw
-        many times a pass for the price of one walk of each table. An
-        answered endpoint is left out of the gossiped side, where
-        `addresses` holds it too, as Core's `Good_` moves an entry from
-        the new table to the tried one and `Select_` flips between two
-        tables that never hold one endpoint twice. With `new_only` the
-        draw is from the gossiped side alone, Core's `Select(true, ...)`
-        that a feeler makes, and with `network` from both sides kept to
-        the one network, as `CNetAddr::GetNetwork` names it: Core's
-        `Select(false, {network})`, which an extra network peer makes.
+        answered table and the gossiped one, and in either a bucket
+        before an address in it, kept as `GetChance` weighs it, so
+        `P2pManager` can draw many times a pass for the price of a copy of
+        each table's slots. An answered endpoint holds no slot of the
+        gossiped table, as Core's `Good_` moves an entry from the new table
+        to the tried one and `Select_` flips between two tables that never
+        hold one endpoint twice. With `new_only` the draw is from the
+        gossiped side alone, Core's `Select(true, ...)` that a feeler makes,
+        and with `network` from both sides kept to the one network, as
+        `CNetAddr::GetNetwork` names it: Core's `Select(false, {network})`,
+        which an extra network peer makes.
 
-        The answered side reads `active_addresses` as it stands, not
-        `get_active_addresses`'s pruned view: Core's `Select_`
+        A terrible entry is not left out of a draw: Core's `Select_`
         (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
-        never calls `IsTerrible` -- only `GetAddr_`'s serving and
-        `AddSingle`'s duplicate-overwrite check do -- so a terrible entry
-        stays eligible for a draw here as it does there
-        (btclib-org/btclib-node#1434). A row this draws can still be
-        pruned from the table, and from the store, by
-        `get_active_addresses`'s own periodic sweep before the next
-        call; that remaining divergence from Core's tried table, which
-        keeps the entry until another address takes its slot, is argued
-        at `get_active_addresses`'s own docstring (#253).
+        never calls `IsTerrible`, only `GetAddr_`'s serving and
+        `AddSingle`'s overwrite of a slot do (btclib-org/btclib-node#1434).
+        A terrible tried entry stays in the tried table until another
+        address takes its slot, as Core's does.
         """
-        with self._active_lock:
-            raw_active = list(self.active_addresses)
-        answered = [
-            addr
-            for addr in raw_active
-            if can_connect(addr) and (network is None or get_network(addr) == network)
-        ]
-        tried = {_endpoint(addr) for addr in answered}
-        # Drawn from the addresses that can be dialled, rather than from
-        # the whole table with a retry on the ones that cannot: a table
-        # holding none of them -- a seed answering with AAAA records
-        # alone is enough, and `add_addresses` takes the tor, i2p and
-        # routable cjdns a peer sends -- made that retry a loop with no exit,
-        # in the caller's event loop. Nothing to dial is an answer, and
-        # `None` is it.
-        # Locked, unlike `is_empty` above: this walks the set rather
-        # than asking its length, and add_addresses (#298) reaches it
-        # from Node's own thread while this runs on P2pManager's --
-        # unprotected, that is CPython's `RuntimeError: Set changed
-        # size during iteration`, not merely a stale answer.
+
+        def fits(row: NetworkAddressV2) -> bool:
+            return can_connect(row) and (network is None or get_network(row) == network)
+
+        def chance(row: NetworkAddressV2) -> float:
+            entry = self._stats.get(_endpoint(row))
+            return _chance(
+                time.time(), self.last_try(row), entry.attempts if entry else 0
+            )
+
+        # Locked, unlike `is_empty` above: a copy of a dict another thread
+        # is writing can fail with `RuntimeError: dictionary changed size
+        # during iteration`, and add_addresses (#298) reaches it from Node's
+        # own thread while this runs on P2pManager's.
         with self._addresses_lock:
-            known = [
-                address
-                for address in self.addresses
-                if can_connect(address)
-                and _endpoint(address) not in tried
-                and (network is None or get_network(address) == network)
-            ]
-        return partial(_select, [] if new_only else answered, known)
+            rows = dict(self._rows)
+            occupant = dict(self._occupant)
+        new = _Side(
+            occupant,
+            list({slot[0] for slot in occupant}),
+            rows.__getitem__,
+            fits,
+            chance,
+        )
+        if new_only:
+            return partial(_select, None, new)
+        with self._active_lock:
+            tried_occupant = dict(self._tried_occupant)
+            tried_rows = {
+                key: self.active_addresses[position]
+                for key, position in self._active_index.items()
+            }
+        tried = _Side(
+            tried_occupant,
+            list({slot[0] for slot in tried_occupant}),
+            tried_rows.__getitem__,
+            fits,
+            chance,
+        )
+        return partial(_select, tried, new)
 
     def add_addresses(
         self,
@@ -1005,17 +1545,26 @@ class PeerDB:
         source: NetworkAddressV2 | None = None,
         time_penalty: float = _GOSSIP_TIME_PENALTY,
     ) -> int:
-        """Merge `addresses` into `self.addresses`, checked and deduplicated.
+        """Merge `addresses` into the new table, checked and deduplicated.
 
-        Returns how many endpoints the table did not hold before.
+        Returns how many of them the new table took a slot for, new
+        endpoints and further buckets of held ones alike: Core's `Add`
+        answers whether there were any.
 
         An address `_storable` refuses is dropped. Every other address
         settles onto its own `endpoint_key` row, its services ORed into
-        those the row held, up to `_MAX_ADDRESSES` distinct endpoints,
-        past which a genuinely new one is dropped too. The services are
-        ORed into the endpoint's answered row as well, where it has one.
-        Takes `_addresses_lock`, then `_active_lock`, the two never
-        nested.
+        those the row held. The services are ORed into the endpoint's
+        answered row as well, where it has one. Takes `_addresses_lock`,
+        then `_active_lock`, the two never nested.
+
+        Placement is Core's `AddSingle` (`_insert_new`): a new endpoint
+        takes the slot its group and the group of `source` map it to, and an
+        endpoint held and not tried may take a further one, up to
+        `_NEW_BUCKETS_PER_ADDRESS`, if the gossip is newer than its time and
+        a draw of one in two to the power of the slots it holds comes up.
+        What one source group gives spreads over
+        `_NEW_BUCKETS_PER_SOURCE_GROUP` buckets at most. With no `source` an
+        address is its own source.
 
         A new row's timestamp is the gossiped one, `time_penalty` seconds
         less, floored at zero; a row held keeps its own unless the gossip
@@ -1059,14 +1608,8 @@ class PeerDB:
         added = 0
         now = time.time()
         source_host = _host(source) if source is not None else None
+        source_group = net_group(source) if source is not None else None
         with self._addresses_lock, self._write_batch() as wb:
-            # `endpoint_key` is what the durable row is already keyed on --
-            # network id, address and port, not `services` -- so a
-            # second gossip for the one endpoint overwrites the row on
-            # disk. This index is what makes `self.addresses` settle on
-            # the endpoint the same way instead of holding one member
-            # per `services` value ever seen for it (#247).
-            by_endpoint = {endpoint_key(known): known for known in self.addresses}
             for address in addresses:
                 # BIP155's ignore rule: an IPV6 record that is really an
                 # IPv4 or a (long-retired) TORv2 address wearing another
@@ -1079,7 +1622,10 @@ class PeerDB:
                 if not _storable(address):
                     continue
                 key = endpoint_key(address)
-                existing = by_endpoint.get(key)
+                endpoint = _endpoint(address)
+                # one row per endpoint, whatever `services` it was gossiped
+                # with (#247)
+                existing = self._rows.get(endpoint)
                 # a gossip adds services to an endpoint already held and
                 # never takes one away, as Core's `AddSingle` ORs them in
                 # (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the
@@ -1090,24 +1636,21 @@ class PeerDB:
                 penalty = 0.0 if _host(address) == source_host else time_penalty
                 timestamp = _held_time(existing, address, penalty, now)
                 known = replace(address, timestamp=timestamp, services=services)
-                # the cap is on distinct endpoints, so updating one
-                # already held does not spend it -- only a genuinely new
-                # endpoint can run the table out of room
-                if existing is None and len(self.addresses) >= _MAX_ADDRESSES:
-                    break
-                if existing is not None:
-                    self.addresses.discard(existing)
-                else:
+                group = source_group or net_group(address)
+                if existing is None:
+                    if not self._insert_new(known, group, now, wb):
+                        continue
+                    self._adopt(known, group)
+                    self._put_sources(endpoint, wb)
                     added += 1
-                self.addresses.add(known)
-                self._known_keys.add(key)
-                by_endpoint[key] = known
+                else:
+                    self._replace_row(endpoint, existing, known)
+                    added += self._insert_further(address, known, group, now, wb)
+                if wb is not None and known != existing:
+                    wb.put(_KNOWN + key, known.serialize(check_validity=False))
                 gossiped[key] = (
                     gossiped.get(key, ServiceFlags.NODE_NONE) | address.services
                 )
-                if wb is not None:
-                    value = known.serialize(check_validity=False)
-                    wb.put(_KNOWN + key, value)
         # Core keeps one entry per endpoint, and `AddSingle` ORs gossip
         # into a tried one as into a new one
         with self._active_lock:
@@ -1119,6 +1662,48 @@ class PeerDB:
                         position, replace(row, services=row.services | services)
                     )
         return added
+
+    def _insert_further(
+        self,
+        gossip: NetworkAddressV2,
+        known: NetworkAddressV2,
+        group: bytes,
+        now: float,
+        wb: _Sink,
+    ) -> bool:
+        """Give a held endpoint a further slot from `group`, if Core would.
+
+        `AddSingle` (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+        v31.1 tag) does so for an endpoint whose gossip is newer than the
+        time it now holds, that is not in the tried table and holds fewer
+        than `_NEW_BUCKETS_PER_ADDRESS` slots, and then at odds of one to
+        two to the power of the slots held. The caller holds
+        `_addresses_lock`.
+        """
+        endpoint = _endpoint(known)
+        if gossip.timestamp <= known.timestamp or endpoint in self._tried_endpoints:
+            return False
+        held = len(self._slots.get(endpoint, ()))
+        if held >= _NEW_BUCKETS_PER_ADDRESS or (held and not _roll(1 << held)):
+            return False
+        if not self._insert_new(known, group, now, wb):
+            return False
+        self._put_sources(endpoint, wb)
+        return True
+
+    def _replace_row(
+        self,
+        endpoint: tuple[int, bytes, int],
+        old: NetworkAddressV2,
+        new: NetworkAddressV2,
+    ) -> None:
+        """Hold `new` for an endpoint in place of `old`.
+
+        The caller holds `_addresses_lock`.
+        """
+        self.addresses.discard(old)
+        self.addresses.add(new)
+        self._rows[endpoint] = new
 
     def set_services(self, address: NetworkAddressV2, services: ServiceFlags) -> None:
         """Overwrite the services held for `address`'s endpoint.
@@ -1138,8 +1723,7 @@ class PeerDB:
             if existing is None:
                 return
             known = replace(existing, services=services)
-            self.addresses.discard(existing)
-            self.addresses.add(known)
+            self._replace_row(_endpoint(address), existing, known)
             if wb is not None:
                 wb.put(_KNOWN + key, known.serialize(check_validity=False))
         with self._active_lock:
@@ -1153,10 +1737,7 @@ class PeerDB:
 
         The caller holds `_addresses_lock`.
         """
-        if endpoint_key(address) not in self._known_keys:
-            return None
-        endpoint = _endpoint(address)
-        return next((a for a in self.addresses if _endpoint(a) == endpoint), None)
+        return self._rows.get(_endpoint(address))
 
     def _set_answered(self, position: int, row: NetworkAddressV2) -> None:
         """Write `row` at `position` of `active_addresses`, and to the store.
@@ -1169,27 +1750,39 @@ class PeerDB:
                 _ANSWERED + endpoint_key(row), row.serialize(check_validity=False)
             )
 
-    def attempt(self, address: NetworkAddressV2) -> None:
+    def attempt(
+        self, address: NetworkAddressV2, *, count_failure: bool = False
+    ) -> None:
         """Record a try to connect to `address`, as Core's `Attempt_` does.
 
         `AddrManImpl::Attempt_` (`src/addrman.cpp`, at
         bitcoin/bitcoin@9be056a8a7, the v31.1 tag) sets `m_last_try` on
         the entry addrman holds for the address, and does nothing where
         it holds none; so is an endpoint `_known_keys` does not hold left
-        out here, an answered one being known too. A try older than
-        `RECENT_TRY_SECONDS` is dropped, since nothing reads one.
+        out here, an answered one being known too. With `count_failure`
+        it also counts an attempt, `nAttempts`, once for the tries since
+        the last `Good_`: `ThreadOpenConnections` passes it once the node
+        holds outbound peers in enough net groups to be online. A try is
+        kept as long as `Good_` and `ResolveCollisions_` read it,
+        `_ADDRMAN_REPLACEMENT`.
         """
         key = endpoint_key(address)
-        with self._addresses_lock:
-            if key not in self._known_keys:
-                return
+        endpoint = _endpoint(address)
         now = time.time()
-        self._last_try = {
-            tried: when
-            for tried, when in self._last_try.items()
-            if now - when < RECENT_TRY_SECONDS
-        }
-        self._last_try[key] = now
+        with self._addresses_lock, self._write_batch() as wb:
+            if endpoint not in self._rows:
+                return
+            self._last_try = {
+                tried: when
+                for tried, when in self._last_try.items()
+                if now - when < _ADDRMAN_REPLACEMENT
+            }
+            self._last_try[key] = now
+            entry = self._stats.setdefault(endpoint, _Stats())
+            if count_failure and entry.last_count_attempt < self._last_good:
+                entry.last_count_attempt = now
+                entry.attempts += 1
+                self._put_stats(endpoint, wb)
 
     def last_try(self, address: NetworkAddressV2) -> float:
         """Return when `address` was last tried, `0.0` for never or long ago."""
@@ -1228,83 +1821,200 @@ class PeerDB:
                 break
             if network is not None and network_class(row) != network:
                 continue
-            if not _aged_out(row, now, self.last_try(row)):
+            if not _aged_out(
+                row, now, self.last_try(row), self._stats.get(_endpoint(row))
+            ):
                 sample.append(row)
         return sample
 
-    def get_active_addresses(self) -> list[NetworkAddressV2]:
-        """Return `active_addresses`, pruned of every entry `_aged_out` names.
-
-        A pruned entry's durable `answered-` row is deleted too. Locked
-        with `_active_lock`.
-        """
-        now = time.time()
-        with self._active_lock:
-            # An answered row's timestamp is its last handshake, Core's
-            # `m_last_success`, and it is kept until `IsTerrible`'s time
-            # tests call that stamp terrible (`_aged_out`). It is not
-            # `nTime`, which only the known row holds. Core keeps even a
-            # terrible entry in its tried table, leaving it out of a
-            # `getaddr` answer and moving it back to the new table only
-            # when another entry needs its slot. Here it leaves the table
-            # and its `answered-` row with it, so that the durable store
-            # stays bounded by what answered within the horizon (#253).
-            active: list[NetworkAddressV2] = []
-            for addr in self.active_addresses:
-                if not _aged_out(addr, now, self.last_try(addr)):
-                    active.append(addr)
-                elif self.db is not None:
-                    self.db.delete(_ANSWERED + endpoint_key(addr))
-            # rebuilt only where the prune removed something: a row
-            # kept keeps its position, and rebuilding costs an
-            # `endpoint_key` per row every call (btclib-org/btclib-node#1217)
-            if len(active) != len(self.active_addresses):
-                self.active_addresses = active
-                self._reindex_active()
-            return self.active_addresses
-
-    def add_active_address(self, addr: NetworkAddressV2) -> bool:
-        """Record `addr` as answered, and say whether it was.
+    def add_active_address(
+        self, addr: NetworkAddressV2, *, test_before_evict: bool = True
+    ) -> bool:
+        """Record `addr` as answered, and say whether it moved to the tried one.
 
         Core's `AddrManImpl::Good_` (`src/addrman.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which moves an entry
-        to the tried table and leaves `nTime` alone, "to avoid leaking
-        information about currently-connected peers": the known row is
-        not written, and the answered row is stamped now, `m_last_success`,
-        which nothing serves. `connected` is what moves `nTime`.
-        A repeat handshake with an already-held endpoint settles onto its
-        one row rather than growing the table. An endpoint `addresses`
-        does not hold is not recorded, as `Good_` updates only an entry
-        addrman already has, and neither is an address `_storable`
-        refuses, which `addresses` never holds. Takes `_addresses_lock`
-        to ask, then `_active_lock` to write, the two never nested.
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the entry is marked
+        as connected to now, its attempts are reset, and `nTime` is left
+        alone, "to avoid leaking information about currently-connected
+        peers" -- the known row is not written, and the answered row is
+        stamped now, `m_last_success`, which nothing serves. `connected`
+        is what moves `nTime`. An endpoint `addresses` does not hold is
+        not recorded, as `Good_` updates only an entry addrman already has,
+        and neither is an address `_storable` refuses, which `addresses`
+        never holds.
+
+        The entry leaves every bucket of the new table for its slot in the
+        tried table, and the entry that held that slot goes back to the
+        new table. With `test_before_evict`, `Good`'s own default, an
+        entry that would take a held slot waits instead in the collisions
+        `resolve_collisions` settles, and this answers `False`, as it does
+        for an entry already tried, whose row a repeat handshake settles
+        onto (#270). Takes `_move_lock`, then `_addresses_lock` and
+        `_active_lock` in turn, never nested.
         """
+        with self._move_lock:
+            return self._good(addr, time.time(), test_before_evict=test_before_evict)
+
+    def _good(
+        self, addr: NetworkAddressV2, now: float, *, test_before_evict: bool
+    ) -> bool:
+        """Do `Good_`; the caller holds `_move_lock`."""
+        endpoint = _endpoint(addr)
         key = endpoint_key(addr)
-        with self._addresses_lock:
-            existing = self._held(addr)
-        if existing is None:
-            return False
-        answered = replace(addr, timestamp=int(time.time()))
+        with self._addresses_lock, self._write_batch() as wb:
+            # before the lookup, as `Good_` sets `m_last_good` ahead of `Find`
+            self._last_good = now
+            known = self._rows.get(endpoint)
+            if known is None:
+                return False
+            entry = self._stats.setdefault(endpoint, _Stats())
+            entry.last_success = now
+            entry.attempts = 0
+            self._last_try[key] = now
+            tried = endpoint in self._tried_endpoints
+            slot = _tried_slot(self._bucket_key, known)
+            self._put_stats(endpoint, wb)
+        answered = replace(addr, timestamp=int(now))
         with self._active_lock:
-            position = self._active_index.get(key)
-            if position is not None:
-                # a repeat handshake with an endpoint already held:
-                # settle onto its one row rather than growing the table
-                # an entry per reconnect (#270), matching
-                # `add_addresses`'s own `by_endpoint`.
-                self.active_addresses[position] = answered
-            else:
-                # the cap is on distinct endpoints, so updating one
-                # already held (above) does not spend it -- only a
-                # genuinely new one can run the table out of room,
-                # `add_addresses`'s own cap check reads the same way.
-                if len(self.active_addresses) >= _MAX_ADDRESSES:
-                    return False
-                self._active_index[key] = len(self.active_addresses)
-                self.active_addresses.append(answered)
-            if self.db is not None:
-                self.db.put(_ANSWERED + key, answered.serialize(check_validity=False))
+            if tried:
+                # a repeat handshake with an endpoint already held settles
+                # onto its one row rather than growing the table an entry
+                # per reconnect (#270)
+                self._set_answered(self._active_index[key], answered)
+                return False
+            holder = self._tried_occupant.get(slot)
+        if holder is not None and test_before_evict:
+            with self._addresses_lock:
+                if len(self._collisions) < _SET_TRIED_COLLISION_SIZE:
+                    self._collisions.add(endpoint)
+            return False
+        self._make_tried(endpoint, answered, slot)
         return True
+
+    def _make_tried(
+        self,
+        endpoint: tuple[int, bytes, int],
+        answered: NetworkAddressV2,
+        slot: tuple[int, int],
+    ) -> None:
+        """Move an endpoint to its slot of the tried table: `MakeTried`.
+
+        The caller holds `_move_lock`. Whatever held the slot goes back to
+        the new table, to the slot its own group and first source map it
+        to, over whatever holds that.
+        """
+        key = endpoint_key(answered)
+        with self._addresses_lock, self._write_batch() as wb:
+            for held in self._slots.pop(endpoint, {}):
+                del self._occupant[held]
+            self._tried_endpoints.add(endpoint)
+            self._collisions.discard(endpoint)
+            self._put_sources(endpoint, wb)
+            self._put_stats(endpoint, wb)
+        with self._active_lock:
+            evicted_key = self._tried_occupant.get(slot)
+            evicted = None if evicted_key is None else self._tried_remove(evicted_key)
+            self._tried_insert(key, answered, slot)
+            if self.db is not None:
+                if evicted_key is not None:
+                    self.db.delete(_ANSWERED + evicted_key)
+                self.db.put(_ANSWERED + key, answered.serialize(check_validity=False))
+        if evicted is not None:
+            self._return_to_new(evicted)
+
+    def _return_to_new(self, row: NetworkAddressV2) -> None:
+        """Give an entry evicted from the tried table its new-table slot again.
+
+        It takes the slot its group and first source map it to from
+        whatever holds it, as `MakeTried` does for the entry it evicts. The
+        caller holds `_move_lock`.
+        """
+        endpoint = _endpoint(row)
+        with self._addresses_lock, self._write_batch() as wb:
+            self._tried_endpoints.discard(endpoint)
+            group = self._source[endpoint]
+            slot = _new_slot(self._bucket_key, self._rows[endpoint], group)
+            if slot in self._occupant:
+                self._clear_slot(slot, wb)
+            self._occupant[slot] = endpoint
+            self._slots[endpoint] = {slot: group}
+            self._put_sources(endpoint, wb)
+            self._put_stats(endpoint, wb)
+
+    def resolve_collisions(self) -> None:
+        """Settle the tried-table collisions that can be, `ResolveCollisions_`.
+
+        An entry waiting for the slot of one tried within
+        `_ADDRMAN_REPLACEMENT` stops waiting and the old one stays. An old
+        entry that was tried and failed in that time, for over a minute,
+        or that has had neither a success nor a try in it and whose waiting
+        entry answered over `_ADDRMAN_TEST_WINDOW` ago, is replaced.
+        `ThreadOpenConnections` calls it before each draw, as
+        `P2pManager` does; the feeler's connection to the old entry that
+        `select_tried_collision` names is what gives it a success to read.
+        Takes `_move_lock`.
+        """
+        now = time.time()
+        with self._move_lock:
+            with self._addresses_lock:
+                waiting = list(self._collisions)
+            for endpoint in waiting:
+                if self._resolved(endpoint, now):
+                    with self._addresses_lock:
+                        self._collisions.discard(endpoint)
+
+    def _resolved(self, endpoint: tuple[int, bytes, int], now: float) -> bool:
+        """Whether a waiting entry's collision is settled, doing so if it can.
+
+        The caller holds `_move_lock`.
+        """
+        with self._addresses_lock:
+            known = self._rows.get(endpoint)
+            if known is None:
+                return True
+            waiting = self._stats[endpoint].last_success
+            slot = _tried_slot(self._bucket_key, known)
+        with self._active_lock:
+            old_key = self._tried_occupant.get(slot)
+            old = (
+                None
+                if old_key is None
+                else self.active_addresses[self._active_index[old_key]]
+            )
+        if old is not None and old_key is not None:
+            old_success = self._stats[_endpoint(old)].last_success
+            old_try = self._last_try.get(old_key, 0.0)
+            if now - old_success < _ADDRMAN_REPLACEMENT:
+                return True
+            if now - old_try < _ADDRMAN_REPLACEMENT:
+                if now - old_try <= _ADDRMAN_RECENT_TRY_GRACE:
+                    return False
+            elif now - waiting <= _ADDRMAN_TEST_WINDOW:
+                return False
+        self._good(known, now, test_before_evict=False)
+        return True
+
+    def select_tried_collision(self) -> NetworkAddressV2 | None:
+        """Return a tried address another is waiting to replace, or `None`.
+
+        Core's `SelectTriedCollision`, whose caller makes a feeler
+        connection to the address it names: that connection's handshake is
+        what `Good_` reads as the old entry answering.
+        """
+        with self._addresses_lock:
+            if not self._collisions:
+                return None
+            endpoint = secrets.choice(list(self._collisions))
+            known = self._rows.get(endpoint)
+            if known is None:
+                self._collisions.discard(endpoint)
+                return None
+            slot = _tried_slot(self._bucket_key, known)
+        with self._active_lock:
+            key = self._tried_occupant.get(slot)
+            return (
+                None if key is None else self.active_addresses[self._active_index[key]]
+            )
 
     def connected(self, address: NetworkAddressV2) -> None:
         """Move the time of `address`'s endpoint forward to now, if it is stale.
@@ -1326,7 +2036,6 @@ class PeerDB:
             ):
                 return
             known = replace(existing, timestamp=now)
-            self.addresses.discard(existing)
-            self.addresses.add(known)
+            self._replace_row(_endpoint(address), existing, known)
             if wb is not None:
                 wb.put(_KNOWN + key, known.serialize(check_validity=False))

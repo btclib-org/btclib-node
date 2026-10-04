@@ -58,6 +58,7 @@ from hypothesis import settings
 from btclib_node import Node
 from btclib_node.config import DEFAULT_INCREMENTAL_RELAY_FEERATE, Config
 from btclib_node.constants import NodeStatus
+from btclib_node.p2p import address as address_module
 from tests import get_random_port
 
 if TYPE_CHECKING:
@@ -723,3 +724,21 @@ def regtest_node(tmp_path: Path) -> Iterator[Callable[..., Node]]:
             return node
 
         yield make
+
+
+@pytest.fixture(autouse=True)
+def deterministic_bucket_key() -> Iterator[None]:
+    """Place addresses in the new table by one key, and in one bucket each.
+
+    As Core's tests build an `AddrMan` `deterministic`: with a key drawn
+    at random, which of the addresses a test stores in one group share a
+    slot would change from run to run, and so would whether an address
+    gossiped again takes a further bucket (`_roll`). A `MonkeyPatch` of
+    its own, not the `monkeypatch` fixture: that fixture, asked for here,
+    would undo a test's own patches after its fixtures' teardown instead
+    of before it.
+    """
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(address_module, "_new_bucket_key", lambda: b"\x01" * 32)
+        patch.setattr(address_module, "_roll", lambda _factor: False)
+        yield
