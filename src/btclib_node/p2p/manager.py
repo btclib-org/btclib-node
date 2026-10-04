@@ -22,9 +22,10 @@ import socket
 import threading
 import time
 from collections import Counter, deque
-from concurrent.futures import CancelledError
+from concurrent.futures import CancelledError, Future, InvalidStateError
 from contextlib import suppress
 from dataclasses import dataclass, replace
+from functools import partial
 from ipaddress import IPv4Address, IPv6Address, ip_address
 from typing import TYPE_CHECKING, Any, cast, override
 
@@ -100,8 +101,6 @@ from btclib_node.p2p.selfannounce import (
 )
 
 if TYPE_CHECKING:
-    from concurrent.futures import Future
-
     from btclib.p2p.addrv2 import NetworkAddressV2
     from btclib.p2p.payload import Payload
     from btclib.tx.tx import Tx as BtclibTx
@@ -410,6 +409,40 @@ def _network_error_string(error: OSError) -> str:
     `FormatMessageA` fills without stripping it.
     """
     return f"{error.strerror} ({getattr(error, 'winerror', None) or error.errno})"
+
+
+async def _getaddrinfo(  # noqa: PLR0913
+    loop: asyncio.AbstractEventLoop,
+    host: bytes | str | None,
+    port: bytes | str | int | None,
+    *,
+    family: int = 0,
+    type: int = 0,  # noqa: A002
+    proto: int = 0,
+    flags: int = 0,
+) -> list[Any]:
+    """Answer `loop.getaddrinfo`, looked up on a daemon thread of its own.
+
+    asyncio looks up in the loop's default executor, whose threads are
+    not daemons: `concurrent.futures` joins them before the interpreter
+    exits, and a lookup cannot be interrupted, so a slow resolver keeps a
+    stopped node's process alive until it answers (issue #1274). A daemon
+    thread is not waited for.
+    """
+    lookup: Future[list[Any]] = Future()
+
+    def run() -> None:
+        # a lookup cancelled while it ran has no one left to tell
+        with suppress(InvalidStateError):
+            try:
+                lookup.set_result(
+                    socket.getaddrinfo(host, port, family, type, proto, flags)
+                )
+            except Exception as error:  # noqa: BLE001
+                lookup.set_exception(error)
+
+    threading.Thread(target=run, name="getaddrinfo", daemon=True).start()
+    return await asyncio.wrap_future(lookup, loop=loop)
 
 
 class P2pManager(threading.Thread):
@@ -787,6 +820,9 @@ class P2pManager(threading.Thread):
         self.bind_error: str | None = None
 
         self.loop = asyncio.new_event_loop()
+        self.loop.getaddrinfo = partial(  # type: ignore[method-assign]
+            _getaddrinfo, self.loop
+        )
         # What `run` binds and `stop` closes -- kept here rather than
         # only inside the `with server_socket:` each of `server`'s own
         # tasks holds, since that alone depends on this manager's own
