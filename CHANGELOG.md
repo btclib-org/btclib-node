@@ -2031,6 +2031,12 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
   does in Core, after Core's three delays** (closes #1196), where every
   announcer was asked at the next step.
 
+### A stopped node's process does not wait for a DNS lookup
+
+- **The P2P loop's `getaddrinfo` runs on a daemon thread**, not in
+  asyncio's default executor, whose threads Python joins at exit: a slow
+  lookup of `dummySeed.invalid.` held the process after `SIGTERM` (issue #1274).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

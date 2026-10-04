@@ -9148,3 +9148,76 @@ def test_an_accepted_connection_refuses_a_v1_peer_without_v1transport(
     finally:
         manager.stop()
         manager.join(timeout=10)
+
+
+def test_the_loops_lookup_runs_on_a_daemon_thread(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1274: `loop.getaddrinfo` answers what `socket.getaddrinfo` does.
+
+    A daemon thread does not hold the process open at exit, as the
+    default executor's threads do.
+    """
+    answer = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 80))]
+    seen: list[tuple[Any, bool]] = []
+
+    def getaddrinfo(*args: object) -> list[Any]:
+        seen.append((args, threading.current_thread().daemon))
+        return answer
+
+    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+    manager = a_manager()
+    found = manager.loop.run_until_complete(
+        manager.loop.getaddrinfo("host", 80, type=socket.SOCK_STREAM)
+    )
+    assert found == answer
+    assert seen == [(("host", 80, 0, socket.SOCK_STREAM, 0, 0), True)]
+
+
+def test_the_loops_lookup_raises_what_socket_getaddrinfo_raises(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1274: a failed lookup is `socket.gaierror` to the caller."""
+
+    def getaddrinfo(*_: object) -> NoReturn:
+        raise socket.gaierror(socket.EAI_NONAME, "no such name")
+
+    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+    manager = a_manager()
+    with pytest.raises(socket.gaierror):
+        manager.loop.run_until_complete(manager.loop.getaddrinfo("host", 80))
+
+
+def test_a_lookup_answering_after_its_caller_is_cancelled_is_dropped(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1274: a lookup cannot be interrupted, so it may answer late.
+
+    `stop` cancels every task, a lookup's included: its thread ends
+    quietly, which pytest would fail on as an unhandled thread exception.
+    """
+    entered = threading.Event()
+    release = threading.Event()
+
+    def getaddrinfo(*_: object) -> list[Any]:
+        entered.set()
+        assert release.wait(timeout=30)
+        return []
+
+    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+    manager = a_manager()
+    loop = manager.loop
+
+    async def ask_and_give_up() -> None:
+        task = asyncio.ensure_future(loop.getaddrinfo("host", 80))
+        while not entered.is_set():  # noqa: ASYNC110
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+    loop.run_until_complete(ask_and_give_up())
+    (lookup,) = (t for t in threading.enumerate() if t.name == "getaddrinfo")
+    release.set()
+    lookup.join(timeout=10)
+    assert not lookup.is_alive()
