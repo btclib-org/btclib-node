@@ -12,6 +12,7 @@ and reopened, and does it come back after the file it was written to is
 no longer the file being written to.
 """
 
+import pathlib
 import threading
 import time
 from contextlib import ExitStack
@@ -615,6 +616,108 @@ def test_prune_up_to_reclaims_a_file_once_every_block_in_it_is_pruned(
     assert set(block_db.files) == {"000002.blk"}
     assert not (block_db.data_dir / "000001.blk").exists()
     assert (block_db.data_dir / "000002.blk").exists()
+
+
+class _StopError(Exception):
+    """Stands for the process stopping at a chosen point."""
+
+
+def _two_files_one_block_each(
+    block_db: BlockDB,
+) -> tuple[list[bytes], Callable[[int], bytes]]:
+    chain = generate_random_chain(2, RegTest().genesis.hash)
+    block_db.add_block(chain[0])
+    block_db.files["000001.blk"].size = MAX_FILE_SIZE + 1
+    block_db.add_block(chain[1])
+    hashes = [block.header.hash for block in chain]
+    return hashes, hashes.__getitem__
+
+
+def test_a_stop_before_the_unlink_leaves_no_file_behind_after_a_reopen(
+    a_db: Callable[[Path | None], BlockDB], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stop in `_release` before the unlink leaves nothing (ISS 1621)."""
+    block_db = a_db(None)
+    _, hash_at_height = _two_files_one_block_each(block_db)
+
+    def stop(*_args: object, **_kwargs: object) -> None:
+        raise _StopError
+
+    monkeypatch.setattr(pathlib.Path, "unlink", stop)
+    with pytest.raises(_StopError):
+        block_db.prune_up_to(0, hash_at_height)
+    monkeypatch.undo()
+    block_db.close()
+    assert (block_db.data_dir / "000001.blk").exists()
+
+    again = a_db(None)
+    assert not (again.data_dir / "000001.blk").exists()
+    assert set(again.files) == {"000002.blk"}
+    assert again.current_usage() == again.files["000002.blk"].size
+    assert (again.data_dir / "000002.blk").exists()
+
+
+def test_a_stop_after_the_unlink_leaves_no_key_behind_after_a_reopen(
+    a_db: Callable[[Path | None], BlockDB], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The file is gone and its `f` key is not: the reopen drops the key."""
+    block_db = a_db(None)
+    _, hash_at_height = _two_files_one_block_each(block_db)
+
+    delete = block_db.db.delete
+
+    def stop_at_the_file_key(key: bytes) -> None:
+        if key[:1] == b"f":
+            raise _StopError
+        delete(key)
+
+    monkeypatch.setattr(block_db.db, "delete", stop_at_the_file_key)
+    with pytest.raises(_StopError):
+        block_db.prune_up_to(0, hash_at_height)
+    monkeypatch.undo()
+    block_db.close()
+    assert not (block_db.data_dir / "000001.blk").exists()
+
+    again = a_db(None)
+    assert set(again.files) == {"000002.blk"}
+    assert not (again.data_dir / "000001.blk").exists()
+
+
+def test_a_reopen_keeps_the_file_still_open_for_writing(
+    a_db: Callable[[Path | None], BlockDB],
+) -> None:
+    """The file `file_index` names stays though nothing is live in it."""
+    block_db = a_db(None)
+    _, hash_at_height = _two_files_one_block_each(block_db)
+    block_db.prune_up_to(1, hash_at_height)
+    assert set(block_db.files) == {"000002.blk"}
+    block_db.close()
+
+    again = a_db(None)
+    assert set(again.files) == {"000002.blk"}
+    assert (again.data_dir / "000002.blk").exists()
+
+
+def test_a_reopen_removes_a_rev_file_nothing_is_live_in(
+    a_db: Callable[[Path | None], BlockDB],
+) -> None:
+    """The sweep reaches a `.rev` file as it does a `.blk` one."""
+    block_db = a_db(None)
+    chain = generate_random_chain(2, RegTest().genesis.hash)
+    block_db.add_block(chain[0])
+    block_db.add_rev_block(a_rev_block(block_hash=chain[0].header.hash))
+    block_db.finalize()
+    block_db.files["000001.blk"].size = MAX_FILE_SIZE + 1
+    block_db.add_block(chain[1])
+    assert "000001.rev" in block_db.files
+    block_db.db.delete(b"r" + chain[0].header.hash)
+    block_db.db.delete(b"b" + chain[0].header.hash)
+    block_db.close()
+
+    again = a_db(None)
+    assert set(again.files) == {"000002.blk"}
+    assert not (again.data_dir / "000001.rev").exists()
+    assert not (again.data_dir / "000001.blk").exists()
 
 
 def test_current_usage_is_zero_for_an_empty_store(
