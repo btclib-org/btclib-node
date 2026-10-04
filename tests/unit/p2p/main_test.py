@@ -25,7 +25,7 @@ from btclib.p2p.reject import Reject, RejectCode
 import btclib_node.p2p.callbacks as cb
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.exceptions import MisbehavingError
-from btclib_node.log import Logger
+from btclib_node.log import Logger, LogRateLimiter
 from btclib_node.mempool import Mempool
 from btclib_node.p2p import main as main_module
 from btclib_node.p2p.callbacks import callbacks, handshake_callbacks
@@ -39,6 +39,7 @@ from btclib_node.p2p.main import (
 from tests import discourage_recorder, generate_random_transaction, log_recorder
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from btclib_node import Node
@@ -46,6 +47,12 @@ if TYPE_CHECKING:
 
 
 _AN_ADDRESS = NetworkAddressV2(0, 0, 1, b"\x01\x02\x03\x04", 18444)
+
+
+def debug_recorder() -> tuple[list[str], Callable[..., None]]:
+    """Return a list and a `Logger.log_debug` stand-in that fills it."""
+    entries, record = log_recorder()
+    return entries, lambda _category, msg, *args: record(msg, *args)
 
 
 def make_node(
@@ -586,9 +593,9 @@ def test_a_message_that_does_not_parse_costs_the_peer_nothing(
     def boom(node: Node, msg: bytes, conn: Connection) -> None:
         raise BTClibValueError("no")
 
-    logged, record = log_recorder()
+    logged, record = debug_recorder()
     logger = SimpleNamespace(
-        info=lambda *a: None, log_debug=lambda *a: None, exception=record
+        info=lambda *a: None, log_debug=record, exception=lambda *a: None
     )
     if handshake:
         monkeypatch.setitem(handshake_callbacks, "version", boom)
@@ -606,7 +613,7 @@ def test_a_message_that_does_not_parse_costs_the_peer_nothing(
         handle_p2p(node)
     assert stopped == []
     assert not node.p2p_manager.discouraged
-    (line,) = logged
+    (line,) = [line for line in logged if "failed" in line]
     assert line.endswith("peer not discouraged")
 
 
@@ -653,19 +660,19 @@ def test_a_peer_the_manager_spares_is_logged_as_not_discouraged(
         return False
 
     monkeypatch.setitem(callbacks, "ping", boom)
-    logged, record = log_recorder()
+    logged, record = debug_recorder()
     node, stopped = make_node(
         "messages",
         ("ping", b"", 0, 1, 0.0),
         status=P2pConnStatus.Connected,
         logger=SimpleNamespace(
-            info=lambda *a: None, log_debug=lambda *a: None, exception=record
+            info=lambda *a: None, log_debug=record, exception=lambda *a: None
         ),
     )
     node.p2p_manager.maybe_discourage_and_disconnect = spare
     handle_p2p(node)
     assert stopped == [True]
-    (line,) = logged
+    (line,) = [line for line in logged if "failed" in line]
     assert line.endswith("peer not discouraged")
 
 
@@ -789,8 +796,9 @@ def a_pending_node(
     """Build a node stand-in with one connection on `pending_cfilters`.
 
     Returns the node alongside the lists its discouraging stand-in and
-    `logger.exception` calls are recorded into -- `logged` stays empty
-    where `logger` is a real `Logger`, since nothing appends to it then.
+    `logger.exception` and `logger.log_debug` calls are recorded into --
+    `logged` stays empty where `logger` is a real `Logger`, since nothing
+    appends to it then.
     """
     discouraged, record = discourage_recorder()
     logged: list[Any] = []
@@ -799,7 +807,10 @@ def a_pending_node(
         p2p_manager=SimpleNamespace(maybe_discourage_and_disconnect=record),
         logger=logger
         if logger is not None
-        else SimpleNamespace(exception=lambda *a: logged.append(a)),
+        else SimpleNamespace(
+            exception=lambda *a: logged.append(a),
+            log_debug=lambda *a: logged.append(a),
+        ),
     )
     return node, discouraged, logged
 
@@ -943,8 +954,8 @@ def a_pending_getdata_node(
 
     The same shape as `a_pending_node` above, over `pending_getdata`
     instead: returns the node alongside the lists its
-    discouraging stand-in and `logger.exception` calls are recorded
-    into.
+    discouraging stand-in and `logger.exception` and `logger.log_debug`
+    calls are recorded into.
     """
     discouraged, record = discourage_recorder()
     logged: list[Any] = []
@@ -953,7 +964,10 @@ def a_pending_getdata_node(
         p2p_manager=SimpleNamespace(maybe_discourage_and_disconnect=record),
         logger=logger
         if logger is not None
-        else SimpleNamespace(exception=lambda *a: logged.append(a)),
+        else SimpleNamespace(
+            exception=lambda *a: logged.append(a),
+            log_debug=lambda *a: logged.append(a),
+        ),
     )
     return node, discouraged, logged
 
@@ -1252,3 +1266,126 @@ def test_resume_getdata_log_line_distinguishes_the_verdict(
     assert "peer not discouraged" in not_discouraged
     assert "peer discouraged" in discouraged
     assert "peer not discouraged" not in discouraged
+
+
+# `Node.logger` never reaches `caplog` (`log.py`), so each test below reads
+# back the file a real `Logger` wrote.
+
+_MALFORMED_HEADERS = b"\x01" + b"\xff" * 10
+
+
+def _headers_node(logger: Logger) -> Any:
+    """Build a node stand-in with one malformed `headers` queued."""
+    node, _stopped = make_node(
+        "messages",
+        ("headers", _MALFORMED_HEADERS, 0, 1, 0.0),
+        status=P2pConnStatus.Connected,
+        logger=logger,
+    )
+    return node
+
+
+def test_a_received_message_writes_no_line_unless_net_is_debugged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core logs `received: ...` under `-debug=net` and nowhere else."""
+    monkeypatch.setitem(callbacks, "ping", lambda *_a: None)
+    for debug, categories in ((False, ()), (True, ("rpc",)), (True, ("net",))):
+        path = tmp_path / f"{debug}-{'-'.join(categories)}.log"
+        logger = Logger(path, debug=debug, categories=categories)
+        node, _stopped = make_node(
+            "messages",
+            ("ping", b"12345678", 0, 1, 0.0),
+            status=P2pConnStatus.Connected,
+            logger=logger,
+        )
+        handle_p2p(node)
+        logger.close()
+        text = path.read_text(encoding="utf-8")
+        assert ("[net] received: ping (8 bytes) peer=0" in text) is (
+            categories == ("net",)
+        )
+        assert "Received p2p message" not in text
+
+
+def test_a_message_that_does_not_parse_writes_one_short_line_without_a_traceback(
+    tmp_path: Path,
+) -> None:
+    """Core logs an exception out of `ProcessMessage` as one `net` line."""
+    path = tmp_path / "history.log"
+    logger = Logger(path, debug=True, categories=("net",))
+    node = _headers_node(logger)
+    handle_p2p(node)
+    logger.close()
+    text = path.read_text(encoding="utf-8")
+    (line,) = [line for line in text.splitlines() if "failed" in line]
+    assert "[net] Handling headers from connection 0 failed (" in line
+    assert line.endswith("), peer not discouraged")
+    assert len(line) < 200
+    assert "Traceback" not in text
+    assert not node.p2p_manager.discouraged
+
+
+def test_a_message_that_does_not_parse_writes_nothing_without_net_debug(
+    tmp_path: Path,
+) -> None:
+    """The same message, with `net` not selected, leaves the log as it was."""
+    path = tmp_path / "history.log"
+    logger = Logger(path)
+    handle_p2p(_headers_node(logger))
+    logger.close()
+    assert path.read_text(encoding="utf-8") == "\n" * 5
+
+
+def test_an_exception_that_is_not_a_parse_error_keeps_its_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only `BTClibValueError` is expected of a payload: the rest is a bug."""
+
+    def boom(*_a: Any) -> None:
+        raise RuntimeError("no")
+
+    monkeypatch.setitem(callbacks, "ping", boom)
+    path = tmp_path / "history.log"
+    logger = Logger(path)
+    node, _stopped = make_node(
+        "messages",
+        ("ping", b"", 0, 1, 0.0),
+        status=P2pConnStatus.Connected,
+        logger=logger,
+    )
+    handle_p2p(node)
+    logger.close()
+    text = path.read_text(encoding="utf-8")
+    assert "[error] Handling ping from connection 0 failed" in text
+    assert "Traceback" in text
+    assert "RuntimeError: no" in text
+
+
+def test_a_repeated_exception_is_cut_off_at_the_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's rate limiter bounds what one failing call site writes."""
+
+    def boom(*_a: Any) -> None:
+        raise RuntimeError("no")
+
+    monkeypatch.setitem(callbacks, "ping", boom)
+    path = tmp_path / "history.log"
+    logger = Logger(path)
+    logger.rate_limiter = LogRateLimiter(20_000, 3600)
+    node, _stopped = make_node(
+        "messages",
+        ("ping", b"", 0, 1, 0.0),
+        status=P2pConnStatus.Connected,
+        logger=logger,
+    )
+    for _ in range(200):
+        node.p2p_manager.messages.append(("ping", b"", 0, 1, 0.0))
+        handle_p2p(node)
+    logger.close()
+    text = path.read_text(encoding="utf-8")
+    assert text.count("Excessive logging detected") == 1
+    # the budget, the traceback that crossed it and the warning
+    assert len(text) < 20_000 + 2_000 + 1_000
+    assert 1 < text.count("Handling ping from connection 0 failed") < 200

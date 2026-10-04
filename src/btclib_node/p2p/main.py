@@ -10,7 +10,10 @@ or `P2pManager.handshake_messages` -- and dispatch it through
 depending on the connection's own `P2pConnStatus`. An exception raised
 by a callback ends that connection's message rather than the loop: it
 goes to `P2pManager.maybe_discourage_and_disconnect` where it is a
-`MisbehavingError`, and is logged with the peer kept otherwise.
+`MisbehavingError`, and is logged with the peer kept otherwise: on one
+line under the `net` debug category where it is a `BTClibValueError`,
+btclib's parse error, as Core logs what `ProcessMessage` throws;
+with its traceback where it is anything else.
 
 Each also weighs its own queued item's wire size back off the
 connection it came from, `queued_recv_bytes`, resuming that connection's
@@ -27,6 +30,8 @@ called once every pass of `run`'s own loop regardless.
 """
 
 from typing import TYPE_CHECKING
+
+from btclib.exceptions import BTClibValueError
 
 from btclib_node.constants import P2pConnStatus
 from btclib_node.exceptions import MisbehavingError
@@ -66,6 +71,11 @@ def _drop(manager: P2pManager, conn: Connection, e: Exception) -> bool:
     return False
 
 
+def _verdict(*, discourage: bool) -> str:
+    """Return the end of a failure's line: what became of the peer."""
+    return "peer discouraged" if discourage else "peer not discouraged"
+
+
 def handle_p2p_handshake(node: Node) -> None:
     """Pop one queued handshake message and dispatch it, or drop the peer.
 
@@ -102,7 +112,9 @@ def handle_p2p_handshake(node: Node) -> None:
             resume = conn.queued_recv_bytes <= MAX_QUEUED_RECV_BYTES
         if resume:
             conn.loop.call_soon_threadsafe(conn._recv_resume.set)  # noqa: SLF001
-        node.logger.info("Received p2p message: %s, %s", msg_type, conn_id)
+        node.logger.log_debug(
+            "net", "received: %s (%d bytes) peer=%d", msg_type, len(msg), conn_id
+        )
         if msg_type not in handshake_callbacks:
             conn.time_received = received
             _dispatch(node, conn, conn_id, msg_type, msg)
@@ -139,12 +151,23 @@ def handle_p2p_handshake(node: Node) -> None:
             # as soon as the connection exists, which is what this
             # block -- where a handshake that raised before `verack`
             # lands -- needs it to (btclib-org/btclib-node#611)
-            node.logger.exception(
-                "Handling %s from connection %s failed, %s",
-                msg_type,
-                conn_id,
-                "peer discouraged" if discourage else "peer not discouraged",
-            )
+            # logged as `_dispatch`'s `except` below logs it
+            if isinstance(e, BTClibValueError):
+                node.logger.log_debug(
+                    "net",
+                    "Handling %s from connection %s failed (%.200s), %s",
+                    msg_type,
+                    conn_id,
+                    e,
+                    _verdict(discourage=discourage),
+                )
+            else:
+                node.logger.exception(
+                    "Handling %s from connection %s failed, %s",
+                    msg_type,
+                    conn_id,
+                    _verdict(discourage=discourage),
+                )
 
 
 def _dispatch(
@@ -180,12 +203,29 @@ def _dispatch(
         discourage = _drop(manager, conn, e)
         # `conn_id`, not `conn.address`: same reasoning as
         # `handle_p2p_handshake` above (#526)
-        node.logger.exception(
-            "Handling %s from connection %s failed, %s",
-            msg_type,
-            conn_id,
-            "peer discouraged" if discourage else "peer not discouraged",
-        )
+        # Core's `ProcessMessages` logs what `ProcessMessage` throws as one
+        # `net` debug line, text only (`src/net_processing.cpp`, at
+        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). A
+        # `BTClibValueError` is btclib's refusal of a payload and gets
+        # that line, cut at 200 characters (this node's own cut, not
+        # Core's); anything else is this node's own code failing and
+        # keeps its traceback.
+        if isinstance(e, BTClibValueError):
+            node.logger.log_debug(
+                "net",
+                "Handling %s from connection %s failed (%.200s), %s",
+                msg_type,
+                conn_id,
+                e,
+                _verdict(discourage=discourage),
+            )
+        else:
+            node.logger.exception(
+                "Handling %s from connection %s failed, %s",
+                msg_type,
+                conn_id,
+                _verdict(discourage=discourage),
+            )
 
 
 def handle_p2p(node: Node) -> None:
@@ -222,7 +262,9 @@ def handle_p2p(node: Node) -> None:
             resume = conn.queued_recv_bytes <= MAX_QUEUED_RECV_BYTES
         if resume:
             conn.loop.call_soon_threadsafe(conn._recv_resume.set)  # noqa: SLF001
-        node.logger.info("Received p2p message: %s, %s", msg_type, conn_id)
+        node.logger.log_debug(
+            "net", "received: %s (%d bytes) peer=%d", msg_type, len(msg), conn_id
+        )
         conn.time_received = received
         _dispatch(node, conn, conn_id, msg_type, msg)
 
@@ -270,11 +312,21 @@ def resume_cfilters(node: Node) -> bool:
             discourage = _drop(manager, conn, e)
             # `conn_id`, not `conn.address`: same reasoning as
             # `handle_p2p_handshake` above (#526)
-            node.logger.exception(
-                "Resuming cfilters for connection %s failed, %s",
-                conn_id,
-                "peer discouraged" if discourage else "peer not discouraged",
-            )
+            # logged as `_dispatch`'s `except` above logs it
+            if isinstance(e, BTClibValueError):
+                node.logger.log_debug(
+                    "net",
+                    "Resuming cfilters for connection %s failed (%.200s), %s",
+                    conn_id,
+                    e,
+                    _verdict(discourage=discourage),
+                )
+            else:
+                node.logger.exception(
+                    "Resuming cfilters for connection %s failed, %s",
+                    conn_id,
+                    _verdict(discourage=discourage),
+                )
         if len(block_hashes) != before:
             progressed = True
     for conn_id in done:
@@ -312,11 +364,21 @@ def resume_getdata(node: Node) -> bool:
             discourage = _drop(manager, conn, e)
             # `conn_id`, not `conn.address`: same reasoning as
             # `handle_p2p_handshake` above (#526)
-            node.logger.exception(
-                "Resuming getdata for connection %s failed, %s",
-                conn_id,
-                "peer discouraged" if discourage else "peer not discouraged",
-            )
+            # logged as `_dispatch`'s `except` above logs it
+            if isinstance(e, BTClibValueError):
+                node.logger.log_debug(
+                    "net",
+                    "Resuming getdata for connection %s failed (%.200s), %s",
+                    conn_id,
+                    e,
+                    _verdict(discourage=discourage),
+                )
+            else:
+                node.logger.exception(
+                    "Resuming getdata for connection %s failed, %s",
+                    conn_id,
+                    _verdict(discourage=discourage),
+                )
         if len(items) != before:
             progressed = True
     for conn_id in done:

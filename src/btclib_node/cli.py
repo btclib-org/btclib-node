@@ -570,6 +570,11 @@ _OPTIONS: dict[str, _Option] = {
         "-maxconnections=0)",
         _CONNECTION_TITLE,
     ),
+    "logratelimit": _Option(
+        "",
+        "Apply rate limiting to unconditional logging (default: 1)",
+        _DEBUG_TEST_TITLE,
+    ),
     "minimumchainwork": _Option(
         "=<hex>",
         "Minimum work assumed to exist on a valid chain in hex (default: "
@@ -2363,6 +2368,7 @@ def _after_lock(before: _BeforeLock) -> Config:
         debug=before.debug,
         debug_categories=before.debug_categories,
         debug_exclude=before.debug_exclude,
+        log_rate_limit=_get_bool(settings, "logratelimit") is not False,
         connect=connect or (["0"] if connect_negated else []),
         addnode=_get_args(settings, "addnode"),
         seednode=_get_args(settings, "seednode"),
@@ -2491,6 +2497,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 log_warnings=before.settings.log_warnings,
                 section_warning=before.settings.section_warning,
                 config_args=_log_args(before.settings),
+                rate_limit=_get_bool(before.settings, "logratelimit") is not False,
             )
             logger.error(str(error))  # noqa: TRY400
             logger.close()

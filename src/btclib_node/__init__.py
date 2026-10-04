@@ -330,6 +330,7 @@ class Node(threading.Thread):
             log_warnings=config.log_warnings,
             section_warning=config.section_warning,
             config_args=config.config_args,
+            rate_limit=config.log_rate_limit,
         )
 
         # A `getcfilters` answer `p2p.callbacks.get_cfilters` could not

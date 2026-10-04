@@ -540,6 +540,8 @@ class Config:
     debug_categories: frozenset[str]
     # the categories `-debugexclude` names, which `-debug` does not select
     debug_exclude: frozenset[str]
+    # `-logratelimit`: `log.LogRateLimiter` limits `history.log`
+    log_rate_limit: bool
     # the warnings Core buffers while it reads its settings, in order;
     # `open_history_log` logs each once its own log is open, ahead of
     # its version line
@@ -807,6 +809,7 @@ class Config:
         debug: bool = False,
         debug_categories: Collection[str] = (),
         debug_exclude: Collection[str] = (),
+        log_rate_limit: bool = True,
         log_path: str | None = "history.log",
         min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
         incremental_relay_feerate: FeeRate = DEFAULT_INCREMENTAL_RELAY_FEERATE,
@@ -988,6 +991,7 @@ class Config:
         self.debug = debug
         self.debug_categories = frozenset(debug_categories)
         self.debug_exclude = frozenset(debug_exclude)
+        self.log_rate_limit = log_rate_limit
         self.log_path = log_path
         self.log_warnings = tuple(log_warnings)
         self.section_warning = section_warning
