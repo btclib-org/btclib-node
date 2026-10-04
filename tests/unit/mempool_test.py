@@ -4,6 +4,7 @@
 
 """`Mempool`'s bookkeeping, eviction and its rolling minimum feerate."""
 
+import hashlib
 import secrets
 import time
 from fractions import Fraction
@@ -1264,3 +1265,173 @@ def test_entry_is_not_bip125_replaceable_when_nothing_signals() -> None:
     mempool.add_tx(parent, 0)
     mempool.add_tx(child, 0)
     assert mempool.entry(child.hash).bip125_replaceable is False
+
+
+def test_a_package_hash_does_not_depend_on_the_order() -> None:
+    """Core's `GetPackageHash` sorts the wtxids and hashes them held."""
+    first, second = secrets.token_bytes(32), secrets.token_bytes(32)
+    assert mempool_module.package_hash([first, second]) == mempool_module.package_hash(
+        [second, first]
+    )
+    low, high = sorted([first, second])
+    assert (
+        mempool_module.package_hash([first, second])
+        == hashlib.sha256(low[::-1] + high[::-1]).digest()
+    )
+    assert mempool_module.package_hash([first]) != mempool_module.package_hash([second])
+
+
+def test_a_package_hash_sorts_by_the_display_bytes() -> None:
+    """Core compares the wtxids from their last held byte, so by display bytes.
+
+    `src/policy/packages.cpp` and `src/test/txpackage_tests.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag. Here the display bytes and
+    the held bytes order the pair differently: the hash is of the held
+    bytes of `low` then `high`, written out.
+    """
+    low = b"\x00" * 31 + b"\xff"
+    high = b"\x01" + b"\x00" * 31
+    expected = "7811638deb8c6514e9189e82d2b182306872bf316ee7cf32e65051779d0ea9c8"
+    assert mempool_module.package_hash([high, low]).hex() == expected
+    assert mempool_module.package_hash([low, high]).hex() == expected
+
+
+def test_the_reconsiderable_cache_is_kept_apart_and_cleared_by_a_block() -> None:
+    """A key recorded for a package to undo is not a recent reject."""
+    mempool = Mempool(Logger(debug=True))
+    key = secrets.token_bytes(32)
+    assert not mempool.was_recently_rejected_reconsiderable(key)
+    mempool.mark_rejected_reconsiderable(key)
+    mempool.mark_rejected_reconsiderable(key)
+    assert mempool.was_recently_rejected_reconsiderable(key)
+    assert not mempool.was_recently_rejected(key)
+    assert len(mempool._recent_rejects_reconsiderable_order) == 1
+    mempool.note_block_connected()
+    assert not mempool.was_recently_rejected_reconsiderable(key)
+
+
+def test_the_reconsiderable_cache_forgets_the_oldest_past_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same bound as the other cache."""
+    monkeypatch.setattr(mempool_module, "_RECENT_REJECTS_CAPACITY", 1)
+    mempool = Mempool(Logger(debug=True))
+    first, second = secrets.token_bytes(32), secrets.token_bytes(32)
+    mempool.mark_rejected_reconsiderable(first)
+    mempool.mark_rejected_reconsiderable(second)
+    assert not mempool.was_recently_rejected_reconsiderable(first)
+    assert mempool.was_recently_rejected_reconsiderable(second)
+
+
+def a_package(parent_fee: int, child_fee: int) -> list[tuple[Tx, int, int]]:
+    """Return a parent and its child as `add_package` takes them."""
+    parent = generate_random_transaction()
+    child = generate_random_transaction(parent.id)
+    return [(parent, parent_fee, parent.vsize), (child, child_fee, child.vsize)]
+
+
+def test_a_package_is_added_whole_with_the_fee_given_to_each() -> None:
+    """Both are held, parent first, with their own fee and vsize."""
+    mempool = Mempool(Logger(debug=True))
+    members = a_package(0, 1000)
+    assert mempool.add_package(members, height=7)
+    for tx, fee, vsize in members:
+        assert mempool.contains_tx(tx)
+        assert mempool.fees[tx.hash] == fee
+        assert mempool.vsizes[tx.hash] == vsize
+    assert mempool.size == 2
+
+
+def test_a_package_makes_room_by_evicting_what_pays_less() -> None:
+    """The worst are evicted, and the rolling minimum rises."""
+    mempool = Mempool(Logger(debug=True))
+    members = a_package(0, 10_000)
+    cheap, dear = generate_random_transaction(), generate_random_transaction()
+    mempool.add_tx(cheap, 0)
+    mempool.add_tx(dear, 10**7)
+    mempool.bytesize_limit = mempool.bytesize + members[0][2] + members[1][2] - 1
+    assert mempool.add_package(members, height=0)
+    assert not mempool.contains_tx(cheap)
+    assert mempool.contains_tx(dear)
+    assert all(mempool.contains_tx(tx) for tx, _, _ in members)
+    assert mempool.get_min_fee_rate().sats_per_kvbyte > 0
+
+
+def test_a_package_paying_less_than_the_worst_is_refused_and_raises_the_floor() -> None:
+    """Nothing is evicted, nothing added, and the entry stays in the heap."""
+    mempool = Mempool(Logger(debug=True))
+    members = a_package(0, 100)
+    incumbent = generate_random_transaction()
+    mempool.add_tx(incumbent, 10**7)
+    mempool.bytesize_limit = mempool.bytesize + members[0][2] + members[1][2] - 1
+    assert not mempool.add_package(members, height=0)
+    assert mempool.contains_tx(incumbent)
+    assert mempool.size == 1
+    assert mempool.get_min_fee_rate().sats_per_kvbyte > 0
+    # the incumbent is still the worst, so a package paying more evicts it
+    better = a_package(0, 10**8)
+    assert mempool.add_package(better, height=0)
+    assert not mempool.contains_tx(incumbent)
+
+
+def test_a_package_whose_mempool_parent_is_evicted_for_room_is_not_added() -> None:
+    """A parent the room costs leaves the package nothing to spend."""
+    mempool = Mempool(Logger(debug=True))
+    held = generate_random_transaction()
+    mempool.add_tx(held, 0)
+    parent = generate_random_transaction(held.id)
+    child = generate_random_transaction(parent.id)
+    members = [(parent, 0, parent.vsize), (child, 10**6, child.vsize)]
+    # the package fits once `held` is gone, and not before
+    mempool.bytesize_limit = mempool.bytesize + parent.vsize + child.vsize - 1
+    assert not mempool.add_package(members, height=0)
+    assert mempool.size == 0
+
+
+def test_a_package_over_the_limit_is_evicted_whole() -> None:
+    """Nothing of it stays where the limit leaves it no room."""
+    mempool = Mempool(Logger(debug=True))
+    members = a_package(0, 10_000)
+    mempool.bytesize_limit = 0
+    assert not mempool.add_package(members, height=0)
+    assert mempool.size == 0
+
+
+def test_a_package_left_only_its_parent_by_the_limit_is_removed_with_it() -> None:
+    """If only the child is evicted after the add, the parent goes too."""
+    mempool = Mempool(Logger(debug=True))
+    members = a_package(10**6, 10)
+    mempool.bytesize_limit = members[0][2]
+    assert not mempool.add_package(members, height=0)
+    assert mempool.size == 0
+
+
+def test_a_staged_transaction_is_there_only_while_staged() -> None:
+    """Its outpoints and indexes are held, then every counter is as before."""
+    mempool = Mempool(Logger(debug=True))
+    parent = generate_random_transaction()
+    child = generate_random_transaction(parent.id)
+    mempool.add_tx(generate_random_transaction())
+    sequence, updated = mempool.sequence, mempool.transactions_updated
+    with mempool.staged(parent, 0, parent.vsize):
+        assert mempool.contains_tx(parent)
+        assert mempool._parents(child) == [parent.hash]
+    assert not mempool.contains_tx(parent)
+    assert (mempool.sequence, mempool.transactions_updated) == (sequence, updated)
+    assert mempool.size == 1
+    assert (parent.vin[0].prev_out.tx_id, 0) not in mempool.outpoint_spender
+
+
+def test_a_staged_transaction_is_taken_out_when_the_block_raises() -> None:
+    """The mempool is left as it was by a check that fails."""
+    mempool = Mempool(Logger(debug=True))
+    parent = generate_random_transaction()
+
+    def fails() -> None:
+        with mempool.staged(parent, 0, parent.vsize):
+            msg = "boom"
+            raise RuntimeError(msg)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        fails()
+    assert mempool.size == 0

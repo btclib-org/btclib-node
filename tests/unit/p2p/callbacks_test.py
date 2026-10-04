@@ -90,6 +90,7 @@ from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.block_index import BlockStatus, calculate_work
 from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, NodeStatus, P2pConnStatus
+from btclib_node.download import DownloadManager
 from btclib_node.exceptions import (
     ChainstateInconsistencyError,
     MisbehavingError,
@@ -2273,18 +2274,11 @@ def a_data_node(
     # `main.new_pow_valid_block`'s last block, Core's `m_most_recent_block`
     node.most_recent_block = None
     node.block_db = block_db
-    node.download_manager = SimpleNamespace(
-        received_txs=[],
-        inv_txs=[],
-        # every (peer, txid, wtxid) `tx` completed an announcement for
-        tx_responses=[],
-        headers_sync_timeouts={},
-        inv_triggered_getheaders=set(),
-        last_block_inv_triggering_headers_sync=None,
-        last_getheaders_timestamps={},
-        # every (peer, header) `headers` asked to direct-fetch towards
-        direct_fetches=[],
-    )
+    node.download_manager = DownloadManager(node, node.logger)
+    # every (peer, txid, wtxid) `tx` completed an announcement for
+    node.download_manager.tx_responses = []
+    # every (peer, header) `headers` asked to direct-fetch towards
+    node.download_manager.direct_fetches = []
     node.download_manager.received_tx_response = lambda conn_id, txid, wtxid: (
         node.download_manager.tx_responses.append((conn_id, txid, wtxid))
     )

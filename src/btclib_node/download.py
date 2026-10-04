@@ -29,6 +29,9 @@ from btclib.p2p.negotiation import FeeFilter, SendHeaders
 from btclib_node.chainstate.block_index import BlockStatus, block_time
 from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
 from btclib_node.constants import P2pConnStatus
+from btclib_node.exceptions import MissingPrevoutError, TxRejectedError
+from btclib_node.mempool import package_hash
+from btclib_node.orphanage import TxOrphanage
 from btclib_node.p2p.block_availability import find_next_blocks_to_download
 from btclib_node.p2p.callbacks import (
     MAX_GETDATA_INFLIGHT_BYTES,
@@ -46,6 +49,8 @@ from btclib_node.txrequest import TxRequestTracker
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+    from btclib.tx.tx import Tx
 
     from btclib_node import Node
     from btclib_node.log import Logger
@@ -311,14 +316,14 @@ def _is_sync_peer(conn: Connection, preferred: int, *, blocks_in_flight: bool) -
     )
 
 
-def _tx_fetch_type(conn: Connection) -> InventoryType:
+def _tx_fetch_type(conn: Connection, *, wtxid: bool) -> InventoryType:
     """Return the type a `getdata` asks `conn` for a transaction under.
 
     Core's `SendMessages` (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag): `MSG_WTX` of a peer with `m_wtxid_relay`, else `MSG_TX`
-    with `GetFetchFlags`' witness flag where the peer offers `NODE_WITNESS`.
+    the v31.1 tag): `MSG_WTX` for a wtxid, else `MSG_TX` with
+    `GetFetchFlags`' witness flag where the peer offers `NODE_WITNESS`.
     """
-    if conn.wtxidrelay_received:
+    if wtxid:
         return InventoryType.MSG_WTX
     version_message = conn.version_message
     if version_message and version_message.services & ServiceFlags.NODE_WITNESS:
@@ -385,6 +390,11 @@ class DownloadManager:
         # `_request_wanted_txs`; the `tx` and `notfound` callbacks and
         # `_queue_announcements_for_received_txs` retire what it holds.
         self.tx_requests = TxRequestTracker()
+        # Core's `m_orphanage`: what peers sent with parents not found yet,
+        # kept to be taken up when a parent arrives and as the child a
+        # parent that pays too little is accepted with. The `tx` callback
+        # fills it through `mempool_rejected_tx`.
+        self.orphanage = TxOrphanage()
 
         # Core's `m_next_inv_to_inbounds_per_network_key`
         # (net_processing.cpp, the same commit): one schedule per
@@ -727,13 +737,16 @@ class DownloadManager:
         of the next only after the request expires or is answered with a
         `notfound`.
 
-        The announcements of a connection no longer connected are
-        forgotten here, where Core's `FinalizeNode` does it.
+        The announcements and orphans of a connection no longer connected
+        are forgotten here, where Core's `FinalizeNode` does it.
         """
         connections = self.node.p2p_manager.connections.copy()
         for peer in self.tx_requests.peers():
             if peer not in connections:
                 self.tx_requests.disconnected_peer(peer)
+        for peer in self.orphanage.peers():
+            if peer not in connections:
+                self.orphanage.erase_for_peer(peer)
         now = time.time()
         wtxid_peers = sum(conn.wtxidrelay_received for conn in connections.values())
         for conn_id, announced in self.inv_txs:
@@ -749,16 +762,25 @@ class DownloadManager:
         """Track `announced` by `conn`, to be asked for after Core's delays.
 
         Core's `AddTxAnnouncement` (`node/txdownloadman_impl.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): dropped once the peer
-        has `MAX_PEER_TX_ANNOUNCEMENTS` tracked, unless it holds `RELAY`.
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the wtxid of an orphan
+        makes `conn` a peer to resolve it with. Otherwise a transaction already
+        had, a reconsiderable refusal included, is dropped, and so is an
+        announcement of a peer with `MAX_PEER_TX_ANNOUNCEMENTS` tracked,
+        unless it holds `RELAY`.
         Otherwise its `reqtime` is delayed by `NONPREF_PEER_TX_DELAY` where
         the peer is not preferred, by `TXID_RELAY_DELAY` where it
         announced a txid while a wtxid-relay peer is connected, and by
         `OVERLOADED_PEER_TX_DELAY` where it already has
         `MAX_PEER_TX_REQUEST_IN_FLIGHT` requests outstanding and no
-        `RELAY`. Core's orphan resolution, which the first lines of that
-        function serve, has nothing here to resolve.
+        `RELAY`.
         """
+        by_wtxid = conn.wtxidrelay_received
+        orphan = self.orphanage.get_tx(announced) if by_wtxid else None
+        if orphan is not None:
+            self._resolve_orphan_with(conn, orphan, now, wtxid_peers)
+            return
+        if self.already_have_tx(announced, wtxid=by_wtxid, include_reconsiderable=True):
+            return
         relay = NetPermissionFlags.RELAY in conn.permissions
         if not relay and self.tx_requests.count(conn.id) >= _MAX_PEER_TX_ANNOUNCEMENTS:
             return
@@ -766,7 +788,7 @@ class DownloadManager:
         delay = 0.0
         if not preferred:
             delay += _NONPREF_PEER_TX_DELAY
-        if not conn.wtxidrelay_received and wtxid_peers > 0:
+        if not by_wtxid and wtxid_peers > 0:
             delay += _TXID_RELAY_DELAY
         if (
             not relay
@@ -783,9 +805,10 @@ class DownloadManager:
 
         Core's `GetRequestsToSend` (`node/txdownloadman_impl.cpp`, at
         bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a transaction already
-        held, or recently rejected, is forgotten instead; the others are
+        had is forgotten instead; the others are
         requested until `GETDATA_TX_INTERVAL` has passed. They go in
-        `getdata`s of at most `MAX_GETDATA_SZ` items.
+        `getdata`s of at most `MAX_GETDATA_SZ` items. A parent of an orphan
+        is asked for by txid, whatever `conn` relays.
 
         A transaction queued for a script check off `Node`'s thread is
         asked of no one meanwhile. It stays tracked, so another announcer
@@ -794,26 +817,261 @@ class DownloadManager:
         `tx` message.
         """
         requestable, _expired = self.tx_requests.get_requestable(conn.id, now)
-        mempool = self.node.mempool
         tx_checks = self.node.tx_checks
-        by_wtxid = conn.wtxidrelay_received
-        wanted: list[bytes] = []
+        wanted: list[Inventory] = []
         for announced in requestable:
-            if not mempool.get_missing([announced], wtxid=by_wtxid) or (
-                mempool.was_recently_rejected(announced)
+            wtxid = conn.wtxidrelay_received and not self.tx_requests.is_txid(
+                conn.id, announced
+            )
+            if self.already_have_tx(
+                announced, wtxid=wtxid, include_reconsiderable=False
             ):
                 self.tx_requests.forget_tx_hash(announced)
                 continue
             if tx_checks.pending(announced):
                 continue
-            wanted.append(announced)
+            wanted.append(Inventory(_tx_fetch_type(conn, wtxid=wtxid), announced))
             self.tx_requests.requested_tx(
                 conn.id, announced, now + _GETDATA_TX_INTERVAL
             )
-        fetch_type = _tx_fetch_type(conn)
         for start in range(0, len(wanted), _MAX_GETDATA_SZ):
-            batch = wanted[start : start + _MAX_GETDATA_SZ]
-            conn.send(GetData([Inventory(fetch_type, h) for h in batch]))
+            conn.send(GetData(wanted[start : start + _MAX_GETDATA_SZ]))
+
+    def already_have_tx(
+        self, txhash: bytes, *, wtxid: bool, include_reconsiderable: bool
+    ) -> bool:
+        """Answer whether `txhash` is not to be asked for, as `AlreadyHaveTx`.
+
+        `txhash` is a wtxid where `wtxid` holds and a txid otherwise
+        (`src/node/txdownloadman_impl.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+        v31.1 tag). The orphanage is asked by wtxid whatever `txhash` is, as
+        Core does: a txid is then a wtxid only for a transaction without a
+        witness, and cannot be a false positive for one with. A refusal
+        `mark_rejected_reconsiderable` holds counts only with
+        `include_reconsiderable`.
+
+        Core's filter of recently confirmed transactions is left out, which
+        this tree has no counterpart of.
+        """
+        mempool = self.node.mempool
+        if self.orphanage.have_tx(txhash):
+            return True
+        if include_reconsiderable and mempool.was_recently_rejected_reconsiderable(
+            txhash
+        ):
+            return True
+        if mempool.was_recently_rejected(txhash):
+            return True
+        return txhash in (mempool.transactions if wtxid else mempool.txid_index)
+
+    @staticmethod
+    def unique_parents(tx: Tx) -> list[bytes]:
+        """Return the txids `tx` spends, each once."""
+        # Core sorts a `Txid` by its internal bytes, the reverse of the display
+        # bytes this tree keeps
+        return sorted({tx_in.prev_out.tx_id for tx_in in tx.vin}, key=lambda t: t[::-1])
+
+    def mempool_rejected_tx(
+        self, tx: Tx, error: Exception, conn_id: int, *, first_time: bool
+    ) -> tuple[Tx, Tx] | None:
+        """Take in what refused `tx` means, Core's `MempoolRejectedTx`.
+
+        `error` is `MissingPrevoutError`, Core's `TX_MISSING_INPUTS`, or
+        what else refused it. `first_time` is whether this is the first
+        refusal of a transaction a peer sent, and not a transaction taken
+        from the orphanage or a package. Answers the parent and child to
+        validate as a package, where `tx` was refused for a reason a
+        package can undo and `conn_id` sent a child that spends it.
+        (`src/node/txdownloadman_impl.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+        v31.1 tag.)
+
+        A transaction missing inputs is kept as an orphan on its first
+        refusal, unless a parent was refused already (`_keep_orphan`). It is
+        recorded as refused nowhere else, as a missing input says nothing of
+        the transaction: its parent may arrive. Any other refusal is
+        recorded, in the filter a package can undo for `error.reconsiderable`
+        and otherwise in `Mempool.mark_rejected`'s, and ends the orphan
+        if it was one.
+
+        Left out is what Core does for a witness-stripped refusal and for
+        `TX_INPUTS_NOT_STANDARD`, which tell the txid apart from the wtxid
+        in the filter: `Mempool.mark_rejected` has the reason this tree does
+        not. And `AddKnownTx` and `AddToCompactExtraTransactions`, whose
+        state this tree does not have.
+        """
+        mempool = self.node.mempool
+        wtxid = tx.hash
+        if isinstance(error, MissingPrevoutError):
+            if first_time and not mempool.was_recently_rejected(wtxid):
+                self._keep_orphan(tx, conn_id)
+            return None
+        package = None
+        if isinstance(error, TxRejectedError) and error.reconsiderable:
+            mempool.mark_rejected_reconsiderable(wtxid)
+            if first_time:
+                package = self.find_1p1c_package(tx, conn_id)
+        else:
+            mempool.mark_rejected(wtxid)
+        self.tx_requests.forget_tx_hash(wtxid)
+        self.orphanage.erase_tx(wtxid)
+        return package
+
+    def _keep_orphan(self, tx: Tx, conn_id: int) -> None:
+        """Keep `tx` as an orphan of the peers that can resolve it.
+
+        Core's first-refusal branch of `MempoolRejectedTx`. Not kept where
+        a parent is in `Mempool.mark_rejected`'s cache, or where two parents
+        are in the cache a package can undo: one parent and one child cannot
+        undo two. Both hashes of `tx` are then recorded refused.
+        Otherwise the parents not yet had are asked for from `conn_id` and
+        from the other peers that announced `tx`
+        (`_maybe_add_orphan_resolution_candidate`), and `tx` is kept for each
+        that takes it.
+        """
+        mempool = self.node.mempool
+        txid, wtxid = tx.id, tx.hash
+        unique_parents = self.unique_parents(tx)
+        reconsiderable_parent: bytes | None = None
+        rejected_parents = False
+        for parent_txid in unique_parents:
+            if mempool.was_recently_rejected(parent_txid):
+                rejected_parents = True
+                break
+            if (
+                mempool.was_recently_rejected_reconsiderable(parent_txid)
+                and parent_txid not in mempool.txid_index
+            ):
+                if reconsiderable_parent is not None:
+                    rejected_parents = True
+                    break
+                reconsiderable_parent = parent_txid
+        if rejected_parents:
+            # whatever the witness, it is refused: both hashes are recorded
+            mempool.mark_rejected(txid)
+            mempool.mark_rejected(wtxid)
+        else:
+            unique_parents = [
+                parent_txid
+                for parent_txid in unique_parents
+                if not self.already_have_tx(
+                    parent_txid, wtxid=False, include_reconsiderable=False
+                )
+            ]
+            now = time.time()
+            wtxid_peers = self._wtxid_peer_count()
+            candidates = [conn_id]
+            candidates += self.tx_requests.get_candidate_peers(txid)
+            if tx.is_segwit:
+                candidates += self.tx_requests.get_candidate_peers(wtxid)
+            for peer in candidates:
+                if self._maybe_add_orphan_resolution_candidate(
+                    unique_parents, wtxid, peer, now, wtxid_peers
+                ):
+                    self.orphanage.add_tx(tx, peer)
+        self.tx_requests.forget_tx_hash(txid)
+        self.tx_requests.forget_tx_hash(wtxid)
+
+    def _wtxid_peer_count(self) -> int:
+        """Return how many peers relay by wtxid, Core's `m_num_wtxid_peers`."""
+        connections = self.node.p2p_manager.connections.copy()
+        return sum(conn.wtxidrelay_received for conn in connections.values())
+
+    def _resolve_orphan_with(
+        self, conn: Connection, orphan: Tx, now: float, wtxid_peers: int
+    ) -> None:
+        """Make `conn`, which announced `orphan`, a peer to resolve it with.
+
+        The first lines of Core's `AddTxAnnouncement`: the parents `orphan`
+        still lacks are asked of `conn` as if it had announced them, and
+        `conn` becomes an announcer of `orphan`. Nothing is left to ask
+        where every parent is had.
+        """
+        parents = [
+            parent_txid
+            for parent_txid in self.unique_parents(orphan)
+            if not self.already_have_tx(
+                parent_txid, wtxid=False, include_reconsiderable=False
+            )
+        ]
+        if parents and self._maybe_add_orphan_resolution_candidate(
+            parents, orphan.hash, conn.id, now, wtxid_peers
+        ):
+            self.orphanage.add_announcer(orphan.hash, conn.id)
+
+    def _maybe_add_orphan_resolution_candidate(
+        self,
+        parents: list[bytes],
+        wtxid: bytes,
+        peer: int,
+        now: float,
+        wtxid_peers: int,
+    ) -> bool:
+        """Ask `peer` for the `parents` of an orphan, and say whether it was.
+
+        Core's `MaybeAddOrphanResolutionCandidate`
+        (`node/txdownloadman_impl.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        tag): not a peer that is gone or announced `wtxid` already, nor one
+        without `RELAY` that would then have more than
+        `MAX_PEER_TX_ANNOUNCEMENTS` tracked. Each parent is announced by txid,
+        with the delays `_add_tx_announcement` gives, and the one for
+        `TXID_RELAY_DELAY` whenever a wtxid-relay peer is connected, as the
+        parent may arrive from that peer sooner than asked.
+        """
+        conn = self.node.p2p_manager.connections.get(peer)
+        if conn is None or self.orphanage.have_tx_from_peer(wtxid, peer):
+            return False
+        relay = NetPermissionFlags.RELAY in conn.permissions
+        if (
+            not relay
+            and self.tx_requests.count(peer) + len(parents) > _MAX_PEER_TX_ANNOUNCEMENTS
+        ):
+            return False
+        preferred = _is_preferred_download(conn)
+        delay = 0.0
+        if not preferred:
+            delay += _NONPREF_PEER_TX_DELAY
+        if wtxid_peers > 0:
+            delay += _TXID_RELAY_DELAY
+        if (
+            not relay
+            and self.tx_requests.count_in_flight(peer) >= _MAX_PEER_TX_REQUEST_IN_FLIGHT
+        ):
+            delay += _OVERLOADED_PEER_TX_DELAY
+        for parent_txid in parents:
+            self.tx_requests.received_inv(
+                peer, parent_txid, preferred=preferred, reqtime=now + delay, txid=True
+            )
+        return True
+
+    def find_1p1c_package(self, parent: Tx, conn_id: int) -> tuple[Tx, Tx] | None:
+        """Find a child of `parent` from `conn_id` to try with it as a package.
+
+        Core's `Find1P1CPackage` (`node/txdownloadman_impl.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), asked of a parent refused
+        as `mark_rejected_reconsiderable` records. Only the children of
+        `conn_id` count, newest first, so that a flood of fake children does
+        not crowd out the real one a peer sent. A child is tried once with
+        its parent, and not at all once it was refused itself.
+        """
+        mempool = self.node.mempool
+        for child in self.orphanage.get_children_from_same_peer(parent, conn_id):
+            pair = package_hash([parent.hash, child.hash])
+            if not mempool.was_recently_rejected_reconsiderable(
+                pair
+            ) and not mempool.was_recently_rejected(child.id):
+                return parent, child
+        return None
+
+    def mempool_accepted_tx(self, tx: Tx) -> None:
+        """Take in that `tx` was accepted, Core's `MempoolAcceptedTx`.
+
+        Nobody is asked for it any longer, the orphans that spend it are to be
+        reconsidered, and it is no orphan itself.
+        """
+        self.tx_requests.forget_tx_hash(tx.id)
+        self.tx_requests.forget_tx_hash(tx.hash)
+        self.orphanage.add_children_to_work_set(tx)
+        self.orphanage.erase_tx(tx.hash)
 
     def received_tx_response(self, conn_id: int, txid: bytes, wtxid: bytes) -> None:
         """Complete `conn_id`'s announcement of a transaction it sent.

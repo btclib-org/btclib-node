@@ -113,6 +113,13 @@ btclib\_node.notify module
    :members:
    :show-inheritance:
 
+btclib\_node.orphanage module
+-----------------------------
+
+.. automodule:: btclib_node.orphanage
+   :members:
+   :show-inheritance:
+
 btclib\_node.signet module
 ---------------------------
 

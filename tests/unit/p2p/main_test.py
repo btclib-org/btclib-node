@@ -24,6 +24,7 @@ from btclib.p2p.reject import Reject, RejectCode
 
 import btclib_node.p2p.callbacks as cb
 from btclib_node.constants import NodeStatus, P2pConnStatus
+from btclib_node.download import DownloadManager
 from btclib_node.exceptions import MisbehavingError
 from btclib_node.log import Logger, LogRateLimiter
 from btclib_node.mempool import Mempool
@@ -710,7 +711,7 @@ def test_a_consensus_invalid_transaction_costs_the_peer_nothing(
     )
     node.is_initial_block_download = False
     node.mempool = Mempool(Logger(debug=True))
-    node.download_manager = SimpleNamespace(received_tx_response=lambda *_: None)
+    node.download_manager = DownloadManager(node, node.logger)
     node.p2p_manager.connections[0].id = 0
     node.tx_checks = TxChecks()
     handle_p2p(node)

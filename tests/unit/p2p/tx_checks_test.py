@@ -339,7 +339,9 @@ def test_a_conflict_accepted_meanwhile_refuses_the_checked_tx(
     resume_tx_checks(node)
     assert not node.mempool.contains_tx(checked)
     assert node.mempool.contains_tx(conflict)
-    assert node.mempool.was_recently_rejected(checked.hash)
+    # "insufficient fee", which Core's `PaysForRBF` gives as `TX_RECONSIDERABLE`
+    assert node.mempool.was_recently_rejected_reconsiderable(checked.hash)
+    assert not node.mempool.was_recently_rejected(checked.hash)
 
 
 def test_a_coin_a_block_spent_meanwhile_refuses_the_checked_tx(

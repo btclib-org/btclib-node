@@ -12,9 +12,11 @@ round leaves behind decays the way Core's own does, `_ROLLING_FEE_HALFLIFE`
 below being `ROLLING_FEE_HALFLIFE` (`src/txmempool.h`).
 """
 
+import hashlib
 import heapq
 import time
 from collections import deque
+from contextlib import contextmanager
 from fractions import Fraction
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -24,13 +26,13 @@ from btclib_node.config import DEFAULT_INCREMENTAL_RELAY_FEERATE
 from btclib_node.exceptions import TxRejectedError
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Iterator, Sequence
 
     from btclib.tx.tx import Tx
 
     from btclib_node.log import Logger
 
-__all__ = ["Mempool", "MempoolEntry", "format_money"]
+__all__ = ["Mempool", "MempoolEntry", "format_money", "package_hash"]
 
 # Core's own `MAX_BIP125_RBF_SEQUENCE` (`src/policy/rbf.h`,
 # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `SignalsOptInRBF`'s own
@@ -113,6 +115,33 @@ def format_money(amount: int) -> str:
     return f"{whole}.{decimals}"
 
 
+def package_hash(wtxids: Iterable[bytes]) -> bytes:
+    """Return Core's `GetPackageHash` of a package's wtxids.
+
+    The SHA-256 of the wtxids sorted ascending by their display bytes
+    (`lexicographical_compare` over reverse iterators), each hashed as the
+    bytes Core holds, the reverse of the display bytes this tree keeps
+    (`src/policy/packages.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag). It does not depend on the order the package is given in.
+    """
+    held = [wtxid[::-1] for wtxid in sorted(wtxids)]
+    return hashlib.sha256(b"".join(held)).digest()
+
+
+def _remember(members: set[bytes], order: deque[bytes], key: bytes) -> None:
+    """Add `key` to a bounded cache, the oldest leaving at the capacity.
+
+    `deque(maxlen=...)` would drop the key that falls off the far end
+    without telling `members`, so the two are retired together.
+    """
+    if key in members:
+        return
+    if len(order) >= _RECENT_REJECTS_CAPACITY:
+        members.discard(order.popleft())
+    order.append(key)
+    members.add(key)
+
+
 class Mempool:
     """The node's set of transactions not yet in a block, keyed both ways.
 
@@ -131,7 +160,8 @@ class Mempool:
     candidates rather than held ones, `_recent_rejects_order` alongside
     it tracking insertion order for eviction -- `mark_rejected` below is
     where both are written and `was_recently_rejected` where the first
-    is read.
+    is read. `_recent_rejects_reconsiderable` and its order are the same
+    for the refusals a package can undo.
     """
 
     def __init__(
@@ -300,6 +330,11 @@ class Mempool:
         # than trusting the deque to do it alone. btclib-org/btclib-node#845
         self._recent_rejects: set[bytes] = set()
         self._recent_rejects_order: deque[bytes] = deque()
+        # Core's `m_lazy_recent_rejects_reconsiderable`, the same size and
+        # reset as the cache above: the wtxids refused for a reason a
+        # package can undo, and the hashes of the packages refused.
+        self._recent_rejects_reconsiderable: set[bytes] = set()
+        self._recent_rejects_reconsiderable_order: deque[bytes] = deque()
 
     def is_full(self) -> bool:
         """Whether `bytesize` has already reached `bytesize_limit`."""
@@ -364,13 +399,27 @@ class Mempool:
         filter leaves open for the identical reason, not one specific
         to this mempool. btclib-org/btclib-node#845
         """
-        if wtxid in self._recent_rejects:
-            return
-        if len(self._recent_rejects_order) >= _RECENT_REJECTS_CAPACITY:
-            oldest = self._recent_rejects_order.popleft()
-            self._recent_rejects.discard(oldest)
-        self._recent_rejects_order.append(wtxid)
-        self._recent_rejects.add(wtxid)
+        _remember(self._recent_rejects, self._recent_rejects_order, wtxid)
+
+    def was_recently_rejected_reconsiderable(self, key: bytes) -> bool:
+        """Whether `key` was marked reconsiderable since the last block."""
+        return key in self._recent_rejects_reconsiderable
+
+    def mark_rejected_reconsiderable(self, key: bytes) -> None:
+        """Record a wtxid refused for a reason a package can undo, or a package.
+
+        Core's `RecentRejectsReconsiderableFilter().insert`
+        (`src/node/txdownloadman_impl.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+        v31.1 tag): the wtxid of a transaction refused as `TX_RECONSIDERABLE`
+        is not downloaded or submitted alone again, and the hash of a
+        package refused for any reason (`package_hash`) is not tried again.
+        Cleared and bounded as `mark_rejected`'s cache is.
+        """
+        _remember(
+            self._recent_rejects_reconsiderable,
+            self._recent_rejects_reconsiderable_order,
+            key,
+        )
 
     # Don't need lock because handled in same thread
     def add_tx(
@@ -429,8 +478,83 @@ class Mempool:
             # a caller that skipped `main.verify_mempool_acceptance`, whose
             # `check_replacement` call refuses this first
             return False
-        for outpoint in outpoints:
-            self.outpoint_spender[outpoint] = wtxid
+        self._insert(tx, fee, vsize, height)
+        self._push_heap(wtxid)
+        self._evict_to_limit()
+        return wtxid in self.transactions
+
+    def add_package(
+        self, members: Sequence[tuple[Tx, int, int]], *, height: int
+    ) -> bool:
+        """Add a package's transactions, parents first, or none, and say which.
+
+        `members` are `(tx, fee, vsize)` of a parent and the child
+        paying for it, each already refused by none of
+        `main.pre_verify_package`'s checks on this very state. They are
+        judged by their aggregate feerate where the mempool is over its
+        limit: the others are evicted for room, worst first, as long as
+        they pay less than the package, and the package is itself the
+        eviction once the worst left pays more. Core evicts the worst
+        chunk after adding (`LimitMempoolSize` after `SubmitPackage`,
+        `src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
+        which is the same choice with chunks scored by the cluster graph
+        this mempool does not hold. `_evict_to_limit`'s own docstring has
+        the departure for the others.
+
+        A parent of the package that an eviction takes leaves nothing to
+        add, and so does a member left alone by the eviction after the
+        add, where a package larger than the limit is evicted.
+        """
+        fee = sum(member[1] for member in members)
+        size = sum(member[2] for member in members)
+        rate = Fraction(fee, size)
+        parents = {wtxid for tx, _, _ in members for wtxid in self._parents(tx)}
+        while self.bytesize + size > self.bytesize_limit and self.transactions:
+            worst = self._pop_worst_wtxid()
+            worst_rate = Fraction(self.fees[worst], self.vsizes[worst])
+            if rate < worst_rate:
+                self._unpop_worst_wtxid(worst)
+                self._track_package_removed(
+                    float(rate * 1000 + self.incremental_relay_feerate.sats_per_kvbyte)
+                )
+                return False
+            self._evict_chunk(worst)
+        if not parents <= self.transactions.keys():
+            return False
+        for tx, member_fee, vsize in members:
+            self._insert(tx, member_fee, vsize, height)
+            self._push_heap(tx.hash)
+        self._evict_to_limit()
+        wtxids = [tx.hash for tx, _, _ in members]
+        if all(wtxid in self.transactions for wtxid in wtxids):
+            return True
+        for wtxid in wtxids:
+            self.remove_with_descendants(wtxid)
+        return False
+
+    @contextmanager
+    def staged(self, tx: Tx, fee: int, vsize: int) -> Iterator[None]:
+        """Hold `tx` as if accepted for the block, then take it out again.
+
+        What a package's child is checked against: the mempool its parent
+        would leave. Nothing is evicted or announced, the heap is left
+        alone, and `sequence` and `transactions_updated` are as they were
+        after, so no reader of either sees the parent come and go.
+        `tx` is one `main.pre_verify_mempool_acceptance` accepted.
+        """
+        sequence, updated = self.sequence, self.transactions_updated
+        self._insert(tx, fee, vsize, height=0)
+        try:
+            yield
+        finally:
+            self._pop(tx.hash)
+            self.sequence, self.transactions_updated = sequence, updated
+
+    def _insert(self, tx: Tx, fee: int, vsize: int | None, height: int) -> None:
+        """Enter `tx` in every index, with no eviction and no heap entry."""
+        wtxid, txid = tx.hash, tx.id
+        for vin in tx.vin:
+            self.outpoint_spender[vin.prev_out.tx_id, vin.prev_out.vout] = wtxid
         self.transactions[wtxid] = tx
         self.txid_index[txid] = wtxid
         self.fees[wtxid] = fee
@@ -443,10 +567,13 @@ class Mempool:
         self.bytesize += self.vsizes[wtxid]
         self.sequence += 1
         self.transactions_updated += 1
-        # `self.sequence`, already bumped once above and unique to this
-        # call -- it never repeats and only ever grows -- is this heap's
-        # own tie-breaker too, so a second counter kept only for this is
-        # not needed: two equal-feerate entries pop in the order they
+
+    def _push_heap(self, wtxid: bytes) -> None:
+        """Give `wtxid`, just inserted, its entry in the eviction heap."""
+        # `self.sequence`, bumped by `_insert`, is unique among the entries
+        # this heap holds (`staged` winds it back but pushes none) and is
+        # this heap's own tie-breaker too, so a second counter kept only for
+        # this is not needed: two equal-feerate entries pop in the order they
         # were pushed, `min`'s own stability over `self.transactions`'
         # insertion order before this heap existed. It also doubles as
         # this wtxid's current heap entry's own identifier: a wtxid
@@ -456,10 +583,8 @@ class Mempool:
         self._heap_current_seq[wtxid] = self.sequence
         heapq.heappush(
             self._feerate_heap,
-            (Fraction(fee, self.vsizes[wtxid]), self.sequence, wtxid),
+            (Fraction(self.fees[wtxid], self.vsizes[wtxid]), self.sequence, wtxid),
         )
-        self._evict_to_limit()
-        return wtxid in self.transactions
 
     def remove_tx(self, tx: Tx) -> None:
         """Remove `tx` by txid, a no-op if this mempool does not hold it."""
@@ -548,8 +673,9 @@ class Mempool:
 
         A second child is refused even where it pays to replace the first,
         which Core's sibling eviction would try: this mempool replaces
-        nothing, `check_replacement`. `PackageTRUCChecks` has no caller:
-        this node accepts no package. btclib-org/btclib-node#1399
+        nothing, `check_replacement`. A package's child is checked with
+        its parent staged (`staged`) in place of `PackageTRUCChecks`.
+        btclib-org/btclib-node#1399
         """
         reason = "TRUC-violation"
         parents = self._parents(tx)
@@ -1007,13 +1133,13 @@ class Mempool:
         or not it had already gone stale on its own -- stops matching
         exactly the way an ordinary re-add's leftover does. The indices
         handed out this way, `0` upward, are smaller than `self.sequence`
-        can ever be read as here: `self.sequence` only ever grows, by at
-        least one per add and one per removal, so it already exceeds
-        `self.size` -- and therefore every index below it -- at any
-        point `_pop`'s own check calls this. A push after this rebuild
-        still carries the current, larger `self.sequence`, so it still
-        breaks a tie against a rebuilt entry the same way it would have
-        against the entry the rebuild replaced.
+        can ever be read as here: `self.sequence` grows by at least one
+        per add and one per removal, and `staged` only restores the value it
+        had before, so it already exceeds `self.size` -- and therefore every
+        index below it -- at any point `_pop`'s own check calls this. A push
+        after this rebuild still carries the current, larger `self.sequence`,
+        so it still breaks a tie against a rebuilt entry the same way it
+        would have against the entry the rebuild replaced.
         """
         self._feerate_heap = []
         for index, (wtxid, fee) in enumerate(self.fees.items()):
@@ -1048,33 +1174,47 @@ class Mempool:
         it.
         """
         while self.bytesize > self.bytesize_limit and self.transactions:
-            worst = self._pop_worst_wtxid()
-            package = self._descendants(worst)
-            # Core's own `removed` (`:917-925`): the feerate of the whole
-            # evicted chunk -- `GetWorstMainChunk`'s own aggregate fee
-            # over its own aggregate size, not the worst entry's rate
-            # alone -- with `m_opts.incremental_relay_feerate` added to
-            # it by `CFeeRate::operator+=` (`policy/feerate.h:80-82`),
-            # which sums the two rates' own sat/kvB values rather than
-            # combining them by size. A low-fee parent evicted together
-            # with a child overpaying for it (CPFP) bumps the rolling
-            # minimum by their combined rate, not by the parent's own
-            # rate alone, which the aggregate here reproduces even though
-            # this mempool's own selection above does not chase CPFP the
-            # way `m_txgraph`'s package score does.
-            #
-            # sat/kvB, exact until the float `_track_package_removed`
-            # stores it as -- Core's own `CFeeRate` arithmetic in
-            # `TrimToSize` is int64 rather than float, a difference this
-            # module's own advisory, non-consensus use of the number
-            # does not need to close.
-            package_fee = sum(self.fees[w] for w in package)
-            package_vsize = sum(self.vsizes[w] for w in package)
-            removed_rate = Fraction(package_fee, package_vsize) * 1000
-            removed_rate += self.incremental_relay_feerate.sats_per_kvbyte
-            for victim in package:
-                self._pop(victim)
-            self._track_package_removed(float(removed_rate))
+            self._evict_chunk(self._pop_worst_wtxid())
+
+    def _unpop_worst_wtxid(self, wtxid: bytes) -> None:
+        """Put back the heap entry `_pop_worst_wtxid` just took for `wtxid`."""
+        heapq.heappush(
+            self._feerate_heap,
+            (
+                Fraction(self.fees[wtxid], self.vsizes[wtxid]),
+                self._heap_current_seq[wtxid],
+                wtxid,
+            ),
+        )
+
+    def _evict_chunk(self, worst: bytes) -> None:
+        """Evict `worst`, just popped from the heap, with what depends on it."""
+        package = self._descendants(worst)
+        # Core's own `removed` (`:917-925`): the feerate of the whole
+        # evicted chunk -- `GetWorstMainChunk`'s own aggregate fee
+        # over its own aggregate size, not the worst entry's rate
+        # alone -- with `m_opts.incremental_relay_feerate` added to
+        # it by `CFeeRate::operator+=` (`policy/feerate.h:80-82`),
+        # which sums the two rates' own sat/kvB values rather than
+        # combining them by size. A low-fee parent evicted together
+        # with a child overpaying for it (CPFP) bumps the rolling
+        # minimum by their combined rate, not by the parent's own
+        # rate alone, which the aggregate here reproduces even though
+        # this mempool's own selection (`_evict_to_limit`) does not chase
+        # CPFP the way `m_txgraph`'s package score does.
+        #
+        # sat/kvB, exact until the float `_track_package_removed`
+        # stores it as -- Core's own `CFeeRate` arithmetic in
+        # `TrimToSize` is int64 rather than float, a difference this
+        # module's own advisory, non-consensus use of the number
+        # does not need to close.
+        package_fee = sum(self.fees[w] for w in package)
+        package_vsize = sum(self.vsizes[w] for w in package)
+        removed_rate = Fraction(package_fee, package_vsize) * 1000
+        removed_rate += self.incremental_relay_feerate.sats_per_kvbyte
+        for victim in package:
+            self._pop(victim)
+        self._track_package_removed(float(removed_rate))
 
     def _track_package_removed(self, rate_per_kvbyte: float) -> None:
         """Core's own `trackPackageRemoved` (`txmempool.cpp`, same commit).
@@ -1108,16 +1248,20 @@ class Mempool:
         into `remove_tx`, which already runs once per transaction inside
         that same loop rather than once per block.
 
-        Also clears `mark_rejected`'s own cache, whichever peer's
+        Also clears `mark_rejected`'s own cache and
+        `mark_rejected_reconsiderable`'s, whichever peer's
         transaction the connected block held or did not: a reorg's own
         multi-block connect loop calls this once per block added, so the
-        cache is emptied at least once for any active tip change, the
-        same event Core's `ActiveTipChange` resets `m_recent_rejects` on.
+        caches are emptied at least once for any active tip change, the
+        same event Core's `ActiveTipChange` resets `m_recent_rejects` and
+        `m_lazy_recent_rejects_reconsiderable` on.
         """
         self._last_rolling_fee_update = time.time()
         self._block_since_last_rolling_fee_bump = True
         self._recent_rejects.clear()
         self._recent_rejects_order.clear()
+        self._recent_rejects_reconsiderable.clear()
+        self._recent_rejects_reconsiderable_order.clear()
 
     def get_min_fee_rate(self) -> FeeRate:
         """Return the rolling minimum feerate, decayed since it last moved.

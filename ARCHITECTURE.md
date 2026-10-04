@@ -105,11 +105,12 @@ script — are btclib's; what is here is the dispatch across workers and
 the chain state a verdict is checked against.
 
 A transaction a peer relays has its scripts checked on `Node.worker_pool`
-too, one transaction at a time, so the loop goes on serving every peer
-while they run (`src/btclib_node/p2p/tx_checks.py`). `Node`'s thread runs
+too, one candidate at a time (a transaction, or a parent with its child),
+so the loop goes on serving every peer while they run
+(`src/btclib_node/p2p/tx_checks.py`). `Node`'s thread runs
 every other check first, and applies the verdict once it is in, after
 running those checks again against the chain and the mempool as they
-are then. The worker reads only the transaction and its prevouts; the
+are then. The worker reads only the transactions and their prevouts; the
 queue of candidates, the mempool and the chain state stay on `Node`'s
 thread. `sendrawtransaction`, `testmempoolaccept` and the transactions a
 reorg puts back in the mempool are checked on `Node`'s thread, scripts

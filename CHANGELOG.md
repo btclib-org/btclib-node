@@ -192,6 +192,17 @@ as a note, and its `http` and `rpc` categories are logged (issue #1307).
   the file at the merge base with `origin/main`, is refused**
   (issue btclib-org/.github#1614).
 
+### Orphans are kept, and `getorphantxs` lists them
+
+A transaction whose inputs are not found is kept per peer, within Core's
+bounds, and taken up when a parent is accepted (closes #1420).
+
+### A parent that pays too little is accepted with a child that pays for it
+
+A parent paying too little goes in with its child, or not at all. A candidate
+leaving a parent's dust unspent is refused "missing-ephemeral-spends",
+`sendrawtransaction` and `testmempoolaccept` too (issue #1473).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on
