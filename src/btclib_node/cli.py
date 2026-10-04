@@ -300,10 +300,6 @@ _CONNECTION_TITLE = "Connection options:"
 _DEBUG_TEST_TITLE = "Debugging/Testing options:"
 _CHAINPARAMS_TITLE = "Chain selection options:"
 _NODE_RELAY_TITLE = "Node relay options:"
-# What the help of an option says where `verify_mempool_acceptance` does
-# not act on it: enforcing it needs `btclib`'s policy module
-# (btclib-org/btclib-node#1382)
-_NOT_YET_ENFORCED = "; not yet enforced (#1382)"
 _RPC_TITLE = "RPC server options:"
 _TITLES = (
     _OPTIONS_TITLE,
@@ -399,8 +395,7 @@ _OPTIONS: dict[str, _Option] = {
     "?": _Option("", "", None),
     "acceptnonstdtxn": _Option(
         "",
-        'Relay and mine "non-standard" transactions (test networks only; '
-        f"default: 0){_NOT_YET_ENFORCED}",
+        'Relay and mine "non-standard" transactions (test networks only; default: 0)',
         _NODE_RELAY_TITLE,
         debug_only=True,
     ),
@@ -479,14 +474,14 @@ _OPTIONS: dict[str, _Option] = {
     ),
     "datacarrier": _Option(
         "",
-        f"Relay and mine data carrier transactions (default: 1){_NOT_YET_ENFORCED}",
+        "Relay and mine data carrier transactions (default: 1)",
         _NODE_RELAY_TITLE,
     ),
     "datacarriersize": _Option(
         "=<n>",
         "Relay and mine transactions whose data-carrying raw scriptPubKeys in "
         "aggregate are of this size or less, allowing multiple outputs "
-        f"(default: {DEFAULT_MAX_DATACARRIER_BYTES}){_NOT_YET_ENFORCED}",
+        f"(default: {DEFAULT_MAX_DATACARRIER_BYTES})",
         _NODE_RELAY_TITLE,
     ),
     "datadir": _Option(
@@ -527,8 +522,7 @@ _OPTIONS: dict[str, _Option] = {
         "Fee rate (in BTC/kvB) used to define dust, the value of an output such "
         "that it will cost more than its value in fees at this fee rate to "
         "spend it. (default: "
-        f"{_format_money(DEFAULT_DUST_RELAY_FEERATE.sats_per_kvbyte)})"
-        f"{_NOT_YET_ENFORCED}",
+        f"{_format_money(DEFAULT_DUST_RELAY_FEERATE.sats_per_kvbyte)})",
         _NODE_RELAY_TITLE,
         debug_only=True,
     ),
@@ -613,8 +607,7 @@ _OPTIONS: dict[str, _Option] = {
     ),
     "permitbaremultisig": _Option(
         "",
-        "Relay transactions creating non-P2SH multisig outputs (default: 1)"
-        f"{_NOT_YET_ENFORCED}",
+        "Relay transactions creating non-P2SH multisig outputs (default: 1)",
         _NODE_RELAY_TITLE,
     ),
     "port": _Option(
