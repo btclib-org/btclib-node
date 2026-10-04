@@ -93,6 +93,8 @@ def fake_manager(connections: dict[int, Any]) -> SimpleNamespace:
         # what `RpcConnection.run` holds from reading `interrupted` to
         # queuing onto `messages`, as `RpcManager` builds it
         queue_lock=threading.Lock(),
+        # not in warmup, as a node that has finished loading
+        in_warmup=False,
     )
 
 

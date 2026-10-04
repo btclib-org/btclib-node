@@ -38,6 +38,7 @@ from btclib_node.exceptions import RpcCredentialRefusedError
 from btclib_node.rpc.allow import allowed_subnets, client_allowed
 from btclib_node.rpc.auth import RpcAuth
 from btclib_node.rpc.connection import RpcConnection
+from btclib_node.rpc.main import answer_warmup
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine, Sequence
@@ -45,6 +46,7 @@ if TYPE_CHECKING:
 
     from btclib_node import Node
     from btclib_node.p2p.banman import Subnet
+    from btclib_node.rpc.jsonrpc import HttpReply
 
 __all__ = ["RpcManager"]
 
@@ -270,6 +272,16 @@ class RpcManager(threading.Thread):
         # `messages` before `interrupt` returns or refused
         # (btclib-org/btclib-node#1515).
         self.queue_lock = threading.Lock()
+        # Core's `fRPCInWarmup` and `rpcWarmupStatus` (`src/rpc/server.cpp`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): while `in_warmup`
+        # holds, every request is answered `RPC_IN_WARMUP` with
+        # `warmup_status`, on this manager's thread, since `Node`'s is
+        # busy opening the stores. Written under `queue_lock`, which
+        # `RpcConnection.run` holds from reading `in_warmup` to queuing or
+        # answering, so a request is either answered in warmup or queued
+        # after it, never both. Not in warmup until `Node.run` says so.
+        self.in_warmup = False
+        self.warmup_status = "RPC server started"
         # What `run` binds and `stop` closes. `server`'s own
         # `ExitStack` ordinarily closes these once `stop`'s
         # cancellation reaches that task -- except where `stop` arrives
@@ -722,6 +734,28 @@ class RpcManager(threading.Thread):
             self._report_server_failure
         )
         loop.run_forever()
+
+    def start_warmup(self) -> None:
+        """Core's `SetRPCWarmupStarting`: answer requests `RPC_IN_WARMUP`."""
+        with self.queue_lock:
+            self.in_warmup = True
+
+    def set_warmup_status(self, status: str) -> None:
+        """Core's `SetRPCWarmupStatus`: the message a warmup answer carries."""
+        with self.queue_lock:
+            self.warmup_status = status
+
+    def finish_warmup(self) -> None:
+        """Core's `SetRPCWarmupFinished`: queue requests for `Node` again."""
+        with self.queue_lock:
+            self.in_warmup = False
+
+    def answer_warmup(self, conn: RpcConnection, body: object) -> HttpReply:
+        """Answer `body`, a decoded request, as a node in warmup does.
+
+        Called by `RpcConnection.run` holding `queue_lock`, `in_warmup` set.
+        """
+        return answer_warmup(self.node, conn, body)
 
     def interrupt(self) -> None:
         """Stop accepting new RPC work, without waiting for this thread.

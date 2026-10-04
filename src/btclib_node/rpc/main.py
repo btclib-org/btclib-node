@@ -49,7 +49,7 @@ if TYPE_CHECKING:
     from btclib_node.rpc.connection import RpcConnection
     from btclib_node.rpc.manager import RpcManager
 
-__all__ = ["Job", "get_connection", "handle_rpc", "resume_rpc"]
+__all__ = ["Job", "answer_warmup", "get_connection", "handle_rpc", "resume_rpc"]
 
 # A request being answered: it yields as a waiting method does, and
 # returns the reply, whether to stop the node and the delay before it.
@@ -76,6 +76,10 @@ def _execute(
     member, and `RPC_PARSE_ERROR` from `HTTPReq_JSONRPC`'s last catch
     for a lone legacy one.
 
+    While the node is in warmup that is the first thing it does, whatever
+    the method, as `CRPCTable::execute` does (`src/rpc/server.cpp`, same
+    tag): `RPC_IN_WARMUP` and the message `RpcManager.warmup_status` holds.
+
     Named parameters are mapped onto positions once the method is found,
     as `ExecuteCommand` maps them.
 
@@ -99,6 +103,9 @@ def _execute(
     A method that waits returns a generator, which this runs to its end,
     yielding as it yields (the module docstring).
     """
+    manager = node.rpc_manager
+    if manager.in_warmup:
+        raise RpcError(RPCErrorCode.IN_WARMUP, manager.warmup_status)
     callback = callbacks.get(request.method)
     if callback is None:
         raise RpcError(RPCErrorCode.METHOD_NOT_FOUND, "Method not found")
@@ -281,6 +288,22 @@ def _step(node: Node, conn: RpcConnection, job: Job) -> bool | None:
         conn.send(reply)
     node.logger.log_debug("rpc", "Finished rpc\n")
     return None
+
+
+def answer_warmup(node: Node, conn: RpcConnection, body: object) -> HttpReply:
+    """Answer `body` while the node is in warmup, from the RPC manager's thread.
+
+    `Node`'s thread is opening the stores then, so `RpcConnection.run`
+    calls this instead of queuing the request. `_execute` refuses at its
+    first line, so no step yields and no callback runs here.
+    """
+    job = _answer(node, conn, body)
+    while True:
+        try:
+            next(job)
+        except StopIteration as done:
+            reply: HttpReply = done.value[0]
+            return reply
 
 
 def handle_rpc(node: Node) -> None:

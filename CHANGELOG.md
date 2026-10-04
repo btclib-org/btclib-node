@@ -145,6 +145,12 @@ and a parse by a reference timed beside it over the same input, in
 - **A wildcard listener keeps one `getaddr` cache per local address a peer
   reached, not one for all, as Core's `m_network_key` does** (closes #1722).
 
+### A request sent while the stores load is answered `-28`
+
+- **Until start-up has finished, every RPC method answers `RPC_IN_WARMUP`
+  with the current init message, as Core's does**, where the request waited
+  for the load to end (closes #1317).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on
