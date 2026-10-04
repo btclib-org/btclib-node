@@ -609,7 +609,6 @@ git-only = [
     # fuzz.yml and by tests/fuzz_corpus_test.py and by nothing a package
     # installed from the sdist runs
     "fuzz/",
-    ".gitattributes",
     ".gitignore",
     ".vscode/",
     "COPYRIGHT",
