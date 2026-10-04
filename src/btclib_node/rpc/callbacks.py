@@ -14,9 +14,8 @@ call every entry, `stop` included, unless `-rpcwhitelistdefault` holds.
 """
 
 import math
-import string
+import re
 import time
-from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from ipaddress import ip_address
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -70,6 +69,7 @@ from btclib_node.rpc.errors import (
     RpcError,
     bool_mismatch,
     bool_param,
+    is_hex,
     json_type_name,
     type_error,
     type_errors,
@@ -474,9 +474,9 @@ def _parse_hash_v(name: str, value: str) -> bytes:
     characters, so a wrong length is `"<name> must be of length 64 (not
     <n>, for '<value>')"` even where every character is a valid hex
     digit (`"aabb"`, four of them) -- and only a 64-character string
-    that still fails to decode reaches the second message, `"<name>
-    must be hexadecimal string (not '<value>')"`, `bytes.fromhex`'s own
-    `ValueError` standing in for `FromHex`'s own failure at that point.
+    that is not all hex digits reaches the second message, `"<name>
+    must be hexadecimal string (not '<value>')"`: `FromHex` takes digits
+    only, so whitespace, which `bytes.fromhex` skips, is refused here.
     `name` is each call site's own choice, matching Core's: `"hash"` for
     `getblockheader`, `"blockhash"` for `getblock`, `"txid"` for
     `gettxout` (`src/rpc/blockchain.cpp:678,828,1258`, same sha), and
@@ -489,13 +489,12 @@ def _parse_hash_v(name: str, value: str) -> bytes:
             RPCErrorCode.INVALID_PARAMETER,
             f"{name} must be of length 64 (not {len(value)}, for '{value}')",
         )
-    try:
-        return bytes.fromhex(value)
-    except ValueError as error:
+    if not is_hex(value):
         raise RpcError(
             RPCErrorCode.INVALID_PARAMETER,
             f"{name} must be hexadecimal string (not '{value}')",
-        ) from error
+        )
+    return bytes.fromhex(value)
 
 
 def get_block_header(
@@ -1220,7 +1219,7 @@ def submit_header(node: Node, conn: RpcConnection, params: list[Any]) -> None:
 
     Core's own `submitheader` (`rpc/mining.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `hexdata` is decoded as
-    `DecodeHexBlockHeader` decodes it: `_is_hex`, then the first eighty
+    `DecodeHexBlockHeader` decodes it: `is_hex`, then the first eighty
     bytes, any after them ignored as Core's `SpanReader` ignores them.
     A header whose parent this index does not hold is refused before any
     check. `BlockIndex.add_headers` then checks and indexes it, as
@@ -1236,7 +1235,7 @@ def submit_header(node: Node, conn: RpcConnection, params: list[Any]) -> None:
     decode_failed = RpcError(
         RPCErrorCode.DESERIALIZATION_ERROR, "Block header decode failed"
     )
-    if not _is_hex(params[0]):
+    if not is_hex(params[0]):
         raise decode_failed
     try:
         header = BlockHeader.parse(
@@ -2851,17 +2850,7 @@ def get_mempool_entry(
         raise RpcError(RPCErrorCode.MISC_ERROR, 'getmempoolentry "txid"')
     if not isinstance(params[0], str):
         raise type_error(1, "txid", params[0], "string")
-    try:
-        txid = bytes.fromhex(params[0])
-    except ValueError as error:
-        # ParseHashV, src/rpc/util.cpp:125, down to the sentence -- the
-        # same simplification `get_block_header`'s own `blockhash` above
-        # takes, an odd-length or non-hex string refused and a
-        # wrong-length-but-valid-hex one not
-        raise RpcError(
-            RPCErrorCode.INVALID_PARAMETER,
-            f"txid must be hexadecimal string (not '{params[0]}')",
-        ) from error
+    txid = _parse_hash_v("txid", params[0])
     mempool = node.mempool
     wtxid = mempool.txid_index.get(txid)
     if wtxid is None:
@@ -3085,28 +3074,10 @@ def get_raw_transaction(
     return _raw_transaction_json(node, found, verbosity)
 
 
-# Core's own `IsHex` (`src/util/strencodings.cpp`,
-# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): every character a hex
-# digit. btclib-org/btclib-node#1372
-_HEX_DIGITS = frozenset(string.hexdigits)
-
-
-def _is_hex(s: str) -> bool:
-    """Core's `IsHex` (`src/util/strencodings.cpp`, same tag).
-
-    Requires a non-empty, even-length hexadecimal string: Python's
-    `bytes.fromhex`, and so btclib's own `bytes_from_octets`
-    (`btclib/utils.py`), tolerates whitespace between and around bytes,
-    which is what let a `rawtx` Core refuses decode here instead.
-    btclib-org/btclib-node#1372
-    """
-    return bool(s) and len(s) % 2 == 0 and all(c in _HEX_DIGITS for c in s)
-
-
 def _decode_hex_tx(rawtx: str) -> Tx:
     """Decode `rawtx` as Core's `DecodeHexTx` does.
 
-    `_is_hex` refuses any character outside `_HEX_DIGITS` -- a space
+    `is_hex` refuses any character that is not a hex digit -- a space
     included -- and an odd or zero length, ahead of `ParseHex`
     (`src/core_io.cpp`, same tag).
 
@@ -3118,7 +3089,7 @@ def _decode_hex_tx(rawtx: str) -> Tx:
     it. Answering a well-formed but structurally invalid transaction
     with "TX decode failed" was btclib-org/btclib-node#1375.
     """
-    if not _is_hex(rawtx):
+    if not is_hex(rawtx):
         err_msg = f"invalid hex string: {rawtx!r}"
         raise BTClibValueError(err_msg)
     return Tx.parse(bytes.fromhex(rawtx), check_validity=False)
@@ -3378,6 +3349,57 @@ _DEFAULT_MAX_BURN_AMOUNT = 0
 _AMOUNT_NOT_NUMBER_OR_STRING = "Amount is not a number or string"
 
 
+# `ParseFixedPoint`'s own grammar (`src/util/strencodings.cpp`, same
+# tag): an optional `-`, a lone `0` or digits not starting with `0`, an
+# optional `.` followed by at least one digit, an optional exponent, and
+# nothing else. `[0-9]`, not `\d`: Python's `\d` reads any Unicode digit.
+_FIXED_POINT = re.compile(
+    r"-?(?P<int>0|[1-9][0-9]*)(?:\.(?P<frac>[0-9]+))?(?:[eE](?P<exp>[+-]?[0-9]+))?"
+)
+# `ParseFixedPoint`'s own `UPPER_BOUND`: the largest value it returns,
+# and the bound on its mantissa and on its exponent's digits.
+_FIXED_POINT_DIGITS = 18
+_FIXED_POINT_BOUND = 10**_FIXED_POINT_DIGITS - 1
+_BTC_DECIMALS = 8
+
+
+def _parse_fixed_point(text: str, decimals: int) -> int | None:
+    """Answer Core's `ParseFixedPoint`: `text` as an integer of 10^-`decimals`.
+
+    `src/util/strencodings.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag. `None` stands for its `false`: text outside `_FIXED_POINT`,
+    more decimals than `decimals` once the trailing zeros are dropped,
+    or a mantissa, an exponent or a result past `_FIXED_POINT_BOUND`.
+    Python's `Decimal` takes a space, a `+`, an underscore, `1.` and `.5`,
+    which Core refuses, so it does not read the text here. The mantissa
+    is kept without its trailing zeros, as Core keeps it, so `0e30` is
+    refused, as Core refuses it, though its value is zero.
+    """
+    match = _FIXED_POINT.fullmatch(text)
+    if match is None:
+        return None
+    fraction = match["frac"] or ""
+    digits = ("" if match["int"] == "0" else match["int"]) + fraction
+    mantissa = digits.rstrip("0")
+    exponent_text = match["exp"] or "0"
+    exponent_digits = exponent_text.lstrip("+-").lstrip("0")
+    if max(len(mantissa.lstrip("0")), len(exponent_digits)) > _FIXED_POINT_DIGITS:
+        return None
+    exponent = (
+        (-1 if exponent_text.startswith("-") else 1) * int(exponent_digits or "0")
+        - len(fraction)
+        + len(digits)
+        - len(mantissa)
+        + decimals
+    )
+    if not 0 <= exponent < _FIXED_POINT_DIGITS:
+        return None
+    amount: int = int(mantissa or "0") * 10**exponent
+    if amount > _FIXED_POINT_BOUND:
+        return None
+    return -amount if text.startswith("-") else amount
+
+
 def _amount_param(params: list[Any], position: int, *, name: str, default: int) -> int:
     """Read an `RPCArg::Type::AMOUNT` argument, Core's own `AmountFromValue`.
 
@@ -3385,42 +3407,25 @@ def _amount_param(params: list[Any], position: int, *, name: str, default: int) 
     `RPCArg::Type::AMOUNT` is exempt from `RPCMethod::HandleRequest`'s
     own pre-check (`ExpectedType` answers `std::nullopt` for it, "VNUM
     or VSTR, checked inside AmountFromValue()"), so a JSON number or
-    string is read here as a decimal BTC amount, exact to eight
-    decimals, and refused as `RPC_TYPE_ERROR`: "Amount is not a number
-    or string" for a JSON value of neither type -- `bool` included,
-    `bool` being `int`'s own subclass in Python and no JSON bool ever
-    being a number to Core's own `UniValue` -- "Invalid amount" for one
-    that does not parse as a decimal, is not finite, or is not a whole
-    number of satoshi, and "Amount out of range" for one that parses but
-    falls outside `MoneyRange`, 0 through `MAX_MONEY`.
+    string is read here as a decimal BTC amount by `_parse_fixed_point`,
+    and refused as `RPC_TYPE_ERROR`: "Amount is not a number or string"
+    for a JSON value of neither type -- `bool` included, `bool` being
+    `int`'s own subclass in Python and no JSON bool ever being a number
+    to Core's own `UniValue` -- "Invalid amount" for one that
+    `_parse_fixed_point` refuses, and "Amount out of range" for one that
+    it reads but that falls outside `MoneyRange`, 0 through `MAX_MONEY`.
 
-    `btclib.amount.valid_btc_amount` parses and range-checks the same
-    grammar -- `Decimal`, finite, at most eight decimals, 0 through the
-    21 million cap -- but folds Core's own two distinct messages above
-    into the one `BTClibValueError` it always raises, which is why this
-    reads the value with `Decimal` directly instead. `ParseFixedPoint`'s
-    own digit-by-digit overflow guard (`src/util/strencodings.cpp`, same
-    tag) is not replayed either: `Decimal.as_integer_ratio` is exact
-    with no fixed width to overflow, the way `btclib.fee.FeeRate`'s own
-    `from_sats_per_vbyte` already reads a decimal quote, and the
-    `MoneyRange` check below is what `AmountFromValue` bounds its own
-    result against either way -- the same value refused, whichever the
-    parser.
+    `btclib.amount.valid_btc_amount` folds Core's two messages into the
+    one `BTClibValueError` it always raises, and reads its text with
+    `Decimal`, which is why this does not call it.
     """
     if len(params) <= position or params[position] is None:
         return default
     value = params[position]
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         raise RpcError(RPCErrorCode.TYPE_ERROR, _AMOUNT_NOT_NUMBER_OR_STRING)
-    try:
-        decimal_value = Decimal(str(value))
-    except InvalidOperation:
-        raise RpcError(RPCErrorCode.TYPE_ERROR, "Invalid amount") from None
-    if not decimal_value.is_finite():
-        raise RpcError(RPCErrorCode.TYPE_ERROR, "Invalid amount")
-    numerator, denominator = decimal_value.as_integer_ratio()
-    amount, remainder = divmod(numerator * _COIN, denominator)
-    if remainder:
+    amount = _parse_fixed_point(str(value), _BTC_DECIMALS)
+    if amount is None:
         raise RpcError(RPCErrorCode.TYPE_ERROR, "Invalid amount")
     if not 0 <= amount <= _MAX_MONEY:
         raise RpcError(RPCErrorCode.TYPE_ERROR, "Amount out of range")

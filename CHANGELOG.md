@@ -59,6 +59,23 @@ required checks too, and `REVIEWING.md`'s "hold the merge" excepts it
 `codeql.yml` passes `queries: security-extended` to the shared analysis for a
 one-month trial (issue btclib-org/.github#1505).
 
+### A hash holding whitespace is refused
+
+- **`getblock`, `getblockheader`, `gettxout`, `getrawtransaction` and
+  `getmempoolentry` refuse it** with `-8`, where it was read as fewer than
+  32 bytes (closes #1655). `getmempoolentry` checks the length, too.
+
+### An amount is read by `ParseFixedPoint`'s grammar
+
+- **`maxfeerate` and `maxburnamount` refuse a space, a `+`, an underscore,
+  `1.`, `.5` and a leading zero** with `Invalid amount` (closes #1664).
+  A value of 10^10 BTC or more is `Invalid amount`, not `Amount out of range`.
+
+### A lone surrogate in a request body is a parse error
+
+- **A lone surrogate escape, or its UTF-8 bytes, in a string or a key
+  is answered `-32700`**, as Core answers it (closes #1665).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on

@@ -1658,6 +1658,47 @@ def test_a_body_that_is_not_json_is_a_500_parse_error() -> None:
     assert not messages
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'["\\ud800"]',
+        b'["\\udc00"]',
+        b'["\\ud800x"]',
+        b'["\\ud83d\\ud83d\\ude00"]',
+        b'{"\\ud800":1}',
+        b'{"a":[{"b":"\\ud800"}]}',
+        b'{"a":1,"a":"\\ud800"}',
+        b'["\xed\xa0\x80"]',
+    ],
+)
+def test_a_lone_surrogate_anywhere_in_a_body_is_a_value_error(body: bytes) -> None:
+    """`decode` refuses a lone surrogate, as Core's UTF-8 filter does.
+
+    The escape, its UTF-8 bytes, a key, a nested value and a duplicate
+    key's lost value all count. btclib-org/btclib-node#1665
+    """
+    with pytest.raises(ValueError, match="surrogates not allowed"):
+        decode(body)
+
+
+def test_a_surrogate_pair_is_one_character() -> None:
+    """The control: an escaped pair is U+1F600, not a lone surrogate."""
+    assert decode(b'["\\ud83d\\ude00"]') == ["\U0001f600"]
+
+
+def test_a_body_holding_a_lone_surrogate_is_a_500_parse_error() -> None:
+    """`bitcoind` answers it `-32700` with a null `id`, before any method."""
+    body = b'{"jsonrpc":"1.0","id":7,"method":"help","params":["\\ud800"]}'
+    reply, _, _, messages, _ = refused(
+        request(b"Content-Length: %d\r\n" % len(body), body)
+    )
+    head, _, content = reply.partition(b"\r\n\r\n")
+    assert head.startswith(b"HTTP/1.1 500 Internal Server Error\r\n")
+    assert json.loads(content)["error"] == {"code": -32700, "message": "Parse error"}
+    assert json.loads(content)["id"] is None
+    assert not messages
+
+
 def test_a_key_named_twice_is_read_as_its_first_value() -> None:
     """`method` named twice runs the first, as `bitcoind` does (issue #1151)."""
     body = b'{"id":1,"method":"getblockcount","method":"nosuch"}'

@@ -66,11 +66,28 @@ class JsonObject(dict[str, Any]):
 
 
 def decode(body: bytes | bytearray) -> Any:  # noqa: ANN401
-    """Decode a request body, each object a `JsonObject`.
+    r"""Decode a request body, each object a `JsonObject`.
 
-    Raises `ValueError` where `json.loads` does.
+    Raises `ValueError` where `json.loads` does, and where a string or
+    an object key holds a lone surrogate. `json.loads` reads `"\ud800"`
+    with no low surrogate after it, and a UTF-8 encoding of one, as a
+    one-character string. Core's `JSONUTF8StringFilter` refuses both
+    (`src/univalue/include/univalue_utffilter.h`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and `HTTPReq_JSONRPC`
+    answers the whole body as a parse error.
     """
-    return json.loads(body, object_pairs_hook=JsonObject)
+    value = json.loads(body, object_pairs_hook=JsonObject)
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, str):
+            item.encode()  # UnicodeEncodeError, a ValueError, on a surrogate
+        elif isinstance(item, list):
+            pending.extend(item)
+        elif isinstance(item, JsonObject):
+            for key, member in item.items():
+                pending.extend((key, member))
+    return value
 
 
 class HttpReply(NamedTuple):
