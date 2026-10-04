@@ -30,6 +30,12 @@ keeps whichever shape it was written in.
 
 ## Unreleased
 
+### The redownload buffer test stops counting other threads
+
+- **`test_the_redownload_buffer_holds_headers_compressed` counts only
+  blocks allocated under a `headers_sync.py` frame**, not every thread's
+  as `tracemalloc.get_traced_memory()` did (closes #1705).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on
