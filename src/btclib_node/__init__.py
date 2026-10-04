@@ -45,9 +45,11 @@ from btclib_node.p2p.main import (
     handle_p2p_handshake,
     resume_cfilters,
     resume_getdata,
+    resume_tx_checks,
 )
 from btclib_node.p2p.manager import P2pManager
 from btclib_node.p2p.permissions import Whitelist
+from btclib_node.p2p.tx_checks import TxChecks
 from btclib_node.rpc.main import handle_rpc
 from btclib_node.rpc.manager import RpcManager
 from btclib_node.versionbits import UnknownActivations
@@ -190,9 +192,9 @@ def _pool_factory(*, gil_enabled: bool) -> type[Pool]:
     libsecp256k1 context that its own "Thread safety" section documents
     as safe for concurrent calls. Under a GIL build the choice does not
     matter for correctness and matters for speed: the libsecp256k1 cffi
-    call does not release the GIL, so a `ThreadPool` there is threads
-    taking turns behind a process pool's own real parallelism, which is
-    why the GIL build keeps `Pool`.
+    call releases the GIL but the Python around it does not, so a
+    `ThreadPool` there is threads taking turns behind a process pool's
+    own real parallelism, which is why the GIL build keeps `Pool`.
 
     Core's own `CCheckQueue` always shares one
     `PrecomputedTransactionData` by pointer across its worker threads
@@ -353,6 +355,11 @@ class Node(threading.Thread):
         # `p2p.callbacks.advance_getdata` and `p2p.main.resume_getdata`,
         # both on this thread. btclib-org/btclib-node#470
         self.pending_getdata: dict[int, tuple[Connection, deque[Inventory]]] = {}
+
+        # relayed transactions waiting on a script check, read and
+        # written by `p2p.callbacks.tx` and `p2p.main.resume_tx_checks`,
+        # both on this thread; the checks run on `worker_pool`
+        self.tx_checks = TxChecks()
 
         # Built on first use, by the property below: the pool is
         # interpreters under a GIL build (spawned rather than forked
@@ -636,10 +643,11 @@ class Node(threading.Thread):
         they did not expect -- and leaving `run`'s own loop by exception
         skips every close below it, so the databases would stay open.
 
-        `resume_cfilters` and `resume_getdata` are last and unconditional,
-        not one more queue to size a share from: nothing is queued to
-        trigger either, a paused `getcfilters` or `getdata` answer being
-        owed regardless of what else this pass finds waiting.
+        `resume_cfilters`, `resume_getdata` and `resume_tx_checks` are
+        last and unconditional, not one more queue to size a share from:
+        nothing is queued to trigger them, a paused `getcfilters` or
+        `getdata` answer, or a script check's verdict, being owed
+        regardless of what else this pass finds waiting.
 
         Each request answered here pushes `rpc_manager`'s reply deadline
         forward, as `_drain_rpc_queue` does for each it answers. A pass
@@ -685,6 +693,8 @@ class Node(threading.Thread):
             if resume_cfilters(self):
                 wait = False
             if resume_getdata(self):
+                wait = False
+            if resume_tx_checks(self):
                 wait = False
         except Exception:
             self.logger.exception("Exception occurred handling a message")

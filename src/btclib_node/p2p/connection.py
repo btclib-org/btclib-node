@@ -819,8 +819,9 @@ class Connection:
         # Set: `run`'s own read loop below may call `sock_recv` again.
         # `parse_messages` clears it, synchronously and on this same
         # loop, the moment `queued_recv_bytes` crosses
-        # `MAX_QUEUED_RECV_BYTES`. What sets it back is `handle_p2p`'s
-        # own decrement, from `Node`'s thread, through
+        # `MAX_QUEUED_RECV_BYTES`. What sets it back is the decrement of
+        # `handle_p2p` (or `resume_tx_checks`, for a held `tx`), from
+        # `Node`'s thread, through
         # `loop.call_soon_threadsafe` -- `asyncio.Event.set()` is not
         # itself safe to call from a thread other than the one running
         # the loop the event belongs to, the same reason `send` below
@@ -1422,8 +1423,9 @@ class Connection:
         `messages`.
         Every item carries its own wire size alongside it, a fourth
         tuple element `handle_p2p` or `handle_p2p_handshake`
-        (`p2p/main.py`) weighs back off `queued_recv_bytes` once it is
-        processed (btclib-org/btclib-node#462); `handshake_messages` is
+        (`p2p/main.py`), or `resume_tx_checks` for a `tx` they held back,
+        weighs back off `queued_recv_bytes` once it is processed
+        (btclib-org/btclib-node#462); `handshake_messages` is
         still drained whole every pass of `Node`'s own loop rather than
         sharing `messages`'s own log2-scaled share, which bounds how
         long a backlog persists but not how large one can grow between

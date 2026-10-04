@@ -786,9 +786,16 @@ class DownloadManager:
         held, or recently rejected, is forgotten instead; the others are
         requested until `GETDATA_TX_INTERVAL` has passed. They go in
         `getdata`s of at most `MAX_GETDATA_SZ` items.
+
+        A transaction queued for a script check off `Node`'s thread is
+        asked of no one meanwhile. It stays tracked, so another announcer
+        is asked if the check ends with it neither kept nor refused. Core
+        needs no such wait, as it checks the scripts while handling the
+        `tx` message.
         """
         requestable, _expired = self.tx_requests.get_requestable(conn.id, now)
         mempool = self.node.mempool
+        tx_checks = self.node.tx_checks
         by_wtxid = conn.wtxidrelay_received
         wanted: list[bytes] = []
         for announced in requestable:
@@ -796,6 +803,8 @@ class DownloadManager:
                 mempool.was_recently_rejected(announced)
             ):
                 self.tx_requests.forget_tx_hash(announced)
+                continue
+            if tx_checks.pending(announced):
                 continue
             wanted.append(announced)
             self.tx_requests.requested_tx(

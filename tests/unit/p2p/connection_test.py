@@ -56,6 +56,7 @@ from btclib_node.p2p.transport import (
     TransportProtocolType,
     V1Transport,
 )
+from btclib_node.p2p.tx_checks import TxChecks
 from btclib_node.p2p.v2transport import V2Transport
 from tests import debug_recorder, discourage_recorder, log_recorder, wait_until
 
@@ -1211,6 +1212,7 @@ def test_a_ping_ahead_of_verack_is_not_answered_by_one_drain_pass(
         rpc_manager=SimpleNamespace(messages=deque()),
         pending_cfilters={},
         pending_getdata={},
+        tx_checks=TxChecks(),
         logger=connection.node.logger,
     )
     with connection.client:

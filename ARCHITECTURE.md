@@ -13,10 +13,11 @@ expectations hold is the [assurance case](./ASSURANCE_CASE.md).
 
 `Node` (`src/btclib_node/__init__.py`) is a thread running one loop: it
 drains the handshake queue, then a share of the RPC queue and a share of
-the peer-to-peer queue, then steps the download manager and extends the
-chain. A message that raises is logged and the loop continues; a failure
-in the download manager's step or in `update_chain` is logged and ends
-the node, the databases below being closed on the way out.
+the peer-to-peer queue, moves the script checks of relayed transactions
+along, then steps the download manager and extends the chain. A message
+that raises is logged and the loop continues; a failure in the download
+manager's step or in `update_chain` is logged and ends the node, the
+databases below being closed on the way out.
 
 ## The protocol and the RPC surface
 
@@ -78,6 +79,17 @@ under a free-threaded one, one script check per worker. The rules
 themselves, and the objects they run against — a `Tx`, a `Block`, a
 script — are btclib's; what is here is the dispatch across workers and
 the chain state a verdict is checked against.
+
+A transaction a peer relays has its scripts checked on `Node.worker_pool`
+too, one transaction at a time, so the loop goes on serving every peer
+while they run (`src/btclib_node/p2p/tx_checks.py`). `Node`'s thread runs
+every other check first, and applies the verdict once it is in, after
+running those checks again against the chain and the mempool as they
+are then. The worker reads only the transaction and its prevouts; the
+queue of candidates, the mempool and the chain state stay on `Node`'s
+thread. `sendrawtransaction`, `testmempoolaccept` and the transactions a
+reorg puts back in the mempool are checked on `Node`'s thread, scripts
+included.
 
 ## What is delegated, and what is not
 

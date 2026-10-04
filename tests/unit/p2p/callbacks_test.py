@@ -98,7 +98,7 @@ from btclib_node.exceptions import (
     TxRejectedError,
 )
 from btclib_node.log import Logger
-from btclib_node.main import MempoolAcceptance, verify_mempool_acceptance
+from btclib_node.main import MempoolCandidate, pre_verify_mempool_acceptance
 from btclib_node.mempool import Mempool
 from btclib_node.notify import Warnings
 from btclib_node.p2p.address import PeerDB, endpoint_key, host_key, peer_address
@@ -131,6 +131,7 @@ from btclib_node.p2p.callbacks import (
     sendaddrv2,
     sendcmpct,
     sendheaders,
+    settle_tx,
     tx,
     verack,
     version,
@@ -151,6 +152,7 @@ from btclib_node.p2p.protocol_version import (
     SHORT_IDS_BLOCKS_VERSION,
     WTXID_RELAY_VERSION,
 )
+from btclib_node.p2p.tx_checks import TxChecks
 from tests import (
     brute_force_nonce,
     build_block,
@@ -2293,13 +2295,20 @@ def a_data_node(
     node.pending_getdata = {}
     if block_index is not None:
         node.chainstate.block_index = block_index
+    node.tx_checks = TxChecks()
     return node
+
+
+def relay(node: Any, payload: bytes, peer: Any) -> None:
+    """Run `tx`, then settle what it queued as though its scripts passed."""
+    tx(node, payload, peer)
+    settle_tx(node, node.tx_checks.unqueue(peer.id), None)
 
 
 def test_a_transaction_that_verifies_is_kept_and_reported(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A transaction `verify_mempool_acceptance` accepts is kept and reported.
+    """A transaction whose checks and scripts pass is kept and reported.
 
     Kept in the mempool, and reported to `download_manager.received_txs`
     keyed on the sending peer's id, for the download manager's own
@@ -2307,12 +2316,14 @@ def test_a_transaction_that_verifies_is_kept_and_reported(
     answered (btclib-org/btclib-node#1357).
     """
     monkeypatch.setattr(
-        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, 999)
+        cb,
+        "pre_verify_mempool_acceptance",
+        lambda node, tx: MempoolCandidate(0, 999, []),
     )
     transaction = a_transaction()
     node = a_data_node()
     peer = a_peer(id=3)
-    tx(node, TxMsg(transaction, include_witness=True).serialize(), peer)
+    relay(node, TxMsg(transaction, include_witness=True).serialize(), peer)
     assert node.mempool.contains_tx(transaction)
     assert node.mempool.vsizes[transaction.hash] == 999
     assert node.download_manager.received_txs == [(3, transaction.hash)]
@@ -2321,30 +2332,39 @@ def test_a_transaction_that_verifies_is_kept_and_reported(
 
 
 @pytest.mark.parametrize(
-    "refusal",
-    [None, MissingPrevoutError, BTClibValueError],
-    ids=["accepted", "missing-parents", "refused"],
+    ("refusal", "held"),
+    [
+        (None, False),
+        (MissingPrevoutError, False),
+        (BTClibValueError, False),
+        (None, True),
+    ],
+    ids=["accepted", "missing-parents", "refused", "already-held"],
 )
 def test_a_transaction_completes_the_senders_announcement_whatever_becomes_of_it(
-    monkeypatch: pytest.MonkeyPatch, refusal: type[Exception] | None
+    monkeypatch: pytest.MonkeyPatch, refusal: type[Exception] | None, *, held: bool
 ) -> None:
     """Core's `ReceivedTx` answers the sender's announcement before judging it.
 
     So the next peer to have announced the transaction is asked for it at
     once, instead of when the request times out, whether the sender's copy
-    was kept or not.
+    was kept or not, or was one the mempool already held. One that passes
+    is queued for its script check with its announcement already completed.
     """
 
-    def verify(node: Any, transaction: Any) -> MempoolAcceptance:
+    def verify(node: Any, transaction: Any) -> MempoolCandidate:
         if refusal is not None:
             raise refusal
-        return MempoolAcceptance(0, 999)
+        return MempoolCandidate(0, 999, [])
 
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", verify)
+    monkeypatch.setattr(cb, "pre_verify_mempool_acceptance", verify)
     transaction = a_transaction()
     node = a_data_node()
+    if held:
+        node.mempool.add_tx(transaction)
     tx(node, TxMsg(transaction, include_witness=True).serialize(), a_peer(id=3))
     assert node.download_manager.tx_responses == [(3, transaction.id, transaction.hash)]
+    assert (3 in node.tx_checks.queued) is (refusal is None and not held)
 
 
 def test_a_transaction_from_a_block_relay_only_peer_completes_nothing() -> None:
@@ -2374,7 +2394,7 @@ def test_a_transaction_whose_parents_are_missing_is_not_kept(
     def missing(node: Any, transaction: Any) -> NoReturn:
         raise MissingPrevoutError
 
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", missing)
+    monkeypatch.setattr(cb, "pre_verify_mempool_acceptance", missing)
     transaction = a_transaction()
     node = a_data_node()
     peer = a_peer(id=3)
@@ -2405,7 +2425,7 @@ def test_a_transaction_only_relay_policy_refuses_costs_the_peer_nothing(
         err_msg = "non-minimal push"
         raise NonStandardTxError(err_msg)
 
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", non_standard)
+    monkeypatch.setattr(cb, "pre_verify_mempool_acceptance", non_standard)
     transaction = a_transaction()
     node = a_data_node()
     # the class is on the discouraging side of that test, so this catch
@@ -2438,7 +2458,7 @@ def test_a_transaction_failing_a_consensus_check_costs_the_peer_nothing(
         err_msg = "bad-txns-nonfinal"
         raise BTClibValueError(err_msg)
 
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", consensus_invalid)
+    monkeypatch.setattr(cb, "pre_verify_mempool_acceptance", consensus_invalid)
     transaction = a_transaction()
     node = a_data_node()
     tx(node, TxMsg(transaction, include_witness=True).serialize(), a_peer(id=3))
@@ -2463,7 +2483,7 @@ def test_a_refused_transaction_is_not_reverified_on_resubmission(
         err_msg = "bad-txns-nonfinal"
         raise BTClibValueError(err_msg)
 
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", consensus_invalid)
+    monkeypatch.setattr(cb, "pre_verify_mempool_acceptance", consensus_invalid)
     transaction = a_transaction()
     node = a_data_node()
     payload = TxMsg(transaction, include_witness=True).serialize()
@@ -2486,14 +2506,14 @@ def test_a_held_txid_under_another_witness_is_refused_as_held(
     node.is_initial_block_download = False
     reasons: list[str] = []
 
-    def recording(node: Node, transaction: Tx) -> MempoolAcceptance:
+    def recording(node: Node, transaction: Tx) -> MempoolCandidate:
         try:
-            return verify_mempool_acceptance(node, transaction)
+            return pre_verify_mempool_acceptance(node, transaction)
         except TxRejectedError as exc:
             reasons.append(exc.reason)
             raise
 
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", recording)
+    monkeypatch.setattr(cb, "pre_verify_mempool_acceptance", recording)
     twin = a_twin(held)
     tx(node, TxMsg(twin, include_witness=True).serialize(), a_peer(id=3))
     assert reasons == ["txn-same-nonwitness-data-in-mempool"]
@@ -2518,7 +2538,7 @@ def test_a_fee_refusal_is_recorded_and_the_peer_kept(
         reason, details = "min relay fee not met", "0 < 11"
         raise TxRejectedError(reason, details)
 
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", fee_refusal)
+    monkeypatch.setattr(cb, "pre_verify_mempool_acceptance", fee_refusal)
     transaction = a_transaction()
     node = a_data_node()
     payload = TxMsg(transaction, include_witness=True).serialize()
@@ -2545,7 +2565,7 @@ def test_a_transaction_missing_its_parent_is_reverified_on_resubmission(
         calls.append(transaction.hash)
         raise MissingPrevoutError
 
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", missing)
+    monkeypatch.setattr(cb, "pre_verify_mempool_acceptance", missing)
     transaction = a_transaction()
     node = a_data_node()
     payload = TxMsg(transaction, include_witness=True).serialize()
@@ -2571,7 +2591,7 @@ def test_a_transaction_already_held_skips_reverification(
     calls: list[bytes] = []
     monkeypatch.setattr(
         cb,
-        "verify_mempool_acceptance",
+        "pre_verify_mempool_acceptance",
         lambda node, transaction: calls.append(transaction.hash),
     )
     transaction = a_transaction()
@@ -2598,7 +2618,7 @@ def test_a_corrupted_stored_record_propagates_out_of_tx(
         err_msg = "stored utxo- record failed to parse"
         raise ChainstateInconsistencyError(err_msg)
 
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", corrupted)
+    monkeypatch.setattr(cb, "pre_verify_mempool_acceptance", corrupted)
     transaction = a_transaction()
     node = a_data_node()
     with pytest.raises(ChainstateInconsistencyError):
@@ -2616,7 +2636,7 @@ def test_a_transaction_received_in_initial_block_download_is_dropped(
     transaction sent while this node is still syncing is possible --
     Core's own reason for the same drop is that the utxo set is not
     caught up enough to check it, not that the peer misbehaved.
-    verify_mempool_acceptance is patched to accept unconditionally,
+    pre_verify_mempool_acceptance is patched to accept unconditionally,
     so the mempool staying empty is the gate firing rather than a
     coincidental rejection.
     """
@@ -2624,11 +2644,13 @@ def test_a_transaction_received_in_initial_block_download_is_dropped(
     # transaction sent while this node is still syncing is possible --
     # Core's own reason for the same drop is that the utxo set is not
     # caught up enough to check it, not that the peer misbehaved.
-    # verify_mempool_acceptance is patched to accept unconditionally,
+    # pre_verify_mempool_acceptance is patched to accept unconditionally,
     # so the mempool staying empty is the gate firing rather than a
     # coincidental rejection
     monkeypatch.setattr(
-        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, tx.vsize)
+        cb,
+        "pre_verify_mempool_acceptance",
+        lambda node, tx: MempoolCandidate(0, tx.vsize, []),
     )
     transaction = a_transaction()
     node = a_data_node(is_initial_block_download=True)
@@ -2647,7 +2669,9 @@ def test_a_transaction_already_held_is_not_reported_twice(
     `add_tx` itself would be a harmless no-op for it.
     """
     monkeypatch.setattr(
-        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, tx.vsize)
+        cb,
+        "pre_verify_mempool_acceptance",
+        lambda node, tx: MempoolCandidate(0, tx.vsize, []),
     )
     transaction = a_transaction()
     node = a_data_node()
@@ -2681,12 +2705,14 @@ def test_a_transaction_a_full_mempool_declined_is_not_reported_either(
     # for a transaction this node never actually kept.
     # btclib-org/btclib-node#277
     monkeypatch.setattr(
-        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, tx.vsize)
+        cb,
+        "pre_verify_mempool_acceptance",
+        lambda node, tx: MempoolCandidate(0, tx.vsize, []),
     )
     transaction = a_transaction()
     node = a_data_node()
     node.mempool.bytesize_limit = 0
-    tx(node, TxMsg(transaction, include_witness=True).serialize(), a_peer(id=3))
+    relay(node, TxMsg(transaction, include_witness=True).serialize(), a_peer(id=3))
     assert not node.mempool.contains_tx(transaction)
     assert node.download_manager.received_txs == []
 
@@ -3366,12 +3392,14 @@ def test_a_transaction_is_taken_in_out_of_ibd_below_block_synced(
     announcement.
     """
     monkeypatch.setattr(
-        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, tx.vsize)
+        cb,
+        "pre_verify_mempool_acceptance",
+        lambda node, tx: MempoolCandidate(0, tx.vsize, []),
     )
     transaction, announced = a_transaction(), a_transaction()
     node = a_data_node(status=NodeStatus.SyncingHeaders)
     peer = a_peer(id=3, wtxidrelay_received=True)
-    tx(node, TxMsg(transaction, include_witness=True).serialize(), peer)
+    relay(node, TxMsg(transaction, include_witness=True).serialize(), peer)
     assert node.mempool.contains_tx(transaction)
     items = [Inventory(InventoryType.MSG_WTX, announced.hash)]
     inv(node, Inv(items).serialize(), peer)
@@ -6398,7 +6426,7 @@ def test_a_transaction_from_a_block_relay_only_peer_drops_it(
     Core's `TX` handler checks `RejectIncomingTxs` before anything else,
     its own IBD gate included. The transaction is not taken either.
     """
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
+    monkeypatch.setattr(cb, "pre_verify_mempool_acceptance", lambda node, tx: 0)
     transaction = a_transaction()
     node = a_data_node(is_initial_block_download=ibd)
     peer = a_peer(id=3, automatic=True, block_relay=True)
@@ -7100,12 +7128,14 @@ def test_a_transaction_the_mempool_holds_is_announced_for_a_force_relay_peer(
     peer without the permission it is dropped, as before.
     """
     monkeypatch.setattr(
-        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, 999)
+        cb,
+        "pre_verify_mempool_acceptance",
+        lambda node, tx: MempoolCandidate(0, 999, []),
     )
     transaction = a_transaction()
     node = a_data_node()
     message = TxMsg(transaction, include_witness=True).serialize()
-    tx(node, message, a_peer(id=3))
+    relay(node, message, a_peer(id=3))
     node.download_manager.received_txs.clear()
     tx(node, message, a_peer(id=4))
     assert node.download_manager.received_txs == []

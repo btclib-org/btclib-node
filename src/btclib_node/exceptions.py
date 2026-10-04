@@ -115,7 +115,7 @@ class LowWorkHeaderError(BTClibValueError):
 class MissingPrevoutError(ValueError):
     """A transaction's input spends an output this node cannot find.
 
-    Raised only by `verify_mempool_acceptance` (`main.py`), while it
+    Raised only by `pre_verify_mempool_acceptance` (`main.py`), while it
     walks a candidate mempool transaction's own inputs against the UTXO
     set and the mempool together and neither has the prevout --
     `InvalidBlockInputError` below is the same check, made instead while

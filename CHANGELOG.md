@@ -2059,6 +2059,12 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
   the `net` debug category, and `-logratelimit` (on by default) limits each
   source location's non-debug lines to 1 MiB an hour, as Core does.**
 
+### A relayed transaction's scripts are checked off `Node`'s thread
+
+- **The loop serves every peer while a relayed transaction's scripts are
+  checked on `Node.worker_pool`**, one at a time, a peer's next `tx`
+  waiting; RPC and reorg acceptance check on `Node`'s thread.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

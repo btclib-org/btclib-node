@@ -138,6 +138,13 @@ btclib\_node.p2p.transport module
    :members:
    :show-inheritance:
 
+btclib\_node.p2p.tx\_checks module
+-----------------------------------
+
+.. automodule:: btclib_node.p2p.tx_checks
+   :members:
+   :show-inheritance:
+
 btclib\_node.p2p.v2transport module
 --------------------------------------
 

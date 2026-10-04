@@ -43,12 +43,14 @@ from btclib_node.p2p.connection import PeerStats
 from btclib_node.p2p.manager import P2pManager
 from btclib_node.p2p.permissions import NetPermissionFlags
 from btclib_node.p2p.protocol_version import FEEFILTER_VERSION, SENDHEADERS_VERSION
+from btclib_node.p2p.tx_checks import TxCheck, TxChecks
 from tests import generate_random_header_chain, generate_random_transaction
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
     from btclib.p2p.addrv2 import NetworkAddressV2
+    from btclib.tx.tx import Tx
 
     from btclib_node import Node
     from btclib_node.chainstate.block_index import BlockIndex
@@ -172,6 +174,7 @@ def make_manager(
             min_relay_feerate=min_relay_feerate, minimum_chain_work=0
         ),
         chain=SimpleNamespace(consensus=SimpleNamespace(segwit_height=0)),
+        tx_checks=TxChecks(),
     )
     manager = DownloadManager(cast("Node", node), Logger(debug=True))
     # `Node`'s own, which `callbacks.maybe_send_getheaders` reads its
@@ -901,6 +904,32 @@ def test_a_reply_hands_the_transaction_to_the_next_announcer() -> None:
     manager.received_tx_response(asked.id, a_hash(1), a_hash(1))
     manager.tx_download()
     assert getdata_hashes(other) == [a_hash(1)]
+
+
+@pytest.mark.parametrize("by_wtxid", [True, False], ids=["wtxid", "txid"])
+def test_a_transaction_queued_for_its_scripts_is_asked_of_no_one_else(
+    *, by_wtxid: bool
+) -> None:
+    """ISS 1196: one announcer at a time, while the scripts are checked too."""
+    first = a_conn(1, inbound=False, wtxidrelay_received=by_wtxid)
+    second = a_conn(2, inbound=False, wtxidrelay_received=by_wtxid)
+    manager = make_manager([first, second])
+    tx = SimpleNamespace(id=a_hash(1), hash=a_hash(2))
+    announced = tx.hash if by_wtxid else tx.id
+    manager.inv_txs = [(1, announced), (2, announced)]
+    manager.tx_download()
+    asked, other = asked_and_other(first, second)
+    # what `p2p.callbacks.tx` leaves of a candidate with only its scripts
+    # left to check
+    manager.received_tx_response(asked.id, tx.id, tx.hash)
+    tx_checks = manager.node.tx_checks
+    tx_checks.queue(TxCheck(asked, cast("Tx", tx), []))
+    manager.tx_download()
+    assert not only(other, GetData)
+    # a check that ends with the transaction neither kept nor refused
+    tx_checks.unqueue(asked.id)
+    manager.tx_download()
+    assert getdata_hashes(other) == [announced]
 
 
 @pytest.mark.parametrize("by_wtxid", [True, False], ids=["wtxid", "txid"])
