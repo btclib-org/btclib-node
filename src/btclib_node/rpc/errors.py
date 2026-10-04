@@ -4,11 +4,32 @@
 
 """How a callback refuses a request rather than failing on it."""
 
+import string
 from typing import Any
 
 from bitcoin_core_rpc import RPCErrorCode
 
-__all__ = ["RpcError", "bool_mismatch", "bool_param", "type_error", "type_errors"]
+__all__ = [
+    "RpcError",
+    "bool_mismatch",
+    "bool_param",
+    "is_hex",
+    "type_error",
+    "type_errors",
+]
+
+_HEX_DIGITS = frozenset(string.hexdigits)
+
+
+def is_hex(text: str) -> bool:
+    """Core's `IsHex`: a non-empty, even-length string of hexadecimal digits.
+
+    `src/util/strencodings.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag. `bytes.fromhex` skips whitespace between bytes, and so does
+    btclib's `bytes_from_octets`; `IsHex` refuses it, so a string is
+    checked here before either decodes it. btclib-org/btclib-node#1372
+    """
+    return bool(text) and len(text) % 2 == 0 and all(c in _HEX_DIGITS for c in text)
 
 
 class RpcError(Exception):

@@ -2667,7 +2667,7 @@ def test_hex_with_whitespace_is_refused_like_core(
     raw = a_tx().serialize(include_witness=True).hex()
     # two spaces, not one: an odd-length probe would already be refused
     # by the length-parity half of the guard, telling this test nothing
-    # about the character-set half `_HEX_DIGITS` is
+    # about the character-set half `is_hex` has
     with_space = raw[:8] + "  " + raw[8:]
     assert len(with_space) % 2 == 0
     params = [with_space] if callback is send_raw_transaction else [[with_space]]
@@ -3231,7 +3231,7 @@ def test_decoderawtransaction_refuses_whitespace_like_core() -> None:
 
     Two leading spaces, not one: an odd-length probe is already refused
     by the length-parity half of `_decode_hex_tx`'s own guard, telling
-    this test nothing about the character-set half, `_HEX_DIGITS`.
+    this test nothing about the character-set half of `is_hex`.
     """
     raw = a_tx().serialize(include_witness=True).hex()
     with_space = "  " + raw
@@ -5859,6 +5859,25 @@ def test_get_block_refuses_a_blockhash_that_is_not_hexadecimal(
     )
 
 
+def test_get_block_refuses_a_blockhash_holding_whitespace(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A 64-character `blockhash` of 48 digits and spaces is not hexadecimal.
+
+    `bytes.fromhex` skips the spaces and reads 24 bytes; `FromHex` takes
+    digits only. btclib-org/btclib-node#1655
+    """
+    node = regtest_node()
+    spaced = "aa " * 16 + "a" * 16
+    assert len(spaced) == 64
+    with pytest.raises(RpcError) as raised:
+        get_block(node, _CONN, [spaced, 0])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert (
+        raised.value.message == f"blockhash must be hexadecimal string (not '{spaced}')"
+    )
+
+
 def test_get_block_refuses_a_blockhash_of_the_wrong_length(
     regtest_node: Callable[..., Node],
 ) -> None:
@@ -7718,6 +7737,76 @@ def test_send_raw_transaction_a_maxburnamount_param_allows_a_smaller_burn(
     assert mempool.contains_tx(tx)
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "1_0",
+        " 0.01",
+        "0.01 ",
+        "+0.01",
+        "1.",
+        ".5",
+        "-.5",
+        "01",
+        "0e30",
+        "1e",
+        "1\n",
+        "1\u0663",
+        "100000000000",
+        "1e11",
+        "99999999999",
+        "1234567890123456789e-11",
+        "1e1000000000000000000",
+        "0.123456789",
+        "",
+        "-",
+    ],
+)
+def test_an_amount_string_core_refuses_is_invalid_amount(text: str) -> None:
+    """`ParseFixedPoint` refuses each of these; `Decimal` read most of them.
+
+    `src/util/strencodings.cpp`, at bitcoin/bitcoin@9be056a8a7.
+    btclib-org/btclib-node#1664
+    """
+    with pytest.raises(RpcError) as raised:
+        cb._amount_param([text], 0, name="maxfeerate", default=0)
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert raised.value.message == "Invalid amount"
+
+
+@pytest.mark.parametrize(
+    ("value", "amount"),
+    [
+        ("0", 0),
+        ("-0", 0),
+        ("0.01", 1_000_000),
+        ("0.00000001", 1),
+        ("1", 100_000_000),
+        ("1.5", 150_000_000),
+        ("1e-8", 1),
+        ("1E2", 10_000_000_000),
+        ("1e+2", 10_000_000_000),
+        ("0.10000000000", 10_000_000),
+        ("21000000", 21_000_000 * 100_000_000),
+        (0.01, 1_000_000),
+        (1e-08, 1),
+        (3, 300_000_000),
+    ],
+)
+def test_an_amount_core_reads_is_read(value: object, amount: int) -> None:
+    """The control for the refusals above: the grammar still reads these."""
+    assert cb._amount_param([value], 0, name="maxfeerate", default=0) == amount
+
+
+@pytest.mark.parametrize("text", ["-1", "-0.00000001", "21000000.00000001"])
+def test_an_amount_outside_money_range_is_out_of_range(text: str) -> None:
+    """A well-formed amount past `MoneyRange` keeps its own message."""
+    with pytest.raises(RpcError) as raised:
+        cb._amount_param([text], 0, name="maxfeerate", default=0)
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert raised.value.message == "Amount out of range"
+
+
 def test_send_raw_transaction_maxburnamount_not_a_decimal_is_invalid_amount() -> None:
     """A `maxburnamount` `Decimal` can't parse is Core's "Invalid amount"."""
     tx = a_tx()
@@ -7872,11 +7961,28 @@ def test_get_mempool_entry_a_non_string_txid_is_a_type_error() -> None:
 
 
 def test_get_mempool_entry_a_non_hex_txid_is_invalid_parameter() -> None:
-    """A `txid` that is not valid hex is `ParseHashV`'s own refusal."""
+    """A `txid` of 64 characters that are not hex is `ParseHashV`'s refusal."""
     with pytest.raises(RpcError) as raised:
-        get_mempool_entry(a_node(), _CONN, ["not-hex"])
+        get_mempool_entry(a_node(), _CONN, ["z" * 64])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
-    assert raised.value.message == "txid must be hexadecimal string (not 'not-hex')"
+    assert raised.value.message == f"txid must be hexadecimal string (not '{'z' * 64}')"
+
+
+def test_get_mempool_entry_a_txid_of_the_wrong_length_is_invalid_parameter() -> None:
+    """A `txid` of valid hex and not 64 characters is `ParseHashV`'s too."""
+    with pytest.raises(RpcError) as raised:
+        get_mempool_entry(a_node(), _CONN, ["aabb"])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert raised.value.message == "txid must be of length 64 (not 4, for 'aabb')"
+
+
+def test_get_mempool_entry_a_txid_holding_whitespace_is_invalid_parameter() -> None:
+    """A `txid` of 48 digits and spaces is refused, not read as 24 bytes."""
+    spaced = "aa " * 16 + "a" * 16
+    with pytest.raises(RpcError) as raised:
+        get_mempool_entry(a_node(), _CONN, [spaced])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert raised.value.message == f"txid must be hexadecimal string (not '{spaced}')"
 
 
 def test_get_mempool_entry_answers_core_s_own_shape() -> None:

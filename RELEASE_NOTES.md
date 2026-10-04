@@ -30,6 +30,14 @@ release below would have to act on to move past it — and
 `RELEASING.md`'s *Release to PyPI* is what retitles it to the version
 on release day.
 
+### Breaking changes
+
+- **An RPC argument Core refuses is refused** (closes #1655, closes #1664,
+  closes #1665). A hash with whitespace in it, an amount with a space, a
+  `+`, an underscore, a leading zero, `1.` or `.5`, and a request body
+  with a lone surrogate escape are errors, as they are in Core. Check the
+  values you pass.
+
 ## v2026.10.4
 
 **The fourth release.** Everything below is measured against `v2026.9.24`:
