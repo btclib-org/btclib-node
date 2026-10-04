@@ -151,6 +151,12 @@ and a parse by a reference timed beside it over the same input, in
   with the current init message, as Core's does**, where the request waited
   for the load to end (closes #1317).
 
+### decoderawtransaction replays Core's DecodeTx
+
+- **`decoderawtransaction` tries the legacy reading as well as the extended
+  one and keeps the first whose scripts pass `CheckTxScriptsSanity`, as Core
+  does: a transaction with no input decodes** (closes #1458).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on
