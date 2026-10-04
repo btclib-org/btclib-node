@@ -37,6 +37,21 @@ on release day.
   `+`, an underscore, a leading zero, `1.` or `.5`, and a request body
   with a lone surrogate escape are errors, as they are in Core. Check the
   values you pass.
+- **`mining.solve_block`, `rpc.mining.generate_to_address` and
+  `generate_block` return generators, and `rpc.mining.get_block_template`
+  does for a `longpollid`** (closes #1622) (closes #1606). A program that
+  calls them directly drives the generator, as `rpc.main` does. A JSON-RPC
+  client needs no change: `getblocktemplate` waits on a `longpollid` and
+  `waitforblockheight` is served, both refused before.
+
+### Worth knowing, though nothing raises
+
+- **At most 16 requests that wait or search run at once, and 64 more
+  queue**, as in Core's defaults for
+  `-rpcthreads` and `-rpcworkqueue`, which this node does not read. A
+  request past that gets `503` "Work queue depth exceeded", so a client
+  holding many `waitforblockheight` or long-poll calls open has to keep
+  them under 80.
 
 ## v2026.10.4
 

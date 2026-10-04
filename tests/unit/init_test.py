@@ -37,7 +37,12 @@ from btclib_node import Node, install_signal_handlers
 from btclib_node.chains import RegTest
 from btclib_node.chainstate import Chainstate
 from btclib_node.config import Config
-from btclib_node.constants import CLIENT_NAME, CLIENT_VERSION, NodeStatus
+from btclib_node.constants import (
+    CLIENT_NAME,
+    CLIENT_VERSION,
+    RPC_THREADS,
+    NodeStatus,
+)
 from btclib_node.exceptions import (
     ChainstateInconsistencyError,
     DirectoryLockError,
@@ -326,6 +331,108 @@ def test_drain_message_queues_calls_resume_cfilters(
 
         monkeypatch.setattr(btclib_node, "resume_cfilters", lambda _n: True)
         assert node._drain_message_queues() is False
+
+
+def test_drain_message_queues_calls_resume_rpc(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_drain_message_queues` calls `resume_rpc` and follows its answer.
+
+    The same shape as `test_drain_message_queues_calls_resume_cfilters`
+    above, over `resume_rpc` instead.
+    """
+    with unstarted_node_context(tmp_path) as node:
+        calls: list[Any] = []
+
+        def not_progressed(n: Any) -> bool:
+            calls.append(n)
+            return False
+
+        monkeypatch.setattr(btclib_node, "resume_rpc", not_progressed)
+        assert node._drain_message_queues() is True
+        assert calls == [node]
+
+        monkeypatch.setattr(btclib_node, "resume_rpc", lambda _n: True)
+        assert node._drain_message_queues() is False
+
+
+def test_drain_rpc_queue_answers_a_request_still_waiting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A waiting request is stepped to its end, which pushes the deadline.
+
+    A step that leaves it waiting pushes nothing, so a request that never
+    ends cannot hold `Node.stop`'s wait open.
+    """
+    with unstarted_node_context(tmp_path) as node:
+        node.pending_rpc.append((None, None))  # type: ignore[arg-type]
+        # whether each step answers the request: the third does
+        answers = [False, False, True]
+
+        def resume(n: Node) -> bool:
+            if answers.pop(0):
+                n.pending_rpc.clear()
+            return False
+
+        monkeypatch.setattr(btclib_node, "resume_rpc", resume)
+        pushed: list[float] = []
+        monkeypatch.setattr(node.rpc_manager, "extend_reply_deadline", pushed.append)
+
+        node._drain_rpc_queue()
+
+        assert answers == []
+        assert len(pushed) == 1
+
+
+def test_the_loop_starts_a_request_only_while_a_thread_is_free(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With `RPC_THREADS` requests waiting, the next stays on `messages`.
+
+    The drain starts it once one of them ends.
+    """
+    with unstarted_node_context(tmp_path) as node:
+        started: list[Node] = []
+        monkeypatch.setattr(btclib_node, "handle_rpc", started.append)
+        node.rpc_manager.messages.append((None, 0))
+        for _ in range(RPC_THREADS):
+            node.pending_rpc.append((None, None))  # type: ignore[arg-type]
+
+        assert node._drain_message_queues() is True
+        assert started == []
+
+        node.pending_rpc.pop()
+        assert node._drain_message_queues() is False
+        assert started == [node]
+
+
+def test_drain_rpc_queue_steps_waiting_requests_before_starting_more(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A queued request waits for a free thread in the drain too."""
+    with unstarted_node_context(tmp_path) as node:
+        order: list[str] = []
+
+        def start(n: Node) -> None:
+            order.append("start")
+            n.rpc_manager.messages.clear()
+
+        def resume(n: Node) -> bool:
+            order.append("resume")
+            n.pending_rpc.pop()
+            return True
+
+        monkeypatch.setattr(btclib_node, "handle_rpc", start)
+        monkeypatch.setattr(btclib_node, "resume_rpc", resume)
+        node.rpc_manager.messages.append((None, 0))
+        for _ in range(RPC_THREADS):
+            node.pending_rpc.append((None, None))  # type: ignore[arg-type]
+
+        node._drain_rpc_queue()
+
+        assert order[0] == "resume"
+        assert "start" in order
+        assert not node.pending_rpc
 
 
 def test_drain_message_queues_calls_resume_getdata(
@@ -975,6 +1082,58 @@ def test_a_step_that_raises_brings_the_node_down_rather_than_spinning(
     assert not node.is_alive()
     assert node.chainstate.db.closed
     assert node.block_db.db.closed
+
+
+def test_a_step_that_raises_ends_a_request_still_waiting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`terminate_flag` is set, so `_drain_rpc_queue` ends a pending wait.
+
+    `waitforblockheight` for a height far ahead only ends once the flag
+    is set; with `update_chain` failing and the flag unset, the drain
+    would spin on it for ever.
+    """
+    node = a_stopping_rpc_node(tmp_path)
+    caller = threading.Thread(
+        target=lambda: rpc_client(node, timeout=30).call_raw(
+            "waitforblockheight", [1000]
+        ),
+        daemon=True,
+    )
+    caller.start()
+    try:
+        wait_until(lambda: len(node.pending_rpc) == 1)
+
+        def boom(_node: Node) -> None:
+            raise RuntimeError("no")
+
+        monkeypatch.setattr(btclib_node, "update_chain", boom)
+        node.join(timeout=_STOP_TIMEOUT)
+        assert not node.is_alive()
+    finally:
+        node.terminate_flag.set()
+        node.join(timeout=_STOP_TIMEOUT)
+    assert not node.pending_rpc
+
+
+def test_drain_rpc_queue_pushes_the_deadline_though_handle_rpc_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A request whose answer raised was still consumed: the deadline moves."""
+    with unstarted_node_context(tmp_path) as node:
+        node.rpc_manager.messages.append((None, -1))
+
+        def raising_handle_rpc(handled_node: Node) -> None:
+            handled_node.rpc_manager.messages.popleft()
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(btclib_node, "handle_rpc", raising_handle_rpc)
+        pushed: list[float] = []
+        monkeypatch.setattr(node.rpc_manager, "extend_reply_deadline", pushed.append)
+
+        node._drain_rpc_queue()
+
+        assert len(pushed) == 1
 
 
 def test_a_missing_reverse_patch_stops_the_node_rather_than_rolling_back(

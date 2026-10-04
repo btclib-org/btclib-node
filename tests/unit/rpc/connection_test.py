@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 
 import btclib_node.rpc.connection as connection_module
+from btclib_node.constants import RPC_WORK_QUEUE
 from btclib_node.exceptions import (
     IncompleteRequestHeadError,
     MalformedRequestHeadError,
@@ -1375,6 +1376,29 @@ def test_an_interrupt_past_the_early_checks_is_refused_as_submit_refuses() -> No
     assert warnings == [
         ("HTTP request rejected during server shutdown: '%s'", "Interrupted")
     ]
+
+
+def test_a_request_past_the_work_queue_is_refused_as_core_refuses_it() -> None:
+    """With `RPC_WORK_QUEUE` requests waiting, the next is a 503.
+
+    It is refused before any credential is read.
+
+    Core's `http_request_cb` answers "Work queue depth exceeded" when
+    `g_threadpool_http.WorkQueueSize()` has reached `-rpcworkqueue`
+    (`src/httpserver.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    """
+
+    def full(manager: SimpleNamespace) -> None:
+        manager.messages.extend([(None, 0)] * RPC_WORK_QUEUE)
+
+    reply, _, _, messages, warnings = refused(with_length(), prepare=full)
+    body = b"Work queue depth exceeded"
+    assert reply == (
+        b"HTTP/1.1 503 Service Unavailable\r\n"
+        b"Content-Length: %d\r\n\r\n" % len(body) + body
+    )
+    assert len(messages) == RPC_WORK_QUEUE
+    assert warnings == [("Request rejected because http work queue depth exceeded",)]
 
 
 def test_an_interrupt_waits_for_a_request_being_queued() -> None:

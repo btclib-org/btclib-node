@@ -23,6 +23,8 @@ __all__ = [
     "MAX_TIP_AGE",
     "MIN_BLOCKS_TO_KEEP",
     "MIN_PRUNE_TARGET_MIB",
+    "RPC_THREADS",
+    "RPC_WORK_QUEUE",
     "USER_AGENT",
     "NodeStatus",
     "P2pConnStatus",
@@ -99,6 +101,24 @@ USER_AGENT = f"/btclib:{CLIENT_VERSION}/"
 # own version line, `LogPackageVersion` (`src/init/common.cpp:156`, same
 # sha), is `CLIENT_NAME` and `CLIENT_VERSION` the same way.
 CLIENT_NAME = "btclib-node"
+
+# Core's `DEFAULT_HTTP_THREADS` and `DEFAULT_HTTP_WORKQUEUE`
+# (`src/httpserver.h`, at bitcoin/bitcoin@9be056a8a7): requests running at
+# once, and requests waiting for a thread, past which a new one is refused
+# 503. Here the requests running are `Node.pending_rpc`, those that wait or
+# search, which `Node`'s loop steps in turn; the requests waiting are
+# `RpcManager.messages`, which the loop starts only while `RPC_THREADS` are
+# running. The depth is checked as Core checks it, where a request arrives,
+# in `rpc.connection.RpcConnection.run`.
+#
+# `-rpcthreads` and `-rpcworkqueue` are not read: only the defaults are
+# taken, since nothing here runs on a thread per request to size.
+#
+# A client that hangs up leaves its request running, as Core's worker runs
+# on, and the reply to the gone client is dropped
+# (`rpc.connection.RpcConnection._write`).
+RPC_THREADS = 16
+RPC_WORK_QUEUE = 64
 
 
 def default_data_dir() -> Path:

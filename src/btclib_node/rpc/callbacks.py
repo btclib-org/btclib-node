@@ -79,6 +79,7 @@ from btclib_node.rpc.mining import (
     generate_block,
     generate_to_address,
     get_block_template,
+    wait_for_block_height,
 )
 from btclib_node.rpc.solver import solver
 
@@ -3856,7 +3857,7 @@ def get_rpc_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str, Any
     (`src/rpc/server.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
     tag): `rpc.main._execute` is this node's own `ExecuteCommand`, and
     `node.active_rpc_commands` is its own `active_commands`, appended to
-    and popped there rather than guarded by a destructor -- this call's
+    and removed there rather than guarded by a destructor -- this call's
     own entry is already in it by the time this callback runs, exactly
     as Core's own is by the time its lambda runs. `duration` is
     microseconds, `Ticks<std::chrono::microseconds>` over Core's own
@@ -3913,7 +3914,7 @@ def stop_wait_param(params: list[Any]) -> int | None:
 
 
 def stop(node: Node, conn: RpcConnection, params: list[Any]) -> str:
-    """Answer `stop`; `handle_rpc` delays this reply by `wait`, then stops.
+    """Answer `stop`; `rpc.main._step` delays this reply by `wait`, then stops.
 
     A `wait` in milliseconds holds the reply back that long, Core's own
     hidden testing argument (`src/rpc/server.cpp:155-166`, at
@@ -3927,11 +3928,11 @@ def stop(node: Node, conn: RpcConnection, params: list[Any]) -> str:
     Core's sleep runs once `stop` has already requested shutdown, on
     the request's own HTTP worker thread, which that shutdown joins
     before it goes on (`StopHTTPServer`, `src/httpserver.cpp`, same
-    tag). A `time.sleep` here would run before `handle_rpc` requested
+    tag). A `time.sleep` here would run before `rpc.main._step` requested
     this node's shutdown at all, on the one thread that carries RPC, P2P
     and chain work alike (`ARCHITECTURE.md`, "The loop").
     `rpc.main._answer_one` reads this same `wait` again once this call
-    is known to have succeeded; `handle_rpc` hands the delayed reply to
+    is known to have succeeded; `rpc.main._step` hands the delayed reply to
     `RpcConnection.send_and_close_after` and stops the node at once, and
     `RpcManager.stop` finishes that reply the way Core's shutdown
     finishes its worker.
@@ -3956,6 +3957,7 @@ callbacks = {
     "getblockcount": get_block_count,
     "getblockchaininfo": get_blockchain_info,
     "pruneblockchain": prune_blockchain,
+    "waitforblockheight": wait_for_block_height,
     "getblockhash": get_block_hash,
     "getblockheader": get_block_header,
     "getblock": get_block,
@@ -4008,6 +4010,7 @@ arg_names: dict[str, tuple[str, ...]] = {
     "getblockcount": (),
     "getblockchaininfo": (),
     "pruneblockchain": ("height",),
+    "waitforblockheight": ("height", "timeout"),
     "getblockhash": ("height",),
     "getblockheader": ("blockhash", "verbose"),
     "getblock": ("blockhash", "verbosity|verbose"),
