@@ -134,6 +134,12 @@ jobs:
         `origin/${{ github.event.pull_request.base.ref }}`.
       # no leading comma: the called workflow writes the one that joins
       # this to its own list
-      extra-allowed-tools: "Bash(git fetch origin:*),Bash(git log:*),\
+      #
+      # The fetch is the one command the prompt names, in full. As a
+      # prefix, `git fetch origin:*` admitted `--upload-pack=<cmd>`,
+      # which git runs, and its abbreviation `--upl`. An exact rule
+      # refuses both, before or after the ref.
+      extra-allowed-tools: "Bash(git fetch origin \
+        ${{ github.event.pull_request.base.ref }}),Bash(git log:*),\
         Bash(git diff:*),Bash(gh issue view:*),\
         Bash(gh api repos/btclib-org/btclib-node/contents/*)"
