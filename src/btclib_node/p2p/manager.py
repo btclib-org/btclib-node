@@ -967,9 +967,10 @@ class P2pManager(threading.Thread):
         analogous site, `CNode`'s own constructor (`src/net.cpp`, at
         bitcoin/bitcoin@05e49b342f), gates the address on `fLogIPs`.
 
-        `local_address` is `server`'s own listening socket's bind
-        address, `None` for a dialled connection -- the only inbound
-        path, `server` below, is the only caller that ever passes one.
+        `local_address` is the accepted socket's own address, concrete
+        where the listener is bound to every interface, `None` for a
+        dialled connection -- the only inbound path, `server` below, is
+        the only caller that ever passes one.
         `conn.addr_cache_key`'s own docstring (`connection.py`) is
         where the key built from it is argued.
 
@@ -3322,14 +3323,6 @@ class P2pManager(threading.Thread):
         `await loop.sock_accept(server_socket)` right here, which does
         not have the property the comment below argues for.
         """
-        # This socket's own bind, read once: it never changes for as
-        # long as this coroutine runs, and it is what every connection
-        # `create_connection` builds off it shares as the local half of
-        # its own `addr_cache_key` -- `[:2]` drops the flow info and
-        # scope id an AF_INET6 `getsockname()` carries, which nothing
-        # here needs, the same trim `server`'s own `sockaddr[:2]` below
-        # gives the peer's half.
-        local_address = cast("tuple[str, int]", server_socket.getsockname()[:2])
         with server_socket:
             # The queue is what keeps a shutdown from discarding an
             # already-accepted socket reaching `server`'s own consumption
@@ -3383,7 +3376,9 @@ class P2pManager(threading.Thread):
                     # accepted socket's own address, concrete where the
                     # listener is bound to every interface, is looked up
                     # in `m_onion_binds` (`GetBindAddress`, same sha)
-                    bound = sock.getsockname()[:2]
+                    # `[:2]` drops the flow info and scope id of an
+                    # AF_INET6 address, as `sockaddr[:2]` above does.
+                    bound = cast("tuple[str, int]", sock.getsockname()[:2])
                     inbound_onion = (
                         ip_address(bound[0]),
                         bound[1],
@@ -3450,7 +3445,7 @@ class P2pManager(threading.Thread):
                         address,
                         inbound=True,
                         prefer_evict=discouraged,
-                        local_address=local_address,
+                        local_address=bound,
                         inbound_onion=inbound_onion,
                         # the v2 transport falls back to v1 on its own where
                         # -v1transport allows, as Core's always does

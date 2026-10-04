@@ -5536,20 +5536,21 @@ def public_listener(manager: P2pManager) -> socket.socket:
 
 
 def land_an_inbound_peer(
-    manager: P2pManager, host: str, port: int
+    manager: P2pManager, host: str, port: int, *, local: str = "127.0.0.1"
 ) -> tuple[socket.socket, socket.socket]:
     """Hand `server` an accepted socket that says it came from `host`.
 
     Through `P2pManager._accept_queues`, since a peer the suite can
     really connect from is a local one, which is never discouraged.
-    The socket is one end of a loopback connection, as `server` reads the
-    address it is bound to. Returns the pair, the second being the peer's
-    own end.
+    The socket is one end of a loopback connection on `local`, as
+    `server` reads the address it is bound to. Returns the pair, the second
+    being the peer's own end.
     """
     server_socket = public_listener(manager)
     wait_until(lambda: server_socket in manager._accept_queues)
-    with socket.create_server(("127.0.0.1", 0)) as pair_listener:
-        theirs = socket.create_connection(pair_listener.getsockname())
+    family = socket.AF_INET6 if ":" in local else socket.AF_INET
+    with socket.create_server((local, 0), family=family) as pair_listener:
+        theirs = socket.create_connection(pair_listener.getsockname()[:2])
         ours, _ = pair_listener.accept()
     manager.loop.call_soon_threadsafe(
         manager._accept_queues[server_socket].put_nowait, (ours, (host, port))
@@ -5558,35 +5559,63 @@ def land_an_inbound_peer(
     return ours, theirs
 
 
-def test_an_inbound_connection_s_cache_key_is_its_own_local_socket(
+def test_an_inbound_connection_s_cache_key_is_its_accepted_local_socket(
     a_manager: AManagerFactory,
 ) -> None:
-    """ISS 1478: `create_connection` keys an inbound peer by its local bind.
+    """ISS 1478, ISS 1722: `create_connection` keys a peer by its local socket.
 
-    `server_socket.getsockname()` is what `server` reads the local half
-    from; the network half is the accepted peer's own `network_id`,
-    which the two peers below share despite arriving at different ports
-    -- this node has one IPv4 listener, so both land on the one bind.
+    `server` reads the local half off the accepted socket, as Core's
+    `CreateNodeFromAcceptedSocket` does with `GetBindAddress`: its host
+    and port, not those of the `0.0.0.0` listener it came through.
     """
-    port = get_random_port()
-    manager = a_manager(port=port)
+    manager = a_manager(port=get_random_port())
     manager.start()
     wait_until_listening(manager)
-    server_socket = public_listener(manager)
-    local_host, local_port = server_socket.getsockname()[:2]
     with ExitStack() as peers:
-        _, first = land_an_inbound_peer(manager, "1.2.3.4", 50000)
-        peers.enter_context(closing(first))
-        wait_until(lambda: 0 in manager.pending_connections)
-        _, second = land_an_inbound_peer(manager, "1.2.3.5", 50001)
-        peers.enter_context(closing(second))
-        wait_until(lambda: 1 in manager.pending_connections)
-        for conn in manager.pending_connections.values():
-            assert conn.addr_cache_key == (
+        accepted = []
+        for number, host in enumerate(["1.2.3.4", "1.2.3.5"]):
+            ours, theirs = land_an_inbound_peer(manager, host, 50000 + number)
+            peers.enter_context(closing(theirs))
+            accepted.append(ours)
+        wait_until(lambda: len(manager.pending_connections) == 2)
+        for number, ours in enumerate(accepted):
+            local_host, local_port = ours.getsockname()[:2]
+            assert manager.pending_connections[number].addr_cache_key == (
                 BIP155Network.IPV4,
                 local_host,
                 local_port,
             )
+        assert accepted[0].getsockname() != public_listener(manager).getsockname()
+        manager.stop()
+        manager.join(timeout=10)
+
+
+def test_a_wildcard_listener_keys_each_local_address_apart(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1722: two local addresses on one wildcard bind get two caches.
+
+    Core hashes the accepted socket's own address into `m_network_key`,
+    so that a node cannot be linked across its addresses by its `getaddr`
+    answers. The accepted sockets below are on `127.0.0.1` and `::1`.
+    """
+    manager = a_manager(port=get_random_port())
+    manager.start()
+    wait_until_listening(manager)
+    with ExitStack() as peers:
+        _, first = land_an_inbound_peer(manager, "1.2.3.4", 50000)
+        peers.enter_context(closing(first))
+        try:
+            _, second = land_an_inbound_peer(manager, "1.2.3.4", 50001, local="::1")
+        except OSError as refused:  # pragma: no cover -- runs only without IPv6
+            manager.stop()
+            manager.join(timeout=10)
+            pytest.skip(f"this host has no IPv6: {refused}")
+        peers.enter_context(closing(second))
+        wait_until(lambda: len(manager.pending_connections) == 2)
+        keys = {conn.addr_cache_key for conn in manager.pending_connections.values()}
+        assert {key[1] for key in keys if key} == {"127.0.0.1", "::1"}
+        assert len(keys) == 2
         manager.stop()
         manager.join(timeout=10)
 
