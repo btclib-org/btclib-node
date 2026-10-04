@@ -25,6 +25,7 @@ from btclib_node.chains import HeadersSyncParams, RegTest
 from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.block_index import calculate_work
 from btclib_node.log import Logger
+from btclib_node.p2p import headers_sync
 from btclib_node.p2p.headers_sync import (
     ChainStart,
     HeadersSyncState,
@@ -866,16 +867,30 @@ def test_the_redownload_buffer_holds_headers_compressed() -> None:
 
     Measured with `tracemalloc` around the buffering of a redownload held
     short of both the buffer's size and the target: a `BlockHeader` per
-    entry would cost several times the bound here.
+    entry would cost several times the bound here. Only blocks allocated
+    under a `headers_sync.py` frame count, so code outside that file does
+    not.
     """
     buffered = 2_000
     chain = unsolved_chain(buffered + 10)
     sync = redownloading(buffered + 11, chain, buffer=buffered)
-    tracemalloc.start()
-    before = tracemalloc.get_traced_memory()[0]
-    result = sync.process_next_headers(chain[:buffered], full_headers_message=True)
-    grown = tracemalloc.get_traced_memory()[0] - before
-    tracemalloc.stop()
+    only_this_module = [
+        tracemalloc.Filter(
+            inclusive=True, filename_pattern=headers_sync.__file__, all_frames=True
+        )
+    ]
+
+    def held() -> int:
+        snapshot = tracemalloc.take_snapshot().filter_traces(only_this_module)
+        return sum(stat.size for stat in snapshot.statistics("filename"))
+
+    tracemalloc.start(25)
+    try:
+        before = held()
+        result = sync.process_next_headers(chain[:buffered], full_headers_message=True)
+        grown = held() - before
+    finally:
+        tracemalloc.stop()
     assert not result.pow_validated_headers
     assert len(sync._redownloaded_headers) == buffered
     assert grown < 128 * buffered
