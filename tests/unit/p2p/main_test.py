@@ -1328,6 +1328,36 @@ def test_a_message_that_does_not_parse_writes_one_short_line_without_a_traceback
     assert not node.p2p_manager.discouraged
 
 
+@pytest.mark.parametrize("handshake", [True, False])
+def test_a_parse_error_longer_than_200_characters_is_cut_at_200_in_the_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    handshake: bool,  # noqa: FBT001
+) -> None:
+    """The `net` line carries the first 200 characters of the exception."""
+    err_msg = "0123456789" * 30
+
+    def refuse(*_a: Any) -> None:
+        raise BTClibValueError(err_msg)
+
+    monkeypatch.setitem(
+        handshake_callbacks if handshake else callbacks, "verack", refuse
+    )
+    path = tmp_path / "history.log"
+    logger = Logger(path, debug=True, categories=("net",))
+    node, _stopped = make_node(
+        "handshake_messages" if handshake else "messages",
+        ("verack", b"", 0, 1, 0.0),
+        status=P2pConnStatus.Open if handshake else P2pConnStatus.Connected,
+        logger=logger,
+    )
+    (handle_p2p_handshake if handshake else handle_p2p)(node)
+    logger.close()
+    text = path.read_text(encoding="utf-8")
+    (line,) = [line for line in text.splitlines() if "failed" in line]
+    assert line.endswith(f" failed ({err_msg[:200]}), peer not discouraged")
+
+
 def test_a_message_that_does_not_parse_writes_nothing_without_net_debug(
     tmp_path: Path,
 ) -> None:
