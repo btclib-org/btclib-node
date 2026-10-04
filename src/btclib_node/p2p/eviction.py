@@ -289,11 +289,15 @@ _CJDNS_PREFIX = 0xFC
 def _ip(address: NetworkAddressV2) -> _IP:
     """Return the peer's IP, an IPv4 one mapped into IPv6 taken as IPv4.
 
-    `network_address` gives every IP address as IPv6, an IPv4 one
-    mapped; Core parses a mapped address as IPv4
-    (`CNetAddr::SetLegacyIPv6`), and so does this.
+    Core parses a mapped address as IPv4 (`CNetAddr::SetLegacyIPv6`), and
+    so does this. The octets are read directly: `network_address` would
+    build the same IP and parse it again from text.
     """
-    ip = network_address(address).ip
+    if not can_addrv1(address):
+        network_address(address)  # raises: the network is no IP one
+    if address.network_id == BIP155Network.IPV4:
+        return IPv4Address(address.address)
+    ip = IPv6Address(address.address)
     return ip.ipv4_mapped or ip
 
 
@@ -392,7 +396,11 @@ def net_class(address: NetworkAddressV2) -> Network:
     prefix, as it does in Core, where accepting a peer parses its
     address through `SetLegacyIPv6`.
     """
-    ip = _ip(address)
+    return _ip_net_class(_ip(address))
+
+
+def _ip_net_class(ip: _IP) -> Network:
+    """Return `net_class` of an IP, already parsed from the address."""
     if ip in _INTERNAL:
         return Network.INTERNAL
     if not _is_routable(ip):
@@ -455,10 +463,11 @@ def net_group(address: NetworkAddressV2) -> bytes:
     if not can_addrv1(address):
         return _overlay_group(address)
     ip = _ip(address)
-    group = bytes([net_class(address)])
-    if ip in _INTERNAL:
+    net = _ip_net_class(ip)
+    group = bytes([net])
+    if net == Network.INTERNAL:
         return group + ip.packed[6:]
-    if not _is_routable(ip):
+    if net == Network.UNROUTABLE:
         return group
     ipv4 = _linked_ipv4(ip)
     if ipv4 is not None:

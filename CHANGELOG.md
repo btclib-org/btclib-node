@@ -209,6 +209,12 @@ leaving a parent's dust unspent is refused "missing-ephemeral-spends",
   or SIGTSTP writes every thread's stack to stderr**, and one that stops
   in time prints nothing (issue #1274).
 
+### `net_group` reads the address octets once
+
+- **`net_group` builds the IP from the octets**, where `network_address`
+  parsed it from text at each step, which slowed the address table's load
+  (closes #1708).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on
