@@ -218,9 +218,13 @@ step — and publishes the very files those checks passed to
    uv run --isolated --no-project --python 3.14 \
      --index https://test.pypi.org/simple/ \
      --index-strategy unsafe-best-match \
+     --refresh-package btclib-node \
      --with "btclib-node==${rehearsal:?}" \
      python -c "from btclib_node import Node; print(Node)"
    ```
+
+   `--refresh-package` makes uv read the index again rather than its cache,
+   which can miss a version just published.
 
 1. Check that the `build` job is green. It signs a rehearsal's files
    too, which is what it is here for: a permission or an API that only
@@ -322,10 +326,7 @@ this release included.
 
    **If `main` moves while the gates run, the default is to throw the
    branch away and redo these edits on top of it, and never to merge
-   `main` into it.** `CHANGELOG.md` and `RELEASE_NOTES.md` are
-   `merge=union`, so a change that opened a heading this release also
-   opens is fused into one section carrying that heading twice, and the
-   union driver reports no conflict for a reader to catch.
+   `main` into it.**
 
    The reset takes this release's edits away with it, so what follows is
    making them again on the new base: retitle, set the version, `uv lock`,
@@ -372,28 +373,6 @@ this release included.
    defect and, in `$scratch/expected.md`, the file that should have
    been there. `v2026.8.27` was rebased when #551 landed in front of
    the tag, and this is what licensed it.
-
-   **Two checks that look like this one and are not.** Both were
-   measured against a fused rebase and against a *misordered* one — the
-   same entry below the newly landed one instead of above it, with
-   every line intact:
-
-   - **The added and removed lines of the diff, compared before and
-     after the rebase, are necessary and not sufficient.** They catch a
-     fusion that ate a line and **pass** a pure misordering, the `+`
-     lines being the same sequence wherever they land. This paragraph
-     prescribed exactly that check until
-     [ISS btclib-org/btclib-node#561][iss-561] measured it;
-     btclib-org/.github#488 has the fuller scale it belongs to.
-   - **`git merge-tree --write-tree` is not a check at all.**
-     `merge-ort` reads `.gitattributes` from the trees it is merging,
-     applies the `union` driver, and writes the fused blob — exit `0`,
-     a tree id, and the defect inside it.
-
-   **The reconstruction is owed on a hand redo too.** `git reset
-   --hard` and retyping the edits is not immune: retitling a heading
-   the landed change also opened fuses it the same way, and nothing
-   about having typed it yourself says otherwise.
 
 1. Give the release pull request its title and its body, before merging
    it and not after. The title is the version; the body says what the
@@ -647,6 +626,15 @@ this release included.
    narrowing what passes. Each path verifies only the releases its own
    workflow signed.
 
+1. **Review the bestpractices.dev answers.** Refresh the saved answers
+   with `btclib-org/.github`'s `.github/scripts/bestpractices.py`, and run
+   its `--stale` and `--differ` to find what to read (section 10 of its
+   README). Read <https://www.bestpractices.dev/projects/14816> against the
+   release and update every answer it changed: the release notes and the
+   vulnerabilities it fixed, signed tags and assets, attestation names. Then
+   refresh the saved answers again. An advisory this repository publishes is
+   owed the same review.
+
 1. Open the next cycle: set a generic next version without the day
    (e.g. after `2026.8`, use `2026.9`) in `pyproject.toml`, through a
    pull request like any other, and re-lock so `uv.lock` agrees:
@@ -879,7 +867,6 @@ reading a mismatch as tampering:
 [iss-286]: https://github.com/btclib-org/btclib-node/issues/286
 [iss-504]: https://github.com/btclib-org/btclib-node/issues/504
 [iss-554]: https://github.com/btclib-org/btclib-node/issues/554
-[iss-561]: https://github.com/btclib-org/btclib-node/issues/561
 [iss-553]: https://github.com/btclib-org/btclib-node/issues/553
 [gh-105]: https://github.com/btclib-org/.github/issues/105
 [gh-745]: https://github.com/btclib-org/.github/issues/745

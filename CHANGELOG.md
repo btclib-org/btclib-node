@@ -36,6 +36,24 @@ keeps whichever shape it was written in.
   blocks allocated under a `headers_sync.py` frame**, not every thread's
   as `tracemalloc.get_traced_memory()` did (closes #1705).
 
+### The forms set a type, and the history files lose `merge=union`
+
+Each form sets an issue type, no kind label (issue btclib-org/.github#1584);
+the history files have no merge driver (issue btclib-org/.github#1582);
+a release reviews the bestpractices.dev answers (issue btclib-org/.github#1589).
+
+### The rehearsal install refreshes the index
+
+RELEASING.md installs the rehearsal with `--refresh-package btclib-node`,
+because uv can answer from a cached index and miss a version just published
+(issue btclib-org/.github#1595).
+
+### `--admin` waits for no required check
+
+`CONTRIBUTING.md`'s emergency paragraph says `--admin` skips the
+required checks too, and `REVIEWING.md`'s "hold the merge" excepts it
+(issue btclib-org/.github#1597).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on

@@ -288,8 +288,9 @@ record.** Then rely on it, and say whose it is. Two runs qualify: the
 workflows of the required checks, running beside a review on the same
 commit — `CONTRIBUTING.md` names which checks those are — and an author
 handing over a branch they gated themselves and said so. What is relied
-on is that those gates run and hold the merge, not the colour of a
-check, which stays none of a reviewer's business for the reason below.
+on is that those gates run and, except under the maintainer's `--admin`,
+hold the merge, not the colour of a check, which stays none of a
+reviewer's business for the reason below.
 
 The sha is the whole of the condition: a run on another tree is not a run
 on this one, so a rebase voids it — the branch was gated, and then the
@@ -337,8 +338,9 @@ one, is where the rule lives.
   go, not to be shortened.
 - If the branch was rebased: does `CHANGELOG.md` still say what the
   branch meant it to say, and the release notes with it where the
-  repository has them? Section 9 marks them `merge=union`, so they never
-  conflict and a rebase can put back a line the branch had removed.
+  repository has them? Section 9 says how a rebase conflict there is
+  resolved, and at git's default conflict style deleting the markers
+  loses a line both sides share.
 - Does the branch's own `CHANGELOG.md` entry sit **last in the open
   section**? Section 9 puts it there and `check-changelog` reads no
   position, so a green gate says nothing about it; `CONTRIBUTING.md` has
