@@ -99,6 +99,12 @@ and a parse by a reference timed beside it over the same input, in
 - **16 run at once and 64 queue; a request past that is answered `503`
   "Work queue depth exceeded"**, as with Core's defaults (issue #1622).
 
+### The kernel-source test reads the route when it runs
+
+- **`netif_test` asks the kernel for its source in the test, beside
+  `local_addresses()`, not at collection** (closes #1618). A network
+  change between the two no longer fails it.
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on

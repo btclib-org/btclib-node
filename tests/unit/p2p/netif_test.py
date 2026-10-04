@@ -169,10 +169,6 @@ def the_source_the_kernel_routes_from() -> IPv4Address | None:
         return IPv4Address(probe.getsockname()[0])
 
 
-# asked at import, so that the skip below is decided before the test runs
-_SOURCE = the_source_the_kernel_routes_from()
-
-
 class _Unrouted(socket.socket):
     """A socket whose `connect` finds no route, as a machine offline does."""
 
@@ -206,31 +202,69 @@ def test_the_probe_answers_the_source_or_none_without_a_route(
     assert the_source_the_kernel_routes_from() == source
 
 
+def _the_kernel_s_source() -> IPv4Address | None:
+    """Ask the kernel for its source when called, at the test, not before."""
+    return the_source_the_kernel_routes_from()
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="no getifaddrs (#1310)")
 @pytest.mark.parametrize(
-    ("source", "held"),
+    ("source_of", "held"),
     [
-        pytest.param(
-            _SOURCE,
-            True,
-            marks=pytest.mark.skipif(
-                _SOURCE is None, reason="no route off this machine"
-            ),
-            id="the kernel's source",
-        ),
-        pytest.param(_TEST_NET_1, False, id="TEST-NET-1"),
+        pytest.param(_the_kernel_s_source, True, id="the kernel's source"),
+        pytest.param(lambda: _TEST_NET_1, False, id="TEST-NET-1"),
     ],
 )
 def test_this_machine_s_addresses_hold_the_one_the_kernel_routes_from(
-    source: IPv4Address, *, held: bool
+    source_of: Callable[[], IPv4Address | None], *, held: bool
 ) -> None:
     """The real `getifaddrs`: IP addresses, no loopback, the source kept.
+
+    The source and the addresses are read together, in the test, so that a
+    network change between collection and run cannot split them.
 
     TEST-NET-1 is reserved for documentation, so no interface is meant to
     hold it: it runs the same lines where there is no route, and shows
     that the membership asked of the source can answer no.
     """
+    source = source_of()
     addresses = local_addresses()
+    if source is None:
+        pytest.skip("no route off this machine")
     assert all(isinstance(ip, (IPv4Address, IPv6Address)) for ip in addresses)
     assert not any(ip.is_loopback for ip in addresses)
     assert (source in addresses) is held
+
+
+def test_the_kernel_s_source_is_read_when_the_test_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A source read at collection, not at the run, would not be this one."""
+    moved = IPv4Address("198.51.100.1")
+    asked: list[None] = []
+
+    def probe() -> IPv4Address:
+        asked.append(None)
+        return moved
+
+    monkeypatch.setattr(
+        sys.modules[__name__], "the_source_the_kernel_routes_from", probe
+    )
+    monkeypatch.setattr(sys.modules[__name__], "local_addresses", lambda: [moved])
+    test_this_machine_s_addresses_hold_the_one_the_kernel_routes_from(
+        _the_kernel_s_source, held=True
+    )
+    assert len(asked) == 1
+
+
+def test_no_route_skips_the_kernel_s_source_case(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Where the machine has no route, the case skips at the run."""
+    monkeypatch.setattr(
+        sys.modules[__name__], "the_source_the_kernel_routes_from", lambda: None
+    )
+    with pytest.raises(pytest.skip.Exception):
+        test_this_machine_s_addresses_hold_the_one_the_kernel_routes_from(
+            _the_kernel_s_source, held=True
+        )
