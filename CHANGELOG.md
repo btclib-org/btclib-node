@@ -1986,6 +1986,22 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
   and `-datacarrier`, `-datacarriersize`, `-permitbaremultisig` and
   `-dustrelayfee` enforced** (closes #1382).
 
+### The release publishes the files the build job built
+
+- **The publish jobs, `github-release` and the `dist` job check the files
+  they download against the build job's digests**, and fail where a file
+  differs, is added or is missing (closes #1558).
+
+### The verification command takes `--source-ref` for every signer
+
+- **`SECURITY.md` and `RELEASING.md` say `reusable-attest.yml` takes it too**:
+  on v2026.9.24 the tag passes and `refs/heads/main` fails (issue #1558).
+
+### The smoke test of the `dist` job is unpinned, and `ASSURANCE_CASE.md` says so
+
+- **It runs after the build job and publishes nothing**, on a release
+  (issue #1558).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

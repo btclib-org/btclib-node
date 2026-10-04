@@ -77,12 +77,12 @@ source. The flag is required rather than a narrowing, the command
 refusing a genuine release without it, and `--source-ref` is what keeps a
 build of a branch from passing as the release. A release from v2026.9.24
 on, made before this repository called `reusable-build.yml`, was signed
-by `reusable-attest.yml`, named the same way without `--source-ref`.
-Through v2026.9.4 the signer is `release.yml` itself, so for those
-releases `signer` is `"$repo/.github/workflows/release.yml"`, and there
-the flag narrows what passes: without it an attestation from any
-workflow in this repository is accepted. No path verifies a release
-another signed. The signed statement is attached to the
+by `reusable-attest.yml`, named the same way. Through v2026.9.4 the
+signer is `release.yml` itself, so for those releases `signer` is
+`"$repo/.github/workflows/release.yml"`, and there `--signer-workflow`
+narrows what passes: without it an attestation from any workflow in this
+repository is accepted. All three take `--source-ref refs/tags/v<version>`.
+No path verifies a release another signed. The signed statement is attached to the
 release as well, as `<tag>.intoto.jsonl`, or as `<tag>.attestation.jsonl` on a
 release that carries that name instead, so `--bundle <that file>` runs the
 same check reading it from disk instead of asking GitHub for it; one
