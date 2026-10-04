@@ -344,7 +344,32 @@ class BlockDB:
             self.live[location.filename] = self.live.get(location.filename, 0) + 1
         for location in self.rev_patches.values():
             self.live[location.filename] = self.live.get(location.filename, 0) + 1
+        self._sweep_empty_files()
         self.logger.info("Finished Block database initialization")
+
+    def _sweep_empty_files(self) -> None:
+        # a stop inside `_release`, after the last `b` or `r` key of a
+        # file is deleted and before its `f` key is, leaves the file on
+        # disk and in `files` with nothing live in it. Core's
+        # `ScanAndUnlinkAlreadyPrunedFiles` unlinks the files its own
+        # block-file info records as empty at startup for the same
+        # reason. It runs only once Core has pruned; here `p` is written
+        # after the walk, so the first stop of all leaves it unset and
+        # the sweep cannot wait for it.
+        for filename in list(self.files):
+            if filename not in self.live and not self._is_current(filename):
+                self._unlink_file(filename)
+
+    def _is_current(self, filename: str) -> bool:
+        return Path(filename).stem == f"{self.file_index:06d}"
+
+    def _unlink_file(self, filename: str) -> None:
+        # unlink first and delete the `f` key last, so a stop between
+        # the two leaves a key without a file, which the sweep above
+        # removes again.
+        (self.data_dir / filename).unlink(missing_ok=True)
+        del self.files[filename]
+        self.db.delete(b"f" + filename.encode())
 
     def close(self) -> None:
         """Close the key-value store and any file still open for writing."""
@@ -626,7 +651,7 @@ class BlockDB:
             self.live[filename] = remaining
             return
         self.live.pop(filename, None)
-        if Path(filename).stem == f"{self.file_index:06d}":
+        if self._is_current(filename):
             return
         if (
             not is_block
@@ -635,6 +660,4 @@ class BlockDB:
         ):
             self.open_rev_file.close()
             self.open_rev_file = None
-        (self.data_dir / filename).unlink(missing_ok=True)
-        del self.files[filename]
-        self.db.delete(b"f" + filename.encode())
+        self._unlink_file(filename)

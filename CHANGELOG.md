@@ -2019,6 +2019,12 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
 - **`PreChecks`' `tx-size-small` is applied**, `-acceptnonstdtxn` or not
   (closes #1687).
 
+### A stop inside `BlockDB._release` leaves no pruned file behind
+
+- **`BlockDB` unlinks at startup every file nothing is live in** but the
+  one `file_index` names, as Core's `ScanAndUnlinkAlreadyPrunedFiles` does,
+  so a stop inside `_release` leaves no file in `current_usage` (closes #1621).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
