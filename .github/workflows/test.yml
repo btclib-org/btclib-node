@@ -154,6 +154,14 @@ on:
           or `sbom` in the same run would collide with that job's.
         type: boolean
         default: false
+      digests:
+        description: >
+          The `digests` output of reusable-build.yml, which the `dist`
+          job checks the downloaded files against when `use-signed-dist`
+          is set, so that what it verified is what release.yml publishes.
+          Ignored otherwise.
+        type: string
+        default: ""
   # the escape hatch, for a branch whose pull request is not open yet
   workflow_dispatch:
 
@@ -416,6 +424,17 @@ jobs:
         with:
           name: dist
           path: dist/
+      # the same check as the publish jobs make in release.yml: the files
+      # the checks below read are the ones the build job printed the
+      # digests of, and so the ones published
+      - name: Check the files are the ones the build job built
+        if: inputs.use-signed-dist
+        env:
+          DIGESTS: ${{ inputs.digests }}
+        shell: bash
+        run: |
+          sha256sum dist/* | LC_ALL=C sort -k2 \
+            | diff - <(printf '%s\n' "$DIGESTS" | grep -F '  dist/')
       # what the sdist normalizer and the bill-of-materials generator
       # below read. uv_build itself ignores it and stamps a fixed
       # timestamp into both archives, so nothing in this job is
@@ -465,8 +484,10 @@ jobs:
       - name: Checksum the distribution files
         if: ${{ !inputs.use-signed-dist }}
         run: sha256sum dist/* sbom/*
-      # before anything is installed: a step below runs third-party code, so
-      # the worst a compromised dependency can do here is fail this job
+      # this upload does not freeze `dist`: a later step can upload an
+      # artifact of the same name over it. A release does not publish
+      # this upload: its publish jobs check the files they download
+      # against the digests of release.yml's build job
       - name: Upload the distribution files
         if: ${{ !inputs.use-signed-dist }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -513,6 +534,11 @@ jobs:
       # would let an ordinary install resolve, and the fuller form below
       # would have failed on every run for a reason no floor bump here
       # could fix. #381's own "Done when" is what this step now clears
+      #
+      # The install is unpinned on purpose. It runs in this job, on the
+      # files the build job signed where release.yml set `use-signed-dist`,
+      # and this job publishes nothing, so an unpinned install cannot
+      # reach what is published
       - name: Smoke-test the wheel, installed on its own
         run: |
           cd "$RUNNER_TEMP"

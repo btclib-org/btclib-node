@@ -181,8 +181,12 @@ one change that makes this section live again.
    which `release.yml`'s `build` job calls, holds `id-token: write` too,
    for its own Sigstore exchange, and no environment: it signs the
    distribution files before either reviewed job starts, and signs only
-   files whose digests the build job printed. `pypi` is additionally
-   restricted to `v*` tags, which is the only ref its job runs on anyway.
+   files whose digests the build job printed. `publish-testpypi`,
+   `publish-pypi`, `github-release` and the `dist` job check what they
+   download against those digests, and fail where a file differs, is added
+   or is missing.
+   `pypi` is additionally restricted to `v*` tags, which is the only ref
+   its job runs on anyway.
 
    Self-review stays allowed: `prevent_self_review` is false on both
    environments, so whoever pushed the tag may approve its run without
@@ -725,7 +729,7 @@ gh attestation verify "sbom/btclib_node-${version:?}.cdx.json" \
 `reusable-build.yml`, and `--signer-workflow` is required: without it the
 command refuses the release. A tag from v2026.9.24 on, made before this
 repository called `reusable-build.yml`, was signed by
-`reusable-attest.yml`, with no `--source-ref`. A tag through v2026.9.4
+`reusable-attest.yml`, named the same way. A tag through v2026.9.4
 was signed by `release.yml` itself, and for one of those `signer` is
 `"$repo/.github/workflows/release.yml"`, the flag there only narrowing
 what passes. Each path verifies only the

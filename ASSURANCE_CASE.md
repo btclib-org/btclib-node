@@ -375,7 +375,10 @@ and what counters each.
 - **Supply chain.** SECURITY.md's *Supported versions* describes the
   attestations. `uv.lock` pins every dependency of an install from the
   checkout, and the suite and the lint gate install with `--locked`
-  (`CONTRIBUTING.md`'s own commands). A release ships floors, not pins,
+  (`CONTRIBUTING.md`'s own commands). The smoke test in `test.yml`'s `dist`
+  job installs the wheel unpinned, deliberately; on a release that job
+  runs after the build job, on the files that job signed, and publishes
+  nothing. A release ships floors, not pins,
   so `pip install btclib-node` gets the newest version each floor
   admits. `deps-latest.yml` and `deps-oldest.yml` resolve fresh,
   deliberately, so a break in what the lock hides is caught on a

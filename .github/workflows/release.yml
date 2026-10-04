@@ -155,6 +155,8 @@ jobs:
       concurrency-suffix: "-release"
       # the files the dist job checks are the ones the build job signed
       use-signed-dist: true
+      # and refuses them unless their digests are the ones the build job printed
+      digests: ${{ needs.build.outputs.digests }}
 
   # and the same checks a pull request lints with: without this, a tag
   # push could publish code the pre-commit hooks reject. Not gated on
@@ -186,7 +188,7 @@ jobs:
     # btclib-org/btclib#1461 is where this exact shape blocked
     # publish-testpypi from ever starting, on the first cycle to run
     # public-api against a real breaking change
-    needs: [public-api, audit, test, lint, docs]
+    needs: [build, public-api, audit, test, lint, docs]
     if: >-
       always() && github.event_name == 'workflow_dispatch' &&
       github.repository == 'btclib-org/btclib-node' &&
@@ -206,6 +208,16 @@ jobs:
         with:
           name: dist
           path: dist/
+      # a job that ran after the build could have uploaded another
+      # artifact named `dist`: what is published is the files the build
+      # job printed the digests of, or nothing
+      - name: Check the files are the ones the build job built
+        env:
+          DIGESTS: ${{ needs.build.outputs.digests }}
+        shell: bash
+        run: |
+          sha256sum dist/* | LC_ALL=C sort -k2 \
+            | diff - <(printf '%s\n' "$DIGESTS" | grep -F '  dist/')
       # generates PEP 740 attestations by default
       - name: Publish to TestPyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
@@ -222,7 +234,7 @@ jobs:
     # See publish-testpypi's own comment: public-api stays a need for
     # ordering, not for its result, the same issue applying to a tag
     # push as to a rehearsal
-    needs: [public-api, audit, test, lint, docs]
+    needs: [build, public-api, audit, test, lint, docs]
     if: >-
       always() && github.event_name == 'push' &&
       github.repository == 'btclib-org/btclib-node' &&
@@ -244,6 +256,16 @@ jobs:
         with:
           name: dist
           path: dist/
+      # a job that ran after the build could have uploaded another
+      # artifact named `dist`: what is published is the files the build
+      # job printed the digests of, or nothing
+      - name: Check the files are the ones the build job built
+        env:
+          DIGESTS: ${{ needs.build.outputs.digests }}
+        shell: bash
+        run: |
+          sha256sum dist/* | LC_ALL=C sort -k2 \
+            | diff - <(printf '%s\n' "$DIGESTS" | grep -F '  dist/')
       # generates PEP 740 attestations by default
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
@@ -293,6 +315,8 @@ jobs:
     uses: btclib-org/.github/.github/workflows/reusable-github-release.yml@main
     with:
       dist-artifact: dist
+      # refuses the files unless their digests are the ones the build job printed
+      digests: ${{ needs.build.outputs.digests }}
 
   # the sentinel on the documentation, which nothing else here asks
   # about:

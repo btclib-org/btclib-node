@@ -651,6 +651,7 @@ package = ["src/btclib_node"]
 # `tests/interpreters_test.py` reads pyproject.toml, .python-version and
 # the CI files against one another, `tests/property_test.py` draws
 # unconstrained octets against the entry points those harnesses declare,
+# `tests/release_digests_test.py` reads release.yml and test.yml,
 # `tests/sdist_dotted_names_test.py` reads source-exclude below against
 # `git ls-files`, and the rest load a script under .github/scripts/ by
 # path -- so each mirrors no module of the package and drives no node.
@@ -681,6 +682,7 @@ testpaths = [
     "tests/interpreters_test.py",
     "tests/pragma_test.py",
     "tests/property_test.py",
+    "tests/release_digests_test.py",
     "tests/sdist_dotted_names_test.py",
     "tests/unit",
     "tests/functional",
