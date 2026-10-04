@@ -186,6 +186,12 @@ as a note, and its `http` and `rpc` categories are logged (issue #1307).
   the document's, in place of a component count that had gone stale**
   (closes #1733).
 
+### `check-changelog` refuses an entry added to an older release
+
+- **A `###` heading under a release older than the newest, absent from
+  the file at the merge base with `origin/main`, is refused**
+  (issue btclib-org/.github#1614).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on
