@@ -2025,6 +2025,12 @@ publish jobs wait for approval (issue btclib-org/.github#1506).
   one `file_index` names, as Core's `ScanAndUnlinkAlreadyPrunedFiles` does,
   so a stop inside `_release` leaves no file in `current_usage` (closes #1621).
 
+### A transaction is asked of one announcer at a time, after Core's delays
+
+- **A transaction is asked of one announcer at a time, as `TxRequestTracker`
+  does in Core, after Core's three delays** (closes #1196), where every
+  announcer was asked at the next step.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

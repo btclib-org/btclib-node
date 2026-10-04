@@ -757,13 +757,6 @@ class Connection:
         # check always treats as due. btclib-org/btclib-node#141
         self.tx_announce_queue: list[bytes] = []
         self.next_inv_send_time: float = 0.0
-        # hash -> when this peer was asked for it, so a `notfound` this
-        # node receives has something to clear and a second `getdata` for
-        # the same hash is not sent while the first is still outstanding.
-        # The hash is a wtxid for a peer that sent `wtxidrelay`, a txid
-        # for one that did not.
-        # btclib-org/btclib-node#144
-        self.tx_requested: dict[bytes, float] = {}
 
         # What this node last told this peer its own minimum relay
         # feerate is, and when it may next say so again -- Core's own
