@@ -262,6 +262,19 @@ and costs nothing to move past.
   #1329), as Core does: an array of fewer than 1 or more than 25 is refused
   with `-8`, and the first element of the wrong type (`-3`) or that does not
   decode (`-22`) ends the call, where it answered one entry per element.
+- **The Python API under `btclib_node` changed in about sixty more places**
+  (issue #1685), for a program that imports it. `release.yml`'s
+  `public-api` job lists each against `v2026.9.24`. Among them:
+  `rpc.connection.RequestHead` and `RpcConnection`'s send methods;
+  `RpcManager.server`, which takes a list of sockets; `Chain.__init__`,
+  which requires `fixed_seeds`, `headers_sync_params` and
+  `min_bip9_warning_height`; `BlockIndex.get_download_candidates`,
+  `BlockIndex.get_headers_from_locators` and `MAX_DOWNLOAD_WINDOW`, gone;
+  `PeerDB`'s DNS and sampling helpers, gone; and `Config`'s `rpc_host`,
+  whose default is now `None`.
+- **An HTTP header section over 8192 bytes is refused**, as Core's
+  libevent does; it was 65536. A JSON-RPC client sending larger headers
+  has to trim them.
 
 ### Worth knowing, though nothing raises
 
