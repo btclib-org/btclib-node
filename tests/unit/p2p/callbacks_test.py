@@ -166,6 +166,7 @@ from tests import (
     log_recorder,
 )
 from tests.conftest import unstarted_node_context
+from tests.unit.main_test import a_dusty_spend
 from tests.unit.rpc.callbacks_test import a_node_holding, a_twin
 
 if TYPE_CHECKING:
@@ -2520,6 +2521,21 @@ def test_a_held_txid_under_another_witness_is_refused_as_held(
     assert node.mempool.was_recently_rejected(twin.hash)
     assert node.mempool.contains_tx(held)
     assert node.download_manager.received_txs == []
+
+
+def test_a_dust_output_that_pays_a_fee_is_refused_and_not_relayed(
+    regtest_node: Callable[[], Node],
+) -> None:
+    """A peer's spend with a dust output and a fee is recorded as refused.
+
+    Core's `PreCheckEphemeralTx` (btclib-org/btclib-node#1594).
+    """
+    node = regtest_node()
+    dusty = a_dusty_spend(node, 1_000)
+    node.is_initial_block_download = False
+    tx(node, TxMsg(dusty, include_witness=True).serialize(), a_peer(id=3))
+    assert node.mempool.was_recently_rejected(dusty.hash)
+    assert not node.mempool.contains_tx(dusty)
 
 
 def test_a_fee_refusal_is_recorded_and_the_peer_kept(

@@ -111,6 +111,12 @@ and a parse by a reference timed beside it over the same input, in
   `FindTxForGetData` does from `m_most_recent_block_txs`**, by txid or by
   wtxid, where it was `notfound` once the mempool dropped it (closes #1607).
 
+### A transaction with a dust output must pay no fee
+
+- **A candidate with a dust output and a fee is refused "dust", "tx with dust
+  output must be 0-fee", a reorg's re-add included, as Core's
+  `PreCheckEphemeralTx` refuses it** (closes #1594).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on
