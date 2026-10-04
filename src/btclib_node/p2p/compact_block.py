@@ -10,13 +10,14 @@ sends one to a high-bandwidth peer. `callbacks` imports `main`, so the
 function cannot live there.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from btclib.p2p.compact_blocks import CmpctBlock, PrefilledTransaction
 
 if TYPE_CHECKING:
     from btclib.block import Block
+    from btclib.tx import Tx
 
 __all__ = ["MostRecentBlock", "compact_block"]
 
@@ -27,11 +28,23 @@ class MostRecentBlock:
 
     Core's `m_most_recent_block` and `m_most_recent_compact_block`
     (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-    tag), which `m_most_recent_block_hash` names.
+    tag), which `m_most_recent_block_hash` names. `txs` is Core's
+    `m_most_recent_block_txs`, built with them: every transaction of the
+    block under its txid and under its wtxid, the two kept apart as
+    Core's `GenTxid` does.
     """
 
     block: Block
     compact: CmpctBlock
+    txs: dict[tuple[bool, bytes], Tx] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        """Index the block's transactions by txid and by wtxid."""
+        txs: dict[tuple[bool, bytes], Tx] = {}
+        for tx in self.block.transactions:
+            txs.setdefault((False, tx.id), tx)
+            txs.setdefault((True, tx.hash), tx)
+        object.__setattr__(self, "txs", txs)
 
     @property
     def hash(self) -> bytes:

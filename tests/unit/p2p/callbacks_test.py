@@ -142,7 +142,7 @@ from btclib_node.p2p.chain_sync import (
     ChainSyncTimeoutState,
     disconnect_if_insufficient_work,
 )
-from btclib_node.p2p.compact_block import compact_block
+from btclib_node.p2p.compact_block import MostRecentBlock, compact_block
 from btclib_node.p2p.connection import Connection, PeerStats
 from btclib_node.p2p.headers_sync import HeadersSyncState, State
 from btclib_node.p2p.permissions import NetPermissionFlags
@@ -4118,6 +4118,60 @@ def test_getblocktxn_is_answered_with_the_transactions_asked_for() -> None:
     getblocktxn(node, GetBlockTxn(wanted, [1, 3]).serialize(), peer)
     (answer,) = peer.sent
     assert answer == BlockTxn(wanted, [block.transactions[1], block.transactions[3]])
+
+
+@pytest.mark.parametrize(
+    ("type_code", "by_wtxid", "witness"),
+    [
+        (InventoryType.MSG_TX, False, False),
+        (InventoryType.MSG_WITNESS_TX, False, True),
+        (InventoryType.MSG_WTX, True, True),
+    ],
+)
+def test_a_transaction_of_the_most_recent_block_is_served(
+    *, type_code: InventoryType, by_wtxid: bool, witness: bool
+) -> None:
+    """ISS 1607: `FindTxForGetData` falls back to `m_most_recent_block_txs`.
+
+    It holds every transaction under its txid and its wtxid, the mempool
+    holds none of them here, and the coinbase is served like the rest.
+    """
+    block = a_block_with_transactions(2)
+    node = a_data_node()
+    node.most_recent_block = MostRecentBlock(block, compact_block(block, 99))
+    for held in block.transactions:
+        peer = a_peer()
+        item = Inventory(type_code, held.hash if by_wtxid else held.id)
+        getdata(node, GetData([item]).serialize(), peer)
+        assert peer.sent == [TxMsg(held, include_witness=witness)]
+
+
+def test_a_transaction_of_the_most_recent_block_is_not_found_by_the_other_id() -> None:
+    """ISS 1607: Core's map is keyed on `GenTxid`, a txid and a wtxid apart."""
+    block = a_block_with_transactions(1)
+    tx = block.transactions[1]
+    assert tx.id != tx.hash
+    node = a_data_node()
+    node.most_recent_block = MostRecentBlock(block, compact_block(block, 99))
+    for type_code, identifier in (
+        (InventoryType.MSG_TX, tx.hash),
+        (InventoryType.MSG_WTX, tx.id),
+    ):
+        peer = a_peer()
+        item = Inventory(type_code, identifier)
+        getdata(node, GetData([item]).serialize(), peer)
+        assert peer.sent == [NotFound([item])]
+
+
+def test_a_transaction_of_the_most_recent_block_needs_a_peer_that_relays() -> None:
+    """ISS 1607: `ProcessGetData` skips transaction items for such a peer."""
+    block = a_block_with_transactions(1)
+    node = a_data_node()
+    node.most_recent_block = MostRecentBlock(block, compact_block(block, 99))
+    peer = a_peer(relay_tx=False)
+    item = Inventory(InventoryType.MSG_WTX, block.transactions[1].hash)
+    getdata(node, GetData([item]).serialize(), peer)
+    assert not peer.sent
 
 
 def test_getblocktxn_for_the_most_recent_block_needs_no_lookup() -> None:

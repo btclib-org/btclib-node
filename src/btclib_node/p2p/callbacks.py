@@ -1682,6 +1682,18 @@ def _below_prune_threshold(node: Node, block_hash: bytes) -> bool:
     return tip_height - block_info.index > MIN_BLOCKS_TO_KEEP + 2
 
 
+def _find_tx_for_getdata(node: Node, tx_hash: bytes, *, wtxid: bool) -> Tx | None:
+    """Return the mempool's transaction, else the most recent block's.
+
+    Core's `FindTxForGetData`: the most recent block's transactions are
+    `m_most_recent_block_txs`.
+    """
+    tx = node.mempool.get_tx(tx_hash, wtxid=wtxid)
+    if tx is None and node.most_recent_block is not None:
+        tx = node.most_recent_block.txs.get((wtxid, tx_hash))
+    return tx
+
+
 def _serve_getdata_item(
     node: Node,
     conn: Connection,
@@ -1706,7 +1718,7 @@ def _serve_getdata_item(
         if not conn.relay_tx:
             return not_found_bytes
         wtxid = item.type_code == InventoryType.MSG_WTX
-        tx = node.mempool.get_tx(item.hash, wtxid=wtxid)
+        tx = _find_tx_for_getdata(node, item.hash, wtxid=wtxid)
         if tx:
             include_witness = item.type_code in (
                 InventoryType.MSG_WITNESS_TX,
@@ -1769,8 +1781,9 @@ def advance_getdata(node: Node, conn: Connection, items: deque[Inventory]) -> bo
     pops what it serves off the front of the same `deque`, the shape
     `advance_cfilters` below already gives `get_cfilters`.
 
-    A transaction is served from the mempool only if the peer wants it
-    relayed, answered `notfound` on a miss; a requested block not held
+    A transaction is served from the mempool, then from the most recent
+    block, only if the peer wants it relayed, answered `notfound` on a
+    miss; a requested block not held
     is silent. Both match Core -- BIP37's `fRelay` is written about
     announcements, "broadcast transactions will not be announced", and
     says nothing about a transaction a peer asks for by hash, but Core
