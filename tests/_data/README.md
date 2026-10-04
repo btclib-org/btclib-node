@@ -113,3 +113,23 @@ no upstream copy to fall out of step with:
 ```shell
 uv run pytest tests/unit/chainstate/filter_index_test.py -k scale
 ```
+
+## `tests/unit/chainstate/_data/regtest_hash_serialized_3.json`
+
+Not vendored -- derived. A regtest chain of 103 blocks mined by Bitcoin
+Core v31.1.0 (`bitcoind -regtest`, `setmocktime 1700000000`): 101 blocks
+to a wallet address, a block holding one transaction with 301 outputs,
+and a block spending two of them (outputs 3 and 270). `blocks` is each
+block as `getblock <hash> 0` printed it, heights 1 to 103, and
+`gettxoutsetinfo` is that node's own answer to `gettxoutsetinfo` and
+`gettxoutsetinfo muhash` at height 103, the fields the tests compare.
+
+The hashes are Core's, not this tree's. The wide transaction is what
+makes the vector check the order the coins are folded in: the store
+sorts output 256 before output 1, and Core's `ComputeUTXOStats` sorts
+them numerically. There is no upstream copy to pin; the tests that read
+the file are the check:
+
+```shell
+uv run pytest tests/unit/chainstate/utxo_index_test.py -k serialized_hash
+```

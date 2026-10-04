@@ -52,6 +52,13 @@ a call stays on `Node`'s thread, which owns the state it reads: it is a
 generator, and the loop runs it a step at a time, serving peers and
 other requests between steps. `src/btclib_node/rpc/main.py` has how.
 
+`gettxoutsetinfo` with `hash_serialized_3`, Core's default, is the one
+call whose work leaves `Node`'s thread. `Node`'s thread flushes the
+chainstate and opens a cursor over the stored coins, whose view RocksDB
+fixes there; a thread of the call's own hashes them, reading no state of
+`Node`'s but `terminate_flag`, and the call is a generator waiting for
+it, as the others are. `stop` ends the scan at its next coin.
+
 ## The transport
 
 `src/btclib_node/p2p/transport.py` frames messages for v1 and

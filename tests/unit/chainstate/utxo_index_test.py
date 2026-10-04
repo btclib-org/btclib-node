@@ -10,10 +10,14 @@ block either still staged or already written, and persistence across a
 restart.
 """
 
+import hashlib
+import json
+from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import pytest
+from btclib.block import Block
 from btclib.script import script
 from btclib.tx.out_point import OutPoint
 from btclib.tx.tx import Tx
@@ -38,8 +42,11 @@ _BIP30_ORIGINAL_HASH = bytes.fromhex(
     "00000000000271a2dc26e7667f8419f2e15416dc6955e5a6c6cdf3f2574dd08e"
 )
 
-if TYPE_CHECKING:
-    from pathlib import Path
+# Core v31.1.0's `gettxoutsetinfo` over the regtest chain these blocks
+# make (`tests/_data/README.md` says how it was made)
+_CORE_VECTOR = json.loads(
+    (Path(__file__).parent / "_data" / "regtest_hash_serialized_3.json").read_text()
+)
 
 
 def test_long_init(tmp_path: Path) -> None:
@@ -908,4 +915,113 @@ def test_apply_rev_block_never_restores_an_output_it_never_stored(
 
     utxo_index.apply_rev_block(rev_block)
     assert key not in utxo_index.updated_utxo_set
+    chainstate.close()
+
+
+def test_serialized_hash_is_core_s_over_a_chain_with_a_wide_transaction(
+    tmp_path: Path,
+) -> None:
+    """The stored set hashes to what Core's `gettxoutsetinfo` answered.
+
+    One transaction of the chain has 301 outputs, two of them spent in
+    the next block: the store sorts an index of 256 or more before one
+    of 1, as little-endian bytes, where Core folds them in numerically.
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+    for height, block_hex in enumerate(_CORE_VECTOR["blocks"], start=1):
+        block = Block.parse(bytes.fromhex(block_hex), check_validity=False)
+        utxo_index.add_block(block, height)
+    utxo_index.finalize()
+
+    expected = _CORE_VECTOR["gettxoutsetinfo"]
+    serialized_hash = utxo_index.serialized_hash(utxo_index.cursor())
+    assert serialized_hash is not None
+    assert serialized_hash[::-1].hex() == expected["hash_serialized_3"]
+    assert utxo_index.coin_stats.digest[::-1].hex() == expected["muhash"]
+    assert utxo_index.coin_stats.transaction_output_count == expected["txouts"]
+    chainstate.close()
+
+
+def test_serialized_hash_of_an_empty_set_is_the_double_hash_of_nothing(
+    tmp_path: Path,
+) -> None:
+    """No coin is `HashWriter{}`'s `GetHash()`: SHA256d of no bytes."""
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    assert (
+        chainstate.utxo_index.serialized_hash(chainstate.utxo_index.cursor())
+        == hashlib.sha256(hashlib.sha256(b"").digest()).digest()
+    )
+    chainstate.close()
+
+
+def test_serialized_hash_is_none_for_a_stored_coin_that_does_not_parse(
+    tmp_path: Path,
+) -> None:
+    """A checksum-clean record `Coin.parse` cannot read leaves no hash.
+
+    Core's cursor fails to read the value, and `ComputeUTXOStats`
+    answers no stats (`src/kernel/coinstats.cpp`).
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+    funding = coinbase(b"\x24")
+    utxo_index.add_block(one_tx_block([funding], b"\x24" * 32), 1)
+    utxo_index.finalize()
+    key = b"utxo-" + OutPoint(funding.id, 0).serialize(check_validity=False)
+    stored = utxo_index.db.get(key)
+    assert stored is not None
+    utxo_index.db.put(key, stored[:1])
+
+    assert utxo_index.serialized_hash(utxo_index.cursor()) is None
+    chainstate.close()
+
+
+def test_serialized_hash_calls_the_interruption_point_per_coin(tmp_path: Path) -> None:
+    """Core's `interruption_point` runs per coin and ends the walk."""
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+    for height, tag in enumerate((b"\x31", b"\x32", b"\x33"), start=1):
+        utxo_index.add_block(one_tx_block([coinbase(tag)], tag * 32), height)
+    utxo_index.finalize()
+    calls: list[int] = []
+
+    def interrupt() -> None:
+        calls.append(1)
+        if len(calls) == 2:
+            err_msg = "interrupted"
+            raise RuntimeError(err_msg)
+
+    with pytest.raises(RuntimeError, match="interrupted"):
+        utxo_index.serialized_hash(utxo_index.cursor(), interrupt)
+    assert len(calls) == 2
+    chainstate.close()
+
+
+def test_the_cursor_is_the_stored_set_as_it_was_opened(tmp_path: Path) -> None:
+    """A block written after the cursor is opened is not in what it walks.
+
+    Core's `CCoinsViewDB::Cursor` reads an implicit LevelDB snapshot, and
+    this is the same property of a RocksDB iterator: the hash of the
+    cursor does not move when the set does.
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+    funding = coinbase(b"\x34")
+    utxo_index.add_block(one_tx_block([funding], b"\x34" * 32), 1)
+    utxo_index.finalize()
+    cursor = utxo_index.cursor()
+    expected = utxo_index.serialized_hash(utxo_index.cursor())
+
+    utxo_index.add_block(
+        one_tx_block(
+            [coinbase(b"\x35"), spending(OutPoint(funding.id, 0), b"\x35")],
+            b"\x35" * 32,
+        ),
+        2,
+    )
+    utxo_index.finalize()
+
+    assert utxo_index.serialized_hash(utxo_index.cursor()) != expected
+    assert utxo_index.serialized_hash(cursor) == expected
     chainstate.close()

@@ -10,9 +10,12 @@ validates against -- and the `block_db.RevBlock` a reorg away from this
 block would need to undo it.
 """
 
+import hashlib
 from typing import TYPE_CHECKING, Any
 
+from btclib.coinstats import tx_out_ser
 from btclib.exceptions import BTClibValueError
+from btclib.hashes import sha256
 from btclib.tx.out_point import OutPoint
 
 from btclib_node.block_db import Coin, RevBlock
@@ -24,6 +27,8 @@ from btclib_node.chainstate.muhash import (
 from btclib_node.exceptions import ChainstateInconsistencyError, InvalidBlockInputError
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
+
     from btclib.block import Block
     from btclib.tx.tx import Tx
 
@@ -632,6 +637,74 @@ class UtxoIndex:
         self.removed_utxos = set()
         self.updated_utxo_set = {}
         self._undo_log = []
+
+    def cursor(self) -> Iterator[tuple[bytes, bytes]]:
+        """Return a cursor over the stored `utxo-` records, as they are now.
+
+        Core's `CCoinsViewDB::Cursor`: the view is fixed when this
+        returns, so a block connected or a flush made while the cursor is
+        walked, on any thread, does not reach it (`KeyValueStore.scan_prefix`).
+        It sees what is written, not what is staged, so a caller flushes
+        first, as Core's `gettxoutsetinfo` does (`ForceFlushStateToDisk`).
+        """
+        return self.db.scan_prefix(b"utxo-")
+
+    @staticmethod
+    def _by_txid(
+        cursor: Iterator[tuple[bytes, bytes]],
+    ) -> Iterator[list[tuple[int, bytes, bytes]]]:
+        """Yield each txid's `(n, out_point_bytes, value)` rows, `n` ascending.
+
+        The store sorts `utxo-` keys by txid and then by the bytes of a
+        little-endian output index, which is not `n` for an index of 256
+        or more, so each txid's rows are sorted again here. Core's
+        `ComputeUTXOStats` collects one txid's outputs into a
+        `std::map<uint32_t, Coin>` for the same reason
+        (`src/kernel/coinstats.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+        v31.1 tag), and the txid bytes order the same in both stores.
+        """
+        txid = b""
+        rows: list[tuple[int, bytes, bytes]] = []
+        for key, value in cursor:
+            out_point_bytes = key[len(b"utxo-") :]
+            if out_point_bytes[:32] != txid and rows:
+                yield sorted(rows)
+                rows = []
+            txid = out_point_bytes[:32]
+            n = int.from_bytes(out_point_bytes[32:], "little")
+            rows.append((n, out_point_bytes, value))
+        if rows:
+            yield sorted(rows)
+
+    @staticmethod
+    def serialized_hash(
+        cursor: Iterator[tuple[bytes, bytes]],
+        interruption_point: Callable[[], None] = lambda: None,
+    ) -> bytes | None:
+        """Return Core's `hash_serialized_3` over `cursor`'s coins, or `None`.
+
+        SHA256d over `tx_out_ser` of every coin, in `_by_txid`'s order:
+        `ApplyHash` over `ComputeUTXOStats`' cursor
+        (`src/kernel/coinstats.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+        v31.1 tag). The digest is `HashWriter::GetHash`'s own byte order,
+        reversed for the hex `uint256::GetHex` prints.
+
+        `interruption_point` is called once per coin, and what it raises
+        ends the walk, as Core's `node.rpc_interruption_point` does.
+        `None` is a stored record that does not parse, where Core's
+        cursor fails to read the value and `ComputeUTXOStats` returns no
+        stats.
+        """
+        hasher = hashlib.sha256()
+        for rows in UtxoIndex._by_txid(cursor):
+            for _, out_point_bytes, value in rows:
+                interruption_point()
+                try:
+                    coin = Coin.parse(value, check_validity=False)
+                except BTClibValueError:
+                    return None
+                hasher.update(tx_out_ser(out_point_bytes, coin))
+        return sha256(hasher.digest())
 
     def rollback(self, mark: int = 0) -> None:
         """Undo every mutation recorded since `mark`, in reverse.
