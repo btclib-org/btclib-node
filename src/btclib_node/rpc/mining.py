@@ -101,17 +101,15 @@ def _address_script(node: Node, text: str) -> ScriptPubKey | None:
     return here if same else None
 
 
-# an extended key as written in a descriptor, whatever follows it. A stopgap
-# for btclib-org/btclib-wallet#180: once `parse` refuses a key of another
-# network, as Core's `Parse` does, this and its helper go
+# an extended key as written in a descriptor, whatever follows it
 _EXTENDED_KEY = re.compile(r"[a-zA-Z]{4}[1-9A-HJ-NP-Za-km-z]{100,}")
 
 
 def _has_key_of_another_chain(node: Node, text: str) -> bool:
     """Say whether `text` holds an extended key that is not this chain's.
 
-    Core refuses it in `Parse`, before any other check; btclib refuses it
-    only on expansion, which a hardened step or a multipath would preempt.
+    Core refuses it in `Parse`, before any other check; btclib_wallet's
+    `parse` refuses a multipath expression first.
     """
     for key in _EXTENDED_KEY.findall(text):
         prv_keys: dict[str, str] = {}
@@ -131,11 +129,7 @@ def _descriptor_script(node: Node, text: str) -> ScriptPubKey | None:
     scripts, or four for an uncompressed key, and the p2wpkh one is taken
     from four and the p2pkh one from two.
 
-    Where this differs from Core: a WIF of another chain is not refused
-    here, where Core's `Parse` refuses it, because btclib_wallet's `parse`
-    does not check a WIF's network (btclib-org/btclib-wallet#180). A
-    descriptor holding one mines, or answers the next check's error in
-    place of Core's -5. An extended key of another chain is refused, by
+    A key of another chain is refused: a WIF by `parse`, an extended key by
     `_has_key_of_another_chain`.
     """
     # Core's order: a key of another chain fails `Parse`, then a multipath

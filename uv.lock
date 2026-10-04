@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.14"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -241,16 +241,16 @@ wheels = [
 
 [[package]]
 name = "btclib"
-version = "2026.10.3"
+version = "2026.10.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "bitcoin-core-rpc" },
     { name = "btclib-ecc" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ec/d1/ea50285e5e2f636f8232c7faa28b8addf3054fe41d38a1e9a954aca132bf/btclib-2026.10.3.tar.gz", hash = "sha256:95c95323ff3f23da340ea8a11a55feaf82654201d2fb40a099e7af9e80467148", size = 7358879, upload-time = "2026-10-03T07:18:23.635Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/73/df/8aa7c2a3a48fc44a478dd00d44e6aee046e8913194700bacb3fd2d243978/btclib-2026.10.4.tar.gz", hash = "sha256:4192c57e838497830e05c1cfc30ecf55023505b76246037e525ce5477cbe7096", size = 7367248, upload-time = "2026-10-03T22:09:33.458Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b9/e6/9391452256e048f5647be4a98dec0a90631c57fbf28e4341eefd49fbf169/btclib-2026.10.3-py3-none-any.whl", hash = "sha256:f9d935b7ed7c9945dc44428027516ca4e2e0cfeabf4ffd09c4565fdec6623341", size = 430920, upload-time = "2026-10-03T07:18:21.894Z" },
+    { url = "https://files.pythonhosted.org/packages/e1/b9/746635fd0f5da2d805be2a89fec4bc7ef943de98c6262a182d3cf36a804f/btclib-2026.10.4-py3-none-any.whl", hash = "sha256:364e7384f351859d9c19ff12ff3c951e7cf72eee7a04c52ba4ad0429081b6aa6", size = 432143, upload-time = "2026-10-03T22:09:30.227Z" },
 ]
 
 [package.optional-dependencies]
@@ -372,8 +372,8 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "bitcoin-core-rpc", specifier = ">=2026.9.3" },
-    { name = "btclib", extras = ["secp256k1", "bip324"], specifier = ">=2026.10.3" },
-    { name = "btclib-wallet", specifier = ">=2026.9.30" },
+    { name = "btclib", extras = ["secp256k1", "bip324"], specifier = ">=2026.10.4" },
+    { name = "btclib-wallet", specifier = ">=2026.10.4" },
     { name = "rocksdict", specifier = ">=0.3.29" },
 ]
 
@@ -388,8 +388,8 @@ check = [
 dev = [
     { name = "atheris", marker = "sys_platform == 'linux'", specifier = ">=3.1.0" },
     { name = "bitcoin-core-rpc", specifier = ">=2026.8.29" },
-    { name = "btclib-ecc", specifier = ">=2026.9.26" },
-    { name = "btclib-secp256k1", specifier = ">=0.8.0.8" },
+    { name = "btclib-ecc", specifier = ">=2026.10.2" },
+    { name = "btclib-secp256k1", specifier = ">=0.8.0.10" },
     { name = "check-sdist", specifier = ">=1.6.0" },
     { name = "check-wheel-contents", specifier = ">=0.6.3" },
     { name = "cosmic-ray", specifier = ">=8.7.0" },
@@ -432,8 +432,8 @@ lint = [
 mutation = [{ name = "cosmic-ray", specifier = ">=8.7.0" }]
 test = [
     { name = "bitcoin-core-rpc", specifier = ">=2026.8.29" },
-    { name = "btclib-ecc", specifier = ">=2026.9.26" },
-    { name = "btclib-secp256k1", specifier = ">=0.8.0.8" },
+    { name = "btclib-ecc", specifier = ">=2026.10.2" },
+    { name = "btclib-secp256k1", specifier = ">=0.8.0.10" },
     { name = "hypothesis", specifier = ">=6.140.3" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
@@ -445,55 +445,55 @@ test = [
 
 [[package]]
 name = "btclib-secp256k1"
-version = "0.8.0.9"
+version = "0.8.0.10"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cffi" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/99/91/be95f69508a8bb10a5193c59eebf82aa51137975e050693f741131927fd8/btclib_secp256k1-0.8.0.9.tar.gz", hash = "sha256:19a2b618e251bb7126a27f89f514d262c15de2dc47a1edec7821f1f33e931fa5", size = 6401045, upload-time = "2026-09-29T10:11:39.229Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/97/24/aead66acb2cfe489317c82a68292679ae8d4867b568a1634777d9b9226d9/btclib_secp256k1-0.8.0.10.tar.gz", hash = "sha256:3ae5697a2957a60b5ddc027fcbbd63222b35d00210e25ed5ccfe749507a91677", size = 6599149, upload-time = "2026-10-03T17:54:22.048Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/38/52/2ad1c8128271651dcf539a71ab41c662f4ddbc2d2410c9a4e089a0209c95/btclib_secp256k1-0.8.0.9-cp314-cp314-macosx_10_15_x86_64.whl", hash = "sha256:ed3c99b9caa256cd7a7e3342a6702af22751a50399c0feabbf832ca47f23df8f", size = 1484276, upload-time = "2026-09-29T10:10:31.038Z" },
-    { url = "https://files.pythonhosted.org/packages/8b/98/10e1a4646c6af17222494e69775ee4f3283a47819419d2db65fae2e6e6f1/btclib_secp256k1-0.8.0.9-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:b812aca6768a44a78cd7e7461e81e6dd0d876d73b13dfa1e90ee689874ba74d2", size = 1507049, upload-time = "2026-09-29T10:10:32.514Z" },
-    { url = "https://files.pythonhosted.org/packages/aa/8b/bae429d8a3409610ee2961c03202bef59fac5af12614a45931618387349a/btclib_secp256k1-0.8.0.9-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:75836979e2c8e087e8d3f5c9238a4ac45cf8714e6ee4771b8733716eaa631bfe", size = 1575362, upload-time = "2026-09-29T10:10:34.112Z" },
-    { url = "https://files.pythonhosted.org/packages/9b/e5/59f805e3e0c6d2b4c326b20bb0ca8f321294467f18704a84e428f629d9b4/btclib_secp256k1-0.8.0.9-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b3a2b754e45c597e72b7dc0528331443c0ab03dcfc1602b474914a4f98b99daa", size = 1558876, upload-time = "2026-09-29T10:10:35.729Z" },
-    { url = "https://files.pythonhosted.org/packages/6f/86/e984a87eb837fe8400f6b9fb9a182a951a886749cf98023bfca5031df091/btclib_secp256k1-0.8.0.9-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:f7c5349db6a8eff8a75ac96e41913e081f19085d37554be91ebee96521197d47", size = 1577591, upload-time = "2026-09-29T10:10:37.169Z" },
-    { url = "https://files.pythonhosted.org/packages/4e/a1/02a30446316aec7ec7a183d5a98460cbab6dfbded8c9a5f254edef28695a/btclib_secp256k1-0.8.0.9-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:97f0c1058e43f175d54cfa2c139b745a8f9ce01be8c7e197a487329af05dbbb9", size = 1558601, upload-time = "2026-09-29T10:10:38.897Z" },
-    { url = "https://files.pythonhosted.org/packages/2d/1f/8d4a721760398208ffe8fcb85ea328c86990789b66262205d72f2b05de08/btclib_secp256k1-0.8.0.9-cp314-cp314-win_amd64.whl", hash = "sha256:cfa0c3ed65a2f03efd251ce9f67539e095ab6a939f0b58fc7e3295331349b76e", size = 1470846, upload-time = "2026-09-29T10:10:40.496Z" },
-    { url = "https://files.pythonhosted.org/packages/7b/ef/e647132cfbe60137a8ccce0680ecea34b7e23862525870db68eabb635351/btclib_secp256k1-0.8.0.9-cp314-cp314-win_arm64.whl", hash = "sha256:eac7193a46480ecaba6a60e8bd24127a89e882defcbbcd278890ccff353a7555", size = 1505971, upload-time = "2026-09-29T10:10:41.94Z" },
-    { url = "https://files.pythonhosted.org/packages/17/46/8d591639097c7de3fd6b6aaaa5d21b3f9c997d328452370b3bf2c5c6b421/btclib_secp256k1-0.8.0.9-cp314-cp314t-macosx_10_15_x86_64.whl", hash = "sha256:eb5cdb385b4bac8e84f73ddbd39b7c03732a5e9c6084ea7b3b1ad555134e98b8", size = 1484605, upload-time = "2026-09-29T10:10:43.946Z" },
-    { url = "https://files.pythonhosted.org/packages/f1/a8/54add720771204511ffed8843277940817ceeffc1332c18903d3f13cc85b/btclib_secp256k1-0.8.0.9-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:e64aaa83ade68888442e6e2b5eaec707f859c3fa3ee7f4325092ac6398a38b5a", size = 1507487, upload-time = "2026-09-29T10:10:45.589Z" },
-    { url = "https://files.pythonhosted.org/packages/3c/87/ca68ac0f8d5f79e4bb446e8fdbb3b65432223b462141d7941e6c41d6e33d/btclib_secp256k1-0.8.0.9-cp314-cp314t-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:37f55459dca6428450317581dc7360df41851d6855cb25b2557e8d45d9f2adeb", size = 1582296, upload-time = "2026-09-29T10:10:47.594Z" },
-    { url = "https://files.pythonhosted.org/packages/57/18/0c487310075fd5f5a27d00bf5c27bd24308f81a98b2919587f5f6958d57a/btclib_secp256k1-0.8.0.9-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:c2491858325828c6d38b46c621b5a0a1968922ec21b90ccffd3672872700f602", size = 1565437, upload-time = "2026-09-29T10:10:49.123Z" },
-    { url = "https://files.pythonhosted.org/packages/c7/f0/445d8b5ba66c9d5acce24208e52c10bf8f6b18167e717d3993ad31ae558a/btclib_secp256k1-0.8.0.9-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:b0c3c23e028e851f05e14caa5efdc25d4d3f9f520518c7779bd388ebd3f8fd22", size = 1584402, upload-time = "2026-09-29T10:10:50.839Z" },
-    { url = "https://files.pythonhosted.org/packages/98/c5/b86e132b917d006db86a10be0926878a6cacb1e7036553b56943ce11e299/btclib_secp256k1-0.8.0.9-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:cc52160c3164f2c2a05fb6d9493dafc96bd902adf1171bf4c787c63fa0b20e27", size = 1565172, upload-time = "2026-09-29T10:10:52.363Z" },
-    { url = "https://files.pythonhosted.org/packages/ae/0a/57934c7702f5298cb6eb688cffc308b57ee2ba4717221219f2e16b041f04/btclib_secp256k1-0.8.0.9-cp314-cp314t-win_amd64.whl", hash = "sha256:bacdd2ad349715a320538202fa2976e2ffaedb321cbc3c20bd48702078849536", size = 1471133, upload-time = "2026-09-29T10:10:53.87Z" },
-    { url = "https://files.pythonhosted.org/packages/52/7b/e9cd12f9cdaaf19b586be6b38e944f642beeb000a7163f6859500dabe06c/btclib_secp256k1-0.8.0.9-cp314-cp314t-win_arm64.whl", hash = "sha256:707cbc0b36c28a4b740eac3aeb35f51388352e5c684693d984d9ebc08fd6a8e3", size = 1506261, upload-time = "2026-09-29T10:10:55.487Z" },
-    { url = "https://files.pythonhosted.org/packages/62/dd/27f93af83aca8f6ec9c649e44b4495d5ebbf846937bc11797df12a2d3f61/btclib_secp256k1-0.8.0.9-cp315-cp315-macosx_10_15_x86_64.whl", hash = "sha256:f5bbb3165810eb865bd9bb7df9e50f26e1a2231055cf6d59bcd79374e8a1607b", size = 1484275, upload-time = "2026-09-29T10:10:57.144Z" },
-    { url = "https://files.pythonhosted.org/packages/d7/e4/bdcdc728c1920697551e80c519b481dcc5ec988217fba8f28a468fac6148/btclib_secp256k1-0.8.0.9-cp315-cp315-macosx_11_0_arm64.whl", hash = "sha256:4dbf1baf182b6f8b4d602db5719f0328e8982af8d8fe487d084e6581358447fb", size = 1507216, upload-time = "2026-09-29T10:10:58.596Z" },
-    { url = "https://files.pythonhosted.org/packages/b4/29/3679f492c0a6942da65a2d489ee6bc8bf51ae032e20c31de42eb1a3752d9/btclib_secp256k1-0.8.0.9-cp315-cp315-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:cf94161bca32f1f5d77cbe507868e8badd3d5953aecba2965e49648029a3e8cc", size = 1575615, upload-time = "2026-09-29T10:11:00.019Z" },
-    { url = "https://files.pythonhosted.org/packages/c6/88/9c5fe4138360b84639f275fcc7460c396453970c758f19c6564c334f1d86/btclib_secp256k1-0.8.0.9-cp315-cp315-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:4d4d75d13ca8d7bda4eb98e43c83bb9ce08c27b985f5a6e1e13fdcc6350a59f1", size = 1558956, upload-time = "2026-09-29T10:11:01.896Z" },
-    { url = "https://files.pythonhosted.org/packages/69/11/f7305610787bc639fd9aadb7ed6e38639a2f7ba0d137a3eea67816fddeab/btclib_secp256k1-0.8.0.9-cp315-cp315-musllinux_1_2_aarch64.whl", hash = "sha256:a839f01a1cd5e1da2c36b728783fa24a81ccd7d45b5a0afd314b11b5186f523f", size = 1577767, upload-time = "2026-09-29T10:11:03.593Z" },
-    { url = "https://files.pythonhosted.org/packages/d4/24/712c42f96933c92136be96bce3a93c8e96b2a00662e3db9bbf624b397328/btclib_secp256k1-0.8.0.9-cp315-cp315-musllinux_1_2_x86_64.whl", hash = "sha256:f042587fc2393ee0ad183559500f433277eba836675101156784c4f8691ae771", size = 1558747, upload-time = "2026-09-29T10:11:05.061Z" },
-    { url = "https://files.pythonhosted.org/packages/3f/7c/3e6fa5d8620c1cbc953c79096195a33fa88e727397a9770a22764a545a38/btclib_secp256k1-0.8.0.9-cp315-cp315-win_amd64.whl", hash = "sha256:ef873d481db487e751610d9f313d7be19f3f870fdeb17fab5dfb50365735a750", size = 1470846, upload-time = "2026-09-29T10:11:06.64Z" },
-    { url = "https://files.pythonhosted.org/packages/79/96/8d7442f032ba8534853216b38b56293cb872cb0ee20d9a4bb2a6b359b4d5/btclib_secp256k1-0.8.0.9-cp315-cp315-win_arm64.whl", hash = "sha256:055dbf21fe4670dd55b925a6700f538315adf63dff802ea3f0cba5da65a43cd4", size = 1505972, upload-time = "2026-09-29T10:11:08.587Z" },
-    { url = "https://files.pythonhosted.org/packages/dd/e9/c656c763834c95ad3b84fd487c0113c6f97a24d34c65bd5246dcba8a1022/btclib_secp256k1-0.8.0.9-cp315-cp315t-macosx_10_15_x86_64.whl", hash = "sha256:771e522f323e2cd7a79a6d7b09b865ec0af5dd3d4e3b9ef4ae95bfcc80326e68", size = 1484304, upload-time = "2026-09-29T10:11:10.24Z" },
-    { url = "https://files.pythonhosted.org/packages/74/cd/6e2a3cb7cf9deb6f75aaaf80860848ef46b9d2d70ce902bea35a7c9cbc1a/btclib_secp256k1-0.8.0.9-cp315-cp315t-macosx_11_0_arm64.whl", hash = "sha256:8cd65045d19d2cced2f01c4a91d6fa09651f31116846438f4a591bec5644767d", size = 1507225, upload-time = "2026-09-29T10:11:11.709Z" },
-    { url = "https://files.pythonhosted.org/packages/12/e6/646caa185e0fd2f7d85d86abadb61485b2090c653e02fab010132b16affe/btclib_secp256k1-0.8.0.9-cp315-cp315t-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:46f6b2b15045d337fe27d8dc0efd9c70a522d7f738aa0a12d8cf44f9f0944dac", size = 1575270, upload-time = "2026-09-29T10:11:13.293Z" },
-    { url = "https://files.pythonhosted.org/packages/a8/36/9a29265c3c7d657c81660f1f2eed98cc4674aa580b427eca7d51c9c8cd5f/btclib_secp256k1-0.8.0.9-cp315-cp315t-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:3c7dd419038870996cbead8ba7433c946dec87a6f33ecf00ea2f2500f1dd8c5d", size = 1558574, upload-time = "2026-09-29T10:11:14.883Z" },
-    { url = "https://files.pythonhosted.org/packages/95/b8/e802dc1883b3532cb80c3a683e82403eaf8624715c03300b4d3cac946506/btclib_secp256k1-0.8.0.9-cp315-cp315t-musllinux_1_2_aarch64.whl", hash = "sha256:9f8a226632afa3fa4905b8e47c98ce21f0484fecde3d993c522643c39994220c", size = 1577527, upload-time = "2026-09-29T10:11:16.756Z" },
-    { url = "https://files.pythonhosted.org/packages/53/d2/c433069f513a5f47c350f41f92f06c203f10adb81012307999bcfd57a086/btclib_secp256k1-0.8.0.9-cp315-cp315t-musllinux_1_2_x86_64.whl", hash = "sha256:a864091e4bdbaf449f52c16fa10685f92f5127ba1a38b0e4cf10f0e887443b5f", size = 1558353, upload-time = "2026-09-29T10:11:18.887Z" },
-    { url = "https://files.pythonhosted.org/packages/67/ec/91f42798dda5ba852e7a590e1474fed457c7950d9addadb23ae8bad6964e/btclib_secp256k1-0.8.0.9-cp315-cp315t-win_amd64.whl", hash = "sha256:8902ffe883a3eea4b94099cf4c6efe03b9595bffafa55ef3ef38d6510420abb4", size = 1470884, upload-time = "2026-09-29T10:11:20.689Z" },
-    { url = "https://files.pythonhosted.org/packages/fb/7d/573bbdd6fbccbb6b6a2e5b46be5302ed42ec5dc7f73b434bdc1a22075074/btclib_secp256k1-0.8.0.9-cp315-cp315t-win_arm64.whl", hash = "sha256:e9539d0877f960174ed98f83018505bce47fc360c331b06c35fc3c0a7fbf41cf", size = 1505969, upload-time = "2026-09-29T10:11:22.474Z" },
-    { url = "https://files.pythonhosted.org/packages/c3/70/47f052ed2e5102452e24cc25102890206ced348edb3bf198999a67ccb0d1/btclib_secp256k1-0.8.0.9-py3-none-macosx_10_13_universal2.whl", hash = "sha256:81ccaf807ac3b6eb6ab1c3b1d0ce9db7b850b89b86fec57e86e3670781d3309c", size = 2745167, upload-time = "2026-09-29T10:11:30.549Z" },
-    { url = "https://files.pythonhosted.org/packages/b0/8e/2f3d9b1955276bd935cb8ad733350fe47cae79b6dd866ab213c043ef86bc/btclib_secp256k1-0.8.0.9-py3-none-macosx_11_0_universal2.whl", hash = "sha256:25d63537cecbd078fc0388bb5cae2ba56017c17628e8b3e6db77aae517decfb6", size = 2745189, upload-time = "2026-09-29T10:11:32.198Z" },
-    { url = "https://files.pythonhosted.org/packages/ef/3d/b040220454a6cb793b9072861d236e0cb0f75be125510c4e8b4bf0bb47b0/btclib_secp256k1-0.8.0.9-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:8b6bcdff7633aa7edd72ab43c7d533107a6dcd1af261e8faf7a6c01726135245", size = 1448827, upload-time = "2026-09-29T10:11:33.755Z" },
-    { url = "https://files.pythonhosted.org/packages/33/a0/ef892ac8f36f05068b50039e7425e330488928993ea6c63414fc23387d5f/btclib_secp256k1-0.8.0.9-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:566e2a539991c0dafb2496558006efac341125d129d0b5dade226dce30a0e723", size = 1429689, upload-time = "2026-09-29T10:11:35.468Z" },
-    { url = "https://files.pythonhosted.org/packages/55/48/a054a2c4d110a50ae41695293034432df9e17c2e7956da1c040c854fc148/btclib_secp256k1-0.8.0.9-py3-none-win_amd64.whl", hash = "sha256:9247a5341757fbf8c99866354d82f9ce0cce0132d7194ccfe584a20c5365b3e6", size = 1451591, upload-time = "2026-09-29T10:11:37.319Z" },
+    { url = "https://files.pythonhosted.org/packages/6c/a3/49f47dc1b483d69af06b127429f6e1f9109ffac676cf8683101ad3320a90/btclib_secp256k1-0.8.0.10-cp314-cp314-macosx_10_15_x86_64.whl", hash = "sha256:bd83934d84ca55a286a9becd004318e0db517bd78a408ca059351b9a589bce20", size = 1488666, upload-time = "2026-10-03T17:53:13.727Z" },
+    { url = "https://files.pythonhosted.org/packages/8a/2b/d674c2dec632b3ce653ce13f088353d22dfb56338cd45360cafa2a11ef3a/btclib_secp256k1-0.8.0.10-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:acc5cd7fbe3174386b4b7c1b7b1880e19ef70cedeb47402db4bd52c47de7c868", size = 1511445, upload-time = "2026-10-03T17:53:15.35Z" },
+    { url = "https://files.pythonhosted.org/packages/cd/99/d046703ff0db114b16f5193816e6998660b95c6a7d0c3d68647027c9598b/btclib_secp256k1-0.8.0.10-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:97e15f1ac29b4e71198111f41dd0deac47ed5c4bf54684dc0bcfb0ac86e6edcf", size = 1579758, upload-time = "2026-10-03T17:53:16.96Z" },
+    { url = "https://files.pythonhosted.org/packages/a1/84/eecc580696bf30ddb4e5e6b716677a635d7c7f3ed9b64b02ae39c1996e6b/btclib_secp256k1-0.8.0.10-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:a96d205645eeb0ceaf42abe81aff86aa1492f87254254453c4a154bc7a91dc56", size = 1563269, upload-time = "2026-10-03T17:53:18.402Z" },
+    { url = "https://files.pythonhosted.org/packages/68/09/a86f945432eec60bd40e8627273136cd76ac969f468672f8e19d3a62602c/btclib_secp256k1-0.8.0.10-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:0c5cdae3c930cb1104b82142b21b679108fc3c4a469fc081754d78abfb726838", size = 1581991, upload-time = "2026-10-03T17:53:20.201Z" },
+    { url = "https://files.pythonhosted.org/packages/d5/74/db3c40726801f01cafefb5ff4e1e9d9d6bc28289b3f489dc62004b2d64de/btclib_secp256k1-0.8.0.10-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:dbfb7d5bad139f51b5cb662d07e8aee1efc04c81eab5ac4d4d10c974873e272b", size = 1562994, upload-time = "2026-10-03T17:53:21.719Z" },
+    { url = "https://files.pythonhosted.org/packages/3d/78/364667de66952908e5b2a31521ee9f9f3de2e2110a1415f582d117b3b3fb/btclib_secp256k1-0.8.0.10-cp314-cp314-win_amd64.whl", hash = "sha256:44e4d40731b6511c228ce02fd66d2b0a6c7f0b962c0d289d132b02733c38c84a", size = 1474944, upload-time = "2026-10-03T17:53:23.282Z" },
+    { url = "https://files.pythonhosted.org/packages/29/d0/62727a49ce3ef76290803380df8099be2400ddbf148eb5be4caf55e64740/btclib_secp256k1-0.8.0.10-cp314-cp314-win_arm64.whl", hash = "sha256:dc2908762ff5e24252b4eff9756da1a4276df93b9cdf74de3a0fb02ce52f990b", size = 1510069, upload-time = "2026-10-03T17:53:24.719Z" },
+    { url = "https://files.pythonhosted.org/packages/47/00/979ca1d64c60a840fb5857140857ab38520e0882012f68192955a654dc46/btclib_secp256k1-0.8.0.10-cp314-cp314t-macosx_10_15_x86_64.whl", hash = "sha256:a7e41e6c93064423da985078a643d0dd083d32aa9e37d34cf839c867d07fc952", size = 1489001, upload-time = "2026-10-03T17:53:26.25Z" },
+    { url = "https://files.pythonhosted.org/packages/2b/6c/7f0ef02ef98ffea5c3d736236f0829daa29b874bea89f3f9fdd4915413cd/btclib_secp256k1-0.8.0.10-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:be3a53240dffd9377e7802eb1900279dcaabc39e7067edd19c42bcb66140e900", size = 1511881, upload-time = "2026-10-03T17:53:27.819Z" },
+    { url = "https://files.pythonhosted.org/packages/d1/bd/04266e0c7520dafac756aa4cbafdb3584f5ef3845f584200cd8b54660d89/btclib_secp256k1-0.8.0.10-cp314-cp314t-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:1d14fd50ead4bc7ef9cfdea33399be511f27d708e9b458e2dff0bb4c3119b750", size = 1586690, upload-time = "2026-10-03T17:53:29.439Z" },
+    { url = "https://files.pythonhosted.org/packages/d0/39/9b6ded3a958083602e46d4097a9045df0369936c729f2464aecf921efbcd/btclib_secp256k1-0.8.0.10-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:e0e953529a58f959450a23fa5fa551ef1d28365fda37184ce61cd15473fc1892", size = 1569835, upload-time = "2026-10-03T17:53:30.963Z" },
+    { url = "https://files.pythonhosted.org/packages/88/4b/6b109aeeab38f4d56a26fc7a67148f2cfbba0099d80448ee7b71efe392fb/btclib_secp256k1-0.8.0.10-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:086bbff50da262c0066268717919ba580983451544b4b70cc8d9b6b9d889fea3", size = 1588799, upload-time = "2026-10-03T17:53:32.693Z" },
+    { url = "https://files.pythonhosted.org/packages/34/b7/f6584b36572896d79c325a91258ee9a9db4c7a8e7fc7e1bb2f82b42b9ad2/btclib_secp256k1-0.8.0.10-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:9cc0fd8929ecd5bc0221a45f988b3de112810216b24a13572f7aeaeb444eae96", size = 1569564, upload-time = "2026-10-03T17:53:34.631Z" },
+    { url = "https://files.pythonhosted.org/packages/16/9b/9ee7e9bfe9b45bf8f17470f72ad70a081dd166f21cae4814ad72df29748f/btclib_secp256k1-0.8.0.10-cp314-cp314t-win_amd64.whl", hash = "sha256:5046c5c9d5683d6cf2a7614f23b0404e1fd5d830aa171619bffc568d032fa6c4", size = 1475233, upload-time = "2026-10-03T17:53:36.726Z" },
+    { url = "https://files.pythonhosted.org/packages/be/8f/340d5dfb2dc48f33425f5fcf7c08d20e5e6d4416987ea2753cf5b27f6373/btclib_secp256k1-0.8.0.10-cp314-cp314t-win_arm64.whl", hash = "sha256:500ef51daac9394e2a5fde931907522fc690baff8e16c6067897eb7de6c57663", size = 1510353, upload-time = "2026-10-03T17:53:38.527Z" },
+    { url = "https://files.pythonhosted.org/packages/c6/91/bc94682f2f36a859afdee8568348065d1d01186be3d45775af9ed5c3247c/btclib_secp256k1-0.8.0.10-cp315-cp315-macosx_10_15_x86_64.whl", hash = "sha256:8534598cf970ef44dba23fef9d96b11a325f29019b20a55eab2dd8fbc1ca584c", size = 1488668, upload-time = "2026-10-03T17:53:40.046Z" },
+    { url = "https://files.pythonhosted.org/packages/fe/7c/abd4a0db8ce7ca557689964ebb4f4c3bf8218a05ad797d6285ba2fc88384/btclib_secp256k1-0.8.0.10-cp315-cp315-macosx_11_0_arm64.whl", hash = "sha256:50f6451c6bee9b756efbd864412a73f04c4efd9136a9b12d1023266c1b26bf81", size = 1511613, upload-time = "2026-10-03T17:53:42.009Z" },
+    { url = "https://files.pythonhosted.org/packages/c5/e6/a15ebd04369ebe58979748deb2f586875c57a9874606fd86ff78d9af6594/btclib_secp256k1-0.8.0.10-cp315-cp315-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:127ab1b2d5e9fc164eb30c6d4f7e80e046d65cea2680f2120648028dd7ec9c31", size = 1580011, upload-time = "2026-10-03T17:53:43.839Z" },
+    { url = "https://files.pythonhosted.org/packages/a5/c9/b1fc0353e488f0a91b52a5335c9e5f00ef3ec0a80d9cb21240d98242ecbf/btclib_secp256k1-0.8.0.10-cp315-cp315-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:0c4a072743ffa79bba993eccc9049792d1b3f31443a44522a658db0ee1ba9e45", size = 1563348, upload-time = "2026-10-03T17:53:45.513Z" },
+    { url = "https://files.pythonhosted.org/packages/2b/35/c914a8add72a759629e2623d31b0272bfe7b9295c3ee3c5d523bc3aaea7e/btclib_secp256k1-0.8.0.10-cp315-cp315-musllinux_1_2_aarch64.whl", hash = "sha256:59ba8078d2fcdd4d6cc6062fe4d518994a79f92842f416fb05b3fefae9101f42", size = 1582165, upload-time = "2026-10-03T17:53:47.466Z" },
+    { url = "https://files.pythonhosted.org/packages/00/b6/0e32ad3d41f26223a1405789e9e96189ccc50be69b469034eb1a95f32f72/btclib_secp256k1-0.8.0.10-cp315-cp315-musllinux_1_2_x86_64.whl", hash = "sha256:6d372ac087c7ce831ef18f3da1bde34531b8ea9036bea9ca23195460934fa69f", size = 1563141, upload-time = "2026-10-03T17:53:49.468Z" },
+    { url = "https://files.pythonhosted.org/packages/e8/c8/af2b6a81e269de192aec99748b57de6385e6b88b68e0c6d503cec8c987ed/btclib_secp256k1-0.8.0.10-cp315-cp315-win_amd64.whl", hash = "sha256:c0d265af3519a31272e5a8e3b5d4dc747c24ea3b642baebc52dd267ef8991067", size = 1474941, upload-time = "2026-10-03T17:53:51.117Z" },
+    { url = "https://files.pythonhosted.org/packages/a4/ca/9b777f24bb506c363ba67e1b0dec4c0d169eaa0fb98b934bbc99f514ad2c/btclib_secp256k1-0.8.0.10-cp315-cp315-win_arm64.whl", hash = "sha256:c3682783391ccd73265ad9e400a075afe68ac686b0e676fa9609cb7a2c147177", size = 1510069, upload-time = "2026-10-03T17:53:53.21Z" },
+    { url = "https://files.pythonhosted.org/packages/55/8b/3580f1c27619f1ef51da72aad8eece5fd0dfb4b8e07e37a854440625b288/btclib_secp256k1-0.8.0.10-cp315-cp315t-macosx_10_15_x86_64.whl", hash = "sha256:f438c320236f881f7851bd5712f5b2a718ec4f2c6a8349e51758734dd123d1a4", size = 1488700, upload-time = "2026-10-03T17:53:54.936Z" },
+    { url = "https://files.pythonhosted.org/packages/ae/de/6b40804feeba29a31eb7d56b32314a36daf0a69442e6294715fd8106f895/btclib_secp256k1-0.8.0.10-cp315-cp315t-macosx_11_0_arm64.whl", hash = "sha256:9efd27bc05eb89ef81e3ffd648935eaf946d2db91758f7d14e2174fed983b94d", size = 1511619, upload-time = "2026-10-03T17:53:56.535Z" },
+    { url = "https://files.pythonhosted.org/packages/10/1a/4f5ba0460e53d0a46e227556036a94ecd619997a792d6ef5ac2d3606a212/btclib_secp256k1-0.8.0.10-cp315-cp315t-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:787d655312f32fc5c3879f3497213477c6f5a5668f05a3ea40f9125929e51d78", size = 1579664, upload-time = "2026-10-03T17:53:58.102Z" },
+    { url = "https://files.pythonhosted.org/packages/0b/04/4e6f142c60105c5476f8f93b07711abca1ff6ca65c9cb63499a59391bb85/btclib_secp256k1-0.8.0.10-cp315-cp315t-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:d0e7381e1c1b749c8f319704936a0f6446f5ea69d20f21b1a9b60ad2566f69b1", size = 1562973, upload-time = "2026-10-03T17:53:59.643Z" },
+    { url = "https://files.pythonhosted.org/packages/92/95/abaae66a9b3592d676c719d289e9ae23b1b239c18b7260d9f2a05d57e037/btclib_secp256k1-0.8.0.10-cp315-cp315t-musllinux_1_2_aarch64.whl", hash = "sha256:e9b37b659554274dbc1239db4872bb49cc8655881b7f9195518fa68cf67a9a91", size = 1581921, upload-time = "2026-10-03T17:54:01.181Z" },
+    { url = "https://files.pythonhosted.org/packages/c0/a8/827394fbca2f333aa4bf6c4e2a9bba61f4611fd4604cb6516d809c2235b0/btclib_secp256k1-0.8.0.10-cp315-cp315t-musllinux_1_2_x86_64.whl", hash = "sha256:7fce69d6e389e8046d7f44bf77f1ceeaa49f7e08592762d3a449fd9e3572e689", size = 1562753, upload-time = "2026-10-03T17:54:02.736Z" },
+    { url = "https://files.pythonhosted.org/packages/da/60/496d6ecf9776a268bc6df272dec4a83097a660f83522386b038b97736837/btclib_secp256k1-0.8.0.10-cp315-cp315t-win_amd64.whl", hash = "sha256:5309fa41e29449abaeae287a44358136dea936a6d3335b274456afe24dd90777", size = 1474989, upload-time = "2026-10-03T17:54:04.258Z" },
+    { url = "https://files.pythonhosted.org/packages/14/03/001b304f80d7a10a5f99c0d78073b51ddde501d00c792cdfe4d0a5883fa1/btclib_secp256k1-0.8.0.10-cp315-cp315t-win_arm64.whl", hash = "sha256:2d4a8be80b3391551327565a7a5dd144c219496b86e1a53e5575e3f89039927b", size = 1510068, upload-time = "2026-10-03T17:54:05.917Z" },
+    { url = "https://files.pythonhosted.org/packages/73/96/3ebce7cb9fc149d1ff9d601c9de64383363ed78e4f53bf97d9acc34b9bfb/btclib_secp256k1-0.8.0.10-py3-none-macosx_10_13_universal2.whl", hash = "sha256:2d8d7c43bbda15281ca0bb452285c26f16f41ffb73b286ad3536f8907321bc0c", size = 2749562, upload-time = "2026-10-03T17:54:13.793Z" },
+    { url = "https://files.pythonhosted.org/packages/6e/6b/aa41164adfb39ab3fc2de8f7e2d604ee8e418756a3436f5870726ce16ceb/btclib_secp256k1-0.8.0.10-py3-none-macosx_11_0_universal2.whl", hash = "sha256:28f58faa709497b5615f0d1994626dd8831ea5511d3a3a5a64597b9874cfcfbd", size = 2749586, upload-time = "2026-10-03T17:54:15.876Z" },
+    { url = "https://files.pythonhosted.org/packages/94/a9/f89bd5af7ce8cfeb23302a048ed5e81d2a86b40862b358eaebcfed9f4dd7/btclib_secp256k1-0.8.0.10-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:a05ba535a143b054c8a16e9f1804ef2df1580c6196a09806ac37e78d11d0f54f", size = 1453229, upload-time = "2026-10-03T17:54:17.537Z" },
+    { url = "https://files.pythonhosted.org/packages/f8/9c/26c35cc169c3018a374746d243c904cf2534f175828f6c8f2b994009e3fa/btclib_secp256k1-0.8.0.10-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:cc589ab368d8f3781cf5bd725eac1823c9f6f4d4993761fdf0f41d04b165c7b0", size = 1434088, upload-time = "2026-10-03T17:54:19.009Z" },
+    { url = "https://files.pythonhosted.org/packages/1d/bb/94339f66158247ac3c83228fadea650211a4b12419cfd2ad6adcbd2667e7/btclib_secp256k1-0.8.0.10-py3-none-win_amd64.whl", hash = "sha256:6bc337d2b8af7f6badb076ae19c2e421ed8aa817e211818f47c17247cc1bafe2", size = 1455641, upload-time = "2026-10-03T17:54:20.409Z" },
 ]
 
 [[package]]
 name = "btclib-wallet"
-version = "2026.9.30"
+version = "2026.10.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "bitcoin-core-rpc" },
@@ -502,9 +502,9 @@ dependencies = [
     { name = "btclib-mnemonics" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a7/ae/e7b1b9e91d01d064a618a4f34997adc65d1ee0e540e0f72533d47f621002/btclib_wallet-2026.9.30.tar.gz", hash = "sha256:383e639ecf65f5f6ec23c19539e0f0d2def259945e366f05aa4851444d9ec475", size = 2694372, upload-time = "2026-09-29T22:48:53.288Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/35/ca/dd2f70549e823e150738669466d6a46bb9112a70169a0eb9ac9c6ba8a1d5/btclib_wallet-2026.10.4.tar.gz", hash = "sha256:810f67476aa21a9efcd00f54d5f30a075b71e38659cf6c46a482427a5420752c", size = 2890259, upload-time = "2026-10-04T05:29:30.434Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/53/69/b3de5f6f821c3a04d9b35525a1ef0260adee04ab5c543693a34b0f062038/btclib_wallet-2026.9.30-py3-none-any.whl", hash = "sha256:a7b5bd3477ddce1e54272c1cafa3d3cf967583b7a9f25d784f9b2ca434f793de", size = 448497, upload-time = "2026-09-29T22:48:51.482Z" },
+    { url = "https://files.pythonhosted.org/packages/ce/9e/355e5c04783c30b4e7d829d472ff3dac32d6312f532255c3f1b61af07326/btclib_wallet-2026.10.4-py3-none-any.whl", hash = "sha256:e78bdb17ec360f328652853939dab1d97000aa71e5c2e6f4f36ed9de8c8d42c4", size = 454550, upload-time = "2026-10-04T05:29:28.168Z" },
 ]
 
 [[package]]

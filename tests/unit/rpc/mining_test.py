@@ -425,12 +425,11 @@ def test_generateblock_derives_a_hardened_step_from_an_extended_private_key(
     )
 
 
-def test_generateblock_accepts_a_wif_of_another_chain_where_core_refuses(
-    node: Node,
-) -> None:
-    """This pins a divergence: btclib-org/btclib-wallet#180, Core answers -5."""
-    assert coinbase_script_of(node, f"pkh({MAINNET_WIF})") == bytes.fromhex(
-        "76a914751e76e8199196d454941c45d1b3a323f1433bd688ac"
+def test_generateblock_refuses_a_wif_of_another_chain(node: Node) -> None:
+    """Core's `Parse` refuses it with -5."""
+    assert refusal(lambda: generate_block(node, CONN, [f"pkh({MAINNET_WIF})", []])) == (
+        -5,
+        "Error: Invalid address or descriptor",
     )
 
 
