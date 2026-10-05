@@ -123,8 +123,16 @@ of every interface, at `-port` where one names no port. It turns
 `-listen` on, and `-nolisten` beside it is refused. A name is not looked
 up. `-externalip=<ip or name>[:port]`, repeatable, tells the node an
 address it is reached at, at the port of the first `-bind` that names
-one, or `-port`. The node keeps it as its own, which its automatic
+one, then that of the first `-whitebind` that does not grant `noban`,
+then `-port`. The node keeps it as its own, which its automatic
 outbound draw skips, tells its peers of it, and turns `-discover` off.
+
+`-whitebind=<[permissions@]addr>`, repeatable, listens on an address
+that has to name a port, and grants every peer that connects to it the
+permissions named, added to those `-whitelist` grants. A value naming
+none grants what `-whitelist` grants one (`download,noban,mempool,relay`
+by default). Like `-bind`, it turns `-listen` on, `-nolisten` beside it is
+refused, and it stops the node listening on every interface.
 
 ## Reading progress
 

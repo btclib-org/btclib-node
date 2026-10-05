@@ -243,6 +243,7 @@ class AManagerFactory(Protocol):
         seednode: Sequence[str] = (),
         listen: bool = True,
         bind: Sequence[str] = (),
+        whitebind: Sequence[str] = (),
         externalip: Sequence[str] = (),
         discover: bool | None = None,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
@@ -277,6 +278,7 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
         seednode: Sequence[str] = (),
         listen: bool = True,
         bind: Sequence[str] = (),
+        whitebind: Sequence[str] = (),
         externalip: Sequence[str] = (),
         discover: bool | None = None,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
@@ -330,6 +332,7 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
                 seednode_args=tuple(seednode),
                 listen=listen,
                 bind=tuple(bind),
+                whitebind=tuple(whitebind),
                 externalip=tuple(externalip),
                 # `Config.__init__`'s own sentinel: `discover=None`
                 # follows `listen` and `externalip`, an explicit value
@@ -2103,6 +2106,9 @@ def test_a_bound_routable_address_is_a_local_one_under_discover(
         server_socket.close()
     expected = {host_key(peer_address("8.8.8.8", 0))} if discover else set()
     assert manager.local_addresses == expected
+    assert {i.score for i in manager.local_snapshot().values()} == (
+        {LOCAL_BIND} if discover else set()
+    )
 
 
 def test_externalip_is_a_local_address_whether_or_not_it_discovers(
@@ -9680,3 +9686,235 @@ def test_a_feeler_marks_good_a_collision_it_is_connected_to(
     asyncio.run(manager._maybe_dial_more_peers())
     assert marked == [old]
     assert list(tries_of(manager)) == [endpoint_key(new)]
+
+
+def accept_on(manager: P2pManager, port: int, stack: ExitStack) -> Any:
+    """Connect to the listener on `port` for real, and return what it made.
+
+    The connection is held open until `stack` closes, and is the pending
+    one `server` built, still in its handshake.
+    """
+    expected = manager.last_connection_id + 1
+    stack.enter_context(
+        closing(socket.create_connection(("127.0.0.1", port), timeout=20))
+    )
+    wait_until(lambda: expected in manager.pending_connections)
+    return manager.pending_connections[expected]
+
+
+def listening_manager(manager: P2pManager, stack: ExitStack) -> None:
+    """Start `manager`, wait for its listeners, and stop it with `stack`."""
+    manager.start()
+    stack.callback(manager.join, timeout=10)
+    stack.callback(manager.stop)
+    wait_until_listening(manager)
+
+
+def test_a_whitebind_listener_grants_its_peers_what_it_names(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1625: `ListenSocket::m_permissions`, which a plain listener lacks."""
+    plain, white = get_random_port(), get_random_port()
+    manager = a_manager(
+        bind=[f"127.0.0.1:{plain}"], whitebind=[f"noban,addr@127.0.0.1:{white}"]
+    )
+    with ExitStack() as stack:
+        listening_manager(manager, stack)
+        granted = accept_on(manager, white, stack)
+        assert (
+            granted.permissions == NetPermissionFlags.NO_BAN | NetPermissionFlags.ADDR
+        )
+        assert accept_on(manager, plain, stack).permissions == NetPermissionFlags.NONE
+
+
+def test_a_whitebind_naming_no_permission_grants_the_defaults(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1625: `Implicit` is resolved when a connection is accepted."""
+    white = get_random_port()
+    manager = a_manager(whitebind=[f"127.0.0.1:{white}"])
+    with ExitStack() as stack:
+        listening_manager(manager, stack)
+        assert accept_on(manager, white, stack).permissions == (
+            NetPermissionFlags.NO_BAN
+            | NetPermissionFlags.RELAY
+            | NetPermissionFlags.MEMPOOL
+        )
+
+
+def test_a_whitebind_grant_is_added_to_what_the_whitelist_grants(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1625: both are `AddFlag`ed onto one set."""
+    white = get_random_port()
+    manager = a_manager(whitebind=[f"download@127.0.0.1:{white}"])
+    manager.whitelist = Whitelist.parse(["addr@127.0.0.1"])
+    with ExitStack() as stack:
+        listening_manager(manager, stack)
+        assert accept_on(manager, white, stack).permissions == (
+            NetPermissionFlags.DOWNLOAD | NetPermissionFlags.ADDR
+        )
+
+
+def test_a_whitebind_noban_peer_is_not_refused_where_banned(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1625: the ban check reads the permissions the listener grants."""
+    white, plain = get_random_port(), get_random_port()
+    manager = a_manager(
+        bind=[f"127.0.0.1:{plain}"], whitebind=[f"noban@127.0.0.1:{white}"]
+    )
+    manager.ban_man.ban(a_subnet("127.0.0.1"))
+    with ExitStack() as stack:
+        listening_manager(manager, stack)
+        accept_on(manager, white, stack)
+        with closing(socket.create_connection(("127.0.0.1", plain), timeout=20)) as c:
+            c.settimeout(20)
+            assert c.recv(1) == b""
+        assert len(manager.pending_connections) == 1
+
+
+def test_bind_binds_a_whitebind_between_the_plain_and_the_onion_ones(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1625: `InitBinds` binds `vBinds`, `vWhiteBinds` and `onion_binds`."""
+    plain, white, tagged = (get_random_port() for _ in range(3))
+    manager = a_manager(
+        bind=[f"127.0.0.1:{tagged}=onion", f"127.0.0.1:{plain}"],
+        whitebind=[f"relay@127.0.0.1:{white}"],
+    )
+    sockets = manager._bind()
+    try:
+        assert [s.getsockname()[1] for s in sockets] == [plain, white, tagged]
+        assert [manager._listener_permissions.get(s) for s in sockets] == [
+            None,
+            NetPermissionFlags.RELAY,
+            None,
+        ]
+        assert manager._onion_binds == {(IPv4Address("127.0.0.1"), tagged)}
+    finally:
+        for server_socket in sockets:
+            server_socket.close()
+
+
+def test_a_whitebind_alone_is_bound_beside_the_default_onion_listener(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1625: `bind_on_any` is false, and no `-bind` leaves the onion one."""
+    port, white = get_random_port(), get_random_port()
+    manager = a_manager(port=port, whitebind=[f"127.0.0.1:{white}"])
+    sockets = manager._bind()
+    try:
+        assert [s.getsockname()[:2] for s in sockets] == [
+            ("127.0.0.1", white),
+            ("127.0.0.1", port + 1),
+        ]
+        assert manager._onion_binds == {(IPv4Address("127.0.0.1"), port + 1)}
+    finally:
+        for server_socket in sockets:
+            server_socket.close()
+
+
+def test_a_bind_beside_a_whitebind_leaves_no_default_onion_listener(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1625: `AppInitMain` adds the onion listener where no `-bind` is."""
+    port, plain, white = (get_random_port() for _ in range(3))
+    manager = a_manager(
+        port=port, bind=[f"127.0.0.1:{plain}"], whitebind=[f"127.0.0.1:{white}"]
+    )
+    sockets = manager._bind()
+    try:
+        assert [s.getsockname()[1] for s in sockets] == [plain, white]
+        assert manager._onion_binds == set()
+    finally:
+        for server_socket in sockets:
+            server_socket.close()
+
+
+def test_a_failed_whitebind_ends_the_bind_and_closes_the_rest(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1625: a `-whitebind` is `BF_REPORT_ERROR`: none is optional."""
+    taken = socket.socket()
+    taken.bind(("127.0.0.1", 0))
+    taken.listen()
+    plain = get_random_port()
+    manager = a_manager(
+        bind=[f"127.0.0.1:{plain}"],
+        whitebind=[f"127.0.0.1:{taken.getsockname()[1]}"],
+    )
+    try:
+        with pytest.raises(OSError, match=r"Unable to bind to 127\.0\.0\.1"):
+            manager._bind()
+        assert not manager.listening.is_set()
+        # the plain listener was closed, so its port is free again
+        with closing(socket.socket()) as again:
+            again.bind(("127.0.0.1", plain))
+    finally:
+        taken.close()
+
+
+def test_run_with_whitebind_discovers_nothing(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1625: `Discover()` is off `bind_on_any`: not under `-whitebind`."""
+    monkeypatch.setattr(
+        manager_module, "local_addresses", lambda: [ip_address("1.2.3.4")]
+    )
+    manager = a_manager(whitebind=[f"127.0.0.1:{get_random_port()}"])
+    try:
+        assert manager.start_listener()
+        wait_until(manager.loop.is_running)
+        assert manager.local_addresses == frozenset()
+    finally:
+        manager.stop()
+        manager.join(timeout=10)
+
+
+@pytest.mark.parametrize("discover", [True, False])
+def test_a_whitebind_address_is_a_local_one_unless_it_grants_noban(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, *, discover: bool
+) -> None:
+    """ISS 1625: `Bind` calls `AddLocal` for a listener holding no `noban`.
+
+    A value naming no permission is one: it is granted `noban` later.
+    """
+    manager = a_manager(
+        port=1,
+        whitebind=[
+            "8.8.8.8:5",
+            "noban@8.8.4.4:6",
+            "relay@1.1.1.1:7",
+            "all@1.0.0.1:8",
+        ],
+        discover=discover,
+    )
+    monkeypatch.setattr(manager, "_bind_one", lambda *_: socket.socket())
+    for server_socket in manager._bind():
+        server_socket.close()
+    held = {"8.8.8.8", "1.1.1.1"} if discover else set()
+    assert manager.local_addresses == {host_key(peer_address(h, 0)) for h in held}
+    assert {i.score for i in manager.local_snapshot().values()} == (
+        {LOCAL_BIND} if discover else set()
+    )
+
+
+def test_the_listen_port_is_the_first_whitebind_that_grants_no_noban(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1625: `GetListenPort` reads `-whitebind` after `-bind`."""
+    manager = a_manager(port=1, whitebind=["noban@127.0.0.1:2", "download@127.0.0.1:3"])
+    assert manager._listen_port() == 3
+    beside_bind = a_manager(port=1, bind=["127.0.0.1:9"], whitebind=["127.0.0.1:3"])
+    assert beside_bind._listen_port() == 9
+
+
+def test_a_manager_whose_whitebind_is_refused_ends_like_a_failed_bind(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1625: a hand-made `Config` can carry a `-whitebind` `cli` refuses."""
+    manager = a_manager(whitebind=["127.0.0.1"])
+    assert not manager.start_listener()
+    wait_until(lambda: not manager.is_alive())
+    assert manager.bind_error == "Need to specify a port with -whitebind: '127.0.0.1'"

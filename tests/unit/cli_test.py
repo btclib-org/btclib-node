@@ -3021,6 +3021,90 @@ def test_build_config_a_bind_defaults_its_port_to_dash_port() -> None:
         cli.build_config(["-regtest", "-port=9", "-bind=1.2.3.4:9", "-bind=1.2.3.4"])
 
 
+def test_build_config_whitebind_is_a_list_and_turns_listen_on() -> None:
+    """ISS 1625: `-whitebind` soft-sets `-listen` on, ahead of `-connect`."""
+    argv = ["-regtest", "-connect=10.0.0.1", "-whitebind=noban@127.0.0.1:7"]
+    config = cli.build_config([*argv, "-whitebind=[::1]:8"])
+    assert config.whitebind == ("noban@127.0.0.1:7", "[::1]:8")
+    assert config.listen is True
+    assert cli.build_config(["-regtest"]).whitebind == ()
+
+
+def test_build_config_whitebind_does_not_overrule_listen_0() -> None:
+    """ISS 1625: the soft-set yields, and `-listen=0` is then refused."""
+    message = "Cannot set -bind or -whitebind together with -listen=0"
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        cli.build_config(["-regtest", "-whitebind=127.0.0.1:7", "-nolisten"])
+
+
+@pytest.mark.parametrize(
+    "value", ["127.0.0.1:0", "noban@127.0.0.1:0", "[::1]:x", "noban@127.0.0.1:7,"]
+)
+def test_build_config_a_whitebind_with_a_bad_port_is_refused(value: str) -> None:
+    """ISS 1625: `CheckHostPortOptions` reads the value with its permissions."""
+    message = f"Invalid port specified in -whitebind: '{value}'"
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        cli.build_config(["-regtest", f"-whitebind={value}"])
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ("127.0.0.1", "Need to specify a port with -whitebind: '127.0.0.1'"),
+        ("localhost:7", "Cannot resolve -whitebind address: 'localhost:7'"),
+        (
+            "out@127.0.0.1:7",
+            'whitebind may only be used for incoming connections ("out" was passed)',
+        ),
+        ("bogus@127.0.0.1:7", "Invalid P2P permission: 'bogus'"),
+    ],
+)
+def test_build_config_a_whitebind_core_refuses_is_refused_in_its_words(
+    value: str, message: str
+) -> None:
+    """ISS 1625: `NetWhitebindPermissions::TryParse`'s errors."""
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        cli.build_config(["-regtest", f"-whitebind={value}"])
+
+
+@pytest.mark.parametrize(
+    ("argv", "duplicate"),
+    [
+        (["-whitebind=1.2.3.4:7", "-whitebind=noban@1.2.3.4:7"], "1.2.3.4:7"),
+        (["-whitebind=1.2.3.4:7", "-bind=1.2.3.4:7"], "1.2.3.4:7"),
+        (["-whitebind=1.2.3.4:18445", "-bind=1.2.3.4=onion"], "1.2.3.4:18445"),
+        # the default onion bind, which `-whitebind` alone leaves in place
+        (["-whitebind=127.0.0.1:18445"], "127.0.0.1:18445"),
+        (["-port=9", "-whitebind=127.0.0.1:10"], "127.0.0.1:10"),
+    ],
+)
+def test_build_config_an_address_bound_twice_with_a_whitebind_is_refused(
+    argv: list[str], duplicate: str
+) -> None:
+    """ISS 1625: `CheckBindingConflicts` sees the `-whitebind` ones first."""
+    message = (
+        f"Duplicate binding configuration for address {duplicate}. Please check "
+        "your -bind, -bind=...=onion and -whitebind settings."
+    )
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        cli.build_config(["-regtest", *argv])
+
+
+def test_build_config_a_bind_beside_a_whitebind_adds_no_onion_bind() -> None:
+    """ISS 1625: `AppInitMain` adds the onion bind where no `-bind` is."""
+    argv = ["-regtest", "-bind=127.0.0.2:5", "-whitebind=127.0.0.1:18445"]
+    assert cli.build_config(argv).whitebind == ("127.0.0.1:18445",)
+
+
+def test_build_config_externalip_is_at_the_whitebind_listen_port() -> None:
+    """ISS 1625: `GetListenPort` takes a `-whitebind` that grants no `noban`."""
+    argv = ["-regtest", "-externalip=8.8.8.8", "-whitebind=noban@127.0.0.1:7"]
+    assert cli.build_config([*argv, "-whitebind=127.0.0.1:77"]).externalip == (
+        "8.8.8.8:77",
+    )
+    assert cli.build_config(argv).externalip == ("8.8.8.8:18444",)
+
+
 def test_build_config_externalip_turns_discover_off() -> None:
     """ISS 1445: the soft-set yields to an explicit value."""
     config = cli.build_config(["-regtest", "-externalip=8.8.8.8"])
@@ -3046,6 +3130,7 @@ def _bad_port_warning(option: str, port: int) -> str:
         (["-bind=127.0.0.1:22"], _bad_port_warning("-bind", 22)),
         (["-port=22", "-bind=127.0.0.1"], _bad_port_warning("-bind", 22)),
         (["-port=22", "-bind=127.0.0.1:8333"], ""),
+        (["-port=22", "-whitebind=127.0.0.1:8333"], ""),
         (["-bind=127.0.0.1:22=onion"], ""),
         (
             ["-bind=127.0.0.1:22", "-bind=127.0.0.2:25"],
@@ -3056,7 +3141,10 @@ def _bad_port_warning(option: str, port: int) -> str:
 def test_build_config_warns_of_a_bad_port_as_core_does(
     argv: list[str], expected: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """ISS 1645: each plain `-bind`, and `-port` only where no `-bind` is."""
+    """ISS 1645: each plain `-bind`, and `-port` only where no `-bind` is.
+
+    `-whitebind` is never warned of, and ignores `-port` as `-bind` does.
+    """
     cli.build_config(["-regtest", *argv])
     assert capsys.readouterr().err == expected
 

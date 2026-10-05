@@ -39,11 +39,14 @@ from btclib.p2p.addrv2 import (
 )
 
 from btclib_node.config import (
+    BindAddress,
+    WhitebindAddress,
     default_onion_bind,
     listen_port,
     lookup_host_port,
     lookup_service,
     parse_bind,
+    parse_whitebind,
     service_text,
 )
 from btclib_node.constants import CLIENT_NAME, P2pConnStatus
@@ -495,9 +498,11 @@ class P2pManager(threading.Thread):
         # reason: whether `_discover` below runs at all, independent of
         # `self.listen` (btclib-org/btclib-node#1330's own "Expected").
         self.discover = node.config.discover
-        # Core's `-bind` and `-externalip`, as given and read the same
-        # way: `_bind` and `_add_externalip` parse them when `run` starts
+        # Core's `-bind`, `-whitebind` and `-externalip`, as given and read
+        # the same way: `_bind` and `_add_externalip` parse them when `run`
+        # starts
         self.bind = node.config.bind
+        self.whitebind = node.config.whitebind
         self.externalip = node.config.externalip
         # Core's own `fNetworkActive` (`src/net.h`,
         # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), always true at
@@ -831,6 +836,10 @@ class P2pManager(threading.Thread):
         # listener, which `server` finds a socket's own among. Filled by
         # `_bind` and read by `server`, both on this manager's thread.
         self._onion_binds: set[tuple[Host, int]] = set()
+        # Core's `ListenSocket::m_permissions`: what each `-whitebind`
+        # listener grants, which `server` reads for its own socket. Filled
+        # by `_bind`, on this manager's thread, as `_onion_binds` is.
+        self._listener_permissions: dict[socket.socket, NetPermissionFlags] = {}
         # `server`'s own accept queue, one per listening socket, kept
         # here rather than only local to `server`'s own frame so the two
         # `manager_test.py` tests naming btclib-org/btclib-node#386 can
@@ -928,6 +937,7 @@ class P2pManager(threading.Thread):
         addr_name: str | None = None,
         local_address: tuple[str, int] | None = None,
         inbound_onion: bool = False,
+        granted: NetPermissionFlags | None = None,
         use_v2transport: bool = False,
     ) -> None:
         """Build a `Connection` for `client`, hold it pending, and start it.
@@ -981,6 +991,9 @@ class P2pManager(threading.Thread):
         `inbound_onion` is Core's own: the connection reached an `=onion`
         listener. Its peer's address is then the Tor daemon's, so no
         `-whitelist` entry is matched against it.
+
+        `granted` is what the listener the connection reached grants
+        (`-whitebind`), which `-whitelist` adds to.
         """
         client.settimeout(0.0)
         self.last_connection_id += 1
@@ -1006,6 +1019,7 @@ class P2pManager(threading.Thread):
             None if inbound_onion else address,
             inbound=inbound,
             manual=not (automatic or addr_fetch),
+            granted=granted,
         )
         conn.block_relay = block_relay
         conn.feeler = feeler
@@ -3056,7 +3070,7 @@ class P2pManager(threading.Thread):
     def _listen_port(self) -> int:
         """Return `GetListenPort`: what local addresses are recorded at."""
         # set wherever `run` binds, which is where it calls this
-        return listen_port(self.bind, cast("int", self.port))
+        return listen_port(self.bind, self.whitebind, cast("int", self.port))
 
     def _add_local(self, host: Host, port: int, score: int) -> bool:
         """Keep `host` as one of this node's own addresses, as `AddLocal` does.
@@ -3129,10 +3143,11 @@ class P2pManager(threading.Thread):
         `AppInitMain` calls `Discover` (`src/net.cpp:3376-3384`, at
         bitcoin/bitcoin@9be056a8a7, the v31.1 tag) off `bind_on_any`
         (`src/init.cpp:2163`, `:2193-2196`, same sha) -- whether the
-        node would bind every interface, which is to say no `-bind` was
-        given -- never off `fListen`, which is why `run` below calls this
-        off `self.discover` rather than off `self.listen`: an explicit
-        `-discover=1` still records these addresses under `-listen=0`
+        node would bind every interface, which is to say no `-bind` or
+        `-whitebind` was given -- never off `fListen`, which is why `run`
+        below calls this off `self.discover` rather than off `self.listen`:
+        an explicit `-discover=1` still records these addresses under
+        `-listen=0`
         (btclib-org/btclib-node#1330). `self.discover` is itself Core's
         own soft `-discover=0` under `-listen=0` or `-externalip`
         (`Config.discover`'s own comment; this node has no `-proxy`).
@@ -3156,16 +3171,15 @@ class P2pManager(threading.Thread):
         host OS may not have IPv6 support" (net.cpp, 58a7869f86) -- while
         a failure to bind "0.0.0.0" is `BF_REPORT_ERROR` there too.
 
-        With a `-bind` it is those addresses alone that are bound, the
-        plain ones before the `=onion` ones as `InitBinds` has it, each
-        required: a failure of any ends `run`, the sockets already bound
-        closed. Without one, the loopback `=onion` listener
-        `default_onion_bind` names comes first, as there, and is
-        required too (btclib-org/btclib-node#1666). A connection an
-        `=onion` listener accepts is tagged `inbound_onion`
+        With a `-bind` or a `-whitebind` it is those addresses alone that
+        are bound, as `InitBinds` has it, each required: a failure of any
+        ends `run`, the sockets already bound closed. Without either, the
+        loopback `=onion` listener `default_onion_bind` names comes first,
+        as there, and is required too (btclib-org/btclib-node#1666). A
+        connection an `=onion` listener accepts is tagged `inbound_onion`
         (btclib-org/btclib-node#1644).
         """
-        if self.bind:
+        if self.bind or self.whitebind:
             sockets = self._bind_given()
         else:
             onion = default_onion_bind(cast("int", self.port))
@@ -3190,15 +3204,26 @@ class P2pManager(threading.Thread):
         return sockets
 
     def _bind_given(self) -> list[socket.socket]:
-        """Bind every `-bind` address, `CConnman::Bind` for each.
+        """Bind each `-bind` and `-whitebind` address, as `CConnman::Bind` does.
 
-        A bound address `AddLocal` keeps is recorded at `LOCAL_BIND`
-        unless it is tagged `=onion`, which `BF_DONT_ADVERTISE` keeps out.
+        In `InitBinds`' order: the plain binds, the `-whitebind` ones, the
+        `=onion` ones. With no `-bind`, the default `=onion` one is the
+        last, as `AppInitMain` adds it. A bound address `AddLocal` keeps
+        is recorded at `LOCAL_BIND` unless it is tagged `=onion`, which
+        `BF_DONT_ADVERTISE` keeps out, or grants `noban`.
         """
-        addresses = sorted(
-            (parse_bind(value, cast("int", self.port)) for value in self.bind),
+        port = cast("int", self.port)
+        binds = sorted(
+            (parse_bind(value, port) for value in self.bind),
             key=lambda address: address.onion,
         )
+        addresses: list[BindAddress | WhitebindAddress] = [
+            *(address for address in binds if not address.onion),
+            *(parse_whitebind(value) for value in self.whitebind),
+            *(address for address in binds if address.onion),
+        ]
+        if not self.bind:
+            addresses.append(default_onion_bind(port))
         sockets: list[socket.socket] = []
         try:
             for address in addresses:
@@ -3213,8 +3238,13 @@ class P2pManager(threading.Thread):
                 family = (
                     socket.AF_INET if isinstance(host, IPv4Address) else socket.AF_INET6
                 )
-                sockets.append(self._bind_one(family, str(host), address.port))
-                if address.onion:
+                listener = self._bind_one(family, str(host), address.port)
+                sockets.append(listener)
+                if isinstance(address, WhitebindAddress):
+                    self._listener_permissions[listener] = address.flags
+                    if self.discover and NetPermissionFlags.NO_BAN not in address.flags:
+                        self._add_local(host, address.port, LOCAL_BIND)
+                elif address.onion:
                     self._onion_binds.add((host, address.port))
                 elif self.discover:
                     self._add_local(host, address.port, LOCAL_BIND)
@@ -3433,8 +3463,11 @@ class P2pManager(threading.Thread):
                         )
                         sock.close()
                         continue
+                    granted = self._listener_permissions.get(server_socket)
                     permissions = self.whitelist.flags(
-                        None if inbound_onion else address, inbound=True
+                        None if inbound_onion else address,
+                        inbound=True,
+                        granted=granted,
                     )
                     no_ban = NetPermissionFlags.NO_BAN in permissions
                     if not no_ban and self.ban_man.is_peer_banned(address):
@@ -3475,6 +3508,7 @@ class P2pManager(threading.Thread):
                         prefer_evict=discouraged,
                         local_address=bound,
                         inbound_onion=inbound_onion,
+                        granted=granted,
                         # the v2 transport falls back to v1 on its own where
                         # -v1transport allows, as Core's always does
                         use_v2transport=self.supports_v2transport(),
@@ -3543,7 +3577,7 @@ class P2pManager(threading.Thread):
             self.logger.info("Starting P2P manager")
             asyncio.set_event_loop(loop)
             self._add_externalip()
-            if self.discover and not self.bind:
+            if self.discover and not (self.bind or self.whitebind):
                 self._discover()
             if self.listen:
                 server_sockets = self._bind()
