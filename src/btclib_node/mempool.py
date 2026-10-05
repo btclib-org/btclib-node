@@ -102,6 +102,14 @@ _ROLLING_FEE_HALFLIFE = 60 * 60 * 12
 
 _COIN = 100_000_000
 
+# `CAmount` is an `int64_t`, and `SaturatingAdd` clamps a delta to it
+_INT64_MIN, _INT64_MAX = -(2**63), 2**63 - 1
+
+
+def _saturate(amount: int) -> int:
+    """Clamp `amount` to an `int64`, Core's `SaturatingAdd` of two."""
+    return min(max(amount, _INT64_MIN), _INT64_MAX)
+
 
 def format_money(amount: int) -> str:
     """Core's own `FormatMoney` for an amount never negative here.
@@ -188,6 +196,12 @@ class Mempool:
         # main.verify_mempool_acceptance already computes and would
         # otherwise discard. btclib-org/btclib-node#260
         self.fees: dict[bytes, int] = {}
+        # wtxid -> Core's `m_modified_fee`: `fees` and the delta, saturated
+        # at the `int64` range at each step as `UpdateModifiedFee` does
+        # (`src/kernel/mempool_entry.h`, at bitcoin/bitcoin@9be056a8a7, the
+        # v31.1 tag), so it is not always `fees` plus `deltas`, which a
+        # delta at the bound shows. btclib-org/btclib-node#1502
+        self.modified_fees: dict[bytes, int] = {}
         # wtxid -> Core's `CTxMemPoolEntry::GetTxSize`, the sigop-adjusted
         # vsize `main.verify_mempool_acceptance` computes: what every
         # feerate and the size limit here read. btclib-org/btclib-node#1357
@@ -231,15 +245,15 @@ class Mempool:
         # refusing a second spender is what keeps one wtxid per outpoint.
         # btclib-org/btclib-node#1244
         self.outpoint_spender: dict[tuple[bytes, int], bytes] = {}
-        # (individual feerate, insertion order, wtxid), a min-heap
+        # (modified feerate, push order, wtxid), a min-heap
         # `add_tx` pushes one entry onto and `_pop_worst_wtxid` below
         # reads from instead of `_evict_to_limit` scanning `transactions`
         # whole -- the other O(n) factor btclib-org/btclib-node#441
         # measured and deliberately left alone, #457 being where this
         # heap is argued and measured both ways. A wtxid's feerate is
-        # fixed at push time and never mutated in place -- there is no
-        # fee-bump or replace-by-fee path in this mempool to change what
-        # an entry already held pays -- but a wtxid can still leave and
+        # fixed at push time and never mutated in place: `prioritise`,
+        # which changes what a held entry is worth, pushes a fresh entry.
+        # A wtxid can also leave and
         # come back (a reorg's own `_reconcile_mempool_for_reorg`, in
         # `main.py`, is one path that does this), and a heap entry from
         # its first spell is not deleted when it leaves, only ignored
@@ -262,6 +276,17 @@ class Mempool:
         # first spell's leftover entry both name a wtxid `transactions`
         # currently holds, and only one of the two is the current entry.
         self._heap_current_seq: dict[bytes, int] = {}
+        # The last second element `_push_heap` handed out, which `sequence`
+        # cannot be: `prioritise` pushes a second entry for a held wtxid
+        # without a sequence event, and Core's `GetSequence` does not
+        # count it either.
+        self._heap_pushes: int = 0
+        # txid -> Core's `mapDeltas` (`src/txmempool.h`, at
+        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the fee delta
+        # `prioritisetransaction` added, kept whether or not the
+        # transaction is held, never zero. `modified_fee` is its reader.
+        # btclib-org/btclib-node#1502
+        self.deltas: dict[bytes, int] = {}
         self.size: int = 0
         self.bytesize: int = 0
         # Core's own `DEFAULT_MAX_MEMPOOL_SIZE_MB`
@@ -491,8 +516,8 @@ class Mempool:
         `members` are `(tx, fee, vsize)` of a parent and the child
         paying for it, each already refused by none of
         `main.pre_verify_package`'s checks on this very state. They are
-        judged by their aggregate feerate where the mempool is over its
-        limit: the others are evicted for room, worst first, as long as
+        judged by their aggregate modified feerate where the mempool is over
+        its limit: the others are evicted for room, worst first, as long as
         they pay less than the package, and the package is itself the
         eviction once the worst left pays more. Core evicts the worst
         chunk after adding (`LimitMempoolSize` after `SubmitPackage`,
@@ -505,13 +530,13 @@ class Mempool:
         add, and so does a member left alone by the eviction after the
         add, where a package larger than the limit is evicted.
         """
-        fee = sum(member[1] for member in members)
+        fee = sum(fee + self.delta(tx.id) for tx, fee, _ in members)
         size = sum(member[2] for member in members)
         rate = Fraction(fee, size)
         parents = {wtxid for tx, _, _ in members for wtxid in self._parents(tx)}
         while self.bytesize + size > self.bytesize_limit and self.transactions:
             worst = self._pop_worst_wtxid()
-            worst_rate = Fraction(self.fees[worst], self.vsizes[worst])
+            worst_rate = Fraction(self.modified_fee(worst), self.vsizes[worst])
             if rate < worst_rate:
                 self._unpop_worst_wtxid(worst)
                 self._track_package_removed(
@@ -558,6 +583,7 @@ class Mempool:
         self.transactions[wtxid] = tx
         self.txid_index[txid] = wtxid
         self.fees[wtxid] = fee
+        self.modified_fees[wtxid] = _saturate(fee + self.delta(txid))
         self.vsizes[wtxid] = tx.vsize if vsize is None else vsize
         self.entry_times[wtxid] = time.time()
         self.heights[wtxid] = height
@@ -570,20 +596,23 @@ class Mempool:
 
     def _push_heap(self, wtxid: bytes) -> None:
         """Give `wtxid`, just inserted, its entry in the eviction heap."""
-        # `self.sequence`, bumped by `_insert`, is unique among the entries
-        # this heap holds (`staged` winds it back but pushes none) and is
-        # this heap's own tie-breaker too, so a second counter kept only for
-        # this is not needed: two equal-feerate entries pop in the order they
-        # were pushed, `min`'s own stability over `self.transactions`'
-        # insertion order before this heap existed. It also doubles as
-        # this wtxid's current heap entry's own identifier: a wtxid
-        # re-added after leaving overwrites `_heap_current_seq[wtxid]`
-        # with this call's own value, so the entry a leftover, unpopped
-        # heap tuple from its first spell still carries stops matching.
-        self._heap_current_seq[wtxid] = self.sequence
+        # `_heap_pushes` is unique among the entries this heap holds and
+        # is this heap's own tie-breaker too: two equal-feerate entries pop
+        # in the order they were pushed, `min`'s own stability over
+        # `self.transactions`' insertion order before this heap existed. It
+        # also doubles as this wtxid's current heap entry's own identifier: a
+        # wtxid re-added after leaving, or prioritised, overwrites
+        # `_heap_current_seq[wtxid]` with this call's own value, so the entry
+        # a leftover, unpopped heap tuple from before carries stops matching.
+        self._heap_pushes += 1
+        self._heap_current_seq[wtxid] = self._heap_pushes
         heapq.heappush(
             self._feerate_heap,
-            (Fraction(self.fees[wtxid], self.vsizes[wtxid]), self.sequence, wtxid),
+            (
+                Fraction(self.modified_fee(wtxid), self.vsizes[wtxid]),
+                self._heap_pushes,
+                wtxid,
+            ),
         )
 
     def remove_tx(self, tx: Tx) -> None:
@@ -595,6 +624,78 @@ class Mempool:
     def contains_tx(self, tx: Tx) -> bool:
         """Whether `tx`'s own wtxid is currently held."""
         return tx.hash in self.transactions
+
+    def delta(self, txid: bytes) -> int:
+        """Return the fee delta of `txid`, held or not, zero where it has none.
+
+        Core's `ApplyDelta` (`src/txmempool.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which its mempool
+        acceptance asks of a candidate before it is held.
+        btclib-org/btclib-node#1502
+        """
+        return self.deltas.get(txid, 0)
+
+    def modified_fee(self, wtxid: bytes) -> int:
+        """Return the modified fee of the held `wtxid`: its fee and its delta.
+
+        Core's `GetModifiedFee`: what the feerate this mempool evicts by
+        reads, and the ancestor and descendant sums. The fee the
+        transaction pays, `fees`, stays what a block template adds to the
+        coinbase and what BIP133's `feefilter` is held against
+        (`GetFee`, `src/node/miner.cpp` and `src/net_processing.cpp`, same
+        tag): the delta is a ranking and is never paid.
+        btclib-org/btclib-node#1502
+        """
+        return self.modified_fees[wtxid]
+
+    def prioritise(self, txid: bytes, fee_delta: int) -> None:
+        """Add `fee_delta` to the delta of `txid`, held or not.
+
+        Core's `PrioritiseTransaction` (same tag): deltas stack, are
+        clamped to an `int64`, and a delta that comes to zero is dropped.
+        A held transaction is also counted in `transactions_updated`, as
+        `nTransactionsUpdated` is, which a `getblocktemplate` long poll
+        waits on, and is pushed on the eviction heap at its new rate.
+        Nothing is evicted here: Core trims at the next addition only.
+        A delta is not dropped when the transaction is evicted or
+        replaced, only when a block holds it or conflicts with it
+        (`remove_for_block`).
+
+        Core writes the deltas to `mempool.dat`
+        (`src/node/mempool_persist.cpp`). This node keeps no mempool on
+        disk, so a restart drops them with it
+        (btclib-org/btclib-node#1746). btclib-org/btclib-node#1502
+        """
+        delta = _saturate(self.delta(txid) + fee_delta)
+        if delta:
+            self.deltas[txid] = delta
+        else:
+            self.deltas.pop(txid, None)
+        wtxid = self.txid_index.get(txid)
+        if wtxid is not None:
+            self.modified_fees[wtxid] = _saturate(self.modified_fees[wtxid] + fee_delta)
+            self.transactions_updated += 1
+            self._push_heap(wtxid)
+            self._bound_heap()
+
+    def prioritised(self) -> list[tuple[bytes, int, int | None]]:
+        """Return `(txid, delta, modified fee)` for each delta.
+
+        Core's `GetPrioritisedTransactions` (same tag), in the order of its
+        `std::map<Txid, CAmount>`: by the txid's internal bytes. The
+        modified fee is `None` for a transaction not held.
+        btclib-org/btclib-node#1502
+        """
+        return [
+            (
+                txid,
+                delta,
+                self.modified_fee(self.txid_index[txid])
+                if txid in self.txid_index
+                else None,
+            )
+            for txid, delta in sorted(self.deltas.items(), key=lambda d: d[0][::-1])
+        ]
 
     def _replaced(self, tx: Tx) -> set[bytes]:
         """Return what spends an outpoint `tx` spends, with its descendants.
@@ -621,13 +722,16 @@ class Mempool:
         candidate's sigop-adjusted size (btclib-org/btclib-node#1357). A
         candidate that pays for them, which Core may accept, is refused
         "bip125-replacement-disallowed", Core's reason where it allows no
-        replacement; replacing is btclib-org/btclib-node#1334.
-        btclib-org/btclib-node#1244
+        replacement; replacing is btclib-org/btclib-node#1334. Both sides of
+        the comparison are modified fees, as `PaysForRBF`'s are: `fee` is
+        what `tx` pays, and its own delta is added here.
+        btclib-org/btclib-node#1244, btclib-org/btclib-node#1502
         """
         replaced = self._replaced(tx)
         if not replaced:
             return
-        original = sum(self.fees[wtxid] for wtxid in replaced)
+        original = sum(self.modified_fee(wtxid) for wtxid in replaced)
+        fee += self.delta(tx.id)
         txid = tx.id.hex()
         if fee < original:
             details = (
@@ -784,10 +888,39 @@ class Mempool:
         at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a held spend of a
         coin the block spent can never confirm. Called after `remove_tx`
         has taken `tx` itself out, so every spender left is a conflict.
-        btclib-org/btclib-node#1244
+        The direct spenders lose their fee delta and their descendants keep
+        theirs, as in Core's `removeConflicts`.
+        btclib-org/btclib-node#1244, btclib-org/btclib-node#1502
         """
+        for conflict in self._direct_conflicts(tx):
+            self.clear_prioritisation(self.transactions[conflict].id)
         for victim in self._replaced(tx):
             self._pop(victim)
+
+    def clear_prioritisation(self, txid: bytes) -> None:
+        """Drop the fee delta of `txid`, Core's `ClearPrioritisation`."""
+        self.deltas.pop(txid, None)
+
+    def remove_for_block(self, transactions: Iterable[Tx]) -> None:
+        """Remove what a connected block holds or conflicts with, deltas too.
+
+        Core's `removeForBlock` (`src/txmempool.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag) takes each transaction
+        out, then what conflicts with it, then clears its fee delta. The
+        delta of a transaction a block holds is gone with it, so the
+        transaction has none if a reorg returns it to the mempool; one set
+        after the block connected is applied then. Nothing is done for an
+        empty mempool with no delta, as in Core
+        (`mapTx.size() || mapNextTx.size() || mapDeltas.size()`): a block
+        connected during initial block download would otherwise hash every
+        transaction. btclib-org/btclib-node#1502
+        """
+        if not (self.size or self.deltas):
+            return
+        for tx in transactions:
+            self.remove_tx(tx)
+            self.remove_conflicts(tx)
+            self.clear_prioritisation(tx.id)
 
     def remove_dependents(self, tx: Tx) -> None:
         """Remove what spends any of `tx`'s own outputs, with its descendants.
@@ -845,7 +978,9 @@ class Mempool:
         BIP133's own comparison -- Core's `txiter->GetFee() <
         filterrate.GetFee(txiter->GetTxSize())`, net_processing.cpp --
         against this mempool's own record of what the transaction paid,
-        rather than recomputing it at relay time. `min_fee_rate` of
+        rather than recomputing it at relay time. That is the fee without
+        its delta, as in Core: a peer's filter asks what the transaction
+        pays, not what this node ranks it by. `min_fee_rate` of
         zero, BIP133's and `Connection.feefilter`'s own "no filter"
         value, always clears; so does a wtxid this mempool holds no fee
         for -- already relayed out of `Mempool.add_tx`'s own default,
@@ -884,6 +1019,7 @@ class Mempool:
         tx = self.transactions.pop(wtxid)
         self.txid_index.pop(tx.id, None)
         self.fees.pop(wtxid, None)
+        self.modified_fees.pop(wtxid, None)
         vsize = self.vsizes.pop(wtxid)
         self.entry_times.pop(wtxid, None)
         self.heights.pop(wtxid, None)
@@ -912,16 +1048,21 @@ class Mempool:
         self.bytesize -= vsize
         self.sequence += 1
         self.transactions_updated += 1
-        # Bounds the heap at twice the size it would be with no stale
-        # entries in it at all: a wtxid removed here without its own
-        # heap entry ever being popped (every removal but the one
-        # `_pop_worst_wtxid` itself just consumed) is one more entry
-        # `len(self._feerate_heap)` counts and `self.size` no longer
-        # does, and this is the one place, alongside `add_tx`'s own
-        # push, that both numbers are already in hand to compare.
+        self._bound_heap()
+        return tx
+
+    def _bound_heap(self) -> None:
+        """Rebuild the heap once it holds over twice the entries `size` does.
+
+        Bounds the heap at twice the size it would be with no stale
+        entries in it at all: a wtxid removed without its own heap entry
+        ever being popped (every removal but the one `_pop_worst_wtxid`
+        itself just consumed) or prioritised again is one more entry
+        `len(self._feerate_heap)` counts and `self.size` no longer does.
+        `_pop` and `prioritise` are the places that leave one.
+        """
         if len(self._feerate_heap) > 2 * self.size:
             self._rebuild_feerate_heap()
-        return tx
 
     def _descendants(self, wtxid: bytes) -> set[bytes]:
         """Return wtxid and every mempool transaction depending on it.
@@ -1024,9 +1165,10 @@ class Mempool:
         a cluster mempool's own linearization this mempool does not
         carry, the same reason `rpc.callbacks.get_mempool_info` leaves
         out every field a cluster graph would back. `modified` is `base`
-        unchanged: Core's own difference between the two is
-        `prioritisetransaction`'s fee delta, which this tree does not
-        serve. `depends` and `spent_by` are each this transaction's own
+        plus the transaction's fee delta, and `ancestor` and `descendant`
+        sum the modified fees, as `CalculateAncestorData` and
+        `CalculateDescendantData` do (`src/txmempool.cpp`, same tag).
+        `depends` and `spent_by` are each this transaction's own
         direct mempool parents and children -- `tx.vin` filtered to
         `txid_index`, and `self.spent_by` itself -- not the transitive
         closure `_ancestors`/`_descendants` walk for the counts and
@@ -1046,21 +1188,20 @@ class Mempool:
             (self.transactions[child].id for child in self.spent_by.get(tx.id, ())),
             key=lambda txid: txid[::-1],
         )
-        fee = self.fees[wtxid]
         return MempoolEntry(
             vsize=self.vsizes[wtxid],
             weight=tx.weight,
             time=int(self.entry_times[wtxid]),
             height=self.heights[wtxid],
             wtxid=wtxid,
-            fee=fee,
-            modified_fee=fee,
+            fee=self.fees[wtxid],
+            modified_fee=self.modified_fee(wtxid),
             ancestor_count=len(ancestors),
             ancestor_size=sum(self.vsizes[w] for w in ancestors),
-            ancestor_fees=sum(self.fees[w] for w in ancestors),
+            ancestor_fees=sum(self.modified_fee(w) for w in ancestors),
             descendant_count=len(descendants),
             descendant_size=sum(self.vsizes[w] for w in descendants),
-            descendant_fees=sum(self.fees[w] for w in descendants),
+            descendant_fees=sum(self.modified_fee(w) for w in descendants),
             depends=depends,
             spent_by=spent_by,
             bip125_replaceable=self.is_bip125_replaceable(wtxid),
@@ -1098,13 +1239,13 @@ class Mempool:
         """Pop and return the currently held wtxid of the lowest feerate.
 
         `_feerate_heap` holds one entry per wtxid this mempool has ever
-        held a push for, and a push happens once per `add_tx` call and
-        once per `_rebuild_feerate_heap` sweep -- never updated in
-        place, since a wtxid's feerate cannot change while it is held,
-        there being no fee-bump or replace-by-fee path into this
-        mempool. What can change is whether a given physical entry is
+        held a push for, and a push happens once per `add_tx` call, once
+        per `prioritise` of a held wtxid and once per
+        `_rebuild_feerate_heap` sweep -- never updated in place. What can
+        change is whether a given physical entry is
         still the one this wtxid is currently held under: `add_tx` on a
-        wtxid that left and came back pushes a fresh entry with a fresh
+        wtxid that left and came back, or `prioritise` of one held, pushes
+        a fresh entry with a fresh
         second element and overwrites `_heap_current_seq[wtxid]` to
         match it, so an older entry for the same wtxid, still physically
         in the heap because `_pop` never goes looking for it, now names
@@ -1121,16 +1262,16 @@ class Mempool:
         happens before the heap runs out. For every wtxid still held,
         exactly one entry in the heap has the second element
         `_heap_current_seq` currently names for it, pushed either by the
-        `add_tx` call that last (re-)added it or by the most recent
-        `_rebuild_feerate_heap` sweep since; that entry cannot have been
+        `add_tx` or `prioritise` call that last pushed it or by the most
+        recent `_rebuild_feerate_heap` sweep since; that entry cannot have been
         popped already, since popping the entry matching a wtxid's
         current mapping only ever happens here, at the moment this
         method returns that wtxid to be evicted, and eviction is what
         removes the wtxid (and its mapping) from `self.transactions` --
         so the invariant is "at least one matching entry per currently
-        held wtxid", not "exactly one": a re-add can leave a second,
-        now-permanently-stale entry for the same wtxid behind, and nothing
-        needs it gone before this can terminate correctly.
+        held wtxid", not "exactly one": a re-add or a `prioritise` can leave
+        a second, now-permanently-stale entry for the same wtxid behind, and
+        nothing needs it gone before this can terminate correctly.
         """
         while True:
             _, seq, wtxid = heapq.heappop(self._feerate_heap)
@@ -1151,19 +1292,21 @@ class Mempool:
         heap entry from before this rebuild -- superseded here whether
         or not it had already gone stale on its own -- stops matching
         exactly the way an ordinary re-add's leftover does. The indices
-        handed out this way, `0` upward, are smaller than `self.sequence`
-        can ever be read as here: `self.sequence` grows by at least one
-        per add and one per removal, and `staged` only restores the value it
-        had before, so it already exceeds `self.size` -- and therefore every
-        index below it -- at any point `_pop`'s own check calls this. A push
-        after this rebuild still carries the current, larger `self.sequence`,
-        so it still breaks a tie against a rebuilt entry the same way it
-        would have against the entry the rebuild replaced.
+        handed out this way, `0` upward, are smaller than
+        `self._heap_pushes` can ever be read as here: each held wtxid has
+        had a push of its own, so it already exceeds `self.size` -- and
+        therefore every index below it -- at any point `_bound_heap`
+        calls this. A push after this rebuild
+        still carries a larger `self._heap_pushes`, so it still
+        breaks a tie against a rebuilt entry the same way it would have
+        against the entry the rebuild replaced.
         """
         self._feerate_heap = []
-        for index, (wtxid, fee) in enumerate(self.fees.items()):
+        for index, wtxid in enumerate(self.fees):
             self._heap_current_seq[wtxid] = index
-            self._feerate_heap.append((Fraction(fee, self.vsizes[wtxid]), index, wtxid))
+            self._feerate_heap.append(
+                (Fraction(self.modified_fee(wtxid), self.vsizes[wtxid]), index, wtxid)
+            )
         heapq.heapify(self._feerate_heap)
 
     def _evict_to_limit(self) -> None:
@@ -1200,7 +1343,7 @@ class Mempool:
         heapq.heappush(
             self._feerate_heap,
             (
-                Fraction(self.fees[wtxid], self.vsizes[wtxid]),
+                Fraction(self.modified_fee(wtxid), self.vsizes[wtxid]),
                 self._heap_current_seq[wtxid],
                 wtxid,
             ),
@@ -1227,7 +1370,7 @@ class Mempool:
         # `TrimToSize` is int64 rather than float, a difference this
         # module's own advisory, non-consensus use of the number
         # does not need to close.
-        package_fee = sum(self.fees[w] for w in package)
+        package_fee = sum(self.modified_fee(w) for w in package)
         package_vsize = sum(self.vsizes[w] for w in package)
         removed_rate = Fraction(package_fee, package_vsize) * 1000
         removed_rate += self.incremental_relay_feerate.sats_per_kvbyte

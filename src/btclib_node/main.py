@@ -556,19 +556,16 @@ def _reconcile_mempool_for_reorg(
             tip_height = len(node.chainstate.block_index.active_chain) - 1
             node.mempool.add_tx(tx, fee, vsize, height=tip_height)
     for block in to_add:
-        # an empty mempool holds none of them, and `remove_tx` hashes
-        # each transaction to ask, which a block connected during
-        # initial block download would pay for every transaction
-        if node.mempool.size:
-            for tx in block.transactions[1:]:
-                node.mempool.remove_tx(tx)
-                node.mempool.remove_conflicts(tx)
+        # `remove_for_block` hashes each transaction to ask, so it does
+        # nothing for an empty mempool with no fee delta: a block connected
+        # during initial block download would pay for every transaction
+        node.mempool.remove_for_block(block.transactions)
         # Core's own `removeForBlock` (`src/txmempool.cpp:405-427`,
         # at bitcoin/bitcoin@58a7869f86): once per block connected,
         # whether or not it held anything this mempool was also
         # holding, restarting `Mempool.get_min_fee_rate`'s own decay
-        # clock -- not folded into `remove_tx` above, which already
-        # runs once per transaction rather than once per block.
+        # clock -- kept outside `remove_for_block`, which returns early
+        # for an empty mempool with no fee delta, where this still runs.
         # btclib-org/btclib-node#294
         node.mempool.note_block_connected()
     if to_remove:
@@ -2148,10 +2145,14 @@ def pre_verify_package(node: Node, parent: Tx, child: Tx) -> PackageCandidate:
             child_candidate = pre_verify_mempool_acceptance(
                 node, child, package_feerate=True
             )
+        # the package's `m_total_modified_fees`
         _check_fee_rate(
             node,
             parent_candidate.vsize + child_candidate.vsize,
-            parent_candidate.fee + child_candidate.fee,
+            parent_candidate.fee
+            + node.mempool.delta(parent.id)
+            + child_candidate.fee
+            + node.mempool.delta(child.id),
         )
     except (MissingPrevoutError, TxRejectedError) as refusal:
         raise PackageRefusedError(
@@ -2214,15 +2215,16 @@ def _check_ephemeral_dust(node: Node, tx: Tx, fee: int) -> None:
     the v31.1 tag, and at bitcoin/bitcoin@66776840be, master: a dust output
     is held only by a transaction that pays nothing, which no miner has a
     reason to mine alone. `IsStandardTx` has already allowed one. Core
-    tests the base and the modified fee; `prioritisetransaction` is not
-    implemented here, so the two are one number
-    (btclib-org/btclib-node#1502).
-    btclib-org/btclib-node#1594
+    tests the base and the modified fee, so a delta
+    (`prioritisetransaction`) that makes up a zero fee is refused too, as
+    is one that cancels a fee. btclib-org/btclib-node#1594,
+    btclib-org/btclib-node#1502
     """
     config = node.config
+    modified_fee = fee + node.mempool.delta(tx.id)
     if (
         config.require_standard
-        and fee != 0
+        and (fee != 0 or modified_fee != 0)
         and dust_outputs(tx, dust_relay_fee=config.dust_relay_feerate)
     ):
         reason, details = "dust", "tx with dust output must be 0-fee"
@@ -2296,12 +2298,15 @@ def _check_fee_and_truc(
 ) -> None:
     """Refuse a fee under either floor, then what BIP431 refuses.
 
+    `CheckFeeRate` is asked the modified fee: `fee` and the delta of `tx`
+    (`prioritisetransaction`), held or not. btclib-org/btclib-node#1502
+
     The last of `PreChecks`, skipped for a disconnected block's
     transactions, and with the fee floors left out where the package's
     feerate is held to them instead. btclib-org/btclib-node#1399
     """
     if not package_feerate:
-        _check_fee_rate(node, vsize, fee)
+        _check_fee_rate(node, vsize, fee + node.mempool.delta(tx.id))
     node.mempool.check_truc(tx, vsize)
 
 
@@ -2360,13 +2365,15 @@ def _check_fee_rate(node: Node, vsize: int, fee: int) -> None:
     at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the mempool's own
     rolling minimum first, then the relay floor, each rounded up for
     `vsize` as `CFeeRate::GetFee` rounds it and each refused with Core's
-    own reason and "<fee> < <floor>". Core also asks whether the rolling
-    minimum is positive, which a fee never negative here makes
-    redundant: `_check_tx_inputs` has already refused one. `vsize` is
-    the sigop-adjusted one, Core's `GetTxSize`: btclib-org/btclib-node#1357.
+    own reason and "<fee> < <floor>". The rolling minimum refuses only
+    where it is positive, as in Core: with none, a modified fee below zero,
+    which a delta larger than the fee gives, is answered by the relay
+    floor. `fee` is the modified fee, and `vsize` the sigop-adjusted one,
+    Core's `GetTxSize`: btclib-org/btclib-node#1357,
+    btclib-org/btclib-node#1502.
     """
     mempool_reject_fee = fee_from_vsize(vsize, node.mempool.get_min_fee_rate())
-    if fee < mempool_reject_fee:
+    if mempool_reject_fee > 0 and fee < mempool_reject_fee:
         reason, details = "mempool min fee not met", f"{fee} < {mempool_reject_fee}"
         raise TxRejectedError(reason, details)
     min_relay_fee = fee_from_vsize(vsize, node.config.min_relay_feerate)

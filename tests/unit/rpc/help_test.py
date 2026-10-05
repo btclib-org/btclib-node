@@ -54,6 +54,8 @@ _EXPECTED_BARE_LISTING = (
     "\n"
     "== Mining ==\n"
     'getblocktemplate {"mode":"str","capabilities":["str",...],"rules":["segwit","str",...],"longpollid":"str","data":"hex"}\n'
+    "getprioritisedtransactions\n"
+    'prioritisetransaction "txid" ( dummy ) fee_delta\n'
     'submitblock "hexdata" ( "dummy" )\n'
     'submitheader "hexdata"\n'
     "\n"

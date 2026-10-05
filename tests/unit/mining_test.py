@@ -244,6 +244,62 @@ def test_the_package_with_the_best_feerate_goes_in_first(funded: Node) -> None:
     assert funded.mempool.size == 0
 
 
+def test_a_delta_ranks_a_transaction_but_the_coinbase_takes_what_it_paid(
+    funded: Node,
+) -> None:
+    """The order is by modified fee, the fees and the coinbase by fee paid.
+
+    `AddToBlock` keeps `GetFee` in `vTxFees` and in the block's fees;
+    `addChunks` ranks by the modified feerate, which `-printpriority` logs.
+    """
+    cbs = coinbases(funded, 3)
+    low = pool(funded, spend([OutPoint(cbs[0].id, 0)], [SUBSIDY - 2_000]), 2_000)
+    high = pool(funded, spend([OutPoint(cbs[1].id, 0)], [SUBSIDY - 9_000]), 9_000)
+    mid = pool(funded, spend([OutPoint(cbs[2].id, 0)], [SUBSIDY - 5_000]), 5_000)
+    funded.mempool.prioritise(low.id, 20_000)
+    funded.mempool.prioritise(high.id, -8_000)
+
+    template = create_new_block(funded, SCRIPT)
+
+    assert template.block.transactions[1:] == [low, mid, high]
+    assert template.fees == [2_000, 5_000, 9_000]
+    assert template.block.transactions[0].vout[0].value == SUBSIDY + 16_000
+    mine_template(funded, template.block)
+
+
+def test_the_block_minimum_feerate_is_asked_of_the_modified_fee(funded: Node) -> None:
+    """A free transaction with a delta goes in, a paying one under it not."""
+    cbs = coinbases(funded, 2)
+    free = pool(funded, spend([OutPoint(cbs[0].id, 0)], [SUBSIDY]), 0)
+    paying = pool(funded, spend([OutPoint(cbs[1].id, 0)], [SUBSIDY - 5_000]), 5_000)
+    funded.mempool.prioritise(free.id, 1_000)
+    funded.mempool.prioritise(paying.id, -5_000)
+
+    template = create_new_block(funded, SCRIPT)
+
+    assert template.block.transactions[1:] == [free]
+    assert template.fees == [0]
+
+
+def test_a_delta_on_a_child_lifts_its_parent_too(funded: Node) -> None:
+    """The package is ranked by its modified fees, as the ancestors' sum is."""
+    cbs = coinbases(funded, 2)
+    parent = pool(funded, spend([OutPoint(cbs[0].id, 0)], [SUBSIDY - 100]), 100)
+    child = pool(funded, spend([OutPoint(parent.id, 0)], [SUBSIDY - 200]), 100)
+    other = pool(funded, spend([OutPoint(cbs[1].id, 0)], [SUBSIDY - 5_000]), 5_000)
+    assert create_new_block(funded, SCRIPT).block.transactions[1:] == [
+        other,
+        parent,
+        child,
+    ]
+    funded.mempool.prioritise(child.id, 20_000)
+
+    template = create_new_block(funded, SCRIPT)
+
+    assert template.block.transactions[1:] == [parent, child, other]
+    mine_template(funded, template.block)
+
+
 def test_a_child_that_pays_well_lifts_its_parent(funded: Node) -> None:
     """A parent is ranked with its child's fee, and goes in before it."""
     cbs = coinbases(funded, 3)

@@ -5,6 +5,7 @@
 """`update_chain`/`verify_mempool_acceptance`: connect, reorg, reject."""
 
 import os
+import secrets
 import shutil
 import signal
 import subprocess
@@ -4977,3 +4978,174 @@ def test_a_connected_block_erases_the_orphans_it_conflicts_with(node: Node) -> N
     connect(node, chain)
     assert not orphanage.have_tx(rival.hash)
     assert orphanage.have_tx(unrelated.hash)
+
+
+def test_a_delta_makes_up_a_fee_under_the_relay_floor(node: Node) -> None:
+    """The floor is asked of the modified fee, and the fee paid is answered.
+
+    `bitcoind` v31.1 accepts a free transaction prioritised by the relay
+    fee, `mining_prioritisetransaction.py` asserts. A delta short of it
+    is refused with the modified fee in the details.
+    """
+    free = a_funded_spend(node, 0)
+    floor = fee_from_vsize(free.vsize, node.config.min_relay_feerate)
+    assert floor > 1
+    refused_with(node, free, "min relay fee not met", f"0 < {floor}")
+    node.mempool.prioritise(free.id, floor - 1)
+    refused_with(node, free, "min relay fee not met", f"{floor - 1} < {floor}")
+    node.mempool.prioritise(free.id, 1)
+    assert verify_mempool_acceptance(node, free).fee == 0
+
+
+def test_a_negative_delta_takes_a_fee_under_the_relay_floor(node: Node) -> None:
+    """A delta larger than the fee refuses a transaction paying the floor.
+
+    Its modified fee is below zero. With no rolling minimum the relay floor
+    refuses it, as Core's `CheckFeeRate` asks the minimum only where it is
+    positive, and with one that does. A disconnected block's transaction is
+    not held to either.
+    """
+    spend = a_funded_spend(node, FEE)
+    floor = fee_from_vsize(spend.vsize, node.config.min_relay_feerate)
+    assert verify_mempool_acceptance(node, spend).fee == FEE
+    node.mempool.prioritise(spend.id, -(FEE + 5))
+    refused_with(node, spend, "min relay fee not met", f"-5 < {floor}")
+    node.mempool._rolling_min_fee_rate = 5000.0
+    node.mempool._block_since_last_rolling_fee_bump = False
+    rolling = fee_from_vsize(spend.vsize, FeeRate(sats_per_kvbyte=5000))
+    refused_with(node, spend, "mempool min fee not met", f"-5 < {rolling}")
+    assert verify_mempool_acceptance(node, spend, bypass_limits=True).fee == FEE
+
+
+def test_a_delta_is_held_against_the_mempool_s_rolling_minimum(node: Node) -> None:
+    """The rolling minimum is asked of the modified fee too."""
+    spend = a_funded_spend(node, 0)
+    node.mempool._rolling_min_fee_rate = 5000.0
+    node.mempool._block_since_last_rolling_fee_bump = False
+    floor = fee_from_vsize(spend.vsize, FeeRate(sats_per_kvbyte=5000))
+    node.mempool.prioritise(spend.id, floor - 1)
+    refused_with(node, spend, "mempool min fee not met", f"{floor - 1} < {floor}")
+    node.mempool.prioritise(spend.id, 1)
+    assert verify_mempool_acceptance(node, spend).fee == 0
+
+
+@pytest.mark.parametrize(("fee", "delta"), [(0, 5), (FEE, 0), (FEE, -FEE), (0, -5)])
+def test_a_dust_output_is_refused_unless_both_fees_are_zero(
+    node: Node, fee: int, delta: int
+) -> None:
+    """`PreCheckEphemeralTx` asks the base fee and the modified one.
+
+    A free spend with a dust output is refused once a delta gives it a
+    modified fee, in either direction; one paying a fee is refused whatever
+    the delta, even where it leaves a modified fee of zero.
+    """
+    spend = a_dusty_spend(node, fee)
+    node.mempool.prioritise(spend.id, delta)
+    refused_with(node, spend, "dust", "tx with dust output must be 0-fee")
+
+
+def test_a_free_dust_output_with_a_delta_that_comes_to_nothing_is_taken(
+    node: Node,
+) -> None:
+    """Both fees are zero, which is the one case a dust output is held."""
+    spend = a_dusty_spend(node, 0)
+    node.mempool.prioritise(spend.id, 5)
+    node.mempool.prioritise(spend.id, -5)
+    assert verify_mempool_acceptance(node, spend, bypass_limits=True).fee == 0
+
+
+def test_a_package_is_held_to_the_floor_by_its_modified_fee(node: Node) -> None:
+    """A delta on the child pays for the parent, and one against it does not."""
+    parent = a_free_parent(node)
+    free = child_of(parent)
+    child = replace(free, vout=[replace(free.vout[0], value=free.vout[0].value + FEE)])
+    floor = fee_from_vsize(parent.vsize + child.vsize, node.config.min_relay_feerate)
+    node.mempool.prioritise(child.id, floor - 1)
+    with pytest.raises(PackageRefusedError):
+        pre_verify_package(node, parent, child)
+    node.mempool.prioritise(child.id, 1)
+    assert pre_verify_package(node, parent, child).child is not None
+    node.mempool.prioritise(child.id, -1)
+    node.mempool.prioritise(parent.id, 1)
+    assert pre_verify_package(node, parent, child).child is not None
+    node.mempool.prioritise(parent.id, -2)
+    with pytest.raises(PackageRefusedError):
+        pre_verify_package(node, parent, child)
+
+
+def test_a_replacement_is_held_to_what_the_candidate_is_worth(node: Node) -> None:
+    """Rule 3 reads the candidate's modified fee."""
+    held = hold(node, funded_spends(node, 1)[0])
+    value = held.vout[0].value
+    conflict = replace(
+        held, lock_time=1, vout=[replace(held.vout[0], value=value - FEE)]
+    )
+    with pytest.raises(TxRejectedError, match="bip125-replacement-disallowed"):
+        verify_mempool_acceptance(node, conflict)
+    node.mempool.prioritise(conflict.id, -(FEE + 1))
+    with pytest.raises(TxRejectedError, match="less fees than conflicting"):
+        verify_mempool_acceptance(node, conflict)
+
+
+def test_a_block_takes_the_delta_of_a_transaction_it_holds_not_held_before(
+    node: Node,
+) -> None:
+    """Core's `removeForBlock` clears every transaction of the block.
+
+    One not in the mempool too, which only the delta tells of, and the
+    coinbase, which Core's loop over `vtx` does not skip.
+    """
+    common = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, common)
+    mined = generate_random_transaction(common[0].transactions[0].id)
+    assert node.mempool.size == 0
+    node.mempool.prioritise(mined.id, 777)
+    kept = secrets.token_bytes(32)
+    node.mempool.prioritise(kept, 5)
+    coinbase = generate_coinbase(height=len(common) + 1)
+    node.mempool.prioritise(coinbase.id, 9)
+    block = build_block(common[-1].header.hash, [coinbase, mined], len(common))
+    node.chainstate.block_index.add_headers([block.header])
+    node.block_db.add_block(block)
+    node.chainstate.block_index.set_downloaded(block.header.hash)
+    settle(node)
+    assert node.chainstate.block_index.active_chain[-1] == block.header.hash
+    assert node.mempool.deltas == {kept: 5}
+
+
+def test_a_delta_set_while_a_transaction_is_mined_applies_on_a_reorg(
+    node: Node,
+) -> None:
+    """The transaction comes back with the delta given after its block.
+
+    The delta given before is gone with the block, so one given after is
+    the whole of it, as in `bitcoind` v31.1's
+    `mining_prioritisetransaction.py`.
+    """
+    common = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, common)
+    mined = generate_random_transaction(common[0].transactions[0].id)
+    node.mempool.prioritise(mined.id, 1_000_000)
+    abandoned = build_block(
+        common[-1].header.hash,
+        [generate_coinbase(height=len(common) + 1), mined],
+        len(common),
+    )
+    block_index.add_headers([abandoned.header])
+    node.block_db.add_block(abandoned)
+    block_index.set_downloaded(abandoned.header.hash)
+    settle(node)
+    assert block_index.active_chain[-1] == abandoned.header.hash
+    assert node.mempool.deltas == {}
+    node.mempool.prioritise(mined.id, 777)
+
+    heavier = _extend(common[-1].header.hash, len(common), 2)
+    block_index.add_headers([block.header for block in heavier])
+    for block in heavier:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+    settle(node)
+    assert block_index.active_chain[-1] == heavier[-1].header.hash
+    assert node.mempool.contains_tx(mined)
+    wtxid = mined.hash
+    assert node.mempool.modified_fee(wtxid) == node.mempool.fees[wtxid] + 777
