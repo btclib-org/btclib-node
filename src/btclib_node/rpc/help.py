@@ -603,6 +603,54 @@ _HELP_PRUNEBLOCKCHAIN = (
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "pruneblockchain", "params": [1000]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
+_HELP_WAITFORBLOCK = (
+    'waitforblock "blockhash" ( timeout )\n'
+    "\n"
+    "Waits for a specific new block and returns useful info about it.\n"
+    "\n"
+    "Returns the current block on timeout or exit.\n"
+    "\n"
+    "Make sure to use no RPC timeout (bitcoin-cli -rpcclienttimeout=0)\n"
+    "\n"
+    "Arguments:\n"
+    "1. blockhash    (string, required) Block hash to wait for.\n"
+    "2. timeout      (numeric, optional, default=0) Time in milliseconds to wait for a response. 0 indicates no timeout.\n"
+    "\n"
+    "Result:\n"
+    "{                    (json object)\n"
+    '  "hash" : "hex",    (string) The blockhash\n'
+    '  "height" : n       (numeric) Block height\n'
+    "}\n"
+    "\n"
+    "Examples:\n"
+    '> bitcoin-cli waitforblock "0000000000079f8ef3d2c688c244eb7a4570b24c9ed7b4a8c619eb02596f8862" 1000\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "waitforblock", "params": ["0000000000079f8ef3d2c688c244eb7a4570b24c9ed7b4a8c619eb02596f8862", 1000]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
+_HELP_WAITFORNEWBLOCK = (
+    'waitfornewblock ( timeout "current_tip" )\n'
+    "\n"
+    "Waits for any new block and returns useful info about it.\n"
+    "\n"
+    "Returns the current block on timeout or exit.\n"
+    "\n"
+    "Make sure to use no RPC timeout (bitcoin-cli -rpcclienttimeout=0)\n"
+    "\n"
+    "Arguments:\n"
+    "1. timeout        (numeric, optional, default=0) Time in milliseconds to wait for a response. 0 indicates no timeout.\n"
+    "2. current_tip    (string, optional) Method waits for the chain tip to differ from this.\n"
+    "\n"
+    "Result:\n"
+    "{                    (json object)\n"
+    '  "hash" : "hex",    (string) The blockhash\n'
+    '  "height" : n       (numeric) Block height\n'
+    "}\n"
+    "\n"
+    "Examples:\n"
+    "> bitcoin-cli waitfornewblock 1000\n"
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "waitfornewblock", "params": [1000]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
 _HELP_WAITFORBLOCKHEIGHT = (
     "waitforblockheight height ( timeout )\n"
     "\n"
@@ -1584,7 +1632,9 @@ HELP_TEXT: dict[str, str] = {
     "gettxout": _HELP_GETTXOUT,
     "gettxoutsetinfo": _HELP_GETTXOUTSETINFO,
     "pruneblockchain": _HELP_PRUNEBLOCKCHAIN,
+    "waitforblock": _HELP_WAITFORBLOCK,
     "waitforblockheight": _HELP_WAITFORBLOCKHEIGHT,
+    "waitfornewblock": _HELP_WAITFORNEWBLOCK,
     "help": _HELP_HELP,
     "stop": _HELP_STOP,
     "getrpcinfo": _HELP_GETRPCINFO,
@@ -1634,7 +1684,9 @@ CATEGORY: dict[str, str] = {
     "gettxout": "Blockchain",
     "gettxoutsetinfo": "Blockchain",
     "pruneblockchain": "Blockchain",
+    "waitforblock": "Blockchain",
     "waitforblockheight": "Blockchain",
+    "waitfornewblock": "Blockchain",
     "help": "Control",
     "stop": "Control",
     "getrpcinfo": "Control",
