@@ -209,7 +209,8 @@ numbers cannot be set.
 Every header's proof of work, and its retarget and median-time-past
 against its ancestors, and its version against BIP34, BIP66 and BIP65
 from their heights; a block's own structure against its difficulty
-bound, on receipt; every script and every signature in it; a coinbase
+bound, on receipt; every script and every signature in it, unless
+`-assumevalid` names it or a block above it, on Core's conditions; a coinbase
 that pays no more than subsidy plus fees and commits to its own height
 under BIP34
 ([#568](https://github.com/btclib-org/btclib-node/issues/568) and

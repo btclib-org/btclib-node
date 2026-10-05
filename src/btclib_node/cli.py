@@ -1733,7 +1733,7 @@ def _get_assume_valid(settings: _Settings) -> bytes | None:
     `0`, `-noassumevalid`, a bare `-assumevalid` -- is Core's "verify all",
     and is `None` here, as is a value not given, until Core's default
     per network is read (btclib-org/btclib-node#1576, a later pull
-    request). Nothing reads the value yet.
+    request).
     """
     value = _get_arg(settings, "assumevalid")
     if value is None:

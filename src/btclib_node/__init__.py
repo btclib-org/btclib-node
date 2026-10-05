@@ -534,6 +534,11 @@ class Node(threading.Thread):
         # stale one. btclib-org/btclib-node#587
         self.last_rejected_block: tuple[bytes, BaseException] | None = None
 
+        # What `main._log_script_check_reason` last logged, so that a
+        # change is logged once: Core's own
+        # `m_last_script_check_reason_logged`
+        self.script_check_reason_logged: tuple[str | None] | None = None
+
         # This node's own active-chain tip height, at the moment
         # `main._finalize_fork` last moved it -- read by
         # `p2p.connection.Connection.own_version`, for an outbound
