@@ -1099,6 +1099,9 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
     if node.is_initial_block_download:
         return
     tx = TxMsg.parse(msg).tx
+    # Core's `AddKnownTx`: the sender has what it sent, under the hash it
+    # announces by.
+    conn.known_tx_inventory.add(tx.hash if conn.wtxidrelay_received else tx.id)
     # Core's `ReceivedTx` completes the sender's announcement first of all,
     # whatever becomes of the transaction, a script check included.
     node.download_manager.received_tx_response(conn.id, tx.id, tx.hash)
@@ -1129,9 +1132,8 @@ def already_judged(node: Node, tx: Tx, conn: Connection) -> bool:
         # all the same, where the mempool holds it, as Core's
         # `InitiateTxBroadcastToAll` does. Core skips a peer whose
         # `m_tx_inventory_known_filter` holds the hash
-        # (`net_processing.cpp:2262`, same sha). This node keeps no such
-        # filter, so a peer already told is told again.
-        # btclib-org/btclib-node#1630
+        # (`net_processing.cpp:2262`, same sha), as `known_tx_inventory`
+        # does here.
         if NetPermissionFlags.FORCE_RELAY in conn.permissions:
             node.download_manager.received_txs.append((conn.id, tx.hash))
         return True
@@ -1677,8 +1679,6 @@ def inv(node: Node, msg: bytes, conn: Connection) -> None:
                 manager.inv_triggered_getheaders.add(conn.id)
                 manager.last_block_inv_triggering_headers_sync = unknown[-1]
 
-    if node.is_initial_block_download:
-        return
     # Core skips `MSG_TX` from a peer that sent `wtxidrelay` and `MSG_WTX`
     # from one that did not. It keeps `MSG_WITNESS_TX` from every peer, as
     # a txid (`net_processing.cpp` and `protocol.h`, at
@@ -1693,6 +1693,12 @@ def inv(node: Node, msg: bytes, conn: Connection) -> None:
         else (InventoryType.MSG_TX, InventoryType.MSG_WITNESS_TX)
     )
     hashes = [x.hash for x in inv.items if x.type_code in tx_types]
+    # Core's `AddKnownTx` runs on each such item before its IBD check:
+    # a peer that announced a transaction has it.
+    for announced in hashes:
+        conn.known_tx_inventory.add(announced)
+    if node.is_initial_block_download:
+        return
     missing_tx = node.mempool.get_missing(hashes, wtxid=by_wtxid)
     if missing_tx:
         node.download_manager.inv_txs.extend([(conn.id, h) for h in missing_tx])

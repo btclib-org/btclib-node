@@ -39,7 +39,7 @@ from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.block_availability import BLOCK_DOWNLOAD_WINDOW, BlockAvailability
 from btclib_node.p2p.callbacks import MAX_GETDATA_INFLIGHT_BYTES
 from btclib_node.p2p.chain_sync import ChainSyncTimeoutState
-from btclib_node.p2p.connection import PeerStats
+from btclib_node.p2p.connection import KnownTxInventory, PeerStats
 from btclib_node.p2p.manager import P2pManager
 from btclib_node.p2p.permissions import NetPermissionFlags
 from btclib_node.p2p.protocol_version import FEEFILTER_VERSION, SENDHEADERS_VERSION
@@ -122,6 +122,7 @@ def a_conn(
         last_block_announcement=last_block_announcement,
         tx_announce_queue=[],
         next_inv_send_time=0.0,
+        known_tx_inventory=KnownTxInventory(),
         stats=PeerStats(),
         block_availability=BlockAvailability(),
         status=status,
@@ -2785,3 +2786,45 @@ def test_a_force_relay_peer_is_sent_no_feefilter() -> None:
     manager._send_due_feefilters()
     assert not only(forced, FeeFilter)
     assert only(relayed, FeeFilter)
+
+
+def test_a_known_transaction_sent_twice_by_force_relay_is_announced_once() -> None:
+    """ISS 1630: a peer already told is not told again, as in Core."""
+    forced = a_conn(1, permissions=NetPermissionFlags.FORCE_RELAY)
+    other = a_conn(2)
+    manager = make_manager([forced, other])
+    hold(manager, a_hash(1))
+    for _ in range(2):
+        manager.received_txs = [(1, a_hash(1))]
+        manager.tx_download()
+        other.next_inv_send_time = 0.0
+    manager._send_due_announcements()
+    assert [hashes_of(inv) for inv in only(other, Inv)] == [[a_hash(1)]]
+
+
+@pytest.mark.parametrize("by_wtxid", [True, False])
+def test_a_peer_that_announced_a_transaction_is_not_queued_it(
+    by_wtxid: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1630: the record is by wtxid for a wtxid-relay peer, else by txid."""
+    other = a_conn(2, wtxidrelay_received=by_wtxid)
+    manager = make_manager([a_conn(1), other])
+    hold(manager, a_hash(1))
+    held = manager.node.mempool.transactions[a_hash(1)]
+    other.known_tx_inventory.add(a_hash(1) if by_wtxid else held.id)
+    manager.received_txs = [(1, a_hash(1))]
+    manager.tx_download()
+    assert not only(other, Inv)
+    assert other.tx_announce_queue == []
+
+
+def test_a_transaction_the_peer_announced_since_it_was_queued_is_not_sent() -> None:
+    """ISS 1630: `_send_due_announcements` checks the record, as Core does."""
+    conn = a_conn(1)
+    manager = make_manager([conn])
+    hold(manager, a_hash(1), a_hash(2))
+    conn.tx_announce_queue = [a_hash(1), a_hash(2)]
+    conn.known_tx_inventory.add(a_hash(1))
+    manager._send_due_announcements()
+    assert [hashes_of(inv) for inv in only(conn, Inv)] == [[a_hash(2)]]
+    assert a_hash(2) in conn.known_tx_inventory

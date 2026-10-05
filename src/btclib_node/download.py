@@ -722,6 +722,7 @@ class DownloadManager:
                 for wtxid in received
                 if wtxid not in known
                 and wtxid in self.node.mempool.transactions
+                and self._tx_inventory(conn, wtxid).hash not in conn.known_tx_inventory
                 and self.node.mempool.meets_fee_rate(wtxid, conn.feefilter)
             ]
             _extend_tx_announce_queue(conn, new_for_conn)
@@ -896,8 +897,8 @@ class DownloadManager:
         Left out is what Core does for a witness-stripped refusal and for
         `TX_INPUTS_NOT_STANDARD`, which tell the txid apart from the wtxid
         in the filter: `Mempool.mark_rejected` has the reason this tree does
-        not. And `AddKnownTx` and `AddToCompactExtraTransactions`, whose
-        state this tree does not have.
+        not. And `AddToCompactExtraTransactions`, whose state this tree
+        does not have.
         """
         mempool = self.node.mempool
         wtxid = tx.hash
@@ -946,7 +947,10 @@ class DownloadManager:
                     break
                 reconsiderable_parent = parent_txid
         if rejected_parents:
-            # whatever the witness, it is refused: both hashes are recorded
+            # whatever the witness, it is refused: both hashes are recorded.
+            # No parent is recorded as known: Core clears `unique_parents`
+            # here (`MempoolRejectedTx`, `src/node/txdownloadman_impl.cpp`
+            # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
             mempool.mark_rejected(txid)
             mempool.mark_rejected(wtxid)
         else:
@@ -957,6 +961,7 @@ class DownloadManager:
                     parent_txid, wtxid=False, include_reconsiderable=False
                 )
             ]
+            self._add_known_txs(conn_id, unique_parents)
             now = time.time()
             wtxid_peers = self._wtxid_peer_count()
             candidates = [conn_id]
@@ -970,6 +975,16 @@ class DownloadManager:
                     self.orphanage.add_tx(tx, peer)
         self.tx_requests.forget_tx_hash(txid)
         self.tx_requests.forget_tx_hash(wtxid)
+
+    def _add_known_txs(self, conn_id: int, txids: list[bytes]) -> None:
+        """Record that `conn_id` has `txids`: it sent a child spending them.
+
+        Core's `AddKnownTx`, which skips a peer no longer connected.
+        """
+        sender = self.node.p2p_manager.connections.get(conn_id)
+        if sender is not None:
+            for txid in txids:
+                sender.known_tx_inventory.add(txid)
 
     def _wtxid_peer_count(self) -> int:
         """Return how many peers relay by wtxid, Core's `m_num_wtxid_peers`."""
@@ -1142,10 +1157,16 @@ class DownloadManager:
                 # net_processing.cpp) rather than trusting a queue of
                 # hashes either, for the same reason.
                 # btclib-org/btclib-node#294
+                #
+                # And against `known_tx_inventory`, Core's filter check at
+                # the same point: a peer that announced the transaction
+                # since it was queued has it.
                 queue = [
                     wtxid
                     for wtxid in conn.tx_announce_queue
                     if wtxid in self.node.mempool.transactions
+                    and self._tx_inventory(conn, wtxid).hash
+                    not in conn.known_tx_inventory
                 ]
                 # Paced the way `advance_getdata` (`p2p/callbacks.py`)
                 # paces a `getdata` answer's own blocks: checked before
@@ -1181,7 +1202,10 @@ class DownloadManager:
                     if conn.queued_send_bytes >= MAX_GETDATA_INFLIGHT_BYTES:
                         break
                     chunk = queue[start : start + MAX_INV_SZ]
-                    conn.send(Inv([self._tx_inventory(conn, w) for w in chunk]))
+                    inventory = [self._tx_inventory(conn, w) for w in chunk]
+                    conn.send(Inv(inventory))
+                    for item in inventory:
+                        conn.known_tx_inventory.add(item.hash)
                     sent_through = start + len(chunk)
                 # Only the entries this call actually served leave the
                 # queue: what a chunk past the bound above left behind is
