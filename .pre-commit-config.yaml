@@ -208,7 +208,7 @@ repos:
   # it runs ahead of markdownlint-cli2 below on purpose: that hook's
   # `--fix` repairs the very seam this hook exists to name
   - repo: https://github.com/btclib-org/.github
-    rev: 954e38b1afdd282f5318beb9bffceca70e55ee0a
+    rev: f668578c07124c632dc36f9c4a92a3a4db8914e8
     hooks:
       - id: check-changelog
         args: [--grandfathered, "56"]
@@ -501,7 +501,7 @@ repos:
   # checked only staged files unless given --enforce-all, so under
   # "pre-commit run --all-files" it checked nothing
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.9
+    rev: v0.16.10
     hooks:
       - id: ruff-check
         name: ruff check (in place fixes)
@@ -583,7 +583,7 @@ repos:
         pass_filenames: false
         require_serial: true
   - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: 0.12.19
+    rev: 0.12.23
     hooks:
       # keep uv.lock in sync with pyproject.toml
       - id: uv-lock
