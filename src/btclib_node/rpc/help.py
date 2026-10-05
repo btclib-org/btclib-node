@@ -341,6 +341,157 @@ _HELP_GETMEMPOOLENTRY = (
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "getmempoolentry", "params": ["mytxid"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
+_HELP_GETMEMPOOLANCESTORS = (
+    'getmempoolancestors "txid" ( verbose )\n'
+    "\n"
+    "If txid is in the mempool, returns all in-mempool ancestors.\n"
+    "\n"
+    "Arguments:\n"
+    "1. txid       (string, required) The transaction id (must be in mempool)\n"
+    "2. verbose    (boolean, optional, default=false) True for a json object, false for array of transaction ids\n"
+    "\n"
+    "Result (for verbose = false):\n"
+    "[           (json array)\n"
+    '  "hex",    (string) The transaction id of an in-mempool ancestor transaction\n'
+    "  ...\n"
+    "]\n"
+    "\n"
+    "Result (for verbose = true):\n"
+    "{                                         (json object)\n"
+    '  "transactionid" : {                     (json object)\n'
+    '    "vsize" : n,                          (numeric) virtual transaction size as defined in BIP 141. This is different from actual serialized size for witness transactions as witness data is discounted.\n'
+    '    "weight" : n,                         (numeric) transaction weight as defined in BIP 141.\n'
+    '    "time" : xxx,                         (numeric) local time transaction entered pool in seconds since 1 Jan 1970 GMT\n'
+    '    "height" : n,                         (numeric) block height when transaction entered pool\n'
+    '    "descendantcount" : n,                (numeric) number of in-mempool descendant transactions (including this one)\n'
+    '    "descendantsize" : n,                 (numeric) virtual transaction size of in-mempool descendants (including this one)\n'
+    '    "ancestorcount" : n,                  (numeric) number of in-mempool ancestor transactions (including this one)\n'
+    '    "ancestorsize" : n,                   (numeric) virtual transaction size of in-mempool ancestors (including this one)\n'
+    "    \"chunkweight\" : n,                    (numeric) sigops-adjusted weight (as defined in BIP 141 and modified by '-bytespersigop') of this transaction's chunk\n"
+    '    "wtxid" : "hex",                      (string) hash of serialized transaction, including witness data\n'
+    '    "fees" : {                            (json object)\n'
+    '      "base" : n,                         (numeric) transaction fee, denominated in BTC\n'
+    '      "modified" : n,                     (numeric) transaction fee with fee deltas used for mining priority, denominated in BTC\n'
+    '      "ancestor" : n,                     (numeric) transaction fees of in-mempool ancestors (including this one) with fee deltas used for mining priority, denominated in BTC\n'
+    '      "descendant" : n,                   (numeric) transaction fees of in-mempool descendants (including this one) with fee deltas used for mining priority, denominated in BTC\n'
+    '      "chunk" : n                         (numeric) transaction fees of chunk, denominated in BTC\n'
+    "    },\n"
+    '    "depends" : [                         (json array) unconfirmed transactions used as inputs for this transaction\n'
+    '      "hex",                              (string) parent transaction id\n'
+    "      ...\n"
+    "    ],\n"
+    '    "spentby" : [                         (json array) unconfirmed transactions spending outputs from this transaction\n'
+    '      "hex",                              (string) child transaction id\n'
+    "      ...\n"
+    "    ],\n"
+    '    "bip125-replaceable" : true|false,    (boolean) Whether this transaction signals BIP125 replaceability or has an unconfirmed ancestor signaling BIP125 replaceability. (DEPRECATED)\n'
+    "                                          \n"
+    '    "unbroadcast" : true|false            (boolean) Whether this transaction is currently unbroadcast (initial broadcast not yet acknowledged by any peers)\n'
+    "  },\n"
+    "  ...\n"
+    "}\n"
+    "\n"
+    "Examples:\n"
+    '> bitcoin-cli getmempoolancestors "mytxid"\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "getmempoolancestors", "params": ["mytxid"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
+_HELP_GETMEMPOOLDESCENDANTS = (
+    'getmempooldescendants "txid" ( verbose )\n'
+    "\n"
+    "If txid is in the mempool, returns all in-mempool descendants.\n"
+    "\n"
+    "Arguments:\n"
+    "1. txid       (string, required) The transaction id (must be in mempool)\n"
+    "2. verbose    (boolean, optional, default=false) True for a json object, false for array of transaction ids\n"
+    "\n"
+    "Result (for verbose = false):\n"
+    "[           (json array)\n"
+    '  "hex",    (string) The transaction id of an in-mempool descendant transaction\n'
+    "  ...\n"
+    "]\n"
+    "\n"
+    "Result (for verbose = true):\n"
+    "{                                         (json object)\n"
+    '  "transactionid" : {                     (json object)\n'
+    '    "vsize" : n,                          (numeric) virtual transaction size as defined in BIP 141. This is different from actual serialized size for witness transactions as witness data is discounted.\n'
+    '    "weight" : n,                         (numeric) transaction weight as defined in BIP 141.\n'
+    '    "time" : xxx,                         (numeric) local time transaction entered pool in seconds since 1 Jan 1970 GMT\n'
+    '    "height" : n,                         (numeric) block height when transaction entered pool\n'
+    '    "descendantcount" : n,                (numeric) number of in-mempool descendant transactions (including this one)\n'
+    '    "descendantsize" : n,                 (numeric) virtual transaction size of in-mempool descendants (including this one)\n'
+    '    "ancestorcount" : n,                  (numeric) number of in-mempool ancestor transactions (including this one)\n'
+    '    "ancestorsize" : n,                   (numeric) virtual transaction size of in-mempool ancestors (including this one)\n'
+    "    \"chunkweight\" : n,                    (numeric) sigops-adjusted weight (as defined in BIP 141 and modified by '-bytespersigop') of this transaction's chunk\n"
+    '    "wtxid" : "hex",                      (string) hash of serialized transaction, including witness data\n'
+    '    "fees" : {                            (json object)\n'
+    '      "base" : n,                         (numeric) transaction fee, denominated in BTC\n'
+    '      "modified" : n,                     (numeric) transaction fee with fee deltas used for mining priority, denominated in BTC\n'
+    '      "ancestor" : n,                     (numeric) transaction fees of in-mempool ancestors (including this one) with fee deltas used for mining priority, denominated in BTC\n'
+    '      "descendant" : n,                   (numeric) transaction fees of in-mempool descendants (including this one) with fee deltas used for mining priority, denominated in BTC\n'
+    '      "chunk" : n                         (numeric) transaction fees of chunk, denominated in BTC\n'
+    "    },\n"
+    '    "depends" : [                         (json array) unconfirmed transactions used as inputs for this transaction\n'
+    '      "hex",                              (string) parent transaction id\n'
+    "      ...\n"
+    "    ],\n"
+    '    "spentby" : [                         (json array) unconfirmed transactions spending outputs from this transaction\n'
+    '      "hex",                              (string) child transaction id\n'
+    "      ...\n"
+    "    ],\n"
+    '    "bip125-replaceable" : true|false,    (boolean) Whether this transaction signals BIP125 replaceability or has an unconfirmed ancestor signaling BIP125 replaceability. (DEPRECATED)\n'
+    "                                          \n"
+    '    "unbroadcast" : true|false            (boolean) Whether this transaction is currently unbroadcast (initial broadcast not yet acknowledged by any peers)\n'
+    "  },\n"
+    "  ...\n"
+    "}\n"
+    "\n"
+    "Examples:\n"
+    '> bitcoin-cli getmempooldescendants "mytxid"\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "getmempooldescendants", "params": ["mytxid"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
+# Core's text, word for word, including its mentions of the
+# txospenderindex. This node has no `-txospenderindex`: the answer is
+# the mempool's alone, and `blockhash` is never in it.
+_HELP_GETTXSPENDINGPREVOUT = (
+    'gettxspendingprevout [{"txid":"hex","vout":n},...] ( {"mempool_only":bool,"return_spending_tx":bool,...} )\n'
+    "\n"
+    "Scans the mempool (and the txospenderindex, if available) to find transactions spending any of the given outputs\n"
+    "\n"
+    "Arguments:\n"
+    "1. outputs                 (json array, required) The transaction outputs that we want to check, and within each, the txid (string) vout (numeric).\n"
+    "     [\n"
+    "       {                   (json object)\n"
+    '         "txid": "hex",    (string, required) The transaction id\n'
+    '         "vout": n,        (numeric, required) The output number\n'
+    "       },\n"
+    "       ...\n"
+    "     ]\n"
+    "2. options                 (json object, optional) Options object that can be used to pass named arguments, listed below.\n"
+    "\n"
+    "Named Arguments:\n"
+    "mempool_only          (boolean, optional, default=true if txospenderindex unavailable, otherwise false) If false and mempool lacks a relevant spend, use txospenderindex (throws an exception if not available).\n"
+    "return_spending_tx    (boolean, optional, default=false) If true, return the full spending tx.\n"
+    "\n"
+    "Result:\n"
+    "[                              (json array)\n"
+    "  {                            (json object)\n"
+    '    "txid" : "hex",            (string) the transaction id of the checked output\n'
+    '    "vout" : n,                (numeric) the vout value of the checked output\n'
+    '    "spendingtxid" : "hex",    (string, optional) the transaction id of the mempool transaction spending this output (omitted if unspent)\n'
+    '    "spendingtx" : "hex",      (string, optional) the transaction spending this output (only if return_spending_tx is set, omitted if unspent)\n'
+    '    "blockhash" : "hex"        (string, optional) the hash of the spending block (omitted if unspent or the spending tx is not confirmed)\n'
+    "  },\n"
+    "  ...\n"
+    "]\n"
+    "\n"
+    "Examples:\n"
+    '> bitcoin-cli gettxspendingprevout "[{\\"txid\\":\\"a08e6907dbbd3d809776dbfc5d82e371b764ed838b5655e72f463568df1aadf0\\",\\"vout\\":3}]"\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "gettxspendingprevout", "params": ["[{\\"txid\\":\\"a08e6907dbbd3d809776dbfc5d82e371b764ed838b5655e72f463568df1aadf0\\",\\"vout\\":3}]"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+    '> bitcoin-cli -named gettxspendingprevout outputs=\'[{"txid":"a08e6907dbbd3d809776dbfc5d82e371b764ed838b5655e72f463568df1aadf0","vout":3}]\' return_spending_tx=true\n'
+)
+
 _HELP_GETMEMPOOLINFO = (
     "getmempoolinfo\n"
     "\n"
@@ -1626,6 +1777,9 @@ HELP_TEXT: dict[str, str] = {
     "reconsiderblock": _HELP_RECONSIDERBLOCK,
     "preciousblock": _HELP_PRECIOUSBLOCK,
     "getmempoolentry": _HELP_GETMEMPOOLENTRY,
+    "getmempoolancestors": _HELP_GETMEMPOOLANCESTORS,
+    "getmempooldescendants": _HELP_GETMEMPOOLDESCENDANTS,
+    "gettxspendingprevout": _HELP_GETTXSPENDINGPREVOUT,
     "getmempoolinfo": _HELP_GETMEMPOOLINFO,
     "getrawmempool": _HELP_GETRAWMEMPOOL,
     "getorphantxs": _HELP_GETORPHANTXS,
@@ -1678,6 +1832,9 @@ CATEGORY: dict[str, str] = {
     "reconsiderblock": "hidden",
     "preciousblock": "Blockchain",
     "getmempoolentry": "Blockchain",
+    "getmempoolancestors": "Blockchain",
+    "getmempooldescendants": "Blockchain",
+    "gettxspendingprevout": "Blockchain",
     "getmempoolinfo": "Blockchain",
     "getrawmempool": "Blockchain",
     "getorphantxs": "hidden",

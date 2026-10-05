@@ -192,13 +192,39 @@ class JsonRpcRequest:
         return reply
 
 
+def _take_position(
+    args_in: dict[str, Any], pattern: str, named_only: tuple[str, ...]
+) -> tuple[str, list[Any]] | None:
+    """Pop what `pattern`'s position is given from `args_in`.
+
+    Return None where nothing is given, else the position's own names
+    and the one value it takes: the argument, or the object of its
+    `named_only` options. Giving both is refused.
+    """
+    names = pattern.split("|")
+    options = {n: args_in.pop(n) for n in names if n in named_only and n in args_in}
+    own = [n for n in names if n not in named_only]
+    name = next((n for n in own if n in args_in), None)
+    if name is None:
+        return ("|".join(own), [options]) if options else None
+    if options:
+        message = f"Parameter {name} conflicts with parameter {next(iter(options))}"
+        raise RpcError(RPCErrorCode.INVALID_PARAMETER, message)
+    return "|".join(own), [args_in.pop(name)]
+
+
 def transform_named_arguments(
-    params: dict[str, Any], arg_names: tuple[str, ...]
+    params: dict[str, Any],
+    arg_names: tuple[str, ...],
+    named_only: tuple[str, ...] = (),
 ) -> list[Any]:
     """Map `params`' keys onto positions as `transformNamedArguments` does.
 
     `src/rpc/server.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag.
     `arg_names` is the method's own, `a|b` two names for one position.
+    `named_only` are the names of an `OBJ_NAMED_PARAMS` argument's own
+    options: those given are gathered into one object, which fills that
+    argument's position, and giving that argument too is refused.
     A position left out ahead of one given is a JSON null, and one left
     out after the last given is not there at all. An `args` array holds
     the leading positions, the named ones filling in after it, and an
@@ -223,17 +249,18 @@ def transform_named_arguments(
     initial_hole_size = 0
     initial_param: str | None = None
     for pattern in arg_names:
-        name = next((n for n in pattern.split("|") if n in args_in), None)
-        if name is None:
+        taken = _take_position(args_in, pattern, named_only)
+        if taken is None:
             hole += 1
             if not out:
                 initial_hole_size = hole
             continue
+        label, values = taken
         out.extend([None] * hole)
         hole = 0
         if initial_param is None:
-            initial_param = pattern
-        out.append(args_in.pop(name))
+            initial_param = label
+        out.extend(values)
     positional = args_in.pop("args", None)
     if isinstance(positional, list):
         if initial_param is not None and initial_hole_size < len(positional):
