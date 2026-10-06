@@ -192,6 +192,23 @@ as a note, and its `http` and `rpc` categories are logged (issue #1307).
   the file at the merge base with `origin/main`, is refused**
   (issue btclib-org/.github#1614).
 
+### `signmessagewithprivkey` and `verifymessage` are served
+
+- **`signmessagewithprivkey` signs a message with a WIF key and
+  `verifymessage` checks it against a P2PKH address, as Core's do**
+  (closes #1538).
+
+### `signrawtransactionwithkey` and `combinerawtransaction` are served
+
+- **`signrawtransactionwithkey` and `combinerawtransaction` follow Core, but
+  drop the signatures of an input its script refuses until btclib-org/btclib#2552
+  and refuse as Core `master` does, not v31.1** (closes #1400).
+
+### `btclib-ecc` is a runtime dependency
+
+- **`btclib-ecc>=2026.10.2` is declared where `src/` imports it**, as
+  `signing.py` and `p2p/v2transport.py` do, and not only in the `test` group.
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on

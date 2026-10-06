@@ -66,10 +66,16 @@ _EXPECTED_BARE_LISTING = (
     "setnetworkactive state\n"
     "\n"
     "== Rawtransactions ==\n"
+    'combinerawtransaction ["hexstring",...]\n'
     'decoderawtransaction "hexstring" ( iswitness )\n'
     'getrawtransaction "txid" ( verbosity "blockhash" )\n'
     'sendrawtransaction "hexstring" ( maxfeerate maxburnamount )\n'
-    'testmempoolaccept ["rawtx",...] ( maxfeerate )'
+    'signrawtransactionwithkey "hexstring" ["privatekey",...] ( [{"txid":"hex","vout":n,"scriptPubKey":"hex","redeemScript":"hex","witnessScript":"hex","amount":amount},...] "sighashtype" )\n'
+    'testmempoolaccept ["rawtx",...] ( maxfeerate )\n'
+    "\n"
+    "== Util ==\n"
+    'signmessagewithprivkey "privkey" "message"\n'
+    'verifymessage "address" "signature" "message"'
 )
 
 

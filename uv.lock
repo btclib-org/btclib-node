@@ -295,6 +295,7 @@ source = { editable = "." }
 dependencies = [
     { name = "bitcoin-core-rpc" },
     { name = "btclib", extra = ["bip324", "secp256k1"] },
+    { name = "btclib-ecc" },
     { name = "btclib-wallet" },
     { name = "rocksdict" },
 ]
@@ -310,7 +311,6 @@ check = [
 dev = [
     { name = "atheris", marker = "sys_platform == 'linux'" },
     { name = "bitcoin-core-rpc" },
-    { name = "btclib-ecc" },
     { name = "btclib-secp256k1" },
     { name = "check-sdist" },
     { name = "check-wheel-contents" },
@@ -358,7 +358,6 @@ mutation = [
 ]
 test = [
     { name = "bitcoin-core-rpc" },
-    { name = "btclib-ecc" },
     { name = "btclib-secp256k1" },
     { name = "hypothesis" },
     { name = "pytest" },
@@ -373,6 +372,7 @@ test = [
 requires-dist = [
     { name = "bitcoin-core-rpc", specifier = ">=2026.10.4" },
     { name = "btclib", extras = ["secp256k1", "bip324"], specifier = ">=2026.10.5" },
+    { name = "btclib-ecc", specifier = ">=2026.10.2" },
     { name = "btclib-wallet", specifier = ">=2026.10.4" },
     { name = "rocksdict", specifier = ">=0.3.29" },
 ]
@@ -388,7 +388,6 @@ check = [
 dev = [
     { name = "atheris", marker = "sys_platform == 'linux'", specifier = ">=3.1.0" },
     { name = "bitcoin-core-rpc", specifier = ">=2026.10.4" },
-    { name = "btclib-ecc", specifier = ">=2026.10.2" },
     { name = "btclib-secp256k1", specifier = ">=0.8.0.10" },
     { name = "check-sdist", specifier = ">=1.6.0" },
     { name = "check-wheel-contents", specifier = ">=0.6.3" },
@@ -432,7 +431,6 @@ lint = [
 mutation = [{ name = "cosmic-ray", specifier = ">=8.7.0" }]
 test = [
     { name = "bitcoin-core-rpc", specifier = ">=2026.10.4" },
-    { name = "btclib-ecc", specifier = ">=2026.10.2" },
     { name = "btclib-secp256k1", specifier = ">=0.8.0.10" },
     { name = "hypothesis", specifier = ">=6.140.3" },
     { name = "pytest", specifier = ">=9.1.1" },

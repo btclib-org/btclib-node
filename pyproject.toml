@@ -74,6 +74,14 @@ dependencies = [
     # The floor is 2026.10.4, the first release whose `parse` refuses a
     # key of another network, which `rpc/mining.py` relies on.
     "btclib-wallet>=2026.10.4",
+    # `signing.py` and `p2p/v2transport.py` import `btclib_ecc` directly: a
+    # direct runtime dependency, not what btclib happens to bring
+    # (btclib-org/btclib-node#1431). `tests/unit/interpreter_test.py` builds
+    # its signatures through the same package.
+    #
+    # The floor is 2026.10.2, the release fixing GHSA-r5pw-9wrg-m3mj
+    # and GHSA-m38m-987v-j55h.
+    "btclib-ecc>=2026.10.2",
     "rocksdict>=0.3.29",
     # `rpc/errors.py` imports `RPCErrorCode` directly now, so this is a
     # direct runtime dependency rather than the transitive arrival
@@ -302,17 +310,6 @@ test = [
     #
     # The floor is 2026.10.4, the security release (issue #1685).
     "bitcoin-core-rpc>=2026.10.4",
-    # tests/unit/interpreter_test.py builds signatures through
-    # `btclib_ecc.ecc.dsa`/`ssa` directly rather than through btclib's own
-    # re-export, ahead of btclib dropping that re-export
-    # (btclib-org/btclib#2404, decided 2026-09-28): `src/` imports
-    # nothing from it, and stays declared against btclib alone, so this
-    # is a test dependency landing before the re-export it replaces is
-    # gone rather than a runtime one (btclib-org/btclib-node#1431).
-    #
-    # The floor is 2026.10.2, the release fixing GHSA-r5pw-9wrg-m3mj
-    # and GHSA-m38m-987v-j55h.
-    "btclib-ecc>=2026.10.2",
     # btclib-ecc's own bindings import (`_libsecp256k1.py`) reaches
     # `btclib_secp256k1.ecdh.shared_point`, absent below 0.8.0.8 --
     # measured directly, an older install answers plain `ImportError`
@@ -708,10 +705,8 @@ addopts = "-ra --cov --durations=8 -n auto --strict-config --strict-markers"
 #
 # -- so this is a ratchet at zero cost, not a climb, the same shape as
 # `xfail_strict` below.
-# This suite has no `xfail` today (`grep -rn xfail tests/` matches only
-# a comment in tests/_data/README.md, not a call), so this too costs
-# nothing to turn on now rather than when the first one is written and
-# nobody notices it stopped meaning anything.
+# A strict `xfail` fails the day the test passes, so one waiting on
+# btclib stops being a silent marker the moment btclib delivers.
 xfail_strict = true
 # What a single test is given before the run says which test hung and
 # where, instead of sitting there. Measured rather than picked, on the
@@ -1045,6 +1040,7 @@ ignore = [
 "src/btclib_node/rpc/callbacks.py" = ["ARG001"]
 # handlers registered in rpc/callbacks.py
 "src/btclib_node/rpc/mining.py" = ["ARG001"]
+"src/btclib_node/rpc/signing.py" = ["ARG001"]
 # socket.socket.setblocking is a C-level method taking no keyword
 # arguments at all (verified directly: socket().setblocking(flag=False)
 # raises "takes no keyword arguments"), so the every-call-site half of
