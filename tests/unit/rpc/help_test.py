@@ -279,3 +279,22 @@ def test_stop_help_names_what_stop_actually_returns() -> None:
     node = cast("Node", None)
     conn = cast("RpcConnection", None)
     assert match.group(1) == stop(node, conn, [])
+
+
+@pytest.mark.parametrize(
+    ("command", "order"),
+    [
+        ("getmempoolentry", ["vsize", "vsize_bip141", "vsize_adjusted"]),
+        ("getrawmempool", ["vsize", "vsize_bip141", "vsize_adjusted"]),
+        ("testmempoolaccept", ["vsize_adjusted", "vsize", "vsize_bip141"]),
+    ],
+)
+def test_mempool_help_lists_the_three_vsize_fields_in_core_s_order(
+    command: str, order: list[str]
+) -> None:
+    """Each mempool RPC's help lists the sizes in Core's `RPCResult` order.
+
+    `MempoolEntryDescription` and `testmempoolaccept`'s result list, at
+    bitcoin/bitcoin@aef8a04966 (btclib-org/btclib-node#1757).
+    """
+    assert re.findall(r'"(vsize\w*)" :', HELP_TEXT[command]) == order

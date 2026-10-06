@@ -23,6 +23,12 @@ and `setban`'s own invalid-command refusal, byte for byte). `help_rpc`
 below answers it for a command named explicitly, and un-truncated, where
 Core's own bare listing keeps only each entry's first line.
 
+The `vsize_adjusted`, `vsize` and `vsize_bip141` lines of
+`getmempoolentry`, `getrawmempool` and `testmempoolaccept` are Core 32's
+(`src/rpc/mempool.cpp`, at bitcoin/bitcoin@aef8a04966), laid out as
+`RPCHelpMan::ToString` lays them out. No bitcoind carrying them was read
+back (btclib-org/btclib-node#1757).
+
 `CATEGORY` is each command's own heading in Core's `help`'s bare
 listing (`CRPCTable::help`, `src/rpc/server.cpp:69-117`, at
 bitcoin/bitcoin@9be056a8a7, the v31.1 tag), sorted the way that
@@ -296,7 +302,11 @@ _HELP_GETMEMPOOLENTRY = (
     "\n"
     "Result:\n"
     "{                                       (json object)\n"
-    '  "vsize" : n,                          (numeric) virtual transaction size as defined in BIP 141. This is different from actual serialized size for witness transactions as witness data is discounted.\n'
+    '  "vsize" : n,                          (numeric) (DEPRECATED) Was previously erroneously described as the BIP 141 vsize, but is actually sigops-adjusted vsize.\n'
+    "                                        Use vsize_bip141 to actually get that behavior or switch to the explicit vsize_adjusted for retained behavior.\n"
+    '  "vsize_bip141" : n,                   (numeric) Virtual transaction size as defined in BIP 141.\n'
+    "                                        This is different from actual serialized size for witness transactions as witness data is discounted.\n"
+    '  "vsize_adjusted" : n,                 (numeric) Maximum of sigop-adjusted size (-bytespersigop) and virtual transaction size as defined in BIP 141.\n'
     '  "weight" : n,                         (numeric) transaction weight as defined in BIP 141.\n'
     '  "time" : xxx,                         (numeric) local time transaction entered pool in seconds since 1 Jan 1970 GMT\n'
     '  "height" : n,                         (numeric) block height when transaction entered pool\n'
@@ -381,7 +391,11 @@ _HELP_GETRAWMEMPOOL = (
     "Result (for verbose = true):\n"
     "{                                         (json object)\n"
     '  "transactionid" : {                     (json object)\n'
-    '    "vsize" : n,                          (numeric) virtual transaction size as defined in BIP 141. This is different from actual serialized size for witness transactions as witness data is discounted.\n'
+    '    "vsize" : n,                          (numeric) (DEPRECATED) Was previously erroneously described as the BIP 141 vsize, but is actually sigops-adjusted vsize.\n'
+    "                                          Use vsize_bip141 to actually get that behavior or switch to the explicit vsize_adjusted for retained behavior.\n"
+    '    "vsize_bip141" : n,                   (numeric) Virtual transaction size as defined in BIP 141.\n'
+    "                                          This is different from actual serialized size for witness transactions as witness data is discounted.\n"
+    '    "vsize_adjusted" : n,                 (numeric) Maximum of sigop-adjusted size (-bytespersigop) and virtual transaction size as defined in BIP 141.\n'
     '    "weight" : n,                         (numeric) transaction weight as defined in BIP 141.\n'
     '    "time" : xxx,                         (numeric) local time transaction entered pool in seconds since 1 Jan 1970 GMT\n'
     '    "height" : n,                         (numeric) block height when transaction entered pool\n'
@@ -1516,7 +1530,11 @@ _HELP_TESTMEMPOOLACCEPT = (
     '    "wtxid" : "hex",              (string) The transaction witness hash in hex\n'
     '    "package-error" : "str",      (string, optional) Package validation error, if any (only possible if rawtxs had more than 1 transaction).\n'
     '    "allowed" : true|false,       (boolean, optional) Whether this tx would be accepted to the mempool and pass client-specified maxfeerate. If not present, the tx was not fully validated due to a failure in another tx in the list.\n'
-    "    \"vsize\" : n,                  (numeric, optional) Virtual transaction size as defined in BIP 141. This is different from actual serialized size for witness transactions as witness data is discounted (only present when 'allowed' is true)\n"
+    "    \"vsize_adjusted\" : n,         (numeric, optional) Maximum of sigop-adjusted size (-bytespersigop) and virtual transaction size as defined in BIP 141 (only present when 'allowed' is true).\n"
+    '    "vsize" : n,                  (numeric, optional) (DEPRECATED) Was previously erroneously described as the BIP 141 vsize, but is actually sigops-adjusted vsize.\n'
+    "                                  Use vsize_bip141 to actually get that behavior or switch to the explicit vsize_adjusted for retained behavior.\n"
+    '    "vsize_bip141" : n,           (numeric, optional) Virtual transaction size as defined in BIP 141.\n'
+    "                                  This is different from actual serialized size for witness transactions as witness data is discounted (only present when 'allowed' is true).\n"
     "    \"fees\" : {                    (json object, optional) Transaction fees (only present if 'allowed' is true)\n"
     '      "base" : n,                 (numeric) transaction fee in BTC\n'
     '      "effective-feerate" : n,    (numeric) the effective feerate in BTC per KvB. May differ from the base feerate if, for example, there are modified fees from prioritisetransaction or a package feerate was used.\n'
