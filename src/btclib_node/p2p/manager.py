@@ -543,7 +543,11 @@ class P2pManager(threading.Thread):
         # each anchor dial pops from the back, and its
         # `fAddressesInitialized`, which `run` sets once past the bind
         # and `stop` reads before dumping the anchors back.
+        # `m_anchors_mutex` guards it: `set_network_active` replaces it
+        # on `Node`'s thread, an anchor dial pops it on this manager's
+        # loop. Never held with `_connections_lock`.
         self.anchors: list[NetworkAddressV2] = []
+        self._anchors_lock = threading.Lock()
         self._anchors_path = node.data_dir / ANCHORS_DATABASE_FILENAME
         self._addresses_initialized = False
         # Core's own `-dnsseed`, `Config.dnsseed` having taken its
@@ -1398,10 +1402,15 @@ class P2pManager(threading.Thread):
         """Flip `network_active`, dropping every held connection on a `false`.
 
         Core's own `CConnman::SetNetworkActive` (`src/net.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): only where `active`
-        actually changed, drop every connection this node holds at
+        bitcoin/bitcoin@aef8a04966, past bitcoin/bitcoin#34213): only where
+        `active` actually changed, drop every connection this node holds at
         once, `_disconnect_if_inactive`'s own docstring arguing why
         that is not the only time it runs.
+
+        On a `false`, the block-relay-only peers held, the first two
+        opened, become `anchors` before they are dropped, so they are
+        dialled again once the network is active and are what `stop`
+        writes. Anchors not yet tried stay where no peer is held.
 
         Reached from the `setnetworkactive` RPC, on `Node`'s own thread
         -- the same thread `disconnect_node` already calls
@@ -1410,6 +1419,11 @@ class P2pManager(threading.Thread):
         """
         if self.network_active == active:
             return
+        if not active:
+            held = self._block_relay_addresses()
+            if held:
+                with self._anchors_lock:
+                    self.anchors = held
         self.network_active = active
         self._disconnect_if_inactive()
 
@@ -2300,9 +2314,13 @@ class P2pManager(threading.Thread):
             await asyncio.sleep(secrets.SystemRandom().uniform(0, _FEELER_SLEEP_WINDOW))
         # `OpenNetworkConnection`'s `fNetworkActive` gate, where Core
         # reaches it: past the grant, the fixed seeds, the `-seednode`
-        # queue and the draw, so an inactive network still seeds and
-        # still pops the anchor it would have dialled
-        # (`async_connect`'s docstring has the citation).
+        # queue and the draw, so an inactive network still seeds
+        # (`async_connect`'s docstring has the citation). While the
+        # network is off `_next_outbound` chooses no anchor. A flip
+        # between that check and `_pop_anchor` still loses the one
+        # popped: Core's `ThreadOpenConnections` reads `fNetworkActive`
+        # and pops `m_anchors` in two steps too (`src/net.cpp`, at
+        # bitcoin/bitcoin@aef8a04966).
         if not self.network_active:
             return
         # `OpenNetworkConnection` (`src/net.cpp`,
@@ -2341,8 +2359,11 @@ class P2pManager(threading.Thread):
         services, one `_v1_only` refuses, and one in a network group an
         outbound peer already holds.
         """
-        while self.anchors:
-            anchor = self.anchors.pop()
+        while True:
+            with self._anchors_lock:
+                if not self.anchors:
+                    return None
+                anchor = self.anchors.pop()
             if (
                 can_connect(anchor)
                 and is_valid(network_address(anchor).ip)
@@ -2360,7 +2381,6 @@ class P2pManager(threading.Thread):
                     ip_and_port(str(endpoint.ip), endpoint.port),
                 )
                 return anchor
-        return None
 
     def _draw(
         self,
@@ -2435,20 +2455,28 @@ class P2pManager(threading.Thread):
         """Which automatic connection to open next, `None` for none.
 
         The order is `ThreadOpenConnections`'s own (`src/net.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): an anchor while one is
-        left and the block-relay-only target is unmet, then full-relay up
-        to its target, then block-relay-only up to its own, then one
-        full-relay peer past the target while `try_new_outbound_peer` is
-        set, then one more block-relay-only peer each time its exponential
-        timer comes due, once `start_extra_block_relay_peers` is set, then
-        a feeler each time its own timer does, then, with eight full-relay
-        peers, one more on a network none of them is on each time its own
-        timer does. A timer is drawn again when it is picked, whatever the
-        draw from the table then finds. `DownloadManager` drops an extra
-        peer, or another, once it is connected, and `callbacks.version` a
-        feeler as soon as it has answered.
+        bitcoin/bitcoin@aef8a04966, past bitcoin/bitcoin#34213): an anchor while
+        the network is active, one is left and the block-relay-only target is
+        unmet, then full-relay up to its target, then block-relay-only up
+        to its own, then one full-relay peer past the target while
+        `try_new_outbound_peer` is set, then one more block-relay-only
+        peer each time its exponential timer comes due, once
+        `start_extra_block_relay_peers` is set, then a feeler each time
+        its own timer does, then, with eight full-relay peers, one more
+        on a network none of them is on each time its own timer does. A
+        timer is drawn again when it is picked, whatever the draw from
+        the table then finds. `DownloadManager` drops an extra peer, or
+        another, once it is connected, and `callbacks.version` a feeler
+        as soon as it has answered.
         """
-        if self.anchors and block_relay < self.max_outbound_block_relay:
+        # An inactive network leaves the anchors alone: `_pop_anchor`
+        # would pop one and `_dial_one_draw` drop it at its
+        # `network_active` gate.
+        if (
+            self.network_active
+            and self.anchors
+            and block_relay < self.max_outbound_block_relay
+        ):
             return _Outbound.ANCHOR
         if full_relay < self.max_outbound_full_relay:
             return _Outbound.FULL_RELAY
@@ -3532,14 +3560,16 @@ class P2pManager(threading.Thread):
         # `CConnman::Start`'s own order: past the bind, before any
         # connection is opened
         if self.use_addrman_outgoing:
-            self.anchors = read_anchors(
-                self._anchors_path, self.node.chain.magic, self.logger.info
-            )
-            del self.anchors[MAX_BLOCK_RELAY_ONLY_ANCHORS:]
-            self.logger.info(
-                "%i block-relay-only anchors will be tried for connections.",
-                len(self.anchors),
-            )
+            with self._anchors_lock:
+                self.anchors = read_anchors(
+                    self._anchors_path, self.node.chain.magic, self.logger.info
+                )
+                del self.anchors[MAX_BLOCK_RELAY_ONLY_ANCHORS:]
+                if self.network_active:
+                    self.logger.info(
+                        "%i block-relay-only anchors will be tried for connections.",
+                        len(self.anchors),
+                    )
         self._addresses_initialized = True
         if self.use_dns_seed:
             asyncio.run_coroutine_threadsafe(self._dns_address_seed(), loop)
@@ -3738,6 +3768,23 @@ class P2pManager(threading.Thread):
         self.listening.clear()
         self.logger.info("Stopping P2P Manager")
 
+    def _block_relay_addresses(self) -> list[NetworkAddressV2]:
+        """Return the first two block-relay-only peers held, pending included.
+
+        Core's `GetCurrentBlockRelayOnlyConns`, in the order opened, cut
+        to `MAX_BLOCK_RELAY_ONLY_ANCHORS` as its callers cut it.
+        """
+        with self._connections_lock:
+            connected = (
+                *self.connections.values(),
+                *self.pending_connections.values(),
+            )
+        return [
+            conn.address
+            for conn in sorted(connected, key=lambda conn: conn.id)
+            if conn.block_relay
+        ][:MAX_BLOCK_RELAY_ONLY_ANCHORS]
+
     def _dump_anchors(self) -> None:
         """Write the block-relay-only peers held at shutdown to `anchors.dat`.
 
@@ -3745,22 +3792,19 @@ class P2pManager(threading.Thread):
         `-connect`: `GetCurrentBlockRelayOnlyConns` takes every
         block-relay-only connection in `m_nodes`, pending ones included,
         in the order they were opened, and the first two are kept. The
-        address is the one dialled, as `CNode::addr` is. A write that
-        fails is logged, as `SerializeFileDB` logs it, and stops nothing.
+        address is the one dialled, as `CNode::addr` is. While the
+        network is inactive, `anchors` is written instead when it holds
+        any (bitcoin/bitcoin#34213). A write that fails is logged, as
+        `SerializeFileDB` logs it, and stops nothing.
         """
         if not (self._addresses_initialized and self.use_addrman_outgoing):
             return
         self._addresses_initialized = False
-        with self._connections_lock:
-            connected = (
-                *self.connections.values(),
-                *self.pending_connections.values(),
-            )
-        anchors = [
-            conn.address
-            for conn in sorted(connected, key=lambda conn: conn.id)
-            if conn.block_relay
-        ][:MAX_BLOCK_RELAY_ONLY_ANCHORS]
+        anchors = self._block_relay_addresses()
+        if not self.network_active:
+            with self._anchors_lock:
+                anchors = list(self.anchors) or anchors
+            del anchors[MAX_BLOCK_RELAY_ONLY_ANCHORS:]
         try:
             dump_anchors(self._anchors_path, self.node.chain.magic, anchors)
         except OSError:

@@ -227,6 +227,12 @@ leaving a parent's dust unspent is refused "missing-ephemeral-spends",
   does, and keeps an up, non-loopback adapter's non-transient unicast
   addresses (closes #1310). It found none there.
 
+### `anchors.dat` keeps the anchors across a stop with the network off, as in Core
+
+- **`setnetworkactive false` keeps the block-relay-only peers held as the
+  anchors**, written to `anchors.dat` at stop. An anchor read at start
+  stays stored while the network is off (closes #1753).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on
