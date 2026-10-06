@@ -68,6 +68,7 @@ if TYPE_CHECKING:
     from btclib_node.rpc.manager import RpcManager
 
 __all__ = [
+    "COIN",
     "MAX_BODY_BYTES",
     "MAX_HEADER_BYTES",
     "REQUEST_TIMEOUT",
@@ -75,6 +76,7 @@ __all__ = [
     "RawJSON",
     "RequestHead",
     "RpcConnection",
+    "btc_amount",
     "parse_request_head",
 ]
 
@@ -156,6 +158,27 @@ class RawJSON:
     def __init__(self, text: str) -> None:
         """Wrap `text`, the exact number `JSONEncoder` writes back out."""
         self.text = text
+
+
+# Core's own `COIN` (`src/consensus/amount.h`, at bitcoin/bitcoin@9be056a8a7)
+COIN = 100_000_000
+
+
+def btc_amount(sats: int) -> RawJSON:
+    """Format a satoshi amount as Core's own exact BTC string.
+
+    Core's own `ValueFromAmount` (`src/core_io.cpp:285-296`,
+    at bitcoin/bitcoin@9be056a8a7): integer `amount / COIN` and
+    `amount % COIN`, formatted `%d.%08d` -- exact at every magnitude,
+    where a Python float division (`sats / 1e8`) serializes through
+    `repr`, which fixes no decimal places and emits exponent notation
+    (`1e-06`) at a magnitude ordinary for a feerate. A negative amount,
+    which a decoded output can carry (`CAmount` is signed), keeps its
+    sign in front, as Core's own version places it.
+    """
+    quotient, remainder = divmod(abs(sats), COIN)
+    sign = "-" if sats < 0 else ""
+    return RawJSON(f"{sign}{quotient}.{remainder:08d}")
 
 
 class JSONEncoder(json.JSONEncoder):

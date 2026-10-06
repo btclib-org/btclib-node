@@ -3230,28 +3230,18 @@ def test_a_script_with_no_key_or_destination_infers_raw(
 
 
 @pytest.mark.parametrize(
-    ("x", "on_curve"),
+    "script_hex",
     [
-        (1, True),
-        (5, False),
-        (cb._SECP256K1_P + 1, False),
+        "5120" + "00" * 31 + "05",
+        # an x at or above the field prime
+        "5120" + "ff" * 32,
     ],
 )
-def test_an_x_only_key_is_on_the_curve_when_xonlypubkey_says_so(
-    x: int, *, on_curve: bool
+def test_an_off_curve_taproot_program_is_an_address_not_rawtr(
+    script_hex: str,
 ) -> None:
-    """`_is_x_only_key` answers `XOnlyPubKey::IsFullyValid`.
-
-    1 is the x of a point (the generator's is another), 5 has no point
-    above it, and the prime plus 1, which is 1 in the field, is no
-    coordinate for all that.
-    """
-    assert cb._is_x_only_key(x.to_bytes(32, "big")) is on_curve
-
-
-def test_an_off_curve_taproot_program_is_an_address_not_rawtr() -> None:
     """A program off the curve is `addr(...)`: `rawtr` refuses it."""
-    script_bytes = bytes.fromhex("5120" + "00" * 31 + "05")
+    script_bytes = bytes.fromhex(script_hex)
     entry = cb._script_pub_key_dict(script_bytes, "regtest")
     assert entry["type"] == "witness_v1_taproot"
     assert entry["desc"] == add_checksum(f"addr({entry['address']})")

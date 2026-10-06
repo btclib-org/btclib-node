@@ -98,9 +98,10 @@ what `P2pManager` and `RpcManager` open their listeners and connections
 through; `rocksdict` is the store; `multiprocessing` is `Node.worker_pool`
 under a GIL interpreter.
 
-`btclib_wallet` is a required dependency: `rpc/callbacks.py` takes
-`add_checksum` from its `descriptors` to write the descriptor of a
-decoded script (`_infer_descriptor`), so what it returns reaches a
+`btclib_wallet` is a required dependency: `rpc/callbacks.py` and
+`rpc/utxo_set.py` take `infer_descriptor` from its `descriptors` to write
+a script's descriptor, and `rpc/utxo_set.py` parses with its `parse` the
+descriptors a `scantxoutset` caller sends, so what it returns reaches a
 caller's answer.
 
 `ctypes` is imported by `p2p/netif.py` alone, which loads the C library

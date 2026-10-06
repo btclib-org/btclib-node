@@ -44,6 +44,7 @@ _EXPECTED_BARE_LISTING = (
     'gettxspendingprevout [{"txid":"hex","vout":n},...] ( {"mempool_only":bool,"return_spending_tx":bool,...} )\n'
     'preciousblock "blockhash"\n'
     "pruneblockchain height\n"
+    'scantxoutset "action" ( [scanobjects,...] )\n'
     'waitforblock "blockhash" ( timeout )\n'
     "waitforblockheight height ( timeout )\n"
     'waitfornewblock ( timeout "current_tip" )\n'

@@ -76,6 +76,10 @@ writes, and reconsiders it, with the network off meanwhile. The invalidate
 and the reconsider run without yielding, so a deep rollback holds `Node`'s
 loop, where Core does it on an HTTP worker thread.
 
+`scantxoutset` is not either: it walks the same cursor on `Node`'s thread,
+a step of coins at a time, and yields between steps. `status` and `abort` are
+served between two steps, so the scan's state needs no lock.
+
 ## The transport
 
 `src/btclib_node/p2p/transport.py` frames messages for v1 and

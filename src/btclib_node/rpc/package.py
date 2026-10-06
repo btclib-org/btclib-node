@@ -39,6 +39,7 @@ from btclib_node.main import (
     pre_verify_mempool_acceptance,
     pre_verify_subpackage,
 )
+from btclib_node.rpc.connection import btc_amount
 from btclib_node.rpc.errors import RpcError, json_type_name, type_error
 from btclib_node.rpc.help import HELP_TEXT
 
@@ -193,7 +194,6 @@ def _tx_result(tx: Tx, outcome: Outcome) -> dict[str, Any]:
     """Return the JSON of what `outcome` says of `tx`."""
     from btclib_node.rpc.callbacks import (  # noqa: PLC0415 -- it imports this module
         _MISSING_INPUTS_REASON,
-        _btc_amount,
     )
 
     result: dict[str, Any] = {"txid": tx.id.hex()}
@@ -203,13 +203,13 @@ def _tx_result(tx: Tx, outcome: Outcome) -> dict[str, Any]:
     elif outcome.other_wtxid is not None:
         result["other-wtxid"] = outcome.other_wtxid.hex()
     else:
-        fees: dict[str, Any] = {"base": _btc_amount(outcome.base_fee)}
+        fees: dict[str, Any] = {"base": btc_amount(outcome.base_fee)}
         result["vsize"] = outcome.vsize
         result["fees"] = fees
         if outcome.effective is not None:
             modified_fee, vsize, wtxids = outcome.effective
             # `CFeeRate::GetFeePerK` rounds down
-            fees["effective-feerate"] = _btc_amount(modified_fee * 1000 // vsize)
+            fees["effective-feerate"] = btc_amount(modified_fee * 1000 // vsize)
             fees["effective-includes"] = [wtxid.hex() for wtxid in wtxids]
     return result
 
