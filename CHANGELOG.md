@@ -192,6 +192,12 @@ as a note, and its `http` and `rpc` categories are logged (issue #1307).
   the file at the merge base with `origin/main`, is refused**
   (issue btclib-org/.github#1614).
 
+### `3fff::/20` is not a valid address
+
+- **`is_valid` refuses `3fff::/20`, RFC 9637's documentation range, as Core
+  master's `CNetAddr::IsValid` does, so such an address is neither kept,
+  dialled nor a ban target** (closes #1756).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on

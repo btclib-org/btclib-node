@@ -565,11 +565,16 @@ VALID_CASES = [
     ("::ffff:255.255.255.255", False),
     ("::", False),
     ("2001:db8::1", False),
+    ("3fff::", False),
+    ("3fff:fff:ffff:ffff:ffff:ffff:ffff:ffff", False),
     ("fd6b:88c0:8724::1", False),
     ("fd87:d87e:eb43::1", False),
     # beside both prefixes, and valid
     ("fd6b:88c0:8725::1", True),
     ("fd87:d87e:eb44::1", True),
+    # just outside the RFC9637 /20 on each side, and valid
+    ("3ffe:ffff:ffff:ffff:ffff:ffff:ffff:ffff", True),
+    ("3fff:1000::", True),
 ]
 
 
