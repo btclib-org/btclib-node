@@ -233,6 +233,18 @@ leaving a parent's dust unspent is refused "missing-ephemeral-spends",
   anchors**, written to `anchors.dat` at stop. An anchor read at start
   stays stored while the network is off (closes #1753).
 
+### The block template compares a package's real weight
+
+- **The weight limit counts a package at its real weight, and the sigop
+  limit is checked on its own**, as in Core's bitcoin/bitcoin#35580
+  (closes #1754).
+
+### The last block of a period is not dated before its first
+
+- **The template's time and `mintime` have BIP54's bound on every
+  network**, as in Core's bitcoin/bitcoin#35949; not consensus
+  (closes #1755).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on
