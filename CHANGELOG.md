@@ -221,6 +221,12 @@ leaving a parent's dust unspent is refused "missing-ephemeral-spends",
   block, on Core's conditions, and the log says where it turns off and on**
   (issue #1576). No hash is assumed unless given.
 
+### On Windows the node finds its interface addresses
+
+- **`local_addresses` asks `GetAdaptersAddresses` through `ctypes`**, as Core
+  does, and keeps an up, non-loopback adapter's non-transient unicast
+  addresses (closes #1310). It found none there.
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on
