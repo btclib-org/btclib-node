@@ -1668,11 +1668,13 @@ def invalidate_chain(node: Node, block_hash: bytes) -> None:
     Core's own `InvalidateBlock`, the free RPC-layer function
     (`src/rpc/blockchain.cpp:1695-1714`) calling `Chainstate::InvalidateBlock`
     (`src/validation.cpp`), both at bitcoin/bitcoin@9be056a8a7, the v31.1
-    tag. `rpc.callbacks.invalidate_block` is this function's only caller,
-    and has already refused a `block_hash` this index does not know
-    (Core's own `RPC_INVALID_ADDRESS_OR_KEY`); Core's own silent no-op
-    for the genesis block (`if (pindex->nHeight == 0) return false`) is
-    answered below, in this function, rather than there, since
+    tag. Its callers are `rpc.callbacks.invalidate_block`, which has
+    already refused a `block_hash` this index does not know (Core's own
+    `RPC_INVALID_ADDRESS_OR_KEY`), and `rpc.snapshot`'s
+    `_rolled_back_write`, whose `block_hash` is `chain[height + 1]`, a
+    block of the active chain above genesis and so known. Core's own
+    silent no-op for the genesis block (`if (pindex->nHeight == 0) return
+    false`) is answered below, in this function, rather than there, since
     `BlockIndex.invalidate` itself has no such floor and would mark the
     whole index invalid by walking every block ever built on genesis.
 
@@ -1803,14 +1805,15 @@ def reconsider_chain(node: Node, block_hash: bytes) -> None:
     which runs only where a better chain is found
     (`src/validation.cpp:3423-3424` and `:3318`, same sha).
 
-    `rpc.callbacks.reconsider_block` is this function's only caller, and
-    has already refused a `block_hash` this index does not know
+    Its callers are `rpc.callbacks.reconsider_block`, which has already
+    refused a `block_hash` this index does not know
     (`RPC_INVALID_ADDRESS_OR_KEY`, Core's own answer for the identical
-    lookup failure). Reconsidering a `block_hash` this index knows but
-    never marked invalid is a no-op the way Core's own loop is: nothing
-    in `header_dict` carries the mark `reconsider`'s own filter looks
-    for, so nothing is cleared, and `activate_best_chain` finds the tip
-    already best.
+    lookup failure), and `rpc.snapshot`'s `_rolled_back_write`, which
+    passes the known block it invalidated. Reconsidering a `block_hash`
+    this index knows but never marked invalid is a no-op the way Core's
+    own loop is: nothing in `header_dict` carries the mark `reconsider`'s
+    own filter looks for, so nothing is cleared, and `activate_best_chain`
+    finds the tip already best.
 
     `BlockStatus` carries no counterpart to Core's own separate
     `BLOCK_FAILED_VALID` bit: `valid` and `invalid` share the one field

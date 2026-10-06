@@ -117,6 +117,10 @@ class Coin(_BtclibCoin):
 # encoding ceiling, 8 bytes, is the only bound left here.
 _LOCAL_BOOKKEEPING_MAX = 0xFFFF_FFFF_FFFF_FFFF
 
+# a block's header, and the widest compact size that can follow it
+_BLOCK_HEADER_SIZE = 80
+_VAR_INT_MAX_SIZE = 9
+
 
 @dataclass
 class RevBlock:
@@ -530,6 +534,24 @@ class BlockDB:
                 file, block_location.index, block_location.size
             )
         return Block.parse(block_data, check_validity=False)
+
+    def tx_count(self, block_hash: bytes) -> int | None:
+        """Return the transaction count of a block, or `None` if it is not held.
+
+        Read from the eighty bytes of header and the count after them, so
+        the block is not parsed. `None` is a block this store does not hold.
+        """
+        with self._lock:
+            if block_hash not in self.blocks:
+                return None
+            block_location = self.blocks[block_hash]
+            file = self.__get_block_file(block_location.filename)
+            head = self.__get_data_from_file(
+                file,
+                block_location.index,
+                min(block_location.size, _BLOCK_HEADER_SIZE + _VAR_INT_MAX_SIZE),
+            )
+        return var_int.parse(head[_BLOCK_HEADER_SIZE:])
 
     def get_rev_block(self, block_hash: bytes) -> RevBlock | None:
         """Return the reverse patch for `block_hash`, or `None` if not held."""

@@ -81,6 +81,13 @@ btclib\_node.rpc.package module
    :members:
    :show-inheritance:
 
+btclib\_node.rpc.snapshot module
+-----------------------------------
+
+.. automodule:: btclib_node.rpc.snapshot
+   :members:
+   :show-inheritance:
+
 btclib\_node.rpc.solver module
 -----------------------------------
 
