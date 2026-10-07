@@ -106,10 +106,11 @@ that question.
 
 Precedence is Core's `GetSetting` and `GetSettingsList`
 (`src/common/settings.cpp`, same sha), ported as `_get_setting` and
-`_get_settings_list` below: the command line over the active chain's
-section over the default section; within the command line the last
-value, within a file the first, the chain selectors aside; and a
-negation discarding every value named before it at its own level.
+`_get_settings_list` below: the command line over `settings.json` over
+the active chain's section over the default section; within the command
+line the last value, within a file the first, the chain selectors
+aside; and a negation discarding every value named before it at its own
+level.
 `-connect`, `-addnode`, `-seednode`, `-rpcauth`, `-rpcwhitelist`,
 `-rpcbind`, `-rpcallowip`, `-whitelist`, `-whitebind`, `-debug` and
 `-shutdownnotify` are lists, every value from every level applying --
@@ -147,6 +148,30 @@ the same key mean two different things depending on when it is read.
 Warned about on stderr with its own message rather than the generic one
 below, since `datadir` is a real, documented option and not a typo the
 generic message would have a reader believe it was.
+
+`settings.json` is Core's read-write file (`settings_file.py`), in the
+chain's data directory, or where `-settings=<path>` names it, a relative
+path being joined to that directory; `-nosettings` reads and writes none.
+`_init_settings_file` reads it and writes it back at every start, after
+`bitcoin.conf` and ahead of `-help`, as `InitConfig` does. An option looks
+its bare name up in it, never `section.name` or `noname`, and what it finds
+is read as Core reads it, by the getter that asks. A `false` is the
+negation and a string the value. A number is the value of an option read
+as a string or an integer, "JSON integer out of range" where it is
+outside the `int64_t` range or written with a fraction or an exponent,
+and is refused as a bool or among several values. An array holds the
+values of an option that takes several, and is refused as one value. A
+`null` is no value where one is read, and hides the levels below the file,
+and is refused among several; an object is refused wherever it is read.
+Every refusal is Core's `JSON value of type <type> is not of expected
+type string`, where the option is read.
+
+A `settings` key in the file moves the file the write goes to, since Core
+reads `-settings` again for the write, and `{"settings": false}` refuses
+the start. The chain is resolved before the file is read and asked again
+after it, as `AppInitParameterInteraction` asks (`src/init.cpp`): a file
+naming a second chain selector refuses the start with the invalid
+combination, and the chain the first ask gave is the one used.
 
 A `bitcoin.conf` in the data directory that `-conf` leaves unread, by
 naming another file, is refused as `InitConfig` (`src/common/init.cpp`,
@@ -208,6 +233,15 @@ from btclib_node.p2p.address import BAD_PORTS
 from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME, is_valid_host
 from btclib_node.p2p.permissions import NET_PERMISSIONS_DOC
 from btclib_node.rpc.connection import REQUEST_TIMEOUT
+from btclib_node.settings_file import (
+    SETTINGS_FILENAME,
+    Json,
+    Number,
+    read_settings,
+    type_name,
+    write_json,
+    write_settings,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -729,6 +763,15 @@ _OPTIONS: dict[str, _Option] = {
         _CONNECTION_TITLE,
     ),
     "server": _Option("", "Accept JSON-RPC commands", _RPC_TITLE),
+    "settings": _Option(
+        "=<file>",
+        "Specify path to dynamic settings data file. Can be disabled with "
+        "-nosettings. File is written at runtime and not meant to be edited by "
+        f"users (use {_DEFAULT_CONF_FILENAME} instead for custom settings). "
+        "Relative paths will be prefixed by datadir location. "
+        f"(default: {SETTINGS_FILENAME})",
+        _OPTIONS_TITLE,
+    ),
     "shutdownnotify": _Option(
         "=<cmd>",
         "Execute command immediately before beginning shutdown. The need for "
@@ -817,6 +860,7 @@ _Value = str | bool
 _RoConfig = dict[str, dict[str, list[_Value]]]
 
 _COMMAND_LINE = "command line"
+_SETTINGS_FILE = "settings file"
 _NETWORK_SECTION = "network section"
 _DEFAULT_SECTION = "default section"
 
@@ -849,6 +893,9 @@ class _Settings:
     # `init::StartLogging`'s "Config file:" line, logged after the data
     # directory's; `_read_settings` sets it
     config_file_line: str = ""
+    # `settings.json`'s values by name, in key order: Core's
+    # `Settings::rw_settings`, empty until `_init_settings_file` reads it
+    rw_settings: dict[str, Json] = field(default_factory=dict)
 
 
 def _interpret_key(key: str) -> _KeyInfo:
@@ -889,7 +936,7 @@ def _interpret_value(
     return "" if value is None else value
 
 
-def _negated(values: list[_Value]) -> int:
+def _negated(values: Sequence[Json]) -> int:
     """Return how many of `values` a negation discards: Core's `negated()`."""
     for index in range(len(values), 0, -1):
         if values[index - 1] is False:
@@ -1219,21 +1266,29 @@ def _load_conf_tree(  # noqa: PLR0913
     return tree
 
 
+def _wrong_type(value: Json) -> ValueError:
+    """Return the error Core's `UniValue::get_str` throws on `value`."""
+    err_msg = f"JSON value of type {type_name(value)} is not of expected type string"
+    return ValueError(err_msg)
+
+
 def _sources(
     settings: _Settings, name: str, section: str
-) -> list[tuple[list[_Value], str]]:
+) -> list[tuple[list[Json], str]]:
     """Return `name`'s values at each level Core's `MergeSettings` merges.
 
-    Highest first: the command line, the network section of the file
-    (where `section` names one), and its default section.
+    Highest first: the command line, `settings.json`, the network section
+    of the file (where `section` names one), and its default section.
     """
-    sources: list[tuple[list[_Value], str]] = []
+    sources: list[tuple[list[Json], str]] = []
     if name in settings.command_line:
-        sources.append((settings.command_line[name], _COMMAND_LINE))
+        sources.append((list(settings.command_line[name]), _COMMAND_LINE))
+    if name in settings.rw_settings:
+        sources.append(([settings.rw_settings[name]], _SETTINGS_FILE))
     if section and name in settings.ro_config.get(section, {}):
-        sources.append((settings.ro_config[section][name], _NETWORK_SECTION))
+        sources.append((list(settings.ro_config[section][name]), _NETWORK_SECTION))
     if name in settings.ro_config.get("", {}):
-        sources.append((settings.ro_config[""][name], _DEFAULT_SECTION))
+        sources.append((list(settings.ro_config[""][name]), _DEFAULT_SECTION))
     return sources
 
 
@@ -1244,7 +1299,7 @@ def _use_default_section(settings: _Settings, name: str) -> bool:
 
 def _get_setting(
     settings: _Settings, name: str, *, get_chain_type: bool = False
-) -> _Value | None:
+) -> Json:
     """Return `name`'s one value, Core's `GetSetting` (`common/settings.cpp`).
 
     The highest level naming it decides. There, the last value after the
@@ -1252,7 +1307,8 @@ def _get_setting(
     set; `False` where a negation is last. A default section is skipped
     for a network-only option off `main` unless it ends negated, and
     `get_chain_type` -- `GetChainArg`'s own read -- reads the file's
-    default section alone and skips a command line ending negated.
+    default section alone and skips a level ending negated, whatever
+    its source.
     """
     section = "" if get_chain_type else settings.network
     ignore_default = not get_chain_type and not _use_default_section(settings, name)
@@ -1260,7 +1316,7 @@ def _get_setting(
         last_negated = values[-1] is False
         if ignore_default and source == _DEFAULT_SECTION and not last_negated:
             continue
-        if get_chain_type and source == _COMMAND_LINE and last_negated:
+        if get_chain_type and last_negated:
             continue
         live = values[_negated(values) :]
         if not live:
@@ -1270,7 +1326,7 @@ def _get_setting(
     return None
 
 
-def _get_settings_list(settings: _Settings, name: str) -> list[_Value]:
+def _get_settings_list(settings: _Settings, name: str) -> list[Json]:
     """Return `name`'s values, Core's `GetSettingsList` (`common/settings.cpp`).
 
     Every level's values after its own last negation, highest level
@@ -1279,27 +1335,36 @@ def _get_settings_list(settings: _Settings, name: str) -> list[_Value]:
     by a value of its own, Core's own "zombie" values.
     """
     ignore_default = not _use_default_section(settings, name)
-    result: list[_Value] = []
+    result: list[Json] = []
     done = False
     prev_negated_empty = False
     for values, source in _sources(settings, name, settings.network):
-        add_zombie = source != _COMMAND_LINE and not prev_negated_empty
+        add_zombie = (
+            source in {_NETWORK_SECTION, _DEFAULT_SECTION} and not prev_negated_empty
+        )
         if ignore_default and source == _DEFAULT_SECTION:
             continue
         if not done or add_zombie:
-            result.extend(values[_negated(values) :])
+            for value in values[_negated(values) :]:
+                # an array of the file is the values it holds
+                result.extend(value if isinstance(value, list) else [value])
         done = done or _negated(values) > 0
         prev_negated_empty = prev_negated_empty or (values[-1] is False and not result)
     return result
 
 
-def _setting_to_str(value: _Value) -> str:
-    """Return Core's `SettingToString`: `"0"` negated, `"1"` doubly so."""
+def _setting_to_str(value: Json) -> str:
+    """Return Core's `SettingToString`: `"0"` negated, `"1"` doubly so.
+
+    A number is its text. Raises `_wrong_type` for an array and an object.
+    """
     if value is True:
         return "1"
     if value is False:
         return "0"
-    return value
+    if isinstance(value, str):
+        return value
+    raise _wrong_type(value)
 
 
 def _setting_to_write_str(value: _Value) -> str:
@@ -1317,7 +1382,7 @@ def _setting_to_write_str(value: _Value) -> str:
 
 
 def _log_args(settings: _Settings) -> tuple[str, ...]:
-    """Return Core's `LogArgs` lines, config file first, command line last.
+    """Return Core's `LogArgs` lines: config file, settings file, command line.
 
     `ArgsManager::LogArgs`/`logArgsPrefix` (`src/common/args.cpp`, at
     bitcoin/bitcoin@9be056a8a7): `std::map` order -- a section, then a
@@ -1327,9 +1392,9 @@ def _log_args(settings: _Settings) -> tuple[str, ...]:
     `_parse_conf_text` drops an unknown config key with its own warning,
     and `_parse_parameters` refuses an unknown command-line one outright,
     so Core's own `if (flags)` guard around this has nothing left here to
-    be false for. `LogArgs`'s middle category, "Setting file arg:" from
-    `m_settings.rw_settings`, is settings.json's, which this tree has
-    none of, so it never has a line to emit here.
+    be false for. `LogArgs`'s middle category, "Setting file arg:", is
+    `settings.json`'s: every name it holds, known or not, in key order,
+    its value as `write_json` writes it.
     """
     lines: list[str] = []
     for section, args in sorted(settings.ro_config.items()):
@@ -1339,6 +1404,10 @@ def _log_args(settings: _Settings) -> tuple[str, ...]:
             for value in values:
                 shown = "****" if sensitive else _setting_to_write_str(value)
                 lines.append(f"Config file arg: {prefix}{name}={shown}")
+    lines.extend(
+        f"Setting file arg: {name} = {write_json(value)}"
+        for name, value in settings.rw_settings.items()
+    )
     for name, values in sorted(settings.command_line.items()):
         sensitive = _OPTIONS[name].sensitive
         for value in values:
@@ -1354,16 +1423,34 @@ def _get_arg(settings: _Settings, name: str) -> str | None:
 
 
 def _get_args(settings: _Settings, name: str) -> list[str]:
-    """Return Core's `GetArgs` of `name`: every value, as strings."""
-    return [_setting_to_str(value) for value in _get_settings_list(settings, name)]
+    """Return Core's `GetArgs` of `name`: every value, as strings.
+
+    `GetArgs` throws on the first of them that is a number, a `null`, an
+    array or an object.
+    """
+    result = []
+    for value in _get_settings_list(settings, name):
+        if isinstance(value, Number):
+            raise _wrong_type(value)
+        result.append(_setting_to_str(value))
+    return result
+
+
+def _setting_to_bool(value: Json) -> bool | None:
+    """Return Core's `SettingToBool`, `None` for a `null`.
+
+    A number is refused, as `get_str` refuses it.
+    """
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, Number) or not isinstance(value, str):
+        raise _wrong_type(value)
+    return _interpret_bool(value)
 
 
 def _get_bool(settings: _Settings, name: str) -> bool | None:
     """Return Core's `GetBoolArg` of `name`, `None` where nothing sets it."""
-    value = _get_setting(settings, name)
-    if value is None or isinstance(value, bool):
-        return value
-    return _interpret_bool(value)
+    return _setting_to_bool(_get_setting(settings, name))
 
 
 def _atoi64(text: str) -> int:
@@ -1397,6 +1484,16 @@ def _get_int(settings: _Settings, name: str) -> int | None:
     value = _get_setting(settings, name)
     if value is None or isinstance(value, bool):
         return None if value is None else int(value)
+    if isinstance(value, Number):
+        if (
+            not _LEADING_INTEGER.fullmatch(value)
+            or not _INT64_MIN <= int(value) <= _INT64_MAX
+        ):
+            err_msg = "JSON integer out of range"
+            raise ValueError(err_msg)
+        return int(value)
+    if not isinstance(value, str):
+        raise _wrong_type(value)
     return _atoi64(value)
 
 
@@ -1467,8 +1564,8 @@ def _chain_arg(settings: _Settings) -> str:
     own `get_net` lambda passes an empty section for exactly this lookup
     (`GetChainArg`, `src/common/args.cpp`, at bitcoin/bitcoin@9be056a8a7),
     which is what lets a file decide the chain before any section but
-    the default one can mean anything; and a negated selector on the
-    command line is skipped there, as Core skips it. At most one of the
+    the default one can mean anything; and a selector negated at any
+    level is skipped there, as Core skips it. At most one of the
     five may resolve true; more is the same "Invalid combination" Core
     refuses, in Core's own words. A `-chain` Core does not know is
     returned as given, behind `_UNKNOWN_CHAIN`, as `GetChainArg` returns
@@ -1476,16 +1573,13 @@ def _chain_arg(settings: _Settings) -> str:
     """
 
     def get_net(name: str) -> bool:
-        value = _get_setting(settings, name, get_chain_type=True)
-        if value is None or isinstance(value, bool):
-            return bool(value)
-        return _interpret_bool(value)
+        return bool(_setting_to_bool(_get_setting(settings, name, get_chain_type=True)))
 
-    chain_alias = _get_arg(settings, "chain")
-    testnet = get_net("testnet")
-    signet = get_net("signet")
     regtest = get_net("regtest")
+    signet = get_net("signet")
+    testnet = get_net("testnet")
     testnet4 = get_net("testnet4")
+    chain_alias = _get_arg(settings, "chain")
     if sum([chain_alias is not None, testnet, signet, regtest, testnet4]) > 1:
         # Core's own words (`GetChainArg`, same citation as above)
         err_msg = (
@@ -1689,6 +1783,74 @@ def _check_ignored_conf(
         "not an error."
     )
     raise ValueError(error)
+
+
+def _settings_path(settings: _Settings, net_dir: str) -> str | None:
+    """Return Core's `GetSettingsPath`; `None` under `-nosettings`.
+
+    `GetPathArg("-settings", "settings.json")` (`src/common/args.cpp`, at
+    bitcoin/bitcoin@9be056a8a7) joined to the chain's data directory
+    `net_dir`, an absolute `-settings` standing as it is.
+    """
+    if _is_negated(settings, "settings"):
+        return None
+    name = _get_arg(settings, "settings")
+    return os.path.join(net_dir, get_path_arg(name or SETTINGS_FILENAME))  # noqa: PTH118
+
+
+def _make_data_dirs(net_dir: str) -> None:
+    """Make the chain's data directory where missing, as `InitConfig` does.
+
+    It makes no `wallets` directory, which `SECURITY.md`'s *Where this node
+    departs from Bitcoin Core* explains. A failure is Python's words rather
+    than the C++ library's.
+    """
+    if not os.path.exists(net_dir):  # noqa: PTH110
+        try:
+            Path(net_dir).mkdir(exist_ok=True, parents=True)
+        except OSError as os_error:
+            raise ValueError(str(os_error)) from None
+
+
+def _init_settings_file(settings: _Settings, net_dir: str) -> None:
+    """Read `settings.json`, warn of its unknown names, and write it back.
+
+    `InitConfig` (`src/common/init.cpp`, at bitcoin/bitcoin@9be056a8a7)
+    over `ArgsManager::ReadSettingsFile` and `WriteSettingsFile`
+    (`src/common/args.cpp`), each failure refused in Core's words: "Settings
+    file could not be read", or "written", and what `settings_file.py` says.
+    A name no option has is warned of in the log alone. The path is asked
+    for again by the write, as `WriteSettingsFile` does, after the file's
+    own `settings` key has had its say.
+    """
+    path = _settings_path(settings, net_dir)
+    if path is None:
+        return
+    try:
+        settings.rw_settings = read_settings(path)
+    except OSError as os_error:
+        # `fs::exists` throws, and `InitConfig` shows libstdc++'s `what()`
+        err_msg = (
+            f"filesystem error: cannot get file status: {os_error.strerror} [{path}]"
+        )
+        raise ValueError(err_msg) from None
+    except ValueError as error:
+        err_msg = f"Settings file could not be read:\n- {error}"
+        raise ValueError(err_msg) from None
+    settings.log_warnings.extend(
+        f"Ignoring unknown rw_settings value {name}"
+        for name in settings.rw_settings
+        if _interpret_key(name).name not in _OPTIONS
+    )
+    path = _settings_path(settings, net_dir)
+    if path is None:
+        err_msg = "Attempt to write settings file when dynamic settings are disabled."
+        raise ValueError(err_msg)
+    try:
+        write_settings(path, settings.rw_settings)
+    except ValueError as error:
+        err_msg = f"Settings file could not be written:\n- {error}"
+        raise ValueError(err_msg) from None
 
 
 def _parse_money(value: str) -> int | None:
@@ -1963,7 +2125,12 @@ def _read_settings(argv: Sequence[str]) -> tuple[_Settings, Path, str]:
         )
     chain_name = _resolve_chain_name(settings)
     settings.network = _CHAIN_SECTION[chain_name]
+    net_dir = os.path.join(base_display, chain_name)  # noqa: PTH118
+    _make_data_dirs(net_dir)
     _check_ignored_conf(settings, base_dir, conf_path)
+    _init_settings_file(settings, net_dir)
+    # `AppInitParameterInteraction` asks again, with the file's values in
+    _resolve_chain_name(settings)
 
     if token is not None:
         err_msg = (
@@ -2042,7 +2209,7 @@ def _unsuitable_section_only_args(settings: _Settings) -> list[str]:
     return there; off `main`, a `network_only` name whose only non-empty
     source is the default section is what it collects --
     `OnlyHasDefaultSectionSetting` (`src/common/settings.cpp`, same sha),
-    over the same three sources `_sources` above already reads. A
+    over the same sources `_sources` above already reads. A
     source ending in a negation is empty there too, `SettingsSpan::empty`,
     same file, which is why a value is skipped rather than counted where
     `values[-1] is False`, the idiom `_get_setting` above already uses

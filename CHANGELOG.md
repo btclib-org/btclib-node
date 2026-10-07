@@ -299,6 +299,12 @@ announced or was sent, and one on it is not announced to that peer again
   fee delta, kept for a transaction held or not, is read as its modified fee
   and cleared by the block that holds it** (closes #1502).
 
+### `settings.json` is read and written, with `-settings` and `-nosettings`
+
+- **`settings.json` in the chain's data directory is read and written back
+  at every start, `-settings=<path>` naming another file and `-nosettings`
+  none; its values sit above `bitcoin.conf`** (closes #1523).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on

@@ -120,6 +120,13 @@ btclib\_node.orphanage module
    :members:
    :show-inheritance:
 
+btclib\_node.settings\_file module
+-----------------------------------
+
+.. automodule:: btclib_node.settings_file
+   :members:
+   :show-inheritance:
+
 btclib\_node.signet module
 ---------------------------
 

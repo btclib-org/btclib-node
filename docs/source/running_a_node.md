@@ -59,6 +59,15 @@ a `bitcoin.conf` refuses to start, as `bitcoind` refuses, that file's
 settings going unread; `-allowignoredconf` starts it anyway, the refusal
 written to the log as a warning.
 
+The node also keeps `settings.json` in the chain's data directory, the
+file Bitcoin Core keeps there for the values a program sets while it
+runs. It is read at every start and written back whole, under a
+`_warning_` key. A value in it wins over `bitcoin.conf` and loses to the
+command line. `-settings=<path>` names another file, relative to the
+chain's data directory, and `-nosettings` neither reads nor writes one. A
+file that is not valid JSON, not an object, or names a key twice refuses
+the start; removing it resets the settings.
+
 On POSIX, `btclib-node` sets its umask to 0077 before it reads its
 options, as `bitcoind` does. Every directory it creates is then 0700 and
 every file 0600, the chain directory and `history.log` included, the
