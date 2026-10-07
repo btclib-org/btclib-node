@@ -11,6 +11,7 @@ from collections import deque
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
+from btclib.p2p.block_filters import BlockFilterType, CFilter, GetCFilters
 from btclib.p2p.data import TxPayload as TxMsg
 from btclib.p2p.inventory import GetData, Inventory, InventoryType
 from btclib.p2p.keepalive import Ping, Pong
@@ -26,6 +27,7 @@ from btclib_node.p2p import tx_checks
 from btclib_node.p2p.main import (
     handle_p2p,
     handle_p2p_handshake,
+    resume_cfilters,
     resume_getdata,
     resume_tx_checks,
 )
@@ -40,6 +42,7 @@ from tests import (
 from tests.unit.main_test import connect, spend
 from tests.unit.p2p.callbacks_test import (
     a_data_node,
+    a_filters_node,
     a_parsed_version,
     a_peer,
     a_transaction,
@@ -309,6 +312,57 @@ def test_a_message_behind_a_paused_getdata_is_handled_after_its_answer(
     peer.queued_send_bytes = 0
     assert resume_getdata(node)
     assert [type(sent) for sent in peer.sent] == [TxMsg, Pong, TxMsg]
+    assert peer.queued_recv_bytes == 0
+    assert not node.tx_checks.waiting
+
+
+def test_a_message_behind_a_paused_getcfilters_is_handled_after_its_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1789: a `pong` follows the filters of the `getcfilters` before it.
+
+    A second `getcfilters` waits too, so it is answered after the `pong`
+    and the paused entry never holds more than one range. Another peer is
+    not held.
+    """
+    node = a_relay_node(monkeypatch)
+    filters = a_filters_node(length=8)
+    node.chainstate, node.config.peerblockfilters = filters.chainstate, True
+    peer, other = a_relay_peer(node, 3), a_relay_peer(node, 4)
+    for conn in (peer, other):
+        conn.version_message = a_parsed_version(protocol=BIP0031_VERSION + 1)
+    stop = node.chainstate.block_index.active_chain
+    first = GetCFilters(BlockFilterType.BASIC, 2, stop[3]).serialize()
+    second = GetCFilters(BlockFilterType.BASIC, 5, stop[6]).serialize()
+    nonce = 12345678
+    peer.queued_send_bytes = cb.MAX_CFILTERS_INFLIGHT_BYTES
+    queue_message(node, peer, "getcfilters", first)
+    assert not peer.sent
+    assert len(node.pending_cfilters[3][1]) == 2
+    queue_message(node, peer, "ping", Ping(nonce).serialize())
+    queue_message(node, peer, "getcfilters", second)
+    queue_message(node, other, "ping", Ping(nonce).serialize())
+    assert [type(sent) for sent in other.sent] == [Pong]
+    assert not peer.sent
+    assert len(node.pending_cfilters[3][1]) == 2
+    assert len(node.tx_checks.waiting[3]) == 2
+    assert not resume_cfilters(node)
+    assert not resume_tx_checks(node)
+    assert not peer.sent
+    peer.queued_send_bytes = 0
+    assert resume_cfilters(node)
+    assert [type(sent) for sent in peer.sent] == [CFilter, CFilter]
+    assert 3 not in node.pending_cfilters
+    assert resume_tx_checks(node)
+    assert [type(sent) for sent in peer.sent] == [CFilter, CFilter, Pong]
+    peer.queued_send_bytes = cb.MAX_CFILTERS_INFLIGHT_BYTES
+    assert resume_tx_checks(node)
+    assert 3 in node.pending_cfilters
+    assert not resume_tx_checks(node)
+    peer.queued_send_bytes = 0
+    assert resume_cfilters(node)
+    sent = [type(message) for message in peer.sent]
+    assert sent == [CFilter, CFilter, Pong, CFilter, CFilter]
     assert peer.queued_recv_bytes == 0
     assert not node.tx_checks.waiting
 

@@ -156,7 +156,6 @@ __all__ = [
     "MAX_CFILTERS_INFLIGHT_BYTES",
     "MAX_CMPCTBLOCK_DEPTH",
     "MAX_GETDATA_INFLIGHT_BYTES",
-    "MAX_PENDING_CFILTER_HASHES",
     "addr",
     "addrv2",
     "advance_cfilters",
@@ -2712,41 +2711,6 @@ def _filter_range(  # noqa: PLR0913, PLR0917
 # answer the bound it used to lean on already was.
 MAX_CFILTERS_INFLIGHT_BYTES = int(2 * ONE_BUSY_MODERN_BLOCK_FILTER_BYTES)
 
-# How many block hashes one connection's own entry on
-# `node.pending_cfilters` may hold at once, `get_cfilters` extending an
-# existing one rather than answering a second `getcfilters` that arrives
-# while the first is still paused. Core has nothing here to diverge
-# from: `ProcessGetCFilters` (`net_processing.cpp:3556`, b91d983f66)
-# calls `LookupFilterRange` and pushes every filter it returns in one
-# call, with no pending state of its own to collide with a second
-# `getcfilters` from the same peer -- each is answered to completion, in
-# turn, before the next is looked at, relying only on
-# `nSendBufferMaxSize`/`fPauseSend` to bound how much of that can queue
-# at the socket. This node's own pause point is per request rather than
-# per byte queued at the socket, so it needs a bound of its own kind,
-# and BIP157 says nothing about how many `getcfilters` one connection
-# may have outstanding at once for a reader to diverge from either. Two
-# full requests -- `MAX_GETCFILTERS_SIZE` apiece -- is the room this
-# bound gives on its own terms: enough for a `getcfilters` already
-# draining and a second one the same peer sends before the first
-# finishes to both extend the one pending entry, rather than have either
-# dropped.
-#
-# Past it, a third stacked request is silence rather than a disconnect.
-# `_prepare_filter_request` above now disconnects a request it declines
-# on protocol-validity grounds, matching Core (ISS 1477), but a peer
-# pipelining past what two full answers already cover is not a protocol
-# violation BIP157 or Core's own `PrepareBlockFilterRequest` reaches --
-# it is ordinary pipelining this node already tolerates elsewhere, past
-# this connection's own room for it, with no refusal message BIP157
-# defines to send instead, so dropping the connection over it would be
-# disproportionate to what tripped it. `MAX_QUEUED_SEND_BYTES`
-# (`connection.py`) is the other idiom sharing that same capacity
-# reasoning: a byte bound still underneath this one, for a peer that is
-# actually abusive, dropping the connection outright rather than leaving
-# a request unanswered.
-MAX_PENDING_CFILTER_HASHES = 2 * MAX_GETCFILTERS_SIZE
-
 
 def advance_cfilters(node: Node, conn: Connection, block_hashes: deque[bytes]) -> bool:
     """Send from the front of `block_hashes` while `conn`'s own queue has room.
@@ -2805,14 +2769,19 @@ def get_cfilters(node: Node, msg: bytes, conn: Connection) -> None:
     not finish on `node.pending_cfilters` for `p2p.main.resume_cfilters`
     to complete.
 
-    A second `getcfilters` arriving while `conn`'s own entry there is
-    still paused extends that same `deque` rather than replacing it --
-    `MAX_PENDING_CFILTER_HASHES`, beside `advance_cfilters` above, is
-    where that bound and the reasoning behind it are. `_filter_range`
-    has already validated and bounded this request's own range before
-    that check runs, so what is refused there is refused whole: no
-    partial answer is ever started for a range this node will not
-    finish.
+    Core's `ProcessMessages` (`net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) returns before
+    `PollMessage` whenever `fPauseSend` is set, as a `getcfilters`
+    answer larger than the send buffer leaves it set.
+    While `conn` has an entry on `node.pending_cfilters`,
+    `_hold_message` (`p2p/main.py`) holds its later messages, in
+    order, and `resume_tx_checks` reads them once `resume_cfilters` has
+    finished the answer (btclib-org/btclib-node#1789). So an entry is
+    never extended by a second request, and holds one range at most.
+
+    The messages held are weighed against `conn.queued_recv_bytes`, so
+    reads from the connection pause at `MAX_QUEUED_RECV_BYTES`: that
+    bounds what a peer can pile up behind a paused answer.
     """
     request = GetCFilters.parse(msg)
     block_hashes = _filter_range(
@@ -2825,14 +2794,7 @@ def get_cfilters(node: Node, msg: bytes, conn: Connection) -> None:
     )
     if block_hashes is None:
         return
-    existing = node.pending_cfilters.get(conn.id)
-    if existing is None:
-        pending = deque(block_hashes)
-    else:
-        _, pending = existing
-        if len(pending) + len(block_hashes) > MAX_PENDING_CFILTER_HASHES:
-            return
-        pending.extend(block_hashes)
+    pending = deque(block_hashes)
     if not advance_cfilters(node, conn, pending):
         node.pending_cfilters[conn.id] = (conn, pending)
 

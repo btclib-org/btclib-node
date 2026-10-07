@@ -16,8 +16,9 @@ reconsider.
 At most one candidate per peer is queued or checked at a time. A
 peer's later messages of every command wait here, in order, still
 weighed against its `queued_recv_bytes`, until its candidate is settled,
-it has no orphan to reconsider and no `getdata` answer paused on
-`Node.pending_getdata`, which `p2p.main.resume_getdata` finishes on
+it has no orphan to reconsider and no `getdata` or `getcfilters`
+answer paused on `Node.pending_getdata` or `Node.pending_cfilters`,
+which `p2p.main.resume_getdata` and `resume_cfilters` finish on
 `Node`'s thread too.
 Candidates are checked in the order they were queued, so a peer that
 sends again goes to the back. Core's message handler reads one message

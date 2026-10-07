@@ -110,7 +110,6 @@ from btclib_node.p2p.callbacks import (
     MAX_CFILTERS_INFLIGHT_BYTES,
     MAX_CMPCTBLOCK_DEPTH,
     MAX_GETDATA_INFLIGHT_BYTES,
-    MAX_PENDING_CFILTER_HASHES,
     addr,
     addrv2,
     advance_cfilters,
@@ -2291,6 +2290,7 @@ def a_data_node(
     # written by `getdata` only where `advance_getdata` pauses; empty
     # here for every test that never trips that pacing bound
     node.pending_getdata = {}
+    node.pending_cfilters = {}
     if block_index is not None:
         node.chainstate.block_index = block_index
     node.tx_checks = TxChecks()
@@ -5343,67 +5343,6 @@ def test_a_paused_answer_resumes_once_the_queue_drains() -> None:
     assert [msg.block_hash for msg in peer.sent] == [
         h.to_bytes(32, "big") for h in range(2, 6)
     ]
-
-
-def test_a_second_getcfilters_while_the_first_is_still_paused_is_not_lost() -> None:
-    """A second `getcfilters` arriving while the first is paused extends it.
-
-    Neither range is dropped: both are answered in full, in the order
-    the two requests arrived, once the connection's own queue drains --
-    rather than the second overwriting `node.pending_cfilters`'s entry
-    for this connection and discarding the first range's own remaining
-    block hashes, which is what a plain assignment there used to do.
-    """
-    node = a_filters_node(length=20)
-    peer = a_peer(queued_send_bytes=MAX_CFILTERS_INFLIGHT_BYTES)
-    a_getcfilters(node, peer, 0, 5)
-    assert not peer.sent
-    a_getcfilters(node, peer, 10, 12)
-    _conn, block_hashes = node.pending_cfilters[peer.id]
-    assert list(block_hashes) == [
-        h.to_bytes(32, "big") for h in (0, 1, 2, 3, 4, 5, 10, 11, 12)
-    ]
-
-    peer.queued_send_bytes = 0
-    assert advance_cfilters(node, peer, block_hashes) is True
-    assert [msg.block_hash for msg in peer.sent] == [
-        h.to_bytes(32, "big") for h in (0, 1, 2, 3, 4, 5, 10, 11, 12)
-    ]
-
-
-def test_a_getcfilters_past_the_pending_cap_is_silent() -> None:
-    """A third request stacked past `MAX_PENDING_CFILTER_HASHES` is silent.
-
-    Two requests of `MAX_GETCFILTERS_SIZE` heights apiece -- `_filter_range`'s
-    own bound on any one of them -- already reach the cap between them; a
-    third is refused whole rather than partially extending it.
-
-    `_prepare_filter_request` now disconnects a request it declines on
-    protocol-validity grounds -- an unsupported filter type, an invalid
-    stop hash, a range too long -- matching Core (ISS 1477). A peer
-    pipelining past what this connection still extends for is not one of
-    those: it is ordinary pipelining this node already tolerates
-    elsewhere, so this bound answers it with silence instead, for lack
-    of a defined refusal message BIP157 leaves it to send -- the same
-    reasoning `MAX_PENDING_CFILTER_HASHES`'s own comment argues.
-    """
-    node = a_filters_node(length=MAX_PENDING_CFILTER_HASHES + 20)
-    peer = a_peer(queued_send_bytes=MAX_CFILTERS_INFLIGHT_BYTES)
-    a_getcfilters(node, peer, 0, MAX_GETCFILTERS_SIZE - 1)
-    a_getcfilters(node, peer, MAX_GETCFILTERS_SIZE, MAX_PENDING_CFILTER_HASHES - 1)
-    _conn, block_hashes = node.pending_cfilters[peer.id]
-    assert len(block_hashes) == MAX_PENDING_CFILTER_HASHES
-
-    a_getcfilters(
-        node,
-        peer,
-        MAX_PENDING_CFILTER_HASHES,
-        MAX_PENDING_CFILTER_HASHES,
-    )
-    assert not peer.sent
-    assert not peer.stopped
-    _conn, block_hashes = node.pending_cfilters[peer.id]
-    assert len(block_hashes) == MAX_PENDING_CFILTER_HASHES
 
 
 def test_get_cfilters_stops_once_the_connection_closes_mid_answer() -> None:
