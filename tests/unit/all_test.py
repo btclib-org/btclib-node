@@ -38,14 +38,16 @@ if TYPE_CHECKING:
 # pass is one that was about to become public by accident.
 UNEXPORTED = {
     # the loop's own idle-wait tuning, read by nothing outside it
-    # (IDLE_SLEEP_SECONDS); STOP_TIMEOUT is read and patched in place by
-    # the shutdown tests, and P2P_INIT_ERROR and RPC_INIT_ERROR read by
-    # the start-up ones, which is the suite exercising its own module
-    # rather than a caller importing the name
+    # (IDLE_SLEEP_SECONDS); STOP_DUMP_DELAY and STOP_TIMEOUT are read, and
+    # STOP_TIMEOUT patched in place, by the shutdown tests, and
+    # P2P_INIT_ERROR and RPC_INIT_ERROR read by the start-up ones, which is
+    # the suite exercising its own module rather than a caller importing
+    # the name
     "btclib_node": [
         "IDLE_SLEEP_SECONDS",
         "P2P_INIT_ERROR",
         "RPC_INIT_ERROR",
+        "STOP_DUMP_DELAY",
         "STOP_TIMEOUT",
     ],
     # called only by the four leaves' own constructors, in this module

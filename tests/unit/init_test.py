@@ -13,12 +13,16 @@ messages directly and what it does with them does not depend on
 scheduling.
 """
 
+import faulthandler
+import io
 import logging
 import multiprocessing
 import os
 import re
 import signal
 import socket
+import subprocess
+import sys
 import threading
 import time
 from collections import deque
@@ -845,6 +849,13 @@ def test_the_node_asking_itself_to_stop_does_not_wait_for_itself(
     assert not exceptions
 
 
+@pytest.fixture(autouse=True)
+def _no_stack_dump_left_armed() -> Iterator[None]:
+    """Cancel the dump a handler called in this process armed (#1274)."""
+    yield
+    faulthandler.cancel_dump_traceback_later()
+
+
 @pytest.mark.parametrize("signal_number", [signal.SIGTERM, signal.SIGINT])
 def test_a_signal_asks_the_node_to_stop(
     tmp_path: Path, signal_number: signal.Signals
@@ -866,6 +877,105 @@ def test_a_signal_asks_the_node_to_stop(
     handler(signal_number, None)
     node.join(timeout=_STOP_TIMEOUT)
     assert not node.is_alive()
+
+
+# What `install_signal_handlers` runs in a process of its own: a stand-in
+# node whose `stop` takes `stop_seconds`, a thread that is not a daemon
+# holding the process open for `hold_seconds`, and `idle` seconds before
+# the signal. The dump is `faulthandler`'s, written to a real file
+# descriptor, which a subprocess has and pytest's capture of `sys.stderr`
+# does not.
+_STOPPING_PROCESS = """
+import os, signal, sys, threading, time
+import btclib_node
+
+stop_seconds, hold_seconds, delay, idle = (float(arg) for arg in sys.argv[1:])
+btclib_node.STOP_DUMP_DELAY = delay
+
+
+class Node:
+    def stop(self):
+        time.sleep(stop_seconds)
+
+
+btclib_node.install_signal_handlers(Node())
+threading.Thread(target=time.sleep, args=(hold_seconds,)).start()
+time.sleep(idle)
+os.kill(os.getpid(), signal.SIGTERM)
+"""
+
+
+def _stderr_of_a_stopping_process(
+    stop_seconds: float, hold_seconds: float, delay: float = 0.5, idle: float = 0
+) -> str:
+    """Run `_STOPPING_PROCESS` to its exit; return what it wrote to stderr."""
+    done = subprocess.run(  # noqa: S603
+        [
+            sys.executable,
+            "-c",
+            _STOPPING_PROCESS,
+            str(stop_seconds),
+            str(hold_seconds),
+            str(delay),
+            str(idle),
+        ],
+        capture_output=True,
+        encoding="utf-8",
+        check=True,
+        timeout=_STOP_TIMEOUT,
+    )
+    return done.stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.kill(SIGTERM) kills there")
+def test_a_stop_that_takes_too_long_writes_every_threads_stack() -> None:
+    """A process alive `STOP_DUMP_DELAY` after SIGTERM dumps its stacks."""
+    stderr = _stderr_of_a_stopping_process(stop_seconds=3, hold_seconds=0)
+    # the main thread is inside `stop`, the call that blocked
+    assert "most recent call first" in stderr
+    assert "in stop" in stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.kill(SIGTERM) kills there")
+def test_a_process_held_open_after_stop_returns_writes_every_threads_stack() -> None:
+    """`stop` returning leaves the dump armed while a thread holds on."""
+    stderr = _stderr_of_a_stopping_process(stop_seconds=0, hold_seconds=3)
+    assert "most recent call first" in stderr
+    # the main thread waits in `threading._shutdown` for the sleeping one
+    assert "_shutdown" in stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.kill(SIGTERM) kills there")
+def test_a_clean_stop_writes_nothing_to_stderr() -> None:
+    """A process that exits within `STOP_DUMP_DELAY` leaves stderr empty."""
+    # idle for longer than the delay before the signal, so that arming at
+    # install time, not in the handler, would dump; and a delay far above
+    # the time the process takes to exit, so that a loaded machine cannot
+    # make this one
+    assert not _stderr_of_a_stopping_process(0, 0, delay=4, idle=5)
+
+
+@pytest.mark.parametrize("stderr", [None, io.StringIO()])
+def test_a_stderr_that_cannot_arm_the_dump_does_not_stop_the_stop(
+    monkeypatch: pytest.MonkeyPatch, stderr: io.StringIO | None
+) -> None:
+    """A stderr with no file descriptor still lets the handler stop the node."""
+    handlers = {}
+    monkeypatch.setattr(
+        signal, "signal", lambda number, handler: handlers.update({number: handler})
+    )
+    stopped = []
+    install_signal_handlers(
+        cast("Node", SimpleNamespace(stop=lambda: stopped.append(1)))
+    )
+    monkeypatch.setattr(sys, "stderr", stderr)
+    handlers[signal.SIGTERM](signal.SIGTERM, None)
+    assert stopped
+
+
+def test_the_stack_dump_comes_out_before_the_stop_gives_up() -> None:
+    """`STOP_DUMP_DELAY` is below `STOP_TIMEOUT`, which `stop` raises at."""
+    assert btclib_node.STOP_DUMP_DELAY < _STOP_TIMEOUT
 
 
 def test_install_signal_handlers_skips_sigtstp_where_the_platform_has_none(

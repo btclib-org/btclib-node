@@ -203,6 +203,12 @@ A parent paying too little goes in with its child, or not at all. A candidate
 leaving a parent's dust unspent is refused "missing-ephemeral-spends",
 `sendrawtransaction` and `testmempoolaccept` too (issue #1473).
 
+### A node still running after a stop signal writes every thread's stack
+
+- **A process still alive `STOP_DUMP_DELAY` seconds after SIGINT, SIGTERM
+  or SIGTSTP writes every thread's stack to stderr**, and one that stops
+  in time prints nothing (issue #1274).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on

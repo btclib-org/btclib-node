@@ -16,6 +16,7 @@ an asyncio loop of their own; this module is what calls into them and
 what they hand work back to.
 """
 
+import faulthandler
 import multiprocessing
 import os
 import signal
@@ -23,7 +24,7 @@ import sys
 import threading
 import time
 from collections import deque
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from math import log2
 from multiprocessing.pool import Pool, ThreadPool
 from typing import TYPE_CHECKING, override
@@ -89,6 +90,16 @@ __all__ = ["Node", "install_signal_handlers"]
 # `tests/unit/init_test.py` asserts that ordering rather than leaving it
 # to this comment.
 STOP_TIMEOUT = 30
+
+# How long after a SIGINT, SIGTERM or SIGTSTP the process is still
+# running before every thread's stack is written to stderr
+# (`install_signal_handlers`). Below `STOP_TIMEOUT`, and below the wait
+# after which bitcoin-node-tests' adapter kills the node, so the dump is
+# out before anything gives up on the process. That wait is
+# `scaled(_STARTUP_TIMEOUT)` in `NodeAdapter._terminate`
+# (`src/bitcoin_node_tests/node.py`), at btclib-org/bitcoin-node-tests@037126c.
+# `tests/unit/init_test.py` asserts the first.
+STOP_DUMP_DELAY = 15
 
 # How long the loop below sleeps once a pass finds nothing waiting in
 # either queue. The figure it replaces, 0.0001, sat below the
@@ -1113,9 +1124,28 @@ def install_signal_handlers(node: Node) -> None:
     `return` -- SIGINT and SIGTERM registering correctly ahead of it was
     not enough to save a caller that let this propagate
     (btclib-org/btclib-node#430).
+
+    The handler also arms `faulthandler.dump_traceback_later`, so that a
+    process still alive `STOP_DUMP_DELAY` seconds later writes the stack
+    of every thread to stderr (btclib-org/btclib-node#1274). It is armed
+    in the handler rather than at install time, so that a process which
+    stops in time prints nothing, and it is not cancelled when `stop`
+    returns, since the process can still be held open after that, by a
+    thread that is not a daemon. The
+    watchdog is a C thread, so the dump comes out whichever thread is
+    blocked, but it is armed only once the Python handler runs: a main
+    thread stuck in a C call that never returns to the interpreter never
+    gets here, and `faulthandler.register` would be the way to see that,
+    at the price of a dump on every clean stop. A second signal re-arms
+    the delay. Bitcoin Core's `Shutdown` writes no stack
+    (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7).
     """
 
     def stop_handler(_signum: int, _frame: FrameType | None) -> None:
+        # a diagnostic never stops the stop: arming raises where stderr has
+        # no file descriptor (closed, `None`, a `StringIO`)
+        with suppress(Exception):
+            faulthandler.dump_traceback_later(STOP_DUMP_DELAY, exit=False)
         node.stop()
 
     signal.signal(signal.SIGINT, stop_handler)
