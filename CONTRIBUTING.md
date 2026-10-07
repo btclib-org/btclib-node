@@ -81,7 +81,7 @@ scans the branch's own commit text for a verb in front of a reference.
 and not the forms, which are the half a citation is got wrong in:
 `(closes #N)` cites an issue the change closes, wherever the citation
 sits — the title, the commit subject where [*Merge method*][s11] makes
-that the thing that lands, and a `CHANGELOG.md` entry — and `(issue #N)`
+that the thing that lands — and `(issue #N)`
 cites, in those same places, an issue the change advances and does *not*
 close. One token holds one meaning whichever file it sits in, so the
 pair is chosen by what is true of the change rather than by which file
@@ -93,27 +93,8 @@ before the rule stays where it is.
 file's other half. Read before opening a pull request, it is what the
 pull request will be answered against.
 
-`CHANGELOG.md` gets an entry for anything a reader would notice, and the
-release notes move only for something a user has to *act* on, in the
-repositories that publish.
-
-Where that entry goes is [section 9][s9]'s — the end of the open
-section — and a gate reads it only in part: `check-changelog` refuses an
-entry under a release older than the newest, and cannot tell where in
-the open section the branch's entry sits. The open
-section's headings, in the order the file holds them, a branch's own
-last:
-
-```shell
-awk '/^## /{n++} n==1 && /^### /' CHANGELOG.md
-```
-
-`n==1` takes the open section, from the first `##` heading to the next,
-and the scan is `/^## /` rather than `/^## v/`: a section headed
-`## Unreleased` is no match for `/^## v/`, which counts from the first
-release heading instead and prints a released section's entries — or
-nothing, where the tree has released nothing — while reading as a
-check that passed.
+A pull request adds no entry to `CHANGELOG.md` or `RELEASE_NOTES.md`, a
+release's own pull request excepted ([section 9][s9], [section 12][s12]).
 
 ### One subject, opened as soon as it is written
 
@@ -269,6 +250,7 @@ settings and why they are what they are.
 [s-what]: https://github.com/btclib-org/.github#what-this-repository-is
 [s11]: https://github.com/btclib-org/.github#11-github-settings
 [s9]: https://github.com/btclib-org/.github#9-prose-comments-and-docstrings
+[s12]: https://github.com/btclib-org/.github#12-releasing
 [s-title]: https://github.com/btclib-org/.github#what-a-pull-request-says-it-is
 [s-rev]: https://github.com/btclib-org/.github#review
 [s-sigs]: https://github.com/btclib-org/.github#signatures

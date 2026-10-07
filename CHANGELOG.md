@@ -5,6 +5,10 @@ Every change of a release, in full: what changed, why, and what it cost.
 what a user has to act on; this file is the record behind them, and is
 where a claim in those notes can be checked.
 
+A release's own pull request writes the release's section, from the
+squash subjects since the previous tag, and no other pull request adds an
+entry (sections 9 and 12 of the organization standard).
+
 The record starts here, and nothing is reconstructed for the years of
 work before it: a changelog written backwards from a git log is a guess
 at what somebody would have noticed, and there is no way to check the

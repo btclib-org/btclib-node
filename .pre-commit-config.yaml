@@ -208,7 +208,7 @@ repos:
   # it runs ahead of markdownlint-cli2 below on purpose: that hook's
   # `--fix` repairs the very seam this hook exists to name
   - repo: https://github.com/btclib-org/.github
-    rev: f668578c07124c632dc36f9c4a92a3a4db8914e8
+    rev: 70f5915abed3b982009996ae52254fbc68c00dfc
     hooks:
       - id: check-changelog
         args: [--grandfathered, "56"]

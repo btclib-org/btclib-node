@@ -38,3 +38,13 @@ body:
         print(version("btclib-node"))'` -- which names an exact commit
         through its own `v<version>` tag.
       placeholder: "3facec5, or 2026.8.27 from a PyPI install"
+
+  - type: markdown
+    attributes:
+      value: >
+        **Sign-off.** Whoever takes this issue signs off every commit
+        (`git commit -s`). The required `Sign-off` check refuses a pull
+        request whose commits lack the `Signed-off-by:` trailer;
+        [`CONTRIBUTING.md`'s *Pull
+        requests*](https://github.com/btclib-org/.github/blob/main/CONTRIBUTING.md#pull-requests)
+        says why.
