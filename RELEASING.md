@@ -331,55 +331,6 @@ this release included.
    PyPI never accepts that version's file names again, even once the
    release is deleted.
 
-   **If `main` moves while the gates run, the default is to throw the
-   branch away and redo these edits on top of it, and never to merge
-   `main` into it.**
-
-   The reset takes this release's edits away with it, so what follows is
-   making them again on the new base: write the sections, set the version,
-   `uv lock`, and gate again.
-
-   ```shell
-   git fetch origin
-   git reset --hard origin/main
-   ```
-
-   **A rebase is allowed where it is checked, and the check is the redo
-   itself, done in a scratch file.** Rebuild what the redo would have
-   produced, from `git show` rather than from the working tree, and
-   compare it byte for byte against what the rebase left:
-
-   ```shell
-   version=<the version being released>
-   ```
-
-   ```shell
-   : "${version:?}" &&
-   git rebase origin/main &&
-   scratch=$(mktemp -d) &&
-   git show origin/main:CHANGELOG.md > "$scratch/expected.md"
-   ```
-
-   Apply this release's own edits to `$scratch/expected.md` by hand:
-   write `## v<version>` and fold in any `## Unreleased`, as above. That
-   step is a person's, so it ends the chain rather than sitting inside
-   it, and what follows is a fence of its own, whose `cmp` prints nothing
-   where it passes:
-
-   ```shell
-   git show HEAD:CHANGELOG.md > "${scratch:?}/actual.md" &&
-   cmp "${scratch:?}/expected.md" "${scratch:?}/actual.md"
-   ```
-
-   and the same pair, in a `scratch=$(mktemp -d)` of its own, for
-   `RELEASE_NOTES.md`: a fixed name is a name a second run of this
-   same step, or a second person on the same machine, can silently
-   overwrite or read back stale. Identical bytes are a proof the
-   rebase produced what the redo would have; a difference is both the
-   defect and, in `$scratch/expected.md`, the file that should have
-   been there. `v2026.8.27` was rebased when #551 landed in front of
-   the tag, and this is what licensed it.
-
 1. Give the release pull request its title and its body, before merging
    it and not after. The title is the version; the body says what the
    release is — what moved, what did not, and which of the two a user
@@ -400,6 +351,19 @@ this release included.
    the same build `docs.yml` runs on every pull request and `release.yml`
    runs again on the tag, `-W`, `-n` and all — checked here too, ahead of
    a tag, rather than trusted to a run this step already duplicates.
+
+   **If `main` moves while the gates run, never merge `main` into the
+   branch.** A rebase would apply cleanly, but the release's section would
+   miss what `main` just landed. Reset the branch to the new `main`:
+
+   ```shell
+   git fetch origin
+   git reset --hard origin/main
+   ```
+
+   then make the sections, the version and the pull request's body again,
+   as above, and gate again. The branch then goes up with
+   `git push --force-with-lease`.
 
 1. Merge it the way every other pull request here lands: once somebody
    other than its author has approved the head and the checks are in,
