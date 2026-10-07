@@ -737,6 +737,50 @@ def test_a_trickle_sends_the_top_of_the_full_sort_after_any_change(seed: int) ->
     assert trickles
 
 
+@pytest.mark.parametrize("known", [0.0, 0.5, 0.9, 0.999])
+def test_a_trickle_skips_a_long_run_of_known_entries_on_shared_queues(
+    known: float,
+) -> None:
+    """ISS 1810: most of a shared queue known to a peer still sends the best.
+
+    Two peers share 3000 queued, one knows a fraction of them, and a third
+    queues a few of its own. Each is sent the best-paying it lacks, 85 for
+    the shared queue (70 plus 5 per 1000).
+    """
+    rng = random.Random(7)
+    knowing, plain, small = a_conn(1), a_conn(2), a_conn(3)
+    manager = make_manager([knowing, plain, small])
+    txs = [paying(manager, fee=1000 + n) for n in range(3000)]
+    best_first = [tx.hash for tx in reversed(txs)]
+    for conn in (knowing, plain):
+        conn.tx_announce_queue = dict.fromkeys(tx.hash for tx in txs)
+    mine = rng.sample(best_first, 5)
+    small.tx_announce_queue = dict.fromkeys(mine)
+    has = set(rng.sample(best_first, int(known * len(best_first))))
+    for wtxid in has:
+        knowing.known_tx_inventory.add(wtxid)
+    manager._send_due_announcements()
+    cap = download_module._trickle_cap(3000)
+    assert hashes_of(only(plain, Inv)[0]) == best_first[:cap]
+    lacked = [w for w in best_first if w not in has]
+    assert [h for inv in only(knowing, Inv) for h in hashes_of(inv)] == lacked[:cap]
+    assert hashes_of(only(small, Inv)[0]) == [w for w in best_first if w in mine]
+
+
+def test_a_queue_outside_the_shared_best_is_sorted_and_cut_at_its_cap() -> None:
+    """A peer queuing only what ranks below the others' is sent its best 70."""
+    low, high = a_conn(1), a_conn(2)
+    manager = make_manager([low, high])
+    cheap = [paying(manager, fee=100 + n) for n in range(100)]
+    dear = [paying(manager, fee=10_000 + n) for n in range(200)]
+    low.tx_announce_queue = dict.fromkeys(tx.hash for tx in cheap)
+    high.tx_announce_queue = dict.fromkeys(tx.hash for tx in dear)
+    manager._send_due_announcements()
+    assert hashes_of(only(low, Inv)[0]) == [tx.hash for tx in reversed(cheap)][:70]
+    assert hashes_of(only(high, Inv)[0]) == [tx.hash for tx in reversed(dear)][:70]
+    assert list(low.tx_announce_queue) == [tx.hash for tx in cheap[:30]]
+
+
 def test_a_prioritised_transaction_is_ranked_by_its_modified_fee() -> None:
     """Core's graph fee is the modified fee: a delta moves a transaction up."""
     other = a_conn(1)

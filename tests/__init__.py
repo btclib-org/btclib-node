@@ -324,7 +324,7 @@ def _spending_tx(outpoints: list[tuple[bytes, int]]) -> Tx:
 
 def _mempool_changes(
     rng: random.Random, mempool: Mempool
-) -> dict[str, Callable[[], None]]:
+) -> dict[str, Callable[[], object]]:
     """Return the changes `random_mempool_history` picks from, by name."""
 
     def held() -> list[Tx]:
