@@ -356,10 +356,8 @@ class Node(threading.Thread):
         # ancestry (`p2p.callbacks._filter_range`) rather than active
         # chain heights, so a reorg mid-pause cannot change what this
         # entry finishes sending (btclib-org/btclib-node#1476).
-        # `p2p.callbacks.advance_cfilters` and `p2p.main.resume_cfilters`
-        # are the only two that read or write this, and both run on this
-        # thread -- `run`'s own loop below, under `handle_p2p` or under
-        # `resume_cfilters` directly -- so nothing here needs a lock.
+        # Everything that reads or writes it runs on this thread, so it
+        # needs no lock.
         # btclib-org/btclib-node#442
         self.pending_cfilters: dict[int, tuple[Connection, deque[bytes]]] = {}
 

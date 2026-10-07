@@ -115,9 +115,11 @@ __all__ = [
 # much less room rather than adding to what that answer may commit; and
 # `MAX_CFILTERS_INFLIGHT_BYTES` being the lower of the two bounds,
 # `advance_cfilters` stops on its first check throughout a `getdata`
-# overshoot. A peer pipelining a `getcfilters` behind a `getdata` it has
-# not finished draining therefore has its filters counted inside that
-# answer's own peak, never on top of it. The peak either mechanism can
+# overshoot. A `getcfilters` sent behind a `getdata` answer still paused
+# waits (`_hold_message`, `p2p/main.py`), and a `getdata` behind a paused
+# `getcfilters` answer waits too, so a connection never has both paused,
+# and filters queued before a `getdata` are counted inside that answer's
+# own peak, never on top of it. The peak either mechanism can
 # reach is its own bound plus one whole message of the kind that bound
 # paces, and the larger of the two -- `MAX_GETDATA_INFLIGHT_BYTES` and a
 # block -- is the first two terms below.

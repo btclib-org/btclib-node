@@ -109,15 +109,17 @@ def _hold_message(
 ) -> bool:
     """Hold a message back while the peer has work before it.
 
-    That is a check queued, a message held, an orphan to reconsider or a
-    `getdata` answer paused on `node.pending_getdata`.
+    That is a check queued, a message held, an orphan to reconsider, or a
+    `getdata` or `getcfilters` answer paused on `node.pending_getdata`
+    or `node.pending_cfilters`.
     Answers whether it did. Core handles a peer's messages in the order
     received, decides a `tx` before it reads the next one, and reads
     nothing more from a peer while its `getdata` requests are unserved
-    (`ProcessMessages`, `src/net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so a `pong` tells the
-    peer its `tx` was handled and its items were sent
-    (btclib-org/btclib-node#1739, btclib-org/btclib-node#1775). `held` is
+    or its send buffer is full (`ProcessMessages`,
+    `src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag), so a `pong` tells the peer its `tx` was handled and its items
+    were sent (btclib-org/btclib-node#1739, btclib-org/btclib-node#1775,
+    btclib-org/btclib-node#1789). `held` is
     the command, the payload, its wire size and the time it was read;
     it stays weighed against the peer's `queued_recv_bytes`, which
     pauses the connection's reads at `MAX_QUEUED_RECV_BYTES`, Core's
@@ -127,6 +129,7 @@ def _hold_message(
         node.tx_checks.busy(conn_id)
         or node.download_manager.orphanage.have_tx_to_reconsider(conn_id)
         or conn_id in node.pending_getdata
+        or conn_id in node.pending_cfilters
     ):
         return False
     node.tx_checks.waiting.setdefault(conn_id, deque()).append(held)
@@ -337,17 +340,14 @@ def resume_cfilters(node: Node) -> bool:
 
     Answers whether anything did -- a connection dropped from
     `node.pending_cfilters` counts, same as one whose block hashes
-    shrank from this function's own vantage point (a `getcfilters`
-    extending it runs inside `get_cfilters`, strictly before this is
-    called again, so growth is never what a pass here sees), so this
-    only answers `False` where every paused connection was tried and
-    stayed exactly as paused as it already was.
+    shrank -- so this only answers `False` where every paused
+    connection was tried and stayed exactly as paused as it already was.
     `node.pending_cfilters` maps a connection id to the connection
     itself and the block hashes `advance_cfilters` (`p2p.callbacks`) has
     not yet sent -- entered there only when that call paused rather than
-    finished, and read and written only here and in `get_cfilters`
-    itself, both on `Node`'s own thread, so nothing here needs a lock
-    any more than `get_cfilters`'s own loop over a fresh request does.
+    finished. It is written only here and in `get_cfilters`, and read
+    there and by `_hold_message` and `_read_held`, all on `Node`'s own
+    thread, so nothing here needs a lock.
 
     A connection already closed is dropped without trying it -- `stop`
     can be called from `P2pManager`'s own thread too, but the flag it
@@ -477,7 +477,7 @@ def _read_held(node: Node) -> bool:
     """Read the oldest held message of each peer free to have one read.
 
     A peer is free with nothing queued, no orphan to reconsider and no
-    `getdata` answer paused.
+    `getdata` or `getcfilters` answer paused.
     Answers whether any was read, or dropped for being gone.
     """
     checks = node.tx_checks
@@ -494,6 +494,7 @@ def _read_held(node: Node) -> bool:
         if (
             node.download_manager.orphanage.have_tx_to_reconsider(conn_id)
             or conn_id in node.pending_getdata
+            or conn_id in node.pending_cfilters
         ):
             continue
         progressed = True
@@ -526,7 +527,7 @@ def resume_tx_checks(node: Node) -> bool:
       takes up an orphan before the next message
       (`p2p.callbacks.process_orphan`);
     - each peer with nothing queued, no orphan to reconsider and no
-      `getdata` answer paused has its
+      `getdata` or `getcfilters` answer paused has its
       oldest held message read, one per peer per pass, as Core's message
       handler reads one message per peer per pass;
     - with no check in flight, the oldest candidate queued is handed to
