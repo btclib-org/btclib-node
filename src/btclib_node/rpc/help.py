@@ -1117,6 +1117,48 @@ _HELP_GETBLOCKTEMPLATE = (
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "getblocktemplate", "params": [{"rules": ["segwit"]}]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
+_HELP_GETPRIORITISEDTRANSACTIONS = (
+    "getprioritisedtransactions\n"
+    "\n"
+    "Returns a map of all user-created (see prioritisetransaction) fee deltas by txid, and whether the tx is present in mempool.\n"
+    "\n"
+    "Result:\n"
+    "{                                 (json object) prioritisation keyed by txid\n"
+    '  "<transactionid>" : {           (json object)\n'
+    '    "fee_delta" : n,              (numeric) transaction fee delta in satoshis\n'
+    '    "in_mempool" : true|false,    (boolean) whether this transaction is currently in mempool\n'
+    '    "modified_fee" : n            (numeric, optional) modified fee in satoshis. Only returned if in_mempool=true\n'
+    "  },\n"
+    "  ...\n"
+    "}\n"
+    "\n"
+    "Examples:\n"
+    "> bitcoin-cli getprioritisedtransactions \n"
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "getprioritisedtransactions", "params": []}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
+_HELP_PRIORITISETRANSACTION = (
+    'prioritisetransaction "txid" ( dummy ) fee_delta\n'
+    "\n"
+    "Accepts the transaction into mined blocks at a higher (or lower) priority\n"
+    "\n"
+    "Arguments:\n"
+    "1. txid         (string, required) The transaction id.\n"
+    "2. dummy        (numeric, optional) API-Compatibility for previous API. Must be zero or null.\n"
+    "                DEPRECATED. For forward compatibility use named arguments and omit this parameter.\n"
+    "3. fee_delta    (numeric, required) The fee value (in satoshis) to add (or subtract, if negative).\n"
+    "                Note, that this value is not a fee rate. It is a value to modify absolute fee of the TX.\n"
+    "                The fee is not actually paid, only the algorithm for selecting transactions into a block\n"
+    "                considers the transaction as it would have paid a higher (or lower) fee.\n"
+    "\n"
+    "Result:\n"
+    "true|false    (boolean) Returns true\n"
+    "\n"
+    "Examples:\n"
+    '> bitcoin-cli prioritisetransaction "txid" 0.0 10000\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "prioritisetransaction", "params": ["txid", 0.0, 10000]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
 _HELP_ADDNODE = (
     'addnode "node" "command" ( v2transport )\n'
     "\n"
@@ -1795,6 +1837,8 @@ HELP_TEXT: dict[str, str] = {
     "submitblock": _HELP_SUBMITBLOCK,
     "submitheader": _HELP_SUBMITHEADER,
     "getblocktemplate": _HELP_GETBLOCKTEMPLATE,
+    "prioritisetransaction": _HELP_PRIORITISETRANSACTION,
+    "getprioritisedtransactions": _HELP_GETPRIORITISEDTRANSACTIONS,
     "generatetoaddress": _HELP_GENERATETOADDRESS,
     "generateblock": _HELP_GENERATEBLOCK,
     "addnode": _HELP_ADDNODE,
@@ -1850,6 +1894,8 @@ CATEGORY: dict[str, str] = {
     "submitblock": "Mining",
     "submitheader": "Mining",
     "getblocktemplate": "Mining",
+    "prioritisetransaction": "Mining",
+    "getprioritisedtransactions": "Mining",
     "generatetoaddress": "hidden",
     "generateblock": "hidden",
     "addnode": "Network",

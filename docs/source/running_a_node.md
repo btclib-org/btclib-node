@@ -193,9 +193,10 @@ Each mirrors the Core method of the same name: `getbestblockhash`,
 `getblockcount`, `getblockchaininfo`, `getchaintips`, `pruneblockchain`,
 `waitforblockheight`, `waitfornewblock`, `waitforblock`, `preciousblock`,
 `getblockhash`, `getblockheader`, `getblock`, `submitblock`, `submitheader`,
-`getblocktemplate`, `getpeerinfo`, `getconnectioncount`, `getnetworkinfo`,
-`getnodeaddresses`, `setnetworkactive`, `addnode`, `disconnectnode`, `setban`,
-`listbanned`, `clearbanned`, `getmempoolinfo`, `getmempoolentry`,
+`getblocktemplate`, `prioritisetransaction`, `getprioritisedtransactions`,
+`getpeerinfo`, `getconnectioncount`, `getnetworkinfo`, `getnodeaddresses`,
+`setnetworkactive`, `addnode`, `disconnectnode`, `setban`, `listbanned`,
+`clearbanned`, `getmempoolinfo`, `getmempoolentry`,
 `getmempoolancestors`, `getmempooldescendants`, `getrawmempool`,
 `getrawtransaction`, `gettxout`, `gettxspendingprevout`, `gettxoutsetinfo`,
 `decoderawtransaction`, `testmempoolaccept`, `sendrawtransaction`, `ping`,
@@ -203,6 +204,9 @@ Each mirrors the Core method of the same name: `getbestblockhash`,
 `generatetoaddress` and `generateblock` among them -- are left off this list the
 same way `bitcoin-cli help`'s bare listing leaves them off. The `callbacks`
 table in `src/btclib_node/rpc/callbacks.py` is the list the node serves.
+
+The fee deltas `prioritisetransaction` sets are held in memory, as the
+mempool is, and are gone at a restart (btclib-org/btclib-node#1746).
 
 A call that waits -- `waitforblockheight`, `waitfornewblock`,
 `waitforblock`, or `getblocktemplate` with a `longpollid` -- or searches

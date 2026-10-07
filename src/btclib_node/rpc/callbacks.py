@@ -31,6 +31,7 @@ from btclib.fee import FeeRate, fee_from_vsize
 from btclib.p2p.address import ServiceFlags
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 from btclib.p2p.limits import PROTOCOL_VERSION
+from btclib.policy import dust_outputs
 from btclib.script.script import op_code_spans, script_to_dict
 from btclib.script.spendability import is_unspendable
 from btclib.tx import Tx
@@ -126,6 +127,7 @@ __all__ = [
     "get_node_addresses",
     "get_orphan_txs",
     "get_peer_info",
+    "get_prioritised_transactions",
     "get_raw_mempool",
     "get_raw_transaction",
     "get_rpc_info",
@@ -138,6 +140,7 @@ __all__ = [
     "named_only",
     "ping",
     "precious_block",
+    "prioritise_transaction",
     "prune_blockchain",
     "reconsider_block",
     "send_raw_transaction",
@@ -3018,6 +3021,77 @@ def get_mempool_descendants(
     )
 
 
+def prioritise_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> bool:
+    """Answer `prioritisetransaction`: add a fee delta to a transaction.
+
+    Core's own (`src/rpc/mining.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag), in its order: the argument types, `txid`, `fee_delta` as an
+    `int64`, then `dummy`. The deprecated `dummy`, a priority Core no longer
+    has, is read as a number and refused with `RPC_INVALID_PARAMETER`
+    unless it is null, omitted or zero. A transaction held with a dust
+    output is refused where the mempool requires standard transactions,
+    since one that pays a fee is not allowed to enter with it. The delta
+    is kept for a transaction not held, and applied once it is
+    (`Mempool.prioritise`). btclib-org/btclib-node#1502
+    """
+    if len(params) != len(arg_names["prioritisetransaction"]):
+        raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["prioritisetransaction"])
+    txid_param, dummy, fee_delta = params
+    mismatches: list[tuple[int, str, object, str]] = []
+    if not isinstance(txid_param, str):
+        mismatches.append((1, "txid", txid_param, "string"))
+    dummy_mismatch = _number_mismatch(params, 1, name="dummy")
+    if dummy_mismatch is not None:
+        mismatches.append(dummy_mismatch)
+    # `fee_delta` is required, so a null is a mismatch where `dummy`'s is not
+    if fee_delta is None or _number_mismatch(params, 2, name="fee_delta"):
+        mismatches.append((3, "fee_delta", fee_delta, "number"))
+    if mismatches:
+        raise type_errors(*mismatches)
+    txid = parse_hash_v("txid", txid_param)
+    amount = _integer(fee_delta, -_INT64_BOUND, _INT64_BOUND - 1)
+    if dummy is not None and dummy != 0:
+        raise RpcError(
+            RPCErrorCode.INVALID_PARAMETER,
+            "Priority is no longer supported, dummy argument to "
+            "prioritisetransaction must be 0.",
+        )
+    config = node.config
+    tx = node.mempool.get_tx(txid)
+    if (
+        config.require_standard
+        and tx is not None
+        and dust_outputs(tx, dust_relay_fee=config.dust_relay_feerate)
+    ):
+        raise RpcError(
+            RPCErrorCode.INVALID_PARAMETER,
+            "Priority is not supported for transactions with dust outputs.",
+        )
+    node.mempool.prioritise(txid, amount)
+    return True
+
+
+def get_prioritised_transactions(
+    node: Node, conn: RpcConnection, _: list[Any]
+) -> dict[str, dict[str, Any]]:
+    """Answer `getprioritisedtransactions`: every fee delta, held or not.
+
+    Core's own (`src/rpc/mining.cpp`, same tag): amounts in satoshi, keyed
+    by txid in the order of the txid's internal bytes, and a `modified_fee`
+    only for a transaction in the mempool. btclib-org/btclib-node#1502
+    """
+    answer: dict[str, dict[str, Any]] = {}
+    for txid, delta, modified_fee in node.mempool.prioritised():
+        entry: dict[str, Any] = {
+            "fee_delta": delta,
+            "in_mempool": modified_fee is not None,
+        }
+        if modified_fee is not None:
+            entry["modified_fee"] = modified_fee
+        answer[txid.hex()] = entry
+    return answer
+
+
 def _check_object(
     obj: dict[str, Any], fields: dict[str, str], *, allow_null: bool
 ) -> None:
@@ -4307,6 +4381,8 @@ callbacks = {
     "getmempoolentry": get_mempool_entry,
     "getmempoolancestors": get_mempool_ancestors,
     "getmempooldescendants": get_mempool_descendants,
+    "prioritisetransaction": prioritise_transaction,
+    "getprioritisedtransactions": get_prioritised_transactions,
     "gettxspendingprevout": get_tx_spending_prevout,
     "getrawtransaction": get_raw_transaction,
     "gettxout": get_tx_out,
@@ -4368,6 +4444,8 @@ arg_names: dict[str, tuple[str, ...]] = {
     "getmempoolentry": ("txid",),
     "getmempoolancestors": ("txid", "verbose"),
     "getmempooldescendants": ("txid", "verbose"),
+    "prioritisetransaction": ("txid", "dummy", "fee_delta"),
+    "getprioritisedtransactions": (),
     "gettxspendingprevout": (
         "outputs",
         "options|mempool_only|return_spending_tx",

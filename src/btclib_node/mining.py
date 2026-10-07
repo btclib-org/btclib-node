@@ -221,10 +221,11 @@ class _PackageSelector:
 
     Core's `addPackageTxs` before cluster mempool: the package of a
     transaction is itself and the ancestors not yet in the block, ranked
-    by the feerate of the package. A package that does not fit the
-    weight or sigop limit, or holds a transaction not final at `height`,
-    is left out, and the packages of the descendants of what goes in are
-    ranked again.
+    by the feerate of the package. The fees ranked are the modified ones
+    (`prioritisetransaction`); what a block pays out is the fees paid.
+    A package that does not fit the weight or sigop limit, or holds a
+    transaction not final at `height`, is left out, and the packages of the
+    descendants of what goes in are ranked again.
     """
 
     def __init__(self, node: Node, height: int, lock_time_cutoff: int) -> None:
@@ -270,7 +271,7 @@ class _PackageSelector:
 
     def _push(self, wtxid: bytes) -> None:
         package = self._package(wtxid)
-        fee = sum(self.pool.fees[w] for w in package)
+        fee = sum(self.pool.modified_fee(w) for w in package)
         size = sum(self.pool.vsizes[w] for w in package)
         self.revision[wtxid] = self.revision.get(wtxid, 0) + 1
         heapq.heappush(

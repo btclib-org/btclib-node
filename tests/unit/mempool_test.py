@@ -1435,3 +1435,393 @@ def test_a_staged_transaction_is_taken_out_when_the_block_raises() -> None:
     with pytest.raises(RuntimeError, match="boom"):
         fails()
     assert mempool.size == 0
+
+
+def test_a_delta_stacks_and_is_kept_for_a_transaction_not_held() -> None:
+    """Deltas add up whether or not the txid is in the mempool.
+
+    A delta of zero is not kept, and one that comes back to zero is
+    dropped, as `bitcoind` v31.1's `getprioritisedtransactions` answers.
+    """
+    mempool = Mempool(Logger(debug=True))
+    txid = secrets.token_bytes(32)
+    mempool.prioritise(txid, 0)
+    assert mempool.deltas == {}
+    mempool.prioritise(txid, 100)
+    mempool.prioritise(txid, -30)
+    assert mempool.delta(txid) == 70
+    assert mempool.prioritised() == [(txid, 70, None)]
+    mempool.prioritise(txid, -70)
+    assert mempool.deltas == {}
+    assert mempool.delta(txid) == 0
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "kept"),
+    [
+        (2**63 - 1, 5, 2**63 - 1),
+        (-(2**63), -5, -(2**63)),
+        (2**63 - 1, -(2**63), -1),
+    ],
+)
+def test_a_delta_saturates_at_the_int64_range(
+    first: int, second: int, kept: int
+) -> None:
+    """`SaturatingAdd` clamps the sum, as `bitcoind` v31.1 does."""
+    mempool = Mempool(Logger(debug=True))
+    txid = secrets.token_bytes(32)
+    mempool.prioritise(txid, first)
+    mempool.prioritise(txid, second)
+    assert mempool.delta(txid) == kept
+
+
+def test_a_delta_is_applied_once_the_transaction_enters() -> None:
+    """The fee paid is kept, the modified fee carries the delta."""
+    mempool = Mempool(Logger(debug=True))
+    tx = generate_random_transaction()
+    mempool.prioritise(tx.id, 500)
+    assert mempool.add_tx(tx, 1_000)
+    assert mempool.fees[tx.hash] == 1_000
+    assert mempool.modified_fee(tx.hash) == 1_500
+    assert mempool.prioritised() == [(tx.id, 500, 1_500)]
+    mempool.prioritise(tx.id, -2_000)
+    assert mempool.modified_fee(tx.hash) == -500
+    assert mempool.fees[tx.hash] == 1_000
+
+
+def test_prioritised_lists_by_internal_txid_bytes() -> None:
+    """Core's `std::map<Txid, CAmount>` orders by the bytes it holds."""
+    mempool = Mempool(Logger(debug=True))
+    txids = [secrets.token_bytes(32) for _ in range(8)]
+    for txid in txids:
+        mempool.prioritise(txid, 1)
+    listed = [txid for txid, _, _ in mempool.prioritised()]
+    assert listed == sorted(txids, key=lambda txid: txid[::-1])
+    assert listed != sorted(txids)
+
+
+def a_diamond_with_deltas() -> tuple[Mempool, list[Tx]]:
+    """Hold `root`, `left`, `right` and `tip` paying 1000 to 4000, with deltas.
+
+    `left` has 10, `right` -3 and `tip` 100.
+    """
+    mempool = Mempool(Logger(debug=True))
+    root = generate_random_transaction()
+    left = generate_random_transaction(root.id)
+    right = a_spend_of([(root.id, 1)])
+    tip = a_transaction_spending(left.id, right.id)
+    txs = [root, left, right, tip]
+    for number, tx in enumerate(txs, start=1):
+        assert mempool.add_tx(tx, 1_000 * number)
+    for tx, delta in zip(txs[1:], (10, -3, 100), strict=True):
+        mempool.prioritise(tx.id, delta)
+    return mempool, txs
+
+
+def test_an_entry_has_its_own_modified_fee() -> None:
+    """`modified` is `base` and the delta; `base` is what was paid."""
+    mempool, (root, left, right, tip) = a_diamond_with_deltas()
+    assert [mempool.entry(tx.hash).fee for tx in (root, left, right, tip)] == [
+        1_000,
+        2_000,
+        3_000,
+        4_000,
+    ]
+    assert [mempool.entry(tx.hash).modified_fee for tx in (root, left, right, tip)] == [
+        1_000,
+        2_010,
+        2_997,
+        4_100,
+    ]
+
+
+def test_an_entry_sums_the_modified_fees_of_its_ancestors() -> None:
+    """Core's `CalculateAncestorData`: the transaction and its ancestors."""
+    mempool, (root, left, right, tip) = a_diamond_with_deltas()
+    assert mempool.entry(root.hash).ancestor_fees == 1_000
+    assert mempool.entry(left.hash).ancestor_fees == 1_000 + 2_010
+    assert mempool.entry(right.hash).ancestor_fees == 1_000 + 2_997
+    assert mempool.entry(tip.hash).ancestor_fees == 1_000 + 2_010 + 2_997 + 4_100
+
+
+def test_an_entry_sums_the_modified_fees_of_its_descendants() -> None:
+    """Core's `CalculateDescendantData`: the transaction and what spends it."""
+    mempool, (root, left, right, tip) = a_diamond_with_deltas()
+    assert mempool.entry(root.hash).descendant_fees == 1_000 + 2_010 + 2_997 + 4_100
+    assert mempool.entry(left.hash).descendant_fees == 2_010 + 4_100
+    assert mempool.entry(right.hash).descendant_fees == 2_997 + 4_100
+    assert mempool.entry(tip.hash).descendant_fees == 4_100
+
+
+def test_prioritising_a_held_transaction_is_an_update_and_no_sequence_event() -> None:
+    """`nTransactionsUpdated` counts it, `GetSequence` does not.
+
+    A transaction not held is neither.
+    """
+    mempool = Mempool(Logger(debug=True))
+    tx = generate_random_transaction()
+    mempool.add_tx(tx, 1_000)
+    sequence, updated = mempool.sequence, mempool.transactions_updated
+    mempool.prioritise(secrets.token_bytes(32), 5)
+    assert (mempool.sequence, mempool.transactions_updated) == (sequence, updated)
+    mempool.prioritise(tx.id, 5)
+    assert mempool.sequence == sequence
+    assert mempool.transactions_updated == updated + 1
+
+
+def test_the_feerate_it_evicts_by_includes_the_delta_of_a_new_entry() -> None:
+    """A free transaction with a delta outranks one paying a little."""
+    mempool = Mempool(Logger(debug=True))
+    free, paying, keeper = (generate_random_transaction() for _ in range(3))
+    mempool.prioritise(free.id, 10_000)
+    mempool.add_tx(free, 0)
+    mempool.add_tx(paying, 100)
+    mempool.bytesize_limit = mempool.bytesize + keeper.vsize - 1
+    assert mempool.add_tx(keeper, 5_000)
+    assert mempool.contains_tx(free)
+    assert not mempool.contains_tx(paying)
+
+
+def test_a_delta_set_on_a_held_transaction_changes_who_is_evicted() -> None:
+    """The heap holds a fresh entry at the new rate, not the one it pushed."""
+    mempool = Mempool(Logger(debug=True))
+    worse, better, keeper = (generate_random_transaction() for _ in range(3))
+    mempool.add_tx(worse, 100)
+    mempool.add_tx(better, 5_000)
+    mempool.prioritise(worse.id, 10_000)
+    mempool.bytesize_limit = mempool.bytesize + keeper.vsize - 1
+    assert mempool.add_tx(keeper, 20_000)
+    assert mempool.contains_tx(worse)
+    assert not mempool.contains_tx(better)
+
+
+def test_only_the_last_delta_of_a_held_transaction_ranks_it() -> None:
+    """An entry pushed for an earlier delta no longer stands for the wtxid.
+
+    No sequence event lies between the two calls, so they need pushes
+    of their own to be told apart.
+    """
+    mempool = Mempool(Logger(debug=True))
+    raised, other, keeper = (generate_random_transaction() for _ in range(3))
+    mempool.add_tx(raised, 5_000)
+    mempool.add_tx(other, 3_000)
+    mempool.prioritise(raised.id, -4_999)
+    mempool.prioritise(raised.id, 10_000)
+    mempool.bytesize_limit = mempool.bytesize + keeper.vsize - 1
+    assert mempool.add_tx(keeper, 20_000)
+    assert mempool.contains_tx(raised)
+    assert not mempool.contains_tx(other)
+
+
+def test_a_negative_delta_makes_a_well_paying_transaction_the_one_evicted() -> None:
+    """The delta is read both ways: against the fee as well as for it."""
+    mempool = Mempool(Logger(debug=True))
+    rich, plain, keeper = (generate_random_transaction() for _ in range(3))
+    mempool.add_tx(rich, 100_000)
+    mempool.add_tx(plain, 5_000)
+    mempool.prioritise(rich.id, -99_000)
+    mempool.bytesize_limit = mempool.bytesize + keeper.vsize - 1
+    assert mempool.add_tx(keeper, 20_000)
+    assert not mempool.contains_tx(rich)
+    assert mempool.contains_tx(plain)
+
+
+def test_a_rebuilt_heap_ranks_by_the_modified_feerate() -> None:
+    """`_rebuild_feerate_heap` is what bounds the heap, and keeps the delta."""
+    mempool = Mempool(Logger(debug=True))
+    worse, better, keeper = (generate_random_transaction() for _ in range(3))
+    mempool.add_tx(worse, 100)
+    mempool.add_tx(better, 5_000)
+    mempool.prioritise(worse.id, 10_000)
+    mempool._rebuild_feerate_heap()
+    mempool.bytesize_limit = mempool.bytesize + keeper.vsize - 1
+    assert mempool.add_tx(keeper, 20_000)
+    assert mempool.contains_tx(worse)
+    assert not mempool.contains_tx(better)
+
+
+def test_prioritising_again_and_again_does_not_grow_the_heap_without_bound() -> None:
+    """Each call leaves a stale entry; the heap is rebuilt past twice `size`."""
+    mempool = Mempool(Logger(debug=True))
+    tx = generate_random_transaction()
+    mempool.add_tx(tx, 1_000)
+    for _ in range(50):
+        mempool.prioritise(tx.id, 1)
+    assert len(mempool._feerate_heap) <= 2 * mempool.size
+    assert mempool.delta(tx.id) == 50
+
+
+def test_eviction_bumps_the_rolling_minimum_by_the_modified_rate_it_evicts() -> None:
+    """Core's `removed` is the chunk's modified feerate."""
+    mempool = Mempool(Logger(debug=True))
+    victim, keeper = generate_random_transaction(), generate_random_transaction()
+    mempool.add_tx(victim, 0)
+    mempool.prioritise(victim.id, 7_000)
+    mempool.bytesize_limit = mempool.bytesize + keeper.vsize - 1
+    mempool.add_tx(keeper, 10**6)
+    assert not mempool.contains_tx(victim)
+    expected = Fraction(7_000, victim.vsize) * 1000 + 100
+    assert mempool._rolling_min_fee_rate == float(expected)
+
+
+def test_a_package_is_judged_by_its_modified_feerate() -> None:
+    """Deltas on its members lift it over an incumbent that pays more."""
+    mempool = Mempool(Logger(debug=True))
+    members = a_package(0, 0)
+    incumbent = generate_random_transaction()
+    mempool.add_tx(incumbent, 10**5)
+    mempool.bytesize_limit = mempool.bytesize + members[0][2] + members[1][2] - 1
+    assert not mempool.add_package(members, height=0)
+    mempool.prioritise(members[0][0].id, 10**6)
+    mempool.prioritise(members[1][0].id, 10**6)
+    assert mempool.add_package(members, height=0)
+    assert not mempool.contains_tx(incumbent)
+
+
+def test_a_package_is_ranked_against_the_modified_feerate_of_what_it_evicts() -> None:
+    """An incumbent with a negative delta is worth less than it paid."""
+    mempool = Mempool(Logger(debug=True))
+    members = a_package(0, 10_000)
+    incumbent = generate_random_transaction()
+    mempool.add_tx(incumbent, 10**6)
+    mempool.prioritise(incumbent.id, -(10**6))
+    mempool.bytesize_limit = mempool.bytesize + members[0][2] + members[1][2] - 1
+    assert mempool.add_package(members, height=0)
+    assert not mempool.contains_tx(incumbent)
+
+
+def a_package_at(rate: int) -> list[tuple[Tx, int, int]]:
+    """Return a package whose child pays for both at `rate` sat/vB."""
+    parent, child = a_package(0, 0)
+    size = parent[2] + child[2]
+    return [parent, (child[0], rate * size, child[2])]
+
+
+def test_a_refused_package_leaves_the_worst_entry_at_its_modified_rate() -> None:
+    """The entry put back after a refusal is not the base-rate one.
+
+    `worst` paid 200 sat/vB and is worth 50 with its delta, `other` pays
+    100: a package at 10 is refused, and one at 60 still evicts `worst`
+    and not `other`.
+    """
+    mempool = Mempool(Logger(debug=True))
+    worst, other = generate_random_transaction(), generate_random_transaction()
+    mempool.add_tx(worst, 200 * worst.vsize)
+    mempool.prioritise(worst.id, -150 * worst.vsize)
+    mempool.add_tx(other, 100 * other.vsize)
+    poor = a_package_at(10)
+    mempool.bytesize_limit = mempool.bytesize
+    assert not mempool.add_package(poor, height=0)
+    assert mempool.contains_tx(worst)
+    middling = a_package_at(60)
+    mempool.bytesize_limit = mempool.bytesize + middling[0][2] + middling[1][2] - 1
+    assert mempool.add_package(middling, height=0)
+    assert not mempool.contains_tx(worst)
+    assert mempool.contains_tx(other)
+
+
+def test_a_replacement_counts_the_delta_of_what_it_replaces() -> None:
+    """Core's `PaysForRBF` reads the conflicts' modified fees."""
+    mempool, coin, held, child = a_mempool_with_a_conflict()
+    mempool.prioritise(held.id, 1_000)
+    mempool.prioritise(child.id, 500)
+    candidate = a_spend_of([coin])
+    with pytest.raises(TxRejectedError) as refused:
+        mempool.check_replacement(candidate, 13_499, candidate.vsize)
+    assert refused.value.reason == "insufficient fee"
+    shortfall = f"{mempool_module.format_money(13_499)} < "
+    assert str(refused.value).endswith(shortfall + mempool_module.format_money(13_500))
+
+
+def test_a_replacement_counts_its_own_delta() -> None:
+    """The candidate's fee is its modified one, in the words of the refusal."""
+    mempool, coin, _, _ = a_mempool_with_a_conflict()
+    candidate = a_spend_of([coin])
+    mempool.prioritise(candidate.id, 100)
+    with pytest.raises(TxRejectedError) as refused:
+        mempool.check_replacement(candidate, 11_899, candidate.vsize)
+    assert str(refused.value).endswith(
+        f"{mempool_module.format_money(11_999)} < {mempool_module.format_money(12_000)}"
+    )
+
+
+def test_a_block_takes_the_delta_of_what_it_holds_and_of_what_it_conflicts_with() -> (
+    None
+):
+    """Core's `removeForBlock` and `removeConflicts` clear it, a child's stays.
+
+    The child of a conflict is evicted with it but is not the conflict, and
+    its delta is kept as it is for any transaction evicted.
+    """
+    mempool, coin, held, child = a_mempool_with_a_conflict()
+    mined = generate_random_transaction()
+    never_held = generate_random_transaction()
+    mempool.add_tx(mined, 1_000)
+    for tx in (held, child, mined, never_held):
+        mempool.prioritise(tx.id, 5)
+    block = [
+        a_spend_of([coin]),
+        mined,
+        never_held,
+    ]
+    mempool.remove_for_block(block)
+    assert mempool.deltas == {child.id: 5}
+    assert mempool.size == 0
+
+
+def test_a_block_clears_the_delta_of_a_coinbase_it_holds() -> None:
+    """Core iterates the whole of `vtx`, the coinbase included."""
+    mempool = Mempool(Logger(debug=True))
+    coinbase = generate_random_transaction()
+    mempool.prioritise(coinbase.id, 5)
+    mempool.remove_for_block([coinbase])
+    assert mempool.deltas == {}
+
+
+def test_a_delta_survives_an_eviction() -> None:
+    """Only a block clears it: eviction and removal keep it.
+
+    Core's `mining_prioritisetransaction.py` at v31.1 says so, and keeps
+    it through a replacement.
+    """
+    mempool = Mempool(Logger(debug=True))
+    victim, keeper = generate_random_transaction(), generate_random_transaction()
+    mempool.add_tx(victim, 0)
+    mempool.prioritise(victim.id, -5)
+    mempool.bytesize_limit = mempool.bytesize + keeper.vsize - 1
+    mempool.add_tx(keeper, 10**6)
+    assert not mempool.contains_tx(victim)
+    assert mempool.delta(victim.id) == -5
+    mempool.remove_tx(victim)
+    mempool.remove_with_descendants(keeper.hash)
+    assert mempool.delta(victim.id) == -5
+
+
+def test_a_feefilter_is_held_against_the_fee_paid() -> None:
+    """BIP133 asks what the transaction pays, as Core's `GetFee` does."""
+    mempool = Mempool(Logger(debug=True))
+    tx = generate_random_transaction()
+    mempool.add_tx(tx, 0)
+    mempool.prioritise(tx.id, 10**6)
+    assert not mempool.meets_fee_rate(tx.hash, 1_000)
+
+
+def test_a_held_modified_fee_saturates_at_each_step_as_core_keeps_it() -> None:
+    """The entry's modified fee is not its fee plus the delta at the bound.
+
+    `bitcoind` v31.1, a held transaction paying 1410: a delta of
+    9223372036854775797 gives a modified fee of 9223372036854775807, and
+    the opposite delta then gives an empty list and a modified fee of 10,
+    not 1410. btclib-org/btclib-node#1502
+    """
+    mempool = Mempool(Logger(debug=True))
+    tx = a_transaction_spending(secrets.token_bytes(32))
+    mempool.add_tx(tx, 1410, tx.vsize, height=0)
+    wtxid = tx.hash
+    mempool.prioritise(tx.id, 2**63 - 11)
+    assert mempool.modified_fee(wtxid) == 2**63 - 1
+    assert mempool.prioritised() == [(tx.id, 2**63 - 11, 2**63 - 1)]
+    mempool.prioritise(tx.id, -(2**63 - 11))
+    assert mempool.prioritised() == []
+    assert mempool.modified_fee(wtxid) == 10
+    assert mempool.fees[wtxid] == 1410
