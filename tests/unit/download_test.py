@@ -614,7 +614,7 @@ def test_a_second_announcement_waits_for_the_peers_own_schedule(
     manager.tx_download()
     (first,) = only(other, Inv)
     assert hashes_of(first) == [a_hash(1)]
-    # a schedule was set; a draw can be shorter than the test's own clock read
+    # a schedule was set
     assert other.next_inv_send_time > 0.0
 
     manager.received_txs = [(2, a_hash(2))]

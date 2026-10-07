@@ -6997,8 +6997,7 @@ def test_a_feeler_is_dialled_once_both_targets_are_met(
             "use_v2transport": False,
         }
     ]
-    # redrawn from the 0 the fixture sets; a draw can be shorter than the
-    # test's own clock read
+    # redrawn from the 0 the fixture sets
     assert manager._next_feeler > 0
     asyncio.run(manager._maybe_dial_more_peers())
     assert len(made) == 1
