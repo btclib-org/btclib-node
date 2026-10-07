@@ -37,7 +37,7 @@ from btclib.p2p.keepalive import Ping
 from btclib.p2p.limits import PROTOCOL_VERSION
 
 from btclib_node.chains import Main, RegTest
-from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS
+from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS, BindAddress
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.log import Logger
 from btclib_node.p2p import address as address_module
@@ -2072,6 +2072,14 @@ def test_a_taken_port_closes_the_default_onion_listener(
     refers to is closed by its own finalizer, which hides the leak.
     """
     port = get_random_port()
+    # The default `=onion` listener on a port the kernel picks: one on
+    # `port + 1` fails first wherever another process holds it
+    # (btclib-org/btclib-node#1785).
+    monkeypatch.setattr(
+        manager_module,
+        "default_onion_bind",
+        lambda _port: BindAddress(IPv4Address("127.0.0.1"), 0, onion=True),
+    )
     manager = a_manager(port=port)
     bound: list[socket.socket] = []
     bind_one = manager._bind_one
@@ -6009,7 +6017,10 @@ def test_a_manager_that_cannot_bind_stops_being_alive(
         taken.bind(("", 0))
         taken.listen()
         port = taken.getsockname()[1]
-        manager = a_manager(port=port)
+        # Without a `-bind` the node first binds an `=onion` listener on
+        # `port + 1`, which another process may hold
+        # (btclib-org/btclib-node#1785).
+        manager = a_manager(port=port, bind=[f"0.0.0.0:{port}"])
         monkeypatch.setattr(manager.logger, "exception", logged.append)
         assert not manager.start_listener()
         wait_until(lambda: not manager.is_alive())
