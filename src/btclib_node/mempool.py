@@ -1275,7 +1275,8 @@ class Mempool:
         ancestors, so parents sort first. A tie after that goes to the
         lower txid, Core's mempool fallback order (`txmempool.cpp`,
         `fallback_order`, a comparison of the internal byte order). Each
-        package is computed once per call.
+        package is computed once per call, and a transaction with no
+        relatives in this mempool is scored without the walks.
         """
         packages: dict[bytes, tuple[Fraction, int]] = {}
 
@@ -1287,14 +1288,21 @@ class Mempool:
                 packages[wtxid] = (Fraction(fee, vsize), len(ancestors))
             return packages[wtxid]
 
-        return {
-            wtxid: (
+        def key(wtxid: bytes) -> tuple[Fraction, int, bytes]:
+            tx = self.transactions[wtxid]
+            if tx.id not in self.spent_by and not any(
+                vin.prev_out.tx_id in self.txid_index for vin in tx.vin
+            ):
+                # no relatives here: its own package, with no walk
+                rate = Fraction(self.modified_fee(wtxid), self.vsizes[wtxid])
+                return -rate, 1, tx.id[::-1]
+            return (
                 -max(package(d)[0] for d in self._descendants(wtxid)),
                 package(wtxid)[1],
-                self.transactions[wtxid].id[::-1],
+                tx.id[::-1],
             )
-            for wtxid in wtxids
-        }
+
+        return {wtxid: key(wtxid) for wtxid in wtxids}
 
     def is_bip125_replaceable(self, wtxid: bytes) -> bool:
         """Whether `wtxid`, or an unconfirmed ancestor, signals BIP125 opt-in.

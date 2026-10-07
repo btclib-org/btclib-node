@@ -1825,3 +1825,48 @@ def test_a_held_modified_fee_saturates_at_each_step_as_core_keeps_it() -> None:
     assert mempool.prioritised() == []
     assert mempool.modified_fee(wtxid) == 10
     assert mempool.fees[wtxid] == 1410
+
+
+def test_a_transaction_with_no_relatives_is_keyed_without_the_package_walks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The key is the same with or without the walks, for singles too."""
+    mempool = Mempool(Logger(debug=True))
+    held: list[Tx] = []
+    for fee in (500, 1000, 1500):
+        tx = generate_random_transaction()
+        assert mempool.add_tx(tx, fee=fee)
+        held.append(tx)
+    singles = [tx.hash for tx in held]
+    mempool.prioritise(held[0].id, 10_000)
+    parent = generate_random_transaction()
+    assert mempool.add_tx(parent, fee=10)
+    child = generate_random_transaction(parent.id)
+    assert mempool.add_tx(child, fee=9000)
+    grandchild = generate_random_transaction(child.id)
+    assert mempool.add_tx(grandchild, fee=20)
+    mempool.prioritise(child.id, 700)
+    chain = [tx.hash for tx in (parent, child, grandchild)]
+
+    def full(wtxid: bytes) -> tuple[Fraction, int, bytes]:
+        best = Fraction(0)
+        for descendant in mempool._descendants(wtxid):
+            ancestors = mempool._ancestors(descendant)
+            fee = sum(mempool.modified_fee(w) for w in ancestors)
+            vsize = sum(mempool.vsizes[w] for w in ancestors)
+            best = max(best, Fraction(fee, vsize))
+        return (
+            -best,
+            len(mempool._ancestors(wtxid)),
+            mempool.transactions[wtxid].id[::-1],
+        )
+
+    expected = {wtxid: full(wtxid) for wtxid in singles + chain}
+    assert mempool.mining_order_keys(singles + chain) == expected
+
+    def refused(wtxid: bytes) -> set[bytes]:
+        raise AssertionError("walked")
+
+    monkeypatch.setattr(mempool, "_ancestors", refused)
+    monkeypatch.setattr(mempool, "_descendants", refused)
+    assert mempool.mining_order_keys(singles) == {w: expected[w] for w in singles}
