@@ -147,8 +147,8 @@ __all__ = [
 # inside `advance_getdata`'s own peak above rather than committed on top
 # of it. A transaction announcement's `inv` (`_send_due_announcements`,
 # `download.py`) is paced too now, against this same field and this same
-# `MAX_GETDATA_INFLIGHT_BYTES` bound, checked before every `MAX_INV_SZ`
-# chunk -- so a peer this node is mid-`getdata`-answer to, in the same
+# `MAX_GETDATA_INFLIGHT_BYTES` bound, checked before every trickle
+# -- so a peer this node is mid-`getdata`-answer to, in the same
 # pass `Node.run` reaches `_step_chain` in, is not additionally charged
 # for its own announcements: whichever of the two ran first this turn
 # already left `queued_send_bytes` at or past this bound, and the second

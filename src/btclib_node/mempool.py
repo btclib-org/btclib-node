@@ -1257,6 +1257,45 @@ class Mempool:
         found.discard(wtxid)
         return sorted(found, key=lambda w: self.transactions[w].id[::-1])
 
+    def mining_order_keys(
+        self, wtxids: Iterable[bytes]
+    ) -> dict[bytes, tuple[Fraction, int, bytes]]:
+        """Return a sort key for each of `wtxids`, best-paying first.
+
+        Core at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, orders
+        announcements by `CompareMiningScoreWithTopology`, the cluster
+        linearization, which this mempool does not have.
+
+        Feerates use the modified fee, as Core's graph does
+        (`txmempool.cpp:641`, same tag).
+
+        The score is the highest feerate among the ancestor packages of
+        `wtxid` and of each of its descendants. A parent scores at least
+        what any child paying for it does, and a tie goes to fewer
+        ancestors, so parents sort first. A tie after that goes to the
+        lower txid, Core's mempool fallback order (`txmempool.cpp`,
+        `fallback_order`, a comparison of the internal byte order). Each
+        package is computed once per call.
+        """
+        packages: dict[bytes, tuple[Fraction, int]] = {}
+
+        def package(wtxid: bytes) -> tuple[Fraction, int]:
+            if wtxid not in packages:
+                ancestors = self._ancestors(wtxid)
+                fee = sum(self.modified_fee(w) for w in ancestors)
+                vsize = sum(self.vsizes[w] for w in ancestors)
+                packages[wtxid] = (Fraction(fee, vsize), len(ancestors))
+            return packages[wtxid]
+
+        return {
+            wtxid: (
+                -max(package(d)[0] for d in self._descendants(wtxid)),
+                package(wtxid)[1],
+                self.transactions[wtxid].id[::-1],
+            )
+            for wtxid in wtxids
+        }
+
     def is_bip125_replaceable(self, wtxid: bytes) -> bool:
         """Whether `wtxid`, or an unconfirmed ancestor, signals BIP125 opt-in.
 
