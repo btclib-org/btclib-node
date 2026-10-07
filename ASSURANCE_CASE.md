@@ -105,10 +105,11 @@ caller's answer.
 
 `ctypes` is imported by `p2p/netif.py` alone, which loads the C library
 with `CDLL(None)`, calls `getifaddrs` and reads the `ifaddrs` memory it
-returns, the standard library having no binding of it. That is a trust
-item: the C library and the layout `_IfAddrs` declares are
-trusted without a check, and what is read is this machine's own interface
-table, never a peer's.
+returns, the standard library having no binding of it. On Windows it loads
+`iphlpapi`, calls `GetAdaptersAddresses` and reads the memory it fills. That
+is a trust item: the C library, `iphlpapi` and the layouts `_IfAddrs`,
+`_Adapter` and `_UnicastAddress` declare are trusted without a check, and
+what is read is this machine's own interface table, never a peer's.
 
 `subprocess` runs an operator's `-*notify` command through the shell
 (`notify.py`).
