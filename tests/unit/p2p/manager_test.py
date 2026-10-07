@@ -6983,6 +6983,8 @@ def test_a_feeler_is_dialled_once_both_targets_are_met(
 
     Picking it draws the timer again, so a second pass dials nothing.
     """
+    # a draw as short as the test takes would make the second pass dial
+    monkeypatch.setattr(manager_module, "_exponential_delay", lambda _: 1000.0)
     new = peer_address("5.6.7.8", 18444, services=FULL_NODE)
     manager, made = a_feeler_manager(a_manager, monkeypatch, new)
     asyncio.run(manager._maybe_dial_more_peers())
@@ -6995,7 +6997,8 @@ def test_a_feeler_is_dialled_once_both_targets_are_met(
             "use_v2transport": False,
         }
     ]
-    assert manager._next_feeler > time.time()
+    # redrawn from the 0 the fixture sets
+    assert manager._next_feeler > 0
     asyncio.run(manager._maybe_dial_more_peers())
     assert len(made) == 1
 
@@ -7688,7 +7691,9 @@ def test_an_extra_peer_is_dialled_for_a_network_no_peer_is_on(
     manager = a_network_manager(a_manager, conns, {Network.IPV6: V6}, max_connections)
     expected = manager_module._Outbound.NETWORK if dials else None
     assert manager._next_outbound(full_relay, 2) is expected
-    assert (manager._next_extra_network_peer > time.time()) is dials
+    # redrawn from the 0 the fixture sets, where it dials; a draw can be
+    # shorter than the test's own clock read
+    assert (manager._next_extra_network_peer > 0) is dials
     if dials:
         assert network_dials(manager, monkeypatch, set()) == [(V6, FULL_RELAY)]
 
