@@ -305,7 +305,8 @@ def _accept_together(
     Core's `AcceptMultipleTransactionsInternal`. A refusal sets the outcome
     of the transaction it names, unless Core refuses the package as a whole
     and that transaction keeps its answer from alone: the TRUC rules only the
-    package reveals, which Core's message carries, and the cluster limit. The
+    package reveals, which Core's message carries, the cluster limit and a
+    conflict with a held transaction (`PackageRBFChecks`). The
     dust a parent leaves is "unspent-dust", with the refusal of the child.
     """
     try:
@@ -313,10 +314,10 @@ def _accept_together(
     except PackageRefusedError as refused:
         ((wtxid, refusal),) = refused.errors.items()
         reason = refusal.reason if isinstance(refusal, TxRejectedError) else ""
-        if reason == "TRUC-violation" and refused.package_level:
-            return str(refusal)
-        if reason == "too-large-cluster":
-            return reason
+        if refused.package_level:
+            # Core's message names the TRUC rule and the cluster limit
+            named = {"TRUC-violation": str(refusal), "too-large-cluster": reason}
+            return named.get(reason, "transaction failed")
         outcomes[wtxid] = _Outcome(error=refusal)
         if reason == "missing-ephemeral-spends":
             return "unspent-dust"

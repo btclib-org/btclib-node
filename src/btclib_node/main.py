@@ -2209,9 +2209,9 @@ def pre_verify_package(node: Node, parent: Tx, child: Tx) -> PackageCandidate:
     A refusal is a `PackageRefusedError`, with the answer each
     transaction has in `ProcessPackageResult`: the parent that failed
     alone keeps its own, and a child its own or a missing input. A refusal
-    of the package as a whole (its TRUC rules, its cluster) leaves each its
-    answer from alone, and the child a missing input, so that it stays an
-    orphan.
+    of the package as a whole (its TRUC rules, a conflict, its cluster)
+    leaves each its answer from alone, and the child a missing input, so
+    that it stays an orphan.
     """
     parent_wtxid, child_wtxid = parent.hash, child.hash
     if package_refusal([parent, child]) is not None:
@@ -2264,9 +2264,11 @@ def pre_verify_subpackage(
        (`PackageRefusedError.package_level`),
     3. the package's total fee against the fee floors, which admits a child
        below the floor that a parent above it pays for,
-    4. a conflict with a held transaction, which `Mempool.check_replacement`
-       refuses as it does a single transaction: replacing by package is
-       btclib-org/btclib-node#1334,
+    4. a conflict with a held transaction (`Mempool.check_replacement`),
+       which refuses the package and no transaction
+       (`PackageRefusedError.package_level`), as Core's `PackageRBFChecks`
+       does where the package does not pay for the replacement. Replacing by
+       package is btclib-org/btclib-node#1334,
     5. the cluster limit (`Mempool.check_cluster`), which also refuses the
        package and no transaction,
     6. the dust a parent leaves unspent (`_check_ephemeral_spends`).
@@ -2341,7 +2343,8 @@ def pre_verify_subpackage(
     each(
         lambda _, tx, candidate: mempool.check_replacement(
             tx, candidate.fee, candidate.vsize
-        )
+        ),
+        package_level=True,
     )
     each(
         lambda _, tx, candidate: mempool.check_cluster(tx, candidate.vsize),

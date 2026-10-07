@@ -323,6 +323,12 @@ announced or was sent, and one on it is not announced to that peer again
   in Core: the peer's later messages wait while the answer is paused,
   so `MAX_PENDING_GETDATA_ITEMS` is gone (closes #1775).
 
+### A child conflicting with a held transaction stays an orphan
+
+- **A package refused for a conflict with a held transaction leaves its
+  child an orphan, and `submitpackage` answers it a missing input, as Core
+  does** (closes #1782) (closes #1792).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on

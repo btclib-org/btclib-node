@@ -643,7 +643,7 @@ def test_a_conflict_is_asked_before_the_cluster_limit(
     rival = replace(
         held,
         lock_time=1,
-        vout=[replace(held.vout[0], value=held.vout[0].value + FEE - 1)],
+        vout=[replace(held.vout[0], value=held.vout[0].value + 1)],
     )
     monkeypatch.setattr(mempool_module, "_CLUSTER_LIMIT", 1)
     answer = submit(node, [rival, child_of(rival)])
@@ -711,7 +711,7 @@ def test_a_conflict_is_refused_as_a_lone_transaction_is(node: Node) -> None:
     rival = replace(
         held,
         lock_time=1,
-        vout=[replace(held.vout[0], value=held.vout[0].value + FEE - 1)],
+        vout=[replace(held.vout[0], value=held.vout[0].value + 1)],
     )
     child = child_of(rival)
     answer = submit(node, [rival, child])
@@ -722,6 +722,33 @@ def test_a_conflict_is_refused_as_a_lone_transaction_is(node: Node) -> None:
     paying = replace(held, lock_time=2, vout=[replace(held.vout[0], value=1_000)])
     alone = submit(node, [paying])
     assert result(alone, paying)["error"] == "bip125-replacement-disallowed"
+
+
+def test_a_child_conflicting_with_a_held_transaction_is_missing_inputs(
+    node: Node,
+) -> None:
+    """ISS 1792: Core's `PackageRBFChecks` has no result for either.
+
+    Each keeps its answer from alone, the child's a missing input.
+    `bitcoind` v31.1 answers the pair `package RBF failed: insufficient
+    anti-DoS fees`; the message is btclib-org/btclib-node#1334.
+    """
+    first, second = funded_spends(node, 2)
+    held = hold(node, first)
+    value = second.vout[0].value + FEE
+    parent = replace(second, vout=[replace(second.vout[0], value=value)])
+    child = child_of(parent)
+    child = replace(
+        child,
+        vin=[*child.vin, held.vin[0]],
+        vout=[replace(child.vout[0], value=child.vout[0].value + held.vout[0].value)],
+    )
+    answer = submit(node, [parent, child])
+    assert answer["package_msg"] == "transaction failed"
+    assert result(answer, parent)["error"].startswith("min relay fee not met")
+    assert result(answer, child)["error"] == "bad-txns-inputs-missingorspent"
+    assert node.mempool.size == 1
+    assert node.mempool.contains_tx(held)
 
 
 def test_a_transaction_the_trimmed_mempool_does_not_keep_is_refused_mempool_full(

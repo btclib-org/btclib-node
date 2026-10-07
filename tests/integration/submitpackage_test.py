@@ -617,6 +617,24 @@ def a_conflict_that_pays_too_little(ctx: Ctx) -> None:
         assert ours[1]["tx-results"] == theirs[1]["tx-results"]
 
 
+def a_child_that_conflicts_and_pays_too_little(ctx: Ctx) -> None:
+    """Answer the child its missing input, as it was alone (ISS 1792)."""
+    coin = ctx.coin()
+    ctx.send(_pay(coin, 5_000))
+    parent = _pay(ctx.coin(), 0)
+    joined = [_coin(parent), coin]
+    child = _spend(joined, [sum(spent.value for spent in joined) - 5_000])
+    ours, theirs = ctx.ask("submitpackage", [[_hex(parent), _hex(child)]])
+    assert theirs[1]["package_msg"].startswith("package RBF failed: ")
+    assert theirs[1]["tx-results"][child.hash.hex()]["error"] == (
+        "bad-txns-inputs-missingorspent"
+    )
+    # the message is as above (btclib-org/btclib-node#1334)
+    if ours is not None:
+        assert ours[1]["package_msg"] == "transaction failed"
+        assert ours[1]["tx-results"] == theirs[1]["tx-results"]
+
+
 SCENARIOS: list[Callable[[Ctx], None]] = [
     refusals,
     a_single_transaction,
@@ -644,6 +662,7 @@ SCENARIOS: list[Callable[[Ctx], None]] = [
     ephemeral_dust,
     a_cluster_too_large,
     a_conflict_that_pays_too_little,
+    a_child_that_conflicts_and_pays_too_little,
 ]
 
 

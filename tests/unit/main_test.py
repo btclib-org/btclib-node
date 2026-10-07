@@ -4922,6 +4922,32 @@ def test_a_child_that_does_not_pay_for_its_parent_is_refused(node: Node) -> None
     assert reason_of(errors[child.hash]) == "min relay fee not met"
 
 
+def test_a_child_conflicting_with_a_held_transaction_refuses_the_package_whole(
+    node: Node,
+) -> None:
+    """ISS 1782: Core's `PackageRBFChecks` has no result for either.
+
+    The parent keeps its answer from alone, the fee floor, and the child
+    a missing input, so that it stays an orphan. Replacing by package is
+    btclib-org/btclib-node#1334.
+    """
+    first, second = funded_spends(node, 2)
+    held = hold(node, first)
+    value = second.vout[0].value + FEE
+    parent = replace(second, vout=[replace(second.vout[0], value=value)])
+    child = child_of(parent)
+    child = replace(
+        child,
+        vin=[*child.vin, held.vin[0]],
+        vout=[replace(child.vout[0], value=child.vout[0].value + held.vout[0].value)],
+    )
+    with pytest.raises(PackageRefusedError) as refused:
+        pre_verify_package(node, parent, child)
+    errors = refused.value.errors
+    assert reason_of(errors[parent.hash]) == "min relay fee not met"
+    assert isinstance(errors[child.hash], MissingPrevoutError)
+
+
 def test_a_child_spending_an_output_its_parent_lacks_is_missing_inputs(
     node: Node,
 ) -> None:
