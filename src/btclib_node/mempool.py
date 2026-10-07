@@ -1263,7 +1263,7 @@ class Mempool:
 
     def mining_order_keys(
         self, wtxids: Iterable[bytes]
-    ) -> dict[bytes, tuple[Fraction, int, bytes]]:
+    ) -> dict[bytes, tuple[int, int, bytes]]:
         """Return a sort key for each of `wtxids`, best-paying first.
 
         Core at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, orders
@@ -1281,25 +1281,32 @@ class Mempool:
         `fallback_order`, a comparison of the internal byte order). Each
         package is computed once per call, and a transaction with no
         relatives in this mempool is scored without the walks.
-        """
-        packages: dict[bytes, tuple[Fraction, int]] = {}
 
-        def package(wtxid: bytes) -> tuple[Fraction, int]:
+        A feerate is `fee * scale // vsize`, an integer. Two distinct
+        feerates `a/b` and `c/d` differ by at least `1 / (b * d)`, and
+        `scale` is the square of the total vsize held, which no vsize
+        exceeds, so the floors of the scaled feerates differ in the order
+        of the feerates, and equal feerates give equal floors.
+        """
+        scale = sum(self.vsizes.values()) ** 2
+        packages: dict[bytes, tuple[int, int]] = {}
+
+        def package(wtxid: bytes) -> tuple[int, int]:
             if wtxid not in packages:
                 ancestors = self._ancestors(wtxid)
                 fee = sum(self.modified_fee(w) for w in ancestors)
                 vsize = sum(self.vsizes[w] for w in ancestors)
-                packages[wtxid] = (Fraction(fee, vsize), len(ancestors))
+                packages[wtxid] = (fee * scale // vsize, len(ancestors))
             return packages[wtxid]
 
-        def key(wtxid: bytes) -> tuple[Fraction, int, bytes]:
+        def key(wtxid: bytes) -> tuple[int, int, bytes]:
             tx = self.transactions[wtxid]
             txid = self.txids[wtxid]
             if txid not in self.spent_by and not any(
                 vin.prev_out.tx_id in self.txid_index for vin in tx.vin
             ):
                 # no relatives here: its own package, with no walk
-                rate = Fraction(self.modified_fee(wtxid), self.vsizes[wtxid])
+                rate = self.modified_fee(wtxid) * scale // self.vsizes[wtxid]
                 return -rate, 1, txid[::-1]
             return (
                 -max(package(d)[0] for d in self._descendants(wtxid)),
