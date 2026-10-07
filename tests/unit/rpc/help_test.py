@@ -43,8 +43,10 @@ _EXPECTED_BARE_LISTING = (
     'gettxout "txid" n ( include_mempool )\n'
     'gettxoutsetinfo ( "hash_type" hash_or_height use_index )\n'
     'gettxspendingprevout [{"txid":"hex","vout":n},...] ( {"mempool_only":bool,"return_spending_tx":bool,...} )\n'
+    'importmempool "filepath" ( options )\n'
     'preciousblock "blockhash"\n'
     "pruneblockchain height\n"
+    "savemempool\n"
     'scantxoutset "action" ( [scanobjects,...] )\n'
     'waitforblock "blockhash" ( timeout )\n'
     "waitforblockheight height ( timeout )\n"

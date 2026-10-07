@@ -84,6 +84,14 @@ loop, where Core does it on an HTTP worker thread.
 a step of coins at a time, and yields between steps. `status` and `abort` are
 served between two steps, so the scan's state needs no lock.
 
+`importmempool` and the load of `mempool.dat` at start run on `Node`'s thread
+a transaction at a time, the file read as they go. Core reads with a blocking
+`fread`, on an HTTP worker for `importmempool` and on its `initload` thread at
+start; here only a regular file is read, a pipe or a device being refused
+before any read, as a read of one would hold the loop.
+A step holds the loop for one transaction, or the file's header or tail, and
+for a read from a slow file system.
+
 A `cmpctblock` holds `Node`'s loop while it is rebuilt: the short id of
 every mempool transaction is hashed there without yielding.
 

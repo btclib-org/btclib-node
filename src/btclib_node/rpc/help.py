@@ -664,6 +664,50 @@ _HELP_GETMEMPOOLINFO = (
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "getmempoolinfo", "params": []}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
+_HELP_SAVEMEMPOOL = (
+    "savemempool\n"
+    "\n"
+    "Dumps the mempool to disk. It will fail until the previous dump is fully loaded.\n"
+    "\n"
+    "Result:\n"
+    "{                        (json object)\n"
+    '  "filename" : "str"     (string) the directory and file where the mempool was saved\n'
+    "}\n"
+    "\n"
+    "Examples:\n"
+    "> bitcoin-cli savemempool \n"
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "savemempool", "params": []}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
+_HELP_IMPORTMEMPOOL = (
+    'importmempool "filepath" ( options )\n'
+    "\n"
+    "Import a mempool.dat file and attempt to add its contents to the mempool.\n"
+    "Warning: Importing untrusted files is dangerous, especially if metadata from the file is taken over.\n"
+    "\n"
+    "Arguments:\n"
+    "1. filepath    (string, required) The mempool file\n"
+    "2. options     (json object, optional) Options object that can be used to pass named arguments, listed below.\n"
+    "\n"
+    "Named Arguments:\n"
+    "use_current_time            (boolean, optional, default=true) Whether to use the current system time or use the entry time metadata from the mempool file.\n"
+    "                            Warning: Importing untrusted metadata may lead to unexpected issues and undesirable behavior.\n"
+    "apply_fee_delta_priority    (boolean, optional, default=false) Whether to apply the fee delta metadata from the mempool file.\n"
+    "                            It will be added to any existing fee deltas.\n"
+    "                            The fee delta can be set by the prioritisetransaction RPC.\n"
+    "                            Warning: Importing untrusted metadata may lead to unexpected issues and undesirable behavior.\n"
+    "                            Only set this bool if you understand what it does.\n"
+    "apply_unbroadcast_set       (boolean, optional, default=false) Whether to apply the unbroadcast set metadata from the mempool file.\n"
+    "                            Warning: Importing untrusted metadata may lead to unexpected issues and undesirable behavior.\n"
+    "\n"
+    "Result:\n"
+    "{}    (empty JSON object)\n"
+    "\n"
+    "Examples:\n"
+    "> bitcoin-cli importmempool /path/to/mempool.dat\n"
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "importmempool", "params": [/path/to/mempool.dat]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
 _HELP_GETRAWMEMPOOL = (
     "getrawmempool ( verbose mempool_sequence )\n"
     "\n"
@@ -2136,6 +2180,8 @@ HELP_TEXT: dict[str, str] = {
     "getmempooldescendants": _HELP_GETMEMPOOLDESCENDANTS,
     "gettxspendingprevout": _HELP_GETTXSPENDINGPREVOUT,
     "getmempoolinfo": _HELP_GETMEMPOOLINFO,
+    "savemempool": _HELP_SAVEMEMPOOL,
+    "importmempool": _HELP_IMPORTMEMPOOL,
     "getrawmempool": _HELP_GETRAWMEMPOOL,
     "getorphantxs": _HELP_GETORPHANTXS,
     "gettxout": _HELP_GETTXOUT,
@@ -2200,6 +2246,8 @@ CATEGORY: dict[str, str] = {
     "getmempooldescendants": "Blockchain",
     "gettxspendingprevout": "Blockchain",
     "getmempoolinfo": "Blockchain",
+    "savemempool": "Blockchain",
+    "importmempool": "Blockchain",
     "getrawmempool": "Blockchain",
     "getorphantxs": "hidden",
     "gettxout": "Blockchain",

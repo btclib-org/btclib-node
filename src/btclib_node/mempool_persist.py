@@ -26,11 +26,13 @@ loads on a thread of its own.
 """
 
 import os
+import stat
 import struct
+import sys
 import time
 from collections import Counter
-from io import BytesIO
-from typing import TYPE_CHECKING, NamedTuple
+from io import SEEK_CUR, SEEK_SET, BytesIO
+from typing import TYPE_CHECKING, BinaryIO, NamedTuple, cast, override
 
 from btclib import var_int
 from btclib.exceptions import BTClibTypeError, BTClibValueError
@@ -170,6 +172,58 @@ def dump_mempool(mempool: Mempool, path: Path, *, v1: bool = False) -> bool:
     return True
 
 
+# the most one read asks the file for, however much a field claims
+_CHUNK = 1 << 16
+
+
+class _Stream(BytesIO):
+    """A `mempool.dat` read piece by piece, de-obfuscated as it is read.
+
+    A `BytesIO` for what `btclib`'s parsers accept, though it holds
+    nothing: `read` takes from the file, so a file is never read whole.
+    A short read is the end of the file, which holds for the regular
+    file `_open` gives.
+    `Tx.parse` gives back what it read of a marker with a backward
+    `seek`, which is all `seek` does here.
+    """
+
+    def __init__(self, file: BinaryIO) -> None:
+        """Wrap `file`, whose bytes are plain until `key` is set."""
+        super().__init__()
+        self._file = file
+        self._position = 0
+        self._last = b""
+        self._given_back = b""
+        self.key: bytes | None = None
+
+    @override
+    def read(self, size: int | None = -1) -> bytes:
+        left = size if size is not None and size >= 0 else sys.maxsize
+        pieces = [self._given_back[:left]]
+        self._given_back = self._given_back[left:]
+        left -= len(pieces[0])
+        while left > 0:
+            piece = self._file.read(min(left, _CHUNK))
+            if not piece:
+                break
+            if self.key is not None:
+                piece = obfuscate(piece, self.key, self._position)
+            self._position += len(piece)
+            left -= len(piece)
+            pieces.append(piece)
+        self._last = b"".join(pieces)
+        return self._last
+
+    @override
+    def seek(self, offset: int, whence: int = SEEK_SET, /) -> int:
+        if whence != SEEK_CUR or not -len(self._last) <= offset < 0:
+            err_msg = "only a step back into the last read"
+            raise ValueError(err_msg)
+        self._given_back = self._last[offset:] + self._given_back
+        self._last = self._last[:offset]
+        return 0
+
+
 class _Reader:
     """A `mempool.dat` read field by field, as `LoadMempool` reads it.
 
@@ -177,27 +231,23 @@ class _Reader:
     parse, as Core's `AutoFile` does.
     """
 
-    def __init__(self, data: bytes) -> None:
+    def __init__(self, file: BinaryIO) -> None:
         """Read the version and the key, and the count of transactions.
 
         `version` is `None` for a version Core does not know, and
         nothing past it is read.
         """
         self.count = 0
-        stream = BytesIO(data)
-        self.version: int | None = _U64.unpack(self._read(stream, 8))[0]
+        self.stream = _Stream(file)
+        self.version: int | None = _U64.unpack(self._read(self.stream, 8))[0]
         if self.version == MEMPOOL_DUMP_VERSION_NO_XOR_KEY:
             self.key: bytes | None = None
         elif self.version == MEMPOOL_DUMP_VERSION:
-            self.key = parse_key(stream)
+            self.key = parse_key(self.stream)
+            self.stream.key = self.key
         else:
             self.version = None
             return
-        offset = stream.tell()
-        payload = data[offset:]
-        if self.key is not None:
-            payload = obfuscate(payload, self.key, offset)
-        self.stream = BytesIO(payload)
         self.count = _U64.unpack(self._read(self.stream, 8))[0]
 
     @staticmethod
@@ -228,14 +278,14 @@ class _Reader:
         return [self._read(self.stream, 32)[::-1] for _ in range(count)]
 
 
-# what a file that does not parse raises: a short read, or a field btclib
-# refuses, a key of the wrong size among them
-_UNREADABLE = (EOFError, BTClibValueError)
+# what a file that does not parse raises: a read the system refuses, a short
+# read, or a field btclib refuses, a key of the wrong size among them
+_UNREADABLE = (OSError, EOFError, BTClibValueError)
 
 
 def read_mempool_file(data: bytes) -> MempoolFile:
     """Return what `data` holds, raising where it is not a `mempool.dat`."""
-    reader = _Reader(data)
+    reader = _Reader(BytesIO(data))
     if reader.version is None:
         err_msg = "unknown version"
         raise BTClibValueError(err_msg)
@@ -265,6 +315,27 @@ def _outcome(node: Node, tx: Tx, entry_time: int, now: int) -> str:
     # for any other transaction
     track_accepted(node, tx)
     return "succeeded"
+
+
+def _open(path: Path) -> BinaryIO:
+    """Open `path` for reading, and refuse what is not a regular file.
+
+    Core reads any file with a blocking `fread`, on an HTTP worker for
+    `importmempool` and on its `initload` thread at start. Here a read
+    holds `Node`'s loop, and a pipe or a device can hold it for as long
+    as its writer likes, or for ever, so only a regular file is read, in
+    bounded steps. The refusal comes before any read; for `/dev/zero` it
+    is the answer Core gives once it has read the version.
+
+    `O_NONBLOCK` is for the open of a pipe with no writer, which would
+    wait for one; it does nothing to a regular file.
+    """
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        err_msg = f"{path} is not a regular file"
+        raise OSError(err_msg)
+    return cast("BinaryIO", os.fdopen(fd, "rb"))
 
 
 def _progress(logger: Logger, tried: int, total: int) -> None:
@@ -299,30 +370,31 @@ def load_mempool(
     logger = node.logger
     mempool = node.mempool
     try:
-        data = path.read_bytes()
-    except OSError:
+        file = _open(path)
+    except OSError, ValueError:
         logger.info("Failed to open mempool file. Continuing anyway.")
         return False
     now = int(time.time())
     counts = Counter[str]()
     try:
-        reader = _Reader(data)
-        if reader.version is None:
-            return False
-        logger.info("Loading %d mempool transactions from file...", reader.count)
-        for tried in range(reader.count):
-            _progress(logger, tried, reader.count)
-            tx, entry_time, delta = reader.entry()
-            if delta and apply_fee_delta_priority:
-                mempool.prioritise(tx.id, delta)
-            counts[
-                _outcome(node, tx, now if use_current_time else entry_time, now)
-            ] += 1
-            yield
-        deltas = reader.deltas()
-        for txid, delta in deltas.items() if apply_fee_delta_priority else ():
-            mempool.prioritise(txid, delta)
-        txids = reader.unbroadcast()
+        with file:
+            reader = _Reader(file)
+            if reader.version is None:
+                return False
+            logger.info("Loading %d mempool transactions from file...", reader.count)
+            for tried in range(reader.count):
+                _progress(logger, tried, reader.count)
+                tx, entry_time, delta = reader.entry()
+                if delta and apply_fee_delta_priority:
+                    mempool.prioritise(tx.id, delta)
+                counts[
+                    _outcome(node, tx, now if use_current_time else entry_time, now)
+                ] += 1
+                yield
+            deltas = reader.deltas()
+            for txid, delta in deltas.items() if apply_fee_delta_priority else ():
+                mempool.prioritise(txid, delta)
+            txids = reader.unbroadcast()
     except _UNREADABLE as error:
         logger.info(
             "Failed to deserialize mempool data on file: %s. Continuing anyway.", error

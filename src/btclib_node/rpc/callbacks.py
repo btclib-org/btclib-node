@@ -20,6 +20,7 @@ import threading
 import time
 from io import BytesIO
 from ipaddress import ip_address
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from bitcoin_core_rpc import RPCErrorCode, chain_from_network
@@ -59,6 +60,8 @@ from btclib_node.main import (
     update_chain,
     verify_mempool_acceptance,
 )
+from btclib_node.mempool_persist import FILENAME as MEMPOOL_FILENAME
+from btclib_node.mempool_persist import dump_mempool, load_mempool
 from btclib_node.p2p.address import SEEDS_SERVICE_FLAGS, ip_and_port, network_class
 from btclib_node.p2p.banman import (
     SpecialAddress,
@@ -148,6 +151,7 @@ __all__ = [
     "get_tx_out_set_info",
     "get_tx_spending_prevout",
     "help_rpc",
+    "import_mempool",
     "invalidate_block",
     "list_banned",
     "named_only",
@@ -156,6 +160,7 @@ __all__ = [
     "prioritise_transaction",
     "prune_blockchain",
     "reconsider_block",
+    "save_mempool",
     "send_raw_transaction",
     "service_names",
     "set_ban",
@@ -2273,6 +2278,89 @@ def get_mempool_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     }
 
 
+def save_mempool(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str, str]:
+    """Answer `savemempool`: write `mempool.dat` now, and name it.
+
+    Core's own (`src/rpc/mempool.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag): refused until the load at start has ended, and where the
+    file cannot be written. `-persistmempoolv1` decides the version, and
+    `-persistmempool=0` does not refuse it.
+    """
+    mempool = node.mempool
+    if not mempool.load_tried:
+        raise RpcError(RPCErrorCode.MISC_ERROR, "The mempool was not loaded yet")
+    path = node.data_dir / MEMPOOL_FILENAME
+    if not dump_mempool(mempool, path, v1=node.config.persist_mempool_v1):
+        raise RpcError(RPCErrorCode.MISC_ERROR, "Unable to dump mempool to disk")
+    return {"filename": str(path)}
+
+
+def _import_option(options: dict[str, Any], key: str, *, default: bool) -> bool:
+    """Read an `importmempool` option: absent or null is `default`."""
+    if options.get(key) is None:
+        return default
+    return _bool_option(options, key, default=default)
+
+
+def import_mempool(
+    node: Node, conn: RpcConnection, params: list[Any]
+) -> Generator[bool, None, dict[str, Any]]:
+    """Answer `importmempool`: load a `mempool.dat` into the mempool.
+
+    Core's own (`src/rpc/mempool.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag), in its order: the argument types, a refusal during
+    initial block download, then the options, each a bool or null for
+    its default, unknown ones ignored. A file that cannot be read whole
+    is refused. The file is read as the load goes, a transaction a step,
+    as the load at start is, so peers and other calls are served between
+    steps. The load ends refused where the node stops meanwhile, as
+    Core's ends on `m_interrupt`.
+    """
+    if not params:
+        raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["importmempool"])
+    filepath = params[0]
+    options = params[1] if len(params) > 1 else None
+    mismatches: list[tuple[int, str, object, str]] = []
+    if not isinstance(filepath, str):
+        mismatches.append((1, "filepath", filepath, "string"))
+    if options is not None and not isinstance(options, dict):
+        mismatches.append((2, "options", options, "object"))
+    if mismatches:
+        raise type_errors(*mismatches)
+    if node.is_initial_block_download:
+        raise RpcError(
+            RPCErrorCode.CLIENT_IN_INITIAL_DOWNLOAD,
+            "Can only import the mempool after the block download and sync is done.",
+        )
+    options = {} if options is None else options
+    load = load_mempool(
+        node,
+        Path(filepath),
+        use_current_time=_import_option(options, "use_current_time", default=True),
+        apply_fee_delta_priority=_import_option(
+            options, "apply_fee_delta_priority", default=False
+        ),
+        apply_unbroadcast_set=_import_option(
+            options, "apply_unbroadcast_set", default=False
+        ),
+    )
+    loaded = False
+    while not node.terminate_flag.is_set():
+        try:
+            next(load)
+        except StopIteration as done:
+            loaded = done.value
+            break
+        yield True
+    load.close()
+    if not loaded:
+        raise RpcError(
+            RPCErrorCode.MISC_ERROR,
+            "Unable to import mempool file, see debug.log for details.",
+        )
+    return {}
+
+
 # ParseHashType's three names (src/rpc/blockchain.cpp:967-978, at
 # bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and Core's own default
 # (`RPCArg::Default{"hash_serialized_3"}`, same file, line 1017)
@@ -4360,6 +4448,8 @@ callbacks = {
     "listbanned": list_banned,
     "clearbanned": clear_banned,
     "getmempoolinfo": get_mempool_info,
+    "savemempool": save_mempool,
+    "importmempool": import_mempool,
     "getrawmempool": get_raw_mempool,
     "getorphantxs": get_orphan_txs,
     "getmempoolentry": get_mempool_entry,
@@ -4392,9 +4482,9 @@ callbacks = {
 # (`src/rpc/server.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): what
 # `rpc.jsonrpc.transform_named_arguments` maps an object's keys onto.
 # `a|b` is two names for one position. None of these methods takes an
-# `OBJ_NAMED_PARAMS` options object but `dumptxoutset` and
-# `gettxspendingprevout`, whose `options` position carries their options
-# too, as `client.cpp` lists them; `named_only` says which are named-only.
+# `OBJ_NAMED_PARAMS` options object but `dumptxoutset`, `gettxspendingprevout`
+# and `importmempool`, whose `options` position carries their options too, as
+# `client.cpp` lists them; `named_only` says which are named-only.
 # `bitcoind`'s own table is what `help dump_all_command_conversions`
 # answers, and `tests/integration/rpc_framing_test.py` holds this one to it.
 arg_names: dict[str, tuple[str, ...]] = {
@@ -4430,6 +4520,11 @@ arg_names: dict[str, tuple[str, ...]] = {
     "listbanned": (),
     "clearbanned": (),
     "getmempoolinfo": (),
+    "savemempool": (),
+    "importmempool": (
+        "filepath",
+        "options|use_current_time|apply_fee_delta_priority|apply_unbroadcast_set",
+    ),
     "getrawmempool": ("verbose", "mempool_sequence"),
     "getorphantxs": ("verbosity",),
     "getmempoolentry": ("txid",),
@@ -4465,4 +4560,9 @@ arg_names: dict[str, tuple[str, ...]] = {
 named_only: dict[str, tuple[str, ...]] = {
     "dumptxoutset": ("rollback",),
     "gettxspendingprevout": ("mempool_only", "return_spending_tx"),
+    "importmempool": (
+        "use_current_time",
+        "apply_fee_delta_priority",
+        "apply_unbroadcast_set",
+    ),
 }

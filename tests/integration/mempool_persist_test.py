@@ -4,6 +4,8 @@
 
 """`mempool.dat` written by this node and read by bitcoind, and the reverse.
 
+`savemempool` and `importmempool` are asked of both nodes too.
+
 Each file is compared byte for byte with the other side's, once written
 again with that side's obfuscation key: the key is random, and the rest
 of the file follows from its content.
@@ -14,6 +16,7 @@ import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from bitcoin_core_rpc import RpcError
 from btclib.tx.out_point import OutPoint
 from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
@@ -34,6 +37,8 @@ from tests import (
 from tests.integration.reorg_test import a_chain, submit
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from tests.integration.conftest import Bitcoind
 
 # what bitcoind's `importmempool` takes over from the file: everything
@@ -56,7 +61,7 @@ def a_spend(spent: tuple[Tx, int], outputs: int, fee: int) -> Tx:
     )
 
 
-def started(data_dir: Path) -> Node:
+def started(data_dir: Path, *, persist_mempool: bool = True) -> Node:
     """Start a regtest node on `data_dir`."""
     node = Node(
         config=Config(
@@ -64,6 +69,7 @@ def started(data_dir: Path) -> Node:
             data_dir=data_dir,
             p2p_port=get_random_port(),
             rpc_port=get_random_port(),
+            persist_mempool=persist_mempool,
         )
     )
     node.start()
@@ -145,3 +151,115 @@ def test_each_node_reads_the_file_the_other_writes(
     finally:
         node.stop()
     assert rewritten(theirs, path.read_bytes()) == theirs
+
+
+def _answer(call: Callable[[str, Any], Any], method: str, params: Any) -> Any:
+    """Return what `call` answers, or the error as its code and message."""
+    try:
+        return ("result", call(method, params))
+    except RpcError as error:
+        # past the url, which names each side's own port
+        return ("error", error.code, error.args[0].split(": ", 1)[1])
+
+
+def _agree(client: Any, bitcoind: Bitcoind, calls: list[tuple[str, Any]]) -> None:
+    """Assert both nodes answer each of `calls` alike."""
+    for method, params in calls:
+        ours = _answer(client.call, method, params)
+        assert ours == _answer(bitcoind.rpc, method, params), (method, params)
+
+
+def test_savemempool_and_importmempool_answer_as_bitcoind_does(
+    bitcoind: Bitcoind, tmp_path: Path
+) -> None:
+    """The refusals alike, before and after the block download.
+
+    Then each node imports the file the other saved, with everything in
+    it, and saves it back unchanged.
+    """
+    garbage = tmp_path / "garbage.dat"
+    garbage.write_bytes(b"garbage")
+    missing = str(tmp_path / "missing.dat")
+    data_dir = tmp_path / "node"
+    node = started(data_dir)
+    try:
+        client = rpc_client(node)
+        wait_until(lambda: client.call("getmempoolinfo")["loaded"])
+        _agree(
+            client,
+            bitcoind,
+            [
+                ("savemempool", [1]),
+                ("importmempool", []),
+                ("importmempool", [1]),
+                ("importmempool", [missing, 5]),
+                ("importmempool", [1, 5]),
+                ("importmempool", [missing, {}, 3]),
+                ("importmempool", [missing, {"use_current_time": 1}]),
+                ("importmempool", {"use_current_time": False}),
+                ("importmempool", {"filepath": 3}),
+            ],
+        )
+
+        chain = a_chain(100)
+        submit(bitcoind, chain)
+        node.p2p_manager.connect(peer_address("127.0.0.1", bitcoind.p2p_port, 0, 0))
+        block_index = node.chainstate.block_index
+        wait_until(lambda: len(block_index.active_chain) == len(chain) + 1)
+        wait_until(lambda: not client.call("getblockchaininfo")["initialblockdownload"])
+        bitcoind.rpc("setnetworkactive", [False])
+        wait_until(lambda: client.call("getconnectioncount") == 0)
+        _agree(
+            client,
+            bitcoind,
+            [
+                ("importmempool", [missing]),
+                ("importmempool", [str(garbage)]),
+                ("importmempool", [""]),
+                ("importmempool", [missing, {"use_current_time": 1}]),
+                ("importmempool", [missing, {"apply_fee_delta_priority": "x"}]),
+                ("importmempool", [missing, {"use_current_time": None, "foo": 1}]),
+                ("importmempool", [missing, None]),
+                (
+                    "importmempool",
+                    {"filepath": missing, "apply_unbroadcast_set": True, "options": {}},
+                ),
+                ("importmempool", {"filepath": missing, "apply_unbroadcast_set": 3}),
+            ],
+        )
+
+        root = a_spend((chain[0].transactions[0], 0), 2, 200_000)
+        first = a_spend((root, 0), 1, 30_000)
+        last = a_spend((root, 1), 1, 5_000)
+        for tx in (root, first, last):
+            client.call(
+                "sendrawtransaction", [tx.serialize(include_witness=True).hex()]
+            )
+        client.call("prioritisetransaction", [first.id.hex(), None, 1_000])
+        saved = client.call("savemempool")
+        assert saved == {"filename": str(node.data_dir / "mempool.dat")}
+        ours = Path(saved["filename"]).read_bytes()
+    finally:
+        node.stop()
+
+    assert bitcoind.rpc("importmempool", [saved["filename"], _ALL]) == {}
+    theirs_path = Path(cast("Any", bitcoind.rpc("savemempool"))["filename"])
+    assert rewritten(theirs_path.read_bytes(), ours) == theirs_path.read_bytes()
+
+    bitcoind.rpc("prioritisetransaction", [last.id.hex(), None, 3_000])
+    bitcoind.rpc("prioritisetransaction", [secrets.token_hex(32), None, 11])
+    bitcoind.rpc("savemempool")
+    theirs = theirs_path.read_bytes()
+    node = started(data_dir, persist_mempool=False)
+    try:
+        client = rpc_client(node)
+        wait_until(lambda: client.call("getmempoolinfo")["loaded"])
+        assert client.call("getrawmempool") == []
+        assert client.call("importmempool", [str(theirs_path), _ALL]) == {}
+        assert client.call("getprioritisedtransactions") == bitcoind.rpc(
+            "getprioritisedtransactions"
+        )
+        ours = Path(client.call("savemempool")["filename"]).read_bytes()
+    finally:
+        node.stop()
+    assert rewritten(theirs, ours) == theirs

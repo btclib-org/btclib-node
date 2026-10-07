@@ -205,7 +205,8 @@ Each mirrors the Core method of the same name: `getbestblockhash`,
 `getblocktemplate`, `prioritisetransaction`, `getprioritisedtransactions`,
 `getpeerinfo`, `getconnectioncount`, `getnetworkinfo`, `getnodeaddresses`,
 `setnetworkactive`, `addnode`, `disconnectnode`, `setban`, `listbanned`,
-`clearbanned`, `getmempoolinfo`, `getmempoolentry`, `getmempoolcluster`,
+`clearbanned`, `getmempoolinfo`, `savemempool`, `importmempool`,
+`getmempoolentry`, `getmempoolcluster`,
 `getmempoolancestors`, `getmempooldescendants`, `getrawmempool`,
 `getrawtransaction`, `gettxout`, `gettxspendingprevout`, `gettxoutsetinfo`,
 `dumptxoutset`, `scantxoutset`, `decoderawtransaction`, `testmempoolaccept`,
@@ -221,7 +222,8 @@ to `mempool.dat` in the chain's data directory at shutdown and read back
 at start, each transaction checked again as a new one, in Bitcoin Core's
 format: either node reads the other's file. `-persistmempool=0` does
 neither, and `-persistmempoolv1` writes the file without its obfuscation
-key.
+key. `savemempool` writes the file at once, and `importmempool` loads
+another.
 
 A call that waits -- `waitforblockheight`, `waitfornewblock`,
 `waitforblock`, or `getblocktemplate` with a `longpollid` -- or searches
