@@ -1264,6 +1264,21 @@ def test_parse_messages_weighs_a_queued_message_against_the_recv_bound() -> None
     assert connection._recv_resume.is_set()
 
 
+def test_parse_messages_stamps_last_receive_on_octets_short_of_a_message() -> None:
+    """ISS 1768: `ReceiveMsgBytes` stamps `m_last_recv` on every read.
+
+    Half a message completes nothing, and the stamp is moved all the same.
+    """
+    connection, _ = a_connection()
+    connection.status = P2pConnStatus.Connected
+    connection.last_receive = 0
+    with connection.client:
+        wire = _wire_ping()
+        connection.parse_messages(wire[: len(wire) // 2])
+    assert not connection.manager.messages
+    assert connection.last_receive > 0
+
+
 def test_parse_messages_counts_each_message_under_core_s_key() -> None:
     """A command Core names is its own key, and any other is `*other*`."""
     connection, _ = a_connection()

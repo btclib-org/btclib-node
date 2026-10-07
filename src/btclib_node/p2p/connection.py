@@ -1351,6 +1351,13 @@ class Connection:
                     return
                 with self._send_lock:
                     self.queued_send_bytes -= _queued_size(self._outbox.popleft())
+                # Core's `m_last_send`, stamped once the whole message is
+                # written, where `SocketSendData` stamps each `send()` that
+                # takes octets: `sock_sendall` reports only the end. A
+                # message that takes `manager._TIMEOUT_INTERVAL` to write
+                # has `_keep_alive` drop its peer somewhat before Core's
+                # ping timeout would.
+                # btclib-org/btclib-node#1784
                 self.last_send = time.time()
 
     async def async_send(self, payload: Payload) -> None:
@@ -1521,6 +1528,11 @@ class Connection:
         # `messages` already does. btclib-org/btclib-node#482
         consumed = 0
         remaining = memoryview(data)
+        # Stamped on the octets, not on a message they complete, as
+        # `CNode::ReceiveMsgBytes` stamps `m_last_recv`: a block arriving
+        # slowly keeps its peer from being dropped as silent.
+        # btclib-org/btclib-node#1768
+        received = self.last_receive = time.time()
         try:
             while remaining:
                 remaining = self.transport.received_bytes(remaining)
@@ -1531,10 +1543,8 @@ class Connection:
                 except RejectedMessageError as e:
                     # counted where Core's `ReceiveMsgBytes` counts a
                     # rejected message, and the peer kept
-                    self.last_receive = time.time()
                     self._count_received(_MESSAGE_TYPE_OTHER, e.size)
                     continue
-                received = self.last_receive = time.time()
                 consumed += message.size
                 self._count_received(message.command, message.size)
                 # `handshake_messages` is drained whole ahead of

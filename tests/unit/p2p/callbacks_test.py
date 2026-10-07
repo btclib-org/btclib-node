@@ -1310,6 +1310,19 @@ def test_a_verack_completes_the_handshake() -> None:
     assert promoted == [9]
 
 
+def test_a_verack_stamps_ping_start_before_the_peer_is_promoted() -> None:
+    """ISS 1768: `_keep_alive` cannot ping a peer as it is promoted."""
+    stamped: list[float] = []
+    peer = a_peer(id=9, version_message=a_parsed_version(), wtxidrelay_received=True)
+    peer.ping_start = 0
+    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+    node = a_handshake_node(
+        promote_connection=lambda _: stamped.append(peer.ping_start), peer_db=peer_db
+    )
+    verack(node, b"", peer)
+    assert stamped[0] > 0
+
+
 def test_a_verack_from_an_inbound_peer_asks_it_for_no_addresses() -> None:
     """ISS 1166: Core sends `getaddr` to an outbound peer alone.
 
