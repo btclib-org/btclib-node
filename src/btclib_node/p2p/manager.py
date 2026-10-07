@@ -696,12 +696,11 @@ class P2pManager(threading.Thread):
         self._reconnections: deque[_Reconnection] = deque()
         self._retrying: list[_Reconnection] = []
         self._reconnections_lock = threading.Lock()
-        # (command, payload, connection id, wire size, receive time) --
-        # the size, `Connection.parse_messages`'s own addition since
-        # #462, is what
+        # (command, payload, connection id, weight, receive time) --
+        # the weight, Core's `CNetMessage::GetMemoryUsage`, is what
         # `handle_p2p`/`handle_p2p_handshake` (`p2p/main.py`) weigh back
-        # off `queued_recv_bytes`, `MAX_QUEUED_RECV_BYTES`'s own comment
-        # (`p2p/connection.py`) arguing why. `handshake_messages` is
+        # off `queued_recv_bytes`, `Connection.recv_flood_size`'s own
+        # comment (`p2p/connection.py`) arguing why. `handshake_messages` is
         # drained whole every pass of `Node`'s own loop rather than
         # sharing `messages`'s own log2-scaled share
         # (btclib-org/btclib-node#462), and now paces its own reads
@@ -1012,6 +1011,8 @@ class P2pManager(threading.Thread):
             inbound=inbound,
             use_v2transport=use_v2transport,
             allow_v1=self.node.config.v1transport,
+            send_buffer_max_size=self.node.config.send_buffer_max_size,
+            recv_flood_size=self.node.config.receive_flood_size,
         )
         conn.automatic = automatic
         conn.inbound_onion = inbound_onion

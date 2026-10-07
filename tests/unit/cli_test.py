@@ -680,6 +680,39 @@ def test_build_config_reads_bantime(
     assert _build(tmp_path, *argv, conf=conf).ban_time == ban_time
 
 
+@pytest.mark.parametrize(
+    ("argv", "conf", "send", "receive"),
+    [
+        ([], "", 1_000_000, 5_000_000),
+        (["-maxsendbuffer=8000", "-maxreceivebuffer=1"], "", 8_000_000, 1_000),
+        ([], "maxsendbuffer=0\nmaxreceivebuffer=2\n", 0, 2_000),
+        # `unsigned int`, as `AppInitMain` stores `1000 * GetIntArg`
+        (["-maxsendbuffer=-1"], "", 2**32 - 1_000, 5_000_000),
+    ],
+    ids=["Core's defaults", "command line", "file", "negative wraps"],
+)
+def test_build_config_reads_the_buffer_options_in_thousands_of_bytes(
+    tmp_path: Path, argv: list[str], conf: str, send: int, receive: int
+) -> None:
+    """ISS 1812: `-maxsendbuffer` and `-maxreceivebuffer`, `<n>*1000` bytes."""
+    config = _build(tmp_path, *argv, conf=conf)
+    assert config.send_buffer_max_size == send
+    assert config.receive_flood_size == receive
+
+
+def test_help_names_the_buffer_options() -> None:
+    """ISS 1812: in `bitcoind` v31.1.0's words, among the connection options."""
+    message = " ".join(cli._help_message(show_debug=False).split())
+    assert (
+        "-maxreceivebuffer=<n> Maximum per-connection receive buffer, <n>*1000 "
+        "bytes (default: 5000)"
+    ) in message
+    assert (
+        "-maxsendbuffer=<n> Maximum per-connection memory usage for the send "
+        "buffer, <n>*1000 bytes (default: 1000)"
+    ) in message
+
+
 def test_help_names_bantime() -> None:
     """ISS 1219: in Core's words, among the connection options."""
     assert (

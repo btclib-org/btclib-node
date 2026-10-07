@@ -19,7 +19,7 @@ from btclib.tx.limits import COINBASE_MATURITY
 
 import btclib_node.p2p.callbacks as cb
 from btclib_node.chains import RegTest
-from btclib_node.constants import P2pConnStatus
+from btclib_node.constants import DEFAULT_MAXRECEIVEBUFFER, P2pConnStatus
 from btclib_node.exceptions import TxRejectedError
 from btclib_node.interpreter import check_transaction
 from btclib_node.main import MempoolCandidate, verify_mempool_acceptance
@@ -140,11 +140,12 @@ def a_relay_node(monkeypatch: pytest.MonkeyPatch) -> Any:
 
 
 def a_relay_peer(node: Any, conn_id: int) -> Any:
-    """Connect a peer to `node`, with the byte count `handle_p2p` reads."""
+    """Connect a peer to `node`, with the counts `handle_p2p` reads."""
     peer = a_peer(
         id=conn_id,
         status=P2pConnStatus.Connected,
         queued_recv_bytes=0,
+        recv_flood_size=1000 * DEFAULT_MAXRECEIVEBUFFER,
         _recv_lock=threading.Lock(),
         _recv_resume=SimpleNamespace(set=lambda: None),
         loop=SimpleNamespace(call_soon_threadsafe=lambda fn: fn()),

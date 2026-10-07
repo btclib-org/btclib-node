@@ -43,7 +43,12 @@ from typing import TYPE_CHECKING
 from btclib.fee import FeeRate
 
 from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet, TestNet4
-from btclib_node.constants import MAX_TIP_AGE, default_data_dir
+from btclib_node.constants import (
+    DEFAULT_MAXRECEIVEBUFFER,
+    DEFAULT_MAXSENDBUFFER,
+    MAX_TIP_AGE,
+    default_data_dir,
+)
 from btclib_node.exceptions import InvalidChainTypeError, UnknownChainError
 from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME, Host, lookup_host
 from btclib_node.p2p.permissions import NetPermissionFlags, parse_whitebind_permissions
@@ -814,6 +819,12 @@ class Config:
     # Core's own `-bantime`: how long a `setban` ban lasts, in seconds,
     # where the call names no length. `Node` hands it to its `BanMan`.
     ban_time: int
+    # Core's `nSendBufferMaxSize` and `nReceiveFloodSize`, `-maxsendbuffer`
+    # and `-maxreceivebuffer` in bytes: the bounds a `Connection`
+    # (`p2p/connection.py`) holds a peer's messages past and stops reading
+    # past.
+    send_buffer_max_size: int
+    receive_flood_size: int
     # Core's own `-blocknotify`: the command `main._after_tip_change` runs
     # through the shell each time a fork commits outside initial block
     # download, `%s` replaced by the new tip's hash
@@ -906,6 +917,8 @@ class Config:
         forcednsseed: bool = False,
         fixed_seeds: bool = True,
         ban_time: int = DEFAULT_MISBEHAVING_BANTIME,
+        send_buffer_max_size: int = 1000 * DEFAULT_MAXSENDBUFFER,
+        receive_flood_size: int = 1000 * DEFAULT_MAXRECEIVEBUFFER,
         block_notify: str = "",
         startup_notify: str = "",
         shutdown_notify: Sequence[str] = (),
@@ -1002,6 +1015,8 @@ class Config:
         self.max_connections = max_connections
         self.fixed_seeds = fixed_seeds
         self.ban_time = ban_time
+        self.send_buffer_max_size = send_buffer_max_size
+        self.receive_flood_size = receive_flood_size
         self.block_notify = block_notify
         self.startup_notify = startup_notify
         self.shutdown_notify = tuple(shutdown_notify)

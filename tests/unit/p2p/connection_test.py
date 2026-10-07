@@ -33,7 +33,7 @@ from btclib.p2p.message import Message
 
 from btclib_node import Node
 from btclib_node.chains import RegTest
-from btclib_node.constants import NodeStatus, P2pConnStatus
+from btclib_node.constants import DEFAULT_MAXSENDBUFFER, NodeStatus, P2pConnStatus
 from btclib_node.orphanage import TxOrphanage
 from btclib_node.p2p import connection as connection_module
 from btclib_node.p2p.address import peer_address
@@ -44,7 +44,7 @@ from btclib_node.p2p.callbacks import (
     handshake_callbacks,
     pong,
 )
-from btclib_node.p2p.connection import SEND_BUFFER_MAX_SIZE, Connection
+from btclib_node.p2p.connection import Connection
 from btclib_node.p2p.eviction import Network
 from btclib_node.p2p.messages import NoncelessPing
 from btclib_node.p2p.transport import (
@@ -1251,21 +1251,32 @@ def test_a_ping_ahead_of_verack_is_not_answered_by_one_drain_pass(
     assert not answered
 
 
-def test_parse_messages_weighs_a_queued_message_against_the_recv_bound() -> None:
-    """A `messages`-bound item adds its own wire size to `queued_recv_bytes`.
+# What Core's `CNetMessage::GetMemoryUsage` gives a received `ping`: 80
+# bytes of `CNetMessage`, 32 of its `DataStream` and `MallocUsage` of the
+# 8-byte payload, 32.
+_PING_WEIGHT = 80 + 32 + 32
 
-    Far under `MAX_QUEUED_RECV_BYTES`, so `_recv_resume` stays set: what
-    this checks is the size accounting itself, the boundary tests below
-    are what check the pause it feeds.
+
+def test_parse_messages_weighs_a_queued_message_against_the_recv_bound() -> None:
+    """ISS 1812: an item adds Core's weight for it to `queued_recv_bytes`.
+
+    Far under `recv_flood_size`, so `_recv_resume` stays set: what this
+    checks is the accounting itself, the boundary tests below are what
+    check the pause it feeds.
     """
     connection, _ = a_connection()
     connection.status = P2pConnStatus.Connected
     with connection.client:
-        wire = _wire_ping()
-        connection.parse_messages(wire)
+        connection.parse_messages(_wire_ping())
     (item,) = connection.manager.messages
-    assert item == ("ping", Ping(1).serialize(), 0, len(wire), connection.last_receive)
-    assert connection.queued_recv_bytes == len(wire)
+    assert item == (
+        "ping",
+        Ping(1).serialize(),
+        0,
+        _PING_WEIGHT,
+        connection.last_receive,
+    )
+    assert connection.queued_recv_bytes == _PING_WEIGHT
     assert connection._recv_resume.is_set()
 
 
@@ -1352,7 +1363,7 @@ def test_a_message_written_is_counted_and_one_that_failed_is_not() -> None:
 
 
 def test_parse_messages_weighs_a_handshake_message_too() -> None:
-    """A `handshake_messages`-bound item adds its own wire size too.
+    """A `handshake_messages`-bound item adds its own weight too.
 
     `handshake_messages` is still drained whole every pass of `Node`'s
     own loop (`_drain_message_queues`) rather than sharing `messages`'s
@@ -1361,47 +1372,43 @@ def test_parse_messages_weighs_a_handshake_message_too() -> None:
     """
     connection, _ = a_connection()
     with connection.client:
-        wire = _wire_verack()
-        connection.parse_messages(wire)
+        connection.parse_messages(_wire_verack())
     (item,) = connection.manager.handshake_messages
-    assert item[:4] == ("verack", Verack().serialize(), 0, len(wire))
-    assert connection.queued_recv_bytes == len(wire)
+    # the two structs, an empty payload allocating nothing
+    assert item[:4] == ("verack", Verack().serialize(), 0, 80 + 32)
+    assert connection.queued_recv_bytes == 80 + 32
     assert connection._recv_resume.is_set()
 
 
 def test_parse_messages_clears_recv_resume_once_over_the_bound() -> None:
-    """Crossing `MAX_QUEUED_RECV_BYTES` clears `_recv_resume`.
+    """Crossing `recv_flood_size` clears `_recv_resume`.
 
-    Seeded one octet under the bound, so the incoming message's own
-    size is what tips it over -- landing exactly on the bound, the
+    Seeded one byte under the bound, so the incoming message's own
+    weight is what tips it over -- landing exactly on the bound, the
     complementary case below, is deliberately not this.
     """
     connection, _ = a_connection()
+    bound = connection.recv_flood_size
     with connection.client:
-        wire = _wire_ping()
-        connection.queued_recv_bytes = (
-            connection_module.MAX_QUEUED_RECV_BYTES - len(wire) + 1
-        )
-        connection.parse_messages(wire)
-    assert connection.queued_recv_bytes == connection_module.MAX_QUEUED_RECV_BYTES + 1
+        connection.queued_recv_bytes = bound - _PING_WEIGHT + 1
+        connection.parse_messages(_wire_ping())
+    assert connection.queued_recv_bytes == bound + 1
     assert not connection._recv_resume.is_set()
 
 
 def test_parse_messages_leaves_recv_resume_set_landing_exactly_on_the_bound() -> None:
-    """Landing exactly on `MAX_QUEUED_RECV_BYTES`, not over it, does not pause.
+    """Landing exactly on `recv_flood_size`, not over it, does not pause.
 
     `handle_p2p`'s own resume check (`p2p/main.py`) uses the same `<=`,
     so the two share this one boundary rather than each picking it
     independently.
     """
     connection, _ = a_connection()
+    bound = connection.recv_flood_size
     with connection.client:
-        wire = _wire_ping()
-        connection.queued_recv_bytes = connection_module.MAX_QUEUED_RECV_BYTES - len(
-            wire
-        )
-        connection.parse_messages(wire)
-    assert connection.queued_recv_bytes == connection_module.MAX_QUEUED_RECV_BYTES
+        connection.queued_recv_bytes = bound - _PING_WEIGHT
+        connection.parse_messages(_wire_ping())
+    assert connection.queued_recv_bytes == bound
     assert connection._recv_resume.is_set()
 
 
@@ -1446,7 +1453,7 @@ def test_run_does_not_read_again_while_recv_resume_is_cleared() -> None:
 
 
 def test_a_peer_past_the_send_bound_is_sent_to_not_dropped() -> None:
-    """ISS 1805: past `SEND_BUFFER_MAX_SIZE` a message is still queued and sent.
+    """ISS 1805: past `send_buffer_max_size` a message is still queued and sent.
 
     Core drops no peer over its send buffer: past `nSendBufferMaxSize` it
     sets `fPauseSend`, and what it queues still goes out.
@@ -1455,7 +1462,7 @@ def test_a_peer_past_the_send_bound_is_sent_to_not_dropped() -> None:
     async def drive() -> tuple[Connection, list[bytes]]:
         loop = asyncio.get_running_loop()
         connection = a_running_connection(loop, socket.socket())
-        connection.send_memusage = 2 * SEND_BUFFER_MAX_SIZE
+        connection.send_memusage = 2 * connection.send_buffer_max_size
         sent: list[bytes] = []
 
         async def _send(data: bytes) -> None:
@@ -1477,21 +1484,22 @@ def test_a_flood_of_pings_pauses_the_peer_at_cores_count() -> None:
     """ISS 1796: each message weighs what Core's `GetMemoryUsage` gives it.
 
     A `ping` is 56 bytes of `CSerializedNetMsg` and `MallocUsage` of its
-    8-byte payload, 32: 88 bytes. A buffer at `SEND_BUFFER_MAX_SIZE`
+    8-byte payload, 32: 88 bytes. A buffer at `send_buffer_max_size`
     does not pause, Core's comparison being `>`; the ping past it does.
     The weight leaves with the message once it is written, and the pause
     with it.
     """
     connection, _ = a_connection()
+    bound = connection.send_buffer_max_size
     per_ping = 56 + 32
-    connection.send_memusage = SEND_BUFFER_MAX_SIZE - per_ping
+    connection.send_memusage = bound - per_ping
     messages = [connection._queue(Ping(1))]
-    assert connection.send_memusage == SEND_BUFFER_MAX_SIZE
+    assert connection.send_memusage == bound
     paused = [connection.pause_send]
     messages.append(connection._queue(Ping(2)))
     paused.append(connection.pause_send)
     assert paused == [False, True]
-    connection.send_memusage -= SEND_BUFFER_MAX_SIZE - per_ping
+    connection.send_memusage -= bound - per_ping
 
     async def _send(data: bytes) -> None:
         pass
@@ -1578,11 +1586,11 @@ def test_a_getdata_answer_pauses_once_the_send_buffer_is_full() -> None:
     """ISS 1805: one block per call until `pause_send` is set, as in Core.
 
     The peer drains nothing. Each block weighs just over a third of
-    `SEND_BUFFER_MAX_SIZE`, so the call after the third finds the
+    `send_buffer_max_size`, so the call after the third finds the
     buffer past it and serves nothing, and the connection stays open.
     Once the buffer drains, the next call serves the next block.
     """
-    size = SEND_BUFFER_MAX_SIZE // 3
+    size = 1000 * DEFAULT_MAXSENDBUFFER // 3
     blocks = {bytes([i]) + b"\x00" * 31: _FakeBigBlock(size) for i in range(6)}
     items = [Inventory(InventoryType.MSG_BLOCK, h) for h in blocks]
 

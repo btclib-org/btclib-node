@@ -1960,7 +1960,7 @@ def getdata(node: Node, msg: bytes, conn: Connection) -> None:
     extended by a second request, and holds one request's items at most.
 
     The messages held are weighed against `conn.queued_recv_bytes`, so
-    reads from the connection pause at `MAX_QUEUED_RECV_BYTES`: that
+    reads from the connection pause past `conn.recv_flood_size`: that
     bounds what a peer can pile up behind a paused answer.
     """
     _refuse_past_bound("getdata", _count_past(msg, MAX_INV_SZ, _INV_ENTRY_SIZE))
@@ -2618,7 +2618,7 @@ def get_cfilters(node: Node, msg: bytes, conn: Connection) -> None:
     never extended by a second request, and holds one range at most.
 
     The messages held are weighed against `conn.queued_recv_bytes`, so
-    reads from the connection pause at `MAX_QUEUED_RECV_BYTES`: that
+    reads from the connection pause past `conn.recv_flood_size`: that
     bounds what a peer can pile up behind a paused answer.
     """
     request = GetCFilters.parse(msg)

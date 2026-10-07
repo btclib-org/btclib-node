@@ -4,15 +4,16 @@
 
 """The send-side bound, against a peer on a real socket that stops reading.
 
-`SEND_BUFFER_MAX_SIZE` (`btclib_node/p2p/connection.py`) sets
-`pause_send`, Core's `fPauseSend`: a half-served answer pauses, the
-peer's later messages wait, and the peer is not dropped for it. The
-bound engages only against a peer that stops draining what it was sent,
-and a well-behaved daemon always reads: pointing a bitcoind at this node
-cannot reach it, so this half of the question wants a synthetic peer
-and no daemon at all. The receive-side half is
-`tests/integration/backpressure_test.py`, which does want one.
-btclib-org/btclib-node#492
+Past `Connection.send_buffer_max_size` (`btclib_node/p2p/connection.py`),
+`-maxsendbuffer`, a connection sets `pause_send`, Core's `fPauseSend`: a
+half-served answer pauses, the peer's later messages wait, and the peer
+is not dropped for it. The bound engages only against a peer that stops
+draining what it was sent, and a well-behaved daemon always reads:
+pointing a bitcoind at this node cannot reach it, so this half of the
+question wants a synthetic peer and no daemon at all. The receive-side
+half is `tests/integration/backpressure_test.py`, which does want one;
+the last test here sets `-maxreceivebuffer` low enough for this peer to
+reach it. btclib-org/btclib-node#492
 
 The peer here completes the handshake and then never calls `recv`
 again. Nothing it was sent is lost: those octets sit in the two kernel
@@ -57,13 +58,17 @@ from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
-from btclib_node import Node
+from btclib_node import Node, cli
 from btclib_node.chains import RegTest
 from btclib_node.config import Config
-from btclib_node.constants import NodeStatus, P2pConnStatus
+from btclib_node.constants import (
+    DEFAULT_MAXRECEIVEBUFFER,
+    DEFAULT_MAXSENDBUFFER,
+    NodeStatus,
+    P2pConnStatus,
+)
 from btclib_node.p2p import connection as connection_module
 from btclib_node.p2p import manager as manager_module
-from btclib_node.p2p.connection import SEND_BUFFER_MAX_SIZE
 from btclib_node.p2p.transport import SerializedMessage
 from tests import (
     GENESIS_TIME,
@@ -104,11 +109,14 @@ _SUBSIDY = 50 * 10**8
 # `blocks_of` below ever reaches.
 _SERVED_BLOCK_BYTES = 999_000
 
+# A connection's `send_buffer_max_size` unless `-maxsendbuffer` sets it.
+_SEND_BUFFER_MAX_SIZE = 1000 * DEFAULT_MAXSENDBUFFER
+
 # What each end of the connection may hold in its kernel socket buffer,
 # set on both ends below. `send_memusage` counts only what the socket
 # has not yet taken (`Connection._drain_outbox` subtracts a message once
 # `sock_sendall` returns), so octets a buffer swallows never stand
-# against `SEND_BUFFER_MAX_SIZE`. Left to the kernel that is several
+# against `send_buffer_max_size`. Left to the kernel that is several
 # megabytes to a peer that never reads -- autotuned, and larger on some
 # runners -- which left the pause below unreached on CI. Fixed at this
 # size, the two ends together absorb well under
@@ -121,14 +129,14 @@ _SOCKET_BUFFER_BYTES = 65_536
 # rounding either.
 _KERNEL_BUFFER_ALLOWANCE = 4_000_000
 
-# How many blocks put `send_memusage` past `SEND_BUFFER_MAX_SIZE`
+# How many blocks put `send_memusage` past `_SEND_BUFFER_MAX_SIZE`
 # whatever the two kernel buffers take, with one of margin: the blocks
 # `test_a_getdata_answer_pauses_...` below connects, and the ones the
 # other tests queue. Connecting more paid for `update_chain`'s own block
 # validation over blocks the pause never reaches, slow enough to time out
 # under load (btclib-org/btclib-node#1518).
 _BLOCKS_PAST_THE_BOUND = (
-    SEND_BUFFER_MAX_SIZE + _KERNEL_BUFFER_ALLOWANCE
+    _SEND_BUFFER_MAX_SIZE + _KERNEL_BUFFER_ALLOWANCE
 ) // _SERVED_BLOCK_BYTES + 2
 
 # What the `getdata` below asks for: more than it can serve before the
@@ -205,16 +213,19 @@ def blocks_of(count: int, payload_bytes: int) -> list[Block]:
 
 
 @contextmanager
-def a_served_node(tmp_path: Path, chain: list[Block]) -> Iterator[Node]:
+def a_served_node(
+    tmp_path: Path, chain: list[Block], config: Config | None = None
+) -> Iterator[Node]:
     """Give a started node holding `chain` in its store, stopped on exit.
 
     `peerblockfilters=True`: `deaf_peer` below feeds a BIP157 test, and
     `-peerblockfilters` is off by default (ISS 1395). `v1transport=True`:
     the peer below speaks v1 on a raw socket, which a node without it
-    drops.
+    drops. A `config` given replaces the whole of this one.
     """
     node = Node(
-        config=Config(
+        config=config
+        or Config(
             chain="regtest",
             data_dir=tmp_path,
             p2p_port=get_random_port(),
@@ -286,11 +297,13 @@ class DeafPeer:
         self.socket.close()
 
 
-@pytest.fixture
-def deaf_peer(tmp_path: Path) -> Iterator[tuple[Node, DeafPeer, list[Block]]]:
+@contextmanager
+def a_deaf_peer(
+    tmp_path: Path, config: Config | None = None
+) -> Iterator[tuple[Node, DeafPeer, list[Block]]]:
     """Give a node holding a served chain, and a peer of it that never reads."""
     chain = blocks_of(_BLOCKS_ASKED_FOR, _SERVED_BLOCK_BYTES)
-    with a_served_node(tmp_path, chain) as node:
+    with a_served_node(tmp_path, chain, config) as node:
         peer = DeafPeer(node)
         try:
             peer.shake_hands()
@@ -301,6 +314,27 @@ def deaf_peer(tmp_path: Path) -> Iterator[tuple[Node, DeafPeer, list[Block]]]:
             yield node, peer, chain
         finally:
             peer.close()
+
+
+@pytest.fixture
+def deaf_peer(tmp_path: Path) -> Iterator[tuple[Node, DeafPeer, list[Block]]]:
+    """Give `a_deaf_peer` with the node's default configuration."""
+    with a_deaf_peer(tmp_path) as served:
+        yield served
+
+
+def a_node_config(tmp_path: Path, *options: str) -> Config:
+    """Build a node's configuration from its command line, as `main` does."""
+    return cli.build_config(
+        [
+            f"-datadir={tmp_path}",
+            "-regtest",
+            f"-port={get_random_port()}",
+            "-server=0",
+            "-v1transport",
+            *options,
+        ]
+    )
 
 
 def the_connection(node: Node) -> Connection:
@@ -360,13 +394,13 @@ def test_a_getdata_answer_pauses_once_the_send_buffer_is_full(
     _, items = node.pending_getdata[connection.id]
     assert items
     one_block = max(weight(message) for message in block_messages(connected))
-    assert connection.send_memusage <= SEND_BUFFER_MAX_SIZE + one_block
+    assert connection.send_memusage <= _SEND_BUFFER_MAX_SIZE + one_block
 
 
 def test_a_peer_that_does_not_read_is_paused_not_dropped(
     deaf_peer: tuple[Node, DeafPeer, list[Block]],
 ) -> None:
-    """ISS 1805: queued past `SEND_BUFFER_MAX_SIZE`, the peer stays connected.
+    """ISS 1805: queued past `send_buffer_max_size`, the peer stays connected.
 
     Handed to `Connection.send` directly rather than asked for: what this
     node sends of its own accord -- a block announcement, an `addr` --
@@ -417,7 +451,7 @@ def test_a_peer_that_does_not_read_is_dropped_by_the_ping_timeout(
 def test_a_getcfilters_from_a_paused_peer_waits_unread(
     deaf_peer: tuple[Node, DeafPeer, list[Block]],
 ) -> None:
-    """A `getcfilters` from a peer past `SEND_BUFFER_MAX_SIZE` is held.
+    """A `getcfilters` from a peer past `send_buffer_max_size` is held.
 
     Core's `ProcessMessages` reads nothing from a peer with `fPauseSend`
     set (btclib-org/btclib-node#1796), so no filter is queued for it and
@@ -445,3 +479,43 @@ def test_a_getcfilters_from_a_paused_peer_waits_unread(
 
     assert connection.status == P2pConnStatus.Connected
     assert connection.id not in node.pending_cfilters
+
+
+def test_maxsendbuffer_sets_the_send_bound(tmp_path: Path) -> None:
+    """ISS 1812: past Core's default `-maxsendbuffer`, within this one.
+
+    The blocks that pause a connection at the default leave one at
+    `-maxsendbuffer=8000` running: they weigh less than its 8,000,000
+    bytes, and more than the default's bound whatever the kernel takes.
+    """
+    config = a_node_config(tmp_path, "-maxsendbuffer=8000")
+    with a_deaf_peer(tmp_path, config) as (node, _, chain):
+        connection = the_connection(node)
+        assert connection.send_buffer_max_size == 8_000_000
+        messages = block_messages(chain[:_BLOCKS_PAST_THE_BOUND])
+        assert sum(weight(m) for m in messages) <= connection.send_buffer_max_size
+        for message in messages:
+            connection.send(message)
+        assert connection.send_memusage > _SEND_BUFFER_MAX_SIZE
+        assert not connection.pause_send
+
+
+def test_maxreceivebuffer_sets_the_receive_bound(tmp_path: Path) -> None:
+    """ISS 1812: at `-maxreceivebuffer=1` a few held `ping`s stop the reads.
+
+    The send buffer is filled first, so what the peer sends is held
+    unread and weighs on `queued_recv_bytes`. Reads stop once it passes
+    1,000 bytes, far short of the default's bound.
+    """
+    config = a_node_config(tmp_path, "-maxreceivebuffer=1")
+    with a_deaf_peer(tmp_path, config) as (node, peer, chain):
+        connection = the_connection(node)
+        assert connection.recv_flood_size == 1000
+        for message in block_messages(chain[:_BLOCKS_PAST_THE_BOUND]):
+            connection.send(message)
+        wait_until(lambda: connection.pause_send)
+        for nonce in range(10):
+            peer.send(Ping(nonce))
+        wait_until(lambda: not connection._recv_resume.is_set())
+        assert connection.queued_recv_bytes > connection.recv_flood_size
+        assert connection.queued_recv_bytes < 1000 * DEFAULT_MAXRECEIVEBUFFER

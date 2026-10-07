@@ -38,7 +38,12 @@ from btclib.p2p.limits import PROTOCOL_VERSION
 
 from btclib_node.chains import Main, RegTest
 from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS, BindAddress
-from btclib_node.constants import NodeStatus, P2pConnStatus
+from btclib_node.constants import (
+    DEFAULT_MAXRECEIVEBUFFER,
+    DEFAULT_MAXSENDBUFFER,
+    NodeStatus,
+    P2pConnStatus,
+)
 from btclib_node.log import Logger
 from btclib_node.p2p import address as address_module
 from btclib_node.p2p import manager as manager_module
@@ -360,6 +365,8 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
                 peerblockfilters=False,
                 v2transport=v2transport,
                 v1transport=v1transport,
+                send_buffer_max_size=1000 * DEFAULT_MAXSENDBUFFER,
+                receive_flood_size=1000 * DEFAULT_MAXRECEIVEBUFFER,
             ),
             # `Connection.own_version`'s own `start_height`
             # (btclib-org/btclib-node#722), 0 matching a fresh `Node`'s

@@ -97,7 +97,7 @@ class TxChecks:
         self.queued: dict[int, TxCheck] = {}
         # the txids and wtxids of `queued`, each counted once per candidate
         self._pending: Counter[bytes] = Counter()
-        # a peer's messages not read yet: command, payload, wire size, time read
+        # a peer's messages not read yet: command, payload, weight, time read
         self.waiting: dict[int, deque[tuple[str, bytes, int, float]]] = {}
         # the one check handed to the pool, its pending verdict, and the
         # `time.monotonic()` it is due by

@@ -225,7 +225,12 @@ from btclib_node.config import (
     service_text,
     split_host_port,
 )
-from btclib_node.constants import MIN_PRUNE_TARGET_MIB, default_data_dir
+from btclib_node.constants import (
+    DEFAULT_MAXRECEIVEBUFFER,
+    DEFAULT_MAXSENDBUFFER,
+    MIN_PRUNE_TARGET_MIB,
+    default_data_dir,
+)
 from btclib_node.dirlock import DirectoryLock, lock_directories
 from btclib_node.exceptions import DirectoryLockError
 from btclib_node.log import open_history_log
@@ -635,6 +640,18 @@ _OPTIONS: dict[str, _Option] = {
         "Maintain at most <n> automatic connections to peers (default: "
         f"{DEFAULT_MAX_PEER_CONNECTIONS}); does not limit a peer dialled through "
         "-connect or -addnode",
+        _CONNECTION_TITLE,
+    ),
+    "maxreceivebuffer": _Option(
+        "=<n>",
+        "Maximum per-connection receive buffer, <n>*1000 bytes (default: "
+        f"{DEFAULT_MAXRECEIVEBUFFER})",
+        _CONNECTION_TITLE,
+    ),
+    "maxsendbuffer": _Option(
+        "=<n>",
+        "Maximum per-connection memory usage for the send buffer, <n>*1000 "
+        f"bytes (default: {DEFAULT_MAXSENDBUFFER})",
         _CONNECTION_TITLE,
     ),
     "maxtipage": _Option(
@@ -1504,6 +1521,18 @@ def _to_int(value: int) -> int:
     `-maxconnections` into its `int user_max_connection`.
     """
     return (value - _INT_MIN) % 2**32 + _INT_MIN
+
+
+def _get_thousands(settings: _Settings, name: str, default: int) -> int:
+    """Return `1000 * GetIntArg(name, default)` as an `unsigned int` holds it.
+
+    How `AppInitMain` reads `-maxsendbuffer` and `-maxreceivebuffer` into
+    `nSendBufferMaxSize` and `nReceiveFloodSize` (`src/init.cpp` and
+    `src/net.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a negative
+    value wraps, as it does there.
+    """
+    value = _get_int(settings, name)
+    return (1000 * (default if value is None else value)) % 2**32
 
 
 def _get_port(settings: _Settings, name: str) -> int | None:
@@ -2587,6 +2616,12 @@ def _after_lock(before: _BeforeLock) -> Config:
         forcednsseed=bool(_get_bool(settings, "forcednsseed")),
         fixed_seeds=fixedseeds,
         ban_time=ban_time,
+        send_buffer_max_size=_get_thousands(
+            settings, "maxsendbuffer", DEFAULT_MAXSENDBUFFER
+        ),
+        receive_flood_size=_get_thousands(
+            settings, "maxreceivebuffer", DEFAULT_MAXRECEIVEBUFFER
+        ),
         block_notify=_get_arg(settings, "blocknotify") or "",
         startup_notify=_get_arg(settings, "startupnotify") or "",
         shutdown_notify=_get_args(settings, "shutdownnotify"),

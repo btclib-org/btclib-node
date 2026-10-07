@@ -30,7 +30,7 @@ from btclib_node.log import Logger, LogRateLimiter
 from btclib_node.mempool import Mempool
 from btclib_node.p2p import main as main_module
 from btclib_node.p2p.callbacks import callbacks, handshake_callbacks
-from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES, KnownTxInventory
+from btclib_node.p2p.connection import KnownTxInventory
 from btclib_node.p2p.main import (
     handle_p2p,
     handle_p2p_handshake,
@@ -49,6 +49,9 @@ if TYPE_CHECKING:
 
 
 _AN_ADDRESS = NetworkAddressV2(0, 0, 1, b"\x01\x02\x03\x04", 18444)
+# the stand-in's `recv_flood_size`, `-maxreceivebuffer=2`: not the
+# default, so a bound read from anywhere but the connection is caught
+_RECV_FLOOD_SIZE = 2 * 1000
 
 
 def debug_recorder() -> tuple[list[str], Callable[..., None]]:
@@ -93,6 +96,7 @@ def make_node(
         addr_fetch=False,
         stop=lambda: stopped.append(True),
         queued_recv_bytes=queued_recv_bytes,
+        recv_flood_size=_RECV_FLOOD_SIZE,
         pause_send=False,
         _recv_lock=threading.Lock(),
         _recv_resume=SimpleNamespace(set=lambda: resumed.append(True)),
@@ -304,7 +308,7 @@ def test_handle_p2p_handshake_weighs_the_message_off_the_connections_own_queued_
 ) -> None:
     """The popped handshake item's own size is subtracted too.
 
-    `handshake_messages` now shares `MAX_QUEUED_RECV_BYTES`
+    `handshake_messages` now shares `recv_flood_size`
     (`p2p/connection.py`) with `messages`, so what a connection has
     queued there and not yet had `handle_p2p_handshake` look at counts
     the same way `handle_p2p`'s own weighing already does.
@@ -335,11 +339,11 @@ def test_handle_p2p_handshake_resumes_a_connection_back_under_the_bound(
         "handshake_messages",
         ("verack", b"", 0, 1, 0.0),
         status=P2pConnStatus.Open,
-        queued_recv_bytes=MAX_QUEUED_RECV_BYTES + 1,
+        queued_recv_bytes=_RECV_FLOOD_SIZE + 1,
     )
     handle_p2p_handshake(node)
     conn = node.p2p_manager.connections[0]
-    assert conn.queued_recv_bytes == MAX_QUEUED_RECV_BYTES
+    assert conn.queued_recv_bytes == _RECV_FLOOD_SIZE
     assert conn.resumed == [True]
     assert not stopped
 
@@ -347,7 +351,7 @@ def test_handle_p2p_handshake_resumes_a_connection_back_under_the_bound(
 def test_handle_p2p_handshake_does_not_resume_a_connection_still_over_the_bound(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Still over `MAX_QUEUED_RECV_BYTES` after the pop: no resume scheduled.
+    """Still over `recv_flood_size` after the pop: no resume scheduled.
 
     Mirrors `test_handle_p2p_does_not_resume_a_connection_still_over_the_bound`
     above, over `handshake_messages` instead. btclib-org/btclib-node#482
@@ -357,11 +361,11 @@ def test_handle_p2p_handshake_does_not_resume_a_connection_still_over_the_bound(
         "handshake_messages",
         ("verack", b"", 0, 1, 0.0),
         status=P2pConnStatus.Open,
-        queued_recv_bytes=MAX_QUEUED_RECV_BYTES + 2,
+        queued_recv_bytes=_RECV_FLOOD_SIZE + 2,
     )
     handle_p2p_handshake(node)
     conn = node.p2p_manager.connections[0]
-    assert conn.queued_recv_bytes == MAX_QUEUED_RECV_BYTES + 1
+    assert conn.queued_recv_bytes == _RECV_FLOOD_SIZE + 1
     assert not conn.resumed
     assert not stopped
 
@@ -746,7 +750,7 @@ def test_handle_p2p_weighs_the_message_off_the_connections_own_queued_bytes() ->
     """The popped item's own size is subtracted from `queued_recv_bytes`.
 
     Whatever happens to the message next -- here, an ordinary dispatch --
-    `MAX_QUEUED_RECV_BYTES` (`p2p/connection.py`) paces what a connection
+    `recv_flood_size` (`p2p/connection.py`) paces what a connection
     has queued and not yet had `handle_p2p` look at, not what became of
     it once looked at.
     """
@@ -764,7 +768,7 @@ def test_handle_p2p_weighs_the_message_off_the_connections_own_queued_bytes() ->
 def test_handle_p2p_resumes_a_connection_back_under_the_bound() -> None:
     """Dropping back to the bound schedules `_recv_resume.set` once.
 
-    Seeded one octet over `MAX_QUEUED_RECV_BYTES` -- `Connection.__init__`'s
+    Seeded one octet over `recv_flood_size` -- `Connection.__init__`'s
     `queued_recv_bytes` docstring is the constant this mirrors -- so that
     subtracting the popped item's own size lands it exactly on the bound,
     which `handle_p2p`'s own `<=` treats as resumed.
@@ -773,17 +777,17 @@ def test_handle_p2p_resumes_a_connection_back_under_the_bound() -> None:
         "messages",
         ("nosuchcommand", b"", 0, 1, 0.0),
         status=P2pConnStatus.Connected,
-        queued_recv_bytes=MAX_QUEUED_RECV_BYTES + 1,
+        queued_recv_bytes=_RECV_FLOOD_SIZE + 1,
     )
     handle_p2p(node)
     conn = node.p2p_manager.connections[0]
-    assert conn.queued_recv_bytes == MAX_QUEUED_RECV_BYTES
+    assert conn.queued_recv_bytes == _RECV_FLOOD_SIZE
     assert conn.resumed == [True]
     assert not stopped
 
 
 def test_handle_p2p_does_not_resume_a_connection_still_over_the_bound() -> None:
-    """Still over `MAX_QUEUED_RECV_BYTES` after the pop: no resume scheduled.
+    """Still over `recv_flood_size` after the pop: no resume scheduled.
 
     The mirror of the test above -- one octet short of the bound rather
     than landing on it -- so a connection that queued far more than one
@@ -793,11 +797,11 @@ def test_handle_p2p_does_not_resume_a_connection_still_over_the_bound() -> None:
         "messages",
         ("nosuchcommand", b"", 0, 1, 0.0),
         status=P2pConnStatus.Connected,
-        queued_recv_bytes=MAX_QUEUED_RECV_BYTES + 2,
+        queued_recv_bytes=_RECV_FLOOD_SIZE + 2,
     )
     handle_p2p(node)
     conn = node.p2p_manager.connections[0]
-    assert conn.queued_recv_bytes == MAX_QUEUED_RECV_BYTES + 1
+    assert conn.queued_recv_bytes == _RECV_FLOOD_SIZE + 1
     assert not conn.resumed
     assert not stopped
 

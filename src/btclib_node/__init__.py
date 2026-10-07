@@ -696,7 +696,7 @@ class Node(threading.Thread):
         and without the push `stop`'s bound would run out on them before
         the drain's first request (btclib-org/btclib-node#1651).
 
-        A connection paused on `MAX_QUEUED_RECV_BYTES`
+        A connection paused on its `recv_flood_size`
         (`p2p/connection.py`) waits here and nowhere of its own: what
         resumes it is `handle_p2p` popping enough of that connection's
         own items off `p2p_manager.messages`, and that queue is shared by

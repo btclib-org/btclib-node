@@ -39,9 +39,9 @@ here are the ones [ARCHITECTURE](./ARCHITECTURE.md) describes.
   test leaves out. Nothing here fuzzes the `json.loads` of an RPC body.
 - **What one connection may cost this node, and how many inbound
   connections it holds, are bounded.** A peer whose send buffer passes
-  `SEND_BUFFER_MAX_SIZE` has nothing more read from it until the buffer
+  `-maxsendbuffer` has nothing more read from it until the buffer
   drains, as in Core, and one that stops reading is dropped by the ping
-  timeout; the comment beside that bound
+  timeout; the comment beside `Connection.send_buffer_max_size`
   (`src/btclib_node/p2p/connection.py`) argues what the two leave it
   able to cost, closed as btclib-org/btclib-node#1805. Past `Config.max_connections`'s
   inbound share, `P2pManager.server` evicts an inbound peer by Core's
@@ -209,12 +209,13 @@ garbage is longer than `MAX_GARBAGE_LEN`, 4095 bytes, before its
 terminator, a packet whose length field exceeds a message's largest
 contents before it decrypts the contents, and a packet that does not
 authenticate. The connection bounds what it will buffer in either
-direction — `MAX_QUEUED_RECV_BYTES` on what may sit unprocessed,
-`SEND_BUFFER_MAX_SIZE` on what this node may owe a peer before it reads
-nothing more from it — with `getdata` and `getcfilters` answers checked
-against that last bound before every item, the module's own comment
-beside it arguing what bounds the rest. What crosses this boundary already framed
-is handed to btclib's own `Message.parse` for the codec itself.
+direction — `recv_flood_size` (`-maxreceivebuffer`) on what may sit
+unprocessed, `send_buffer_max_size` (`-maxsendbuffer`) on what this node
+may owe a peer before it reads nothing more from it — with `getdata` and
+`getcfilters` answers checked against that last bound before every item,
+the comment beside it arguing what bounds the rest. What crosses this
+boundary already framed is handed to btclib's own `Message.parse` for the
+codec itself.
 
 **The store.** `src/btclib_node/db.py` is what every index opens its
 datadir through, and it is the one place a bit flipped on disk is
@@ -337,7 +338,7 @@ and what counters each.
   above).
 - **Uncontrolled resource consumption (CWE-400, CWE-770).**
   `MAX_HEADER_BYTES`/`MAX_BODY_BYTES` on the RPC surface,
-  `MAX_PROTOCOL_MESSAGE_LENGTH`/`MAX_QUEUED_RECV_BYTES`/`SEND_BUFFER_MAX_SIZE`
+  `MAX_PROTOCOL_MESSAGE_LENGTH`, `-maxreceivebuffer` and `-maxsendbuffer`
   and the pacing beside them on the p2p surface. SECURITY.md's
   *Limitations* states what is bounded and what is not yet.
 - **Weak randomness (CWE-330, CWE-338).** `ruff`'s flake8-bandit family,

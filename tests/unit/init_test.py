@@ -44,6 +44,7 @@ from btclib_node.config import Config
 from btclib_node.constants import (
     CLIENT_NAME,
     CLIENT_VERSION,
+    DEFAULT_MAXRECEIVEBUFFER,
     RPC_THREADS,
     NodeStatus,
 )
@@ -55,7 +56,6 @@ from btclib_node.exceptions import (
 )
 from btclib_node.interpreter import warm
 from btclib_node.main import prune_up_to_height, update_chain
-from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES
 from btclib_node.rpc.auth import COOKIE_FILE
 from btclib_node.rpc.callbacks import callbacks
 from btclib_node.rpc.connection import RpcConnection
@@ -688,28 +688,32 @@ def test_requests_answered_by_the_loop_after_stop_extend_stop_s_wait(
     assert not node.is_alive()
 
 
+# A fresh connection's `recv_flood_size`, Core's `-maxreceivebuffer` default.
+_RECV_FLOOD_SIZE = 1000 * DEFAULT_MAXRECEIVEBUFFER
+
 # How many items one busy connection's own queued bytes are split into,
 # and what one of them weighs. Equal sizes are what make a pass's own
 # share countable, and this many of them leaves the watched connection
-# back under `MAX_QUEUED_RECV_BYTES` on its first pop, so what the
+# back under `recv_flood_size` on its first pop, so what the
 # measurement below counts is when that pop happens rather than how many
 # it takes.
 _ITEMS_PER_BUSY_PEER = 8
-_ONE_QUEUED_MESSAGE = MAX_QUEUED_RECV_BYTES // _ITEMS_PER_BUSY_PEER
+_ONE_QUEUED_MESSAGE = _RECV_FLOOD_SIZE // _ITEMS_PER_BUSY_PEER
 
 
 def a_paused_connection(resumed: list[bool]) -> Any:
     """Return a connection queued past its own bound, recording its resume.
 
     Only what `handle_p2p` (`btclib_node/p2p/main.py`) reads off a
-    connection while weighing a message back off it: the counter, the
-    lock around it, the event it sets to resume the reads, and a loop
-    stand-in that runs a threadsafe call inline -- the same stand-in
-    `tests/unit/p2p/main_test.py` builds, there being no running loop
-    under an unstarted node. An empty send queue holds nothing back.
+    connection while weighing a message back off it: the counter, its
+    bound, the lock around it, the event it sets to resume the reads,
+    and a loop stand-in that runs a threadsafe call inline -- the same
+    stand-in `tests/unit/p2p/main_test.py` builds, there being no running
+    loop under an unstarted node. An empty send queue holds nothing back.
     """
     return SimpleNamespace(
-        queued_recv_bytes=MAX_QUEUED_RECV_BYTES + 1,
+        queued_recv_bytes=_RECV_FLOOD_SIZE + 1,
+        recv_flood_size=_RECV_FLOOD_SIZE,
         pause_send=False,
         _recv_lock=threading.Lock(),
         _recv_resume=SimpleNamespace(set=lambda: resumed.append(True)),
@@ -750,7 +754,7 @@ def test_a_paused_connection_resumes_on_the_first_pass_with_nobody_else_busy(
 ) -> None:
     """One busy peer is its own first item, so the next pass resumes it.
 
-    This is the whole of what `MAX_QUEUED_RECV_BYTES`
+    This is the whole of what `recv_flood_size`
     (`btclib_node/p2p/connection.py`) promises on its own, and the
     control for the measurement below: a wait longer than this one is
     another peer's traffic and not the bound's own doing.
