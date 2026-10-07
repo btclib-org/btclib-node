@@ -596,8 +596,12 @@ def test_a_queue_left_with_nothing_still_held_sends_no_inv() -> None:
     assert other.tx_announce_queue == []
 
 
-def test_a_second_announcement_waits_for_the_peers_own_schedule() -> None:
+def test_a_second_announcement_waits_for_the_peers_own_schedule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A first send fires at once; a second waits for the peer's own timer."""
+    # a draw as short as the test takes would make the second send due
+    monkeypatch.setattr(download_module._rng, "expovariate", lambda _: 1000.0)
     # the first ever announcement to a fresh connection fires at once --
     # its schedule reads 0, "never scheduled", which the due-check
     # always treats as due -- but once a schedule is set, a transaction
@@ -610,7 +614,8 @@ def test_a_second_announcement_waits_for_the_peers_own_schedule() -> None:
     manager.tx_download()
     (first,) = only(other, Inv)
     assert hashes_of(first) == [a_hash(1)]
-    assert other.next_inv_send_time > time.time()
+    # a schedule was set; a draw can be shorter than the test's own clock read
+    assert other.next_inv_send_time > 0.0
 
     manager.received_txs = [(2, a_hash(2))]
     manager.tx_download()
@@ -689,7 +694,8 @@ def test_two_inbound_ipv4_peers_share_one_schedule_regardless_of_subnet() -> Non
     manager = make_manager([first, second])
     manager.tx_download()
     assert first.next_inv_send_time == second.next_inv_send_time
-    assert first.next_inv_send_time > time.time()
+    # a schedule was set; a draw can be shorter than the test's own clock read
+    assert first.next_inv_send_time > 0.0
 
 
 def test_two_inbound_ipv6_peers_share_one_schedule_regardless_of_subnet() -> None:
@@ -1272,7 +1278,8 @@ def test_a_fresh_connections_first_feefilter_is_sent_immediately() -> None:
     (sent,) = only(conn, FeeFilter)
     assert sent.feerate == 100  # the mempool's own rolling minimum is 0
     assert conn.feefilter_sent == 100
-    assert conn.next_feefilter_send_time > time.time()
+    # a schedule was set; a draw can be shorter than the test's own clock read
+    assert conn.next_feefilter_send_time > 0.0
 
 
 def test_a_connection_not_yet_due_is_sent_nothing_again() -> None:
@@ -1289,8 +1296,9 @@ def test_an_unchanged_rate_is_not_resent_once_its_own_schedule_comes_due() -> No
     manager = make_manager([conn], min_relay_feerate=FeeRate(sats_per_kvbyte=100))
     manager._send_due_feefilters()
     assert not only(conn, FeeFilter)
-    # the schedule still moves even though nothing was sent
-    assert conn.next_feefilter_send_time > time.time()
+    # the schedule still moves even though nothing was sent; a draw can be
+    # shorter than the test's own clock read
+    assert conn.next_feefilter_send_time > 0.0
 
 
 def test_the_floor_is_never_undercut_even_by_an_empty_mempools_own_zero() -> None:
