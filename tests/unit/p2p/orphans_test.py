@@ -22,13 +22,14 @@ import btclib_node.p2p.callbacks as cb
 import btclib_node.p2p.main as p2p_main
 from btclib_node.chains import RegTest
 from btclib_node.constants import P2pConnStatus
-from btclib_node.exceptions import TxRejectedError
+from btclib_node.exceptions import MissingPrevoutError, TxRejectedError
 from btclib_node.interpreter import check_package
 from btclib_node.mempool import package_hash
 from btclib_node.p2p.callbacks import process_orphan
 from btclib_node.p2p.main import resume_tx_checks
 from btclib_node.p2p.tx_checks import TxCheck
-from tests import generate_random_chain
+from btclib_node.rpc.callbacks import test_mempool_accept as mempool_accept
+from tests import build_block, generate_coinbase, generate_random_chain
 from tests.unit.main_test import connect, spend
 from tests.unit.p2p.callbacks_test import a_peer
 
@@ -133,6 +134,60 @@ def settle(node: Node) -> None:
     """Run the loop's tx step until nothing is queued or being checked."""
     while resume_tx_checks(node) or node.tx_checks.queued:
         pass
+
+
+def test_a_confirmed_transaction_is_refused_as_known_and_not_kept_as_an_orphan(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Core answers `txn-already-known`, and orphans only missing inputs.
+
+    The inputs of a transaction the chain confirmed are spent, but one of
+    its outputs is not (`MemPoolAccept::PreChecks`,
+    `src/validation.cpp:864-873`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag). btclib-org/btclib-node#1779
+    """
+    node = regtest_node()
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    funding = chain[0].transactions[0]
+    confirmed = spend(funding, funding.vout[0].value - 1000)
+    block = build_block(
+        chain[-1].header.hash,
+        [generate_coinbase(height=len(chain) + 1), confirmed],
+        len(chain),
+    )
+    connect(node, [*chain, block])
+    node.is_initial_block_download = False
+    with pytest.raises(TxRejectedError) as refused:
+        node_main.pre_verify_mempool_acceptance(node, confirmed)
+    assert refused.value.reason == "txn-already-known"
+    peer = a_connected_peer(node)
+    relay(node, peer, confirmed)
+    assert node.mempool.was_recently_rejected(confirmed.hash)
+    assert not node.download_manager.orphanage.have_tx(confirmed.hash)
+    assert not node.mempool.contains_tx(confirmed)
+    raw = confirmed.serialize(include_witness=True).hex()
+    (verdict,) = mempool_accept(node, cast("Any", None), [[raw]])
+    assert verdict["reject-reason"] == "txn-already-known"
+
+
+def test_a_confirmed_transaction_with_every_output_spent_is_an_orphan(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Core answers `TX_MISSING_INPUTS`: no unspent output says it confirmed."""
+    node = regtest_node()
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    funding = chain[0].transactions[0]
+    confirmed = spend(funding, funding.vout[0].value - 1000)
+    spender = spend(confirmed, confirmed.vout[0].value - 1000)
+    block = build_block(
+        chain[-1].header.hash,
+        [generate_coinbase(height=len(chain) + 1), confirmed, spender],
+        len(chain),
+    )
+    connect(node, [*chain, block])
+    node.is_initial_block_download = False
+    with pytest.raises(MissingPrevoutError):
+        node_main.pre_verify_mempool_acceptance(node, confirmed)
 
 
 def test_a_child_ahead_of_its_parent_is_taken_in_with_it(
