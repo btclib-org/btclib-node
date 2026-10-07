@@ -1284,11 +1284,11 @@ class Mempool:
 
         A feerate is `fee * scale // vsize`, an integer. Two distinct
         feerates `a/b` and `c/d` differ by at least `1 / (b * d)`, and
-        `scale` is the square of the total vsize held, which no vsize
-        exceeds, so the floors of the scaled feerates differ in the order
+        `scale` is the square of the total vsize held, which no package's
+        vsize exceeds, so the floors of the scaled feerates differ in the order
         of the feerates, and equal feerates give equal floors.
         """
-        scale = sum(self.vsizes.values()) ** 2
+        scale = self.bytesize**2
         packages: dict[bytes, tuple[int, int]] = {}
 
         def package(wtxid: bytes) -> tuple[int, int]:

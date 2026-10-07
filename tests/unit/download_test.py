@@ -207,6 +207,7 @@ def hold(manager: DownloadManager, *wtxids: bytes) -> None:
         mempool.fees[wtxid] = 0
         mempool.modified_fees[wtxid] = 0
         mempool.vsizes[wtxid] = tx.vsize
+        mempool.bytesize += tx.vsize
 
 
 def hashes_of(message: GetData | Inv) -> list[bytes]:

@@ -1881,6 +1881,9 @@ def test_the_integer_key_orders_as_the_exact_one(seed: int) -> None:
     by_integers = sorted(wtxids, key=keys.__getitem__)
     by_fractions = sorted(wtxids, key=lambda w: exact_order_key(mempool, w))
     assert by_integers == by_fractions
+    assert {w: keys[w][1:] for w in wtxids} == {
+        w: exact_order_key(mempool, w)[1:] for w in wtxids
+    }
 
 
 def test_a_transaction_with_no_relatives_is_keyed_without_the_package_walks(
