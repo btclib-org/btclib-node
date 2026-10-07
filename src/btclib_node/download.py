@@ -1267,7 +1267,7 @@ class DownloadManager:
     def _rank_queued(
         self, conns: list[Connection], caps: list[int]
     ) -> tuple[dict[bytes, tuple[int, int, bytes]], list[bytes]]:
-        """Return the key of each wtxid queued for `conns`, and the best first.
+        """Return each queued wtxid's key, and the best of them in order.
 
         The mempool cannot change within a call, so the queued transactions
         of every due connection are keyed once. An entry the mempool no
@@ -1313,12 +1313,12 @@ class DownloadManager:
         the cap. The last two are read when sending, so a change while the
         entry waited applies. What is not popped stays queued.
 
-        `keys` has every wtxid of the queue, and `best` is the first of all
-        the due connections' queued wtxids in key order. Every wtxid of this
-        queue that `best` lacks sorts after those it has, so the queue is
-        read through `best` first, then by `heapq.nsmallest` over what is
-        left. Each round of that takes the next `want` entries and doubles
-        `want`, so a queue of dropped entries is not scanned once per entry.
+        `keys` has every wtxid of the queue. `best` is the head, in key
+        order, of all the due connections' queued wtxids, so no entry of this
+        queue that `best` lacks sorts before one it holds. The queue is read
+        through `best`, then by `heapq.nsmallest` over what is left, taking
+        twice as many each round, so a long run of dropped entries costs a
+        few scans of the queue.
         """
         queue = conn.tx_announce_queue
         batch: list[bytes] = []

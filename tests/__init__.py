@@ -348,6 +348,20 @@ def _mempool_changes(
         tx, fee, vsize = new_tx()
         mempool.add_tx(tx, fee=fee, vsize=vsize)
 
+    removed: list[tuple[Tx, int, int]] = []
+
+    def remove() -> None:
+        tx = rng.choice(held())
+        removed.append((tx, mempool.fees[tx.hash], mempool.vsizes[tx.hash]))
+        mempool.remove_tx(tx)
+
+    def readd() -> None:
+        # as a reorg returns a block's transaction, its children still held
+        absent = [r for r in removed if r[0].hash not in mempool.transactions]
+        with_children = [r for r in absent if r[0].id in mempool.spent_by]
+        if tx_fee_vsize := rng.choice(with_children or absent or [None]):
+            mempool.add_tx(tx_fee_vsize[0], fee=tx_fee_vsize[1], vsize=tx_fee_vsize[2])
+
     def stage() -> None:
         tx, fee, vsize = new_tx()
         with mempool.staged(tx, fee, vsize):
@@ -370,7 +384,8 @@ def _mempool_changes(
     return {
         "add": add,
         "stage": stage,
-        "remove": lambda: mempool.remove_tx(rng.choice(held())),
+        "remove": remove,
+        "readd": readd,
         "block": lambda: mempool.remove_for_block(
             rng.sample(held(), min(len(held()), rng.randint(1, 3)))
         ),
@@ -388,10 +403,11 @@ def random_mempool_history(
     Transactions have three outputs and spend up to three outpoints of
     held ones, so there are chains, siblings and children of several
     parents. A step is one of: an addition, a removal, a block holding
-    some held transactions and one that conflicts with another, an
-    eviction with descendants, a prioritisation, or a transaction held for
-    a moment. A removal leaves a held child whose parent is gone, as a
-    confirmed parent does. Additions are favoured below 100 held.
+    some held transactions, a block conflicting with one, an eviction with
+    descendants, a prioritisation, a transaction held for a moment, or the
+    return of a removed transaction. A removal leaves a held child whose
+    parent is gone, as a confirmed parent does, and a return can find its
+    children held. Additions are favoured below 100 held.
     """
     changes = _mempool_changes(rng, mempool)
     for _ in range(steps):
