@@ -555,15 +555,21 @@ def test_drain_progress_extends_stop_s_wait_past_stop_timeout(
     event to keep the ten `getblockcount` calls sent behind it queued
     rather than answered as they arrive, `node.stop()` runs once all ten
     are on `rpc_manager.messages`, and only then is the first released,
-    so `_drain_rpc_queue` answers all ten -- 0.15 seconds apiece -- after
+    so `_drain_rpc_queue` answers all ten -- 0.5 seconds apiece -- after
     `Node.stop`'s own wait loop has already started timing it.
     `STOP_TIMEOUT` measured from the call to `stop` alone would run out
     partway through, on a node that was answering requests the entire
     time; `extend_reply_deadline` is what `Node.stop`'s wait loop reads
     instead, exactly as it already does for a delayed `stop` reply
     (#1467).
+
+    The deadline is not pushed during a pause: one longer than
+    `STOP_TIMEOUT` between two answers, or after the last, still fails
+    `stop`. So `STOP_TIMEOUT` is wide enough to absorb a stall on a busy
+    machine, and still below what the ten answers sum to
+    (btclib-org/btclib-node#1790).
     """
-    monkeypatch.setattr(btclib_node, "STOP_TIMEOUT", 1.0)
+    monkeypatch.setattr(btclib_node, "STOP_TIMEOUT", 4.0)
     hold = threading.Event()
     original_get_best_block_hash = callbacks["getbestblockhash"]
     original_get_block_count = callbacks["getblockcount"]
@@ -573,7 +579,7 @@ def test_drain_progress_extends_stop_s_wait_past_stop_timeout(
         return original_get_best_block_hash(node, conn, params)
 
     def slow_get_block_count(node: Node, conn: Any, params: Any) -> Any:
-        time.sleep(0.15)
+        time.sleep(0.5)
         return original_get_block_count(node, conn, params)
 
     monkeypatch.setitem(callbacks, "getbestblockhash", held_get_best_block_hash)
@@ -1757,6 +1763,10 @@ def test_a_node_whose_p2p_port_is_taken_stops_and_frees_its_rpc_port(
                 chain="regtest",
                 data_dir=tmp_path,
                 p2p_port=p2p_port,
+                # Without a `-bind` the node first binds an `=onion` listener on
+                # `p2p_port + 1`, which another process may hold
+                # (btclib-org/btclib-node#1785).
+                bind=(f"0.0.0.0:{p2p_port}",),
                 rpc_port=rpc_port,
                 debug=True,
             )
