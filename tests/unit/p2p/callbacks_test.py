@@ -3431,7 +3431,7 @@ def test_a_transaction_is_taken_in_out_of_ibd_below_block_synced(
     assert node.mempool.contains_tx(transaction)
     items = [Inventory(InventoryType.MSG_WTX, announced.hash)]
     inv(node, Inv(items).serialize(), peer)
-    assert node.download_manager.inv_txs == [(3, announced.hash)]
+    assert node.download_manager.inv_txs == [(3, announced.hash, False)]
 
 
 def test_a_transaction_announced_in_initial_block_download_is_ignored() -> None:
@@ -3583,7 +3583,7 @@ def test_a_transaction_announced_that_we_lack_is_wanted() -> None:
     peer = a_peer(id=4, wtxidrelay_received=True)
     items = [Inventory(InventoryType.MSG_WTX, transaction.hash)]
     inv(node, Inv(items).serialize(), peer)
-    assert node.download_manager.inv_txs == [(4, transaction.hash)]
+    assert node.download_manager.inv_txs == [(4, transaction.hash, False)]
     assert not peer.sent
 
 
@@ -3605,7 +3605,7 @@ def test_a_transaction_inv_is_read_in_the_peer_s_own_relay_mode(
     ]
     inv(node, Inv(items).serialize(), peer)
     kept = transaction.hash if by_wtxid else transaction.id
-    assert node.download_manager.inv_txs == [(4, kept)]
+    assert node.download_manager.inv_txs == [(4, kept, not by_wtxid)]
 
 
 @pytest.mark.parametrize(
@@ -3648,13 +3648,24 @@ def test_a_witness_tx_inv_is_a_txid_announcement_without_wtxidrelay(
     assert asked_for.items == (Inventory(fetch, txid),)
 
 
-def test_a_witness_tx_inv_from_a_wtxid_relay_peer_is_dropped() -> None:
-    """Core follows it as a txid; the download queue cannot (ISS 1774)."""
-    node = a_data_node()
+@pytest.mark.parametrize("held", [False, True])
+def test_a_witness_tx_inv_from_a_wtxid_relay_peer_is_a_txid_announcement(
+    *, held: bool
+) -> None:
+    """ISS 1774: Core reads `MSG_WITNESS_TX` as a txid from a wtxid-relay peer.
+
+    It is queued as a txid, and not queued where the mempool holds that txid.
+    """
+    transaction = a_transaction()
+    mempool = Mempool(Logger(debug=True))
+    if held:
+        mempool.add_tx(transaction)
+    node = a_data_node(mempool=mempool)
     peer = a_peer(id=4, wtxidrelay_received=True)
-    items = [Inventory(InventoryType.MSG_WITNESS_TX, a_hash(7))]
+    items = [Inventory(InventoryType.MSG_WITNESS_TX, transaction.id)]
     inv(node, Inv(items).serialize(), peer)
-    assert node.download_manager.inv_txs == []
+    expected = [] if held else [(4, transaction.id, True)]
+    assert node.download_manager.inv_txs == expected
 
 
 @pytest.mark.parametrize("by_wtxid", [True, False])

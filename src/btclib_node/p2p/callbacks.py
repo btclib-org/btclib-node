@@ -1682,28 +1682,37 @@ def inv(node: Node, msg: bytes, conn: Connection) -> None:
                 manager.last_block_inv_triggering_headers_sync = unknown[-1]
 
     # Core skips `MSG_TX` from a peer that sent `wtxidrelay` and `MSG_WTX`
-    # from one that did not. It keeps `MSG_WITNESS_TX` from every peer, as
-    # a txid (`net_processing.cpp` and `protocol.h`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Here it is kept only from
-    # a peer without `wtxidrelay`: `inv_txs` holds one hash space per peer,
-    # and a txid in a wtxid peer's would be asked for as a wtxid.
-    # btclib-org/btclib-node#1774
-    by_wtxid = conn.wtxidrelay_received
-    tx_types = (
-        (InventoryType.MSG_WTX,)
-        if by_wtxid
-        else (InventoryType.MSG_TX, InventoryType.MSG_WITNESS_TX)
+    # from one that did not, and reads `MSG_WITNESS_TX` as a txid from
+    # either (`net_processing.cpp` and `protocol.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The announcement keeps
+    # which of the two it is: a wtxid-relay peer's `MSG_WITNESS_TX` is
+    # looked up and asked for as a txid. btclib-org/btclib-node#1774
+    skipped = (
+        InventoryType.MSG_TX if conn.wtxidrelay_received else InventoryType.MSG_WTX
     )
-    hashes = [x.hash for x in inv.items if x.type_code in tx_types]
+    announced = [
+        (x.hash, x.type_code != InventoryType.MSG_WTX)
+        for x in inv.items
+        if x.type_code in _TX_TYPES and x.type_code != skipped
+    ]
     # Core's `AddKnownTx` runs on each such item before its IBD check:
     # a peer that announced a transaction has it.
-    for announced in hashes:
-        conn.known_tx_inventory.add(announced)
+    for announced_hash, _ in announced:
+        conn.known_tx_inventory.add(announced_hash)
     if node.is_initial_block_download:
         return
-    missing_tx = node.mempool.get_missing(hashes, wtxid=by_wtxid)
-    if missing_tx:
-        node.download_manager.inv_txs.extend([(conn.id, h) for h in missing_tx])
+    mempool = node.mempool
+    missing_txids = set(
+        mempool.get_missing([h for h, txid in announced if txid], wtxid=False)
+    )
+    missing_wtxids = set(
+        mempool.get_missing([h for h, txid in announced if not txid], wtxid=True)
+    )
+    node.download_manager.inv_txs.extend(
+        (conn.id, h, txid)
+        for h, txid in announced
+        if h in (missing_txids if txid else missing_wtxids)
+    )
 
 
 # The two families `advance_getdata` below dispatches on -- everything

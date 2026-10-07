@@ -38,6 +38,7 @@ from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.block_availability import BLOCK_DOWNLOAD_WINDOW, BlockAvailability
 from btclib_node.p2p.callbacks import MAX_GETDATA_INFLIGHT_BYTES
+from btclib_node.p2p.callbacks import inv as inv_callback
 from btclib_node.p2p.chain_sync import ChainSyncTimeoutState
 from btclib_node.p2p.connection import KnownTxInventory, PeerStats
 from btclib_node.p2p.manager import P2pManager
@@ -280,7 +281,7 @@ def test_a_peer_without_wtxid_relay_is_asked_by_txid(
     )
     manager = make_manager([peer])
     txid = a_hash(9)
-    manager.inv_txs = [(1, txid)]
+    manager.inv_txs = [(1, txid, True)]
     manager.tx_download()
     (getdata,) = only(peer, GetData)
     assert [(i.type_code, i.hash) for i in getdata.items] == [
@@ -303,7 +304,7 @@ def test_a_transaction_received_answers_an_announcement_by_txid() -> None:
     txid = manager.node.mempool.transactions[wtxid].id
     manager.tx_requests.received_inv(2, txid, preferred=False, reqtime=0.0)
     manager.received_txs = [(1, wtxid)]
-    manager.inv_txs = [(2, txid)]
+    manager.inv_txs = [(2, txid, True)]
     manager.tx_download()
     assert not announcer.sent
     assert manager.tx_requests.size() == 0
@@ -324,7 +325,7 @@ def test_transactions_are_relayed_at_any_sync_state() -> None:
     wtxid = a_hash(7)
     hold(manager, wtxid)
     manager.received_txs = [(None, wtxid)]
-    manager.inv_txs = [(1, a_hash(8))]
+    manager.inv_txs = [(1, a_hash(8), False)]
     manager.tx_download()
     (getdata,) = only(asker, GetData)
     assert hashes_of(getdata) == [a_hash(8)]
@@ -338,7 +339,7 @@ def test_a_transaction_a_peer_announced_is_asked_of_that_peer() -> None:
     """`tx_download` sends `GetData` to the peer whose `inv` named the wtxid."""
     first, second = a_conn(1, inbound=False), a_conn(2, inbound=False)
     manager = make_manager([first, second])
-    manager.inv_txs = [(1, a_hash(1))]
+    manager.inv_txs = [(1, a_hash(1), False)]
     manager.tx_download()
     (getdata,) = only(first, GetData)
     assert hashes_of(getdata) == [a_hash(1)]
@@ -349,7 +350,7 @@ def test_a_peer_that_announced_the_same_transaction_twice_is_asked_once() -> Non
     """Two `inv`s from the same peer for one wtxid produce one `GetData` ask."""
     conn = a_conn(1, inbound=False)
     manager = make_manager([conn])
-    manager.inv_txs = [(1, a_hash(1)), (1, a_hash(1))]
+    manager.inv_txs = [(1, a_hash(1), False), (1, a_hash(1), False)]
     manager.tx_download()
     (getdata,) = only(conn, GetData)
     assert hashes_of(getdata) == [a_hash(1)]
@@ -359,7 +360,7 @@ def test_an_announcement_from_a_peer_that_is_gone_asks_nobody() -> None:
     """An `inv` from a connection id no longer in `connections` is dropped."""
     conn = a_conn(1)
     manager = make_manager([conn])
-    manager.inv_txs = [(99, a_hash(1))]
+    manager.inv_txs = [(99, a_hash(1), False)]
     manager.tx_download()
     assert not conn.sent
 
@@ -370,7 +371,7 @@ def test_the_peer_that_sent_a_transaction_is_not_asked_for_it_again() -> None:
     # and a second copy of something we already hold
     sender = a_conn(1)
     manager = make_manager([sender])
-    manager.inv_txs = [(1, a_hash(1))]
+    manager.inv_txs = [(1, a_hash(1), False)]
     manager.received_txs = [(1, a_hash(1))]
     manager.tx_download()
     assert not only(sender, GetData)
@@ -425,7 +426,7 @@ def test_a_peer_that_declined_relay_is_still_answered_about_what_it_wants() -> N
     # that announced one is still asked for it
     declined = a_conn(1, relay_tx=False, inbound=False)
     manager = make_manager([declined])
-    manager.inv_txs = [(1, a_hash(1))]
+    manager.inv_txs = [(1, a_hash(1), False)]
     manager.tx_download()
     (getdata,) = only(declined, GetData)
     assert hashes_of(getdata) == [a_hash(1)]
@@ -439,7 +440,7 @@ def test_a_transaction_is_announced_to_the_peers_that_do_not_have_it() -> None:
     hold(manager, *received)
     manager.received_txs = [(1, wtxid) for wtxid in received]
     # peer 2 announced them, so it has them; peer 1 sent them
-    manager.inv_txs = [(2, wtxid) for wtxid in received]
+    manager.inv_txs = [(2, wtxid, False) for wtxid in received]
     manager.tx_download()
     assert not only(sender, Inv)
     assert not only(announcer, Inv)
@@ -494,7 +495,7 @@ def test_a_peer_still_wanting_something_else_is_asked_for_it() -> None:
     sender, wanter = a_conn(1), a_conn(2, inbound=False)
     manager = make_manager([sender, wanter])
     manager.received_txs = [(1, a_hash(1))]
-    manager.inv_txs = [(1, a_hash(1)), (2, a_hash(2))]
+    manager.inv_txs = [(1, a_hash(1), False), (2, a_hash(2), False)]
     manager.tx_download()
     (getdata,) = only(wanter, GetData)
     assert hashes_of(getdata) == [a_hash(2)]
@@ -993,9 +994,9 @@ def test_an_outstanding_ask_is_not_repeated_before_it_is_answered() -> None:
     """A second `inv` for an already-asked wtxid draws no second `GetData`."""
     conn = a_conn(1, inbound=False)
     manager = make_manager([conn])
-    manager.inv_txs = [(1, a_hash(1))]
+    manager.inv_txs = [(1, a_hash(1), False)]
     manager.tx_download()
-    manager.inv_txs = [(1, a_hash(1))]
+    manager.inv_txs = [(1, a_hash(1), False)]
     manager.tx_download()
     assert len(only(conn, GetData)) == 1
 
@@ -1004,7 +1005,7 @@ def test_a_transaction_two_peers_announced_is_asked_of_one() -> None:
     """ISS 1196: Core asks one announcer at a time, however many there are."""
     first, second = a_conn(1, inbound=False), a_conn(2, inbound=False)
     manager = make_manager([first, second])
-    manager.inv_txs = [(1, a_hash(1)), (2, a_hash(1))]
+    manager.inv_txs = [(1, a_hash(1), False), (2, a_hash(1), False)]
     manager.tx_download()
     manager.tx_download()
     assert len(getdata_hashes(first)) + len(getdata_hashes(second)) == 1
@@ -1016,7 +1017,7 @@ def test_a_preferred_peer_is_asked_before_a_non_preferred_one(
     """ISS 1196: an outbound peer is asked, in whatever order they announced."""
     inbound, outbound = a_conn(1), a_conn(2, inbound=False)
     manager = make_manager([inbound, outbound])
-    manager.inv_txs = [(1, a_hash(1)), (2, a_hash(1))]
+    manager.inv_txs = [(1, a_hash(1), False), (2, a_hash(1), False)]
     manager.tx_download()
     clock.now += download_module._NONPREF_PEER_TX_DELAY
     manager.tx_download()
@@ -1039,7 +1040,7 @@ def test_a_non_preferred_peers_announcement_is_asked_after_the_delay(
     assert delayed_for == download_module._NONPREF_PEER_TX_DELAY
     conn = a_conn(1)
     manager = make_manager([conn])
-    manager.inv_txs = [(1, a_hash(1))]
+    manager.inv_txs = [(1, a_hash(1), False)]
     manager.tx_download()
     assert not only(conn, GetData)
     clock.now += elapsed
@@ -1059,12 +1060,46 @@ def test_a_txid_announcement_waits_while_a_wtxid_peer_is_connected(
     announcer = a_conn(1, inbound=False, wtxidrelay_received=False)
     conns = [announcer, a_conn(2, inbound=False)] if wtxid_peer else [announcer]
     manager = make_manager(conns)
-    manager.inv_txs = [(1, a_hash(1))]
+    manager.inv_txs = [(1, a_hash(1), True)]
     manager.tx_download()
     assert bool(only(announcer, GetData)) is (delay == 0.0)
     clock.now += delay
     manager.tx_download()
     assert getdata_hashes(announcer) == [a_hash(1)]
+
+
+@pytest.mark.parametrize(
+    "services", [ServiceFlags.NODE_WITNESS, ServiceFlags.NODE_NONE]
+)
+def test_a_witness_tx_inv_from_a_wtxid_relay_peer_is_asked_for_by_txid(
+    clock: SimpleNamespace, services: ServiceFlags
+) -> None:
+    """ISS 1774: Core reads `MSG_WITNESS_TX` as a txid from a wtxid-relay peer.
+
+    Asked for as a txid, after `TXID_RELAY_DELAY` as any txid announcement
+    while a wtxid-relay peer is connected, and by `MSG_WITNESS_TX` where the
+    peer offers `NODE_WITNESS`, else by `MSG_TX`.
+    """
+    announcer = a_conn(
+        1,
+        inbound=False,
+        version_message=a_version(services | ServiceFlags.NODE_NETWORK),
+    )
+    manager = make_manager([announcer])
+    txid = a_hash(7)
+    message = Inv([Inventory(InventoryType.MSG_WITNESS_TX, txid)]).serialize()
+    inv_callback(manager.node, message, announcer)
+    manager.tx_download()
+    assert not only(announcer, GetData)
+    clock.now += download_module._TXID_RELAY_DELAY
+    manager.tx_download()
+    fetch = (
+        InventoryType.MSG_WITNESS_TX
+        if services & ServiceFlags.NODE_WITNESS
+        else InventoryType.MSG_TX
+    )
+    (asked_for,) = only(announcer, GetData)
+    assert asked_for.items == (Inventory(fetch, txid),)
 
 
 @pytest.mark.parametrize(
@@ -1097,7 +1132,7 @@ def test_an_overloaded_peers_announcement_waits(
     for n in range(in_flight):
         manager.tx_requests.received_inv(1, a_hash(n), preferred=True, reqtime=0.0)
         manager.tx_requests.requested_tx(1, a_hash(n), expiry=math.inf)
-    manager.inv_txs = [(1, a_hash(10_000))]
+    manager.inv_txs = [(1, a_hash(10_000), False)]
     manager.tx_download()
     assert (a_hash(10_000) not in getdata_hashes(conn)) is delayed
     clock.now += download_module._OVERLOADED_PEER_TX_DELAY
@@ -1115,7 +1150,7 @@ def test_a_notfound_hands_the_transaction_to_the_next_announcer() -> None:
     """ISS 1196: the announcer that has none is not waited out."""
     first, second = a_conn(1, inbound=False), a_conn(2, inbound=False)
     manager = make_manager([first, second])
-    manager.inv_txs = [(1, a_hash(1)), (2, a_hash(1))]
+    manager.inv_txs = [(1, a_hash(1), False), (2, a_hash(1), False)]
     manager.tx_download()
     asked, other = asked_and_other(first, second)
     manager.received_not_found(asked.id, [Inventory(InventoryType.MSG_WTX, a_hash(1))])
@@ -1130,7 +1165,7 @@ def test_a_request_is_handed_on_once_it_has_expired(clock: SimpleNamespace) -> N
     """ISS 1196: after `GETDATA_TX_INTERVAL` the next announcer is asked."""
     first, second = a_conn(1, inbound=False), a_conn(2, inbound=False)
     manager = make_manager([first, second])
-    manager.inv_txs = [(1, a_hash(1)), (2, a_hash(1))]
+    manager.inv_txs = [(1, a_hash(1), False), (2, a_hash(1), False)]
     manager.tx_download()
     asked, other = asked_and_other(first, second)
     clock.now += download_module._GETDATA_TX_INTERVAL - 0.1
@@ -1146,7 +1181,7 @@ def test_a_reply_hands_the_transaction_to_the_next_announcer() -> None:
     """ISS 1196: a transaction the sender's copy of which was not kept."""
     first, second = a_conn(1, inbound=False), a_conn(2, inbound=False)
     manager = make_manager([first, second])
-    manager.inv_txs = [(1, a_hash(1)), (2, a_hash(1))]
+    manager.inv_txs = [(1, a_hash(1), False), (2, a_hash(1), False)]
     manager.tx_download()
     asked, other = asked_and_other(first, second)
     manager.received_tx_response(asked.id, a_hash(1), a_hash(1))
@@ -1164,7 +1199,7 @@ def test_a_transaction_queued_for_its_scripts_is_asked_of_no_one_else(
     manager = make_manager([first, second])
     tx = SimpleNamespace(id=a_hash(1), hash=a_hash(2))
     announced = tx.hash if by_wtxid else tx.id
-    manager.inv_txs = [(1, announced), (2, announced)]
+    manager.inv_txs = [(1, announced, not by_wtxid), (2, announced, not by_wtxid)]
     manager.tx_download()
     asked, other = asked_and_other(first, second)
     # what `p2p.callbacks.tx` leaves of a candidate with only its scripts
@@ -1190,7 +1225,7 @@ def test_a_reply_completes_the_announcement_under_the_hash_it_was_made_by(
     manager = make_manager([first, second])
     txid, wtxid = a_hash(1), a_hash(2)
     announced = wtxid if by_wtxid else txid
-    manager.inv_txs = [(1, announced), (2, announced)]
+    manager.inv_txs = [(1, announced, not by_wtxid), (2, announced, not by_wtxid)]
     manager.tx_download()
     asked, other = asked_and_other(first, second)
     manager.received_tx_response(asked.id, txid, wtxid)
@@ -1202,7 +1237,7 @@ def test_a_transaction_recently_rejected_is_not_asked_of_the_next_announcer() ->
     """ISS 1196: Core's `AlreadyHaveTx` forgets it instead."""
     first, second = a_conn(1, inbound=False), a_conn(2, inbound=False)
     manager = make_manager([first, second])
-    manager.inv_txs = [(1, a_hash(1)), (2, a_hash(1))]
+    manager.inv_txs = [(1, a_hash(1), False), (2, a_hash(1), False)]
     manager.tx_download()
     asked, other = asked_and_other(first, second)
     manager.node.mempool.mark_rejected(a_hash(1))
@@ -1223,7 +1258,7 @@ def test_a_transaction_the_mempool_holds_is_forgotten_not_asked(
     hold(manager, wtxid)
     held = manager.node.mempool.transactions[wtxid]
     manager.node.mempool.txid_index[held.id] = wtxid
-    manager.inv_txs = [(1, wtxid if by_wtxid else held.id)]
+    manager.inv_txs = [(1, wtxid if by_wtxid else held.id, not by_wtxid)]
     manager.tx_download()
     assert not only(conn, GetData)
     assert manager.tx_requests.size() == 0
@@ -1233,7 +1268,7 @@ def test_a_transaction_received_is_no_longer_asked_of_anyone_else() -> None:
     """ISS 1196: kept from any peer, it is forgotten for all of them."""
     first, second = a_conn(1, inbound=False), a_conn(2, inbound=False)
     manager = make_manager([first, second, a_conn(3)])
-    manager.inv_txs = [(1, a_hash(1)), (2, a_hash(1))]
+    manager.inv_txs = [(1, a_hash(1), False), (2, a_hash(1), False)]
     manager.tx_download()
     _, other = asked_and_other(first, second)
     hold(manager, a_hash(1))
@@ -1247,7 +1282,7 @@ def test_a_disconnected_announcer_hands_its_request_on() -> None:
     """ISS 1196: its announcements go with the connection."""
     first, second = a_conn(1, inbound=False), a_conn(2, inbound=False)
     manager = make_manager([first, second])
-    manager.inv_txs = [(1, a_hash(1)), (2, a_hash(1))]
+    manager.inv_txs = [(1, a_hash(1), False), (2, a_hash(1), False)]
     manager.tx_download()
     asked, other = asked_and_other(first, second)
     del cast("Any", manager.node).p2p_manager.connections[asked.id]
@@ -1260,7 +1295,7 @@ def test_a_notfound_completes_only_the_transactions_it_names() -> None:
     """Core's `IsGenTxMsg`: a block item with the same hash is left alone."""
     conn = a_conn(1, inbound=False)
     manager = make_manager([conn])
-    manager.inv_txs = [(1, a_hash(1))]
+    manager.inv_txs = [(1, a_hash(1), False)]
     manager.tx_download()
     manager.received_not_found(1, [Inventory(InventoryType.MSG_BLOCK, a_hash(1))])
     assert manager.tx_requests.count_in_flight(1) == 1
@@ -1279,7 +1314,7 @@ def test_a_notfound_past_core_s_bound_is_ignored(
     """Core's `net_processing.cpp` passes `ReceivedNotFound` nothing past it."""
     conn = a_conn(1, inbound=False)
     manager = make_manager([conn])
-    manager.inv_txs = [(1, a_hash(1))]
+    manager.inv_txs = [(1, a_hash(1), False)]
     manager.tx_download()
     bound = download_module._MAX_PEER_TX_ANNOUNCEMENTS + MAX_BLOCKS_IN_TRANSIT_PER_PEER
     filler = [
@@ -1296,7 +1331,7 @@ def test_both_lists_are_emptied_by_a_step() -> None:
     """`tx_download` clears `inv_txs` and `received_txs` before it returns."""
     conn = a_conn(1)
     manager = make_manager([conn])
-    manager.inv_txs = [(1, a_hash(1))]
+    manager.inv_txs = [(1, a_hash(1), False)]
     manager.received_txs = [(1, a_hash(2))]
     manager.tx_download()
     assert manager.inv_txs == []
@@ -2724,7 +2759,7 @@ def test_two_full_invs_of_wtxids_draw_capped_getdatas_rather_than_a_raise() -> N
     conn = a_conn(1, inbound=False)
     manager = make_manager([conn])
     announced = [a_hash(n) for n in range(2 * MAX_INV_SZ)]
-    manager.inv_txs = [(1, h) for h in announced]
+    manager.inv_txs = [(1, h, False) for h in announced]
     manager.tx_download()
     getdatas = only(conn, GetData)
     assert [len(g.items) for g in getdatas] == [download_module._MAX_GETDATA_SZ] * (
@@ -2748,7 +2783,7 @@ def test_asks_already_outstanding_count_against_the_announcement_cap(
     manager = make_manager([conn])
     for n in range(outstanding):
         manager.tx_requests.received_inv(1, a_hash(n), preferred=True, reqtime=math.inf)
-    manager.inv_txs = [(1, a_hash(10_000 + n)) for n in range(2)]
+    manager.inv_txs = [(1, a_hash(10_000 + n), False) for n in range(2)]
     manager.tx_download()
     assert sum(len(g.items) for g in only(conn, GetData)) == asked
 
@@ -2758,7 +2793,7 @@ def test_a_getdata_of_wanted_transactions_holds_at_most_core_s_batch() -> None:
     conn = a_conn(1, inbound=False)
     manager = make_manager([conn])
     size = download_module._MAX_GETDATA_SZ
-    manager.inv_txs = [(1, a_hash(n)) for n in range(size + 1)]
+    manager.inv_txs = [(1, a_hash(n), False) for n in range(size + 1)]
     manager.tx_download()
     assert [len(g.items) for g in only(conn, GetData)] == [size, 1]
 
@@ -3007,7 +3042,7 @@ def test_a_relay_peer_has_no_limit_on_announcements() -> None:
     announced = [
         a_hash(n) for n in range(download_module._MAX_PEER_TX_ANNOUNCEMENTS + 3)
     ]
-    manager.inv_txs = [(1, h) for h in announced]
+    manager.inv_txs = [(1, h, False) for h in announced]
     manager.tx_download()
     asked = [h for g in only(conn, GetData) for h in hashes_of(g)]
     assert asked == announced
