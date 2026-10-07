@@ -7413,6 +7413,111 @@ def test_the_block_relay_only_peers_are_the_anchors_written_at_stop(
     assert not path.exists()
 
 
+def three_block_relay_conns() -> list[Any]:
+    """Block-relay-only peers opened in id order, one more than anchors hold."""
+    return [
+        a_conn(i, block_relay=True, address=peer_address(f"5.6.{i}.1", 1))
+        for i in (1, 2, 3)
+    ]
+
+
+def test_the_block_relay_only_peers_are_written_at_stop_with_the_network_off(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1753, bitcoin/bitcoin#34213: the peers held when it went off."""
+    conns = three_block_relay_conns()
+    manager = a_manager(conns, listen=False, max_connections=0)
+    manager.start()
+    wait_until(manager.loop.is_running)
+    manager.set_network_active(active=False)
+    manager.connections.clear()
+    manager.stop()
+    assert read_anchors(manager._anchors_path, RegTest().magic) == [
+        conns[0].address,
+        conns[1].address,
+    ]
+
+
+def test_anchors_held_are_kept_when_the_network_goes_off_with_no_peer(
+    a_manager: AManagerFactory,
+) -> None:
+    """Core keeps `m_anchors` where `GetCurrentBlockRelayOnlyConns` is empty."""
+    manager = a_manager([a_conn(1)], listen=False, max_connections=0)
+    manager.start()
+    wait_until(manager.loop.is_running)
+    manager.anchors = [ANCHOR]
+    manager.set_network_active(active=False)
+    assert manager.anchors == [ANCHOR]
+    manager.stop()
+    assert read_anchors(manager._anchors_path, RegTest().magic) == [ANCHOR]
+
+
+def test_stored_anchors_give_way_to_the_peers_held_when_the_network_goes_off(
+    a_manager: AManagerFactory,
+) -> None:
+    """Core's `m_anchors = std::move(anchors)`, over what was stored."""
+    conn = a_conn(1, block_relay=True, address=peer_address("5.6.1.1", 1))
+    manager = a_manager([conn], listen=False, max_connections=0)
+    manager.anchors = [ANCHOR]
+    manager.set_network_active(active=False)
+    assert manager.anchors == [conn.address]
+
+
+def test_the_peers_held_are_written_at_stop_when_the_network_is_off_with_no_anchor(
+    a_manager: AManagerFactory,
+) -> None:
+    """`StopNodes` writes `m_anchors` only where it is not empty."""
+    conn = a_conn(1, block_relay=True, address=peer_address("5.6.1.1", 1))
+    manager = a_manager([conn], listen=False, max_connections=0)
+    manager.start()
+    wait_until(manager.loop.is_running)
+    manager.network_active = False
+    manager.stop()
+    assert read_anchors(manager._anchors_path, RegTest().magic) == [conn.address]
+
+
+def test_an_anchor_is_not_chosen_while_the_network_is_off(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1753: `_next_outbound` keeps it for the day the network is on."""
+    manager = a_manager()
+    outbound = manager_module._Outbound
+    manager.anchors = [ANCHOR]
+    manager.set_network_active(active=False)
+    assert manager._next_outbound(0, 1) is outbound.FULL_RELAY
+    assert manager.anchors == [ANCHOR]
+    manager.set_network_active(active=True)
+    assert manager._next_outbound(0, 1) is outbound.ANCHOR
+
+
+@pytest.mark.parametrize("active", [True, False])
+def test_the_anchors_are_announced_only_with_the_network_on(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    active: bool,
+) -> None:
+    """Core logs `anchors will be tried` under `fNetworkActive` alone."""
+    manager = a_manager(listen=False, max_connections=0)
+    manager.network_active = active
+    logged: list[str] = []
+    monkeypatch.setattr(
+        manager,
+        "logger",
+        SimpleNamespace(
+            info=lambda fmt, *args: logged.append(fmt % args),
+            log_debug=lambda *a: None,
+            exception=lambda *a: None,
+        ),
+    )
+    an_anchors_file(manager, [ANCHOR])
+    manager.start()
+    wait_until(manager.loop.is_running)
+    announced = "1 block-relay-only anchors will be tried for connections."
+    assert (announced in logged) is active
+    assert manager.anchors == [ANCHOR]
+
+
 @pytest.mark.parametrize("started", [True, False])
 def test_no_anchor_is_written_under_connect_or_short_of_the_start(
     a_manager: AManagerFactory, *, started: bool
