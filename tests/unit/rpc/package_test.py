@@ -56,6 +56,7 @@ from tests.unit.main_test import (
     funded_spends,
     hold,
     padded,
+    two_held_version_3_parents,
     with_script_sig,
     with_two_outputs,
 )
@@ -616,6 +617,22 @@ def test_a_package_truc_refusal_reads_the_held_parents(node: Node) -> None:
     # a held parent with no child takes one
     lone = hold(node, replace(second, version=3))
     assert package_truc(node, [child_of(lone, version=3)], 0) is None
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_a_package_truc_refusal_names_the_held_parent_with_the_smallest_txid(
+    node: Node, *, reverse: bool
+) -> None:
+    """`PackageTRUCChecks` takes its held parents from `GetParents`, by txid.
+
+    btclib-org/btclib-node#1783
+    """
+    first, second = two_held_version_3_parents(node)
+    child = a_child_of_all([first, second] if reverse else [second, first])
+    refusal = str(package_truc(node, [child], 0))
+    assert refusal.endswith(
+        f"cannot spend from version=3 tx {first.id.hex()} (wtxid={first.hash.hex()})"
+    )
 
 
 def test_maxfeerate_is_asked_before_the_truc_rules(node: Node) -> None:

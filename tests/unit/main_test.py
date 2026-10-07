@@ -1987,6 +1987,51 @@ def test_a_version_3_transaction_has_one_parent_and_no_grandparent(
     )
 
 
+def two_held_version_3_parents(node: Node) -> tuple[Tx, Tx]:
+    """Hold two version 3 spends and return them, smallest txid first.
+
+    `Txid` compares its bytes as stored, the reverse of `Tx.id`'s displayed
+    order. The second one's fee is nudged until the two orders disagree, or
+    a sort on the displayed hex would pass.
+    """
+
+    def with_fee(spend: Tx, nudge: int) -> Tx:
+        output = spend.vout[0]
+        return replace(spend, vout=[TxOut(output.value - nudge, output.script_pub_key)])
+
+    one, other = (replace(spend, version=3) for spend in funded_spends(node, 2))
+    other = next(
+        candidate
+        for nudge in range(64)
+        if (one.id < (candidate := with_fee(other, nudge)).id)
+        != (one.id[::-1] < candidate.id[::-1])
+    )
+    first, second = sorted([one, other], key=lambda spend: spend.id[::-1])
+    assert first.id > second.id
+    return hold(node, first), hold(node, second)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_a_refusal_names_the_held_parent_with_the_smallest_txid(
+    node: Node, *, reverse: bool
+) -> None:
+    """Core takes the first of a `std::set<Txid>`, whatever the input order.
+
+    Both input orders are asked, one of which is Core's own.
+    btclib-org/btclib-node#1783
+    """
+    first, second = two_held_version_3_parents(node)
+    ordered = [first, second] if reverse else [second, first]
+    child = child_of(ordered[0], version=2)
+    child.vin.append(replace(child_of(ordered[1], version=2).vin[0]))
+    refused_with(
+        node,
+        child,
+        "TRUC-violation",
+        f"non-version=3 {ids(child)} cannot spend from version=3 {ids(first)}",
+    )
+
+
 def test_a_version_3_parent_has_one_child(node: Node) -> None:
     """A second child is refused, unless it conflicts with the first.
 
