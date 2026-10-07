@@ -281,6 +281,12 @@ Each connection keeps a bounded record of the transactions its peer
 announced or was sent, and one on it is not announced to that peer again
 (closes #1630).
 
+### A peer's messages are handled in the order received
+
+- **A `pong` follows the verdict on a `tx` sent before the `ping`**, as in
+  Core: its later messages wait while it has a check queued, a message
+  held or an orphan to reconsider (closes #1739). Others do not wait.
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on

@@ -9,16 +9,20 @@ transaction, of an orphan taken up again and of a parent with its child,
 on `Node`'s thread, and queues the candidate here.
 `p2p.main.resume_tx_checks` hands the scripts to `Node.worker_pool`, one
 candidate at a time, and applies the verdict back on `Node`'s thread,
-so the loop goes on serving every peer while a check runs.
+so the loop goes on serving other peers while it runs; the sending
+peer's later messages wait for the verdict and for any orphan it is to
+reconsider.
 
 At most one candidate per peer is queued or checked at a time. A
-peer's later `tx` messages wait here, in order, still weighed against
-its `queued_recv_bytes`, until its candidate is settled. Candidates are
-checked in the order they were queued, so a peer that sends again goes
-to the back. Core's message handler reads one message of each peer per
-pass, its peers shuffled each time (`CConnman::ThreadMessageHandler`,
-`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag); a queue
-holding each peer at most once is as fair, without the shuffle.
+peer's later messages of every command wait here, in order, still
+weighed against its `queued_recv_bytes`, until its candidate is settled
+and it has no orphan to reconsider.
+Candidates are checked in the order they were queued, so a peer that
+sends again goes to the back. Core's message handler reads one message
+of each peer per pass, its peers shuffled each time
+(`CConnman::ThreadMessageHandler`, `src/net.cpp`, at
+bitcoin/bitcoin@9be056a8a7, the v31.1 tag); a queue holding each peer at
+most once is as fair, without the shuffle.
 
 Everything here is read and written on `Node`'s thread alone, so it
 needs no lock. A worker reads only the transaction and its prevouts: a
@@ -93,8 +97,8 @@ class TxChecks:
         self.queued: dict[int, TxCheck] = {}
         # the txids and wtxids of `queued`, each counted once per candidate
         self._pending: Counter[bytes] = Counter()
-        # a peer's `tx` messages not read yet: payload, wire size, time read
-        self.waiting: dict[int, deque[tuple[bytes, int, float]]] = {}
+        # a peer's messages not read yet: command, payload, wire size, time read
+        self.waiting: dict[int, deque[tuple[str, bytes, int, float]]] = {}
         # the one check handed to the pool, its pending verdict, and the
         # `time.monotonic()` it is due by
         self._in_flight: tuple[TxCheck, AsyncResult[Any], float] | None = None
@@ -105,7 +109,7 @@ class TxChecks:
         return self._in_flight is not None
 
     def busy(self, conn_id: int) -> bool:
-        """Answer whether a `tx` from this peer has to wait its turn."""
+        """Answer whether a check queued or a message held holds this peer."""
         return conn_id in self.queued or conn_id in self.waiting
 
     def queue(self, check: TxCheck) -> None:

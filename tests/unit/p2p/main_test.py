@@ -111,6 +111,10 @@ def make_node(
     getattr(manager, queue_name).append(item)
     node = SimpleNamespace(
         p2p_manager=manager,
+        tx_checks=TxChecks(),
+        download_manager=SimpleNamespace(
+            orphanage=SimpleNamespace(have_tx_to_reconsider=lambda peer: False)
+        ),
         logger=logger
         if logger is not None
         else SimpleNamespace(

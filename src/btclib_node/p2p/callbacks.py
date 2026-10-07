@@ -2133,15 +2133,11 @@ def getdata(node: Node, msg: bytes, conn: Connection) -> None:
     connection: it simply stops reading that connection's next message,
     `getdata` included, until the current one has drained.
 
-    That discipline does not port here without a larger redesign:
-    `P2pManager.messages` (`p2p/manager.py`) is one `deque` shared by
-    every connection, and `handle_p2p` (`p2p/main.py`) pops one message
-    off its front regardless of which connection sent it, where Core's
-    own `m_getdata_requests` and `PollMessage` are both per connection
-    to begin with -- there is no single connection this node could
-    "stop reading from" without reordering that shared queue or giving
-    each connection a backlog of its own. `MAX_PENDING_GETDATA_ITEMS`
-    above is this tree's own bound in place of that redesign.
+    That discipline is not ported for `getdata`
+    (btclib-org/btclib-node#1775): `TxChecks.waiting` holds a peer's
+    later messages only while it has a script check queued, a message
+    held or an orphan to reconsider. `MAX_PENDING_GETDATA_ITEMS` above is
+    this tree's own bound.
     """
     _refuse_past_bound("getdata", _count_past(msg, MAX_INV_SZ, _INV_ENTRY_SIZE))
     getdata = GetData.parse(msg)

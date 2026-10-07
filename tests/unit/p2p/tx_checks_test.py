@@ -206,6 +206,82 @@ def test_a_second_tx_from_a_peer_waits_for_the_first_check(
     assert node.received == [first_size, second_size]
 
 
+def queue_message(node: Any, peer: Any, msg_type: str, payload: bytes) -> None:
+    """Queue a message from `peer` as `parse_messages` would; handle it."""
+    peer.queued_recv_bytes += len(payload)
+    node.p2p_manager.messages.append((msg_type, payload, peer.id, len(payload), 0.0))
+    handle_p2p(node)
+
+
+def test_a_message_behind_a_tx_is_handled_after_its_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1739: any command waits, so a `pong` follows the verdict.
+
+    Another peer's message does not wait, and a message held weighs on
+    its peer's receive bound until it is read, so a flood is paused at
+    the bound as any other.
+    """
+    node = a_relay_node(monkeypatch)
+    peer, other = a_relay_peer(node, 3), a_relay_peer(node, 4)
+    handled: list[tuple[int, str]] = []
+
+    def recording(command: str) -> Callable[[Node, bytes, Any], None]:
+        def record(node: Node, msg: bytes, conn: Any) -> None:
+            handled.append((conn.id, command))
+
+        return record
+
+    for command in ("ping", "getdata"):
+        monkeypatch.setitem(cb.callbacks, command, recording(command))
+    transaction = a_transaction()
+    send(node, peer, transaction)
+    resume_tx_checks(node)
+    queue_message(node, peer, "ping", b"12345678")
+    queue_message(node, peer, "getdata", b"\0")
+    queue_message(node, other, "ping", b"12345678")
+    assert handled == [(4, "ping")]
+    assert peer.queued_recv_bytes == len(b"12345678") + len(b"\0")
+    assert not resume_tx_checks(node)
+    node.worker_pool.checks[0][2].resolve()
+    assert resume_tx_checks(node)
+    assert node.mempool.contains_tx(transaction)
+    assert handled == [(4, "ping"), (3, "ping")]
+    assert resume_tx_checks(node)
+    assert handled == [(4, "ping"), (3, "ping"), (3, "getdata")]
+    assert peer.queued_recv_bytes == 0
+    assert not node.tx_checks.waiting
+
+
+def test_a_handshake_command_behind_a_tx_stops_the_peer_after_the_rest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1739: a `sendaddrv2` is handled after the `tx` and `ping` before it.
+
+    Past `verack` it drops the peer, as in Core, which handles what came
+    before it and then disconnects.
+    """
+    node = a_relay_node(monkeypatch)
+    peer = a_relay_peer(node, 3)
+    handled: list[str] = []
+    monkeypatch.setitem(
+        cb.callbacks, "ping", lambda node, msg, conn: handled.append("ping")
+    )
+    transaction = a_transaction()
+    send(node, peer, transaction)
+    resume_tx_checks(node)
+    queue_message(node, peer, "ping", b"12345678")
+    queue_message(node, peer, "sendaddrv2", b"")
+    assert not peer.stopped
+    node.worker_pool.checks[0][2].resolve()
+    resume_tx_checks(node)
+    assert node.mempool.contains_tx(transaction)
+    assert handled == ["ping"]
+    assert not peer.stopped
+    resume_tx_checks(node)
+    assert peer.stopped == [True]
+
+
 def test_a_tx_behind_the_handshake_waits_too(monkeypatch: pytest.MonkeyPatch) -> None:
     """A `tx` queued behind a `verack` waits as one in `messages` does."""
     node = a_relay_node(monkeypatch)

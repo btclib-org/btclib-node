@@ -224,6 +224,10 @@ class TxOrphanage:
         """Return the peers with a transaction to reconsider."""
         return sorted(set(self._reconsiderable.values()))
 
+    def have_tx_to_reconsider(self, peer: int) -> bool:
+        """Answer whether `peer` has a transaction to reconsider."""
+        return peer in self._reconsiderable.values()
+
     def erase_tx(self, wtxid: bytes) -> bool:
         """Remove `wtxid` and its announcements; answer whether it was kept."""
         erased = self._erase_wtxid(wtxid)
