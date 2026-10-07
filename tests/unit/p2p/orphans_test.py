@@ -83,11 +83,14 @@ class UnfinishedPool(InlinePool):
 class Chain:
     """A node past coinbase maturity, with a parent and its child to relay."""
 
-    def __init__(self, node: Node, parent: Tx, child: Tx) -> None:
-        """Hold the node and the pair."""
+    def __init__(
+        self, node: Node, parent: Tx, child: Tx, spare: Tx | None = None
+    ) -> None:
+        """Hold the node, the pair and, if asked for, a spare coinbase."""
         self.node = node
         self.parent = parent
         self.child = child
+        self.spare = spare
 
 
 def a_pair(
@@ -98,23 +101,31 @@ def a_pair(
     floor: float = 100_000.0,
     parent_script_sig: bytes | None = None,
     child_script_sig: bytes | None = None,
+    spare: bool = False,
 ) -> Chain:
     """Build a node whose mempool minimum is `floor` sat/kvB, and a pair.
 
     The parent pays `parent_fee`, under that floor; the child spends it and
     pays `child_fee`, enough that the two together are over. A
-    `script_sig` of `b""` makes the scripts of that one fail.
+    `script_sig` of `b""` makes the scripts of that one fail. With `spare`, the
+    chain is two blocks longer and `Chain.spare` is a mature coinbase the
+    pair does not spend.
     """
     node = regtest_node()
-    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    chain = generate_random_chain(COINBASE_MATURITY + 2 * spare, RegTest().genesis.hash)
     connect(node, chain)
     node.is_initial_block_download = False
+    if spare:
+        # connecting a block that spends started a real worker pool
+        started = cast("Any", node)._worker_pool
+        started.terminate()
+        started.join()
     cast("Any", node)._worker_pool = InlinePool()
     node.mempool._rolling_min_fee_rate = floor
-    funding = chain[0].transactions[0]
+    funding = chain[int(spare)].transactions[0]
     parent = spend(funding, funding.vout[0].value - parent_fee, parent_script_sig)
     child = spend(parent, parent.vout[0].value - child_fee, child_script_sig)
-    return Chain(node, parent, child)
+    return Chain(node, parent, child, chain[2].transactions[0] if spare else None)
 
 
 def a_connected_peer(node: Node, conn_id: int = 3) -> Any:
@@ -381,6 +392,49 @@ def test_a_package_refused_for_its_cluster_leaves_the_child_an_orphan(
     assert not node.mempool.size
     assert node.download_manager.orphanage.have_tx(pair.child.hash)
     assert not node.mempool.was_recently_rejected(pair.child.hash)
+
+
+@pytest.mark.parametrize("child_fee", [100_000, 10_000_000])
+def test_a_package_conflicting_with_a_held_transaction_leaves_the_child_an_orphan(
+    regtest_node: Callable[..., Node], child_fee: int
+) -> None:
+    """ISS 1782: Core's `PackageRBFChecks` answers for neither member.
+
+    The child also spends what a held transaction spends. Where it does not
+    pay for the replacement, Core fails the package in `PackageRBFChecks`
+    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+    with no result for either transaction, so `ProcessPackageResult` passes
+    the child its answer from alone, a missing input: it stays an orphan.
+    Where it pays, Core replaces the held transaction; this node refuses
+    it the same way, which is btclib-org/btclib-node#1334.
+    """
+    pair = a_pair(regtest_node, spare=True)
+    node, peer = pair.node, a_connected_peer(pair.node)
+    assert pair.spare is not None
+    held = spend(pair.spare, pair.spare.vout[0].value - 100_000)
+    relay(node, peer, held)
+    assert node.mempool.contains_tx(held)
+    child = replace(
+        pair.child,
+        vin=[*pair.child.vin, held.vin[0]],
+        vout=[
+            replace(
+                pair.child.vout[0],
+                value=pair.parent.vout[0].value + pair.spare.vout[0].value - child_fee,
+            )
+        ],
+    )
+    relay(node, peer, child)
+    assert node.download_manager.orphanage.have_tx(child.hash)
+    relay(node, peer, pair.parent)
+    assert node.mempool.size == 1
+    assert node.mempool.contains_tx(held)
+    assert node.download_manager.orphanage.have_tx(child.hash)
+    assert not node.mempool.was_recently_rejected(child.hash)
+    assert not node.mempool.was_recently_rejected_reconsiderable(child.hash)
+    assert node.mempool.was_recently_rejected_reconsiderable(
+        package_hash([pair.parent.hash, child.hash])
+    )
 
 
 def test_a_package_that_no_longer_pays_when_its_scripts_are_in_is_refused(

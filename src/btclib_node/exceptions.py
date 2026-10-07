@@ -181,8 +181,9 @@ class PackageRefusedError(BTClibValueError):
     has none.
 
     `package_level` is whether the refusal is one only the package reveals
-    (Core's `PackageTRUCChecks`), which names the package and no
-    transaction in its answer, and is not that transaction's own.
+    (Core's `PackageTRUCChecks` and `PackageRBFChecks`, and its cluster
+    limit), which names the package and no transaction in its answer, and
+    is not that transaction's own.
     """
 
     def __init__(
