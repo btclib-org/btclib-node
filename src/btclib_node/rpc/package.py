@@ -9,7 +9,8 @@ Core's `submitpackage` (`src/rpc/mempool.cpp`) over `AcceptPackage`
 handler has `rpc.callbacks`' signature and runs on `Node`'s thread, so it
 checks scripts and changes the mempool without a lock (`ARCHITECTURE.md`).
 `rpc.callbacks` imports this module, so its helpers are imported inside the
-functions that use them.
+functions that use them. `package_test_accept` is `testmempoolaccept`'s
+judgement of several transactions, which adds none of them.
 
 Package replacement is not served, whatever Core does with the same call
 (btclib-org/btclib-node#1334): a transaction that conflicts with a held one
@@ -48,7 +49,7 @@ if TYPE_CHECKING:
     from btclib_node.mempool import Mempool
     from btclib_node.rpc.connection import RpcConnection
 
-__all__ = ["submit_package"]
+__all__ = ["Outcome", "accepted", "package_test_accept", "submit_package"]
 
 _TOPOLOGY_REFUSED = (
     "package topology disallowed. not child-with-parents or parents depend on "
@@ -68,14 +69,14 @@ class _Call(NamedTuple):
     invalid: dict[bytes, str]
 
 
-class _Outcome(NamedTuple):
-    """What `submitpackage` answers of one transaction.
+class Outcome(NamedTuple):
+    """What `submitpackage` or `testmempoolaccept` answers of one transaction.
 
-    Either `error`, or what the mempool holds of it: its `vsize` and the
-    `base_fee` it pays, and `other_wtxid` where it holds another witness of
-    it instead. `effective` is the modified fee and the vsize its effective
-    feerate is of, with the wtxids they are the sums over, where the
-    transaction was taken now and not before.
+    Either `error`, or what the mempool holds, or would hold, of it: its
+    `vsize` and the `base_fee` it pays, and `other_wtxid` where it holds
+    another witness of it instead. `effective` is the modified fee and the
+    vsize its effective feerate is of, with the wtxids they are the sums
+    over, where the transaction was taken, or would be, now and not before.
     """
 
     error: Exception | None = None
@@ -83,6 +84,15 @@ class _Outcome(NamedTuple):
     vsize: int = 0
     base_fee: int = 0
     effective: tuple[int, int, list[bytes]] | None = None
+
+
+def accepted(node: Node, tx: Tx, fee: int, vsize: int) -> Outcome:
+    """Return the outcome of `tx` passing with `fee` and `vsize`.
+
+    Its effective feerate is its own modified fee over its own vsize.
+    """
+    effective = (fee + node.mempool.delta(tx.id), vsize, [tx.hash])
+    return Outcome(vsize=vsize, base_fee=fee, effective=effective)
 
 
 def submit_package(
@@ -179,7 +189,7 @@ def _read(params: list[Any]) -> _Call:
     )
 
 
-def _tx_result(tx: Tx, outcome: _Outcome) -> dict[str, Any]:
+def _tx_result(tx: Tx, outcome: Outcome) -> dict[str, Any]:
     """Return the JSON of what `outcome` says of `tx`."""
     from btclib_node.rpc.callbacks import (  # noqa: PLC0415 -- it imports this module
         _MISSING_INPUTS_REASON,
@@ -204,17 +214,17 @@ def _tx_result(tx: Tx, outcome: _Outcome) -> dict[str, Any]:
     return result
 
 
-def _held(mempool: Mempool, tx: Tx) -> _Outcome | None:
+def _held(mempool: Mempool, tx: Tx) -> Outcome | None:
     """Return what the mempool says of `tx` if it holds it in some witness."""
     wtxid = tx.hash
     if mempool.contains_tx(tx):
-        return _Outcome(vsize=mempool.vsizes[wtxid], base_fee=mempool.fees[wtxid])
+        return Outcome(vsize=mempool.vsizes[wtxid], base_fee=mempool.fees[wtxid])
     if tx.id in mempool.txid_index:
-        return _Outcome(other_wtxid=mempool.txid_index[tx.id])
+        return Outcome(other_wtxid=mempool.txid_index[tx.id])
     return None
 
 
-def _accept(node: Node, call: _Call) -> tuple[str, dict[bytes, _Outcome]]:
+def _accept(node: Node, call: _Call) -> tuple[str, dict[bytes, Outcome]]:
     """Take what passes of `call.txs`, and return the message and each outcome.
 
     Core's `AcceptPackage` (`src/validation.cpp`, same tag). A package
@@ -237,9 +247,9 @@ def _accept(node: Node, call: _Call) -> tuple[str, dict[bytes, _Outcome]]:
     refusal = package_refusal(txs)
     if refusal is not None:
         error = TxRejectedError("package-not-validated")
-        return refusal, {tx.hash: _Outcome(error=error) for tx in txs}
+        return refusal, {tx.hash: Outcome(error=error) for tx in txs}
     mempool = node.mempool
-    outcomes: dict[bytes, _Outcome] = {}
+    outcomes: dict[bytes, Outcome] = {}
     together: list[Tx] = []
     ended = False
     for tx in txs:
@@ -261,7 +271,7 @@ def _accept(node: Node, call: _Call) -> tuple[str, dict[bytes, _Outcome]]:
     mempool.trim()
     for tx in txs:
         if outcomes[tx.hash].error is None and tx.id not in mempool.txid_index:
-            outcomes[tx.hash] = _Outcome(error=TxRejectedError("mempool full"))
+            outcomes[tx.hash] = Outcome(error=TxRejectedError("mempool full"))
             message = "transaction failed"
     return message, outcomes
 
@@ -273,7 +283,7 @@ def _a_package_may_undo(error: Exception) -> bool:
     )
 
 
-def _accept_alone(node: Node, tx: Tx, call: _Call) -> _Outcome:
+def _accept_alone(node: Node, tx: Tx, call: _Call) -> Outcome:
     """Take `tx` by itself, or return what refuses it.
 
     Core's `AcceptSingleTransactionInternal`: its checks are
@@ -283,22 +293,21 @@ def _accept_alone(node: Node, tx: Tx, call: _Call) -> _Outcome:
     """
     mempool = node.mempool
     if tx.hash in call.invalid:
-        return _Outcome(error=TxRejectedError(call.invalid[tx.hash]))
+        return Outcome(error=TxRejectedError(call.invalid[tx.hash]))
     try:
         candidate = pre_verify_mempool_acceptance(
             node, tx, max_feerate=call.max_feerate
         )
         check_transaction(candidate.prev_outputs, tx)
     except (MissingPrevoutError, TxRejectedError) as refusal:
-        return _Outcome(error=refusal)
+        return Outcome(error=refusal)
     tip_height = len(node.chainstate.block_index.active_chain) - 1
     mempool.add_tx(tx, candidate.fee, candidate.vsize, height=tip_height, trim=False)
-    effective = (candidate.fee + mempool.delta(tx.id), candidate.vsize, [tx.hash])
-    return _Outcome(vsize=candidate.vsize, base_fee=candidate.fee, effective=effective)
+    return accepted(node, tx, candidate.fee, candidate.vsize)
 
 
 def _accept_together(
-    node: Node, txs: list[Tx], max_feerate: int, outcomes: dict[bytes, _Outcome]
+    node: Node, txs: list[Tx], max_feerate: int, outcomes: dict[bytes, Outcome]
 ) -> str:
     """Take `txs`, each refused alone, as a package, and return the message.
 
@@ -313,12 +322,10 @@ def _accept_together(
         candidates = pre_verify_subpackage(node, txs, max_feerate=max_feerate)
     except PackageRefusedError as refused:
         ((wtxid, refusal),) = refused.errors.items()
-        reason = refusal.reason if isinstance(refusal, TxRejectedError) else ""
         if refused.package_level:
-            # Core's message names the TRUC rule and the cluster limit
-            named = {"TRUC-violation": str(refusal), "too-large-cluster": reason}
-            return named.get(reason, "transaction failed")
-        outcomes[wtxid] = _Outcome(error=refusal)
+            return _package_error(refusal) or "transaction failed"
+        outcomes[wtxid] = Outcome(error=refusal)
+        reason = refusal.reason if isinstance(refusal, TxRejectedError) else ""
         if reason == "missing-ephemeral-spends":
             return "unspent-dust"
         return "transaction failed"
@@ -329,7 +336,7 @@ def _accept_together(
     failure = check_package(items)
     if failure is not None:
         index, error = failure
-        outcomes[txs[index].hash] = _Outcome(error=error)
+        outcomes[txs[index].hash] = Outcome(error=error)
         return "transaction failed"
     mempool = node.mempool
     tip_height = len(node.chainstate.block_index.active_chain) - 1
@@ -344,5 +351,70 @@ def _accept_together(
         [tx.hash for tx in txs],
     )
     for tx, fee, vsize in members:
-        outcomes[tx.hash] = _Outcome(vsize=vsize, base_fee=fee, effective=effective)
+        outcomes[tx.hash] = Outcome(vsize=vsize, base_fee=fee, effective=effective)
     return "success"
+
+
+def _package_error(refusal: Exception) -> str | None:
+    """Return Core's message for a refusal of a package as a whole, or `None`.
+
+    Core's `PCKG_POLICY` states (`src/validation.cpp`, same tag) name the
+    TRUC rule with its details, and the cluster limit without. A conflict
+    with a held transaction has none here: Core's is a package replacement's
+    (btclib-org/btclib-node#1334).
+    """
+    reason = refusal.reason if isinstance(refusal, TxRejectedError) else ""
+    named = {"TRUC-violation": str(refusal), "too-large-cluster": reason}
+    return named.get(reason)
+
+
+def package_test_accept(
+    node: Node, txs: list[Tx]
+) -> tuple[str | None, dict[bytes, Outcome]]:
+    """Judge `txs` as one package, and take none of them.
+
+    Core's `ProcessNewPackage` with `test_accept`, which runs
+    `AcceptMultipleTransactions` under `PackageTestAccept`
+    (`src/validation.cpp`, same tag): `package_refusal`, then
+    `pre_verify_subpackage` with `test_accept`, then the scripts of each in
+    turn. Any topology `package_refusal` takes is judged, a child with its
+    parents or not.
+
+    Returns Core's message where it refuses the package as a whole, and
+    the outcome of each transaction Core answers: the one refused, and,
+    where its scripts are what is refused, each before it; or every one.
+    The effective feerate of each is its own.
+    """
+    from btclib_node.rpc.callbacks import (  # noqa: PLC0415 -- it imports this module
+        _check_transaction,
+    )
+
+    refusal = package_refusal(txs)
+    if refusal is not None:
+        return refusal, {}
+    invalid = {
+        tx.hash: TxRejectedError(reason)
+        for tx in txs
+        if (reason := _check_transaction(tx)) is not None
+    }
+    try:
+        candidates = pre_verify_subpackage(node, txs, test_accept=True, invalid=invalid)
+    except PackageRefusedError as refused:
+        ((wtxid, error),) = refused.errors.items()
+        if refused.package_level:
+            return _package_error(error), {}
+        return None, {wtxid: Outcome(error=error)}
+    pairs = list(zip(txs, candidates, strict=True))
+    failure = check_package([(candidate.prev_outputs, tx) for tx, candidate in pairs])
+    passed = len(txs) if failure is None else failure[0]
+    outcomes = {
+        tx.hash: accepted(node, tx, candidate.fee, candidate.vsize)
+        for tx, candidate in pairs[:passed]
+    }
+    if failure is not None:
+        index, error = failure
+        # a fault that is not a refusal ends the call, as it does alone
+        if not isinstance(error, TxRejectedError):
+            raise error
+        outcomes[txs[index].hash] = Outcome(error=error)
+    return None, outcomes

@@ -20,7 +20,7 @@ import threading
 import time
 from io import BytesIO
 from ipaddress import ip_address
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from bitcoin_core_rpc import RPCErrorCode, chain_from_network
 from btclib import b32, b58
@@ -90,7 +90,12 @@ from btclib_node.rpc.mining import (
     wait_for_block_height,
     wait_for_new_block,
 )
-from btclib_node.rpc.package import submit_package
+from btclib_node.rpc.package import (
+    Outcome,
+    accepted,
+    package_test_accept,
+    submit_package,
+)
 from btclib_node.rpc.solver import solver
 
 if TYPE_CHECKING:
@@ -3895,13 +3900,13 @@ def test_mempool_accept(
 ) -> list[dict[str, Any]]:
     """Answer `testmempoolaccept`, one verdict per raw tx in `params[0]`.
 
-    Runs `verify_mempool_acceptance` without calling `Mempool.add_tx`,
-    so a transaction it verifies is reported allowed without being
-    added -- the same reject reasons `send_raw_transaction` raises are
-    reported here per entry instead, neither ending the whole batch.
-    A fault that is neither of those two propagates and does end it,
-    matching Core's own `testmempoolaccept`, which has no per-tx
-    catch-all either (btclib-org/btclib-node#668).
+    One transaction is judged alone (`_test_accept_alone`), and several
+    as one package (`package.package_test_accept`), as Core's handler
+    does (`src/rpc/mempool.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag). Nothing is added to the mempool. A refusal is reported in the
+    entry of the transaction it names; a fault that is not one propagates
+    and ends the call, as Core's handler has no catch-all either
+    (btclib-org/btclib-node#668).
     """
     if not params:
         # the same mechanism get_block_hash's own missing-argument case
@@ -3953,90 +3958,94 @@ def test_mempool_accept(
                 f"TX decode failed: {rawtx} Make sure the tx has at least one input."
             )
             raise RpcError(RPCErrorCode.DESERIALIZATION_ERROR, err_msg) from error
-    return [_mempool_accept_verdict(node, tx, max_raw_tx_fee_rate) for tx in txs]
+    return _test_accept_results(node, txs, max_raw_tx_fee_rate)
 
 
-def _mempool_accept_verdict(
-    node: Node, tx: Tx, max_raw_tx_fee_rate: int
-) -> dict[str, Any]:
-    """Return `test_mempool_accept`'s own per-tx verdict for `tx`.
+def _test_accept_results(
+    node: Node, txs: list[Tx], max_raw_tx_fee_rate: int
+) -> list[dict[str, Any]]:
+    """Judge `txs`, alone or as a package, and answer an entry for each."""
+    if len(txs) == 1:
+        package_error, outcomes = None, {txs[0].hash: _test_accept_alone(node, txs[0])}
+    else:
+        package_error, outcomes = package_test_accept(node, txs)
+    results: list[dict[str, Any]] = []
+    # Core leaves the entries after one over `maxfeerate` unanswered, its
+    # descendants not being submitted with it (`src/rpc/mempool.cpp`)
+    exit_early = False
+    for tx in txs:
+        result: dict[str, Any] = {"txid": tx.id, "wtxid": tx.hash}
+        if package_error is not None:
+            result["package-error"] = package_error
+        outcome = outcomes.get(tx.hash)
+        if outcome is not None and not exit_early:
+            exit_early = _test_accept_verdict(result, tx, outcome, max_raw_tx_fee_rate)
+        results.append(result)
+    return results
 
-    Only these two, matching Core's own shape: testmempoolaccept's
-    per-tx loop (src/rpc/mempool.cpp:379-430, at
-    bitcoin/bitcoin@ca7162cde5) never catches anything itself -- it
-    only ever branches on the TxValidationResult ProcessTransaction
-    always returns rather than raises, so a genuine C++ exception
-    escaping that loop is not one tx's own verdict, it propagates out
-    of the RPC call entirely, to ExecuteCommand's own catch
-    (src/rpc/server.cpp:874-887, same commit), which is this tree's
-    handle_rpc (rpc/main.py) -- already logging and answering
-    INTERNAL_ERROR for exactly this, the same uniform catch
-    send_raw_transaction below already relies on for anything past its
-    own two excepts (btclib-org/btclib-node#668).
 
-    `max_raw_tx_fee_rate`'s own refusal is not a third exception: Core's
-    own fee-cap check runs after its candidate already verified
-    (`src/rpc/mempool.cpp`, same tag), so `_exceeds_max_fee` below reads
-    `verify_mempool_acceptance`'s own successful answer rather than
-    catching anything. btclib-org/btclib-node#1371
+def _test_accept_alone(node: Node, tx: Tx) -> Outcome:
+    """Return what `testmempoolaccept` finds of `tx` alone.
+
+    Core's `ProcessTransaction` with `test_accept` (`src/validation.cpp`,
+    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `PreChecks` asks
+    `CheckTransaction` first, ahead of everything context-dependent
+    (btclib-org/btclib-node#1375). Only a refusal is caught, as a fault
+    is no verdict on `tx` (btclib-org/btclib-node#668).
     """
-    tx_res: dict[str, Any] = {
-        "txid": tx.id,
-        "wtxid": tx.hash,
-        "allowed": False,
-    }
     reason = _check_transaction(tx)
     if reason is not None:
-        # Core's own `PreChecks` (`src/validation.cpp`,
-        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) calls
-        # `CheckTransaction` first, ahead of everything
-        # context-dependent below; `reject-details` is
-        # `state.ToString()`, the same string as `reject-reason` where,
-        # as for every one of `CheckTransaction`'s own checks, no debug
-        # message is attached (`src/rpc/mempool.cpp`, same tag).
-        # btclib-org/btclib-node#1375
-        tx_res["reject-reason"] = reason
-        tx_res["reject-details"] = reason
-        return tx_res
+        return Outcome(error=TxRejectedError(reason))
     try:
-        # The sizes for an accepted one alone, as Core answers them: the
-        # sigop-adjusted size is known once the prevouts are read.
-        # btclib-org/btclib-node#1357
+        # the sigop-adjusted size, known once the prevouts are read
+        # (btclib-org/btclib-node#1357)
         fee, vsize = verify_mempool_acceptance(node, tx)
-        if _exceeds_max_fee(vsize, fee, max_raw_tx_fee_rate):
-            # Core's own reject-reason for this one alone, with no
-            # reject-details (`src/rpc/mempool.cpp`, same tag): the
-            # candidate itself verified, so there is no `TxRejectedError`
-            # to read one from. btclib-org/btclib-node#1371
-            tx_res["reject-reason"] = "max-fee-exceeded"
-        else:
-            # `testmempoolaccept`'s three sizes (`src/rpc/mempool.cpp`,
-            # at bitcoin/bitcoin@aef8a04966). btclib-org/btclib-node#1757
-            tx_res["vsize_adjusted"] = vsize
-            tx_res["vsize"] = vsize
-            tx_res["vsize_bip141"] = tx.vsize
-            tx_res["allowed"] = True
-            # `fees` (`src/rpc/mempool.cpp`, at bitcoin/bitcoin@9be056a8a7,
-            # the v31.1 tag): the effective feerate is the modified fee
-            # over the sigop-adjusted size, in BTC per kvB, rounded down
-            # as `CFeeRate::GetFeePerK` does. A single transaction
-            # includes only its own wtxid. btclib-org/btclib-node#1799
-            modified_fee = fee + node.mempool.delta(tx.id)
-            tx_res["fees"] = {
-                "base": _btc_amount(fee),
-                "effective-feerate": _btc_amount(modified_fee * 1000 // vsize),
-                "effective-includes": [tx.hash.hex()],
-            }
-    except TxRejectedError as exc:
-        # Core's own pair for every reason but `missing-inputs`
-        # (`src/rpc/mempool.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-        # v31.1 tag). btclib-org/btclib-node#1245, btclib-org/btclib-node#1328
-        tx_res["reject-reason"] = exc.reason
-        tx_res["reject-details"] = str(exc)
-    except MissingPrevoutError:
-        # and that one alone, with no details. btclib-org/btclib-node#1328
-        tx_res["reject-reason"] = "missing-inputs"
-    return tx_res
+    except (MissingPrevoutError, TxRejectedError) as refusal:
+        return Outcome(error=refusal)
+    return accepted(node, tx, fee, vsize)
+
+
+def _test_accept_verdict(
+    result: dict[str, Any], tx: Tx, outcome: Outcome, max_raw_tx_fee_rate: int
+) -> bool:
+    """Write the verdict of `outcome` in `result`; say if over `maxfeerate`.
+
+    Core's `testmempoolaccept` (`src/rpc/mempool.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). A refusal is its reason
+    and `ToString`, but a missing input is "missing-inputs" alone
+    (btclib-org/btclib-node#1245, btclib-org/btclib-node#1328). The fee
+    cap is asked of a transaction that passed, with no details
+    (btclib-org/btclib-node#1371). The sizes are Core 32's
+    (`src/rpc/mempool.cpp`, at bitcoin/bitcoin@aef8a04966,
+    btclib-org/btclib-node#1757). The effective feerate is in BTC per kvB,
+    rounded down as `CFeeRate::GetFeePerK` rounds it
+    (btclib-org/btclib-node#1799).
+    """
+    result["allowed"] = False
+    error = outcome.error
+    if isinstance(error, MissingPrevoutError):
+        result["reject-reason"] = "missing-inputs"
+        return False
+    if error is not None:
+        result["reject-reason"] = cast("TxRejectedError", error).reason
+        result["reject-details"] = str(error)
+        return False
+    if _exceeds_max_fee(outcome.vsize, outcome.base_fee, max_raw_tx_fee_rate):
+        result["reject-reason"] = "max-fee-exceeded"
+        return True
+    result["vsize_adjusted"] = outcome.vsize
+    result["vsize"] = outcome.vsize
+    result["vsize_bip141"] = tx.vsize
+    result["allowed"] = True
+    modified_fee, vsize, wtxids = cast(
+        "tuple[int, int, list[bytes]]", outcome.effective
+    )
+    result["fees"] = {
+        "base": _btc_amount(outcome.base_fee),
+        "effective-feerate": _btc_amount(modified_fee * 1000 // vsize),
+        "effective-includes": [wtxid.hex() for wtxid in wtxids],
+    }
+    return False
 
 
 # Core's own `TransactionErrorString(TransactionError::ALREADY_IN_UTXO_SET)`

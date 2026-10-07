@@ -737,7 +737,7 @@ class Mempool:
         (`src/policy/rbf.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
         tag).
         """
-        conflicts = self._direct_conflicts(tx)
+        conflicts = self.direct_conflicts(tx)
         return set().union(*(self._descendants(wtxid) for wtxid in conflicts))
 
     def check_replacement(self, tx: Tx, fee: int, vsize: int) -> None:
@@ -848,7 +848,7 @@ class Mempool:
         # a child this candidate conflicts with is not counted: whether it
         # pays to replace it is `check_replacement`'s to say
         siblings = self._descendants(parent) - {parent}
-        if siblings and not siblings & self._direct_conflicts(tx):
+        if siblings and not siblings & self.direct_conflicts(tx):
             parent_tx = self.transactions[parent]
             details = (
                 f"tx {parent_tx.id.hex()} (wtxid={parent_tx.hash.hex()}) "
@@ -946,7 +946,7 @@ class Mempool:
             details = f"{_named(parent)} would exceed descendant count limit"
             raise TxRejectedError(reason, details)
 
-    def _direct_conflicts(self, tx: Tx) -> set[bytes]:
+    def direct_conflicts(self, tx: Tx) -> set[bytes]:
         """Return the wtxids of the held spenders of what `tx` spends."""
         outpoints = ((vin.prev_out.tx_id, vin.prev_out.vout) for vin in tx.vin)
         return {
@@ -1014,7 +1014,7 @@ class Mempool:
         theirs, as in Core's `removeConflicts`.
         btclib-org/btclib-node#1244, btclib-org/btclib-node#1502
         """
-        for conflict in self._direct_conflicts(tx):
+        for conflict in self.direct_conflicts(tx):
             self.clear_prioritisation(self.transactions[conflict].id)
         for victim in self._replaced(tx):
             self._pop(victim)
