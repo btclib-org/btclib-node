@@ -12,6 +12,8 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 from btclib.p2p.data import TxPayload as TxMsg
+from btclib.p2p.inventory import GetData, Inventory, InventoryType
+from btclib.p2p.keepalive import Ping, Pong
 from btclib.tx.limits import COINBASE_MATURITY
 
 import btclib_node.p2p.callbacks as cb
@@ -21,7 +23,13 @@ from btclib_node.exceptions import TxRejectedError
 from btclib_node.interpreter import check_transaction
 from btclib_node.main import MempoolCandidate, verify_mempool_acceptance
 from btclib_node.p2p import tx_checks
-from btclib_node.p2p.main import handle_p2p, handle_p2p_handshake, resume_tx_checks
+from btclib_node.p2p.main import (
+    handle_p2p,
+    handle_p2p_handshake,
+    resume_getdata,
+    resume_tx_checks,
+)
+from btclib_node.p2p.protocol_version import BIP0031_VERSION
 from tests import (
     build_block,
     generate_coinbase,
@@ -30,7 +38,12 @@ from tests import (
     wait_until,
 )
 from tests.unit.main_test import connect, spend
-from tests.unit.p2p.callbacks_test import a_data_node, a_peer, a_transaction
+from tests.unit.p2p.callbacks_test import (
+    a_data_node,
+    a_parsed_version,
+    a_peer,
+    a_transaction,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -249,6 +262,53 @@ def test_a_message_behind_a_tx_is_handled_after_its_verdict(
     assert handled == [(4, "ping"), (3, "ping")]
     assert resume_tx_checks(node)
     assert handled == [(4, "ping"), (3, "ping"), (3, "getdata")]
+    assert peer.queued_recv_bytes == 0
+    assert not node.tx_checks.waiting
+
+
+def test_a_message_behind_a_paused_getdata_is_handled_after_its_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1775: a `pong` follows the items of the `getdata` before the `ping`.
+
+    A second `getdata` waits too, so it is answered after the `pong` and
+    the paused entry never holds more than one request. Another peer is
+    not held.
+    """
+    node = a_relay_node(monkeypatch)
+    peer, other = a_relay_peer(node, 3), a_relay_peer(node, 4)
+    for conn in (peer, other):
+        conn.version_message = a_parsed_version(protocol=BIP0031_VERSION + 1)
+    transaction = a_transaction()
+    node.mempool.add_tx(transaction)
+    request = GetData([Inventory(InventoryType.MSG_WTX, transaction.hash)])
+    nonce = 12345678
+    peer.queued_send_bytes = cb.MAX_GETDATA_INFLIGHT_BYTES
+    queue_message(node, peer, "getdata", request.serialize())
+    assert not peer.sent
+    assert len(node.pending_getdata[3][1]) == 1
+    queue_message(node, peer, "ping", Ping(nonce).serialize())
+    queue_message(node, peer, "getdata", request.serialize())
+    queue_message(node, other, "ping", Ping(nonce).serialize())
+    assert [type(sent) for sent in other.sent] == [Pong]
+    assert not peer.sent
+    assert len(node.pending_getdata[3][1]) == 1
+    assert len(node.tx_checks.waiting[3]) == 2
+    assert not resume_getdata(node)
+    assert not resume_tx_checks(node)
+    assert not peer.sent
+    peer.queued_send_bytes = 0
+    assert resume_getdata(node)
+    assert [type(sent) for sent in peer.sent] == [TxMsg]
+    assert resume_tx_checks(node)
+    assert [type(sent) for sent in peer.sent] == [TxMsg, Pong]
+    peer.queued_send_bytes = cb.MAX_GETDATA_INFLIGHT_BYTES
+    assert resume_tx_checks(node)
+    assert 3 in node.pending_getdata
+    assert not resume_tx_checks(node)
+    peer.queued_send_bytes = 0
+    assert resume_getdata(node)
+    assert [type(sent) for sent in peer.sent] == [TxMsg, Pong, TxMsg]
     assert peer.queued_recv_bytes == 0
     assert not node.tx_checks.waiting
 

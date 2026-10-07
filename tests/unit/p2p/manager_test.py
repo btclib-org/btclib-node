@@ -5303,6 +5303,7 @@ def test_a_connections_id_still_resolves_to_its_address_when_the_handshake_fails
     monkeypatch.setattr(manager.node, "logger", logger)
     monkeypatch.setattr(manager.node, "p2p_manager", manager, raising=False)
     monkeypatch.setattr(manager.node, "tx_checks", TxChecks(), raising=False)
+    monkeypatch.setattr(manager.node, "pending_getdata", {}, raising=False)
     monkeypatch.setattr(
         manager.node,
         "download_manager",

@@ -157,7 +157,6 @@ __all__ = [
     "MAX_CMPCTBLOCK_DEPTH",
     "MAX_GETDATA_INFLIGHT_BYTES",
     "MAX_PENDING_CFILTER_HASHES",
-    "MAX_PENDING_GETDATA_ITEMS",
     "addr",
     "addrv2",
     "advance_cfilters",
@@ -1845,7 +1844,7 @@ def _notfound_pace(
     tree was missing.
     """
     over_budget = conn.queued_send_bytes + not_found_bytes >= MAX_GETDATA_INFLIGHT_BYTES
-    should_flush = bool(not_found_len) and (over_budget or not_found_len >= MAX_INV_SZ)
+    should_flush = bool(not_found_len) and over_budget
     return should_flush, over_budget
 
 
@@ -2041,22 +2040,6 @@ def advance_getdata(node: Node, conn: Connection, items: deque[Inventory]) -> bo
     miss anything, so `conn.queued_send_bytes` could still read zero
     after fifty thousand of them, and the loop had no reason to stop
     before popping every item this request named.
-
-    A batch is also flushed -- sent and reset, without pausing the
-    call -- once it reaches `MAX_INV_SZ` on its own, whatever
-    `conn.queued_send_bytes` reads: `NotFound.assert_valid` refuses
-    more entries than that, and `node.pending_getdata` can hand this
-    function a backlog of `MAX_PENDING_GETDATA_ITEMS` (`getdata` below),
-    twice `MAX_INV_SZ`, drawn from two stacked requests rather than the
-    one this bound was sized against. All of that many being misses is
-    an entirely mundane way to reach it -- every hash in both requests
-    having left the mempool between the first `getdata` and the second
-    is enough -- and at `_NOTFOUND_ITEM_BYTES` apiece the byte bound
-    above alone would let it happen: the whole backlog's own worth of
-    misses is still short of `MAX_GETDATA_INFLIGHT_BYTES`. Chunking on
-    the item count this class already enforces is what keeps that
-    backlog from reaching `NotFound`'s own constructor as one batch
-    that raises instead of one this connection can be paced on.
     """
     not_found: list[Inventory] = []
     not_found_bytes = 0
@@ -2082,73 +2065,36 @@ def advance_getdata(node: Node, conn: Connection, items: deque[Inventory]) -> bo
     return not items
 
 
-# How many items one connection's own entry on `node.pending_getdata`
-# may hold at once, `getdata` below extending an existing one rather
-# than answering a second `getdata` that arrives while the first is
-# still paused -- sized the way `MAX_PENDING_CFILTER_HASHES` below
-# is: two full requests, `MAX_INV_SZ` apiece, `GetData.parse` already
-# bounding any one message to that many. `getdata`'s own docstring below
-# is where this tree's own need for a numeric cap here, where Core's
-# real protection is not one, is argued.
-#
-# Unlike `MAX_PENDING_CFILTER_HASHES`'s own plain 32-byte hashes, an
-# `Inventory` is not negligible to hold: measured directly in this
-# tree's own venv, `tracemalloc` gives roughly 161 bytes per live
-# instance, so this bound's own 100,000 items cost roughly 16.1 MB of
-# interpreter memory per connection -- the same order as
-# `MAX_QUEUED_SEND_BYTES` itself, not two orders of magnitude below it
-# the way the cfilters analogy alone would suggest.
-MAX_PENDING_GETDATA_ITEMS = 2 * MAX_INV_SZ
-
-
 def getdata(node: Node, msg: bytes, conn: Connection) -> None:
     """Answer a peer's request for the transactions and blocks it named.
 
     `advance_getdata` above is where every item is actually served, and
     where this request's own place in Core's `getdata` semantics is
-    argued; this is only where a fresh request joins whatever this
-    connection has not yet finished serving.
+    argued; this only starts a request, and leaves on
+    `node.pending_getdata` what it could not finish.
 
-    A second `getdata` arriving while `conn`'s own entry on
-    `node.pending_getdata` is still paused extends the same `deque`
-    rather than replacing it, up to `MAX_PENDING_GETDATA_ITEMS` -- past
-    which a third stacked request is silent, the same answer
-    `get_cfilters` below already gives a request past its own
-    `MAX_PENDING_CFILTER_HASHES`, and for the same reason: dropping
-    the connection over pipelining this node already tolerates
-    elsewhere would be disproportionate to what tripped it, and
-    `MAX_QUEUED_SEND_BYTES` (`connection.py`) is still underneath this
-    to catch a peer that is actually abusive.
+    Core's `ProcessMessages` (`net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) returns before
+    `PollMessage` whenever `m_getdata_requests` is non-empty or
+    `fPauseSend` is set: "this maintains the order of responses and
+    prevents m_getdata_requests to grow unbounded". It never backlogs more
+    than one request's own `MAX_INV_SZ` items per connection, and reads
+    nothing more from it, `getdata` included, until the current one has
+    drained.
 
-    Core's own protection here is not a numeric cap either, whatever
-    reading only `Peer.m_getdata_requests` (appended to at
-    `net_processing.cpp:4472`) suggests. `ProcessMessages`
-    (`net_processing.cpp:5429-5436`, at bitcoin/bitcoin@b91d983f66) is
-    where it actually lives: "this maintains the order of responses and
-    prevents m_getdata_requests to grow unbounded", by returning before
-    `PollMessage` -- the call that reads this connection's own next
-    message off the wire -- whenever `m_getdata_requests` is still
-    non-empty, and again whenever `fPauseSend` is set. Core therefore
-    never backlogs more than one request's own `MAX_INV_SZ` items per
-    connection: it simply stops reading that connection's next message,
-    `getdata` included, until the current one has drained.
+    This ports the first condition (btclib-org/btclib-node#1775); the
+    second is btclib-org/btclib-node#1789. While `conn` has an entry on
+    `node.pending_getdata`, `_hold_message` (`p2p/main.py`) holds its
+    later messages, in order, and `resume_tx_checks` reads them once
+    `resume_getdata` has finished the answer. So an entry is never
+    extended by a second request, and holds one request's items at most.
 
-    That discipline is not ported for `getdata`
-    (btclib-org/btclib-node#1775): `TxChecks.waiting` holds a peer's
-    later messages only while it has a script check queued, a message
-    held or an orphan to reconsider. `MAX_PENDING_GETDATA_ITEMS` above is
-    this tree's own bound.
+    The messages held are weighed against `conn.queued_recv_bytes`, so
+    reads from the connection pause at `MAX_QUEUED_RECV_BYTES`: that
+    bounds what a peer can pile up behind a paused answer.
     """
     _refuse_past_bound("getdata", _count_past(msg, MAX_INV_SZ, _INV_ENTRY_SIZE))
-    getdata = GetData.parse(msg)
-    existing = node.pending_getdata.get(conn.id)
-    if existing is None:
-        items = deque(getdata.items)
-    else:
-        _, items = existing
-        if len(items) + len(getdata.items) > MAX_PENDING_GETDATA_ITEMS:
-            return
-        items.extend(getdata.items)
+    items = deque(GetData.parse(msg).items)
     if not advance_getdata(node, conn, items):
         node.pending_getdata[conn.id] = (conn, items)
 

@@ -4415,33 +4415,6 @@ def test_a_paused_getdata_answer_resumes_once_the_queue_drains() -> None:
     assert answer.tx == transaction
 
 
-def test_a_second_getdata_while_the_first_is_still_paused_is_not_lost() -> None:
-    """A second `getdata` arriving while the first is paused extends it.
-
-    Neither request is dropped: both are served in full, in the order
-    the two arrived, once the connection's own queue drains -- the same
-    rule `get_cfilters`'s own pending range follows.
-    """
-    first = a_transaction()
-    second = a_transaction()
-    mempool = Mempool(Logger(debug=True))
-    mempool.add_tx(first)
-    mempool.add_tx(second)
-    node = a_data_node(mempool=mempool)
-    peer = a_peer(queued_send_bytes=MAX_GETDATA_INFLIGHT_BYTES)
-    item1 = Inventory(InventoryType.MSG_WTX, first.hash)
-    item2 = Inventory(InventoryType.MSG_WTX, second.hash)
-    getdata(node, GetData([item1]).serialize(), peer)
-    assert not peer.sent
-    getdata(node, GetData([item2]).serialize(), peer)
-    _conn, items = node.pending_getdata[peer.id]
-    assert list(items) == [item1, item2]
-
-    peer.queued_send_bytes = 0
-    assert advance_getdata(node, peer, items) is True
-    assert [msg.tx for msg in peer.sent] == [first, second]
-
-
 def test_getdata_notfound_covers_only_what_a_call_actually_served() -> None:
     """`notfound` batches misses served this call, not ones still pending.
 
@@ -4508,40 +4481,6 @@ def test_getdata_stops_sending_once_the_connection_closes_mid_answer() -> None:
     getdata(node, GetData(items).serialize(), peer)
     assert len(peer.sent) == 2
     assert peer.id not in node.pending_getdata
-
-
-def test_a_getdata_past_the_pending_cap_is_silent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A third request stacked past `MAX_PENDING_GETDATA_ITEMS` is silent.
-
-    The same answer `get_cfilters` already gives a request past its own
-    `MAX_PENDING_CFILTER_HASHES`, and `getdata`'s own docstring is
-    where the reasoning behind it, and Core's own different one, are
-    argued.
-
-    `MAX_PENDING_GETDATA_ITEMS` is `2 * MAX_INV_SZ` -- fifty thousand
-    apiece, where `get_cfilters`'s own cap is two full requests of
-    `MAX_GETCFILTERS_SIZE` (one thousand) -- so this test monkeypatches
-    it down rather than actually building on the order of a hundred
-    thousand `Inventory` entries to reach the same branch.
-    """
-    monkeypatch.setattr(cb, "MAX_PENDING_GETDATA_ITEMS", 4)
-    node = a_data_node(block_db=SimpleNamespace(get_block=lambda h: None))
-    peer = a_peer(queued_send_bytes=MAX_GETDATA_INFLIGHT_BYTES)
-    hashes = [bytes([i]) * 32 for i in range(5)]
-    first = [Inventory(InventoryType.MSG_BLOCK, h) for h in hashes[:2]]
-    second = [Inventory(InventoryType.MSG_BLOCK, h) for h in hashes[2:4]]
-    getdata(node, GetData(first).serialize(), peer)
-    getdata(node, GetData(second).serialize(), peer)
-    _conn, items = node.pending_getdata[peer.id]
-    assert len(items) == 4
-
-    third = [Inventory(InventoryType.MSG_BLOCK, hashes[4])]
-    getdata(node, GetData(third).serialize(), peer)
-    assert not peer.sent
-    _conn, items = node.pending_getdata[peer.id]
-    assert len(items) == 4
 
 
 class FakeHeaderIndex:

@@ -112,6 +112,7 @@ def make_node(
     node = SimpleNamespace(
         p2p_manager=manager,
         tx_checks=TxChecks(),
+        pending_getdata={},
         download_manager=SimpleNamespace(
             orphanage=SimpleNamespace(have_tx_to_reconsider=lambda peer: False)
         ),
