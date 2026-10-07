@@ -45,6 +45,7 @@ __all__ = [
     "NodeShutdownTimeoutError",
     "NonStandardTxError",
     "OversizedRequestBodyError",
+    "PackageRefusedError",
     "PrevoutCountMismatchError",
     "ReimportedMainProcessError",
     "RejectedMessageError",
@@ -123,6 +124,22 @@ class MissingPrevoutError(ValueError):
     """
 
 
+# The reasons whose Core result is `TX_RECONSIDERABLE`, which `PreChecks`,
+# `CheckFeeRate`, `ReplacementChecks` and the trim after an accepted
+# transaction give (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+# v31.1 tag): a refusal that a package with a child paying for it can undo.
+# "replacement-failed" is left out: only `ImprovesFeerateDiagram` gives it,
+# and this tree has no counterpart.
+_RECONSIDERABLE_REASONS = frozenset(
+    {
+        "mempool min fee not met",
+        "min relay fee not met",
+        "insufficient fee",
+        "mempool full",
+    }
+)
+
+
 class TxRejectedError(BTClibValueError):
     """A mempool candidate refused with one of Core's own reject reasons.
 
@@ -133,15 +150,11 @@ class TxRejectedError(BTClibValueError):
     v31.1 tag). `rpc.callbacks` answers `testmempoolaccept`'s
     `reject-reason` and `reject-details` with them, and
     `sendrawtransaction`'s `-26` with `str()`. `BTClibValueError`, so
-    `p2p.callbacks.tx` records it as it records any other refusal, a fee
-    floor's included, until the next block. Core returns a fee floor's
-    as `TX_RECONSIDERABLE` and keeps it in a filter of its own,
-    `RecentRejectsReconsiderableFilter`, and `ReceivedTx`
-    (`src/node/txdownloadman_impl.cpp`, same tag) does consult it -- but
-    only to refuse resubmitting that tx by itself again while it looks
-    for a 1p1c package through `Find1P1CPackage`. This tree has no
-    package path for that filter to serve, so one reject cache covers
-    both. `details` defaults to empty for a reason Core's own checks
+    `p2p.callbacks.tx` records it as it records any other refusal until
+    the next block. A fee floor's refusal is `reconsiderable`: Core keeps
+    it apart in `RecentRejectsReconsiderableFilter` and looks for a
+    child that pays for it, as `DownloadManager.mempool_rejected_tx`
+    does. `details` defaults to empty for a reason Core's own checks
     never attach a debug message to (`non-final`,
     `txn-already-in-mempool`), matching `ToString`'s own fallback
     rather than printing a trailing ", ".
@@ -151,6 +164,26 @@ class TxRejectedError(BTClibValueError):
         super().__init__(f"{reason}, {details}" if details else reason)
         self.reason = reason
         self.details = details
+
+    @property
+    def reconsiderable(self) -> bool:
+        """Whether Core's result for this refusal is `TX_RECONSIDERABLE`."""
+        return self.reason in _RECONSIDERABLE_REASONS
+
+
+class PackageRefusedError(BTClibValueError):
+    """A package of transactions refused, and what each of them answers.
+
+    Raised by `main.pre_verify_package`. `errors` maps the wtxid of each
+    transaction that has a verdict to it, which `p2p.callbacks` treats as
+    Core's `ProcessPackageResult` treats the result of that transaction.
+    A refusal of the package as a whole, which names no transaction,
+    has none.
+    """
+
+    def __init__(self, errors: dict[bytes, Exception]) -> None:
+        super().__init__("package refused")
+        self.errors = errors
 
 
 class NonStandardTxError(TxRejectedError):

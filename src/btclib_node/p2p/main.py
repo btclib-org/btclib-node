@@ -45,6 +45,7 @@ from btclib_node.p2p.callbacks import (
     already_judged,
     callbacks,
     handshake_callbacks,
+    process_orphan,
     settle_tx,
 )
 from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES
@@ -424,6 +425,30 @@ def resume_getdata(node: Node) -> bool:
     return progressed
 
 
+def _take_up_orphans(node: Node) -> bool:
+    """Take up an orphan for each peer that has one and no check queued.
+
+    Answers whether any was. A peer gone is passed over: `DownloadManager`
+    erases its orphans.
+    """
+    progressed = False
+    for conn_id in node.download_manager.orphanage.peers_to_reconsider():
+        conn = node.p2p_manager.connections.get(conn_id)
+        if conn is None or conn_id in node.tx_checks.queued:
+            continue
+        progressed = True
+        try:
+            process_orphan(node, conn)
+        except Exception as e:
+            discourage = _drop(node.p2p_manager, conn, e)
+            node.logger.exception(
+                "Taking up an orphan from connection %s failed, %s",
+                conn_id,
+                _verdict(discourage=discourage),
+            )
+    return progressed
+
+
 def resume_tx_checks(node: Node) -> bool:
     """Settle the check in flight, read held `tx` messages, start the next.
 
@@ -432,6 +457,10 @@ def resume_tx_checks(node: Node) -> bool:
     - a check whose verdict is in goes to `p2p.callbacks.settle_tx`;
     - a check past `TX_CHECK_DEADLINE` is dropped and logged, its worker
       presumed gone;
+    - each peer with nothing queued and an orphan to reconsider takes one
+      up, ahead of its held `tx` messages, as Core's `ProcessMessages`
+      takes up an orphan before the next message
+      (`p2p.callbacks.process_orphan`);
     - each peer with nothing queued has its oldest held `tx` read, one
       per peer per pass, as Core's message handler reads one message
       per peer per pass;
@@ -444,8 +473,8 @@ def resume_tx_checks(node: Node) -> bool:
     behind a queue of them; one dropped at its deadline may still be
     running.
 
-    An exception out of `settle_tx` or out of a held `tx` is handled as
-    `handle_p2p`'s own is.
+    An exception out of `settle_tx`, out of an orphan or out of a held `tx`
+    is handled as `handle_p2p`'s own is.
     """
     checks = node.tx_checks
     manager = node.p2p_manager
@@ -472,6 +501,7 @@ def resume_tx_checks(node: Node) -> bool:
             overdue.conn.id,
             TX_CHECK_DEADLINE,
         )
+    progressed |= _take_up_orphans(node)
     for conn_id, waiting in list(checks.waiting.items()):
         if conn_id in checks.queued:
             continue

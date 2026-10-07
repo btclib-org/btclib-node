@@ -34,7 +34,7 @@ from btclib_node.exceptions import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Sequence
 
     from btclib.script.engine.flags import ScriptFlags
     from btclib.tx.tx import Tx
@@ -46,6 +46,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "STANDARD_FLAGS",
+    "check_package",
     "check_scripts",
     "check_transaction",
     "f",
@@ -305,3 +306,21 @@ def check_transaction(prevouts: list[TxOut], tx: Tx) -> None:
             if _consensus_accepts(prevouts, tx):
                 raise NonStandardTxError(reason, details) from refusal
             raise TxRejectedError(reason, details) from refusal
+
+
+def check_package(
+    items: Sequence[tuple[list[TxOut], Tx]],
+) -> tuple[int, BTClibValueError] | None:
+    """Verify the scripts of a package's transactions in turn, on one thread.
+
+    `items` are each transaction's prevouts and itself, parents first.
+    Answers the position and the refusal of the first that `check_transaction`
+    refuses, or `None`. The position is answered rather than raised, so that
+    which transaction failed crosses `Node.worker_pool` with its refusal.
+    """
+    for position, (prevouts, tx) in enumerate(items):
+        try:
+            check_transaction(prevouts, tx)
+        except BTClibValueError as refusal:
+            return position, refusal
+    return None

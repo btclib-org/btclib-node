@@ -64,6 +64,7 @@ from btclib_node.exceptions import (
     ChainstateInconsistencyError,
     InvalidBlockInputError,
     MissingPrevoutError,
+    PackageRefusedError,
     PrevoutCountMismatchError,
     TxRejectedError,
 )
@@ -73,7 +74,7 @@ from btclib_node.interpreter import (
     check_transaction,
     get_flags,
 )
-from btclib_node.mempool import Mempool, format_money
+from btclib_node.mempool import format_money
 from btclib_node.notify import alert_notify, run_detached
 from btclib_node.p2p.block_availability import (
     peer_has_header,
@@ -105,6 +106,7 @@ if TYPE_CHECKING:
 __all__ = [
     "MempoolAcceptance",
     "MempoolCandidate",
+    "PackageCandidate",
     "activate_best_chain",
     "assert_valid_block",
     "check_fork_warning_conditions",
@@ -117,6 +119,7 @@ __all__ = [
     "parent_lookup",
     "passes_check_block",
     "pre_verify_mempool_acceptance",
+    "pre_verify_package",
     "precious_chain",
     "prune_up_to_height",
     "reconsider_chain",
@@ -220,6 +223,10 @@ def check_fork_warning_conditions(node: Node) -> None:
 # Core's own `MAX_BLOCKS_TO_ANNOUNCE` (`src/net_processing.cpp:152`,
 # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
 _MAX_BLOCKS_TO_ANNOUNCE = 8
+
+# Core's own `MAX_PACKAGE_WEIGHT` (`src/policy/packages.h:24`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+_MAX_PACKAGE_WEIGHT = 404_000
 
 
 # _after_tip_change calls this, out of initial block download, with
@@ -703,8 +710,11 @@ def _after_tip_change(
     node: Node, to_remove: list[RevBlock], to_add: list[Block]
 ) -> None:
     update_ibd_status(node)
-    for _ in to_add:
+    for block in to_add:
         node.download_manager.block_connected()
+        # Core's `TxDownloadManagerImpl::BlockConnected`: what the block
+        # includes or spends an input of is no longer an orphan
+        node.download_manager.orphanage.erase_for_block(block)
     _reconcile_mempool_for_reorg(node, to_remove, to_add)
     check_fork_warning_conditions(node)
     if not node.is_initial_block_download:
@@ -1780,6 +1790,19 @@ class MempoolCandidate(NamedTuple):
     prev_outputs: list[TxOut]
 
 
+class PackageCandidate(NamedTuple):
+    """What `pre_verify_package` answers for a parent and its child.
+
+    `child` is `None` where the parent passes alone: it is then accepted
+    alone, and its child reconsidered once it is held. Otherwise
+    `parent_error` is why the parent was refused alone.
+    """
+
+    parent: MempoolCandidate
+    child: MempoolCandidate | None
+    parent_error: TxRejectedError | None
+
+
 def verify_mempool_acceptance(
     node: Node, tx: Tx, *, bypass_limits: bool = False
 ) -> MempoolAcceptance:
@@ -1795,7 +1818,7 @@ def verify_mempool_acceptance(
 
 
 def pre_verify_mempool_acceptance(
-    node: Node, tx: Tx, *, bypass_limits: bool = False
+    node: Node, tx: Tx, *, bypass_limits: bool = False, package_feerate: bool = False
 ) -> MempoolCandidate:
     """Verify a transaction against its prevouts, all but its scripts.
 
@@ -1853,6 +1876,15 @@ def pre_verify_mempool_acceptance(
     `CheckFeeRate`, unless `bypass_limits` -- Core's own flag, set where
     a disconnected block's transactions rejoin the mempool.
     btclib-org/btclib-node#1245
+
+    `package_feerate` is Core's own `m_package_feerates`: the fee floors
+    are left to the caller, who holds the package's feerate to them
+    (`pre_verify_package`).
+
+    Where `Config.require_standard` holds, refuses
+    "missing-ephemeral-spends" a candidate that leaves a dust output of
+    a held parent unspent, Core's `CheckEphemeralSpends`, after the
+    replacement and cluster checks and unless `bypass_limits`.
     """
     # Core's own `PreChecks` order again: a coinbase, then `IsStandardTx`,
     # ahead of the finality check, the inputs and every script
@@ -1950,11 +1982,13 @@ def pre_verify_mempool_acceptance(
     _check_ephemeral_dust(node, tx, fee)
     vsize = _sigop_adjusted_vsize(tx, prev_outputs)
     if not bypass_limits:
-        _check_fee_and_truc(node, tx, vsize, fee)
+        _check_fee_and_truc(node, tx, vsize, fee, package_feerate=package_feerate)
     # Core's own `ReplacementChecks`, after `PreChecks` and before the
     # scripts, `bypass_limits` or not (btclib-org/btclib-node#1244), then
     # `CheckMemPoolPolicyLimits` (btclib-org/btclib-node#1383)
-    _check_replacement_and_cluster(mempool, tx, vsize, fee)
+    _check_replacement_cluster_and_spends(
+        node, tx, vsize, fee, bypass_limits=bypass_limits
+    )
 
     # The scripts are checked after all of this, by the caller: Core
     # defers its own script checks the same way, to spend no signature
@@ -1962,6 +1996,82 @@ def pre_verify_mempool_acceptance(
     # refuses (`PolicyScriptChecks`, `src/validation.cpp:1378`,
     # at bitcoin/bitcoin@4519933391).
     return MempoolCandidate(fee, vsize, prev_outputs)
+
+
+def pre_verify_package(node: Node, parent: Tx, child: Tx) -> PackageCandidate:
+    """Verify a parent and its child as one package, all but their scripts.
+
+    Core's `AcceptPackage` for a child with one parent, `Find1P1CPackage`'s
+    shape (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag). The package is `conflict-in-package` where both spend an
+    outpoint, and "package-too-large" where their weight is over
+    `MAX_PACKAGE_WEIGHT`: `IsWellFormedPackage`
+    (`src/policy/packages.cpp:85-92`), which answers for neither, so the
+    child stays an orphan. The parent is tried alone first, and a package
+    follows only if it is refused for a fee floor
+    (`TxRejectedError.reconsiderable`): any other refusal, or a missing
+    input, ends it. Both are then checked
+    without the fee floors, the child with its parent held
+    (`Mempool.staged`), and the package's total fee is held to them.
+    Package feerates admit a child below the floor that a parent above it
+    pays for, so a parent that passes alone is accepted alone, as Core
+    accepts it before it considers the child.
+
+    A refusal is a `PackageRefusedError`, with the answer each
+    transaction has in `ProcessPackageResult`: the parent that failed
+    alone keeps its own, and a child its own or a missing input.
+
+    A package that conflicts with a held transaction is refused as a
+    single transaction is, by `Mempool.check_replacement`: replacing by
+    package is btclib-org/btclib-node#1334. `Mempool.add_package` takes
+    any number of transactions, parents first. A package of more is this
+    function's staging repeated, parents first, which
+    btclib-org/btclib-node#1494 asks for.
+    """
+    parent_wtxid, child_wtxid = parent.hash, child.hash
+    if parent.weight + child.weight > _MAX_PACKAGE_WEIGHT:
+        raise PackageRefusedError({})
+    parent_spends = {
+        (tx_in.prev_out.tx_id, tx_in.prev_out.vout) for tx_in in parent.vin
+    }
+    if any(
+        (tx_in.prev_out.tx_id, tx_in.prev_out.vout) in parent_spends
+        for tx_in in child.vin
+    ):
+        raise PackageRefusedError({})
+    try:
+        alone = pre_verify_mempool_acceptance(node, parent)
+    except (MissingPrevoutError, TxRejectedError) as refusal:
+        parent_error = refusal
+    else:
+        return PackageCandidate(alone, None, None)
+    if not (isinstance(parent_error, TxRejectedError) and parent_error.reconsiderable):
+        raise PackageRefusedError(
+            {parent_wtxid: parent_error, child_wtxid: MissingPrevoutError()}
+        )
+    try:
+        parent_candidate = pre_verify_mempool_acceptance(
+            node, parent, package_feerate=True
+        )
+    except TxRejectedError as refusal:
+        raise PackageRefusedError(
+            {parent_wtxid: refusal, child_wtxid: MissingPrevoutError()}
+        ) from refusal
+    try:
+        with node.mempool.staged(parent, parent_candidate.fee, parent_candidate.vsize):
+            child_candidate = pre_verify_mempool_acceptance(
+                node, child, package_feerate=True
+            )
+        _check_fee_rate(
+            node,
+            parent_candidate.vsize + child_candidate.vsize,
+            parent_candidate.fee + child_candidate.fee,
+        )
+    except (MissingPrevoutError, TxRejectedError) as refusal:
+        raise PackageRefusedError(
+            {parent_wtxid: parent_error, child_wtxid: refusal}
+        ) from refusal
+    return PackageCandidate(parent_candidate, child_candidate, parent_error)
 
 
 def _check_standard_tx(node: Node, tx: Tx) -> None:
@@ -2095,26 +2205,66 @@ def _check_tx_inputs(prevout_coins: list[Coin], tx: Tx, spend_height: int) -> No
         raise TxRejectedError(reason, details)
 
 
-def _check_fee_and_truc(node: Node, tx: Tx, vsize: int, fee: int) -> None:
+def _check_fee_and_truc(
+    node: Node, tx: Tx, vsize: int, fee: int, *, package_feerate: bool
+) -> None:
     """Refuse a fee under either floor, then what BIP431 refuses.
 
     The last of `PreChecks`, skipped for a disconnected block's
-    transactions. btclib-org/btclib-node#1399
+    transactions, and with the fee floors left out where the package's
+    feerate is held to them instead. btclib-org/btclib-node#1399
     """
-    _check_fee_rate(node, vsize, fee)
+    if not package_feerate:
+        _check_fee_rate(node, vsize, fee)
     node.mempool.check_truc(tx, vsize)
 
 
-def _check_replacement_and_cluster(
-    mempool: Mempool, tx: Tx, vsize: int, fee: int
-) -> None:
-    """Refuse a conflict, then a cluster past Core's limits.
+def _check_ephemeral_spends(node: Node, tx: Tx) -> None:
+    """Refuse a candidate that leaves a held parent's dust output unspent.
 
-    `ReplacementChecks`, then `CheckMemPoolPolicyLimits`.
+    Core's `CheckEphemeralSpends` (`src/policy/ephemeral_policy.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which `PreChecks`' caller
+    asks of a candidate, or of every transaction of a package, where the
+    mempool requires standard transactions: the dust a parent may carry
+    because it pays no fee is spent by its child, never left in the
+    mempool. A package's parent is held while its child is checked
+    (`Mempool.staged`), so one question covers both.
+    """
+    config = node.config
+    if not config.require_standard:
+        return
+    unspent: set[tuple[bytes, int]] = set()
+    for parent_txid in {tx_in.prev_out.tx_id for tx_in in tx.vin}:
+        parent = node.mempool.get_tx(parent_txid)
+        if parent is not None:
+            dust = dust_outputs(parent, dust_relay_fee=config.dust_relay_feerate)
+            unspent.update((parent_txid, index) for index in dust)
+    unspent -= {(tx_in.prev_out.tx_id, tx_in.prev_out.vout) for tx_in in tx.vin}
+    if unspent:
+        reason = "missing-ephemeral-spends"
+        details = (
+            f"tx {tx.id.hex()} (wtxid={tx.hash.hex()}) "
+            "did not spend parent's ephemeral dust"
+        )
+        raise TxRejectedError(reason, details)
+
+
+def _check_replacement_cluster_and_spends(
+    node: Node, tx: Tx, vsize: int, fee: int, *, bypass_limits: bool
+) -> None:
+    """Refuse a conflict, a cluster past Core's limits, then unspent dust.
+
+    `ReplacementChecks`, `CheckMemPoolPolicyLimits`, then
+    `_check_ephemeral_spends`, which a disconnected block's transactions
+    skip: Core's `AcceptSingleTransaction` calls `CheckEphemeralSpends`
+    under `!m_bypass_limits && require_standard` (`src/validation.cpp`
+    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
     btclib-org/btclib-node#1383
     """
-    mempool.check_replacement(tx, fee, vsize)
-    mempool.check_cluster(tx, vsize)
+    node.mempool.check_replacement(tx, fee, vsize)
+    node.mempool.check_cluster(tx, vsize)
+    if not bypass_limits:
+        _check_ephemeral_spends(node, tx)
 
 
 def _check_fee_rate(node: Node, vsize: int, fee: int) -> None:

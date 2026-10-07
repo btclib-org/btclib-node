@@ -36,6 +36,7 @@ from btclib_node import Node
 from btclib_node.chains import RegTest
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.download import MAX_BLOCKS_IN_TRANSIT_PER_PEER
+from btclib_node.orphanage import TxOrphanage
 from btclib_node.p2p import connection as connection_module
 from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.callbacks import (
@@ -1227,6 +1228,7 @@ def test_a_ping_ahead_of_verack_is_not_answered_by_one_drain_pass(
         pending_cfilters={},
         pending_getdata={},
         tx_checks=TxChecks(),
+        download_manager=SimpleNamespace(orphanage=TxOrphanage()),
         logger=connection.node.logger,
     )
     with connection.client:

@@ -4,10 +4,11 @@
 
 """The script checks of relayed transactions, run off `Node`'s thread.
 
-`p2p.callbacks.tx` runs every check of a relayed transaction but its
-scripts on `Node`'s thread and queues the candidate here.
+`p2p.callbacks` runs every check but the scripts of a relayed
+transaction, of an orphan taken up again and of a parent with its child,
+on `Node`'s thread, and queues the candidate here.
 `p2p.main.resume_tx_checks` hands the scripts to `Node.worker_pool`, one
-transaction at a time, and applies the verdict back on `Node`'s thread,
+candidate at a time, and applies the verdict back on `Node`'s thread,
 so the loop goes on serving every peer while a check runs.
 
 At most one candidate per peer is queued or checked at a time. A
@@ -21,8 +22,8 @@ holding each peer at most once is as fair, without the shuffle.
 
 Everything here is read and written on `Node`'s thread alone, so it
 needs no lock. A worker reads only the transaction and its prevouts: a
-`TxOut` is frozen, and nothing but its `TxCheck` holds the `Tx` until
-the verdict is in.
+`TxOut` is frozen, and nothing writes to the `Tx`, which the orphanage
+may also hold, until the verdict is in.
 
 `sendrawtransaction` and `testmempoolaccept` check scripts on `Node`'s
 thread, as Core's RPC holds `cs_main` across the check and its message
@@ -33,9 +34,9 @@ handler waits on that lock (`src/node/transaction.cpp`,
 import time
 from collections import Counter
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from btclib_node.interpreter import check_transaction
+from btclib_node.interpreter import check_package, check_transaction
 
 if TYPE_CHECKING:
     from collections import deque
@@ -60,11 +61,27 @@ TX_CHECK_DEADLINE = 300
 
 @dataclass
 class TxCheck:
-    """A relayed transaction whose scripts are queued or being checked."""
+    """A relayed transaction whose scripts are queued or being checked.
+
+    `parent` is set for a package: `tx` is then the child, and `parent` the
+    transaction it is checked and kept with, and its prevouts. `first_time`
+    is `False` for a transaction taken from the orphanage or a package, which
+    Core's `ProcessInvalidTx` does not look for a package for. `failed` is
+    set by `TxChecks.finish` to the position of the transaction of a package
+    whose scripts failed, parents first.
+    """
 
     conn: Connection
     tx: Tx
     prev_outputs: list[TxOut]
+    parent: tuple[Tx, list[TxOut]] | None = None
+    first_time: bool = True
+    failed: int = 0
+
+    def hashes(self) -> set[bytes]:
+        """Return the txids and wtxids of what is being checked."""
+        txs = [self.tx] if self.parent is None else [self.parent[0], self.tx]
+        return {tx_hash for tx in txs for tx_hash in (tx.id, tx.hash)}
 
 
 class TxChecks:
@@ -80,7 +97,7 @@ class TxChecks:
         self.waiting: dict[int, deque[tuple[bytes, int, float]]] = {}
         # the one check handed to the pool, its pending verdict, and the
         # `time.monotonic()` it is due by
-        self._in_flight: tuple[TxCheck, AsyncResult[None], float] | None = None
+        self._in_flight: tuple[TxCheck, AsyncResult[Any], float] | None = None
 
     @property
     def checking(self) -> bool:
@@ -94,12 +111,12 @@ class TxChecks:
     def queue(self, check: TxCheck) -> None:
         """Queue `check` behind the candidates already queued."""
         self.queued[check.conn.id] = check
-        self._pending.update({check.tx.id, check.tx.hash})
+        self._pending.update(check.hashes())
 
     def unqueue(self, conn_id: int) -> TxCheck:
         """Take this peer's candidate off the queue."""
         check = self.queued.pop(conn_id)
-        for tx_hash in {check.tx.id, check.tx.hash}:
+        for tx_hash in check.hashes():
             self._pending[tx_hash] -= 1
             if not self._pending[tx_hash]:
                 del self._pending[tx_hash]
@@ -111,8 +128,15 @@ class TxChecks:
 
     def start(self, node: Node, check: TxCheck) -> None:
         """Hand `check`'s scripts to `node.worker_pool`."""
-        args = (check.prev_outputs, check.tx)
-        result = node.worker_pool.apply_async(check_transaction, args)
+        result: AsyncResult[Any]
+        if check.parent is None:
+            result = node.worker_pool.apply_async(
+                check_transaction, (check.prev_outputs, check.tx)
+            )
+        else:
+            parent, parent_outputs = check.parent
+            package = [(parent_outputs, parent), (check.prev_outputs, check.tx)]
+            result = node.worker_pool.apply_async(check_package, (package,))
         self._in_flight = (check, result, time.monotonic() + TX_CHECK_DEADLINE)
 
     def finish(self) -> tuple[TxCheck, Exception | None] | None:
@@ -125,10 +149,13 @@ class TxChecks:
         (check, result, _), self._in_flight = self._in_flight, None
         self.unqueue(check.conn.id)
         try:
-            result.get()
+            failure = result.get()
         except Exception as refusal:  # noqa: BLE001
             return check, refusal
-        return check, None
+        if failure is None:
+            return check, None
+        check.failed, failed_with = failure
+        return check, failed_with
 
     def drop_overdue(self) -> TxCheck | None:
         """Drop the check in flight once past its deadline with no verdict."""

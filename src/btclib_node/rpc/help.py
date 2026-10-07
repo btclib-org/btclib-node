@@ -427,6 +427,61 @@ _HELP_GETRAWMEMPOOL = (
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "getrawmempool", "params": [true]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
+_HELP_GETORPHANTXS = (
+    "getorphantxs ( verbosity )\n"
+    "\n"
+    "Shows transactions in the tx orphanage.\n"
+    "\n"
+    "EXPERIMENTAL warning: this call may be changed in future releases.\n"
+    "\n"
+    "Arguments:\n"
+    "1. verbosity    (numeric, optional, default=0) 0 for an array of txids (may contain duplicates), 1 for an array of objects with tx details, and 2 for details from (1) and tx hex\n"
+    "\n"
+    "Result (for verbose = 0):\n"
+    "[           (json array)\n"
+    '  "hex",    (string) The transaction hash in hex\n'
+    "  ...\n"
+    "]\n"
+    "\n"
+    "Result (for verbose = 1):\n"
+    "[                       (json array)\n"
+    "  {                     (json object)\n"
+    '    "txid" : "hex",     (string) The transaction hash in hex\n'
+    '    "wtxid" : "hex",    (string) The transaction witness hash in hex\n'
+    '    "bytes" : n,        (numeric) The serialized transaction size in bytes\n'
+    '    "vsize" : n,        (numeric) The virtual transaction size as defined in BIP 141. This is different from actual serialized size for witness transactions as witness data is discounted.\n'
+    '    "weight" : n,       (numeric) The transaction weight as defined in BIP 141.\n'
+    '    "from" : [          (json array)\n'
+    "      n,                (numeric) Peer ID\n"
+    "      ...\n"
+    "    ]\n"
+    "  },\n"
+    "  ...\n"
+    "]\n"
+    "\n"
+    "Result (for verbose = 2):\n"
+    "[                       (json array)\n"
+    "  {                     (json object)\n"
+    '    "txid" : "hex",     (string) The transaction hash in hex\n'
+    '    "wtxid" : "hex",    (string) The transaction witness hash in hex\n'
+    '    "bytes" : n,        (numeric) The serialized transaction size in bytes\n'
+    '    "vsize" : n,        (numeric) The virtual transaction size as defined in BIP 141. This is different from actual serialized size for witness transactions as witness data is discounted.\n'
+    '    "weight" : n,       (numeric) The transaction weight as defined in BIP 141.\n'
+    '    "from" : [          (json array)\n'
+    "      n,                (numeric) Peer ID\n"
+    "      ...\n"
+    "    ],\n"
+    '    "hex" : "hex"       (string) The serialized, hex-encoded transaction data\n'
+    "  },\n"
+    "  ...\n"
+    "]\n"
+    "\n"
+    "Examples:\n"
+    "> bitcoin-cli getorphantxs 2\n"
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "getorphantxs", "params": [2]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+    "\n"
+)
+
 _HELP_GETTXOUT = (
     'gettxout "txid" n ( include_mempool )\n'
     "\n"
@@ -1507,6 +1562,7 @@ HELP_TEXT: dict[str, str] = {
     "getmempoolentry": _HELP_GETMEMPOOLENTRY,
     "getmempoolinfo": _HELP_GETMEMPOOLINFO,
     "getrawmempool": _HELP_GETRAWMEMPOOL,
+    "getorphantxs": _HELP_GETORPHANTXS,
     "gettxout": _HELP_GETTXOUT,
     "gettxoutsetinfo": _HELP_GETTXOUTSETINFO,
     "pruneblockchain": _HELP_PRUNEBLOCKCHAIN,
@@ -1556,6 +1612,7 @@ CATEGORY: dict[str, str] = {
     "getmempoolentry": "Blockchain",
     "getmempoolinfo": "Blockchain",
     "getrawmempool": "Blockchain",
+    "getorphantxs": "hidden",
     "gettxout": "Blockchain",
     "gettxoutsetinfo": "Blockchain",
     "pruneblockchain": "Blockchain",

@@ -94,6 +94,8 @@ from btclib_node.exceptions import (
     LowWorkHeaderError,
     MisbehavingError,
     MissingPrevoutError,
+    PackageRefusedError,
+    TxRejectedError,
 )
 from btclib_node.main import (
     activate_best_chain,
@@ -105,7 +107,9 @@ from btclib_node.main import (
     new_pow_valid_block,
     passes_check_block,
     pre_verify_mempool_acceptance,
+    pre_verify_package,
 )
+from btclib_node.mempool import package_hash
 from btclib_node.p2p.address import AddrResponseCache, ip_and_port, peer_address
 from btclib_node.p2p.block_availability import (
     remove_block_request,
@@ -178,6 +182,7 @@ __all__ = [
     "not_found",
     "ping",
     "pong",
+    "process_orphan",
     "sendaddrv2",
     "sendcmpct",
     "sendheaders",
@@ -1065,10 +1070,12 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
     """Check an unsolicited transaction, and queue its scripts to be checked.
 
     A no-op in initial block download, if the mempool already holds this
-    wtxid or has recently refused it, or if the transaction fails a
-    check other than its scripts. Otherwise its scripts are queued in
-    `node.tx_checks` (`p2p/tx_checks.py`), and `settle_tx` decides it
-    once they are checked.
+    wtxid, has recently refused it or the orphanage keeps it, or if the
+    transaction fails a check other than its scripts. One whose inputs are
+    not found is kept as an orphan, and one refused for a fee floor is tried
+    with a child the peer sent, if the peer sent one (`_start_package`).
+    Otherwise its scripts are queued in `node.tx_checks`
+    (`p2p/tx_checks.py`), and `settle_tx` decides it once they are checked.
 
     A block-relay-only peer sending one is disconnected, and not
     discouraged, as Core's `TX` handler does first of all where
@@ -1095,9 +1102,18 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
     # Core's `ReceivedTx` completes the sender's announcement first of all,
     # whatever becomes of the transaction, a script check included.
     node.download_manager.received_tx_response(conn.id, tx.id, tx.hash)
-    if already_judged(node, tx, conn):
+    if already_judged(node, tx, conn) or node.download_manager.orphanage.have_tx(
+        tx.hash
+    ):
         return
-    candidate = _pre_verify(node, tx)
+    if node.mempool.was_recently_rejected_reconsiderable(tx.hash):
+        # Core's `ReceivedTx`: not submitted by itself again, but a child
+        # the peer sent may pay for it
+        package = node.download_manager.find_1p1c_package(tx, conn.id)
+        if package is not None:
+            _start_package(node, conn, *package)
+        return
+    candidate = _pre_verify(node, tx, conn)
     if candidate is not None:
         node.tx_checks.queue(TxCheck(conn, tx, candidate.prev_outputs))
 
@@ -1122,28 +1138,21 @@ def already_judged(node: Node, tx: Tx, conn: Connection) -> bool:
     return False
 
 
-def _pre_verify(node: Node, tx: Tx) -> MempoolCandidate | None:
-    """Run every mempool check but the scripts; record a refusal of `tx`."""
+def _pre_verify(
+    node: Node, tx: Tx, conn: Connection, *, first_time: bool = True
+) -> MempoolCandidate | None:
+    """Run every mempool check but the scripts; take in a refusal of `tx`.
+
+    A refusal goes to `_rejected`. `first_time` is whether `tx` is new to
+    this node and not taken from the orphanage or a package.
+    """
     try:
         return pre_verify_mempool_acceptance(node, tx)
-    except MissingPrevoutError:
-        # An input neither the UTXO set nor the mempool has: its parent
-        # is unknown, or held without that output
-        # (btclib-org/btclib-node#1252). Not recorded in `Mempool`'s own
-        # reject cache below, since Core records neither: both are
-        # `TX_MISSING_INPUTS`, `CCoinsViewMemPool::GetCoin` answering the
-        # same `nullopt` for each, and `MempoolRejectedTx`
-        # (`src/node/txdownloadman_impl.cpp`, at bitcoin/bitcoin@9be056a8a7,
-        # the v31.1 tag) adds that result to `m_recent_rejects` only where
-        # a parent was itself rejected. An unknown parent can still arrive
-        # with no block connecting first; a held one never gains the
-        # output, and Core leaves it out of the cache all the same.
-        return None
-    except BTClibValueError:
-        # Every other refusal `pre_verify_mempool_acceptance` can make,
-        # and a script refusal `settle_tx` reads, each
-        # a `TxRejectedError` and so a `BTClibValueError` -- a
-        # relay-policy-only one (`NonStandardTxError`, or a fee below
+    except (MissingPrevoutError, BTClibValueError) as refusal:
+        # A `TxRejectedError`, and so a `BTClibValueError`, is every other
+        # refusal `pre_verify_mempool_acceptance` can make, and a script
+        # refusal `settle_tx` reads -- a relay-policy-only one
+        # (`NonStandardTxError`, or a fee below
         # either floor) exactly as much as a genuine consensus one
         # (non-final, a coinbase spent too soon, a bad sequence lock, or
         # a script failure `_consensus_accepts` also refuses). Core
@@ -1157,13 +1166,113 @@ def _pre_verify(node: Node, tx: Tx) -> MempoolCandidate | None:
         # no `MaybePunishNodeForTx`, where `MaybePunishNodeForBlock` exists and
         # is called. None of these is a `MisbehavingError`, so
         # `p2p.main.handle_p2p` would not discourage the peer either; caught
-        # here for the record below. btclib-org/btclib-node#843
-        #
-        # Recorded in `Mempool`'s own reject cache, whose docstring
-        # argues the resubmission cost this answers and the gap it
-        # leaves open. btclib-org/btclib-node#845
-        node.mempool.mark_rejected(tx.hash)
+        # here for the record in `_rejected`. btclib-org/btclib-node#843
+        _rejected(node, tx, refusal, conn, first_time=first_time)
         return None
+
+
+def _rejected(
+    node: Node, tx: Tx, error: Exception, conn: Connection, *, first_time: bool
+) -> None:
+    """Record why `tx` was refused, and try the package it may belong to.
+
+    Core's `ProcessInvalidTx`, the package it answers processed as
+    `ProcessPackageResult` does: `DownloadManager.mempool_rejected_tx` says
+    what each kind of refusal comes to. Where the refusal can be undone with
+    a child the peer sent, that package is started now.
+    btclib-org/btclib-node#845
+    """
+    package = node.download_manager.mempool_rejected_tx(
+        tx, error, conn.id, first_time=first_time
+    )
+    if package is not None:
+        _start_package(node, conn, *package)
+
+
+def _accepted(node: Node, tx: Tx, conn: Connection) -> None:
+    """Take in that `tx` is in the mempool, and have it announced.
+
+    Core's `ProcessValidTx`: the orphans that spend it are to be
+    reconsidered, and every other peer is told of it.
+    """
+    node.download_manager.mempool_accepted_tx(tx)
+    node.download_manager.received_txs.append((conn.id, tx.hash))
+
+
+def _start_package(node: Node, conn: Connection, parent: Tx, child: Tx) -> None:
+    """Verify a parent refused for a fee floor with a child, and queue them.
+
+    Core's `ProcessNewPackage` of what `Find1P1CPackage` found, up to the
+    scripts: `settle_tx` adds the package once they are checked. A parent
+    that passes by itself is queued alone, its child to be taken up once it
+    is held. `conn` has no check queued, as it sent what is being handled.
+    """
+    try:
+        candidate = pre_verify_package(node, parent, child)
+    except PackageRefusedError as refused:
+        _package_refused(node, conn, parent, child, refused.errors)
+        return
+    if candidate.child is None:
+        node.tx_checks.queue(
+            TxCheck(conn, parent, candidate.parent.prev_outputs, first_time=False)
+        )
+        return
+    parent_check = (parent, candidate.parent.prev_outputs)
+    node.tx_checks.queue(
+        TxCheck(
+            conn,
+            child,
+            candidate.child.prev_outputs,
+            parent=parent_check,
+            first_time=False,
+        )
+    )
+
+
+def _package_refused(
+    node: Node,
+    conn: Connection,
+    parent: Tx,
+    child: Tx,
+    errors: dict[bytes, Exception],
+) -> None:
+    """Record a package refused, and what each of its transactions answers.
+
+    Core's `ProcessPackageResult` for an invalid package: its hash is not
+    tried again, and each transaction with a result is taken in, the child
+    first, so that the parent is no longer an orphan's missing input
+    (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    """
+    node.mempool.mark_rejected_reconsiderable(package_hash([parent.hash, child.hash]))
+    for member in (child, parent):
+        error = errors.get(member.hash)
+        if error is not None:
+            _rejected(node, member, error, conn, first_time=False)
+
+
+def process_orphan(node: Node, conn: Connection) -> bool:
+    """Take up an orphan `conn` is to reconsider, as far as its scripts.
+
+    Core's `ProcessOrphanTx` (`src/net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the oldest is verified, and
+    one still missing an input stays an orphan and the next is tried.
+    Answers whether one was refused or queued for its scripts, as Core
+    answers that it processed one.
+    """
+    orphanage = node.download_manager.orphanage
+    while (orphan := orphanage.get_tx_to_reconsider(conn.id)) is not None:
+        try:
+            candidate = pre_verify_mempool_acceptance(node, orphan)
+        except MissingPrevoutError:
+            continue
+        except BTClibValueError as refusal:
+            _rejected(node, orphan, refusal, conn, first_time=False)
+            return True
+        node.tx_checks.queue(
+            TxCheck(conn, orphan, candidate.prev_outputs, first_time=False)
+        )
+        return True
+    return False
 
 
 def settle_tx(node: Node, check: TxCheck, refusal: Exception | None) -> None:
@@ -1176,15 +1285,18 @@ def settle_tx(node: Node, check: TxCheck, refusal: Exception | None) -> None:
     still holds if they pass: a prevout is fixed by its outpoint, and
     `interpreter.STANDARD_FLAGS` reads no height.
     """
+    if check.parent is not None:
+        _settle_package(node, check, check.parent[0], refusal)
+        return
     tx, conn = check.tx, check.conn
     if already_judged(node, tx, conn):
         return
-    candidate = _pre_verify(node, tx)
+    candidate = _pre_verify(node, tx, conn, first_time=check.first_time)
     if candidate is None:
         return
     if isinstance(refusal, BTClibValueError):
         # recorded and the peer kept, `_pre_verify`'s comment says why
-        node.mempool.mark_rejected(tx.hash)
+        _rejected(node, tx, refusal, conn, first_time=check.first_time)
         return
     if refusal is not None:
         raise refusal
@@ -1196,12 +1308,78 @@ def settle_tx(node: Node, check: TxCheck, refusal: Exception | None) -> None:
     # that then asks for it getting `notfound` for its trouble.
     # btclib-org/btclib-node#277
     tip_height = len(node.chainstate.block_index.active_chain) - 1
-    if node.mempool.add_tx(tx, candidate.fee, candidate.vsize, height=tip_height):
+    if not node.mempool.add_tx(tx, candidate.fee, candidate.vsize, height=tip_height):
+        # Core's `TX_RECONSIDERABLE` "mempool full": it no longer meets the
+        # minimum the eviction left, though a child may pay for it
+        _rejected(
+            node, tx, TxRejectedError("mempool full"), conn, first_time=check.first_time
+        )
+        return
+    if check.first_time:
         # novel and accepted into the mempool: what Core's own
         # `m_last_tx_time` records for eviction (`net_processing.cpp`'s
         # `ProcessMessage`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
         conn.last_novel_tx_time = int(time.time())
-        node.download_manager.received_txs.append((conn.id, tx.hash))
+    _accepted(node, tx, conn)
+
+
+def _settle_package(
+    node: Node, check: TxCheck, parent: Tx, refusal: Exception | None
+) -> None:
+    """Keep a parent and its child together, or record why not.
+
+    `settle_tx` for a package, `check.tx` being the child. The checks but
+    the scripts run again first, as they do for one transaction, and a
+    package whose member the mempool holds or refused is dropped. A script
+    refusal belongs to the transaction `check.failed` names, and the
+    other answers what it did when the package was verified: the parent a
+    fee floor, the child a missing input.
+    """
+    child, conn = check.tx, check.conn
+    if already_judged(node, parent, conn) or already_judged(node, child, conn):
+        # taken in or refused meanwhile, by another peer's copy or a call
+        return
+    try:
+        candidate = pre_verify_package(node, parent, child)
+    except PackageRefusedError as refused:
+        _package_refused(node, conn, parent, child, refused.errors)
+        return
+    if candidate.child is None:
+        # the parent now passes by itself, which the package is for only
+        # where it does not
+        node.tx_checks.queue(
+            TxCheck(conn, parent, candidate.parent.prev_outputs, first_time=False)
+        )
+        return
+    if refusal is not None and not isinstance(refusal, BTClibValueError):
+        raise refusal
+    errors: dict[bytes, Exception]
+    if refusal is None:
+        members = [
+            (parent, candidate.parent.fee, candidate.parent.vsize),
+            (child, candidate.child.fee, candidate.child.vsize),
+        ]
+        tip_height = len(node.chainstate.block_index.active_chain) - 1
+        if node.mempool.add_package(members, height=tip_height):
+            # Core iterates backwards, so that the child leaves the
+            # orphanage before it can be marked for reconsidering
+            for member in (child, parent):
+                _accepted(node, member, conn)
+            return
+        # not `TxRejectedError`, so not reconsiderable: `AcceptPackage`'s
+        # "mempool full" is `TX_MEMPOOL_POLICY` (`src/validation.cpp:1748`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+        errors = {
+            member.hash: BTClibValueError("mempool full") for member in (parent, child)
+        }
+    else:
+        assert candidate.parent_error is not None  # noqa: S101
+        errors = {
+            parent.hash: candidate.parent_error,
+            child.hash: MissingPrevoutError(),
+            (parent, child)[check.failed].hash: refusal,
+        }
+    _package_refused(node, conn, parent, child, errors)
 
 
 def _unrequested_block_refused(node: Node, block_hash: bytes) -> bool:

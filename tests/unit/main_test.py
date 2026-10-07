@@ -59,12 +59,14 @@ from btclib_node.exceptions import (
     MisbehavingError,
     MissingPrevoutError,
     NonStandardTxError,
+    PackageRefusedError,
     TxRejectedError,
 )
 from btclib_node.interpreter import check_scripts, get_flags
 from btclib_node.log import Logger
 from btclib_node.main import (
     check_fork_warning_conditions,
+    pre_verify_package,
     prune_up_to_height,
     update_chain,
     verify_mempool_acceptance,
@@ -4799,3 +4801,152 @@ def test_a_body_failing_check_block_under_an_invalid_header_is_not_cached_invali
     block_index.add_headers([block.header])
     block_index.invalidate(block.header.hash)
     assert not main.is_cached_invalid(block_index, block)
+
+
+def a_free_parent(node: Node) -> Tx:
+    """Return a spend paying no fee, which the relay floor refuses alone."""
+    parent = funded_spends(node, 1)[0]
+    value = parent.vout[0].value + FEE
+    return replace(parent, vout=[TxOut(value, parent.vout[0].script_pub_key)])
+
+
+def reason_of(error: Exception) -> str:
+    """Return the reject reason of `error`, which has to be a refusal."""
+    assert isinstance(error, TxRejectedError)
+    return error.reason
+
+
+def test_a_package_of_a_free_parent_and_a_paying_child_is_accepted(node: Node) -> None:
+    """The child pays for the parent, which the relay floor refused alone."""
+    parent = a_free_parent(node)
+    child = child_of(parent)
+    candidate = pre_verify_package(node, parent, child)
+    assert candidate.parent.fee == 0
+    assert candidate.child is not None
+    assert candidate.child.fee == FEE
+    assert candidate.parent_error is not None
+    assert candidate.parent_error.reason == "min relay fee not met"
+    assert not node.mempool.contains_tx(parent)
+    assert node.mempool.size == 0
+
+
+def test_a_parent_that_passes_alone_is_accepted_alone(node: Node) -> None:
+    """Core accepts it before it considers the child."""
+    parent = funded_spends(node, 1)[0]
+    candidate = pre_verify_package(node, parent, child_of(parent))
+    assert candidate.child is None
+    assert candidate.parent_error is None
+    assert candidate.parent.fee == FEE
+
+
+def test_a_package_spending_one_outpoint_twice_is_refused_whole(node: Node) -> None:
+    """Core's "conflict-in-package", which has an answer for neither."""
+    parent = a_free_parent(node)
+    with pytest.raises(PackageRefusedError) as refused:
+        pre_verify_package(node, parent, replace(parent, lock_time=1))
+    assert refused.value.errors == {}
+
+
+def test_a_parent_refused_for_more_than_its_fee_ends_the_package(node: Node) -> None:
+    """Its refusal is the parent's answer, and the child's a missing input."""
+    parent = replace(funded_spends(node, 1)[0], version=4)
+    child = child_of(parent)
+    with pytest.raises(PackageRefusedError) as refused:
+        pre_verify_package(node, parent, child)
+    errors = refused.value.errors
+    assert reason_of(errors[parent.hash]) == "version"
+    assert isinstance(errors[child.hash], MissingPrevoutError)
+
+
+def test_a_parent_missing_inputs_ends_the_package(node: Node) -> None:
+    """A missing input is not a fee floor the child could pay."""
+    parent = child_of(a_free_parent(node))
+    child = child_of(parent)
+    with pytest.raises(PackageRefusedError) as refused:
+        pre_verify_package(node, parent, child)
+    assert isinstance(refused.value.errors[parent.hash], MissingPrevoutError)
+
+
+def test_a_parent_the_fee_floor_hid_a_refusal_behind_ends_the_package(
+    node: Node,
+) -> None:
+    """Without the floor, the TRUC rule that came after it is what refuses."""
+    held = hold(node, funded_spends(node, 1)[0])
+    free = child_of(held, version=3)
+    parent = replace(free, vout=[replace(free.vout[0], value=free.vout[0].value + FEE)])
+    child = child_of(parent, version=3)
+    with pytest.raises(PackageRefusedError) as refused:
+        pre_verify_package(node, parent, child)
+    errors = refused.value.errors
+    assert reason_of(errors[parent.hash]) == "TRUC-violation"
+    assert isinstance(errors[child.hash], MissingPrevoutError)
+
+
+def test_a_child_that_does_not_pay_for_its_parent_is_refused(node: Node) -> None:
+    """The package's total fee is held to the floor."""
+    parent = a_free_parent(node)
+    free = child_of(parent)
+    child = replace(free, vout=[replace(free.vout[0], value=free.vout[0].value + FEE)])
+    with pytest.raises(PackageRefusedError) as refused:
+        pre_verify_package(node, parent, child)
+    errors = refused.value.errors
+    assert reason_of(errors[parent.hash]) == "min relay fee not met"
+    assert reason_of(errors[child.hash]) == "min relay fee not met"
+
+
+def test_a_child_spending_an_output_its_parent_lacks_is_missing_inputs(
+    node: Node,
+) -> None:
+    """The staged parent has one output."""
+    parent = a_free_parent(node)
+    child = child_of(parent)
+    child.vin[0] = replace(child.vin[0], prev_out=OutPoint(parent.id, 5))
+    with pytest.raises(PackageRefusedError) as refused:
+        pre_verify_package(node, parent, child)
+    assert isinstance(refused.value.errors[child.hash], MissingPrevoutError)
+
+
+def a_free_dust_parent(node: Node) -> Tx:
+    """Return a spend paying no fee with a dust output, which `dust` allows."""
+    parent = a_free_parent(node)
+    return with_outputs(parent, TxOut(0, anyone_can_spend()))
+
+
+def a_child_spending_the_dust(parent: Tx) -> Tx:
+    """Return a child of both outputs of `parent`, paying `FEE`."""
+    child = child_of(parent)
+    dust = TxIn(OutPoint(parent.id, 1), anyone_can_spend_script_sig(), 0xFFFFFFFF)
+    return replace(child, vin=[*child.vin, dust])
+
+
+def test_a_package_must_spend_its_parent_s_ephemeral_dust(node: Node) -> None:
+    """Core's `CheckEphemeralSpends`: a child leaving the dust is refused."""
+    parent = a_free_dust_parent(node)
+    candidate = pre_verify_package(node, parent, a_child_spending_the_dust(parent))
+    assert candidate.child is not None
+    leaving = child_of(parent)
+    with pytest.raises(PackageRefusedError) as refused:
+        pre_verify_package(node, parent, leaving)
+    assert reason_of(refused.value.errors[leaving.hash]) == "missing-ephemeral-spends"
+    error = refused.value.errors[leaving.hash]
+    assert isinstance(error, TxRejectedError)
+    assert error.details == (
+        f"tx {leaving.id.hex()} (wtxid={leaving.hash.hex()}) "
+        "did not spend parent's ephemeral dust"
+    )
+    node.config.require_standard = False
+    assert pre_verify_package(node, parent, leaving).child is not None
+
+
+def test_a_connected_block_erases_the_orphans_it_conflicts_with(node: Node) -> None:
+    """Core's `BlockConnected`: an orphan the block conflicts with is gone."""
+    chain = generate_random_chain(COINBASE_MATURITY + 1, RegTest().genesis.hash)
+    spent = chain[-1].transactions[1].vin[0].prev_out
+    rival = generate_random_transaction(spent.tx_id)
+    unrelated = generate_random_transaction()
+    orphanage = node.download_manager.orphanage
+    orphanage.add_tx(rival, 1)
+    orphanage.add_tx(unrelated, 1)
+    connect(node, chain)
+    assert not orphanage.have_tx(rival.hash)
+    assert orphanage.have_tx(unrelated.hash)

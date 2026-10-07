@@ -117,6 +117,7 @@ __all__ = [
     "get_mempool_info",
     "get_network_info",
     "get_node_addresses",
+    "get_orphan_txs",
     "get_peer_info",
     "get_raw_mempool",
     "get_raw_transaction",
@@ -878,7 +879,9 @@ def _block_json_header(
     return out
 
 
-def _parse_verbosity(params: list[Any], position: int, *, default: int) -> int:
+def _parse_verbosity(
+    params: list[Any], position: int, *, default: int, allow_bool: bool = True
+) -> int:
     """Read a `verbosity` argument as Core's `ParseVerbosity` does.
 
     `ParseVerbosity` (`rpc/util.cpp:83-96`, at bitcoin/bitcoin@9be056a8a7)
@@ -891,12 +894,19 @@ def _parse_verbosity(params: list[Any], position: int, *, default: int) -> int:
     number is `RPC_TYPE_ERROR` with the bare "JSON value of type ... is
     not of expected type number", not the "Wrong type passed" object of
     a type-checked argument (measured against bitcoind v31.1.0 for both
-    RPCs).
+    RPCs). `getorphantxs` passes `allow_bool=False`, which makes a JSON bool
+    `RPC_TYPE_ERROR` "Verbosity was boolean but only integer allowed"
+    (measured against the same bitcoind).
     """
     if len(params) <= position or params[position] is None:
         return default
     value = params[position]
     if isinstance(value, bool):
+        if not allow_bool:
+            raise RpcError(
+                RPCErrorCode.TYPE_ERROR,
+                "Verbosity was boolean but only integer allowed",
+            )
         return int(value)
     if isinstance(value, float):
         raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
@@ -2864,6 +2874,43 @@ def get_raw_mempool(
     return {"txids": txids, "mempool_sequence": node.mempool.sequence}
 
 
+def get_orphan_txs(
+    node: Node, conn: RpcConnection, params: list[Any]
+) -> list[str] | list[dict[str, Any]]:
+    """Answer `getorphantxs`: the orphanage, in Core's three verbosities.
+
+    Core's hidden RPC (`src/rpc/mempool.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag): the txids at verbosity 0, an object each with its
+    `txid`, `wtxid`, `bytes`, `vsize`, `weight` and the ids of the peers it
+    is `from` at 1, and the `hex` too at 2, in the order of the wtxids as
+    Core holds them. Any other number is `RPC_INVALID_PARAMETER`, and a bool
+    is refused (`_parse_verbosity`). `vsize` is `GetVirtualTransactionSize`
+    without sigops, as `getrawmempool`'s is not.
+    """
+    verbosity = _parse_verbosity(params, 0, default=0, allow_bool=False)
+    orphans = node.download_manager.orphanage.get_orphan_transactions()
+    if verbosity == 0:
+        return [tx.id.hex() for tx, _ in orphans]
+    if verbosity not in (1, 2):
+        raise RpcError(
+            RPCErrorCode.INVALID_PARAMETER, f"Invalid verbosity value {verbosity}"
+        )
+    answer: list[dict[str, Any]] = []
+    for tx, announcers in orphans:
+        entry: dict[str, Any] = {
+            "txid": tx.id.hex(),
+            "wtxid": tx.hash.hex(),
+            "bytes": tx.size,
+            "vsize": tx.vsize,
+            "weight": tx.weight,
+            "from": announcers,
+        }
+        if verbosity == 2:  # noqa: PLR2004
+            entry["hex"] = tx.serialize(include_witness=True).hex()
+        answer.append(entry)
+    return answer
+
+
 def get_mempool_entry(
     node: Node, conn: RpcConnection, params: list[Any]
 ) -> dict[str, Any]:
@@ -4064,6 +4111,7 @@ callbacks = {
     "clearbanned": clear_banned,
     "getmempoolinfo": get_mempool_info,
     "getrawmempool": get_raw_mempool,
+    "getorphantxs": get_orphan_txs,
     "getmempoolentry": get_mempool_entry,
     "getrawtransaction": get_raw_transaction,
     "gettxout": get_tx_out,
@@ -4117,6 +4165,7 @@ arg_names: dict[str, tuple[str, ...]] = {
     "clearbanned": (),
     "getmempoolinfo": (),
     "getrawmempool": ("verbose", "mempool_sequence"),
+    "getorphantxs": ("verbosity",),
     "getmempoolentry": ("txid",),
     "getrawtransaction": ("txid", "verbosity|verbose", "blockhash"),
     "gettxout": ("txid", "n", "include_mempool"),
