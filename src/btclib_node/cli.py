@@ -679,6 +679,19 @@ _OPTIONS: dict[str, _Option] = {
         "Relay transactions creating non-P2SH multisig outputs (default: 1)",
         _NODE_RELAY_TITLE,
     ),
+    "persistmempool": _Option(
+        "",
+        "Whether to save the mempool on shutdown and load on restart (default: 1)",
+        _OPTIONS_TITLE,
+    ),
+    "persistmempoolv1": _Option(
+        "",
+        "Whether a mempool.dat file created by -persistmempool or the savemempool "
+        "RPC will be written in the legacy format (version 1) or the current "
+        "format (version 2). This temporary option will be removed in the "
+        "future. (default: 0)",
+        _OPTIONS_TITLE,
+    ),
     "port": _Option(
         "=<port>",
         "Listen for connections on <port>",
@@ -2661,6 +2674,8 @@ def _after_lock(before: _BeforeLock) -> Config:
         permit_bare_multisig=before.mempool.permit_bare_multisig,
         max_datacarrier_bytes=before.mempool.max_datacarrier_bytes,
         require_standard=before.mempool.require_standard,
+        persist_mempool=_get_bool(settings, "persistmempool") is not False,
+        persist_mempool_v1=bool(_get_bool(settings, "persistmempoolv1")),
         minimum_chain_work=before.minimum_chain_work,
         assume_valid=before.assume_valid,
         max_tip_age=before.max_tip_age,

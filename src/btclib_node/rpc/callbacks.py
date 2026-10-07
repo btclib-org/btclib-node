@@ -2256,7 +2256,8 @@ def get_mempool_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
         node.config.min_relay_feerate.sats_per_kvbyte,
     )
     return {
-        "loaded": True,
+        # Core's `GetLoadTried`: whether the load of `mempool.dat` ended
+        "loaded": mempool.load_tried,
         "size": mempool.size,
         "bytes": mempool.bytesize,
         "maxmempool": mempool.bytesize_limit,

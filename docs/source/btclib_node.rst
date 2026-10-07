@@ -113,6 +113,13 @@ btclib\_node.mempool module
    :members:
    :show-inheritance:
 
+btclib\_node.mempool\_persist module
+-------------------------------------
+
+.. automodule:: btclib_node.mempool_persist
+   :members:
+   :show-inheritance:
+
 btclib\_node.mining module
 ---------------------------
 

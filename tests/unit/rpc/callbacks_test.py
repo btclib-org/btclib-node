@@ -936,11 +936,14 @@ def test_the_connection_count_includes_a_peer_still_mid_handshake() -> None:
 def test_the_mempool_reports_its_size_and_bytes() -> None:
     """`getmempoolinfo`'s size and bytes fields read the mempool's own tally.
 
-    `size` is its transaction count and `bytes` its total vsize.
+    `size` is its transaction count and `bytes` its total vsize. `loaded`
+    is whether the load of `mempool.dat` has ended.
     """
     mempool = Mempool(Logger(debug=True))
     tx = a_tx()
     mempool.add_tx(tx)
+    assert get_mempool_info(a_node(mempool=mempool), _CONN, [])["loaded"] is False
+    mempool.load_tried = True
     out = get_mempool_info(a_node(mempool=mempool), _CONN, [])
     assert out["loaded"] is True
     assert out["size"] == 1

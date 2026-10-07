@@ -241,8 +241,9 @@ class Mempool:
         # wtxid -> Core's own `CTxMemPoolEntry::GetTime`
         # (`src/kernel/mempool_entry.h`, at bitcoin/bitcoin@9be056a8a7, the
         # v31.1 tag): the wall-clock second this entry was accepted,
-        # `add_tx` below's own `time.time()`. `getmempoolentry`'s own
-        # `time` field. btclib-org/btclib-node#1397
+        # `add_tx` below's own `time.time()`, or for an entry loaded from
+        # `mempool.dat` the time the file gives (`mempool_persist`).
+        # `getmempoolentry`'s own `time` field. btclib-org/btclib-node#1397
         self.entry_times: dict[bytes, float] = {}
         # wtxid -> Core's own `CTxMemPoolEntry::GetHeight`, the active
         # chain's own tip height -- not `verify_mempool_acceptance`'s own
@@ -254,7 +255,8 @@ class Mempool:
         # txid -> nothing, this mempool's own copy of Core's own
         # `m_unbroadcast_txids` (`src/txmempool.h`, same tag): a
         # transaction `rpc.callbacks.send_raw_transaction` submitted and
-        # kept, until some peer's own `getdata` is served for it
+        # kept, or one `mempool.dat` marks, until some peer's own
+        # `getdata` is served for it
         # (`mark_broadcast` below) or it leaves this mempool for any
         # reason (`_pop`) -- never one a peer handed this node over the
         # wire, `p2p.callbacks.tx` calling neither. `get_mempool_info`'s
@@ -325,6 +327,12 @@ class Mempool:
         # here genesis is seeded at every start, so this starts at 0, as
         # Core's does after a restart.
         self.transactions_updated: int = 0
+        # Core's `m_load_tried` (`src/txmempool.h`, at
+        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): whether the load of
+        # `mempool.dat` at start ended without a stop. `Node` writes the
+        # file at shutdown only then, so a node stopped while loading
+        # keeps the file it was reading. btclib-org/btclib-node#1746
+        self.load_tried: bool = False
 
         # Core's own `rollingMinimumFeeRate`/`lastRollingFeeUpdate`/
         # `blockSinceLastRollingFeeBump` (`src/txmempool.h`, same commit):
@@ -688,12 +696,8 @@ class Mempool:
         Nothing is evicted here: Core trims at the next addition only.
         A delta is not dropped when the transaction is evicted or
         replaced, only when a block holds it or conflicts with it
-        (`remove_for_block`).
-
-        Core writes the deltas to `mempool.dat`
-        (`src/node/mempool_persist.cpp`). This node keeps no mempool on
-        disk, so a restart drops them with it
-        (btclib-org/btclib-node#1746). btclib-org/btclib-node#1502
+        (`remove_for_block`). `mempool.dat` keeps them across a restart
+        (`mempool_persist`). btclib-org/btclib-node#1502
         """
         delta = _saturate(self.delta(txid) + fee_delta)
         if delta:
@@ -1364,15 +1368,16 @@ class Mempool:
     def mark_broadcast_locally(self, txid: bytes) -> None:
         """Add `txid` to the unbroadcast set, Core's own `AddUnbroadcastTx`.
 
-        Called only where Core calls it: once a transaction submitted
-        through `sendrawtransaction` is kept, never for one a peer handed
-        this node over the wire -- `BroadcastTransaction`'s own
-        `MEMPOOL_AND_BROADCAST_TO_ALL` branch is the one call site Core
-        has for it (`src/node/transaction.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and `net_processing.cpp`'s
-        own p2p acceptance path has none. A txid this mempool does not
-        hold is left alone, the way Core's own sanity check leaves it
-        out of the set rather than inserting it. btclib-org/btclib-node#1421
+        Called where Core calls it: once a transaction submitted through
+        `sendrawtransaction` is kept, `BroadcastTransaction`'s
+        `MEMPOOL_AND_BROADCAST_TO_ALL` branch (`src/node/transaction.cpp`,
+        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and for each txid
+        of `mempool.dat`'s unbroadcast set (`src/node/mempool_persist.cpp`,
+        same tag). Never for one a peer handed this node over the wire:
+        `net_processing.cpp`'s p2p acceptance path has no call. A txid
+        this mempool does not hold is left alone, the way Core's own
+        sanity check leaves it out of the set rather than inserting it.
+        btclib-org/btclib-node#1421
         """
         if txid in self.txid_index:
             self.unbroadcast.add(txid)

@@ -1235,6 +1235,7 @@ def test_a_ping_ahead_of_verack_is_not_answered_by_one_drain_pass(
         tx_checks=TxChecks(),
         download_manager=SimpleNamespace(orphanage=TxOrphanage()),
         logger=connection.node.logger,
+        _resume_mempool_load=lambda: False,
     )
     with connection.client:
         wire = b"".join(
