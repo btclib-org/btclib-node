@@ -167,6 +167,8 @@ from tests import (
     log_recorder,
 )
 from tests.conftest import unstarted_node_context
+from tests.unit.download_test import a_conn, a_hash, make_manager, only
+from tests.unit.download_test import a_version as a_services_version
 from tests.unit.main_test import a_dusty_spend
 from tests.unit.rpc.callbacks_test import a_node_holding, a_twin
 
@@ -3588,6 +3590,55 @@ def test_a_transaction_inv_is_read_in_the_peer_s_own_relay_mode(
     inv(node, Inv(items).serialize(), peer)
     kept = transaction.hash if by_wtxid else transaction.id
     assert node.download_manager.inv_txs == [(4, kept)]
+
+
+@pytest.mark.parametrize(
+    ("kinds", "services"),
+    [
+        ((InventoryType.MSG_WITNESS_TX,), ServiceFlags.NODE_WITNESS),
+        (
+            (InventoryType.MSG_TX, InventoryType.MSG_WITNESS_TX),
+            ServiceFlags.NODE_WITNESS,
+        ),
+        ((InventoryType.MSG_WITNESS_TX,), ServiceFlags.NODE_NONE),
+    ],
+)
+def test_a_witness_tx_inv_is_a_txid_announcement_without_wtxidrelay(
+    kinds: tuple[InventoryType, ...], services: ServiceFlags
+) -> None:
+    """ISS 1772: Core reads `MSG_WITNESS_TX` as a txid announcement.
+
+    From a peer that did not send `wtxidrelay` it leads to one `getdata` for
+    the txid, once even where `MSG_TX` names it too. The `getdata` is by
+    `MSG_WITNESS_TX` where the peer offers `NODE_WITNESS`, else by `MSG_TX`.
+    """
+    peer = a_conn(
+        1,
+        inbound=False,
+        wtxidrelay_received=False,
+        version_message=a_services_version(services | ServiceFlags.NODE_NETWORK),
+    )
+    manager = make_manager([peer])
+    txid = a_hash(7)
+    items = [Inventory(kind, txid) for kind in kinds]
+    inv(manager.node, Inv(items).serialize(), peer)
+    manager.tx_download()
+    fetch = (
+        InventoryType.MSG_WITNESS_TX
+        if services & ServiceFlags.NODE_WITNESS
+        else InventoryType.MSG_TX
+    )
+    (asked_for,) = only(peer, GetData)
+    assert asked_for.items == (Inventory(fetch, txid),)
+
+
+def test_a_witness_tx_inv_from_a_wtxid_relay_peer_is_dropped() -> None:
+    """Core follows it as a txid; the download queue cannot (ISS 1774)."""
+    node = a_data_node()
+    peer = a_peer(id=4, wtxidrelay_received=True)
+    items = [Inventory(InventoryType.MSG_WITNESS_TX, a_hash(7))]
+    inv(node, Inv(items).serialize(), peer)
+    assert node.download_manager.inv_txs == []
 
 
 @pytest.mark.parametrize("by_wtxid", [True, False])

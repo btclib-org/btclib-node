@@ -1679,12 +1679,20 @@ def inv(node: Node, msg: bytes, conn: Connection) -> None:
 
     if node.is_initial_block_download:
         return
-    # Core keeps only the items matching the peer's `wtxidrelay`: wtxids
-    # from a peer that sent it, txids from one that did not. `inv_txs`
-    # then holds each hash in the peer's own space.
+    # Core skips `MSG_TX` from a peer that sent `wtxidrelay` and `MSG_WTX`
+    # from one that did not. It keeps `MSG_WITNESS_TX` from every peer, as
+    # a txid (`net_processing.cpp` and `protocol.h`, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Here it is kept only from
+    # a peer without `wtxidrelay`: `inv_txs` holds one hash space per peer,
+    # and a txid in a wtxid peer's would be asked for as a wtxid.
+    # btclib-org/btclib-node#1774
     by_wtxid = conn.wtxidrelay_received
-    tx_type = InventoryType.MSG_WTX if by_wtxid else InventoryType.MSG_TX
-    hashes = [x.hash for x in inv.items if x.type_code == tx_type]
+    tx_types = (
+        (InventoryType.MSG_WTX,)
+        if by_wtxid
+        else (InventoryType.MSG_TX, InventoryType.MSG_WITNESS_TX)
+    )
+    hashes = [x.hash for x in inv.items if x.type_code in tx_types]
     missing_tx = node.mempool.get_missing(hashes, wtxid=by_wtxid)
     if missing_tx:
         node.download_manager.inv_txs.extend([(conn.id, h) for h in missing_tx])
