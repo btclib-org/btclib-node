@@ -4016,6 +4016,17 @@ def _mempool_accept_verdict(
             tx_res["vsize"] = vsize
             tx_res["vsize_bip141"] = tx.vsize
             tx_res["allowed"] = True
+            # `fees` (`src/rpc/mempool.cpp`, at bitcoin/bitcoin@9be056a8a7,
+            # the v31.1 tag): the effective feerate is the modified fee
+            # over the sigop-adjusted size, in BTC per kvB, rounded down
+            # as `CFeeRate::GetFeePerK` does. A single transaction
+            # includes only its own wtxid. btclib-org/btclib-node#1799
+            modified_fee = fee + node.mempool.delta(tx.id)
+            tx_res["fees"] = {
+                "base": _btc_amount(fee),
+                "effective-feerate": _btc_amount(modified_fee * 1000 // vsize),
+                "effective-includes": [tx.hash.hex()],
+            }
     except TxRejectedError as exc:
         # Core's own pair for every reason but `missing-inputs`
         # (`src/rpc/mempool.cpp`, at bitcoin/bitcoin@9be056a8a7, the
