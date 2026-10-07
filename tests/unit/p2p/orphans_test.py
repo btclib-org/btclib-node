@@ -507,7 +507,7 @@ def test_a_message_is_held_while_the_peer_has_an_orphan_to_reconsider(
     node.download_manager.orphanage.add_children_to_work_set(pair.parent)
     assert not node.tx_checks.busy(peer.id)
     held = ("ping", b"", 0, 0.0)
-    assert p2p_main._wait_for_tx_check(node, peer.id, held)
+    assert p2p_main._hold_message(node, peer.id, held)
     assert list(node.tx_checks.waiting[peer.id]) == [held]
 
 

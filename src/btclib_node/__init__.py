@@ -365,9 +365,9 @@ class Node(threading.Thread):
 
         # The same shape as `pending_cfilters` above, for a `getdata`
         # `p2p.callbacks.getdata` could not finish serving: the
-        # connection and the items still owed, read and written only by
-        # `p2p.callbacks.advance_getdata` and `p2p.main.resume_getdata`,
-        # both on this thread. btclib-org/btclib-node#470
+        # connection and the items still owed. Everything that reads or
+        # writes it runs on this thread, so it needs no lock.
+        # btclib-org/btclib-node#470
         self.pending_getdata: dict[int, tuple[Connection, deque[Inventory]]] = {}
 
         # relayed transactions waiting on a script check, read and

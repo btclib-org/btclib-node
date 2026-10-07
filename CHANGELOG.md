@@ -317,6 +317,12 @@ announced or was sent, and one on it is not announced to that peer again
   in Core** (closes #1779). It was kept as an orphan. Now it is recorded
   as refused, and `testmempoolaccept` and `submitpackage` answer the same.
 
+### A peer's later messages wait while its getdata answer is paused
+
+- **A `pong` follows the items of a `getdata` sent before the `ping`**, as
+  in Core: the peer's later messages wait while the answer is paused,
+  so `MAX_PENDING_GETDATA_ITEMS` is gone (closes #1775).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on

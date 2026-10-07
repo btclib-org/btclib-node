@@ -27,6 +27,9 @@ closed on the way out.
 - `src/btclib_node/rpc/` is the JSON-RPC surface, on the same shape of
   manager and handler.
 
+A peer's messages are handled in the order received. `_hold_message`
+(`src/btclib_node/p2p/main.py`) says what makes the later ones wait.
+
 `P2pManager` and `RpcManager` are each a thread of their own, running an
 asyncio loop, and a coroutine enters that loop only through
 `run_coroutine_threadsafe`. Their plain methods are another matter:
