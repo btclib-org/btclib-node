@@ -215,6 +215,12 @@ leaving a parent's dust unspent is refused "missing-ephemeral-spends",
   parsed it from text at each step, which slowed the address table's load
   (closes #1708).
 
+### `-assumevalid` skips script verification under Core's conditions
+
+- **`-assumevalid=<hash>` skips script verification of the blocks under that
+  block, on Core's conditions, and the log says where it turns off and on**
+  (issue #1576). No hash is assumed unless given.
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on

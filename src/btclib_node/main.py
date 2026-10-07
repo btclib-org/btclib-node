@@ -123,6 +123,7 @@ __all__ = [
     "precious_chain",
     "prune_up_to_height",
     "reconsider_chain",
+    "script_check_reason",
     "try_connect_block",
     "update_chain",
     "verify_mempool_acceptance",
@@ -1123,6 +1124,87 @@ def is_cached_invalid(block_index: BlockIndex, block: Block) -> bool:
     )
 
 
+# Core's `TWO_WEEKS_IN_SECONDS` (`ConnectBlock`, `src/validation.cpp`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+_ASSUME_VALID_BURIAL = 60 * 60 * 24 * 7 * 2
+
+
+# One return per arm of `ConnectBlock`'s own if/else chain.
+def script_check_reason(  # noqa: PLR0911
+    node: Node, block_hash: bytes, index: int
+) -> str | None:
+    """Return why `block_hash` at `index` is verified, `None` where it is not.
+
+    The `script_check_reason` of Core's `ConnectBlock` (`src/validation.cpp`,
+    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), condition for condition,
+    in Core's order and with Core's words. Scripts are skipped only where
+    `-assumevalid` names a block this node has the header of, `block_hash`
+    is an ancestor of it and of the best header, the best header carries
+    `-minimumchainwork`, and the chain work between `block_hash` and the
+    best header is more than two weeks of blocks at the best header's own
+    difficulty. A block not yet indexed, which is what
+    `try_connect_block` is given, is on no chain: Core's `fJustCheck` reads
+    a block index entry built for it, which no chain holds either.
+    """
+    assume_valid = node.config.assume_valid
+    if assume_valid is None:
+        return "assumevalid=0 (always verify)"
+    block_index = node.chainstate.block_index
+    assumed = block_index.header_dict.get(assume_valid)
+    if assumed is None:
+        return "assumevalid hash not in headers"
+    if block_index.get_ancestor(assume_valid, index) != block_hash:
+        return (
+            "block height above assumevalid height"
+            if index > assumed.index
+            else "block not in assumevalid chain"
+        )
+    best_hash = block_index.header_index[-1]
+    if block_index.get_ancestor(best_hash, index) != block_hash:
+        return "block not in best header chain"
+    chainwork = block_index.chainwork
+    if chainwork[best_hash] < node.config.minimum_chain_work:
+        return "best header chainwork below minimumchainwork"
+    # Core's `GetBlockProofEquivalentTime`, whose result is never negative
+    # for an ancestor of the best header
+    best = block_index.header_dict[best_hash].header
+    proof_time = (
+        (chainwork[best_hash] - chainwork[block_hash])
+        * node.chain.consensus.pow_target_spacing
+        // calculate_work(best)
+    )
+    if proof_time <= _ASSUME_VALID_BURIAL:
+        return "block too recent relative to best header"
+    return None
+
+
+def _log_script_check_reason(
+    node: Node, block_hash: bytes, index: int, reason: str | None
+) -> None:
+    """Log where script verification turns on or off, as `ConnectBlock` does.
+
+    Core's `m_last_script_check_reason_logged` is an `std::optional`:
+    `node.script_check_reason_logged` is `None` until the first block, then
+    a one-tuple of the last reason, `None` for "Disabling".
+    """
+    if node.script_check_reason_logged == (reason,):
+        return
+    node.script_check_reason_logged = (reason,)
+    if reason is None:
+        node.logger.info(
+            "Disabling script verification at block #%d (%s).",
+            index,
+            block_hash.hex(),
+        )
+    else:
+        node.logger.info(
+            "Enabling script verification at block #%d (%s): %s.",
+            index,
+            block_hash.hex(),
+            reason,
+        )
+
+
 # update_chain's own per-block gate, once a candidate's spends and
 # creations are staged and its own height is known: Core's `ConnectBlock`
 # (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
@@ -1131,7 +1213,8 @@ def is_cached_invalid(block_index: BlockIndex, block: Block) -> bool:
 # its BIP68 relative lock via btclib.tx.tx_context.assert_sequence_locks
 # and the block's running sigop cost, then the coinbase value, then the
 # scripts, whose results Core reads only after the loop and the coinbase
-# value. So, past an input missing or already spent, which
+# value, unless `script_check_reason` skips them: nothing else is skipped
+# there. So, past an input missing or already spent, which
 # utxo_index.add_block refuses for every transaction first, the rule a
 # block breaks first in transaction order is the one refused, and a
 # coinbase paying too much is refused before a failing script
@@ -1150,6 +1233,8 @@ def _validate_block(
 ) -> None:
     block_hash = block.header.hash
     parent_mtp, bip113_active = contextual_check_block(node, block, index)
+    reason = script_check_reason(node, block_hash, index)
+    _log_script_check_reason(node, block_hash, index, reason)
 
     block_index = node.chainstate.block_index
     parent_header = block_index.header_dict[block.header.previous_block_hash].header
@@ -1184,7 +1269,8 @@ def _validate_block(
 
     block_subsidy = subsidy(index, node.chain.consensus.subsidy_halving_interval)
     assert_coinbase_value(coinbase, block_subsidy, fees)
-    check_scripts(transactions, flags, node)
+    if reason is not None:
+        check_scripts(transactions, flags, node)
 
 
 # Core's own `MAX_MONEY` (`src/consensus/amount.h`, at

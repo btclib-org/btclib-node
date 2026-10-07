@@ -62,6 +62,11 @@ on release day.
 - **A request sent while the node starts is answered `-28`**, as in Core
   (closes #1317). A client that waits for the node by sending a request
   retries on `-28`, as it does for `bitcoind`.
+- **`-assumevalid=<hash>` skips the script checks of the blocks under that
+  block, as in Core** (issue #1576). Nothing is assumed valid by default
+  yet: the node verifies every script unless you pass the option. Pass
+  only a hash you have verified, since a block under it with an invalid
+  script can be accepted.
 
 ## v2026.10.4
 

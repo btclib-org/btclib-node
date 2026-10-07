@@ -102,7 +102,8 @@ the consensus rules `btclib.script.engine` implements, fanned out across
 under a free-threaded one, one script check per worker. The rules
 themselves, and the objects they run against — a `Tx`, a `Block`, a
 script — are btclib's; what is here is the dispatch across workers and
-the chain state a verdict is checked against.
+the chain state a verdict is checked against. `-assumevalid` skips a
+block's script checks, and only those, under Core's conditions.
 
 A transaction a peer relays has its scripts checked on `Node.worker_pool`
 too, one candidate at a time (a transaction, or a parent with its child),

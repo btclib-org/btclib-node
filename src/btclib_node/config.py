@@ -609,7 +609,8 @@ class Config:
     # Core's own `-assumevalid`: the hash of a block whose ancestors
     # script verification may skip, `None` where it is off (`0`,
     # `-noassumevalid`, or not given: Core's default per network is not
-    # read yet, btclib-org/btclib-node#1576). Nothing reads it yet.
+    # read yet, btclib-org/btclib-node#1576). `main.script_check_reason`
+    # reads it.
     assume_valid: bytes | None
     # Core's own `-maxtipage`, in seconds rather than as a `timedelta`
     # for the same reason `ban_time` above is an `int`: the value is an

@@ -332,8 +332,8 @@ disk recording that it was ever tried. `generate_active_chain` and
 `generate_block_candidates` (`chainstate/block_index.py`) then rebuild
 `active_chain` and `block_candidates` without it, exactly as they would
 for a block this store has never seen; `get_first_candidate` offers it
-again, and `update_chain` (`main.py`) revalidates it in full,
-`check_scripts` included, and re-stages the identical `Coin`s and
+again, and `update_chain` (`main.py`) revalidates it as it would any block,
+and re-stages the identical `Coin`s and
 the identical filter, both being pure functions of the block and its
 ancestry. Nothing is corrupted by this -- what the last flush wrote is
 self-consistent, being one transaction, and everything after it is
