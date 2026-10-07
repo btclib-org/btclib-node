@@ -93,6 +93,7 @@ def make_node(
         addr_fetch=False,
         stop=lambda: stopped.append(True),
         queued_recv_bytes=queued_recv_bytes,
+        send_memusage=0,
         _recv_lock=threading.Lock(),
         _recv_resume=SimpleNamespace(set=lambda: resumed.append(True)),
         loop=SimpleNamespace(call_soon_threadsafe=lambda fn: fn()),

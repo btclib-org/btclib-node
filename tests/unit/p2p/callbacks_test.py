@@ -619,6 +619,8 @@ def a_peer(**attributes: Any) -> Any:
         # written here, so it never trips that pacing bound, the same
         # way a real connection whose peer reads promptly never would
         queued_send_bytes=0,
+        # and what `_hold_message` reads for Core's `fPauseSend`
+        send_memusage=0,
         version_message=None,
         block_availability=BlockAvailability(),
         chain_sync=ChainSyncTimeoutState(),

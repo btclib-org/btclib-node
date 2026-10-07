@@ -38,6 +38,7 @@ from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.download import MAX_BLOCKS_IN_TRANSIT_PER_PEER
 from btclib_node.orphanage import TxOrphanage
 from btclib_node.p2p import connection as connection_module
+from btclib_node.p2p import main as p2p_main
 from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.callbacks import (
     MAX_CFILTERS_INFLIGHT_BYTES,
@@ -47,7 +48,7 @@ from btclib_node.p2p.callbacks import (
     handshake_callbacks,
     pong,
 )
-from btclib_node.p2p.connection import Connection
+from btclib_node.p2p.connection import SEND_BUFFER_MAX_SIZE, Connection
 from btclib_node.p2p.eviction import Network
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 from btclib_node.p2p.messages import NoncelessPing
@@ -1471,6 +1472,35 @@ def test_a_peer_already_at_the_send_bound_is_dropped_not_queued_further() -> Non
     assert not sent
     # this node's own choice under load, not the peer's doing: #283
     assert not discouraged_of(connection)
+
+
+def test_a_flood_of_pings_pauses_the_peer_at_cores_count() -> None:
+    """ISS 1796: each message weighs what Core's `GetMemoryUsage` gives it.
+
+    A `ping` is 56 bytes of `CSerializedNetMsg` and `MallocUsage` of its
+    8-byte payload, 32: 88 bytes. Core's `fPauseSend` is set by the
+    ping that takes the total past `SEND_BUFFER_MAX_SIZE`, while the
+    wire count is still about a third of it. The weight leaves with
+    the message once it is written.
+    """
+    connection, _ = a_connection()
+    per_ping = 56 + 32
+    flood = SEND_BUFFER_MAX_SIZE // per_ping
+    messages = [connection._queue(Ping(nonce)) for nonce in range(flood)]
+    assert connection.send_memusage == flood * per_ping
+    assert not p2p_main._pause_send(connection)
+    messages.append(connection._queue(Ping(flood)))
+    assert p2p_main._pause_send(connection)
+    assert connection.queued_send_bytes * 2 < SEND_BUFFER_MAX_SIZE
+
+    async def _send(data: bytes) -> None:
+        pass
+
+    connection._send = _send  # type: ignore[method-assign]
+    connection._outbox.extend(cast("list[SerializedMessage]", messages))
+    asyncio.run(connection._drain_outbox())
+    assert connection.send_memusage == 0
+    assert connection.queued_send_bytes == 0
 
 
 def _message_overhead() -> int:

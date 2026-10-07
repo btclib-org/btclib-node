@@ -165,10 +165,12 @@ _BLOCKS_CONNECTED_BEFORE_PAUSE = (
 # enough to cost minutes in block validation. That bound is not about
 # filters, though: it is how far ahead of a peer's own draining a filter
 # answer may schedule, so a connection put that far behind by ordinary
-# traffic is the same state, reached in seconds. Comfortably past that
-# bound, and comfortably short of `MAX_QUEUED_SEND_BYTES`, which would
-# drop the peer instead of pausing it.
-_BLOCKS_QUEUED_AHEAD = 4
+# traffic is the same state, reached in seconds. Enough blocks that
+# what the two kernel buffers can take still leaves the queue past that
+# bound.
+_BLOCKS_QUEUED_AHEAD = (
+    _KERNEL_BUFFER_ALLOWANCE + MAX_CFILTERS_INFLIGHT_BYTES
+) // _SERVED_BLOCK_BYTES + 1
 _FILTERED_BLOCKS = 4
 
 
@@ -408,13 +410,12 @@ def test_a_getcfilters_answer_will_not_schedule_ahead_of_a_peer_that_is_behind(
 ) -> None:
     """A connection already past `MAX_CFILTERS_INFLIGHT_BYTES` gets no filters.
 
-    `node.pending_cfilters` carries the same evidence `pending_getdata`
-    does in
-    `test_a_getdata_answer_pauses_rather_than_filling_the_send_queue`
-    above: `advance_cfilters` leaves heights behind only where it stopped
-    at its own bound. The connection stays `Connected`, the whole point
-    of the pause being that a peer this far behind is served later rather
-    than dropped.
+    What the kernel buffers take decides where the queue settles, so the
+    request meets one of two bounds. Past `SEND_BUFFER_MAX_SIZE` it is
+    held unread, as Core's `fPauseSend` holds it (btclib-org/btclib-node#1796).
+    Within it, `advance_cfilters` pauses before the first filter, leaving
+    every height on `node.pending_cfilters`. The connection stays
+    `Connected`: a peer this far behind is served later, not dropped.
     """
     node, peer, chain = deaf_peer
     connection = the_connection(node)
@@ -433,8 +434,11 @@ def test_a_getcfilters_answer_will_not_schedule_ahead_of_a_peer_that_is_behind(
     wait_until(lambda: connection.queued_send_bytes >= MAX_CFILTERS_INFLIGHT_BYTES)
 
     peer.send(GetCFilters(BlockFilterType.BASIC, 1, filtered[-1].header.hash))
-    wait_until(lambda: node.pending_cfilters)
+    conn_id = connection.id
+    wait_until(
+        lambda: conn_id in node.pending_cfilters or conn_id in node.tx_checks.waiting
+    )
 
     assert connection.status == P2pConnStatus.Connected
-    _, heights = node.pending_cfilters[connection.id]
-    assert heights
+    _, heights = node.pending_cfilters.get(conn_id, (None, ()))
+    assert conn_id in node.tx_checks.waiting or len(heights) == _FILTERED_BLOCKS

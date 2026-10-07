@@ -24,6 +24,7 @@ from btclib_node.exceptions import TxRejectedError
 from btclib_node.interpreter import check_transaction
 from btclib_node.main import MempoolCandidate, verify_mempool_acceptance
 from btclib_node.p2p import tx_checks
+from btclib_node.p2p.connection import SEND_BUFFER_MAX_SIZE
 from btclib_node.p2p.main import (
     handle_p2p,
     handle_p2p_handshake,
@@ -364,6 +365,71 @@ def test_a_message_behind_a_paused_getcfilters_is_handled_after_its_answer(
     sent = [type(message) for message in peer.sent]
     assert sent == [CFilter, CFilter, Pong, CFilter, CFilter]
     assert peer.queued_recv_bytes == 0
+    assert not node.tx_checks.waiting
+
+
+def a_pinging_peer(node: Any, conn_id: int) -> Any:
+    """Connect a peer `ping` answers with a `pong`."""
+    peer = a_relay_peer(node, conn_id)
+    peer.version_message = a_parsed_version(protocol=BIP0031_VERSION + 1)
+    return peer
+
+
+def nonces(peer: Any) -> list[int]:
+    """Answer the nonce of each `pong` sent to `peer`, in order."""
+    return [sent.nonce for sent in peer.sent if isinstance(sent, Pong)]
+
+
+def test_a_ping_behind_a_full_send_queue_waits_for_the_drain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1796: no `pong` while the send queue is past `fPauseSend`'s bound.
+
+    The bound is Core's `>`: a queue at `SEND_BUFFER_MAX_SIZE` holds
+    nothing. Another peer is not held.
+    """
+    node = a_relay_node(monkeypatch)
+    peer, other = a_pinging_peer(node, 3), a_pinging_peer(node, 4)
+    peer.send_memusage = SEND_BUFFER_MAX_SIZE + 1
+    queue_message(node, peer, "ping", Ping(1).serialize())
+    queue_message(node, other, "ping", Ping(2).serialize())
+    assert nonces(other) == [2]
+    assert not peer.sent
+    assert len(node.tx_checks.waiting[3]) == 1
+    assert peer.queued_recv_bytes == len(Ping(1).serialize())
+    assert not resume_tx_checks(node)
+    assert not peer.sent
+    peer.send_memusage = SEND_BUFFER_MAX_SIZE
+    assert resume_tx_checks(node)
+    assert nonces(peer) == [1]
+    assert peer.queued_recv_bytes == 0
+    assert not node.tx_checks.waiting
+
+
+def test_messages_held_by_a_full_send_queue_are_read_in_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1796: one per pass once the queue drains, none while it refills.
+
+    A message arriving while older ones are held waits behind them.
+    """
+    node = a_relay_node(monkeypatch)
+    peer = a_pinging_peer(node, 3)
+    peer.send_memusage = SEND_BUFFER_MAX_SIZE + 1
+    for nonce in (1, 2, 3):
+        queue_message(node, peer, "ping", Ping(nonce).serialize())
+    peer.send_memusage = 0
+    assert resume_tx_checks(node)
+    assert nonces(peer) == [1]
+    queue_message(node, peer, "ping", Ping(4).serialize())
+    assert nonces(peer) == [1]
+    peer.send_memusage = SEND_BUFFER_MAX_SIZE + 1
+    assert not resume_tx_checks(node)
+    assert nonces(peer) == [1]
+    peer.send_memusage = 0
+    for _ in range(3):
+        assert resume_tx_checks(node)
+    assert nonces(peer) == [1, 2, 3, 4]
     assert not node.tx_checks.waiting
 
 
