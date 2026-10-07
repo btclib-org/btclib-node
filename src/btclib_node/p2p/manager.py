@@ -95,7 +95,6 @@ from btclib_node.p2p.eviction import (
 )
 from btclib_node.p2p.netif import local_addresses
 from btclib_node.p2p.permissions import NetPermissionFlags, Whitelist
-from btclib_node.p2p.protocol_version import BIP0031_VERSION, common_version
 from btclib_node.p2p.selfannounce import (
     LOCAL_BIND,
     LOCAL_IF,
@@ -134,15 +133,16 @@ _AUTOMATIC_DIAL_INTERVAL = 0.5
 # `-peertimeout` to set it.
 _PEER_CONNECT_TIMEOUT = 60
 
-# `manage_connections`'s own idle bound, not Core's `TIMEOUT_INTERVAL`
-# (20 minutes, `net.h`, aed80c7395) -- a shorter one of this tree's own:
-# a connection quiet this long is sent a `ping`, and one still quiet
-# this long again after that is dropped. A pending connection is held
-# to `_PEER_CONNECT_TIMEOUT` above instead. A peer at `BIP0031_VERSION`
-# or below answers its `ping` with no `pong` (`Connection.send_ping`), so
-# it is sent one whenever none has been queued to it this long, and is
-# dropped once quiet twice this long.
-_IDLE_TIMEOUT = 120
+# Core's `PING_INTERVAL` (`src/net_processing.cpp`) and `TIMEOUT_INTERVAL`
+# (`src/net.h`), at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, in
+# seconds: the wait before a connection with no ping outstanding is sent
+# one, and the silence, or the delay of a `pong`, that drops it.
+# `_keep_alive` applies them.
+#
+# bitcoin/bitcoin#36080, which keeps a peer that owes a pong while it is
+# serving a block this node asked for, is not in v31.1 and is not here.
+_PING_INTERVAL = 120
+_TIMEOUT_INTERVAL = 1200
 
 # The two loops Core dials `-connect` and `-addnode` from, each its own
 # thread (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
@@ -1791,8 +1791,8 @@ class P2pManager(threading.Thread):
                 )
                 self.remove_connection(conn.id)
                 continue
-            if now - conn.last_receive > _IDLE_TIMEOUT:
-                self._ping_or_drop_idle(conn, now)
+            if not self._keep_alive(conn, now):
+                continue
             self._maybe_send_local_addr(conn, now)
         for conn in self.pending_connections.copy().values():
             # Dropped `_PEER_CONNECT_TIMEOUT` after connecting, quiet or
@@ -1800,7 +1800,7 @@ class P2pManager(threading.Thread):
             # of `fSuccessfullyConnected` (btclib-org/btclib-node#1169).
             # No ping in between: `ping` is as much a message the
             # handshake has to clear before it is sent as `inv` or `tx`
-            # is (#131). The idle bound above is not asked here, being
+            # is (#131). `_TIMEOUT_INTERVAL` is not asked here, being
             # longer: a connection quiet that long is past this one.
             # A v2 outbound attempt a v1-only peer refuses ends here, as a
             # `Closed` pending connection: `remove_connection` is Core's
@@ -1862,26 +1862,36 @@ class P2pManager(threading.Thread):
         else:
             conn.send(Addr([addr_entry(address)]))
 
-    def _ping_or_drop_idle(self, conn: Connection, now: float) -> None:
-        """Ping or drop `conn`, quiet for `_IDLE_TIMEOUT`, as argued there."""
-        # One read, not `conn.ping_sent` re-read in the `elif` below:
-        # `callbacks.pong`, on the other thread, clears it the moment a
-        # pong answers this connection's own ping, and a second read
-        # landing right after that clear turned `now - 0 > _IDLE_TIMEOUT`
-        # true for every `now`, dropping a peer for having just answered.
+    def _keep_alive(self, conn: Connection, now: float) -> bool:
+        """Ping `conn` or drop it as Core does; whether it was kept.
+
+        `MaybeSendPing` and `CConnman::InactivityCheck`
+        (`src/net_processing.cpp` and `src/net.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a peer this node
+        has received nothing from, or sent no whole message to, for
+        `_TIMEOUT_INTERVAL`, or whose `pong` is that overdue, is
+        dropped; otherwise it is sent a `ping` once `_PING_INTERVAL`
+        has passed since the last and none is outstanding. A peer at
+        `BIP0031_VERSION` or below has none outstanding, so only its
+        silence drops it.
+        """
+        # One read, not `conn.ping_sent` re-read below: `callbacks.pong`,
+        # on the other thread, clears it the moment a pong answers this
+        # connection's own ping, and a second read landing right after
+        # that clear turned `now - 0` into an overdue pong, dropping a
+        # peer for having just answered.
         # btclib-org/btclib-node#357
         ping_sent = conn.ping_sent
-        if common_version(conn) <= BIP0031_VERSION:
-            # no `pong` to wait on (`Connection.send_ping`), so the whole
-            # quiet span is waited out here instead
-            if now - conn.last_receive > 2 * _IDLE_TIMEOUT:
-                self.remove_connection(conn.id)
-            elif now - conn.ping_start > _IDLE_TIMEOUT:
-                conn.send_ping()
-        elif not ping_sent:
-            conn.send_ping()
-        elif now - ping_sent > _IDLE_TIMEOUT:
+        if (
+            now - conn.last_receive > _TIMEOUT_INTERVAL
+            or now - conn.last_send > _TIMEOUT_INTERVAL
+            or (ping_sent and now - ping_sent > _TIMEOUT_INTERVAL)
+        ):
             self.remove_connection(conn.id)
+            return False
+        if not ping_sent and now - conn.ping_start > _PING_INTERVAL:
+            conn.send_ping()
+        return True
 
     def _maybe_add_fixed_seeds(self) -> None:
         """Add the chain's fixed seeds for every reachable network held empty.

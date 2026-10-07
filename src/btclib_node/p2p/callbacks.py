@@ -603,6 +603,10 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
     if not conn.version_message:
         return
     conn.status = P2pConnStatus.Connected
+    # Ahead of `promote_connection`: `P2pManager._keep_alive`, on another
+    # thread, pings a connection whose `ping_start` is old, and would
+    # ping this one as it arrives. btclib-org/btclib-node#1768
+    conn.ping_start = time.time()
     # out of P2pManager.pending_connections and into connections, the
     # dict every send iterates: btclib-org/btclib-node#131
     node.p2p_manager.promote_connection(conn.id)

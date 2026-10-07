@@ -64,6 +64,7 @@ from btclib_node.p2p.eviction import Network, get_network, net_group
 from btclib_node.p2p.main import handle_p2p_handshake
 from btclib_node.p2p.manager import P2pManager
 from btclib_node.p2p.permissions import NetPermissionFlags, Whitelist
+from btclib_node.p2p.protocol_version import BIP0031_VERSION
 from btclib_node.p2p.selfannounce import LOCAL_BIND, LOCAL_MANUAL, LocalService
 from btclib_node.p2p.tx_checks import TxChecks
 from btclib_node.p2p.v2transport import V1PeerRefusedError, V2Transport
@@ -95,7 +96,8 @@ def a_conn(
     *,
     status: P2pConnStatus = P2pConnStatus.Connected,
     last_receive: float | None = None,
-    ping_start: float = 0,
+    last_send: float | None = None,
+    ping_start: float | None = None,
     connected_time: int | None = None,
     address: NetworkAddressV2 | None = None,
     relay_tx: bool = True,
@@ -116,9 +118,10 @@ def a_conn(
 
     `reconnect_v1` is what its transport answers `should_reconnect_v1`.
 
-    `send_ping` on this double does not send a real ping: it records
-    one and backdates `ping_sent` well past the idle bound, standing in
-    for a ping already sent and never answered. `nonce` defaults to
+    `send_ping` on this double records a ping and stamps `ping_start`,
+    and `ping_sent` too unless `protocol` is `BIP0031_VERSION` or below,
+    as the real one does. `ping_start` defaults to now, a ping just
+    sent, and `last_send` to `last_receive`. `nonce` defaults to
     `None`, the same as a real `Connection` that has not sent a
     `version` yet -- `promote_connection` and `remove_connection` both
     read it back to clear `pending_outbound_nonces`.
@@ -129,7 +132,12 @@ def a_conn(
         status=status,
         address=address or default_address,
         last_receive=time.time() if last_receive is None else last_receive,
-        ping_start=ping_start,
+        last_send=(
+            (time.time() if last_receive is None else last_receive)
+            if last_send is None
+            else last_send
+        ),
+        ping_start=time.time() if ping_start is None else ping_start,
         connected_time=int(time.time()) if connected_time is None else connected_time,
         ping_sent=0,
         relay_tx=relay_tx,
@@ -163,10 +171,9 @@ def a_conn(
     conn.stop = lambda: conn.stopped.append(True)
 
     def send_ping() -> None:
-        # a ping already answered by nothing: the manager reads the time
-        # it was sent to decide the peer is gone
-        conn.ping_sent = time.time() - 200
         conn.ping_start = time.time()
+        if protocol > BIP0031_VERSION:
+            conn.ping_sent = conn.ping_start
         conn.sent.append("ping")
 
     conn.send_ping = send_ping
@@ -811,75 +818,113 @@ def test_a_connection_that_has_closed_is_let_go_of(a_manager: AManagerFactory) -
     assert not manager.connections
 
 
-def test_a_closed_connection_past_the_idle_bound_is_not_pinged(
+def test_a_closed_connection_due_a_ping_is_not_pinged(
     a_manager: AManagerFactory,
 ) -> None:
-    """#435: removal does not fall through into the idle check below it.
+    """#435: removal does not fall through into the ping check below it.
 
-    A connection `Closed` and idle at once used to be removed by the
-    first check and then, still the loop variable, found idle by the
-    second -- with `last_receive` frozen and `ping_sent` never set, so
-    `send_ping` ran on a connection already out of both tables.
+    A connection `Closed` and due a ping at once used to be removed by the
+    first check and then, still the loop variable, pinged by the
+    second: `send_ping` ran on a connection already out of both tables.
     """
-    conn = a_conn(1, status=P2pConnStatus.Closed, last_receive=time.time() - 200)
+    conn = a_conn(1, status=P2pConnStatus.Closed, ping_start=time.time() - 200)
     manager = a_manager([conn])
     asyncio.run(one_pass(manager))
     assert not manager.connections
     assert conn.sent == []
 
 
-def test_a_peer_that_has_gone_quiet_is_pinged_and_then_dropped(
-    a_manager: AManagerFactory,
-) -> None:
-    """An idle peer is pinged first, and dropped only past a second idle pass.
+# Core's `PING_INTERVAL` and `TIMEOUT_INTERVAL`, which `_keep_alive`
+# applies
+PING_INTERVAL = 120
+TIMEOUT_INTERVAL = 1200
 
-    `a_conn`'s own `send_ping` backdates `ping_sent` on the spot, so
-    the second pass finds the ping already unanswered rather than
-    waiting for a real one to time out.
-    """
-    conn = a_conn(1, last_receive=time.time() - 200)
+
+@pytest.mark.parametrize(
+    ("since_ping", "pinged"),
+    [(PING_INTERVAL + 10, True), (PING_INTERVAL - 10, False)],
+)
+def test_an_active_peer_is_pinged_every_ping_interval(
+    a_manager: AManagerFactory, since_ping: int, *, pinged: bool
+) -> None:
+    """ISS 1768: an active peer is pinged two minutes after its last ping."""
+    conn = a_conn(1, ping_start=time.time() - since_ping)
     manager = a_manager([conn])
-
-    async def pinged_then_dropped() -> None:
-        await one_pass(manager)
-        assert conn.sent == ["ping"]
-        assert list(manager.connections) == [1]
-        await one_pass(manager)
-
-    asyncio.run(pinged_then_dropped())
-    assert not manager.connections
+    asyncio.run(one_pass(manager))
+    assert conn.sent == (["ping"] if pinged else [])
+    assert list(manager.connections) == [1]
 
 
-def test_a_quiet_peer_at_bip31_or_below_is_pinged_and_dropped_on_quiet(
-    a_manager: AManagerFactory,
+@pytest.mark.parametrize(
+    ("overdue", "dropped"),
+    [(TIMEOUT_INTERVAL + 10, True), (TIMEOUT_INTERVAL - 10, False)],
+)
+def test_a_peer_that_never_answers_a_ping_is_dropped_after_the_timeout_interval(
+    a_manager: AManagerFactory, overdue: int, *, dropped: bool
 ) -> None:
-    """ISS 1180: no `pong` to wait on, so twice the idle bound is waited.
+    """ISS 1768: Core waits twenty minutes for a `pong`, not two.
 
-    ISS 1204: meanwhile it is sent a `ping`, with no nonce, where none
-    has been queued to it for the idle bound, and a second pass queues
-    no second one; the same quiet span a pinged peer gets drops it.
+    The peer keeps sending and being sent to, so only the `pong` is overdue.
     """
-    bound = manager_module._IDLE_TIMEOUT
-    long_ago = time.time() - bound - 10
-    quiet = a_conn(1, last_receive=long_ago, protocol=60000)
-    pinged = a_conn(2, last_receive=long_ago, ping_start=time.time(), protocol=60000)
-    quieter = a_conn(3, last_receive=time.time() - 2 * bound - 10, protocol=60000)
-    manager = a_manager([quiet, pinged, quieter])
+    sent_at = time.time() - overdue
+    conn = a_conn(1, ping_start=sent_at)
+    conn.ping_sent = sent_at
+    manager = a_manager([conn])
     asyncio.run(one_pass(manager))
-    asyncio.run(one_pass(manager))
-    assert quiet.sent == ["ping"]
-    assert pinged.sent == quieter.sent == []
-    assert list(manager.connections) == [1, 2]
+    assert (1 not in manager.connections) is dropped
+    assert conn.sent == []
 
 
-def test_a_peer_that_answered_recently_is_left_alone(
+def test_a_peer_sending_one_block_slowly_is_kept_without_a_pong(
     a_manager: AManagerFactory,
 ) -> None:
-    """A peer heard from recently is neither pinged nor dropped."""
+    """ISS 1768: a peer serving a block for five minutes keeps its slot.
+
+    The ping went out five minutes ago, queued behind the block this node
+    asked for, and its `pong` follows the block. The peer was last heard
+    from two minutes ago, and no second ping is sent.
+    """
+    sent_at = time.time() - 300
+    conn = a_conn(1, last_receive=time.time() - 130, ping_start=sent_at)
+    conn.last_send = time.time()
+    conn.ping_sent = sent_at
+    manager = a_manager([conn])
+    asyncio.run(one_pass(manager))
+    assert list(manager.connections) == [1]
+    assert conn.sent == []
+
+
+@pytest.mark.parametrize("side", ["last_receive", "last_send"])
+@pytest.mark.parametrize(
+    ("quiet", "dropped"),
+    [(TIMEOUT_INTERVAL + 10, True), (TIMEOUT_INTERVAL - 10, False)],
+)
+def test_a_peer_with_nothing_received_or_sent_for_the_timeout_interval_is_dropped(
+    a_manager: AManagerFactory, side: str, quiet: int, *, dropped: bool
+) -> None:
+    """ISS 1768: `InactivityCheck` drops on either direction's silence."""
     conn = a_conn(1)
+    setattr(conn, side, time.time() - quiet)
     manager = a_manager([conn])
     asyncio.run(one_pass(manager))
-    assert conn.sent == []
+    assert (1 not in manager.connections) is dropped
+
+
+def test_a_peer_at_bip31_or_below_is_pinged_without_a_pong_to_wait_for(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1180, ISS 1204, ISS 1768: a nonceless ping, and no `pong` awaited.
+
+    It is sent a ping every `PING_INTERVAL` and owes no `pong`. The first
+    pass stamps `ping_start`, so a second pass sends no second ping. Only
+    silence drops it.
+    """
+    pinged = a_conn(1, ping_start=time.time() - PING_INTERVAL - 10, protocol=60000)
+    silent = a_conn(2, last_receive=time.time() - TIMEOUT_INTERVAL - 10, protocol=60000)
+    manager = a_manager([pinged, silent])
+    asyncio.run(one_pass(manager))
+    asyncio.run(one_pass(manager))
+    assert pinged.sent == ["ping"]
     assert list(manager.connections) == [1]
 
 
@@ -918,8 +963,8 @@ def test_a_pong_landing_between_the_idle_check_and_its_reread_does_not_drop_the_
     `_prune_stale_connections` used to read `conn.ping_sent` twice -- once for
     `if not conn.ping_sent` and again for the `elif` right after -- so a
     `callbacks.pong` on the other thread clearing it to 0 between the two reads
-    made `now - 0 > _IDLE_TIMEOUT` true for a peer that had just answered its
-    ping.
+    made a just-cleared `ping_sent` read as an overdue pong, dropping a peer
+    that had just answered its ping.
 
     Driven deterministically rather than by timing an actual thread: a
     `ping_sent` that answers a recent timestamp on its first read and 0 -- what
@@ -932,7 +977,9 @@ def test_a_pong_landing_between_the_idle_check_and_its_reread_does_not_drop_the_
         id = 1
         status = P2pConnStatus.Connected
         address = peer_address("1.2.3.4", 18444)
-        last_receive = time.time() - 200
+        last_receive = time.time()
+        last_send = time.time()
+        ping_start = time.time() - 200
         relay_tx = True
         feefilter = 0
         automatic = False
@@ -5138,18 +5185,6 @@ def test_a_transaction_of_our_own_is_handed_to_the_download_manager(
     tx = generate_random_transaction()
     manager.broadcast_raw_transaction(tx, 1000)
     assert manager.node.download_manager.received_txs == [(None, tx.hash)]
-
-
-def test_a_peer_that_was_pinged_recently_is_given_time_to_answer(
-    a_manager: AManagerFactory,
-) -> None:
-    """An idle peer already pinged recently is not pinged again or dropped."""
-    conn = a_conn(1, last_receive=time.time() - 200)
-    conn.ping_sent = time.time()
-    manager = a_manager([conn])
-    asyncio.run(one_pass(manager))
-    assert conn.sent == []
-    assert list(manager.connections) == [1]
 
 
 def test_an_empty_peer_db_is_not_asked_for_an_address(
