@@ -199,9 +199,33 @@ def test_a_retarget_block_is_not_dated_before_its_parent_less_the_timewarp_bound
     ].header
     tip_time = int(tip.time.timestamp())
 
-    assert mining._minimum_time(tip, 143, 1_000, node) == 1_001
+    assert mining._minimum_time(tip, 142, 1_000, node) == 1_001
     assert mining._minimum_time(tip, 144, 1_000, node) == max(1_001, tip_time - 600)
     assert mining._minimum_time(tip, 144, tip_time + 5, node) == tip_time + 6
+
+
+def test_a_period_last_block_is_not_dated_before_the_period_first_block(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """At a period's last height `GetMinimumTime` has BIP54's bound."""
+    with_consensus(monkeypatch, node, pow_target_timespan=2_400)
+    mine(node, 103)
+    # the period's first block is dated ahead of every median time past
+    template = create_new_block(node, SCRIPT)
+    template.block.header.time += timedelta(seconds=3_000)
+    first = mine_template(node, template.block)
+    mine(node, 2)
+    block_index = node.chainstate.block_index
+    tip_hash = block_index.active_chain[-1]
+    tip = block_index.header_dict[tip_hash].header
+    assert len(block_index.active_chain) == 107
+    assert int(tip.time.timestamp()) < int(first.header.time.timestamp())
+
+    template = create_new_block(node, SCRIPT)
+
+    first_time = int(first.header.time.timestamp())
+    assert template.min_time == first_time
+    assert int(template.block.header.time.timestamp()) == first_time
 
 
 def test_the_package_with_the_best_feerate_goes_in_first(funded: Node) -> None:
@@ -306,25 +330,22 @@ def test_a_package_over_the_sigop_limit_is_left_out(
     assert template.sigops == [1]
 
 
-def test_a_package_is_counted_at_its_sigop_adjusted_weight(
+def test_a_sigop_dense_package_that_fits_by_weight_is_in_the_template(
     funded: Node, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Core's chunk limit is `GetAdjustedWeight`, not the weight."""
-    cbs = coinbases(funded, 2)
-    heavy = pool(funded, spend([OutPoint(cbs[0].id, 0)], [SUBSIDY - 9_000]), 9_000)
-    light = pool(funded, spend([OutPoint(cbs[1].id, 0)], [SUBSIDY - 1_000]), 1_000)
-    monkeypatch.setattr(
-        mining,
-        "sig_op_cost",
-        lambda _prev_outputs, tx, _flags: 1_000 if tx is heavy else 1,
-    )
-    # the weight of `heavy` fits, and its 1000 sigops at 20 each do not
-    assert heavy.weight < 10_000
-    monkeypatch.setattr(mining, "MAX_BLOCK_WEIGHT", 8_000 + 10_000)
+    """The weight limit compares real weight; the sigop limit is its own."""
+    cbs = coinbases(funded, 1)
+    dense = pool(funded, spend([OutPoint(cbs[0].id, 0)], [SUBSIDY - 9_000]), 9_000)
+    monkeypatch.setattr(mining, "sig_op_cost", lambda _prev_outputs, _tx, _flags: 1_000)
+    # 1000 sigops at 20 weight each are over the room the weight leaves
+    room = dense.weight + 1
+    assert room < 1_000 * 20
+    monkeypatch.setattr(mining, "MAX_BLOCK_WEIGHT", 8_000 + room)
 
     template = create_new_block(funded, SCRIPT)
 
-    assert template.block.transactions[1:] == [light]
+    assert template.block.transactions[1:] == [dense]
+    assert template.sigops == [1_000]
 
 
 def test_a_package_under_one_satoshi_per_kvb_is_left_out(funded: Node) -> None:

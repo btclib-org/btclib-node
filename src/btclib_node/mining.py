@@ -21,9 +21,13 @@ Where this module differs from Core:
   order. This mempool has no clusters (btclib-org/btclib-node#1383,
   btclib-org/btclib-node#1499), so `_PackageSelector` takes ancestor
   packages by feerate, the order Core used before them. The block is
-  valid either way; the fee it collects can differ. As Core's chunk
-  limits do, the weight limit counts a package at its sigop-adjusted
-  weight.
+  valid either way; the fee it collects can differ.
+- The weight limit and `_minimum_time` follow Core's `master` at
+  bitcoin/bitcoin@aef8a04966, not v31.1. The weight limit compares a
+  package's real weight (bitcoin/bitcoin#35580), and the sigop limit
+  is checked on its own. `_minimum_time` holds the last block of a
+  difficulty period to the time of its first, BIP54's rule, on every
+  network (bitcoin/bitcoin#35949).
 - `-blockmaxweight`, `-blockmintxfee`, `-blockreservedweight` and
   `-printpriority` are not options of this node: the block limits are
   Core's defaults, and a package under `DEFAULT_BLOCK_MIN_TX_FEE`, 1
@@ -124,10 +128,6 @@ _WITNESS_NONCE = bytes(32)
 # `DEFAULT_BLOCK_MIN_TX_FEE`, 1 sat/kvB, as satoshi per virtual byte
 _MIN_FEERATE = Fraction(1, 1000)
 
-# `DEFAULT_BYTES_PER_SIGOP` (`src/policy/policy.h`): what a sigop weighs in
-# a transaction's sigop-adjusted weight
-_BYTES_PER_SIGOP = 20
-
 # nonces `solve_block` tries in one step. A pass of the loop runs one step
 # of each search in progress, so it grows by one chunk per search, at most
 # `RPC_THREADS` of them (`constants.RPC_THREADS`).
@@ -179,10 +179,21 @@ class _Chosen(NamedTuple):
 def _minimum_time(
     tip_header: BlockHeader, height: int, tip_mtp: int, node: Node
 ) -> int:
-    """Return `GetMinimumTime`: past the median time, and BIP94's bound."""
+    """Return `GetMinimumTime`: past the median time, and two bounds.
+
+    A period's first block is held to BIP94's timewarp bound and its last
+    to BIP54's Murch-Zawy bound, the time of the period's first block.
+    Core applies both to templates on every network. Only BIP94's is
+    consensus here, and only on testnet4.
+    """
+    interval = node.chain.consensus.difficulty_adjustment_interval
     min_time = tip_mtp + 1
-    if height % node.chain.consensus.difficulty_adjustment_interval == 0:
+    if height % interval == 0:
         min_time = max(min_time, block_time(tip_header) - MAX_TIMEWARP)
+    if height % interval == interval - 1:
+        block_index = node.chainstate.block_index
+        first = block_index.header_dict[block_index.active_chain[height - interval + 1]]
+        min_time = max(min_time, block_time(first.header))
     return min_time
 
 
@@ -267,15 +278,10 @@ class _PackageSelector:
             (-Fraction(fee, size), len(self.heap), wtxid, self.revision[wtxid]),
         )
 
-    def _adjusted_weight(self, wtxid: bytes) -> int:
-        """Return Core's `GetAdjustedWeight`: the weight, or the sigops'."""
-        weight = self.pool.transactions[wtxid].weight
-        return max(weight, self._sigops_of(wtxid) * _BYTES_PER_SIGOP)
-
     def _fits(self, package: list[bytes]) -> bool:
         transactions = self.pool.transactions
         return (
-            self.weight + sum(self._adjusted_weight(w) for w in package)
+            self.weight + sum(transactions[w].weight for w in package)
             < MAX_BLOCK_WEIGHT
             and self.cost + sum(self._sigops_of(w) for w in package)
             < MAX_BLOCK_SIGOPS_COST
