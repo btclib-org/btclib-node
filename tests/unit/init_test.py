@@ -565,8 +565,9 @@ def test_drain_progress_extends_stop_s_wait_past_stop_timeout(
 
     The deadline is not pushed during a pause: one longer than
     `STOP_TIMEOUT` between two answers, or after the last, still fails
-    `stop`. So `STOP_TIMEOUT` is 4.0, below the 5.0 the answers sum to;
-    at 1.0 a stall of 1.2 seconds failed it (btclib-org/btclib-node#1790).
+    `stop`. So `STOP_TIMEOUT` is wide enough to absorb a stall on a busy
+    machine, and still below what the ten answers sum to
+    (btclib-org/btclib-node#1790).
     """
     monkeypatch.setattr(btclib_node, "STOP_TIMEOUT", 4.0)
     hold = threading.Event()
