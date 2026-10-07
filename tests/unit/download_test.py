@@ -13,6 +13,7 @@ has stopped sending blocks is let go.
 """
 
 import math
+import random
 import threading
 import time
 from datetime import UTC, datetime
@@ -45,7 +46,11 @@ from btclib_node.p2p.manager import P2pManager
 from btclib_node.p2p.permissions import NetPermissionFlags
 from btclib_node.p2p.protocol_version import FEEFILTER_VERSION, SENDHEADERS_VERSION
 from btclib_node.p2p.tx_checks import TxCheck, TxChecks
-from tests import generate_random_header_chain, generate_random_transaction
+from tests import (
+    generate_random_header_chain,
+    generate_random_transaction,
+    random_mempool_history,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -685,6 +690,33 @@ def test_a_short_queue_beside_a_long_disjoint_one_is_sent_whole_and_best_first()
     assert short.tx_announce_queue == {}
     assert len(only(long, Inv)[0].items) == 70
     assert len(long.tx_announce_queue) == 130
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_a_trickle_sends_the_top_of_the_full_sort_after_any_change(seed: int) -> None:
+    """ISS 1810: a partial pick gives the full sort's top `cap`."""
+    rng = random.Random(seed)
+    other = a_conn(1)
+    manager = make_manager([other])
+    mempool = cast("Any", manager.node).mempool
+    trickles = 0
+    for step_number, _ in enumerate(random_mempool_history(rng, mempool, 300)):
+        if step_number % 7 or len(mempool.transactions) < 80:
+            continue
+        held = list(mempool.transactions)
+        queued = rng.sample(held, rng.randint(80, len(held)))
+        other.tx_announce_queue = dict.fromkeys(queued)
+        other.next_inv_send_time = 0.0
+        other.known_tx_inventory = KnownTxInventory()
+        other.sent.clear()
+        manager._send_due_announcements()
+        keys = mempool.mining_order_keys(queued)
+        full_sort = sorted(queued, key=keys.__getitem__)
+        (inv,) = only(other, Inv)
+        assert hashes_of(inv) == full_sort[: len(inv.items)]
+        assert len(inv.items) == 70
+        trickles += 1
+    assert trickles
 
 
 def test_a_prioritised_transaction_is_ranked_by_its_modified_fee() -> None:

@@ -55,11 +55,13 @@ from btclib_node.rpc import manager as rpc_manager
 from btclib_node.rpc.auth import COOKIE_FILE, password_hmac
 
 if TYPE_CHECKING:
+    import random
     from collections.abc import Callable, Generator, Iterator
 
     from btclib.p2p.addrv2 import NetworkAddressV2
 
     from btclib_node import Node
+    from btclib_node.mempool import Mempool
 
 
 _TESTS_DIR = Path(__file__).parent
@@ -301,6 +303,103 @@ def generate_random_transaction(
         vin=[tx_in],
         vout=[tx_out],
     )
+
+
+def _spending_tx(outpoints: list[tuple[bytes, int]]) -> Tx:
+    """Return a transaction of three outputs spending `outpoints`."""
+    return Tx(
+        version=1,
+        lock_time=0,
+        vin=[
+            TxIn(
+                prev_out=OutPoint(txid, vout),
+                script_sig=anyone_can_spend_script_sig(),
+                sequence=0xFFFFFFFF,
+            )
+            for txid, vout in outpoints
+        ],
+        vout=[TxOut(value=10**6, script_pub_key=anyone_can_spend()) for _ in range(3)],
+    )
+
+
+def _mempool_changes(
+    rng: random.Random, mempool: Mempool
+) -> dict[str, Callable[[], None]]:
+    """Return the changes `random_mempool_history` picks from, by name."""
+
+    def held() -> list[Tx]:
+        return list(mempool.transactions.values())
+
+    def new_tx() -> tuple[Tx, int, int]:
+        free = [
+            (tx.id, vout)
+            for tx in held()
+            for vout in range(3)
+            if (tx.id, vout) not in mempool.outpoint_spender
+        ]
+        outpoints = (
+            rng.sample(free, min(len(free), rng.randint(1, 3)))
+            if free and rng.random() < 0.7
+            else [(secrets.token_bytes(32), 0)]
+        )
+        return _spending_tx(outpoints), rng.randint(0, 20_000), rng.randint(100, 3000)
+
+    def add() -> None:
+        tx, fee, vsize = new_tx()
+        mempool.add_tx(tx, fee=fee, vsize=vsize)
+
+    def stage() -> None:
+        tx, fee, vsize = new_tx()
+        with mempool.staged(tx, fee, vsize):
+            pass
+
+    def conflict() -> None:
+        victim = rng.choice(held())
+        mempool.remove_for_block(
+            [
+                _spending_tx(
+                    [(vin.prev_out.tx_id, vin.prev_out.vout) for vin in victim.vin]
+                )
+            ]
+        )
+
+    def prioritise() -> None:
+        delta = rng.choice([-1, 1]) * rng.randint(1, 6000)
+        mempool.prioritise(rng.choice(held()).id, delta)
+
+    return {
+        "add": add,
+        "stage": stage,
+        "remove": lambda: mempool.remove_tx(rng.choice(held())),
+        "block": lambda: mempool.remove_for_block(
+            rng.sample(held(), min(len(held()), rng.randint(1, 3)))
+        ),
+        "conflict": conflict,
+        "evict": lambda: mempool.remove_with_descendants(rng.choice(held()).hash),
+        "prioritise": prioritise,
+    }
+
+
+def random_mempool_history(
+    rng: random.Random, mempool: Mempool, steps: int
+) -> Iterator[str]:
+    """Change `mempool` at random `steps` times, yielding what each did.
+
+    Transactions have three outputs and spend up to three outpoints of
+    held ones, so there are chains, siblings and children of several
+    parents. A step is one of: an addition, a removal, a block holding
+    some held transactions and one that conflicts with another, an
+    eviction with descendants, a prioritisation, or a transaction held for
+    a moment. A removal leaves a held child whose parent is gone, as a
+    confirmed parent does. Additions are favoured below 100 held.
+    """
+    changes = _mempool_changes(rng, mempool)
+    for _ in range(steps):
+        held = len(mempool.transactions)
+        grow = not held or (held < 100 and rng.random() < 0.8)
+        step = "add" if grow else rng.choice([*changes, "add", "add"])
+        changes[step]()
+        yield step
 
 
 def ambiguous_tx(spk: bytes = b"", *, legacy_insane: bool = False) -> bytes:
