@@ -999,9 +999,10 @@ def test_the_raw_mempool_is_a_plain_list_of_txids_by_default() -> None:
 def test_the_raw_mempool_verbose_table_names_each_transaction() -> None:
     """`getrawmempool` verbose answers an object keyed by txid.
 
-    Each entry names its own wtxid, vsize and weight; the vsize is the one
-    the entry was added with, Core's sigop-adjusted `GetTxSize`
-    (btclib-org/btclib-node#1357).
+    Each entry names its own wtxid, sizes and weight; `vsize_adjusted` and
+    `vsize` are the one the entry was added with, Core's sigop-adjusted
+    `GetTxSize` (btclib-org/btclib-node#1357), and `vsize_bip141` is the
+    transaction's own (btclib-org/btclib-node#1757).
     """
     mempool = Mempool(Logger(debug=True))
     tx = a_tx()
@@ -1012,7 +1013,10 @@ def test_the_raw_mempool_verbose_table_names_each_transaction() -> None:
     assert isinstance(verbose, dict)
     assert list(verbose) == [tx.id.hex()]
     assert verbose[tx.id.hex()]["wtxid"] == tx.hash.hex()
+    assert verbose[tx.id.hex()]["vsize_adjusted"] == tx.vsize + 7
     assert verbose[tx.id.hex()]["vsize"] == tx.vsize + 7
+    assert verbose[tx.id.hex()]["vsize_bip141"] == tx.vsize
+    assert list(verbose[tx.id.hex()])[:3] == ["size", "vsize_adjusted", "vsize"]
     assert verbose[tx.id.hex()]["weight"] == tx.weight
 
 
@@ -2429,20 +2433,25 @@ def test_mempool_acceptance_reports_a_reason_for_each_refusal(
         ) -> MempoolAcceptance:
             if error is not None:
                 raise error
-            return MempoolAcceptance(0, 81)
+            return MempoolAcceptance(0, tx.vsize + 7)
 
         monkeypatch.setattr(cb, "verify_mempool_acceptance", verify)
         (result,) = mempool_accept(a_node(), _CONN, [[raw]])
         verdict = {
-            k: v for k, v in result.items() if k not in {"txid", "wtxid", "vsize"}
+            k: v
+            for k, v in result.items()
+            if k not in {"txid", "wtxid", "vsize_adjusted", "vsize", "vsize_bip141"}
         }
         assert verdict == expected
         # the size verification answered, and only for an accepted one,
-        # as Core answers it (btclib-org/btclib-node#1357)
+        # as Core answers it, with the transaction's own BIP 141 size
+        # beside it (btclib-org/btclib-node#1357, btclib-org/btclib-node#1757)
+        sizes = ("vsize_adjusted", "vsize", "vsize_bip141")
         if name == "accepted":
-            assert result["vsize"] == 81
+            assert [result[k] for k in sizes] == [tx.vsize + 7, tx.vsize + 7, tx.vsize]
+            assert [k for k in result if k in sizes] == list(sizes)
         else:
-            assert "vsize" not in result
+            assert not set(sizes) & result.keys()
 
 
 def test_mempool_acceptance_propagates_a_store_error_rather_than_reporting_it(
@@ -7992,6 +8001,8 @@ def test_test_mempool_accept_default_maxfeerate_refuses_a_high_fee(
     assert result["allowed"] is False
     assert result["reject-reason"] == "max-fee-exceeded"
     assert "vsize" not in result
+    assert "vsize_adjusted" not in result
+    assert "vsize_bip141" not in result
     assert "reject-details" not in result
 
 
@@ -8005,6 +8016,8 @@ def test_test_mempool_accept_maxfeerate_zero_accepts_any_fee(
     )
     assert result["allowed"] is True
     assert result["vsize"] == 200
+    assert result["vsize_adjusted"] == 200
+    assert result["vsize_bip141"] == a_tx().vsize
 
 
 def test_test_mempool_accept_a_lower_maxfeerate_still_refuses_a_cheaper_fee(
@@ -8389,7 +8402,7 @@ def test_get_mempool_entry_a_txid_holding_whitespace_is_invalid_parameter() -> N
 
 
 def test_get_mempool_entry_answers_core_s_own_shape() -> None:
-    """`getmempoolentry` answers vsize, weight, fees, ancestors and descendants.
+    """`getmempoolentry` answers sizes, weight, fees, ancestors and descendants.
 
     `parent` <- `tx` <- `child`, one held entry each, `tx` in the middle
     read back. btclib-org/btclib-node#1397
@@ -8399,12 +8412,15 @@ def test_get_mempool_entry_answers_core_s_own_shape() -> None:
     tx = generate_random_transaction(parent.id)
     child = generate_random_transaction(tx.id)
     mempool.add_tx(parent, 1_000, height=100)
-    mempool.add_tx(tx, 2_000, height=100)
+    mempool.add_tx(tx, 2_000, tx.vsize + 7, height=100)
     mempool.add_tx(child, 3_000, height=100)
     node = a_node(mempool=mempool)
 
     entry = get_mempool_entry(node, _CONN, [tx.id.hex()])
-    assert entry["vsize"] == mempool.vsizes[tx.hash]
+    assert entry["vsize_adjusted"] == tx.vsize + 7
+    assert entry["vsize"] == tx.vsize + 7
+    assert entry["vsize_bip141"] == tx.vsize
+    assert list(entry)[:3] == ["vsize_adjusted", "vsize", "vsize_bip141"]
     assert entry["weight"] == tx.weight
     assert entry["height"] == 100
     assert entry["wtxid"] == tx.hash

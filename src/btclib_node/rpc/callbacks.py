@@ -2857,9 +2857,14 @@ def get_raw_mempool(
         return {
             tx.id.hex(): {
                 "size": tx.size,
-                # Core's `GetTxSize`, the sigop-adjusted one.
-                # btclib-org/btclib-node#1357
+                # Core's `GetTxSize`, the sigop-adjusted one, as
+                # `vsize_adjusted` and the deprecated `vsize`, then the
+                # BIP 141 size (`entryToJSON`, `src/rpc/mempool.cpp`, at
+                # bitcoin/bitcoin@aef8a04966). btclib-org/btclib-node#1357,
+                # btclib-org/btclib-node#1757
+                "vsize_adjusted": node.mempool.vsizes[wtxid],
                 "vsize": node.mempool.vsizes[wtxid],
+                "vsize_bip141": tx.vsize,
                 "weight": tx.weight,
                 "wtxid": tx.hash.hex(),
             }
@@ -2917,7 +2922,9 @@ def get_mempool_entry(
     """Answer `getmempoolentry`: one held transaction's own accounting.
 
     Core's own shape (`entryToJSON`, `src/rpc/mempool.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), less `chunkweight` and
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), with Core 32's
+    `vsize_adjusted` and `vsize_bip141` (at bitcoin/bitcoin@aef8a04966,
+    btclib-org/btclib-node#1757), less `chunkweight` and
     the `fees` object's own `chunk` -- `Mempool.entry`'s own docstring is
     where that is argued. A `txid` this mempool does not hold is Core's
     own `RPC_INVALID_ADDRESS_OR_KEY`, "Transaction not in mempool".
@@ -2942,7 +2949,11 @@ def get_mempool_entry(
         )
     entry = mempool.entry(wtxid)
     return {
+        # `entryToJSON`'s three sizes (`src/rpc/mempool.cpp`, at
+        # bitcoin/bitcoin@aef8a04966). btclib-org/btclib-node#1757
+        "vsize_adjusted": entry.vsize,
         "vsize": entry.vsize,
+        "vsize_bip141": mempool.transactions[wtxid].vsize,
         "weight": entry.weight,
         "time": entry.time,
         "height": entry.height,
@@ -3737,8 +3748,8 @@ def _mempool_accept_verdict(
         tx_res["reject-details"] = reason
         return tx_res
     try:
-        # `vsize` for an accepted one alone, as Core answers it: the
-        # sigop-adjusted size, known once the prevouts are read.
+        # The sizes for an accepted one alone, as Core answers them: the
+        # sigop-adjusted size is known once the prevouts are read.
         # btclib-org/btclib-node#1357
         fee, vsize = verify_mempool_acceptance(node, tx)
         if _exceeds_max_fee(vsize, fee, max_raw_tx_fee_rate):
@@ -3748,7 +3759,11 @@ def _mempool_accept_verdict(
             # to read one from. btclib-org/btclib-node#1371
             tx_res["reject-reason"] = "max-fee-exceeded"
         else:
+            # `testmempoolaccept`'s three sizes (`src/rpc/mempool.cpp`,
+            # at bitcoin/bitcoin@aef8a04966). btclib-org/btclib-node#1757
+            tx_res["vsize_adjusted"] = vsize
             tx_res["vsize"] = vsize
+            tx_res["vsize_bip141"] = tx.vsize
             tx_res["allowed"] = True
     except TxRejectedError as exc:
         # Core's own pair for every reason but `missing-inputs`

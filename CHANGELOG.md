@@ -245,6 +245,12 @@ leaving a parent's dust unspent is refused "missing-ephemeral-spends",
   network**, as in Core's bitcoin/bitcoin#35949; not consensus
   (closes #1755).
 
+### The mempool RPCs answer `vsize_adjusted` and `vsize_bip141`
+
+- **`testmempoolaccept`, `getrawmempool` with `verbose` and
+  `getmempoolentry` answer `vsize_adjusted` and `vsize_bip141` beside
+  `vsize`**, with Core 32's values, and their help names them (issue #1757).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on

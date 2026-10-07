@@ -75,6 +75,8 @@ from btclib_node.mempool import format_money
 from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.callbacks import getblocks
 from btclib_node.p2p.compact_block import MostRecentBlock, compact_block
+from btclib_node.rpc.callbacks import get_mempool_entry, get_raw_mempool
+from btclib_node.rpc.callbacks import test_mempool_accept as mempool_accept
 from tests import (
     anyone_can_spend,
     anyone_can_spend_redeem_script,
@@ -92,6 +94,7 @@ if TYPE_CHECKING:
 
     from btclib_node.block_db import Coin
     from btclib_node.p2p.connection import Connection
+    from btclib_node.rpc.connection import RpcConnection
 
 
 # what a mempool candidate below pays where the test is not about its fee:
@@ -1361,6 +1364,30 @@ def test_a_sigop_dense_spend_is_priced_by_its_sigop_cost(node: Node) -> None:
         verify_mempool_acceptance(node, spend(999))
     assert str(raised.value) == "min relay fee not met, 999 < 1000"
     assert verify_mempool_acceptance(node, spend(1_000)) == (1_000, 10_000)
+
+
+def test_the_mempool_rpcs_tell_the_adjusted_size_from_the_bip141_one(
+    node: Node,
+) -> None:
+    """A sigop-dense spend answers 10000 adjusted and its own BIP 141 vsize.
+
+    `testmempoolaccept`, `getmempoolentry` and `getrawmempool` verbose
+    (btclib-org/btclib-node#1757).
+    """
+    tx = a_sigop_dense_spend(node, 100)(1_000)
+    assert tx.vsize < 10_000
+    expected = [10_000, 10_000, tx.vsize]
+    sizes = ("vsize_adjusted", "vsize", "vsize_bip141")
+    raw = tx.serialize(include_witness=True).hex()
+    (verdict,) = mempool_accept(node, cast("RpcConnection", None), [[raw]])
+    assert verdict["allowed"] is True
+    assert [verdict[k] for k in sizes] == expected
+    node.mempool.add_tx(tx, *verify_mempool_acceptance(node, tx))
+    entry = get_mempool_entry(node, cast("RpcConnection", None), [tx.id.hex()])
+    assert [entry[k] for k in sizes] == expected
+    verbose = get_raw_mempool(node, cast("RpcConnection", None), [True])
+    assert isinstance(verbose, dict)
+    assert [verbose[tx.id.hex()][k] for k in sizes] == expected
 
 
 def test_a_sigop_dense_conflict_pays_relay_for_its_sigop_cost(node: Node) -> None:
