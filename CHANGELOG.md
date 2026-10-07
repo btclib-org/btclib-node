@@ -257,6 +257,12 @@ leaving a parent's dust unspent is refused "missing-ephemeral-spends",
   and that spend is erased from the store when it is spent again or its
   creation is undone** (closes #1763). It stayed spendable after a restart.
 
+### A `MSG_WITNESS_TX` in an `inv` is a txid announcement
+
+- **`callbacks.inv` queues one by txid from a peer that did not send
+  `wtxidrelay`**, as Core does at v31.1 (closes #1772). A wtxid-relay
+  peer's is dropped, where Core follows it (issue #1774).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on
