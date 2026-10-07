@@ -33,11 +33,14 @@ _EXPECTED_BARE_LISTING = (
     "getblockhash height\n"
     'getblockheader "blockhash" ( verbose )\n'
     "getchaintips\n"
+    'getmempoolancestors "txid" ( verbose )\n'
+    'getmempooldescendants "txid" ( verbose )\n'
     'getmempoolentry "txid"\n'
     "getmempoolinfo\n"
     "getrawmempool ( verbose mempool_sequence )\n"
     'gettxout "txid" n ( include_mempool )\n'
     'gettxoutsetinfo ( "hash_type" hash_or_height use_index )\n'
+    'gettxspendingprevout [{"txid":"hex","vout":n},...] ( {"mempool_only":bool,"return_spending_tx":bool,...} )\n'
     'preciousblock "blockhash"\n'
     "pruneblockchain height\n"
     'waitforblock "blockhash" ( timeout )\n'

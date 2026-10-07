@@ -980,6 +980,20 @@ class Mempool:
             frontier.extend(self.transactions[parent_wtxid].vin)
         return ancestors
 
+    def related(self, wtxid: bytes, *, ancestors: bool) -> list[bytes]:
+        """Return the wtxids `wtxid` descends from, or that descend from it.
+
+        `_ancestors` or `_descendants` less `wtxid`, which both include
+        and the two RPCs omit. Ordered by internal hash, the txid's bytes
+        reversed, as Core's `setEntries` is: a `std::set` under
+        `CompareIteratorByHash` (`src/kernel/mempool_entry.h`), listed in
+        order by `src/rpc/mempool.cpp`, at bitcoin/bitcoin@9be056a8a7,
+        the v31.1 tag. btclib-org/btclib-node#1501
+        """
+        found = self._ancestors(wtxid) if ancestors else self._descendants(wtxid)
+        found.discard(wtxid)
+        return sorted(found, key=lambda w: self.transactions[w].id[::-1])
+
     def is_bip125_replaceable(self, wtxid: bytes) -> bool:
         """Whether `wtxid`, or an unconfirmed ancestor, signals BIP125 opt-in.
 
@@ -1017,6 +1031,10 @@ class Mempool:
         `txid_index`, and `self.spent_by` itself -- not the transitive
         closure `_ancestors`/`_descendants` walk for the counts and
         sizes beside them, matching Core's own `setDepends`/`GetChildren`.
+        `depends` is in the order of the txids as displayed, Core's
+        `std::set<std::string>`; `spent_by` is in the order of their
+        internal bytes, which `GetChildren` sorts by
+        (`src/txmempool.cpp`, same tag).
         """
         tx = self.transactions[wtxid]
         ancestors = self._ancestors(wtxid)
@@ -1025,7 +1043,8 @@ class Mempool:
             {vin.prev_out.tx_id for vin in tx.vin} & self.txid_index.keys()
         )
         spent_by = sorted(
-            self.transactions[child].id for child in self.spent_by.get(tx.id, ())
+            (self.transactions[child].id for child in self.spent_by.get(tx.id, ())),
+            key=lambda txid: txid[::-1],
         )
         fee = self.fees[wtxid]
         return MempoolEntry(

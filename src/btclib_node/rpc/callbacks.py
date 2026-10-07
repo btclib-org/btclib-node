@@ -79,6 +79,7 @@ from btclib_node.rpc.errors import (
     type_errors,
 )
 from btclib_node.rpc.help import HELP_TEXT, answer_help
+from btclib_node.rpc.jsonrpc import JsonObject
 from btclib_node.rpc.mining import (
     generate_block,
     generate_to_address,
@@ -95,6 +96,7 @@ if TYPE_CHECKING:
     from btclib_node import Node
     from btclib_node.chainstate.block_index import BlockIndex
     from btclib_node.chainstate.utxo_index import UtxoIndex
+    from btclib_node.mempool import Mempool
     from btclib_node.p2p.block_availability import BlockAvailability
     from btclib_node.p2p.connection import Connection
     from btclib_node.rpc.connection import RpcConnection
@@ -116,6 +118,8 @@ __all__ = [
     "get_blockchain_info",
     "get_chain_tips",
     "get_connection_count",
+    "get_mempool_ancestors",
+    "get_mempool_descendants",
     "get_mempool_entry",
     "get_mempool_info",
     "get_network_info",
@@ -127,9 +131,11 @@ __all__ = [
     "get_rpc_info",
     "get_tx_out",
     "get_tx_out_set_info",
+    "get_tx_spending_prevout",
     "help_rpc",
     "invalidate_block",
     "list_banned",
+    "named_only",
     "ping",
     "precious_block",
     "prune_blockchain",
@@ -2887,6 +2893,40 @@ def get_orphan_txs(
     return answer
 
 
+def _mempool_entry_json(mempool: Mempool, wtxid: bytes) -> dict[str, Any]:
+    """Return one entry in `getmempoolentry`'s own shape.
+
+    The shape `getmempoolancestors` and `getmempooldescendants` give each
+    transaction when `verbose` is true, too.
+    """
+    entry = mempool.entry(wtxid)
+    return {
+        # `entryToJSON`'s three sizes (`src/rpc/mempool.cpp`, at
+        # bitcoin/bitcoin@aef8a04966). btclib-org/btclib-node#1757
+        "vsize_adjusted": entry.vsize,
+        "vsize": entry.vsize,
+        "vsize_bip141": mempool.transactions[wtxid].vsize,
+        "weight": entry.weight,
+        "time": entry.time,
+        "height": entry.height,
+        "descendantcount": entry.descendant_count,
+        "descendantsize": entry.descendant_size,
+        "ancestorcount": entry.ancestor_count,
+        "ancestorsize": entry.ancestor_size,
+        "wtxid": entry.wtxid,
+        "fees": {
+            "base": _btc_amount(entry.fee),
+            "modified": _btc_amount(entry.modified_fee),
+            "ancestor": _btc_amount(entry.ancestor_fees),
+            "descendant": _btc_amount(entry.descendant_fees),
+        },
+        "depends": entry.depends,
+        "spentby": entry.spent_by,
+        "bip125-replaceable": entry.bip125_replaceable,
+        "unbroadcast": entry.unbroadcast,
+    }
+
+
 def get_mempool_entry(
     node: Node, conn: RpcConnection, params: list[Any]
 ) -> dict[str, Any]:
@@ -2918,32 +2958,196 @@ def get_mempool_entry(
         raise RpcError(
             RPCErrorCode.INVALID_ADDRESS_OR_KEY, "Transaction not in mempool"
         )
-    entry = mempool.entry(wtxid)
+    return _mempool_entry_json(mempool, wtxid)
+
+
+def _mempool_relatives(
+    node: Node, params: list[Any], *, method: str, ancestors: bool
+) -> dict[str, Any] | list[str]:
+    """Answer `getmempoolancestors` or `getmempooldescendants`.
+
+    Core's two RPCs (`src/rpc/mempool.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag): the transactions in the mempool that `txid` spends
+    from, transitively, or that spend from it, not `txid` itself. A txid
+    array unless `verbose`, then an object of each one's `getmempoolentry`
+    answer, keyed by txid. Core checks every argument's JSON type, and
+    reports every mismatch, before the body runs. btclib-org/btclib-node#1501
+    """
+    if not params:
+        raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT[method])
+    mismatches: list[tuple[int, str, object, str]] = []
+    if not isinstance(params[0], str):
+        mismatches.append((1, "txid", params[0], "string"))
+    verbose_mismatch = bool_mismatch(params, 1, name="verbose")
+    if verbose_mismatch is not None:
+        mismatches.append(verbose_mismatch)
+    if mismatches:
+        raise type_errors(*mismatches)
+    verbose = bool_param(params, 1, name="verbose", default=False)
+    txid = parse_hash_v("txid", params[0])
+    mempool = node.mempool
+    wtxid = mempool.txid_index.get(txid)
+    if wtxid is None:
+        raise RpcError(
+            RPCErrorCode.INVALID_ADDRESS_OR_KEY, "Transaction not in mempool"
+        )
+    related = mempool.related(wtxid, ancestors=ancestors)
+    if not verbose:
+        return [mempool.transactions[w].id.hex() for w in related]
     return {
-        # `entryToJSON`'s three sizes (`src/rpc/mempool.cpp`, at
-        # bitcoin/bitcoin@aef8a04966). btclib-org/btclib-node#1757
-        "vsize_adjusted": entry.vsize,
-        "vsize": entry.vsize,
-        "vsize_bip141": mempool.transactions[wtxid].vsize,
-        "weight": entry.weight,
-        "time": entry.time,
-        "height": entry.height,
-        "descendantcount": entry.descendant_count,
-        "descendantsize": entry.descendant_size,
-        "ancestorcount": entry.ancestor_count,
-        "ancestorsize": entry.ancestor_size,
-        "wtxid": entry.wtxid,
-        "fees": {
-            "base": _btc_amount(entry.fee),
-            "modified": _btc_amount(entry.modified_fee),
-            "ancestor": _btc_amount(entry.ancestor_fees),
-            "descendant": _btc_amount(entry.descendant_fees),
-        },
-        "depends": entry.depends,
-        "spentby": entry.spent_by,
-        "bip125-replaceable": entry.bip125_replaceable,
-        "unbroadcast": entry.unbroadcast,
+        mempool.transactions[w].id.hex(): _mempool_entry_json(mempool, w)
+        for w in related
     }
+
+
+def get_mempool_ancestors(
+    node: Node, conn: RpcConnection, params: list[Any]
+) -> dict[str, Any] | list[str]:
+    """Answer `getmempoolancestors`, `_mempool_relatives`' ancestors."""
+    return _mempool_relatives(
+        node, params, method="getmempoolancestors", ancestors=True
+    )
+
+
+def get_mempool_descendants(
+    node: Node, conn: RpcConnection, params: list[Any]
+) -> dict[str, Any] | list[str]:
+    """Answer `getmempooldescendants`, `_mempool_relatives`' descendants."""
+    return _mempool_relatives(
+        node, params, method="getmempooldescendants", ancestors=False
+    )
+
+
+def _check_object(
+    obj: dict[str, Any], fields: dict[str, str], *, allow_null: bool
+) -> None:
+    """Core's `RPCTypeCheckObj` with `fStrict`: each named field, then no other.
+
+    `src/rpc/util.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag.
+    `fields` maps a name to the JSON type it must have, named as univalue
+    does. A missing field is null: refused as "Missing" unless
+    `allow_null`, where it and an explicit null pass. Every error is
+    `RPC_TYPE_ERROR`.
+    """
+    for key, expected in fields.items():
+        value = obj.get(key)
+        if value is None:
+            if allow_null:
+                continue
+            raise RpcError(RPCErrorCode.TYPE_ERROR, f"Missing {key}")
+        if json_type_name(value) != expected:
+            raise RpcError(
+                RPCErrorCode.TYPE_ERROR,
+                f"JSON value of type {json_type_name(value)} for field {key} "
+                f"is not of expected type {expected}",
+            )
+    for key in obj:
+        if key not in fields:
+            raise RpcError(RPCErrorCode.TYPE_ERROR, f"Unexpected key {key}")
+
+
+def _bool_option(options: dict[str, Any], key: str, *, default: bool) -> bool:
+    """Read `key` as `get_bool` does: absent is `default`, null is refused."""
+    if key not in options:
+        return default
+    value = options[key]
+    if not isinstance(value, bool):
+        raise RpcError(
+            RPCErrorCode.TYPE_ERROR,
+            f"JSON value of type {json_type_name(value)} is not of expected type bool",
+        )
+    return value
+
+
+_INT_MAX = 2**31 - 1
+
+
+def _spending_prevout(output: object) -> tuple[bytes, int]:
+    """Check one `gettxspendingprevout` outpoint, Core's checks in Core's order.
+
+    An object of exactly `txid`, a string, and `vout`, a number. `vout` is
+    read by `UniValue::getInt<int>`: a float, or an integer outside a C
+    `int`, is `RPC_MISC_ERROR`, and a negative one `RPC_INVALID_PARAMETER`.
+    """
+    if not isinstance(output, dict):
+        raise RpcError(
+            RPCErrorCode.TYPE_ERROR,
+            f"JSON value of type {json_type_name(output)} "
+            "is not of expected type object",
+        )
+    _check_object(output, {"txid": "string", "vout": "number"}, allow_null=False)
+    txid = parse_hash_v("txid", output["txid"])
+    vout = output["vout"]
+    if isinstance(vout, float) or not -_INT_MAX - 1 <= vout <= _INT_MAX:
+        raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
+    if vout < 0:
+        raise RpcError(
+            RPCErrorCode.INVALID_PARAMETER, "Invalid parameter, vout cannot be negative"
+        )
+    return txid, vout
+
+
+def get_tx_spending_prevout(
+    node: Node, conn: RpcConnection, params: list[Any]
+) -> list[dict[str, Any]]:
+    """Answer `gettxspendingprevout`: the mempool transaction spending each.
+
+    Core's RPC (`src/rpc/mempool.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag), without its `-txospenderindex`, which this node does not
+    have: the answer is the mempool's alone, so `blockhash` is never in
+    it. Each answer is the outpoint's own object, as given, with
+    `spendingtxid` added where a mempool transaction spends it, and
+    `spendingtx` too under `return_spending_tx`. Core's `mempool_only`
+    defaults to true where there is no index, and false asks for the
+    index: an outpoint the mempool does not spend is then refused, as Core
+    refuses it with the index unavailable. btclib-org/btclib-node#1501
+    """
+    if not params:
+        raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["gettxspendingprevout"])
+    outputs = params[0]
+    options = params[1] if len(params) > 1 else None
+    mismatches: list[tuple[int, str, object, str]] = []
+    if not isinstance(outputs, list):
+        mismatches.append((1, "outputs", outputs, "array"))
+    if options is not None and not isinstance(options, dict):
+        mismatches.append((2, "options", options, "object"))
+    if mismatches:
+        raise type_errors(*mismatches)
+    if not outputs:
+        raise RpcError(
+            RPCErrorCode.INVALID_PARAMETER, "Invalid parameter, outputs are missing"
+        )
+    options = {} if options is None else options
+    _check_object(
+        options,
+        {"mempool_only": "bool", "return_spending_tx": "bool"},
+        allow_null=True,
+    )
+    mempool_only = _bool_option(options, "mempool_only", default=True)
+    return_spending_tx = _bool_option(options, "return_spending_tx", default=False)
+    outpoints = [_spending_prevout(output) for output in outputs]
+
+    mempool = node.mempool
+    answer: list[dict[str, Any]] = []
+    for output, (txid, vout) in zip(outputs, outpoints, strict=True):
+        # every pair as given, a key named twice included: Core copies the
+        # `UniValue`, which holds both
+        pairs = list(output.items())
+        wtxid = mempool.outpoint_spender.get((txid, vout))
+        if wtxid is not None:
+            spender = mempool.transactions[wtxid]
+            pairs.append(("spendingtxid", spender.id.hex()))
+            if return_spending_tx:
+                hex_tx = spender.serialize(include_witness=True).hex()
+                pairs.append(("spendingtx", hex_tx))
+        elif not mempool_only:
+            raise RpcError(
+                RPCErrorCode.MISC_ERROR,
+                f"No spending tx for the outpoint {txid.hex()}:{vout} in mempool, "
+                "and txospenderindex is unavailable.",
+            )
+        answer.append(JsonObject(pairs))
+    return answer
 
 
 def _decode_txid(txid_arg: str) -> bytes:
@@ -4101,6 +4305,9 @@ callbacks = {
     "getrawmempool": get_raw_mempool,
     "getorphantxs": get_orphan_txs,
     "getmempoolentry": get_mempool_entry,
+    "getmempoolancestors": get_mempool_ancestors,
+    "getmempooldescendants": get_mempool_descendants,
+    "gettxspendingprevout": get_tx_spending_prevout,
     "getrawtransaction": get_raw_transaction,
     "gettxout": get_tx_out,
     "gettxoutsetinfo": get_tx_out_set_info,
@@ -4118,7 +4325,9 @@ callbacks = {
 # (`src/rpc/server.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): what
 # `rpc.jsonrpc.transform_named_arguments` maps an object's keys onto.
 # `a|b` is two names for one position. None of these methods takes an
-# `OBJ_NAMED_PARAMS` options object, so no name here is named-only.
+# `OBJ_NAMED_PARAMS` options object but `gettxspendingprevout`, whose
+# `options` position carries `mempool_only` and `return_spending_tx` too,
+# as `client.cpp` lists them; `named_only` says which of those are named-only.
 # `bitcoind`'s own table is what `help dump_all_command_conversions`
 # answers, and `tests/integration/rpc_framing_test.py` holds this one to it.
 arg_names: dict[str, tuple[str, ...]] = {
@@ -4157,6 +4366,12 @@ arg_names: dict[str, tuple[str, ...]] = {
     "getrawmempool": ("verbose", "mempool_sequence"),
     "getorphantxs": ("verbosity",),
     "getmempoolentry": ("txid",),
+    "getmempoolancestors": ("txid", "verbose"),
+    "getmempooldescendants": ("txid", "verbose"),
+    "gettxspendingprevout": (
+        "outputs",
+        "options|mempool_only|return_spending_tx",
+    ),
     "getrawtransaction": ("txid", "verbosity|verbose", "blockhash"),
     "gettxout": ("txid", "n", "include_mempool"),
     "gettxoutsetinfo": ("hash_type", "hash_or_height", "use_index"),
@@ -4167,4 +4382,10 @@ arg_names: dict[str, tuple[str, ...]] = {
     "stop": ("wait",),
     "help": ("command",),
     "getrpcinfo": (),
+}
+
+# The names of each method's `OBJ_NAMED_PARAMS` options, which
+# `transform_named_arguments` gathers into the options object.
+named_only: dict[str, tuple[str, ...]] = {
+    "gettxspendingprevout": ("mempool_only", "return_spending_tx"),
 }

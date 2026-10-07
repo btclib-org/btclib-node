@@ -287,6 +287,12 @@ announced or was sent, and one on it is not announced to that peer again
   Core: its later messages wait while it has a check queued, a message
   held or an orphan to reconsider (closes #1739). Others do not wait.
 
+### The mempool's ancestors, descendants and spenders are served
+
+- **`getmempoolancestors`, `getmempooldescendants` and `gettxspendingprevout`
+  answer as Core's do, without `-txospenderindex`; an entry's `spentby` is
+  ordered by internal bytes, as Core's, not as displayed** (closes #1501).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on

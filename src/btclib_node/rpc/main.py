@@ -31,7 +31,12 @@ from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import RPCErrorCode
 
-from btclib_node.rpc.callbacks import arg_names, callbacks, stop_wait_param
+from btclib_node.rpc.callbacks import (
+    arg_names,
+    callbacks,
+    named_only,
+    stop_wait_param,
+)
 from btclib_node.rpc.errors import RpcError
 from btclib_node.rpc.help import HELP_TEXT
 from btclib_node.rpc.jsonrpc import (
@@ -124,7 +129,9 @@ def _execute(
     try:
         params = request.params
         if isinstance(params, dict):
-            params = transform_named_arguments(params, arg_names[request.method])
+            params = transform_named_arguments(
+                params, arg_names[request.method], named_only.get(request.method, ())
+            )
         if len(params) > len(arg_names[request.method]):
             raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT[request.method])
         try:
