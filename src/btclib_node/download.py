@@ -134,6 +134,7 @@ _MAX_FILTER_FEERATE = 1e7
 # peer is meant not to be able to predict.
 _rng = SystemRandom()
 
+
 # `block_download`'s own timing, in seconds: Core's
 # `BLOCK_STALLING_TIMEOUT_DEFAULT` and `BLOCK_STALLING_TIMEOUT_MAX`, the
 # bounds of how long a peer may hold up the download window, and
@@ -151,6 +152,19 @@ _BLOCK_DOWNLOAD_TIMEOUT_PER_PEER = 0.5
 # the peer it picks must have been connected for it to be dropped.
 _EXTRA_PEER_CHECK_INTERVAL = 45
 _MINIMUM_CONNECT_TIME = 30
+
+# Core's `ReattemptInitialBroadcast` runs 10 minutes after start-up and
+# after each run, plus a random 0 to 5 minutes drawn afresh each time
+# (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), in
+# seconds.
+_REATTEMPT_BROADCAST_INTERVAL = 600
+_REATTEMPT_BROADCAST_JITTER = 300
+
+
+def _reattempt_broadcast_delay() -> float:
+    """Core's `10min + randrange(5min)`, in seconds."""
+    return _REATTEMPT_BROADCAST_INTERVAL + _rng.uniform(0, _REATTEMPT_BROADCAST_JITTER)
+
 
 # The number of block intervals `CanDirectFetch` (same sha) allows the
 # active tip to lag the clock by, in `_POW_TARGET_SPACING` units.
@@ -475,6 +489,8 @@ class DownloadManager:
         # Core's `m_initial_sync_finished`.
         self._next_extra_peer_check = time.time() + _EXTRA_PEER_CHECK_INTERVAL
         self._initial_sync_finished = False
+        # When `_reattempt_initial_broadcast` next runs
+        self._next_reattempt_broadcast = time.time() + _reattempt_broadcast_delay()
         # Core's `m_last_tip_update`, which `main._finalize_fork` stamps
         # as each block connects, zero until then, and
         # `m_stale_tip_check_time`, when the stale-tip check next runs.
@@ -491,11 +507,40 @@ class DownloadManager:
         """
         self.sync_headers()
         self.block_download()
+        # before `tx_download`, which announces and then empties `received_txs`
+        self._reattempt_initial_broadcast()
         self.tx_download()
         self._send_due_sendheaders()
         self._send_due_feefilters()
         self._consider_evictions()
         self._check_for_stale_tip_and_evict_peers()
+
+    def _reattempt_initial_broadcast(self) -> None:
+        """Announce each unbroadcast transaction to every peer again.
+
+        Core's `ReattemptInitialBroadcast` (`net_processing.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): it queues each held
+        transaction of `Mempool.unbroadcast` the way
+        `P2pManager.broadcast_raw_transaction` does, so `tx_download`
+        skips a peer that already knows it, as `InitiateTxBroadcastToAll`
+        does. A txid no longer held is dropped from the set. A peer's
+        `getdata` for it is what ends the repeats (`callbacks.getdata`).
+
+        It runs on `Node`'s thread, which owns the mempool and
+        `received_txs`. Core, on its scheduler thread, takes `m_peer_mutex`
+        instead. btclib-org/btclib-node#1816
+        """
+        now = time.time()
+        if now < self._next_reattempt_broadcast:
+            return
+        self._next_reattempt_broadcast = now + _reattempt_broadcast_delay()
+        mempool = self.node.mempool
+        for txid in sorted(mempool.unbroadcast):
+            wtxid = mempool.txid_index.get(txid)
+            if wtxid is None:
+                mempool.mark_broadcast(txid)
+            else:
+                self.received_txs.append((None, wtxid))
 
     def _check_for_stale_tip_and_evict_peers(self) -> None:
         """Drop an extra outbound peer, and let `P2pManager` dial one more.
