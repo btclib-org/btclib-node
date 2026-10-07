@@ -40,7 +40,9 @@ _EXPECTED_BARE_LISTING = (
     'gettxoutsetinfo ( "hash_type" hash_or_height use_index )\n'
     'preciousblock "blockhash"\n'
     "pruneblockchain height\n"
+    'waitforblock "blockhash" ( timeout )\n'
     "waitforblockheight height ( timeout )\n"
+    'waitfornewblock ( timeout "current_tip" )\n'
     "\n"
     "== Control ==\n"
     "getrpcinfo\n"

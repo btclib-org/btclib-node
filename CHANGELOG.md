@@ -263,6 +263,12 @@ leaving a parent's dust unspent is refused "missing-ephemeral-spends",
   `wtxidrelay`**, as Core does at v31.1 (closes #1772). A wtxid-relay
   peer's is dropped, where Core follows it (issue #1774).
 
+### `waitfornewblock` and `waitforblock` are served
+
+- **Each waits on the tip as Core's do and answers it at its `timeout` and
+  once the node stops** (closes #1656). A tip reached and left within one
+  pass of the loop is missed, which Core's wait does not.
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on

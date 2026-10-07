@@ -74,6 +74,7 @@ from btclib_node.rpc.errors import (
     bool_param,
     is_hex,
     json_type_name,
+    parse_hash_v,
     type_error,
     type_errors,
 )
@@ -82,7 +83,9 @@ from btclib_node.rpc.mining import (
     generate_block,
     generate_to_address,
     get_block_template,
+    wait_for_block,
     wait_for_block_height,
+    wait_for_new_block,
 )
 from btclib_node.rpc.solver import solver
 
@@ -473,38 +476,6 @@ def get_block_hash(node: Node, conn: RpcConnection, params: list[Any]) -> bytes:
     return active_chain[height]
 
 
-def _parse_hash_v(name: str, value: str) -> bytes:
-    """Answer Core's own `ParseHashV`: a hash from its own 64-character hex.
-
-    `ParseHashV` (`src/rpc/util.cpp:116-124`, at bitcoin/bitcoin@9be056a8a7)
-    checks the string's own length before it ever tries to decode it:
-    `uint256::FromHex` answers `nullopt` for anything but exactly 64
-    characters, so a wrong length is `"<name> must be of length 64 (not
-    <n>, for '<value>')"` even where every character is a valid hex
-    digit (`"aabb"`, four of them) -- and only a 64-character string
-    that is not all hex digits reaches the second message, `"<name>
-    must be hexadecimal string (not '<value>')"`: `FromHex` takes digits
-    only, so whitespace, which `bytes.fromhex` skips, is refused here.
-    `name` is each call site's own choice, matching Core's: `"hash"` for
-    `getblockheader`, `"blockhash"` for `getblock`, `"txid"` for
-    `gettxout` (`src/rpc/blockchain.cpp:678,828,1258`, same sha), and
-    `"parameter 1"`/`"parameter 3"` for `getrawtransaction`'s own two
-    hash arguments, Core's own names for them
-    (`src/rpc/rawtransaction.cpp:304,317`, same sha).
-    """
-    if len(value) != 64:  # noqa: PLR2004
-        raise RpcError(
-            RPCErrorCode.INVALID_PARAMETER,
-            f"{name} must be of length 64 (not {len(value)}, for '{value}')",
-        )
-    if not is_hex(value):
-        raise RpcError(
-            RPCErrorCode.INVALID_PARAMETER,
-            f"{name} must be hexadecimal string (not '{value}')",
-        )
-    return bytes.fromhex(value)
-
-
 def get_block_header(
     node: Node, conn: RpcConnection, params: list[Any]
 ) -> dict[str, Any] | str:
@@ -561,7 +532,7 @@ def get_block_header(
 
     # ParseHashV, src/rpc/util.cpp:116-124, "hash" -- getblockheader's own
     # label, not getblock's "blockhash"
-    block_hash = _parse_hash_v("hash", params[0])
+    block_hash = parse_hash_v("hash", params[0])
     try:
         block_info = block_index.get_block_info(block_hash)
     except KeyError as error:
@@ -746,7 +717,7 @@ def _known_block_hash(node: Node, params: list[Any], method: str) -> bytes:
     one is `method`'s own full help text under `RPC_MISC_ERROR`, the
     shape `get_block_hash`'s own missing-argument comment already
     argues; a wrongly typed or wrongly shaped one is
-    `type_error`/`_parse_hash_v`, exactly as `get_block_header`'s own
+    `type_error`/`parse_hash_v`, exactly as `get_block_header`'s own
     `"hash"`-labelled argument is checked (`ParseHashV`, same label this
     index's own callers use for it); and a 64-character hex string this
     index does not know is `RPC_INVALID_ADDRESS_OR_KEY`,
@@ -760,7 +731,7 @@ def _known_block_hash(node: Node, params: list[Any], method: str) -> bytes:
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT[method])
     if not isinstance(params[0], str):
         raise type_error(1, "blockhash", params[0], "string")
-    block_hash = _parse_hash_v("blockhash", params[0])
+    block_hash = parse_hash_v("blockhash", params[0])
     try:
         node.chainstate.block_index.get_block_info(block_hash)
     except KeyError as error:
@@ -934,7 +905,7 @@ def _parse_get_block_params(params: list[Any]) -> tuple[bytes, int]:
     # `ParseHashV(request.params[0], "blockhash")` (`rpc/blockchain.cpp
     # :828`, same sha) -- `getblock`'s own label, not `get_block_header`'s
     # "hash", the two RPCs naming the same positional argument differently.
-    block_hash = _parse_hash_v("blockhash", params[0])
+    block_hash = parse_hash_v("blockhash", params[0])
 
     verbosity = _parse_verbosity(params, 1, default=1)
     return block_hash, verbosity
@@ -2714,7 +2685,7 @@ def _parse_get_tx_out_params(params: list[Any]) -> tuple[bytes, int, bool]:
         mismatches.append((2, "n", n_param, "number"))
     if mismatches:
         raise type_errors(*mismatches)
-    txid = _parse_hash_v("txid", txid_param)
+    txid = parse_hash_v("txid", txid_param)
     # `UniValue::getInt<uint32_t>()` (`src/univalue/include/univalue.h
     # :142-153`): a non-integral number, or one outside uint32_t's own
     # range, is `RPC_MISC_ERROR` ("JSON integer out of range") -- the
@@ -2940,7 +2911,7 @@ def get_mempool_entry(
         raise RpcError(RPCErrorCode.MISC_ERROR, 'getmempoolentry "txid"')
     if not isinstance(params[0], str):
         raise type_error(1, "txid", params[0], "string")
-    txid = _parse_hash_v("txid", params[0])
+    txid = parse_hash_v("txid", params[0])
     mempool = node.mempool
     wtxid = mempool.txid_index.get(txid)
     if wtxid is None:
@@ -2982,7 +2953,7 @@ def _decode_txid(txid_arg: str) -> bytes:
     :304`, at bitcoin/bitcoin@9be056a8a7) -- Core's own name for this
     argument here, not "txid".
     """
-    return _parse_hash_v("parameter 1", txid_arg)
+    return parse_hash_v("parameter 1", txid_arg)
 
 
 def _decode_optional_block_hash(params: list[Any]) -> bytes | None:
@@ -2997,7 +2968,7 @@ def _decode_optional_block_hash(params: list[Any]) -> bytes | None:
         return None
     # `ParseHashV(request.params[2], "parameter 3")` (`rpc/rawtransaction.cpp
     # :317`, at bitcoin/bitcoin@9be056a8a7) -- Core's own name here too.
-    return _parse_hash_v("parameter 3", params[2])
+    return parse_hash_v("parameter 3", params[2])
 
 
 class _FoundTransaction(NamedTuple):
@@ -4099,7 +4070,9 @@ callbacks = {
     "getblockcount": get_block_count,
     "getblockchaininfo": get_blockchain_info,
     "pruneblockchain": prune_blockchain,
+    "waitforblock": wait_for_block,
     "waitforblockheight": wait_for_block_height,
+    "waitfornewblock": wait_for_new_block,
     "getblockhash": get_block_hash,
     "getblockheader": get_block_header,
     "getblock": get_block,
@@ -4153,7 +4126,9 @@ arg_names: dict[str, tuple[str, ...]] = {
     "getblockcount": (),
     "getblockchaininfo": (),
     "pruneblockchain": ("height",),
+    "waitforblock": ("blockhash", "timeout"),
     "waitforblockheight": ("height", "timeout"),
+    "waitfornewblock": ("timeout", "current_tip"),
     "getblockhash": ("height",),
     "getblockheader": ("blockhash", "verbose"),
     "getblock": ("blockhash", "verbosity|verbose"),

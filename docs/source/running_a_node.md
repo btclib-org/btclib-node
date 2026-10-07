@@ -183,26 +183,25 @@ without a whitelist even where none is set.
 
 Each mirrors the Core method of the same name: `getbestblockhash`,
 `getblockcount`, `getblockchaininfo`, `getchaintips`, `pruneblockchain`,
-`waitforblockheight`, `preciousblock`, `getblockhash`, `getblockheader`,
-`getblock`, `submitblock`, `submitheader`, `getblocktemplate`,
-`getpeerinfo`, `getconnectioncount`, `getnetworkinfo`, `getnodeaddresses`,
-`setnetworkactive`, `addnode`, `disconnectnode`, `setban`, `listbanned`,
-`clearbanned`, `getmempoolinfo`, `getmempoolentry`, `getrawmempool`,
-`getrawtransaction`, `gettxout`, `gettxoutsetinfo`,
-`decoderawtransaction`, `testmempoolaccept`, `sendrawtransaction`,
-`ping`, `getrpcinfo`, `stop`, `help`. Core's own hidden commands --
-`addconnection`, `generatetoaddress` and `generateblock` among them --
-are left off this list the same way `bitcoin-cli help`'s bare listing
-leaves them off. The `callbacks` table in
-`src/btclib_node/rpc/callbacks.py` is the list the node serves.
+`waitforblockheight`, `waitfornewblock`, `waitforblock`, `preciousblock`,
+`getblockhash`, `getblockheader`, `getblock`, `submitblock`, `submitheader`,
+`getblocktemplate`, `getpeerinfo`, `getconnectioncount`, `getnetworkinfo`,
+`getnodeaddresses`, `setnetworkactive`, `addnode`, `disconnectnode`, `setban`,
+`listbanned`, `clearbanned`, `getmempoolinfo`, `getmempoolentry`,
+`getrawmempool`, `getrawtransaction`, `gettxout`, `gettxoutsetinfo`,
+`decoderawtransaction`, `testmempoolaccept`, `sendrawtransaction`, `ping`,
+`getrpcinfo`, `stop`, `help`. Core's own hidden commands -- `addconnection`,
+`generatetoaddress` and `generateblock` among them -- are left off this list the
+same way `bitcoin-cli help`'s bare listing leaves them off. The `callbacks`
+table in `src/btclib_node/rpc/callbacks.py` is the list the node serves.
 
-A call that waits -- `waitforblockheight`, or `getblocktemplate` with a
-`longpollid` -- or searches nonces -- `generatetoaddress` and
-`generateblock` -- leaves the node serving its peers and every other call
-meanwhile, `stop` included, which ends it. As in Core, 16 such calls run
-at once and 64 more may wait for one to end; a request arriving past that
-is answered `503` "Work queue depth exceeded". Unlike Core's, these two
-numbers cannot be set.
+A call that waits -- `waitforblockheight`, `waitfornewblock`,
+`waitforblock`, or `getblocktemplate` with a `longpollid` -- or searches
+nonces -- `generatetoaddress` and `generateblock` -- leaves the node
+serving its peers and every other call meanwhile, `stop` included, which
+ends it. As in Core, 16 such calls run at once and 64 more may wait for one
+to end; a request arriving past that is answered `503` "Work queue depth
+exceeded". Unlike Core's, these two numbers cannot be set.
 
 ## What is validated, and what is not
 
