@@ -30,7 +30,7 @@ from btclib_node.log import Logger, LogRateLimiter
 from btclib_node.mempool import Mempool
 from btclib_node.p2p import main as main_module
 from btclib_node.p2p.callbacks import callbacks, handshake_callbacks
-from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES
+from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES, KnownTxInventory
 from btclib_node.p2p.main import (
     handle_p2p,
     handle_p2p_handshake,
@@ -97,6 +97,8 @@ def make_node(
         _recv_resume=SimpleNamespace(set=lambda: resumed.append(True)),
         loop=SimpleNamespace(call_soon_threadsafe=lambda fn: fn()),
         resumed=resumed,
+        wtxidrelay_received=False,
+        known_tx_inventory=KnownTxInventory(),
     )
     manager = SimpleNamespace(
         messages=deque(),

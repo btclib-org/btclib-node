@@ -70,9 +70,11 @@ if TYPE_CHECKING:
     from btclib_node.p2p.manager import P2pManager
 
 __all__ = [
+    "KNOWN_TX_INVENTORY_CAPACITY",
     "MAX_QUEUED_RECV_BYTES",
     "MAX_QUEUED_SEND_BYTES",
     "Connection",
+    "KnownTxInventory",
     "PeerStats",
     "local_services",
 ]
@@ -441,6 +443,49 @@ class PeerStats:
     bytes_recv_per_msg: Counter[str] = field(default_factory=Counter)
 
 
+# Core's `TxRelay::m_tx_inventory_known_filter`, `CRollingBloomFilter{50000,
+# 0.000001}` (`src/net_processing.cpp:307`, at bitcoin/bitcoin@9be056a8a7, the
+# v31.1 tag). The count carries over. The structure does not: an exact record
+# has no false positives, so it never withholds a transaction the peer lacks,
+# which Core's filter does once in a million queries.
+#
+# That costs memory on every connection: a full record holds
+# `KNOWN_TX_INVENTORY_CAPACITY` hashes in a set and a deque, and Core's filter
+# is a fraction of that. btclib-org/btclib-node#1743 is the question whether
+# to keep it.
+KNOWN_TX_INVENTORY_CAPACITY = 50_000
+
+
+class KnownTxInventory:
+    """The latest transaction hashes a peer announced to this node or was sent.
+
+    A txid for a peer without wtxid relay and a wtxid otherwise, as Core's
+    filter holds them. Reached from `Node`'s thread alone: the `inv` and `tx`
+    callbacks and `DownloadManager` write and read it, `P2pManager`'s thread
+    never does, so it needs no lock.
+    """
+
+    __slots__ = ("_members", "_order")
+
+    def __init__(self) -> None:
+        """Start with no hash."""
+        self._members: set[bytes] = set()
+        self._order: deque[bytes] = deque()
+
+    def __contains__(self, key: bytes) -> bool:
+        """Answer whether `key` is on the record."""
+        return key in self._members
+
+    def add(self, key: bytes) -> None:
+        """Record `key`, the oldest leaving at the capacity."""
+        if key in self._members:
+            return
+        if len(self._order) >= KNOWN_TX_INVENTORY_CAPACITY:
+            self._members.discard(self._order.popleft())
+        self._order.append(key)
+        self._members.add(key)
+
+
 class Connection:
     """One peer-to-peer socket and everything owed to or by it.
 
@@ -771,6 +816,10 @@ class Connection:
         # check always treats as due. btclib-org/btclib-node#141
         self.tx_announce_queue: list[bytes] = []
         self.next_inv_send_time: float = 0.0
+
+        # What this peer is known to have, so that a transaction is not
+        # announced to it again: Core's `m_tx_inventory_known_filter`.
+        self.known_tx_inventory: KnownTxInventory = KnownTxInventory()
 
         # What this node last told this peer its own minimum relay
         # feerate is, and when it may next say so again -- Core's own

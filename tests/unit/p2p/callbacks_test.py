@@ -144,7 +144,7 @@ from btclib_node.p2p.chain_sync import (
     disconnect_if_insufficient_work,
 )
 from btclib_node.p2p.compact_block import MostRecentBlock, compact_block
-from btclib_node.p2p.connection import Connection, PeerStats
+from btclib_node.p2p.connection import Connection, KnownTxInventory, PeerStats
 from btclib_node.p2p.headers_sync import HeadersSyncState, State
 from btclib_node.p2p.permissions import NetPermissionFlags
 from btclib_node.p2p.protocol_version import (
@@ -665,6 +665,7 @@ def a_peer(**attributes: Any) -> Any:
         permissions=NetPermissionFlags.NONE,
         address=peer_address("1.2.3.4", 18444),
         stats=PeerStats(),
+        known_tx_inventory=KnownTxInventory(),
         # what `Connection` starts every connection at, and what
         # `verack`, `addr` and `addrv2` spend and top up (ISS 1166)
         addr_token_bucket=1.0,
@@ -7258,3 +7259,51 @@ def test_a_transaction_the_mempool_holds_is_announced_for_a_force_relay_peer(
     assert node.download_manager.received_txs == []
     tx(node, message, a_peer(id=5, permissions=NetPermissionFlags.FORCE_RELAY))
     assert node.download_manager.received_txs == [(5, transaction.hash)]
+
+
+@pytest.mark.parametrize("ibd", [True, False])
+@pytest.mark.parametrize("by_wtxid", [True, False])
+def test_a_transaction_inv_is_recorded_in_the_peer_s_own_relay_mode(
+    by_wtxid: bool,  # noqa: FBT001
+    ibd: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1630: Core's `AddKnownTx` runs on the matching items, in IBD too."""
+    transaction = a_transaction()
+    node = a_data_node(is_initial_block_download=ibd)
+    peer = a_peer(id=4, wtxidrelay_received=by_wtxid)
+    items = [
+        Inventory(InventoryType.MSG_WTX, transaction.hash),
+        Inventory(InventoryType.MSG_TX, transaction.id),
+    ]
+    inv(node, Inv(items).serialize(), peer)
+    kept, skipped = (
+        (transaction.hash, transaction.id)
+        if by_wtxid
+        else (transaction.id, transaction.hash)
+    )
+    assert kept in peer.known_tx_inventory
+    assert skipped not in peer.known_tx_inventory
+
+
+@pytest.mark.parametrize("by_wtxid", [True, False])
+def test_a_transaction_a_peer_sent_is_recorded_as_known_to_it(
+    monkeypatch: pytest.MonkeyPatch,
+    by_wtxid: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1630: Core's `AddKnownTx` on a received `tx`, by the peer's hash."""
+    monkeypatch.setattr(
+        cb,
+        "pre_verify_mempool_acceptance",
+        lambda node, tx: MempoolCandidate(0, 999, []),
+    )
+    transaction = a_transaction()
+    node = a_data_node()
+    peer = a_peer(id=4, wtxidrelay_received=by_wtxid)
+    tx(node, TxMsg(transaction, include_witness=True).serialize(), peer)
+    kept, skipped = (
+        (transaction.hash, transaction.id)
+        if by_wtxid
+        else (transaction.id, transaction.hash)
+    )
+    assert kept in peer.known_tx_inventory
+    assert skipped not in peer.known_tx_inventory

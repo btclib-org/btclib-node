@@ -2172,3 +2172,19 @@ def test_an_inbound_v1_peer_is_taken_with_allow_v1() -> None:
     connection, entries = _run_inbound_v2_connection_spoken_to_in_v1(allow_v1=True)
     assert connection.transport.get_info().transport_type is TransportProtocolType.V1
     assert entries == []
+
+
+def test_the_known_transaction_record_drops_its_oldest_at_the_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1630: the oldest hash leaves first, a repeat does not renew."""
+    monkeypatch.setattr(connection_module, "KNOWN_TX_INVENTORY_CAPACITY", 3)
+    known = connection_module.KnownTxInventory()
+    for key in (b"a", b"b", b"c", b"a", b"d"):
+        known.add(key)
+    assert [key in known for key in (b"a", b"b", b"c", b"d")] == [
+        False,
+        True,
+        True,
+        True,
+    ]

@@ -275,6 +275,12 @@ leaving a parent's dust unspent is refused "missing-ephemeral-spends",
   peer accepted on it the permissions, added to `-whitelist`'s, as in
   Core** (closes #1625).
 
+### A transaction is announced once to a peer
+
+Each connection keeps a bounded record of the transactions its peer
+announced or was sent, and one on it is not announced to that peer again
+(closes #1630).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on

@@ -182,7 +182,8 @@ def a_tx_of(*parents: Tx) -> Tx:
 
 def test_a_child_of_a_refused_parent_is_refused_under_both_hashes() -> None:
     """Nothing the parent undoes, so nothing to keep."""
-    manager = make_manager([a_conn(1)])
+    sender = a_conn(1)
+    manager = make_manager([sender])
     parent, child = a_parent_and_child()
     child = a_segwit(child)
     manager.node.mempool.mark_rejected(parent.id)
@@ -191,6 +192,8 @@ def test_a_child_of_a_refused_parent_is_refused_under_both_hashes() -> None:
     assert mempool.was_recently_rejected(child.id)
     assert mempool.was_recently_rejected(child.hash)
     assert not manager.orphanage.have_tx(child.hash)
+    # Core clears `unique_parents` in this branch: no parent is recorded
+    assert parent.id not in sender.known_tx_inventory
 
 
 def test_a_child_of_one_reconsiderable_parent_is_kept_and_of_two_refused() -> None:
@@ -450,3 +453,23 @@ def test_the_wtxid_peers_are_counted() -> None:
     """Core's `m_num_wtxid_peers`."""
     manager = make_manager([a_conn(1), a_conn(2, wtxidrelay_received=False), a_conn(3)])
     assert manager._wtxid_peer_count() == 2
+
+
+def test_the_sender_of_an_orphan_is_known_to_have_its_missing_parents() -> None:
+    """ISS 1630: Core's `AddKnownTx` on the parents, for a child sent to us."""
+    sender = a_conn(1)
+    manager = make_manager([sender])
+    parent, child = a_parent_and_child()
+    manager.mempool_rejected_tx(child, MissingPrevoutError("x"), 1, first_time=True)
+    assert parent.id in sender.known_tx_inventory
+    assert child.id not in sender.known_tx_inventory
+
+
+def test_an_orphan_whose_sender_is_gone_is_taken_in_without_recording() -> None:
+    """ISS 1630: Core records the parents `if (peer)` and goes on without."""
+    manager = make_manager([a_conn(2)])
+    _, child = a_parent_and_child()
+    refused = manager.mempool_rejected_tx(
+        child, MissingPrevoutError("x"), 1, first_time=True
+    )
+    assert refused is None
