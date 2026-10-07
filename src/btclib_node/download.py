@@ -23,7 +23,6 @@ from typing import TYPE_CHECKING
 from btclib.p2p.address import ServiceFlags
 from btclib.p2p.addrv2 import BIP155Network
 from btclib.p2p.inventory import GetData, Inv, Inventory, InventoryType
-from btclib.p2p.limits import MAX_INV_SZ
 from btclib.p2p.negotiation import FeeFilter, SendHeaders
 
 from btclib_node.chainstate.block_index import BlockStatus, block_time
@@ -48,7 +47,7 @@ from btclib_node.p2p.protocol_version import (
 from btclib_node.txrequest import TxRequestTracker
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
 
     from btclib.tx.tx import Tx
 
@@ -69,6 +68,24 @@ __all__ = ["DownloadManager"]
 # are why.
 _INBOUND_TX_ANNOUNCE_INTERVAL = 5.0
 _OUTBOUND_TX_ANNOUNCE_INTERVAL = 2.0
+
+# net_processing.cpp's `INVENTORY_BROADCAST_TARGET` (14 per second over
+# the 5 second inbound interval) and `INVENTORY_BROADCAST_MAX`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag: the number of transactions one
+# trickle announces to a peer is the target plus 5 for each 1000 queued, at
+# most the maximum. bitcoin/bitcoin#34628 replaces this with two global
+# buckets after v31.1; relay follows the release.
+_INVENTORY_BROADCAST_TARGET = 70
+_INVENTORY_BROADCAST_MAX = 1000
+
+
+def _trickle_cap(queued: int) -> int:
+    """Return how many of `queued` announcements one trickle may send."""
+    return min(
+        _INVENTORY_BROADCAST_MAX,
+        _INVENTORY_BROADCAST_TARGET + (queued // 1000) * 5,
+    )
+
 
 # Core's transaction download constants, `node/txdownloadman.h` and
 # `net_processing.cpp` at bitcoin/bitcoin@9be056a8a7, the v31.1 tag:
@@ -335,8 +352,8 @@ def _extend_tx_announce_queue(conn: Connection, new_for_conn: list[bytes]) -> No
     """Append `new_for_conn`'s own wtxids not already in `conn`'s queue.
 
     `tx_announce_queue` stays the `list[bytes]` `connection.py` declares
-    it and `_send_due_announcements` drains in the order it is appended
-    in; `queued` is local and rebuilt on every call, only so that
+    it, in arrival order; `_send_due_announcements` sends from it
+    best-paying first. `queued` is local and rebuilt on every call, only so that
     membership below is not a scan of the whole queue for every wtxid a
     connection is newly offered. btclib-org/btclib-node#444
 
@@ -642,8 +659,8 @@ class DownloadManager:
         received = list(dict.fromkeys(wtxid for _, wtxid in self.received_txs))
         if not received:
             return
-        # `received` itself stays a list, for the order `_send_due_
-        # announcements` sends in; membership below is against the dict
+        # `received` itself stays a list, the arrival order a
+        # connection's queue keeps; membership below is against the dict
         # `answers` instead, so a peer with many wtxids still outstanding
         # does not turn one `inv_txs` pass into a full scan of `received`
         # per entry. btclib-org/btclib-node#444
@@ -695,20 +712,13 @@ class DownloadManager:
             if not conn.relay_tx:
                 continue
             known = has_it.get(conn.id, ())
-            # BIP133: a peer told this node its own floor
-            # (callbacks.feefilter, `conn.feefilter`) is not queued
-            # a transaction below it either -- checked once here,
-            # against the mempool's own record of what the
-            # transaction paid, rather than re-checked on every
-            # `_send_due_announcements` drain of an unchanging queue.
-            # btclib-org/btclib-node#260
+            # BIP133: the peer's own floor (`conn.feefilter`) is applied
+            # when the trickle is sent, as Core does
+            # (`InitiateTxBroadcastToAll` queues whatever the peer does not
+            # know), so a floor that changes while a transaction waits
+            # applies to it. btclib-org/btclib-node#260
             #
-            # `wtxid in self.node.mempool.transactions` is checked
-            # here too, and not left to `meets_fee_rate` alone: that
-            # method reads a wtxid it holds no fee for as clearing
-            # every rate, which is right for its own purpose -- a
-            # wtxid already relayed out of `Mempool.add_tx`'s own
-            # default -- and wrong for this one. Eviction
+            # Membership of the mempool is checked here: eviction
             # (`Mempool._evict_to_limit`) can remove a wtxid this
             # same batch already recorded in `received` before this
             # loop reaches it, another transaction in the same batch
@@ -723,7 +733,6 @@ class DownloadManager:
                 if wtxid not in known
                 and wtxid in self.node.mempool.transactions
                 and self._tx_inventory(conn, wtxid).hash not in conn.known_tx_inventory
-                and self.node.mempool.meets_fee_rate(wtxid, conn.feefilter)
             ]
             _extend_tx_announce_queue(conn, new_for_conn)
 
@@ -1122,9 +1131,11 @@ class DownloadManager:
         # so the gap between a `tx` this node receives and the `inv` it
         # sends on carries no information about when that arrival was.
         now = time.time()
+        due_conns = []
         for conn in self.node.p2p_manager.connections.copy().values():
             if not conn.relay_tx:
                 continue
+            due = now >= conn.next_inv_send_time
             # `fSendTrickle` is always true for a `NO_BAN` peer
             if (
                 conn.next_inv_send_time
@@ -1135,97 +1146,115 @@ class DownloadManager:
             # Core's trickle records the mempool's sequence whether or
             # not it announces anything
             conn.stats.last_inv_sequence = self.node.mempool.sequence
+            # Filtered against current mempool membership here, at send
+            # time, rather than trusted from when it was queued: a wtxid
+            # can sit in a queue for its connection's whole schedule,
+            # easily longer than the time between two eviction rounds
+            # (`Mempool._evict_to_limit`), so an entry that was held when
+            # queued can be gone by the time this runs. Core's own trickle
+            # send does the same (`net_processing.cpp`,
+            # `m_mempool.info(wtxid)`). btclib-org/btclib-node#294
+            live = [
+                wtxid
+                for wtxid in conn.tx_announce_queue
+                if wtxid in self.node.mempool.transactions
+            ]
+            # Paced the way `advance_getdata` (`p2p/callbacks.py`) paces a
+            # `getdata` answer's own blocks: checked before sending,
+            # against the same field and the same bound, so a peer this
+            # node is already answering a `getdata` on is not additionally
+            # charged for its own announcements. Core has no such check;
+            # the divergence is argued at `_notfound_pace`
+            # (`p2p/callbacks.py`), where its full send buffer only stops
+            # it reading from that peer and `MAX_QUEUED_SEND_BYTES` here
+            # drops the connection. btclib-org/btclib-node#529
+            #
+            # A paced trickle sends nothing and leaves the queue and the
+            # schedule alone, so the next call resumes it. It is left out
+            # of the ranking below, which it would not use.
+            if live and conn.queued_send_bytes >= MAX_GETDATA_INFLIGHT_BYTES:
+                conn.tx_announce_queue = live
+                continue
+            due_conns.append((conn, due, live))
+        # The mempool cannot change within this call, so the queued
+        # transactions of every due connection are ranked once, best-paying
+        # first, and each connection walks that order.
+        queued = dict.fromkeys(w for _, _, live in due_conns for w in live)
+        keys = self.node.mempool.mining_order_keys(queued)
+        ranked = sorted(keys, key=keys.__getitem__)
+        rank = {wtxid: position for position, wtxid in enumerate(ranked)}
+        for conn, due, live in due_conns:
             if conn.tx_announce_queue:
-                # `Inv.assert_valid` (btclib.p2p.inventory) refuses more
-                # than `MAX_INV_SZ` entries, and this queue has had this
-                # connection's whole schedule -- a mean of several
-                # seconds, an exponential draw's own tail longer still --
-                # to grow past that bound. Core's own `SendMessages`
-                # (net_processing.cpp) answers the same way: several
-                # `MakeAndPushMessage` calls of at most `MAX_INV_SZ` each
-                # rather than one built whole. btclib-org/btclib-node#282
-                #
-                # Filtered against current mempool membership here, at
-                # send time, rather than trusted from when it was queued:
-                # a wtxid can sit in this queue for this connection's
-                # whole schedule, easily longer than the time between two
-                # eviction rounds (`Mempool._evict_to_limit`), so an entry
-                # that was held when queued can be gone by the time this
-                # runs. Core's own trickle send re-derives its inv from
-                # the live mempool at this same point
-                # (`CTxMemPool::ExtractBestByMiningScoreWithTopology`,
-                # net_processing.cpp) rather than trusting a queue of
-                # hashes either, for the same reason.
-                # btclib-org/btclib-node#294
-                #
-                # And against `known_tx_inventory`, Core's filter check at
-                # the same point: a peer that announced the transaction
-                # since it was queued has it.
-                queue = [
-                    wtxid
-                    for wtxid in conn.tx_announce_queue
-                    if wtxid in self.node.mempool.transactions
-                    and self._tx_inventory(conn, wtxid).hash
-                    not in conn.known_tx_inventory
-                ]
-                # Paced the way `advance_getdata` (`p2p/callbacks.py`)
-                # paces a `getdata` answer's own blocks: checked before
-                # every chunk rather than after, against the same field
-                # and the same bound, so a peer this node is already
-                # answering a `getdata` on is not additionally charged
-                # for its own announcements -- whichever of the two ran
-                # first this turn has already pushed `queued_send_bytes`
-                # toward `MAX_GETDATA_INFLIGHT_BYTES`, and the second
-                # sees that and backs off before committing anything, the
-                # same displacement `p2p/connection_test.py` already
-                # measures between a `getdata` answer and `get_cfilters`.
-                # Nothing bounds how large `queue` itself can grow between
-                # two trickles -- every transaction accepted while this
-                # connection lives is appended to it, and this node
-                # answers no BIP35 `mempool` request that would dump the
-                # whole mempool in at once, but nothing refuses one that
-                # grows this queue by hand across many turns either --
-                # and before this check, nothing paced sending it in one
-                # piece regardless of size. Core's own tx-inventory loop
-                # in `SendMessages` (`src/net_processing.cpp`,
-                # at bitcoin/bitcoin@05e49b342f) has no such check --
-                # it pushes an `INV` every time `vInv` reaches
-                # `MAX_INV_SZ`, as many chunks as one call needs. The
-                # divergence is this tree's to own rather than Core's to
-                # answer for, and `_notfound_pace`
-                # (`p2p/callbacks.py`) is where it is argued: Core's full
-                # send buffer only stops it reading from that peer, where
-                # `MAX_QUEUED_SEND_BYTES` here drops the connection.
-                # btclib-org/btclib-node#529
-                sent_through = 0
-                for start in range(0, len(queue), MAX_INV_SZ):
-                    if conn.queued_send_bytes >= MAX_GETDATA_INFLIGHT_BYTES:
-                        break
-                    chunk = queue[start : start + MAX_INV_SZ]
-                    inventory = [self._tx_inventory(conn, w) for w in chunk]
-                    conn.send(Inv(inventory))
-                    for item in inventory:
-                        conn.known_tx_inventory.add(item.hash)
-                    sent_through = start + len(chunk)
-                # Only the entries this call actually served leave the
-                # queue: what a chunk past the bound above left behind is
-                # still owed, and stays for this same function's next
-                # call -- `DownloadManager.step` runs every turn of
-                # `Node`'s own loop, the resume cadence `resume_getdata`
-                # and `resume_cfilters` (`p2p/main.py`) already have.
-                conn.tx_announce_queue = queue[sent_through:]
-            # A schedule is only redrawn once this connection's queue is
-            # actually empty: redrawing it while a chunk is still owed
-            # would push the next attempt out to this trickle's own mean
-            # delay instead of the very next turn, which is the resume
-            # cadence the comment above relies on.
-            if not conn.tx_announce_queue:
+                # The cap is Core's, from the queue's size before the
+                # filter above (`m_tx_inventory_to_send.size()`).
+                cap = _trickle_cap(len(conn.tx_announce_queue))
+                batch, dropped = self._pick_trickle(conn, live, cap, ranked, rank)
+                if batch:
+                    # `cap` is at most `_INVENTORY_BROADCAST_MAX`, below
+                    # `MAX_INV_SZ`, so one `Inv` always holds a trickle.
+                    self._send_trickle(conn, batch)
+                # What a trickle does not send stays queued for the next,
+                # in arrival order.
+                gone = dropped.union(batch)
+                conn.tx_announce_queue = [w for w in live if w not in gone]
+            # Core redraws the schedule when the timer is due, not for a
+            # `NO_BAN` peer announced to ahead of it.
+            if due:
                 if conn.inbound:
                     conn.next_inv_send_time = self._next_inbound_inv_time(conn, now)
                 else:
                     conn.next_inv_send_time = now + _rng.expovariate(
                         1 / _OUTBOUND_TX_ANNOUNCE_INTERVAL
                     )
+
+    def _send_trickle(self, conn: Connection, batch: list[bytes]) -> None:
+        """Send `batch` in one `Inv` and record it as known to the peer."""
+        inventory = [self._tx_inventory(conn, w) for w in batch]
+        conn.send(Inv(inventory))
+        for item in inventory:
+            conn.known_tx_inventory.add(item.hash)
+
+    def _pick_trickle(
+        self,
+        conn: Connection,
+        live: list[bytes],
+        cap: int,
+        ranked: list[bytes],
+        rank: dict[bytes, int],
+    ) -> tuple[list[bytes], set[bytes]]:
+        """Return what one trickle sends and what it drops from the queue.
+
+        Core pops the queue best-paying first. It drops an entry the peer
+        already has, or one below its feefilter, without counting it toward
+        the cap. Both are read when sending, so a change while the entry
+        waited applies. `ranked` is every queued transaction of the call,
+        best-paying first, and `rank` its inverse; `live` is this
+        connection's own that the mempool still holds.
+
+        Either path yields `live` in `ranked`'s order. Walking `ranked`
+        takes about `cap * len(ranked) / len(live)` steps to find `cap`
+        entries; sorting `live` takes about `len(live)` steps, times a log.
+        So the walk is used when `len(live)` squared is at least
+        `cap * len(ranked)`, as when peers share a queue, and the sort
+        otherwise.
+        """
+        mine = set(live)
+        order: Iterable[bytes]
+        if len(mine) ** 2 >= cap * len(ranked):
+            order = (wtxid for wtxid in ranked if wtxid in mine)
+        else:
+            order = sorted(mine, key=rank.__getitem__)
+        batch: list[bytes] = []
+        dropped: set[bytes] = set()
+        for wtxid in order:
+            if len(batch) == cap:
+                break
+            known = self._tx_inventory(conn, wtxid).hash in conn.known_tx_inventory
+            if known or not self.node.mempool.meets_fee_rate(wtxid, conn.feefilter):
+                dropped.add(wtxid)
+            else:
+                batch.append(wtxid)
+        return batch, dropped
 
     def _tx_inventory(self, conn: Connection, wtxid: bytes) -> Inventory:
         """Name a held transaction the way `conn` relays: wtxid, else txid.
@@ -1235,8 +1264,7 @@ class DownloadManager:
         """
         if conn.wtxidrelay_received:
             return Inventory(InventoryType.MSG_WTX, wtxid)
-        txid = self.node.mempool.transactions[wtxid].id
-        return Inventory(InventoryType.MSG_TX, txid)
+        return Inventory(InventoryType.MSG_TX, self.node.mempool.txids[wtxid])
 
     def _consider_evictions(self) -> None:
         """Run Core's `ConsiderEviction` for every connected peer.

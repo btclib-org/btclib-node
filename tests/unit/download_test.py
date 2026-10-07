@@ -47,7 +47,7 @@ from btclib_node.p2p.tx_checks import TxCheck, TxChecks
 from tests import generate_random_header_chain, generate_random_transaction
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Iterable, Iterator
 
     from btclib.p2p.addrv2 import NetworkAddressV2
     from btclib.tx.tx import Tx
@@ -199,10 +199,15 @@ def hold(manager: DownloadManager, *wtxids: bytes) -> None:
     and its own `tx.hash == wtxid` invariant rather than manufacturing a
     transaction that hashes to a chosen 32 bytes.
     """
+    mempool = cast("Any", manager.node).mempool
     for wtxid in wtxids:
-        cast("Any", manager.node).mempool.transactions[wtxid] = (
-            generate_random_transaction()
-        )
+        tx = generate_random_transaction()
+        mempool.transactions[wtxid] = tx
+        mempool.txids[wtxid] = tx.id
+        mempool.fees[wtxid] = 0
+        mempool.modified_fees[wtxid] = 0
+        mempool.vsizes[wtxid] = tx.vsize
+        mempool.bytesize += tx.vsize
 
 
 def hashes_of(message: GetData | Inv) -> list[bytes]:
@@ -439,7 +444,7 @@ def test_a_transaction_is_announced_to_the_peers_that_do_not_have_it() -> None:
     assert not only(sender, Inv)
     assert not only(announcer, Inv)
     (inv,) = only(other, Inv)
-    assert hashes_of(inv) == received
+    assert sorted(hashes_of(inv)) == received
 
 
 def test_a_peer_s_feefilter_withholds_a_transaction_below_its_rate() -> None:
@@ -496,20 +501,249 @@ def test_a_peer_still_wanting_something_else_is_asked_for_it() -> None:
     assert not only(sender, GetData)
 
 
-def test_a_queue_past_max_inv_sz_is_sent_as_several_invs() -> None:
-    """A queue one over `MAX_INV_SZ` is sent as a full `Inv` plus one more."""
-    # Inv.assert_valid (btclib.p2p.inventory) refuses more than
-    # MAX_INV_SZ entries in one message. btclib-org/btclib-node#282
+def paying(
+    manager: DownloadManager,
+    fee: int,
+    prevout: bytes | None = None,
+    vsize: int | None = None,
+) -> Tx:
+    """Add a transaction paying `fee` to the manager's mempool and return it."""
+    tx = generate_random_transaction(prevout)
+    assert cast("Any", manager.node).mempool.add_tx(tx, fee=fee, vsize=vsize)
+    return tx
+
+
+@pytest.mark.parametrize(
+    ("queued", "cap"),
+    [
+        (0, 70),
+        (999, 70),
+        (1000, 75),
+        (5000, 95),
+        (50_000, 320),
+        (186_000, 1000),
+        (10**6, 1000),
+    ],
+)
+def test_a_trickle_is_capped_at_cores_target_plus_five_per_thousand(
+    queued: int, cap: int
+) -> None:
+    """Core v31.1's `broadcast_max`, at most `INVENTORY_BROADCAST_MAX`."""
+    assert download_module._trickle_cap(queued) == cap
+
+
+def test_a_trickle_sends_the_best_paying_95_of_5000_and_keeps_the_rest() -> None:
+    """ISS 1767: 5000 queued announce 95, best-paying first, the rest stays."""
     other = a_conn(1)
     manager = make_manager([other])
-    other.tx_announce_queue = [a_hash(n) for n in range(MAX_INV_SZ + 1)]
-    hold(manager, *other.tx_announce_queue)
+    txs = [paying(manager, fee=1000 + n) for n in range(5000)]
+    other.tx_announce_queue = [tx.hash for tx in txs]
     manager._send_due_announcements()
-    first, second = only(other, Inv)
-    assert len(first.items) == MAX_INV_SZ
-    assert len(second.items) == 1
-    assert hashes_of(second) == [a_hash(MAX_INV_SZ)]
+    (inv,) = only(other, Inv)
+    assert hashes_of(inv) == [tx.hash for tx in reversed(txs[-95:])]
+    assert other.tx_announce_queue == [tx.hash for tx in txs[:-95]]
+    # the schedule is redrawn, from the 0.0 `a_conn` starts it at, although
+    # the queue is not empty
+    assert other.next_inv_send_time > 0.0
+
+
+def test_a_parent_is_announced_before_the_child_that_pays_for_it() -> None:
+    """A low-fee parent takes the score of its high-fee child's package."""
+    other = a_conn(1)
+    manager = make_manager([other])
+    middling = paying(manager, fee=2000)
+    parent = paying(manager, fee=1)
+    child = paying(manager, fee=100_000, prevout=parent.id)
+    other.tx_announce_queue = [child.hash, middling.hash, parent.hash]
+    manager._send_due_announcements()
+    (inv,) = only(other, Inv)
+    assert hashes_of(inv) == [parent.hash, child.hash, middling.hash]
+
+
+def test_what_the_mempool_no_longer_holds_does_not_use_up_the_cap() -> None:
+    """Evicted entries count in the queue's size, not in what is sent."""
+    other = a_conn(1)
+    manager = make_manager([other])
+    live = [a_hash(n) for n in range(70)]
+    hold(manager, *live)
+    other.tx_announce_queue = [a_hash(n) for n in range(100)]
+    manager._send_due_announcements()
+    (inv,) = only(other, Inv)
+    assert len(inv.items) == 70
     assert other.tx_announce_queue == []
+
+
+def test_the_cap_is_taken_from_the_queue_before_evicted_entries_leave_it() -> None:
+    """1000 queued, 30 of them evicted, still announce 75, not 70."""
+    other = a_conn(1)
+    manager = make_manager([other])
+    other.tx_announce_queue = [a_hash(n) for n in range(1000)]
+    hold(manager, *other.tx_announce_queue[30:])
+    manager._send_due_announcements()
+    (inv,) = only(other, Inv)
+    assert len(inv.items) == 75
+
+
+def test_the_order_is_the_feerate_not_the_fee() -> None:
+    """A smaller fee on a smaller transaction pays more per vbyte."""
+    other = a_conn(1)
+    manager = make_manager([other])
+    large = paying(manager, fee=1500, vsize=300)
+    small = paying(manager, fee=1000, vsize=100)
+    other.tx_announce_queue = [large.hash, small.hash]
+    manager._send_due_announcements()
+    (inv,) = only(other, Inv)
+    assert hashes_of(inv) == [small.hash, large.hash]
+
+
+def test_a_feefilter_raised_while_queued_drops_what_it_now_excludes() -> None:
+    """Core skips an entry below the floor without counting it: 10 of 100."""
+    other = a_conn(1)
+    manager = make_manager([other])
+    low = [paying(manager, fee=10 + n) for n in range(90)]
+    high = [paying(manager, fee=100_000 + n) for n in range(10)]
+    other.tx_announce_queue = [tx.hash for tx in low + high]
+    other.feefilter = 100_000
+    manager._send_due_announcements()
+    (inv,) = only(other, Inv)
+    assert set(hashes_of(inv)) == {tx.hash for tx in high}
+    assert other.tx_announce_queue == []
+
+
+def test_equal_scores_go_out_by_ascending_txid_not_arrival() -> None:
+    """Core v31.1's fallback order is the txid, in internal byte order."""
+    other = a_conn(1)
+    manager = make_manager([other])
+    txs = [paying(manager, fee=1000) for _ in range(50)]
+    other.tx_announce_queue = [tx.hash for tx in txs]
+    manager._send_due_announcements()
+    (inv,) = only(other, Inv)
+    expected = sorted(txs, key=lambda tx: tx.id[::-1])
+    assert hashes_of(inv) == [tx.hash for tx in expected]
+
+
+def test_a_transaction_below_the_feefilter_is_queued_and_dropped_when_sent() -> None:
+    """Core queues what the peer does not know; the floor applies at send."""
+    other = a_conn(1, feefilter=100_000)
+    manager = make_manager([other])
+    low = paying(manager, fee=1)
+    other.next_inv_send_time = time.time() + 3600
+    manager.received_txs = [(2, low.hash)]
+    manager.tx_download()
+    assert other.tx_announce_queue == [low.hash]
+    other.next_inv_send_time = 0.0
+    manager._send_due_announcements()
+    assert not only(other, Inv)
+    assert other.tx_announce_queue == []
+
+
+def test_a_paced_peer_s_queue_is_not_ranked() -> None:
+    """A paced trickle sends nothing, so its queue costs no ranking."""
+    paced = a_conn(1, queued_send_bytes=MAX_GETDATA_INFLIGHT_BYTES)
+    manager = make_manager([paced])
+    paced.tx_announce_queue = [paying(manager, fee=1000).hash]
+    ranked: list[list[bytes]] = []
+    mempool = cast("Any", manager.node).mempool
+    original = mempool.mining_order_keys
+
+    def record(wtxids: Iterable[bytes]) -> dict[bytes, Any]:
+        queued = list(wtxids)
+        ranked.append(queued)
+        return cast("dict[bytes, Any]", original(queued))
+
+    mempool.mining_order_keys = record
+    manager._send_due_announcements()
+    assert ranked == [[]]
+    assert len(paced.tx_announce_queue) == 1
+
+
+def test_what_the_peer_has_does_not_use_up_the_cap_and_what_is_sent_is_recorded() -> (
+    None
+):
+    """100 queued, 30 known to the peer: 70 go, the known ones are dropped."""
+    other = a_conn(1)
+    manager = make_manager([other])
+    txs = [paying(manager, fee=1000 + n) for n in range(100)]
+    other.tx_announce_queue = [tx.hash for tx in txs]
+    # the 30 best-paying are the ones the peer has
+    for tx in txs[-30:]:
+        other.known_tx_inventory.add(tx.hash)
+    manager._send_due_announcements()
+    (inv,) = only(other, Inv)
+    assert hashes_of(inv) == [tx.hash for tx in reversed(txs[:70])]
+    assert other.tx_announce_queue == []
+    assert all(tx.hash in other.known_tx_inventory for tx in txs[:70])
+
+
+def test_a_short_queue_beside_a_long_disjoint_one_is_sent_whole_and_best_first() -> (
+    None
+):
+    """The short queue is neither cut by, nor reads, the other's entries."""
+    short, long = a_conn(1), a_conn(2)
+    manager = make_manager([short, long])
+    mine = [paying(manager, fee=fee) for fee in (200, 300, 100)]
+    theirs = [paying(manager, fee=1000 + n) for n in range(200)]
+    short.tx_announce_queue = [tx.hash for tx in mine]
+    long.tx_announce_queue = [tx.hash for tx in theirs]
+    manager._send_due_announcements()
+    assert hashes_of(only(short, Inv)[0]) == [mine[1].hash, mine[0].hash, mine[2].hash]
+    assert short.tx_announce_queue == []
+    assert len(only(long, Inv)[0].items) == 70
+    assert len(long.tx_announce_queue) == 130
+
+
+def test_walking_the_ranking_and_sorting_the_queue_pick_the_same_entries() -> None:
+    """A queue that is much of the ranking is walked, a small one is sorted."""
+    other = a_conn(1)
+    manager = make_manager([other])
+    txs = [paying(manager, fee=1000 + n) for n in range(5)]
+    best_first = [tx.hash for tx in reversed(txs)]
+    live = [txs[0].hash, txs[2].hash, txs[3].hash]
+    other.known_tx_inventory.add(txs[3].hash)
+    picked = []
+    for padding in (0, 100):
+        ranked = best_first + [a_hash(n) for n in range(padding)]
+        rank = {wtxid: place for place, wtxid in enumerate(ranked)}
+        picked.append(manager._pick_trickle(other, live, 1, ranked, rank))
+    # the best of the three is known to the peer, so it is dropped, uncounted
+    assert picked[0] == picked[1] == ([txs[2].hash], {txs[3].hash})
+
+
+def test_a_prioritised_transaction_is_ranked_by_its_modified_fee() -> None:
+    """Core's graph fee is the modified fee: a delta moves a transaction up."""
+    other = a_conn(1)
+    manager = make_manager([other])
+    plain = paying(manager, fee=5000)
+    raised = paying(manager, fee=100)
+    cast("Any", manager.node).mempool.prioritise(raised.id, 10_000)
+    other.tx_announce_queue = [plain.hash, raised.hash]
+    manager._send_due_announcements()
+    (inv,) = only(other, Inv)
+    assert hashes_of(inv) == [raised.hash, plain.hash]
+
+
+def test_the_feefilter_compares_the_base_fee_not_the_modified_one() -> None:
+    """Core's `txinfo.fee` is the base fee: a delta does not lift it over."""
+    other = a_conn(1, feefilter=100_000)
+    manager = make_manager([other])
+    low = paying(manager, fee=1)
+    cast("Any", manager.node).mempool.prioritise(low.id, 10**9)
+    other.tx_announce_queue = [low.hash]
+    manager._send_due_announcements()
+    assert not only(other, Inv)
+    assert other.tx_announce_queue == []
+
+
+def test_each_peer_is_sent_only_what_is_queued_for_it() -> None:
+    """Peers ranked together are announced their own queues, best first."""
+    first, second = a_conn(1), a_conn(2)
+    manager = make_manager([first, second])
+    a, b, c = (paying(manager, fee=fee) for fee in (300, 200, 100))
+    first.tx_announce_queue = [c.hash, a.hash]
+    second.tx_announce_queue = [c.hash, b.hash]
+    manager._send_due_announcements()
+    assert hashes_of(only(first, Inv)[0]) == [a.hash, c.hash]
+    assert hashes_of(only(second, Inv)[0]) == [b.hash, c.hash]
 
 
 def test_a_trickle_records_the_mempool_s_sequence_announcing_or_not() -> None:
@@ -527,17 +761,6 @@ def test_a_trickle_records_the_mempool_s_sequence_announcing_or_not() -> None:
     assert waiting.stats.last_inv_sequence == 1
 
 
-def test_a_queue_at_exactly_max_inv_sz_is_sent_as_one_inv() -> None:
-    """A queue exactly `MAX_INV_SZ` long still fits in a single `Inv`."""
-    other = a_conn(1)
-    manager = make_manager([other])
-    other.tx_announce_queue = [a_hash(n) for n in range(MAX_INV_SZ)]
-    hold(manager, *other.tx_announce_queue)
-    manager._send_due_announcements()
-    (only_inv,) = only(other, Inv)
-    assert len(only_inv.items) == MAX_INV_SZ
-
-
 def test_announcements_pause_once_the_queue_is_full_and_leave_the_rest_queued() -> None:
     """`_send_due_announcements` paces on `queued_send_bytes` too.
 
@@ -553,19 +776,20 @@ def test_announcements_pause_once_the_queue_is_full_and_leave_the_rest_queued() 
     """
     other = a_conn(1, queued_send_bytes=MAX_GETDATA_INFLIGHT_BYTES)
     manager = make_manager([other])
-    other.tx_announce_queue = [a_hash(n) for n in range(MAX_INV_SZ + 1)]
+    other.tx_announce_queue = [a_hash(n) for n in range(100)]
     hold(manager, *other.tx_announce_queue)
     manager._send_due_announcements()
     assert not only(other, Inv)
-    assert other.tx_announce_queue == [a_hash(n) for n in range(MAX_INV_SZ + 1)]
+    assert other.tx_announce_queue == [a_hash(n) for n in range(100)]
     assert other.next_inv_send_time == 0.0
 
     other.queued_send_bytes = 0
     manager._send_due_announcements()
-    first, second = only(other, Inv)
-    assert len(first.items) == MAX_INV_SZ
-    assert len(second.items) == 1
-    assert other.tx_announce_queue == []
+    (inv,) = only(other, Inv)
+    assert len(inv.items) == 70
+    # all scores are equal: which 70 go is the txid order's
+    assert set(hashes_of(inv)).isdisjoint(other.tx_announce_queue)
+    assert len(other.tx_announce_queue) == 30
     assert other.next_inv_send_time > 0.0
 
 
@@ -2771,6 +2995,9 @@ def test_a_no_ban_peer_is_announced_to_before_its_trickle_is_due() -> None:
     manager._send_due_announcements()
     assert hashes_of(only(trusted, Inv)[0]) == [a_hash(1)]
     assert not only(other, Inv)
+    # Core redraws only when the timer is due
+    assert trusted.next_inv_send_time > time.time() + 3000
+    assert other.next_inv_send_time > time.time() + 3000
 
 
 def test_a_relay_peer_has_no_limit_on_announcements() -> None:

@@ -5,6 +5,7 @@
 """`Mempool`'s bookkeeping, eviction and its rolling minimum feerate."""
 
 import hashlib
+import random
 import secrets
 import time
 from fractions import Fraction
@@ -1825,3 +1826,91 @@ def test_a_held_modified_fee_saturates_at_each_step_as_core_keeps_it() -> None:
     assert mempool.prioritised() == []
     assert mempool.modified_fee(wtxid) == 10
     assert mempool.fees[wtxid] == 1410
+
+
+def exact_order_key(mempool: Mempool, wtxid: bytes) -> tuple[Fraction, int, bytes]:
+    """Return the reference key: `Fraction`s and the full walks."""
+    best = Fraction(0)
+    first = True
+    for descendant in mempool._descendants(wtxid):
+        ancestors = mempool._ancestors(descendant)
+        fee = sum(mempool.modified_fee(w) for w in ancestors)
+        vsize = sum(mempool.vsizes[w] for w in ancestors)
+        rate = Fraction(fee, vsize)
+        best = rate if first else max(best, rate)
+        first = False
+    txid = mempool.transactions[wtxid].id
+    return -best, len(mempool._ancestors(wtxid)), txid[::-1]
+
+
+def a_mixed_mempool(seed: int) -> tuple[Mempool, list[bytes], list[bytes]]:
+    """Singles of near-equal feerate, chains, and prioritised transactions."""
+    rng = random.Random(seed)
+    mempool = Mempool(Logger(debug=True))
+    singles: list[bytes] = []
+    for _ in range(60):
+        vsize = rng.randint(90_000, 100_000)
+        tx = generate_random_transaction()
+        # a feerate of about a half, one satoshi either way: near ties
+        assert mempool.add_tx(tx, fee=vsize // 2 + rng.randint(-1, 1), vsize=vsize)
+        singles.append(tx.hash)
+    for fee, vsize in ((1000, 200), (2500, 500), (4000, 800)):
+        tx = generate_random_transaction()
+        assert mempool.add_tx(tx, fee=fee, vsize=vsize)  # equal feerates
+        singles.append(tx.hash)
+    chained: list[bytes] = []
+    prevout = None
+    for _ in range(12):
+        tx = generate_random_transaction(prevout)
+        assert mempool.add_tx(
+            tx, fee=rng.randint(1, 5000), vsize=rng.randint(100, 1000)
+        )
+        chained.append(tx.hash)
+        prevout = tx.id
+    for wtxid in rng.sample(singles + chained, 10):
+        mempool.prioritise(mempool.transactions[wtxid].id, rng.randint(-50, 5000))
+    return mempool, singles, chained
+
+
+@pytest.mark.parametrize("seed", range(5))
+def test_the_integer_key_orders_as_the_exact_one(seed: int) -> None:
+    """Near ties, equal feerates, chains and deltas sort the same either way."""
+    mempool, singles, chained = a_mixed_mempool(seed)
+    wtxids = singles + chained
+    keys = mempool.mining_order_keys(wtxids)
+    by_integers = sorted(wtxids, key=keys.__getitem__)
+    by_fractions = sorted(wtxids, key=lambda w: exact_order_key(mempool, w))
+    assert by_integers == by_fractions
+    assert {w: keys[w][1:] for w in wtxids} == {
+        w: exact_order_key(mempool, w)[1:] for w in wtxids
+    }
+
+
+def test_a_transaction_with_no_relatives_is_keyed_without_the_package_walks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A single is keyed without a walk; a chain member needs one."""
+    mempool, singles, chained = a_mixed_mempool(0)
+    walks: list[bytes] = []
+    walk = mempool._descendants
+
+    def spy(wtxid: bytes) -> set[bytes]:
+        walks.append(wtxid)
+        return walk(wtxid)
+
+    monkeypatch.setattr(mempool, "_descendants", spy)
+    mempool.mining_order_keys(chained)
+    assert walks
+    walks.clear()
+    mempool.mining_order_keys(singles)
+    assert walks == []
+
+
+def test_the_stored_txid_follows_the_entry_in_and_out() -> None:
+    """`txids` holds each held wtxid's txid and drops it with the entry."""
+    mempool = Mempool(Logger(debug=True))
+    tx = generate_random_transaction()
+    assert mempool.add_tx(tx, fee=100)
+    assert mempool.txids == {tx.hash: tx.id}
+    mempool.remove_tx(tx)
+    assert mempool.txids == {}

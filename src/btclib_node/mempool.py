@@ -199,6 +199,9 @@ class Mempool:
 
         self.transactions: dict[bytes, Tx] = {}
         self.txid_index: dict[bytes, bytes] = {}
+        # wtxid -> txid, kept beside `txid_index` so that a read does not
+        # serialize the transaction again: `Tx.id` is not cached.
+        self.txids: dict[bytes, bytes] = {}
         # wtxid -> fee in satoshi, the sum-of-inputs-less-sum-of-outputs
         # main.verify_mempool_acceptance already computes and would
         # otherwise discard. btclib-org/btclib-node#260
@@ -614,6 +617,7 @@ class Mempool:
             self.outpoint_spender[vin.prev_out.tx_id, vin.prev_out.vout] = wtxid
         self.transactions[wtxid] = tx
         self.txid_index[txid] = wtxid
+        self.txids[wtxid] = txid
         self.fees[wtxid] = fee
         self.modified_fees[wtxid] = _saturate(fee + self.delta(txid))
         self.vsizes[wtxid] = tx.vsize if vsize is None else vsize
@@ -1139,7 +1143,7 @@ class Mempool:
         long as this mempool runs.
         """
         tx = self.transactions.pop(wtxid)
-        self.txid_index.pop(tx.id, None)
+        self.txid_index.pop(self.txids.pop(wtxid), None)
         self.fees.pop(wtxid, None)
         self.modified_fees.pop(wtxid, None)
         vsize = self.vsizes.pop(wtxid)
@@ -1207,7 +1211,7 @@ class Mempool:
         transactions by and what `verify_mempool_acceptance`'s own
         mempool lookup reads a prevout by. btclib-org/btclib-node#294
         """
-        root_txid = self.transactions[wtxid].id
+        root_txid = self.txids[wtxid]
         descendants = {wtxid}
         frontier = [root_txid]
         while frontier:
@@ -1216,7 +1220,7 @@ class Mempool:
                 if candidate_wtxid in descendants:
                     continue
                 descendants.add(candidate_wtxid)
-                frontier.append(self.transactions[candidate_wtxid].id)
+                frontier.append(self.txids[candidate_wtxid])
         return descendants
 
     def _ancestors(self, wtxid: bytes) -> set[bytes]:
@@ -1256,6 +1260,61 @@ class Mempool:
         found = self._ancestors(wtxid) if ancestors else self._descendants(wtxid)
         found.discard(wtxid)
         return sorted(found, key=lambda w: self.transactions[w].id[::-1])
+
+    def mining_order_keys(
+        self, wtxids: Iterable[bytes]
+    ) -> dict[bytes, tuple[int, int, bytes]]:
+        """Return a sort key for each of `wtxids`, best-paying first.
+
+        Core at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, orders
+        announcements by `CompareMiningScoreWithTopology`, the cluster
+        linearization, which this mempool does not have.
+
+        Feerates use the modified fee, as Core's graph does
+        (`txmempool.cpp:641`, same tag).
+
+        The score is the highest feerate among the ancestor packages of
+        `wtxid` and of each of its descendants. A parent scores at least
+        what any child paying for it does, and a tie goes to fewer
+        ancestors, so parents sort first. A tie after that goes to the
+        lower txid, Core's mempool fallback order (`txmempool.cpp`,
+        `fallback_order`, a comparison of the internal byte order). Each
+        package is computed once per call, and a transaction with no
+        relatives in this mempool is scored without the walks.
+
+        A feerate is `fee * scale // vsize`, an integer. Two distinct
+        feerates `a/b` and `c/d` differ by at least `1 / (b * d)`, and
+        `scale` is the square of the total vsize held, which no package's
+        vsize exceeds, so the floors of the scaled feerates differ in the order
+        of the feerates, and equal feerates give equal floors.
+        """
+        scale = self.bytesize**2
+        packages: dict[bytes, tuple[int, int]] = {}
+
+        def package(wtxid: bytes) -> tuple[int, int]:
+            if wtxid not in packages:
+                ancestors = self._ancestors(wtxid)
+                fee = sum(self.modified_fee(w) for w in ancestors)
+                vsize = sum(self.vsizes[w] for w in ancestors)
+                packages[wtxid] = (fee * scale // vsize, len(ancestors))
+            return packages[wtxid]
+
+        def key(wtxid: bytes) -> tuple[int, int, bytes]:
+            tx = self.transactions[wtxid]
+            txid = self.txids[wtxid]
+            if txid not in self.spent_by and not any(
+                vin.prev_out.tx_id in self.txid_index for vin in tx.vin
+            ):
+                # no relatives here: its own package, with no walk
+                rate = self.modified_fee(wtxid) * scale // self.vsizes[wtxid]
+                return -rate, 1, txid[::-1]
+            return (
+                -max(package(d)[0] for d in self._descendants(wtxid)),
+                package(wtxid)[1],
+                txid[::-1],
+            )
+
+        return {wtxid: key(wtxid) for wtxid in wtxids}
 
     def is_bip125_replaceable(self, wtxid: bytes) -> bool:
         """Whether `wtxid`, or an unconfirmed ancestor, signals BIP125 opt-in.
