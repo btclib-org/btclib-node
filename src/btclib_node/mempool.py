@@ -1425,9 +1425,11 @@ class Mempool:
 
         Called once some peer's own `getdata` is served for it
         (`net_processing.cpp`'s `m_mempool.RemoveUnbroadcastTx`, same
-        commit) -- `_pop` above is the other call site, Core's own
-        `removeUnchecked` discarding it unconditionally on every way a
-        transaction leaves this mempool. btclib-org/btclib-node#1421
+        commit), and by `DownloadManager._reattempt_initial_broadcast` for
+        a txid no longer held, as Core's `ReattemptInitialBroadcast` calls
+        it. `_pop` above discards it too, as Core's own `removeUnchecked`
+        does on every way a transaction leaves this mempool.
+        btclib-org/btclib-node#1421
         """
         self.unbroadcast.discard(txid)
 

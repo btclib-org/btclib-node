@@ -3098,3 +3098,128 @@ def test_a_transaction_the_peer_announced_since_it_was_queued_is_not_sent() -> N
     manager._send_due_announcements()
     assert [hashes_of(inv) for inv in only(conn, Inv)] == [[a_hash(2)]]
     assert a_hash(2) in conn.known_tx_inventory
+
+
+def an_unbroadcast_manager(
+    conns: list[Any], monkeypatch: pytest.MonkeyPatch
+) -> tuple[DownloadManager, bytes]:
+    """Build a manager holding one unbroadcast transaction, its reattempt due.
+
+    Answers the transaction's wtxid. The draw is pinned to the lower bound,
+    10 minutes.
+    """
+    monkeypatch.setattr(download_module._rng, "uniform", lambda low, _high: low)
+    manager = make_manager(conns, block_index=HeaderIndex(age=_OLD))
+    wtxid = a_hash(1)
+    hold(manager, wtxid)
+    mempool = manager.node.mempool
+    txid = mempool.txids[wtxid]
+    mempool.txid_index[txid] = wtxid
+    mempool.unbroadcast.add(txid)
+    manager._next_reattempt_broadcast = 0
+    return manager, wtxid
+
+
+def test_the_reattempt_is_scheduled_10_to_15_minutes_ahead(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1816: `10min + randrange(5min)`, drawn afresh each time."""
+    bounds: list[tuple[float, float]] = []
+
+    def draw(low: float, high: float) -> float:
+        bounds.append((low, high))
+        return 42.0
+
+    monkeypatch.setattr(download_module._rng, "uniform", draw)
+    before = time.time()
+    manager = make_manager([])
+    assert bounds == [(0, 300)]
+    assert before + 642 <= manager._next_reattempt_broadcast <= time.time() + 642
+    manager._next_reattempt_broadcast = 0
+    before = time.time()
+    manager._reattempt_initial_broadcast()
+    assert len(bounds) == 2
+    assert before + 642 <= manager._next_reattempt_broadcast <= time.time() + 642
+
+
+def test_an_unbroadcast_transaction_is_announced_again_when_due(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1816: every peer that does not know it is announced it, per run."""
+    peer, other = a_conn(1), a_conn(2)
+    manager, wtxid = an_unbroadcast_manager([peer, other], monkeypatch)
+    manager.step()
+    assert [hashes_of(inv) for inv in only(peer, Inv)] == [[wtxid]]
+    assert [hashes_of(inv) for inv in only(other, Inv)] == [[wtxid]]
+    # the next run is 10 minutes away, and the transaction stays unbroadcast
+    # until a peer asks for it
+    assert manager._next_reattempt_broadcast > time.time() + 590
+    assert manager.node.mempool.unbroadcast
+
+
+def test_nothing_is_announced_before_the_reattempt_is_due(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1816: the run waits for its schedule."""
+    peer = a_conn(1)
+    manager, _ = an_unbroadcast_manager([peer], monkeypatch)
+    manager._next_reattempt_broadcast = time.time() + 60
+    manager.step()
+    assert not only(peer, Inv)
+
+
+def test_a_peer_that_knows_the_transaction_is_not_announced_it_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1816: `InitiateTxBroadcastToAll` skips a peer's known inventory.
+
+    So a repeat reaches a peer connected since the last run, or one the last
+    run's announcement never reached.
+    """
+    knows, new = a_conn(1), a_conn(2)
+    manager, wtxid = an_unbroadcast_manager([knows], monkeypatch)
+    manager.step()
+    assert len(only(knows, Inv)) == 1
+    manager.node.p2p_manager.connections[2] = new
+    manager._next_reattempt_broadcast = 0
+    manager.step()
+    assert len(only(knows, Inv)) == 1
+    assert [hashes_of(inv) for inv in only(new, Inv)] == [[wtxid]]
+
+
+def test_a_transaction_a_peer_asked_for_is_not_announced_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1816: the repeats end with the `getdata` that discards it."""
+    peer = a_conn(1)
+    manager, _ = an_unbroadcast_manager([peer], monkeypatch)
+    mempool = manager.node.mempool
+    (txid,) = mempool.unbroadcast
+    mempool.mark_broadcast(txid)
+    manager.step()
+    assert not only(peer, Inv)
+
+
+def test_an_unbroadcast_txid_no_longer_held_is_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1816: Core's `RemoveUnbroadcastTx` on a txid `get` misses."""
+    peer = a_conn(1)
+    manager, _ = an_unbroadcast_manager([peer], monkeypatch)
+    mempool = manager.node.mempool
+    mempool.txid_index.clear()
+    manager.step()
+    assert not mempool.unbroadcast
+    assert not only(peer, Inv)
+
+
+def test_a_peer_without_wtxid_relay_is_reannounced_the_txid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1816: the reattempt names the transaction as the peer relays it."""
+    legacy = a_conn(2, wtxidrelay_received=False)
+    manager, wtxid = an_unbroadcast_manager([legacy], monkeypatch)
+    txid = manager.node.mempool.txids[wtxid]
+    manager.step()
+    (inv,) = only(legacy, Inv)
+    assert [(i.type_code, i.hash) for i in inv.items] == [(InventoryType.MSG_TX, txid)]
