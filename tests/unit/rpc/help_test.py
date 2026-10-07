@@ -76,6 +76,7 @@ _EXPECTED_BARE_LISTING = (
     'decoderawtransaction "hexstring" ( iswitness )\n'
     'getrawtransaction "txid" ( verbosity "blockhash" )\n'
     'sendrawtransaction "hexstring" ( maxfeerate maxburnamount )\n'
+    'submitpackage ["rawtx",...] ( maxfeerate maxburnamount )\n'
     'testmempoolaccept ["rawtx",...] ( maxfeerate )'
 )
 

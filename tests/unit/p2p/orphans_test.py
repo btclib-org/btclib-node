@@ -17,6 +17,7 @@ from btclib.tx.out_point import OutPoint
 from btclib.tx.tx_in import TxIn
 
 import btclib_node.main as node_main
+import btclib_node.mempool as mempool_module
 import btclib_node.p2p.callbacks as cb
 import btclib_node.p2p.main as p2p_main
 from btclib_node.chains import RegTest
@@ -288,6 +289,43 @@ def test_a_package_over_the_weight_limit_leaves_the_child_an_orphan(
     assert node.mempool.was_recently_rejected_reconsiderable(
         package_hash([pair.parent.hash, pair.child.hash])
     )
+
+
+def test_a_package_refused_by_the_truc_rules_leaves_the_child_an_orphan(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Core's `PackageTRUCChecks` answers for neither member.
+
+    `ProcessPackageResult` (`src/net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) passes the child its answer
+    from when it was tried alone, a missing input, so it stays an orphan
+    and is not recorded as refused. The pair is recorded.
+    """
+    pair = a_pair(regtest_node)
+    node, peer = pair.node, a_connected_peer(pair.node)
+    child = replace(pair.child, version=3)
+    relay(node, peer, child)
+    relay(node, peer, pair.parent)
+    assert not node.mempool.size
+    assert node.download_manager.orphanage.have_tx(child.hash)
+    assert not node.mempool.was_recently_rejected(child.hash)
+    assert node.mempool.was_recently_rejected_reconsiderable(
+        package_hash([pair.parent.hash, child.hash])
+    )
+
+
+def test_a_package_refused_for_its_cluster_leaves_the_child_an_orphan(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's "too-large-cluster" answers for neither member either."""
+    pair = a_pair(regtest_node)
+    node, peer = pair.node, a_connected_peer(pair.node)
+    monkeypatch.setattr(mempool_module, "_CLUSTER_LIMIT", 1)
+    relay(node, peer, pair.child)
+    relay(node, peer, pair.parent)
+    assert not node.mempool.size
+    assert node.download_manager.orphanage.have_tx(pair.child.hash)
+    assert not node.mempool.was_recently_rejected(pair.child.hash)
 
 
 def test_a_package_that_no_longer_pays_when_its_scripts_are_in_is_refused(

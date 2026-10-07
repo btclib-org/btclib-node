@@ -1736,6 +1736,62 @@ _HELP_SENDRAWTRANSACTION = (
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "sendrawtransaction", "params": ["signedhex"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
+_HELP_SUBMITPACKAGE = (
+    'submitpackage ["rawtx",...] ( maxfeerate maxburnamount )\n'
+    "\n"
+    "Submit a package of raw transactions (serialized, hex-encoded) to local node.\n"
+    "The package will be validated according to consensus and mempool policy rules. If any transaction passes, it will be accepted to mempool.\n"
+    "This RPC is experimental and the interface may be unstable. Refer to doc/policy/packages.md for documentation on package policies.\n"
+    "Warning: successful submission does not mean the transactions will propagate throughout the network.\n"
+    "\n"
+    "Arguments:\n"
+    "1. package          (json array, required) An array of raw transactions.\n"
+    "                    The package must consist of a transaction with (some, all, or none of) its unconfirmed parents. A single transaction is permitted.\n"
+    "                    None of the parents may depend on each other. Parents that are already in mempool do not need to be present in the package.\n"
+    "                    The package must be topologically sorted, with the child being the last element in the array if there are multiple elements.\n"
+    "     [\n"
+    '       "rawtx",     (string)\n'
+    "       ...\n"
+    "     ]\n"
+    '2. maxfeerate       (numeric or string, optional, default="0.10") Reject transactions whose fee rate is higher than the specified value, expressed in BTC/kvB.\n'
+    "                    Fee rates larger than 1BTC/kvB are rejected.\n"
+    "                    Set to 0 to accept any fee rate.\n"
+    "3. maxburnamount    (numeric or string, optional, default=\"0.00\") Reject transactions with provably unspendable outputs (e.g. 'datacarrier' outputs that use the OP_RETURN opcode) greater than the specified value, expressed in BTC.\n"
+    "                    If burning funds through unspendable outputs is desired, increase this value.\n"
+    "                    This check is based on heuristics and does not guarantee spendability of outputs.\n"
+    "                    \n"
+    "\n"
+    "Result:\n"
+    "{                                   (json object)\n"
+    '  "package_msg" : "str",            (string) The transaction package result message. "success" indicates all transactions were accepted into or are already in the mempool.\n'
+    '  "tx-results" : {                  (json object) The transaction results keyed by wtxid. An entry is returned for every submitted wtxid.\n'
+    '    "wtxid" : {                     (json object) transaction wtxid\n'
+    '      "txid" : "hex",               (string) The transaction hash in hex\n'
+    '      "other-wtxid" : "hex",        (string, optional) The wtxid of a different transaction with the same txid but different witness found in the mempool. This means the submitted transaction was ignored.\n'
+    '      "vsize" : n,                  (numeric, optional) Sigops-adjusted virtual transaction size.\n'
+    '      "fees" : {                    (json object, optional) Transaction fees\n'
+    '        "base" : n,                 (numeric) transaction fee in BTC\n'
+    '        "effective-feerate" : n,    (numeric, optional) if the transaction was not already in the mempool, the effective feerate in BTC per KvB. For example, the package feerate and/or feerate with modified fees from prioritisetransaction.\n'
+    '        "effective-includes" : [    (json array, optional) if effective-feerate is provided, the wtxids of the transactions whose fees and vsizes are included in effective-feerate.\n'
+    '          "hex",                    (string) transaction wtxid in hex\n'
+    "          ...\n"
+    "        ]\n"
+    "      },\n"
+    '      "error" : "str"               (string, optional) Error string if rejected from mempool, or "package-not-validated" when the package aborts before any per-tx processing.\n'
+    "    },\n"
+    "    ...\n"
+    "  },\n"
+    '  "replaced-transactions" : [       (json array, optional) List of txids of replaced transactions\n'
+    '    "hex",                          (string) The transaction id\n'
+    "    ...\n"
+    "  ]\n"
+    "}\n"
+    "\n"
+    "Examples:\n"
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "submitpackage", "params": [["raw-parent-tx-1", "raw-parent-tx-2", "raw-child-tx"]]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+    "> bitcoin-cli submitpackage '[\"raw-tx-without-unconfirmed-parents\"]'\n"
+)
+
 _HELP_TESTMEMPOOLACCEPT = (
     'testmempoolaccept ["rawtx",...] ( maxfeerate )\n'
     "\n"
@@ -1858,6 +1914,7 @@ HELP_TEXT: dict[str, str] = {
     "getrawtransaction": _HELP_GETRAWTRANSACTION,
     "sendrawtransaction": _HELP_SENDRAWTRANSACTION,
     "testmempoolaccept": _HELP_TESTMEMPOOLACCEPT,
+    "submitpackage": _HELP_SUBMITPACKAGE,
 }
 
 # Each command's own category, Core's own `RPCMethod`'s registration
@@ -1924,6 +1981,7 @@ CATEGORY: dict[str, str] = {
     "getrawtransaction": "Rawtransactions",
     "sendrawtransaction": "Rawtransactions",
     "testmempoolaccept": "Rawtransactions",
+    "submitpackage": "Rawtransactions",
 }
 
 # `CRPCTable::help`'s own sort key, `category + name`

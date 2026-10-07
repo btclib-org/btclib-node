@@ -46,6 +46,13 @@ _MAX_BIP125_RBF_SEQUENCE = 0xFFFFFFFE
 _TRUC_VERSION = 3
 _TRUC_MAX_VSIZE = 10_000
 _TRUC_CHILD_MAX_VSIZE = 1_000
+_TRUC_ANCESTORS = 2
+
+
+def _named(tx: Tx) -> str:
+    """Return `tx` as Core's TRUC messages name it."""
+    return f"tx {tx.id.hex()} (wtxid={tx.hash.hex()})"
+
 
 # `DEFAULT_CLUSTER_LIMIT` and `DEFAULT_CLUSTER_SIZE_LIMIT_KVB`
 # (`src/policy/policy.h`, same commit): the most transactions, and
@@ -448,9 +455,19 @@ class Mempool:
 
     # Don't need lock because handled in same thread
     def add_tx(
-        self, tx: Tx, fee: int = 0, vsize: int | None = None, *, height: int = 0
+        self,
+        tx: Tx,
+        fee: int = 0,
+        vsize: int | None = None,
+        *,
+        height: int = 0,
+        trim: bool = True,
     ) -> bool:
         """Add `tx`, evict past the limit, and say whether it stuck.
+
+        With `trim` false nothing is evicted, and the caller calls `trim`
+        itself once it has added what it will: Core's package submission,
+        which trims once at the end.
 
         A no-op, returning `False`, for a txid already held or a
         transaction spending an outpoint one held already spends. Otherwise
@@ -505,17 +522,22 @@ class Mempool:
             return False
         self._insert(tx, fee, vsize, height)
         self._push_heap(wtxid)
-        self._evict_to_limit()
+        if trim:
+            self._evict_to_limit()
         return wtxid in self.transactions
+
+    def trim(self) -> None:
+        """Evict past the limit, Core's `LimitMempoolSize`, as `add_tx` does."""
+        self._evict_to_limit()
 
     def add_package(
         self, members: Sequence[tuple[Tx, int, int]], *, height: int
     ) -> bool:
         """Add a package's transactions, parents first, or none, and say which.
 
-        `members` are `(tx, fee, vsize)` of a parent and the child
-        paying for it, each already refused by none of
-        `main.pre_verify_package`'s checks on this very state. They are
+        `members` are `(tx, fee, vsize)` of the parents and the child
+        paying for them, each already refused by none of
+        `main.pre_verify_subpackage`'s checks on this very state. They are
         judged by their aggregate modified feerate where the mempool is over
         its limit: the others are evicted for room, worst first, as long as
         they pay less than the package, and the package is itself the
@@ -565,14 +587,24 @@ class Mempool:
         would leave. Nothing is evicted or announced, the heap is left
         alone, and `sequence` and `transactions_updated` are as they were
         after, so no reader of either sees the parent come and go.
-        `tx` is one `main.pre_verify_mempool_acceptance` accepted.
+        `tx` is one `main.pre_verify_mempool_acceptance` accepted, or one
+        `main.pre_verify_subpackage` stages before asking about conflicts,
+        which may conflict with a held transaction.
         """
         sequence, updated = self.sequence, self.transactions_updated
+        # a held transaction `tx` conflicts with keeps its claim on the outpoint
+        spenders = {
+            outpoint: self.outpoint_spender[outpoint]
+            for vin in tx.vin
+            if (outpoint := (vin.prev_out.tx_id, vin.prev_out.vout))
+            in self.outpoint_spender
+        }
         self._insert(tx, fee, vsize, height=0)
         try:
             yield
         finally:
             self._pop(tx.hash)
+            self.outpoint_spender.update(spenders)
             self.sequence, self.transactions_updated = sequence, updated
 
     def _insert(self, tx: Tx, fee: int, vsize: int | None, height: int) -> None:
@@ -777,8 +809,8 @@ class Mempool:
 
         A second child is refused even where it pays to replace the first,
         which Core's sibling eviction would try: this mempool replaces
-        nothing, `check_replacement`. A package's child is checked with
-        its parent staged (`staged`) in place of `PackageTRUCChecks`.
+        nothing, `check_replacement`. What needs the package is
+        `check_package_truc`'s.
         btclib-org/btclib-node#1399
         """
         reason = "TRUC-violation"
@@ -822,6 +854,96 @@ class Mempool:
                 f"tx {parent_tx.id.hex()} (wtxid={parent_tx.hash.hex()}) "
                 "would exceed descendant count limit"
             )
+            raise TxRejectedError(reason, details)
+
+    def check_package_truc(self, package: Sequence[Tx], index: int, vsize: int) -> None:
+        """Refuse `package[index]` if BIP431 does of a package, as Core does.
+
+        Core's `PackageTRUCChecks` (`src/policy/truc_policy.cpp`,
+        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), in its order, with
+        the parents the mempool holds and those before `index` in
+        `package`: too many ancestors, the ancestors of a held parent, the
+        size of a version 3 child, the version of its parent, a sibling or
+        a child in the package, and the other children of a held parent.
+        A conflict with a held sibling does not excuse it, as it does not in
+        Core.
+        """
+        tx = package[index]
+        possible = {vin.prev_out.tx_id for vin in tx.vin}
+        held = [self.transactions[wtxid] for wtxid in self._parents(tx)]
+        in_package = [other for other in package[:index] if other.id in possible]
+        if tx.version == _TRUC_VERSION:
+            self._check_truc_child(package, tx, vsize, held, in_package)
+            return
+        reason = "TRUC-violation"
+        for parent in [*held, *in_package]:
+            if parent.version == _TRUC_VERSION:
+                details = (
+                    f"non-version=3 {_named(tx)} cannot spend from version=3 "
+                    f"{_named(parent)}"
+                )
+                raise TxRejectedError(reason, details)
+
+    def _check_truc_child(
+        self,
+        package: Sequence[Tx],
+        tx: Tx,
+        vsize: int,
+        held: list[Tx],
+        in_package: list[Tx],
+    ) -> None:
+        """Refuse a version 3 `tx` of a package, `check_package_truc`'s rest."""
+        reason = "TRUC-violation"
+        who = _named(tx)
+        if vsize > _TRUC_MAX_VSIZE:
+            details = (
+                f"version=3 {who} is too big: {vsize} > {_TRUC_MAX_VSIZE} virtual bytes"
+            )
+            raise TxRejectedError(reason, details)
+        ancestors = f"{who} would have too many ancestors"
+        count = len(in_package) + 1
+        if len(held) + count > _TRUC_ANCESTORS:
+            raise TxRejectedError(reason, ancestors)
+        if held and len(self._ancestors(held[0].hash)) + count > _TRUC_ANCESTORS:
+            raise TxRejectedError(reason, ancestors)
+        if held or in_package:
+            self._check_truc_parent(package, tx, vsize, held, in_package)
+
+    def _check_truc_parent(
+        self,
+        package: Sequence[Tx],
+        tx: Tx,
+        vsize: int,
+        held: list[Tx],
+        in_package: list[Tx],
+    ) -> None:
+        """Refuse a version 3 `tx` with a parent, `check_package_truc`'s end."""
+        reason = "TRUC-violation"
+        who = _named(tx)
+        if vsize > _TRUC_CHILD_MAX_VSIZE:
+            details = (
+                f"version=3 child {who} is too big: {vsize} > "
+                f"{_TRUC_CHILD_MAX_VSIZE} virtual bytes"
+            )
+            raise TxRejectedError(reason, details)
+        parent = held[0] if held else in_package[0]
+        if parent.version != _TRUC_VERSION:
+            details = (
+                f"version=3 {who} cannot spend from non-version=3 {_named(parent)}"
+            )
+            raise TxRejectedError(reason, details)
+        for other in package:
+            if other is tx:
+                continue
+            for vin in other.vin:
+                if vin.prev_out.tx_id == parent.id:
+                    details = f"{_named(parent)} would exceed descendant count limit"
+                    raise TxRejectedError(reason, details)
+                if vin.prev_out.tx_id == tx.id:
+                    details = f"{_named(other)} would have too many ancestors"
+                    raise TxRejectedError(reason, details)
+        if held and len(self._descendants(parent.hash)) > 1:
+            details = f"{_named(parent)} would exceed descendant count limit"
             raise TxRejectedError(reason, details)
 
     def _direct_conflicts(self, tx: Tx) -> set[bytes]:
