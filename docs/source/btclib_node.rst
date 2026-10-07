@@ -29,6 +29,13 @@ btclib\_node.cli module
    :members:
    :show-inheritance:
 
+btclib\_node.cluster\_linearize module
+---------------------------------------
+
+.. automodule:: btclib_node.cluster_linearize
+   :members:
+   :show-inheritance:
+
 btclib\_node.config module
 ---------------------------
 
@@ -138,6 +145,13 @@ btclib\_node.snapshot module
 -----------------------------
 
 .. automodule:: btclib_node.snapshot
+   :members:
+   :show-inheritance:
+
+btclib\_node.txgraph module
+----------------------------
+
+.. automodule:: btclib_node.txgraph
    :members:
    :show-inheritance:
 

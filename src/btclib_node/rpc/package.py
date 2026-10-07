@@ -302,7 +302,14 @@ def _accept_alone(node: Node, tx: Tx, call: _Call) -> Outcome:
     except (MissingPrevoutError, TxRejectedError) as refusal:
         return Outcome(error=refusal)
     tip_height = len(node.chainstate.block_index.active_chain) - 1
-    mempool.add_tx(tx, candidate.fee, candidate.vsize, height=tip_height, trim=False)
+    mempool.add_tx(
+        tx,
+        candidate.fee,
+        candidate.vsize,
+        height=tip_height,
+        trim=False,
+        weight=candidate.weight,
+    )
     return accepted(node, tx, candidate.fee, candidate.vsize)
 
 
@@ -341,16 +348,16 @@ def _accept_together(
     mempool = node.mempool
     tip_height = len(node.chainstate.block_index.active_chain) - 1
     members = [
-        (tx, candidate.fee, candidate.vsize)
+        (tx, candidate.fee, candidate.vsize, candidate.weight)
         for tx, candidate in zip(txs, candidates, strict=True)
     ]
     mempool.add_package(members, height=tip_height)
     effective = (
-        sum(fee + mempool.delta(tx.id) for tx, fee, _ in members),
-        sum(vsize for _, _, vsize in members),
+        sum(fee + mempool.delta(tx.id) for tx, fee, _, _ in members),
+        sum(vsize for _, _, vsize, _ in members),
         [tx.hash for tx in txs],
     )
-    for tx, fee, vsize in members:
+    for tx, fee, vsize, _ in members:
         outcomes[tx.hash] = Outcome(vsize=vsize, base_fee=fee, effective=effective)
     return "success"
 

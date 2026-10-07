@@ -72,7 +72,7 @@ from btclib_node.main import (
     update_chain,
     verify_mempool_acceptance,
 )
-from btclib_node.mempool import format_money
+from btclib_node.mempool import Mempool, format_money
 from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.callbacks import getblocks
 from btclib_node.p2p.compact_block import MostRecentBlock, compact_block
@@ -89,6 +89,7 @@ from tests import (
     generate_random_transaction,
     generate_segwit_block,
 )
+from tests.unit.rpc.mempool_graph_test import a_tx
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -1364,7 +1365,7 @@ def test_a_sigop_dense_spend_is_priced_by_its_sigop_cost(node: Node) -> None:
     with pytest.raises(TxRejectedError) as raised:
         verify_mempool_acceptance(node, spend(999))
     assert str(raised.value) == "min relay fee not met, 999 < 1000"
-    assert verify_mempool_acceptance(node, spend(1_000)) == (1_000, 10_000)
+    assert verify_mempool_acceptance(node, spend(1_000)) == (1_000, 10_000, 40_000)
 
 
 def test_the_mempool_rpcs_tell_the_adjusted_size_from_the_bip141_one(
@@ -2740,6 +2741,27 @@ def test_evict_immature_or_nonfinal_skips_a_wtxid_a_cascade_already_took(
     assert not node.mempool.contains_tx(child)
 
 
+def test_evict_immature_or_nonfinal_leaves_the_clusters_optimal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Core's `removeForReorg` ends with `DoWork(POST_CHANGE_COST)`.
+
+    `p` has children `x` and `y`; evicting `x` leaves `p` and `y` a
+    cluster to relinearize, which the eviction does before it returns.
+    """
+    p = a_tx(outputs=2)
+    x, y = a_tx((p.id, 0)), a_tx((p.id, 1))
+    mempool = Mempool(Logger(debug=True))
+    for fee, tx in enumerate((p, x, y), start=1):
+        assert mempool.add_tx(tx, 1_000 * fee)
+    assert mempool.graph.do_work(0)
+    monkeypatch.setattr(main, "_still_final_and_mature", lambda _, tx: tx is not x)
+    main._evict_immature_or_nonfinal(cast("Node", SimpleNamespace(mempool=mempool)))
+    assert x.hash not in mempool.transactions
+    assert len(mempool.transactions) == 2
+    assert mempool.graph.do_work(0)
+
+
 def test_a_connected_block_restarts_the_mempool_s_decay_clock(node: Node) -> None:
     """Connecting a block restarts the mempool's rolling-minimum decay clock."""
     # note_block_connected runs once per block update_chain connects to the
@@ -2887,8 +2909,8 @@ def test_a_reorg_re_adds_abandoned_transactions_parent_first(
     real = main.verify_mempool_acceptance
 
     def marked(node: Node, tx: Tx, *, bypass_limits: bool = False) -> Any:
-        fee, vsize = real(node, tx, bypass_limits=bypass_limits)
-        return main.MempoolAcceptance(fee, vsize + 1)
+        fee, vsize, weight = real(node, tx, bypass_limits=bypass_limits)
+        return main.MempoolAcceptance(fee, vsize + 1, weight)
 
     monkeypatch.setattr(main, "verify_mempool_acceptance", marked)
     # a chain of two transactions confirmed only on the branch being

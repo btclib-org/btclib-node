@@ -49,6 +49,7 @@ from btclib_node.chains import Chain, HeadersSyncParams, Main, RegTest
 from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.block_index import BlockStatus, block_time, calculate_work
 from btclib_node.chainstate.muhash import CoinStats
+from btclib_node.cluster_linearize import FeeFrac
 from btclib_node.config import DEFAULT_MAX_DATACARRIER_BYTES, DEFAULT_MIN_RELAY_FEERATE
 from btclib_node.constants import (
     MIN_BLOCKS_TO_KEEP,
@@ -7004,7 +7005,7 @@ def test_invalidate_block_drops_a_disconnected_transaction_past_the_ten_block_ca
     connect(node, chain)
     capped = extra_blocks[0]
     child = generate_random_transaction(capped_tx.id, value=capped_tx.vout[0].value)
-    fee, vsize = verify_mempool_acceptance(node, child, bypass_limits=True)
+    fee, vsize, _ = verify_mempool_acceptance(node, child, bypass_limits=True)
     node.mempool.add_tx(child, fee, vsize)
     assert node.mempool.contains_tx(child)
 
@@ -7063,7 +7064,7 @@ def test_invalidate_block_evicts_an_orphan_left_by_a_failed_readd(
     connect(node, chain)
     deepest = extra_blocks[0]
     c = generate_random_transaction(t.id, value=t.vout[0].value)
-    fee, vsize = verify_mempool_acceptance(node, c, bypass_limits=True)
+    fee, vsize, _ = verify_mempool_acceptance(node, c, bypass_limits=True)
     node.mempool.add_tx(c, fee, vsize)
     assert node.mempool.contains_tx(c)
 
@@ -7092,7 +7093,7 @@ def test_invalidate_block_evicts_a_spend_of_a_disconnected_coinbase(
     common = generate_random_chain(COINBASE_MATURITY, node.chain.genesis.hash)
     connect(node, common)
     spend = generate_random_transaction(common[0].transactions[0].id)
-    fee, vsize = verify_mempool_acceptance(node, spend, bypass_limits=True)
+    fee, vsize, _ = verify_mempool_acceptance(node, spend, bypass_limits=True)
     node.mempool.add_tx(spend, fee, vsize)
     assert node.mempool.contains_tx(spend)
 
@@ -7131,7 +7132,7 @@ def test_invalidate_block_evicts_a_mempool_transaction_a_disconnect_makes_immatu
     )
     connect(node, [extra])
     mature_spend = generate_random_transaction(common[0].transactions[0].id)
-    fee, vsize = verify_mempool_acceptance(node, mature_spend, bypass_limits=True)
+    fee, vsize, _ = verify_mempool_acceptance(node, mature_spend, bypass_limits=True)
     node.mempool.add_tx(mature_spend, fee, vsize, height=len(common) + 1)
     assert node.mempool.contains_tx(mature_spend)
 
@@ -8377,6 +8378,18 @@ def test_getmempoolinfo_reports_the_relay_options() -> None:
     assert out["incrementalrelayfee"].text == "0.00000100"
     assert out["permitbaremultisig"] is True
     assert out["maxdatacarriersize"] == 100_000
+
+
+def test_getmempoolinfo_optimal_is_what_the_graph_s_work_answers() -> None:
+    """`optimal` is Core's `DoWork(0)`: false while a cluster waits for work."""
+    mempool = Mempool(Logger(debug=True))
+    assert get_mempool_info(a_node(mempool=mempool), _CONN, [])["optimal"] is True
+    mempool.graph.add_transaction(b"a", FeeFrac(1, 4), b"a")
+    mempool.graph.add_transaction(b"b", FeeFrac(9, 4), b"b")
+    mempool.graph.add_dependency(b"a", b"b")
+    assert get_mempool_info(a_node(mempool=mempool), _CONN, [])["optimal"] is False
+    mempool.graph.do_work(10**9)
+    assert get_mempool_info(a_node(mempool=mempool), _CONN, [])["optimal"] is True
 
 
 def test_getmempoolinfo_reports_the_relay_options_it_was_given() -> None:

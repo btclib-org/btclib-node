@@ -18,10 +18,10 @@ searches on an RPC thread of its own.
 Where this module differs from Core:
 
 - Core 31's `addChunks` takes a cluster mempool's chunks in feerate
-  order. This mempool has no clusters (btclib-org/btclib-node#1383,
-  btclib-org/btclib-node#1499), so `_PackageSelector` takes ancestor
-  packages by feerate, the order Core used before them. The block is
-  valid either way; the fee it collects can differ.
+  order. `_PackageSelector` takes ancestor packages by feerate, the
+  order Core used before clusters, although `Mempool.graph` keeps the
+  chunks (btclib-org/btclib-node#1822). The block is valid either way;
+  the fee it collects can differ.
 - The weight limit and `_minimum_time` follow Core's `master` at
   bitcoin/bitcoin@aef8a04966, not v31.1. The weight limit compares a
   package's real weight (bitcoin/bitcoin#35580), and the sigop limit

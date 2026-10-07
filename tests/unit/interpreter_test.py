@@ -774,7 +774,7 @@ def test_sig_op_cost_is_core_s(
 ) -> None:
     """Core's `GetTransactionSigOpCost`, term by term, is btclib's.
 
-    What `main._sigop_adjusted_vsize` relies on (btclib-org/btclib-node#1586).
+    What `main._sigop_adjusted_weight` relies on (btclib-org/btclib-node#1586).
     """
     tx_in = TxIn(OutPoint(b"\x33" * 32, 0), script_sig, 0xFFFFFFFF, Witness(stack))
     tx = Tx(version=2, lock_time=0, vin=[tx_in], vout=[TxOut(1, output)])

@@ -492,6 +492,55 @@ _HELP_GETTXSPENDINGPREVOUT = (
     '> bitcoin-cli -named gettxspendingprevout outputs=\'[{"txid":"a08e6907dbbd3d809776dbfc5d82e371b764ed838b5655e72f463568df1aadf0","vout":3}]\' return_spending_tx=true\n'
 )
 
+_HELP_GETMEMPOOLCLUSTER = (
+    'getmempoolcluster "txid"\n'
+    "\n"
+    "Returns mempool data for given cluster\n"
+    "\n"
+    "Arguments:\n"
+    "1. txid    (string, required) The txid of a transaction in the cluster\n"
+    "\n"
+    "Result:\n"
+    "{                           (json object)\n"
+    "  \"clusterweight\" : n,      (numeric) total sigops-adjusted weight (as defined in BIP 141 and modified by '-bytespersigop')\n"
+    '  "txcount" : n,            (numeric) number of transactions\n'
+    '  "chunks" : [              (json array) chunks in this cluster (in mining order)\n'
+    "    {                       (json object)\n"
+    '      "chunkfee" : n,       (numeric) fees of the transactions in this chunk\n'
+    '      "chunkweight" : n,    (numeric) sigops-adjusted weight of all transactions in this chunk\n'
+    '      "txs" : [             (json array) transactions in this chunk in mining order\n'
+    '        "hex",              (string) transaction id\n'
+    "        ...\n"
+    "      ]\n"
+    "    },\n"
+    "    ...\n"
+    "  ]\n"
+    "}\n"
+    "\n"
+    "Examples:\n"
+    "> bitcoin-cli getmempoolcluster txid\n"
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "getmempoolcluster", "params": [txid]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
+_HELP_GETMEMPOOLFEERATEDIAGRAM = (
+    "getmempoolfeeratediagram\n"
+    "\n"
+    "Returns the feerate diagram for the whole mempool.\n"
+    "\n"
+    "Result (mempool chunks):\n"
+    "[                    (json array)\n"
+    "  {                  (json object)\n"
+    '    "weight" : n,    (numeric) cumulative sigops-adjusted weight\n'
+    '    "fee" : n        (numeric) cumulative fee\n'
+    "  },\n"
+    "  ...\n"
+    "]\n"
+    "\n"
+    "Examples:\n"
+    "> bitcoin-cli getmempoolfeeratediagram \n"
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "getmempoolfeeratediagram", "params": []}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
 _HELP_GETMEMPOOLINFO = (
     "getmempoolinfo\n"
     "\n"
@@ -1988,6 +2037,8 @@ HELP_TEXT: dict[str, str] = {
     "reconsiderblock": _HELP_RECONSIDERBLOCK,
     "preciousblock": _HELP_PRECIOUSBLOCK,
     "getmempoolentry": _HELP_GETMEMPOOLENTRY,
+    "getmempoolcluster": _HELP_GETMEMPOOLCLUSTER,
+    "getmempoolfeeratediagram": _HELP_GETMEMPOOLFEERATEDIAGRAM,
     "getmempoolancestors": _HELP_GETMEMPOOLANCESTORS,
     "getmempooldescendants": _HELP_GETMEMPOOLDESCENDANTS,
     "gettxspendingprevout": _HELP_GETTXSPENDINGPREVOUT,
@@ -2048,6 +2099,8 @@ CATEGORY: dict[str, str] = {
     "reconsiderblock": "hidden",
     "preciousblock": "Blockchain",
     "getmempoolentry": "Blockchain",
+    "getmempoolcluster": "Blockchain",
+    "getmempoolfeeratediagram": "hidden",
     "getmempoolancestors": "Blockchain",
     "getmempooldescendants": "Blockchain",
     "gettxspendingprevout": "Blockchain",

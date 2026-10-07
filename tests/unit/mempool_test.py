@@ -5,7 +5,6 @@
 """`Mempool`'s bookkeeping, eviction and its rolling minimum feerate."""
 
 import hashlib
-import random
 import secrets
 import time
 from fractions import Fraction
@@ -1324,11 +1323,14 @@ def test_the_reconsiderable_cache_forgets_the_oldest_past_capacity(
     assert mempool.was_recently_rejected_reconsiderable(second)
 
 
-def a_package(parent_fee: int, child_fee: int) -> list[tuple[Tx, int, int]]:
+def a_package(parent_fee: int, child_fee: int) -> list[tuple[Tx, int, int, int | None]]:
     """Return a parent and its child as `add_package` takes them."""
     parent = generate_random_transaction()
     child = generate_random_transaction(parent.id)
-    return [(parent, parent_fee, parent.vsize), (child, child_fee, child.vsize)]
+    return [
+        (parent, parent_fee, parent.vsize, None),
+        (child, child_fee, child.vsize, None),
+    ]
 
 
 def test_a_package_is_added_whole_with_the_fee_given_to_each() -> None:
@@ -1336,7 +1338,7 @@ def test_a_package_is_added_whole_with_the_fee_given_to_each() -> None:
     mempool = Mempool(Logger(debug=True))
     members = a_package(0, 1000)
     assert mempool.add_package(members, height=7)
-    for tx, fee, vsize in members:
+    for tx, fee, vsize, _ in members:
         assert mempool.contains_tx(tx)
         assert mempool.fees[tx.hash] == fee
         assert mempool.vsizes[tx.hash] == vsize
@@ -1354,7 +1356,7 @@ def test_a_package_makes_room_by_evicting_what_pays_less() -> None:
     assert mempool.add_package(members, height=0)
     assert not mempool.contains_tx(cheap)
     assert mempool.contains_tx(dear)
-    assert all(mempool.contains_tx(tx) for tx, _, _ in members)
+    assert all(mempool.contains_tx(tx) for tx, *_ in members)
     assert mempool.get_min_fee_rate().sats_per_kvbyte > 0
 
 
@@ -1382,7 +1384,7 @@ def test_a_package_whose_mempool_parent_is_evicted_for_room_is_not_added() -> No
     mempool.add_tx(held, 0)
     parent = generate_random_transaction(held.id)
     child = generate_random_transaction(parent.id)
-    members = [(parent, 0, parent.vsize), (child, 10**6, child.vsize)]
+    members = [(parent, 0, parent.vsize, None), (child, 10**6, child.vsize, None)]
     # the package fits once `held` is gone, and not before
     mempool.bytesize_limit = mempool.bytesize + parent.vsize + child.vsize - 1
     assert not mempool.add_package(members, height=0)
@@ -1691,11 +1693,11 @@ def test_a_package_is_ranked_against_the_modified_feerate_of_what_it_evicts() ->
     assert not mempool.contains_tx(incumbent)
 
 
-def a_package_at(rate: int) -> list[tuple[Tx, int, int]]:
+def a_package_at(rate: int) -> list[tuple[Tx, int, int, int | None]]:
     """Return a package whose child pays for both at `rate` sat/vB."""
     parent, child = a_package(0, 0)
     size = parent[2] + child[2]
-    return [parent, (child[0], rate * size, child[2])]
+    return [parent, (child[0], rate * size, child[2], None)]
 
 
 def test_a_refused_package_leaves_the_worst_entry_at_its_modified_rate() -> None:
@@ -1828,82 +1830,122 @@ def test_a_held_modified_fee_saturates_at_each_step_as_core_keeps_it() -> None:
     assert mempool.fees[wtxid] == 1410
 
 
-def exact_order_key(mempool: Mempool, wtxid: bytes) -> tuple[Fraction, int, bytes]:
-    """Return the reference key: `Fraction`s and the full walks."""
-    best = Fraction(0)
-    first = True
-    for descendant in mempool._descendants(wtxid):
-        ancestors = mempool._ancestors(descendant)
-        fee = sum(mempool.modified_fee(w) for w in ancestors)
-        vsize = sum(mempool.vsizes[w] for w in ancestors)
-        rate = Fraction(fee, vsize)
-        best = rate if first else max(best, rate)
-        first = False
-    txid = mempool.transactions[wtxid].id
-    return -best, len(mempool._ancestors(wtxid)), txid[::-1]
+def test_the_trickle_order_is_the_order_a_block_takes() -> None:
+    """A parent its child pays for goes first, as one chunk, then a single.
 
-
-def a_mixed_mempool(seed: int) -> tuple[Mempool, list[bytes], list[bytes]]:
-    """Singles of near-equal feerate, chains, and prioritised transactions."""
-    rng = random.Random(seed)
+    Core's `CompareMiningScoreWithTopology` reads the clusters' chunks:
+    the parent pays nothing, its child pays for both above the single's
+    rate, and the single pays above the parent's own rate.
+    """
     mempool = Mempool(Logger(debug=True))
-    singles: list[bytes] = []
-    for _ in range(60):
-        vsize = rng.randint(90_000, 100_000)
-        tx = generate_random_transaction()
-        # a feerate of about a half, one satoshi either way: near ties
-        assert mempool.add_tx(tx, fee=vsize // 2 + rng.randint(-1, 1), vsize=vsize)
-        singles.append(tx.hash)
-    for fee, vsize in ((1000, 200), (2500, 500), (4000, 800)):
-        tx = generate_random_transaction()
-        assert mempool.add_tx(tx, fee=fee, vsize=vsize)  # equal feerates
-        singles.append(tx.hash)
-    chained: list[bytes] = []
-    prevout = None
-    for _ in range(12):
-        tx = generate_random_transaction(prevout)
-        assert mempool.add_tx(
-            tx, fee=rng.randint(1, 5000), vsize=rng.randint(100, 1000)
-        )
-        chained.append(tx.hash)
-        prevout = tx.id
-    for wtxid in rng.sample(singles + chained, 10):
-        mempool.prioritise(mempool.transactions[wtxid].id, rng.randint(-50, 5000))
-    return mempool, singles, chained
-
-
-@pytest.mark.parametrize("seed", range(5))
-def test_the_integer_key_orders_as_the_exact_one(seed: int) -> None:
-    """Near ties, equal feerates, chains and deltas sort the same either way."""
-    mempool, singles, chained = a_mixed_mempool(seed)
-    wtxids = singles + chained
+    parent = generate_random_transaction()
+    child = generate_random_transaction(parent.id)
+    single = generate_random_transaction()
+    mempool.add_tx(parent, 0)
+    mempool.add_tx(child, 100 * (parent.vsize + child.vsize))
+    mempool.add_tx(single, 10 * single.vsize)
+    wtxids = [single.hash, child.hash, parent.hash]
     keys = mempool.mining_order_keys(wtxids)
-    by_integers = sorted(wtxids, key=keys.__getitem__)
-    by_fractions = sorted(wtxids, key=lambda w: exact_order_key(mempool, w))
-    assert by_integers == by_fractions
-    assert {w: keys[w][1:] for w in wtxids} == {
-        w: exact_order_key(mempool, w)[1:] for w in wtxids
-    }
+    assert sorted(wtxids, key=keys.__getitem__) == [
+        parent.hash,
+        child.hash,
+        single.hash,
+    ]
 
 
-def test_a_transaction_with_no_relatives_is_keyed_without_the_package_walks(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A single is keyed without a walk; a chain member needs one."""
-    mempool, singles, chained = a_mixed_mempool(0)
-    walks: list[bytes] = []
-    walk = mempool._descendants
+def test_equal_chunks_go_by_txid_in_its_internal_byte_order() -> None:
+    """Core's `fallback_order`, the txid as stored, breaks a tie."""
+    mempool = Mempool(Logger(debug=True))
+    txs = [generate_random_transaction() for _ in range(6)]
+    for tx in txs:
+        mempool.add_tx(tx, 1_000, 100, 400)
+    keys = mempool.mining_order_keys([tx.hash for tx in txs])
+    by_order = sorted(txs, key=lambda tx: keys[tx.hash])
+    assert by_order == sorted(txs, key=lambda tx: tx.id[::-1])
 
-    def spy(wtxid: bytes) -> set[bytes]:
-        walks.append(wtxid)
-        return walk(wtxid)
 
-    monkeypatch.setattr(mempool, "_descendants", spy)
-    mempool.mining_order_keys(chained)
-    assert walks
-    walks.clear()
-    mempool.mining_order_keys(singles)
-    assert walks == []
+def test_the_graph_follows_what_the_mempool_holds() -> None:
+    """Added, linked to its parent, prioritised, and removed with it."""
+    mempool = Mempool(Logger(debug=True))
+    parent = generate_random_transaction()
+    child = generate_random_transaction(parent.id)
+    mempool.add_tx(parent, 0, 100, 400)
+    mempool.add_tx(child, 1_000, 100, 400)
+    graph = mempool.graph
+    assert graph.cluster(parent.hash) == [parent.hash, child.hash]
+    assert graph.chunk_feerate(parent.hash) == (1_000, 800)
+    mempool.prioritise(parent.id, 3_000)
+    assert graph.do_work(10**9)
+    chunks = graph.chunks(child.hash)
+    assert [chunk.refs for chunk in chunks] == [[parent.hash], [child.hash]]
+    mempool.remove_with_descendants(parent.hash)
+    assert len(graph) == 0
+
+
+def test_a_parent_held_after_its_child_is_linked_to_it() -> None:
+    """A reorg puts a parent back under the child the mempool kept."""
+    mempool = Mempool(Logger(debug=True))
+    parent = generate_random_transaction()
+    child = generate_random_transaction(parent.id)
+    mempool.add_tx(child, 1_000, 100, 400)
+    mempool.add_tx(parent, 0, 100, 400)
+    assert mempool.graph.cluster(child.hash) == [parent.hash, child.hash]
+
+
+def test_a_staged_transaction_never_enters_the_graph() -> None:
+    """`staged` leaves the clusters as they were, optimal included."""
+    mempool = Mempool(Logger(debug=True))
+    parent = generate_random_transaction()
+    mempool.add_tx(parent, 0)
+    child = generate_random_transaction(parent.id)
+    with mempool.staged(child, 1_000, child.vsize):
+        assert child.hash not in mempool.graph
+    assert mempool.graph.cluster(parent.hash) == [parent.hash]
+    assert mempool.graph.do_work(0)
+
+
+def test_a_block_leaves_the_clusters_optimal() -> None:
+    """Core's `removeForBlock` relinearizes what the block leaves."""
+    mempool = Mempool(Logger(debug=True))
+    grand = generate_random_transaction()
+    parent = generate_random_transaction(grand.id)
+    child = generate_random_transaction(parent.id)
+    for tx, fee in ((grand, 0), (parent, 5_000), (child, 0)):
+        mempool.add_tx(tx, fee)
+    mempool.remove_for_block([grand])
+    assert mempool.graph.do_work(0)
+    assert mempool.graph.cluster(child.hash) == [parent.hash, child.hash]
+
+
+def test_a_weight_stands_in_where_the_caller_has_none() -> None:
+    """`tx.weight`, or four times a `vsize` above the one it rounds up to."""
+    tx = generate_random_transaction()
+    own = -(-tx.weight // 4)
+    assert mempool_module._weight(tx, None) == tx.weight
+    assert mempool_module._weight(tx, own) == tx.weight
+    assert mempool_module._weight(tx, own + 5) == 4 * (own + 5)
+
+
+def test_a_cluster_is_sized_by_weight_as_core_s_graph_is() -> None:
+    """404,000 weight units fit, though the two vsizes add to 101,001."""
+    mempool = Mempool(Logger(debug=True))
+    parent = generate_random_transaction()
+    child = generate_random_transaction(parent.id)
+    assert mempool.add_tx(parent, 100, 50_501, 202_001)
+    mempool.check_cluster(child, 50_500, 201_999)
+    with pytest.raises(TxRejectedError, match="too-large-cluster"):
+        mempool.check_cluster(child, 50_500, 202_000)
+
+
+def test_a_staged_parent_counts_by_the_weight_it_is_given() -> None:
+    """A child of a staged parent is held to 404,000 weight units by weight."""
+    mempool = Mempool(Logger(debug=True))
+    parent = generate_random_transaction()
+    child = generate_random_transaction(parent.id)
+    with mempool.staged(parent, 100, 50_501, 202_001):
+        mempool.check_cluster(child, 50_500, 201_999)
+        with pytest.raises(TxRejectedError, match="too-large-cluster"):
+            mempool.check_cluster(child, 50_500, 202_000)
 
 
 def test_the_stored_txid_follows_the_entry_in_and_out() -> None:

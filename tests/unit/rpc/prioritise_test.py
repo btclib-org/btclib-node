@@ -141,6 +141,7 @@ def test_the_fees_of_a_held_transaction_carry_the_delta() -> None:
         "modified": "0.00003500",
         "ancestor": "0.00003500",
         "descendant": "0.00003500",
+        "chunk": "0.00003500",
     }
 
 
