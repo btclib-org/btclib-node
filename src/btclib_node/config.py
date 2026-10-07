@@ -12,7 +12,7 @@ already built, or a network's name, into the `Chain` a `Config` carries.
 `split_host_port` and `lookup_host_port` split a "host[:port]": the first
 is `-rpcbind`'s, the second a peer's. `lookup_service`, `parse_bind` and
 `listen_port` read an address Core's `Lookup` reads, for `-externalip`
-and `-bind`.
+and `-bind`, `parse_whitebind` that of `-whitebind`.
 `get_path_arg` is `cli.py`'s reader of `-datadir`, `-conf` and
 `-blocksdir`. All of these are public here because other modules read
 them.
@@ -46,6 +46,7 @@ from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet, TestNet4
 from btclib_node.constants import MAX_TIP_AGE, default_data_dir
 from btclib_node.exceptions import InvalidChainTypeError, UnknownChainError
 from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME, Host, lookup_host
+from btclib_node.p2p.permissions import NetPermissionFlags, parse_whitebind_permissions
 from btclib_node.rpc.auth import (
     COOKIE_FILE,
     RpcAuthEntry,
@@ -66,6 +67,7 @@ __all__ = [
     "DEFAULT_MIN_RELAY_FEERATE",
     "BindAddress",
     "Config",
+    "WhitebindAddress",
     "default_onion_bind",
     "get_path_arg",
     "listen_port",
@@ -73,6 +75,7 @@ __all__ = [
     "lookup_service",
     "onion_port",
     "parse_bind",
+    "parse_whitebind",
     "service_text",
     "split_host_port",
 ]
@@ -281,29 +284,68 @@ def parse_bind(arg: str, default_port: int) -> BindAddress:
     return BindAddress(*service, onion)
 
 
-def listen_port(bind: Sequence[str], default_port: int) -> int:
+@dataclass(frozen=True)
+class WhitebindAddress:
+    """One `-whitebind` value: where to listen, and what its peers hold."""
+
+    host: Host
+    port: int
+    flags: NetPermissionFlags
+
+
+def parse_whitebind(arg: str) -> WhitebindAddress:
+    """Return the address and permissions `-whitebind=<arg>` names.
+
+    `NetWhitebindPermissions::TryParse` (`src/net_permissions.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a numeric address, which
+    has to name a port. Raises `ValueError` in Core's words.
+    """
+    flags, spec = parse_whitebind_permissions(arg)
+    service = lookup_service(spec, 0)
+    if service is None:
+        err_msg = f"Cannot resolve -whitebind address: '{spec}'"
+        raise ValueError(err_msg)
+    if service[1] == 0:
+        err_msg = f"Need to specify a port with -whitebind: '{spec}'"
+        raise ValueError(err_msg)
+    return WhitebindAddress(*service, flags)
+
+
+def listen_port(
+    bind: Sequence[str], whitebind: Sequence[str], default_port: int
+) -> int:
     """Return the port this node is said to listen on, as `GetListenPort` does.
 
     `GetListenPort` (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag) is the port of the first `-bind` that names one, and
-    `default_port` otherwise. An `=onion` value resolves to nothing there,
-    and so is passed over.
+    v31.1 tag) is the port of the first `-bind` that names one, then that
+    of the first `-whitebind` that grants no `noban`, and `default_port`
+    otherwise. A `-whitebind` naming no permission is not one that grants
+    `noban`: it is granted it later. An `=onion` value resolves to nothing
+    there, and so is passed over, as is a `-whitebind` Core refuses.
     """
     for value in bind:
         service = lookup_service(value, 0)
         if service is not None and service[1] != 0:
             return service[1]
+    for value in whitebind:
+        try:
+            address = parse_whitebind(value)
+        except ValueError:
+            continue
+        if NetPermissionFlags.NO_BAN not in address.flags:
+            return address.port
     return default_port
 
 
-def _refuse_bind_without_listen(bind: Sequence[str], *, listen: bool) -> None:
-    """Refuse a `-bind` beside `-listen=0`, in the words of Core's refusal.
+def _refuse_bind_without_listen(
+    bind: Sequence[str], whitebind: Sequence[str], *, listen: bool
+) -> None:
+    """Refuse a `-bind` or `-whitebind` beside `-listen=0`, in Core's words.
 
     `AppInitParameterInteraction` (`src/init.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), whose words name
-    `-whitebind` too.
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
     """
-    if bind and not listen:
+    if (bind or whitebind) and not listen:
         err_msg = "Cannot set -bind or -whitebind together with -listen=0"
         raise ValueError(err_msg)
 
@@ -693,8 +735,13 @@ class Config:
     # and `parse_bind` reads each. With any, `P2pManager` binds those
     # and not every interface (`bind_on_any`, `src/init.cpp`, at
     # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Core refuses one beside
-    # `-listen=0`, and its `-whitebind` is not read here.
+    # `-listen=0`.
     bind: tuple[str, ...]
+    # Core's own `-whitebind` values, as given: `cli` refuses a malformed
+    # one and `parse_whitebind` reads each. `P2pManager` binds each beside
+    # `bind`'s, grants its peers what it names, and counts it as a `-bind`
+    # for `bind_on_any`. Core refuses one beside `-listen=0`.
+    whitebind: tuple[str, ...]
     # Core's own `-externalip` values, each an address `lookup_service`
     # reads without a lookup: `cli` resolves a name before it gets here.
     # `P2pManager` records each as a local address, as `AddLocal` at
@@ -714,7 +761,8 @@ class Config:
     # itself goes on to succeed, as Core's `Discover()`
     # (`src/net.cpp:3376-3384`, same sha) does: `AppInitMain` calls it
     # off `bind_on_any` (`src/init.cpp:2163`, same sha), never off
-    # `fListen`, so `P2pManager` calls it unless `bind` above is given.
+    # `fListen`, so `P2pManager` calls it unless `bind` or `whitebind`
+    # above is given.
     discover: bool
     # Core's own `-peerblockfilters`: whether `NODE_COMPACT_FILTERS` is
     # advertised in `version` and whether a BIP157 request is answered
@@ -847,6 +895,7 @@ class Config:
         seednode: Sequence[str] = (),
         listen: bool = True,
         bind: Sequence[str] = (),
+        whitebind: Sequence[str] = (),
         externalip: Sequence[str] = (),
         discover: bool | None = None,
         peerblockfilters: bool = False,
@@ -922,6 +971,7 @@ class Config:
         self.seednode_args = tuple(seednode)
         self.listen = listen
         self.bind = tuple(bind)
+        self.whitebind = tuple(whitebind)
         self.externalip = tuple(externalip)
         self.discover = (
             self.listen and not self.externalip if discover is None else discover
@@ -942,7 +992,7 @@ class Config:
         )
         self.forcednsseed = forcednsseed
 
-        _refuse_bind_without_listen(self.bind, listen=self.listen)
+        _refuse_bind_without_listen(self.bind, self.whitebind, listen=self.listen)
 
         if max_connections < 0:
             # Core's own wording (`AppInitParameterInteraction`, same

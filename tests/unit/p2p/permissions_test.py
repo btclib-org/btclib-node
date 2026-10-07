@@ -2,7 +2,9 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""Tests for `btclib_node.p2p.permissions`, Core's `-whitelist`."""
+"""Tests for `btclib_node.p2p.permissions`: `-whitelist` and `-whitebind`."""
+
+import re
 
 import pytest
 
@@ -10,6 +12,7 @@ from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.permissions import (
     NetPermissionFlags,
     Whitelist,
+    parse_whitebind_permissions,
     permission_names,
 )
 
@@ -17,8 +20,11 @@ from btclib_node.p2p.permissions import (
 _DEFAULT = ["noban", "relay", "mempool", "download"]
 
 
-def _names(whitelist: Whitelist, host: str, **kwargs: bool) -> list[str]:
-    return permission_names(whitelist.flags(peer_address(host, 8333), **kwargs))
+def _names(
+    whitelist: Whitelist, host: str, *, inbound: bool, manual: bool = False
+) -> list[str]:
+    flags = whitelist.flags(peer_address(host, 8333), inbound=inbound, manual=manual)
+    return permission_names(flags)
 
 
 @pytest.mark.parametrize(
@@ -171,3 +177,81 @@ def test_composite_flags_hold_what_they_imply() -> None:
     assert NetPermissionFlags.DOWNLOAD in NetPermissionFlags.NO_BAN
     assert NetPermissionFlags.RELAY in NetPermissionFlags.FORCE_RELAY
     assert NetPermissionFlags.NO_BAN not in NetPermissionFlags.DOWNLOAD
+
+
+@pytest.mark.parametrize(
+    ("text", "names", "address"),
+    [
+        ("noban@1.2.3.4:5", ["noban", "download"], "1.2.3.4:5"),
+        ("in,relay@1.2.3.4:5", ["relay"], "1.2.3.4:5"),
+        ("noban,,relay@[::1]:5", ["noban", "relay", "download"], "[::1]:5"),
+        ("@1.2.3.4:5", [], "1.2.3.4:5"),
+        ("1.2.3.4:5", [], "1.2.3.4:5"),
+    ],
+)
+def test_whitebind_permissions_are_split_from_the_address(
+    text: str, names: list[str], address: str
+) -> None:
+    """ISS 1625: `TryParsePermissionFlags`' prefix, then the address."""
+    flags, rest = parse_whitebind_permissions(text)
+    assert permission_names(flags) == names
+    assert rest == address
+
+
+def test_a_whitebind_naming_no_permission_holds_implicit() -> None:
+    """ISS 1625: only `@` makes the permissions explicit, even empty ones."""
+    assert NetPermissionFlags.IMPLICIT in parse_whitebind_permissions("1.2.3.4:5")[0]
+    assert not parse_whitebind_permissions("@1.2.3.4:5")[0]
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        (
+            "out,noban@1.2.3.4:5",
+            'whitebind may only be used for incoming connections ("out" was passed)',
+        ),
+        ("bogus,out@1.2.3.4:5", "Invalid P2P permission: 'bogus'"),
+        ("in@1.2.3.4:5", "Only direction was set, no permissions: 'in@1.2.3.4:5'"),
+    ],
+)
+def test_whitebind_permissions_are_refused_in_core_s_words(
+    text: str, message: str
+) -> None:
+    """ISS 1625: the texts are those of `bitcoind` v31.1.0.
+
+    `out` is refused where it is read, so a permission named before it
+    that is none is refused first, and `-whitelist` still accepts `out`.
+    """
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        parse_whitebind_permissions(text)
+    if text.startswith("out"):
+        assert Whitelist.parse(["out,noban@1.2.3.4"]).outgoing
+
+
+def test_a_listener_grants_its_peers_beside_the_whitelist() -> None:
+    """ISS 1625: the listener's grant, then the values', one set."""
+    whitelist = Whitelist.parse(["addr@1.2.3.4"])
+    granted = NetPermissionFlags.MEMPOOL
+    flags = whitelist.flags(peer_address("1.2.3.4", 1), inbound=True, granted=granted)
+    assert permission_names(flags) == ["mempool", "addr"]
+    # a value that does not match the peer adds nothing to the grant
+    flags = whitelist.flags(peer_address("5.6.7.8", 1), inbound=True, granted=granted)
+    assert permission_names(flags) == ["mempool"]
+
+
+def test_a_listener_naming_no_permission_grants_the_defaults() -> None:
+    """ISS 1625: `IMPLICIT` in the listener's flags is resolved as a value's."""
+    flags = Whitelist().flags(
+        peer_address("9.9.9.9", 1), inbound=True, granted=NetPermissionFlags.IMPLICIT
+    )
+    assert permission_names(flags) == _DEFAULT
+
+
+def test_no_listener_grant_reaches_an_outbound_connection() -> None:
+    """ISS 1625: an outbound connection is accepted on no listener."""
+    granted = NetPermissionFlags.NO_BAN
+    flags = Whitelist().flags(
+        peer_address("9.9.9.9", 1), inbound=False, granted=granted
+    )
+    assert flags == NetPermissionFlags.NONE

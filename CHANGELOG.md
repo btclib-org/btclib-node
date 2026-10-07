@@ -269,6 +269,12 @@ leaving a parent's dust unspent is refused "missing-ephemeral-spends",
   once the node stops** (closes #1656). A tip reached and left within one
   pass of the loop is missed, which Core's wait does not.
 
+### `-whitebind` grants the peers of its listener permissions
+
+- **`-whitebind=<[permissions@]addr>` binds an address and grants every
+  peer accepted on it the permissions, added to `-whitelist`'s, as in
+  Core** (closes #1625).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on
