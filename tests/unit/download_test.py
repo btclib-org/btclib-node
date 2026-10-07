@@ -37,7 +37,6 @@ from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.block_availability import BLOCK_DOWNLOAD_WINDOW, BlockAvailability
-from btclib_node.p2p.callbacks import MAX_GETDATA_INFLIGHT_BYTES
 from btclib_node.p2p.callbacks import inv as inv_callback
 from btclib_node.p2p.chain_sync import ChainSyncTimeoutState
 from btclib_node.p2p.connection import KnownTxInventory, PeerStats
@@ -48,7 +47,7 @@ from btclib_node.p2p.tx_checks import TxCheck, TxChecks
 from tests import generate_random_header_chain, generate_random_transaction
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Iterator
+    from collections.abc import Callable, Iterator
 
     from btclib.p2p.addrv2 import NetworkAddressV2
     from btclib.tx.tx import Tx
@@ -76,7 +75,6 @@ def a_conn(
     status: Any = P2pConnStatus.Connected,
     feefilter_sent: int = 0,
     next_feefilter_send_time: float = 0.0,
-    queued_send_bytes: int = 0,
     version_message: Any = ...,
     wtxidrelay_received: bool = True,
     block_relay: bool = False,
@@ -137,13 +135,6 @@ def a_conn(
         wtxidrelay_received=wtxidrelay_received,
         sent_sendheaders=False,
         chain_sync=ChainSyncTimeoutState(),
-        # what a real `Connection` starts every fresh connection at
-        # (`p2p/connection.py`), and what `_send_due_announcements` now
-        # paces an `Inv` chunk against the same way `advance_getdata`
-        # paces a `getdata` answer's blocks: never written here unless a
-        # test asks for it, so it never trips that check, the same way a
-        # real connection whose peer reads promptly never would.
-        queued_send_bytes=queued_send_bytes,
     )
 
 
@@ -638,26 +629,6 @@ def test_a_transaction_below_the_feefilter_is_queued_and_dropped_when_sent() -> 
     assert other.tx_announce_queue == []
 
 
-def test_a_paced_peer_s_queue_is_not_ranked() -> None:
-    """A paced trickle sends nothing, so its queue costs no ranking."""
-    paced = a_conn(1, queued_send_bytes=MAX_GETDATA_INFLIGHT_BYTES)
-    manager = make_manager([paced])
-    paced.tx_announce_queue = [paying(manager, fee=1000).hash]
-    ranked: list[list[bytes]] = []
-    mempool = cast("Any", manager.node).mempool
-    original = mempool.mining_order_keys
-
-    def record(wtxids: Iterable[bytes]) -> dict[bytes, Any]:
-        queued = list(wtxids)
-        ranked.append(queued)
-        return cast("dict[bytes, Any]", original(queued))
-
-    mempool.mining_order_keys = record
-    manager._send_due_announcements()
-    assert ranked == [[]]
-    assert len(paced.tx_announce_queue) == 1
-
-
 def test_what_the_peer_has_does_not_use_up_the_cap_and_what_is_sent_is_recorded() -> (
     None
 ):
@@ -760,38 +731,6 @@ def test_a_trickle_records_the_mempool_s_sequence_announcing_or_not() -> None:
     assert idle.stats.last_inv_sequence == 42
     # 1, what a connection starts at
     assert waiting.stats.last_inv_sequence == 1
-
-
-def test_announcements_pause_once_the_queue_is_full_and_leave_the_rest_queued() -> None:
-    """`_send_due_announcements` paces on `queued_send_bytes` too.
-
-    A connection already at `MAX_GETDATA_INFLIGHT_BYTES` -- whatever put
-    it there, a `getdata` answer this same turn among the plausible
-    causes -- gets no `Inv` at all: nothing is sent, every wtxid stays on
-    `conn.tx_announce_queue`, and the schedule is not redrawn, so the very
-    next call (the cadence `resume_getdata` and `resume_cfilters` already
-    have) tries again rather than waiting for this trickle's own mean
-    delay. Before btclib-org/btclib-node#529 nothing checked this field
-    here at all: an already-full connection was sent the whole queue
-    regardless, on top of whatever already put it at the bound.
-    """
-    other = a_conn(1, queued_send_bytes=MAX_GETDATA_INFLIGHT_BYTES)
-    manager = make_manager([other])
-    other.tx_announce_queue = [a_hash(n) for n in range(100)]
-    hold(manager, *other.tx_announce_queue)
-    manager._send_due_announcements()
-    assert not only(other, Inv)
-    assert other.tx_announce_queue == [a_hash(n) for n in range(100)]
-    assert other.next_inv_send_time == 0.0
-
-    other.queued_send_bytes = 0
-    manager._send_due_announcements()
-    (inv,) = only(other, Inv)
-    assert len(inv.items) == 70
-    # all scores are equal: which 70 go is the txid order's
-    assert set(hashes_of(inv)).isdisjoint(other.tx_announce_queue)
-    assert len(other.tx_announce_queue) == 30
-    assert other.next_inv_send_time > 0.0
 
 
 def test_a_queued_announcement_evicted_before_its_own_schedule_is_not_sent() -> None:

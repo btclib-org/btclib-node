@@ -350,7 +350,7 @@ class Node(threading.Thread):
         )
 
         # A `getcfilters` answer `p2p.callbacks.get_cfilters` could not
-        # finish scheduling under its own pacing bound, keyed by
+        # finish scheduling before `Connection.pause_send` was set, keyed by
         # connection id: the connection itself and the block hashes
         # still owed, resolved along the request's own stop block
         # ancestry (`p2p.callbacks._filter_range`) rather than active
@@ -428,7 +428,8 @@ class Node(threading.Thread):
         # nonce (btclib-org/btclib-node#1336). Core guards them with
         # `m_most_recent_block_mutex`. No lock here: the one writer,
         # `new_pow_valid_block`, and the readers, `_announce_added_blocks`,
-        # `callbacks._serve_getdata_item` and `getblocktxn`, all run on
+        # `callbacks._serve_getdata_tx`, `_serve_getdata_block` and
+        # `getblocktxn`, all run on
         # `Node`'s own loop, never on `P2pManager`'s or `RpcManager`'s
         # thread.
         self.most_recent_block: MostRecentBlock | None = None

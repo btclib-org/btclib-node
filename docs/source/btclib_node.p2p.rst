@@ -75,13 +75,6 @@ btclib\_node.p2p.eviction module
    :members:
    :show-inheritance:
 
-btclib\_node.p2p.filter\_size module
----------------------------------------
-
-.. automodule:: btclib_node.p2p.filter_size
-   :members:
-   :show-inheritance:
-
 btclib\_node.p2p.headers\_sync module
 ----------------------------------------
 

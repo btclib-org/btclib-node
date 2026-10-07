@@ -48,7 +48,7 @@ from btclib_node.p2p.callbacks import (
     process_orphan,
     settle_tx,
 )
-from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES, SEND_BUFFER_MAX_SIZE
+from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES
 from btclib_node.p2p.tx_checks import TX_CHECK_DEADLINE
 
 if TYPE_CHECKING:
@@ -104,17 +104,6 @@ def _weigh_off(conn: Connection, size: int) -> None:
         conn.loop.call_soon_threadsafe(conn._recv_resume.set)  # noqa: SLF001
 
 
-def _pause_send(conn: Connection) -> bool:
-    """Answer Core's `fPauseSend`: whether `conn`'s send queue is full.
-
-    Read on `Node`'s thread without `_send_lock`, as `advance_getdata`
-    (`p2p/callbacks.py`) reads `queued_send_bytes`. A drain the read
-    misses holds the peer one more pass of `Node`'s loop; a missed
-    increment is one of the small messages `P2pManager`'s thread sends.
-    """
-    return conn.send_memusage > SEND_BUFFER_MAX_SIZE
-
-
 def _hold_message(
     node: Node, conn: Connection, conn_id: int, held: tuple[str, bytes, int, float]
 ) -> bool:
@@ -122,8 +111,8 @@ def _hold_message(
 
     That is a check queued, a message held, an orphan to reconsider, a
     `getdata` or `getcfilters` answer paused on `node.pending_getdata`
-    or `node.pending_cfilters`, or a send queue past
-    `SEND_BUFFER_MAX_SIZE`.
+    or `node.pending_cfilters`, or `conn.pause_send`, Core's
+    `fPauseSend`.
     Answers whether it did. Core handles a peer's messages in the order
     received, decides a `tx` before it reads the next one, and reads
     nothing more from a peer while its `getdata` requests are unserved
@@ -133,11 +122,9 @@ def _hold_message(
     were sent (btclib-org/btclib-node#1739, btclib-org/btclib-node#1775,
     btclib-org/btclib-node#1789, btclib-org/btclib-node#1796).
 
-    A paused `getcfilters` answer holds the peer sooner than Core would.
-    Core queues every filter of an answer at once and holds the peer only
-    once they pass `nSendBufferMaxSize`; `advance_cfilters`
-    (`p2p/callbacks.py`) pauses below `SEND_BUFFER_MAX_SIZE`, and this
-    hold is what keeps a second request from replacing the paused one.
+    A paused `getcfilters` answer holds the peer where Core's full send
+    buffer would (`advance_cfilters`, `p2p/callbacks.py`), and keeps a
+    second request from replacing the paused one.
 
     `held` is the command, the payload, its wire size and the time it
     was read; it stays weighed against the peer's `queued_recv_bytes`,
@@ -149,7 +136,7 @@ def _hold_message(
         or node.download_manager.orphanage.have_tx_to_reconsider(conn_id)
         or conn_id in node.pending_getdata
         or conn_id in node.pending_cfilters
-        or _pause_send(conn)
+        or conn.pause_send
     ):
         return False
     node.tx_checks.waiting.setdefault(conn_id, deque()).append(held)
@@ -516,7 +503,7 @@ def _read_held(node: Node) -> bool:
             node.download_manager.orphanage.have_tx_to_reconsider(conn_id)
             or conn_id in node.pending_getdata
             or conn_id in node.pending_cfilters
-            or _pause_send(conn)
+            or conn.pause_send
         ):
             continue
         progressed = True

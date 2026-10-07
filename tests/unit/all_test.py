@@ -67,12 +67,6 @@ UNEXPORTED = {
         "update_header_index",
         "update_ibd_status",
     ],
-    # inputs to the one figure filter_size.py publishes, not needed on
-    # their own outside it
-    "btclib_node.p2p.filter_size": [
-        "BYTES_PER_FILTER_ELEMENT",
-        "ELEMENTS_PER_BUSY_MODERN_BLOCK",
-    ],
     # type_error's own vocabulary lookup, called from nowhere else
     "btclib_node.rpc.errors": ["json_type_name"],
 }

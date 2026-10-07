@@ -25,7 +25,6 @@ import pytest
 from btclib.exceptions import BTClibRuntimeError
 from btclib.hashes import hash256
 from btclib.p2p.address import ServiceFlags
-from btclib.p2p.block_filters import BlockFilterType, CFilter
 from btclib.p2p.handshake import Verack, Version
 from btclib.p2p.inventory import GetData, Inv, Inventory, InventoryType
 from btclib.p2p.keepalive import Ping, Pong
@@ -35,14 +34,11 @@ from btclib.p2p.message import Message
 from btclib_node import Node
 from btclib_node.chains import RegTest
 from btclib_node.constants import NodeStatus, P2pConnStatus
-from btclib_node.download import MAX_BLOCKS_IN_TRANSIT_PER_PEER
 from btclib_node.orphanage import TxOrphanage
 from btclib_node.p2p import connection as connection_module
-from btclib_node.p2p import main as p2p_main
 from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.callbacks import (
-    MAX_CFILTERS_INFLIGHT_BYTES,
-    MAX_GETDATA_INFLIGHT_BYTES,
+    advance_getdata,
     callbacks,
     getdata,
     handshake_callbacks,
@@ -50,7 +46,6 @@ from btclib_node.p2p.callbacks import (
 )
 from btclib_node.p2p.connection import SEND_BUFFER_MAX_SIZE, Connection
 from btclib_node.p2p.eviction import Network
-from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 from btclib_node.p2p.messages import NoncelessPing
 from btclib_node.p2p.transport import (
     BytesToSend,
@@ -141,11 +136,15 @@ def test_a_connection_is_reached_over_the_network_of_its_listener(
     assert connection.connected_through_network == network
 
 
-def test_a_message_that_will_not_serialize_is_logged_and_dropped() -> None:
+@pytest.mark.parametrize("synchronous", [False, True])
+def test_a_message_that_will_not_serialize_is_logged_and_dropped(
+    *, synchronous: bool
+) -> None:
     """A message that fails to serialize is logged, and the connection stays up.
 
     The connection stays up: one message this node cannot build is not
-    a reason to drop a peer that has done nothing wrong.
+    a reason to drop a peer that has done nothing wrong. `send` and
+    `async_send` alike count and schedule nothing for it.
     """
     connection, logged = a_connection()
     sent: list[bytes] = []
@@ -156,9 +155,14 @@ def test_a_message_that_will_not_serialize_is_logged_and_dropped() -> None:
         sent.append(data)  # pragma: no cover -- the payload never serializes
 
     connection._send = _send  # type: ignore[method-assign]
+    payload = cast("Payload", Unserializable())
     with connection.client:
-        asyncio.run(connection.async_send(cast("Payload", Unserializable())))
+        if synchronous:
+            connection.send(payload)
+        else:
+            asyncio.run(connection.async_send(payload))
     assert not sent
+    assert connection.send_memusage == 0
     (line,) = logged
     assert "error in serializing message" in line
 
@@ -177,11 +181,11 @@ def test_a_message_the_transport_cannot_frame_is_logged_and_dropped() -> None:
 
     connection._send = _send  # type: ignore[method-assign]
     message = SerializedMessage("a" * 13, b"")
-    connection.queued_send_bytes = connection_module._queued_size(message)
+    connection.send_memusage = connection_module._send_memusage(message)
     with connection.client:
         asyncio.run(connection._deliver(message))
     assert not sent
-    assert connection.queued_send_bytes == 0
+    assert connection.send_memusage == 0
     (line,) = logged
     assert "error in serializing message" in line
 
@@ -232,8 +236,8 @@ def test_a_v2_connection_holds_messages_until_the_handshake_gives_it_a_cipher() 
 
     connection._send = _send  # type: ignore[method-assign]
     messages = [SerializedMessage("ping", Ping(n).serialize()) for n in (1, 2, 3)]
-    size = sum(connection_module._queued_size(m) for m in messages)
-    connection.queued_send_bytes = size
+    size = sum(connection_module._send_memusage(m) for m in messages)
+    connection.send_memusage = size
 
     async def drive() -> None:
         for message in messages:
@@ -241,14 +245,14 @@ def test_a_v2_connection_holds_messages_until_the_handshake_gives_it_a_cipher() 
         assert len(sent) == 1
         assert not _peer_reads(peer, sent[0])
         assert len(connection._outbox) == 3
-        assert connection.queued_send_bytes == size
+        assert connection.send_memusage == size
         connection.parse_messages(_peer_writes(peer))
         await connection._drain_outbox()
 
     with connection.client:
         asyncio.run(drive())
     assert not connection._outbox
-    assert connection.queued_send_bytes == 0
+    assert connection.send_memusage == 0
     assert [(m.command, m.payload) for m in _peer_reads(peer, b"".join(sent[1:]))] == [
         (m.command, m.payload) for m in messages
     ]
@@ -1071,10 +1075,10 @@ def test_stop_ends_every_delivery_the_peer_never_drained() -> None:
     On a selector loop the first delivery fills the socket and waits in
     `sock_sendall`, and the second waits on `_write_lock` behind it; on
     a proactor loop the socket pair takes both whole, and
-    `test_the_send_queue_bound_drops_a_peer_it_has_no_way_to_pace`
+    `test_a_peer_that_does_not_read_is_paused_not_dropped`
     (`tests/functional/p2p/backpressure_test.py`) is where a write is
     left in flight there. Both are over, and nothing
-    is left in `queued_send_bytes`, before `stop_a_threaded_loop` has
+    is left in `send_memusage`, before `stop_a_threaded_loop` has
     cancelled anything: otherwise the first is pending until whatever
     closes the loop, or freed pending by the collector first
     (btclib-org/btclib-node#1164).
@@ -1087,7 +1091,7 @@ def test_stop_ends_every_delivery_the_peer_never_drained() -> None:
     message = SerializedMessage("block", b"x" * MAX_PROTOCOL_MESSAGE_LENGTH)
     try:
         connection = a_running_connection(loop, ours)
-        connection.queued_send_bytes = 2 * connection_module._queued_size(message)
+        connection.send_memusage = 2 * connection_module._send_memusage(message)
         first = asyncio.run_coroutine_threadsafe(connection._deliver(message), loop)
         second = asyncio.run_coroutine_threadsafe(connection._deliver(message), loop)
         time.sleep(0.15)
@@ -1097,7 +1101,7 @@ def test_stop_ends_every_delivery_the_peer_never_drained() -> None:
         stop_a_threaded_loop(loop, thread)
         theirs.close()
 
-    assert connection.queued_send_bytes == 0
+    assert connection.send_memusage == 0
     assert connection._writing is None
 
 
@@ -1441,36 +1445,31 @@ def test_run_does_not_read_again_while_recv_resume_is_cleared() -> None:
     assert after == [65536]
 
 
-def test_a_peer_already_at_the_send_bound_is_dropped_not_queued_further() -> None:
-    """A send that would exceed `MAX_QUEUED_SEND_BYTES` is refused, not queued.
+def test_a_peer_past_the_send_bound_is_sent_to_not_dropped() -> None:
+    """ISS 1805: past `SEND_BUFFER_MAX_SIZE` a message is still queued and sent.
 
-    `queued_send_bytes` starts already at the bound, whatever filled it,
-    so one more message is refused regardless of its own size; this
-    node's own choice under load and not the peer's doing, so #283 says
-    it is not a discourage.
+    Core drops no peer over its send buffer: past `nSendBufferMaxSize` it
+    sets `fPauseSend`, and what it queues still goes out.
     """
 
     async def drive() -> tuple[Connection, list[bytes]]:
         loop = asyncio.get_running_loop()
         connection = a_running_connection(loop, socket.socket())
-        # already owed this much, whatever it is: one more octet queued
-        # is refused regardless of what filled the budget
-        connection.queued_send_bytes = connection_module.MAX_QUEUED_SEND_BYTES
+        connection.send_memusage = 2 * SEND_BUFFER_MAX_SIZE
         sent: list[bytes] = []
 
         async def _send(data: bytes) -> None:
-            sent.append(data)  # pragma: no cover -- the bound refuses this send
+            sent.append(data)
 
         connection._send = _send  # type: ignore[method-assign]
         await connection.async_send(Ping(1))
+        connection.client.close()
         return connection, sent
 
     connection, sent = asyncio.run(drive())
-    assert connection.status == P2pConnStatus.Closed
-    # the reservation is untouched: the refused message never joined it
-    assert connection.queued_send_bytes == connection_module.MAX_QUEUED_SEND_BYTES
-    assert not sent
-    # this node's own choice under load, not the peer's doing: #283
+    assert connection.status == P2pConnStatus.Open
+    assert len(sent) == 1
+    assert connection.pause_send
     assert not discouraged_of(connection)
 
 
@@ -1478,20 +1477,21 @@ def test_a_flood_of_pings_pauses_the_peer_at_cores_count() -> None:
     """ISS 1796: each message weighs what Core's `GetMemoryUsage` gives it.
 
     A `ping` is 56 bytes of `CSerializedNetMsg` and `MallocUsage` of its
-    8-byte payload, 32: 88 bytes. Core's `fPauseSend` is set by the
-    ping that takes the total past `SEND_BUFFER_MAX_SIZE`, while the
-    wire count is still about a third of it. The weight leaves with
-    the message once it is written.
+    8-byte payload, 32: 88 bytes. A buffer at `SEND_BUFFER_MAX_SIZE`
+    does not pause, Core's comparison being `>`; the ping past it does.
+    The weight leaves with the message once it is written, and the pause
+    with it.
     """
     connection, _ = a_connection()
     per_ping = 56 + 32
-    flood = SEND_BUFFER_MAX_SIZE // per_ping
-    messages = [connection._queue(Ping(nonce)) for nonce in range(flood)]
-    assert connection.send_memusage == flood * per_ping
-    assert not p2p_main._pause_send(connection)
-    messages.append(connection._queue(Ping(flood)))
-    assert p2p_main._pause_send(connection)
-    assert connection.queued_send_bytes * 2 < SEND_BUFFER_MAX_SIZE
+    connection.send_memusage = SEND_BUFFER_MAX_SIZE - per_ping
+    messages = [connection._queue(Ping(1))]
+    assert connection.send_memusage == SEND_BUFFER_MAX_SIZE
+    paused = [connection.pause_send]
+    messages.append(connection._queue(Ping(2)))
+    paused.append(connection.pause_send)
+    assert paused == [False, True]
+    connection.send_memusage -= SEND_BUFFER_MAX_SIZE - per_ping
 
     async def _send(data: bytes) -> None:
         pass
@@ -1500,165 +1500,7 @@ def test_a_flood_of_pings_pauses_the_peer_at_cores_count() -> None:
     connection._outbox.extend(cast("list[SerializedMessage]", messages))
     asyncio.run(connection._drain_outbox())
     assert connection.send_memusage == 0
-    assert connection.queued_send_bytes == 0
-
-
-def _message_overhead() -> int:
-    """Measure the wire octets a send adds on top of one `filter_bytes`.
-
-    `Message`'s envelope, plus `CFilter`'s own filter type, block hash,
-    and `filter_bytes`'s own `var_int` length prefix.
-
-    Measured, at a size in the range the two bursts below build,
-    rather than assumed: `var_int` is five octets only above 65,536,
-    which is a fact about the encoding and not about this module, so it
-    is read off a real `Message` built the way `Connection._queue`
-    builds one instead of counted on to stay what it was last measured
-    as.
-    """
-    size = 98_000
-    payload = CFilter(
-        BlockFilterType.BASIC, b"\x00" * 32, b"\x00" * size, check_validity=False
-    ).serialize(check_validity=False)
-    envelope = Message(RegTest().magic, "cfilter", payload).serialize()
-    return len(envelope) - size
-
-
-def _burst_summing_to(total_wire_bytes: int, count: int) -> list[CFilter]:
-    """Build `count` `CFilter`-shaped messages summing to `total_wire_bytes`.
-
-    What `Connection._queue` actually counts toward `queued_send_bytes`
-    is the whole wire message, not merely the `filter_bytes` argument
-    each is built from.
-    `CFilter` is a convenient, arbitrarily-sized payload to stand in for
-    whatever a connection has queued -- a `getdata` answer's own blocks
-    among them, since `count` here models how many separate messages one
-    handler schedules back to back, not that they are filters: no message
-    here could be one whole answer's size anyway, `Message.serialize`
-    refusing a payload over `MAX_PROTOCOL_MESSAGE_LENGTH` regardless of
-    `check_validity`. `filter_bytes` is not a real Golomb-Rice set:
-    `check_validity=False` on both the object and `_queue`'s own
-    `serialize` call is what lets zeroed octets stand in for one, the way
-    a wrong-shaped block already does elsewhere in this test tree.
-    """
-    total = total_wire_bytes - count * _message_overhead()
-    base = total // count
-    sizes = [base] * count
-    sizes[-1] += total - base * count  # the remainder, on the last one
-    return [
-        CFilter(
-            BlockFilterType.BASIC, b"\x00" * 32, b"\x00" * size, check_validity=False
-        )
-        for size in sizes
-    ]
-
-
-def _two_bursts_in_flight(
-    first_burst: list[CFilter], second_burst: list[CFilter]
-) -> tuple[Connection, list[int]]:
-    """Put two bursts of messages in flight on the same connection together.
-
-    Between them the two bursts stand for whatever one connection has
-    been committed to sending, in two handlers' worth rather than one:
-    the sizes are the caller's to pick, and what is measured is
-    `Connection._queue`'s own comparison against `MAX_QUEUED_SEND_BYTES`
-    rather than any dispatch's own schedule. The first burst is held
-    open on a socket write that never finishes, the way a real one would
-    be by a peer reading slower than this node can serialize. Returns
-    the connection and the sizes `_send` actually saw.
-    """
-
-    async def drive() -> tuple[Connection, list[int]]:
-        loop = asyncio.get_running_loop()
-        connection = a_running_connection(loop, socket.socket())
-        release = asyncio.Event()
-        delivered: list[int] = []
-
-        async def _send(data: bytes) -> None:
-            delivered.append(len(data))
-            await release.wait()
-
-        connection._send = _send  # type: ignore[method-assign]
-
-        first_tasks = [
-            asyncio.ensure_future(connection.async_send(f)) for f in first_burst
-        ]
-        # one turn of the loop: every task in the burst runs its
-        # synchronous prefix -- the bound check and the reservation,
-        # under `_send_lock` -- before any of them reaches the
-        # (contended, after the first) `_write_lock`
-        await asyncio.sleep(0)
-        assert connection.queued_send_bytes  # the first answer is on the books
-
-        second_tasks = [
-            asyncio.ensure_future(connection.async_send(f)) for f in second_burst
-        ]
-        await asyncio.sleep(0)
-
-        release.set()
-        await asyncio.gather(*first_tasks, *second_tasks)
-        # closed here rather than left to the drop path: that path
-        # closes it only where the third burst tips the connection into
-        # P2pConnStatus.Closed, and the socket built above is real
-        # (`socket.socket()`, not a pair `_send` stands in for) either
-        # way
-        connection.client.close()
-        return connection, delivered
-
-    return asyncio.run(drive())
-
-
-def _bursts_summing_to_the_bound(slack: int) -> tuple[list[CFilter], list[CFilter]]:
-    """Build two bursts summing to `MAX_QUEUED_SEND_BYTES` less `slack`.
-
-    A total, not a schedule: what these two drive is
-    `Connection._queue`'s own comparison at its own boundary, and
-    nothing here claims either pacing mechanism reaches this much. What
-    they do reach is
-    `test_filters_in_flight_come_out_of_a_getdata_answers_own_room` and
-    `test_a_realistic_getdata_burst_and_cfilters_headroom_are_not_dropped`
-    below, each driving the real dispatch instead of assuming a total.
-    """
-    first_share = MAX_GETDATA_INFLIGHT_BYTES + MAX_PROTOCOL_MESSAGE_LENGTH
-    total = connection_module.MAX_QUEUED_SEND_BYTES - slack
-    # slack always comes out of the second share, never the first, so a
-    # caller's own slack has to stay well under what the bound leaves
-    # above `first_share` or that share goes negative
-    return (
-        _burst_summing_to(first_share, 3),
-        _burst_summing_to(total - first_share, 3),
-    )
-
-
-def test_a_total_at_the_send_bound_is_not_dropped() -> None:
-    """`MAX_QUEUED_SEND_BYTES` holds a total landing just short of it.
-
-    A boundary check on `Connection._queue`'s own comparison, and only
-    that: what either pacing mechanism actually schedules is what the
-    tests below drive.
-    """
-    first, second = _bursts_summing_to_the_bound(slack=4096)
-    connection, delivered = _two_bursts_in_flight(first, second)
-    assert connection.status == P2pConnStatus.Open
-    assert len(delivered) == len(first) + len(second)
-    assert connection.queued_send_bytes == 0
-
-
-def test_past_the_send_bound_the_peer_is_dropped() -> None:
-    """Past the bound above, the peer is dropped.
-
-    The same two bursts, tipping past `MAX_QUEUED_SEND_BYTES` instead of
-    stopping short of it.
-    """
-    first, second = _bursts_summing_to_the_bound(slack=-4096)
-    connection, delivered = _two_bursts_in_flight(first, second)
-    assert connection.status == P2pConnStatus.Closed
-    # the first burst reached the socket in full; at least one message of
-    # the second, the one that tipped the bound, never did
-    assert len(delivered) < len(first) + len(second)
-    assert len(delivered) >= len(first)
-    # released and accounted for, not left on the books by the drop
-    assert connection.queued_send_bytes == 0
+    assert not connection.pause_send
 
 
 class _FakeBigBlock:
@@ -1698,172 +1540,13 @@ def a_chainstate_holding(block_hashes: Iterable[bytes]) -> Any:
     return SimpleNamespace(block_index=block_index)
 
 
-def test_a_realistic_getdata_burst_and_cfilters_headroom_are_not_dropped() -> None:
-    """`getdata`'s own real schedule and `get_cfilters`'s own headroom survive.
-
-    Six 1.5 MB blocks in one `getdata` -- comfortably inside
-    `MAX_BLOCKS_IN_TRANSIT_PER_PEER` (sixteen) and each well under
-    `MAX_PROTOCOL_MESSAGE_LENGTH` -- driven through the real
-    `getdata`/`advance_getdata` dispatch rather than hand-summed to an
-    assumed total: that assumption is exactly what let
-    `MAX_QUEUED_SEND_BYTES` under-size itself once already
-    (btclib-org/btclib-node#470), `advance_getdata`'s check-before-send
-    shape scheduling whatever fits *before* the item that tips its own
-    pacing bound, not a total capped at that bound. The filters behind
-    it are handed to `Connection.async_send` rather than to
-    `advance_cfilters`, which at this much already queued pauses on its
-    own first check instead: what is measured here is the total this
-    connection carries, where the displacement that pause produces is
-    what `test_filters_in_flight_come_out_of_a_getdata_answers_own_room`
-    below drives.
-    """
-    size = 1_500_000
-    blocks = {bytes([i]) + b"\x00" * 31: _FakeBigBlock(size) for i in range(6)}
-    items = [Inventory(InventoryType.MSG_BLOCK, h) for h in blocks]
-    cfilters_headroom = _burst_summing_to(
-        int(2 * ONE_BUSY_MODERN_BLOCK_FILTER_BYTES), 2
-    )
-
-    async def drive() -> tuple[Connection, list[int]]:
-        loop = asyncio.get_running_loop()
-        connection = a_running_connection(loop, socket.socket())
-        connection.node.block_db = SimpleNamespace(get_block=blocks.get)  # type: ignore[assignment]
-        connection.node.most_recent_block = None
-        connection.node.chainstate = a_chainstate_holding(blocks)
-        connection.node.mempool = SimpleNamespace(get_tx=lambda *a, **k: None)  # type: ignore[assignment]
-        connection.node.pending_getdata = {}
-        release = asyncio.Event()
-        delivered: list[int] = []
-
-        async def _send(data: bytes) -> None:
-            delivered.append(len(data))
-            await release.wait()
-
-        connection._send = _send  # type: ignore[method-assign]
-
-        getdata(connection.node, GetData(items).serialize(), connection)
-        # every block reserved its own share on this thread, before any
-        # turn of the loop and so before any of them drained
-        assert connection.queued_send_bytes == pytest.approx(
-            len(blocks) * size, rel=0.01
-        )
-        # Connection.send schedules the write through
-        # run_coroutine_threadsafe rather than starting its task's own
-        # first step immediately the way a direct ensure_future in this
-        # coroutine's own frame would, so it takes several turns for
-        # every block to reach `release`
-        for _ in range(50):
-            await asyncio.sleep(0)
-
-        second_tasks = [
-            asyncio.ensure_future(connection.async_send(f)) for f in cfilters_headroom
-        ]
-        await asyncio.sleep(0)
-
-        release.set()
-        await asyncio.gather(*second_tasks)
-        connection.client.close()
-        return connection, delivered
-
-    connection, delivered = asyncio.run(drive())
-    assert connection.status == P2pConnStatus.Open
-    assert len(delivered) == len(items) + len(cfilters_headroom)
-    assert connection.queued_send_bytes == 0
-
-
-def _blocks_served_behind(in_flight_bytes: int) -> tuple[int, int]:
-    """Answer a `getdata` for small blocks with `in_flight_bytes` already owed.
-
-    Returns the peak `queued_send_bytes` the answer reached and how many
-    of the blocks it served before `MAX_GETDATA_INFLIGHT_BYTES` paused
-    it. The blocks are sized so that a filter answer's own peak is the
-    same order as one of them, which is what makes the displacement
-    below visible at all.
-    """
-    size = 300_000
-    blocks = {bytes([i]) + b"\x00" * 31: _FakeBigBlock(size) for i in range(40)}
-    items = [Inventory(InventoryType.MSG_BLOCK, h) for h in blocks]
-
-    async def drive() -> tuple[int, int]:
-        loop = asyncio.get_running_loop()
-        connection = a_running_connection(loop, socket.socket())
-        connection.node.block_db = SimpleNamespace(get_block=blocks.get)  # type: ignore[assignment]
-        connection.node.most_recent_block = None
-        connection.node.chainstate = a_chainstate_holding(blocks)
-        connection.node.mempool = SimpleNamespace(get_tx=lambda *a, **k: None)  # type: ignore[assignment]
-        connection.node.pending_getdata = {}
-        release = asyncio.Event()
-
-        async def _send(data: bytes) -> None:
-            await release.wait()
-
-        connection._send = _send  # type: ignore[method-assign]
-
-        tasks = []
-        if in_flight_bytes:
-            tasks = [
-                asyncio.ensure_future(connection.async_send(f))
-                for f in _burst_summing_to(in_flight_bytes, 2)
-            ]
-            await asyncio.sleep(0)
-
-        getdata(connection.node, GetData(items).serialize(), connection)
-        peak = connection.queued_send_bytes
-        assert connection.status == P2pConnStatus.Open
-        _conn, remaining = connection.node.pending_getdata[connection.id]
-
-        release.set()
-        await asyncio.gather(*tasks)
-        connection.client.close()
-        return peak, len(items) - len(remaining)
-
-    return asyncio.run(drive())
-
-
-def test_filters_in_flight_come_out_of_a_getdata_answers_own_room() -> None:
-    """A filter answer already owed displaces blocks rather than adding to them.
-
-    `advance_getdata` and `advance_cfilters` (`callbacks.py`) pace on the
-    one `queued_send_bytes` field, so a `getcfilters` pipelined behind a
-    `getdata` the peer has not drained is counted inside that answer's
-    own peak: the same request is served fewer blocks, and the total the
-    connection carries does not grow. That is what
-    `MAX_QUEUED_SEND_BYTES` is sized against, rather than the two
-    overshoots added together (btclib-org/btclib-node#521).
-    """
-    alone_peak, alone_served = _blocks_served_behind(0)
-    behind_peak, behind_served = _blocks_served_behind(
-        MAX_CFILTERS_INFLIGHT_BYTES + int(ONE_BUSY_MODERN_BLOCK_FILTER_BYTES)
-    )
-    assert behind_served < alone_served
-    assert behind_peak <= alone_peak
-    assert behind_peak < connection_module.MAX_QUEUED_SEND_BYTES
-
-
-def test_the_send_bound_holds_the_peak_a_getdata_answer_can_pace_to() -> None:
-    """The bound stays above `MAX_GETDATA_INFLIGHT_BYTES` and one whole block.
-
-    The relation the bound is derived from: `advance_getdata`'s last
-    check passes just under its own bound, and what it then commits is a
-    whole wire message rather than the payload
-    `MAX_PROTOCOL_MESSAGE_LENGTH` bounds. A change to either constant
-    that left this false would have this bound drop the peer the pacing
-    bound had already paused. The envelope is measured off a
-    `Message` built the way `Connection._queue` builds one rather than
-    counted on to stay what it was.
-    """
-    envelope = len(Message(RegTest().magic, "block", b"").serialize())
-    peak = MAX_GETDATA_INFLIGHT_BYTES + MAX_PROTOCOL_MESSAGE_LENGTH + envelope
-    assert peak < connection_module.MAX_QUEUED_SEND_BYTES
-
-
 def test_send_counts_a_message_before_the_loop_has_written_it() -> None:
     """`Connection.send` has counted the message by the time it returns.
 
-    The whole of what a caller pacing on `queued_send_bytes` between two
-    sends depends on: the count is taken on the calling thread, so it is
-    true of the connection before any turn of the loop the write is
-    scheduled on. btclib-org/btclib-node#512
+    The whole of what a caller checking `pause_send` between two sends
+    depends on: the count is taken on the calling thread, so it is true
+    of the connection before any turn of the loop the write is scheduled
+    on. btclib-org/btclib-node#512
     """
 
     async def drive() -> tuple[int, int, list[int]]:
@@ -1877,107 +1560,40 @@ def test_send_counts_a_message_before_the_loop_has_written_it() -> None:
         connection._send = _send  # type: ignore[method-assign]
 
         connection.send(Ping(1))
-        reserved = connection.queued_send_bytes
+        reserved = connection.send_memusage
         # the write itself is the loop's, and takes turns of it to
         # happen: run_coroutine_threadsafe schedules rather than starts
         for _ in range(10):
             await asyncio.sleep(0)
         connection.client.close()
-        return reserved, connection.queued_send_bytes, delivered
+        return reserved, connection.send_memusage, delivered
 
     reserved, after, delivered = asyncio.run(drive())
-    (written,) = delivered
-    assert reserved == written
+    assert len(delivered) == 1
+    assert reserved == 56 + 32
     assert after == 0
 
 
-def test_a_getdata_answer_paces_on_what_it_has_already_handed_over() -> None:
-    """A `getdata` for more blocks than fit is paced, not dropped.
+def test_a_getdata_answer_pauses_once_the_send_buffer_is_full() -> None:
+    """ISS 1805: one block per call until `pause_send` is set, as in Core.
 
-    A whole `MAX_BLOCKS_IN_TRANSIT_PER_PEER` (`btclib_node/download.py`)
-    of megabyte blocks, which is the request this node makes of its own
-    peers and so an ordinary one to answer. The peer drains nothing, so
-    `advance_getdata` stops within one block of
-    `MAX_GETDATA_INFLIGHT_BYTES` -- the overshoot
-    `MAX_QUEUED_SEND_BYTES`'s own room above that bound is sized for --
-    and leaves the rest on `node.pending_getdata` for
-    `p2p.main.resume_getdata`, which is a peer paced rather than a peer
-    dropped. btclib-org/btclib-node#512
+    The peer drains nothing. Each block weighs just over a third of
+    `SEND_BUFFER_MAX_SIZE`, so the call after the third finds the
+    buffer past it and serves nothing, and the connection stays open.
+    Once the buffer drains, the next call serves the next block.
     """
-    size = 1_000_000
-    blocks = {
-        bytes([i]) + b"\x00" * 31: _FakeBigBlock(size)
-        for i in range(MAX_BLOCKS_IN_TRANSIT_PER_PEER)
-    }
+    size = SEND_BUFFER_MAX_SIZE // 3
+    blocks = {bytes([i]) + b"\x00" * 31: _FakeBigBlock(size) for i in range(6)}
     items = [Inventory(InventoryType.MSG_BLOCK, h) for h in blocks]
 
-    async def drive() -> tuple[Connection, int, int]:
+    async def drive() -> tuple[Connection, list[int], bool, int]:
         loop = asyncio.get_running_loop()
         connection = a_running_connection(loop, socket.socket())
-        connection.node.block_db = SimpleNamespace(get_block=blocks.get)  # type: ignore[assignment]
-        connection.node.most_recent_block = None
-        connection.node.chainstate = a_chainstate_holding(blocks)
-        connection.node.mempool = SimpleNamespace(get_tx=lambda *a, **k: None)  # type: ignore[assignment]
-        connection.node.pending_getdata = {}
-        release = asyncio.Event()
-        delivered: list[int] = []
-
-        async def _send(data: bytes) -> None:
-            delivered.append(len(data))
-            await release.wait()
-
-        connection._send = _send  # type: ignore[method-assign]
-
-        getdata(connection.node, GetData(items).serialize(), connection)
-        # the whole answer this call committed to, before any turn of
-        # the loop has written a byte of it
-        peak = connection.queued_send_bytes
-        release.set()
-        for _ in range(50):
-            await asyncio.sleep(0)
-        connection.client.close()
-        return connection, peak, delivered[0]
-
-    connection, peak, one_message = asyncio.run(drive())
-    assert connection.status == P2pConnStatus.Open
-    # one message past the bound and no further, measured off a message
-    # this answer actually queued rather than assumed from `size`
-    assert peak < MAX_GETDATA_INFLIGHT_BYTES + one_message
-    # every block here serializes to the same length, so what the peak
-    # holds says how many of them were served
-    _conn, pending = connection.node.pending_getdata[connection.id]
-    assert list(pending) == items[peak // one_message :]
-    assert connection.queued_send_bytes == 0
-
-
-def test_a_getdata_of_mostly_misses_does_not_drop_the_connection() -> None:
-    """A `getdata` answer's own trailing `notfound` is paced too.
-
-    One request, `MAX_INV_SZ` items, all but three a transaction this
-    node no longer has -- a peer whose asks raced an eviction round, not
-    a protocol violation -- and the last three blocks just under
-    `MAX_PROTOCOL_MESSAGE_LENGTH`. Before btclib-org/btclib-node#529 a
-    miss cost nothing against `MAX_GETDATA_INFLIGHT_BYTES`, so this
-    request's whole `notfound` landed on top of the three blocks and
-    past `MAX_QUEUED_SEND_BYTES`, dropping a connection the pacing bound
-    above it had already handled for the blocks alone.
-    """
-    block_size = MAX_PROTOCOL_MESSAGE_LENGTH - 100
-    blocks = {bytes([i]) + b"\x00" * 31: _FakeBigBlock(block_size) for i in range(3)}
-    misses = [
-        Inventory(InventoryType.MSG_WTX, i.to_bytes(4, "big") + b"\x01" * 28)
-        for i in range(MAX_INV_SZ - len(blocks))
-    ]
-    items = misses + [Inventory(InventoryType.MSG_BLOCK, h) for h in blocks]
-
-    async def drive() -> tuple[Connection, int]:
-        loop = asyncio.get_running_loop()
-        connection = a_running_connection(loop, socket.socket())
-        connection.node.block_db = SimpleNamespace(get_block=blocks.get)  # type: ignore[assignment]
-        connection.node.most_recent_block = None
-        connection.node.chainstate = a_chainstate_holding(blocks)
-        connection.node.mempool = SimpleNamespace(get_tx=lambda *a, **k: None)  # type: ignore[assignment]
-        connection.node.pending_getdata = {}
+        node = connection.node
+        node.block_db = SimpleNamespace(get_block=blocks.get)  # type: ignore[assignment]
+        node.most_recent_block = None
+        node.chainstate = a_chainstate_holding(blocks)
+        node.pending_getdata = {}
         release = asyncio.Event()
 
         async def _send(data: bytes) -> None:
@@ -1985,21 +1601,25 @@ def test_a_getdata_of_mostly_misses_does_not_drop_the_connection() -> None:
 
         connection._send = _send  # type: ignore[method-assign]
 
-        getdata(connection.node, GetData(items).serialize(), connection)
-        peak = connection.queued_send_bytes
+        getdata(node, GetData(items).serialize(), connection)
+        _conn, pending = node.pending_getdata[connection.id]
+        left = [len(pending)]
+        for _ in range(3):
+            advance_getdata(node, connection, pending)
+            left.append(len(pending))
+        paused = connection.pause_send
         release.set()
         for _ in range(50):
             await asyncio.sleep(0)
+        advance_getdata(node, connection, pending)
         connection.client.close()
-        return connection, peak
+        return connection, left, paused, len(pending)
 
-    connection, peak = asyncio.run(drive())
+    connection, left, paused, after_drain = asyncio.run(drive())
+    assert left == [5, 4, 3, 3]
+    assert paused
     assert connection.status == P2pConnStatus.Open
-    assert peak < connection_module.MAX_QUEUED_SEND_BYTES
-    # the request was not served in full in this one call: at least the
-    # last block, popped only after the accumulated misses were flushed
-    # and the bound tripped, is left for `p2p.main.resume_getdata`
-    assert connection.id in connection.node.pending_getdata
+    assert after_drain == 2
 
 
 @pytest.mark.parametrize(

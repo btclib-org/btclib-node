@@ -38,10 +38,12 @@ here are the ones [ARCHITECTURE](./ARCHITECTURE.md) describes.
   handlers of `p2p/callbacks.py` through a `Node`, which the property
   test leaves out. Nothing here fuzzes the `json.loads` of an RPC body.
 - **What one connection may cost this node, and how many inbound
-  connections it holds, are bounded.** A single peer cannot commit this
-  node past `MAX_QUEUED_SEND_BYTES`, a fixed sum of a block's and a
-  filter answer's own sizes (`src/btclib_node/p2p/connection.py`),
-  closed as btclib-org/btclib-node#101. Past `Config.max_connections`'s
+  connections it holds, are bounded.** A peer whose send buffer passes
+  `SEND_BUFFER_MAX_SIZE` has nothing more read from it until the buffer
+  drains, as in Core, and one that stops reading is dropped by the ping
+  timeout; the comment beside that bound
+  (`src/btclib_node/p2p/connection.py`) argues what the two leave it
+  able to cost, closed as btclib-org/btclib-node#1805. Past `Config.max_connections`'s
   inbound share, `P2pManager.server` evicts an inbound peer by Core's
   own rules and closes the new one, before building anything for it,
   only where every peer held is protected. A peer from a host this node
@@ -208,14 +210,10 @@ terminator, a packet whose length field exceeds a message's largest
 contents before it decrypts the contents, and a packet that does not
 authenticate. The connection bounds what it will buffer in either
 direction — `MAX_QUEUED_RECV_BYTES` on what may sit unprocessed,
-`MAX_QUEUED_SEND_BYTES` on what this node will queue back out —
-`getdata` and `getcfilters` paced against that last bound, checked
-before every item rather than
-once a whole answer is built, and `headers` and `addr` sized into
-headroom of their own since each answers a request in one message and
-neither is frequent enough to need a pacing point, the module's own
-comment beside `MAX_QUEUED_SEND_BYTES` arguing the sizing in full
-(btclib-org/btclib-node#101). What crosses this boundary already framed
+`SEND_BUFFER_MAX_SIZE` on what this node may owe a peer before it reads
+nothing more from it — with `getdata` and `getcfilters` answers checked
+against that last bound before every item, the module's own comment
+beside it arguing what bounds the rest. What crosses this boundary already framed
 is handed to btclib's own `Message.parse` for the codec itself.
 
 **The store.** `src/btclib_node/db.py` is what every index opens its
@@ -339,7 +337,7 @@ and what counters each.
   above).
 - **Uncontrolled resource consumption (CWE-400, CWE-770).**
   `MAX_HEADER_BYTES`/`MAX_BODY_BYTES` on the RPC surface,
-  `MAX_PROTOCOL_MESSAGE_LENGTH`/`MAX_QUEUED_RECV_BYTES`/`MAX_QUEUED_SEND_BYTES`
+  `MAX_PROTOCOL_MESSAGE_LENGTH`/`MAX_QUEUED_RECV_BYTES`/`SEND_BUFFER_MAX_SIZE`
   and the pacing beside them on the p2p surface. SECURITY.md's
   *Limitations* states what is bounded and what is not yet.
 - **Weak randomness (CWE-330, CWE-338).** `ruff`'s flake8-bandit family,

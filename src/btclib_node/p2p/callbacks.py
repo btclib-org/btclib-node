@@ -76,7 +76,6 @@ from btclib.p2p.limits import (
     MAX_HEADERS_RESULTS,
     MAX_INV_SZ,
     MAX_LOCATOR_SZ,
-    MAX_PROTOCOL_MESSAGE_LENGTH,
     PROTOCOL_VERSION,
 )
 from btclib.p2p.negotiation import FeeFilter, GetAddr, WtxidRelay
@@ -121,7 +120,6 @@ from btclib_node.p2p.chain_sync import (
 )
 from btclib_node.p2p.compact_block import compact_block
 from btclib_node.p2p.eviction import is_routable
-from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 from btclib_node.p2p.headers_sync import (
     ChainStart,
     HeadersSyncState,
@@ -153,9 +151,7 @@ if TYPE_CHECKING:
 __all__ = [
     "CMPCTBLOCKS_VERSION",
     "MAX_BLOCKTXN_DEPTH",
-    "MAX_CFILTERS_INFLIGHT_BYTES",
     "MAX_CMPCTBLOCK_DEPTH",
-    "MAX_GETDATA_INFLIGHT_BYTES",
     "addr",
     "addrv2",
     "advance_cfilters",
@@ -1777,89 +1773,6 @@ def _block_answer(node: Node, item: Inventory, block: Block) -> BlockMsg | Cmpct
     return BlockMsg(block, include_witness=include_witness, check_validity=False)
 
 
-# Room to schedule ahead of a peer's own draining before `advance_getdata`
-# pauses and hands the rest to `node.pending_getdata`, for `resume_getdata`
-# (`p2p.main`) to finish -- the same idea `MAX_CFILTERS_INFLIGHT_BYTES`
-# below applies to `get_cfilters`, sized against a `getdata` answer's own
-# largest item instead of a filter's: a block, up to
-# `MAX_PROTOCOL_MESSAGE_LENGTH`. Twice that is the same "one draining, one
-# already serialized behind it" margin `MAX_CFILTERS_INFLIGHT_BYTES` gives
-# a filter, scaled to this answer's own larger item.
-#
-# Core's own analogue, `ProcessGetData`'s "only process one BLOCK item per
-# call" (`net_processing.cpp:2798`, at bitcoin/bitcoin@b91d983f66), is a
-# hard count instead of a byte bound, because Core's own next call is
-# `ProcessMessages` looping back over every connection regardless of what
-# this one has queued. A byte bound reproduces the same shape without a
-# second, item-type-specific count to keep in step with
-# `MAX_QUEUED_SEND_BYTES`
-# (`connection.py`): a transaction item is cheap and small, so many of
-# them fit under this bound in one pass, matching Core's own "process as
-# many TX items as possible" (`:2772`, checked against `fPauseSend`
-# before each one, `:2776`); a block item is large enough on its own that
-# one or two exhaust it, without this function ever counting block items
-# by hand the way Core's own count does.
-MAX_GETDATA_INFLIGHT_BYTES = int(2 * MAX_PROTOCOL_MESSAGE_LENGTH)
-
-# What one entry costs inside a `notfound`, read off `Inventory.serialize`
-# rather than hardcoded: a type code (four octets) and a hash (thirty-two),
-# fixed width whatever the entry names. `advance_getdata` below sums this
-# over every miss it has collected but not yet sent, so that a `notfound`
-# still being assembled counts against `MAX_GETDATA_INFLIGHT_BYTES` the
-# same way a block or a transaction already sent does -- nothing else made
-# a miss cost anything, and btclib-org/btclib-node#529 is a peer dropped by
-# a `notfound` for exactly that reason: every item this call could not
-# serve, batched with no pacing check in front of the send.
-#
-# `Message`'s own envelope and the `var_int` length prefix ahead of the
-# entries are both left out of this per-item figure: at
-# `MAX_GETDATA_INFLIGHT_BYTES`'s own scale (megabytes), the few dozen
-# octets either adds is immaterial to when the check below trips -- the
-# same magnitude argument this function's own docstring already makes
-# about a missed `queued_send_bytes` increment being one ping's worth
-# against a whole block's.
-_NOTFOUND_ITEM_BYTES = len(Inventory().serialize())
-
-
-def _notfound_pace(
-    conn: Connection, not_found_bytes: int, not_found_len: int
-) -> tuple[bool, bool]:
-    """Answer whether `advance_getdata`'s pending batch should flush or pause.
-
-    Pulled out of the loop below rather than inlined, alongside
-    `_serve_getdata_item`: `advance_getdata` itself is what ruff's own
-    complexity check counts branches against, and every `if` moved into
-    a helper is one fewer counted there, whichever helper it lands in.
-    Neither of the two questions here reads or writes anything the loop
-    itself needs to -- both are pure functions of the three numbers a
-    caller already has to hand. "Flush" wins over "pause" where both
-    would otherwise apply: sending what is already owed, even while
-    over budget, is what lets the very next check see a `not_found`
-    that is empty again, rather than looping on the same decision.
-
-    **This pacing has no counterpart in Bitcoin Core, and the reason is
-    a difference in what a full send buffer does.** Core's
-    `ProcessGetData` (`src/net_processing.cpp`,
-    at bitcoin/bitcoin@05e49b342f) checks `pfrom.fPauseSend` before every
-    item, hit or miss, but a miss only does `vNotFound.push_back` and
-    `fPauseSend` is driven by `m_send_memusage` -- bytes already handed
-    to the transport -- so a request answered entirely in misses costs
-    that signal nothing, and the `notfound` at the end of the loop is
-    pushed unconditionally. Core can afford that: `nSendBufferMaxSize`
-    is only ever read to set `fPauseSend`, which makes the node stop
-    *reading* from that peer, and nothing anywhere disconnects on send
-    volume. This tree's `MAX_QUEUED_SEND_BYTES`
-    (`p2p/connection.py`) does disconnect, so the same unbounded batch
-    that merely pauses Core drops an honest peer here
-    (btclib-org/btclib-node#529). The pause point is what this tree owes
-    for having that bound at all; it is not a rule Core has and this
-    tree was missing.
-    """
-    over_budget = conn.queued_send_bytes + not_found_bytes >= MAX_GETDATA_INFLIGHT_BYTES
-    should_flush = bool(not_found_len) and over_budget
-    return should_flush, over_budget
-
-
 def _below_prune_threshold(node: Node, block_hash: bytes) -> bool:
     """Whether `block_hash` falls more than `MIN_BLOCKS_TO_KEEP` behind the tip.
 
@@ -1876,7 +1789,7 @@ def _below_prune_threshold(node: Node, block_hash: bytes) -> bool:
     the identical way), so this reads `node.config.pruned` directly
     rather than a per-connection record of what was sent. `+ 2` is
     Core's own buffer, "for possible races". `block_hash` is indexed:
-    `_serve_getdata_item` has already answered Core's own `if (!pindex)
+    `_serve_getdata_block` has already answered Core's own `if (!pindex)
     return;`.
     """
     block_index = node.chainstate.block_index
@@ -1897,92 +1810,84 @@ def _find_tx_for_getdata(node: Node, tx_hash: bytes, *, wtxid: bool) -> Tx | Non
     return tx
 
 
-def _serve_getdata_item(
-    node: Node,
-    conn: Connection,
-    item: Inventory,
-    not_found: list[Inventory],
-    not_found_bytes: int,
-) -> int:
-    """Serve one popped item, appending a miss to `not_found` in place.
-
-    The other half of `advance_getdata`'s own body pulled out for the
-    same reason `_notfound_pace` above was: what item type dispatches to
-    what answer does not need to be inline for the loop around it to
-    read correctly, and keeping it out is what holds `advance_getdata`
-    itself under ruff's own complexity bound. Returns the running
-    `not_found_bytes` total, grown by `_NOTFOUND_ITEM_BYTES` on a miss
-    and left alone otherwise -- `not_found` itself is mutated in place,
-    a `list` being one of the few values this tree passes that way
-    rather than returning a new one, since the caller's own loop already
-    holds no other reference to it worth preserving unmutated.
-    """
-    if item.type_code in _GETDATA_TX_TYPES:
-        if not conn.relay_tx:
-            return not_found_bytes
-        wtxid = item.type_code == InventoryType.MSG_WTX
-        tx = _find_tx_for_getdata(node, item.hash, wtxid=wtxid)
-        if tx:
-            include_witness = item.type_code in (
-                InventoryType.MSG_WITNESS_TX,
-                InventoryType.MSG_WTX,
-            )
-            conn.send(TxMsg(tx, include_witness=include_witness))
-            # Core's own `m_mempool.RemoveUnbroadcastTx(tx->GetHash())`
-            # (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7,
-            # the v31.1 tag): this peer's own `getdata` is the
-            # acknowledgment `getmempoolinfo`'s own `unbroadcastcount`
-            # waits for. `tx->GetHash()` is a txid, matching what
-            # `mark_broadcast` reads `tx.id` by, not `item.hash`, which
-            # is a wtxid for a `MSG_WTX` request.
-            # btclib-org/btclib-node#1421
-            node.mempool.mark_broadcast(tx.id)
-        else:
-            not_found.append(item)
-            not_found_bytes += _NOTFOUND_ITEM_BYTES
-    elif item.type_code in _GETDATA_BLOCK_TYPES:
-        # Core's `ProcessGetBlockData` (`net_processing.cpp`,
-        # at bitcoin/bitcoin@9be056a8a7) ignores a block it has no index
-        # entry for, then one `BlockRequestAllowed` refuses -- off the
-        # active chain and not recently valid -- before the prune threshold
-        if item.hash not in node.chainstate.block_index.header_dict:
-            return not_found_bytes
-        if not _block_request_allowed(node, item.hash):
-            return not_found_bytes
-        if (
-            node.config.pruned
-            and NetPermissionFlags.NO_BAN not in conn.permissions
-            and _below_prune_threshold(node, item.hash)
-        ):
-            conn.stop()
-            return not_found_bytes
-        # Core's `a_recent_block`, ahead of the read
-        recent = node.most_recent_block
-        block = (
-            recent.block
-            if recent is not None and recent.hash == item.hash
-            else node.block_db.get_block(item.hash)
+def _serve_getdata_tx(
+    node: Node, conn: Connection, item: Inventory, not_found: list[Inventory]
+) -> None:
+    """Serve one transaction item, appending a miss to `not_found`."""
+    if not conn.relay_tx:
+        return
+    wtxid = item.type_code == InventoryType.MSG_WTX
+    tx = _find_tx_for_getdata(node, item.hash, wtxid=wtxid)
+    if tx:
+        include_witness = item.type_code in (
+            InventoryType.MSG_WITNESS_TX,
+            InventoryType.MSG_WTX,
         )
-        if block:
-            conn.send(_block_answer(node, item, block))
-            # Core's `m_continuation_block`, right after the block and even
-            # where redundant; a block with no data returns before it
-            if item.hash == conn.continuation_block:
-                tip = node.chainstate.block_index.active_chain[-1]
-                conn.send(Inv([Inventory(InventoryType.MSG_BLOCK, tip)]))
-                conn.continuation_block = None
-    # else: neither family, popped and otherwise ignored -- see the
-    # comment beside _GETDATA_TX_TYPES above.
-    return not_found_bytes
+        conn.send(TxMsg(tx, include_witness=include_witness))
+        # Core's own `m_mempool.RemoveUnbroadcastTx(tx->GetHash())`
+        # (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7,
+        # the v31.1 tag): this peer's own `getdata` is the
+        # acknowledgment `getmempoolinfo`'s own `unbroadcastcount`
+        # waits for. `tx->GetHash()` is a txid, matching what
+        # `mark_broadcast` reads `tx.id` by, not `item.hash`, which
+        # is a wtxid for a `MSG_WTX` request.
+        # btclib-org/btclib-node#1421
+        node.mempool.mark_broadcast(tx.id)
+    else:
+        not_found.append(item)
+
+
+def _serve_getdata_block(node: Node, conn: Connection, item: Inventory) -> None:
+    """Serve one block item, as Core's `ProcessGetBlockData` does.
+
+    Core (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7)
+    ignores a block it has no index entry for, then one
+    `BlockRequestAllowed` refuses -- off the active chain and not
+    recently valid -- before the prune threshold.
+    """
+    if item.hash not in node.chainstate.block_index.header_dict:
+        return
+    if not _block_request_allowed(node, item.hash):
+        return
+    if (
+        node.config.pruned
+        and NetPermissionFlags.NO_BAN not in conn.permissions
+        and _below_prune_threshold(node, item.hash)
+    ):
+        conn.stop()
+        return
+    # Core's `a_recent_block`, ahead of the read
+    recent = node.most_recent_block
+    block = (
+        recent.block
+        if recent is not None and recent.hash == item.hash
+        else node.block_db.get_block(item.hash)
+    )
+    if block:
+        conn.send(_block_answer(node, item, block))
+        # Core's `m_continuation_block`, right after the block and even
+        # where redundant; a block with no data returns before it
+        if item.hash == conn.continuation_block:
+            tip = node.chainstate.block_index.active_chain[-1]
+            conn.send(Inv([Inventory(InventoryType.MSG_BLOCK, tip)]))
+            conn.continuation_block = None
 
 
 def advance_getdata(node: Node, conn: Connection, items: deque[Inventory]) -> bool:
-    """Serve from the front of `items` while `conn`'s own queue has room.
+    """Serve from the front of `items` as Core's `ProcessGetData` does.
 
     Shared by `getdata` below, dispatching a request for the first time,
-    and by `p2p.main.resume_getdata`, retrying one already paused -- each
-    pops what it serves off the front of the same `deque`, the shape
-    `advance_cfilters` below already gives `get_cfilters`.
+    and by `p2p.main.resume_getdata`, Core's next call, which serves a
+    paused request on a later pass of `Node`'s loop. Each pops what it
+    serves off the front of the same `deque`. Answers whether `items` is
+    now empty.
+
+    Core's `ProcessGetData` (`src/net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) serves the transactions
+    at the front, then one other item, checking `fPauseSend` before each:
+    "the send buffer provides backpressure". `conn.pause_send` is that
+    flag. `conn.send` counts each item on this thread before scheduling
+    its write, so the item that sets it pauses the next.
 
     A transaction is served from the mempool, then from the most recent
     block, only if the peer wants it relayed, answered `notfound` on a
@@ -2008,70 +1913,22 @@ def advance_getdata(node: Node, conn: Connection, items: deque[Inventory]) -> bo
     other answer to a block item -- disconnecting rather than staying
     silent -- is argued against the same function.
 
-    `conn.queued_send_bytes` is read the same way `advance_cfilters`
-    below reads it, and holds what `conn.send` has counted -- this
-    loop's own previous items among them, since it counts on this
-    thread before scheduling anything on `P2pManager`'s. A check
-    reading only what that loop had got round to writing would see none
-    of them and serve the whole request as fast as it can pop it, past
-    `MAX_QUEUED_SEND_BYTES` and into the drop, for a peer asking for
-    the blocks this node asks its own peers for
-    (btclib-org/btclib-node#512).
-
-    What the read can miss is either half of a count it did not make. A
-    drain is the loop's -- `conn.send` counts on this thread, but the
-    decrement once the write completes is not -- and that direction is
-    the safe one, an unseen decrement making the number too large and
-    this pause sooner. An increment can also be missed, and that one is
-    not: `P2pManager`'s thread reaches `_queue` too, through
-    `_prune_stale_connections`'s `send_ping`, so a read here can predate
-    a ping and pause later rather than sooner. What makes that
-    immaterial is the magnitude rather than the direction: one ping is a
-    bare envelope and a nonce, where what `MAX_QUEUED_SEND_BYTES` leaves
-    above this loop's own bound is a whole block message and the room
-    over it (`connection.py`) -- so the read needs no lock, and a torn
-    one is not a risk to guard against either (CPython never hands back
-    a value that was not, at some point, actually written).
-
-    `notfound` batches whatever this call found missing, sent once this
-    call is done serving -- whether `items` ran out or this paused --
-    rather than once for the whole original request: Core's own
-    `vNotFound` is a per-call local too, built and sent fresh by every
-    `ProcessGetData` call rather than carried across them.
-
-    **A miss is paced too, against the same bound, though nothing is
-    sent for one the moment it is found.** `not_found_bytes` is this
-    call's own running total of what a `notfound` batching every miss
-    collected so far would cost -- `_NOTFOUND_ITEM_BYTES` per entry,
-    counted the instant a miss joins `not_found` rather than once the
-    batch is finally sent. Read together with `conn.queued_send_bytes`
-    at the top of the loop, it is what makes a run of misses pause the
-    same way a run of blocks already does, rather than accumulating
-    for free and landing in one send with no pacing check in front of
-    it (btclib-org/btclib-node#529): before this, nothing charged a
-    miss anything, so `conn.queued_send_bytes` could still read zero
-    after fifty thousand of them, and the loop had no reason to stop
-    before popping every item this request named.
+    The misses of a call go in one `notfound`, sent once the call has
+    served what it could, as Core's `vNotFound` is a per-call local.
     """
     not_found: list[Inventory] = []
-    not_found_bytes = 0
-    while items:
+    while items and items[0].type_code in _GETDATA_TX_TYPES:
         if conn.status == P2pConnStatus.Closed:
             return True
-        should_flush, should_pause = _notfound_pace(
-            conn, not_found_bytes, len(not_found)
-        )
-        if should_flush:
-            conn.send(NotFound(not_found))
-            not_found = []
-            not_found_bytes = 0
-            continue
-        if should_pause:
+        if conn.pause_send:
             break
+        _serve_getdata_tx(node, conn, items.popleft(), not_found)
+    if items and not conn.pause_send:
+        # Core's one block per call; an item of neither family is
+        # popped and otherwise ignored, as Core erases it
         item = items.popleft()
-        not_found_bytes = _serve_getdata_item(
-            node, conn, item, not_found, not_found_bytes
-        )
+        if item.type_code in _GETDATA_BLOCK_TYPES:
+            _serve_getdata_block(node, conn, item)
     if not_found:
         conn.send(NotFound(not_found))
     return not items
@@ -2478,7 +2335,7 @@ def getblocks(node: Node, msg: bytes, conn: Connection) -> None:
     stops at a block it holds no data for, or one so deep that a peer
     could soon find it gone: `MIN_BLOCKS_TO_KEEP` less an hour's blocks
     behind the tip. The last block sent at the limit
-    is the peer's `continuation_block`, which `_serve_getdata_item`
+    is the peer's `continuation_block`, which `_serve_getdata_block`
     answers with an `inv` of the tip, for the peer's next `getblocks`.
     Core sends the `inv` on its next `SendMessages`; here it is sent
     at once, nothing else being queued ahead of it.
@@ -2692,63 +2549,35 @@ def _filter_range(  # noqa: PLR0913, PLR0917
     ]
 
 
-# Where `get_cfilters` below pauses mid-answer rather than scheduling
-# the rest of a range in one go, the way it used to
-# (btclib-org/btclib-node#442): Core's own analogue is `fPauseSend`
-# (`net.cpp:4205`, read at b91d983f66), tripped once a connection's own
-# send buffer passes `-maxsendbuffer` and cleared as the socket drains
-# (`net.cpp:1677`) -- checked, and re-checked, from `ProcessMessages`'s
-# own loop over each connection's queued work (`net_processing.cpp:2776`),
-# which is one thread calling back into the same connection repeatedly.
-#
-# This node has no such loop to call back into: `get_cfilters` is one
-# call, made once, on `Node`'s own thread under `handle_p2p`, and what
-# it could not finish it has no second chance at from inside itself.
-# Core's "next call" is therefore not `get_cfilters` called again: it is
-# `resume_cfilters` (`p2p.main`), invoked once every pass of `Node`'s
-# own loop regardless of whether this connection has sent anything
-# meanwhile, since a peer already served everything it asked for need
-# not ask again for this node to keep answering it. `advance_cfilters`
-# below is the one piece of logic both `get_cfilters` and
-# `resume_cfilters` call, so the pacing is the same whichever of the two
-# resumes it.
-#
-# `MAX_CFILTERS_INFLIGHT_BYTES` is the pause point itself: how far ahead
-# of a peer's own draining `advance_cfilters` is allowed to schedule
-# before it stops and hands the rest to `node.pending_cfilters`, for
-# `resume_cfilters` to pick up. Twice one busy modern block's own filter
-# (`filter_size.ONE_BUSY_MODERN_BLOCK_FILTER_BYTES`, the same estimate
-# `connection.py`'s own `MAX_QUEUED_SEND_BYTES` is sized from) is room
-# for one filter to finish draining and a second, already serialized,
-# to be on its way behind it -- far below `MAX_QUEUED_SEND_BYTES`
-# itself, which is what makes this a real pause rather than the whole
-# answer the bound it used to lean on already was.
-MAX_CFILTERS_INFLIGHT_BYTES = int(2 * ONE_BUSY_MODERN_BLOCK_FILTER_BYTES)
-
-
 def advance_cfilters(node: Node, conn: Connection, block_hashes: deque[bytes]) -> bool:
-    """Send from the front of `block_hashes` while `conn`'s own queue has room.
+    """Send from the front of `block_hashes` until `conn.pause_send` is set.
 
     Shared by `get_cfilters`, dispatching a request for the first time,
-    and by `p2p.main.resume_cfilters`, retrying one already paused --
-    each pops what it sends off the front of the same `deque`, so a
-    later call, on a later turn of `Node`'s own loop, picks up exactly
-    where the last one left off rather than resending or skipping a
-    block. Answers whether `block_hashes` is now empty.
+    and by `p2p.main.resume_cfilters`, retrying one already paused, on a
+    later pass of `Node`'s loop. Each pops what it sends off the front of
+    the same `deque`. Answers whether `block_hashes` is now empty.
 
-    Checked before every send rather than after, against the same field
-    `advance_getdata` above paces on, unlocked for the reason argued
-    there: `conn.send` counts a filter on this thread before scheduling
-    it, and what the read can still miss is a drain, which only ever
-    makes this pause sooner. `conn.status` beside it is read the same
-    way: seen one turn late it costs a filter serialized for a socket
-    already closed, which `Connection._deliver` suppresses.
+    Core's `ProcessGetCFilters` (`src/net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) queues every filter of
+    the answer at once, and `ProcessMessages` reads nothing more from the
+    peer until its send buffer is back within `nSendBufferMaxSize`. This
+    checks `conn.pause_send` before each filter instead, as
+    `advance_getdata` checks it before each item, and `_hold_message`
+    (`p2p/main.py`) holds the peer while filters are left. The peer sees
+    the same filters, in the same order, and its next message is read at
+    the same point: once the last filter is queued and the buffer is back
+    within the bound. What differs is memory: an answer of
+    `MAX_GETCFILTERS_SIZE` filters is never queued whole.
+
+    `conn.status` is read unlocked: seen one turn late it costs a filter
+    serialized for a socket already closed, which `Connection._deliver`
+    suppresses.
     """
     filter_index = node.chainstate.filter_index
     while block_hashes:
         if conn.status == P2pConnStatus.Closed:
             return True
-        if conn.queued_send_bytes >= MAX_CFILTERS_INFLIGHT_BYTES:
+        if conn.pause_send:
             return False
         block_hash = block_hashes.popleft()
         # `_filter_range` only ever names a block this node has indexed
@@ -2778,15 +2607,10 @@ def get_cfilters(node: Node, msg: bytes, conn: Connection) -> None:
     docstring and `_prepare_filter_request`'s. "sequentially in order by
     block height" is BIP157's own words and the reason this is the one
     request answered by many messages rather than one; `_filter_range`
-    already bounds how many, and `advance_cfilters` above is where the
-    rate they are produced at is bounded too, registering what it could
-    not finish on `node.pending_cfilters` for `p2p.main.resume_cfilters`
-    to complete.
+    already bounds how many, and `advance_cfilters` above pauses at the
+    send buffer's bound, registering what it could not finish on
+    `node.pending_cfilters` for `p2p.main.resume_cfilters` to complete.
 
-    Core's `ProcessMessages` (`net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) returns before
-    `PollMessage` whenever `fPauseSend` is set, as a `getcfilters`
-    answer larger than the send buffer leaves it set.
     While `conn` has an entry on `node.pending_cfilters`,
     `_hold_message` (`p2p/main.py`) holds its later messages, in
     order, and `resume_tx_checks` reads them once `resume_cfilters` has

@@ -710,7 +710,7 @@ def a_paused_connection(resumed: list[bool]) -> Any:
     """
     return SimpleNamespace(
         queued_recv_bytes=MAX_QUEUED_RECV_BYTES + 1,
-        send_memusage=0,
+        pause_send=False,
         _recv_lock=threading.Lock(),
         _recv_resume=SimpleNamespace(set=lambda: resumed.append(True)),
         loop=SimpleNamespace(call_soon_threadsafe=lambda fn: fn()),
