@@ -4,6 +4,8 @@
 
 """Orphans and one-parent-one-child packages, through `tx` and the loop."""
 
+import threading
+from collections import deque
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast, override
@@ -362,6 +364,58 @@ def test_an_orphan_that_pays_too_little_is_refused_when_taken_up(
     assert not node.mempool.contains_tx(pair.child)
     assert node.mempool.was_recently_rejected_reconsiderable(pair.child.hash)
     assert not node.download_manager.orphanage.have_tx(pair.child.hash)
+
+
+def test_a_message_waits_until_the_peer_has_no_orphan_to_reconsider(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1739: each orphan to reconsider is taken up before the next message.
+
+    The first orphan taken up is refused, which queues nothing, and the
+    second is still to reconsider: the `ping` behind them is not read yet.
+    """
+    pair = a_pair(regtest_node, parent_fee=50_000, child_fee=0)
+    node = pair.node
+    peer = a_connected_peer(node)
+    peer.queued_recv_bytes = 0
+    peer._recv_lock = threading.Lock()
+    peer._recv_resume = SimpleNamespace(set=lambda: None)
+    peer.loop = SimpleNamespace(call_soon_threadsafe=lambda fn: fn())
+    node.p2p_manager.messages = deque()
+    node.p2p_manager.handshake_messages = deque()
+    better = spend(pair.parent, pair.parent.vout[0].value - 100_000)
+    seen: list[tuple[bool, list[int]]] = []
+
+    def ping(node: Node, msg: bytes, conn: Any) -> None:
+        orphanage = node.download_manager.orphanage
+        seen.append((node.mempool.contains_tx(better), orphanage.peers_to_reconsider()))
+
+    monkeypatch.setitem(cb.callbacks, "ping", ping)
+    for kind, payload in (
+        ("tx", TxMsg(pair.child, include_witness=True).serialize()),
+        ("tx", TxMsg(better, include_witness=True).serialize()),
+        ("tx", TxMsg(pair.parent, include_witness=True).serialize()),
+        ("ping", b"12345678"),
+    ):
+        peer.queued_recv_bytes += len(payload)
+        node.p2p_manager.messages.append((kind, payload, peer.id, len(payload), 0.0))
+        p2p_main.handle_p2p(node)
+    settle(node)
+    assert seen == [(True, [])]
+
+
+def test_a_message_is_held_while_the_peer_has_an_orphan_to_reconsider(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """With no check queued, the orphan alone holds the peer's next message."""
+    pair = a_pair(regtest_node, parent_fee=50_000)
+    node, peer = pair.node, a_connected_peer(pair.node)
+    relay(node, peer, pair.child)
+    node.download_manager.orphanage.add_children_to_work_set(pair.parent)
+    assert not node.tx_checks.busy(peer.id)
+    held = ("ping", b"", 0, 0.0)
+    assert p2p_main._wait_for_tx_check(node, peer.id, held)
+    assert list(node.tx_checks.waiting[peer.id]) == [held]
 
 
 def test_an_orphan_still_missing_an_input_stays_an_orphan(

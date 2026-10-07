@@ -65,6 +65,7 @@ from btclib_node.p2p.main import handle_p2p_handshake
 from btclib_node.p2p.manager import P2pManager
 from btclib_node.p2p.permissions import NetPermissionFlags, Whitelist
 from btclib_node.p2p.selfannounce import LOCAL_BIND, LOCAL_MANUAL, LocalService
+from btclib_node.p2p.tx_checks import TxChecks
 from btclib_node.p2p.v2transport import V1PeerRefusedError, V2Transport
 from btclib_node.rpc.callbacks import add_connection
 from btclib_node.rpc.errors import RpcError
@@ -5301,6 +5302,15 @@ def test_a_connections_id_still_resolves_to_its_address_when_the_handshake_fails
     monkeypatch.setattr(manager, "logger", logger)
     monkeypatch.setattr(manager.node, "logger", logger)
     monkeypatch.setattr(manager.node, "p2p_manager", manager, raising=False)
+    monkeypatch.setattr(manager.node, "tx_checks", TxChecks(), raising=False)
+    monkeypatch.setattr(
+        manager.node,
+        "download_manager",
+        SimpleNamespace(
+            orphanage=SimpleNamespace(have_tx_to_reconsider=lambda peer: False)
+        ),
+        raising=False,
+    )
     ours, theirs = socket.socketpair()
     address = peer_address("1.2.3.4", 18444)
 

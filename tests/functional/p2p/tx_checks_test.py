@@ -60,13 +60,14 @@ def connected(node1: Node, node2: Node) -> int:
     return conn_id
 
 
-def test_a_ping_is_answered_while_a_script_check_runs(
+def test_a_ping_waits_for_the_verdict_on_the_tx_before_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The check holds until the ping is answered, so only a free loop passes.
+    """ISS 1739: a `pong` follows the verdict, and another peer's needs no wait.
 
     Every check but the scripts is stood in for, and the scripts by a
-    check that waits for the test to release it.
+    check that waits for the test to release it. The second peer's `ping`
+    is answered while the first peer's check runs, so the loop is free.
     """
     monkeypatch.setattr(
         cb,
@@ -80,31 +81,47 @@ def test_a_ping_is_answered_while_a_script_check_runs(
         release.wait(timeout=120)
 
     monkeypatch.setattr(tx_checks, "check_transaction", held)
-    answered: list[int] = []
+    answered: list[tuple[Node, int]] = []
     original = callbacks["pong"]
 
     def recording(node: Node, msg: bytes, conn: Connection) -> None:
         original(node, msg, conn)
-        answered.append(Pong.parse(msg).nonce)
+        answered.append((node, Pong.parse(msg).nonce))
 
     monkeypatch.setitem(callbacks, "pong", recording)
     with (
         node_context(tmp_path / "node1", allow_rpc=False) as node1,
         node_context(tmp_path / "node2", allow_rpc=False) as node2,
+        node_context(tmp_path / "node3", allow_rpc=False) as node3,
     ):
         node1._worker_pool = ThreadPool(1)
         node1.is_initial_block_download = False
         conn_id = connected(node1, node2)
+        node3.p2p_manager.connect(local_addr(node1.p2p_port))
+        wait_until(lambda: len(node1.p2p_manager.connections) == 2)
+        (other_id,) = node3.p2p_manager.connections
+        wait_until(
+            lambda: all(
+                conn.status == P2pConnStatus.Connected
+                for conn in (
+                    *node1.p2p_manager.connections.values(),
+                    *node3.p2p_manager.connections.values(),
+                )
+            )
+        )
         try:
             transaction = generate_random_transaction()
             node2.p2p_manager.send(TxMsg(transaction, include_witness=True), conn_id)
             assert started.wait(timeout=60)
             node2.p2p_manager.send(Ping(_NONCE), conn_id)
-            wait_until(lambda: _NONCE in answered)
+            node3.p2p_manager.send(Ping(_NONCE + 1), other_id)
+            wait_until(lambda: (node3, _NONCE + 1) in answered)
+            assert (node2, _NONCE) not in answered
             assert not node1.mempool.contains_tx(transaction)
         finally:
             release.set()
-        wait_until(lambda: node1.mempool.contains_tx(transaction))
+        wait_until(lambda: (node2, _NONCE) in answered)
+        assert node1.mempool.contains_tx(transaction)
 
 
 def test_a_node_stops_with_a_script_check_in_flight(
