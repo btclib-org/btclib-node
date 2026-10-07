@@ -790,7 +790,8 @@ class Mempool:
     def _parents(self, tx: Tx) -> list[bytes]:
         """Return the wtxids of the held transactions `tx` spends, each once.
 
-        Core's `CTxMemPool::GetParents`, in input order.
+        In input order. Core's `CTxMemPool::GetParents` orders them by txid,
+        as `_parents_by_txid` does.
         """
         return list(
             dict.fromkeys(
@@ -798,6 +799,20 @@ class Mempool:
                 for vin in tx.vin
                 if (parent := self.txid_index.get(vin.prev_out.tx_id)) is not None
             )
+        )
+
+    def _parents_by_txid(self, tx: Tx) -> list[bytes]:
+        """Return `_parents(tx)` as Core's `GetParents` does, by txid.
+
+        Core walks a `std::set<Txid>`, so `mempool_parents[0]` is the parent
+        with the smallest txid, and `SingleTRUCChecks` and
+        `PackageTRUCChecks` refuse on the first that breaks a rule. The set
+        compares the 32 bytes as stored, which is `memcmp` over the reverse
+        of `Tx.id`, the displayed order.
+        btclib-org/btclib-node#1783
+        """
+        return sorted(
+            self._parents(tx), key=lambda wtxid: self.transactions[wtxid].id[::-1]
         )
 
     def check_truc(self, tx: Tx, vsize: int) -> None:
@@ -818,7 +833,7 @@ class Mempool:
         btclib-org/btclib-node#1399
         """
         reason = "TRUC-violation"
-        parents = self._parents(tx)
+        parents = self._parents_by_txid(tx)
         truc = tx.version == _TRUC_VERSION
         who = f"tx {tx.id.hex()} (wtxid={tx.hash.hex()})"
         for parent in parents:
@@ -874,7 +889,7 @@ class Mempool:
         """
         tx = package[index]
         possible = {vin.prev_out.tx_id for vin in tx.vin}
-        held = [self.transactions[wtxid] for wtxid in self._parents(tx)]
+        held = [self.transactions[wtxid] for wtxid in self._parents_by_txid(tx)]
         in_package = [other for other in package[:index] if other.id in possible]
         if tx.version == _TRUC_VERSION:
             self._check_truc_child(package, tx, vsize, held, in_package)
