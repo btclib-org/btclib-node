@@ -311,6 +311,12 @@ announced or was sent, and one on it is not announced to that peer again
   (btclib-org/btclib-node#1334) and keeps no parent by its chunk feerate
   (btclib-org/btclib-node#1740)** (issue #1494).
 
+### A confirmed transaction a peer relays is refused as known, not kept as an orphan
+
+- **A transaction the chain confirmed is refused `txn-already-known`, as
+  in Core** (closes #1779). It was kept as an orphan. Now it is recorded
+  as refused, and `testmempoolaccept` and `submitpackage` answer the same.
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on

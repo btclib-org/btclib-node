@@ -42,6 +42,7 @@ from btclib.policy import (
 from btclib.script.engine import sig_op_cost
 from btclib.script.engine.flags import ScriptFlag
 from btclib.tx.limits import COINBASE_MATURITY
+from btclib.tx.out_point import OutPoint
 from btclib.tx.tx_context import (
     assert_coinbase_value,
     assert_sequence_locks,
@@ -109,6 +110,7 @@ __all__ = [
     "MempoolCandidate",
     "PackageCandidate",
     "activate_best_chain",
+    "already_confirmed",
     "assert_valid_block",
     "check_fork_warning_conditions",
     "check_max_feerate",
@@ -117,6 +119,7 @@ __all__ = [
     "is_block_failed",
     "is_block_mutated",
     "is_cached_invalid",
+    "missing_prevout_refusal",
     "new_pow_valid_block",
     "package_refusal",
     "parent_lookup",
@@ -1904,6 +1907,47 @@ def verify_mempool_acceptance(
     return MempoolAcceptance(candidate.fee, candidate.vsize)
 
 
+def already_confirmed(node: Node, tx: Tx) -> bool:
+    """Whether an unspent output of `tx`'s own is already in the UTXO set.
+
+    Core's own `BroadcastTransaction` (`node/transaction.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) walks `tx->vout` against
+    the coins tip before anything else: "If the transaction is already
+    confirmed in the chain, don't do anything and return early." An
+    output the active chain spent again since is gone from the UTXO set
+    the same as one this transaction never had, so only an *unspent* one
+    of this transaction's own outputs says it already confirmed.
+    """
+    utxo_index = node.chainstate.utxo_index
+    return any(
+        utxo_index.get_coin(
+            OutPoint(tx.id, vout, check_validity=False).serialize(check_validity=False)
+        )
+        is not None
+        for vout in range(len(tx.vout))
+    )
+
+
+def missing_prevout_refusal(
+    node: Node, tx: Tx
+) -> MissingPrevoutError | TxRejectedError:
+    """Answer for a transaction with a prevout the UTXO set lacks.
+
+    Core's `PreChecks` (`src/validation.cpp:864-873`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) tells a transaction the
+    chain already confirmed from an orphan: its inputs are spent, but an
+    output of its own is unspent, and that is `txn-already-known`. Core
+    asks only its coins cache ("Optimistically"), where this reads the
+    whole UTXO set, so it answers where Core can miss an uncached coin.
+    A confirmed transaction whose outputs are all spent is
+    `MissingPrevoutError`, orphaned as Core's `TX_MISSING_INPUTS` is.
+    btclib-org/btclib-node#1779
+    """
+    if already_confirmed(node, tx):
+        return TxRejectedError("txn-already-known")
+    return MissingPrevoutError()
+
+
 def pre_verify_mempool_acceptance(
     node: Node,
     tx: Tx,
@@ -1930,7 +1974,8 @@ def pre_verify_mempool_acceptance(
     Each refusal is a `TxRejectedError` in Core's words, in the order
     Core's `MemPoolAccept` makes them (`src/validation.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag), but for a missing input,
-    `MissingPrevoutError`, which each caller answers for itself.
+    `MissingPrevoutError`, which each caller answers for itself, unless an
+    output of the transaction is unspent: `txn-already-known`.
     btclib-org/btclib-node#1328
 
     Where `Config.require_standard` holds, refuses what Core's relay
@@ -2082,7 +2127,7 @@ def _pre_checks(node: Node, tx: Tx) -> MempoolCandidate:
                 prev_outputs.append(tx_out)
                 prevout_coins.append(Coin(tx_out, spend_height, is_coinbase=False))
             else:
-                raise MissingPrevoutError
+                raise missing_prevout_refusal(node, tx)
 
     def ancestor_median_time_past(height: int) -> int:
         header = header_at_height(tip_header, tip_height, height, parent_of)

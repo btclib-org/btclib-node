@@ -304,7 +304,7 @@ def a_node(
     a block index answering the height of each hash in `heights` --
     nothing else these tests' own callbacks look at. `confirmed_outpoints`
     names the serialized outpoints (`OutPoint.serialize(check_validity=
-    False)`) `send_raw_transaction`'s own `_already_confirmed` reads as
+    False)`) `send_raw_transaction`'s own `already_confirmed` reads as
     already in the UTXO set; empty by default, so nothing here answers
     already confirmed. btclib-org/btclib-node#1373. `pruned` and
     `peerblockfilters` and `v2transport` are `p2p.connection.local_services`'s

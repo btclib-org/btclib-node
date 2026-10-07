@@ -279,14 +279,8 @@ def _accept_alone(node: Node, tx: Tx, call: _Call) -> _Outcome:
     Core's `AcceptSingleTransactionInternal`: its checks are
     `pre_verify_mempool_acceptance`'s, `maxfeerate` among them. A missing
     input of a transaction the chain already holds is "txn-already-known",
-    which no package undoes, and not a missing input. The relay of such a
-    transaction answers it a missing input
-    (btclib-org/btclib-node#1779).
+    which `pre_verify_mempool_acceptance` raises and no package undoes.
     """
-    from btclib_node.rpc.callbacks import (  # noqa: PLC0415 -- it imports this module
-        _already_confirmed,
-    )
-
     mempool = node.mempool
     if tx.hash in call.invalid:
         return _Outcome(error=TxRejectedError(call.invalid[tx.hash]))
@@ -295,11 +289,7 @@ def _accept_alone(node: Node, tx: Tx, call: _Call) -> _Outcome:
             node, tx, max_feerate=call.max_feerate
         )
         check_transaction(candidate.prev_outputs, tx)
-    except MissingPrevoutError as refusal:
-        if _already_confirmed(node, tx):
-            return _Outcome(error=TxRejectedError("txn-already-known"))
-        return _Outcome(error=refusal)
-    except TxRejectedError as refusal:
+    except (MissingPrevoutError, TxRejectedError) as refusal:
         return _Outcome(error=refusal)
     tip_height = len(node.chainstate.block_index.active_chain) - 1
     mempool.add_tx(tx, candidate.fee, candidate.vsize, height=tip_height, trim=False)

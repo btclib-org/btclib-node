@@ -43,6 +43,7 @@ from btclib_node.chainstate.block_index import BlockStatus, block_time
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, USER_AGENT
 from btclib_node.exceptions import MissingPrevoutError, TxRejectedError
 from btclib_node.main import (
+    already_confirmed,
     assert_valid_block,
     check_fork_warning_conditions,
     invalidate_chain,
@@ -4027,27 +4028,6 @@ def _mempool_accept_verdict(
     return tx_res
 
 
-def _already_confirmed(node: Node, tx: Tx) -> bool:
-    """Whether an unspent output of `tx`'s own is already in the UTXO set.
-
-    Core's own `BroadcastTransaction` (`node/transaction.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) walks `tx->vout` against
-    the coins tip before anything else: "If the transaction is already
-    confirmed in the chain, don't do anything and return early." An
-    output the active chain spent again since is gone from the UTXO set
-    the same as one this transaction never had, so only an *unspent* one
-    of this transaction's own outputs says it already confirmed.
-    """
-    utxo_index = node.chainstate.utxo_index
-    return any(
-        utxo_index.get_coin(
-            OutPoint(tx.id, vout, check_validity=False).serialize(check_validity=False)
-        )
-        is not None
-        for vout in range(len(tx.vout))
-    )
-
-
 # Core's own `TransactionErrorString(TransactionError::ALREADY_IN_UTXO_SET)`
 # (`src/common/messages.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
 # tag): `RPCErrorFromTransactionError` maps that error to
@@ -4129,9 +4109,9 @@ def _decode_and_precheck_raw_tx(node: Node, params: list[Any]) -> tuple[Tx, int]
         # btclib-org/btclib-node#1371
         raise RpcError(RPCErrorCode.VERIFY_ERROR, _MAX_BURN_EXCEEDED_REASON)
     max_raw_tx_fee_rate = _parse_max_fee_rate(params, 1)
-    if _already_confirmed(node, tx):
+    if already_confirmed(node, tx):
         # Core's own early return, ahead of the held-in-mempool check
-        # below and of verification itself (`_already_confirmed`'s own
+        # below and of verification itself (`already_confirmed`'s own
         # docstring). btclib-org/btclib-node#1373
         raise RpcError(
             RPCErrorCode.VERIFY_ALREADY_IN_UTXO_SET, _ALREADY_IN_UTXO_SET_REASON
