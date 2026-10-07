@@ -24,11 +24,7 @@ rather than a digit.
 
 ## Unreleased
 
-The `2026.11` cycle is open and nothing has been cut from it. This
-section fills in one landed change at a time — what a user of the
-release below would have to act on to move past it — and
-`RELEASING.md`'s *Release to PyPI* is what retitles it to the version
-on release day.
+The `2026.11` cycle is open and nothing has been cut from it.
 
 ### Breaking changes
 

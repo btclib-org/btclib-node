@@ -158,17 +158,8 @@ constraints. Do not use Fable unless instructed.
   forced a rename to fix rather than a `conf.py` setting;
   btclib-org/btclib-node#264's own `nitpick_ignore` list is the same
   wall met a second time.
-- **Union files after a rebase**: `CONTRIBUTING.md`'s `awk` prints the
-  open section's headings with the branch's own last, and step 3 of
-  `RELEASING.md`'s *Release to PyPI* has this tree's byte-for-byte
-  reconstruction. `RELEASE_NOTES.md` has subsections under
-  `## Unreleased`, so its entry is reconstructed under the subsection
-  heading it belongs to, not at the end of the section: the driver once
-  placed a bullet inside another entry's subsection with nothing lost
-  (btclib-org/btclib-node#728).
-- **The open section's headings carrying `(closes …)` are landed text; a
-  new entry follows section 9 of the standard**
-  (btclib-org/.github#586).
+- **A pull request adds no `CHANGELOG.md` entry**: `CONTRIBUTING.md`'s
+  *Pull requests*.
 - **The docs build does not refuse every closing backtick followed by a
   bare letter.** `` `Coin`s `` fails only where its
   paragraph has no later single backtick; otherwise docutils keeps
