@@ -1264,8 +1264,7 @@ class DownloadManager:
         """
         if conn.wtxidrelay_received:
             return Inventory(InventoryType.MSG_WTX, wtxid)
-        txid = self.node.mempool.transactions[wtxid].id
-        return Inventory(InventoryType.MSG_TX, txid)
+        return Inventory(InventoryType.MSG_TX, self.node.mempool.txids[wtxid])
 
     def _consider_evictions(self) -> None:
         """Run Core's `ConsiderEviction` for every connected peer.

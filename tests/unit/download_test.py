@@ -203,6 +203,7 @@ def hold(manager: DownloadManager, *wtxids: bytes) -> None:
     for wtxid in wtxids:
         tx = generate_random_transaction()
         mempool.transactions[wtxid] = tx
+        mempool.txids[wtxid] = tx.id
         mempool.fees[wtxid] = 0
         mempool.modified_fees[wtxid] = 0
         mempool.vsizes[wtxid] = tx.vsize

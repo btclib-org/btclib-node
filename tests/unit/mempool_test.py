@@ -1870,3 +1870,13 @@ def test_a_transaction_with_no_relatives_is_keyed_without_the_package_walks(
     monkeypatch.setattr(mempool, "_ancestors", refused)
     monkeypatch.setattr(mempool, "_descendants", refused)
     assert mempool.mining_order_keys(singles) == {w: expected[w] for w in singles}
+
+
+def test_the_stored_txid_follows_the_entry_in_and_out() -> None:
+    """`txids` holds each held wtxid's txid and drops it with the entry."""
+    mempool = Mempool(Logger(debug=True))
+    tx = generate_random_transaction()
+    assert mempool.add_tx(tx, fee=100)
+    assert mempool.txids == {tx.hash: tx.id}
+    mempool.remove_tx(tx)
+    assert mempool.txids == {}
