@@ -158,8 +158,8 @@ constraints. Do not use Fable unless instructed.
   forced a rename to fix rather than a `conf.py` setting;
   btclib-org/btclib-node#264's own `nitpick_ignore` list is the same
   wall met a second time.
-- **A pull request adds no `CHANGELOG.md` entry**: `CONTRIBUTING.md`'s
-  *Pull requests*.
+- **The changelog and the release notes**: `CONTRIBUTING.md`'s *Pull requests*
+  says which pull request writes them.
 - **The docs build does not refuse every closing backtick followed by a
   bare letter.** `` `Coin`s `` fails only where its
   paragraph has no later single backtick; otherwise docutils keeps
