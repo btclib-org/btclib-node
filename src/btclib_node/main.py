@@ -91,7 +91,7 @@ from btclib_node.signet import assert_valid_solution
 from btclib_node.versionbits import check_unknown_activations
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Sequence
+    from collections.abc import Callable, Iterator, Mapping, Sequence
 
     from btclib.block import Block, BlockHeader
     from btclib.p2p.compact_blocks import CmpctBlock
@@ -2044,12 +2044,16 @@ def pre_verify_mempool_acceptance(
     )
 
 
-def _pre_checks(node: Node, tx: Tx) -> MempoolCandidate:
+def _pre_checks(
+    node: Node, tx: Tx, *, allow_replacement: bool = True
+) -> MempoolCandidate:
     """Run the checks of `pre_verify_mempool_acceptance` up to the vsize.
 
     Core's `PreChecks` before its fee floor, its TRUC checks and its
     conflict check, which a package asks in their own steps
-    (`pre_verify_subpackage`).
+    (`pre_verify_subpackage`). Without `allow_replacement`, Core's
+    `m_allow_replacement`, a conflict with a held transaction is refused
+    "bip125-replacement-disallowed" after the txid checks.
     """
     # Core's own `PreChecks` order again: a coinbase, then `IsStandardTx`,
     # ahead of the finality check, the inputs and every script
@@ -2096,6 +2100,9 @@ def _pre_checks(node: Node, tx: Tx) -> MempoolCandidate:
         raise TxRejectedError(reason)
     if tx.id in mempool.txid_index:
         reason = "txn-same-nonwitness-data-in-mempool"
+        raise TxRejectedError(reason)
+    if not allow_replacement and mempool.direct_conflicts(tx):
+        reason = "bip125-replacement-disallowed"
         raise TxRejectedError(reason)
 
     for tx_in in tx.vin:
@@ -2248,9 +2255,14 @@ def pre_verify_package(node: Node, parent: Tx, child: Tx) -> PackageCandidate:
 
 
 def pre_verify_subpackage(
-    node: Node, txs: Sequence[Tx], *, max_feerate: int = 0
+    node: Node,
+    txs: Sequence[Tx],
+    *,
+    max_feerate: int = 0,
+    test_accept: bool = False,
+    invalid: Mapping[bytes, TxRejectedError] | None = None,
 ) -> list[MempoolCandidate]:
-    """Verify `txs`, a child after its parents, all but their scripts.
+    """Verify `txs`, parents before children, all but their scripts.
 
     What Core's `AcceptMultipleTransactionsInternal` does with the
     transactions of a package that did not pass alone (`src/validation.cpp`,
@@ -2278,8 +2290,18 @@ def pre_verify_subpackage(
 
     A refusal is a `PackageRefusedError` of one entry: the transaction
     refused, or the child where the package's total fee is under a floor.
+
+    `test_accept` is Core's `PackageTestAccept`, which `testmempoolaccept`
+    asks of several transactions. It uses no package feerate, so step 1
+    holds each transaction to the fee floors by its own fee and step 3 is
+    skipped. It allows no replacement, so step 1 refuses a conflict with a
+    held transaction.
+
+    `invalid` maps a wtxid to its `CheckTransaction` refusal, which step 1
+    raises in that transaction's turn, as `PreChecks` asks it first.
     """
     mempool = node.mempool
+    invalid = invalid or {}
     candidates: list[MempoolCandidate] = []
 
     @contextmanager
@@ -2313,7 +2335,9 @@ def pre_verify_subpackage(
 
     for index, tx in enumerate(txs):
         with before(index, tx):
-            candidate = _pre_checks(node, tx)
+            candidate = _pre_check_member(
+                node, tx, test_accept=test_accept, invalid=invalid
+            )
         candidates.append(candidate)
         # against the held parents: the transaction's own refusal
         with before(index, tx, held_only=True):
@@ -2328,18 +2352,19 @@ def pre_verify_subpackage(
         held_only=True,
         package_level=True,
     )
-    try:
-        # the package's `m_total_modified_fees`
-        _check_fee_rate(
-            node,
-            sum(candidate.vsize for candidate in candidates),
-            sum(
-                candidate.fee + mempool.delta(tx.id)
-                for tx, candidate in zip(txs, candidates, strict=True)
-            ),
-        )
-    except TxRejectedError as refusal:
-        raise PackageRefusedError({txs[-1].hash: refusal}) from refusal
+    if not test_accept:
+        try:
+            # the package's `m_total_modified_fees`
+            _check_fee_rate(
+                node,
+                sum(candidate.vsize for candidate in candidates),
+                sum(
+                    candidate.fee + mempool.delta(tx.id)
+                    for tx, candidate in zip(txs, candidates, strict=True)
+                ),
+            )
+        except TxRejectedError as refusal:
+            raise PackageRefusedError({txs[-1].hash: refusal}) from refusal
     each(
         lambda _, tx, candidate: mempool.check_replacement(
             tx, candidate.fee, candidate.vsize
@@ -2352,6 +2377,26 @@ def pre_verify_subpackage(
     )
     each(lambda _, tx, __: _check_ephemeral_spends(node, tx))
     return candidates
+
+
+def _pre_check_member(
+    node: Node,
+    tx: Tx,
+    *,
+    test_accept: bool,
+    invalid: Mapping[bytes, TxRejectedError],
+) -> MempoolCandidate:
+    """Run Core's `PreChecks` on `tx` of a package, up to its TRUC rules.
+
+    Step 1 of `pre_verify_subpackage`, which asks the TRUC rules after.
+    """
+    if tx.hash in invalid:
+        raise invalid[tx.hash]
+    candidate = _pre_checks(node, tx, allow_replacement=not test_accept)
+    if test_accept:
+        modified_fee = candidate.fee + node.mempool.delta(tx.id)
+        _check_fee_rate(node, candidate.vsize, modified_fee)
+    return candidate
 
 
 def _check_standard_tx(node: Node, tx: Tx) -> None:
