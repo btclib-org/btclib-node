@@ -306,7 +306,7 @@ def test_an_announcement_of_an_orphan_asks_the_announcer_for_its_parents() -> No
     manager = make_manager([first, second])
     parent, child = a_parent_and_child()
     manager.orphanage.add_tx(child, 1)
-    manager.inv_txs = [(2, child.hash)]
+    manager.inv_txs = [(2, child.hash, False)]
     manager.tx_download()
     assert manager.orphanage.have_tx_from_peer(child.hash, 2)
     assert announced(manager, 2, child.hash) is None
@@ -319,7 +319,7 @@ def test_an_announcement_of_an_orphan_with_every_parent_had_asks_nothing() -> No
     parent, child = a_parent_and_child()
     manager.orphanage.add_tx(child, 1)
     manager.node.mempool.add_tx(parent)
-    manager.inv_txs = [(2, child.hash)]
+    manager.inv_txs = [(2, child.hash, False)]
     manager.tx_download()
     assert not manager.orphanage.have_tx_from_peer(child.hash, 2)
     assert manager.tx_requests.size() == 0
@@ -331,7 +331,7 @@ def test_a_peer_without_wtxid_relay_is_not_made_a_resolver_by_a_txid() -> None:
     manager = make_manager([a_conn(1), conn])
     child = an_orphan()
     manager.orphanage.add_tx(child, 1)
-    manager.inv_txs = [(2, child.hash)]
+    manager.inv_txs = [(2, child.hash, True)]
     manager.tx_download()
     # it is already had as an orphan, and so asked of no one
     assert manager.tx_requests.size() == 0
@@ -343,7 +343,7 @@ def test_an_announcement_of_what_is_already_had_is_dropped() -> None:
     conn = a_conn(1, inbound=False)
     manager = make_manager([conn])
     manager.node.mempool.mark_rejected_reconsiderable(a_hash(1))
-    manager.inv_txs = [(1, a_hash(1))]
+    manager.inv_txs = [(1, a_hash(1), False)]
     manager.tx_download()
     assert manager.tx_requests.size() == 0
     assert not only(conn, GetData)

@@ -401,7 +401,10 @@ class DownloadManager:
         # goes out to cannot tell a relayed transaction from this node's
         # own by which path carried it. btclib-org/btclib-node#141
         self.received_txs: list[tuple[int | None, bytes]] = []
-        self.inv_txs: list[tuple[int, bytes]] = []
+        # (conn_id, hash, txid): `txid` says `hash` was announced as a txid,
+        # not a wtxid. A wtxid-relay peer may announce either, as Core's
+        # `ToGenTxid` reads `MSG_WITNESS_TX` as a txid.
+        self.inv_txs: list[tuple[int, bytes, bool]] = []
         # Core's `m_txrequest`: which of the peers that announced a
         # transaction is asked for it, and when. `inv_txs` feeds it in
         # `_request_wanted_txs`; the `tx` and `notfound` callbacks and
@@ -665,9 +668,9 @@ class DownloadManager:
         # does not turn one `inv_txs` pass into a full scan of `received`
         # per entry. btclib-org/btclib-node#444
         #
-        # A peer without wtxid relay announces and is asked by txid
-        # (`callbacks.inv`), so a transaction received answers for its
-        # txid as well: `answers` maps either hash to the wtxid. One
+        # A txid announcement (`callbacks.inv`) is asked by txid, so a
+        # transaction received answers for its txid as well: `answers`
+        # maps either hash to the wtxid. One
         # already evicted again has no txid to read back, and is left
         # to the ask's own timeout.
         answers = {wtxid: wtxid for wtxid in received}
@@ -685,12 +688,12 @@ class DownloadManager:
         has_it: dict[int | None, set[bytes]] = {}
         for conn_id, wtxid in self.received_txs:
             has_it.setdefault(conn_id, set()).add(wtxid)
-        still_wanted: list[tuple[int, bytes]] = []
-        for conn_id, announced in self.inv_txs:
+        still_wanted: list[tuple[int, bytes, bool]] = []
+        for conn_id, announced, txid in self.inv_txs:
             if announced in answers:
                 has_it.setdefault(conn_id, set()).add(answers[announced])
             else:
-                still_wanted.append((conn_id, announced))
+                still_wanted.append((conn_id, announced, txid))
         self.inv_txs = still_wanted
 
         # the tx is in the mempool now: nobody is still to be asked for
@@ -759,15 +762,21 @@ class DownloadManager:
                 self.orphanage.erase_for_peer(peer)
         now = time.time()
         wtxid_peers = sum(conn.wtxidrelay_received for conn in connections.values())
-        for conn_id, announced in self.inv_txs:
+        for conn_id, announced, txid in self.inv_txs:
             conn = connections.get(conn_id)
             if conn is not None:
-                self._add_tx_announcement(conn, announced, now, wtxid_peers)
+                self._add_tx_announcement(conn, announced, now, wtxid_peers, txid=txid)
         for conn in connections.values():
             self._send_tx_requests(conn, now)
 
     def _add_tx_announcement(
-        self, conn: Connection, announced: bytes, now: float, wtxid_peers: int
+        self,
+        conn: Connection,
+        announced: bytes,
+        now: float,
+        wtxid_peers: int,
+        *,
+        txid: bool,
     ) -> None:
         """Track `announced` by `conn`, to be asked for after Core's delays.
 
@@ -779,12 +788,13 @@ class DownloadManager:
         unless it holds `RELAY`.
         Otherwise its `reqtime` is delayed by `NONPREF_PEER_TX_DELAY` where
         the peer is not preferred, by `TXID_RELAY_DELAY` where it
-        announced a txid while a wtxid-relay peer is connected, and by
+        announced a txid while a wtxid-relay peer is connected (a
+        wtxid-relay peer's `MSG_WITNESS_TX` included), and by
         `OVERLOADED_PEER_TX_DELAY` where it already has
         `MAX_PEER_TX_REQUEST_IN_FLIGHT` requests outstanding and no
         `RELAY`.
         """
-        by_wtxid = conn.wtxidrelay_received
+        by_wtxid = not txid
         orphan = self.orphanage.get_tx(announced) if by_wtxid else None
         if orphan is not None:
             self._resolve_orphan_with(conn, orphan, now, wtxid_peers)
@@ -807,7 +817,7 @@ class DownloadManager:
         ):
             delay += _OVERLOADED_PEER_TX_DELAY
         self.tx_requests.received_inv(
-            conn.id, announced, preferred=preferred, reqtime=now + delay
+            conn.id, announced, preferred=preferred, reqtime=now + delay, txid=txid
         )
 
     def _send_tx_requests(self, conn: Connection, now: float) -> None:
