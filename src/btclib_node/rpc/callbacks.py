@@ -2845,15 +2845,8 @@ def get_raw_mempool(
 
     if verbose:
         return {
-            tx.id.hex(): {
-                "size": tx.size,
-                # Core's `GetTxSize`, the sigop-adjusted one.
-                # btclib-org/btclib-node#1357
-                "vsize": node.mempool.vsizes[wtxid],
-                "weight": tx.weight,
-                "wtxid": tx.hash.hex(),
-            }
-            for wtxid, tx in node.mempool.transactions.items()
+            txid.hex(): get_mempool_entry(node, conn, [txid.hex()])
+            for txid in node.mempool.txid_index
         }
 
     txids = [txid.hex() for txid in node.mempool.txid_index]

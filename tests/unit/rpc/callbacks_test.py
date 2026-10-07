@@ -999,9 +999,8 @@ def test_the_raw_mempool_is_a_plain_list_of_txids_by_default() -> None:
 def test_the_raw_mempool_verbose_table_names_each_transaction() -> None:
     """`getrawmempool` verbose answers an object keyed by txid.
 
-    Each entry names its own wtxid, vsize and weight; the vsize is the one
-    the entry was added with, Core's sigop-adjusted `GetTxSize`
-    (btclib-org/btclib-node#1357).
+    Each entry equals `getmempoolentry`'s answer for the same txid, and
+    `size` is absent.
     """
     mempool = Mempool(Logger(debug=True))
     tx = a_tx()
@@ -1011,9 +1010,10 @@ def test_the_raw_mempool_verbose_table_names_each_transaction() -> None:
     verbose = get_raw_mempool(node, _CONN, [True])
     assert isinstance(verbose, dict)
     assert list(verbose) == [tx.id.hex()]
-    assert verbose[tx.id.hex()]["wtxid"] == tx.hash.hex()
-    assert verbose[tx.id.hex()]["vsize"] == tx.vsize + 7
-    assert verbose[tx.id.hex()]["weight"] == tx.weight
+    
+    entry = get_mempool_entry(node, _CONN, [tx.id.hex()])
+    assert verbose[tx.id.hex()] == entry
+    assert "size" not in verbose[tx.id.hex()]
 
 
 def test_mempool_sequence_attaches_the_mempool_s_own_counter() -> None:
