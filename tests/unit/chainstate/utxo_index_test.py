@@ -182,8 +182,7 @@ def test_a_rev_block_that_removes_a_pending_output_takes_it_back(
     """Undoing a still-staged creation simply drops it from updated_utxo_set.
 
     The output was never finalized, so it is in `updated_utxo_set`
-    rather than the database, and apply_rev_block pops it from there
-    without touching `removed_utxos` at all.
+    rather than the database, and apply_rev_block pops it from there.
     """
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     utxo_index = chainstate.utxo_index
@@ -197,6 +196,100 @@ def test_a_rev_block_that_removes_a_pending_output_takes_it_back(
         RevBlock(hash=b"\x05" * 32, to_add=[], to_remove=[added])
     )
     assert key not in utxo_index.updated_utxo_set
+    chainstate.close()
+
+
+def _spent_after_a_flush(tmp_path: Path) -> tuple[Any, bytes, RevBlock, Any]:
+    """Stage a spend of a coin the store holds, and undo it.
+
+    Block 1 creates the coin and is flushed, block 2 spends it, and
+    undoing block 2 stages the coin again while the store keeps its record.
+    Return the index, the coin's key, block 2's undo and block 2.
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+    funding = coinbase(b"\x08")
+    utxo_index.add_block(one_tx_block([funding], b"\x08" * 32), 1)
+    utxo_index.finalize()
+    out_point = OutPoint(funding.id, 0)
+    block2 = one_tx_block(
+        [coinbase(b"\x09"), spending(out_point, b"\x0a")], b"\x09" * 32
+    )
+    _, rev2 = utxo_index.add_block(block2, 2)
+    utxo_index.apply_rev_block(rev2)
+    return chainstate, out_point.serialize(check_validity=False), rev2, block2
+
+
+def test_a_restored_output_that_the_store_holds_is_removed_from_it(
+    tmp_path: Path,
+) -> None:
+    """Spend, flush, undo the spend, undo the creation: nothing is left.
+
+    The flush writes the creation, the spend stages its deletion, and
+    undoing the spend puts the coin back into `updated_utxo_set` while
+    the store still holds it. Undoing the creation must delete it from
+    the store as well, which `finalize` does for `removed_utxos` only.
+    """
+    chainstate, key, _, _ = _spent_after_a_flush(tmp_path)
+    utxo_index = chainstate.utxo_index
+    utxo_index.apply_rev_block(
+        RevBlock(hash=b"\x08" * 32, to_add=[], to_remove=[OutPoint.parse(key)])
+    )
+    utxo_index.finalize()
+    assert chainstate.db.get(b"utxo-" + key) is None
+    chainstate.close()
+
+
+def test_a_restored_output_that_is_spent_again_is_removed_from_the_store(
+    tmp_path: Path,
+) -> None:
+    """Spend, flush, undo the spend, spend again: the record is deleted.
+
+    The coin is staged and also stored, so the second spend takes it from
+    `updated_utxo_set` and has to mark it removed all the same.
+    """
+    chainstate, key, _, block2 = _spent_after_a_flush(tmp_path)
+    utxo_index = chainstate.utxo_index
+    utxo_index.add_block(block2, 2)
+    utxo_index.finalize()
+    assert chainstate.db.get(b"utxo-" + key) is None
+    chainstate.close()
+
+
+def test_a_restore_is_rolled_back_with_the_rest(tmp_path: Path) -> None:
+    """A trial that restored a stored coin leaves no mark of it behind."""
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+    funding = coinbase(b"\x0b")
+    utxo_index.add_block(one_tx_block([funding], b"\x0b" * 32), 1)
+    utxo_index.finalize()
+    out_point = OutPoint(funding.id, 0)
+    block2 = one_tx_block([coinbase(b"\x0c"), spending(out_point, b"\x0d")])
+    _, rev2 = utxo_index.add_block(block2, 2)
+    mark = utxo_index.trial_mark()
+    utxo_index.apply_rev_block(rev2)
+    assert utxo_index._stored_utxos
+    utxo_index.rollback(mark)
+    assert not utxo_index._stored_utxos
+    chainstate.close()
+
+
+def test_an_output_created_and_spent_in_one_batch_never_reaches_the_store(
+    tmp_path: Path,
+) -> None:
+    """A coin that was only ever staged is not marked removed when spent."""
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+    funding = coinbase(b"\x0e")
+    utxo_index.add_block(one_tx_block([funding], b"\x0e" * 32), 1)
+    tx1 = spending(OutPoint(funding.id, 0), b"\x0f")
+    chained = OutPoint(tx1.id, 0)
+    tx2 = spending(chained, b"\x10")
+    utxo_index.add_block(one_tx_block([coinbase(b"\x11"), tx1, tx2]), 2)
+    key = chained.serialize(check_validity=False)
+    assert key not in utxo_index.removed_utxos
+    utxo_index.finalize()
+    assert chainstate.db.get(b"utxo-" + key) is None
     chainstate.close()
 
 
