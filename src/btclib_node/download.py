@@ -1243,29 +1243,13 @@ class DownloadManager:
             # not it announces anything
             conn.stats.last_inv_sequence = self.node.mempool.sequence
             due_conns.append((conn, due))
-        # The mempool cannot change within this call, so the queued
-        # transactions of every due connection are keyed once, and each
-        # connection picks its best-paying from that. An entry the mempool
-        # no longer holds is found at send time, not trusted from when it
-        # was queued: a wtxid can sit in a queue for its connection's whole
-        # schedule, easily longer than the time between two eviction rounds
-        # (`Mempool._evict_to_limit`). Core's own trickle send does the
-        # same (`net_processing.cpp`, `m_mempool.info(wtxid)`).
-        # btclib-org/btclib-node#294
-        mempool = self.node.mempool
-        queued = dict.fromkeys(
-            w for conn, _ in due_conns for w in conn.tx_announce_queue
-        )
-        keys = dict.fromkeys(queued, _GONE_KEY)
-        keys.update(
-            mempool.mining_order_keys([w for w in queued if w in mempool.transactions])
-        )
-        for conn, due in due_conns:
+        caps = [_trickle_cap(len(conn.tx_announce_queue)) for conn, _ in due_conns]
+        keys, best = self._rank_queued([conn for conn, _ in due_conns], caps)
+        for (conn, due), cap in zip(due_conns, caps, strict=True):
             if conn.tx_announce_queue:
                 # The cap is Core's, from the queue's size before anything
                 # is popped (`m_tx_inventory_to_send.size()`).
-                cap = _trickle_cap(len(conn.tx_announce_queue))
-                batch = self._pop_trickle(conn, cap, keys)
+                batch = self._pop_trickle(conn, cap, keys, best)
                 if batch:
                     # `cap` is at most `_INVENTORY_BROADCAST_MAX`, below
                     # `MAX_INV_SZ`, so one `Inv` always holds a trickle.
@@ -1280,6 +1264,32 @@ class DownloadManager:
                         1 / _OUTBOUND_TX_ANNOUNCE_INTERVAL
                     )
 
+    def _rank_queued(
+        self, conns: list[Connection], caps: list[int]
+    ) -> tuple[dict[bytes, tuple[int, int, bytes]], list[bytes]]:
+        """Return the key of each wtxid queued for `conns`, and the best first.
+
+        The mempool cannot change within a call, so the queued transactions
+        of every due connection are keyed once. An entry the mempool no
+        longer holds is found at send time, not trusted from when it was
+        queued: a wtxid can sit in a queue for its connection's whole
+        schedule, easily longer than the time between two eviction rounds
+        (`Mempool._evict_to_limit`). Core's own trickle send does the same
+        (`net_processing.cpp`, `m_mempool.info(wtxid)`).
+        btclib-org/btclib-node#294
+
+        Peers mostly queue the same transactions, so the best of all of
+        them is picked once, with room for the entries a connection drops,
+        and each connection reads its own from that.
+        """
+        queued: dict[bytes, None] = {}
+        for conn in conns:
+            queued.update(conn.tx_announce_queue)
+        keys = dict.fromkeys(queued, _GONE_KEY)
+        keys.update(self.node.mempool.mining_order_keys(queued))
+        best = heapq.nsmallest(2 * max(caps, default=0), queued, key=keys.__getitem__)
+        return keys, best
+
     def _send_trickle(self, conn: Connection, batch: list[bytes]) -> None:
         """Send `batch` in one `Inv` and record it as known to the peer."""
         inventory = [self._tx_inventory(conn, w) for w in batch]
@@ -1292,6 +1302,7 @@ class DownloadManager:
         conn: Connection,
         cap: int,
         keys: dict[bytes, tuple[int, int, bytes]],
+        best: list[bytes],
     ) -> list[bytes]:
         """Pop what one trickle sends from `conn`'s queue, best-paying first.
 
@@ -1302,26 +1313,39 @@ class DownloadManager:
         the cap. The last two are read when sending, so a change while the
         entry waited applies. What is not popped stays queued.
 
-        `keys` has every wtxid of the queue. Each round takes the next
-        `want` of the queue in order and doubles `want`, so a queue of
-        dropped entries is not scanned once per entry.
+        `keys` has every wtxid of the queue, and `best` is the first of all
+        the due connections' queued wtxids in key order. Every wtxid of this
+        queue that `best` lacks sorts after those it has, so the queue is
+        read through `best` first, then by `heapq.nsmallest` over what is
+        left. Each round of that takes the next `want` entries and doubles
+        `want`, so a queue of dropped entries is not scanned once per entry.
         """
-        mempool = self.node.mempool
         queue = conn.tx_announce_queue
         batch: list[bytes] = []
+        for wtxid in best:
+            if len(batch) == cap:
+                return batch
+            if wtxid in queue:
+                del queue[wtxid]
+                self._offer(conn, wtxid, batch)
         want = cap
         while queue and len(batch) < cap:
             for wtxid in heapq.nsmallest(want, queue, key=keys.__getitem__):
                 if len(batch) == cap:
                     break
                 del queue[wtxid]
-                if wtxid not in mempool.transactions:
-                    continue
-                known = self._tx_inventory(conn, wtxid).hash in conn.known_tx_inventory
-                if not known and mempool.meets_fee_rate(wtxid, conn.feefilter):
-                    batch.append(wtxid)
+                self._offer(conn, wtxid, batch)
             want *= 2
         return batch
+
+    def _offer(self, conn: Connection, wtxid: bytes, batch: list[bytes]) -> None:
+        """Add `wtxid`, popped from `conn`'s queue, to `batch` if it is sent."""
+        mempool = self.node.mempool
+        if wtxid not in mempool.transactions:
+            return
+        known = self._tx_inventory(conn, wtxid).hash in conn.known_tx_inventory
+        if not known and mempool.meets_fee_rate(wtxid, conn.feefilter):
+            batch.append(wtxid)
 
     def _tx_inventory(self, conn: Connection, wtxid: bytes) -> Inventory:
         """Name a held transaction the way `conn` relays: wtxid, else txid.

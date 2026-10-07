@@ -694,27 +694,45 @@ def test_a_short_queue_beside_a_long_disjoint_one_is_sent_whole_and_best_first()
 
 @pytest.mark.parametrize("seed", range(4))
 def test_a_trickle_sends_the_top_of_the_full_sort_after_any_change(seed: int) -> None:
-    """ISS 1810: a partial pick gives the full sort's top `cap`."""
+    """ISS 1810: a partial pick gives the full sort's top `cap`.
+
+    Three connections, two of them sharing a queue, each with entries the
+    peer knows and entries the mempool lost.
+    """
     rng = random.Random(seed)
-    other = a_conn(1)
-    manager = make_manager([other])
+    conns = [a_conn(n) for n in (1, 2, 3)]
+    manager = make_manager(conns)
     mempool = cast("Any", manager.node).mempool
     trickles = 0
     for step_number, _ in enumerate(random_mempool_history(rng, mempool, 300)):
         if step_number % 7 or len(mempool.transactions) < 80:
             continue
         held = list(mempool.transactions)
-        queued = rng.sample(held, rng.randint(80, len(held)))
-        other.tx_announce_queue = dict.fromkeys(queued)
-        other.next_inv_send_time = 0.0
-        other.known_tx_inventory = KnownTxInventory()
-        other.sent.clear()
+        fresh = mempool.mining_order_keys(held)
+        shared = rng.sample(held, rng.randint(80, len(held)))
+        expected = []
+        for conn in conns:
+            queued = (
+                shared
+                if conn.id != 3
+                else rng.sample(held, min(len(held), rng.randint(80, 90)))
+            )
+            gone = [a_hash(n) for n in range(rng.randint(0, 3) * 40)]
+            conn.tx_announce_queue = dict.fromkeys(
+                rng.sample(queued + gone, len(queued + gone))
+            )
+            conn.next_inv_send_time = 0.0
+            conn.known_tx_inventory = KnownTxInventory()
+            known = set(rng.sample(queued, len(queued) // 3))
+            for wtxid in known:
+                conn.known_tx_inventory.add(wtxid)
+            conn.sent.clear()
+            best_first = sorted(queued, key=fresh.__getitem__)
+            cap = download_module._trickle_cap(len(conn.tx_announce_queue))
+            expected.append([w for w in best_first if w not in known][:cap])
         manager._send_due_announcements()
-        keys = mempool.mining_order_keys(queued)
-        full_sort = sorted(queued, key=keys.__getitem__)
-        (inv,) = only(other, Inv)
-        assert hashes_of(inv) == full_sort[: len(inv.items)]
-        assert len(inv.items) == 70
+        for conn, wanted in zip(conns, expected, strict=True):
+            assert [h for inv in only(conn, Inv) for h in hashes_of(inv)] == wanted
         trickles += 1
     assert trickles
 
