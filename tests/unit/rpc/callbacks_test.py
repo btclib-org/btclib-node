@@ -2440,7 +2440,8 @@ def test_mempool_acceptance_reports_a_reason_for_each_refusal(
         verdict = {
             k: v
             for k, v in result.items()
-            if k not in {"txid", "wtxid", "vsize_adjusted", "vsize", "vsize_bip141"}
+            if k
+            not in {"txid", "wtxid", "vsize_adjusted", "vsize", "vsize_bip141", "fees"}
         }
         assert verdict == expected
         # the size verification answered, and only for an accepted one,
@@ -2450,8 +2451,14 @@ def test_mempool_acceptance_reports_a_reason_for_each_refusal(
         if name == "accepted":
             assert [result[k] for k in sizes] == [tx.vsize + 7, tx.vsize + 7, tx.vsize]
             assert [k for k in result if k in sizes] == list(sizes)
+            assert set(result["fees"]) == {
+                "base",
+                "effective-feerate",
+                "effective-includes",
+            }
         else:
             assert not set(sizes) & result.keys()
+            assert "fees" not in result
 
 
 def test_mempool_acceptance_propagates_a_store_error_rather_than_reporting_it(
@@ -2529,7 +2536,7 @@ def test_an_array_outside_one_to_twenty_five_is_refused(count: int) -> None:
 def test_twenty_five_rawtxs_are_each_answered(monkeypatch: pytest.MonkeyPatch) -> None:
     """The bound's own edge is inside it."""
     monkeypatch.setattr(
-        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, 0)
+        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, 1)
     )
     raw = a_tx().serialize(include_witness=True).hex()
     assert len(mempool_accept(a_node(), _CONN, [[raw] * 25])) == 25
@@ -8018,6 +8025,64 @@ def test_test_mempool_accept_maxfeerate_zero_accepts_any_fee(
     assert result["vsize"] == 200
     assert result["vsize_adjusted"] == 200
     assert result["vsize_bip141"] == a_tx().vsize
+
+
+def _fees_of(result: dict[str, Any]) -> dict[str, Any]:
+    """Return `result`'s `fees`, its amounts as the strings put on the wire."""
+    fees = result["fees"]
+    return {
+        key: value.text if isinstance(value, RawJSON) else value
+        for key, value in fees.items()
+    }
+
+
+def test_test_mempool_accept_an_allowed_tx_answers_core_s_fees(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`fees` is `base`, `effective-feerate` and its own wtxid, as Core's.
+
+    The key order and the amounts are `src/rpc/mempool.cpp`'s, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag: BTC, and the feerate in
+    BTC per kvB, rounded down. btclib-org/btclib-node#1799
+    """
+
+    def cheap(node: Any, transaction: Any) -> MempoolAcceptance:
+        return MempoolAcceptance(fee=1_001, vsize=3)
+
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", cheap)
+    tx = a_tx()
+    (result,) = mempool_accept(
+        a_node(), _CONN, [[tx.serialize(include_witness=True).hex()]]
+    )
+    assert result["allowed"] is True
+    assert list(result["fees"]) == ["base", "effective-feerate", "effective-includes"]
+    # 1001 * 1000 // 3 = 333_666 sat/kvB
+    assert _fees_of(result) == {
+        "base": "0.00001001",
+        "effective-feerate": "0.00333666",
+        "effective-includes": [tx.hash.hex()],
+    }
+
+
+def test_test_mempool_accept_the_effective_feerate_reads_the_modified_fee(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `prioritisetransaction` delta is in `effective-feerate`, not `base`."""
+
+    def cheap(node: Any, transaction: Any) -> MempoolAcceptance:
+        return MempoolAcceptance(fee=1_000, vsize=200)
+
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", cheap)
+    tx = a_tx()
+    node = a_node()
+    node.mempool.prioritise(tx.id, 500)
+    (result,) = mempool_accept(
+        node, _CONN, [[tx.serialize(include_witness=True).hex()]]
+    )
+    # (1000 + 500) * 1000 // 200 = 7_500 sat/kvB
+    fees = _fees_of(result)
+    assert fees["base"] == "0.00001000"
+    assert fees["effective-feerate"] == "0.00007500"
 
 
 def test_test_mempool_accept_a_lower_maxfeerate_still_refuses_a_cheaper_fee(

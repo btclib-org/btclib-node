@@ -10,6 +10,7 @@ is held in the mempool -- and checks `BitcoinCoreFetcher.get_tx` against
 this node unchanged.
 """
 
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import BitcoinCoreRpcClient
@@ -91,6 +92,9 @@ def test_add_tx(rpc_node: Node) -> None:
 
     result = accept(tx1.serialize(include_witness=True).hex())
     assert result["allowed"]
+    # btclib-org/btclib-node#1799
+    assert result["fees"]["base"] == Decimal("0.00001")
+    assert result["fees"]["effective-includes"] == [tx1.hash.hex()]
 
     result = accept(tx2.serialize(include_witness=True).hex())
     assert not result["allowed"]

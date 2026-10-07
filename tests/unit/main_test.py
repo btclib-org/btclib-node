@@ -1383,6 +1383,8 @@ def test_the_mempool_rpcs_tell_the_adjusted_size_from_the_bip141_one(
     (verdict,) = mempool_accept(node, cast("RpcConnection", None), [[raw]])
     assert verdict["allowed"] is True
     assert [verdict[k] for k in sizes] == expected
+    # the feerate is over the adjusted size, 1000 * 1000 // 10_000 = 100
+    assert verdict["fees"]["effective-feerate"].text == "0.00000100"
     node.mempool.add_tx(tx, *verify_mempool_acceptance(node, tx))
     entry = get_mempool_entry(node, cast("RpcConnection", None), [tx.id.hex()])
     assert [entry[k] for k in sizes] == expected
