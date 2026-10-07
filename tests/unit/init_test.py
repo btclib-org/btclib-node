@@ -706,10 +706,11 @@ def a_paused_connection(resumed: list[bool]) -> Any:
     lock around it, the event it sets to resume the reads, and a loop
     stand-in that runs a threadsafe call inline -- the same stand-in
     `tests/unit/p2p/main_test.py` builds, there being no running loop
-    under an unstarted node.
+    under an unstarted node. An empty send queue holds nothing back.
     """
     return SimpleNamespace(
         queued_recv_bytes=MAX_QUEUED_RECV_BYTES + 1,
+        send_memusage=0,
         _recv_lock=threading.Lock(),
         _recv_resume=SimpleNamespace(set=lambda: resumed.append(True)),
         loop=SimpleNamespace(call_soon_threadsafe=lambda fn: fn()),

@@ -73,6 +73,7 @@ __all__ = [
     "KNOWN_TX_INVENTORY_CAPACITY",
     "MAX_QUEUED_RECV_BYTES",
     "MAX_QUEUED_SEND_BYTES",
+    "SEND_BUFFER_MAX_SIZE",
     "Connection",
     "KnownTxInventory",
     "PeerStats",
@@ -80,15 +81,31 @@ __all__ = [
 ]
 
 
-# Core's own cap, `-maxsendbuffer` (`src/net.h`'s
-# `DEFAULT_MAXSENDBUFFER = 1 * 1000`, in the KB units
-# `src/init.cpp`'s `nSendBufferMaxSize = 1000 *
-# args.GetIntArg("-maxsendbuffer", DEFAULT_MAXSENDBUFFER)` turns into
-# bytes) is not this node's own number: at that threshold Core sets
-# `fPauseSend` (`net.cpp:4205`) and `ProcessMessages`/`ProcessGetData`
-# (`net_processing.cpp:5438`, `:2774-2776`) stop generating further
-# messages for that peer, but what is already in `vSendMsg` keeps
-# draining past the cap rather than being cut off.
+# Core's `nSendBufferMaxSize` at its default, `DEFAULT_MAXSENDBUFFER`
+# (`src/net.h`) times 1000 (`src/init.cpp`), at bitcoin/bitcoin@9be056a8a7,
+# the v31.1 tag. Past it Core sets `fPauseSend` and reads nothing more
+# from the peer until its send buffer is back within it; `_hold_message`
+# (`p2p/main.py`) does the same, weighing each message as Core does. This
+# tree has no `-maxsendbuffer`.
+SEND_BUFFER_MAX_SIZE = 1000 * 1000
+
+# `sizeof(CSerializedNetMsg)` on a 64-bit libstdc++ build: a
+# `std::vector<unsigned char>` (24 bytes) and a `std::string` (32 bytes:
+# a pointer, a length and the 16-byte buffer behind `src/memusage.h`'s
+# "15 bytes in modern libstdc++"), at the same tag. libc++'s `std::string`
+# is 24 bytes, which makes it 48.
+_SERIALIZED_NET_MSG_BYTES = 56
+
+
+def _malloc_usage(alloc: int) -> int:
+    """Return Core's `memusage::MallocUsage` on a 64-bit build."""
+    return ((alloc + 31) >> 4) << 4 if alloc else 0
+
+
+# `SEND_BUFFER_MAX_SIZE` above pauses a peer; the bound below drops one.
+# Core drops no peer over its send buffer: past `nSendBufferMaxSize` it
+# only sets `fPauseSend`, and what is already in `vSendMsg` keeps
+# draining (btclib-org/btclib-node#1805).
 #
 # `get_cfilters` and `callbacks.getdata` (`p2p/callbacks.py`) each have
 # that same kind of pause point of their own now --
@@ -352,6 +369,18 @@ def _queued_size(message: SerializedMessage) -> int:
     actually written.
     """
     return HEADER_SIZE + len(message.payload)
+
+
+def _send_memusage(message: SerializedMessage) -> int:
+    """Return Core's `CSerializedNetMsg::GetMemoryUsage` for `message`.
+
+    The struct, no allocation for a command short enough for the string's
+    own buffer, and `MallocUsage` of the payload (`src/net.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Core reads the vector's
+    capacity, which its standard library's growth can leave above the
+    payload's length, by less than the length again; this takes the length.
+    """
+    return _SERIALIZED_NET_MSG_BYTES + _malloc_usage(len(message.payload))
 
 
 def _make_transport(
@@ -863,6 +892,12 @@ class Connection:
         # `_deliver` calls racing `sock_sendall` on the same socket
         # would interleave their writes on the wire.
         self.queued_send_bytes: int = 0
+        # The same messages weighed as Core's `m_send_memusage` weighs
+        # them (`_send_memusage`), for `_hold_message`'s pause
+        # (`p2p/main.py`); `MAX_QUEUED_SEND_BYTES` and the pacing bounds
+        # stay in `queued_send_bytes`'s unit. Counted under `_send_lock`,
+        # beside it.
+        self.send_memusage: int = 0
         self._send_lock: threading.Lock = threading.Lock()
         self._write_lock = asyncio.Lock()
 
@@ -1296,6 +1331,7 @@ class Connection:
             over_bound = self.queued_send_bytes + size > MAX_QUEUED_SEND_BYTES
             if not over_bound:
                 self.queued_send_bytes += size
+                self.send_memusage += _send_memusage(message)
         if over_bound:
             # Not queued at all, so this message never reaches
             # `queued_send_bytes`: a peer already over budget gets
@@ -1350,7 +1386,9 @@ class Connection:
                 if not taken:
                     return
                 with self._send_lock:
-                    self.queued_send_bytes -= _queued_size(self._outbox.popleft())
+                    sent_message = self._outbox.popleft()
+                    self.queued_send_bytes -= _queued_size(sent_message)
+                    self.send_memusage -= _send_memusage(sent_message)
                 # Core's `m_last_send`, stamped once the whole message is
                 # written, where `SocketSendData` stamps each `send()` that
                 # takes octets: `sock_sendall` reports only the end. A

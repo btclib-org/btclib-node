@@ -48,7 +48,7 @@ from btclib_node.p2p.callbacks import (
     process_orphan,
     settle_tx,
 )
-from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES
+from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES, SEND_BUFFER_MAX_SIZE
 from btclib_node.p2p.tx_checks import TX_CHECK_DEADLINE
 
 if TYPE_CHECKING:
@@ -104,14 +104,26 @@ def _weigh_off(conn: Connection, size: int) -> None:
         conn.loop.call_soon_threadsafe(conn._recv_resume.set)  # noqa: SLF001
 
 
+def _pause_send(conn: Connection) -> bool:
+    """Answer Core's `fPauseSend`: whether `conn`'s send queue is full.
+
+    Read on `Node`'s thread without `_send_lock`, as `advance_getdata`
+    (`p2p/callbacks.py`) reads `queued_send_bytes`. A drain the read
+    misses holds the peer one more pass of `Node`'s loop; a missed
+    increment is one of the small messages `P2pManager`'s thread sends.
+    """
+    return conn.send_memusage > SEND_BUFFER_MAX_SIZE
+
+
 def _hold_message(
-    node: Node, conn_id: int, held: tuple[str, bytes, int, float]
+    node: Node, conn: Connection, conn_id: int, held: tuple[str, bytes, int, float]
 ) -> bool:
     """Hold a message back while the peer has work before it.
 
-    That is a check queued, a message held, an orphan to reconsider, or a
+    That is a check queued, a message held, an orphan to reconsider, a
     `getdata` or `getcfilters` answer paused on `node.pending_getdata`
-    or `node.pending_cfilters`.
+    or `node.pending_cfilters`, or a send queue past
+    `SEND_BUFFER_MAX_SIZE`.
     Answers whether it did. Core handles a peer's messages in the order
     received, decides a `tx` before it reads the next one, and reads
     nothing more from a peer while its `getdata` requests are unserved
@@ -119,17 +131,25 @@ def _hold_message(
     `src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
     tag), so a `pong` tells the peer its `tx` was handled and its items
     were sent (btclib-org/btclib-node#1739, btclib-org/btclib-node#1775,
-    btclib-org/btclib-node#1789). `held` is
-    the command, the payload, its wire size and the time it was read;
-    it stays weighed against the peer's `queued_recv_bytes`, which
-    pauses the connection's reads at `MAX_QUEUED_RECV_BYTES`, Core's
-    `-maxreceivebuffer` default, until `resume_tx_checks` reads it.
+    btclib-org/btclib-node#1789, btclib-org/btclib-node#1796).
+
+    A paused `getcfilters` answer holds the peer sooner than Core would.
+    Core queues every filter of an answer at once and holds the peer only
+    once they pass `nSendBufferMaxSize`; `advance_cfilters`
+    (`p2p/callbacks.py`) pauses below `SEND_BUFFER_MAX_SIZE`, and this
+    hold is what keeps a second request from replacing the paused one.
+
+    `held` is the command, the payload, its wire size and the time it
+    was read; it stays weighed against the peer's `queued_recv_bytes`,
+    which pauses the connection's reads at `MAX_QUEUED_RECV_BYTES`,
+    Core's `-maxreceivebuffer` default, until `resume_tx_checks` reads it.
     """
     if not (
         node.tx_checks.busy(conn_id)
         or node.download_manager.orphanage.have_tx_to_reconsider(conn_id)
         or conn_id in node.pending_getdata
         or conn_id in node.pending_cfilters
+        or _pause_send(conn)
     ):
         return False
     node.tx_checks.waiting.setdefault(conn_id, deque()).append(held)
@@ -178,7 +198,7 @@ def handle_p2p_handshake(node: Node) -> None:
     # that a peer sent a second version/verack/wtxidrelay/sendaddrv2 to
     conn = manager.pending_connections.get(conn_id) or manager.connections.get(conn_id)
     if conn is not None:
-        if _hold_message(node, conn_id, (msg_type, msg, size, received)):
+        if _hold_message(node, conn, conn_id, (msg_type, msg, size, received)):
             return
         _weigh_off(conn, size)
         node.logger.log_debug(
@@ -325,7 +345,7 @@ def handle_p2p(node: Node) -> None:
     # below before being ignored
     conn = manager.connections.get(conn_id) or manager.pending_connections.get(conn_id)
     if conn is not None:
-        if _hold_message(node, conn_id, (msg_type, msg, size, received)):
+        if _hold_message(node, conn, conn_id, (msg_type, msg, size, received)):
             return
         _weigh_off(conn, size)
         node.logger.log_debug(
@@ -476,8 +496,9 @@ def _take_up_orphans(node: Node) -> bool:
 def _read_held(node: Node) -> bool:
     """Read the oldest held message of each peer free to have one read.
 
-    A peer is free with nothing queued, no orphan to reconsider and no
-    `getdata` or `getcfilters` answer paused.
+    A peer is free once nothing `_hold_message` names holds it but its
+    held messages. A drain on `P2pManager`'s thread needs no signal:
+    `Node`'s loop calls this every pass.
     Answers whether any was read, or dropped for being gone.
     """
     checks = node.tx_checks
@@ -495,6 +516,7 @@ def _read_held(node: Node) -> bool:
             node.download_manager.orphanage.have_tx_to_reconsider(conn_id)
             or conn_id in node.pending_getdata
             or conn_id in node.pending_cfilters
+            or _pause_send(conn)
         ):
             continue
         progressed = True
@@ -526,8 +548,7 @@ def resume_tx_checks(node: Node) -> bool:
       up, ahead of its held messages, as Core's `ProcessMessages`
       takes up an orphan before the next message
       (`p2p.callbacks.process_orphan`);
-    - each peer with nothing queued, no orphan to reconsider and no
-      `getdata` or `getcfilters` answer paused has its
+    - each peer free to have one read, as `_read_held` says, has its
       oldest held message read, one per peer per pass, as Core's message
       handler reads one message per peer per pass;
     - with no check in flight, the oldest candidate queued is handed to

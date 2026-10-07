@@ -2086,10 +2086,11 @@ def getdata(node: Node, msg: bytes, conn: Connection) -> None:
     drained.
 
     This ports the first condition (btclib-org/btclib-node#1775); the
-    second is btclib-org/btclib-node#1789. While `conn` has an entry on
-    `node.pending_getdata`, `_hold_message` (`p2p/main.py`) holds its
-    later messages, in order, and `resume_tx_checks` reads them once
-    `resume_getdata` has finished the answer. So an entry is never
+    second is `_hold_message`'s (btclib-org/btclib-node#1796). While
+    `conn` has an entry on `node.pending_getdata`, `_hold_message`
+    (`p2p/main.py`) holds its later messages, in order, and
+    `resume_tx_checks` reads them once `resume_getdata` has finished
+    the answer. So an entry is never
     extended by a second request, and holds one request's items at most.
 
     The messages held are weighed against `conn.queued_recv_bytes`, so
