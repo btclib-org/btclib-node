@@ -114,9 +114,9 @@ every other check first, and applies the verdict once it is in, after
 running those checks again against the chain and the mempool as they
 are then. The worker reads only the transactions and their prevouts; the
 queue of candidates, the mempool and the chain state stay on `Node`'s
-thread. `sendrawtransaction`, `testmempoolaccept` and the transactions a
-reorg puts back in the mempool are checked on `Node`'s thread, scripts
-included.
+thread. `sendrawtransaction`, `submitpackage`, `testmempoolaccept` and the
+transactions a reorg puts back in the mempool are checked on `Node`'s
+thread, scripts included.
 
 ## What is delegated, and what is not
 

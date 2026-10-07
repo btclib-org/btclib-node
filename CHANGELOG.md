@@ -305,6 +305,12 @@ announced or was sent, and one on it is not announced to that peer again
   at every start, `-settings=<path>` naming another file and `-nosettings`
   none; its values sit above `bitcoin.conf`** (closes #1523).
 
+### `submitpackage` is served
+
+- **`submitpackage` answers as Core's does, but replaces nothing
+  (btclib-org/btclib-node#1334) and keeps no parent by its chunk feerate
+  (btclib-org/btclib-node#1740)** (issue #1494).
+
 ## v2026.10.4
 
 ### The attestation's signer is `reusable-attest.yml` from v2026.9.24 on

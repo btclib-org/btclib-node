@@ -89,6 +89,7 @@ from btclib_node.rpc.mining import (
     wait_for_block_height,
     wait_for_new_block,
 )
+from btclib_node.rpc.package import submit_package
 from btclib_node.rpc.solver import solver
 
 if TYPE_CHECKING:
@@ -4390,6 +4391,7 @@ callbacks = {
     "decoderawtransaction": decode_raw_transaction,
     "testmempoolaccept": test_mempool_accept,
     "sendrawtransaction": send_raw_transaction,
+    "submitpackage": submit_package,
     "ping": ping,
     "stop": stop,
     "help": help_rpc,
@@ -4456,6 +4458,7 @@ arg_names: dict[str, tuple[str, ...]] = {
     "decoderawtransaction": ("hexstring", "iswitness"),
     "testmempoolaccept": ("rawtxs", "maxfeerate"),
     "sendrawtransaction": ("hexstring", "maxfeerate", "maxburnamount"),
+    "submitpackage": ("package", "maxfeerate", "maxburnamount"),
     "ping": (),
     "stop": ("wait",),
     "help": ("command",),

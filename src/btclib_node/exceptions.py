@@ -179,11 +179,18 @@ class PackageRefusedError(BTClibValueError):
     Core's `ProcessPackageResult` treats the result of that transaction.
     A refusal of the package as a whole, which names no transaction,
     has none.
+
+    `package_level` is whether the refusal is one only the package reveals
+    (Core's `PackageTRUCChecks`), which names the package and no
+    transaction in its answer, and is not that transaction's own.
     """
 
-    def __init__(self, errors: dict[bytes, Exception]) -> None:
+    def __init__(
+        self, errors: dict[bytes, Exception], *, package_level: bool = False
+    ) -> None:
         super().__init__("package refused")
         self.errors = errors
+        self.package_level = package_level
 
 
 class NonStandardTxError(TxRejectedError):
