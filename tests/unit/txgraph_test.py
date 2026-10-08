@@ -192,6 +192,86 @@ def test_the_cost_default_is_core_s() -> None:
     assert isinstance(graph._rng, random.SystemRandom)
 
 
+# --- Core's `Trim` ---
+
+
+def _chain(graph: TxGraph[str], refs: str, fee: int) -> None:
+    for i, ref in enumerate(refs):
+        graph.add_transaction(ref, FeeFrac(fee, 10), ref)
+        if i:
+            graph.add_dependency(refs[i - 1], ref)
+
+
+def test_a_spend_is_linked_once_its_dependency_is_added() -> None:
+    """`linked` answers the graph's clusters, and yes for what it lacks."""
+    graph = a_graph()
+    graph.add_transaction("p", FeeFrac(1, 10), "p")
+    graph.add_transaction("c", FeeFrac(1, 10), "c")
+    assert not graph.linked("p", "c")
+    assert graph.linked("p", "staged")
+    assert graph.linked("staged", "c")
+    graph.trim([("p", "c")], 64, 10**6)
+    assert graph.linked("p", "c")
+
+
+def test_a_trim_within_the_limits_only_adds_the_dependencies() -> None:
+    """Nothing goes, and the clusters merge."""
+    graph = a_graph()
+    _chain(graph, "ab", 1)
+    graph.add_transaction("p", FeeFrac(1, 10), "p")
+    assert graph.trim([("p", "a")], 3, 30) == []
+    assert graph.cluster("b") == ["p", "a", "b"]
+
+
+def test_a_trim_keeps_the_higher_chunk_feerate() -> None:
+    """Of two chains under one parent, the cheaper one goes, child too.
+
+    Which dependency comes first does not matter.
+    """
+    for dependencies in ([("p", "a"), ("p", "x")], [("p", "x"), ("p", "a")]):
+        graph = a_graph()
+        _chain(graph, "ab", 1)
+        _chain(graph, "xy", 5)
+        graph.add_transaction("p", FeeFrac(1, 10), "p")
+        assert graph.trim(dependencies, 3, 10**6) == ["a", "b"]
+        assert graph.cluster("p") == ["p", "x", "y"]
+        assert "a" not in graph
+        assert "b" not in graph
+
+
+def test_a_trim_goes_by_size_too() -> None:
+    """Core's `m_max_cluster_size`: a part past it is not taken."""
+    graph = a_graph()
+    _chain(graph, "ab", 1)
+    graph.add_transaction("p", FeeFrac(1, 10), "p")
+    assert graph.trim([("p", "a")], 64, 29) == ["b"]
+
+
+def test_equal_feerates_go_by_the_smaller_chunk_then_the_lower_key() -> None:
+    """FeeFrac's order puts the smaller chunk first; equal chunks, the key."""
+    graph = a_graph()
+    graph.add_transaction("p", FeeFrac(1, 10), "p")
+    graph.add_transaction("big", FeeFrac(2, 20), "a")
+    graph.add_transaction("small", FeeFrac(1, 10), "z")
+    assert graph.trim([("p", "big"), ("p", "small")], 2, 10**6) == ["big"]
+    graph = a_graph()
+    graph.add_transaction("p", FeeFrac(1, 10), "p")
+    graph.add_transaction("x", FeeFrac(1, 10), "b")
+    graph.add_transaction("y", FeeFrac(1, 10), "a")
+    assert graph.trim([("p", "x"), ("p", "y")], 2, 10**6) == ["x"]
+
+
+def test_a_transaction_past_the_size_limit_goes_with_what_follows_it() -> None:
+    """An oversized transaction is never taken, nor what comes after it."""
+    graph = a_graph()
+    graph.add_transaction("p", FeeFrac(1, 10), "p")
+    _chain(graph, "ab", 1)
+    graph.add_transaction("huge", FeeFrac(1_000, 100), "h")
+    graph.add_dependency("huge", "a")
+    assert graph.trim([("p", "a")], 64, 50) == ["huge", "a", "b"]
+    assert len(graph) == 1
+
+
 # --- against `linearize` from scratch ---
 
 

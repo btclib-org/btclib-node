@@ -1890,7 +1890,55 @@ def test_a_parent_held_after_its_child_is_linked_to_it() -> None:
     child = generate_random_transaction(parent.id)
     mempool.add_tx(child, 1_000, 100, 400)
     mempool.add_tx(parent, 0, 100, 400)
+    assert mempool.graph.cluster(child.hash) == [child.hash]
+    mempool.update_transactions_from_block([parent.hash])
     assert mempool.graph.cluster(child.hash) == [parent.hash, child.hash]
+
+
+def test_a_reorg_trims_a_cluster_past_64_transactions() -> None:
+    """Core's `Trim` takes the last of a chain of 64 under a re-added parent.
+
+    A chain spends an output of `p`, which is not held, as after `p`
+    confirmed; a reorg brings `p` back. The chain's last transaction
+    would be the cluster's 65th, and goes.
+    """
+    mempool = Mempool(Logger(debug=True))
+    p = generate_random_transaction()
+    chain = [generate_random_transaction(p.id)]
+    while len(chain) < 64:
+        chain.append(generate_random_transaction(chain[-1].id))
+    for tx in chain:
+        assert mempool.add_tx(tx, 1_000, 100, 400)
+    mempool.check_cluster(p, p.vsize)
+    assert mempool.add_tx(p, 1_000, 100, 400)
+    gone = generate_random_transaction()
+    mempool.update_transactions_from_block([gone.hash, p.hash])
+    assert mempool.graph.cluster(p.hash) == [p.hash] + [tx.hash for tx in chain[:63]]
+    assert set(mempool.transactions) == {p.hash} | {tx.hash for tx in chain[:63]}
+
+
+def test_a_re_added_child_counts_no_held_child_of_its_parent() -> None:
+    """Core's graph links a re-added parent to its held children last.
+
+    `r` spends a re-added `p` under which a chain of 64 is held: its
+    cluster is `p` and itself until `update_transactions_from_block`,
+    which keeps `r`, paying more than the chain, and trims two of it.
+    """
+    mempool = Mempool(Logger(debug=True))
+    p = generate_random_transaction()
+    chain = [generate_random_transaction(p.id)]
+    while len(chain) < 64:
+        chain.append(generate_random_transaction(chain[-1].id))
+    for tx in chain:
+        assert mempool.add_tx(tx, 1_000, 100, 400)
+    assert mempool.add_tx(p, 1_000, 100, 400)
+    # another output of `p`'s, which the mempool does not check
+    r = Tx(1, 0, [TxIn(OutPoint(p.id, 1), b"", 0xFFFFFFFF)], chain[0].vout)
+    mempool.check_cluster(r, 100, 400)
+    assert mempool.add_tx(r, 5_000, 100, 400)
+    mempool.update_transactions_from_block([p.hash, r.hash])
+    kept = {p.hash, r.hash} | {tx.hash for tx in chain[:62]}
+    assert set(mempool.transactions) == kept
 
 
 def test_a_staged_transaction_never_enters_the_graph() -> None:
@@ -1947,6 +1995,36 @@ def test_a_staged_parent_counts_by_the_weight_it_is_given() -> None:
         mempool.check_cluster(child, 50_500, 201_999)
         with pytest.raises(TxRejectedError, match="too-large-cluster"):
             mempool.check_cluster(child, 50_500, 202_000)
+
+
+def test_a_cluster_follows_no_unlinked_spend_either_way() -> None:
+    """From the held child of a re-added parent, as from the parent."""
+    mempool = Mempool(Logger(debug=True))
+    parent = generate_random_transaction()
+    child = generate_random_transaction(parent.id)
+    assert mempool.add_tx(child, 1_000, 100, 400)
+    assert mempool.add_tx(parent, 1_000, 100, 400)
+    for seed in (parent, child):
+        members, _ = mempool.cluster([seed.hash], max_count=64, max_weight=10**6)
+        assert members == {seed.hash}
+    mempool.update_transactions_from_block([parent.hash])
+    members, _ = mempool.cluster([child.hash], max_count=64, max_weight=10**6)
+    assert members == {parent.hash, child.hash}
+
+
+def test_a_staged_parent_s_staged_child_counts_toward_a_sibling() -> None:
+    """A spend of a staged parent, outside the graph, is followed."""
+    mempool = Mempool(Logger(debug=True))
+    parent = generate_random_transaction()
+    sibling = generate_random_transaction(parent.id)
+    child = a_transaction_spending(parent.id)
+    with (
+        mempool.staged(parent, 0, 100, 400),
+        mempool.staged(sibling, 0, 50_000, 200_000),
+    ):
+        mempool.check_cluster(child, 50_900, 203_600)
+        with pytest.raises(TxRejectedError, match="too-large-cluster"):
+            mempool.check_cluster(child, 50_901, 203_601)
 
 
 def test_the_stored_txid_follows_the_entry_in_and_out() -> None:

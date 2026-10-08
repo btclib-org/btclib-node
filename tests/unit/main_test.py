@@ -3078,6 +3078,108 @@ def test_a_reorg_re_adds_abandoned_transactions_parent_first(
     assert node.mempool.vsizes[parent.hash] == parent.vsize + 1
 
 
+def test_a_reorg_links_what_it_re_adds_after_the_new_blocks(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's `UpdateTransactionsFromBlock` runs after `removeForBlock`.
+
+    The re-added transactions are linked in the order they came back,
+    once every block of the new chain has left the mempool, and nothing
+    is evicted until all of them are in, as Core's `bypass_limits` re-add
+    and its single `LimitMempoolSize` after.
+    """
+    calls: list[object] = []
+    mempool = node.mempool
+    remove_for_block = mempool.remove_for_block
+    add_tx = mempool.add_tx
+    update = mempool.update_transactions_from_block
+    trim = mempool.trim
+
+    def removing(transactions: Any) -> Any:
+        calls.append("remove_for_block")
+        return remove_for_block(transactions)
+
+    def adding(tx: Tx, *args: Any, **kwargs: Any) -> bool:
+        calls.append(("add_tx", kwargs.get("trim", True)))
+        return add_tx(tx, *args, **kwargs)
+
+    def updating(wtxids: Any) -> None:
+        calls.append(list(wtxids))
+        update(wtxids)
+
+    def trimming() -> None:
+        calls.append("trim")
+        trim()
+
+    monkeypatch.setattr(mempool, "remove_for_block", removing)
+    monkeypatch.setattr(mempool, "add_tx", adding)
+    monkeypatch.setattr(mempool, "update_transactions_from_block", updating)
+    monkeypatch.setattr(mempool, "trim", trimming)
+    common = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, common)
+    parent = generate_random_transaction(common[0].transactions[0].id)
+    child = generate_random_transaction(parent.id)
+    abandoned = build_block(
+        common[-1].header.hash,
+        [generate_coinbase(height=len(common) + 1), parent, child],
+        len(common),
+    )
+    block_index.add_headers([abandoned.header])
+    node.block_db.add_block(abandoned)
+    block_index.set_downloaded(abandoned.header.hash)
+    settle(node)
+    calls.clear()
+
+    heavier = _extend(common[-1].header.hash, len(common), 2)
+    block_index.add_headers([block.header for block in heavier])
+    for block in heavier:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+    settle(node)
+    assert block_index.active_chain[-1] == heavier[-1].header.hash
+    assert calls == [
+        "remove_for_block",
+        "remove_for_block",
+        ("add_tx", False),
+        ("add_tx", False),
+        [parent.hash, child.hash],
+        "trim",
+    ]
+
+
+def test_a_child_of_a_transaction_both_branches_confirm_stays(node: Node) -> None:
+    """Core's `disconnectpool.removeForBlock`: confirmed again, not re-added.
+
+    The parent is in the abandoned block and in the new one, so it is
+    neither re-added nor removed with what spends it.
+    """
+    common = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, common)
+    parent = generate_random_transaction(common[0].transactions[0].id)
+    abandoned = build_block(
+        common[-1].header.hash,
+        [generate_coinbase(height=len(common) + 1), parent],
+        len(common),
+    )
+    connect(node, [abandoned])
+    child = generate_random_transaction(parent.id)
+    node.mempool.add_tx(child, FEE, height=len(common) + 1)
+    again = build_block(
+        common[-1].header.hash,
+        [generate_coinbase(height=len(common) + 1), parent],
+        len(common) + 7,
+    )
+    heavier = [again, *_extend(again.header.hash, len(common) + 1, 1)]
+    block_index.add_headers([block.header for block in heavier])
+    for block in heavier:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+    settle(node)
+    assert block_index.active_chain[-1] == heavier[-1].header.hash
+    assert node.mempool.contains_tx(child)
+    assert not node.mempool.contains_tx(parent)
+
+
 def test_a_block_connected_before_header_sync_ends_leaves_the_mempool(
     node: Node,
 ) -> None:

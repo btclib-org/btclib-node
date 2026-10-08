@@ -522,6 +522,15 @@ def _reconcile_mempool_for_reorg(
         # for an empty mempool with no fee delta, where this still runs.
         # btclib-org/btclib-node#294
         node.mempool.note_block_connected()
+    # Core's `disconnectpool.removeForBlock` after each `removeForBlock`
+    # (`ConnectTip`, same citation): what a new block confirms again is
+    # neither re-added nor removed with its children. Not hashed where
+    # nothing is disconnected, as during initial block download.
+    confirmed = (
+        {tx.id for block in to_add for tx in block.transactions} if to_remove else set()
+    )
+    # Core's `vHashUpdate`, the transactions re-added below
+    readded: list[bytes] = []
     # oldest-abandoned-block first, the opposite of to_remove's own
     # tip-first order above: a transaction from a later abandoned
     # block may spend an output only an earlier abandoned block's
@@ -538,6 +547,8 @@ def _reconcile_mempool_for_reorg(
             err_msg = f"block just removed is missing: {rev_block.hash.hex()}"
             raise ChainstateInconsistencyError(err_msg)
         for tx in removed_block.transactions:
+            if tx.id in confirmed:
+                continue
             # Core's own disconnectpool holds the whole block,
             # coinbase included (`AddTransactionsFromBlock(block.vtx)`),
             # and `MaybeUpdateMempoolForReorg` never re-adds one
@@ -587,14 +598,21 @@ def _reconcile_mempool_for_reorg(
             # `spend_height`, one past it, because this loop moves the
             # active chain one block at a time as it re-adds.
             tip_height = len(node.chainstate.block_index.active_chain) - 1
+            # nothing evicted per re-add: `bypass_limits` skips Core's
+            # `LimitMempoolSize`, which runs once, below
             node.mempool.add_tx(
                 tx,
                 accepted.fee,
                 accepted.vsize,
                 height=tip_height,
                 weight=accepted.weight,
+                trim=False,
             )
             track_accepted(node, tx, limit_bypassed=True)
+            readded.append(tx.hash)
+    # Core's `UpdateTransactionsFromBlock`, once every re-add is in and,
+    # as above, every new block has left the mempool
+    node.mempool.update_transactions_from_block(readded)
     if to_remove:
         # Core's own `removeForReorg` runs every time
         # `MaybeUpdateMempoolForReorg` does, whether or not
@@ -607,6 +625,9 @@ def _reconcile_mempool_for_reorg(
         # -- Core's own `ConnectTip` never calls this path either,
         # running `removeForBlock` alone. btclib-org/btclib-node#1570
         _evict_immature_or_nonfinal(node)
+        # Core's `LimitMempoolSize`, last in `MaybeUpdateMempoolForReorg`
+        # (same citation): the re-adds are evicted from as a whole
+        node.mempool.trim()
 
 
 def _still_final_and_mature(node: Node, tx: Tx) -> bool:

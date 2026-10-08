@@ -664,8 +664,9 @@ class Mempool:
     ) -> None:
         """Enter `tx` in every index, with no eviction and no heap entry.
 
-        In `graph` too unless `graph` is false, linked to its held parents
-        and to its held children, which a reorg can leave behind it.
+        In `graph` too unless `graph` is false, linked to its held parents.
+        A held child, which a reorg can leave behind it, is linked by
+        `update_transactions_from_block`.
         """
         wtxid, txid = tx.hash, tx.id
         for vin in tx.vin:
@@ -690,8 +691,27 @@ class Mempool:
             self.graph.add_transaction(wtxid, feerate, txid[::-1])
             for parent in self._parents(tx):
                 self.graph.add_dependency(parent, wtxid)
-            for child in self.spent_by.get(txid, ()):
-                self.graph.add_dependency(wtxid, child)
+
+    def update_transactions_from_block(self, wtxids: Sequence[bytes]) -> None:
+        """Link the re-added `wtxids` to their held children, then trim.
+
+        Core's `UpdateTransactionsFromBlock` (`src/txmempool.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `wtxids` are what a
+        reorg put back, in the order it did, and one no longer held is
+        skipped. A cluster the links take past Core's limits is trimmed by
+        `TxGraph.trim`, and what it trims is removed, as Core removes it
+        with reason `SIZELIMIT`.
+        """
+        dependencies = [
+            (wtxid, child)
+            for wtxid in reversed(wtxids)
+            if wtxid in self.transactions
+            for child in self.spent_by.get(self.txids[wtxid], ())
+        ]
+        for wtxid in self.graph.trim(
+            dependencies, _CLUSTER_LIMIT, _CLUSTER_WEIGHT_LIMIT
+        ):
+            self._pop(wtxid)
 
     def _push_heap(self, wtxid: bytes) -> None:
         """Give `wtxid`, just inserted, its entry in the eviction heap."""
@@ -1045,8 +1065,12 @@ class Mempool:
 
         A cluster is a connected component of the graph whose edges are
         the spends among held transactions, followed up through each
-        input's parent and down through `spent_by`. The walk stops at the
-        first transaction past `max_count` transactions or `max_weight`
+        input's parent and down through `spent_by`. A spend `graph` does
+        not link yet is not followed, up or down: a reorg links a re-added
+        transaction to its held children only in
+        `update_transactions_from_block`, as Core's graph does
+        (btclib-org/btclib-node#1838). The walk stops at the first
+        transaction past `max_count` transactions or `max_weight`
         sigop-adjusted weight, so a caller tests `len(members) > max_count
         or weight > max_weight` and a cluster past a limit costs no more
         than the limit. btclib-org/btclib-node#1383
@@ -1061,8 +1085,16 @@ class Mempool:
             members.add(wtxid)
             weight += self.weights[wtxid]
             tx = self.transactions[wtxid]
-            frontier.extend(self.spent_by.get(tx.id, ()))
-            frontier.extend(self._parents(tx))
+            frontier.extend(
+                child
+                for child in self.spent_by.get(tx.id, ())
+                if self.graph.linked(wtxid, child)
+            )
+            frontier.extend(
+                parent
+                for parent in self._parents(tx)
+                if self.graph.linked(parent, wtxid)
+            )
         return members, weight
 
     def check_cluster(self, tx: Tx, vsize: int, weight: int | None = None) -> None:
