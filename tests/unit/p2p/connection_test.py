@@ -149,7 +149,7 @@ def test_a_message_that_will_not_serialize_is_logged_and_dropped(
     connection, logged = a_connection()
     sent: list[bytes] = []
 
-    async def _send(data: bytes) -> None:
+    async def _send(data: bytes, _sent: list[tuple[str, int]]) -> None:
         # the message fails to serialize before _send is called, which
         # is the whole point of this test
         sent.append(data)  # pragma: no cover -- the payload never serializes
@@ -176,7 +176,7 @@ def test_a_message_the_transport_cannot_frame_is_logged_and_dropped() -> None:
     connection, logged = a_connection()
     sent: list[bytes] = []
 
-    async def _send(data: bytes) -> None:
+    async def _send(data: bytes, _sent: list[tuple[str, int]]) -> None:
         sent.append(data)  # pragma: no cover -- the message is never framed
 
     connection._send = _send  # type: ignore[method-assign]
@@ -231,7 +231,7 @@ def test_a_v2_connection_holds_messages_until_the_handshake_gives_it_a_cipher() 
     peer = V2Transport(magic, V1Transport(magic), initiating=False)
     sent: list[bytes] = []
 
-    async def _send(data: bytes) -> None:
+    async def _send(data: bytes, _sent: list[tuple[str, int]]) -> None:
         sent.append(data)
 
     connection._send = _send  # type: ignore[method-assign]
@@ -331,7 +331,7 @@ def test_own_version_records_this_connections_own_nonce() -> None:
     manager.add_pending_outbound_nonce = manager.pending_outbound_nonces.add
     manager.port = 18444
 
-    async def _send(data: bytes) -> None:
+    async def _send(data: bytes, _sent: list[tuple[str, int]]) -> None:
         return
 
     connection._send = _send  # type: ignore[method-assign]
@@ -357,7 +357,7 @@ def test_own_version_only_adds_an_outbound_nonce_to_the_manager() -> None:
     manager.add_pending_outbound_nonce = manager.pending_outbound_nonces.add
     manager.port = 18444
 
-    async def _send(data: bytes) -> None:
+    async def _send(data: bytes, _sent: list[tuple[str, int]]) -> None:
         return
 
     connection._send = _send  # type: ignore[method-assign]
@@ -383,7 +383,7 @@ def test_own_version_announces_the_name_and_the_installed_version() -> None:
     manager.port = 18444
     sent: list[bytes] = []
 
-    async def _send(data: bytes) -> None:
+    async def _send(data: bytes, _sent: list[tuple[str, int]]) -> None:
         sent.append(data)
 
     connection._send = _send  # type: ignore[method-assign]
@@ -412,7 +412,7 @@ def test_own_version_carries_this_nodes_own_best_height() -> None:
     manager.port = 18444
     sent: list[bytes] = []
 
-    async def _send(data: bytes) -> None:
+    async def _send(data: bytes, _sent: list[tuple[str, int]]) -> None:
         sent.append(data)
 
     connection._send = _send  # type: ignore[method-assign]
@@ -441,7 +441,7 @@ def test_own_version_asks_a_block_relay_only_peer_for_no_transactions(
     manager.port = 18444
     sent: list[bytes] = []
 
-    async def _send(data: bytes) -> None:
+    async def _send(data: bytes, _sent: list[tuple[str, int]]) -> None:
         sent.append(data)
 
     connection._send = _send  # type: ignore[method-assign]
@@ -464,7 +464,7 @@ def test_own_version_advertises_node_network_when_not_pruned() -> None:
     manager.port = 18444
     sent: list[bytes] = []
 
-    async def _send(data: bytes) -> None:
+    async def _send(data: bytes, _sent: list[tuple[str, int]]) -> None:
         sent.append(data)
 
     connection._send = _send  # type: ignore[method-assign]
@@ -494,7 +494,7 @@ def test_own_version_drops_node_network_when_pruned() -> None:
     manager.port = 18444
     sent: list[bytes] = []
 
-    async def _send(data: bytes) -> None:
+    async def _send(data: bytes, _sent: list[tuple[str, int]]) -> None:
         sent.append(data)
 
     connection._send = _send  # type: ignore[method-assign]
@@ -996,7 +996,7 @@ def test_stop_from_another_thread_does_not_raise_past_a_registered_writer(
         # send buffer and leaves a writer registered on the same fd
         # sock_recv reads from
         send = asyncio.run_coroutine_threadsafe(
-            connection._send(b"x" * (16 * 1024 * 1024)), loop
+            connection._send(b"x" * (16 * 1024 * 1024), [("x", 16 * 1024 * 1024)]), loop
         )
         time.sleep(0.15)
         connection.stop()
@@ -1051,7 +1051,7 @@ def test_stop_on_the_loop_s_own_thread_does_not_raise_past_a_registered_writer(
         connection = a_running_connection(loop, ours)
         connection.task = asyncio.run_coroutine_threadsafe(connection.run(), loop)
         send = asyncio.run_coroutine_threadsafe(
-            connection._send(b"x" * (16 * 1024 * 1024)), loop
+            connection._send(b"x" * (16 * 1024 * 1024), [("x", 16 * 1024 * 1024)]), loop
         )
         time.sleep(0.15)
         # not connection.stop(): this runs stop itself on the loop's
@@ -1095,9 +1095,91 @@ def test_a_long_write_stamps_last_send_after_each_chunk_the_socket_takes(
     )
     chunk = connection_module._SEND_CHUNK
     with connection.client:
-        asyncio.run(connection._send(b"x" * (2 * chunk + 1)))
+        asyncio.run(connection._send(b"x" * (2 * chunk + 1), [("x", 2 * chunk + 1)]))
     assert offered == [(chunk, 0.0), (chunk, 1.0), (1, 2.0)]
     assert connection.last_send == 3.0
+
+
+def test_a_long_write_counts_each_chunk_the_socket_takes_by_message() -> None:
+    """ISS 1869: `bytes_sent` moves while one write is still running.
+
+    Core counts `nSendBytes` and `AccountForSentBytes` after each
+    `send()` that takes octets. The stand-in for `sock_sendall` records
+    the counts as each chunk is offered, so each sees what the chunks
+    before it added. The octets are two messages, the first ending
+    inside the second chunk.
+    """
+    connection, _ = a_connection()
+    seen: list[tuple[int, dict[str, int]]] = []
+
+    async def sock_sendall(_sock: object, data: bytes) -> None:
+        seen.append(
+            (connection.stats.bytes_sent, dict(connection.stats.bytes_sent_per_msg))
+        )
+
+    connection.loop = cast(
+        "asyncio.AbstractEventLoop", SimpleNamespace(sock_sendall=sock_sendall)
+    )
+    chunk = connection_module._SEND_CHUNK
+    sent = [("block", chunk + 10), ("ping", chunk - 9)]
+    with connection.client:
+        asyncio.run(connection._send(b"x" * (2 * chunk + 1), sent))
+    assert seen == [
+        (0, {}),
+        (chunk, {"block": chunk}),
+        (2 * chunk, {"block": chunk + 10, "ping": chunk - 10}),
+    ]
+    assert connection.stats.bytes_sent == 2 * chunk + 1
+    assert connection.stats.bytes_sent_per_msg == {
+        "block": chunk + 10,
+        "ping": chunk - 9,
+    }
+
+
+def test_the_v2_handshake_octets_are_counted_but_have_no_table_entry() -> None:
+    """ISS 1880: Core skips `AccountForSentBytes` for an empty message type.
+
+    The handshake still adds to `nSendBytes`, so to `bytes_sent`.
+    """
+    connection, _ = a_connection(use_v2transport=True)
+    offered: list[int] = []
+
+    async def sock_sendall(_sock: object, data: bytes) -> None:
+        offered.append(len(data))
+
+    connection.loop = cast(
+        "asyncio.AbstractEventLoop", SimpleNamespace(sock_sendall=sock_sendall)
+    )
+    with connection.client:
+        asyncio.run(connection._drain_outbox())
+    assert offered
+    assert connection.stats.bytes_sent == sum(offered)
+    assert connection.stats.bytes_sent_per_msg == {}
+
+
+def test_a_write_cut_short_is_counted_for_the_chunks_the_socket_took() -> None:
+    """ISS 1869: the chunks taken before an `OSError` stay counted.
+
+    The second chunk is refused. Counting after the whole write would
+    leave both counts at zero; Core counted the first `send()`.
+    """
+    connection, _ = a_connection()
+    offered = 0
+
+    async def sock_sendall(_sock: object, _data: bytes) -> None:
+        nonlocal offered
+        offered += 1
+        if offered == 2:
+            raise BrokenPipeError
+
+    connection.loop = cast(
+        "asyncio.AbstractEventLoop", SimpleNamespace(sock_sendall=sock_sendall)
+    )
+    chunk = connection_module._SEND_CHUNK
+    with connection.client, pytest.raises(BrokenPipeError):
+        asyncio.run(connection._send(b"x" * (2 * chunk), [("block", 2 * chunk)]))
+    assert connection.stats.bytes_sent == chunk
+    assert connection.stats.bytes_sent_per_msg == {"block": chunk}
 
 
 def test_a_write_the_socket_refuses_stamps_nothing() -> None:
@@ -1517,7 +1599,7 @@ def test_a_peer_past_the_send_bound_is_sent_to_not_dropped() -> None:
         connection.send_memusage = 2 * connection.send_buffer_max_size
         sent: list[bytes] = []
 
-        async def _send(data: bytes) -> None:
+        async def _send(data: bytes, _sent: list[tuple[str, int]]) -> None:
             sent.append(data)
 
         connection._send = _send  # type: ignore[method-assign]
@@ -1553,7 +1635,7 @@ def test_a_flood_of_pings_pauses_the_peer_at_cores_count() -> None:
     assert paused == [False, True]
     connection.send_memusage -= bound - per_ping
 
-    async def _send(data: bytes) -> None:
+    async def _send(data: bytes, _sent: list[tuple[str, int]]) -> None:
         pass
 
     connection._send = _send  # type: ignore[method-assign]
@@ -1614,7 +1696,7 @@ def test_send_counts_a_message_before_the_loop_has_written_it() -> None:
         connection = a_running_connection(loop, socket.socket())
         delivered: list[int] = []
 
-        async def _send(data: bytes) -> None:
+        async def _send(data: bytes, _sent: list[tuple[str, int]]) -> None:
             delivered.append(len(data))
 
         connection._send = _send  # type: ignore[method-assign]
@@ -1656,7 +1738,7 @@ def test_a_getdata_answer_pauses_once_the_send_buffer_is_full() -> None:
         node.pending_getdata = {}
         release = asyncio.Event()
 
-        async def _send(data: bytes) -> None:
+        async def _send(data: bytes, _sent: list[tuple[str, int]]) -> None:
             await release.wait()
 
         connection._send = _send  # type: ignore[method-assign]
@@ -1800,7 +1882,7 @@ def test_own_version_asks_a_feeler_for_no_transactions() -> None:
     manager.port = 18444
     sent: list[bytes] = []
 
-    async def _send(data: bytes) -> None:
+    async def _send(data: bytes, _sent: list[tuple[str, int]]) -> None:
         sent.append(data)
 
     connection._send = _send  # type: ignore[method-assign]
