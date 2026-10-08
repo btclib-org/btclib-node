@@ -58,6 +58,7 @@ from btclib_node.p2p.transport import (
     V1Transport,
 )
 from btclib_node.p2p.v2transport import V1PeerRefusedError, V2Transport
+from btclib_node.rolling_bloom import RollingBloomFilter
 
 if TYPE_CHECKING:
     import socket
@@ -72,7 +73,6 @@ if TYPE_CHECKING:
     from btclib_node.p2p.manager import P2pManager
 
 __all__ = [
-    "KNOWN_TX_INVENTORY_CAPACITY",
     "Connection",
     "KnownTxInventory",
     "PeerStats",
@@ -278,21 +278,13 @@ class PeerStats:
     bytes_recv_per_msg: Counter[str] = field(default_factory=Counter)
 
 
-# Core's `TxRelay::m_tx_inventory_known_filter`, `CRollingBloomFilter{50000,
-# 0.000001}` (`src/net_processing.cpp:307`, at bitcoin/bitcoin@9be056a8a7, the
-# v31.1 tag). The count carries over. The structure does not: an exact record
-# has no false positives, so it never withholds a transaction the peer lacks,
-# which Core's filter does once in a million queries.
-#
-# That costs memory on every connection: a full record holds
-# `KNOWN_TX_INVENTORY_CAPACITY` hashes in a set and a deque, and Core's filter
-# is a fraction of that. btclib-org/btclib-node#1743 is the question whether
-# to keep it.
-KNOWN_TX_INVENTORY_CAPACITY = 50_000
-
-
-class KnownTxInventory:
+class KnownTxInventory(RollingBloomFilter):
     """The latest transaction hashes a peer announced to this node or was sent.
+
+    Core's `TxRelay::m_tx_inventory_known_filter`, a `CRollingBloomFilter{50000,
+    0.000001}` (`src/net_processing.cpp:307`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag). Like Core's, it withholds a transaction from a peer that
+    lacks it about once in a million queries.
 
     A txid for a peer without wtxid relay and a wtxid otherwise, as Core's
     filter holds them. Reached from `Node`'s thread alone: the `inv` and `tx`
@@ -300,25 +292,11 @@ class KnownTxInventory:
     never does, so it needs no lock.
     """
 
-    __slots__ = ("_members", "_order")
+    __slots__ = ()
 
     def __init__(self) -> None:
-        """Start with no hash."""
-        self._members: set[bytes] = set()
-        self._order: deque[bytes] = deque()
-
-    def __contains__(self, key: bytes) -> bool:
-        """Answer whether `key` is on the record."""
-        return key in self._members
-
-    def add(self, key: bytes) -> None:
-        """Record `key`, the oldest leaving at the capacity."""
-        if key in self._members:
-            return
-        if len(self._order) >= KNOWN_TX_INVENTORY_CAPACITY:
-            self._members.discard(self._order.popleft())
-        self._order.append(key)
-        self._members.add(key)
+        """Size the filter as Core sizes its own."""
+        super().__init__(50_000, 0.000_001)
 
 
 class Connection:

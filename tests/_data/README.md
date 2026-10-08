@@ -230,6 +230,65 @@ that reads the file is the check:
 uv run pytest tests/unit/cluster_linearize_test.py -k core_s_own_runs
 ```
 
+## `tests/unit/_data/core_rolling_bloom_runs.txt`
+
+Not vendored -- derived. Keys run through Bitcoin Core v31.1's own
+`CRollingBloomFilter`, two lines a case: the input, and what Core
+printed. The odd lines are what this script prints, under `python3 -I`:
+
+```python
+import random
+
+r = random.Random(1743)
+keys = [r.randbytes(n).hex() for n in range(41)]
+
+
+def case(n, fp, tweak, *ops):
+    print(n, fp, tweak, *(f"+{k}" for k in keys), *ops, *(f"?{k}" for k in keys))
+
+
+# every MurmurHash3 tail, three generations wiped, both ends of the tweak
+for tweak in (0, 0xFFFF_FFFF, r.getrandbits(32)):
+    case(100, 0.01, tweak, "+n", 0, 300, "?n", 0, 400)
+case(1000, 0.001, r.getrandbits(32), "+n", 0, 2600, "?n", 0, 3000)
+# Core's own parameters for the transactions a peer knows
+ask = ("?n", 0, 1000, "?n", 24990, 20, "?n", 79000, 1000, "?n", 100000, 1000)
+case(50000, 0.000001, r.getrandbits(32), "+n", 0, 80000, *ask)
+# one hash function, one key a generation
+case(1, 0.5, r.getrandbits(32))
+# fifty hash functions, the most Core takes
+case(10, 1e-30, r.getrandbits(32))
+# a ratio below a half, rounded to none and raised to one
+case(10, 0.99, r.getrandbits(32))
+# a ratio of exactly two and a half, rounded away from zero
+case(20, 0.1767766952966369, r.getrandbits(32), "?n", 0, 100)
+```
+
+`core_rolling_bloom.cpp`, beside the file, is the program that read the
+odd lines and printed the even ones, compiled with Apple clang 21. Its
+filter is Core's own code, cut out of `src/hash.cpp` and
+`src/common/bloom.cpp` at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, but
+for `reset`, which takes the tweak from the input:
+
+```shell
+git -C <bitcoin> archive 9be056a8a7 src | tar -x -C <dir>
+git -C <bitcoin> show 9be056a8a7:src/hash.cpp |
+  sed -n '/^unsigned int MurmurHash3/,/^}/p' > <dir>/core_rolling_bloom.inc
+git -C <bitcoin> show 9be056a8a7:src/common/bloom.cpp |
+  sed -n '/^CRollingBloomFilter::/,/::reset()$/p' |
+  sed '$d' >> <dir>/core_rolling_bloom.inc
+clang++ -std=c++20 -O1 -I<dir>/src -I<dir> \
+    -o core_rolling_bloom tests/unit/_data/core_rolling_bloom.cpp
+awk 'NR % 2' tests/unit/_data/core_rolling_bloom_runs.txt | ./core_rolling_bloom
+```
+
+The last command's output is the file's even lines. There is no upstream
+copy to pin; the test that reads the file is the check:
+
+```shell
+uv run pytest tests/unit/rolling_bloom_test.py -k core_s_own_runs
+```
+
 ## `tests/unit/_data/BITCOIN_CORE_COPYING`
 
 ```text

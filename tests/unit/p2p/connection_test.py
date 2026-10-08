@@ -1848,17 +1848,15 @@ def test_an_inbound_v1_peer_is_taken_with_allow_v1() -> None:
     assert entries == []
 
 
-def test_the_known_transaction_record_drops_its_oldest_at_the_capacity(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """ISS 1630: the oldest hash leaves first, a repeat does not renew."""
-    monkeypatch.setattr(connection_module, "KNOWN_TX_INVENTORY_CAPACITY", 3)
+def test_the_known_transaction_record_is_sized_as_core_s() -> None:
+    """ISS 1743: Core's `{50000, 0.000001}` filter, its words and generations.
+
+    The figures are what Core's own filter printed for those parameters, in
+    `tests/unit/_data/core_rolling_bloom_runs.txt`.
+    """
     known = connection_module.KnownTxInventory()
-    for key in (b"a", b"b", b"c", b"a", b"d"):
-        known.add(key)
-    assert [key in known for key in (b"a", b"b", b"c", b"d")] == [
-        False,
-        True,
-        True,
-        True,
-    ]
+    assert (known._lane_bytes // 8, known._per_generation, known._size) == (
+        20,
+        25_000,
+        67_396,
+    )

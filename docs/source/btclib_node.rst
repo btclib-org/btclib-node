@@ -141,6 +141,13 @@ btclib\_node.orphanage module
    :members:
    :show-inheritance:
 
+btclib\_node.rolling\_bloom module
+-----------------------------------
+
+.. automodule:: btclib_node.rolling_bloom
+   :members:
+   :show-inheritance:
+
 btclib\_node.settings\_file module
 -----------------------------------
 
