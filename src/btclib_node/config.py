@@ -641,6 +641,14 @@ class Config:
     permit_bare_multisig: bool
     max_datacarrier_bytes: int | None
     require_standard: bool
+    # Core's own `-persistmempool`, `DEFAULT_PERSIST_MEMPOOL` true, and
+    # `-persistmempoolv1`, `DEFAULT_PERSIST_V1_DAT` false
+    # (`src/node/mempool_persist_args.h` and `src/kernel/mempool_options.h`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): whether `Node` loads
+    # `mempool.dat` at start and writes it at shutdown, and whether it
+    # writes version 1, with no obfuscation key (`mempool_persist`).
+    persist_mempool: bool
+    persist_mempool_v1: bool
     # Core's own `-minimumchainwork`: the chain work below which
     # `main.update_ibd_status` and the `getheaders` handler in
     # `p2p.callbacks` treat the active tip as not caught up, and below
@@ -901,6 +909,8 @@ class Config:
         permit_bare_multisig: bool = True,
         max_datacarrier_bytes: int | None = DEFAULT_MAX_DATACARRIER_BYTES,
         require_standard: bool = True,
+        persist_mempool: bool = True,
+        persist_mempool_v1: bool = False,
         minimum_chain_work: int | None = None,
         assume_valid: bytes | None = None,
         max_tip_age: int = DEFAULT_MAX_TIP_AGE,
@@ -1095,3 +1105,5 @@ class Config:
         self.permit_bare_multisig = permit_bare_multisig
         self.max_datacarrier_bytes = max_datacarrier_bytes
         self.require_standard = require_standard
+        self.persist_mempool = persist_mempool
+        self.persist_mempool_v1 = persist_mempool_v1

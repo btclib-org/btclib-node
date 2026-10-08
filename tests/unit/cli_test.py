@@ -3425,6 +3425,40 @@ def test_help_names_v1transport() -> None:
     assert "Support v1 transport (default: 0)" in message
 
 
+def test_help_names_persistmempool_in_core_s_words() -> None:
+    """`bitcoind` v31.1.0's `-help` text for both options."""
+    message = " ".join(cli._help_message(show_debug=False).split())
+    assert (
+        "-persistmempool Whether to save the mempool on shutdown and load on "
+        "restart (default: 1)"
+    ) in message
+    assert (
+        "-persistmempoolv1 Whether a mempool.dat file created by -persistmempool "
+        "or the savemempool RPC will be written in the legacy format (version 1) "
+        "or the current format (version 2). This temporary option will be "
+        "removed in the future. (default: 0)"
+    ) in message
+
+
+@pytest.mark.parametrize(
+    ("args", "persist", "v1"),
+    [
+        ((), True, False),
+        (("-persistmempool=0",), False, False),
+        (("-nopersistmempool",), False, False),
+        (("-persistmempoolv1",), True, True),
+    ],
+)
+def test_build_config_reads_persistmempool(
+    args: tuple[str, ...],
+    persist: bool,  # noqa: FBT001
+    v1: bool,  # noqa: FBT001
+) -> None:
+    """Core's defaults: persisted, and written as version 2."""
+    config = cli.build_config(["-regtest", *args])
+    assert (config.persist_mempool, config.persist_mempool_v1) == (persist, v1)
+
+
 def test_build_config_seednode_reaches_config() -> None:
     """`-seednode` on the command line resolves through to `Config`."""
     config = cli.build_config(

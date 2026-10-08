@@ -43,6 +43,7 @@ from btclib_node.interpreter import warm
 from btclib_node.log import open_history_log
 from btclib_node.main import check_fork_warning_conditions, update_chain
 from btclib_node.mempool import Mempool
+from btclib_node.mempool_persist import FILENAME, dump_mempool, load_mempool
 from btclib_node.notify import Warnings, run_detached, run_shutdown_notify
 from btclib_node.p2p.address import PeerDB
 from btclib_node.p2p.banman import BanMan
@@ -61,6 +62,7 @@ from btclib_node.rpc.manager import RpcManager
 from btclib_node.versionbits import UnknownActivations
 
 if TYPE_CHECKING:
+    from collections.abc import Generator
     from types import FrameType
 
     from btclib.p2p.inventory import Inventory
@@ -472,6 +474,8 @@ class Node(threading.Thread):
         # set by `run` once `load` has run or start-up has ended before
         # it, which `start` waits on
         self._load_attempted = threading.Event()
+        # the load of `mempool.dat` `run` begins and the loop steps
+        self._mempool_load: Generator[None, None, bool] | None = None
 
     def load(self) -> None:
         """Open the address table, the ban list, the chainstate and the blocks.
@@ -697,12 +701,13 @@ class Node(threading.Thread):
         they did not expect -- and leaving `run`'s own loop by exception
         skips every close below it, so the databases would stay open.
 
-        `resume_rpc`, `resume_cfilters`, `resume_getdata` and
-        `resume_tx_checks` are last and unconditional, not one more queue
-        to size a share from: nothing is queued to trigger them, a waiting
-        request, a paused `getcfilters` or `getdata` answer, or a script
-        check's verdict being owed regardless of what else this pass finds
-        waiting.
+        `resume_rpc`, `resume_cfilters`, `resume_getdata`,
+        `resume_tx_checks` and the load of `mempool.dat` are last and
+        unconditional, not one more queue to size a share from: nothing is
+        queued to trigger them, a waiting request, a paused `getcfilters`
+        or `getdata` answer, a script check's verdict, or the next
+        transaction of the file being owed regardless of what else this
+        pass finds waiting.
 
         A request is started only while fewer than `RPC_THREADS` are
         waiting in `pending_rpc`, the rest staying on `rpc_manager.messages`
@@ -751,17 +756,44 @@ class Node(threading.Thread):
             for _ in range(int(log2(len(self.p2p_manager.messages) + 1))):
                 handle_p2p(self)
                 wait = False
-            if resume_rpc(self):
-                wait = False
-            if resume_cfilters(self):
-                wait = False
-            if resume_getdata(self):
-                wait = False
-            if resume_tx_checks(self):
+            resumed = [
+                resume_rpc(self),
+                resume_cfilters(self),
+                resume_getdata(self),
+                resume_tx_checks(self),
+                self._resume_mempool_load(),
+            ]
+            if any(resumed):
                 wait = False
         except Exception:
             self.logger.exception("Exception occurred handling a message")
         return wait
+
+    def _start_mempool_load(self) -> None:
+        """Begin loading `mempool.dat`, which the loop then steps.
+
+        Core loads it on its `initload` thread, once the blocks are
+        imported (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        tag); here the loop adds one transaction per pass, serving peers
+        and RPC calls between them. With `-persistmempool=0` nothing is read
+        and the load counts as tried, as Core's `LoadMempool` returns at
+        once for an empty path.
+        """
+        if self.config.persist_mempool:
+            self._mempool_load = load_mempool(self, self.data_dir / FILENAME)
+        else:
+            self.mempool.load_tried = True
+
+    def _resume_mempool_load(self) -> bool:
+        """Take one step of the load, and answer whether there was one."""
+        if self._mempool_load is None:
+            return False
+        try:
+            next(self._mempool_load)
+        except StopIteration:
+            self._mempool_load = None
+            self.mempool.load_tried = True
+        return True
 
     def _step_chain(self) -> bool:
         """Advance the chain one step, and answer whether `run` should stop.
@@ -944,6 +976,17 @@ class Node(threading.Thread):
             self.p2p_manager.peer_db.close()
             # Core's `~BanMan` dumps the list one last time
             self.p2p_manager.ban_man.dump()
+            # Core's `Shutdown` writes the mempool once the peers are gone,
+            # before the fee estimates and the chainstate (`src/init.cpp`, at
+            # bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and only where
+            # the load at start ended without a stop, so a node stopped
+            # while loading keeps the file it was reading
+            if self.mempool.load_tried and self.config.persist_mempool:
+                dump_mempool(
+                    self.mempool,
+                    self.data_dir / FILENAME,
+                    v1=self.config.persist_mempool_v1,
+                )
             # Core's `Shutdown`: what is still unconfirmed counts as a
             # failure, and the estimates are written
             self.fee_estimator.flush()
@@ -1003,6 +1046,7 @@ class Node(threading.Thread):
             # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): run once, on a
             # thread nothing waits for.
             run_detached(self.logger, self.config.startup_notify)
+            self._start_mempool_load()
         # `config.connect` and `config.addnode` are each dialled by a
         # loop of `P2pManager`'s own, `_open_connect_peers` and
         # `_open_added_peers`, started from `P2pManager.run` once the

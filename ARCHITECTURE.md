@@ -14,8 +14,9 @@ expectations hold is the [assurance case](./ASSURANCE_CASE.md).
 `Node` (`src/btclib_node/__init__.py`) is a thread running one loop: it
 drains the handshake queue, then a share of the RPC queue and a share of
 the peer-to-peer queue, steps the RPC requests still waiting, moves the
-script checks of relayed transactions along, then steps the download
-manager and extends the chain. A message that raises is logged and the
+script checks of relayed transactions along, loads the next transaction
+of `mempool.dat` while that load lasts, then steps the download manager
+and extends the chain. A message that raises is logged and the
 loop continues; a failure in the download manager's step or in
 `update_chain` is logged and ends the node, the databases below being
 closed on the way out.
@@ -133,9 +134,9 @@ every other check first, and applies the verdict once it is in, after
 running those checks again against the chain and the mempool as they
 are then. The worker reads only the transactions and their prevouts; the
 queue of candidates, the mempool and the chain state stay on `Node`'s
-thread. `sendrawtransaction`, `submitpackage`, `testmempoolaccept` and the
-transactions a reorg puts back in the mempool are checked on `Node`'s
-thread, scripts included.
+thread. `sendrawtransaction`, `submitpackage`, `testmempoolaccept`, the
+transactions a reorg puts back in the mempool and those `mempool.dat`
+loads are checked on `Node`'s thread, scripts included.
 
 ## What is delegated, and what is not
 

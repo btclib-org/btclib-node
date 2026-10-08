@@ -216,8 +216,12 @@ left off this list the same way `bitcoin-cli help`'s bare listing leaves them
 off. The `callbacks` table in
 `src/btclib_node/rpc/callbacks.py` is the list the node serves.
 
-The fee deltas `prioritisetransaction` sets are held in memory, as the
-mempool is, and are gone at a restart (btclib-org/btclib-node#1746).
+The mempool and the fee deltas `prioritisetransaction` sets are written
+to `mempool.dat` in the chain's data directory at shutdown and read back
+at start, each transaction checked again as a new one, in Bitcoin Core's
+format: either node reads the other's file. `-persistmempool=0` does
+neither, and `-persistmempoolv1` writes the file without its obfuscation
+key.
 
 A call that waits -- `waitforblockheight`, `waitfornewblock`,
 `waitforblock`, or `getblocktemplate` with a `longpollid` -- or searches
