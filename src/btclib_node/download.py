@@ -32,10 +32,7 @@ from btclib_node.exceptions import MissingPrevoutError, TxRejectedError
 from btclib_node.mempool import package_hash
 from btclib_node.orphanage import TxOrphanage
 from btclib_node.p2p.block_availability import find_next_blocks_to_download
-from btclib_node.p2p.callbacks import (
-    MAX_GETDATA_INFLIGHT_BYTES,
-    maybe_send_getheaders,
-)
+from btclib_node.p2p.callbacks import maybe_send_getheaders
 from btclib_node.p2p.chain_sync import consider_eviction
 from btclib_node.p2p.eviction import get_network
 from btclib_node.p2p.permissions import NetPermissionFlags
@@ -1214,22 +1211,6 @@ class DownloadManager:
                 for wtxid in conn.tx_announce_queue
                 if wtxid in self.node.mempool.transactions
             ]
-            # Paced the way `advance_getdata` (`p2p/callbacks.py`) paces a
-            # `getdata` answer's own blocks: checked before sending,
-            # against the same field and the same bound, so a peer this
-            # node is already answering a `getdata` on is not additionally
-            # charged for its own announcements. Core has no such check;
-            # the divergence is argued at `_notfound_pace`
-            # (`p2p/callbacks.py`), where its full send buffer only stops
-            # it reading from that peer and `MAX_QUEUED_SEND_BYTES` here
-            # drops the connection. btclib-org/btclib-node#529
-            #
-            # A paced trickle sends nothing and leaves the queue and the
-            # schedule alone, so the next call resumes it. It is left out
-            # of the ranking below, which it would not use.
-            if live and conn.queued_send_bytes >= MAX_GETDATA_INFLIGHT_BYTES:
-                conn.tx_announce_queue = live
-                continue
             due_conns.append((conn, due, live))
         # The mempool cannot change within this call, so the queued
         # transactions of every due connection are ranked once, best-paying

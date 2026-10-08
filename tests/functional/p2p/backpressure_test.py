@@ -2,22 +2,23 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""The send-side bounds, against a peer on a real socket that stops reading.
+"""The send-side bound, against a peer on a real socket that stops reading.
 
-`MAX_GETDATA_INFLIGHT_BYTES` and `MAX_CFILTERS_INFLIGHT_BYTES`
-(`btclib_node/p2p/callbacks.py`) pause a half-served answer, and
-`MAX_QUEUED_SEND_BYTES` (`btclib_node/p2p/connection.py`) drops a
-connection whose queue would grow past it. All three engage only against
-a peer that stops draining what it was sent, and a well-behaved daemon
-always reads: pointing a bitcoind at this node cannot reach any of them,
-so this half of the question wants a synthetic peer and no daemon at
-all. The receive-side half is `tests/integration/backpressure_test.py`,
-which does want one. btclib-org/btclib-node#492
+Past `Connection.send_buffer_max_size` (`btclib_node/p2p/connection.py`),
+`-maxsendbuffer`, a connection sets `pause_send`, Core's `fPauseSend`: a
+half-served answer pauses, the peer's later messages wait, and the peer
+is not dropped for it. The bound engages only against a peer that stops
+draining what it was sent, and a well-behaved daemon always reads:
+pointing a bitcoind at this node cannot reach it, so this half of the
+question wants a synthetic peer and no daemon at all. The receive-side
+half is `tests/integration/backpressure_test.py`, which does want one;
+the last test here sets `-maxreceivebuffer` low enough for this peer to
+reach it. btclib-org/btclib-node#492
 
 The peer here completes the handshake and then never calls `recv`
 again. Nothing it was sent is lost: those octets sit in the two kernel
 buffers until the window closes behind them, and what will not fit is
-what stands in this node's own `queued_send_bytes`.
+what stands in this node's own `send_memusage`.
 
 The blocks a `getdata` asks for go straight into `block_db` without the
 header chain that would ordinarily carry them: `advance_getdata` serves
@@ -47,6 +48,7 @@ from btclib.p2p.block_filters import BlockFilterType, GetCFilters
 from btclib.p2p.data import BlockPayload as BlockMsg
 from btclib.p2p.handshake import Verack, Version
 from btclib.p2p.inventory import GetData, Inventory, InventoryType
+from btclib.p2p.keepalive import Ping
 from btclib.p2p.limits import PROTOCOL_VERSION
 from btclib.p2p.message import Message
 from btclib.p2p.negotiation import WtxidRelay
@@ -56,15 +58,18 @@ from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
-from btclib_node import Node
+from btclib_node import Node, cli
 from btclib_node.chains import RegTest
 from btclib_node.config import Config
-from btclib_node.constants import NodeStatus, P2pConnStatus
-from btclib_node.p2p.callbacks import (
-    MAX_CFILTERS_INFLIGHT_BYTES,
-    MAX_GETDATA_INFLIGHT_BYTES,
+from btclib_node.constants import (
+    DEFAULT_MAXRECEIVEBUFFER,
+    DEFAULT_MAXSENDBUFFER,
+    NodeStatus,
+    P2pConnStatus,
 )
-from btclib_node.p2p.connection import MAX_QUEUED_SEND_BYTES
+from btclib_node.p2p import connection as connection_module
+from btclib_node.p2p import manager as manager_module
+from btclib_node.p2p.transport import SerializedMessage
 from tests import (
     GENESIS_TIME,
     brute_force_nonce,
@@ -86,23 +91,10 @@ if TYPE_CHECKING:
 # through.
 _SUBSIDY = 50 * 10**8
 
-# One served block, and how many of them the `getdata` below asks for.
-# The product is several times `MAX_QUEUED_SEND_BYTES`, so the answer
-# cannot fit however much of it this node schedules ahead of the peer's
-# own draining.
-#
-# A megabyte is what makes the pause itself the subject rather than the
-# room above it: `MAX_QUEUED_SEND_BYTES` is sized for one block past
-# `MAX_GETDATA_INFLIGHT_BYTES` and no more (`p2p/connection.py`), so at
-# this size an answer scheduling items past its own bound spends that
-# room and gets the peer dropped --
-# btclib-org/btclib-node#512, and what
-# `test_a_getdata_answer_pauses_rather_than_filling_the_send_queue`
-# below stands against. It is an ordinary size to be asked for, too: a
-# peer in initial block download asks for
-# `MAX_BLOCKS_IN_TRANSIT_PER_PEER` blocks of up to
-# `MAX_PROTOCOL_MESSAGE_LENGTH` (`btclib_node/download.py`), which is
-# what this node asks its own peers for.
+# One served block. A megabyte is an ordinary size to be asked for: a
+# peer in initial block download asks for `MAX_BLOCKS_IN_TRANSIT_PER_PEER`
+# blocks of up to `MAX_PROTOCOL_MESSAGE_LENGTH` (`btclib_node/download.py`),
+# which is what this node asks its own peers for.
 #
 # Just short of a megabyte, not a whole one: `a_block`'s one coinbase
 # carries this whole payload in its own output, and `Tx.assert_valid`
@@ -116,13 +108,15 @@ _SUBSIDY = 50 * 10**8
 # of non-payload fields; this leaves headroom for them at every height
 # `blocks_of` below ever reaches.
 _SERVED_BLOCK_BYTES = 999_000
-_BLOCKS_ASKED_FOR = 3 * MAX_QUEUED_SEND_BYTES // _SERVED_BLOCK_BYTES
+
+# A connection's `send_buffer_max_size` unless `-maxsendbuffer` sets it.
+_SEND_BUFFER_MAX_SIZE = 1000 * DEFAULT_MAXSENDBUFFER
 
 # What each end of the connection may hold in its kernel socket buffer,
-# set on both ends below. `queued_send_bytes` counts only what the socket
-# has not yet taken (`Connection._deliver` subtracts a message once
+# set on both ends below. `send_memusage` counts only what the socket
+# has not yet taken (`Connection._drain_outbox` subtracts a message once
 # `sock_sendall` returns), so octets a buffer swallows never stand
-# against `MAX_GETDATA_INFLIGHT_BYTES`. Left to the kernel that is several
+# against `send_buffer_max_size`. Left to the kernel that is several
 # megabytes to a peer that never reads -- autotuned, and larger on some
 # runners -- which left the pause below unreached on CI. Fixed at this
 # size, the two ends together absorb well under
@@ -135,42 +129,19 @@ _SOCKET_BUFFER_BYTES = 65_536
 # rounding either.
 _KERNEL_BUFFER_ALLOWANCE = 4_000_000
 
-# How many of `chain`'s own blocks `test_a_getdata_answer_pauses_...`
-# below needs on the active chain, out of the `_BLOCKS_ASKED_FOR` it asks
-# about. `advance_getdata`'s own loop (`p2p/callbacks.py`) checks its pause
-# bound *before* popping the next item, so once `queued_send_bytes` reaches
-# `MAX_GETDATA_INFLIGHT_BYTES` the rest of `items` -- connected or not --
-# is left where it was, never reaching `_block_request_allowed`. A block
-# not on the active chain is skipped silently and adds nothing, so the
-# bytes served are the connected blocks' own, and they must exceed that
-# bound plus whatever the buffers swallow. A block message is a little
-# over `_SERVED_BLOCK_BYTES`, so dividing by that size is the most
-# blocks the crossing can take, and the `+ 2` is two whole blocks of
-# margin above it. Connecting every one of `_BLOCKS_ASKED_FOR` paid for
-# `update_chain`'s own block validation over blocks the pause never
-# reaches, which is what made `wait_until(lambda:
-# len(block_index.active_chain) == ...)` below slow enough to time out
-# under load rather than the pause itself (btclib-org/btclib-node#1518).
-# Still below `_BLOCKS_ASKED_FOR`, and the queue it builds (a pause
-# bound plus one block) stays under `MAX_QUEUED_SEND_BYTES`.
-_BLOCKS_CONNECTED_BEFORE_PAUSE = (
-    MAX_GETDATA_INFLIGHT_BYTES + _KERNEL_BUFFER_ALLOWANCE
+# How many blocks put `send_memusage` past `_SEND_BUFFER_MAX_SIZE`
+# whatever the two kernel buffers take, with one of margin: the blocks
+# `test_a_getdata_answer_pauses_...` below connects, and the ones the
+# other tests queue. Connecting more paid for `update_chain`'s own block
+# validation over blocks the pause never reaches, slow enough to time out
+# under load (btclib-org/btclib-node#1518).
+_BLOCKS_PAST_THE_BOUND = (
+    _SEND_BUFFER_MAX_SIZE + _KERNEL_BUFFER_ALLOWANCE
 ) // _SERVED_BLOCK_BYTES + 2
 
-# What the filter test queues at the connection before it asks for a
-# filter at all, and how many blocks it then asks about. A filter's size
-# follows the number of scripts in its block rather than the block's own
-# size, and a block carries few enough of those that reaching
-# `MAX_CFILTERS_INFLIGHT_BYTES` in filters alone wants a chain long
-# enough to cost minutes in block validation. That bound is not about
-# filters, though: it is how far ahead of a peer's own draining a filter
-# answer may schedule, so a connection put that far behind by ordinary
-# traffic is the same state, reached in seconds. Enough blocks that
-# what the two kernel buffers can take still leaves the queue past that
-# bound.
-_BLOCKS_QUEUED_AHEAD = (
-    _KERNEL_BUFFER_ALLOWANCE + MAX_CFILTERS_INFLIGHT_BYTES
-) // _SERVED_BLOCK_BYTES + 1
+# What the `getdata` below asks for: more than it can serve before the
+# pause, the ones past those not on the active chain.
+_BLOCKS_ASKED_FOR = 2 * _BLOCKS_PAST_THE_BOUND
 _FILTERED_BLOCKS = 4
 
 
@@ -220,8 +191,8 @@ def blocks_of(count: int, payload_bytes: int) -> list[Block]:
     random octets, which is what makes a block as large as a caller
     wants without giving it transactions to validate. One coinbase, not
     several transactions: `update_chain` -- which `test_a_getdata_answer_
-    pauses_rather_than_filling_the_send_queue` and `test_a_getcfilters_
-    answer_will_not_schedule_ahead_of_a_peer_that_is_behind` below both
+    pauses_once_the_send_buffer_is_full` and `test_a_getcfilters_from_a_
+    paused_peer_waits_unread` below both
     run a handful of these blocks through, to put them on the active
     chain -- validates a non-coinbase input's prevout against the UTXO
     set, which nothing here ever populates; a coinbase has none to
@@ -242,16 +213,19 @@ def blocks_of(count: int, payload_bytes: int) -> list[Block]:
 
 
 @contextmanager
-def a_served_node(tmp_path: Path, chain: list[Block]) -> Iterator[Node]:
+def a_served_node(
+    tmp_path: Path, chain: list[Block], config: Config | None = None
+) -> Iterator[Node]:
     """Give a started node holding `chain` in its store, stopped on exit.
 
     `peerblockfilters=True`: `deaf_peer` below feeds a BIP157 test, and
     `-peerblockfilters` is off by default (ISS 1395). `v1transport=True`:
     the peer below speaks v1 on a raw socket, which a node without it
-    drops.
+    drops. A `config` given replaces the whole of this one.
     """
     node = Node(
-        config=Config(
+        config=config
+        or Config(
             chain="regtest",
             data_dir=tmp_path,
             p2p_port=get_random_port(),
@@ -275,8 +249,8 @@ class DeafPeer:
     """A peer that finishes the handshake and then never reads again.
 
     Sending is all it does afterwards, so everything this node answers
-    stays in the socket -- the state all three send-side bounds are
-    about, and the one no daemon enters.
+    stays in the socket -- the state the send-side bound is about, and
+    the one no daemon enters.
     """
 
     def __init__(self, node: Node) -> None:
@@ -323,11 +297,13 @@ class DeafPeer:
         self.socket.close()
 
 
-@pytest.fixture
-def deaf_peer(tmp_path: Path) -> Iterator[tuple[Node, DeafPeer, list[Block]]]:
+@contextmanager
+def a_deaf_peer(
+    tmp_path: Path, config: Config | None = None
+) -> Iterator[tuple[Node, DeafPeer, list[Block]]]:
     """Give a node holding a served chain, and a peer of it that never reads."""
     chain = blocks_of(_BLOCKS_ASKED_FOR, _SERVED_BLOCK_BYTES)
-    with a_served_node(tmp_path, chain) as node:
+    with a_served_node(tmp_path, chain, config) as node:
         peer = DeafPeer(node)
         try:
             peer.shake_hands()
@@ -340,29 +316,66 @@ def deaf_peer(tmp_path: Path) -> Iterator[tuple[Node, DeafPeer, list[Block]]]:
             peer.close()
 
 
+@pytest.fixture
+def deaf_peer(tmp_path: Path) -> Iterator[tuple[Node, DeafPeer, list[Block]]]:
+    """Give `a_deaf_peer` with the node's default configuration."""
+    with a_deaf_peer(tmp_path) as served:
+        yield served
+
+
+def a_node_config(tmp_path: Path, *options: str) -> Config:
+    """Build a node's configuration from its command line, as `main` does."""
+    return cli.build_config(
+        [
+            f"-datadir={tmp_path}",
+            "-regtest",
+            f"-port={get_random_port()}",
+            "-server=0",
+            "-v1transport",
+            *options,
+        ]
+    )
+
+
 def the_connection(node: Node) -> Connection:
     """Return the one connection the node holds."""
     return next(iter(node.p2p_manager.connections.values()))
 
 
-def test_a_getdata_answer_pauses_rather_than_filling_the_send_queue(
+def block_messages(chain: list[Block]) -> list[BlockMsg]:
+    """Return `chain` as the `block` messages this node serves it in."""
+    return [
+        BlockMsg(block, include_witness=True, check_validity=False) for block in chain
+    ]
+
+
+def weight(payload: Payload) -> int:
+    """Return what `payload` adds to `send_memusage` once queued."""
+    serialized = payload.serialize(check_validity=False)
+    return connection_module._send_memusage(
+        SerializedMessage(payload.command, serialized)
+    )
+
+
+def held_commands(node: Node, connection: Connection) -> list[str]:
+    """Return the commands of the messages held unread for `connection`."""
+    return [held[0] for held in node.tx_checks.waiting.get(connection.id, ())]
+
+
+def test_a_getdata_answer_pauses_once_the_send_buffer_is_full(
     deaf_peer: tuple[Node, DeafPeer, list[Block]],
 ) -> None:
-    """A `getdata` past the send queue leaves the rest on `pending_getdata`.
+    """ISS 1805: a `getdata` answer stops at `pause_send`, one block past it.
 
-    An entry there is what says `MAX_GETDATA_INFLIGHT_BYTES` engaged:
-    `advance_getdata`'s only way out with items still to serve is its
-    own check against that bound, so the entry cannot be reached without
-    `queued_send_bytes` having crossed it. The connection is still
-    `Connected` afterwards, which is the difference between pacing a peer
-    and dropping one.
+    An entry on `pending_getdata` with `pause_send` set says the answer
+    stopped at the bound rather than ran out of items. The buffer is
+    past the bound by less than the last block served, and the
+    connection is still `Connected`.
     """
     node, peer, chain = deaf_peer
     # connected, as a block off the active chain and not validated is
-    # ignored (`_block_request_allowed`) -- only as many as
-    # `_BLOCKS_CONNECTED_BEFORE_PAUSE` names, `advance_getdata` never
-    # reaching the rest once it pauses on them
-    connected = chain[:_BLOCKS_CONNECTED_BEFORE_PAUSE]
+    # ignored (`_block_request_allowed`)
+    connected = chain[:_BLOCKS_PAST_THE_BOUND]
     block_index = node.chainstate.block_index
     block_index.add_headers([block.header for block in connected])
     node.status = NodeStatus.HeaderSynced
@@ -374,48 +387,76 @@ def test_a_getdata_answer_pauses_rather_than_filling_the_send_queue(
             [Inventory(InventoryType.MSG_BLOCK, block.header.hash) for block in chain]
         )
     )
-    wait_until(lambda: node.pending_getdata)
-
     connection = the_connection(node)
+    wait_until(lambda: connection.pause_send and node.pending_getdata)
+
     assert connection.status == P2pConnStatus.Connected
     _, items = node.pending_getdata[connection.id]
     assert items
+    one_block = max(weight(message) for message in block_messages(connected))
+    assert connection.send_memusage <= _SEND_BUFFER_MAX_SIZE + one_block
 
 
-def test_the_send_queue_bound_drops_a_peer_it_has_no_way_to_pace(
+def test_a_peer_that_does_not_read_is_paused_not_dropped(
     deaf_peer: tuple[Node, DeafPeer, list[Block]],
 ) -> None:
-    """Queued past `MAX_QUEUED_SEND_BYTES`, the connection is stopped.
+    """ISS 1805: queued past `send_buffer_max_size`, the peer stays connected.
 
-    Handed to `Connection.send` directly rather than asked for through a
-    `getdata`: what this node sends of its own accord -- a block
-    announcement, an `addr`, a `headers` answer -- is counted against
-    this bound with no pacing point in front of it, and this bound is
-    the only thing underneath. `queued_send_bytes` never crosses it, the
-    refusal coming before the message is counted, and it falls to zero
-    once the stopped connection has ended every write the peer left
-    undrained (btclib-org/btclib-node#1164).
+    Handed to `Connection.send` directly rather than asked for: what this
+    node sends of its own accord -- a block announcement, an `addr` --
+    has no pause in front of it, here or in Core. Every message is
+    queued and none is refused, and what the peer sends meanwhile waits
+    unread.
     """
-    node, _, chain = deaf_peer
+    node, peer, chain = deaf_peer
     connection = the_connection(node)
-    for block in chain:
-        connection.send(BlockMsg(block, include_witness=True, check_validity=False))
-    wait_until(lambda: connection.status == P2pConnStatus.Closed)
-    assert connection.queued_send_bytes <= MAX_QUEUED_SEND_BYTES
-    wait_until(lambda: connection.queued_send_bytes == 0)
+    messages = block_messages(chain[:_BLOCKS_PAST_THE_BOUND])
+    for message in messages:
+        connection.send(message)
+    wait_until(lambda: connection.pause_send)
+    peer.send(Ping(1))
+    wait_until(lambda: held_commands(node, connection) == ["ping"])
+
+    assert connection.status == P2pConnStatus.Connected
+    assert connection.pause_send
+    assert connection.send_memusage <= sum(weight(m) for m in messages)
 
 
-def test_a_getcfilters_answer_will_not_schedule_ahead_of_a_peer_that_is_behind(
+def test_a_peer_that_does_not_read_is_dropped_by_the_ping_timeout(
+    deaf_peer: tuple[Node, DeafPeer, list[Block]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1805: what bounds a peer that never reads is `_keep_alive`.
+
+    The peer keeps sending, so it is not silent; it reads nothing, so no
+    whole message reaches it and its `ping` goes unanswered. Past
+    `_TIMEOUT_INTERVAL`, shortened here, it is dropped, as Core's
+    `InactivityCheck` drops it.
+    """
+    node, peer, chain = deaf_peer
+    monkeypatch.setattr(manager_module, "_TIMEOUT_INTERVAL", 2)
+    connection = the_connection(node)
+    for message in block_messages(chain[:_BLOCKS_PAST_THE_BOUND]):
+        connection.send(message)
+    wait_until(lambda: connection.pause_send)
+
+    def dropped() -> bool:
+        peer.send(Ping(1))
+        return connection.id not in node.p2p_manager.connections
+
+    wait_until(dropped, timeout=30)
+    assert connection.status == P2pConnStatus.Closed
+
+
+def test_a_getcfilters_from_a_paused_peer_waits_unread(
     deaf_peer: tuple[Node, DeafPeer, list[Block]],
 ) -> None:
-    """A connection already past `MAX_CFILTERS_INFLIGHT_BYTES` gets no filters.
+    """A `getcfilters` from a peer past `send_buffer_max_size` is held.
 
-    What the kernel buffers take decides where the queue settles, so the
-    request meets one of two bounds. Past `SEND_BUFFER_MAX_SIZE` it is
-    held unread, as Core's `fPauseSend` holds it (btclib-org/btclib-node#1796).
-    Within it, `advance_cfilters` pauses before the first filter, leaving
-    every height on `node.pending_cfilters`. The connection stays
-    `Connected`: a peer this far behind is served later, not dropped.
+    Core's `ProcessMessages` reads nothing from a peer with `fPauseSend`
+    set (btclib-org/btclib-node#1796), so no filter is queued for it and
+    the connection stays `Connected`: a peer this far behind is served
+    later, not dropped.
     """
     node, peer, chain = deaf_peer
     connection = the_connection(node)
@@ -429,16 +470,52 @@ def test_a_getcfilters_answer_will_not_schedule_ahead_of_a_peer_that_is_behind(
         block_index.set_downloaded(block.header.hash)
     wait_until(lambda: len(block_index.active_chain) == _FILTERED_BLOCKS + 1)
 
-    for block in chain[:_BLOCKS_QUEUED_AHEAD]:
-        connection.send(BlockMsg(block, include_witness=True, check_validity=False))
-    wait_until(lambda: connection.queued_send_bytes >= MAX_CFILTERS_INFLIGHT_BYTES)
+    for message in block_messages(chain[:_BLOCKS_PAST_THE_BOUND]):
+        connection.send(message)
+    wait_until(lambda: connection.pause_send)
 
     peer.send(GetCFilters(BlockFilterType.BASIC, 1, filtered[-1].header.hash))
-    conn_id = connection.id
-    wait_until(
-        lambda: conn_id in node.pending_cfilters or conn_id in node.tx_checks.waiting
-    )
+    wait_until(lambda: held_commands(node, connection) == ["getcfilters"])
 
     assert connection.status == P2pConnStatus.Connected
-    _, heights = node.pending_cfilters.get(conn_id, (None, ()))
-    assert conn_id in node.tx_checks.waiting or len(heights) == _FILTERED_BLOCKS
+    assert connection.id not in node.pending_cfilters
+
+
+def test_maxsendbuffer_sets_the_send_bound(tmp_path: Path) -> None:
+    """ISS 1812: past Core's default `-maxsendbuffer`, within this one.
+
+    The blocks that pause a connection at the default leave one at
+    `-maxsendbuffer=8000` running: they weigh less than its 8,000,000
+    bytes, and more than the default's bound whatever the kernel takes.
+    """
+    config = a_node_config(tmp_path, "-maxsendbuffer=8000")
+    with a_deaf_peer(tmp_path, config) as (node, _, chain):
+        connection = the_connection(node)
+        assert connection.send_buffer_max_size == 8_000_000
+        messages = block_messages(chain[:_BLOCKS_PAST_THE_BOUND])
+        assert sum(weight(m) for m in messages) <= connection.send_buffer_max_size
+        for message in messages:
+            connection.send(message)
+        assert connection.send_memusage > _SEND_BUFFER_MAX_SIZE
+        assert not connection.pause_send
+
+
+def test_maxreceivebuffer_sets_the_receive_bound(tmp_path: Path) -> None:
+    """ISS 1812: at `-maxreceivebuffer=1` a few held `ping`s stop the reads.
+
+    The send buffer is filled first, so what the peer sends is held
+    unread and weighs on `queued_recv_bytes`. Reads stop once it passes
+    1,000 bytes, far short of the default's bound.
+    """
+    config = a_node_config(tmp_path, "-maxreceivebuffer=1")
+    with a_deaf_peer(tmp_path, config) as (node, peer, chain):
+        connection = the_connection(node)
+        assert connection.recv_flood_size == 1000
+        for message in block_messages(chain[:_BLOCKS_PAST_THE_BOUND]):
+            connection.send(message)
+        wait_until(lambda: connection.pause_send)
+        for nonce in range(10):
+            peer.send(Ping(nonce))
+        wait_until(lambda: not connection._recv_resume.is_set())
+        assert connection.queued_recv_bytes > connection.recv_flood_size
+        assert connection.queued_recv_bytes < 1000 * DEFAULT_MAXRECEIVEBUFFER

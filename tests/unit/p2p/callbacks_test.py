@@ -107,9 +107,7 @@ from btclib_node.p2p.banman import BanMan, lookup_subnet
 from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.callbacks import (
     MAX_BLOCKTXN_DEPTH,
-    MAX_CFILTERS_INFLIGHT_BYTES,
     MAX_CMPCTBLOCK_DEPTH,
-    MAX_GETDATA_INFLIGHT_BYTES,
     addr,
     addrv2,
     advance_cfilters,
@@ -614,13 +612,10 @@ def a_peer(**attributes: Any) -> Any:
         # recorded among what was sent, so that its place after them shows
         stop_when_sent=lambda: sent.append("stop_when_sent"),
         status=P2pConnStatus.Open,
-        # what Connection starts every fresh connection at, and what
-        # `advance_cfilters` reads to pace a `getcfilters` answer: never
-        # written here, so it never trips that pacing bound, the same
-        # way a real connection whose peer reads promptly never would
-        queued_send_bytes=0,
-        # and what `_hold_message` reads for Core's `fPauseSend`
-        send_memusage=0,
+        # Core's `fPauseSend`, as a fresh connection starts: never set
+        # here, as a real connection whose peer reads promptly never
+        # sets it
+        pause_send=False,
         version_message=None,
         block_availability=BlockAvailability(),
         chain_sync=ChainSyncTimeoutState(),
@@ -2303,7 +2298,7 @@ def a_data_node(
         node.download_manager.direct_fetches.append((conn.id, last_header))
     )
     # written by `getdata` only where `advance_getdata` pauses; empty
-    # here for every test that never trips that pacing bound
+    # here for every test that never sets `pause_send`
     node.pending_getdata = {}
     node.pending_cfilters = {}
     if block_index is not None:
@@ -4385,19 +4380,20 @@ def test_getblocktxn_on_a_pruned_node_is_silent_for_a_block_it_lacks(
 
 
 def test_an_inventory_of_neither_kind_is_skipped() -> None:
-    """A `getdata` item neither a tx type nor a block type is skipped."""
+    """A `getdata` item of neither family is popped and skipped."""
     node = a_data_node(block_db=SimpleNamespace(get_block=lambda h: None))
     peer = a_peer()
     items = [Inventory(InventoryType.MSG_FILTERED_BLOCK, b"\x11" * 32)]
     getdata(node, GetData(items).serialize(), peer)
     assert not peer.sent
+    assert peer.id not in node.pending_getdata
 
 
 def test_getdata_pauses_once_the_queue_is_full_and_registers_the_rest() -> None:
-    """`getdata` stops serving once `conn` is at its pacing bound.
+    """`getdata` serves nothing while `conn.pause_send` is set.
 
-    Nothing is sent -- the peer was already at the bound before this
-    request arrived -- and the item is left on `node.pending_getdata`,
+    Nothing is sent -- the peer was already paused before this request
+    arrived -- and the item is left on `node.pending_getdata`,
     keyed by the connection's own id, for `p2p.main.resume_getdata` to
     pick up later.
     """
@@ -4405,7 +4401,7 @@ def test_getdata_pauses_once_the_queue_is_full_and_registers_the_rest() -> None:
     mempool = Mempool(Logger(debug=True))
     mempool.add_tx(transaction)
     node = a_data_node(mempool=mempool)
-    peer = a_peer(queued_send_bytes=MAX_GETDATA_INFLIGHT_BYTES)
+    peer = a_peer(pause_send=True)
     item = Inventory(InventoryType.MSG_WTX, transaction.hash)
     getdata(node, GetData([item]).serialize(), peer)
     assert not peer.sent
@@ -4427,13 +4423,13 @@ def test_a_paused_getdata_answer_resumes_once_the_queue_drains() -> None:
     mempool = Mempool(Logger(debug=True))
     mempool.add_tx(transaction)
     node = a_data_node(mempool=mempool)
-    peer = a_peer(queued_send_bytes=MAX_GETDATA_INFLIGHT_BYTES)
+    peer = a_peer(pause_send=True)
     item = Inventory(InventoryType.MSG_WTX, transaction.hash)
     getdata(node, GetData([item]).serialize(), peer)
     assert not peer.sent
     _conn, items = node.pending_getdata[peer.id]
 
-    peer.queued_send_bytes = 0
+    peer.pause_send = False
     assert advance_getdata(node, peer, items) is True
     assert not items
     (answer,) = peer.sent
@@ -4444,8 +4440,8 @@ def test_a_paused_getdata_answer_resumes_once_the_queue_drains() -> None:
 def test_getdata_notfound_covers_only_what_a_call_actually_served() -> None:
     """`notfound` batches misses served this call, not ones still pending.
 
-    A miss found before the pacing bound trips is reported; an item
-    never reached because the bound tripped first is left on
+    A miss found before the pause is reported; an item never reached
+    because the pause came first is left on
     `node.pending_getdata` instead, unreported until a later call
     actually gets to it -- matching Core's own `vNotFound`, built fresh
     by every `ProcessGetData` call rather than carried across them.
@@ -4458,15 +4454,14 @@ def test_getdata_notfound_covers_only_what_a_call_actually_served() -> None:
     hit = Inventory(InventoryType.MSG_WTX, held.hash)
     never_reached = Inventory(InventoryType.MSG_TX, b"\x22" * 32)
 
-    peer = a_peer(queued_send_bytes=0)
+    peer = a_peer()
     sent = peer.sent
 
     def send_then_fill(msg: Any) -> None:
         sent.append(msg)
-        # stands in for what `Connection.send` would actually do: this
-        # send is what fills the connection's own queue up to the bound,
-        # tripping the pause before `never_reached` is looked at
-        peer.queued_send_bytes = MAX_GETDATA_INFLIGHT_BYTES
+        # stands in for what `Connection.send` would do: this send fills
+        # the queue past the bound, pausing before `never_reached`
+        peer.pause_send = True
 
     peer.send = send_then_fill
     getdata(node, GetData([missing, hit, never_reached]).serialize(), peer)
@@ -4488,12 +4483,11 @@ def test_getdata_stops_sending_once_the_connection_closes_mid_answer() -> None:
     found closed is dropped rather than parked, nothing more ever being
     owed to it.
     """
-    blocks = [a_block() for _ in range(4)]
-    lookup = {b.header.hash: b for b in blocks}
-    node = a_data_node(
-        block_index=a_tall_block_index(0, *lookup),
-        block_db=SimpleNamespace(get_block=lookup.get),
-    )
+    transactions = [a_transaction() for _ in range(4)]
+    mempool = Mempool(Logger(debug=True))
+    for transaction in transactions:
+        mempool.add_tx(transaction)
+    node = a_data_node(mempool=mempool)
     peer = a_peer()
     sent = peer.sent
 
@@ -4503,7 +4497,7 @@ def test_getdata_stops_sending_once_the_connection_closes_mid_answer() -> None:
             peer.status = P2pConnStatus.Closed
 
     peer.send = send_then_close
-    items = [Inventory(InventoryType.MSG_BLOCK, b.header.hash) for b in blocks]
+    items = [Inventory(InventoryType.MSG_WTX, tx.hash) for tx in transactions]
     getdata(node, GetData(items).serialize(), peer)
     assert len(peer.sent) == 2
     assert peer.id not in node.pending_getdata
@@ -5266,7 +5260,7 @@ def a_filters_node(
             info=lambda *a: None, warning=lambda *a: None, log_debug=lambda *a: None
         ),
         # written by `get_cfilters` only where `advance_cfilters` pauses;
-        # empty here for every test that never trips that pacing bound
+        # empty here for every test that never sets `pause_send`
         pending_cfilters={},
     )
 
@@ -5333,15 +5327,15 @@ def test_one_block_is_a_range_of_one() -> None:
 
 
 def test_get_cfilters_pauses_once_the_queue_is_full_and_registers_the_rest() -> None:
-    """`get_cfilters` stops scheduling once `conn` is at its pacing bound.
+    """`get_cfilters` sends nothing while `conn.pause_send` is set.
 
-    Nothing is sent -- the peer was already at the bound before this
-    request arrived -- and every block hash is left on
+    Nothing is sent -- the peer was already paused before this request
+    arrived -- and every block hash is left on
     `node.pending_cfilters`, keyed by the connection's own id, for
     `p2p.main.resume_cfilters` to pick up later.
     """
     node = a_filters_node(length=8)
-    peer = a_peer(queued_send_bytes=MAX_CFILTERS_INFLIGHT_BYTES)
+    peer = a_peer(pause_send=True)
     a_getcfilters(node, peer, 2, 5)
     assert not peer.sent
     conn, block_hashes = node.pending_cfilters[peer.id]
@@ -5358,12 +5352,12 @@ def test_a_paused_answer_resumes_once_the_queue_drains() -> None:
     loop around it, which `tests/unit/p2p/main_test.py` already covers.
     """
     node = a_filters_node(length=8)
-    peer = a_peer(queued_send_bytes=MAX_CFILTERS_INFLIGHT_BYTES)
+    peer = a_peer(pause_send=True)
     a_getcfilters(node, peer, 2, 5)
     assert not peer.sent
     _conn, block_hashes = node.pending_cfilters[peer.id]
 
-    peer.queued_send_bytes = 0
+    peer.pause_send = False
     assert advance_cfilters(node, peer, block_hashes) is True
     assert not block_hashes
     assert [msg.block_hash for msg in peer.sent] == [
@@ -5374,13 +5368,9 @@ def test_a_paused_answer_resumes_once_the_queue_drains() -> None:
 def test_get_cfilters_stops_once_the_connection_closes_mid_answer() -> None:
     """`get_cfilters` stops sending once the peer's own connection has closed.
 
-    What Connection.send's own send-buffer bound (#101) looks like
-    from here: conn.status turns P2pConnStatus.Closed partway through
-    the range, and nothing further in it is worth serializing.
+    `conn.status` turns `P2pConnStatus.Closed` partway through the range,
+    and nothing further in it is worth serializing.
     """
-    # what Connection.send's own send-buffer bound (#101) looks like
-    # from here: conn.status turns P2pConnStatus.Closed partway through
-    # the range, and nothing further in it is worth serializing
     node = a_filters_node(length=10)
     peer = a_peer()
     sent = peer.sent

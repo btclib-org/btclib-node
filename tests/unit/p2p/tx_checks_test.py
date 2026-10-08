@@ -19,12 +19,11 @@ from btclib.tx.limits import COINBASE_MATURITY
 
 import btclib_node.p2p.callbacks as cb
 from btclib_node.chains import RegTest
-from btclib_node.constants import P2pConnStatus
+from btclib_node.constants import DEFAULT_MAXRECEIVEBUFFER, P2pConnStatus
 from btclib_node.exceptions import TxRejectedError
 from btclib_node.interpreter import check_transaction
 from btclib_node.main import MempoolCandidate, verify_mempool_acceptance
 from btclib_node.p2p import tx_checks
-from btclib_node.p2p.connection import SEND_BUFFER_MAX_SIZE
 from btclib_node.p2p.main import (
     handle_p2p,
     handle_p2p_handshake,
@@ -141,11 +140,12 @@ def a_relay_node(monkeypatch: pytest.MonkeyPatch) -> Any:
 
 
 def a_relay_peer(node: Any, conn_id: int) -> Any:
-    """Connect a peer to `node`, with the byte count `handle_p2p` reads."""
+    """Connect a peer to `node`, with the counts `handle_p2p` reads."""
     peer = a_peer(
         id=conn_id,
         status=P2pConnStatus.Connected,
         queued_recv_bytes=0,
+        recv_flood_size=1000 * DEFAULT_MAXRECEIVEBUFFER,
         _recv_lock=threading.Lock(),
         _recv_resume=SimpleNamespace(set=lambda: None),
         loop=SimpleNamespace(call_soon_threadsafe=lambda fn: fn()),
@@ -270,6 +270,23 @@ def test_a_message_behind_a_tx_is_handled_after_its_verdict(
     assert not node.tx_checks.waiting
 
 
+def filling_on(peer: Any, kind: type) -> None:
+    """Make each `kind` sent to `peer` fill its send buffer, as a big one."""
+    sent = peer.sent
+
+    def send_then_fill(message: Any) -> None:
+        sent.append(message)
+        if isinstance(message, kind):
+            peer.pause_send = True
+
+    peer.send = send_then_fill
+
+
+def kinds(peer: Any) -> list[type]:
+    """Answer the type of each message sent to `peer`, in order."""
+    return [type(sent) for sent in peer.sent]
+
+
 def test_a_message_behind_a_paused_getdata_is_handled_after_its_answer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -277,42 +294,41 @@ def test_a_message_behind_a_paused_getdata_is_handled_after_its_answer(
 
     A second `getdata` waits too, so it is answered after the `pong` and
     the paused entry never holds more than one request. Another peer is
-    not held.
+    not held. Each `tx` sent here fills the send buffer.
     """
     node = a_relay_node(monkeypatch)
     peer, other = a_relay_peer(node, 3), a_relay_peer(node, 4)
     for conn in (peer, other):
         conn.version_message = a_parsed_version(protocol=BIP0031_VERSION + 1)
-    transaction = a_transaction()
-    node.mempool.add_tx(transaction)
-    request = GetData([Inventory(InventoryType.MSG_WTX, transaction.hash)])
-    nonce = 12345678
-    peer.queued_send_bytes = cb.MAX_GETDATA_INFLIGHT_BYTES
-    queue_message(node, peer, "getdata", request.serialize())
-    assert not peer.sent
+    transactions = [a_transaction() for _ in range(2)]
+    for transaction in transactions:
+        node.mempool.add_tx(transaction)
+    request = GetData(
+        [Inventory(InventoryType.MSG_WTX, tx.hash) for tx in transactions]
+    ).serialize()
+    filling_on(peer, TxMsg)
+    queue_message(node, peer, "getdata", request)
+    assert kinds(peer) == [TxMsg]
     assert len(node.pending_getdata[3][1]) == 1
-    queue_message(node, peer, "ping", Ping(nonce).serialize())
-    queue_message(node, peer, "getdata", request.serialize())
-    queue_message(node, other, "ping", Ping(nonce).serialize())
-    assert [type(sent) for sent in other.sent] == [Pong]
-    assert not peer.sent
-    assert len(node.pending_getdata[3][1]) == 1
+    queue_message(node, peer, "ping", Ping(12345678).serialize())
+    queue_message(node, peer, "getdata", request)
+    queue_message(node, other, "ping", Ping(12345678).serialize())
+    assert kinds(other) == [Pong]
+    assert kinds(peer) == [TxMsg]
     assert len(node.tx_checks.waiting[3]) == 2
     assert not resume_getdata(node)
     assert not resume_tx_checks(node)
-    assert not peer.sent
-    peer.queued_send_bytes = 0
+    peer.pause_send = False
     assert resume_getdata(node)
-    assert [type(sent) for sent in peer.sent] == [TxMsg]
-    assert resume_tx_checks(node)
-    assert [type(sent) for sent in peer.sent] == [TxMsg, Pong]
-    peer.queued_send_bytes = cb.MAX_GETDATA_INFLIGHT_BYTES
-    assert resume_tx_checks(node)
-    assert 3 in node.pending_getdata
+    assert kinds(peer) == [TxMsg, TxMsg]
+    assert 3 not in node.pending_getdata
     assert not resume_tx_checks(node)
-    peer.queued_send_bytes = 0
-    assert resume_getdata(node)
-    assert [type(sent) for sent in peer.sent] == [TxMsg, Pong, TxMsg]
+    peer.pause_send = False
+    assert resume_tx_checks(node)
+    assert kinds(peer) == [TxMsg, TxMsg, Pong]
+    assert resume_tx_checks(node)
+    assert kinds(peer) == [TxMsg, TxMsg, Pong, TxMsg]
+    assert len(node.pending_getdata[3][1]) == 1
     assert peer.queued_recv_bytes == 0
     assert not node.tx_checks.waiting
 
@@ -324,7 +340,7 @@ def test_a_message_behind_a_paused_getcfilters_is_handled_after_its_answer(
 
     A second `getcfilters` waits too, so it is answered after the `pong`
     and the paused entry never holds more than one range. Another peer is
-    not held.
+    not held. Each filter sent here fills the send buffer.
     """
     node = a_relay_node(monkeypatch)
     filters = a_filters_node(length=8)
@@ -335,35 +351,29 @@ def test_a_message_behind_a_paused_getcfilters_is_handled_after_its_answer(
     stop = node.chainstate.block_index.active_chain
     first = GetCFilters(BlockFilterType.BASIC, 2, stop[3]).serialize()
     second = GetCFilters(BlockFilterType.BASIC, 5, stop[6]).serialize()
-    nonce = 12345678
-    peer.queued_send_bytes = cb.MAX_CFILTERS_INFLIGHT_BYTES
+    filling_on(peer, CFilter)
     queue_message(node, peer, "getcfilters", first)
-    assert not peer.sent
-    assert len(node.pending_cfilters[3][1]) == 2
-    queue_message(node, peer, "ping", Ping(nonce).serialize())
+    assert kinds(peer) == [CFilter]
+    assert len(node.pending_cfilters[3][1]) == 1
+    queue_message(node, peer, "ping", Ping(12345678).serialize())
     queue_message(node, peer, "getcfilters", second)
-    queue_message(node, other, "ping", Ping(nonce).serialize())
-    assert [type(sent) for sent in other.sent] == [Pong]
-    assert not peer.sent
-    assert len(node.pending_cfilters[3][1]) == 2
+    queue_message(node, other, "ping", Ping(12345678).serialize())
+    assert kinds(other) == [Pong]
+    assert kinds(peer) == [CFilter]
     assert len(node.tx_checks.waiting[3]) == 2
     assert not resume_cfilters(node)
     assert not resume_tx_checks(node)
-    assert not peer.sent
-    peer.queued_send_bytes = 0
+    peer.pause_send = False
     assert resume_cfilters(node)
-    assert [type(sent) for sent in peer.sent] == [CFilter, CFilter]
+    assert kinds(peer) == [CFilter, CFilter]
     assert 3 not in node.pending_cfilters
-    assert resume_tx_checks(node)
-    assert [type(sent) for sent in peer.sent] == [CFilter, CFilter, Pong]
-    peer.queued_send_bytes = cb.MAX_CFILTERS_INFLIGHT_BYTES
-    assert resume_tx_checks(node)
-    assert 3 in node.pending_cfilters
     assert not resume_tx_checks(node)
-    peer.queued_send_bytes = 0
-    assert resume_cfilters(node)
-    sent = [type(message) for message in peer.sent]
-    assert sent == [CFilter, CFilter, Pong, CFilter, CFilter]
+    peer.pause_send = False
+    assert resume_tx_checks(node)
+    assert kinds(peer) == [CFilter, CFilter, Pong]
+    assert resume_tx_checks(node)
+    assert kinds(peer) == [CFilter, CFilter, Pong, CFilter]
+    assert len(node.pending_cfilters[3][1]) == 1
     assert peer.queued_recv_bytes == 0
     assert not node.tx_checks.waiting
 
@@ -383,14 +393,13 @@ def nonces(peer: Any) -> list[int]:
 def test_a_ping_behind_a_full_send_queue_waits_for_the_drain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """ISS 1796: no `pong` while the send queue is past `fPauseSend`'s bound.
+    """ISS 1796: no `pong` while `pause_send`, Core's `fPauseSend`, is set.
 
-    The bound is Core's `>`: a queue at `SEND_BUFFER_MAX_SIZE` holds
-    nothing. Another peer is not held.
+    Another peer is not held.
     """
     node = a_relay_node(monkeypatch)
     peer, other = a_pinging_peer(node, 3), a_pinging_peer(node, 4)
-    peer.send_memusage = SEND_BUFFER_MAX_SIZE + 1
+    peer.pause_send = True
     queue_message(node, peer, "ping", Ping(1).serialize())
     queue_message(node, other, "ping", Ping(2).serialize())
     assert nonces(other) == [2]
@@ -399,7 +408,7 @@ def test_a_ping_behind_a_full_send_queue_waits_for_the_drain(
     assert peer.queued_recv_bytes == len(Ping(1).serialize())
     assert not resume_tx_checks(node)
     assert not peer.sent
-    peer.send_memusage = SEND_BUFFER_MAX_SIZE
+    peer.pause_send = False
     assert resume_tx_checks(node)
     assert nonces(peer) == [1]
     assert peer.queued_recv_bytes == 0
@@ -415,18 +424,18 @@ def test_messages_held_by_a_full_send_queue_are_read_in_order(
     """
     node = a_relay_node(monkeypatch)
     peer = a_pinging_peer(node, 3)
-    peer.send_memusage = SEND_BUFFER_MAX_SIZE + 1
+    peer.pause_send = True
     for nonce in (1, 2, 3):
         queue_message(node, peer, "ping", Ping(nonce).serialize())
-    peer.send_memusage = 0
+    peer.pause_send = False
     assert resume_tx_checks(node)
     assert nonces(peer) == [1]
     queue_message(node, peer, "ping", Ping(4).serialize())
     assert nonces(peer) == [1]
-    peer.send_memusage = SEND_BUFFER_MAX_SIZE + 1
+    peer.pause_send = True
     assert not resume_tx_checks(node)
     assert nonces(peer) == [1]
-    peer.send_memusage = 0
+    peer.pause_send = False
     for _ in range(3):
         assert resume_tx_checks(node)
     assert nonces(peer) == [1, 2, 3, 4]

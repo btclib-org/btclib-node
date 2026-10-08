@@ -20,6 +20,8 @@ from pathlib import Path
 __all__ = [
     "CLIENT_NAME",
     "CLIENT_VERSION",
+    "DEFAULT_MAXRECEIVEBUFFER",
+    "DEFAULT_MAXSENDBUFFER",
     "MAX_TIP_AGE",
     "MIN_BLOCKS_TO_KEEP",
     "MIN_PRUNE_TARGET_MIB",
@@ -30,6 +32,12 @@ __all__ = [
     "P2pConnStatus",
     "default_data_dir",
 ]
+
+# Core's `DEFAULT_MAXRECEIVEBUFFER` and `DEFAULT_MAXSENDBUFFER`
+# (`src/net.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), in the
+# thousands of bytes `-maxreceivebuffer` and `-maxsendbuffer` take.
+DEFAULT_MAXRECEIVEBUFFER = 5 * 1000
+DEFAULT_MAXSENDBUFFER = 1 * 1000
 
 # Core's own `DEFAULT_MAX_TIP_AGE` (`src/kernel/chainstatemanager_opts.h`
 # :24, at bitcoin/bitcoin@ca7162cde5): `config.Config.max_tip_age`'s own

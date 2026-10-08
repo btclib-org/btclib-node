@@ -21,7 +21,7 @@ import btclib_node.mempool as mempool_module
 import btclib_node.p2p.callbacks as cb
 import btclib_node.p2p.main as p2p_main
 from btclib_node.chains import RegTest
-from btclib_node.constants import P2pConnStatus
+from btclib_node.constants import DEFAULT_MAXRECEIVEBUFFER, P2pConnStatus
 from btclib_node.exceptions import MissingPrevoutError, TxRejectedError
 from btclib_node.interpreter import check_package
 from btclib_node.mempool import package_hash
@@ -525,6 +525,7 @@ def test_a_message_waits_until_the_peer_has_no_orphan_to_reconsider(
     node = pair.node
     peer = a_connected_peer(node)
     peer.queued_recv_bytes = 0
+    peer.recv_flood_size = 1000 * DEFAULT_MAXRECEIVEBUFFER
     peer._recv_lock = threading.Lock()
     peer._recv_resume = SimpleNamespace(set=lambda: None)
     peer.loop = SimpleNamespace(call_soon_threadsafe=lambda fn: fn())
