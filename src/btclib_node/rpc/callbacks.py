@@ -2874,13 +2874,9 @@ def get_mempool_entry(
     btclib-org/btclib-node#1397
     """
     if not params:
-        # the same mechanism get_block_header's own missing-argument case
-        # answers with, above: RPCMethod::HandleRequest's HelpResult,
-        # RPC_MISC_ERROR (src/rpc/server.cpp:887). `txid` is declared
-        # RPCArg::Type::STR_HEX and Optional::NO, so it renders quoted
-        # and outside any `( ... )` group --
-        # read at bitcoin/bitcoin@b91d983f66, src/rpc/mempool.cpp:869-870
-        raise RpcError(RPCErrorCode.MISC_ERROR, 'getmempoolentry "txid"')
+        # the whole help, as get_block_header's own missing-argument case
+        # answers: RPCMethod::HandleRequest's HelpResult, RPC_MISC_ERROR
+        raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["getmempoolentry"])
     if not isinstance(params[0], str):
         raise type_error(1, "txid", params[0], "string")
     txid = parse_hash_v("txid", params[0])

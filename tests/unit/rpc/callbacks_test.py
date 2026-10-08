@@ -8417,11 +8417,11 @@ def test_get_mempool_entry_refuses_a_txid_not_held() -> None:
 
 
 def test_get_mempool_entry_with_no_params_is_core_s_own_help_shape() -> None:
-    """No `txid` at all answers `RPC_MISC_ERROR` with the usage string."""
+    """No `txid` at all answers `RPC_MISC_ERROR` with the whole help."""
     with pytest.raises(RpcError) as raised:
         get_mempool_entry(a_node(), _CONN, [])
     assert raised.value.code == RPCErrorCode.MISC_ERROR
-    assert raised.value.message == 'getmempoolentry "txid"'
+    assert raised.value.message == HELP_TEXT["getmempoolentry"]
 
 
 def test_get_mempool_entry_a_non_string_txid_is_a_type_error() -> None:
