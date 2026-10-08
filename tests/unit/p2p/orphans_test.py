@@ -30,7 +30,12 @@ from btclib_node.p2p.callbacks import process_orphan
 from btclib_node.p2p.main import resume_tx_checks
 from btclib_node.p2p.tx_checks import TxCheck
 from btclib_node.rpc.callbacks import test_mempool_accept as mempool_accept
-from tests import build_block, generate_coinbase, generate_random_chain
+from tests import (
+    anyone_can_spend_script_sig,
+    build_block,
+    generate_coinbase,
+    generate_random_chain,
+)
 from tests.unit.main_test import connect, spend
 from tests.unit.p2p.callbacks_test import a_peer
 
@@ -488,6 +493,53 @@ def test_a_package_the_mempool_cannot_hold_is_refused_as_full(
     assert not node.mempool.size
     assert node.mempool.was_recently_rejected(pair.parent.hash)
     assert node.mempool.was_recently_rejected(pair.child.hash)
+
+
+def test_a_package_the_trim_leaves_in_part_refuses_only_the_member_it_took(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """The member left is accepted, the other is "mempool full".
+
+    The child also spends a held transaction with a negative delta. That
+    other parent pulls the child into a later chunk, so the chunks are the
+    parent alone and the held one with the child. The trim takes the second
+    and the parent stays, as `AcceptPackage` leaves it
+    (btclib-org/btclib-node#1846).
+    """
+    pair = a_pair(regtest_node, spare=True)
+    node, peer = pair.node, a_connected_peer(pair.node)
+    assert pair.spare is not None
+    held = spend(pair.spare, pair.spare.vout[0].value - 100_000)
+    relay(node, peer, held)
+    assert node.mempool.contains_tx(held)
+    node.mempool.prioritise(held.id, -(10**7))
+    child = replace(
+        pair.child,
+        vin=[
+            *pair.child.vin,
+            TxIn(OutPoint(held.id, 0), anyone_can_spend_script_sig(), 0xFFFFFFFF),
+        ],
+        vout=[
+            replace(
+                pair.child.vout[0],
+                value=pair.child.vout[0].value + held.vout[0].value,
+            )
+        ],
+    )
+    relay(node, peer, child)
+    assert node.download_manager.orphanage.have_tx(child.hash)
+    node.mempool.bytesize_limit = (
+        node.mempool.bytesize + pair.parent.vsize + child.vsize - 1
+    )
+    relay(node, peer, pair.parent)
+    assert node.mempool.contains_tx(pair.parent)
+    assert not node.mempool.contains_tx(held)
+    assert not node.mempool.contains_tx(child)
+    assert not node.mempool.was_recently_rejected(pair.parent.hash)
+    assert node.mempool.was_recently_rejected(child.hash)
+    assert node.mempool.was_recently_rejected_reconsiderable(
+        package_hash([pair.parent.hash, child.hash])
+    )
 
 
 def test_a_transaction_the_full_mempool_evicts_is_reconsiderable(

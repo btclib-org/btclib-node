@@ -352,3 +352,95 @@ def test_every_cluster_ends_in_the_order_linearize_gives(
     order = [r for chunk in graph.mining_order() for r in chunk.refs]
     keys = graph.order_keys(feerates)
     assert order == sorted(feerates, key=keys.__getitem__)
+
+
+def test_the_worst_chunk_of_an_empty_graph_is_none() -> None:
+    """There is nothing to evict."""
+    assert a_graph().worst_chunk() is None
+
+
+def test_the_worst_chunk_follows_every_change() -> None:
+    """A removal, a fee change and a merge each move it."""
+    graph = a_graph()
+    graph.add_transaction("A", FeeFrac(2, 10), "A")
+    graph.add_transaction("B", FeeFrac(5, 10), "B")
+    graph.add_transaction("C", FeeFrac(9, 10), "C")
+    worst = graph.worst_chunk()
+    assert worst is not None
+    assert worst.refs == ["A"]
+    graph.set_fee("B", 1)
+    worst = graph.worst_chunk()
+    assert worst is not None
+    assert worst.refs == ["B"]
+    # C pays for B, so the pair ranks at 5/10 and A is the worst again
+    graph.add_dependency("B", "C")
+    worst = graph.worst_chunk()
+    assert worst is not None
+    assert worst.refs == ["A"]
+    graph.remove_transaction("A")
+    worst = graph.worst_chunk()
+    assert worst is not None
+    assert worst.refs == ["B", "C"]
+    graph.remove_transaction("C")
+    graph.remove_transaction("B")
+    assert graph.worst_chunk() is None
+
+
+def test_the_worst_chunk_follows_work_done_after_it_was_read() -> None:
+    """Improving a linearization that was acceptable moves the worst chunk."""
+    graph = a_graph()
+    for ref, fee in (("P", 0), ("C", 100), ("X", 1)):
+        graph.add_transaction(ref, FeeFrac(fee, 10), ref)
+    graph.add_dependency("P", "C")
+    graph.add_dependency("P", "X")
+    graph.add_transaction("Y", FeeFrac(5, 10), "Y")
+    assert graph.do_work(10**9)
+    # an acceptable order that puts X before the child paying for P
+    cluster, _ = graph._locator["P"]
+    cluster.linearization = [graph._locator[ref][1] for ref in ("P", "X", "C")]
+    graph._set_quality(cluster, Quality.ACCEPTABLE)
+    graph._touch(cluster)
+    worst = graph.worst_chunk()
+    assert worst is not None
+    assert worst.refs == ["Y"]
+    assert graph.do_work(10**9)
+    worst = graph.worst_chunk()
+    assert worst is not None
+    assert worst.refs == ["X"]
+
+
+def test_stale_entries_are_dropped_once_they_outnumber_the_clusters() -> None:
+    """Changing one transaction again and again leaves a bounded heap."""
+    graph = a_graph()
+    graph.add_transaction("A", FeeFrac(1, 10), "A")
+    for fee in range(2, 20):
+        graph.set_fee("A", fee)
+        graph.worst_chunk()
+    assert len(graph._worst) <= 2
+
+
+@given(histories(), st.integers(0, 2**32), st.sampled_from([1, 75_000]))
+def test_the_worst_chunk_is_the_last_of_the_mining_order(
+    steps: list[tuple[str, int, int, set[int]]], seed: int, cost: int
+) -> None:
+    """Whatever the history, `worst_chunk` is `mining_order`'s last chunk.
+
+    It is read after every step, so the entries it keeps are stale in
+    every way a change makes them. At a cost of 1 a cluster is acceptable
+    before it is optimal, and `do_work` reorders it after it was read.
+    """
+    graph: TxGraph[int] = TxGraph(acceptable_cost=cost, rng=random.Random(seed))
+    parents: dict[int, set[int]] = {}
+    for kind, ref, fee, deps in steps:
+        if kind == "add":
+            parents[ref] = deps
+            graph.add_transaction(ref, FeeFrac(fee, 1 + ref % 4), ref)
+            for parent in deps:
+                graph.add_dependency(parent, ref)
+            graph.do_work(1_000)
+        else:
+            for r in sorted(_with_descendants(parents, ref), reverse=True):
+                graph.remove_transaction(r)
+                del parents[r]
+        order = graph.mining_order()
+        assert graph.worst_chunk() == (order[-1] if order else None)

@@ -239,10 +239,10 @@ def _accept(node: Node, call: _Call) -> tuple[str, dict[bytes, Outcome]]:
 
     Taking a transaction alone trims nothing: the mempool is trimmed
     once at the end, as Core's `AcceptPackage` does, so a child can pay for
-    a parent a full mempool would have refused. The transactions taken
-    together keep `Mempool.add_package`'s own trimming, which scores them as
-    a whole. Each one gone by the end is refused "mempool full", as Core's
-    last pass over the results does.
+    a parent a full mempool would have refused. `Mempool.add_package` trims
+    after taking the transactions together, by chunk, as the end does. Each
+    one gone by the end is refused "mempool full", as Core's last pass over
+    the results does.
     """
     txs = call.txs
     refusal = package_refusal(txs)
@@ -266,9 +266,6 @@ def _accept(node: Node, call: _Call) -> tuple[str, dict[bytes, Outcome]]:
         message = "transaction failed"
     elif together:
         message = _accept_together(node, together, call.max_feerate, outcomes)
-    # A package whose parent's own feerate is the lowest is evicted whole
-    # here, where Core keeps it by its chunk feerate:
-    # btclib-org/btclib-node#1740
     mempool.trim()
     for tx in txs:
         if outcomes[tx.hash].error is None and tx.id not in mempool.txid_index:
