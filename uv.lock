@@ -373,7 +373,7 @@ test = [
 requires-dist = [
     { name = "bitcoin-core-rpc", specifier = ">=2026.10.4" },
     { name = "btclib", extras = ["secp256k1", "bip324"], specifier = ">=2026.10.7" },
-    { name = "btclib-wallet", specifier = ">=2026.10.7" },
+    { name = "btclib-wallet", specifier = ">=2026.10.8" },
     { name = "rocksdict", specifier = ">=0.3.29" },
 ]
 
