@@ -297,3 +297,27 @@ def test_a_re_added_child_counts_no_held_child_of_its_parent(
         core.mine([])
         _wait_for(node, core.mine([])["hash"])
         _assert_both_hold(client, core, [p, r, *on_p[:62]])
+
+
+def test_a_child_of_a_transaction_both_branches_confirm_stays(
+    bitcoind: Bitcoind, tmp_path: Path
+) -> None:
+    """A reorg to a block confirming `p` again keeps what spends `p`."""
+    core = _Bitcoind(bitcoind)
+    coinbase = core.chain[0].transactions[0]
+    p = _spend([(coinbase.id, 0)], 1, _FUND - 1_000)
+    child = _spend([(p.id, 0)], 1, p.vout[0].value - 1_000)
+    # paying another script, so that the two blocks differ
+    info: Any = core.rpc("getdescriptorinfo", ["raw(51)"])
+    raw = p.serialize(include_witness=True).hex()
+    params: list[object] = [info["descriptor"], [raw], False]
+    other = cast("dict[str, str]", core.rpc("generateblock", params))
+    confirmed = core.mine([p])["hash"]
+    with _a_node(core, tmp_path, confirmed) as node:
+        client = rpc_client(node)
+        _send(client, core, [child])
+        # stored beside the tip, at its height
+        assert core.rpc("submitblock", [other["hex"]]) == "inconclusive"
+        core.rpc("preciousblock", [other["hash"]])
+        _wait_for(node, core.mine([])["hash"])
+        _assert_both_hold(client, core, [child])

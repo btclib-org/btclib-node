@@ -3147,6 +3147,39 @@ def test_a_reorg_links_what_it_re_adds_after_the_new_blocks(
     ]
 
 
+def test_a_child_of_a_transaction_both_branches_confirm_stays(node: Node) -> None:
+    """Core's `disconnectpool.removeForBlock`: confirmed again, not re-added.
+
+    The parent is in the abandoned block and in the new one, so it is
+    neither re-added nor removed with what spends it.
+    """
+    common = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, common)
+    parent = generate_random_transaction(common[0].transactions[0].id)
+    abandoned = build_block(
+        common[-1].header.hash,
+        [generate_coinbase(height=len(common) + 1), parent],
+        len(common),
+    )
+    connect(node, [abandoned])
+    child = generate_random_transaction(parent.id)
+    node.mempool.add_tx(child, FEE, height=len(common) + 1)
+    again = build_block(
+        common[-1].header.hash,
+        [generate_coinbase(height=len(common) + 1), parent],
+        len(common) + 7,
+    )
+    heavier = [again, *_extend(again.header.hash, len(common) + 1, 1)]
+    block_index.add_headers([block.header for block in heavier])
+    for block in heavier:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+    settle(node)
+    assert block_index.active_chain[-1] == heavier[-1].header.hash
+    assert node.mempool.contains_tx(child)
+    assert not node.mempool.contains_tx(parent)
+
+
 def test_a_block_connected_before_header_sync_ends_leaves_the_mempool(
     node: Node,
 ) -> None:

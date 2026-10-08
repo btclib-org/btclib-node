@@ -522,6 +522,13 @@ def _reconcile_mempool_for_reorg(
         # for an empty mempool with no fee delta, where this still runs.
         # btclib-org/btclib-node#294
         node.mempool.note_block_connected()
+    # Core's `disconnectpool.removeForBlock` after each `removeForBlock`
+    # (`ConnectTip`, same citation): what a new block confirms again is
+    # neither re-added nor removed with its children. Not hashed where
+    # nothing is disconnected, as during initial block download.
+    confirmed = (
+        {tx.id for block in to_add for tx in block.transactions} if to_remove else set()
+    )
     # Core's `vHashUpdate`, the transactions re-added below
     readded: list[bytes] = []
     # oldest-abandoned-block first, the opposite of to_remove's own
@@ -540,6 +547,8 @@ def _reconcile_mempool_for_reorg(
             err_msg = f"block just removed is missing: {rev_block.hash.hex()}"
             raise ChainstateInconsistencyError(err_msg)
         for tx in removed_block.transactions:
+            if tx.id in confirmed:
+                continue
             # Core's own disconnectpool holds the whole block,
             # coinbase included (`AddTransactionsFromBlock(block.vtx)`),
             # and `MaybeUpdateMempoolForReorg` never re-adds one
