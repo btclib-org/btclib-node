@@ -271,7 +271,7 @@ def a_peer(
         ),
         stats=PeerStats(),
         block_availability=BlockAvailability(),
-        tx_announce_queue=[],
+        tx_announce_queue={},
         download_queue=[],
         feefilter=0,
         requested_hb_cmpctblocks=False,
@@ -667,7 +667,7 @@ def test_the_fields_this_node_keeps_state_for_read_that_state() -> None:
         bytes_sent_per_msg=Counter({"version": 60, "ping": 40}),
         bytes_recv_per_msg=Counter({"verack": 24, "*other*": 176}),
     )
-    peer.tx_announce_queue = [b"\x01" * 32, b"\x02" * 32]
+    peer.tx_announce_queue = dict.fromkeys([b"\x01" * 32, b"\x02" * 32])
     peer.download_queue = [b"\x0b" * 32, b"\x0a" * 32]
     peer.feefilter = 1234
     peer.addr_relay_enabled = True
@@ -694,7 +694,7 @@ def test_a_peer_that_asked_for_no_relay_has_no_tx_relay() -> None:
     """Core's `TxRelay`-backed fields answer 0 and false for such a peer."""
     peer = a_peer(relay=False)
     peer.stats = PeerStats(last_inv_sequence=42)
-    peer.tx_announce_queue = [b"\x01" * 32]
+    peer.tx_announce_queue = dict.fromkeys([b"\x01" * 32])
     peer.feefilter = 1234
     (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
     assert info["relaytxes"] is False
@@ -742,7 +742,7 @@ def test_a_block_relay_only_peer_has_no_tx_relay_nor_addr_relay() -> None:
     """
     peer = a_peer(inbound=False, automatic=True, block_relay=True, relay=True)
     peer.stats = PeerStats(last_inv_sequence=42)
-    peer.tx_announce_queue = [b"\x01" * 32]
+    peer.tx_announce_queue = dict.fromkeys([b"\x01" * 32])
     peer.feefilter = 1234
     (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
     assert info["relaytxes"] is False
