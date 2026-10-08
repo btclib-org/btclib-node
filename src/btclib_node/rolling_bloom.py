@@ -89,12 +89,29 @@ class RollingBloomFilter:
         self._add = 0xE654_6B64 * self._lanes
         self._lane_bytes = 8 * hash_funcs
         self._unpack = struct.Struct("<" + "I4x" * hash_funcs).unpack
+        self._set_tweak(tweak)
+
+    def _set_tweak(self, tweak: int | None) -> None:
+        """Seed the hash functions from `tweak`, drawn at random if `None`."""
         if tweak is None:
             tweak = secrets.randbits(32)
         # Core's `RollingBloomHash` seeds hash function n with this
         self._seeds = sum(
-            ((n * 0xFBA4_C795 + tweak) & _MASK32) << (64 * n) for n in range(hash_funcs)
+            ((n * 0xFBA4_C795 + tweak) & _MASK32) << (64 * n)
+            for n in range(self._lane_bytes // 8)
         )
+
+    def reset(self, *, tweak: int | None = None) -> None:
+        """Forget every key, as Core's `reset` does, with a new tweak.
+
+        The tweak is `tweak` where given, drawn at random otherwise.
+
+        The words are freed, and allocated again at the next `add`.
+        """
+        self._set_tweak(tweak)
+        self._planes = None
+        self._generation = 1
+        self._this_generation = 0
 
     def _hashes(self, key: bytes) -> int:
         """Return MurmurHash3 of `key` under every seed, lane n under seed n."""

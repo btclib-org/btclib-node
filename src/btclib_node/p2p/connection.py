@@ -73,6 +73,7 @@ if TYPE_CHECKING:
     from btclib_node.p2p.manager import P2pManager
 
 __all__ = [
+    "AddrKnown",
     "Connection",
     "KnownTxInventory",
     "PeerStats",
@@ -297,6 +298,42 @@ class KnownTxInventory(RollingBloomFilter):
     def __init__(self) -> None:
         """Size the filter as Core sizes its own."""
         super().__init__(50_000, 0.000_001)
+
+
+class AddrKnown(RollingBloomFilter):
+    """The addresses a peer sent this node or was sent, by `service_key`.
+
+    Core's `Peer::m_addr_known`, a `CRollingBloomFilter{5000, 0.001}`
+    (`src/net_processing.cpp:5707`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag). Like Core's, it leaves out of a `getaddr` answer up to one
+    in a thousand of the addresses the peer neither sent nor was sent.
+
+    Reached from `Node`'s thread, by the `addr`, `addrv2` and `getaddr`
+    callbacks, and from `P2pManager`'s, by the self-announcement. Each
+    call holds a lock, as Core's `g_msgproc_mutex` guards its filter.
+    """
+
+    __slots__ = ("_lock",)
+
+    def __init__(self) -> None:
+        """Size the filter as Core sizes its own."""
+        super().__init__(5_000, 0.001)
+        self._lock = threading.Lock()
+
+    @override
+    def add(self, key: bytes) -> None:
+        with self._lock:
+            super().add(key)
+
+    @override
+    def __contains__(self, key: bytes) -> bool:
+        with self._lock:
+            return super().__contains__(key)
+
+    @override
+    def reset(self, *, tweak: int | None = None) -> None:
+        with self._lock:
+            super().reset(tweak=tweak)
 
 
 class Connection:
@@ -650,6 +687,9 @@ class Connection:
         # What this peer is known to have, so that a transaction is not
         # announced to it again: Core's `m_tx_inventory_known_filter`.
         self.known_tx_inventory: KnownTxInventory = KnownTxInventory()
+        # What this peer is known to have among addresses, so that one is
+        # not sent to it again: Core's `m_addr_known`.
+        self.addr_known: AddrKnown = AddrKnown()
 
         # What this node last told this peer its own minimum relay
         # feerate is, and when it may next say so again -- Core's own

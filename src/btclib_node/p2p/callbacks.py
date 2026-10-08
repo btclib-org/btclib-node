@@ -116,7 +116,12 @@ from btclib_node.main import (
     pre_verify_package,
 )
 from btclib_node.mempool import package_hash
-from btclib_node.p2p.address import AddrResponseCache, ip_and_port, peer_address
+from btclib_node.p2p.address import (
+    AddrResponseCache,
+    ip_and_port,
+    peer_address,
+    service_key,
+)
 from btclib_node.p2p.block_availability import (
     in_flight_from,
     remove_block_request,
@@ -855,6 +860,7 @@ def _cached_sample(node: Node, conn: Connection) -> list[NetworkAddressV2]:
 def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
     """Answer a peer's `getaddr` with a sample of every known address, once.
 
+    An address `conn.addr_known` holds is left out, as Core leaves it out.
     A peer holding `ADDR` is answered from a draw of its own. For any
     other the sample is a cache, shared and redrawn only once its own
     lifetime and jitter expire -- `_cached_sample` argues why -- and
@@ -906,15 +912,23 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
     # `PeerDB.get_addr` already keeps this under MAX_ADDR_TO_SEND, the
     # bound btclib's Addr and AddrV2 refuse a longer message than, so one
     # message is always enough.
+    # an addr version 1 message has nowhere to put a tor, i2p or cjdns
+    # address, so those are left out rather than made up
+    compatible = [a for a in sample if conn.prefer_addressv2 or can_addrv1(a)]
+    # Core's `PushAddress` and `MaybeSendAddr` leave out what the peer
+    # knows, and record the rest as known
+    unknown = []
+    for address in compatible:
+        key = service_key(address)
+        if key not in conn.addr_known:
+            conn.addr_known.add(key)
+            unknown.append(address)
+    if not unknown:
+        return
     if conn.prefer_addressv2:
-        if sample:
-            conn.send(AddrV2(sample))
+        conn.send(AddrV2(unknown))
     else:
-        # an addr version 1 message has nowhere to put a tor, i2p or
-        # cjdns address, so those are left out rather than made up
-        entries = [addr_entry(addr) for addr in sample if can_addrv1(addr)]
-        if entries:
-            conn.send(Addr(entries))
+        conn.send(Addr([addr_entry(address) for address in unknown]))
 
 
 def addr(node: Node, msg: bytes, conn: Connection) -> None:
@@ -1039,6 +1053,8 @@ def _store_gossip(
         dated = address
         if address.timestamp <= _GOSSIP_MIN_TIME or address.timestamp > now + 600:
             dated = replace(address, timestamp=int(now - _GOSSIP_REDATE))
+        # Core's `AddAddressKnown`, a discouraged or banned address included
+        conn.addr_known.add(service_key(dated))
         if manager.is_discouraged(dated) or manager.ban_man.is_peer_banned(dated):
             continue
         kept.append(dated)
@@ -1084,7 +1100,8 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
     """Check an unsolicited transaction, and queue its scripts to be checked.
 
     A no-op in initial block download, if the mempool already holds this
-    wtxid, has recently refused it or the orphanage keeps it, or if the
+    wtxid, has recently refused it, a block recently confirmed it or the
+    orphanage keeps it, or if the
     transaction fails a check other than its scripts. One whose inputs are
     not found is kept as an orphan, and one refused for a fee floor is tried
     with a child the peer sent, if the peer sent one (`_start_package`).
@@ -1119,8 +1136,11 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
     # Core's `ReceivedTx` completes the sender's announcement first of all,
     # whatever becomes of the transaction, a script check included.
     node.download_manager.received_tx_response(conn.id, tx.id, tx.hash)
-    if already_judged(node, tx, conn) or node.download_manager.orphanage.have_tx(
-        tx.hash
+    download_manager = node.download_manager
+    if (
+        already_judged(node, tx, conn)
+        or download_manager.orphanage.have_tx(tx.hash)
+        or tx.hash in download_manager.recent_confirmed
     ):
         return
     if node.mempool.was_recently_rejected_reconsiderable(tx.hash):

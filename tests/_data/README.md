@@ -262,6 +262,11 @@ case(10, 1e-30, r.getrandbits(32))
 case(10, 0.99, r.getrandbits(32))
 # a ratio of exactly two and a half, rounded away from zero
 case(20, 0.1767766952966369, r.getrandbits(32), "?n", 0, 100)
+# Core's parameters for its other filters, each reset to a new tweak
+for n, fp in ((120000, 0.000001), (48000, 0.000001), (5000, 0.001)):
+    reset = f"!{r.getrandbits(32)}"
+    ops = ("+n", 0, 3000, reset, "+n", 3000, 1000, "?n", 0, 4000)
+    case(n, fp, r.getrandbits(32), *ops)
 ```
 
 `core_rolling_bloom.cpp`, beside the file, is the program that read the

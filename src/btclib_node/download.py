@@ -48,12 +48,14 @@ from btclib_node.p2p.protocol_version import (
     SENDHEADERS_VERSION,
     common_version,
 )
+from btclib_node.rolling_bloom import RollingBloomFilter
 from btclib_node.txgraph import MiningKey
 from btclib_node.txrequest import TxRequestTracker
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from btclib.block import Block
     from btclib.tx.tx import Tx
 
     from btclib_node import Node
@@ -442,6 +444,14 @@ class DownloadManager:
         # parent that pays too little is accepted with. The `tx` callback
         # fills it through `mempool_rejected_tx`.
         self.orphanage = TxOrphanage()
+        # Core's `m_lazy_recent_confirmed_transactions`, a
+        # `CRollingBloomFilter{48'000, 0.000'001}`
+        # (`src/node/txdownloadman_impl.h`, at bitcoin/bitcoin@9be056a8a7,
+        # the v31.1 tag): the txids and wtxids of the transactions
+        # connected lately, which are not asked for or verified again.
+        # Like Core's, it drops a transaction never confirmed up to once
+        # in a million queries. `add_confirmed` fills it.
+        self.recent_confirmed = RollingBloomFilter(48_000, 0.000_001)
         # Core's `vExtraTxnForCompact`: the transactions most recently
         # refused, which `callbacks.cmpctblock` rebuilds a block from
         # beside the mempool. `mempool_rejected_tx` fills it.
@@ -941,9 +951,6 @@ class DownloadManager:
         witness, and cannot be a false positive for one with. A refusal
         `mark_rejected_reconsiderable` holds counts only with
         `include_reconsiderable`.
-
-        Core's filter of recently confirmed transactions is left out, which
-        this tree has no counterpart of.
         """
         mempool = self.node.mempool
         if self.orphanage.have_tx(txhash):
@@ -952,7 +959,7 @@ class DownloadManager:
             txhash
         ):
             return True
-        if mempool.was_recently_rejected(txhash):
+        if txhash in self.recent_confirmed or mempool.was_recently_rejected(txhash):
             return True
         return txhash in (mempool.transactions if wtxid else mempool.txid_index)
 
@@ -1023,8 +1030,8 @@ class DownloadManager:
         """Keep `tx` as an orphan of the peers that can resolve it.
 
         Core's first-refusal branch of `MempoolRejectedTx`. Not kept where
-        a parent is in `Mempool.mark_rejected`'s cache, or where two parents
-        are in the cache a package can undo: one parent and one child cannot
+        a parent is in `Mempool.mark_rejected`'s filter, or where two parents
+        are in the filter a package can undo: one parent and one child cannot
         undo two. Both hashes of `tx` are then recorded refused.
         Otherwise the parents not yet had are asked for from `conn_id` and
         from the other peers that announced `tx`
@@ -1627,6 +1634,21 @@ class DownloadManager:
         self.block_stalling_timeout = max(
             int(self.block_stalling_timeout * 0.85), _BLOCK_STALLING_TIMEOUT_DEFAULT
         )
+
+    def add_confirmed(self, block: Block) -> None:
+        """Record what `block` confirms, as Core's `BlockConnected` does.
+
+        Each transaction by txid and, where it carries a witness, by wtxid
+        (`src/node/txdownloadman_impl.cpp`, at bitcoin/bitcoin@9be056a8a7,
+        the v31.1 tag). `main` calls this for a block connected out of
+        initial block download, as Core's `PeerManagerImpl` does, and
+        `recent_confirmed.reset()` for any block disconnected, as Core's
+        `BlockDisconnected` does.
+        """
+        for tx in block.transactions:
+            self.recent_confirmed.add(tx.id)
+            if tx.hash != tx.id:
+                self.recent_confirmed.add(tx.hash)
 
     def block_download(self) -> None:
         """Drop the peers stalling the download, and ask each for blocks.

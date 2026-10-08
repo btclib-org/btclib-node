@@ -104,7 +104,13 @@ from btclib_node.log import Logger
 from btclib_node.main import MempoolCandidate, pre_verify_mempool_acceptance
 from btclib_node.mempool import Mempool
 from btclib_node.notify import Warnings
-from btclib_node.p2p.address import PeerDB, endpoint_key, host_key, peer_address
+from btclib_node.p2p.address import (
+    PeerDB,
+    endpoint_key,
+    host_key,
+    peer_address,
+    service_key,
+)
 from btclib_node.p2p.banman import BanMan, lookup_subnet
 from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.callbacks import (
@@ -143,7 +149,12 @@ from btclib_node.p2p.chain_sync import (
     disconnect_if_insufficient_work,
 )
 from btclib_node.p2p.compact_block import MostRecentBlock, compact_block
-from btclib_node.p2p.connection import Connection, KnownTxInventory, PeerStats
+from btclib_node.p2p.connection import (
+    AddrKnown,
+    Connection,
+    KnownTxInventory,
+    PeerStats,
+)
 from btclib_node.p2p.headers_sync import HeadersSyncState, State
 from btclib_node.p2p.permissions import NetPermissionFlags
 from btclib_node.p2p.protocol_version import (
@@ -169,6 +180,7 @@ from tests.conftest import unstarted_node_context
 from tests.unit.download_test import a_conn, a_hash, make_manager, only
 from tests.unit.download_test import a_version as a_services_version
 from tests.unit.main_test import a_dusty_spend
+from tests.unit.rolling_bloom_test import a_small_filter
 from tests.unit.rpc.callbacks_test import a_node_holding, a_twin
 
 if TYPE_CHECKING:
@@ -256,6 +268,7 @@ def make_node(
         inbound=inbound,
         addr_cache_key=addr_cache_key,
         permissions=NetPermissionFlags.NONE,
+        addr_known=AddrKnown(),
     )
     keys = {host_key(address) for address in discouraged}
     node = SimpleNamespace(
@@ -418,6 +431,7 @@ def another_conn(
         permissions=NetPermissionFlags.NONE,
         inbound=True,
         addr_cache_key=addr_cache_key,
+        addr_known=AddrKnown(),
     )
 
 
@@ -535,6 +549,58 @@ def test_a_discouraged_host_is_left_out_of_a_getaddr_answer(
     getaddr(node, b"", conn)
     (answer,) = sent
     assert answer.addresses == (kept,)
+
+
+def test_what_the_peer_knows_is_left_out_of_a_getaddr_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1851: Core's `PushAddress` and `MaybeSendAddr` read `m_addr_known`.
+
+    An address the filter holds is left out, and so is one it finds
+    without having held it; what is sent is recorded in it.
+    """
+    monkeypatch.setattr(PeerDB, "get_addr", an_unsampled_table)
+    now = int(time.time())
+    held = peer_address("1.2.3.4", 18444, timestamp=now)
+    bloom = a_small_filter(service_key(held))
+    hosts = (f"10.0.{i // 256}.{i % 256}" for i in range(2000))
+    candidates = (peer_address(host, 18444, timestamp=now) for host in hosts)
+    never = next(a for a in candidates if service_key(a) in bloom)
+    sent_one = peer_address("1.2.3.5", 18444, timestamp=now)
+    node, conn, sent = make_node([held, never, sent_one], prefer_addressv2=True)
+    conn.addr_known = bloom
+    getaddr(node, b"", conn)
+    (answer,) = sent
+    assert answer.addresses == (sent_one,)
+    assert service_key(sent_one) in conn.addr_known
+
+
+def test_an_address_a_peer_gossips_is_known_to_it_discouraged_or_not() -> None:
+    """ISS 1851: Core's `AddAddressKnown` runs before the discouraged check."""
+    kept = a_gossiped_address("1.2.3.4")
+    discouraged = a_gossiped_address("1.2.3.5")
+    node = a_handshake_node(
+        peer_db=PeerDB(cast("Chain", None), cast("Path", None)),
+        discouraged_hosts=["1.2.3.5"],
+    )
+    peer = a_gossiping_peer()
+    addrv2(node, AddrV2([kept, discouraged]).serialize(), peer)
+    assert service_key(kept) in peer.addr_known
+    assert service_key(discouraged) in peer.addr_known
+
+
+def test_the_record_of_known_addresses_is_sized_as_core_s() -> None:
+    """ISS 1851: Core's `{5000, 0.001}` filter.
+
+    The figures are what Core's own filter printed for those parameters, in
+    `tests/unit/_data/core_rolling_bloom_runs.txt`.
+    """
+    bloom = AddrKnown()
+    assert (bloom._lane_bytes // 8, bloom._per_generation, bloom._size) == (
+        10,
+        2_500,
+        3_370,
+    )
 
 
 def test_a_banned_host_is_left_out_of_a_getaddr_answer(
@@ -665,6 +731,7 @@ def a_peer(**attributes: Any) -> Any:
         address=peer_address("1.2.3.4", 18444),
         stats=PeerStats(),
         known_tx_inventory=KnownTxInventory(),
+        addr_known=AddrKnown(),
         # what `Connection` starts every connection at, and what
         # `verack`, `addr` and `addrv2` spend and top up (ISS 1166)
         addr_token_bucket=1.0,
@@ -2597,7 +2664,7 @@ def test_a_transaction_missing_its_parent_is_reverified_on_resubmission(
 
     Unlike a genuine refusal: the missing parent can arrive on its own,
     with no block having to connect first, so nothing tells
-    `Mempool`'s reject cache when a `MissingPrevoutError` might stop
+    `Mempool`'s reject filter when a `MissingPrevoutError` might stop
     holding -- Core's identical exemption is `TX_MISSING_INPUTS`, never
     added to `m_recent_rejects` either.
     """
@@ -2640,6 +2707,35 @@ def test_a_transaction_already_held_skips_reverification(
     node = a_data_node()
     node.mempool.add_tx(transaction)
     tx(node, TxMsg(transaction, include_witness=True).serialize(), a_peer(id=3))
+    assert calls == []
+
+
+@pytest.mark.parametrize("site", ["confirmed", "rejects"])
+def test_what_a_filter_finds_skips_verification(
+    monkeypatch: pytest.MonkeyPatch, site: str
+) -> None:
+    """ISS 1851: Core's `ReceivedTx` drops what `AlreadyHaveTx` finds.
+
+    Whether recently confirmed or refused: a transaction the filter
+    holds, and one it finds without having held it, are not verified.
+    """
+    calls: list[bytes] = []
+    monkeypatch.setattr(
+        cb,
+        "pre_verify_mempool_acceptance",
+        lambda node, transaction: calls.append(transaction.hash),
+    )
+    node = a_data_node()
+    held = a_transaction()
+    bloom = a_small_filter(held.hash)
+    if site == "confirmed":
+        node.download_manager.recent_confirmed = bloom
+    else:
+        node.mempool._recent_rejects = bloom
+    candidates = (a_transaction() for _ in range(2000))
+    never = next(t for t in candidates if t.hash in bloom)
+    for transaction in (held, never):
+        tx(node, TxMsg(transaction, include_witness=True).serialize(), a_peer(id=3))
     assert calls == []
 
 

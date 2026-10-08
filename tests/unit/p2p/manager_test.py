@@ -55,6 +55,7 @@ from btclib_node.p2p.address import (
     host_key,
     internal_source,
     peer_address,
+    service_key,
 )
 from btclib_node.p2p.anchors import dump_anchors, read_anchors
 from btclib_node.p2p.banman import (
@@ -64,7 +65,7 @@ from btclib_node.p2p.banman import (
     Subnet,
     lookup_subnet,
 )
-from btclib_node.p2p.connection import local_services
+from btclib_node.p2p.connection import AddrKnown, local_services
 from btclib_node.p2p.eviction import Network, get_network, net_group
 from btclib_node.p2p.main import handle_p2p_handshake
 from btclib_node.p2p.manager import P2pManager
@@ -94,6 +95,7 @@ from tests import (
     wait_until,
     wait_until_listening,
 )
+from tests.unit.rolling_bloom_test import a_small_filter
 
 
 def a_conn(
@@ -168,6 +170,7 @@ def a_conn(
         transport=SimpleNamespace(should_reconnect_v1=lambda: reconnect_v1),
         addr_relay_enabled=False,
         next_local_addr_send=0.0,
+        addr_known=AddrKnown(),
         prefer_addressv2=True,
         sent=[],
         stopped=[],
@@ -713,24 +716,33 @@ def test_a_manual_peer_is_never_discouraged(a_manager: AManagerFactory) -> None:
     assert not other.stopped
 
 
-def test_the_host_discouraged_longest_ago_is_forgotten_first(
-    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+def test_the_discouraged_record_is_sized_as_core_s(
+    a_manager: AManagerFactory,
 ) -> None:
-    """ISS 1078: past its capacity the record forgets its oldest host.
+    """ISS 1851: Core's `{50000, 0.000001}` filter.
 
-    Discouraging a host again makes it the newest, so the one forgotten
-    is the one discouraged longest ago rather than the one first seen.
+    The figures are what Core's own filter printed for those parameters, in
+    `tests/unit/_data/core_rolling_bloom_runs.txt`.
     """
-    monkeypatch.setattr(manager_module, "_DISCOURAGED_CAPACITY", 2)
+    bloom = a_manager()._discouraged
+    assert (bloom._lane_bytes // 8, bloom._per_generation, bloom._size) == (
+        20,
+        25_000,
+        67_396,
+    )
+
+
+def test_a_host_the_filter_wrongly_finds_is_discouraged(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1851: a false positive of `m_discouraged` is a discouraged host."""
     manager = a_manager()
-    first, second, third = (peer_address(f"1.2.3.{i}", 18444) for i in (1, 2, 3))
-    manager.discourage(first)
-    manager.discourage(second)
-    manager.discourage(first)
-    manager.discourage(third)
-    assert manager.is_discouraged(first)
-    assert not manager.is_discouraged(second)
-    assert manager.is_discouraged(third)
+    discouraged = peer_address("1.2.3.4", 18444)
+    manager._discouraged = a_small_filter(host_key(discouraged))
+    hosts = (peer_address(f"10.0.{i // 256}.{i % 256}", 18444) for i in range(2000))
+    never = next(host for host in hosts if manager.is_discouraged(host))
+    assert never != discouraged
+    assert manager.is_discouraged(discouraged)
 
 
 def test_add_pending_outbound_nonce_makes_it_visible_to_is_self_connect_nonce(
@@ -2347,6 +2359,28 @@ def test_a_relaying_peer_is_told_the_local_address_once_in_a_while(
     assert len(conn.sent) == 1
     manager._maybe_send_local_addr(conn, 1100.0)
     assert len(conn.sent) == 2
+
+
+def test_a_later_self_announcement_resets_what_the_peer_knows(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1851: Core resets `m_addr_known` before every later announcement.
+
+    The first is sent without being recorded; a later one empties the
+    filter and records the address it sends.
+    """
+    manager, conn = an_announcing_manager(a_manager)
+    monkeypatch.setattr(secrets.SystemRandom, "expovariate", lambda self, rate: 100.0)
+    gossiped = service_key(peer_address("1.2.3.4", 18444))
+    conn.addr_known.add(gossiped)
+    manager._maybe_send_local_addr(conn, 1000.0)
+    local = service_key(peer_address("8.8.8.8", 7))
+    assert gossiped in conn.addr_known
+    assert local not in conn.addr_known
+    manager._maybe_send_local_addr(conn, 1100.0)
+    assert len(conn.sent) == 2
+    assert gossiped not in conn.addr_known
+    assert local in conn.addr_known
 
 
 def test_a_peer_wanting_addr_version_1_is_told_in_an_addr_message(

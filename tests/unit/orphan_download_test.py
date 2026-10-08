@@ -10,7 +10,7 @@ refused, and which child is tried with a parent that pays too little.
 
 import secrets
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from btclib.p2p.inventory import GetData, InventoryType
@@ -29,8 +29,10 @@ from tests.unit.download_test import (
     only,
 )
 from tests.unit.orphanage_test import a_child, an_orphan
+from tests.unit.rolling_bloom_test import a_small_filter
 
 if TYPE_CHECKING:
+    from btclib.block import Block
     from btclib.tx.tx import Tx
 
 
@@ -88,6 +90,45 @@ def test_a_recent_reject_is_already_had() -> None:
     manager = make_manager([a_conn(1)])
     manager.node.mempool.mark_rejected(a_hash(1))
     assert manager.already_have_tx(a_hash(1), wtxid=False, include_reconsiderable=False)
+
+
+def test_a_recently_confirmed_transaction_is_already_had_by_either_hash() -> None:
+    """ISS 1851: Core's `BlockConnected` records the txid and the wtxid."""
+    manager = make_manager([a_conn(1)])
+    tx = a_segwit(an_orphan())
+    manager.add_confirmed(cast("Block", SimpleNamespace(transactions=[tx])))
+    assert manager.already_have_tx(tx.id, wtxid=False, include_reconsiderable=False)
+    assert manager.already_have_tx(tx.hash, wtxid=True, include_reconsiderable=False)
+
+
+def test_the_recently_confirmed_filter_is_sized_as_core_s() -> None:
+    """ISS 1851: Core's `{48'000, 0.000'001}` filter.
+
+    The figures are what Core's own filter printed for those parameters, in
+    `tests/unit/_data/core_rolling_bloom_runs.txt`.
+    """
+    bloom = make_manager([a_conn(1)]).recent_confirmed
+    assert (bloom._lane_bytes // 8, bloom._per_generation, bloom._size) == (
+        20,
+        24_000,
+        64_700,
+    )
+
+
+@pytest.mark.parametrize("site", ["confirmed", "rejects", "reconsiderable"])
+def test_what_a_filter_wrongly_finds_is_already_had(site: str) -> None:
+    """ISS 1851: Core's `AlreadyHaveTx` counts a false positive as had."""
+    manager = make_manager([a_conn(1)])
+    bloom = a_small_filter(a_hash(1))
+    mempool = manager.node.mempool
+    if site == "confirmed":
+        manager.recent_confirmed = bloom
+    elif site == "rejects":
+        mempool._recent_rejects = bloom
+    else:
+        mempool._recent_rejects_reconsiderable = bloom
+    never = next(a_hash(i) for i in range(2, 1000) if a_hash(i) in bloom)
+    assert manager.already_have_tx(never, wtxid=True, include_reconsiderable=True)
 
 
 def test_the_mempool_is_asked_by_the_kind_of_hash_given() -> None:

@@ -72,15 +72,19 @@ _CORE_RUNS = _core_runs()
 
 @pytest.mark.parametrize(("case", "answer"), _CORE_RUNS, ids=range(len(_CORE_RUNS)))
 def test_core_s_own_runs(case: str, answer: str) -> None:
-    """Core v31.1's `CRollingBloomFilter`, run on the same keys and tweak.
+    """Core v31.1's `CRollingBloomFilter`, run on the same keys and tweaks.
 
-    Its sizes, its generation, its words and its answer to every query.
+    Its sizes, its generation, its words and its answer to every query,
+    across a `reset` to a given tweak.
     """
     n, fp, tweak, *ops = case.split()
     bloom = RollingBloomFilter(int(n), float(fp), tweak=int(tweak))
     answers = []
     tokens = iter(ops)
     for op in tokens:
+        if op[0] == "!":
+            bloom.reset(tweak=int(op[1:]))
+            continue
         if op[1:] == "n":
             start, count = int(next(tokens)), int(next(tokens))
             keys = [i.to_bytes(32, "little") for i in range(start, start + count)]
@@ -118,3 +122,31 @@ def test_the_latest_keys_are_always_held() -> None:
     for key in keys:
         bloom.add(key)
     assert all(key in bloom for key in keys[299:])
+
+
+def test_a_reset_frees_the_words() -> None:
+    """Core's `reset` zeroes its words; here they go until the next key."""
+    bloom = RollingBloomFilter(100, 0.01)
+    bloom.add(bytes(32))
+    bloom.reset()
+    assert bloom._planes is None
+    assert bytes(32) not in bloom
+
+
+def a_small_filter(held: bytes) -> RollingBloomFilter:
+    """Return a filter holding `held` that often finds a key it never held.
+
+    One hash function over one pair of words: a key never added is found
+    about one time in 64, so a few hundred candidates hold a false
+    positive. A site's tests put it in place of the site's filter.
+    """
+    bloom = RollingBloomFilter(1, 0.5, tweak=0)
+    bloom.add(held)
+    return bloom
+
+
+def test_a_small_filter_finds_a_key_it_never_held() -> None:
+    """The false positive the sites' tests rely on is there to be found."""
+    bloom = a_small_filter(bytes(32))
+    keys = (i.to_bytes(32, "little") for i in range(1, 1000))
+    assert any(key in bloom for key in keys)

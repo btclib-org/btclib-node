@@ -3489,6 +3489,70 @@ def test_a_reorg_during_initial_block_download_announces_nothing(
     assert not sent
 
 
+def a_refusal(node: Node) -> bytes:
+    """Record a wtxid in both reject filters, and return it."""
+    wtxid = secrets.token_bytes(32)
+    node.mempool.mark_rejected(wtxid)
+    node.mempool.mark_rejected_reconsiderable(wtxid)
+    return wtxid
+
+
+def refused(node: Node, wtxid: bytes) -> tuple[bool, bool]:
+    """Answer whether each reject filter holds `wtxid`."""
+    return (
+        node.mempool.was_recently_rejected(wtxid),
+        node.mempool.was_recently_rejected_reconsiderable(wtxid),
+    )
+
+
+def test_a_tip_change_out_of_initial_block_download_resets_as_core_s(
+    node: Node,
+) -> None:
+    """ISS 1851: Core's `ActiveTipChange` and `BlockConnected`, past IBD.
+
+    The reject filters are reset, and what the block confirms is recorded.
+    """
+    wtxid = a_refusal(node)
+    chain = generate_random_chain(1, RegTest().genesis.hash, tip_time=datetime.now(UTC))
+    connect(node, chain)
+    assert node.is_initial_block_download is False
+    assert refused(node, wtxid) == (False, False)
+    coinbase = chain[0].transactions[0]
+    assert coinbase.id in node.download_manager.recent_confirmed
+
+
+def test_a_tip_change_in_initial_block_download_resets_nothing(node: Node) -> None:
+    """ISS 1851: Core's `PeerManagerImpl` skips both during IBD."""
+    wtxid = a_refusal(node)
+    chain = generate_random_chain(1, RegTest().genesis.hash)
+    connect(node, chain)
+    assert node.is_initial_block_download is True
+    assert refused(node, wtxid) == (True, True)
+    coinbase = chain[0].transactions[0]
+    assert coinbase.id not in node.download_manager.recent_confirmed
+
+
+def test_a_disconnected_block_resets_the_filters_as_core_s(node: Node) -> None:
+    """ISS 1851: Core's `BlockDisconnected`, then `ActiveTipChange`.
+
+    Every recently confirmed transaction is forgotten, not only the
+    disconnected block's, and so is every refusal.
+    """
+    chain = generate_random_chain(2, RegTest().genesis.hash, tip_time=datetime.now(UTC))
+    connect(node, chain)
+    confirmed = node.download_manager.recent_confirmed
+    tip = chain[1].transactions[0]
+    assert tip.id in confirmed
+    other = secrets.token_bytes(32)
+    confirmed.add(other)
+    wtxid = a_refusal(node)
+    main.invalidate_chain(node, chain[1].header.hash)
+    assert len(node.chainstate.block_index.active_chain) == 2
+    assert tip.id not in confirmed
+    assert other not in confirmed
+    assert refused(node, wtxid) == (False, False)
+
+
 def test_the_block_ending_initial_block_download_is_announced_before_sync(
     node: Node,
 ) -> None:
@@ -5463,3 +5527,20 @@ def test_a_delta_set_while_a_transaction_is_mined_applies_on_a_reorg(
     assert node.mempool.contains_tx(mined)
     wtxid = mined.hash
     assert node.mempool.modified_fee(wtxid) == node.mempool.fees[wtxid] + 777
+
+
+def test_a_reorg_forgets_what_was_recently_confirmed(node: Node) -> None:
+    """ISS 1851: Core's `BlockDisconnected` on an ordinary reorg."""
+    first = generate_random_chain(1, RegTest().genesis.hash, tip_time=datetime.now(UTC))
+    connect(node, first)
+    confirmed = node.download_manager.recent_confirmed
+    other = secrets.token_bytes(32)
+    confirmed.add(other)
+    second = generate_random_chain(
+        2, RegTest().genesis.hash, tip_time=datetime.now(UTC)
+    )
+    connect(node, second)
+    assert node.chainstate.block_index.active_chain[-1] == second[-1].header.hash
+    assert other not in confirmed
+    assert first[0].transactions[0].id not in confirmed
+    assert second[-1].transactions[0].id in confirmed
