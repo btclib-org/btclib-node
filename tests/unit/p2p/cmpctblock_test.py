@@ -26,6 +26,7 @@ from btclib.p2p.compact_blocks import (
 )
 from btclib.p2p.data import BlockPayload
 from btclib.p2p.inventory import GetData, GetHeaders, InventoryType
+from btclib.p2p.limits import MAX_BLOCK_TX_INDEX
 from btclib.tx.limits import COINBASE_MATURITY
 from btclib.tx.tx import Tx
 
@@ -261,14 +262,17 @@ def test_a_collision_reaches_the_dispatcher_as_no_failure(
     assert node.p2p_manager.connections[peer.id] is peer
 
 
-@pytest.mark.parametrize("case", ["empty", "index past", "null prefilled"])
+@pytest.mark.parametrize(
+    "case", ["empty", "index past", "index past 65535", "null prefilled"]
+)
 def test_a_compact_block_init_data_refuses_is_misbehaviour(
     regtest_node: Callable[[], Node], case: str
 ) -> None:
     """Core's `InitData` answers INVALID, and the request is dropped.
 
-    No transaction, a prefilled index past the short ids, or a prefilled
-    transaction with neither input nor output.
+    No transaction, a prefilled index past the short ids (one of them past
+    65535, which btclib's parse keeps), or a prefilled transaction with
+    neither input nor output.
     """
     node, _ = a_node(regtest_node)
     block = next_block(node)
@@ -277,6 +281,12 @@ def test_a_compact_block_init_data_refuses_is_misbehaviour(
     prefilled = {
         "empty": [],
         "index past": [PrefilledTransaction(1, coinbase, check_validity=False)],
+        "index past 65535": [
+            PrefilledTransaction(0, coinbase, check_validity=False),
+            PrefilledTransaction(
+                MAX_BLOCK_TX_INDEX + 1, coinbase, check_validity=False
+            ),
+        ],
         "null prefilled": [PrefilledTransaction(0, null, check_validity=False)],
     }[case]
     compact = CmpctBlock(block.header, 7, [], prefilled, check_validity=False)
@@ -582,6 +592,23 @@ def test_a_collision_from_a_peer_asked_second_is_left_to_the_first(
     cmpctblock(node, collided.serialize(), peer)
     assert peer.sent == []
     assert peer.download_queue == []
+
+
+def test_a_reconstruction_refusal_other_than_a_collision_is_not_swallowed(
+    regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a short-id collision is Core's FAILED, answered with the block."""
+
+    def refuse(*_args: object) -> None:
+        err_msg = "not a collision"
+        raise BTClibValueError(err_msg)
+
+    monkeypatch.setattr("btclib_node.p2p.callbacks.reconstruct", refuse)
+    node, _ = a_node(regtest_node)
+    block = next_block(node, generate_random_transaction())
+    peer = a_compact_peer(node)
+    with pytest.raises(BTClibValueError, match="not a collision"):
+        cmpctblock(node, compact_block(block, 7).serialize(), peer)
 
 
 def test_an_optimistic_reconstruction_that_fails_is_ignored(
