@@ -10,6 +10,7 @@ diagram and `optimal`, before and after fee deltas, and the refusals.
 """
 
 import secrets
+import time
 from typing import TYPE_CHECKING, Any
 
 from btclib_node import Node
@@ -54,8 +55,14 @@ def _txs(fan: Tx) -> list[Tx]:
     return txs
 
 
-def _agree(client: Any, bitcoind: Bitcoind, txs: list[Tx]) -> None:
-    """Assert both answer each cluster, entry and the diagram alike."""
+def _agree(
+    client: Any, bitcoind: Bitcoind, txs: list[Tx], sent: dict[str, range]
+) -> None:
+    """Assert both answer each cluster, entry and the diagram alike.
+
+    The two nodes stamp an entry on their own clocks, so its `time` is held
+    to the seconds in `sent` and every other field to bitcoind's.
+    """
     for tx in txs:
         for method in ("getmempoolcluster", "getmempoolentry"):
             ours = _answer(client.call, method, [tx.id.hex()])
@@ -63,6 +70,8 @@ def _agree(client: Any, bitcoind: Bitcoind, txs: list[Tx]) -> None:
             if method == "getmempoolentry":
                 # Core 32's fields, which bitcoind v31.1 does not answer
                 del ours[1]["vsize_adjusted"], ours[1]["vsize_bip141"]
+                for answer in (ours, theirs):
+                    assert answer[1].pop("time") in sent[tx.id.hex()], answer
             assert ours == theirs, (method, tx.id.hex())
     for method in ("getmempoolfeeratediagram", "getmempoolinfo"):
         ours = _answer(client.call, method, [])
@@ -102,17 +111,20 @@ def test_clusters_are_answered_as_bitcoind_does(
         bitcoind.rpc("generatetodescriptor", [1, info["descriptor"]])
         wait_until(lambda: len(block_index.active_chain) == len(chain) + 2)
         client = rpc_client(node)
+        sent: dict[str, range] = {}
         for tx in txs:
             raw = tx.serialize(include_witness=True).hex()
+            first = int(time.time())
             assert client.call("sendrawtransaction", [raw]) == tx.id.hex()
             assert bitcoind.rpc("sendrawtransaction", [raw]) == tx.id.hex()
-        _agree(client, bitcoind, txs)
+            sent[tx.id.hex()] = range(first, int(time.time()) + 1)
+        _agree(client, bitcoind, txs, sent)
 
         for tx, delta in [(txs[1], 200_000), (txs[6], -3_000), (txs[0], 1_000)]:
             params: list[object] = [tx.id.hex(), None, delta]
             assert client.call("prioritisetransaction", params) is True
             assert bitcoind.rpc("prioritisetransaction", params) is True
-            _agree(client, bitcoind, txs)
+            _agree(client, bitcoind, txs, sent)
 
         refusals: list[list[object]] = [
             [],
