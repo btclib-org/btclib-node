@@ -2974,6 +2974,30 @@ def test_a_transaction_a_reorg_puts_back_is_counted_untracked(
     assert (estimator.tracked_txs, estimator.untracked_txs) == (0, 1)
 
 
+def test_a_reorg_expires_what_is_too_old(node: Node) -> None:
+    """Core's `LimitMempoolSize` at a reorg's end expires what is too old."""
+    common = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, common)
+    put_back = generate_random_transaction(common[0].transactions[0].id)
+    abandoned = build_block(
+        common[-1].header.hash,
+        [generate_coinbase(height=len(common) + 1), put_back],
+        len(common),
+    )
+    connect(node, [abandoned])
+    stale = generate_random_transaction()
+    node.mempool.add_tx(stale)
+    node.mempool.set_entry_time(stale.hash, time.time() - node.mempool.expiry - 2)
+    heavier = _extend(common[-1].header.hash, len(common), 2)
+    block_index.add_headers([block.header for block in heavier])
+    for block in heavier:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+    settle(node)
+    assert block_index.active_chain[-1] == heavier[-1].header.hash
+    assert set(node.mempool.txid_index) == {put_back.id}
+
+
 @pytest.mark.parametrize("fee", [0, FEE])
 def test_a_reorg_re_adds_a_dust_spend_only_if_it_pays_no_fee(
     node: Node, fee: int

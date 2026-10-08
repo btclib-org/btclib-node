@@ -13,6 +13,7 @@ import re
 import secrets
 import struct
 import time
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -26,6 +27,7 @@ from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
+from btclib_node import mempool as mempool_module
 from btclib_node.chains import RegTest
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
@@ -321,6 +323,72 @@ def test_a_load_checks_each_transaction_again(funded: tuple[Node, Tx]) -> None:
         "Imported mempool transactions from file: 2 succeeded, 1 failed, "
         "1 expired, 1 already there, 2 waiting for initial broadcast"
     )
+
+
+def test_a_load_expires_by_the_mempool_s_expiry(funded: tuple[Node, Tx]) -> None:
+    """`-mempoolexpiry` decides what is too old to load, as in Core."""
+    node, fan = funded
+    node.mempool.expiry = 3600
+    path = node.data_dir / "mempool.dat"
+    now = int(time.time())
+    write(path, [(fan, now - 3000, 0), (spend(fan, 0, 2_000), now - 3600, 0)], {}, [])
+    lines = LogLines()
+    node.logger.addHandler(lines)
+    assert run(load_mempool(node, path))
+    assert set(node.mempool.txid_index) == {fan.id}
+    assert lines.messages[-1].startswith(
+        "Imported mempool transactions from file: 1 succeeded, 0 failed, 1 expired, "
+    )
+
+
+def test_a_transaction_that_expires_as_it_is_loaded_fails(
+    funded: tuple[Node, Tx], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's load reads the time once, and expires with the file's time.
+
+    So a transaction young enough at the start of the load and too old by
+    its own acceptance is refused, and not handed to the fee estimator.
+    """
+    node, fan = funded
+    node.mempool.expiry = 3600
+    path = node.data_dir / "mempool.dat"
+    now = int(time.time())
+    write(path, [(fan, now - 3599, 0)], {}, [])
+    monkeypatch.setattr(
+        mempool_module, "time", SimpleNamespace(time=lambda: time.time() + 3)
+    )
+    lines = LogLines()
+    node.logger.addHandler(lines)
+    with patch.object(node.fee_estimator, "process_transaction") as process:
+        assert run(load_mempool(node, path))
+    process.assert_not_called()
+    assert node.mempool.size == 0
+    assert lines.messages[-1].startswith(
+        "Imported mempool transactions from file: 0 succeeded, 1 failed, 0 expired, "
+    )
+
+
+def test_a_full_mempool_expires_a_loaded_transaction_before_it_evicts(
+    funded: tuple[Node, Tx], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core accepts with the file's time, so `LimitMempoolSize` expires first.
+
+    The transaction too old by its own acceptance goes, which makes room,
+    and the one paying nothing that the size trim would evict stays.
+    """
+    node, fan = funded
+    mempool = node.mempool
+    mempool.expiry = 3600
+    keeper = a_tx()
+    mempool.add_tx(keeper, 0)
+    mempool.bytesize_limit = keeper.vsize + fan.vsize - 1
+    path = node.data_dir / "mempool.dat"
+    write(path, [(fan, int(time.time()) - 3599, 0)], {}, [])
+    monkeypatch.setattr(
+        mempool_module, "time", SimpleNamespace(time=lambda: time.time() + 3)
+    )
+    assert run(load_mempool(node, path))
+    assert set(mempool.txid_index) == {keeper.id}
 
 
 def test_a_loaded_transaction_is_handed_to_the_fee_estimator(

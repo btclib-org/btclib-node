@@ -224,6 +224,7 @@ _CATEGORY_OF_FILE = {
     "download.py": "net",
     "fee_estimator.py": "estimatefee",
     "main.py": "validation",
+    "mempool.py": "mempool",
     "p2p/banman.py": "net",
     "p2p/callbacks.py": "net",
     "p2p/compact_block.py": "net",

@@ -20,9 +20,9 @@ takes them; `Mempool.mining_order_keys` gives it, parents first.
 
 `load_mempool` re-validates each transaction as a new one, as Core's
 `AcceptToMemoryPool` does with `bypass_limits` false: the mempool is
-trimmed to its limit after each, and the fee estimator is told. It is a
-generator so that `Node` serves its peers between transactions, as Core
-loads on a thread of its own.
+expired and trimmed to its limit after each, and the fee estimator is
+told. It is a generator so that `Node` serves its peers between
+transactions, as Core loads on a thread of its own.
 """
 
 import os
@@ -62,13 +62,9 @@ __all__ = [
     "serialize_mempool",
 ]
 
-# Core's two versions, and its default `-mempoolexpiry` of 336 hours
-# (`src/kernel/mempool_options.h`, same tag): an entry older than that is
-# not loaded. A constant, as this node has no `-mempoolexpiry`: its held
-# transactions never expire (btclib-org/btclib-node#1815).
+# Core's two versions
 MEMPOOL_DUMP_VERSION_NO_XOR_KEY = 1
 MEMPOOL_DUMP_VERSION = 2
-_EXPIRY = 336 * 60 * 60
 
 # `MEMPOOL_FILENAME`, in the chain's own data directory
 FILENAME = "mempool.dat"
@@ -297,9 +293,9 @@ def _outcome(node: Node, tx: Tx, entry_time: int, now: int) -> str:
     """Try one transaction of the file, and return what became of it.
 
     It is added as a new transaction held from `entry_time`, unless it
-    entered the mempool `_EXPIRY` or more before `now`.
+    entered the mempool `-mempoolexpiry` or more before `now`.
     """
-    if entry_time <= now - _EXPIRY:
+    if entry_time <= now - node.mempool.expiry:
         return "expired"
     mempool = node.mempool
     try:
@@ -308,9 +304,10 @@ def _outcome(node: Node, tx: Tx, entry_time: int, now: int) -> str:
     except MissingPrevoutError, BTClibValueError, BTClibTypeError:
         return "failed" if mempool.get_tx(tx.id) is None else "already there"
     tip_height = len(node.chainstate.block_index.active_chain) - 1
-    if not mempool.add_tx(tx, fee, vsize, height=tip_height, weight=weight):
+    if not mempool.add_tx(
+        tx, fee, vsize, height=tip_height, weight=weight, entry_time=entry_time
+    ):
         return "failed"
-    mempool.entry_times[tx.hash] = entry_time
     # Core's `AcceptToMemoryPool` signals `TransactionAddedToMempool` as
     # for any other transaction
     track_accepted(node, tx)

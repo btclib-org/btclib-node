@@ -13,6 +13,7 @@ below being `ROLLING_FEE_HALFLIFE` (`src/txmempool.h`).
 """
 
 import hashlib
+import math
 import time
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, NamedTuple
@@ -21,6 +22,7 @@ from btclib.fee import FeeRate, fee_from_vsize
 
 from btclib_node.cluster_linearize import FeeFrac
 from btclib_node.config import DEFAULT_INCREMENTAL_RELAY_FEERATE
+from btclib_node.constants import DEFAULT_MEMPOOL_EXPIRY_HOURS
 from btclib_node.exceptions import TxRejectedError
 from btclib_node.fee_estimator import RemovedTx
 from btclib_node.rolling_bloom import RollingBloomFilter
@@ -166,6 +168,7 @@ class Mempool:
         self,
         logger: Logger,
         incremental_relay_feerate: FeeRate = DEFAULT_INCREMENTAL_RELAY_FEERATE,
+        expiry: int = DEFAULT_MEMPOOL_EXPIRY_HOURS * 3600,
     ) -> None:
         """Start empty, with the rolling minimum feerate at zero, undecayed.
 
@@ -176,9 +179,13 @@ class Mempool:
         something was just evicted for, and the extra fee a replacement
         pays. Core keeps it apart from `-minrelaytxfee`, the two merely
         sharing a default.
+
+        `expiry` is `-mempoolexpiry` in seconds (`Config.mempool_expiry`),
+        the age at which `expire` removes a held transaction.
         """
         self.logger = logger
         self.incremental_relay_feerate = incremental_relay_feerate
+        self.expiry = expiry
 
         self.transactions: dict[bytes, Tx] = {}
         self.txid_index: dict[bytes, bytes] = {}
@@ -214,7 +221,11 @@ class Mempool:
         # `add_tx` below's own `time.time()`, or for an entry loaded from
         # `mempool.dat` the time the file gives (`mempool_persist`).
         # `getmempoolentry`'s own `time` field. btclib-org/btclib-node#1397
+        # `set_entry_time` writes it.
         self.entry_times: dict[bytes, float] = {}
+        # No held entry is older, so `expire` reads `entry_times` only once
+        # its cutoff passes this.
+        self._oldest_entry_time: float = math.inf
         # wtxid -> Core's own `CTxMemPoolEntry::GetHeight`, the active
         # chain's own tip height -- not `verify_mempool_acceptance`'s own
         # `spend_height`, one past it -- at the moment this entry was
@@ -418,6 +429,7 @@ class Mempool:
         *,
         height: int = 0,
         trim: bool = True,
+        entry_time: float | None = None,
     ) -> bool:
         """Add `tx`, evict past the limit, and say whether it stuck.
 
@@ -443,6 +455,10 @@ class Mempool:
         Core's own convention for it -- and its own name,
         `main.verify_mempool_acceptance`'s `spend_height` being one past
         it -- is argued.
+
+        `entry_time` is when `tx` entered the mempool, now where it is
+        `None`: `mempool.dat` gives an older one, which the expiry before
+        the trim reads, as Core's `AcceptToMemoryPool` takes `accept_time`.
         """
         # `fee` defaults to 0 rather than being required, for the
         # callers -- mostly in tests -- that add a transaction without
@@ -482,13 +498,15 @@ class Mempool:
             # `check_replacement` call refuses this first
             return False
         self._insert(tx, fee, vsize, height, weight)
+        if entry_time is not None:
+            self.set_entry_time(wtxid, entry_time)
         self.graph.do_work(POST_CHANGE_COST)
         if trim:
             self._evict_to_limit()
         return wtxid in self.transactions
 
     def trim(self) -> None:
-        """Evict past the limit, Core's `LimitMempoolSize`, as `add_tx` does."""
+        """Expire and evict, Core's `LimitMempoolSize`, as `add_tx` does."""
         self._evict_to_limit()
 
     def add_package(
@@ -572,7 +590,7 @@ class Mempool:
         self.modified_fees[wtxid] = _saturate(fee + self.delta(txid))
         self.vsizes[wtxid] = tx.vsize if vsize is None else vsize
         self.weights[wtxid] = _weight(tx, vsize) if weight is None else weight
-        self.entry_times[wtxid] = time.time()
+        self.set_entry_time(wtxid, time.time())
         self.heights[wtxid] = height
         for vin in tx.vin:
             self.spent_by.setdefault(vin.prev_out.tx_id, set()).add(wtxid)
@@ -1350,15 +1368,48 @@ class Mempool:
         """
         self.unbroadcast.discard(txid)
 
-    def _evict_to_limit(self) -> None:
-        """Evict the worst chunk until back at the limit: Core's `TrimToSize`.
+    def set_entry_time(self, wtxid: bytes, entry_time: float) -> None:
+        """Record when the held `wtxid` entered the mempool."""
+        self.entry_times[wtxid] = entry_time
+        self._oldest_entry_time = min(self._oldest_entry_time, entry_time)
 
-        `TrimToSize` (`src/txmempool.cpp`, at bitcoin/bitcoin@9be056a8a7,
-        the v31.1 tag) takes the last chunk in the order a block takes
-        them, `m_txgraph->GetWorstMainChunk()`, so a parent is scored with
-        the child paying for it. The chunk is the end of its cluster's
+    def expire(self) -> int:
+        """Remove what is older than `expiry`, with its descendants.
+
+        Core's `Expire` (`src/txmempool.cpp`, at bitcoin/bitcoin@9be056a8a7,
+        the v31.1 tag), with `LimitMempoolSize`'s cutoff: an entry whose
+        second of entry is before the current second less `expiry` goes.
+        Each is removed as Core removes it with reason `EXPIRY`, so
+        `removal_listener` is told. Returns how many were removed.
+        """
+        cutoff = int(time.time()) - self.expiry
+        if self._oldest_entry_time >= cutoff:
+            return 0
+        stage: set[bytes] = set()
+        for wtxid, entry_time in self.entry_times.items():
+            if entry_time < cutoff:
+                stage |= self._descendants(wtxid)
+        for wtxid in stage:
+            self._pop(wtxid)
+        self._oldest_entry_time = min(self.entry_times.values(), default=math.inf)
+        return len(stage)
+
+    def _evict_to_limit(self) -> None:
+        """Expire, then evict the worst chunk until back at the limit.
+
+        Core's `LimitMempoolSize` (`src/validation.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `expire`, then
+        `TrimToSize` (`src/txmempool.cpp`, same tag), which takes the last
+        chunk in the order a block takes them,
+        `m_txgraph->GetWorstMainChunk()`, so a parent is scored with the
+        child paying for it. The chunk is the end of its cluster's
         linearization: nothing left behind spends it.
         """
+        expired = self.expire()
+        if expired:
+            self.logger.log_debug(
+                "mempool", "Expired %i transactions from the memory pool", expired
+            )
         while (
             self.bytesize > self.bytesize_limit
             and (chunk := self.graph.worst_chunk()) is not None

@@ -300,6 +300,12 @@ def test_the_mempool_is_built_with_the_configured_incremental_relay_fee(
         assert node.mempool.incremental_relay_feerate == rate
 
 
+def test_the_mempool_is_built_with_the_configured_expiry(tmp_path: Path) -> None:
+    """`-mempoolexpiry` reaches `Mempool`."""
+    with unstarted_node_context(tmp_path, mempool_expiry=7200) as node:
+        assert node.mempool.expiry == 7200
+
+
 def test_pending_getdata_starts_empty(tmp_path: Path) -> None:
     """A fresh node has nothing registered on `pending_getdata`."""
     with unstarted_node_context(tmp_path) as node:

@@ -223,7 +223,9 @@ at start, each transaction checked again as a new one, in Bitcoin Core's
 format: either node reads the other's file. `-persistmempool=0` does
 neither, and `-persistmempoolv1` writes the file without its obfuscation
 key. `savemempool` writes the file at once, and `importmempool` loads
-another.
+another. A transaction held longer than `-mempoolexpiry` hours, 336 by
+default, is dropped with what spends it, and one that old in the file is
+not loaded.
 
 A call that waits -- `waitforblockheight`, `waitfornewblock`,
 `waitforblock`, or `getblocktemplate` with a `longpollid` -- or searches
