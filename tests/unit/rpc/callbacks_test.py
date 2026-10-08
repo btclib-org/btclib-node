@@ -7029,7 +7029,7 @@ def test_invalidate_block_drops_a_disconnected_transaction_past_the_ten_block_ca
     connect(node, chain)
     capped = extra_blocks[0]
     child = generate_random_transaction(capped_tx.id, value=capped_tx.vout[0].value)
-    fee, vsize, _ = verify_mempool_acceptance(node, child, bypass_limits=True)
+    fee, vsize, *_ = verify_mempool_acceptance(node, child, bypass_limits=True)
     node.mempool.add_tx(child, fee, vsize)
     assert node.mempool.contains_tx(child)
 
@@ -7088,7 +7088,7 @@ def test_invalidate_block_evicts_an_orphan_left_by_a_failed_readd(
     connect(node, chain)
     deepest = extra_blocks[0]
     c = generate_random_transaction(t.id, value=t.vout[0].value)
-    fee, vsize, _ = verify_mempool_acceptance(node, c, bypass_limits=True)
+    fee, vsize, *_ = verify_mempool_acceptance(node, c, bypass_limits=True)
     node.mempool.add_tx(c, fee, vsize)
     assert node.mempool.contains_tx(c)
 
@@ -7117,7 +7117,7 @@ def test_invalidate_block_evicts_a_spend_of_a_disconnected_coinbase(
     common = generate_random_chain(COINBASE_MATURITY, node.chain.genesis.hash)
     connect(node, common)
     spend = generate_random_transaction(common[0].transactions[0].id)
-    fee, vsize, _ = verify_mempool_acceptance(node, spend, bypass_limits=True)
+    fee, vsize, *_ = verify_mempool_acceptance(node, spend, bypass_limits=True)
     node.mempool.add_tx(spend, fee, vsize)
     assert node.mempool.contains_tx(spend)
 
@@ -7156,7 +7156,7 @@ def test_invalidate_block_evicts_a_mempool_transaction_a_disconnect_makes_immatu
     )
     connect(node, [extra])
     mature_spend = generate_random_transaction(common[0].transactions[0].id)
-    fee, vsize, _ = verify_mempool_acceptance(node, mature_spend, bypass_limits=True)
+    fee, vsize, *_ = verify_mempool_acceptance(node, mature_spend, bypass_limits=True)
     node.mempool.add_tx(mature_spend, fee, vsize, height=len(common) + 1)
     assert node.mempool.contains_tx(mature_spend)
 

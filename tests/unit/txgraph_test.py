@@ -444,3 +444,93 @@ def test_the_worst_chunk_is_the_last_of_the_mining_order(
                 del parents[r]
         order = graph.mining_order()
         assert graph.worst_chunk() == (order[-1] if order else None)
+
+
+def test_clusters_are_counted_once_each() -> None:
+    """Core's `CountDistinctClusters`: two of one cluster count once."""
+    graph = a_graph()
+    _chain(graph, "AB", 1)
+    graph.add_transaction("C", FeeFrac(1, 10), "C")
+    assert graph.count_distinct_clusters(["A", "B", "C"]) == 2
+    assert graph.count_distinct_clusters([]) == 0
+
+
+def test_the_staged_diagrams_are_of_the_clusters_the_change_touches() -> None:
+    """Before and after, highest feerate first, the graph left as it was.
+
+    A replaces B: B leaves its cluster with C, and D, a new child of C,
+    joins it. E, which the change does not touch, is in neither diagram.
+    """
+    graph = a_graph()
+    graph.add_transaction("B", FeeFrac(10, 10), "B")
+    graph.add_transaction("C", FeeFrac(30, 10), "C")
+    graph.add_dependency("B", "C")
+    graph.add_transaction("E", FeeFrac(50, 10), "E")
+    added = [("D", FeeFrac(40, 10), "D", ["C", "B"])]
+    diagrams = graph.staged_diagrams(["B"], added, 64, 1_000)
+    assert diagrams == (
+        [FeeFrac(40, 20)],
+        [FeeFrac(70, 20)],
+    )
+    assert sorted(graph.cluster("C")) == ["B", "C"]
+    assert "D" not in graph
+
+
+def test_staged_chunks_of_equal_feerate_go_smaller_first() -> None:
+    """Core's descending `FeeFrac` order breaks a tie by the smaller size."""
+    graph = a_graph()
+    graph.add_transaction("A", FeeFrac(20, 20), "A")
+    graph.add_transaction("B", FeeFrac(10, 10), "B")
+    added: list[tuple[str, FeeFrac, str, list[str]]] = [
+        ("C", FeeFrac(30, 10), "C", []),
+        ("D", FeeFrac(3, 3), "D", []),
+    ]
+    assert graph.staged_diagrams(["A", "B"], added, 64, 1_000) == (
+        [FeeFrac(10, 10), FeeFrac(20, 20)],
+        [FeeFrac(30, 10), FeeFrac(3, 3)],
+    )
+
+
+def test_the_staged_diagrams_are_sorted_across_clusters() -> None:
+    """The chunks of two clusters are merged, highest feerate first."""
+    graph = a_graph()
+    graph.add_transaction("B", FeeFrac(10, 10), "B")
+    graph.add_transaction("P", FeeFrac(50, 10), "P")
+    added = [("D", FeeFrac(1, 10), "D", ["P"])]
+    diagrams = graph.staged_diagrams(["B"], added, 64, 1_000)
+    assert diagrams is not None
+    before, _ = diagrams
+    assert before == [FeeFrac(50, 10), FeeFrac(10, 10)]
+
+
+def test_a_cluster_a_removal_leaves_is_relinearized() -> None:
+    """Removing X leaves Z1 at the front of P's cluster, until it is redone.
+
+    P has children Z1 and Z2, and X is Z1's child. With X gone, Z1 no
+    longer belongs before Z2.
+    """
+    graph = a_graph()
+    for ref, fee in [("P", 0), ("Z1", 1), ("Z2", 10), ("X", 1_000)]:
+        graph.add_transaction(ref, FeeFrac(fee, 10), ref)
+    for parent, child in [("P", "Z1"), ("P", "Z2"), ("Z1", "X")]:
+        graph.add_dependency(parent, child)
+    graph.do_work(10**6)
+    added: list[tuple[str, FeeFrac, str, list[str]]] = [
+        ("R", FeeFrac(1_001, 10), "R", [])
+    ]
+    diagrams = graph.staged_diagrams(["X"], added, 64, 1_000)
+    assert diagrams is not None
+    _, after = diagrams
+    assert after == [FeeFrac(1_001, 10), FeeFrac(10, 20), FeeFrac(1, 10)]
+
+
+def test_a_staged_cluster_past_a_limit_has_no_diagram() -> None:
+    """Core's `IsOversized` with the change staged, by count or by size."""
+    graph = a_graph()
+    _chain(graph, "AB", 1)
+    added = [("C", FeeFrac(1, 10), "C", ["B"])]
+    assert graph.staged_diagrams([], added, 2, 1_000) is None
+    assert graph.staged_diagrams([], added, 3, 29) is None
+    assert graph.staged_diagrams([], added, 3, 30) is not None
+    # what the change removes is not counted
+    assert graph.staged_diagrams(["A"], added, 2, 20) is not None

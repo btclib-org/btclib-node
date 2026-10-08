@@ -128,13 +128,13 @@ class MissingPrevoutError(ValueError):
 # `CheckFeeRate`, `ReplacementChecks` and the trim after an accepted
 # transaction give (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the
 # v31.1 tag): a refusal that a package with a child paying for it can undo.
-# "replacement-failed" is left out: only `ImprovesFeerateDiagram` gives it,
-# and this tree has no counterpart.
 _RECONSIDERABLE_REASONS = frozenset(
     {
         "mempool min fee not met",
         "min relay fee not met",
         "insufficient fee",
+        "insufficient fee (including sibling eviction)",
+        "replacement-failed",
         "mempool full",
     }
 )

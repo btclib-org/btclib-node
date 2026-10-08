@@ -15,7 +15,8 @@ within a budget of work, as `DoWork` does.
 Not ported:
 
 - the staging graph: the mempool stages a package's parent outside the
-  graph (`Mempool.staged`);
+  graph (`Mempool.staged`), and `staged_diagrams` works on a copy of
+  the clusters a replacement changes;
 - queued changes: removals and dependencies are applied as they arrive,
   where Core queues them until a read. That changes the order a merged
   cluster's linearization starts from, so it changes the work spent
@@ -363,6 +364,91 @@ class TxGraph[R: Hashable]:
                     return False
         return True
 
+    def count_distinct_clusters(self, refs: Iterable[R]) -> int:
+        """Count the clusters `refs` are in, Core's `CountDistinctClusters`."""
+        return len({id(self._locator[ref][0]) for ref in refs})
+
+    def staged_diagrams(
+        self,
+        removed: Iterable[R],
+        added: Iterable[tuple[R, FeeFrac, OrderKey, Iterable[R]]],
+        max_count: int,
+        max_size: int,
+    ) -> tuple[list[FeeFrac], list[FeeFrac]] | None:
+        """Return the chunk feerates before and after a change, or `None`.
+
+        Core's `GetMainStagingDiagrams`, for a change that removes `removed`
+        and adds each `(ref, feerate, order_key, parents)` of `added`. A
+        parent is held or added earlier, and one removed is no parent.
+        Before are the chunks of the clusters the change touches, those
+        holding a removal or a parent. After are the chunks of what a copy
+        of those clusters becomes. Both are sorted by feerate, highest
+        first. Each cluster is made acceptable before its chunks are read.
+        Core makes every cluster acceptable, but the ones the change does
+        not touch are not read.
+
+        `None` is a cluster past `max_count` transactions or `max_size`
+        after the change, where Core's `IsOversized` holds. Nothing in the
+        graph changes but the linearizations made acceptable.
+        """
+        removed = set(removed)
+        additions = [
+            (ref, feerate, key, list(parents)) for ref, feerate, key, parents in added
+        ]
+        parents = [parent for *_, refs in additions for parent in refs]
+        touched = {
+            id(cluster): cluster
+            for cluster in (
+                self._locator[ref][0]
+                for ref in [*removed, *parents]
+                if ref in self._locator
+            )
+        }
+        staging: TxGraph[R] = TxGraph(self.acceptable_cost, self._rng)
+        before: list[FeeFrac] = []
+        for cluster in touched.values():
+            self._make_acceptable(cluster)
+            before += [chunk.feerate for chunk in self._chunks(cluster)]
+            staging._copy(cluster, self._keys)
+        staging._change(removed, additions)
+        clusters = [cluster for queue in staging._queues for cluster in queue]
+        if any(_too_large(cluster, max_count, max_size) for cluster in clusters):
+            return None
+        after: list[FeeFrac] = []
+        for cluster in clusters:
+            staging._make_acceptable(cluster)
+            after += [chunk.feerate for chunk in staging._chunks(cluster)]
+        return sorted(before, key=_highest_first), sorted(after, key=_highest_first)
+
+    def _change(
+        self, removed: set[R], added: list[tuple[R, FeeFrac, OrderKey, list[R]]]
+    ) -> None:
+        """Remove `removed`, then add `added` as `staged_diagrams` takes it."""
+        for ref in removed:
+            self.remove_transaction(ref)
+        for ref, feerate, key, _ in added:
+            self.add_transaction(ref, feerate, key)
+        for ref, *_, parents in added:
+            for parent in parents:
+                if parent in self:
+                    self.add_dependency(parent, ref)
+
+    def _copy(self, cluster: _Cluster[R], keys: dict[R, OrderKey]) -> None:
+        """Add a copy of `cluster` of another graph, with its linearization."""
+        copy: _Cluster[R] = _Cluster()
+        for pos in cluster.linearization:
+            ref = cluster.mapping[pos]
+            self._append(copy, ref, cluster.depgraph.feerate(pos))
+            self._keys[ref] = keys[ref]
+        for pos in cluster.linearization:
+            parents = 0
+            for parent in _positions(cluster.depgraph.reduced_parents(pos)):
+                parents |= 1 << self._locator[cluster.mapping[parent]][1]
+            child = self._locator[cluster.mapping[pos]][1]
+            copy.depgraph.add_dependencies(parents, child)
+        self._set_quality(copy, cluster.quality)
+        self._touch(copy)
+
     def cluster(self, ref: R) -> list[R]:
         """Return the cluster of `ref`, in its linearization's order."""
         cluster, _ = self._locator[ref]
@@ -661,6 +747,18 @@ def _taken[R: Hashable](  # noqa: PLR0913
             if not unmet[child]:
                 heapq.heappush(heap, (keys[child], child))
     return set(root)
+
+
+def _too_large[R](cluster: _Cluster[R], max_count: int, max_size: int) -> bool:
+    """Whether `cluster` is past `max_count` transactions or `max_size`."""
+    depgraph = cluster.depgraph
+    size = sum(depgraph.sizes[pos] for pos in _positions(depgraph.positions))
+    return depgraph.tx_count > max_count or size > max_size
+
+
+def _highest_first(feerate: FeeFrac) -> tuple[fractions.Fraction, int]:
+    """Sort key of Core's `FeeFrac` descending: by feerate, then the smaller."""
+    return fractions.Fraction(-feerate.fee, feerate.size), feerate.size
 
 
 def _positions(mask: int) -> Iterable[int]:

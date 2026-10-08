@@ -1365,7 +1365,12 @@ def test_a_sigop_dense_spend_is_priced_by_its_sigop_cost(node: Node) -> None:
     with pytest.raises(TxRejectedError) as raised:
         verify_mempool_acceptance(node, spend(999))
     assert str(raised.value) == "min relay fee not met, 999 < 1000"
-    assert verify_mempool_acceptance(node, spend(1_000)) == (1_000, 10_000, 40_000)
+    assert verify_mempool_acceptance(node, spend(1_000)) == (
+        1_000,
+        10_000,
+        40_000,
+        frozenset(),
+    )
 
 
 def test_the_mempool_rpcs_tell_the_adjusted_size_from_the_bip141_one(
@@ -2034,26 +2039,33 @@ def test_a_refusal_names_the_held_parent_with_the_smallest_txid(
 
 
 def test_a_version_3_parent_has_one_child(node: Node) -> None:
-    """A second child is refused, unless it conflicts with the first.
+    """A second child replaces the first where it pays to, as Core's does.
 
-    A conflicting one is not counted twice, and reaches
-    `check_replacement`, which refuses it in the words of its own. A
-    disconnected block's transaction is not held to the rule.
+    It is weighed as a replacement of its sibling: short of the fees, it
+    is refused "insufficient fee (including sibling eviction)". One that
+    conflicts with the first child is not counted twice, and replaces it.
+    A disconnected block's transaction is not held to the rule.
     """
     parent = hold(node, with_two_outputs(replace(funded_spends(node, 1)[0], version=3)))
-    hold(node, child_of(parent, 0, version=3))
+    first = hold(node, child_of(parent, 0, version=3))
     second = child_of(parent, 1, version=3)
+    relay = fee_from_vsize(second.vsize, node.mempool.incremental_relay_feerate)
     refused_with(
         node,
         second,
-        "TRUC-violation",
-        f"{ids(parent)} would exceed descendant count limit",
+        "insufficient fee (including sibling eviction)",
+        f"rejecting replacement {second.id.hex()}, not enough additional fees to "
+        f"relay; 0.00 < {format_money(relay)}",
     )
     assert verify_mempool_acceptance(node, second, bypass_limits=True).fee == FEE
+    paying = replace(
+        second, vout=[TxOut(second.vout[0].value - 2 * FEE, anyone_can_spend())]
+    )
+    assert verify_mempool_acceptance(node, paying).replaced == {first.hash}
 
     conflicting = child_of(parent, 0, version=3)
     conflicting.vout[0] = TxOut(conflicting.vout[0].value - 2 * FEE, anyone_can_spend())
-    refused_with(node, conflicting, "bip125-replacement-disallowed")
+    assert verify_mempool_acceptance(node, conflicting).replaced == {first.hash}
 
 
 def a_cluster(node: Node, root: Tx, count: int) -> list[Tx]:
@@ -2195,8 +2207,7 @@ def test_a_second_spend_of_a_held_outpoint_is_refused_as_core_refuses_it(
     `bitcoind` v31.1 on regtest, a spend paying 10000 held: a fee-free
     conflict "min relay fee not met", a 5000-sat one "insufficient fee
     ... less fees than conflicting txs; 0.00005 < 0.0001". One paying for
-    the held spend and its own relay, which Core accepts as a
-    replacement, is refused here (btclib-org/btclib-node#1244).
+    the held spend and its own relay replaces it (btclib-org/btclib-node#1244).
     """
     chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
     connect(node, chain)
@@ -2205,11 +2216,7 @@ def test_a_second_spend_of_a_held_outpoint_is_refused_as_core_refuses_it(
     held = generate_random_transaction(funding.id, value=value - 10_000)
     node.mempool.add_tx(held, *verify_mempool_acceptance(node, held))
 
-    refusals = {
-        0: "min relay fee not met",
-        5_000: "insufficient fee",
-        20_000: "bip125-replacement-disallowed",
-    }
+    refusals = {0: "min relay fee not met", 5_000: "insufficient fee"}
     for fee, reason in refusals.items():
         conflict = generate_random_transaction(funding.id, value=value - fee)
         with pytest.raises(TxRejectedError) as refused:
@@ -2219,6 +2226,8 @@ def test_a_second_spend_of_a_held_outpoint_is_refused_as_core_refuses_it(
             assert str(refused.value).endswith("; 0.00005 < 0.0001")
     assert node.mempool.size == 1
     assert node.mempool.contains_tx(held)
+    paying = generate_random_transaction(funding.id, value=value - 20_000)
+    assert verify_mempool_acceptance(node, paying).replaced == {held.hash}
 
 
 def test_a_confirmed_double_spend_evicts_the_held_spend_and_its_child(
@@ -3050,8 +3059,8 @@ def test_a_reorg_re_adds_abandoned_transactions_parent_first(
     real = main.verify_mempool_acceptance
 
     def marked(node: Node, tx: Tx, *, bypass_limits: bool = False) -> Any:
-        fee, vsize, weight = real(node, tx, bypass_limits=bypass_limits)
-        return main.MempoolAcceptance(fee, vsize + 1, weight)
+        accepted = real(node, tx, bypass_limits=bypass_limits)
+        return accepted._replace(vsize=accepted.vsize + 1)
 
     monkeypatch.setattr(main, "verify_mempool_acceptance", marked)
     # a chain of two transactions confirmed only on the branch being
@@ -5304,8 +5313,8 @@ def test_a_child_conflicting_with_a_held_transaction_refuses_the_package_whole(
     """ISS 1782: Core's `PackageRBFChecks` has no result for either.
 
     The parent keeps its answer from alone, the fee floor, and the child
-    a missing input, so that it stays an orphan. Replacing by package is
-    btclib-org/btclib-node#1334.
+    a missing input, so that it stays an orphan. The package pays for the
+    replacement and does not improve the feerate diagram.
     """
     first, second = funded_spends(node, 2)
     held = hold(node, first)
@@ -5482,8 +5491,7 @@ def test_a_replacement_is_held_to_what_the_candidate_is_worth(node: Node) -> Non
     conflict = replace(
         held, lock_time=1, vout=[replace(held.vout[0], value=value - FEE)]
     )
-    with pytest.raises(TxRejectedError, match="bip125-replacement-disallowed"):
-        verify_mempool_acceptance(node, conflict)
+    assert verify_mempool_acceptance(node, conflict).replaced == {held.hash}
     node.mempool.prioritise(conflict.id, -(FEE + 1))
     with pytest.raises(TxRejectedError, match="less fees than conflicting"):
         verify_mempool_acceptance(node, conflict)

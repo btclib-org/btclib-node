@@ -802,31 +802,37 @@ def test_a_replacement_pays_the_incremental_relay_fee_it_was_given() -> None:
     An increase that covers the default rate falls short of a higher one
     (btclib-org/btclib-node#1596).
     """
-    mempool, coin, _, _ = a_mempool_with_a_conflict()
+    mempool, coin, held, child = a_mempool_with_a_conflict()
     candidate = a_spend_of([coin])
     fee = 12_000 + fee_from_vsize(candidate.vsize, mempool.incremental_relay_feerate)
-    with pytest.raises(TxRejectedError, match="bip125-replacement-disallowed"):
-        mempool.check_replacement(candidate, fee, candidate.vsize)
+    replaced = {held.hash, child.hash}
+    assert mempool.check_replacement(candidate, fee, candidate.vsize) == replaced
     mempool.incremental_relay_feerate = FeeRate(sats_per_kvbyte=1_000_000)
     with pytest.raises(TxRejectedError, match="not enough additional fees"):
         mempool.check_replacement(candidate, fee, candidate.vsize)
 
 
-def test_a_conflict_paying_for_what_it_replaces_is_still_refused() -> None:
-    """This mempool replaces nothing: Core's reason where it allows none.
+def test_a_conflict_paying_for_what_it_replaces_replaces_it() -> None:
+    """The conflict and its descendants are replaced, whatever they signal.
 
-    `bitcoind` v31.1 accepts this replacement; the divergence is argued
-    at `Mempool.check_replacement`.
+    `bitcoind` v31.1 replaces them: it has no `-mempoolfullrbf` since
+    v29. `add_tx` takes them out before it adds the replacement.
     """
     mempool, coin, held, child = a_mempool_with_a_conflict()
+    assert held.vin[0].sequence == 0xFFFFFFFF
     candidate = a_spend_of([coin])
     relay = fee_from_vsize(candidate.vsize, mempool.incremental_relay_feerate)
-    with pytest.raises(TxRejectedError) as refused:
-        mempool.check_replacement(candidate, 12_000 + relay, candidate.vsize)
-    assert refused.value.reason == "bip125-replacement-disallowed"
-    assert str(refused.value) == "bip125-replacement-disallowed"
+    replaced = mempool.check_replacement(candidate, 12_000 + relay, candidate.vsize)
+    assert replaced == {held.hash, child.hash}
     assert mempool.contains_tx(held)
-    assert mempool.contains_tx(child)
+    removed: list[bytes] = []
+    mempool.removal_listener = removed.append
+    assert mempool.add_tx(candidate, 12_000 + relay, None, None, replaced)
+    assert sorted(removed) == sorted([held.id, child.id])
+    assert not mempool.contains_tx(held)
+    assert not mempool.contains_tx(child)
+    assert mempool.outpoint_spender[coin] == candidate.hash
+    assert mempool.size == 1
 
 
 def test_a_candidate_with_no_conflict_passes_the_replacement_check() -> None:

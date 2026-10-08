@@ -9,11 +9,6 @@ the answers are held equal key for key, in Core's order: each refusal with
 its code and words, and each shape of `tx-results`. The mempools are held
 equal after each call, so a transaction one took in and the other refused
 is found where it happens.
-
-Package replacement is not served (btclib-org/btclib-node#1334): a package
-that conflicts with a held transaction is held to the answers bitcoind gives
-where it refuses the replacement, and what only bitcoind accepts is not
-asked.
 """
 
 from dataclasses import replace
@@ -604,17 +599,8 @@ def a_conflict_that_pays_too_little(ctx: Ctx) -> None:
     held = _pay(coin, 5_000)
     ctx.send(held)
     ctx.package([_pay(coin, 1_000, outputs=2)])
-    # Core refuses the pair as a package, "package RBF failed", where this
-    # node, which replaces nothing, says "transaction failed"; what each
-    # transaction answers is alike (btclib-org/btclib-node#1334)
     rival = _pay(coin, 4_000, outputs=2)
-    ours, theirs = ctx.ask(
-        "submitpackage", [[_hex(rival), _hex(_pay(_coin(rival), 1_000))]]
-    )
-    assert theirs[1]["package_msg"].startswith("package RBF failed: ")
-    if ours is not None:
-        assert ours[1]["package_msg"] == "transaction failed"
-        assert ours[1]["tx-results"] == theirs[1]["tx-results"]
+    ctx.package([rival, _pay(_coin(rival), 1_000)])
 
 
 def a_child_that_conflicts_and_pays_too_little(ctx: Ctx) -> None:
@@ -624,15 +610,23 @@ def a_child_that_conflicts_and_pays_too_little(ctx: Ctx) -> None:
     parent = _pay(ctx.coin(), 0)
     joined = [_coin(parent), coin]
     child = _spend(joined, [sum(spent.value for spent in joined) - 5_000])
-    ours, theirs = ctx.ask("submitpackage", [[_hex(parent), _hex(child)]])
-    assert theirs[1]["package_msg"].startswith("package RBF failed: ")
-    assert theirs[1]["tx-results"][child.hash.hex()]["error"] == (
-        "bad-txns-inputs-missingorspent"
-    )
-    # the message is as above (btclib-org/btclib-node#1334)
-    if ours is not None:
-        assert ours[1]["package_msg"] == "transaction failed"
-        assert ours[1]["tx-results"] == theirs[1]["tx-results"]
+    ctx.package([parent, child])
+
+
+def a_package_that_replaces(ctx: Ctx) -> None:
+    """Replace a held spend with a parent and the child that pays for both."""
+    coin = ctx.coin()
+    ctx.send(_pay(coin, 5_000))
+    rival = _pay(coin, 4_000)
+    ctx.package([rival, _pay(_coin(rival), 50_000)])
+
+
+def a_lone_replacement(ctx: Ctx) -> None:
+    """Replace two held spends with one, named in `replaced-transactions`."""
+    first, second = ctx.coin(), ctx.coin()
+    ctx.send(_pay(first, 5_000), _pay(second, 5_000))
+    both = _spend([first, second], [first.value + second.value - 50_000])
+    ctx.package([both])
 
 
 SCENARIOS: list[Callable[[Ctx], None]] = [
@@ -663,6 +657,8 @@ SCENARIOS: list[Callable[[Ctx], None]] = [
     a_cluster_too_large,
     a_conflict_that_pays_too_little,
     a_child_that_conflicts_and_pays_too_little,
+    a_package_that_replaces,
+    a_lone_replacement,
 ]
 
 
