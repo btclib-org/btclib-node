@@ -1859,13 +1859,12 @@ class P2pManager(threading.Thread):
 
         `MaybeSendPing` and `CConnman::InactivityCheck`
         (`src/net_processing.cpp` and `src/net.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a peer this node
-        has received nothing from, or sent no whole message to, for
-        `_TIMEOUT_INTERVAL`, or whose `pong` is that overdue, is
-        dropped; otherwise it is sent a `ping` once `_PING_INTERVAL`
-        has passed since the last and none is outstanding. A peer at
-        `BIP0031_VERSION` or below has none outstanding, so only its
-        silence drops it.
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a peer whose
+        `last_receive` or `last_send` is `_TIMEOUT_INTERVAL` old, or whose
+        `pong` is that overdue, is dropped; otherwise it is sent a `ping`
+        once `_PING_INTERVAL` has passed since the last and none is
+        outstanding. A peer at `BIP0031_VERSION` or below has none
+        outstanding, so only its silence drops it.
         """
         # One read, not `conn.ping_sent` re-read below: `callbacks.pong`,
         # on the other thread, clears it the moment a pong answers this
