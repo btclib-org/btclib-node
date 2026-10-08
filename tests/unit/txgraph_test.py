@@ -202,6 +202,18 @@ def _chain(graph: TxGraph[str], refs: str, fee: int) -> None:
             graph.add_dependency(refs[i - 1], ref)
 
 
+def test_a_spend_is_linked_once_its_dependency_is_added() -> None:
+    """`linked` answers the graph's clusters, and yes for what it lacks."""
+    graph = a_graph()
+    graph.add_transaction("p", FeeFrac(1, 10), "p")
+    graph.add_transaction("c", FeeFrac(1, 10), "c")
+    assert not graph.linked("p", "c")
+    assert graph.linked("p", "staged")
+    assert graph.linked("staged", "c")
+    graph.trim([("p", "c")], 64, 10**6)
+    assert graph.linked("p", "c")
+
+
 def test_a_trim_within_the_limits_only_adds_the_dependencies() -> None:
     """Nothing goes, and the clusters merge."""
     graph = a_graph()

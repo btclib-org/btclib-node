@@ -273,3 +273,27 @@ def test_a_transaction_the_new_chain_confirms_is_not_counted(
         core.rpc("preciousblock", [other["hash"]])
         _wait_for(node, core.mine([])["hash"])
         _assert_both_hold(client, core, [p, *on_p])
+
+
+def test_a_re_added_child_counts_no_held_child_of_its_parent(
+    bitcoind: Bitcoind, tmp_path: Path
+) -> None:
+    """A reorg puts back `p` and `r`, which spends `p`'s second output.
+
+    A chain of 64 spends `p`'s first output. `r` is checked against `p`
+    alone, as Core's graph links `p` to the chain only after every
+    re-add, and `r` pays more than the chain, so the trim keeps it.
+    """
+    core = _Bitcoind(bitcoind)
+    coinbase = core.chain[0].transactions[0]
+    p = _spend([(coinbase.id, 0)], 2, (_FUND - 2_000) // 2)
+    r = _spend([(p.id, 1)], 1, p.vout[1].value - 5_000)
+    on_p = _a_chain_on((p.id, 0), p.vout[0].value, 1_000, 64)
+    confirmed = core.mine([p, r])["hash"]
+    with _a_node(core, tmp_path, confirmed) as node:
+        client = rpc_client(node)
+        _send(client, core, on_p)
+        core.rpc("invalidateblock", [confirmed])
+        core.mine([])
+        _wait_for(node, core.mine([])["hash"])
+        _assert_both_hold(client, core, [p, r, *on_p[:62]])

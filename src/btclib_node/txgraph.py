@@ -143,6 +143,12 @@ class TxGraph[R: Hashable]:
         """Return the number of transactions."""
         return len(self._locator)
 
+    def linked(self, parent: R, child: R) -> bool:
+        """Whether `child` is in `parent`'s cluster, or either is not here."""
+        if parent not in self._locator or child not in self._locator:
+            return True
+        return self._locator[parent][0] is self._locator[child][0]
+
     def _set_quality(self, cluster: _Cluster[R], quality: Quality) -> None:
         """Move `cluster` to the queue of `quality`, as Core's vectors do."""
         if cluster.setindex >= 0:

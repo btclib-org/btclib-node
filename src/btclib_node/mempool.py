@@ -1065,8 +1065,12 @@ class Mempool:
 
         A cluster is a connected component of the graph whose edges are
         the spends among held transactions, followed up through each
-        input's parent and down through `spent_by`. The walk stops at the
-        first transaction past `max_count` transactions or `max_weight`
+        input's parent and down through `spent_by`. A spend `graph` does
+        not link yet is not followed, up or down: a reorg links a re-added
+        transaction to its held children only in
+        `update_transactions_from_block`, as Core's graph does
+        (btclib-org/btclib-node#1838). The walk stops at the first
+        transaction past `max_count` transactions or `max_weight`
         sigop-adjusted weight, so a caller tests `len(members) > max_count
         or weight > max_weight` and a cluster past a limit costs no more
         than the limit. btclib-org/btclib-node#1383
@@ -1081,8 +1085,16 @@ class Mempool:
             members.add(wtxid)
             weight += self.weights[wtxid]
             tx = self.transactions[wtxid]
-            frontier.extend(self.spent_by.get(tx.id, ()))
-            frontier.extend(self._parents(tx))
+            frontier.extend(
+                child
+                for child in self.spent_by.get(tx.id, ())
+                if self.graph.linked(wtxid, child)
+            )
+            frontier.extend(
+                parent
+                for parent in self._parents(tx)
+                if self.graph.linked(parent, wtxid)
+            )
         return members, weight
 
     def check_cluster(self, tx: Tx, vsize: int, weight: int | None = None) -> None:
