@@ -615,22 +615,34 @@ def test_drain_progress_extends_stop_s_wait_past_stop_timeout(
     assert not node.is_alive()
 
 
+@pytest.mark.parametrize(
+    "answer_seconds",
+    [(2, 2, 2), (0, 0, 2, 2, 2)],
+    ids=["pass-pushes", "drain-pushes"],
+)
 def test_requests_answered_by_the_loop_after_stop_extend_stop_s_wait(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, answer_seconds: tuple[int, ...]
 ) -> None:
     """`stop` called mid-pass is not outlasted by the pass's other requests.
 
     The loop answers `log2(queued + 1)` requests per pass, and `stop`
-    can arrive during the first. Here the pass answers a second one
-    ahead of `_drain_rpc_queue`, which answers the third. The three
-    finish 1, 2 and 3 seconds after the call, and `STOP_TIMEOUT` is 2.5.
-    Measured from the call alone, the wait runs out before the drain's
-    answer; with every answer pushing the deadline forward, no gap is
-    longer than 1 second. A runner may stall for up to 1.5 seconds
-    before the wait runs out, and a stall only makes the unpushed wait
-    fail sooner (btclib-org/btclib-node#1651, #1712).
+    can arrive during the first. The rest are answered by
+    `_drain_rpc_queue`. `answer_seconds` is how long each request takes
+    after `stop`'s call; `STOP_TIMEOUT` is 5. No answer is more than 2
+    seconds after the one before, so with every answer pushing the
+    deadline forward the wait never runs out. A runner may stall for up
+    to 3 seconds before it does, and a stall only makes an unpushed wait
+    fail sooner (btclib-org/btclib-node#1651, #1712, #1840).
+
+    - `pass-pushes`: three requests, the pass answers two and the drain
+      one, at 2, 4 and 6 seconds. Without the push after the pass's
+      `handle_rpc` the wait runs out at 5, before the drain's answer.
+    - `drain-pushes`: five, the pass answers two at once and the drain
+      three, at 2, 4 and 6 seconds. Only the drain's own pushes cover its last
+      answers: without them the wait runs out at 5 from the pass's last
+      push.
     """
-    monkeypatch.setattr(btclib_node, "STOP_TIMEOUT", 2.5)
+    monkeypatch.setattr(btclib_node, "STOP_TIMEOUT", 5)
     in_first = threading.Event()
     hold_first = threading.Event()
     in_pass = threading.Event()
@@ -643,25 +655,27 @@ def test_requests_answered_by_the_loop_after_stop_extend_stop_s_wait(
         hold_first.wait(10)
         return original_get_best_block_hash(node, conn, params)
 
+    answers = iter(answer_seconds)
+
     def slow_get_block_count(node: Node, conn: Any, params: Any) -> Any:
         in_pass.set()
         hold_pass.wait(10)
-        time.sleep(1)
+        time.sleep(next(answers))
         return original_get_block_count(node, conn, params)
 
     monkeypatch.setitem(callbacks, "getbestblockhash", held_get_best_block_hash)
     monkeypatch.setitem(callbacks, "getblockcount", slow_get_block_count)
 
     node = a_stopping_rpc_node(tmp_path)
-    # held in a pass of its own, so the next pass starts with all three
-    # queued and answers two of them
+    # held in a pass of its own, so the next pass starts with all of them
+    # queued
     first = threading.Thread(
         target=lambda: rpc_client(node).call_raw("getbestblockhash"), daemon=True
     )
     first.start()
     assert in_first.wait(30)
 
-    queued = 3
+    queued = len(answer_seconds)
     callers = [
         threading.Thread(
             target=lambda: rpc_client(node, timeout=30).call_raw("getblockcount"),
