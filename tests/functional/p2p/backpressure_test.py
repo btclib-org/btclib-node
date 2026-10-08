@@ -31,7 +31,7 @@ connects.
 import secrets
 import socket
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
@@ -441,7 +441,10 @@ def test_a_peer_that_does_not_read_is_dropped_by_the_ping_timeout(
     wait_until(lambda: connection.pause_send)
 
     def dropped() -> bool:
-        peer.send(Ping(1))
+        # the node may have closed the socket already, and a send to it
+        # then fails; only the node's own table says it dropped the peer
+        with suppress(BrokenPipeError, ConnectionResetError):
+            peer.send(Ping(1))
         return connection.id not in node.p2p_manager.connections
 
     wait_until(dropped, timeout=30)
