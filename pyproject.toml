@@ -67,7 +67,10 @@ dependencies = [
     # 2026.10.7 is the first release with `btclib.compressor`, which
     # `dumptxoutset` reads (btclib-org/btclib#2558), and `btclib.obfuscation`
     # (btclib-org/btclib#2559), which `mempool_persist.py` imports.
-    "btclib[secp256k1,bip324]>=2026.10.7",
+    #
+    # 2026.10.8 is the first release with `ShortIdCollisionError`
+    # (btclib-org/btclib#2570), which `p2p/callbacks.py` imports.
+    "btclib[secp256k1,bip324]>=2026.10.8",
     # `rpc/callbacks.py` and `rpc/utxo_set.py` import from
     # `btclib_wallet.descriptors`, where btclib's own `descriptors`
     # moved (btclib-org/btclib#2129): a runtime dependency now, not the

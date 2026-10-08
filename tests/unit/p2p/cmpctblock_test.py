@@ -41,6 +41,7 @@ from btclib_node.p2p.compact_block import (
     compact_block,
     maybe_set_peer_as_announcing_header_and_ids,
 )
+from btclib_node.p2p.main import _dispatch
 from tests import (
     build_block,
     generate_coinbase,
@@ -232,6 +233,34 @@ def test_a_compact_block_whose_short_ids_collide_asks_for_the_block(
     assert held(node, block)
 
 
+def test_a_collision_reaches_the_dispatcher_as_no_failure(
+    regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Btclib raises `ShortIdCollisionError`, which is not a failure to log.
+
+    Dispatched as a received message, the collision asks for the block:
+    nothing is logged as an exception, and the peer stays connected.
+    """
+    node, _ = a_node(regtest_node)
+    block = next_block(
+        node, generate_random_transaction(), generate_random_transaction()
+    )
+    compact = compact_block(block, 7)
+    short_id = compact.short_ids[0]
+    collided = CmpctBlock(
+        compact.header, compact.nonce, [short_id, short_id], compact.prefilled_txns
+    )
+    peer = a_compact_peer(node)
+    failures: list[object] = []
+    monkeypatch.setattr(node.logger, "exception", lambda *args: failures.append(args))
+    payload = collided.serialize()
+    _dispatch(node, peer, peer.id, "cmpctblock", payload)
+    assert not failures
+    (getdata,) = sent(peer, GetData)
+    assert [item.hash for item in getdata.items] == [block.header.hash]
+    assert node.p2p_manager.connections[peer.id] is peer
+
+
 @pytest.mark.parametrize("case", ["empty", "index past", "null prefilled"])
 def test_a_compact_block_init_data_refuses_is_misbehaviour(
     regtest_node: Callable[[], Node], case: str
@@ -285,13 +314,16 @@ def test_a_compact_block_header_too_old_is_misbehaviour(
 def test_a_compact_block_of_more_than_65535_transactions_keeps_the_peer(
     regtest_node: Callable[[], Node],
 ) -> None:
-    """Core's deserializer throws "indexes overflowed 16 bits", unpunished."""
+    """Core's deserializer throws "indexes overflowed 16 bits", unpunished.
+
+    btclib's parse refuses the count, so the message is its own.
+    """
     node, _ = a_node(regtest_node)
     block = next_block(node)
     prefilled = [PrefilledTransaction(0, block.transactions[0])]
     compact = CmpctBlock(block.header, 7, range(65535), prefilled, check_validity=False)
     peer = a_compact_peer(node)
-    with pytest.raises(BTClibValueError, match="overflowed") as refusal:
+    with pytest.raises(BTClibValueError, match="invalid transaction count") as refusal:
         cmpctblock(node, compact.serialize(check_validity=False), peer)
     assert not isinstance(refusal.value, MisbehavingError)
     assert block.header.hash not in node.chainstate.block_index.header_dict
