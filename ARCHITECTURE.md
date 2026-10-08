@@ -70,6 +70,12 @@ fixes there; a thread of the call's own hashes them, reading no state of
 `Node`'s but `terminate_flag`, and the call is a generator waiting for
 it, as the others are. `stop` ends the scan at its next coin.
 
+`dumptxoutset` is not: it writes the snapshot on `Node`'s thread, a step of
+coins at a time. A rollback dump invalidates the block after its target,
+writes, and reconsiders it, with the network off meanwhile. The invalidate
+and the reconsider run without yielding, so a deep rollback holds `Node`'s
+loop, where Core does it on an HTTP worker thread.
+
 ## The transport
 
 `src/btclib_node/p2p/transport.py` frames messages for v1 and

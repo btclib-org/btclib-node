@@ -96,6 +96,7 @@ from btclib_node.rpc.package import (
     package_test_accept,
     submit_package,
 )
+from btclib_node.rpc.snapshot import dump_tx_out_set
 from btclib_node.rpc.solver import solver
 
 if TYPE_CHECKING:
@@ -4388,6 +4389,7 @@ callbacks = {
     "getrawtransaction": get_raw_transaction,
     "gettxout": get_tx_out,
     "gettxoutsetinfo": get_tx_out_set_info,
+    "dumptxoutset": dump_tx_out_set,
     "decoderawtransaction": decode_raw_transaction,
     "testmempoolaccept": test_mempool_accept,
     "sendrawtransaction": send_raw_transaction,
@@ -4403,9 +4405,9 @@ callbacks = {
 # (`src/rpc/server.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): what
 # `rpc.jsonrpc.transform_named_arguments` maps an object's keys onto.
 # `a|b` is two names for one position. None of these methods takes an
-# `OBJ_NAMED_PARAMS` options object but `gettxspendingprevout`, whose
-# `options` position carries `mempool_only` and `return_spending_tx` too,
-# as `client.cpp` lists them; `named_only` says which of those are named-only.
+# `OBJ_NAMED_PARAMS` options object but `dumptxoutset` and
+# `gettxspendingprevout`, whose `options` position carries their options
+# too, as `client.cpp` lists them; `named_only` says which are named-only.
 # `bitcoind`'s own table is what `help dump_all_command_conversions`
 # answers, and `tests/integration/rpc_framing_test.py` holds this one to it.
 arg_names: dict[str, tuple[str, ...]] = {
@@ -4455,6 +4457,7 @@ arg_names: dict[str, tuple[str, ...]] = {
     "getrawtransaction": ("txid", "verbosity|verbose", "blockhash"),
     "gettxout": ("txid", "n", "include_mempool"),
     "gettxoutsetinfo": ("hash_type", "hash_or_height", "use_index"),
+    "dumptxoutset": ("path", "type", "options|rollback"),
     "decoderawtransaction": ("hexstring", "iswitness"),
     "testmempoolaccept": ("rawtxs", "maxfeerate"),
     "sendrawtransaction": ("hexstring", "maxfeerate", "maxburnamount"),
@@ -4468,5 +4471,6 @@ arg_names: dict[str, tuple[str, ...]] = {
 # The names of each method's `OBJ_NAMED_PARAMS` options, which
 # `transform_named_arguments` gathers into the options object.
 named_only: dict[str, tuple[str, ...]] = {
+    "dumptxoutset": ("rollback",),
     "gettxspendingprevout": ("mempool_only", "return_spending_tx"),
 }

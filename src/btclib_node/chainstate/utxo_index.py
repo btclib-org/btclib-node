@@ -680,7 +680,7 @@ class UtxoIndex:
         return self.db.scan_prefix(b"utxo-")
 
     @staticmethod
-    def _by_txid(
+    def by_txid(
         cursor: Iterator[tuple[bytes, bytes]],
     ) -> Iterator[list[tuple[int, bytes, bytes]]]:
         """Yield each txid's `(n, out_point_bytes, value)` rows, `n` ascending.
@@ -713,7 +713,7 @@ class UtxoIndex:
     ) -> bytes | None:
         """Return Core's `hash_serialized_3` over `cursor`'s coins, or `None`.
 
-        SHA256d over `tx_out_ser` of every coin, in `_by_txid`'s order:
+        SHA256d over `tx_out_ser` of every coin, in `by_txid`'s order:
         `ApplyHash` over `ComputeUTXOStats`' cursor
         (`src/kernel/coinstats.cpp`, at bitcoin/bitcoin@9be056a8a7, the
         v31.1 tag). The digest is `HashWriter::GetHash`'s own byte order,
@@ -726,7 +726,7 @@ class UtxoIndex:
         stats.
         """
         hasher = hashlib.sha256()
-        for rows in UtxoIndex._by_txid(cursor):
+        for rows in UtxoIndex.by_txid(cursor):
             for _, out_point_bytes, value in rows:
                 interruption_point()
                 try:

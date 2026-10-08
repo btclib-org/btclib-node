@@ -61,9 +61,12 @@ dependencies = [
     # first release carrying `btclib.p2p.bip324`, which
     # `p2p/v2transport.py` imports (issue #1190).
     #
-    # The floor is 2026.10.5, the release fixing GHSA-9r97-9x22-2pp4 and
-    # GHSA-rw95-w37r-537w. 2026.10.4 fixed GHSA-9fr5-46w5-5f9r.
-    "btclib[secp256k1,bip324]>=2026.10.5",
+    # 2026.10.5 fixed GHSA-9r97-9x22-2pp4 and GHSA-rw95-w37r-537w.
+    # 2026.10.4 fixed GHSA-9fr5-46w5-5f9r.
+    #
+    # 2026.10.7 is the first release with `btclib.compressor`, which
+    # `dumptxoutset` reads (btclib-org/btclib#2558).
+    "btclib[secp256k1,bip324]>=2026.10.7",
     # `rpc/callbacks.py` imports `add_checksum` from
     # `btclib_wallet.descriptors`, where btclib's own `descriptors`
     # moved (btclib-org/btclib#2129): a runtime dependency now, not the
@@ -1045,6 +1048,7 @@ ignore = [
 "src/btclib_node/rpc/callbacks.py" = ["ARG001"]
 # handlers registered in rpc/callbacks.py
 "src/btclib_node/rpc/mining.py" = ["ARG001"]
+"src/btclib_node/rpc/snapshot.py" = ["ARG001"]
 # socket.socket.setblocking is a C-level method taking no keyword
 # arguments at all (verified directly: socket().setblocking(flag=False)
 # raises "takes no keyword arguments"), so the every-call-site half of

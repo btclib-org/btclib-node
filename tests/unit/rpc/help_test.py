@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 # is caught here rather than only by eye.
 _EXPECTED_BARE_LISTING = (
     "== Blockchain ==\n"
+    'dumptxoutset "path" ( "type" {"rollback":n,...} )\n'
     "getbestblockhash\n"
     'getblock "blockhash" ( verbosity )\n'
     "getblockchaininfo\n"
