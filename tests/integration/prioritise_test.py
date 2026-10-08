@@ -164,7 +164,6 @@ def _agree(client: Any, bitcoind: Bitcoind, txs: list[Tx]) -> None:
     for tx in txs:
         ours = client.call("getmempoolentry", [tx.id.hex()])["fees"]
         theirs = cast("Any", bitcoind.rpc("getmempoolentry", [tx.id.hex()]))["fees"]
-        theirs.pop("chunk")
         assert ours == theirs, tx.id.hex()
     listed = client.call("getprioritisedtransactions", [])
     assert listed == bitcoind.rpc("getprioritisedtransactions", [])

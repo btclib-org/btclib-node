@@ -88,6 +88,7 @@ from btclib_node.p2p.protocol_version import (
     common_version,
 )
 from btclib_node.signet import assert_valid_solution
+from btclib_node.txgraph import POST_CHANGE_COST
 from btclib_node.versionbits import check_unknown_activations
 
 if TYPE_CHECKING:
@@ -544,7 +545,7 @@ def _reconcile_mempool_for_reorg(
                 # under `cs_main`: what is re-added came out of blocks
                 # the active chain carried, each paid for with its proof
                 # of work.
-                fee, vsize = verify_mempool_acceptance(node, tx, bypass_limits=True)
+                accepted = verify_mempool_acceptance(node, tx, bypass_limits=True)
             except MissingPrevoutError, BTClibValueError:
                 # Rejected on re-add, whether for a prevout this walk's
                 # own earlier iterations have not yet restored or for
@@ -561,7 +562,13 @@ def _reconcile_mempool_for_reorg(
             # `spend_height`, one past it, because this loop moves the
             # active chain one block at a time as it re-adds.
             tip_height = len(node.chainstate.block_index.active_chain) - 1
-            node.mempool.add_tx(tx, fee, vsize, height=tip_height)
+            node.mempool.add_tx(
+                tx,
+                accepted.fee,
+                accepted.vsize,
+                height=tip_height,
+                weight=accepted.weight,
+            )
     for block in to_add:
         # `remove_for_block` hashes each transaction to ask, so it does
         # nothing for an empty mempool with no fee delta: a block connected
@@ -675,13 +682,15 @@ def _evict_immature_or_nonfinal(node: Node) -> None:
     by `Mempool.remove_with_descendants`. Snapshots `node.mempool
     .transactions` before the loop, since eviction mutates it, and skips
     a wtxid a descendant's own removal already took out by the time
-    this reaches it.
+    this reaches it. The clusters left are then relinearized, as Core's
+    `DoWork(POST_CHANGE_COST)` at its end does.
     """
     for wtxid, tx in list(node.mempool.transactions.items()):
         if wtxid not in node.mempool.transactions:
             continue
         if not _still_final_and_mature(node, tx):
             node.mempool.remove_with_descendants(wtxid)
+    node.mempool.graph.do_work(POST_CHANGE_COST)
 
 
 # update_chain's own step once a fork has committed, whatever
@@ -1863,24 +1872,28 @@ class MempoolAcceptance(NamedTuple):
 
     `fee` in satoshi, and `vsize` Core's `GetVirtualTransactionSize(weight,
     sigop cost, DEFAULT_BYTES_PER_SIGOP)`, the size the mempool prices and
-    counts the transaction by. btclib-org/btclib-node#1357
+    counts the transaction by. btclib-org/btclib-node#1357 `weight` is
+    the sigop-adjusted weight that rounds up to `vsize`, Core's
+    `GetAdjustedWeight`, which the mempool's clusters are sized by.
     """
 
     fee: int
     vsize: int
+    weight: int | None = None
 
 
 class MempoolCandidate(NamedTuple):
     """What `pre_verify_mempool_acceptance` answers for a candidate it passes.
 
-    `fee` and `vsize` as `MempoolAcceptance`, and `prev_outputs` the
-    outputs its inputs spend, aligned with `tx.vin`: what
-    `interpreter.check_transaction` verifies the scripts against.
+    `fee`, `vsize` and `weight` as `MempoolAcceptance`, and
+    `prev_outputs` the outputs its inputs spend, aligned with `tx.vin`:
+    what `interpreter.check_transaction` verifies the scripts against.
     """
 
     fee: int
     vsize: int
     prev_outputs: list[TxOut]
+    weight: int | None = None
 
 
 class PackageCandidate(NamedTuple):
@@ -1907,7 +1920,7 @@ def verify_mempool_acceptance(
     """
     candidate = pre_verify_mempool_acceptance(node, tx, bypass_limits=bypass_limits)
     check_transaction(candidate.prev_outputs, tx)
-    return MempoolAcceptance(candidate.fee, candidate.vsize)
+    return MempoolAcceptance(candidate.fee, candidate.vsize, candidate.weight)
 
 
 def already_confirmed(node: Node, tx: Tx) -> bool:
@@ -2155,8 +2168,10 @@ def _pre_checks(
     _check_standard_inputs(node, prev_outputs, tx)
     fee = sum(x.value for x in prev_outputs) - sum(x.value for x in tx.vout)
     _check_ephemeral_dust(node, tx, fee)
-    vsize = _sigop_adjusted_vsize(tx, prev_outputs)
-    return MempoolCandidate(fee, vsize, prev_outputs)
+    weight = _sigop_adjusted_weight(tx, prev_outputs)
+    return MempoolCandidate(
+        fee, -(-weight // WITNESS_SCALE_FACTOR), prev_outputs, weight
+    )
 
 
 def package_refusal(txs: Sequence[Tx]) -> str | None:
@@ -2317,7 +2332,9 @@ def pre_verify_subpackage(
                 txs[: 0 if held_only else index], candidates, strict=False
             ):
                 held.enter_context(
-                    mempool.staged(earlier, candidate.fee, candidate.vsize)
+                    mempool.staged(
+                        earlier, candidate.fee, candidate.vsize, candidate.weight
+                    )
                 )
             try:
                 yield
@@ -2375,7 +2392,9 @@ def pre_verify_subpackage(
         package_level=True,
     )
     each(
-        lambda _, tx, candidate: mempool.check_cluster(tx, candidate.vsize),
+        lambda _, tx, candidate: mempool.check_cluster(
+            tx, candidate.vsize, candidate.weight
+        ),
         package_level=True,
     )
     each(lambda _, tx, __: _check_ephemeral_spends(node, tx))
@@ -2490,12 +2509,12 @@ def _check_standard_inputs(node: Node, prev_outputs: list[TxOut], tx: Tx) -> Non
         raise TxRejectedError(reason)
 
 
-def _sigop_adjusted_vsize(tx: Tx, prev_outputs: list[TxOut]) -> int:
-    """Return Core's vsize for `tx`, refusing one over the sigop ceiling.
+def _sigop_adjusted_weight(tx: Tx, prev_outputs: list[TxOut]) -> int:
+    """Return Core's sigop-adjusted weight of `tx`, refusing too many sigops.
 
     `PreChecks` (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the
     v31.1 tag), `bypass_limits` or not: `GetTransactionSigOpCost` under the
-    standard flags, the vsize `GetVirtualTransactionSize` adjusts by it,
+    standard flags, the weight `GetSigOpsAdjustedWeight` adjusts by it,
     and "bad-txns-too-many-sigops" past `MAX_STANDARD_TX_SIGOPS_COST`.
     `btclib.script.engine.sig_op_cost` is that function, term by term:
     btclib-org/btclib-node#1357, btclib-org/btclib-node#1586.
@@ -2504,8 +2523,7 @@ def _sigop_adjusted_vsize(tx: Tx, prev_outputs: list[TxOut]) -> int:
     if cost > _MAX_STANDARD_TX_SIGOPS_COST:
         reason, details = "bad-txns-too-many-sigops", str(cost)
         raise TxRejectedError(reason, details)
-    adjusted_weight = max(tx.weight, cost * _BYTES_PER_SIGOP)
-    return -(-adjusted_weight // WITNESS_SCALE_FACTOR)
+    return max(tx.weight, cost * _BYTES_PER_SIGOP)
 
 
 def _check_tx_inputs(prevout_coins: list[Coin], tx: Tx, spend_height: int) -> None:
@@ -2595,7 +2613,7 @@ def _check_replacement_cluster_and_spends(
     btclib-org/btclib-node#1383
     """
     node.mempool.check_replacement(tx, candidate.fee, candidate.vsize)
-    node.mempool.check_cluster(tx, candidate.vsize)
+    node.mempool.check_cluster(tx, candidate.vsize, candidate.weight)
     check_max_feerate(node, tx, candidate.fee, candidate.vsize, max_feerate)
     if not bypass_limits:
         _check_ephemeral_spends(node, tx)

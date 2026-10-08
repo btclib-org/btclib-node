@@ -1308,7 +1308,9 @@ def settle_tx(node: Node, check: TxCheck, refusal: Exception | None) -> None:
     # that then asks for it getting `notfound` for its trouble.
     # btclib-org/btclib-node#277
     tip_height = len(node.chainstate.block_index.active_chain) - 1
-    if not node.mempool.add_tx(tx, candidate.fee, candidate.vsize, height=tip_height):
+    if not node.mempool.add_tx(
+        tx, candidate.fee, candidate.vsize, height=tip_height, weight=candidate.weight
+    ):
         # Core's `TX_RECONSIDERABLE` "mempool full": it no longer meets the
         # minimum the eviction left, though a child may pay for it
         _rejected(
@@ -1356,8 +1358,8 @@ def _settle_package(
     errors: dict[bytes, Exception]
     if refusal is None:
         members = [
-            (parent, candidate.parent.fee, candidate.parent.vsize),
-            (child, candidate.child.fee, candidate.child.vsize),
+            (tx, member.fee, member.vsize, member.weight)
+            for tx, member in ((parent, candidate.parent), (child, candidate.child))
         ]
         tip_height = len(node.chainstate.block_index.active_chain) - 1
         if node.mempool.add_package(members, height=tip_height):

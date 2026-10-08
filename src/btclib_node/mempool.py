@@ -22,8 +22,10 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from btclib.fee import FeeRate, fee_from_vsize
 
+from btclib_node.cluster_linearize import FeeFrac
 from btclib_node.config import DEFAULT_INCREMENTAL_RELAY_FEERATE
 from btclib_node.exceptions import TxRejectedError
+from btclib_node.txgraph import POST_CHANGE_COST, MiningKey, TxGraph
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Sequence
@@ -56,17 +58,18 @@ def _named(tx: Tx) -> str:
 
 # `DEFAULT_CLUSTER_LIMIT` and `DEFAULT_CLUSTER_SIZE_LIMIT_KVB`
 # (`src/policy/policy.h`, same commit): the most transactions, and
-# thousands of vbytes, one cluster may hold. btclib-org/btclib-node#1383
+# thousands of vbytes, one cluster may hold. Core's graph takes the size
+# in weight units, the vbytes times four (`src/txmempool.cpp`, same
+# commit). btclib-org/btclib-node#1383
 _CLUSTER_LIMIT = 64
-_CLUSTER_VSIZE_LIMIT = 101 * 1000
+_CLUSTER_WEIGHT_LIMIT = 101 * 1000 * 4
 
 
 class MempoolEntry(NamedTuple):
     """One held transaction's own `getmempoolentry` accounting.
 
     `Mempool.entry` below is the one place this is built; its own
-    docstring is where the shape -- Core's own `entryToJSON`, less what
-    a cluster mempool alone backs -- is argued.
+    docstring is where the shape, Core's own `entryToJSON`, is argued.
     """
 
     vsize: int
@@ -82,6 +85,8 @@ class MempoolEntry(NamedTuple):
     descendant_count: int
     descendant_size: int
     descendant_fees: int
+    chunk_weight: int
+    chunk_fee: int
     depends: list[bytes]
     spent_by: list[bytes]
     bip125_replaceable: bool
@@ -116,6 +121,20 @@ _INT64_MIN, _INT64_MAX = -(2**63), 2**63 - 1
 def _saturate(amount: int) -> int:
     """Clamp `amount` to an `int64`, Core's `SaturatingAdd` of two."""
     return min(max(amount, _INT64_MIN), _INT64_MAX)
+
+
+def _weight(tx: Tx, vsize: int | None) -> int:
+    """Return a sigop-adjusted weight for a caller that passes none.
+
+    `tx.weight` where `vsize` is absent or is what `tx.weight` rounds up
+    to. Otherwise four times `vsize`: where sigops raised `vsize`, that is
+    their weight, `_BYTES_PER_SIGOP` in `main.py` being a multiple of
+    four. A sigop weight less than four units above `tx.weight` reads as
+    `tx.weight`, so the callers that know the sigop cost pass the weight.
+    """
+    if vsize is None or vsize == -(-tx.weight // 4):
+        return tx.weight
+    return 4 * vsize
 
 
 def format_money(amount: int) -> str:
@@ -216,6 +235,15 @@ class Mempool:
         # vsize `main.verify_mempool_acceptance` computes: what every
         # feerate and the size limit here read. btclib-org/btclib-node#1357
         self.vsizes: dict[bytes, int] = {}
+        # wtxid -> Core's `GetAdjustedWeight`, the sigop-adjusted weight
+        # `vsizes` rounds up from: the size `graph` chunks by
+        self.weights: dict[bytes, int] = {}
+        # Core's `m_txgraph`: the clusters and their linearizations, by
+        # modified fee and `weights`. Ties go to the lower txid in its
+        # internal byte order, Core's `fallback_order`
+        # (`src/txmempool.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        # tag).
+        self.graph: TxGraph[bytes] = TxGraph()
         # wtxid -> Core's own `CTxMemPoolEntry::GetTime`
         # (`src/kernel/mempool_entry.h`, at bitcoin/bitcoin@9be056a8a7, the
         # v31.1 tag): the wall-clock second this entry was accepted,
@@ -457,11 +485,12 @@ class Mempool:
         )
 
     # Don't need lock because handled in same thread
-    def add_tx(
+    def add_tx(  # noqa: PLR0913
         self,
         tx: Tx,
         fee: int = 0,
         vsize: int | None = None,
+        weight: int | None = None,
         *,
         height: int = 0,
         trim: bool = True,
@@ -471,6 +500,11 @@ class Mempool:
         With `trim` false nothing is evicted, and the caller calls `trim`
         itself once it has added what it will: Core's package submission,
         which trims once at the end.
+
+        `weight` is the sigop-adjusted weight; `_weight` says what stands
+        in for it where a caller has none. The clusters are relinearized
+        before any eviction, Core's `POST_CHANGE_COST` of work, as
+        `CTxMemPool::Apply` does.
 
         A no-op, returning `False`, for a txid already held or a
         transaction spending an outpoint one held already spends. Otherwise
@@ -523,8 +557,9 @@ class Mempool:
             # a caller that skipped `main.verify_mempool_acceptance`, whose
             # `check_replacement` call refuses this first
             return False
-        self._insert(tx, fee, vsize, height)
+        self._insert(tx, fee, vsize, height, weight)
         self._push_heap(wtxid)
+        self.graph.do_work(POST_CHANGE_COST)
         if trim:
             self._evict_to_limit()
         return wtxid in self.transactions
@@ -534,31 +569,30 @@ class Mempool:
         self._evict_to_limit()
 
     def add_package(
-        self, members: Sequence[tuple[Tx, int, int]], *, height: int
+        self, members: Sequence[tuple[Tx, int, int, int | None]], *, height: int
     ) -> bool:
         """Add a package's transactions, parents first, or none, and say which.
 
-        `members` are `(tx, fee, vsize)` of the parents and the child
-        paying for them, each already refused by none of
+        `members` are `(tx, fee, vsize, weight)` of the parents and the
+        child paying for them, each already refused by none of
         `main.pre_verify_subpackage`'s checks on this very state. They are
         judged by their aggregate modified feerate where the mempool is over
         its limit: the others are evicted for room, worst first, as long as
         they pay less than the package, and the package is itself the
         eviction once the worst left pays more. Core evicts the worst
         chunk after adding (`LimitMempoolSize` after `SubmitPackage`,
-        `src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
-        which is the same choice with chunks scored by the cluster graph
-        this mempool does not hold. `_evict_to_limit`'s own docstring has
-        the departure for the others.
+        `src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag);
+        eviction here does not read `graph`'s chunks. `_evict_to_limit`'s
+        own docstring has the departure for the others.
 
         A parent of the package that an eviction takes leaves nothing to
         add, and so does a member left alone by the eviction after the
         add, where a package larger than the limit is evicted.
         """
-        fee = sum(fee + self.delta(tx.id) for tx, fee, _ in members)
+        fee = sum(fee + self.delta(tx.id) for tx, fee, _, _ in members)
         size = sum(member[2] for member in members)
         rate = Fraction(fee, size)
-        parents = {wtxid for tx, _, _ in members for wtxid in self._parents(tx)}
+        parents = {wtxid for tx, *_ in members for wtxid in self._parents(tx)}
         while self.bytesize + size > self.bytesize_limit and self.transactions:
             worst = self._pop_worst_wtxid()
             worst_rate = Fraction(self.modified_fee(worst), self.vsizes[worst])
@@ -571,11 +605,12 @@ class Mempool:
             self._evict_chunk(worst)
         if not parents <= self.transactions.keys():
             return False
-        for tx, member_fee, vsize in members:
-            self._insert(tx, member_fee, vsize, height)
+        for tx, member_fee, vsize, weight in members:
+            self._insert(tx, member_fee, vsize, height, weight)
             self._push_heap(tx.hash)
+        self.graph.do_work(POST_CHANGE_COST)
         self._evict_to_limit()
-        wtxids = [tx.hash for tx, _, _ in members]
+        wtxids = [tx.hash for tx, *_ in members]
         if all(wtxid in self.transactions for wtxid in wtxids):
             return True
         for wtxid in wtxids:
@@ -583,16 +618,19 @@ class Mempool:
         return False
 
     @contextmanager
-    def staged(self, tx: Tx, fee: int, vsize: int) -> Iterator[None]:
+    def staged(
+        self, tx: Tx, fee: int, vsize: int, weight: int | None = None
+    ) -> Iterator[None]:
         """Hold `tx` as if accepted for the block, then take it out again.
 
         What a package's child is checked against: the mempool its parent
-        would leave. Nothing is evicted or announced, the heap is left
-        alone, and `sequence` and `transactions_updated` are as they were
-        after, so no reader of either sees the parent come and go.
+        would leave. Nothing is evicted or announced, the heap and `graph`
+        are left alone, and `sequence` and `transactions_updated` are as
+        they were after, so no reader of either sees the parent come and go.
         `tx` is one `main.pre_verify_mempool_acceptance` accepted, or one
         `main.pre_verify_subpackage` stages before asking about conflicts,
-        which may conflict with a held transaction.
+        which may conflict with a held transaction. `weight` is as in
+        `add_tx`.
         """
         sequence, updated = self.sequence, self.transactions_updated
         # a held transaction `tx` conflicts with keeps its claim on the outpoint
@@ -602,7 +640,7 @@ class Mempool:
             if (outpoint := (vin.prev_out.tx_id, vin.prev_out.vout))
             in self.outpoint_spender
         }
-        self._insert(tx, fee, vsize, height=0)
+        self._insert(tx, fee, vsize, 0, weight, graph=False)
         try:
             yield
         finally:
@@ -610,8 +648,21 @@ class Mempool:
             self.outpoint_spender.update(spenders)
             self.sequence, self.transactions_updated = sequence, updated
 
-    def _insert(self, tx: Tx, fee: int, vsize: int | None, height: int) -> None:
-        """Enter `tx` in every index, with no eviction and no heap entry."""
+    def _insert(  # noqa: PLR0913
+        self,
+        tx: Tx,
+        fee: int,
+        vsize: int | None,
+        height: int,
+        weight: int | None = None,
+        *,
+        graph: bool = True,
+    ) -> None:
+        """Enter `tx` in every index, with no eviction and no heap entry.
+
+        In `graph` too unless `graph` is false, linked to its held parents
+        and to its held children, which a reorg can leave behind it.
+        """
         wtxid, txid = tx.hash, tx.id
         for vin in tx.vin:
             self.outpoint_spender[vin.prev_out.tx_id, vin.prev_out.vout] = wtxid
@@ -621,6 +672,7 @@ class Mempool:
         self.fees[wtxid] = fee
         self.modified_fees[wtxid] = _saturate(fee + self.delta(txid))
         self.vsizes[wtxid] = tx.vsize if vsize is None else vsize
+        self.weights[wtxid] = _weight(tx, vsize) if weight is None else weight
         self.entry_times[wtxid] = time.time()
         self.heights[wtxid] = height
         for vin in tx.vin:
@@ -629,6 +681,13 @@ class Mempool:
         self.bytesize += self.vsizes[wtxid]
         self.sequence += 1
         self.transactions_updated += 1
+        if graph:
+            feerate = FeeFrac(self.modified_fees[wtxid], self.weights[wtxid])
+            self.graph.add_transaction(wtxid, feerate, txid[::-1])
+            for parent in self._parents(tx):
+                self.graph.add_dependency(parent, wtxid)
+            for child in self.spent_by.get(txid, ()):
+                self.graph.add_dependency(wtxid, child)
 
     def _push_heap(self, wtxid: bytes) -> None:
         """Give `wtxid`, just inserted, its entry in the eviction heap."""
@@ -710,6 +769,7 @@ class Mempool:
         wtxid = self.txid_index.get(txid)
         if wtxid is not None:
             self.modified_fees[wtxid] = _saturate(self.modified_fees[wtxid] + fee_delta)
+            self.graph.set_fee(wtxid, self.modified_fees[wtxid])
             self.transactions_updated += 1
             self._push_heap(wtxid)
             self._bound_heap()
@@ -975,49 +1035,50 @@ class Mempool:
         }
 
     def cluster(
-        self, seeds: Iterable[bytes], *, max_count: int, max_vsize: int
+        self, seeds: Iterable[bytes], *, max_count: int, max_weight: int
     ) -> tuple[set[bytes], int]:
-        """Return the held transactions connected to `seeds`, with their vsize.
+        """Return the held transactions connected to `seeds`, with their weight.
 
         A cluster is a connected component of the graph whose edges are
         the spends among held transactions, followed up through each
         input's parent and down through `spent_by`. The walk stops at the
-        first transaction past `max_count` transactions or `max_vsize`
-        vbytes, so a caller tests `len(members) > max_count or vsize >
-        max_vsize` and a cluster past a limit costs no more than the
-        limit. btclib-org/btclib-node#1383
+        first transaction past `max_count` transactions or `max_weight`
+        sigop-adjusted weight, so a caller tests `len(members) > max_count
+        or weight > max_weight` and a cluster past a limit costs no more
+        than the limit. btclib-org/btclib-node#1383
         """
         members: set[bytes] = set()
-        vsize = 0
+        weight = 0
         frontier = list(seeds)
-        while frontier and len(members) <= max_count and vsize <= max_vsize:
+        while frontier and len(members) <= max_count and weight <= max_weight:
             wtxid = frontier.pop()
             if wtxid in members:
                 continue
             members.add(wtxid)
-            vsize += self.vsizes[wtxid]
+            weight += self.weights[wtxid]
             tx = self.transactions[wtxid]
             frontier.extend(self.spent_by.get(tx.id, ()))
             frontier.extend(self._parents(tx))
-        return members, vsize
+        return members, weight
 
-    def check_cluster(self, tx: Tx, vsize: int) -> None:
+    def check_cluster(self, tx: Tx, vsize: int, weight: int | None = None) -> None:
         """Refuse `tx` if its cluster would pass Core's limits.
 
         Core's `CheckMemPoolPolicyLimits` (`src/validation.cpp`,
         at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), "too-large-cluster"
-        for more than 64 transactions or 101,000 vbytes in the cluster
-        `tx` would join. Core sizes a cluster by sigop-adjusted weight and
-        this mempool keeps the vsize that weight rounds up to, so a
-        cluster within less than four weight units per transaction of the
-        limit is refused here and accepted there. btclib-org/btclib-node#1383
+        for more than 64 transactions or 404,000 sigop-adjusted weight
+        units in the cluster `tx` would join. `weight` is `tx`'s; where it
+        is `None`, `_weight(tx, vsize)` stands in, which is all `vsize` is
+        for. btclib-org/btclib-node#1383
         """
         max_count = _CLUSTER_LIMIT - 1
-        max_vsize = _CLUSTER_VSIZE_LIMIT - vsize
-        members, size = self.cluster(
-            self._parents(tx), max_count=max_count, max_vsize=max_vsize
+        max_weight = _CLUSTER_WEIGHT_LIMIT - (
+            _weight(tx, vsize) if weight is None else weight
         )
-        if len(members) > max_count or size > max_vsize:
+        members, size = self.cluster(
+            self._parents(tx), max_count=max_count, max_weight=max_weight
+        )
+        if len(members) > max_count or size > max_weight:
             reason = "too-large-cluster"
             raise TxRejectedError(reason)
 
@@ -1055,6 +1116,9 @@ class Mempool:
         (`mapTx.size() || mapNextTx.size() || mapDeltas.size()`): a block
         connected during initial block download would otherwise hash every
         transaction. btclib-org/btclib-node#1502
+
+        The clusters left are relinearized, Core's `POST_CHANGE_COST` of
+        work.
         """
         if not (self.size or self.deltas):
             return
@@ -1062,6 +1126,7 @@ class Mempool:
             self.remove_tx(tx)
             self.remove_conflicts(tx)
             self.clear_prioritisation(tx.id)
+        self.graph.do_work(POST_CHANGE_COST)
 
     def remove_dependents(self, tx: Tx) -> None:
         """Remove what spends any of `tx`'s own outputs, with its descendants.
@@ -1162,6 +1227,9 @@ class Mempool:
         self.fees.pop(wtxid, None)
         self.modified_fees.pop(wtxid, None)
         vsize = self.vsizes.pop(wtxid)
+        self.weights.pop(wtxid)
+        if wtxid in self.graph:
+            self.graph.remove_transaction(wtxid)
         self.entry_times.pop(wtxid, None)
         self.heights.pop(wtxid, None)
         # Core's own `removeUnchecked` discards it unconditionally on
@@ -1276,60 +1344,14 @@ class Mempool:
         found.discard(wtxid)
         return sorted(found, key=lambda w: self.transactions[w].id[::-1])
 
-    def mining_order_keys(
-        self, wtxids: Iterable[bytes]
-    ) -> dict[bytes, tuple[int, int, bytes]]:
+    def mining_order_keys(self, wtxids: Iterable[bytes]) -> dict[bytes, MiningKey]:
         """Return a sort key for each of `wtxids`, best-paying first.
 
         Core at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, orders
-        announcements by `CompareMiningScoreWithTopology`, the cluster
-        linearization, which this mempool does not have.
-
-        Feerates use the modified fee, as Core's graph does
-        (`txmempool.cpp:641`, same tag).
-
-        The score is the highest feerate among the ancestor packages of
-        `wtxid` and of each of its descendants. A parent scores at least
-        what any child paying for it does, and a tie goes to fewer
-        ancestors, so parents sort first. A tie after that goes to the
-        lower txid, Core's mempool fallback order (`txmempool.cpp`,
-        `fallback_order`, a comparison of the internal byte order). Each
-        package is computed once per call, and a transaction with no
-        relatives in this mempool is scored without the walks.
-
-        A feerate is `fee * scale // vsize`, an integer. Two distinct
-        feerates `a/b` and `c/d` differ by at least `1 / (b * d)`, and
-        `scale` is the square of the total vsize held, which no package's
-        vsize exceeds, so the floors of the scaled feerates differ in the order
-        of the feerates, and equal feerates give equal floors.
+        announcements by `CompareMiningScoreWithTopology`: the order a
+        block takes them, `TxGraph.order_keys`.
         """
-        scale = self.bytesize**2
-        packages: dict[bytes, tuple[int, int]] = {}
-
-        def package(wtxid: bytes) -> tuple[int, int]:
-            if wtxid not in packages:
-                ancestors = self._ancestors(wtxid)
-                fee = sum(self.modified_fee(w) for w in ancestors)
-                vsize = sum(self.vsizes[w] for w in ancestors)
-                packages[wtxid] = (fee * scale // vsize, len(ancestors))
-            return packages[wtxid]
-
-        def key(wtxid: bytes) -> tuple[int, int, bytes]:
-            tx = self.transactions[wtxid]
-            txid = self.txids[wtxid]
-            if txid not in self.spent_by and not any(
-                vin.prev_out.tx_id in self.txid_index for vin in tx.vin
-            ):
-                # no relatives here: its own package, with no walk
-                rate = self.modified_fee(wtxid) * scale // self.vsizes[wtxid]
-                return -rate, 1, txid[::-1]
-            return (
-                -max(package(d)[0] for d in self._descendants(wtxid)),
-                package(wtxid)[1],
-                txid[::-1],
-            )
-
-        return {wtxid: key(wtxid) for wtxid in wtxids}
+        return self.graph.order_keys(wtxids)
 
     def is_bip125_replaceable(self, wtxid: bytes) -> bool:
         """Whether `wtxid`, or an unconfirmed ancestor, signals BIP125 opt-in.
@@ -1356,11 +1378,9 @@ class Mempool:
         """Return `wtxid`'s own `getmempoolentry` accounting.
 
         Core's own `entryToJSON` (`src/rpc/mempool.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), less `chunkweight`
-        and the `fees` object's own `chunk`: both `GetMainChunkFeerate`'s,
-        a cluster mempool's own linearization this mempool does not
-        carry, the same reason `rpc.callbacks.get_mempool_info` leaves
-        out every field a cluster graph would back. `modified` is `base`
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The chunk's weight
+        and fee are `GetMainChunkFeerate`'s, read from `self.graph`.
+        `modified` is `base`
         plus the transaction's fee delta, and `ancestor` and `descendant`
         sum the modified fees, as `CalculateAncestorData` and
         `CalculateDescendantData` do (`src/txmempool.cpp`, same tag).
@@ -1384,6 +1404,7 @@ class Mempool:
             (self.transactions[child].id for child in self.spent_by.get(tx.id, ())),
             key=lambda txid: txid[::-1],
         )
+        chunk = self.graph.chunk_feerate(wtxid)
         return MempoolEntry(
             vsize=self.vsizes[wtxid],
             weight=tx.weight,
@@ -1398,6 +1419,8 @@ class Mempool:
             descendant_count=len(descendants),
             descendant_size=sum(self.vsizes[w] for w in descendants),
             descendant_fees=sum(self.modified_fee(w) for w in descendants),
+            chunk_weight=chunk.size,
+            chunk_fee=chunk.fee,
             depends=depends,
             spent_by=spent_by,
             bip125_replaceable=self.is_bip125_replaceable(wtxid),
@@ -1514,9 +1537,9 @@ class Mempool:
         at bitcoin/bitcoin@58a7869f86) evicts the worst *chunk*, a package
         score `m_txgraph` computes over the whole cluster graph -- so a
         low-feerate parent paid for by a high-feerate child is not taken
-        out from under it. This mempool holds no dependency graph to
-        score packages by, only enough to answer "what depends on this"
-        once a root is already chosen (`_descendants`), so the
+        out from under it. Eviction here does not read the chunks
+        `graph` keeps, only "what depends on this" once a root is
+        already chosen (`_descendants`), so the
         substitute that stays consistent picks the worst *individual*
         feerate instead and evicts it together with whatever depends on
         it -- not because that is cheapest to evict, but because it is

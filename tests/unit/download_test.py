@@ -30,6 +30,7 @@ from btclib.p2p.negotiation import FeeFilter, SendHeaders
 import btclib_node.download as download_module
 from btclib_node.chains import RegTest
 from btclib_node.chainstate.block_index import block_time
+from btclib_node.cluster_linearize import FeeFrac
 from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.download import MAX_BLOCKS_IN_TRANSIT_PER_PEER, DownloadManager
@@ -181,6 +182,9 @@ def make_manager(
 def hold(manager: DownloadManager, *wtxids: bytes) -> None:
     """Make each wtxid a member of the manager's own mempool, minimally.
 
+    In `Mempool.graph` too, each a cluster of its own, which the trickle
+    ranks by.
+
     `tx_download` and `_send_due_announcements` now check
     `Mempool.transactions` membership before queuing or sending an
     announcement (btclib-org/btclib-node#294), so a synthetic wtxid this
@@ -199,6 +203,8 @@ def hold(manager: DownloadManager, *wtxids: bytes) -> None:
         mempool.fees[wtxid] = 0
         mempool.modified_fees[wtxid] = 0
         mempool.vsizes[wtxid] = tx.vsize
+        mempool.weights[wtxid] = tx.weight
+        mempool.graph.add_transaction(wtxid, FeeFrac(0, tx.weight), tx.id[::-1])
         mempool.bytesize += tx.vsize
 
 

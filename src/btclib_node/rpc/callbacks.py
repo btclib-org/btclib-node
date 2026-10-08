@@ -129,8 +129,10 @@ __all__ = [
     "get_chain_tips",
     "get_connection_count",
     "get_mempool_ancestors",
+    "get_mempool_cluster",
     "get_mempool_descendants",
     "get_mempool_entry",
+    "get_mempool_feerate_diagram",
     "get_mempool_info",
     "get_network_info",
     "get_node_addresses",
@@ -2221,15 +2223,16 @@ def get_mempool_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     # Core's own MempoolInfoToJSON (`src/rpc/mempool.cpp:1075-1086`,
     # at bitcoin/bitcoin@58a7869f86) answers several fields beyond these:
     # `usage`, `total_fee`, `limitclustercount`, `limitclustersize`,
-    # `optimal`, the deprecated `fullrbf`. Every one of those is backed
-    # by a concept this tree does not carry -- a cluster mempool graph, a
-    # persisted total fee -- and answering any of them with a
-    # placeholder would be exactly the decoration this method's own
+    # the deprecated `fullrbf`. Each is backed by something this tree does
+    # not carry -- a memory count, a persisted total fee, the cluster
+    # options (btclib-org/btclib-node#1383) -- and answering any of them
+    # with a placeholder would be exactly the decoration this method's own
     # sparse answer already was. `maxmempool` and `mempoolminfee` are
     # wired in because #294 gave both a real source to read,
     # `unbroadcastcount` because #1421 gave `Mempool.unbroadcast` one,
-    # and the four fields the relay options set because `Config` holds
-    # those options (btclib-org/btclib-node#1497, #1596).
+    # the four fields the relay options set because `Config` holds
+    # those options (btclib-org/btclib-node#1497, #1596), and `optimal`
+    # because `Mempool.graph` knows it, Core's `DoWork(0)`.
     # btclib-org/btclib-node#305
     #
     # `mempoolminfee` is BTC/kvB, matching Core's own
@@ -2262,6 +2265,7 @@ def get_mempool_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
         "unbroadcastcount": len(mempool.unbroadcast),
         "permitbaremultisig": node.config.permit_bare_multisig,
         "maxdatacarriersize": node.config.max_datacarrier_bytes or 0,
+        "optimal": mempool.graph.do_work(0),
     }
 
 
@@ -2846,11 +2850,13 @@ def _mempool_entry_json(mempool: Mempool, wtxid: bytes) -> dict[str, Any]:
         "ancestorcount": entry.ancestor_count,
         "ancestorsize": entry.ancestor_size,
         "wtxid": entry.wtxid,
+        "chunkweight": entry.chunk_weight,
         "fees": {
             "base": btc_amount(entry.fee),
             "modified": btc_amount(entry.modified_fee),
             "ancestor": btc_amount(entry.ancestor_fees),
             "descendant": btc_amount(entry.descendant_fees),
+            "chunk": btc_amount(entry.chunk_fee),
         },
         "depends": entry.depends,
         "spentby": entry.spent_by,
@@ -2867,9 +2873,7 @@ def get_mempool_entry(
     Core's own shape (`entryToJSON`, `src/rpc/mempool.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag), with Core 32's
     `vsize_adjusted` and `vsize_bip141` (at bitcoin/bitcoin@aef8a04966,
-    btclib-org/btclib-node#1757), less `chunkweight` and
-    the `fees` object's own `chunk` -- `Mempool.entry`'s own docstring is
-    where that is argued. A `txid` this mempool does not hold is Core's
+    btclib-org/btclib-node#1757). A `txid` this mempool does not hold is Core's
     own `RPC_INVALID_ADDRESS_OR_KEY`, "Transaction not in mempool".
     btclib-org/btclib-node#1397
     """
@@ -2891,6 +2895,61 @@ def get_mempool_entry(
             RPCErrorCode.INVALID_ADDRESS_OR_KEY, "Transaction not in mempool"
         )
     return _mempool_entry_json(mempool, wtxid)
+
+
+def get_mempool_cluster(
+    node: Node, conn: RpcConnection, params: list[Any]
+) -> dict[str, Any]:
+    """Answer `getmempoolcluster`: the cluster of a held transaction, by chunk.
+
+    Core's `clusterToJSON` (`src/rpc/mempool.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the sigop-adjusted weight
+    and the count of the whole cluster, and each chunk's modified fee,
+    weight and txids, in the order a block takes them. A `txid` this
+    mempool does not hold is "Transaction not in mempool".
+    """
+    if not params:
+        raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["getmempoolcluster"])
+    if not isinstance(params[0], str):
+        raise type_error(1, "txid", params[0], "string")
+    txid = parse_hash_v("txid", params[0])
+    mempool = node.mempool
+    wtxid = mempool.txid_index.get(txid)
+    if wtxid is None:
+        raise RpcError(
+            RPCErrorCode.INVALID_ADDRESS_OR_KEY, "Transaction not in mempool"
+        )
+    chunks = mempool.graph.chunks(wtxid)
+    return {
+        "clusterweight": sum(chunk.feerate.size for chunk in chunks),
+        "txcount": sum(len(chunk.refs) for chunk in chunks),
+        "chunks": [
+            {
+                "chunkfee": btc_amount(chunk.feerate.fee),
+                "chunkweight": chunk.feerate.size,
+                "txs": [mempool.txids[w].hex() for w in chunk.refs],
+            }
+            for chunk in chunks
+        ],
+    }
+
+
+def get_mempool_feerate_diagram(
+    node: Node, conn: RpcConnection, _: list[Any]
+) -> list[dict[str, Any]]:
+    """Answer `getmempoolfeeratediagram`, Core's hidden RPC.
+
+    `GetFeerateDiagram` (`src/txmempool.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag): from zero, the running sigop-adjusted weight and
+    modified fee after each chunk, in the order a block takes them.
+    """
+    points = [{"weight": 0, "fee": btc_amount(0)}]
+    weight = fee = 0
+    for chunk in node.mempool.graph.mining_order():
+        weight += chunk.feerate.size
+        fee += chunk.feerate.fee
+        points.append({"weight": weight, "fee": btc_amount(fee)})
+    return points
 
 
 def _mempool_relatives(
@@ -3920,10 +3979,10 @@ def _test_accept_alone(node: Node, tx: Tx) -> Outcome:
     try:
         # the sigop-adjusted size, known once the prevouts are read
         # (btclib-org/btclib-node#1357)
-        fee, vsize = verify_mempool_acceptance(node, tx)
+        candidate = verify_mempool_acceptance(node, tx)
     except (MissingPrevoutError, TxRejectedError) as refusal:
         return Outcome(error=refusal)
-    return accepted(node, tx, fee, vsize)
+    return accepted(node, tx, candidate.fee, candidate.vsize)
 
 
 def _test_accept_verdict(
@@ -4104,7 +4163,7 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
         # btclib-org/btclib-node#1375
         raise RpcError(RPCErrorCode.VERIFY_REJECTED, reason)
     try:
-        fee, vsize = verify_mempool_acceptance(node, tx)
+        fee, vsize, weight = verify_mempool_acceptance(node, tx)
     except MissingPrevoutError as exc:
         # Core's own missing-inputs code, RPC_VERIFY_ERROR
         # (src/rpc/protocol.h): a transaction this node cannot verify
@@ -4134,7 +4193,7 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
     # this transaction was kept when it was not -- the same defect #277
     # fixed on the peer-to-peer path, `p2p/callbacks.py`'s `tx` handler.
     tip_height = len(node.chainstate.block_index.active_chain) - 1
-    if not node.mempool.add_tx(tx, fee, vsize, height=tip_height):
+    if not node.mempool.add_tx(tx, fee, vsize, height=tip_height, weight=weight):
         # Not kept: `Mempool._evict_to_limit` ran
         # and took this transaction right back out for being the worst
         # one held once `Mempool.bytesize_limit` was restored -- exactly
@@ -4301,6 +4360,8 @@ callbacks = {
     "getrawmempool": get_raw_mempool,
     "getorphantxs": get_orphan_txs,
     "getmempoolentry": get_mempool_entry,
+    "getmempoolcluster": get_mempool_cluster,
+    "getmempoolfeeratediagram": get_mempool_feerate_diagram,
     "getmempoolancestors": get_mempool_ancestors,
     "getmempooldescendants": get_mempool_descendants,
     "prioritisetransaction": prioritise_transaction,
@@ -4367,6 +4428,8 @@ arg_names: dict[str, tuple[str, ...]] = {
     "getrawmempool": ("verbose", "mempool_sequence"),
     "getorphantxs": ("verbosity",),
     "getmempoolentry": ("txid",),
+    "getmempoolcluster": ("txid",),
+    "getmempoolfeeratediagram": (),
     "getmempoolancestors": ("txid", "verbose"),
     "getmempooldescendants": ("txid", "verbose"),
     "prioritisetransaction": ("txid", "dummy", "fee_delta"),
