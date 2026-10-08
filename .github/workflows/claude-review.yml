@@ -38,7 +38,7 @@ name: claude-review
 # on `git log` and `git diff`, or `-X` after the `gh api` path.
 #
 # The paragraph goes where the called workflow puts every caller's,
-# between the verdict paragraph and the instruction not to run the gates.
+# between the findings paragraph and the instruction not to run the gates.
 # Nothing in it turns on the position, its subject being the checkout and
 # the tools rather than the gates, and the alternative is a second
 # insertion point in a shared prompt -- an input whose only job is to
