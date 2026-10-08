@@ -29,7 +29,7 @@ from btclib.p2p.negotiation import FeeFilter, SendHeaders
 
 import btclib_node.download as download_module
 from btclib_node.chains import RegTest
-from btclib_node.chainstate.block_index import block_time
+from btclib_node.chainstate.block_index import BlockStatus, block_time
 from btclib_node.cluster_linearize import FeeFrac
 from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
 from btclib_node.constants import NodeStatus, P2pConnStatus
@@ -86,6 +86,7 @@ def a_conn(
     addr_fetch: bool = False,
     permissions: NetPermissionFlags = NetPermissionFlags.NONE,
     last_block_announcement: int = 0,
+    provides_cmpctblocks: bool = False,
 ) -> Any:
     """Build a fake connection, recording every message handed to `send`.
 
@@ -136,6 +137,7 @@ def a_conn(
         wtxidrelay_received=wtxidrelay_received,
         sent_sendheaders=False,
         chain_sync=ChainSyncTimeoutState(),
+        provides_cmpctblocks=provides_cmpctblocks,
     )
 
 
@@ -2782,6 +2784,61 @@ def test_headers_near_the_tip_are_fetched_at_once(
     }
     assert conn.download_queue == announced
     assert conn.block_availability.downloading_since == now
+
+
+def a_connected_chain(block_index: BlockIndex, length: int) -> None:
+    """Build `an_active_chain` whose blocks were validated, as connected."""
+    for block_hash in an_active_chain(block_index, length):
+        block_index.stage_status(block_hash, BlockStatus.in_active_chain)
+
+
+def test_a_lone_block_is_fetched_at_once_as_a_compact_block(
+    index: BlockIndex, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core asks `MSG_CMPCT_BLOCK` of a peer that sent `sendcmpct(2)`.
+
+    Only for one block on a validated parent, with nothing else in
+    flight.
+    """
+    a_connected_chain(index, 2)
+    a_clock_at(monkeypatch, index, 60)
+    (lone,) = extend(index, 1, index.active_chain[-1])
+    conn = a_conn(1, provides_cmpctblocks=True)
+    manager = make_manager([conn], block_index=index)
+    manager.headers_direct_fetch(conn, lone)
+    (getdata,) = only(conn, GetData)
+    assert [(item.type_code, item.hash) for item in getdata.items] == [
+        (InventoryType.MSG_CMPCT_BLOCK, lone)
+    ]
+    assert conn.download_queue == [lone]
+
+
+@pytest.mark.parametrize(
+    "case", ["no sendcmpct", "two blocks", "another in flight", "parent unchecked"]
+)
+def test_a_block_is_fetched_at_once_in_full_otherwise(
+    index: BlockIndex, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """Each of Core's conditions for `MSG_CMPCT_BLOCK`, missing in turn."""
+    a_connected_chain(index, 2)
+    a_clock_at(monkeypatch, index, 60)
+    announced = extend(index, 2, index.active_chain[-1])
+    last_header = (
+        announced[-1] if case in {"two blocks", "parent unchecked"} else (announced[0])
+    )
+    conn = a_conn(1, provides_cmpctblocks=case != "no sendcmpct")
+    other = a_conn(2, queue=[a_hash(9)] if case == "another in flight" else [])
+    if case == "parent unchecked":
+        # the first block held but not connected, so only the second is asked
+        index.set_downloaded(announced[0])
+    manager = make_manager([conn, other], block_index=index)
+    manager.headers_direct_fetch(conn, last_header)
+    (getdata,) = only(conn, GetData)
+    assert {item.type_code for item in getdata.items} == {
+        InventoryType.MSG_WITNESS_BLOCK
+    }
+    expected = announced if case == "two blocks" else [last_header]
+    assert hashes_of(getdata) == expected
 
 
 def test_headers_are_not_fetched_at_once_behind_a_stale_tip(

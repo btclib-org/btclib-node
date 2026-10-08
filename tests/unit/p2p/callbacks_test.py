@@ -624,6 +624,8 @@ def a_peer(**attributes: Any) -> Any:
         prefer_addressv2=False,
         prefers_headers=False,
         requested_hb_cmpctblocks=False,
+        provides_cmpctblocks=False,
+        bip152_highbandwidth_to=False,
         # what Connection sets, and what the version callback overwrites
         relay_tx=True,
         download_queue=[],
@@ -1612,11 +1614,12 @@ def test_a_sendcmpct_of_version_two_records_the_peer_s_choice(
     """The announce octet is whether this node was chosen high-bandwidth.
 
     Core's `SENDCMPCT` handler sets `m_requested_hb_cmpctblocks` from it
-    (btclib-org/btclib-node#1223).
+    (btclib-org/btclib-node#1223), and `m_provides_cmpctblocks` either way.
     """
     peer = a_peer(requested_hb_cmpctblocks=not requested)
     sendcmpct(a_handshake_node(), payload, peer)
     assert peer.requested_hb_cmpctblocks is requested
+    assert peer.provides_cmpctblocks
 
 
 def test_a_sendcmpct_announce_octet_above_one_is_misbehaving() -> None:
@@ -1645,6 +1648,7 @@ def test_a_sendcmpct_of_another_version_is_ignored() -> None:
     peer = a_peer()
     sendcmpct(a_handshake_node(), SendCmpct(announce=True, version=1).serialize(), peer)
     assert not peer.requested_hb_cmpctblocks
+    assert not peer.provides_cmpctblocks
 
 
 def test_a_short_sendcmpct_is_refused() -> None:

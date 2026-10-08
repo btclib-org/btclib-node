@@ -83,6 +83,9 @@ loop, where Core does it on an HTTP worker thread.
 a step of coins at a time, and yields between steps. `status` and `abort` are
 served between two steps, so the scan's state needs no lock.
 
+A `cmpctblock` holds `Node`'s loop while it is rebuilt: the short id of
+every mempool transaction is hashed there without yielding.
+
 ## The transport
 
 `src/btclib_node/p2p/transport.py` frames messages for v1 and

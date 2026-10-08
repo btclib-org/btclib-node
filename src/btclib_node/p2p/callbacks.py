@@ -51,7 +51,9 @@ from btclib.p2p.compact_blocks import (
     BlockTxn,
     CmpctBlock,
     GetBlockTxn,
+    PartialBlock,
     SendCmpct,
+    reconstruct,
 )
 from btclib.p2p.data import BlockPayload as BlockMsg
 from btclib.p2p.data import TxPayload as TxMsg
@@ -71,6 +73,7 @@ from btclib.p2p.limits import (
     CFCHECKPT_INTERVAL,
     MAX_ADDR_TO_SEND,
     MAX_ADDRV2_SIZE,
+    MAX_BLOCK_TX_INDEX,
     MAX_GETCFHEADERS_SIZE,
     MAX_GETCFILTERS_SIZE,
     MAX_HEADERS_RESULTS,
@@ -112,6 +115,7 @@ from btclib_node.main import (
 from btclib_node.mempool import package_hash
 from btclib_node.p2p.address import AddrResponseCache, ip_and_port, peer_address
 from btclib_node.p2p.block_availability import (
+    in_flight_from,
     remove_block_request,
     update_block_availability,
 )
@@ -119,7 +123,10 @@ from btclib_node.p2p.chain_sync import (
     disconnect_if_insufficient_work,
     protect_if_caught_up,
 )
-from btclib_node.p2p.compact_block import compact_block
+from btclib_node.p2p.compact_block import (
+    MAX_CMPCTBLOCKS_INFLIGHT_PER_BLOCK,
+    compact_block,
+)
 from btclib_node.p2p.eviction import is_routable
 from btclib_node.p2p.headers_sync import (
     ChainStart,
@@ -159,7 +166,9 @@ __all__ = [
     "advance_getdata",
     "already_judged",
     "block",
+    "blocktxn",
     "callbacks",
+    "cmpctblock",
     "feefilter",
     "get_cfcheckpt",
     "get_cfheaders",
@@ -686,7 +695,9 @@ def sendcmpct(node: Node, msg: bytes, conn: Connection) -> None:
     "invalid sendcmpct announce field" before a version other than
     `CMPCTBLOCKS_VERSION` is ignored; otherwise the announce octet is
     the peer's choice of this node as a BIP152 high-bandwidth peer,
-    which a later `sendcmpct` can take back.
+    which a later `sendcmpct` can take back. Either way the peer is one
+    that provides compact blocks, which `cmpctblock` below and
+    `DownloadManager.headers_direct_fetch` read.
 
     v31.1, at bitcoin/bitcoin@9be056a8a7, the release
     `.github/workflows/integration-bitcoind.yml` pins and the
@@ -709,6 +720,7 @@ def sendcmpct(node: Node, msg: bytes, conn: Connection) -> None:
         raise MisbehavingError(err_msg)
     if int.from_bytes(msg[1:_SENDCMPCT_SIZE], "little") != CMPCTBLOCKS_VERSION:
         return
+    conn.provides_cmpctblocks = True
     conn.requested_hb_cmpctblocks = announce != 0
 
 
@@ -1421,12 +1433,8 @@ def _unrequested_block_refused(node: Node, block_hash: bytes) -> bool:
     )
 
 
-def _refuse_before_indexing(node: Node, block: Block, conn: Connection) -> bool:
-    """Refuse what Core refuses of a `block` before its header is indexed.
-
-    Answer whether its witness is read against a commitment, segwit
-    binding after its parent, for `main.is_block_failed` to ask later.
-    """
+def _refuse_before_indexing(node: Node, block: Block, conn: Connection) -> None:
+    """Refuse what Core refuses of a `block` before its header is indexed."""
     block_hash = block.header.hash
     block_index = node.chainstate.block_index
     # Core's `BLOCK` arm refuses a mutated body before the header is
@@ -1439,6 +1447,28 @@ def _refuse_before_indexing(node: Node, block: Block, conn: Connection) -> bool:
     if parent is not None and is_block_mutated(block, check_witness_root=segwit):
         err_msg = f"mutated block {block_hash.hex()}"
         raise MisbehavingError(err_msg)
+    _check_block(node, block, conn, via_compact_block=False)
+
+
+def _block_refusal(err_msg: str, *, punish: bool) -> BTClibValueError:
+    """Return a block's refusal: a `MisbehavingError` where the peer pays."""
+    if punish:
+        return MisbehavingError(err_msg)
+    return BTClibValueError(err_msg)
+
+
+def _check_block(
+    node: Node, block: Block, conn: Connection, *, via_compact_block: bool
+) -> None:
+    """Refuse a body failing `CheckBlock`, or one under a header marked invalid.
+
+    Neither costs the peer where `via_compact_block`: Core's
+    `MaybePunishNodeForBlock` (`net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) punishes nobody for such a
+    block that came through `cmpctblock`, BIP152 letting a peer relay a
+    block whose header alone it checked.
+    """
+    block_hash = block.header.hash
     # Core's `ProcessNewBlock` asks `CheckBlock` before `AcceptBlock`, so a
     # body failing it is refused, and its peer punished, before its header
     # is indexed or its being unrequested is looked at; Core never marks
@@ -1451,19 +1481,16 @@ def _refuse_before_indexing(node: Node, block: Block, conn: Connection) -> bool:
         try:
             assert_valid_block(block, node.chain)
         except BTClibException as e:
-            raise MisbehavingError(str(e)) from e
+            raise _block_refusal(str(e), punish=not via_compact_block) from e
     # Core's `duplicate-invalid`, before the stored block is looked at:
     # `MaybePunishNodeForBlock` punishes `BLOCK_CACHED_INVALID` from an
     # outbound peer alone, so an inbound one is refused and kept
-    if is_cached_invalid(block_index, block):
+    if is_cached_invalid(node.chainstate.block_index, block):
         err_msg = f"duplicate-invalid: {block_hash.hex()}"
-        if conn.inbound:
-            raise BTClibValueError(err_msg)
-        raise MisbehavingError(err_msg)
-    return segwit
+        raise _block_refusal(err_msg, punish=not (via_compact_block or conn.inbound))
 
 
-def _min_pow_checked(node: Node, block: Block) -> bool:
+def _min_pow_checked(node: Node, header: BlockHeader) -> bool:
     """Whether a block's chain clears the anti-DoS work threshold.
 
     Core's `min_pow_checked` in its `BLOCK` arm (`net_processing.cpp`, at
@@ -1472,9 +1499,9 @@ def _min_pow_checked(node: Node, block: Block) -> bool:
     `headers_sync.anti_dos_work_threshold`.
     """
     block_index = node.chainstate.block_index
-    parent = block.header.previous_block_hash
+    parent = header.previous_block_hash
     return parent in block_index.header_dict and (
-        block_index.chainwork[parent] + calculate_work(block.header)
+        block_index.chainwork[parent] + calculate_work(header)
         >= anti_dos_work_threshold(block_index, node.config.minimum_chain_work)
     )
 
@@ -1551,11 +1578,11 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
     remove_block_request(connections, block_hash, time.time(), conn.id)
 
     block_index = node.chainstate.block_index
-    segwit = _refuse_before_indexing(node, block, conn)
+    _refuse_before_indexing(node, block, conn)
     if block_hash not in block_index.header_dict:
         try:
             tip = block_index.add_headers(
-                [block.header], min_pow_checked=_min_pow_checked(node, block)
+                [block.header], min_pow_checked=_min_pow_checked(node, block.header)
             )
         except LowWorkHeaderError as e:
             # Core's `ProcessNewBlock` logs "AcceptBlock FAILED", and its
@@ -1569,51 +1596,75 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
                 f"{block.header.previous_block_hash.hex()}"
             )
             raise MisbehavingError(err_msg)
+    _accept_block(node, block, conn, requested=requested, via_compact_block=False)
 
+
+def _accept_block(
+    node: Node,
+    block: Block,
+    conn: Connection,
+    *,
+    requested: bool,
+    via_compact_block: bool,
+) -> None:
+    """Store a block whose header is indexed, where it is new.
+
+    The tail of `block` above, which `cmpctblock` and `blocktxn` reach
+    too with a block they rebuilt: Core's `ProcessBlock`, with
+    `force_processing` where `requested`. `via_compact_block` spares the
+    peer a block failing a check, as `_check_block` says.
+    """
+    block_hash = block.header.hash
+    block_index = node.chainstate.block_index
     block_info = block_index.get_block_info(block_hash)
 
-    if not block_info.downloaded:
-        if not requested and _unrequested_block_refused(node, block_hash):
-            return
-        # a block that does not hold up is nobody's: the raise reaches
-        # main.handle_p2p, which drops the peer that sent it. Invalidated
-        # first where Core marks it failed (`main.is_block_failed`), so the
-        # next peer offering it is refused before it is asked to send it.
-        # A `MisbehavingError`: the body having passed `CheckBlock` above,
-        # this is `ContextualCheckBlock`'s `bad-blk-weight`, whose
-        # `BLOCK_CONSENSUS` `MaybePunishNodeForBlock` punishes
-        # (btclib-org/btclib-node#1170). btclib's own header check used
-        # to refuse a version of zero or below here on its own, where
-        # Core accepts such a block below BIP34's height -- fixed
-        # at btclib 2026.9.29 (btclib-org/btclib@bbb1ad71, closing
-        # btclib-org/btclib#2309): `assert_valid_block` refuses on
-        # version now only through the same height-gated `bad-version`
-        # `add_headers` already applied to this block's header, above
-        # (btclib-org/btclib-node#1511).
-        try:
-            assert_valid_block(block, node.chain)
-        except BTClibException as e:
-            if is_block_failed(block, check_witness_root=segwit):
-                block_index.invalidate(block_hash)
-                # Core's own `InvalidChainFound` call, same citation as
-                # `main.check_fork_warning_conditions`'s own docstring
-                check_fork_warning_conditions(node)
-            raise MisbehavingError(str(e)) from e
-        node.block_db.add_block(block)
-        # novel, past its own checks and on disk: what Core's own
-        # `m_last_block_time` records for eviction, whether or not the
-        # block later connects (`PeerManagerImpl::ProcessBlock`,
-        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
-        conn.last_novel_block_time = int(time.time())
-        node.logger.info("Received new block with hash:%s", block_hash.hex())
-        block_index.set_downloaded(block_hash)
-        # Core's `AcceptBlock` calls `NewPoWValidBlock` from inside
-        # `ProcessNewBlock`, ahead of `ProcessBlock`'s own
-        # `RemoveBlockRequest` below, at bitcoin/bitcoin@9be056a8a7
-        # (`net_processing.cpp`, the v31.1 tag)
-        new_pow_valid_block(node, block)
-        # stored, so awaited from nobody: Core's `ProcessBlock`
-        remove_block_request(connections, block_hash, time.time())
+    if block_info.downloaded or (
+        not requested and _unrequested_block_refused(node, block_hash)
+    ):
+        # Core's `ProcessBlock` forgets the source of a block not new
+        node.download_manager.block_source.pop(block_hash, None)
+        return
+    # a block that does not hold up is nobody's: the raise reaches
+    # p2p.main.handle_p2p, which drops the peer that sent it, unless the
+    # block came through BIP152, where a plain `BTClibValueError` keeps
+    # it. Invalidated first where Core marks it failed
+    # (`main.is_block_failed`), so the next peer offering it is refused
+    # before it is asked to send it. A `MisbehavingError` outside
+    # BIP152: the body having passed `_check_block`, this is
+    # `ContextualCheckBlock`'s `bad-blk-weight`, whose `BLOCK_CONSENSUS`
+    # `MaybePunishNodeForBlock` punishes (btclib-org/btclib-node#1170).
+    # `assert_valid_block` refuses a version only through the
+    # height-gated `bad-version` that `add_headers` already applied to
+    # this block's header (btclib-org/btclib-node#1511).
+    try:
+        assert_valid_block(block, node.chain)
+    except BTClibException as e:
+        segwit = _segwit_after_parent(node, block.header)
+        if is_block_failed(block, check_witness_root=segwit):
+            block_index.invalidate(block_hash)
+            # Core's own `InvalidChainFound` call, same citation as
+            # `main.check_fork_warning_conditions`'s own docstring
+            check_fork_warning_conditions(node)
+        raise _block_refusal(str(e), punish=not via_compact_block) from e
+    node.block_db.add_block(block)
+    node.download_manager.block_source.setdefault(
+        block_hash, (conn.id, not via_compact_block)
+    )
+    # novel, past its own checks and on disk: what Core's own
+    # `m_last_block_time` records for eviction, whether or not the
+    # block later connects (`PeerManagerImpl::ProcessBlock`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+    conn.last_novel_block_time = int(time.time())
+    node.logger.info("Received new block with hash:%s", block_hash.hex())
+    block_index.set_downloaded(block_hash)
+    # Core's `AcceptBlock` calls `NewPoWValidBlock` from inside
+    # `ProcessNewBlock`, ahead of `ProcessBlock`'s own
+    # `RemoveBlockRequest` below, at bitcoin/bitcoin@9be056a8a7
+    # (`net_processing.cpp`, the v31.1 tag)
+    new_pow_valid_block(node, block)
+    # stored, so awaited from nobody: Core's `ProcessBlock`
+    connections = list(node.p2p_manager.connections.values())
+    remove_block_request(connections, block_hash, time.time())
 
 
 # The transaction items Core's `IsGenTxMsg` answers for, and the one its
@@ -2028,6 +2079,23 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     # `add_headers` checks the work and both of Core's own contextual
     # refusals.
     headers: Sequence[BlockHeader] = Headers.parse(msg, check_validity=False).headers
+    _process_headers(node, conn, headers, via_compact_block=False)
+
+
+def _process_headers(
+    node: Node,
+    conn: Connection,
+    headers: Sequence[BlockHeader],
+    *,
+    via_compact_block: bool,
+) -> None:
+    """Process a batch of headers as `headers` above says.
+
+    Also called by `cmpctblock` with its one header, as Core's
+    `CMPCTBLOCK` handler calls `ProcessHeadersMessage` with
+    `via_compact_block`, which spares the peer a header already marked
+    invalid.
+    """
     # what the message carried, which the rest reads whatever a low-work
     # sync hands back in its place: Core's `nCount`
     n_count = len(headers)
@@ -2085,7 +2153,9 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     # The batch connects, so add_headers answers a hash.
     tip = cast(
         "bytes",
-        block_index.add_headers(headers, punish_cached_invalid=not conn.inbound),
+        block_index.add_headers(
+            headers, punish_cached_invalid=not (conn.inbound or via_compact_block)
+        ),
     )
     # Core's `m_last_block_announcement`, stamped where its last header
     # was new and it has more work than the active tip
@@ -2823,6 +2893,311 @@ def _send_block_transactions(
     conn.send(BlockTxn(request.block_hash, answer))
 
 
+def _ask_full_block(conn: Connection, block_hash: bytes) -> None:
+    """Ask `conn` for `block_hash` as a block, leaving the request as it is.
+
+    Core's `getdata` of `MSG_BLOCK | GetFetchFlags(peer)`, sent where a
+    compact block cannot be used, without calling `BlockRequested`.
+    """
+    # deferred: `download` imports this module
+    from btclib_node.download import block_inventory_type  # noqa: PLC0415
+
+    conn.send(GetData([Inventory(block_inventory_type(conn), block_hash)]))
+
+
+def _reconstruct(node: Node, compact: CmpctBlock) -> PartialBlock | None:
+    """Rebuild what `compact` can from the mempool and the extra transactions.
+
+    Core's `PartiallyDownloadedBlock::InitData` (`blockencodings.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which reads the mempool
+    and then `DownloadManager.extra_txns`. `None` for a short-id
+    collision, Core's `READ_STATUS_FAILED`.
+
+    `InitData`'s `READ_STATUS_INVALID` is a `MisbehavingError` here,
+    asked before `reconstruct`: no transaction, a prefilled transaction
+    with neither input nor output, or a prefilled index past the short
+    ids. Its bound of 100000 transactions is left out: `cmpctblock` has
+    refused more than 65535 already. A prefilled index past 65535 is
+    INVALID too, but btclib's parse refuses it first, and the peer is
+    kept (btclib-org/btclib#2572). What `reconstruct` still refuses with
+    `BTClibValueError` is then the short-id collision. Once a btclib
+    release carries `ShortIdCollisionError` (btclib-org/btclib#2570),
+    this catches that instead.
+
+    The short ids of the whole pool are hashed on `Node`'s thread, as
+    ARCHITECTURE.md says.
+    """
+    short_ids = len(compact.short_ids)
+    if not compact.tx_count or any(
+        not (prefilled_tx.tx.vin or prefilled_tx.tx.vout)
+        or prefilled_tx.index > short_ids + i
+        for i, prefilled_tx in enumerate(compact.prefilled_txns)
+    ):
+        err_msg = "invalid compact block"
+        raise MisbehavingError(err_msg)
+    pool = [*node.mempool.transactions.values(), *node.download_manager.extra_txns]
+    try:
+        return reconstruct(compact, pool)
+    except BTClibValueError:
+        return None
+
+
+def _prefilled_only(compact: CmpctBlock) -> PartialBlock:
+    """Return `compact` with only its prefilled transactions in place.
+
+    What Core's `InitData` leaves in a `PartiallyDownloadedBlock` it
+    answers `READ_STATUS_FAILED` for, which a later `blocktxn` fills.
+    """
+    transactions: list[Tx | None] = [None] * compact.tx_count
+    for prefilled in compact.prefilled_txns:
+        transactions[prefilled.index] = prefilled.tx
+    return PartialBlock(compact.header, transactions, check_validity=False)
+
+
+def _segwit_after_parent(node: Node, header: BlockHeader) -> bool:
+    """Whether segwit binds a block on `header`'s parent, which is indexed."""
+    parent = node.chainstate.block_index.header_dict[header.previous_block_hash]
+    return parent.index + 1 >= node.chain.consensus.segwit_height
+
+
+def cmpctblock(node: Node, msg: bytes, conn: Connection) -> None:
+    """Rebuild a block from a `cmpctblock`, and ask for what it lacks.
+
+    Core's `CMPCTBLOCK` handler (`net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Its header is taken
+    first (`_index_compact_header`), and the block goes further only
+    where it is not held, has more work than the tip, and is in flight
+    or the tip is recent.
+
+    At most two blocks past the tip, the block is queued from this peer
+    where it is asked of fewer than `MAX_CMPCTBLOCKS_INFLIGHT_PER_BLOCK`
+    peers and this one has room, or it is queued from this peer already
+    (`_queue_compact_block`). Otherwise it is rebuilt all the same, and
+    taken where nothing is missing (`_reconstruct_optimistically`).
+    Further past the tip, a block queued from this peer is asked for as a
+    block, and one not asked of this peer is read as a header.
+
+    The message is parsed unchecked, as Core's deserializer reads it:
+    `add_headers` checks the header and `_reconstruct` the rest. More
+    than 65535 transactions is refused here and the peer kept, as Core's
+    deserializer throws "indexes overflowed 16 bits".
+    """
+    # deferred: `download` imports this module
+    from btclib_node.download import MAX_BLOCKS_IN_TRANSIT_PER_PEER  # noqa: PLC0415
+
+    compact = CmpctBlock.parse(msg, check_validity=False)
+    if compact.tx_count > MAX_BLOCK_TX_INDEX:
+        err_msg = "indexes overflowed 16 bits"
+        raise BTClibValueError(err_msg)
+    header = compact.header
+    block_hash = header.hash
+    if not _index_compact_header(node, conn, header):
+        return
+    block_index = node.chainstate.block_index
+    chainwork = block_index.chainwork
+    holders = in_flight_from(node.p2p_manager.connections.copy().values(), block_hash)
+    requested = block_hash in conn.download_queue
+    # Core also asks this of a block it held and pruned, which is
+    # `MIN_BLOCKS_TO_KEEP` below the tip and so has less work
+    if chainwork[block_hash] <= chainwork[block_index.active_chain[-1]]:
+        if requested:
+            _ask_full_block(conn, block_hash)
+        return
+    if not holders and not _can_direct_fetch(node):
+        return
+    if block_index.get_block_info(block_hash).index > len(block_index.active_chain) + 1:
+        if requested:
+            _ask_full_block(conn, block_hash)
+        else:
+            _process_headers(node, conn, [header], via_compact_block=True)
+    elif requested or (
+        len(holders) < MAX_CMPCTBLOCKS_INFLIGHT_PER_BLOCK
+        and len(conn.download_queue) < MAX_BLOCKS_IN_TRANSIT_PER_PEER
+    ):
+        _queue_compact_block(node, conn, compact, holders)
+    else:
+        _reconstruct_optimistically(node, compact, conn)
+
+
+def _index_compact_header(node: Node, conn: Connection, header: BlockHeader) -> bool:
+    """Take a `cmpctblock`'s header, and answer whether its block is wanted.
+
+    A header on a parent not indexed asks for headers, out of initial
+    block download, and one below the anti-DoS work threshold is
+    ignored. The header is indexed otherwise, a header already marked
+    invalid costing the peer nothing, and the peer has the block. The
+    block is wanted where it is not held.
+    """
+    block_hash = header.hash
+    block_index = node.chainstate.block_index
+    if header.previous_block_hash not in block_index.header_dict:
+        # "Doesn't connect (or is genesis)", in Core's words
+        if not node.is_initial_block_download:
+            maybe_send_getheaders(node, conn, block_index.get_block_locator_hashes())
+        return False
+    if not _min_pow_checked(node, header):
+        node.logger.log_debug(
+            "net", "Ignoring low-work compact block from peer %d", conn.id
+        )
+        return False
+    received_new_header = block_hash not in block_index.header_dict
+    block_index.add_headers([header], punish_cached_invalid=False)
+    update_block_availability(block_index, conn.block_availability, block_hash)
+    chainwork = block_index.chainwork
+    if (
+        received_new_header
+        and chainwork[block_hash] > chainwork[block_index.active_chain[-1]]
+    ):
+        conn.last_block_announcement = int(time.time())
+    return not block_index.get_block_info(block_hash).downloaded
+
+
+def _queue_compact_block(
+    node: Node, conn: Connection, compact: CmpctBlock, holders: list[Connection]
+) -> None:
+    """Queue a block from `conn`, rebuild it, and ask for what it lacks.
+
+    `holders` are the peers it was asked of before, the first asked
+    first. Nothing for a block whose partial block `conn` holds already.
+    Rebuilt whole, the block is taken (`_process_compact_block_txns`);
+    short, its missing transactions are asked for where `conn` was asked
+    first, or is a high-bandwidth peer that may take one more slot. A
+    collision asks for the block instead, where `conn` was asked first.
+    Otherwise the block is no longer asked of `conn`.
+    """
+    block_hash = compact.header.hash
+    first_in_flight = not holders or holders[0] is conn
+    partials = conn.block_availability.partial_blocks
+    if block_hash in conn.download_queue:
+        if block_hash in partials:
+            node.logger.log_debug(
+                "net", "Peer sent us compact block we were already syncing!"
+            )
+            return
+    else:
+        # Core's `BlockRequested`
+        if not conn.download_queue:
+            conn.block_availability.downloading_since = time.time()
+        conn.download_queue.append(block_hash)
+        order = next(node.download_manager.request_orders)
+        conn.block_availability.request_order[block_hash] = order
+        node.warm_worker_pool()
+    connections = list(node.p2p_manager.connections.values())
+    try:
+        partial = _reconstruct(node, compact)
+    except MisbehavingError:
+        remove_block_request(connections, block_hash, time.time(), conn.id)
+        raise
+    if partial is None:
+        if first_in_flight:
+            partials[block_hash] = _prefilled_only(compact)
+            _ask_full_block(conn, block_hash)
+        else:
+            remove_block_request(connections, block_hash, time.time(), conn.id)
+        return
+    partials[block_hash] = partial
+    missing = partial.missing_indexes
+    if not missing:
+        _process_compact_block_txns(node, conn, block_hash, ())
+    elif first_in_flight or (
+        conn.bip152_highbandwidth_to
+        and (
+            not conn.inbound
+            or any(not holder.inbound for holder in holders)
+            or len(holders) < MAX_CMPCTBLOCKS_INFLIGHT_PER_BLOCK - 1
+        )
+    ):
+        conn.send(GetBlockTxn(block_hash, missing))
+    else:
+        remove_block_request(connections, block_hash, time.time(), conn.id)
+
+
+def _reconstruct_optimistically(
+    node: Node, compact: CmpctBlock, conn: Connection
+) -> None:
+    """Take a block in flight from other peers if nothing of it is missing.
+
+    Core's "optimistic" reconstruction in its `CMPCTBLOCK` handler: a
+    failure is ignored, and a block rebuilt whole is processed as asked
+    for.
+    """
+    try:
+        partial = _reconstruct(node, compact)
+    except MisbehavingError:
+        return
+    if partial is None or partial.missing_indexes:
+        return
+    block = partial.fill((), check_validity=False)
+    segwit = _segwit_after_parent(node, block.header)
+    if is_block_mutated(block, check_witness_root=segwit):
+        return
+    _check_block(node, block, conn, via_compact_block=True)
+    _accept_block(node, block, conn, requested=True, via_compact_block=True)
+
+
+def blocktxn(node: Node, msg: bytes, conn: Connection) -> None:
+    """Finish the block a `cmpctblock` from this peer left short.
+
+    Core's `BLOCKTXN` handler (`net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The transactions are read
+    unchecked, as Core's deserializer reads them: one that is not valid
+    leaves a block `_check_block` refuses.
+    """
+    answer = BlockTxn.parse(msg, check_validity=False)
+    _process_compact_block_txns(node, conn, answer.block_hash, answer.transactions)
+
+
+def _process_compact_block_txns(
+    node: Node, conn: Connection, block_hash: bytes, transactions: Sequence[Tx]
+) -> None:
+    """Fill the partial block `conn` is rebuilding, and take the block.
+
+    Core's `ProcessCompactBlockTxns` (`net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Ignored for a block with
+    no partial block from this peer, and a `MisbehavingError` for one
+    already filled, or for transactions other than those missing. A block
+    its header does not commit to may be a short-id collision: it is
+    asked for as a block where this peer was asked first, and otherwise
+    left to the others. A block that holds up is taken as one asked for,
+    its failures costing the peer nothing.
+    """
+    connections = list(node.p2p_manager.connections.values())
+    holders = in_flight_from(connections, block_hash)
+    first_in_flight = not holders or holders[0] is conn
+    partials = conn.block_availability.partial_blocks
+    if block_hash not in conn.download_queue or block_hash not in partials:
+        node.logger.log_debug(
+            "net",
+            "Peer %d sent us block transactions for block we weren't expecting",
+            conn.id,
+        )
+        return
+    partial = partials[block_hash]
+    if partial is None:
+        remove_block_request(connections, block_hash, time.time(), conn.id)
+        err_msg = "previous compact block reconstruction attempt failed"
+        raise MisbehavingError(err_msg)
+    try:
+        block = partial.fill(transactions, check_validity=False)
+    except BTClibValueError as e:
+        remove_block_request(connections, block_hash, time.time(), conn.id)
+        err_msg = "invalid compact block/non-matching block transactions"
+        raise MisbehavingError(err_msg) from e
+    # Core's `FillBlock` nulls the header, so that it is not filled twice
+    partials[block_hash] = None
+    segwit = _segwit_after_parent(node, block.header)
+    if is_block_mutated(block, check_witness_root=segwit):
+        # "Possible Short ID collision", in Core's words
+        if first_in_flight:
+            _ask_full_block(conn, block_hash)
+        else:
+            remove_block_request(connections, block_hash, time.time(), conn.id)
+        return
+    remove_block_request(connections, block_hash, time.time(), conn.id)
+    _check_block(node, block, conn, via_compact_block=True)
+    _accept_block(node, block, conn, requested=True, via_compact_block=True)
+
+
 def not_found(node: Node, msg: bytes, conn: Connection) -> None:
     """Complete the announcements of the transactions the peer could not answer.
 
@@ -2861,6 +3236,8 @@ callbacks = {
     "block": block,
     "getdata": getdata,
     "getblocktxn": getblocktxn,
+    "cmpctblock": cmpctblock,
+    "blocktxn": blocktxn,
     "getblocks": getblocks,
     "getheaders": getheaders,
     "headers": headers,

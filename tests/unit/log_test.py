@@ -226,6 +226,7 @@ _CATEGORY_OF_FILE = {
     "main.py": "validation",
     "p2p/banman.py": "net",
     "p2p/callbacks.py": "net",
+    "p2p/compact_block.py": "net",
     "p2p/connection.py": "net",
     "p2p/main.py": "net",
     "p2p/manager.py": "net",

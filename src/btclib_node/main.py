@@ -83,7 +83,11 @@ from btclib_node.p2p.block_availability import (
     peer_has_header,
     process_block_availability,
 )
-from btclib_node.p2p.compact_block import MostRecentBlock, compact_block
+from btclib_node.p2p.compact_block import (
+    MostRecentBlock,
+    block_checked,
+    compact_block,
+)
 from btclib_node.p2p.protocol_version import (
     INVALID_CB_NO_BAN_VERSION,
     common_version,
@@ -732,6 +736,9 @@ def _evict_immature_or_nonfinal(node: Node) -> None:
 def _after_tip_change(
     node: Node, to_remove: list[RevBlock], to_add: list[Block]
 ) -> None:
+    # Core's `ConnectTip` signals `BlockChecked` before the tip moves
+    for block in to_add:
+        block_checked(node, block.header.hash, valid=True)
     update_ibd_status(node)
     for block in to_add:
         node.download_manager.block_connected()
@@ -1515,6 +1522,8 @@ def _invalidate_failed_block(
     update_header_index(block_index, failed_hash)
     block_index.weigh_invalid(_heaviest_downloaded_descendant(block_index, failed_hash))
     check_fork_warning_conditions(node)
+    # `ConnectTip` signals `BlockChecked` for the failed block too
+    block_checked(node, failed_hash, valid=False)
 
 
 def update_chain(node: Node) -> None:

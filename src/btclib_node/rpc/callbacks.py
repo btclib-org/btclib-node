@@ -1408,11 +1408,12 @@ def _peer_entry(
         else version_message.user_agent.decode("ascii", errors="replace")
     )
     entry["inbound"] = p2p_conn.inbound
-    # This node sends `sendcmpct` announcing low bandwidth, so it selects
-    # no high-bandwidth peer: false, what Core answers where it sent none.
-    # Whether the peer selected this node is what its own `sendcmpct`
-    # asked (p2p.callbacks.sendcmpct), Core's `m_bip152_highbandwidth_from`.
-    entry["bip152_hb_to"] = False
+    # Core's `m_bip152_highbandwidth_to` and `m_bip152_highbandwidth_from`:
+    # whether this node chose the peer as high-bandwidth, which
+    # `compact_block.maybe_set_peer_as_announcing_header_and_ids` does, and
+    # whether the peer's own `sendcmpct` chose this node, which
+    # `p2p.callbacks.sendcmpct` records
+    entry["bip152_hb_to"] = p2p_conn.bip152_highbandwidth_to
     entry["bip152_hb_from"] = p2p_conn.requested_hb_cmpctblocks
     # Core's `GetPresyncHeight` while a low-work headers sync runs with
     # the peer, in either of its phases, and -1 where none does
