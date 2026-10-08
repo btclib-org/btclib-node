@@ -89,6 +89,7 @@ from tests import (
     generate_random_transaction,
     generate_segwit_block,
 )
+from tests.unit.orphanage_test import a_tx as an_orphanage_tx
 from tests.unit.rpc.mempool_graph_test import a_tx
 
 if TYPE_CHECKING:
@@ -3565,6 +3566,49 @@ def test_a_tip_change_in_initial_block_download_resets_nothing(node: Node) -> No
     assert coinbase.id not in node.download_manager.recent_confirmed
 
 
+def an_orphan_of_the_coinbase(node: Node, block: Block) -> None:
+    """Hold an orphan sharing an input with `block`'s coinbase."""
+    (tx_in,) = block.transactions[0].vin
+    orphan = an_orphanage_tx((tx_in.prev_out.tx_id, tx_in.prev_out.vout))
+    node.download_manager.orphanage.add_tx(orphan, 1)
+
+
+def test_a_tip_change_out_of_initial_block_download_forgets_the_orphans_and_announcements(
+    node: Node,
+) -> None:
+    """ISS 1871: Core's `TxDownloadManagerImpl::BlockConnected`, past IBD.
+
+    An orphan the block conflicts with is erased, and the announcements of
+    a confirmed transaction are forgotten, as `m_txrequest.ForgetTxHash`.
+    """
+    chain = generate_random_chain(1, RegTest().genesis.hash, tip_time=datetime.now(UTC))
+    manager = node.download_manager
+    an_orphan_of_the_coinbase(node, chain[0])
+    coinbase = chain[0].transactions[0]
+    other = secrets.token_bytes(32)
+    for txhash in (coinbase.id, coinbase.hash, other):
+        manager.tx_requests.received_inv(1, txhash, preferred=True, reqtime=0)
+    connect(node, chain)
+    assert node.is_initial_block_download is False
+    assert manager.orphanage.unique_count == 0
+    assert manager.tx_requests.count(1) == 1
+
+
+def test_a_tip_change_in_initial_block_download_keeps_the_orphans_and_announcements(
+    node: Node,
+) -> None:
+    """ISS 1871: Core's `PeerManagerImpl::BlockConnected` skips both in IBD."""
+    chain = generate_random_chain(1, RegTest().genesis.hash)
+    manager = node.download_manager
+    an_orphan_of_the_coinbase(node, chain[0])
+    coinbase = chain[0].transactions[0]
+    manager.tx_requests.received_inv(1, coinbase.id, preferred=True, reqtime=0)
+    connect(node, chain)
+    assert node.is_initial_block_download is True
+    assert manager.orphanage.unique_count == 1
+    assert manager.tx_requests.count(1) == 1
+
+
 def test_a_disconnected_block_resets_the_filters_as_core_s(node: Node) -> None:
     """ISS 1851: Core's `BlockDisconnected`, then `ActiveTipChange`.
 
@@ -5379,7 +5423,9 @@ def test_a_package_must_spend_its_parent_s_ephemeral_dust(node: Node) -> None:
 
 def test_a_connected_block_erases_the_orphans_it_conflicts_with(node: Node) -> None:
     """Core's `BlockConnected`: an orphan the block conflicts with is gone."""
-    chain = generate_random_chain(COINBASE_MATURITY + 1, RegTest().genesis.hash)
+    chain = generate_random_chain(
+        COINBASE_MATURITY + 1, RegTest().genesis.hash, tip_time=datetime.now(UTC)
+    )
     spent = chain[-1].transactions[1].vin[0].prev_out
     rival = generate_random_transaction(spent.tx_id)
     unrelated = generate_random_transaction()

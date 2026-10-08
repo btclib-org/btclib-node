@@ -768,11 +768,11 @@ def _after_tip_change(
         download_manager.recent_confirmed.reset()
     for block in to_add:
         download_manager.block_connected()
-        # Core's `TxDownloadManagerImpl::BlockConnected`: what the block
-        # includes or spends an input of is no longer an orphan
-        download_manager.orphanage.erase_for_block(block)
+        # Core's `PeerManagerImpl::BlockConnected` skips its
+        # `TxDownloadManagerImpl::BlockConnected` during initial block
+        # download, when no transaction is taken from peers
         if not node.is_initial_block_download:
-            download_manager.add_confirmed(block)
+            download_manager.confirm_block(block)
     _reconcile_mempool_for_reorg(node, to_remove, to_add)
     check_fork_warning_conditions(node)
     if not node.is_initial_block_download:

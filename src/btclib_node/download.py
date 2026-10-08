@@ -450,7 +450,7 @@ class DownloadManager:
         # the v31.1 tag): the txids and wtxids of the transactions
         # connected lately, which are not asked for or verified again.
         # Like Core's, it drops a transaction never confirmed up to once
-        # in a million queries. `add_confirmed` fills it.
+        # in a million queries. `confirm_block` fills it.
         self.recent_confirmed = RollingBloomFilter(48_000, 0.000_001)
         # Core's `vExtraTxnForCompact`: the transactions most recently
         # refused or replaced, which `callbacks.cmpctblock` rebuilds a block
@@ -1634,20 +1634,26 @@ class DownloadManager:
             int(self.block_stalling_timeout * 0.85), _BLOCK_STALLING_TIMEOUT_DEFAULT
         )
 
-    def add_confirmed(self, block: Block) -> None:
-        """Record what `block` confirms, as Core's `BlockConnected` does.
+    def confirm_block(self, block: Block) -> None:
+        """Do what Core's `TxDownloadManagerImpl::BlockConnected` does.
 
-        Each transaction by txid and, where it carries a witness, by wtxid
+        The orphans the block includes or conflicts with are erased. Each
+        transaction is recorded as confirmed, by txid and, where it carries
+        a witness, by wtxid, and its announcements by either hash are
+        forgotten, so that no peer is asked for it
         (`src/node/txdownloadman_impl.cpp`, at bitcoin/bitcoin@9be056a8a7,
         the v31.1 tag). `main` calls this for a block connected out of
         initial block download, as Core's `PeerManagerImpl` does, and
         `recent_confirmed.reset()` for any block disconnected, as Core's
         `BlockDisconnected` does.
         """
+        self.orphanage.erase_for_block(block)
         for tx in block.transactions:
             self.recent_confirmed.add(tx.id)
             if tx.hash != tx.id:
                 self.recent_confirmed.add(tx.hash)
+            self.tx_requests.forget_tx_hash(tx.id)
+            self.tx_requests.forget_tx_hash(tx.hash)
 
     def block_download(self) -> None:
         """Drop the peers stalling the download, and ask each for blocks.
