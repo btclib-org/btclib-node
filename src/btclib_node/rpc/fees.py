@@ -8,7 +8,6 @@ Read at bitcoin/bitcoin@9be056a8a7, the v31.1 tag: the same arguments,
 refusals, answers and units, from `Node.fee_estimator`.
 """
 
-import math
 import string
 from typing import TYPE_CHECKING, Any
 
@@ -23,6 +22,7 @@ from btclib_node.fee_estimator import (
 from btclib_node.rpc.connection import RawJSON, btc_amount
 from btclib_node.rpc.errors import RpcError, type_errors
 from btclib_node.rpc.help import HELP_TEXT
+from btclib_node.rpc.jsonrpc import get_real
 
 if TYPE_CHECKING:
     from btclib_node import Node
@@ -140,13 +140,7 @@ def estimate_raw_fee(
     conf_target = _conf_target(node, params[0])
     threshold = 0.95
     if len(params) > 1 and params[1] is not None:
-        try:
-            threshold = float(params[1])
-        except OverflowError:
-            threshold = math.inf
-        if math.isinf(threshold):
-            # `get_real`, which refuses what a double cannot hold
-            raise RpcError(RPCErrorCode.MISC_ERROR, "JSON double out of range")
+        threshold = get_real(params[1])
     if not 0 <= threshold <= 1:
         raise RpcError(RPCErrorCode.INVALID_PARAMETER, "Invalid threshold")
     estimator = node.fee_estimator
