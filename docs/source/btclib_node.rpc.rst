@@ -95,6 +95,13 @@ btclib\_node.rpc.solver module
    :members:
    :show-inheritance:
 
+btclib\_node.rpc.utxo\_set module
+-----------------------------------
+
+.. automodule:: btclib_node.rpc.utxo_set
+   :members:
+   :show-inheritance:
+
 Module contents
 ---------------
 

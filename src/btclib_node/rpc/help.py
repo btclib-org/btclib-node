@@ -769,6 +769,86 @@ _HELP_GETTXOUTSETINFO = (
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "gettxoutsetinfo", "params": ["none", "00000000c937983704a73af28acdec37b049d214adbda81d7e2a3dd146f6ed09"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
+_HELP_SCANTXOUTSET = (
+    'scantxoutset "action" ( [scanobjects,...] )\n'
+    "\n"
+    "Scans the unspent transaction output set for entries that match certain output descriptors.\n"
+    "Examples of output descriptors are:\n"
+    "    addr(<address>)                      Outputs whose output script corresponds to the specified address (does not include P2PK)\n"
+    "    raw(<hex script>)                    Outputs whose output script equals the specified hex-encoded bytes\n"
+    "    combo(<pubkey>)                      P2PK, P2PKH, P2WPKH, and P2SH-P2WPKH outputs for the given pubkey\n"
+    "    pkh(<pubkey>)                        P2PKH outputs for the given pubkey\n"
+    "    sh(multi(<n>,<pubkey>,<pubkey>,...)) P2SH-multisig outputs for the given threshold and pubkeys\n"
+    "    tr(<pubkey>)                         P2TR\n"
+    "    tr(<pubkey>,{pk(<pubkey>)})          P2TR with single fallback pubkey in tapscript\n"
+    "    rawtr(<pubkey>)                      P2TR with the specified key as output key rather than inner\n"
+    "    wsh(and_v(v:pk(<pubkey>),after(2)))  P2WSH miniscript with mandatory pubkey and a timelock\n"
+    "\n"
+    "In the above, <pubkey> either refers to a fixed public key in hexadecimal notation, or to an xpub/xprv optionally followed by one\n"
+    'or more path elements separated by "/", and optionally ending in "/*" (unhardened), or "/*\'" or "/*h" (hardened) to specify all\n'
+    "unhardened or hardened child keys.\n"
+    "In the latter case, a range needs to be specified by below if different from 1000.\n"
+    "For more information on output descriptors, see the documentation in the doc/descriptors.md file.\n"
+    "\n"
+    "Arguments:\n"
+    "1. action                        (string, required) The action to execute\n"
+    '                                 "start" for starting a scan\n'
+    '                                 "abort" for aborting the current scan (returns true when abort was successful)\n'
+    '                                 "status" for progress report (in %) of the current scan\n'
+    '2. scanobjects                   (json array, optional) Array of scan objects. Required for "start" action\n'
+    "                                 Every scan object is either a string descriptor or an object:\n"
+    "     [\n"
+    '       "descriptor",             (string) An output descriptor\n'
+    "       {                         (json object) An object with output descriptor and metadata\n"
+    '         "desc": "str",          (string, required) An output descriptor\n'
+    '         "range": n or [n,n],    (numeric or array, optional, default=1000) The range of HD chain indexes to explore (either end or [begin,end])\n'
+    "       },\n"
+    "       ...\n"
+    "     ]\n"
+    "\n"
+    "Result (when action=='start'; only returns after scan completes):\n"
+    "{                                 (json object)\n"
+    '  "success" : true|false,         (boolean) Whether the scan was completed\n'
+    '  "txouts" : n,                   (numeric) The number of unspent transaction outputs scanned\n'
+    '  "height" : n,                   (numeric) The block height at which the scan was done\n'
+    '  "bestblock" : "hex",            (string) The hash of the block at the tip of the chain\n'
+    '  "unspents" : [                  (json array)\n'
+    "    {                             (json object)\n"
+    '      "txid" : "hex",             (string) The transaction id\n'
+    '      "vout" : n,                 (numeric) The vout value\n'
+    '      "scriptPubKey" : "hex",     (string) The output script\n'
+    '      "desc" : "str",             (string) A specialized descriptor for the matched output script\n'
+    '      "amount" : n,               (numeric) The total amount in BTC of the unspent output\n'
+    '      "coinbase" : true|false,    (boolean) Whether this is a coinbase output\n'
+    '      "height" : n,               (numeric) Height of the unspent transaction output\n'
+    '      "blockhash" : "hex",        (string) Blockhash of the unspent transaction output\n'
+    '      "confirmations" : n         (numeric) Number of confirmations of the unspent transaction output when the scan was done\n'
+    "    },\n"
+    "    ...\n"
+    "  ],\n"
+    '  "total_amount" : n              (numeric) The total amount of all found unspent outputs in BTC\n'
+    "}\n"
+    "\n"
+    "Result (when action=='abort'):\n"
+    "true|false    (boolean) True if scan will be aborted (not necessarily before this RPC returns), or false if there is no scan to abort\n"
+    "\n"
+    "Result (when action=='status' and a scan is currently in progress):\n"
+    "{                    (json object)\n"
+    '  "progress" : n     (numeric) Approximate percent complete\n'
+    "}\n"
+    "\n"
+    "Result (when action=='status' and no scan is in progress - possibly already completed):\n"
+    "null    (json null)\n"
+    "\n"
+    "Examples:\n"
+    "> bitcoin-cli scantxoutset start '[\"raw(76a91411b366edfc0a8b66feebae5c2e25a7b6a5d1cf3188ac)#fm24fxxy\"]'\n"
+    "> bitcoin-cli scantxoutset status\n"
+    "> bitcoin-cli scantxoutset abort\n"
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "scantxoutset", "params": ["start", ["raw(76a91411b366edfc0a8b66feebae5c2e25a7b6a5d1cf3188ac)#fm24fxxy"]]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "scantxoutset", "params": ["status"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "scantxoutset", "params": ["abort"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
 _HELP_PRUNEBLOCKCHAIN = (
     "pruneblockchain height\n"
     "\n"
@@ -1917,6 +1997,7 @@ HELP_TEXT: dict[str, str] = {
     "gettxout": _HELP_GETTXOUT,
     "gettxoutsetinfo": _HELP_GETTXOUTSETINFO,
     "dumptxoutset": _HELP_DUMPTXOUTSET,
+    "scantxoutset": _HELP_SCANTXOUTSET,
     "pruneblockchain": _HELP_PRUNEBLOCKCHAIN,
     "waitforblock": _HELP_WAITFORBLOCK,
     "waitforblockheight": _HELP_WAITFORBLOCKHEIGHT,
@@ -1976,6 +2057,7 @@ CATEGORY: dict[str, str] = {
     "gettxout": "Blockchain",
     "gettxoutsetinfo": "Blockchain",
     "dumptxoutset": "Blockchain",
+    "scantxoutset": "Blockchain",
     "pruneblockchain": "Blockchain",
     "waitforblock": "Blockchain",
     "waitforblockheight": "Blockchain",
