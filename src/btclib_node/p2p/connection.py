@@ -159,6 +159,11 @@ _MESSAGE_TYPE_OTHER = "*other*"
 _USER_AGENT = USER_AGENT.encode()
 
 
+# `_send` hands `sock_sendall` at most this many octets at a time, and
+# stamps `last_send` after each.
+_SEND_CHUNK = 64 * 1024
+
+
 # Chunks one message may take from a transport; `V1Transport` takes two,
 # and `V2Transport` one beside the handshake octets still unsent.
 _MAX_CHUNKS = 16
@@ -484,8 +489,8 @@ class Connection:
     _writing: asyncio.Task[object] | None = None
 
     # Core's `m_ping_start`: when `send_ping` last queued a `ping`,
-    # nonceless or not, stamped as it is pushed rather than once the write
-    # completes, which is what `last_send` records. A class default for
+    # nonceless or not, stamped as it is pushed rather than as the socket
+    # takes it, which is what `last_send` records. A class default for
     # the reason `time_received` gives. btclib-org/btclib-node#1204
     ping_start: float = 0
 
@@ -1060,10 +1065,26 @@ class Connection:
             self.stop(cancel_task=False)
 
     async def _send(self, data: bytes) -> None:
-        """Write `data`, raising `OSError` where the socket cannot take it."""
+        """Write `data`, raising `OSError` where the socket cannot take it.
+
+        Core stamps `m_last_send` on every `send()` that takes octets
+        (`SocketSendData`, `src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
+        the v31.1 tag), so a peer reading one long message slowly is not
+        dropped for send inactivity while it reads. `sock_sendall`
+        reports only that all of `data` is taken, and asyncio has no
+        `sock_send`, so `last_send` is stamped after each `_SEND_CHUNK`
+        instead. A peer that takes less than one chunk in
+        `manager._TIMEOUT_INTERVAL` is dropped where Core would keep it.
+        btclib-org/btclib-node#1784
+        """
         self._writing = asyncio.current_task()
         try:
-            await self.loop.sock_sendall(self.client, data)
+            view = memoryview(data)
+            for start in range(0, len(view), _SEND_CHUNK):
+                await self.loop.sock_sendall(
+                    self.client, view[start : start + _SEND_CHUNK]
+                )
+                self.last_send = time.time()
         finally:
             self._writing = None
 
@@ -1219,14 +1240,6 @@ class Connection:
                 with self._send_lock:
                     self.send_memusage -= _send_memusage(self._outbox.popleft())
                     self.pause_send = self.send_memusage > self.send_buffer_max_size
-                # Core's `m_last_send`, stamped once the whole message is
-                # written, where `SocketSendData` stamps each `send()` that
-                # takes octets: `sock_sendall` reports only the end. A
-                # message that takes `manager._TIMEOUT_INTERVAL` to write
-                # has `_keep_alive` drop its peer somewhat before Core's
-                # ping timeout would.
-                # btclib-org/btclib-node#1784
-                self.last_send = time.time()
 
     async def async_send(self, payload: Payload) -> None:
         """Frame `payload` and send it.

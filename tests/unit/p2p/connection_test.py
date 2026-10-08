@@ -1069,6 +1069,57 @@ def test_stop_on_the_loop_s_own_thread_does_not_raise_past_a_registered_writer(
     assert not asyncio.all_tasks(loop)
 
 
+def test_a_long_write_stamps_last_send_after_each_chunk_the_socket_takes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1784: `last_send` moves while one message is still being written.
+
+    Core stamps `m_last_send` on every `send()` that takes octets, so a
+    peer reading one long message slowly is not dropped for send
+    inactivity. The clock counts its reads, and the stand-in for
+    `sock_sendall` records `last_send` as each chunk is offered: the first
+    sees the old stamp, every later one the stamp the chunk before it left.
+    """
+    connection, _ = a_connection()
+    connection.last_send = 0.0
+    ticks = iter(float(n) for n in range(1, 100))
+    clock = SimpleNamespace(time=lambda: next(ticks))
+    monkeypatch.setattr(connection_module, "time", clock)
+    offered: list[tuple[int, float]] = []
+
+    async def sock_sendall(_sock: object, data: bytes) -> None:
+        offered.append((len(data), connection.last_send))
+
+    connection.loop = cast(
+        "asyncio.AbstractEventLoop", SimpleNamespace(sock_sendall=sock_sendall)
+    )
+    chunk = connection_module._SEND_CHUNK
+    with connection.client:
+        asyncio.run(connection._send(b"x" * (2 * chunk + 1)))
+    assert offered == [(chunk, 0.0), (chunk, 1.0), (1, 2.0)]
+    assert connection.last_send == 3.0
+
+
+def test_a_write_the_socket_refuses_stamps_nothing() -> None:
+    """ISS 1784: Core stamps `m_last_send` only for a send that took octets.
+
+    The refusal goes through `async_send`, whose `_drain_outbox` suppresses
+    the `OSError`, so a stamp there would show.
+    """
+    connection, _ = a_connection()
+    connection.last_send = 0.0
+
+    async def sock_sendall(_sock: object, _data: bytes) -> None:
+        raise BrokenPipeError
+
+    connection.loop = cast(
+        "asyncio.AbstractEventLoop", SimpleNamespace(sock_sendall=sock_sendall)
+    )
+    with connection.client:
+        asyncio.run(connection.async_send(Verack()))
+    assert connection.last_send == 0.0
+
+
 def test_stop_ends_every_delivery_the_peer_never_drained() -> None:
     """A `_deliver` blocked on an undrained peer ends at `stop`, not later.
 
