@@ -7,7 +7,7 @@ name = "btclib-node"
 # one cycle takes and what each means. The release's own pull request
 # replaces it by hand with the date the release is cut, YYYY.M.D, whose
 # month need not be this one.
-version = "2026.11"
+version = "2026.10.8"
 description = "Bitcoin node in python"
 authors = [{ name = "The btclib developers", email = "devs@btclib.org" }]
 readme = "README.md"

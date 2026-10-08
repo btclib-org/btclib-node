@@ -32,7 +32,7 @@ why it does not stay there once the bullet has it, and that section's
 *Nothing already written is rewritten* is why an entry already landed
 keeps whichever shape it was written in.
 
-## Unreleased
+## v2026.10.8
 
 ### The redownload buffer test stops counting other threads
 
@@ -332,6 +332,159 @@ announced or was sent, and one on it is not announced to that peer again
 - **A package refused for a conflict with a held transaction leaves its
   child an orphan, and `submitpackage` answers it a missing input, as Core
   does** (closes #1782) (closes #1792).
+
+### A peer's later messages wait while its getcfilters answer is paused
+
+- **A `pong` follows the filters of a `getcfilters` sent before the `ping`**,
+  as in Core, and a second `getcfilters` waits rather than stacks, so
+  `MAX_PENDING_CFILTER_HASHES` is gone (closes #1789).
+
+### Ping every two minutes and drop after twenty
+
+- **A peer is pinged two minutes after the last ping, and dropped when its
+  `pong` is twenty minutes overdue or when nothing is received from it, or
+  sent whole to it, for twenty**, as Core v31.1 does (closes #1768).
+
+### `testmempoolaccept` answers an allowed transaction's fees
+
+- **An allowed transaction is answered with `fees`: `base`,
+  `effective-feerate` and `effective-includes`**, as in Core v31.1, the
+  `prioritisetransaction` delta part of the feerate (closes #1799).
+
+### `testmempoolaccept` judges several transactions as a package
+
+- **Several transactions are judged together, so a child whose parent is in
+  the same call is no longer `missing-inputs`**, and nothing is added to the
+  mempool, as Core does (closes #1800).
+
+### A trickle is capped at Core's per-peer limit, best-paying first
+
+- **A trickle announces at most 70 plus 5 per 1000 queued, never more than
+  1000, the best-paying first, and keeps the rest queued**, as Core v31.1
+  does; the feefilter is applied when it is sent (closes #1767).
+
+### A peer whose send queue is full has its later messages held
+
+- **While a peer's send queue is past the send buffer bound, its later
+  messages wait, whatever their command**, as Core's `fPauseSend` does
+  (closes #1796).
+
+### A `MSG_WITNESS_TX` announcement from a wtxid-relay peer is asked by txid
+
+- **The `inv` handler reads a wtxid-relay peer's `MSG_WITNESS_TX` as a txid
+  and asks for it**, as Core v31.1 does, where it dropped the item
+  (closes #1774).
+
+### A TRUC refusal names the held parent Core names
+
+- **The held parent a TRUC refusal names is the first in txid order**, as
+  Core's `GetParents` gives it (closes #1783).
+
+### An unbroadcast transaction is announced again
+
+- **A held transaction not yet announced is queued to every peer again every
+  10 to 15 minutes**, as Core's `ReattemptInitialBroadcast` does
+  (closes #1816).
+
+### `dumptxoutset` is served
+
+- **`dumptxoutset` writes the UTXO set in Core's snapshot format**, byte for
+  byte as bitcoind v31.1.0 does, at the tip or rolled back by height, hash
+  or `type`; it needs `btclib>=2026.10.7` (closes #1471).
+
+### `scantxoutset` is served
+
+- **`scantxoutset` searches the stored coins by descriptor and answers
+  Core's shape, with `status` and `abort`**; a ranged, multipath or `combo`
+  descriptor is expanded (closes #1406).
+
+### A full send buffer pauses a peer and never drops it
+
+- **A connection is no longer dropped for its send queue**, as in Core:
+  `getdata` and `getcfilters` answers stop when it is full (closes #1805).
+  `-maxsendbuffer` and `-maxreceivebuffer` are read (closes #1812).
+
+### `getmempoolcluster` is served
+
+- **The mempool keeps clusters with a linearization, as Core's txgraph does;
+  `getmempoolcluster` and `getmempoolfeeratediagram` are served**, and
+  transactions are announced in the graph's mining order (closes #1499).
+
+### `getmempoolentry` with no argument answers its whole help
+
+- **It answers `RPC_MISC_ERROR` with the whole help, as bitcoind v31.1
+  does**, where it answered its usage line alone (closes #1828).
+
+### A JSON double out of range is refused, and NaN is a parse error
+
+- **A number no double holds, `1e400` or a whole number as large, is
+  refused "JSON double out of range" where Core reads a double; `NaN`,
+  `Infinity` and `-Infinity` are `-32700`** (closes #1826) (closes #1830).
+
+### `estimatesmartfee` and `estimaterawfee` are served
+
+- **Core's fee estimator answers both, and `fee_estimates.dat` in Core's
+  format is read at start and written hourly and at shutdown** (closes #1543);
+  `estimaterawfee` reads its threshold through `get_real` (closes #1842).
+
+### A block is received as a `cmpctblock`
+
+- **`cmpctblock` and `blocktxn` are handled as Core v31.1 does, and a peer
+  that gives a new block is sent `sendcmpct(1)`**, at most three peers at a
+  time; `getpeerinfo`'s `bip152_hb_to` reads it (closes #1321) (closes #1832).
+
+### The block template takes the mempool's chunks
+
+- **`getblocktemplate` takes the chunks of the mempool's graph, best first,
+  as bitcoind v31.1 does**, where it chose by ancestor package
+  (closes #1822).
+
+### The `btclib-wallet` floor is 2026.10.8
+
+- **`pyproject.toml` requires `btclib-wallet>=2026.10.8`**, which leaves a
+  private key out of a key-origin refusal that 2026.10.7 quotes, and that
+  `scantxoutset` answers with (GHSA-62jf-v327-86h5).
+
+### A cluster keeps its mining-order keys until it changes
+
+- **A cluster keeps its keys, dropped when a dependency is added, a fee
+  changes or the linearization is replaced**, not computed on every call
+  (closes #1809).
+
+### An announcement queue is an ordered set
+
+- **A trickle deletes from a connection's queue only what it pops, and the
+  queues of all due connections are ranked once per call**, as Core's trickle
+  erases from its set (closes #1810).
+
+### A refusal names the option, not the line
+
+- **A config line that fails to parse, and a command-line argument refused
+  as invalid, are quoted up to the first `rpcauth`, `rpcpassword` or `rpcuser`;
+  `scantxoutset`'s refusal quotes no descriptor** (GHSA-74pj-5cgg-3m66).
+
+### A reorg trims the mempool as Core does
+
+- **A reorg links a re-added transaction to the held children that spend it,
+  trims the clusters past the limits, and re-adds nothing a new block holds**,
+  as bitcoind v31.1 does (closes #1823) (closes #1838) (closes #1833).
+
+### Eviction takes the worst chunk
+
+- **A full mempool evicts the worst chunk of its graph, as Core's
+  `TrimToSize`, and `Mempool.add_package` adds a package and trims once**,
+  keeping the members the trim leaves (closes #1740) (closes #1846).
+
+### The mempool is kept across a restart
+
+- **`mempool.dat` in Core's format is written at shutdown and loaded at
+  start; `-persistmempool` and `-persistmempoolv1` are read** (issue #1746).
+
+### The `btclib` floor is 2026.10.8
+
+- **`pyproject.toml` requires `btclib>=2026.10.8`, and a short-id collision
+  in a `cmpctblock` asks for the block**, as btclib raises
+  `ShortIdCollisionError` for it (btclib-org/btclib#2570) (closes #1859).
 
 ## v2026.10.4
 
