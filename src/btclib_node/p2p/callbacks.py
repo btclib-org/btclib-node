@@ -27,7 +27,11 @@ from typing import TYPE_CHECKING, cast
 
 from btclib import var_int
 from btclib.amount import valid_sats_amount
-from btclib.exceptions import BTClibException, BTClibValueError
+from btclib.exceptions import (
+    BTClibException,
+    BTClibValueError,
+    ShortIdCollisionError,
+)
 from btclib.p2p.address import Addr, ServiceFlags
 from btclib.p2p.addrv2 import (
     AddrV2,
@@ -73,7 +77,6 @@ from btclib.p2p.limits import (
     CFCHECKPT_INTERVAL,
     MAX_ADDR_TO_SEND,
     MAX_ADDRV2_SIZE,
-    MAX_BLOCK_TX_INDEX,
     MAX_GETCFHEADERS_SIZE,
     MAX_GETCFILTERS_SIZE,
     MAX_HEADERS_RESULTS,
@@ -2935,13 +2938,15 @@ def _reconstruct(node: Node, compact: CmpctBlock) -> PartialBlock | None:
     `InitData`'s `READ_STATUS_INVALID` is a `MisbehavingError` here,
     asked before `reconstruct`: no transaction, a prefilled transaction
     with neither input nor output, or a prefilled index past the short
-    ids. Its bound of 100000 transactions is left out: `cmpctblock` has
-    refused more than 65535 already. A prefilled index past 65535 is
-    INVALID too, but btclib's parse refuses it first, and the peer is
-    kept (btclib-org/btclib#2572). What `reconstruct` still refuses with
-    `BTClibValueError` is then the short-id collision. Once a btclib
-    release carries `ShortIdCollisionError` (btclib-org/btclib#2570),
-    this catches that instead.
+    ids, which includes one past 65535. Its bound of 100000 transactions
+    is left out: btclib's parse refuses more than 65535 first.
+
+    `reconstruct` raises `ShortIdCollisionError` for a short-id
+    collision (btclib-org/btclib#2570), which is caught. Its
+    `BTClibValueError`s cannot happen here, so none is caught:
+    `add_headers` has accepted the header, the parse makes the
+    prefilled indexes increase, and the `MisbehavingError` above
+    refuses the rest.
 
     The short ids of the whole pool are hashed on `Node`'s thread, as
     ARCHITECTURE.md says.
@@ -2957,7 +2962,7 @@ def _reconstruct(node: Node, compact: CmpctBlock) -> PartialBlock | None:
     pool = [*node.mempool.transactions.values(), *node.download_manager.extra_txns]
     try:
         return reconstruct(compact, pool)
-    except BTClibValueError:
+    except ShortIdCollisionError:
         return None
 
 
@@ -2998,16 +3003,13 @@ def cmpctblock(node: Node, msg: bytes, conn: Connection) -> None:
 
     The message is parsed unchecked, as Core's deserializer reads it:
     `add_headers` checks the header and `_reconstruct` the rest. More
-    than 65535 transactions is refused here and the peer kept, as Core's
-    deserializer throws "indexes overflowed 16 bits".
+    than 65535 transactions is refused by the parse and the peer kept, as
+    Core's deserializer throws "indexes overflowed 16 bits".
     """
     # deferred: `download` imports this module
     from btclib_node.download import MAX_BLOCKS_IN_TRANSIT_PER_PEER  # noqa: PLC0415
 
     compact = CmpctBlock.parse(msg, check_validity=False)
-    if compact.tx_count > MAX_BLOCK_TX_INDEX:
-        err_msg = "indexes overflowed 16 bits"
-        raise BTClibValueError(err_msg)
     header = compact.header
     block_hash = header.hash
     if not _index_compact_header(node, conn, header):
