@@ -781,6 +781,34 @@ def test_a_queue_ranking_below_the_others_is_cut_at_its_cap() -> None:
     assert list(low.tx_announce_queue) == [tx.hash for tx in cheap[:30]]
 
 
+def test_a_long_queue_is_walked_and_a_short_one_is_sorted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both are sent their best, and only the short queue is sorted alone."""
+    long_, short = a_conn(1), a_conn(2)
+    manager = make_manager([long_, short])
+    dear = [paying(manager, fee=10_000 + n) for n in range(3000)]
+    cheap = [paying(manager, fee=100 + n) for n in range(100)]
+    long_.tx_announce_queue = dict.fromkeys(tx.hash for tx in dear)
+    short.tx_announce_queue = dict.fromkeys(tx.hash for tx in cheap)
+    sorted_sizes: list[int] = []
+
+    def spy(items: Any, key: Any) -> list[Any]:
+        sorted_sizes.append(len(items))
+        return sorted(items, key=key)
+
+    monkeypatch.setattr(download_module, "sorted", spy, raising=False)
+    manager._send_due_announcements()
+    long_cap = download_module._trickle_cap(3000)
+    assert (
+        hashes_of(only(long_, Inv)[0]) == [tx.hash for tx in reversed(dear)][:long_cap]
+    )
+    assert hashes_of(only(short, Inv)[0]) == [tx.hash for tx in reversed(cheap)][:70]
+    assert list(long_.tx_announce_queue) == [tx.hash for tx in dear[: 3000 - long_cap]]
+    assert list(short.tx_announce_queue) == [tx.hash for tx in cheap[:30]]
+    assert sorted_sizes == [3100, 100]
+
+
 def test_a_prioritised_transaction_is_ranked_by_its_modified_fee() -> None:
     """Core's graph fee is the modified fee: a delta moves a transaction up."""
     other = a_conn(1)

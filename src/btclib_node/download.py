@@ -1245,12 +1245,13 @@ class DownloadManager:
             conn.stats.last_inv_sequence = self.node.mempool.sequence
             due_conns.append((conn, due))
         ranked = self._rank_queued([conn for conn, _ in due_conns])
+        rank = {wtxid: n for n, wtxid in enumerate(ranked)}
         for conn, due in due_conns:
             if conn.tx_announce_queue:
                 # The cap is Core's, from the queue's size before anything
                 # is popped (`m_tx_inventory_to_send.size()`).
                 cap = _trickle_cap(len(conn.tx_announce_queue))
-                batch = self._pop_trickle(conn, cap, ranked)
+                batch = self._pop_trickle(conn, cap, ranked, rank)
                 if batch:
                     # `cap` is at most `_INVENTORY_BROADCAST_MAX`, below
                     # `MAX_INV_SZ`, so one `Inv` always holds a trickle.
@@ -1292,7 +1293,11 @@ class DownloadManager:
             conn.known_tx_inventory.add(item.hash)
 
     def _pop_trickle(
-        self, conn: Connection, cap: int, ranked: list[bytes]
+        self,
+        conn: Connection,
+        cap: int,
+        ranked: list[bytes],
+        rank: dict[bytes, int],
     ) -> list[bytes]:
         """Pop what one trickle sends from `conn`'s queue, best-paying first.
 
@@ -1303,12 +1308,18 @@ class DownloadManager:
         the cap. Each is read when sending, so a change while the entry
         waited applies. What is not popped stays queued.
 
-        `ranked` holds every due connection's entries, so the queue is read
-        through it, stopping at the cap.
+        `ranked` holds every due connection's entries and `rank` their
+        positions in it. A long queue is read by walking `ranked` to the
+        cap; a short one is sorted by `rank`, as walking would pass mostly
+        entries it does not hold.
         """
         queue = conn.tx_announce_queue
         batch: list[bytes] = []
-        for wtxid in ranked:
+        if len(queue) ** 2 >= cap * len(ranked):
+            order = ranked
+        else:
+            order = sorted(queue, key=rank.__getitem__)
+        for wtxid in order:
             if len(batch) == cap or not queue:
                 break
             if wtxid in queue:
