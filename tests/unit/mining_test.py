@@ -17,6 +17,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import timedelta
+from fractions import Fraction
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -228,7 +229,7 @@ def test_a_period_last_block_is_not_dated_before_the_period_first_block(
     assert int(template.block.header.time.timestamp()) == first_time
 
 
-def test_the_package_with_the_best_feerate_goes_in_first(funded: Node) -> None:
+def test_the_chunk_with_the_best_feerate_goes_in_first(funded: Node) -> None:
     """Transactions are taken by fee, and what they pay is the coinbase's."""
     cbs = coinbases(funded, 3)
     low = pool(funded, spend([OutPoint(cbs[0].id, 0)], [SUBSIDY - 2_000]), 2_000)
@@ -282,7 +283,7 @@ def test_the_block_minimum_feerate_is_asked_of_the_modified_fee(funded: Node) ->
 
 
 def test_a_delta_on_a_child_lifts_its_parent_too(funded: Node) -> None:
-    """The package is ranked by its modified fees, as the ancestors' sum is."""
+    """A chunk is ranked by its modified fees."""
     cbs = coinbases(funded, 2)
     parent = pool(funded, spend([OutPoint(cbs[0].id, 0)], [SUBSIDY - 100]), 100)
     child = pool(funded, spend([OutPoint(parent.id, 0)], [SUBSIDY - 200]), 100)
@@ -315,8 +316,10 @@ def test_a_child_that_pays_well_lifts_its_parent(funded: Node) -> None:
     mine_template(funded, template.block)
 
 
-def test_a_child_left_behind_by_its_parent_is_ranked_on_its_own(funded: Node) -> None:
-    """Once a parent is in, its child is ranked by what it pays itself."""
+def test_a_child_paying_less_than_its_parent_is_a_chunk_of_its_own(
+    funded: Node,
+) -> None:
+    """A child that does not lift its parent is ranked by what it pays."""
     cbs = coinbases(funded, 2)
     parent = pool(funded, spend([OutPoint(cbs[0].id, 0)], [SUBSIDY - 20_000]), 20_000)
     child = pool(funded, spend([OutPoint(parent.id, 0)], [SUBSIDY - 20_100]), 100)
@@ -328,8 +331,8 @@ def test_a_child_left_behind_by_its_parent_is_ranked_on_its_own(funded: Node) ->
     mine_template(funded, template.block)
 
 
-def test_a_diamond_of_descendants_is_ranked_once_and_connects(funded: Node) -> None:
-    """A transaction reached through two parents is ranked again only once."""
+def test_a_diamond_goes_in_parents_first_and_connects(funded: Node) -> None:
+    """A transaction reached through two parents goes in after both."""
     cbs = coinbases(funded, 2)
     root = pool(funded, spend([OutPoint(cbs[0].id, 0)], [SUBSIDY // 2 - 100] * 2), 200)
     left = pool(funded, spend([OutPoint(root.id, 0)], [SUBSIDY // 2 - 1_100]), 1_000)
@@ -351,7 +354,146 @@ def test_a_diamond_of_descendants_is_ranked_once_and_connects(funded: Node) -> N
     mine_template(funded, template.block)
 
 
-def test_a_package_over_the_weight_limit_is_left_out(
+def test_a_chunk_goes_in_before_a_transaction_its_best_package_trails(
+    funded: Node,
+) -> None:
+    """Two children paying for one parent go in before a single between.
+
+    The single pays a better feerate than the parent with one child,
+    which is what an ancestor package ranks, and a worse one than the
+    chunk of all three, which is what `addChunks` ranks.
+    """
+    cbs = coinbases(funded, 2)
+    parent = pool(
+        funded, spend([OutPoint(cbs[0].id, 0)], [SUBSIDY // 2 - 100] * 2), 200
+    )
+    children = [
+        pool(funded, spend([OutPoint(parent.id, i)], [SUBSIDY // 2 - 10_100]), 10_000)
+        for i in (0, 1)
+    ]
+    single = pool(funded, spend([OutPoint(cbs[1].id, 0)], [SUBSIDY - 6_000]), 6_000)
+    sizes = [parent.vsize, *(child.vsize for child in children)]
+    assert (
+        Fraction(10_200, sum(sizes[:2]))
+        < Fraction(6_000, single.vsize)
+        < Fraction(20_200, sum(sizes))
+    )
+
+    template = create_new_block(funded, SCRIPT)
+
+    chosen = template.block.transactions[1:]
+    assert chosen[0] == parent
+    assert sorted(tx.id for tx in chosen[1:3]) == sorted(tx.id for tx in children)
+    assert chosen[3] == single
+    mine_template(funded, template.block)
+
+
+def test_a_skipped_chunk_leaves_out_the_later_chunks_of_its_cluster(
+    funded: Node,
+) -> None:
+    """A child that would fit stays out with the parent that did not.
+
+    The child pays less than its parent, so it is a chunk of its own,
+    after the parent's; `addChunks` skips the parent, not final, and
+    `BlockBuilder::Skip` the rest of its cluster.
+    """
+    cbs = coinbases(funded, 2)
+    height = len(funded.chainstate.block_index.active_chain)
+    waiting = pool(
+        funded,
+        spend(
+            [OutPoint(cbs[0].id, 0)],
+            [SUBSIDY - 9_000],
+            lock_time=height + 10,
+            sequence=0,
+        ),
+        9_000,
+    )
+    child = pool(funded, spend([OutPoint(waiting.id, 0)], [SUBSIDY - 10_000]), 1_000)
+    later = pool(funded, spend([OutPoint(cbs[1].id, 0)], [SUBSIDY - 500]), 500)
+    graph = funded.mempool.graph
+    assert [chunk.refs for chunk in graph.mining_order()] == [
+        [waiting.hash],
+        [child.hash],
+        [later.hash],
+    ]
+
+    template = create_new_block(funded, SCRIPT)
+
+    assert template.block.transactions[1:] == [later]
+
+
+def test_the_search_stops_after_failing_in_a_row_near_a_full_block(
+    funded: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's `MAX_CONSECUTIVE_FAILURES` and `BLOCK_FULL_ENOUGH_WEIGHT_DELTA`.
+
+    Once the block is within the delta of full, more failures in a row
+    than the limit stop the search, though a later chunk would fit. A
+    chunk that fits starts the count again.
+    """
+    cbs = coinbases(funded, 5)
+
+    def padded(index: int, fee: int) -> Tx:
+        tx = spend([OutPoint(cbs[index].id, 0)], [SUBSIDY - fee])
+        tx.vout.append(TxOut(0, b"j" + bytes(5_000)))
+        return pool(funded, tx, fee)
+
+    big = padded(0, 500_000)
+    first = pool(funded, spend([OutPoint(cbs[1].id, 0)], [SUBSIDY - 9_000]), 9_000)
+    bigger = [padded(i, 50_000) for i in (2, 3)]
+    last = pool(funded, spend([OutPoint(cbs[4].id, 0)], [SUBSIDY - 1_000]), 1_000)
+    # a failure, `first`, two failures, then `last`
+    order = [chunk.refs for chunk in funded.mempool.graph.mining_order()]
+    assert order[:2] == [[big.hash], [first.hash]]
+    assert sorted(order[2:4]) == sorted([tx.hash] for tx in bigger)
+    assert order[4:] == [[last.hash]]
+    room = first.weight + last.weight + 1
+    monkeypatch.setattr(mining, "MAX_BLOCK_WEIGHT", 8_000 + room)
+    monkeypatch.setattr(mining, "_MAX_CONSECUTIVE_FAILURES", 2)
+    assert create_new_block(funded, SCRIPT).block.transactions[1:] == [first, last]
+
+    monkeypatch.setattr(mining, "_MAX_CONSECUTIVE_FAILURES", 1)
+
+    assert create_new_block(funded, SCRIPT).block.transactions[1:] == [first]
+
+
+def test_the_search_goes_on_after_many_failures_far_from_a_full_block(
+    funded: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """More failures in a row than Core's limit stop nothing short of full.
+
+    The block is exactly `BLOCK_FULL_ENOUGH_WEIGHT_DELTA` from full, which
+    Core does not count as close.
+    """
+    cbs = coinbases(funded, 2)
+    failures = mining._MAX_CONSECUTIVE_FAILURES + 1
+    fan = pool(
+        funded,
+        spend([OutPoint(cbs[0].id, 0)], [(SUBSIDY - 100_000) // failures] * failures),
+        SUBSIDY - (SUBSIDY - 100_000) // failures * failures,
+    )
+    mine(funded, 1)
+    height = len(funded.chainstate.block_index.active_chain)
+    for vout, tx_out in enumerate(fan.vout):
+        # one cluster each, none final in the next block
+        waiting = spend(
+            [OutPoint(fan.id, vout)],
+            [tx_out.value - 2_000],
+            lock_time=height + 10,
+            sequence=0,
+        )
+        pool(funded, waiting, 2_000)
+    last = pool(funded, spend([OutPoint(cbs[1].id, 0)], [SUBSIDY - 1_000]), 1_000)
+    assert funded.mempool.graph.mining_order()[-1].refs == [last.hash]
+    monkeypatch.setattr(mining, "MAX_BLOCK_WEIGHT", 8_000 + 4_000)
+
+    template = create_new_block(funded, SCRIPT)
+
+    assert template.block.transactions[1:] == [last]
+
+
+def test_a_chunk_over_the_weight_limit_is_left_out(
     funded: Node, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A transaction that no longer fits is skipped; a smaller one is not."""
@@ -365,19 +507,25 @@ def test_a_package_over_the_weight_limit_is_left_out(
     template = create_new_block(funded, SCRIPT)
 
     assert template.block.transactions[1:] == [small]
+    # Core's limit is exclusive
+    monkeypatch.setattr(mining, "MAX_BLOCK_WEIGHT", 8_000 + small.weight)
+    assert create_new_block(funded, SCRIPT).block.transactions[1:] == []
 
 
-def test_a_package_over_the_sigop_limit_is_left_out(
+def test_a_chunk_over_the_sigop_limit_is_left_out(
     funded: Node, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A transaction counted over the sigop limit stays in the mempool."""
+    """A transaction reaching the sigop limit stays in the mempool.
+
+    The limit is exclusive, and the coinbase's reserved sigops count.
+    """
     cbs = coinbases(funded, 2)
     heavy = pool(funded, spend([OutPoint(cbs[0].id, 0)], [SUBSIDY - 9_000]), 9_000)
     light = pool(funded, spend([OutPoint(cbs[1].id, 0)], [SUBSIDY - 1_000]), 1_000)
     monkeypatch.setattr(
         mining,
         "sig_op_cost",
-        lambda _prev_outputs, tx, _flags: 80_000 if tx is heavy else 1,
+        lambda _prev_outputs, tx, _flags: 80_000 - 400 if tx is heavy else 1,
     )
 
     template = create_new_block(funded, SCRIPT)
@@ -386,14 +534,16 @@ def test_a_package_over_the_sigop_limit_is_left_out(
     assert template.sigops == [1]
 
 
-def test_a_sigop_dense_package_that_fits_by_weight_is_in_the_template(
+def test_a_sigop_dense_chunk_that_fits_by_weight_is_in_the_template(
     funded: Node, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The weight limit compares real weight; the sigop limit is its own."""
     cbs = coinbases(funded, 1)
-    dense = pool(funded, spend([OutPoint(cbs[0].id, 0)], [SUBSIDY - 9_000]), 9_000)
+    # 1000 sigops at 20 weight each: the graph holds that sigop-adjusted
+    # weight, over the room the real weight leaves
+    dense = spend([OutPoint(cbs[0].id, 0)], [SUBSIDY - 9_000])
+    assert funded.mempool.add_tx(dense, 9_000, 1_000 * 20 // 4, 1_000 * 20)
     monkeypatch.setattr(mining, "sig_op_cost", lambda _prev_outputs, _tx, _flags: 1_000)
-    # 1000 sigops at 20 weight each are over the room the weight leaves
     room = dense.weight + 1
     assert room < 1_000 * 20
     monkeypatch.setattr(mining, "MAX_BLOCK_WEIGHT", 8_000 + room)
@@ -404,9 +554,9 @@ def test_a_sigop_dense_package_that_fits_by_weight_is_in_the_template(
     assert template.sigops == [1_000]
 
 
-def test_a_package_under_one_satoshi_per_kvb_is_left_out(funded: Node) -> None:
+def test_a_chunk_under_one_satoshi_per_kvb_is_left_out(funded: Node) -> None:
     """Core's `addChunks` stops at `DEFAULT_BLOCK_MIN_TX_FEE`, 1 sat/kvB."""
-    cbs = coinbases(funded, 4)
+    cbs = coinbases(funded, 5)
     pool(funded, spend([OutPoint(cbs[0].id, 0)], [SUBSIDY]), 0)
     cheap = pool(funded, spend([OutPoint(cbs[1].id, 0)], [SUBSIDY - 1]), 1)
     # one satoshi over more than 1000 vbytes is just under the floor
@@ -415,12 +565,16 @@ def test_a_package_under_one_satoshi_per_kvb_is_left_out(funded: Node) -> None:
     pool(funded, long, 1)
     assert cheap.vsize < 1_000 < long.vsize
     # exactly 1 sat/kvB is kept: Core stops only below it
-    exact = spend([OutPoint(cbs[3].id, 0)], [SUBSIDY - 1])
-    exact.vout.append(TxOut(0, b"j" + bytes(1_000 - exact.vsize - 30)))
-    while exact.vsize < 1_000:
-        exact.vout[-1] = TxOut(0, exact.vout[-1].script_pub_key.script + b"\x00")
-    assert exact.vsize == 1_000
+    exact, rounded = (spend([OutPoint(cbs[i].id, 0)], [SUBSIDY - 1]) for i in (3, 4))
+    for tx in (exact, rounded):
+        tx.vout.append(TxOut(0, b"j" + bytes(1_000 - tx.vsize - 30)))
+        while tx.vsize < 1_000:
+            tx.vout[-1] = TxOut(0, tx.vout[-1].script_pub_key.script + b"\x00")
+        assert tx.vsize == 1_000
     pool(funded, exact, 1)
+    # a weight one over 4000, as a segwit one can be, is 1001 vbytes:
+    # `ToFeePerVSize` rounds up
+    assert funded.mempool.add_tx(rounded, 1, 1_001, 4_001)
 
     template = create_new_block(funded, SCRIPT)
 

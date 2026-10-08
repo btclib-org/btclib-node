@@ -48,11 +48,12 @@ from btclib_node.cluster_linearize import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Hashable, Iterable
+    from collections.abc import Hashable, Iterable, Iterator
 
 __all__ = [
     "ACCEPTABLE_COST",
     "POST_CHANGE_COST",
+    "BlockBuilder",
     "Chunk",
     "MiningKey",
     "Quality",
@@ -388,25 +389,64 @@ class TxGraph[R: Hashable]:
             keys[ref] = found[id(cluster)][ref]
         return keys
 
-    def mining_order(self) -> list[Chunk[R]]:
-        """Return every chunk, in the order a block takes them.
+    def _main_chunks(self) -> list[tuple[_Cluster[R], Chunk[R]]]:
+        """Return every chunk with its cluster, in the order a block takes them.
 
-        What Core's `BlockBuilder` returns when every chunk is included,
-        every cluster being made acceptable first, as `MakeAllAcceptable`
-        does.
+        Every cluster is made acceptable first, as `MakeAllAcceptable` does.
         """
         for quality in (Quality.NEEDS_FIX, Quality.NEEDS_RELINEARIZE):
             while self._queues[quality]:
                 self._make_acceptable(self._queues[quality][-1])
-        keyed: list[tuple[MiningKey, Chunk[R]]] = []
+        keyed: list[tuple[MiningKey, _Cluster[R], Chunk[R]]] = []
         for quality in (Quality.ACCEPTABLE, Quality.OPTIMAL):
             for cluster in self._queues[quality]:
                 keys = self._order_keys(cluster)
                 keyed.extend(
-                    (keys[chunk.refs[0]], chunk) for chunk in self._chunks(cluster)
+                    (keys[chunk.refs[0]], cluster, chunk)
+                    for chunk in self._chunks(cluster)
                 )
         keyed.sort(key=lambda item: item[0])
-        return [chunk for _, chunk in keyed]
+        return [(cluster, chunk) for _, cluster, chunk in keyed]
+
+    def mining_order(self) -> list[Chunk[R]]:
+        """Return every chunk, in the order a block takes them.
+
+        What Core's `BlockBuilder` returns when every chunk is included.
+        """
+        return [chunk for _, chunk in self._main_chunks()]
+
+    def block_builder(self) -> BlockBuilder[R]:
+        """Return the chunks in mining order, as Core's `GetBlockBuilder`.
+
+        The graph must not change while the builder is in use.
+        """
+        return BlockBuilder(self._main_chunks())
+
+
+class BlockBuilder[R]:
+    """The chunks a block takes, best first: Core's `TxGraph::BlockBuilder`.
+
+    Iterating yields each chunk. Moving on to the next is Core's
+    `Include`; `skip` is its `Skip`, and leaves out the later chunks of
+    the cluster of the chunk last yielded, since they may spend it.
+    """
+
+    def __init__(self, chunks: Iterable[tuple[object, Chunk[R]]]) -> None:
+        """Hold `chunks` in mining order, each with the cluster it is of."""
+        self._chunks = list(chunks)
+        self._skipped: set[object] = set()
+        self._current: object = None
+
+    def __iter__(self) -> Iterator[Chunk[R]]:
+        """Yield each chunk whose cluster has no skipped chunk."""
+        for cluster, chunk in self._chunks:
+            if cluster not in self._skipped:
+                self._current = cluster
+                yield chunk
+
+    def skip(self) -> None:
+        """Leave out the rest of the cluster of the chunk last yielded."""
+        self._skipped.add(self._current)
 
 
 def _positions(mask: int) -> Iterable[int]:

@@ -4,10 +4,11 @@
 
 """Block assembly, proof of work, and the validity check that stores nothing.
 
-Core's `BlockAssembler::CreateNewBlock` (`src/node/miner.cpp`), the
-nonce search of `GenerateBlock` (`src/rpc/mining.cpp`) and
-`TestBlockValidity` (`src/validation.cpp`), at bitcoin/bitcoin@9be056a8a7,
-the v31.1 tag. `rpc.mining` is the RPC surface over them.
+Core's `BlockAssembler::CreateNewBlock` with its `addChunks`
+(`src/node/miner.cpp`), the nonce search of `GenerateBlock`
+(`src/rpc/mining.cpp`) and `TestBlockValidity` (`src/validation.cpp`),
+at bitcoin/bitcoin@9be056a8a7, the v31.1 tag. `rpc.mining` is the RPC
+surface over them.
 
 Everything here runs on `Node`'s own thread, `ARCHITECTURE.md`'s *The
 loop*, which is what lets it read the mempool and the staged UTXO set
@@ -17,21 +18,18 @@ searches on an RPC thread of its own.
 
 Where this module differs from Core:
 
-- Core 31's `addChunks` takes a cluster mempool's chunks in feerate
-  order. `_PackageSelector` takes ancestor packages by feerate, the
-  order Core used before clusters, although `Mempool.graph` keeps the
-  chunks (btclib-org/btclib-node#1822). The block is valid either way;
-  the fee it collects can differ.
 - The weight limit and `_minimum_time` follow Core's `master` at
   bitcoin/bitcoin@aef8a04966, not v31.1. The weight limit compares a
-  package's real weight (bitcoin/bitcoin#35580), and the sigop limit
-  is checked on its own. `_minimum_time` holds the last block of a
-  difficulty period to the time of its first, BIP54's rule, on every
-  network (bitcoin/bitcoin#35949).
+  chunk's real weight, where v31.1's sigop-adjusted weight can leave out
+  a chunk that fits (bitcoin/bitcoin#35580,
+  btclib-org/btclib-node#1754). The sigop limit is checked on its own.
+  `_minimum_time` holds the last block of a difficulty period to the
+  time of its first, BIP54's rule, on every network
+  (bitcoin/bitcoin#35949).
 - `-blockmaxweight`, `-blockmintxfee`, `-blockreservedweight` and
   `-printpriority` are not options of this node: the block limits are
-  Core's defaults, and a package under `DEFAULT_BLOCK_MIN_TX_FEE`, 1
-  sat/kvB, is left out as Core's `addChunks` stops at it.
+  Core's defaults, and the chunks from the first under
+  `DEFAULT_BLOCK_MIN_TX_FEE`, 1 sat/kvB, are left out.
 - A reject reason is Core's `GetRejectReason`, the word BIP22 answers
   and never the debug text after it: `TxRejectedError.reason` for what
   connecting refuses, and Core's word where `_check_block`,
@@ -42,7 +40,6 @@ Where this module differs from Core:
 
 from __future__ import annotations
 
-import heapq
 import re
 import time
 from datetime import UTC, datetime
@@ -64,7 +61,7 @@ from btclib.block.block import (
 )
 from btclib.block.limits import MAX_BLOCK_SIGOPS_COST, MAX_TIMEWARP
 from btclib.block.mining import NONCE_SPACE, mine
-from btclib.consensus import MAX_BLOCK_WEIGHT, subsidy
+from btclib.consensus import MAX_BLOCK_WEIGHT, WITNESS_SCALE_FACTOR, subsidy
 from btclib.exceptions import BTClibException, BTClibValueError
 from btclib.script.engine import sig_op_cost
 from btclib.script.witness import Witness
@@ -127,6 +124,13 @@ _WITNESS_NONCE = bytes(32)
 
 # `DEFAULT_BLOCK_MIN_TX_FEE`, 1 sat/kvB, as satoshi per virtual byte
 _MIN_FEERATE = Fraction(1, 1000)
+
+# `addChunks`' `MAX_CONSECUTIVE_FAILURES` and `BLOCK_FULL_ENOUGH_WEIGHT_DELTA`:
+# the search stops once more chunks than `_MAX_CONSECUTIVE_FAILURES` in a row
+# have not fitted, with the block within `_BLOCK_FULL_ENOUGH_WEIGHT_DELTA` of
+# full
+_MAX_CONSECUTIVE_FAILURES = 1000
+_BLOCK_FULL_ENOUGH_WEIGHT_DELTA = 4000
 
 # nonces `solve_block` tries in one step. A pass of the loop runs one step
 # of each search in progress, so it grows by one chunk per search, at most
@@ -216,127 +220,50 @@ def _prev_outputs(node: Node, tx: Tx) -> list[TxOut]:
     return outputs
 
 
-class _PackageSelector:
-    """Choose mempool transactions for a block at `height`, best packages first.
+def _add_chunks(node: Node, height: int, lock_time_cutoff: int) -> list[_Chosen]:
+    """Choose the mempool's chunks for a block at `height`: Core's `addChunks`.
 
-    Core's `addPackageTxs` before cluster mempool: the package of a
-    transaction is itself and the ancestors not yet in the block, ranked
-    by the feerate of the package. The fees ranked are the modified ones
-    (`prioritisetransaction`); what a block pays out is the fees paid.
-    A package that does not fit the weight or sigop limit, or holds a
-    transaction not final at `height`, is left out, and the packages of the
-    descendants of what goes in are ranked again.
+    The chunks come best first, as `TxGraph.block_builder` gives them,
+    ranked by modified fee (`prioritisetransaction`); what a block pays
+    out is the fees paid. A chunk that does not fit the weight or sigop
+    limit, or holds a transaction not final at `height`, is skipped with
+    the rest of its cluster.
     """
-
-    def __init__(self, node: Node, height: int, lock_time_cutoff: int) -> None:
-        self.node = node
-        self.height = height
-        self.lock_time_cutoff = lock_time_cutoff
-        self.pool = node.mempool
-        self.ancestors: dict[bytes, frozenset[bytes]] = {}
-        self.sigops: dict[bytes, int] = {}
-        self.in_block: set[bytes] = set()
-        self.failed: set[bytes] = set()
-        # the rank a heap entry was pushed with is current only while it
-        # equals the wtxid's `revision`
-        self.revision: dict[bytes, int] = {}
-        self.heap: list[tuple[Fraction, int, bytes, int]] = []
-        self.chosen: list[_Chosen] = []
-        self.weight = _RESERVED_WEIGHT
-        self.cost = _RESERVED_SIGOPS
-
-    def _ancestors_of(self, wtxid: bytes) -> frozenset[bytes]:
-        if wtxid not in self.ancestors:
-            found: set[bytes] = set()
-            for tx_in in self.pool.transactions[wtxid].vin:
-                parent = self.pool.txid_index.get(tx_in.prev_out.tx_id)
-                if parent is not None:
-                    found.add(parent)
-                    found |= self._ancestors_of(parent)
-            self.ancestors[wtxid] = frozenset(found)
-        return self.ancestors[wtxid]
-
-    def _sigops_of(self, wtxid: bytes) -> int:
-        if wtxid not in self.sigops:
-            tx = self.pool.transactions[wtxid]
-            self.sigops[wtxid] = sig_op_cost(
-                _prev_outputs(self.node, tx), tx, STANDARD_FLAGS
-            )
-        return self.sigops[wtxid]
-
-    def _package(self, wtxid: bytes) -> list[bytes]:
-        """Return `wtxid` and its ancestors not in the block, parents first."""
-        ancestors = self._ancestors_of(wtxid) - self.in_block
-        return [*sorted(ancestors, key=lambda w: len(self._ancestors_of(w))), wtxid]
-
-    def _push(self, wtxid: bytes) -> None:
-        package = self._package(wtxid)
-        fee = sum(self.pool.modified_fee(w) for w in package)
-        size = sum(self.pool.vsizes[w] for w in package)
-        self.revision[wtxid] = self.revision.get(wtxid, 0) + 1
-        heapq.heappush(
-            self.heap,
-            (-Fraction(fee, size), len(self.heap), wtxid, self.revision[wtxid]),
-        )
-
-    def _fits(self, package: list[bytes]) -> bool:
-        transactions = self.pool.transactions
-        return (
-            self.weight + sum(transactions[w].weight for w in package)
-            < MAX_BLOCK_WEIGHT
-            and self.cost + sum(self._sigops_of(w) for w in package)
-            < MAX_BLOCK_SIGOPS_COST
-            and all(
-                is_final(transactions[w], self.height, self.lock_time_cutoff)
-                for w in package
-            )
-        )
-
-    def _include(self, package: list[bytes]) -> None:
-        for wtxid in package:
-            tx = self.pool.transactions[wtxid]
-            self.chosen.append(
-                _Chosen(tx, self.pool.fees[wtxid], self._sigops_of(wtxid))
-            )
-            self.weight += tx.weight
-            self.cost += self._sigops_of(wtxid)
-            self.in_block.add(wtxid)
-
-    def _children(self, wtxid: bytes) -> set[bytes]:
-        return self.pool.spent_by.get(self.pool.transactions[wtxid].id, set())
-
-    def _rank_descendants(self, package: list[bytes]) -> None:
-        pending = [child for wtxid in package for child in self._children(wtxid)]
-        ranked: set[bytes] = set()
-        while pending:
-            child = pending.pop()
-            if child not in self.in_block and child not in ranked:
-                ranked.add(child)
-                self._push(child)
-                pending.extend(self._children(child))
-
-    def select(self) -> list[_Chosen]:
-        """Return the chosen transactions in block order."""
-        for wtxid in list(self.pool.transactions):
-            self._push(wtxid)
-        while self.heap:
-            negative_rate, _, wtxid, revision = heapq.heappop(self.heap)
+    pool = node.mempool
+    chosen: list[_Chosen] = []
+    weight = _RESERVED_WEIGHT
+    cost = _RESERVED_SIGOPS
+    failures = 0
+    builder = pool.graph.block_builder()
+    for chunk in builder:
+        # `ToFeePerVSize`: the graph's size is a sigop-adjusted weight
+        vsize = -(-chunk.feerate.size // WITNESS_SCALE_FACTOR)
+        if Fraction(chunk.feerate.fee, vsize) < _MIN_FEERATE:
+            # everything left pays less
+            break
+        txs = [pool.transactions[wtxid] for wtxid in chunk.refs]
+        sigops = [
+            sig_op_cost(_prev_outputs(node, tx), tx, STANDARD_FLAGS) for tx in txs
+        ]
+        if (
+            weight + sum(tx.weight for tx in txs) >= MAX_BLOCK_WEIGHT
+            or cost + sum(sigops) >= MAX_BLOCK_SIGOPS_COST
+            or not all(is_final(tx, height, lock_time_cutoff) for tx in txs)
+        ):
+            builder.skip()
+            failures += 1
             if (
-                wtxid in self.in_block
-                or wtxid in self.failed
-                or revision != self.revision[wtxid]
+                failures > _MAX_CONSECUTIVE_FAILURES
+                and weight + _BLOCK_FULL_ENOUGH_WEIGHT_DELTA > MAX_BLOCK_WEIGHT
             ):
-                continue
-            if -negative_rate < _MIN_FEERATE:
-                # everything left pays less
                 break
-            package = self._package(wtxid)
-            if not self._fits(package):
-                self.failed.add(wtxid)
-                continue
-            self._include(package)
-            self._rank_descendants(package)
-        return self.chosen
+            continue
+        failures = 0
+        for wtxid, tx, tx_sigops in zip(chunk.refs, txs, sigops, strict=True):
+            chosen.append(_Chosen(tx, pool.fees[wtxid], tx_sigops))
+            weight += tx.weight
+            cost += tx_sigops
+    return chosen
 
 
 def _assemble(
@@ -431,9 +358,7 @@ def create_new_block(node: Node, script_pub_key: ScriptPubKey) -> BlockTemplate:
     height = len(block_index.active_chain)
     tip_header = block_index.header_dict[block_index.active_chain[-1]].header
     tip_mtp = median_time_past(tip_header, height - 1, parent_lookup(node))
-    template = _assemble(
-        node, script_pub_key, _PackageSelector(node, height, tip_mtp).select()
-    )
+    template = _assemble(node, script_pub_key, _add_chunks(node, height, tip_mtp))
     reason = check_block_validity(node, template.block, check_merkle_root=False)
     if reason is not None:
         raise TemplateError(reason)

@@ -88,6 +88,33 @@ def test_a_chunk_of_two_goes_by_its_greatest_key() -> None:
     assert [chunk.refs for chunk in graph.mining_order()] == [["s"], ["p", "c"]]
 
 
+def test_a_skipped_chunk_leaves_out_the_rest_of_its_cluster() -> None:
+    """Core's `BlockBuilder::Skip`: the later chunks of that cluster only."""
+    graph = a_graph()
+    # a chain of three chunks, and a single between its first two
+    graph.add_transaction("A", FeeFrac(30, 10), "A")
+    graph.add_transaction("B", FeeFrac(10, 10), "B")
+    graph.add_transaction("C", FeeFrac(5, 10), "C")
+    graph.add_dependency("A", "B")
+    graph.add_dependency("B", "C")
+    graph.add_transaction("S", FeeFrac(20, 10), "S")
+    graph.add_transaction("T", FeeFrac(1, 10), "T")
+    builder = graph.block_builder()
+    taken = []
+    for chunk in builder:
+        taken.append(chunk.refs)
+        if chunk.refs == ["B"]:
+            builder.skip()
+    assert taken == [["A"], ["S"], ["B"], ["T"]]
+    assert [chunk.refs for chunk in graph.mining_order()] == [
+        ["A"],
+        ["S"],
+        ["B"],
+        ["C"],
+        ["T"],
+    ]
+
+
 def test_a_dependency_on_itself_is_ignored() -> None:
     """Core's `AddDependency` does nothing for a dependency on self."""
     graph = a_graph()
