@@ -106,6 +106,9 @@ class _Cluster[R]:
         self.linearization: list[int] = []
         self.quality = Quality.OPTIMAL
         self.setindex = -1
+        # the mining keys of an acceptable cluster, until anything they
+        # read changes: its membership, dependencies, fees or linearization
+        self.keys: dict[R, MiningKey] | None = None
 
     @property
     def is_topological(self) -> bool:
@@ -200,6 +203,7 @@ class TxGraph[R: Hashable]:
         cluster, parent_pos = self._locator[parent]
         _, child_pos = self._locator[child]
         cluster.depgraph.add_dependencies(1 << parent_pos, child_pos)
+        cluster.keys = None
         self._set_quality(cluster, Quality.NEEDS_FIX)
 
     def _merge(self, into: _Cluster[R], other: _Cluster[R]) -> None:
@@ -255,6 +259,7 @@ class TxGraph[R: Hashable]:
         if cluster.depgraph.fees[pos] == fee:
             return
         cluster.depgraph.set_fee(pos, fee)
+        cluster.keys = None
         if cluster.depgraph.tx_count > 1 and cluster.is_acceptable:
             self._set_quality(cluster, Quality.NEEDS_RELINEARIZE)
 
@@ -277,6 +282,7 @@ class TxGraph[R: Hashable]:
         )
         post_linearize(cluster.depgraph, lin)
         cluster.linearization = lin
+        cluster.keys = None
         improved = True
         if optimal:
             self._set_quality(cluster, Quality.OPTIMAL)
@@ -377,16 +383,17 @@ class TxGraph[R: Hashable]:
         """Return a sort key for each of `refs`: the order a block takes them.
 
         Core's `CompareMainOrder`, each cluster being made acceptable
-        first.
+        first. A cluster keeps its keys until its membership,
+        dependencies, fees or linearization change, as Core keeps them
+        in its entries.
         """
-        found: dict[int, dict[R, MiningKey]] = {}
         keys: dict[R, MiningKey] = {}
         for ref in refs:
             cluster, _ = self._locator[ref]
-            if id(cluster) not in found:
+            if cluster.keys is None:
                 self._make_acceptable(cluster)
-                found[id(cluster)] = self._order_keys(cluster)
-            keys[ref] = found[id(cluster)][ref]
+                cluster.keys = self._order_keys(cluster)
+            keys[ref] = cluster.keys[ref]
         return keys
 
     def _main_chunks(self) -> list[tuple[_Cluster[R], Chunk[R]]]:
