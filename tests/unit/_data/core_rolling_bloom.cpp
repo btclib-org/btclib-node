@@ -8,7 +8,8 @@
 // Input, one case per line: nElements, fpRate, nTweak, then operations: `+`
 // or `?` followed by a key in hex inserts or queries it, and `+n` or `?n`
 // followed by a start and a count does so for each key i of the range, i as
-// 32 little-endian bytes. Output, one line per case: nHashFuncs,
+// 32 little-endian bytes. `!` followed by a tweak resets the filter to
+// it. Output, one line per case: nHashFuncs,
 // nEntriesPerGeneration, data.size(), nGeneration, nEntriesThisGeneration,
 // FNV-1a 64 of data's words as little-endian bytes, then one 0 or 1 per
 // query.
@@ -73,7 +74,10 @@ int main()
             }
         };
         while (in >> op) {
-            if (op.size() > 1 && op[1] == 'n') {
+            if (op[0] == '!') {
+                g_tweak = std::stoul(op.substr(1));
+                filter.reset();
+            } else if (op.size() > 1 && op[1] == 'n') {
                 uint64_t start, count;
                 in >> start >> count;
                 for (uint64_t i = start; i < start + count; ++i) run(op[0], Counter(i));

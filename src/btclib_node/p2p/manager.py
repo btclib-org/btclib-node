@@ -63,6 +63,7 @@ from btclib_node.p2p.address import (
     internal_source,
     ip_and_port,
     peer_address,
+    service_key,
 )
 from btclib_node.p2p.anchors import (
     ANCHORS_DATABASE_FILENAME,
@@ -102,6 +103,7 @@ from btclib_node.p2p.selfannounce import (
     LocalService,
     address_for_peer,
 )
+from btclib_node.rolling_bloom import RollingBloomFilter
 
 if TYPE_CHECKING:
     from btclib.p2p.addrv2 import NetworkAddressV2
@@ -364,20 +366,6 @@ def _legacy_ipv6(ip: str) -> IPv6Address:
     return IPv6Address(b"\0" * 10 + b"\xff\xff" + parsed.packed)
 
 
-# How many hosts `P2pManager.discourage` remembers. Core keeps them in
-# `BanMan::m_discouraged`, a `CRollingBloomFilter{50000, 0.000001}`
-# (`src/banman.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
-# `P2pManager._discouraged` is instead an insertion-ordered `dict` of at
-# most this many hosts. btclib-org/btclib-node#1851 is whether to switch
-# it to `rolling_bloom.RollingBloomFilter`. The host discouraged longest
-# ago is forgotten first. Core's filter answers yes
-# for a host it never held, up to one time in a million, and this never
-# does. Core's forgets a host 50,000 to 75,000 insertions later, its
-# generations of 25,000 holding two or three at a time, and this
-# forgets it once 50,000 other hosts have been discouraged since.
-_DISCOURAGED_CAPACITY = 50_000
-
-
 def _exponential_delay(mean: float) -> float:
     """Core's `rand_exp_duration`: an exponential draw of mean `mean`.
 
@@ -614,10 +602,9 @@ class P2pManager(threading.Thread):
         # the `addnode` RPC's own `add` (`add_added_peer`, reached from
         # `rpc/callbacks.py`) has appended and `remove`
         # (`remove_added_peer`) not yet taken back out. `dict[str,
-        # bool]`, not a `set`, for the same insertion-order reason
-        # `_discouraged` (above) is one: `GetAddedNodeInfo` dials this
-        # list in the order `AddNode`'s own `push_back` built it,
-        # oldest first. Read by `_open_added_peers` (the dial loop) and
+        # bool]`, not a `set`, for its insertion order: `GetAddedNodeInfo`
+        # dials this list in the order `AddNode`'s own `push_back` built
+        # it, oldest first. Read by `_open_added_peers` (the dial loop) and
         # by `_added_node` (`_should_pass_over_draw`'s own bound check),
         # each on this manager's own thread; written by
         # `add_added_peer`/`remove_added_peer`, reached from
@@ -765,16 +752,15 @@ class P2pManager(threading.Thread):
         # once per process, so no peer can predict which netgroups the
         # eviction's first protection keeps.
         self._net_group_key = secrets.token_bytes(16)
-        # The hosts `discourage` has recorded, by `host_key`, oldest
-        # first, as values of nothing: `_DISCOURAGED_CAPACITY` is where
-        # this is set against Core's `BanMan::m_discouraged`. Process
-        # lifetime, not `peer_db`'s own tables, as Core's filter is not
-        # written to disk, so a restart forgets them. Locked, as Core's
-        # `m_banned_mutex` guards its filter: `discourage` runs on
-        # `Node`'s thread and on this manager's, and forgetting the
-        # oldest host is a read and a delete that another write must
-        # not land between.
-        self._discouraged: dict[bytes, None] = {}
+        # The hosts `discourage` has recorded, by `host_key`: Core's
+        # `BanMan::m_discouraged`, a `CRollingBloomFilter{50000,
+        # 0.000001}` (`src/banman.h`, at bitcoin/bitcoin@9be056a8a7, the
+        # v31.1 tag). Like Core's, it treats a host never discouraged as
+        # discouraged up to once in a million queries, and nothing resets
+        # it. Not written to disk, so a restart forgets them. Locked, as
+        # Core's `m_banned_mutex` guards its filter: `discourage` and
+        # `is_discouraged` run on `Node`'s thread and on this manager's.
+        self._discouraged = RollingBloomFilter(50_000, 0.000_001)
         self._discouraged_lock = threading.Lock()
         # Overwritten by `_arm_dial_loop` before any loop ever reads it
         # (`manage_connections` calls it first thing); the value here is
@@ -1315,16 +1301,11 @@ class P2pManager(threading.Thread):
 
         Keyed by `host_key`, without the port, as Core's
         `BanMan::Discourage` is (`src/banman.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Discouraging a host
-        already held moves it to the newest, as a second insert into
-        Core's filter does.
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
         """
         key = host_key(address)
         with self._discouraged_lock:
-            self._discouraged.pop(key, None)
-            self._discouraged[key] = None
-            if len(self._discouraged) > _DISCOURAGED_CAPACITY:
-                del self._discouraged[next(iter(self._discouraged))]
+            self._discouraged.add(key)
 
     def is_discouraged(self, address: NetworkAddressV2) -> bool:
         """Whether `address`'s host is discouraged, Core's `IsDiscouraged`."""
@@ -1824,6 +1805,10 @@ class P2pManager(threading.Thread):
         on average. Core queues a later announcement with the other
         addresses it relays; this node relays none, so each is sent alone.
         Nothing is announced where `address_for_peer` finds no address.
+
+        Before a later announcement `conn.addr_known` is reset, as Core
+        resets `m_addr_known`, and the address sent is then recorded in
+        it. The first is sent without either, as Core sends it.
         """
         if (
             not conn.addr_relay_enabled
@@ -1832,6 +1817,9 @@ class P2pManager(threading.Thread):
             or now < conn.next_local_addr_send
         ):
             return
+        later = conn.next_local_addr_send != 0
+        if later:
+            conn.addr_known.reset()
         conn.next_local_addr_send = now + _exponential_delay(_LOCAL_ADDR_INTERVAL)
         peer = ip_address(conn.address.address)
         seen_as = None
@@ -1859,6 +1847,8 @@ class P2pManager(threading.Thread):
         self.logger.log_debug(
             "net", "Advertising address %s to peer=%s", address, conn.id
         )
+        if later:
+            conn.addr_known.add(service_key(address))
         if conn.prefer_addressv2:
             conn.send(AddrV2([address]))
         else:

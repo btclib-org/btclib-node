@@ -536,51 +536,33 @@ def test_mark_rejected_is_read_back_by_was_recently_rejected() -> None:
     assert mempool.was_recently_rejected(wtxid)
 
 
-def test_note_block_connected_clears_the_reject_cache() -> None:
-    """A connected block forgets every refusal recorded before it.
-
-    Mirrors Core's own `ActiveTipChange`, which resets `m_recent_rejects`
-    for the same reason: a refusal that turned on the chain tip --
-    finality, a sequence lock, coinbase maturity -- can stop holding
-    once the tip moves.
-    """
+def test_a_tip_change_forgets_every_refusal_and_a_block_alone_does_not() -> None:
+    """ISS 1851: Core resets both filters on a tip change, not per block."""
     mempool = Mempool(Logger(debug=True))
     wtxid = secrets.token_bytes(32)
     mempool.mark_rejected(wtxid)
+    mempool.mark_rejected_reconsiderable(wtxid)
     mempool.note_block_connected()
+    assert mempool.was_recently_rejected(wtxid)
+    assert mempool.was_recently_rejected_reconsiderable(wtxid)
+    mempool.active_tip_change()
     assert not mempool.was_recently_rejected(wtxid)
+    assert not mempool.was_recently_rejected_reconsiderable(wtxid)
 
 
-def test_marking_an_already_rejected_wtxid_is_a_no_op() -> None:
-    """Re-marking a wtxid already held does not double its own eviction entry.
+@pytest.mark.parametrize("name", ["_recent_rejects", "_recent_rejects_reconsiderable"])
+def test_each_reject_filter_is_sized_as_core_s(name: str) -> None:
+    """ISS 1851: Core's `{120'000, 0.000'001}` filters.
 
-    Otherwise a peer resubmitting the identical refused candidate over
-    and over would push a fresh entry onto `_recent_rejects_order` per
-    resubmission while `_recent_rejects` itself still counts the wtxid
-    once, and the capacity bound below would evict long before its own
-    count says it should.
+    The figures are what Core's own filter printed for those parameters, in
+    `tests/unit/_data/core_rolling_bloom_runs.txt`.
     """
-    mempool = Mempool(Logger(debug=True))
-    wtxid = secrets.token_bytes(32)
-    mempool.mark_rejected(wtxid)
-    mempool.mark_rejected(wtxid)
-    assert len(mempool._recent_rejects_order) == 1
-
-
-def test_mark_rejected_evicts_the_oldest_past_capacity(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Past capacity, the earliest-marked wtxid is forgotten first."""
-    monkeypatch.setattr(mempool_module, "_RECENT_REJECTS_CAPACITY", 2)
-    mempool = Mempool(Logger(debug=True))
-    first, second, third = (secrets.token_bytes(32) for _ in range(3))
-    mempool.mark_rejected(first)
-    mempool.mark_rejected(second)
-    assert mempool.was_recently_rejected(first)
-    mempool.mark_rejected(third)
-    assert not mempool.was_recently_rejected(first)
-    assert mempool.was_recently_rejected(second)
-    assert mempool.was_recently_rejected(third)
+    bloom = getattr(Mempool(Logger(debug=True)), name)
+    assert (bloom._lane_bytes // 8, bloom._per_generation, bloom._size) == (
+        20,
+        60_000,
+        161_750,
+    )
 
 
 def test_get_min_fee_rate_is_zero_before_anything_is_ever_evicted() -> None:
@@ -1214,31 +1196,14 @@ def test_a_package_hash_sorts_by_the_display_bytes() -> None:
     assert mempool_module.package_hash([low, high]).hex() == expected
 
 
-def test_the_reconsiderable_cache_is_kept_apart_and_cleared_by_a_block() -> None:
+def test_the_reconsiderable_filter_is_kept_apart() -> None:
     """A key recorded for a package to undo is not a recent reject."""
     mempool = Mempool(Logger(debug=True))
     key = secrets.token_bytes(32)
     assert not mempool.was_recently_rejected_reconsiderable(key)
     mempool.mark_rejected_reconsiderable(key)
-    mempool.mark_rejected_reconsiderable(key)
     assert mempool.was_recently_rejected_reconsiderable(key)
     assert not mempool.was_recently_rejected(key)
-    assert len(mempool._recent_rejects_reconsiderable_order) == 1
-    mempool.note_block_connected()
-    assert not mempool.was_recently_rejected_reconsiderable(key)
-
-
-def test_the_reconsiderable_cache_forgets_the_oldest_past_capacity(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The same bound as the other cache."""
-    monkeypatch.setattr(mempool_module, "_RECENT_REJECTS_CAPACITY", 1)
-    mempool = Mempool(Logger(debug=True))
-    first, second = secrets.token_bytes(32), secrets.token_bytes(32)
-    mempool.mark_rejected_reconsiderable(first)
-    mempool.mark_rejected_reconsiderable(second)
-    assert not mempool.was_recently_rejected_reconsiderable(first)
-    assert mempool.was_recently_rejected_reconsiderable(second)
 
 
 def a_package(parent_fee: int, child_fee: int) -> list[tuple[Tx, int, int, int | None]]:

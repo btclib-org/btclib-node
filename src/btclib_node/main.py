@@ -761,14 +761,22 @@ def _after_tip_change(
     for block in to_add:
         block_checked(node, block.header.hash, valid=True)
     update_ibd_status(node)
+    download_manager = node.download_manager
+    if to_remove:
+        # Core's `TxDownloadManagerImpl::BlockDisconnected`
+        download_manager.recent_confirmed.reset()
     for block in to_add:
-        node.download_manager.block_connected()
+        download_manager.block_connected()
         # Core's `TxDownloadManagerImpl::BlockConnected`: what the block
         # includes or spends an input of is no longer an orphan
-        node.download_manager.orphanage.erase_for_block(block)
+        download_manager.orphanage.erase_for_block(block)
+        if not node.is_initial_block_download:
+            download_manager.add_confirmed(block)
     _reconcile_mempool_for_reorg(node, to_remove, to_add)
     check_fork_warning_conditions(node)
     if not node.is_initial_block_download:
+        # Core's `PeerManagerImpl::ActiveTipChange`
+        node.mempool.active_tip_change()
         check_unknown_activations(node, len(to_add))
         _announce_added_blocks(node, to_add)
         run_detached(
@@ -1818,9 +1826,14 @@ def invalidate_chain(node: Node, block_hash: bytes) -> None:
         block_index.invalidate(block_hash)
         block_index.generate_block_candidates()
         update_ibd_status(node)
+        # Core's `BlockDisconnected` for each block, and `ActiveTipChange`
+        # where the active chain changed
+        node.download_manager.recent_confirmed.reset()
         _reconcile_mempool_for_reorg(
             node, to_remove, [], readd_limit=_INVALIDATE_MEMPOOL_READD_LIMIT
         )
+        if not node.is_initial_block_download:
+            node.mempool.active_tip_change()
     else:
         block_index.invalidate(block_hash)
     # Core's own `InvalidChainFound(to_mark_failed)`, which ends in
