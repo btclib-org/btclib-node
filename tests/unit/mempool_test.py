@@ -1890,7 +1890,31 @@ def test_a_parent_held_after_its_child_is_linked_to_it() -> None:
     child = generate_random_transaction(parent.id)
     mempool.add_tx(child, 1_000, 100, 400)
     mempool.add_tx(parent, 0, 100, 400)
+    assert mempool.graph.cluster(child.hash) == [child.hash]
+    mempool.update_transactions_from_block([parent.hash])
     assert mempool.graph.cluster(child.hash) == [parent.hash, child.hash]
+
+
+def test_a_reorg_trims_a_cluster_past_64_transactions() -> None:
+    """Core's `Trim` takes the last of a chain of 64 under a re-added parent.
+
+    A chain spends an output of `p`, which is not held, as after `p`
+    confirmed; a reorg brings `p` back. The chain's last transaction
+    would be the cluster's 65th, and goes.
+    """
+    mempool = Mempool(Logger(debug=True))
+    p = generate_random_transaction()
+    chain = [generate_random_transaction(p.id)]
+    while len(chain) < 64:
+        chain.append(generate_random_transaction(chain[-1].id))
+    for tx in chain:
+        assert mempool.add_tx(tx, 1_000, 100, 400)
+    mempool.check_cluster(p, p.vsize)
+    assert mempool.add_tx(p, 1_000, 100, 400)
+    gone = generate_random_transaction()
+    mempool.update_transactions_from_block([gone.hash, p.hash])
+    assert mempool.graph.cluster(p.hash) == [p.hash] + [tx.hash for tx in chain[:63]]
+    assert set(mempool.transactions) == {p.hash} | {tx.hash for tx in chain[:63]}
 
 
 def test_a_staged_transaction_never_enters_the_graph() -> None:

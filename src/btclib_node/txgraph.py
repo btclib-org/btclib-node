@@ -6,18 +6,16 @@
 
 A port of the main graph of `src/txgraph.{h,cpp}`, at
 bitcoin/bitcoin@9be056a8a7, the v31.1 tag. A cluster is a connected
-component of the spend graph, kept with a linearization and a quality,
-and `do_work` improves the linearizations within a budget of work, as
-`DoWork` does.
+component of the dependencies added: the spend graph, but for a
+re-added transaction's held children until
+`Mempool.update_transactions_from_block` links them. It is kept with a
+linearization and a quality, and `do_work` improves the linearizations
+within a budget of work, as `DoWork` does.
 
 Not ported:
 
 - the staging graph: the mempool stages a package's parent outside the
   graph (`Mempool.staged`);
-- `Trim`: `Mempool.check_cluster` refuses a transaction whose cluster
-  would pass the limits, but a reorg can still pass them, since a
-  re-added parent joins the children it already has
-  (btclib-org/btclib-node#1823);
 - `GetWorstMainChunk`, the chunk Core's eviction takes: eviction here
   scores each transaction alone (btclib-org/btclib-node#1740);
 - queued changes: removals and dependencies are applied as they arrive,
@@ -33,6 +31,7 @@ default here is the operating system's generator for the same reason.
 from __future__ import annotations
 
 import fractions
+import heapq
 import random
 from enum import IntEnum
 from typing import TYPE_CHECKING, NamedTuple
@@ -422,6 +421,96 @@ class TxGraph[R: Hashable]:
         """
         return BlockBuilder(self._main_chunks())
 
+    def trim(
+        self, dependencies: Iterable[tuple[R, R]], max_count: int, max_size: int
+    ) -> list[R]:
+        """Add `dependencies`, removing first what would pass the limits.
+
+        Core's `AddDependency` for each `(parent, child)`, then `Trim`:
+        each group of clusters the dependencies would merge, past
+        `max_count` transactions or `max_size`, is trimmed by `_trim`.
+        Return the refs removed, which hold every descendant of each, in
+        their clusters' order; Core's order is its `GraphIndex`, which has
+        no counterpart here.
+        """
+        dependencies = list(dependencies)
+        root: dict[int, int] = {}
+
+        def find(key: int) -> int:
+            while root.setdefault(key, key) != key:
+                key = root[key]
+            return key
+
+        clusters: dict[int, _Cluster[R]] = {}
+        for parent, child in dependencies:
+            parent_cluster, _ = self._locator[parent]
+            child_cluster, _ = self._locator[child]
+            clusters[id(parent_cluster)] = parent_cluster
+            clusters[id(child_cluster)] = child_cluster
+            root[find(id(parent_cluster))] = find(id(child_cluster))
+        groups: dict[int, list[_Cluster[R]]] = {}
+        for key, cluster in clusters.items():
+            groups.setdefault(find(key), []).append(cluster)
+        explicit: dict[int, list[tuple[R, R]]] = {}
+        for parent, child in dependencies:
+            key = find(id(self._locator[child][0]))
+            explicit.setdefault(key, []).append((parent, child))
+        removed: list[R] = []
+        for key, group in groups.items():
+            removed += self._trim(group, explicit[key], max_count, max_size)
+        for ref in removed:
+            self.remove_transaction(ref)
+        for parent, child in dependencies:
+            if child in self._locator:
+                self.add_dependency(parent, child)
+        return removed
+
+    def _trim(
+        self,
+        group: list[_Cluster[R]],
+        explicit: list[tuple[R, R]],
+        max_count: int,
+        max_size: int,
+    ) -> list[R]:
+        """Return what Core's `Trim` removes from one group of clusters.
+
+        Each cluster's linearization, made acceptable, is a chain, and
+        `explicit` joins the chains. A transaction is ready once what
+        precedes it in its chain and its parents in `explicit` are taken.
+        Of those ready, the one of highest chunk feerate, then smallest
+        chunk, is taken next, into one part with its parents. One that
+        would take its part past a limit is not taken, nor is anything
+        after it. Core leaves the order between equal chunks to
+        `std::pop_heap`; the lower `order_key` goes first here.
+        """
+        order: list[R] = []
+        sizes: dict[R, int] = {}
+        chunk_of: dict[R, FeeFrac] = {}
+        deps = list(explicit)
+        for cluster in group:
+            self._make_acceptable(cluster)
+            previous: R | None = None
+            for chunk in self._chunks(cluster):
+                for ref in chunk.refs:
+                    if previous is not None:
+                        deps.append((previous, ref))
+                    previous = ref
+                    order.append(ref)
+                    sizes[ref] = cluster.depgraph.feerate(self._locator[ref][1]).size
+                    chunk_of[ref] = chunk.feerate
+        if len(order) <= max_count and sum(sizes.values()) <= max_size:
+            return []
+        keys = {
+            ref: (
+                fractions.Fraction(-chunk_of[ref].fee, chunk_of[ref].size),
+                chunk_of[ref].size,
+                self._keys[ref],
+            )
+            for ref in order
+        }
+        taken = _taken(order, deps, keys, sizes, max_count=max_count, max_size=max_size)
+        return [ref for ref in order if ref not in taken]
+
 
 class BlockBuilder[R]:
     """The chunks a block takes, best first: Core's `TxGraph::BlockBuilder`.
@@ -447,6 +536,52 @@ class BlockBuilder[R]:
     def skip(self) -> None:
         """Leave out the rest of the cluster of the chunk last yielded."""
         self._skipped.add(self._current)
+
+
+def _taken[R: Hashable](  # noqa: PLR0913
+    order: list[R],
+    deps: list[tuple[R, R]],
+    keys: dict[R, tuple[fractions.Fraction, int, OrderKey]],
+    sizes: dict[R, int],
+    *,
+    max_count: int,
+    max_size: int,
+) -> set[R]:
+    """Return what `TxGraph._trim` takes, the lowest of `keys` first."""
+    parents: dict[R, list[R]] = {ref: [] for ref in order}
+    children: dict[R, list[R]] = {ref: [] for ref in order}
+    for parent, child in deps:
+        parents[child].append(parent)
+        children[parent].append(child)
+    unmet = {ref: len(parents[ref]) for ref in order}
+    heap = [(keys[ref], ref) for ref in order if not unmet[ref]]
+    heapq.heapify(heap)
+    # a union-find over what is taken: each part's root, count and size
+    root: dict[R, R] = {}
+    count: dict[R, int] = {}
+    size: dict[R, int] = {}
+
+    def find(ref: R) -> R:
+        while root[ref] != ref:
+            root[ref] = root[root[ref]]
+            ref = root[ref]
+        return ref
+
+    while heap:
+        _, ref = heapq.heappop(heap)
+        parts = {find(parent) for parent in parents[ref]}
+        new_count = 1 + sum(count[part] for part in parts)
+        new_size = sizes[ref] + sum(size[part] for part in parts)
+        if new_count > max_count or new_size > max_size:
+            continue
+        root[ref], count[ref], size[ref] = ref, new_count, new_size
+        for part in parts:
+            root[part] = ref
+        for child in children[ref]:
+            unmet[child] -= 1
+            if not unmet[child]:
+                heapq.heappush(heap, (keys[child], child))
+    return set(root)
 
 
 def _positions(mask: int) -> Iterable[int]:
