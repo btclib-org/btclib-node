@@ -4,7 +4,8 @@
 
 """`mempool.dat` written by this node and read by bitcoind, and the reverse.
 
-`savemempool` and `importmempool` are asked of both nodes too.
+`savemempool` and `importmempool` are asked of both nodes too, and what
+each expires of what it imported.
 
 Each file is compared byte for byte with the other side's, once written
 again with that side's obfuscation key: the key is random, and the rest
@@ -13,6 +14,7 @@ of the file follows from its content.
 
 import secrets
 import shutil
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -263,3 +265,62 @@ def test_savemempool_and_importmempool_answer_as_bitcoind_does(
     finally:
         node.stop()
     assert rewritten(theirs, ours) == theirs
+
+
+def test_both_nodes_expire_the_same_transactions(
+    bitcoind: Bitcoind, tmp_path: Path
+) -> None:
+    """Core's `Expire` at the next acceptance, with the descendants.
+
+    Both nodes import one file whose oldest entries are just under the
+    default 336 hours old, and then accept the same new transaction once
+    those entries are past it. What each keeps is the same.
+    """
+    chain = a_chain(100)
+    submit(bitcoind, chain)
+    root = a_spend((chain[0].transactions[0], 0), 4, 200_000)
+    old = a_spend((root, 0), 1, 10_000)
+    old_child = a_spend((old, 0), 1, 10_000)
+    young = a_spend((root, 1), 1, 10_000)
+    young_s_old_child = a_spend((young, 0), 1, 10_000)
+    kept = a_spend((root, 2), 1, 10_000)
+    newcomer = a_spend((root, 3), 1, 10_000)
+    now = int(time.time())
+    # what both imports have to finish within
+    margin = 15
+    then = now - 336 * 3600 + margin
+    entries = [
+        (root, now, 0),
+        (old, then, 0),
+        (old_child, now, 0),
+        (young, now, 0),
+        (young_s_old_child, then, 0),
+        (kept, now, 0),
+    ]
+    path = tmp_path / "expiring.dat"
+    path.write_bytes(serialize_mempool(entries, {}, [], None))
+
+    node = started(tmp_path / "node", persist_mempool=False)
+    try:
+        node.p2p_manager.connect(peer_address("127.0.0.1", bitcoind.p2p_port, 0, 0))
+        block_index = node.chainstate.block_index
+        wait_until(lambda: len(block_index.active_chain) == len(chain) + 1)
+        client = rpc_client(node)
+        wait_until(lambda: not client.call("getblockchaininfo")["initialblockdownload"])
+        bitcoind.rpc("setnetworkactive", [False])
+        wait_until(lambda: client.call("getconnectioncount") == 0)
+        assert client.call("importmempool", [str(path), _ALL]) == {}
+        assert bitcoind.rpc("importmempool", [str(path), _ALL]) == {}
+        held = {tx.id.hex() for tx, _, _ in entries}
+        assert set(client.call("getrawmempool")) == held
+        assert set(cast("Any", bitcoind.rpc("getrawmempool"))) == held
+
+        time.sleep(max(0, now + margin + 1 - time.time()))
+        raw = newcomer.serialize(include_witness=True).hex()
+        client.call("sendrawtransaction", [raw])
+        bitcoind.rpc("sendrawtransaction", [raw])
+        ours = set(client.call("getrawmempool"))
+        assert ours == set(cast("Any", bitcoind.rpc("getrawmempool")))
+        assert ours == {tx.id.hex() for tx in (root, young, kept, newcomer)}
+    finally:
+        node.stop()

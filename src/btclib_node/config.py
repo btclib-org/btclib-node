@@ -46,6 +46,7 @@ from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet, TestNet4
 from btclib_node.constants import (
     DEFAULT_MAXRECEIVEBUFFER,
     DEFAULT_MAXSENDBUFFER,
+    DEFAULT_MEMPOOL_EXPIRY_HOURS,
     MAX_TIP_AGE,
     default_data_dir,
 )
@@ -649,6 +650,10 @@ class Config:
     # writes version 1, with no obfuscation key (`mempool_persist`).
     persist_mempool: bool
     persist_mempool_v1: bool
+    # Core's own `-mempoolexpiry`, `MemPoolOptions::expiry`, in seconds: a
+    # held transaction older than that is removed (`Mempool.expire`), and
+    # one of `mempool.dat` that old is not loaded (`mempool_persist`)
+    mempool_expiry: int
     # Core's own `-minimumchainwork`: the chain work below which
     # `main.update_ibd_status` and the `getheaders` handler in
     # `p2p.callbacks` treat the active tip as not caught up, and below
@@ -911,6 +916,7 @@ class Config:
         require_standard: bool = True,
         persist_mempool: bool = True,
         persist_mempool_v1: bool = False,
+        mempool_expiry: int = DEFAULT_MEMPOOL_EXPIRY_HOURS * 3600,
         minimum_chain_work: int | None = None,
         assume_valid: bytes | None = None,
         max_tip_age: int = DEFAULT_MAX_TIP_AGE,
@@ -1107,3 +1113,4 @@ class Config:
         self.require_standard = require_standard
         self.persist_mempool = persist_mempool
         self.persist_mempool_v1 = persist_mempool_v1
+        self.mempool_expiry = mempool_expiry

@@ -7,6 +7,7 @@
 import hashlib
 import secrets
 import time
+from types import SimpleNamespace
 from typing import Any, override
 
 import pytest
@@ -23,7 +24,7 @@ from btclib_node.exceptions import TxRejectedError
 from btclib_node.fee_estimator import RemovedTx
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
-from tests import generate_random_transaction
+from tests import LogLines, generate_random_transaction
 
 
 def a_witness_transaction() -> Tx:
@@ -1977,3 +1978,107 @@ def test_a_block_on_an_empty_mempool_returns_nothing() -> None:
     """No transaction is looked up: there is nothing to remove."""
     mempool = Mempool(Logger(debug=True))
     assert mempool.remove_for_block([generate_random_transaction()]) == []
+
+
+def a_clock(monkeypatch: pytest.MonkeyPatch, now: list[float]) -> None:
+    """Make `now[0]` the time `mempool` reads."""
+    monkeypatch.setattr(mempool_module, "time", SimpleNamespace(time=lambda: now[0]))
+
+
+def test_the_default_expiry_is_core_s() -> None:
+    """`DEFAULT_MEMPOOL_EXPIRY_HOURS`, 336 hours."""
+    assert Mempool(Logger(debug=True)).expiry == 336 * 3600
+
+
+def test_an_expired_entry_goes_with_its_descendants_at_the_next_add(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Core's `Expire`, which `LimitMempoolSize` runs on each acceptance.
+
+    Each removal is told, and so is the count, at debug level. The
+    parent of an expired entry stays.
+    """
+    now = [10**9 + 0.5]
+    a_clock(monkeypatch, now)
+    mempool = Mempool(Logger(debug=True), expiry=100)
+    old = generate_random_transaction()
+    child = generate_random_transaction(old.id)
+    grandchild = generate_random_transaction(child.id)
+    young = generate_random_transaction()
+    old_child = generate_random_transaction(young.id)
+    for tx in (old, child, grandchild, young, old_child):
+        mempool.add_tx(tx)
+    mempool.set_entry_time(old.hash, now[0] - 101)
+    mempool.set_entry_time(old_child.hash, now[0] - 101)
+    told: list[bytes] = []
+    mempool.removal_listener = told.append
+    lines = LogLines()
+    mempool.logger.addHandler(lines)
+    newcomer = generate_random_transaction()
+    assert mempool.add_tx(newcomer)
+    assert set(mempool.txid_index) == {young.id, newcomer.id}
+    assert sorted(told) == sorted(tx.id for tx in (old, child, grandchild, old_child))
+    assert lines.messages == ["Expired 4 transactions from the memory pool"]
+
+
+def test_an_entry_expires_once_its_second_is_before_the_cutoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Core's `GetTime() < now - expiry`, both in whole seconds."""
+    a_clock(monkeypatch, [10**9 + 0.9])
+    mempool = Mempool(Logger(debug=True), expiry=100)
+    kept, gone = generate_random_transaction(), generate_random_transaction()
+    mempool.add_tx(kept)
+    mempool.add_tx(gone)
+    mempool.set_entry_time(kept.hash, 10**9 - 100)
+    mempool.set_entry_time(gone.hash, 10**9 - 100.1)
+    assert mempool.expire() == 1
+    assert set(mempool.txid_index) == {kept.id}
+
+
+def test_each_entry_expires_in_its_own_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The oldest entry left is what the next expiry waits for."""
+    now: list[float] = [10**9]
+    a_clock(monkeypatch, now)
+    mempool = Mempool(Logger(debug=True), expiry=100)
+    first, second = generate_random_transaction(), generate_random_transaction()
+    mempool.add_tx(first)
+    mempool.add_tx(second)
+    mempool.set_entry_time(first.hash, 10**9 - 50)
+    mempool.set_entry_time(second.hash, 10**9 - 10)
+    assert mempool.expire() == 0
+    now[0] += 51
+    assert mempool.expire() == 1
+    assert set(mempool.txid_index) == {second.id}
+    now[0] += 40
+    assert mempool.expire() == 1
+    assert mempool.size == 0
+
+
+def test_an_add_that_does_not_trim_does_not_expire(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`trim` expires, as Core's `LimitMempoolSize` after a package or reorg."""
+    now: list[float] = [10**9]
+    a_clock(monkeypatch, now)
+    mempool = Mempool(Logger(debug=True), expiry=100)
+    old, new = generate_random_transaction(), generate_random_transaction()
+    mempool.add_tx(old)
+    mempool.set_entry_time(old.hash, now[0] - 101)
+    mempool.add_tx(new, trim=False)
+    assert mempool.contains_tx(old)
+    mempool.trim()
+    assert set(mempool.txid_index) == {new.id}
+
+
+def test_a_package_expires_what_is_too_old(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`add_package` trims once, and expires first."""
+    now: list[float] = [10**9]
+    a_clock(monkeypatch, now)
+    mempool = Mempool(Logger(debug=True), expiry=100)
+    old = generate_random_transaction()
+    mempool.add_tx(old)
+    mempool.set_entry_time(old.hash, now[0] - 101)
+    members = a_package(0, 1000)
+    assert all(mempool.add_package(members, height=0))
+    assert set(mempool.txid_index) == {tx.id for tx, *_ in members}

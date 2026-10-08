@@ -3440,6 +3440,31 @@ def test_help_names_persistmempool_in_core_s_words() -> None:
     ) in message
 
 
+def test_help_names_mempoolexpiry_in_core_s_words() -> None:
+    """`bitcoind` v31.1.0's `-help` text."""
+    assert (
+        "  -mempoolexpiry=<n>\n"
+        "       Do not keep transactions in the mempool longer than <n> hours (default:\n"
+        "       336)\n"
+    ) in cli._help_message(show_debug=False)
+
+
+@pytest.mark.parametrize(
+    ("args", "expiry"),
+    [
+        ((), 336 * 3600),
+        (("-mempoolexpiry=2",), 7200),
+        (("-mempoolexpiry=-1",), -3600),
+        (("-nomempoolexpiry",), 0),
+    ],
+)
+def test_build_config_reads_mempoolexpiry_in_hours(
+    args: tuple[str, ...], expiry: int
+) -> None:
+    """Core's `GetIntArg`, kept in seconds as `MemPoolOptions::expiry` is."""
+    assert cli.build_config(["-regtest", *args]).mempool_expiry == expiry
+
+
 @pytest.mark.parametrize(
     ("args", "persist", "v1"),
     [

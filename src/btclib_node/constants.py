@@ -22,6 +22,7 @@ __all__ = [
     "CLIENT_VERSION",
     "DEFAULT_MAXRECEIVEBUFFER",
     "DEFAULT_MAXSENDBUFFER",
+    "DEFAULT_MEMPOOL_EXPIRY_HOURS",
     "MAX_TIP_AGE",
     "MIN_BLOCKS_TO_KEEP",
     "MIN_PRUNE_TARGET_MIB",
@@ -38,6 +39,11 @@ __all__ = [
 # thousands of bytes `-maxreceivebuffer` and `-maxsendbuffer` take.
 DEFAULT_MAXRECEIVEBUFFER = 5 * 1000
 DEFAULT_MAXSENDBUFFER = 1 * 1000
+
+# Core's `DEFAULT_MEMPOOL_EXPIRY_HOURS` (`src/kernel/mempool_options.h`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the default of
+# `-mempoolexpiry`, in hours.
+DEFAULT_MEMPOOL_EXPIRY_HOURS = 336
 
 # Core's own `DEFAULT_MAX_TIP_AGE` (`src/kernel/chainstatemanager_opts.h`
 # :24, at bitcoin/bitcoin@ca7162cde5): `config.Config.max_tip_age`'s own

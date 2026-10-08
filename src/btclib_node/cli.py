@@ -228,6 +228,7 @@ from btclib_node.config import (
 from btclib_node.constants import (
     DEFAULT_MAXRECEIVEBUFFER,
     DEFAULT_MAXSENDBUFFER,
+    DEFAULT_MEMPOOL_EXPIRY_HOURS,
     MIN_PRUNE_TARGET_MIB,
     default_data_dir,
 )
@@ -668,6 +669,12 @@ _OPTIONS: dict[str, _Option] = {
         f"download (default: {DEFAULT_MAX_TIP_AGE})",
         _DEBUG_TEST_TITLE,
         debug_only=True,
+    ),
+    "mempoolexpiry": _Option(
+        "=<n>",
+        "Do not keep transactions in the mempool longer than <n> hours (default: "
+        f"{DEFAULT_MEMPOOL_EXPIRY_HOURS})",
+        _OPTIONS_TITLE,
     ),
     "peerblockfilters": _Option(
         "",
@@ -2036,6 +2043,7 @@ class _MempoolOptions:
     permit_bare_multisig: bool
     max_datacarrier_bytes: int | None
     require_standard: bool
+    mempool_expiry: int
 
 
 def _get_mempool_options(settings: _Settings, chain_name: str) -> _MempoolOptions:
@@ -2049,7 +2057,10 @@ def _get_mempool_options(settings: _Settings, chain_name: str) -> _MempoolOption
     not, the value being in `getmempoolinfo`'s `minrelaytxfee`.
     `-datacarriersize` is a signed 64-bit read stored in an unsigned
     32-bit field, so it wraps; `-nodatacarrier` is `None`.
+    `-mempoolexpiry` is read in hours and kept in seconds.
     """
+    hours = _get_int(settings, "mempoolexpiry")
+    expiry = 3600 * (DEFAULT_MEMPOOL_EXPIRY_HOURS if hours is None else hours)
     incremental = _get_feerate(settings, "incrementalrelayfee")
     if incremental is None:
         incremental = DEFAULT_INCREMENTAL_RELAY_FEERATE
@@ -2083,6 +2094,7 @@ def _get_mempool_options(settings: _Settings, chain_name: str) -> _MempoolOption
         permit_bare_multisig is None or permit_bare_multisig,
         max_datacarrier_bytes,
         require_standard,
+        expiry,
     )
 
 
@@ -2676,6 +2688,7 @@ def _after_lock(before: _BeforeLock) -> Config:
         require_standard=before.mempool.require_standard,
         persist_mempool=_get_bool(settings, "persistmempool") is not False,
         persist_mempool_v1=bool(_get_bool(settings, "persistmempoolv1")),
+        mempool_expiry=before.mempool.mempool_expiry,
         minimum_chain_work=before.minimum_chain_work,
         assume_valid=before.assume_valid,
         max_tip_age=before.max_tip_age,

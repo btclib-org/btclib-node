@@ -540,7 +540,11 @@ class Node(threading.Thread):
         self.chainstate.filter_index.catch_up(
             self.chainstate.block_index.active_chain, self.block_db
         )
-        self.mempool = Mempool(self.logger, self.config.incremental_relay_feerate)
+        self.mempool = Mempool(
+            self.logger,
+            self.config.incremental_relay_feerate,
+            self.config.mempool_expiry,
+        )
         self.mempool.removal_listener = self.fee_estimator.remove_tx
 
         # update_chain's own record of the most recent block its trial
