@@ -274,6 +274,7 @@ def a_peer(
         feefilter=0,
         requested_hb_cmpctblocks=False,
         # what `Connection` starts every connection at
+        bip152_highbandwidth_to=False,
         addr_relay_enabled=False,
         headers_sync=None,
     )
@@ -764,10 +765,15 @@ def test_the_synced_heights_are_the_peer_s_best_known_and_last_common_blocks(
     assert (info["synced_headers"], info["synced_blocks"]) == expected
 
 
-def test_the_fields_this_node_has_no_state_for_answer_core_s_value() -> None:
-    """No high-bandwidth peer chosen here."""
-    (info,) = get_peer_info(a_node({7: a_peer()}), _CONN, [])
-    assert info["bip152_hb_to"] is False
+@pytest.mark.parametrize("chosen", [False, True])
+def test_bip152_hb_to_is_whether_this_node_chose_the_peer(
+    chosen: bool,  # noqa: FBT001
+) -> None:
+    """Core's `m_bip152_highbandwidth_to`."""
+    peer = a_peer()
+    peer.bip152_highbandwidth_to = chosen
+    (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
+    assert info["bip152_hb_to"] is chosen
 
 
 @pytest.mark.parametrize(

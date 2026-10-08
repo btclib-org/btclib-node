@@ -1605,6 +1605,8 @@ def _accept_block(
     if block_info.downloaded or (
         not requested and _unrequested_block_refused(node, block_hash)
     ):
+        # Core's `ProcessBlock` forgets the source of a block not new
+        node.download_manager.block_source.pop(block_hash, None)
         return
     # a block that does not hold up is nobody's: the raise reaches
     # p2p.main.handle_p2p, which drops the peer that sent it, unless the
@@ -1629,6 +1631,7 @@ def _accept_block(
             check_fork_warning_conditions(node)
         raise _block_refusal(str(e), punish=not via_compact_block) from e
     node.block_db.add_block(block)
+    node.download_manager.block_source.setdefault(block_hash, conn.id)
     # novel, past its own checks and on disk: what Core's own
     # `m_last_block_time` records for eviction, whether or not the
     # block later connects (`PeerManagerImpl::ProcessBlock`,

@@ -365,9 +365,11 @@ class Connection:
     requested_hb_cmpctblocks: bool = False
     # Core's `m_provides_cmpctblocks`, set by callbacks.sendcmpct for a
     # `sendcmpct` of version 2 whatever it announces, and Core's
-    # `m_bip152_highbandwidth_to`, whether this node sent the peer
-    # `sendcmpct(1)`, which it never does. Read on `Node`'s thread; class
-    # defaults for the same reason as `time_received`.
+    # `m_bip152_highbandwidth_to`, set by
+    # `compact_block.maybe_set_peer_as_announcing_header_and_ids` when it
+    # sends this peer `sendcmpct(1)` and cleared when it sends
+    # `sendcmpct(0)`. Read on `Node`'s thread; class defaults for the
+    # same reason as `time_received`.
     provides_cmpctblocks: bool = False
     bip152_highbandwidth_to: bool = False
     # Core's `IsBlockOnlyConn()`: an automatic outbound connection this

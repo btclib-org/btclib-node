@@ -2,9 +2,10 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""A block received as a `cmpctblock`, and finished by a `blocktxn`.
+"""A block received as a `cmpctblock`, and the peers asked to send them.
 
-Core's `CMPCTBLOCK` and `BLOCKTXN` handlers (`net_processing.cpp`, at
+Core's `CMPCTBLOCK` and `BLOCKTXN` handlers, `BlockChecked` and
+`MaybeSetPeerAsAnnouncingHeaderAndIDs` (`net_processing.cpp`, at
 bitcoin/bitcoin@9be056a8a7, the v31.1 tag), over a real regtest node
 whose tip is recent.
 """
@@ -21,18 +22,25 @@ from btclib.p2p.compact_blocks import (
     CmpctBlock,
     GetBlockTxn,
     PrefilledTransaction,
+    SendCmpct,
 )
+from btclib.p2p.data import BlockPayload
 from btclib.p2p.inventory import GetData, GetHeaders, InventoryType
 from btclib.tx.limits import COINBASE_MATURITY
 from btclib.tx.tx import Tx
 
 from btclib_node.chains import RegTest
-from btclib_node.constants import NodeStatus
+from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.exceptions import MisbehavingError
 from btclib_node.main import update_chain, verify_mempool_acceptance
 from btclib_node.p2p.block_availability import in_flight_from
+from btclib_node.p2p.callbacks import block as block_callback
 from btclib_node.p2p.callbacks import blocktxn, cmpctblock
-from btclib_node.p2p.compact_block import compact_block
+from btclib_node.p2p.compact_block import (
+    block_checked,
+    compact_block,
+    maybe_set_peer_as_announcing_header_and_ids,
+)
 from tests import (
     build_block,
     generate_coinbase,
@@ -93,10 +101,13 @@ def a_compact_peer(node: Node, conn_id: int = 1, **attributes: Any) -> Any:
     """Return a connected peer that sent `sendcmpct(2)` and serves witnesses."""
     services = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
     peer = a_peer(
-        id=conn_id,
-        provides_cmpctblocks=True,
-        version_message=a_version(services),
-        **attributes,
+        **{
+            "id": conn_id,
+            "status": P2pConnStatus.Connected,
+            "provides_cmpctblocks": True,
+            "version_message": a_version(services),
+            **attributes,
+        }
     )
     node.p2p_manager.connections[conn_id] = peer
     return peer
@@ -633,3 +644,204 @@ def test_a_peer_asked_second_does_not_ask_for_what_is_missing(
     cmpctblock(node, compact_block(block, 7).serialize(), peer)
     assert peer.sent == []
     assert peer.download_queue == []
+
+
+def sendcmpcts(peer: Any) -> list[bool]:
+    """Return the `announce` of every `sendcmpct` `peer` was sent."""
+    return [message.announce for message in sent(peer, SendCmpct)]
+
+
+def test_a_peer_that_gave_a_new_block_is_asked_for_high_bandwidth(
+    regtest_node: Callable[[], Node],
+) -> None:
+    """Core's `BlockChecked`: the block connected, its peer is chosen.
+
+    Its source is forgotten once the block is checked.
+    """
+    node, _ = a_node(regtest_node)
+    block = next_block(node)
+    peer = a_compact_peer(node, inbound=True)
+    cmpctblock(node, compact_block(block, 7).serialize(), peer)
+    assert node.download_manager.block_source == {block.header.hash: peer.id}
+    update_chain(node)
+    assert node.chainstate.block_index.active_chain[-1] == block.header.hash
+    assert sendcmpcts(peer) == [True]
+    assert peer.bip152_highbandwidth_to
+    assert node.download_manager.hb_peers == [peer.id]
+    assert node.download_manager.block_source == {}
+
+
+def test_a_block_that_fails_to_connect_chooses_nobody(
+    regtest_node: Callable[[], Node],
+) -> None:
+    """Core's `ConnectTip` signals the failure, and the source is forgotten.
+
+    The block spends an output nobody has, which only connecting finds.
+    """
+    node, _ = a_node(regtest_node)
+    extra = generate_random_transaction()
+    node.download_manager.extra_txns.append(extra)
+    block = next_block(node, extra)
+    peer = a_compact_peer(node)
+    cmpctblock(node, compact_block(block, 7).serialize(), peer)
+    assert node.download_manager.block_source == {block.header.hash: peer.id}
+    update_chain(node)
+    assert node.chainstate.block_index.active_chain[-1] != block.header.hash
+    assert node.download_manager.block_source == {}
+    assert peer.sent == []
+
+
+@pytest.mark.parametrize("case", ["ibd", "another in flight", "no source"])
+def test_a_block_connected_otherwise_chooses_nobody(
+    regtest_node: Callable[[], Node], case: str
+) -> None:
+    """Core asks out of initial block download, and of the best block only.
+
+    The best block being the one with nothing else in flight.
+    """
+    node, _ = a_node(regtest_node)
+    peer = a_compact_peer(node)
+    block = next_block(node)
+    if case == "ibd":
+        node.is_initial_block_download = True
+    other = a_compact_peer(node, 2)
+    if case == "another in flight":
+        other.download_queue.append(b"\x01" * 32)
+    if case != "no source":
+        node.download_manager.block_source[block.header.hash] = peer.id
+    block_checked(node, block.header.hash, valid=True)
+    assert peer.sent == []
+    assert node.download_manager.hb_peers == []
+    assert node.download_manager.block_source == {}
+
+
+def test_an_invalid_block_chooses_nobody(regtest_node: Callable[[], Node]) -> None:
+    """Core's `BlockChecked` asks a valid block; its source goes either way."""
+    node, _ = a_node(regtest_node)
+    peer = a_compact_peer(node)
+    node.download_manager.block_source[b"\x01" * 32] = peer.id
+    block_checked(node, b"\x01" * 32, valid=False)
+    assert peer.sent == []
+    assert node.download_manager.block_source == {}
+
+
+def test_a_block_not_new_forgets_its_source(regtest_node: Callable[[], Node]) -> None:
+    """Core's `ProcessBlock` erases the source of a block it did not store.
+
+    The first peer to give a block stays its source.
+    """
+    node, _ = a_node(regtest_node)
+    block = next_block(node)
+    first, second = a_compact_peer(node), a_compact_peer(node, 2)
+    payload = compact_block(block, 7).serialize()
+    cmpctblock(node, payload, first)
+    assert node.download_manager.block_source == {block.header.hash: first.id}
+    second.download_queue.append(block.header.hash)
+    block_callback(
+        node,
+        BlockPayload(block, include_witness=True, check_validity=False).serialize(
+            check_validity=False
+        ),
+        second,
+    )
+    assert node.download_manager.block_source == {}
+
+
+def test_three_peers_are_high_bandwidth_at_once(
+    regtest_node: Callable[[], Node],
+) -> None:
+    """BIP152's three: a fourth drops the oldest, sent `sendcmpct(0)`.
+
+    One chosen again moves to the end, and is sent nothing.
+    """
+    node, _ = a_node(regtest_node)
+    peers = [a_compact_peer(node, conn_id) for conn_id in (1, 2, 3, 4)]
+    for peer in peers[:3]:
+        maybe_set_peer_as_announcing_header_and_ids(node, peer.id)
+    maybe_set_peer_as_announcing_header_and_ids(node, 1)
+    assert node.download_manager.hb_peers == [2, 3, 1]
+    maybe_set_peer_as_announcing_header_and_ids(node, 4)
+    assert node.download_manager.hb_peers == [3, 1, 4]
+    assert [sendcmpcts(peer) for peer in peers] == [
+        [True],
+        [True, False],
+        [True],
+        [True],
+    ]
+    assert [peer.bip152_highbandwidth_to for peer in peers] == [
+        True,
+        False,
+        True,
+        True,
+    ]
+
+
+def test_an_inbound_peer_does_not_take_the_last_outbound_slot(
+    regtest_node: Callable[[], Node],
+) -> None:
+    """Core swaps the last outbound peer out of the front before dropping it."""
+    node, _ = a_node(regtest_node)
+    outbound = a_compact_peer(node, 1, inbound=False)
+    inbound = [a_compact_peer(node, conn_id, inbound=True) for conn_id in (2, 3, 4)]
+    for conn_id in (1, 2, 3, 4):
+        maybe_set_peer_as_announcing_header_and_ids(node, conn_id)
+    assert node.download_manager.hb_peers == [1, 3, 4]
+    assert outbound.bip152_highbandwidth_to
+    assert sendcmpcts(inbound[0]) == [True, False]
+
+
+def test_an_inbound_peer_drops_the_oldest_where_two_outbound_are_chosen(
+    regtest_node: Callable[[], Node],
+) -> None:
+    """Core keeps the front only where it is the one outbound peer chosen."""
+    node, _ = a_node(regtest_node)
+    for conn_id, inbound in ((1, False), (2, False), (3, True), (4, True)):
+        a_compact_peer(node, conn_id, inbound=inbound)
+        maybe_set_peer_as_announcing_header_and_ids(node, conn_id)
+    assert node.download_manager.hb_peers == [2, 3, 4]
+
+
+def test_an_inbound_peer_drops_the_oldest_where_no_outbound_is_chosen(
+    regtest_node: Callable[[], Node],
+) -> None:
+    """With no outbound peer to keep, the oldest goes, as for any other."""
+    node, _ = a_node(regtest_node)
+    for conn_id in (1, 2, 3, 4):
+        a_compact_peer(node, conn_id, inbound=True)
+        maybe_set_peer_as_announcing_header_and_ids(node, conn_id)
+    assert node.download_manager.hb_peers == [2, 3, 4]
+
+
+@pytest.mark.parametrize("case", ["no sendcmpct", "gone", "not connected"])
+def test_a_peer_that_cannot_be_asked_is_not_chosen(
+    regtest_node: Callable[[], Node], case: str
+) -> None:
+    """Core asks only a connected peer that sent `sendcmpct(2)`."""
+    node, _ = a_node(regtest_node)
+    peer = a_compact_peer(
+        node,
+        provides_cmpctblocks=case != "no sendcmpct",
+        status=(
+            P2pConnStatus.Open if case == "not connected" else P2pConnStatus.Connected
+        ),
+    )
+    if case == "gone":
+        del node.p2p_manager.connections[peer.id]
+    maybe_set_peer_as_announcing_header_and_ids(node, peer.id)
+    assert peer.sent == []
+    assert node.download_manager.hb_peers == []
+
+
+def test_a_peer_gone_is_dropped_from_the_front_unsent(
+    regtest_node: Callable[[], Node],
+) -> None:
+    """Core keeps a gone peer's id, and pops it when its turn comes."""
+    node, _ = a_node(regtest_node)
+    for conn_id in (1, 2, 3):
+        a_compact_peer(node, conn_id)
+        maybe_set_peer_as_announcing_header_and_ids(node, conn_id)
+    del node.p2p_manager.connections[1]
+    newcomer = a_compact_peer(node, 4)
+    maybe_set_peer_as_announcing_header_and_ids(node, 4)
+    assert node.download_manager.hb_peers == [2, 3, 4]
+    assert sendcmpcts(newcomer) == [True]

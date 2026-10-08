@@ -4,8 +4,11 @@
 
 """A block passes between two of these nodes as a `cmpctblock`.
 
-The receiver holds one of the block's transactions in its mempool and
-lacks the other, so the block goes as a `cmpctblock` and a `blocktxn`.
+The receiver holds one of the first block's transactions in its mempool
+and lacks the other, so the block goes as a `cmpctblock` and a
+`blocktxn`. The sender, having given it a new block, is then chosen as
+a high-bandwidth peer, and sends the next block as a `cmpctblock`
+unasked.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -32,6 +35,9 @@ from tests import (
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from btclib.block import Block
+    from btclib.tx.tx import Tx
+
 
 def a_node(data_dir: Path) -> Node:
     """Return a started regtest node answering RPC."""
@@ -47,8 +53,26 @@ def a_node(data_dir: Path) -> Node:
     return node
 
 
+def submit(node: Node, previous: bytes, height: int, *transactions: Tx) -> Block:
+    """Hand `node` a block on `previous` through `submitblock`."""
+    block = build_block(
+        previous,
+        [generate_coinbase(height=height), *transactions],
+        height,
+        datetime.now(UTC).replace(microsecond=0) + timedelta(seconds=height),
+    )
+    submitted = rpc_client(node).call(
+        "submitblock", [block.serialize(check_validity=False).hex()]
+    )
+    assert submitted is None
+    return block
+
+
 def test_a_block_is_received_as_a_cmpctblock_and_a_blocktxn(tmp_path: Path) -> None:
-    """The receiver asks `MSG_CMPCT_BLOCK`, then the transaction it lacks."""
+    """The receiver asks `MSG_CMPCT_BLOCK`, then the transaction it lacks.
+
+    The next block arrives unasked, and needs no round trip.
+    """
     receiver = a_node(tmp_path / "receiver")
     sender = a_node(tmp_path / "sender")
     try:
@@ -78,16 +102,7 @@ def test_a_block_is_received_as_a_cmpctblock_and_a_blocktxn(tmp_path: Path) -> N
         missing = generate_random_transaction(held.id, held.vout[0].value - 1_000)
         receiver.mempool.add_tx(held, 1_000)
         height = len(chain) + 1
-        block = build_block(
-            chain[-1].header.hash,
-            [generate_coinbase(height=height), held, missing],
-            height,
-            datetime.now(UTC).replace(microsecond=0) + timedelta(seconds=1),
-        )
-        submitted = rpc_client(sender).call(
-            "submitblock", [block.serialize(check_validity=False).hex()]
-        )
-        assert submitted is None
+        block = submit(sender, chain[-1].header.hash, height, held, missing)
 
         receiver_chain = receiver.chainstate.block_index.active_chain
         wait_until(lambda: receiver_chain[-1] == block.header.hash)
@@ -97,6 +112,19 @@ def test_a_block_is_received_as_a_cmpctblock_and_a_blocktxn(tmp_path: Path) -> N
         assert received["blocktxn"]
         assert sent["getblocktxn"]
         assert not received["block"]
+
+        wait_until(lambda: conn.bip152_highbandwidth_to)
+        (theirs,) = sender.p2p_manager.connections.values()
+        wait_until(lambda: theirs.requested_hb_cmpctblocks)
+        before = received.copy(), sent.copy()
+        spend = generate_random_transaction(missing.id, missing.vout[0].value - 1_000)
+        receiver.mempool.add_tx(spend, 1_000)
+        block = submit(sender, block.header.hash, height + 1, spend)
+        wait_until(lambda: receiver_chain[-1] == block.header.hash)
+        assert received["cmpctblock"] > before[0]["cmpctblock"]
+        assert received["headers"] == before[0]["headers"]
+        for asked in ("getdata", "getblocktxn"):
+            assert sent[asked] == before[1][asked]
     finally:
         for node in (receiver, sender):
             node.stop()
