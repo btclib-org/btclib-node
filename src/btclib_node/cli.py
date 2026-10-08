@@ -980,8 +980,8 @@ def _parse_parameters(
     bitcoin/bitcoin@9be056a8a7): a lone `-` or the first argument not
     starting with `-` ends the options, and `--name` is `-name`. Raises
     `ValueError` under `ParseArgs`'s own prefix on an unknown option or
-    one naming a section -- "Invalid parameter", the argument quoted
-    whole -- on a negation the option forbids, and on `-includeconf`
+    one naming a section -- "Invalid parameter", the argument quoted by
+    `_quoted_line` -- on a negation the option forbids, and on `-includeconf`
     not negated. The second value is `ParseArgs`'s own "unexpected
     token", the first argument anywhere in `argv` not starting with `-`,
     which `build_config` refuses once the file is read.
@@ -998,7 +998,7 @@ def _parse_parameters(
         info = _interpret_key(key[1:])
         option = _OPTIONS.get(info.name)
         if option is None or info.section:
-            err_msg = f"{_PARSE_ERROR}Invalid parameter {arg}"
+            err_msg = f"{_PARSE_ERROR}Invalid parameter {_quoted_line(arg)}"
             raise ValueError(err_msg)
         try:
             value = _interpret_value(info, text if equals else None, option, warnings)
@@ -1025,20 +1025,17 @@ def _quoted_line(line: str) -> str:
     Core's `GetConfigOptions` (`src/common/config.cpp`) quotes the whole
     line. This tree departs on purpose, by the maintainer's decision: a line
     that fails to parse may hold a password, and the refusal reaches stderr
-    and logs. A line starting, after any `-`, `<section>.` and `no`, with the
-    name of a `sensitive` option (`rpcauth`, `rpcpassword`, `rpcuser`) is
-    quoted up to that name, whether or not an `=` follows it.
+    and logs. A line holding the name of a `sensitive` option (`rpcauth`,
+    `rpcpassword`, `rpcuser`) is quoted up to the first such name, wherever
+    it sits: after a `-`, a section prefix or `no`, or after text that is
+    none of these.
     """
-    start = len(line) - len(line.lstrip("-"))
-    section, dot, _ = line[start:].partition(".")
-    if dot and section in _RECOGNIZED_SECTIONS:
-        start += len(section) + 1
-    for skip in (start, start + 2):
-        rest = line[skip:]
-        for name, option in _OPTIONS.items():
-            if option.sensitive and rest.startswith(name):
-                return line[: skip + len(name)]
-    return line
+    ends = [
+        line.find(name) + len(name)
+        for name, option in _OPTIONS.items()
+        if option.sensitive and name in line
+    ]
+    return line[: min(ends)] if ends else line
 
 
 def _config_options(
