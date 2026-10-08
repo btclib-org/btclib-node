@@ -195,6 +195,16 @@ gh api repos/btclib-org/btclib-node/rulesets --jq '.[].id' \
   mode**.
 - `tag-integrity` — required signatures on `refs/tags/v*`, no bypass.
 
+A `v*` tag push that brings an unsigned commit is refused. A tag on a
+commit already on `main` is accepted whether it is signed, unsigned or
+lightweight, so the rule does not make a release tag signed
+(btclib-org/.github#1635). That rests on `git tag -s` in the release
+steps and on reading the signature back:
+
+```shell
+gh api repos/<owner>/<repo>/git/tags/<sha> --jq .verification
+```
+
 **The bypass mode is the whole of the design.** `pull_request` excuses
 its holder from the rule while merging a pull request and at no other
 time, so it answers the one thing an emergency cannot wait for — an

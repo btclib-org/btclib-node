@@ -508,11 +508,12 @@ when nobody carries it into the files that mention it. `CHANGELOG.md`
 starts where the record starts rather than where a tag does, for the
 reason its own introduction gives.
 
-Cutting a tag is signed and not by convention: the `tag-integrity`
-ruleset requires a signature on `refs/tags/v*` and has no bypass actor,
-so a tag made without `-s` is refused at the push rather than noticed
-afterwards. `REPOSITORY.md` carries the call that reads that rule back,
-and that rule is the whole of what `tag-integrity` holds —
+Cutting a tag is signed, with `git tag -s`: the `tag-integrity` ruleset
+on `refs/tags/v*` has no bypass actor and refuses a tag push that brings
+an unsigned commit, but does not check the tag's own signature.
+`REPOSITORY.md` has what it does and does not refuse, and the call that
+reads the rule back, and that rule is the whole of what `tag-integrity`
+holds —
 `required_signatures`, and neither `non_fast_forward` nor `deletion` —
 so nothing refuses a tag's deletion, and what follows is kept by hand.
 **The tag of a published version is never deleted or cut again**: the
