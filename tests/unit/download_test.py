@@ -694,7 +694,7 @@ def test_a_short_queue_beside_a_long_disjoint_one_is_sent_whole_and_best_first()
 
 @pytest.mark.parametrize("seed", range(4))
 def test_a_trickle_sends_the_top_of_the_full_sort_after_any_change(seed: int) -> None:
-    """ISS 1810: a partial pick gives the full sort's top `cap`.
+    """ISS 1810: reading the ranking to the cap gives the full sort's top `cap`.
 
     Three connections, two of them sharing a queue, each with entries the
     peer knows and entries the mempool lost.

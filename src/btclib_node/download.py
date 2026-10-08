@@ -1266,15 +1266,12 @@ class DownloadManager:
                     )
 
     def _rank_queued(self, conns: list[Connection]) -> list[bytes]:
-        """Return every wtxid queued for `conns`, best-paying first.
+        """Return every wtxid queued for `conns`, in the order a trickle pops.
 
-        The mempool cannot change within a call, so the queued transactions
-        of every due connection are keyed once. An entry the mempool no
-        longer holds is found at send time, not trusted from when it was
-        queued: a wtxid can sit in a queue for its connection's whole
-        schedule, easily longer than the time between two eviction rounds
-        (`Mempool._evict_to_limit`). Core's own trickle send does the same
-        (`net_processing.cpp`, `m_mempool.info(wtxid)`).
+        An entry the mempool no longer holds comes first (`_GONE_KEY`); the
+        rest go best-paying first. The mempool cannot change within a call,
+        so the entries of every due connection are keyed once. A queued
+        entry can be evicted while it waits (`Mempool._evict_to_limit`).
         btclib-org/btclib-node#294
         """
         queued: dict[bytes, None] = {}
@@ -1320,7 +1317,10 @@ class DownloadManager:
         return batch
 
     def _offer(self, conn: Connection, wtxid: bytes, batch: list[bytes]) -> None:
-        """Add `wtxid`, popped from `conn`'s queue, to `batch` if it is sent."""
+        """Add `wtxid` to `batch` if the trickle sends it.
+
+        That is: held, unknown to the peer, and not below its feefilter.
+        """
         mempool = self.node.mempool
         if wtxid not in mempool.transactions:
             return
