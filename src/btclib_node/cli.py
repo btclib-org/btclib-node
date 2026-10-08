@@ -233,6 +233,7 @@ from btclib_node.constants import (
 )
 from btclib_node.dirlock import DirectoryLock, lock_directories
 from btclib_node.exceptions import DirectoryLockError
+from btclib_node.fee_estimator import MAX_FILE_AGE_HOURS
 from btclib_node.log import open_history_log
 from btclib_node.p2p.address import BAD_PORTS
 from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME, is_valid_host
@@ -440,6 +441,13 @@ _OPTIONS: dict[str, _Option] = {
         "",
         'Relay and mine "non-standard" transactions (test networks only; default: 0)',
         _NODE_RELAY_TITLE,
+        debug_only=True,
+    ),
+    "acceptstalefeeestimates": _Option(
+        "",
+        "Read fee estimates even if they are stale (regtest only; default: 0) fee "
+        f"estimates are considered stale if they are {MAX_FILE_AGE_HOURS} hours old",
+        _DEBUG_TEST_TITLE,
         debug_only=True,
     ),
     "addnode": _Option(
@@ -2635,6 +2643,7 @@ def _after_lock(before: _BeforeLock) -> Config:
         minimum_chain_work=before.minimum_chain_work,
         assume_valid=before.assume_valid,
         max_tip_age=before.max_tip_age,
+        accept_stale_fee_estimates=bool(_get_bool(settings, "acceptstalefeeestimates")),
         rpcauth=_get_args(settings, "rpcauth"),
         rpcuser=_get_arg(settings, "rpcuser") or "",
         rpcpassword=_get_arg(settings, "rpcpassword") or "",

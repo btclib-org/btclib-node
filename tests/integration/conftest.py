@@ -183,7 +183,8 @@ def _started_bitcoind(
     rpc_port = get_random_port()
     p2p_port = get_random_port()
     datadir = tmp_path / "bitcoind"
-    datadir.mkdir()
+    # it may hold a file the test put there for bitcoind to read
+    datadir.mkdir(parents=True, exist_ok=True)
     process = subprocess.Popen(  # noqa: S603
         [
             bitcoind_path,

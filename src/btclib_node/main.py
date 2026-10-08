@@ -70,6 +70,7 @@ from btclib_node.exceptions import (
     PrevoutCountMismatchError,
     TxRejectedError,
 )
+from btclib_node.fee_estimator import track_accepted
 from btclib_node.interpreter import (
     STANDARD_FLAGS,
     check_scripts,
@@ -497,6 +498,26 @@ def _reconcile_mempool_for_reorg(
         rev_block.hash: readd_limit is None or i < readd_limit
         for i, rev_block in enumerate(to_remove)
     }
+    # Core connects every new block, with its `removeForBlock`, before
+    # `MaybeUpdateMempoolForReorg` puts anything back
+    # (`ActivateBestChainStep`, `src/validation.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so the fee estimator
+    # counts the blocks before any re-add or removal the re-add makes
+    first_height = len(node.chainstate.block_index.active_chain) - len(to_add)
+    for height, block in enumerate(to_add, start=first_height):
+        # `remove_for_block` hashes each transaction to ask, so it does
+        # nothing for an empty mempool with no fee delta: a block connected
+        # during initial block download would pay for every transaction
+        removed = node.mempool.remove_for_block(block.transactions)
+        node.fee_estimator.process_block(removed, height)
+        # Core's own `removeForBlock` (`src/txmempool.cpp:405-427`,
+        # at bitcoin/bitcoin@58a7869f86): once per block connected,
+        # whether or not it held anything this mempool was also
+        # holding, restarting `Mempool.get_min_fee_rate`'s own decay
+        # clock -- kept outside `remove_for_block`, which returns early
+        # for an empty mempool with no fee delta, where this still runs.
+        # btclib-org/btclib-node#294
+        node.mempool.note_block_connected()
     # oldest-abandoned-block first, the opposite of to_remove's own
     # tip-first order above: a transaction from a later abandoned
     # block may spend an output only an earlier abandoned block's
@@ -569,19 +590,7 @@ def _reconcile_mempool_for_reorg(
                 height=tip_height,
                 weight=accepted.weight,
             )
-    for block in to_add:
-        # `remove_for_block` hashes each transaction to ask, so it does
-        # nothing for an empty mempool with no fee delta: a block connected
-        # during initial block download would pay for every transaction
-        node.mempool.remove_for_block(block.transactions)
-        # Core's own `removeForBlock` (`src/txmempool.cpp:405-427`,
-        # at bitcoin/bitcoin@58a7869f86): once per block connected,
-        # whether or not it held anything this mempool was also
-        # holding, restarting `Mempool.get_min_fee_rate`'s own decay
-        # clock -- kept outside `remove_for_block`, which returns early
-        # for an empty mempool with no fee delta, where this still runs.
-        # btclib-org/btclib-node#294
-        node.mempool.note_block_connected()
+            track_accepted(node, tx, limit_bypassed=True)
     if to_remove:
         # Core's own `removeForReorg` runs every time
         # `MaybeUpdateMempoolForReorg` does, whether or not
@@ -619,7 +628,7 @@ def _still_final_and_mature(node: Node, tx: Tx) -> bool:
     runs only from `_reconcile_mempool_for_reorg`'s own `to_add` loop:
     `invalidate_chain`'s call passes `to_add=[]`, so it never runs there.
     What keeps such an entry from reaching this function is the re-add
-    loop just above that one. An unresolvable prevout here is the output
+    loop. An unresolvable prevout here is the output
     of a disconnected transaction that did not make it back into the
     mempool -- a coinbase, one past the 10-block cap, or one
     `verify_mempool_acceptance` refused -- and each of those three

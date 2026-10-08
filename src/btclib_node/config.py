@@ -668,6 +668,9 @@ class Config:
     # a tip's age against this, in seconds, rather than building a
     # `timedelta` from it.
     max_tip_age: int
+    # Core's own `-acceptstalefeeestimates`: read `fee_estimates.dat`
+    # however old it is, on regtest alone (`FeeEstimator`)
+    accept_stale_fee_estimates: bool
     # (host, port) pairs, split by `_split_peers` above, host unresolved:
     # Core's own `-connect`, which dials these alone and turns off DNS
     # seeding and
@@ -901,6 +904,7 @@ class Config:
         minimum_chain_work: int | None = None,
         assume_valid: bytes | None = None,
         max_tip_age: int = DEFAULT_MAX_TIP_AGE,
+        accept_stale_fee_estimates: bool = False,
         connect: Sequence[str] = (),
         addnode: Sequence[str] = (),
         seednode: Sequence[str] = (),
@@ -944,6 +948,7 @@ class Config:
         )
         self.assume_valid = assume_valid
         self.max_tip_age = max_tip_age
+        self.accept_stale_fee_estimates = accept_stale_fee_estimates
 
         data_dir = Path(data_dir) if data_dir else default_data_dir()
         self.data_dir = data_dir.absolute() / self.chain.name

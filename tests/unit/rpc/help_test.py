@@ -80,7 +80,10 @@ _EXPECTED_BARE_LISTING = (
     'getrawtransaction "txid" ( verbosity "blockhash" )\n'
     'sendrawtransaction "hexstring" ( maxfeerate maxburnamount )\n'
     'submitpackage ["rawtx",...] ( maxfeerate maxburnamount )\n'
-    'testmempoolaccept ["rawtx",...] ( maxfeerate )'
+    'testmempoolaccept ["rawtx",...] ( maxfeerate )\n'
+    "\n"
+    "== Util ==\n"
+    'estimatesmartfee conf_target ( "estimate_mode" )'
 )
 
 

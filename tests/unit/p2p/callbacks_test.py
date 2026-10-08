@@ -22,6 +22,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from io import BytesIO
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, cast, override
 
@@ -98,6 +99,7 @@ from btclib_node.exceptions import (
     NonStandardTxError,
     TxRejectedError,
 )
+from btclib_node.fee_estimator import FeeEstimator
 from btclib_node.log import Logger
 from btclib_node.main import MempoolCandidate, pre_verify_mempool_acceptance
 from btclib_node.mempool import Mempool
@@ -171,7 +173,6 @@ from tests.unit.rpc.callbacks_test import a_node_holding, a_twin
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-    from pathlib import Path
 
     from btclib.fee import FeeRate
     from btclib.tx.tx import Tx
@@ -768,6 +769,14 @@ def a_handshake_node(
                 # own `height`, and no test here asserts on the value it
                 # stores. btclib-org/btclib-node#1397
                 active_chain=[b"\x00" * 32],
+                # that one block, timed now and the best header: a
+                # transaction accepted here is one the fee estimator tracks
+                header_dict={
+                    b"\x00" * 32: SimpleNamespace(
+                        header=SimpleNamespace(time=datetime.now(UTC))
+                    )
+                },
+                header_index=[b"\x00" * 32],
             )
         ),
         logger=SimpleNamespace(
@@ -2279,6 +2288,10 @@ def a_data_node(
     node = a_handshake_node(status=status)
     node.is_initial_block_download = is_initial_block_download
     node.mempool = mempool if mempool is not None else Mempool(Logger(debug=True))
+    # a file that is not there: an estimator with no history
+    node.fee_estimator = FeeEstimator(
+        Path("/nonexistent/fee_estimates.dat"), Logger(debug=True)
+    )
     node.config.chain = node.chain
     # `new_pow_valid_block`'s own high-water mark, Core's
     # `m_highest_fast_announce`, zero until a call moves it
@@ -2337,6 +2350,8 @@ def test_a_transaction_that_verifies_is_kept_and_reported(
     assert node.download_manager.received_txs == [(3, transaction.hash)]
     # a novel transaction the mempool took: what eviction reads (ISS 1064)
     assert peer.last_novel_tx_time > 0
+    # Core's `TransactionAddedToMempool`, on a chain the double keeps current
+    assert list(node.fee_estimator.mempool_txs) == [transaction.id]
 
 
 @pytest.mark.parametrize(

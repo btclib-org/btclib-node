@@ -42,6 +42,7 @@ from btclib_node.block_db import Coin
 from btclib_node.chainstate.block_index import BlockStatus, block_time
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, USER_AGENT
 from btclib_node.exceptions import MissingPrevoutError, TxRejectedError
+from btclib_node.fee_estimator import track_accepted
 from btclib_node.main import (
     already_confirmed,
     assert_valid_block,
@@ -80,6 +81,7 @@ from btclib_node.rpc.errors import (
     type_error,
     type_errors,
 )
+from btclib_node.rpc.fees import estimate_raw_fee, estimate_smart_fee
 from btclib_node.rpc.help import HELP_TEXT, answer_help
 from btclib_node.rpc.jsonrpc import JsonObject
 from btclib_node.rpc.mining import (
@@ -4196,6 +4198,7 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
         # the case `_MEMPOOL_FULL_REASON`'s own comment names, Core's
         # `TX_RECONSIDERABLE` "mempool full". btclib-org/btclib-node#294
         raise RpcError(RPCErrorCode.VERIFY_REJECTED, _MEMPOOL_FULL_REASON)
+    track_accepted(node, tx)
     # Core's own `AddUnbroadcastTx`, called only here -- never for a
     # transaction a peer handed this node over the wire.
     # btclib-org/btclib-node#1421
@@ -4372,6 +4375,8 @@ callbacks = {
     "testmempoolaccept": test_mempool_accept,
     "sendrawtransaction": send_raw_transaction,
     "submitpackage": submit_package,
+    "estimatesmartfee": estimate_smart_fee,
+    "estimaterawfee": estimate_raw_fee,
     "ping": ping,
     "stop": stop,
     "help": help_rpc,
@@ -4443,6 +4448,8 @@ arg_names: dict[str, tuple[str, ...]] = {
     "testmempoolaccept": ("rawtxs", "maxfeerate"),
     "sendrawtransaction": ("hexstring", "maxfeerate", "maxburnamount"),
     "submitpackage": ("package", "maxfeerate", "maxburnamount"),
+    "estimatesmartfee": ("conf_target", "estimate_mode"),
+    "estimaterawfee": ("conf_target", "threshold"),
     "ping": (),
     "stop": ("wait",),
     "help": ("command",),

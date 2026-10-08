@@ -96,6 +96,7 @@ from btclib_node.exceptions import (
     PackageRefusedError,
     TxRejectedError,
 )
+from btclib_node.fee_estimator import track_accepted
 from btclib_node.main import (
     activate_best_chain,
     assert_valid_block,
@@ -1214,7 +1215,13 @@ def _start_package(node: Node, conn: Connection, parent: Tx, child: Tx) -> None:
         return
     if candidate.child is None:
         node.tx_checks.queue(
-            TxCheck(conn, parent, candidate.parent.prev_outputs, first_time=False)
+            TxCheck(
+                conn,
+                parent,
+                candidate.parent.prev_outputs,
+                first_time=False,
+                in_package=True,
+            )
         )
         return
     parent_check = (parent, candidate.parent.prev_outputs)
@@ -1317,6 +1324,7 @@ def settle_tx(node: Node, check: TxCheck, refusal: Exception | None) -> None:
             node, tx, TxRejectedError("mempool full"), conn, first_time=check.first_time
         )
         return
+    track_accepted(node, tx, in_package=check.in_package)
     if check.first_time:
         # novel and accepted into the mempool: what Core's own
         # `m_last_tx_time` records for eviction (`net_processing.cpp`'s
@@ -1350,7 +1358,13 @@ def _settle_package(
         # the parent now passes by itself, which the package is for only
         # where it does not
         node.tx_checks.queue(
-            TxCheck(conn, parent, candidate.parent.prev_outputs, first_time=False)
+            TxCheck(
+                conn,
+                parent,
+                candidate.parent.prev_outputs,
+                first_time=False,
+                in_package=True,
+            )
         )
         return
     if refusal is not None and not isinstance(refusal, BTClibValueError):
@@ -1363,6 +1377,8 @@ def _settle_package(
         ]
         tip_height = len(node.chainstate.block_index.active_chain) - 1
         if node.mempool.add_package(members, height=tip_height):
+            for member in (parent, child):
+                track_accepted(node, member, in_package=True)
             # Core iterates backwards, so that the child leaves the
             # orphanage before it can be marked for reconsidering
             for member in (child, parent):

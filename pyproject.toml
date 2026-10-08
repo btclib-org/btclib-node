@@ -1050,6 +1050,7 @@ ignore = [
 "src/btclib_node/p2p/callbacks.py" = ["ARG001"]
 "src/btclib_node/rpc/callbacks.py" = ["ARG001"]
 # handlers registered in rpc/callbacks.py
+"src/btclib_node/rpc/fees.py" = ["ARG001"]
 "src/btclib_node/rpc/mining.py" = ["ARG001"]
 "src/btclib_node/rpc/snapshot.py" = ["ARG001"]
 "src/btclib_node/rpc/utxo_set.py" = ["ARG001"]

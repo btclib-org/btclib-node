@@ -24,7 +24,7 @@ from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
-from btclib_node import Node
+from btclib_node import Node, fee_estimator
 from btclib_node import mempool as mempool_module
 from btclib_node.chains import RegTest
 from btclib_node.exceptions import (
@@ -966,3 +966,21 @@ def test_maxfeerate_is_asked_before_the_dust_a_child_leaves(node: Node) -> None:
     assert answer["package_msg"] == "transaction failed"
     assert result(answer, leaving)["error"] == "max feerate exceeded"
     assert node.mempool.size == 0
+
+
+@pytest.mark.parametrize("together", [False, True])
+def test_a_submitted_package_is_not_tracked_for_fee_estimates(
+    node: Node, monkeypatch: pytest.MonkeyPatch, *, together: bool
+) -> None:
+    """Core's `m_package_submission`, alone or together, on a current chain."""
+    monkeypatch.setattr(
+        fee_estimator, "is_current_for_fee_estimation", lambda node: True
+    )
+    if together:
+        parent = a_free_parent(node)
+        txs = [parent, child_of(parent)]
+    else:
+        txs = funded_spends(node, 1)
+    assert submit(node, txs)["package_msg"] == "success"
+    assert node.fee_estimator.mempool_txs == {}
+    assert node.fee_estimator.untracked_txs == len(txs)

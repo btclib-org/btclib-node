@@ -78,6 +78,13 @@ btclib\_node.exceptions module
    :members:
    :show-inheritance:
 
+btclib\_node.fee\_estimator module
+----------------------------------
+
+.. automodule:: btclib_node.fee_estimator
+   :members:
+   :show-inheritance:
+
 btclib\_node.interpreter module
 --------------------------------
 

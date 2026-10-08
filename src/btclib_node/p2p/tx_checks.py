@@ -72,7 +72,9 @@ class TxCheck:
     is `False` for a transaction taken from the orphanage or a package, which
     Core's `ProcessInvalidTx` does not look for a package for. `failed` is
     set by `TxChecks.finish` to the position of the transaction of a package
-    whose scripts failed, parents first.
+    whose scripts failed, parents first. `in_package` marks a parent a
+    package check found passing alone, which Core accepts as a package
+    submission: the fee estimator does not track it.
     """
 
     conn: Connection
@@ -81,6 +83,7 @@ class TxCheck:
     parent: tuple[Tx, list[TxOut]] | None = None
     first_time: bool = True
     failed: int = 0
+    in_package: bool = False
 
     def hashes(self) -> set[bytes]:
         """Return the txids and wtxids of what is being checked."""

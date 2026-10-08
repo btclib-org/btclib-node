@@ -49,6 +49,9 @@ gossip on one thread, a DNS answer on the other. It carries two locks
 for that reason, one per table, taken separately and never nested, and
 a third, taken first, that a move between the tables holds throughout.
 
+`FeeEstimator` (`src/btclib_node/fee_estimator.py`) is reached from
+`Node`'s thread alone, so it carries no lock.
+
 While `Node.load` opens the stores, `Node`'s thread reads no queue.
 `RpcManager` is then in warmup: `RpcConnection.run` answers each request
 on the manager's thread with `RPC_IN_WARMUP` and the current init message,
