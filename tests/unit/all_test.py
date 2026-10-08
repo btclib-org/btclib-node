@@ -55,8 +55,6 @@ UNEXPORTED = {
     # the module-level singleton `Config.chain`'s default already closes
     # over; nothing outside config.py reaches for the constant itself
     "btclib_node.config": ["DEFAULT_CHAIN"],
-    # download.py's per-peer in-flight bound, read only where it is defined
-    "btclib_node.download": ["MAX_BLOCKS_IN_TRANSIT_PER_PEER"],
     # finish_sync: called only from settle_at_no_candidate; update_ibd_status:
     # from that and _after_tip_change, which main.py alone calls, as it
     # alone calls settle_at_no_candidate; update_header_index:

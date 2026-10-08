@@ -363,6 +363,13 @@ class Connection:
     # `Node`'s thread; a class default for the same reason as
     # `time_received`. btclib-org/btclib-node#1223
     requested_hb_cmpctblocks: bool = False
+    # Core's `m_provides_cmpctblocks`, set by callbacks.sendcmpct for a
+    # `sendcmpct` of version 2 whatever it announces, and Core's
+    # `m_bip152_highbandwidth_to`, whether this node sent the peer
+    # `sendcmpct(1)`, which it never does. Read on `Node`'s thread; class
+    # defaults for the same reason as `time_received`.
+    provides_cmpctblocks: bool = False
+    bip152_highbandwidth_to: bool = False
     # Core's `IsBlockOnlyConn()`: an automatic outbound connection this
     # node opened as `BLOCK_RELAY`, which relays blocks alone -- no
     # transaction and no address traffic either way. Set by

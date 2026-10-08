@@ -15,9 +15,10 @@ that read and write those fields, under the same names:
 `callbacks.getheaders` and `main`'s block announcement set
 `best_header_sent`, the announcement asks `peer_has_header`,
 `DownloadManager.block_download` runs `find_next_blocks_to_download`,
-and `callbacks.block` runs `remove_block_request`. `getpeerinfo`'s
-`synced_headers` and `synced_blocks` are the heights of `best_known`
-and `last_common`.
+and `callbacks.block` runs `remove_block_request`. `in_flight_from` and
+`first_in_flight` read Core's `mapBlocksInFlight`, which here is every
+connection's queue. `getpeerinfo`'s `synced_headers` and
+`synced_blocks` are the heights of `best_known` and `last_common`.
 
 A block is a hash here where Core holds a `CBlockIndex*`, and an
 ancestor is read through `BlockIndex.get_ancestor` and
@@ -25,7 +26,7 @@ ancestor is read through `BlockIndex.get_ancestor` and
 `LastCommonAncestor` over the same skip pointers.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from btclib_node.chainstate.block_index import BlockStatus
@@ -34,6 +35,8 @@ from btclib_node.constants import MIN_BLOCKS_TO_KEEP
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Mapping
 
+    from btclib.p2p.compact_blocks import PartialBlock
+
     from btclib_node.chainstate.block_index import BlockIndex
     from btclib_node.p2p.connection import Connection
 
@@ -41,7 +44,9 @@ __all__ = [
     "BLOCK_DOWNLOAD_WINDOW",
     "BlockAvailability",
     "find_next_blocks_to_download",
+    "first_in_flight",
     "get_ancestor",
+    "in_flight_from",
     "peer_has_header",
     "process_block_availability",
     "remove_block_request",
@@ -73,6 +78,13 @@ class BlockAvailability:
     window, and `downloading_since` when the block at the front of its
     queue became the one awaited: wall-clock times, each 0 where Core's
     is zero.
+
+    `partial_blocks` is Core's `QueuedBlock::partialBlock`, for the
+    blocks of the queue a `cmpctblock` is being rebuilt from: `None` once
+    the `blocktxn` was used, where Core nulls its header. `request_order`
+    is where `callbacks.cmpctblock` queued a block among the peers it is
+    asked of, Core's `mapBlocksInFlight` being a multimap that keeps
+    that order. A block missing from it was queued first.
     """
 
     best_known: bytes | None = None
@@ -81,6 +93,11 @@ class BlockAvailability:
     best_header_sent: bytes | None = None
     stalling_since: float = 0.0
     downloading_since: float = 0.0
+    # out of `__init__`, whose signature the docs build cannot read with them
+    partial_blocks: dict[bytes, PartialBlock | None] = field(
+        default_factory=dict, init=False
+    )
+    request_order: dict[bytes, int] = field(default_factory=dict, init=False)
 
 
 def get_ancestor(
@@ -311,7 +328,8 @@ def remove_block_request(
 
     Every connection's, or `from_peer`'s alone. A peer the block was
     asked of stops stalling, and where it was the block awaited at the
-    front of the queue, the one after it is awaited from `now`.
+    front of the queue, the one after it is awaited from `now`. Its
+    partial block goes with it.
     """
     for conn in connections:
         if from_peer is not None and conn.id != from_peer:
@@ -323,4 +341,39 @@ def remove_block_request(
         if queue[0] == block_hash:
             state.downloading_since = max(state.downloading_since, now)
         queue.remove(block_hash)
+        state.partial_blocks.pop(block_hash, None)
+        state.request_order.pop(block_hash, None)
         state.stalling_since = 0.0
+
+
+def _request_order(conn: Connection, block_hash: bytes) -> int:
+    """Return where `conn` stands among the peers `block_hash` is asked of."""
+    return conn.block_availability.request_order.get(block_hash, 0)
+
+
+def in_flight_from(
+    connections: Iterable[Connection], block_hash: bytes
+) -> list[Connection]:
+    """Return the peers `block_hash` is asked of, the first asked first.
+
+    Core's `mapBlocksInFlight.equal_range`.
+    """
+    holders = [conn for conn in connections if block_hash in conn.download_queue]
+    return sorted(holders, key=lambda conn: _request_order(conn, block_hash))
+
+
+def first_in_flight(connections: Iterable[Connection]) -> dict[bytes, int]:
+    """Map each block in flight to the peer it was first asked of.
+
+    Core's `mapBlocksInFlight`, where the first entry of a block is the
+    one `FindNextBlocks` reads.
+    """
+    first: dict[bytes, Connection] = {}
+    for conn in connections:
+        for block_hash in conn.download_queue:
+            held = first.get(block_hash)
+            if held is None or _request_order(conn, block_hash) < _request_order(
+                held, block_hash
+            ):
+                first[block_hash] = conn
+    return {block_hash: conn.id for block_hash, conn in first.items()}

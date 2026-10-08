@@ -14,9 +14,11 @@ commit it was read at beside it, per this tree's own convention of
 matching Core's behaviour, always.
 """
 
+import itertools
 import math
 import time
 from bisect import bisect_left
+from collections import deque
 from random import SystemRandom
 from typing import TYPE_CHECKING
 
@@ -31,9 +33,13 @@ from btclib_node.constants import P2pConnStatus
 from btclib_node.exceptions import MissingPrevoutError, TxRejectedError
 from btclib_node.mempool import package_hash
 from btclib_node.orphanage import TxOrphanage
-from btclib_node.p2p.block_availability import find_next_blocks_to_download
+from btclib_node.p2p.block_availability import (
+    find_next_blocks_to_download,
+    first_in_flight,
+)
 from btclib_node.p2p.callbacks import maybe_send_getheaders
 from btclib_node.p2p.chain_sync import consider_eviction
+from btclib_node.p2p.compact_block import MAX_EXTRA_TX_WEIGHT, MAX_EXTRA_TXNS
 from btclib_node.p2p.eviction import get_network
 from btclib_node.p2p.permissions import NetPermissionFlags
 from btclib_node.p2p.protocol_version import (
@@ -52,7 +58,11 @@ if TYPE_CHECKING:
     from btclib_node.log import Logger
     from btclib_node.p2p.connection import Connection
 
-__all__ = ["DownloadManager"]
+__all__ = [
+    "MAX_BLOCKS_IN_TRANSIT_PER_PEER",
+    "DownloadManager",
+    "block_inventory_type",
+]
 
 # net_processing.cpp's INBOUND_INVENTORY_BROADCAST_INTERVAL and
 # OUTBOUND_INVENTORY_BROADCAST_INTERVAL, at bitcoin/bitcoin@58a7869f86: the
@@ -317,6 +327,17 @@ def _can_serve_witnesses(conn: Connection) -> bool:
     return bool(version_msg and version_msg.services & ServiceFlags.NODE_WITNESS)
 
 
+def block_inventory_type(conn: Connection) -> InventoryType:
+    """Return the type a block is asked of `conn` by: Core's `GetFetchFlags`.
+
+    `MSG_WITNESS_BLOCK` where `conn` can serve witnesses, `MSG_BLOCK`
+    otherwise.
+    """
+    if _can_serve_witnesses(conn):
+        return InventoryType.MSG_WITNESS_BLOCK
+    return InventoryType.MSG_BLOCK
+
+
 def _is_preferred_download(conn: Connection) -> bool:
     """Whether `conn` is a peer headers and blocks are preferably synced from.
 
@@ -426,6 +447,13 @@ class DownloadManager:
         # parent that pays too little is accepted with. The `tx` callback
         # fills it through `mempool_rejected_tx`.
         self.orphanage = TxOrphanage()
+        # Core's `vExtraTxnForCompact`: the transactions most recently
+        # refused, which `callbacks.cmpctblock` rebuilds a block from
+        # beside the mempool. `mempool_rejected_tx` fills it.
+        self.extra_txns: deque[Tx] = deque(maxlen=MAX_EXTRA_TXNS)
+        # Where `callbacks.cmpctblock` queues a block among the peers it is
+        # asked of: `BlockAvailability.request_order`.
+        self.request_orders = itertools.count(1)
 
         # Core's `m_next_inv_to_inbounds_per_network_key`
         # (net_processing.cpp, the same commit): one schedule per
@@ -955,17 +983,26 @@ class DownloadManager:
         and otherwise in `Mempool.mark_rejected`'s, and ends the orphan
         if it was one.
 
+        A first refusal keeps `tx` in `extra_txns`, Core's
+        `AddToCompactExtraTransactions`, unless `_keep_orphan` found it
+        kept already or it weighs `MAX_EXTRA_TX_WEIGHT` or more. Core also
+        keeps there what a replacement evicts, and this mempool replaces
+        nothing (btclib-org/btclib-node#1334).
+
         Left out is what Core does for a witness-stripped refusal and for
         `TX_INPUTS_NOT_STANDARD`, which tell the txid apart from the wtxid
         in the filter: `Mempool.mark_rejected` has the reason this tree does
-        not. And `AddToCompactExtraTransactions`, whose state this tree
-        does not have.
+        not. So a witness-stripped transaction is kept in `extra_txns`,
+        where Core keeps none.
         """
         mempool = self.node.mempool
         wtxid = tx.hash
+        extra = first_time and tx.weight < MAX_EXTRA_TX_WEIGHT
         if isinstance(error, MissingPrevoutError):
             if first_time and not mempool.was_recently_rejected(wtxid):
-                self._keep_orphan(tx, conn_id)
+                extra &= not self._keep_orphan(tx, conn_id)
+            if extra:
+                self.extra_txns.append(tx)
             return None
         package = None
         if isinstance(error, TxRejectedError) and error.reconsiderable:
@@ -976,9 +1013,11 @@ class DownloadManager:
             mempool.mark_rejected(wtxid)
         self.tx_requests.forget_tx_hash(wtxid)
         self.orphanage.erase_tx(wtxid)
+        if extra:
+            self.extra_txns.append(tx)
         return package
 
-    def _keep_orphan(self, tx: Tx, conn_id: int) -> None:
+    def _keep_orphan(self, tx: Tx, conn_id: int) -> bool:
         """Keep `tx` as an orphan of the peers that can resolve it.
 
         Core's first-refusal branch of `MempoolRejectedTx`. Not kept where
@@ -988,7 +1027,8 @@ class DownloadManager:
         Otherwise the parents not yet had are asked for from `conn_id` and
         from the other peers that announced `tx`
         (`_maybe_add_orphan_resolution_candidate`), and `tx` is kept for each
-        that takes it.
+        that takes it. Answers whether it was kept already there, which
+        keeps it out of `extra_txns`.
         """
         mempool = self.node.mempool
         txid, wtxid = tx.id, tx.hash
@@ -1014,7 +1054,9 @@ class DownloadManager:
             # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
             mempool.mark_rejected(txid)
             mempool.mark_rejected(wtxid)
+            kept_already = False
         else:
+            kept_already = self.orphanage.have_tx(wtxid)
             unique_parents = [
                 parent_txid
                 for parent_txid in unique_parents
@@ -1036,6 +1078,7 @@ class DownloadManager:
                     self.orphanage.add_tx(tx, peer)
         self.tx_requests.forget_tx_hash(txid)
         self.tx_requests.forget_tx_hash(wtxid)
+        return kept_already
 
     def _add_known_txs(self, conn_id: int, txids: list[bytes]) -> None:
         """Record that `conn_id` has `txids`: it sent a child spending them.
@@ -1609,13 +1652,9 @@ class DownloadManager:
             for conn in list(node.p2p_manager.connections.values())
             if conn.status == P2pConnStatus.Connected
         ]
-        # Core's `mapBlocksInFlight`: a block is asked of one peer at a
-        # time, the walk passing over what is in flight
-        in_flight = {
-            block_hash: conn.id
-            for conn in connections
-            for block_hash in conn.download_queue
-        }
+        # Core's `mapBlocksInFlight`: the walk passes over what is in
+        # flight, and waits on the peer a block was first asked of
+        in_flight = first_in_flight(connections)
         downloading_from = sum(bool(conn.download_queue) for conn in connections)
         preferred = sum(_is_preferred_download(conn) for conn in connections)
         by_id = {conn.id: conn for conn in connections}
@@ -1647,7 +1686,7 @@ class DownloadManager:
             )
             if blocks:
                 downloading_from += not conn.download_queue
-                self._request_blocks(conn, blocks, now)
+                self._request_blocks(conn, blocks, now, compact=False)
                 in_flight.update(dict.fromkeys(blocks, conn.id))
             elif not conn.download_queue and staller in by_id:
                 stalling = by_id[staller].block_availability
@@ -1672,9 +1711,11 @@ class DownloadManager:
         Core also leaves out a block at or past `segwit_height` where
         `conn` cannot serve witnesses -- `DeploymentActiveAt(*pindexWalk,
         ..., DEPLOYMENT_SEGWIT) || CanServeWitnesses(peer)`, the same
-        test `find_next_blocks_to_download` makes -- and asks for a
-        single block as a compact block, which this node does not
-        download.
+        test `find_next_blocks_to_download` makes.
+
+        A single block is asked for as `MSG_CMPCT_BLOCK` where `conn` sent
+        a `sendcmpct` of version 2, no other block is in flight, and the
+        parent of `last_header` was validated.
         """
         node = self.node
         block_index = node.chainstate.block_index
@@ -1727,7 +1768,15 @@ class DownloadManager:
         blocks = to_fetch[::-1][: max(room, 0)]
         if not blocks:
             return
-        self._request_blocks(conn, blocks, time.time())
+        # Core's `BLOCK_VALID_CHAIN`, which a block reaches once connected
+        parent = header_dict[header_dict[last_header].header.previous_block_hash]
+        compact = (
+            conn.provides_cmpctblocks
+            and len(blocks) == 1
+            and not in_flight
+            and parent.status in (BlockStatus.valid, BlockStatus.in_active_chain)
+        )
+        self._request_blocks(conn, blocks, time.time(), compact=compact)
         if len(blocks) > 1:
             self.logger.log_debug(
                 "net",
@@ -1765,12 +1814,13 @@ class DownloadManager:
         return False
 
     def _request_blocks(
-        self, conn: Connection, blocks: list[bytes], now: float
+        self, conn: Connection, blocks: list[bytes], now: float, *, compact: bool
     ) -> None:
         """Ask `conn` for `blocks`, queued as Core's `BlockRequested` queues.
 
-        The front of an empty queue is awaited from `now`. `GetFetchFlags`'
-        witness flag is set only where `conn` can serve witnesses.
+        The front of an empty queue is awaited from `now`. Asked as
+        `block_inventory_type` says, or as `MSG_CMPCT_BLOCK` where
+        `compact`.
         """
         if not conn.download_queue:
             conn.block_availability.downloading_since = now
@@ -1780,8 +1830,6 @@ class DownloadManager:
         # wanted: btclib-org/btclib-node#262
         self.node.warm_worker_pool()
         fetch_type = (
-            InventoryType.MSG_WITNESS_BLOCK
-            if _can_serve_witnesses(conn)
-            else InventoryType.MSG_BLOCK
+            InventoryType.MSG_CMPCT_BLOCK if compact else block_inventory_type(conn)
         )
         conn.send(GetData([Inventory(fetch_type, block_hash) for block_hash in blocks]))

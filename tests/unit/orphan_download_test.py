@@ -19,6 +19,7 @@ from btclib.script.witness import Witness
 import btclib_node.download as download_module
 from btclib_node.exceptions import MissingPrevoutError, TxRejectedError
 from btclib_node.mempool import package_hash
+from btclib_node.p2p.compact_block import MAX_EXTRA_TX_WEIGHT, MAX_EXTRA_TXNS
 from btclib_node.p2p.permissions import NetPermissionFlags
 from tests.unit.download_test import (
     a_conn,
@@ -473,3 +474,52 @@ def test_an_orphan_whose_sender_is_gone_is_taken_in_without_recording() -> None:
         child, MissingPrevoutError("x"), 1, first_time=True
     )
     assert refused is None
+
+
+def test_a_first_refusal_is_kept_to_rebuild_compact_blocks_with() -> None:
+    """Core's `vExtraTxnForCompact`: the last `MAX_EXTRA_TXNS` refused.
+
+    A transaction refused again, from the orphanage, is not kept again.
+    """
+    manager = make_manager([a_conn(1)])
+    refused = [an_orphan() for _ in range(MAX_EXTRA_TXNS + 1)]
+    for tx in refused:
+        manager.mempool_rejected_tx(tx, TxRejectedError("x"), 1, first_time=True)
+    assert list(manager.extra_txns) == refused[1:]
+    again = an_orphan()
+    manager.mempool_rejected_tx(again, TxRejectedError("x"), 1, first_time=False)
+    assert again not in manager.extra_txns
+
+
+def test_an_orphan_is_kept_to_rebuild_compact_blocks_with_once() -> None:
+    """Core keeps no orphan the orphanage held already, from another peer."""
+    manager = make_manager([a_conn(1), a_conn(2)])
+    _, child = a_parent_and_child()
+    for conn_id in (1, 2):
+        manager.mempool_rejected_tx(
+            child, MissingPrevoutError("x"), conn_id, first_time=True
+        )
+    assert manager.orphanage.have_tx_from_peer(child.hash, 2)
+    assert list(manager.extra_txns) == [child]
+
+
+def test_an_orphan_of_a_refused_parent_is_kept_to_rebuild_with() -> None:
+    """Not kept as an orphan, it is kept for compact blocks all the same."""
+    manager = make_manager([a_conn(1)])
+    parent, child = a_parent_and_child()
+    manager.node.mempool.mark_rejected(parent.id)
+    manager.mempool_rejected_tx(child, MissingPrevoutError("x"), 1, first_time=True)
+    assert not manager.orphanage.have_tx(child.hash)
+    assert list(manager.extra_txns) == [child]
+
+
+def test_a_heavy_refusal_is_not_kept_to_rebuild_compact_blocks_with() -> None:
+    """Core's bound of 100000 bytes, read here as weight, is exclusive."""
+    manager = make_manager([a_conn(1)])
+    padding = (MAX_EXTRA_TX_WEIGHT - an_orphan().weight) // 4
+    heavy, lighter = an_orphan(padding=padding - 2), an_orphan(padding=padding - 3)
+    assert heavy.weight == MAX_EXTRA_TX_WEIGHT
+    assert lighter.weight < MAX_EXTRA_TX_WEIGHT
+    for tx in (heavy, lighter):
+        manager.mempool_rejected_tx(tx, TxRejectedError("x"), 1, first_time=True)
+    assert list(manager.extra_txns) == [lighter]

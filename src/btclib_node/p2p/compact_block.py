@@ -2,12 +2,12 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""A block as the `cmpctblock` this node sends of it.
+"""BIP152 compact blocks, as this node sends and receives them.
 
-Its own module because both of its callers need it: `callbacks`, which
-serves a `cmpctblock` asked for, and `main`'s block announcement, which
-sends one to a high-bandwidth peer. `callbacks` imports `main`, so the
-function cannot live there.
+`compact_block` is a block as the `cmpctblock` this node sends of it.
+`callbacks` serves one asked for, and `main`'s block announcement sends
+one to a high-bandwidth peer. `callbacks` imports `main`, so what both
+need cannot live there.
 """
 
 from dataclasses import dataclass, field
@@ -19,7 +19,27 @@ if TYPE_CHECKING:
     from btclib.block import Block
     from btclib.tx import Tx
 
-__all__ = ["MostRecentBlock", "compact_block"]
+__all__ = [
+    "MAX_CMPCTBLOCKS_INFLIGHT_PER_BLOCK",
+    "MAX_EXTRA_TXNS",
+    "MAX_EXTRA_TX_WEIGHT",
+    "MostRecentBlock",
+    "compact_block",
+]
+
+# Core's `MAX_CMPCTBLOCKS_INFLIGHT_PER_BLOCK` and
+# `DEFAULT_BLOCK_RECONSTRUCTION_EXTRA_TXN` (`src/net_processing.h`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): how many peers one block is
+# asked of through `cmpctblock`, and how many refused transactions are kept
+# to rebuild one with. Core's `-blockreconstructionextratxn` sets the
+# second, and this tree has no such option.
+MAX_CMPCTBLOCKS_INFLIGHT_PER_BLOCK = 3
+MAX_EXTRA_TXNS = 100
+# Core keeps a refused transaction for that only below 100000 bytes of
+# `RecursiveDynamicUsage`. Its orphanage measures a transaction's memory by
+# its weight, which "is often higher than the actual memory usage"
+# (`src/node/txorphanage.cpp`, same tag), and so does this bound.
+MAX_EXTRA_TX_WEIGHT = 100_000
 
 
 @dataclass(frozen=True, slots=True)
