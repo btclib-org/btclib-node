@@ -252,7 +252,7 @@ def test_parse_conf_text_refuses_a_line_in_core_s_words(
 def test_parse_conf_text_leaves_a_sensitive_value_out_of_a_refusal(
     line: str, refusal: str
 ) -> None:
-    """Core quotes the whole line; this tree quotes the option name alone."""
+    """Core quotes the whole line; this tree quotes it up to the option name."""
     with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$") as caught:
         cli._parse_conf_text(f"regtest=1\n{line}\n", warnings=[])
     assert "hunter2" not in str(caught.value)
