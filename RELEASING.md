@@ -365,6 +365,13 @@ this release included.
    as above, and gate again. The branch then goes up with
    `git push --force-with-lease`.
 
+1. Run the dependents' suites with this release in place of its PyPI
+   version: `btclib-node` has none, so there is nothing to run.
+   Section 12 of the
+   [organization standard](https://github.com/btclib-org/.github#12-releasing)
+   has the rule and the loop that derives the dependents; re-derive
+   them before each release rather than carry this answer.
+
 1. Merge it the way every other pull request here lands: once somebody
    other than its author has approved the head and the checks are in,
    "Squash and merge", or auto-merge. `gh pr merge <n> --squash
@@ -409,6 +416,19 @@ this release included.
    `git show` above is the same check one step earlier, where it costs
    nothing, and the chain is what makes it binding — `grep` fails where
    the line is not there, and the push below it does not run.
+
+1. Read the tag's signature back from the API, now that it is pushed. It
+   answers `true`: an unsigned annotated tag answers `false`, and a
+   lightweight tag answers 404 at the second call. `version` is the one
+   set above:
+
+   ```shell
+   tagsha=$(gh api \
+     repos/btclib-org/btclib-node/git/refs/tags/"v${version:?}" \
+     --jq '.object.sha') &&
+   gh api repos/btclib-org/btclib-node/git/tags/"${tagsha:?}" \
+     --jq '.verification.verified'
+   ```
 
 1. Approve the `pypi` environment when the workflow asks. Up to here
    nothing is public and the tag can still be deleted; the upload that
