@@ -14,6 +14,7 @@ scheduling.
 """
 
 import faulthandler
+import hashlib
 import io
 import logging
 import multiprocessing
@@ -73,6 +74,7 @@ from tests import (
     wait_until_listening,
 )
 from tests.conftest import node_context, unstarted_node_context
+from tests.unit.fee_estimator_test import _CORE_EMPTY_FILE_SHA256, _busy
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
@@ -2424,6 +2426,8 @@ def test_a_store_that_cannot_be_opened_ends_start_up_with_the_rest_closed(
     peer_db = node.p2p_manager.peer_db.db
     assert peer_db is not None
     assert peer_db.closed
+    # Core's `Shutdown` writes the fee estimates whatever step failed
+    assert (node.data_dir / "fee_estimates.dat").exists()
     reopened = Node(config=config)
     try:
         reopened.start()
@@ -2545,3 +2549,69 @@ def test_a_node_hands_its_whitelist_to_the_p2p_manager(tmp_path: Path) -> None:
     assert [str(entry.subnet) for entry in whitelist.outgoing] == ["5.6.7.8/32"]
     assert (whitelist.relay, whitelist.force_relay) == (False, True)
     assert node.init_errors == []
+
+
+def test_a_stopped_node_writes_the_fee_estimates_core_writes(tmp_path: Path) -> None:
+    """A fresh node's `fee_estimates.dat` is a fresh bitcoind's, to the byte."""
+    node = Node(
+        config=Config(
+            chain="regtest", data_dir=tmp_path, allow_p2p=False, allow_rpc=False
+        )
+    )
+    node.start()
+    node.stop()
+    data = (node.data_dir / "fee_estimates.dat").read_bytes()
+    assert hashlib.sha256(data).hexdigest() == _CORE_EMPTY_FILE_SHA256
+
+
+def test_a_running_node_writes_its_fee_estimates_once_due(tmp_path: Path) -> None:
+    """Core's hourly `FlushFeeEstimates`, from the node's own loop."""
+    node = Node(
+        config=Config(
+            chain="regtest", data_dir=tmp_path, allow_p2p=False, allow_rpc=False
+        )
+    )
+    path = node.data_dir / "fee_estimates.dat"
+    node.start()
+    try:
+        wait_until(lambda: node.loaded)
+        assert not path.exists()
+        node.fee_estimator._next_flush = 0
+        wait_until(path.exists)
+    finally:
+        node.stop()
+
+
+def test_a_node_starts_from_the_fee_estimates_it_finds(tmp_path: Path) -> None:
+    """The file in the chain's directory is read, and told of removals."""
+    written = _busy(tmp_path).write()
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "fee_estimates.dat").write_bytes(written)
+    with unstarted_node_context(tmp_path) as node:
+        assert node.fee_estimator.write() == written
+        assert node.mempool.removal_listener == node.fee_estimator.remove_tx
+
+
+@pytest.mark.parametrize(("chain", "name"), [("mainnet", "main"), ("signet", "signet")])
+def test_stale_fee_estimates_are_refused_off_regtest(
+    tmp_path: Path, chain: str, name: str
+) -> None:
+    """Core's `InitError`, in its words, before the block index is read."""
+    node = Node(
+        config=Config(
+            chain=chain,
+            data_dir=tmp_path,
+            allow_p2p=False,
+            allow_rpc=False,
+            accept_stale_fee_estimates=True,
+        )
+    )
+    try:
+        node.start()
+        wait_until(lambda: not node.is_alive())
+    finally:
+        node.stop()
+    assert node.init_errors == [
+        f"acceptstalefeeestimates is not supported on {name} chain."
+    ]
+    assert not (node.data_dir / "chainstate").exists()

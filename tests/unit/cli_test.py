@@ -1929,6 +1929,27 @@ def test_build_config_maxtipage_defaults_negates_and_reads_in_seconds(
     assert from_file.max_tip_age == 120
 
 
+def test_build_config_acceptstalefeeestimates_is_a_debug_only_flag(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Core's `-acceptstalefeeestimates`: off unless set, in `-help-debug`."""
+    assert not _build(tmp_path, "-regtest").accept_stale_fee_estimates
+    flag = _build(tmp_path, "-regtest", "-acceptstalefeeestimates")
+    assert flag.accept_stale_fee_estimates
+    with pytest.raises(SystemExit):
+        _build(tmp_path, "-help")
+    assert "-acceptstalefeeestimates" not in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        _build(tmp_path, "-help-debug")
+    # bitcoind v31.1.0's own `-help-debug`
+    assert (
+        "  -acceptstalefeeestimates\n"
+        "       Read fee estimates even if they are stale (regtest only; default: "
+        "0) fee\n"
+        "       estimates are considered stale if they are 60 hours old\n"
+    ) in capsys.readouterr().out
+
+
 def test_build_config_maxtipage_is_debug_only(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

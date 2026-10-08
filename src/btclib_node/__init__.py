@@ -29,6 +29,8 @@ from math import log2
 from multiprocessing.pool import Pool, ThreadPool
 from typing import TYPE_CHECKING, override
 
+from bitcoin_core_rpc import chain_from_network
+
 from btclib_node.block_db import BlockDB, blocks_directory
 from btclib_node.chainstate import Chainstate
 from btclib_node.config import Config
@@ -36,6 +38,7 @@ from btclib_node.constants import RPC_THREADS, NodeStatus
 from btclib_node.dirlock import lock_directories
 from btclib_node.download import DownloadManager
 from btclib_node.exceptions import NodeShutdownTimeoutError, ReimportedMainProcessError
+from btclib_node.fee_estimator import FeeEstimator
 from btclib_node.interpreter import warm
 from btclib_node.log import open_history_log
 from btclib_node.main import check_fork_warning_conditions, update_chain
@@ -498,6 +501,20 @@ class Node(threading.Thread):
         )
         self.p2p_manager = P2pManager(self, self.p2p_port, peer_db, ban_man)
         self._opened.callback(self.p2p_manager.loop.close)
+        # where Core's step 6 builds its estimator, with its refusal of
+        # `-acceptstalefeeestimates` (`src/init.cpp`, at
+        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+        if self.config.accept_stale_fee_estimates and self.chain.name != "regtest":
+            chain = chain_from_network(self.chain.name)
+            msg = f"acceptstalefeeestimates is not supported on {chain} chain."
+            raise ValueError(msg)
+        self.fee_estimator = FeeEstimator(
+            self.data_dir / "fee_estimates.dat",
+            self.logger,
+            read_stale=self.config.accept_stale_fee_estimates,
+        )
+        # Core's `Shutdown` writes it even where a later step fails
+        self._opened.callback(self.fee_estimator.flush)
         warmup("Loading block index…")
         self.chainstate = Chainstate(self.data_dir, self.chain, self.logger)
         self._opened.callback(self.chainstate.close)
@@ -520,6 +537,7 @@ class Node(threading.Thread):
             self.chainstate.block_index.active_chain, self.block_db
         )
         self.mempool = Mempool(self.logger, self.config.incremental_relay_feerate)
+        self.mempool.removal_listener = self.fee_estimator.remove_tx
 
         # update_chain's own record of the most recent block its trial
         # loop refused and why: the hash failed_hash already names
@@ -926,6 +944,9 @@ class Node(threading.Thread):
             self.p2p_manager.peer_db.close()
             # Core's `~BanMan` dumps the list one last time
             self.p2p_manager.ban_man.dump()
+            # Core's `Shutdown`: what is still unconfirmed counts as a
+            # failure, and the estimates are written
+            self.fee_estimator.flush()
             self.chainstate.close()
             self.block_db.close()
 
@@ -1000,6 +1021,7 @@ class Node(threading.Thread):
             # read.
             if self.terminate_flag.is_set() or self._step_chain():
                 break
+            self.fee_estimator.flush_if_due()
         self._stop_managers_and_close_stores()
 
         # joined before the read below, not asked for: the same race

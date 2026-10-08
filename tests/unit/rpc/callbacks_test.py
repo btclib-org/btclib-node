@@ -18,6 +18,7 @@ import time
 from collections import Counter
 from collections.abc import Generator
 from dataclasses import replace
+from datetime import UTC, datetime
 from ipaddress import ip_address
 from pathlib import Path
 from types import SimpleNamespace
@@ -63,6 +64,7 @@ from btclib_node.exceptions import (
     StoreCorruptionError,
     TxRejectedError,
 )
+from btclib_node.fee_estimator import FeeEstimator
 from btclib_node.log import Logger
 from btclib_node.main import (
     MempoolAcceptance,
@@ -329,6 +331,14 @@ def a_node(
                 # for `Mempool.add_tx`'s own `height`, and no test here
                 # asserts on the value it stores.
                 active_chain=[b"\x00" * 32],
+                # that one block, timed now and the best header: a
+                # transaction accepted here is one the fee estimator tracks
+                header_dict={
+                    b"\x00" * 32: SimpleNamespace(
+                        header=SimpleNamespace(time=datetime.now(UTC))
+                    )
+                },
+                header_index=[b"\x00" * 32],
             ),
             utxo_index=SimpleNamespace(
                 get_coin=lambda prevout: object() if prevout in confirmed else None
@@ -351,6 +361,11 @@ def a_node(
             max_datacarrier_bytes=max_datacarrier_bytes,
         ),
         warnings=Warnings(),
+        # a file that is not there: an estimator with no history
+        fee_estimator=FeeEstimator(
+            Path("/nonexistent/fee_estimates.dat"), Logger(debug=True)
+        ),
+        is_initial_block_download=False,
         active_rpc_commands=(
             active_rpc_commands if active_rpc_commands is not None else []
         ),
@@ -8364,6 +8379,21 @@ def test_send_raw_transaction_marks_a_kept_transaction_unbroadcast(
 
     send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
     assert mempool.unbroadcast == {tx.id}
+
+
+def test_send_raw_transaction_hands_a_kept_transaction_to_the_fee_estimator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Core's `TransactionAddedToMempool`, outside any package."""
+    monkeypatch.setattr(
+        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, 100)
+    )
+    node = a_node()
+    node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: None
+    tx = a_tx()
+
+    send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
+    assert list(node.fee_estimator.mempool_txs) == [tx.id]
 
 
 def test_getmempoolinfo_reports_the_relay_options() -> None:

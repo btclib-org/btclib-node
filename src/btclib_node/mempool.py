@@ -25,10 +25,11 @@ from btclib.fee import FeeRate, fee_from_vsize
 from btclib_node.cluster_linearize import FeeFrac
 from btclib_node.config import DEFAULT_INCREMENTAL_RELAY_FEERATE
 from btclib_node.exceptions import TxRejectedError
+from btclib_node.fee_estimator import RemovedTx
 from btclib_node.txgraph import POST_CHANGE_COST, MiningKey, TxGraph
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator, Sequence
+    from collections.abc import Callable, Iterable, Iterator, Sequence
 
     from btclib.tx.tx import Tx
 
@@ -398,6 +399,9 @@ class Mempool:
         # package can undo, and the hashes of the packages refused.
         self._recent_rejects_reconsiderable: set[bytes] = set()
         self._recent_rejects_reconsiderable_order: deque[bytes] = deque()
+        # Called with the txid of each transaction leaving for any reason
+        # but a block: Core's `TransactionRemovedFromMempool`
+        self.removal_listener: Callable[[bytes], object] | None = None
 
     def is_full(self) -> bool:
         """Whether `bytesize` has already reached `bytesize_limit`."""
@@ -644,7 +648,7 @@ class Mempool:
         try:
             yield
         finally:
-            self._pop(tx.hash)
+            self._pop(tx.hash, notify=False)
             self.outpoint_spender.update(spenders)
             self.sequence, self.transactions_updated = sequence, updated
 
@@ -1088,8 +1092,8 @@ class Mempool:
         Core's own `removeConflicts`, which `removeForBlock` calls for
         every transaction of a connected block (`src/txmempool.cpp`,
         at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a held spend of a
-        coin the block spent can never confirm. Called after `remove_tx`
-        has taken `tx` itself out, so every spender left is a conflict.
+        coin the block spent can never confirm. Called once `tx` itself is
+        out, so every spender left is a conflict.
         The direct spenders lose their fee delta and their descendants keep
         theirs, as in Core's `removeConflicts`.
         btclib-org/btclib-node#1244, btclib-org/btclib-node#1502
@@ -1103,8 +1107,12 @@ class Mempool:
         """Drop the fee delta of `txid`, Core's `ClearPrioritisation`."""
         self.deltas.pop(txid, None)
 
-    def remove_for_block(self, transactions: Iterable[Tx]) -> None:
+    def remove_for_block(self, transactions: Iterable[Tx]) -> list[RemovedTx]:
         """Remove what a connected block holds or conflicts with, deltas too.
+
+        Return what the block held, in block order, for the fee estimator:
+        Core's `MempoolTransactionsRemovedForBlock`. Those leave without a
+        call to `removal_listener`; the conflicts call it.
 
         Core's `removeForBlock` (`src/txmempool.cpp`, at
         bitcoin/bitcoin@9be056a8a7, the v31.1 tag) takes each transaction
@@ -1120,13 +1128,22 @@ class Mempool:
         The clusters left are relinearized, Core's `POST_CHANGE_COST` of
         work.
         """
+        removed: list[RemovedTx] = []
         if not (self.size or self.deltas):
-            return
+            return removed
         for tx in transactions:
-            self.remove_tx(tx)
+            txid = tx.id
+            wtxid = self.txid_index.get(txid)
+            if wtxid is not None:
+                entry = RemovedTx(
+                    txid, self.fees[wtxid], self.vsizes[wtxid], self.heights[wtxid]
+                )
+                removed.append(entry)
+                self._pop(wtxid, notify=False)
             self.remove_conflicts(tx)
-            self.clear_prioritisation(tx.id)
+            self.clear_prioritisation(txid)
         self.graph.do_work(POST_CHANGE_COST)
+        return removed
 
     def remove_dependents(self, tx: Tx) -> None:
         """Remove what spends any of `tx`'s own outputs, with its descendants.
@@ -1204,8 +1221,11 @@ class Mempool:
         vsize = self.vsizes[wtxid]
         return fee >= fee_from_vsize(vsize, FeeRate(sats_per_kvbyte=min_fee_rate))
 
-    def _pop(self, wtxid: bytes) -> Tx:
+    def _pop(self, wtxid: bytes, *, notify: bool = True) -> Tx:
         """Remove one entry by wtxid and return the transaction removed.
+
+        `removal_listener` is told, unless `notify` is false: for a
+        transaction a block holds, or one `staged` held for a moment.
 
         The one place every removal, `remove_tx` and eviction alike,
         updates the bookkeeping the indices and counters above carry --
@@ -1258,6 +1278,8 @@ class Mempool:
         self.sequence += 1
         self.transactions_updated += 1
         self._bound_heap()
+        if notify and self.removal_listener is not None:
+            self.removal_listener(tx.id)
         return tx
 
     def _bound_heap(self) -> None:

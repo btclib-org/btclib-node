@@ -209,10 +209,11 @@ Each mirrors the Core method of the same name: `getbestblockhash`,
 `getmempoolancestors`, `getmempooldescendants`, `getrawmempool`,
 `getrawtransaction`, `gettxout`, `gettxspendingprevout`, `gettxoutsetinfo`,
 `dumptxoutset`, `scantxoutset`, `decoderawtransaction`, `testmempoolaccept`,
-`sendrawtransaction`, `submitpackage`, `ping`, `getrpcinfo`, `stop`, `help`.
-Core's own hidden commands -- `addconnection`, `generatetoaddress` and
-`generateblock` among them -- are left off this list the same way
-`bitcoin-cli help`'s bare listing leaves them off. The `callbacks` table in
+`sendrawtransaction`, `submitpackage`, `estimatesmartfee`, `ping`,
+`getrpcinfo`, `stop`, `help`. Core's own hidden commands -- `addconnection`,
+`generatetoaddress`, `generateblock` and `estimaterawfee` among them -- are
+left off this list the same way `bitcoin-cli help`'s bare listing leaves them
+off. The `callbacks` table in
 `src/btclib_node/rpc/callbacks.py` is the list the node serves.
 
 The fee deltas `prioritisetransaction` sets are held in memory, as the

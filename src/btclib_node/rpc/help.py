@@ -54,6 +54,99 @@ from btclib_node.rpc.errors import type_error
 
 __all__ = ["CATEGORY", "HELP_TEXT", "answer_help"]
 
+_HELP_ESTIMATESMARTFEE = (
+    'estimatesmartfee conf_target ( "estimate_mode" )\n'
+    "\n"
+    "Estimates the approximate fee per kilobyte needed for a transaction to begin\n"
+    "confirmation within conf_target blocks if possible and return the number of blocks\n"
+    "for which the estimate is valid. Uses virtual transaction size as defined\n"
+    "in BIP 141 (witness data is discounted).\n"
+    "\n"
+    "Arguments:\n"
+    "1. conf_target      (numeric, required) Confirmation target in blocks (1 - 1008)\n"
+    '2. estimate_mode    (string, optional, default="economical") The fee estimate mode.\n'
+    "                    unset, economical, conservative \n"
+    "                    unset means no mode set (default mode will be used). \n"
+    "                    economical estimates use a shorter time horizon, making them more\n"
+    "                    responsive to short-term drops in the prevailing fee market. This mode\n"
+    "                    potentially returns a lower fee rate estimate.\n"
+    "                    conservative estimates use a longer time horizon, making them\n"
+    "                    less responsive to short-term drops in the prevailing fee market. This mode\n"
+    "                    potentially returns a higher fee rate estimate.\n"
+    "                    \n"
+    "\n"
+    "Result:\n"
+    "{                   (json object)\n"
+    '  "feerate" : n,    (numeric, optional) estimate fee rate in BTC/kvB (only present if no errors were encountered)\n'
+    '  "errors" : [      (json array, optional) Errors encountered during processing (if there are any)\n'
+    '    "str",          (string) error\n'
+    "    ...\n"
+    "  ],\n"
+    '  "blocks" : n      (numeric) block number where estimate was found\n'
+    "                    The request target will be clamped between 2 and the highest target\n"
+    "                    fee estimation is able to return based on how long it has been running.\n"
+    "                    An error is returned if not enough transactions and blocks\n"
+    "                    have been observed to make an estimate for any number of blocks.\n"
+    "}\n"
+    "\n"
+    "Examples:\n"
+    "> bitcoin-cli estimatesmartfee 6\n"
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "estimatesmartfee", "params": [6]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
+_HELP_ESTIMATERAWFEE = (
+    "estimaterawfee conf_target ( threshold )\n"
+    "\n"
+    "WARNING: This interface is unstable and may disappear or change!\n"
+    "\n"
+    "WARNING: This is an advanced API call that is tightly coupled to the specific\n"
+    "implementation of fee estimation. The parameters it can be called with\n"
+    "and the results it returns will change if the internal implementation changes.\n"
+    "\n"
+    "Estimates the approximate fee per kilobyte needed for a transaction to begin\n"
+    "confirmation within conf_target blocks if possible. Uses virtual transaction size as\n"
+    "defined in BIP 141 (witness data is discounted).\n"
+    "\n"
+    "Arguments:\n"
+    "1. conf_target    (numeric, required) Confirmation target in blocks (1 - 1008)\n"
+    "2. threshold      (numeric, optional, default=0.95) The proportion of transactions in a given feerate range that must have been\n"
+    "                  confirmed within conf_target in order to consider those feerates as high enough and proceed to check\n"
+    "                  lower buckets.\n"
+    "\n"
+    "Result:\n"
+    "{                              (json object) Results are returned for any horizon which tracks blocks up to the confirmation target\n"
+    '  "short" : {                  (json object, optional) estimate for short time horizon\n'
+    '    "feerate" : n,             (numeric, optional) estimate fee rate in BTC/kvB\n'
+    '    "decay" : n,               (numeric) exponential decay (per block) for historical moving average of confirmation data\n'
+    '    "scale" : n,               (numeric) The resolution of confirmation targets at this time horizon\n'
+    '    "pass" : {                 (json object, optional) information about the lowest range of feerates to succeed in meeting the threshold\n'
+    '      "startrange" : n,        (numeric) start of feerate range\n'
+    '      "endrange" : n,          (numeric) end of feerate range\n'
+    '      "withintarget" : n,      (numeric) number of txs over history horizon in the feerate range that were confirmed within target\n'
+    '      "totalconfirmed" : n,    (numeric) number of txs over history horizon in the feerate range that were confirmed at any point\n'
+    '      "inmempool" : n,         (numeric) current number of txs in mempool in the feerate range unconfirmed for at least target blocks\n'
+    '      "leftmempool" : n        (numeric) number of txs over history horizon in the feerate range that left mempool unconfirmed after target\n'
+    "    },\n"
+    '    "fail" : {                 (json object, optional) information about the highest range of feerates to fail to meet the threshold\n'
+    "      ...\n"
+    "    },\n"
+    '    "errors" : [               (json array, optional) Errors encountered during processing (if there are any)\n'
+    '      "str",                   (string)\n'
+    "      ...\n"
+    "    ]\n"
+    "  },\n"
+    '  "medium" : {                 (json object, optional) estimate for medium time horizon\n'
+    "    ...\n"
+    "  },\n"
+    '  "long" : {                   (json object, optional) estimate for long time horizon\n'
+    "    ...\n"
+    "  }\n"
+    "}\n"
+    "\n"
+    "Examples:\n"
+    "> bitcoin-cli estimaterawfee 6 0.9\n"
+)
+
 _HELP_GETBESTBLOCKHASH = (
     "getbestblockhash\n"
     "\n"
@@ -2081,6 +2174,8 @@ HELP_TEXT: dict[str, str] = {
     "sendrawtransaction": _HELP_SENDRAWTRANSACTION,
     "testmempoolaccept": _HELP_TESTMEMPOOLACCEPT,
     "submitpackage": _HELP_SUBMITPACKAGE,
+    "estimatesmartfee": _HELP_ESTIMATESMARTFEE,
+    "estimaterawfee": _HELP_ESTIMATERAWFEE,
 }
 
 # Each command's own category, Core's own `RPCMethod`'s registration
@@ -2152,6 +2247,8 @@ CATEGORY: dict[str, str] = {
     "sendrawtransaction": "Rawtransactions",
     "testmempoolaccept": "Rawtransactions",
     "submitpackage": "Rawtransactions",
+    "estimatesmartfee": "Util",
+    "estimaterawfee": "hidden",
 }
 
 # `CRPCTable::help`'s own sort key, `category + name`

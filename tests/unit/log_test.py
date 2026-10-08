@@ -222,6 +222,7 @@ def test_no_call_writes_a_debug_line_with_no_category() -> None:
 _CATEGORY_OF_FILE = {
     "chainstate/block_index.py": "validation",
     "download.py": "net",
+    "fee_estimator.py": "estimatefee",
     "main.py": "validation",
     "p2p/banman.py": "net",
     "p2p/callbacks.py": "net",

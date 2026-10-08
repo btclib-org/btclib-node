@@ -21,6 +21,7 @@ from btclib.tx.tx_out import TxOut
 
 from btclib_node import mempool as mempool_module
 from btclib_node.exceptions import TxRejectedError
+from btclib_node.fee_estimator import RemovedTx
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from tests import generate_random_transaction
@@ -1956,3 +1957,42 @@ def test_the_stored_txid_follows_the_entry_in_and_out() -> None:
     assert mempool.txids == {tx.hash: tx.id}
     mempool.remove_tx(tx)
     assert mempool.txids == {}
+
+
+def test_a_block_returns_what_it_held_and_reports_only_its_conflicts() -> None:
+    """The fee estimator learns of a block's own transactions from the block.
+
+    Core's `removeForBlock` signals `TransactionRemovedFromMempool` for
+    the conflicts and their descendants, never for what the block holds,
+    which `MempoolTransactionsRemovedForBlock` lists in block order.
+    """
+    mempool, coin, held, child = a_mempool_with_a_conflict()
+    mined = generate_random_transaction()
+    mempool.add_tx(mined, 1_000, height=7)
+    told: list[bytes] = []
+    mempool.removal_listener = told.append
+    removed = mempool.remove_for_block([mined, a_spend_of([coin])])
+    assert removed == [RemovedTx(mined.id, 1_000, mined.vsize, 7)]
+    assert sorted(told) == sorted([held.id, child.id])
+
+
+def test_every_removal_but_a_block_s_and_a_staged_one_is_reported() -> None:
+    """A removal and an eviction are told; a staged entry is not."""
+    mempool = Mempool(Logger(debug=True))
+    told: list[bytes] = []
+    mempool.removal_listener = told.append
+    gone, victim, keeper = (generate_random_transaction() for _ in range(3))
+    mempool.add_tx(gone, 0)
+    mempool.remove_tx(gone)
+    with mempool.staged(keeper, 0, keeper.vsize):
+        pass
+    mempool.add_tx(victim, 0)
+    mempool.bytesize_limit = mempool.bytesize + keeper.vsize - 1
+    mempool.add_tx(keeper, 10**6)
+    assert told == [gone.id, victim.id]
+
+
+def test_a_block_on_an_empty_mempool_returns_nothing() -> None:
+    """No transaction is looked up: there is nothing to remove."""
+    mempool = Mempool(Logger(debug=True))
+    assert mempool.remove_for_block([generate_random_transaction()]) == []

@@ -41,7 +41,7 @@ from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
-from btclib_node import Node, main
+from btclib_node import Node, fee_estimator, main
 from btclib_node.block_db import BlockDB
 from btclib_node.chains import RegTest, SigNet
 from btclib_node.chainstate import Chainstate
@@ -2855,6 +2855,123 @@ def test_a_reorg_still_resurrects_a_transaction_its_prevout_survives(
     assert block_index.active_chain[1:] == hashes(heavier)
 
     assert node.mempool.contains_tx(resurrectable)
+
+
+def test_each_connected_block_reaches_the_fee_estimator_at_its_height(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's `MempoolTransactionsRemovedForBlock`, with what the block held."""
+    monkeypatch.setattr(
+        fee_estimator, "is_current_for_fee_estimation", lambda node: True
+    )
+    common = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, common)
+    estimator = node.fee_estimator
+    assert estimator.best_seen_height == len(common)
+    tx = generate_random_transaction(common[0].transactions[0].id)
+    node.mempool.add_tx(tx, FEE, height=len(common))
+    fee_estimator.track_accepted(node, tx)
+    assert list(estimator.mempool_txs) == [tx.id]
+    block = build_block(
+        common[-1].header.hash,
+        [generate_coinbase(height=len(common) + 1), tx],
+        len(common),
+    )
+    connect(node, [block])
+    assert estimator.best_seen_height == len(common) + 1
+    assert estimator.mempool_txs == {}
+    assert estimator.first_recorded_height == len(common) + 1
+
+
+def test_a_reorg_reaches_the_fee_estimator_in_core_s_order(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The new blocks first, then what putting the old ones back removes.
+
+    `child`, tracked, spends `parent`, which the abandoned block holds.
+    The heavier branch spends `parent`'s input again, so `parent` is not
+    put back and `child` leaves. Core's estimator hears of that removal
+    once it has counted both new blocks, as the control below does.
+    """
+    monkeypatch.setattr(
+        fee_estimator, "is_current_for_fee_estimation", lambda node: True
+    )
+    common = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, common)
+    funding = common[0].transactions[0].id
+    parent = generate_random_transaction(funding)
+    abandoned = build_block(
+        common[-1].header.hash,
+        [generate_coinbase(height=len(common) + 1), parent],
+        len(common),
+    )
+    connect(node, [abandoned])
+    child = generate_random_transaction(parent.id)
+    node.mempool.add_tx(child, FEE, height=len(common) + 1)
+    fee_estimator.track_accepted(node, child)
+    estimator = node.fee_estimator
+    assert list(estimator.mempool_txs) == [child.id]
+
+    double_spend = build_block(
+        common[-1].header.hash,
+        [
+            generate_coinbase(height=len(common) + 1),
+            generate_random_transaction(funding),
+        ],
+        len(common),
+    )
+    heavier = [double_spend, *_extend(double_spend.header.hash, len(common) + 1, 1)]
+    block_index.add_headers([block.header for block in heavier])
+    for block in heavier:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+    settle(node)
+    assert block_index.active_chain[-1] == heavier[-1].header.hash
+    assert not node.mempool.contains_tx(child)
+
+    control = fee_estimator.FeeEstimator(node.data_dir / "control.dat", node.logger)
+    for height in range(1, len(common) + 2):
+        control.process_block([], height)
+    control.process_transaction(
+        child.id,
+        FEE,
+        child.vsize,
+        len(common) + 1,
+        limit_bypassed=False,
+        in_package=False,
+        chain_current=True,
+        has_no_mempool_parents=True,
+    )
+    control.process_block([], len(common) + 2)
+    control.remove_tx(child.id)
+    assert estimator.write() == control.write()
+
+
+def test_a_transaction_a_reorg_puts_back_is_counted_untracked(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's `bypass_limits`, at the height of the blocks already counted."""
+    monkeypatch.setattr(
+        fee_estimator, "is_current_for_fee_estimation", lambda node: True
+    )
+    common = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, common)
+    put_back = generate_random_transaction(common[0].transactions[0].id)
+    abandoned = build_block(
+        common[-1].header.hash,
+        [generate_coinbase(height=len(common) + 1), put_back],
+        len(common),
+    )
+    connect(node, [abandoned])
+    heavier = _extend(common[-1].header.hash, len(common), 2)
+    block_index.add_headers([block.header for block in heavier])
+    for block in heavier:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+    settle(node)
+    assert node.mempool.contains_tx(put_back)
+    estimator = node.fee_estimator
+    assert (estimator.tracked_txs, estimator.untracked_txs) == (0, 1)
 
 
 @pytest.mark.parametrize("fee", [0, FEE])

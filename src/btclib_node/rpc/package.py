@@ -33,6 +33,7 @@ from btclib_node.exceptions import (
     PackageRefusedError,
     TxRejectedError,
 )
+from btclib_node.fee_estimator import track_accepted
 from btclib_node.interpreter import check_package, check_transaction
 from btclib_node.main import (
     package_refusal,
@@ -310,6 +311,7 @@ def _accept_alone(node: Node, tx: Tx, call: _Call) -> Outcome:
         trim=False,
         weight=candidate.weight,
     )
+    track_accepted(node, tx, in_package=True)
     return accepted(node, tx, candidate.fee, candidate.vsize)
 
 
@@ -352,6 +354,8 @@ def _accept_together(
         for tx, candidate in zip(txs, candidates, strict=True)
     ]
     mempool.add_package(members, height=tip_height)
+    for tx in txs:
+        track_accepted(node, tx, in_package=True)
     effective = (
         sum(fee + mempool.delta(tx.id) for tx, fee, _, _ in members),
         sum(vsize for _, _, vsize, _ in members),

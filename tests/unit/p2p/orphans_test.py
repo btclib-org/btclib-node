@@ -20,6 +20,7 @@ import btclib_node.main as node_main
 import btclib_node.mempool as mempool_module
 import btclib_node.p2p.callbacks as cb
 import btclib_node.p2p.main as p2p_main
+from btclib_node import fee_estimator
 from btclib_node.chains import RegTest
 from btclib_node.constants import DEFAULT_MAXRECEIVEBUFFER, P2pConnStatus
 from btclib_node.exceptions import MissingPrevoutError, TxRejectedError
@@ -214,6 +215,22 @@ def test_a_child_ahead_of_its_parent_is_taken_in_with_it(
     assert node.mempool.contains_tx(pair.parent)
     assert node.mempool.contains_tx(pair.child)
     assert not node.download_manager.orphanage.have_tx(pair.child.hash)
+
+
+def test_a_package_taken_from_a_peer_is_not_tracked_for_fee_estimates(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's 1p1c is a package submission, on a current chain too."""
+    monkeypatch.setattr(
+        fee_estimator, "is_current_for_fee_estimation", lambda node: True
+    )
+    pair = a_pair(regtest_node)
+    node, peer = pair.node, a_connected_peer(pair.node)
+    relay(node, peer, pair.child)
+    relay(node, peer, pair.parent)
+    assert node.mempool.contains_tx(pair.child)
+    assert node.fee_estimator.mempool_txs == {}
+    assert node.fee_estimator.untracked_txs == 2
 
 
 def test_a_parent_ahead_of_its_child_is_taken_in_when_it_comes_again(
@@ -659,6 +676,32 @@ def test_a_package_start_finds_its_parent_passing_alone(
     relay(node, peer, pair.parent)
     assert node.mempool.contains_tx(pair.parent)
     assert node.mempool.contains_tx(pair.child)
+
+
+@pytest.mark.parametrize("when", ["at the start", "once its scripts pass"])
+def test_a_parent_found_passing_alone_is_not_tracked_for_fee_estimates(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch, when: str
+) -> None:
+    """Core's `SingleInPackageAccept` is a package submission."""
+    monkeypatch.setattr(
+        fee_estimator, "is_current_for_fee_estimation", lambda node: True
+    )
+    pair = a_pair(regtest_node)
+    node, peer = pair.node, a_connected_peer(pair.node)
+    relay(node, peer, pair.child)
+    if when == "at the start":
+        node.mempool.mark_rejected_reconsiderable(pair.parent.hash)
+        node.mempool._rolling_min_fee_rate = 0.0
+        relay(node, peer, pair.parent)
+    else:
+        cb.tx(node, TxMsg(pair.parent, include_witness=True).serialize(), peer)
+        node.mempool._rolling_min_fee_rate = 0.0
+        settle(node)
+    assert node.mempool.contains_tx(pair.parent)
+    assert node.mempool.contains_tx(pair.child)
+    # the child spends a transaction the mempool holds
+    estimator = node.fee_estimator
+    assert (estimator.tracked_txs, estimator.untracked_txs) == (0, 2)
 
 
 def test_a_script_check_that_breaks_is_raised_not_recorded(
