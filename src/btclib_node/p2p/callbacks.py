@@ -1345,6 +1345,40 @@ def settle_tx(node: Node, check: TxCheck, refusal: Exception | None) -> None:
     _accepted(node, tx, conn)
 
 
+def _add_package(
+    node: Node,
+    conn: Connection,
+    members: list[tuple[Tx, int, int, int | None]],
+) -> None:
+    """Add a parent and its child to the mempool, and settle each.
+
+    `AcceptPackage` trims once after adding, and refuses "mempool full" only
+    the members the trim took (`src/validation.cpp:1748`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): not `TxRejectedError`, so
+    not reconsiderable. `ProcessPackageResult` then takes each result in,
+    the child first, so that the child leaves the orphanage before it can
+    be marked for reconsidering, and marks the package hash if any was
+    refused.
+    """
+    (parent, *_), (child, *_) = members
+    tip_height = len(node.chainstate.block_index.active_chain) - 1
+    held = node.mempool.add_package(members, height=tip_height)
+    kept = dict(zip((parent.hash, child.hash), held, strict=True))
+    for member in (parent, child):
+        if kept[member.hash]:
+            track_accepted(node, member, in_package=True)
+    if not all(held):
+        node.mempool.mark_rejected_reconsiderable(
+            package_hash([parent.hash, child.hash])
+        )
+    for member in (child, parent):
+        if kept[member.hash]:
+            _accepted(node, member, conn)
+        else:
+            error = BTClibValueError("mempool full")
+            _rejected(node, member, error, conn, first_time=False)
+
+
 def _settle_package(
     node: Node, check: TxCheck, parent: Tx, refusal: Exception | None
 ) -> None:
@@ -1381,34 +1415,19 @@ def _settle_package(
         return
     if refusal is not None and not isinstance(refusal, BTClibValueError):
         raise refusal
-    errors: dict[bytes, Exception]
     if refusal is None:
         members = [
             (tx, member.fee, member.vsize, member.weight)
             for tx, member in ((parent, candidate.parent), (child, candidate.child))
         ]
-        tip_height = len(node.chainstate.block_index.active_chain) - 1
-        if node.mempool.add_package(members, height=tip_height):
-            for member in (parent, child):
-                track_accepted(node, member, in_package=True)
-            # Core iterates backwards, so that the child leaves the
-            # orphanage before it can be marked for reconsidering
-            for member in (child, parent):
-                _accepted(node, member, conn)
-            return
-        # not `TxRejectedError`, so not reconsiderable: `AcceptPackage`'s
-        # "mempool full" is `TX_MEMPOOL_POLICY` (`src/validation.cpp:1748`,
-        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
-        errors = {
-            member.hash: BTClibValueError("mempool full") for member in (parent, child)
-        }
-    else:
-        assert candidate.parent_error is not None  # noqa: S101
-        errors = {
-            parent.hash: candidate.parent_error,
-            child.hash: MissingPrevoutError(),
-            (parent, child)[check.failed].hash: refusal,
-        }
+        _add_package(node, conn, members)
+        return
+    assert candidate.parent_error is not None  # noqa: S101
+    errors: dict[bytes, Exception] = {
+        parent.hash: candidate.parent_error,
+        child.hash: MissingPrevoutError(),
+        (parent, child)[check.failed].hash: refusal,
+    }
     _package_refused(node, conn, parent, child, errors)
 
 

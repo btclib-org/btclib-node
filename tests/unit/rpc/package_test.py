@@ -909,6 +909,28 @@ def test_a_parent_taken_alone_is_not_evicted_for_its_package(node: Node) -> None
     )
 
 
+def test_a_trim_that_splits_the_package_refuses_only_the_member_it_took(
+    node: Node,
+) -> None:
+    """The child's other, held parent pulls it into a later chunk.
+
+    The chunks are the parent alone and the held one with the child, so
+    the trim takes the second. Core keeps the parent and
+    answers "mempool full" for the child alone (btclib-org/btclib-node#1846).
+    """
+    held_spend, parent_spend = funded_spends(node, 2)
+    held = hold(node, held_spend)
+    node.mempool.prioritise(held.id, -(10**7))
+    parent = free(parent_spend)
+    child = paying(a_child_of_all([parent, held]), 100_000)
+    node.mempool.bytesize_limit = held.vsize + parent.vsize + child.vsize - 1
+    answer = submit(node, [parent, child])
+    assert answer["package_msg"] == "transaction failed"
+    assert "error" not in result(answer, parent)
+    assert result(answer, child)["error"] == "mempool full"
+    assert node.mempool.transactions.keys() == {parent.hash}
+
+
 def test_nothing_is_evicted_until_the_caller_trims(node: Node) -> None:
     """`add_tx` takes `trim`, and `trim` evicts."""
     mempool = node.mempool

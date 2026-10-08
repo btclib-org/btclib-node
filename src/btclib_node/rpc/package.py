@@ -239,10 +239,10 @@ def _accept(node: Node, call: _Call) -> tuple[str, dict[bytes, Outcome]]:
 
     Taking a transaction alone trims nothing: the mempool is trimmed
     once at the end, as Core's `AcceptPackage` does, so a child can pay for
-    a parent a full mempool would have refused. The transactions taken
-    together keep `Mempool.add_package`'s own trimming, which scores them as
-    a whole. Each one gone by the end is refused "mempool full", as Core's
-    last pass over the results does.
+    a parent a full mempool would have refused. `Mempool.add_package` trims
+    after taking the transactions together, by chunk, as the end does. Each
+    one gone by the end is refused "mempool full", as Core's last pass over
+    the results does.
     """
     txs = call.txs
     refusal = package_refusal(txs)

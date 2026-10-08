@@ -1255,7 +1255,7 @@ def test_a_package_is_added_whole_with_the_fee_given_to_each() -> None:
     """Both are held, parent first, with their own fee and vsize."""
     mempool = Mempool(Logger(debug=True))
     members = a_package(0, 1000)
-    assert mempool.add_package(members, height=7)
+    assert all(mempool.add_package(members, height=7))
     for tx, fee, vsize, _ in members:
         assert mempool.contains_tx(tx)
         assert mempool.fees[tx.hash] == fee
@@ -1271,7 +1271,7 @@ def test_a_package_makes_room_by_evicting_what_pays_less() -> None:
     mempool.add_tx(cheap, 0)
     mempool.add_tx(dear, 10**7)
     mempool.bytesize_limit = mempool.bytesize + members[0][2] + members[1][2] - 1
-    assert mempool.add_package(members, height=0)
+    assert all(mempool.add_package(members, height=0))
     assert not mempool.contains_tx(cheap)
     assert mempool.contains_tx(dear)
     assert all(mempool.contains_tx(tx) for tx, *_ in members)
@@ -1285,13 +1285,13 @@ def test_a_package_paying_less_than_the_worst_is_refused_and_raises_the_floor() 
     incumbent = generate_random_transaction()
     mempool.add_tx(incumbent, 10**7)
     mempool.bytesize_limit = mempool.bytesize + members[0][2] + members[1][2] - 1
-    assert not mempool.add_package(members, height=0)
+    assert not all(mempool.add_package(members, height=0))
     assert mempool.contains_tx(incumbent)
     assert mempool.size == 1
     assert mempool.get_min_fee_rate().sats_per_kvbyte > 0
     # the incumbent is still the worst, so a package paying more evicts it
     better = a_package(0, 10**8)
-    assert mempool.add_package(better, height=0)
+    assert all(mempool.add_package(better, height=0))
     assert not mempool.contains_tx(incumbent)
 
 
@@ -1305,7 +1305,7 @@ def test_a_package_whose_mempool_parent_is_evicted_for_room_is_not_added() -> No
     members = [(parent, 0, parent.vsize, None), (child, 10**6, child.vsize, None)]
     # the package fits once `held` is gone, and not before
     mempool.bytesize_limit = mempool.bytesize + parent.vsize + child.vsize - 1
-    assert not mempool.add_package(members, height=0)
+    assert not all(mempool.add_package(members, height=0))
     assert mempool.size == 0
 
 
@@ -1314,17 +1314,31 @@ def test_a_package_over_the_limit_is_evicted_whole() -> None:
     mempool = Mempool(Logger(debug=True))
     members = a_package(0, 10_000)
     mempool.bytesize_limit = 0
-    assert not mempool.add_package(members, height=0)
+    assert not all(mempool.add_package(members, height=0))
     assert mempool.size == 0
 
 
-def test_a_package_left_only_its_parent_by_the_limit_is_removed_with_it() -> None:
-    """If only the child is evicted after the add, the parent goes too."""
+def test_a_package_keeps_the_members_the_trim_leaves() -> None:
+    """The trim takes the child's chunk alone, and the parent stays.
+
+    The parent pays 100 sat/vB and the child 3, below the 4 of `other`, and
+    the limit is a vbyte short of the room the package needs. As in Core's
+    `AcceptPackage`, only the child is refused (btclib-org/btclib-node#1846).
+    """
     mempool = Mempool(Logger(debug=True))
-    members = a_package(10**6, 10)
-    mempool.bytesize_limit = members[0][2]
-    assert not mempool.add_package(members, height=0)
-    assert mempool.size == 0
+    other = generate_random_transaction()
+    parent = generate_random_transaction()
+    child = generate_random_transaction(parent.id)
+    mempool.add_tx(other, 4 * other.vsize)
+    members = [
+        (parent, 100 * parent.vsize, parent.vsize, None),
+        (child, 3 * child.vsize, child.vsize, None),
+    ]
+    mempool.bytesize_limit = mempool.bytesize + parent.vsize + child.vsize - 1
+    assert mempool.add_package(members, height=0) == [True, False]
+    assert mempool.contains_tx(parent)
+    assert not mempool.contains_tx(child)
+    assert mempool.contains_tx(other)
 
 
 def test_a_staged_transaction_is_there_only_while_staged() -> None:
@@ -1558,16 +1572,17 @@ def test_eviction_bumps_the_rolling_minimum_by_the_modified_rate_it_evicts() -> 
 
 def test_a_package_is_judged_by_its_modified_feerate() -> None:
     """Deltas on its members lift it over an incumbent that pays more."""
-    mempool = Mempool(Logger(debug=True))
-    members = a_package(0, 0)
-    incumbent = generate_random_transaction()
-    mempool.add_tx(incumbent, 10**5)
-    mempool.bytesize_limit = mempool.bytesize + members[0][2] + members[1][2] - 1
-    assert not mempool.add_package(members, height=0)
-    mempool.prioritise(members[0][0].id, 10**6)
-    mempool.prioritise(members[1][0].id, 10**6)
-    assert mempool.add_package(members, height=0)
-    assert not mempool.contains_tx(incumbent)
+    for delta in (0, 10**6):
+        mempool = Mempool(Logger(debug=True))
+        members = a_package(0, 0)
+        incumbent = generate_random_transaction()
+        mempool.add_tx(incumbent, 10**5)
+        mempool.bytesize_limit = mempool.bytesize + members[0][2] + members[1][2] - 1
+        if delta:
+            mempool.prioritise(members[0][0].id, delta)
+            mempool.prioritise(members[1][0].id, delta)
+        assert all(mempool.add_package(members, height=0)) == bool(delta)
+        assert mempool.contains_tx(incumbent) != bool(delta)
 
 
 def test_a_package_is_ranked_against_the_modified_feerate_of_what_it_evicts() -> None:
@@ -1578,7 +1593,7 @@ def test_a_package_is_ranked_against_the_modified_feerate_of_what_it_evicts() ->
     mempool.add_tx(incumbent, 10**6)
     mempool.prioritise(incumbent.id, -(10**6))
     mempool.bytesize_limit = mempool.bytesize + members[0][2] + members[1][2] - 1
-    assert mempool.add_package(members, height=0)
+    assert all(mempool.add_package(members, height=0))
     assert not mempool.contains_tx(incumbent)
 
 
@@ -1603,11 +1618,11 @@ def test_a_refused_package_leaves_the_worst_entry_at_its_modified_rate() -> None
     mempool.add_tx(other, 100 * other.vsize)
     poor = a_package_at(10)
     mempool.bytesize_limit = mempool.bytesize
-    assert not mempool.add_package(poor, height=0)
+    assert not all(mempool.add_package(poor, height=0))
     assert mempool.contains_tx(worst)
     middling = a_package_at(60)
     mempool.bytesize_limit = mempool.bytesize + middling[0][2] + middling[1][2] - 1
-    assert mempool.add_package(middling, height=0)
+    assert all(mempool.add_package(middling, height=0))
     assert not mempool.contains_tx(worst)
     assert mempool.contains_tx(other)
 

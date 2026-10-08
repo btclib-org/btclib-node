@@ -530,8 +530,8 @@ class Mempool:
 
     def add_package(
         self, members: Sequence[tuple[Tx, int, int, int | None]], *, height: int
-    ) -> bool:
-        """Add a package's transactions, parents first, or none, and say which.
+    ) -> list[bool]:
+        """Add a package's transactions, parents first, and say which stayed.
 
         `members` are `(tx, fee, vsize, weight)` of the parents and the
         child paying for them, each already refused by none of
@@ -542,19 +542,15 @@ class Mempool:
         goes, which is the package where it pays less than what the
         mempool holds.
 
-        Where the trim takes a member, the rest of the package is removed
-        too.
+        Each member the trim leaves stays, and each it takes is gone, as
+        in Core's `AcceptPackage`, which refuses only those "mempool full".
+        The answer is one `bool` per member, in order.
         """
         for tx, member_fee, vsize, weight in members:
             self._insert(tx, member_fee, vsize, height, weight)
         self.graph.do_work(POST_CHANGE_COST)
         self._evict_to_limit()
-        wtxids = [tx.hash for tx, *_ in members]
-        if all(wtxid in self.transactions for wtxid in wtxids):
-            return True
-        for wtxid in wtxids:
-            self.remove_with_descendants(wtxid)
-        return False
+        return [tx.hash in self.transactions for tx, *_ in members]
 
     @contextmanager
     def staged(
