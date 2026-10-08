@@ -81,7 +81,7 @@ from btclib_node.rpc.errors import (
     type_errors,
 )
 from btclib_node.rpc.help import HELP_TEXT, answer_help
-from btclib_node.rpc.jsonrpc import JsonObject
+from btclib_node.rpc.jsonrpc import JsonObject, get_real
 from btclib_node.rpc.mining import (
     generate_block,
     generate_to_address,
@@ -3009,14 +3009,14 @@ def prioritise_transaction(node: Node, conn: RpcConnection, params: list[Any]) -
     """Answer `prioritisetransaction`: add a fee delta to a transaction.
 
     Core's own (`src/rpc/mining.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag), in its order: the argument types, `txid`, `fee_delta` as an
-    `int64`, then `dummy`. The deprecated `dummy`, a priority Core no longer
-    has, is read as a number and refused with `RPC_INVALID_PARAMETER`
-    unless it is null, omitted or zero. A transaction held with a dust
-    output is refused where the mempool requires standard transactions,
-    since one that pays a fee is not allowed to enter with it. The delta
-    is kept for a transaction not held, and applied once it is
-    (`Mempool.prioritise`). btclib-org/btclib-node#1502
+    v31.1 tag), in its order: the argument types, `txid`, `dummy` as a
+    double (`get_real`, which refuses `1e400`), `fee_delta` as an `int64`,
+    then `dummy` again: refused with `RPC_INVALID_PARAMETER` unless it is
+    null, omitted or zero. A transaction held with a dust output is
+    refused where the mempool requires standard transactions, since one
+    that pays a fee is not allowed to enter with it. The delta is kept for
+    a transaction not held, and applied once it is (`Mempool.prioritise`).
+    btclib-org/btclib-node#1502
     """
     if len(params) != len(arg_names["prioritisetransaction"]):
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["prioritisetransaction"])
@@ -3033,6 +3033,8 @@ def prioritise_transaction(node: Node, conn: RpcConnection, params: list[Any]) -
     if mismatches:
         raise type_errors(*mismatches)
     txid = parse_hash_v("txid", txid_param)
+    if dummy is not None:
+        get_real(dummy)
     amount = _integer(fee_delta, -_INT64_BOUND, _INT64_BOUND - 1)
     if dummy is not None and dummy != 0:
         raise RpcError(

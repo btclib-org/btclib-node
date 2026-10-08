@@ -31,7 +31,7 @@ from btclib_node.rpc.callbacks import (
 )
 from btclib_node.rpc.errors import RpcError
 from btclib_node.rpc.help import CATEGORY, HELP_TEXT
-from btclib_node.rpc.jsonrpc import transform_named_arguments
+from btclib_node.rpc.jsonrpc import decode, transform_named_arguments
 from tests import anyone_can_spend, anyone_can_spend_script_sig
 
 _CONN = cast("Any", None)
@@ -240,6 +240,25 @@ def test_a_dummy_that_is_not_zero_is_refused(dummy: float) -> None:
         "Priority is no longer supported, dummy argument to prioritisetransaction "
         "must be 0."
     )
+
+
+@pytest.mark.parametrize("dummy", ["1e400", "-1e400", "1" + "0" * 400])
+def test_a_dummy_no_double_holds_is_out_of_range(dummy: str) -> None:
+    """Core's `get_real`: `-1` and its message, before `fee_delta` is read."""
+    params = decode(f'["{_TXID}", {dummy}, 1.5]'.encode())
+    error = refused(params)
+    assert error.code == RPCErrorCode.MISC_ERROR
+    assert error.message == "JSON double out of range"
+
+
+@pytest.mark.parametrize(
+    "dummy", ["0e-400", "1e-400", "-1e-400", "0.0", "-0e999", "0e400", "0"]
+)
+def test_a_zero_dummy_is_taken_however_it_is_written(dummy: str) -> None:
+    """Zero is taken, and so is an underflow, which reads as zero."""
+    node = a_node()
+    params = decode(f'["{_TXID}", {dummy}, 5]'.encode())
+    assert prioritise_transaction(node, _CONN, params) is True
 
 
 def test_the_arguments_are_read_in_core_s_order() -> None:
