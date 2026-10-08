@@ -74,10 +74,11 @@ dependencies = [
     # `BitcoinCoreFetcher` (btclib-org/btclib-node#1181,
     # btclib-org/btclib-node#1508).
     #
-    # The floor is 2026.10.8: 2026.10.7, the first release carrying
-    # `infer_descriptor` and `Provider`, which `rpc/callbacks.py` and
-    # `rpc/utxo_set.py` import, quotes a private key in a refusal that
-    # `scantxoutset` answers with (GHSA-62jf-v327-86h5).
+    # The floor is 2026.10.8, the release fixing GHSA-62jf-v327-86h5:
+    # 2026.10.7 quotes a private key in a refusal that `scantxoutset`
+    # answers with.
+    # 2026.10.7 is the first release carrying `infer_descriptor` and
+    # `Provider`, which `rpc/callbacks.py` and `rpc/utxo_set.py` import.
     # 2026.10.4 is the first whose `parse` refuses a key of another
     # network, which `rpc/mining.py` relies on.
     "btclib-wallet>=2026.10.8",
