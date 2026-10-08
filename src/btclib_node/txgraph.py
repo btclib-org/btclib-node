@@ -16,8 +16,6 @@ Not ported:
 
 - the staging graph: the mempool stages a package's parent outside the
   graph (`Mempool.staged`);
-- `GetWorstMainChunk`, the chunk Core's eviction takes: eviction here
-  scores each transaction alone (btclib-org/btclib-node#1740);
 - queued changes: removals and dependencies are applied as they arrive,
   where Core queues them until a read. That changes the order a merged
   cluster's linearization starts from, so it changes the work spent
@@ -108,6 +106,8 @@ class _Cluster[R]:
         # the mining keys of an acceptable cluster, until anything they
         # read changes: its membership, dependencies, fees or linearization
         self.keys: dict[R, MiningKey] | None = None
+        # changes whenever the chunks can have, so a stale `_Worst` shows
+        self.version = 0
 
     @property
     def is_topological(self) -> bool:
@@ -116,6 +116,28 @@ class _Cluster[R]:
     @property
     def is_acceptable(self) -> bool:
         return self.quality >= Quality.ACCEPTABLE
+
+
+class _Worst[R]:
+    """A cluster's last chunk, as `TxGraph._worst` holds it.
+
+    `heapq` pops the smallest, so the order is reversed: the worst chunk
+    is the first out.
+    """
+
+    __slots__ = ("cluster", "key", "version")
+
+    def __init__(self, cluster: _Cluster[R], key: MiningKey) -> None:
+        self.cluster = cluster
+        self.key = key
+        self.version = cluster.version
+
+    def __lt__(self, other: _Worst[R]) -> bool:
+        return other.key < self.key
+
+    @property
+    def is_current(self) -> bool:
+        return self.cluster.setindex >= 0 and self.cluster.version == self.version
 
 
 class TxGraph[R: Hashable]:
@@ -137,6 +159,9 @@ class TxGraph[R: Hashable]:
         self._locator: dict[R, tuple[_Cluster[R], int]] = {}
         self._keys: dict[R, OrderKey] = {}
         self._queues: list[list[_Cluster[R]]] = [[] for _ in Quality]
+        # the clusters whose chunks changed since `worst_chunk` last read them
+        self._dirty: set[_Cluster[R]] = set()
+        self._worst: list[_Worst[R]] = []
 
     def __contains__(self, ref: object) -> bool:
         """Whether `ref` is in the graph."""
@@ -167,7 +192,13 @@ class TxGraph[R: Hashable]:
         cluster.setindex = len(queue)
         queue.append(cluster)
 
+    def _touch(self, cluster: _Cluster[R]) -> None:
+        cluster.keys = None
+        cluster.version += 1
+        self._dirty.add(cluster)
+
     def _delete(self, cluster: _Cluster[R]) -> None:
+        self._dirty.discard(cluster)
         queue = self._queues[cluster.quality]
         last = queue.pop()
         if last is not cluster:
@@ -189,6 +220,7 @@ class TxGraph[R: Hashable]:
         self._append(cluster, ref, feerate)
         self._keys[ref] = order_key
         self._set_quality(cluster, Quality.OPTIMAL)
+        self._touch(cluster)
 
     def add_dependency(self, parent: R, child: R) -> None:
         """Make `child` spend `parent`, merging their clusters.
@@ -208,8 +240,8 @@ class TxGraph[R: Hashable]:
         cluster, parent_pos = self._locator[parent]
         _, child_pos = self._locator[child]
         cluster.depgraph.add_dependencies(1 << parent_pos, child_pos)
-        cluster.keys = None
         self._set_quality(cluster, Quality.NEEDS_FIX)
+        self._touch(cluster)
 
     def _merge(self, into: _Cluster[R], other: _Cluster[R]) -> None:
         remap: dict[int, int] = {}
@@ -257,6 +289,7 @@ class TxGraph[R: Hashable]:
                 part.depgraph.add_dependencies(parents, remap[p])
             single = component & (component - 1) == 0
             self._set_quality(part, Quality.OPTIMAL if single else quality)
+            self._touch(part)
 
     def set_fee(self, ref: R, fee: int) -> None:
         """Change the fee of `ref`, Core's `SetTransactionFee`."""
@@ -264,7 +297,7 @@ class TxGraph[R: Hashable]:
         if cluster.depgraph.fees[pos] == fee:
             return
         cluster.depgraph.set_fee(pos, fee)
-        cluster.keys = None
+        self._touch(cluster)
         if cluster.depgraph.tx_count > 1 and cluster.is_acceptable:
             self._set_quality(cluster, Quality.NEEDS_RELINEARIZE)
 
@@ -287,7 +320,7 @@ class TxGraph[R: Hashable]:
         )
         post_linearize(cluster.depgraph, lin)
         cluster.linearization = lin
-        cluster.keys = None
+        self._touch(cluster)
         improved = True
         if optimal:
             self._set_quality(cluster, Quality.OPTIMAL)
@@ -401,14 +434,47 @@ class TxGraph[R: Hashable]:
             keys[ref] = cluster.keys[ref]
         return keys
 
+    def _make_all_acceptable(self) -> None:
+        for quality in (Quality.NEEDS_FIX, Quality.NEEDS_RELINEARIZE):
+            while self._queues[quality]:
+                self._make_acceptable(self._queues[quality][-1])
+
+    def worst_chunk(self) -> Chunk[R] | None:
+        """Return the last chunk in the order a block takes them.
+
+        Core's `GetWorstMainChunk`, `None` for an empty graph: the chunk
+        an eviction takes, its transactions in linearization order.
+        Being the last chunk of its cluster, none of them is a parent of
+        a transaction left behind. Every cluster is made acceptable
+        first, as Core does.
+
+        A heap holds each cluster's last chunk, and a cluster changed
+        since the last call gets a fresh entry, so this costs what
+        changed rather than the size of the graph.
+        """
+        self._make_all_acceptable()
+        for cluster in self._dirty:
+            last = self._chunks(cluster)[-1]
+            key = self._order_keys(cluster)[last.refs[-1]]
+            heapq.heappush(self._worst, _Worst(cluster, key))
+        self._dirty.clear()
+        clusters = sum(len(queue) for queue in self._queues)
+        if len(self._worst) > 2 * clusters:
+            self._worst = [entry for entry in self._worst if entry.is_current]
+            heapq.heapify(self._worst)
+        while self._worst:
+            entry = self._worst[0]
+            if entry.is_current:
+                return self._chunks(entry.cluster)[-1]
+            heapq.heappop(self._worst)
+        return None
+
     def _main_chunks(self) -> list[tuple[_Cluster[R], Chunk[R]]]:
         """Return every chunk with its cluster, in the order a block takes them.
 
         Every cluster is made acceptable first, as `MakeAllAcceptable` does.
         """
-        for quality in (Quality.NEEDS_FIX, Quality.NEEDS_RELINEARIZE):
-            while self._queues[quality]:
-                self._make_acceptable(self._queues[quality][-1])
+        self._make_all_acceptable()
         keyed: list[tuple[MiningKey, _Cluster[R], Chunk[R]]] = []
         for quality in (Quality.ACCEPTABLE, Quality.OPTIMAL):
             for cluster in self._queues[quality]:

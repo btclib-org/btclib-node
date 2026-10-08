@@ -850,11 +850,6 @@ def barely_paying(spend: Tx, vsize: int) -> Tx:
     return paying(free(spend), vsize)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="eviction scores the parent alone, not its chunk: "
-    "btclib-org/btclib-node#1740",
-)
 def test_a_child_pays_for_a_parent_a_full_mempool_would_have_refused(
     node: Node,
 ) -> None:
@@ -874,7 +869,7 @@ def test_a_child_pays_for_a_parent_a_full_mempool_would_have_refused(
 
 
 def test_a_free_parent_and_its_child_make_room_in_a_full_mempool(node: Node) -> None:
-    """`add_package` scores the package whole, and evicts what pays less."""
+    """The package is scored as one chunk, and evicts what pays less."""
     held_spend, parent_spend = funded_spends(node, 2)
     held = hold(node, padded(held_spend, 400))
     parent = free(parent_spend)
@@ -897,12 +892,6 @@ def test_a_parent_taken_alone_is_still_there_for_its_child(node: Node) -> None:
     assert result(answer, child).get("error") != "bad-txns-inputs-missingorspent"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="eviction scores the parent alone, not its chunk, and so does "
-    "`add_package`'s room-making, which would have to score chunks too: "
-    "btclib-org/btclib-node#1740",
-)
 def test_a_parent_taken_alone_is_not_evicted_for_its_package(node: Node) -> None:
     """The room a package makes is made once every transaction is in."""
     held_spend, alone_spend, free_spend = funded_spends(node, 3)

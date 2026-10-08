@@ -4196,8 +4196,8 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
     tip_height = len(node.chainstate.block_index.active_chain) - 1
     if not node.mempool.add_tx(tx, fee, vsize, height=tip_height, weight=weight):
         # Not kept: `Mempool._evict_to_limit` ran
-        # and took this transaction right back out for being the worst
-        # one held once `Mempool.bytesize_limit` was restored -- exactly
+        # and took this transaction right back out when the trim reached
+        # its chunk, once `Mempool.bytesize_limit` was restored -- exactly
         # the case `_MEMPOOL_FULL_REASON`'s own comment names, Core's
         # `TX_RECONSIDERABLE` "mempool full". btclib-org/btclib-node#294
         raise RpcError(RPCErrorCode.VERIFY_REJECTED, _MEMPOOL_FULL_REASON)

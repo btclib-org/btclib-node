@@ -7,7 +7,6 @@
 import hashlib
 import secrets
 import time
-from fractions import Fraction
 from typing import Any, override
 
 import pytest
@@ -88,23 +87,20 @@ def test_workflow() -> None:
     prev_size = mempool.size
     prev_bytesize = mempool.bytesize
     # Every entry so far pays no fee, so eviction (`Mempool._evict_to_limit`)
-    # breaks the tie toward insertion order -- `dict.items()`'s own order and
-    # `min`'s own stability -- and takes out the oldest of the 100, `txs[0]`,
-    # to make room for the one just added: size and bytesize both come back
-    # to what they were, not because the add refused (the old `is_full()`
-    # wall this replaces) but because eviction undid exactly what the add
-    # did. btclib-org/btclib-node#294
+    # takes one of the 101, whichever Core's order puts last: size and
+    # bytesize both come back to what they were, not because the add
+    # refused (the old `is_full()` wall this replaces) but because eviction
+    # undid what the add did. btclib-org/btclib-node#294
     mempool.bytesize_limit = mempool.bytesize
     new_tx = generate_random_transaction()
     mempool.add_tx(new_tx)
     assert prev_size == mempool.size
     assert prev_bytesize == mempool.bytesize
-    assert not mempool.contains_tx(txs[0])
-    assert mempool.contains_tx(new_tx)
+    assert sum(mempool.contains_tx(t) for t in [*txs, new_tx]) == prev_size
 
     missing_tx = generate_random_transaction()
     mempool.bytesize_limit = 1000**2
-    held = [t.id for t in txs[1:]] + [new_tx.id]
+    held = [t.id for t in [*txs, new_tx] if mempool.contains_tx(t)]
     assert mempool.get_missing([*held, missing_tx.id]) == [missing_tx.id]
 
     assert mempool.get_tx(b"\x00" * 32) is None
@@ -288,18 +284,18 @@ def test_eviction_takes_the_worst_feerate_and_keeps_the_rest() -> None:
     assert mempool.contains_tx(rich)
 
 
-def test_eviction_of_the_worst_parent_takes_its_descendant_with_it() -> None:
-    """Evicting the worst-feerate parent evicts the child that spends it too."""
+def test_eviction_takes_a_parent_with_the_child_paying_for_it() -> None:
+    """The parent is scored with its child, and goes only with it."""
     # verify_mempool_acceptance (main.py) admits a child whose parent is
     # only in the mempool, so evicting the parent alone would leave the
-    # child's own prevout resolving nowhere -- _descendants is what keeps
-    # this from happening. btclib-org/btclib-node#294
+    # child's own prevout resolving nowhere. A chunk is the end of its
+    # cluster's linearization, so it never does. btclib-org/btclib-node#294
     mempool = Mempool(Logger(debug=True))
     parent = generate_random_transaction()
     child = generate_random_transaction(parent.id)
     other = generate_random_transaction()
     mempool.add_tx(parent, 0)
-    mempool.add_tx(child, 0)
+    mempool.add_tx(child, 1_000)
     mempool.bytesize_limit = mempool.bytesize + other.vsize - 1
     assert mempool.add_tx(other, 10_000) is True
     assert not mempool.contains_tx(parent)
@@ -307,12 +303,35 @@ def test_eviction_of_the_worst_parent_takes_its_descendant_with_it() -> None:
     assert mempool.contains_tx(other)
 
 
+def test_a_parent_paid_for_by_its_child_outlasts_an_incumbent_paying_less() -> None:
+    """A free parent and its child rank together, as a chunk (#1740).
+
+    Scored alone the parent is the worst there is, and a newcomer would
+    evict it ahead of incumbents paying less than the pair.
+    """
+    mempool = Mempool(Logger(debug=True))
+    parent = generate_random_transaction()
+    child = generate_random_transaction(parent.id)
+    incumbents = [generate_random_transaction() for _ in range(3)]
+    newcomer = generate_random_transaction()
+    for incumbent in incumbents:
+        mempool.add_tx(incumbent, 2 * incumbent.vsize)
+    mempool.add_tx(parent, 0)
+    mempool.add_tx(child, 50 * (parent.vsize + child.vsize))
+    mempool.bytesize_limit = mempool.bytesize
+    assert mempool.add_tx(newcomer, 3 * newcomer.vsize)
+    assert mempool.contains_tx(parent)
+    assert mempool.contains_tx(child)
+    assert mempool.contains_tx(newcomer)
+    assert sum(mempool.contains_tx(t) for t in incumbents) == 2
+
+
 def test_eviction_of_a_diamond_shaped_package_removes_every_descendant_once() -> None:
-    """Evicting a parent takes a grandchild reachable through two children too.
+    """Evicting a chunk takes a grandchild reachable through two children too.
 
     A parent with two children and a grandchild spending both is one
-    package, and eviction of the parent takes all four out, `grandchild`
-    included -- reached from `parent` through either child, never twice.
+    chunk where the grandchild pays for the others, and eviction takes
+    all four out.
     """
     # btclib-org/btclib-node#441: the spend index `_descendants` now
     # walks, `spent_by`, has one entry per (parent txid, spending wtxid)
@@ -327,8 +346,10 @@ def test_eviction_of_a_diamond_shaped_package_removes_every_descendant_once() ->
     child_b = a_spend_of([(parent.id, 1)])
     grandchild = a_transaction_spending(child_a.id, child_b.id)
     keeper = generate_random_transaction()
-    for tx in (parent, child_a, child_b, grandchild):
+    for tx in (parent, child_a, child_b):
         assert mempool.add_tx(tx, 0)
+    # the grandchild pays for the others, so the four are one chunk
+    assert mempool.add_tx(grandchild, 1_000)
     mempool.bytesize_limit = mempool.bytesize + keeper.vsize - 1
     assert mempool.add_tx(keeper, 10_000) is True
     assert not mempool.contains_tx(parent)
@@ -404,7 +425,7 @@ def test_a_removed_child_does_not_reappear_in_a_later_eviction_of_its_parent() -
     mempool.remove_tx(stale_child)  # e.g. already mined, unrelated to eviction
 
     fresh_child = generate_random_transaction(parent.id)
-    mempool.add_tx(fresh_child, 0)
+    mempool.add_tx(fresh_child, 1_000)
     keeper = generate_random_transaction()
     mempool.bytesize_limit = mempool.bytesize + keeper.vsize - 1
     assert mempool.add_tx(keeper, 10_000) is True
@@ -412,114 +433,6 @@ def test_a_removed_child_does_not_reappear_in_a_later_eviction_of_its_parent() -
     assert not mempool.contains_tx(fresh_child)
     assert mempool.contains_tx(keeper)
     assert mempool.size == 1
-
-
-def test_a_stale_heap_entry_left_by_an_evicted_descendant_is_skipped() -> None:
-    """`_pop_worst_wtxid` discards a descendant's own leftover heap entry.
-
-    Evicting a parent's package leaves the descendant's own
-    `_feerate_heap` entry unconsumed -- `_pop_worst_wtxid` only pops the
-    package root off the heap itself, `_evict_to_limit`'s own loop
-    removing every other package member through `_pop` alone. A later
-    eviction round has to reach past that stale entry, not raise on it
-    or evict the same wtxid a second time: without the current-entry
-    check this test guards, `_descendants` would be asked for the
-    descendants of a wtxid `self.transactions` no longer holds and raise
-    `KeyError`.
-    btclib-org/btclib-node#457
-    """
-    mempool = Mempool(Logger(debug=True))
-    parent = generate_random_transaction()
-    child = generate_random_transaction(parent.id)
-    mempool.add_tx(parent, 0)
-    mempool.add_tx(child, 0)
-    other = generate_random_transaction()
-    mempool.bytesize_limit = mempool.bytesize + other.vsize - 1
-    assert mempool.add_tx(other, 10_000) is True
-    assert not mempool.contains_tx(parent)
-    assert not mempool.contains_tx(child)
-    # `child`'s own heap entry is still in `_feerate_heap`, unconsumed and
-    # now stale -- feerate 0, the same as `cheap` below, but pushed
-    # earlier and so ordered first by the heap's own insertion-order
-    # tiebreak, which is exactly what makes the next eviction round
-    # discard it before finding `cheap` as the genuine worst entry.
-    cheap = generate_random_transaction()
-    mempool.add_tx(cheap, 0)
-    rich = generate_random_transaction()
-    mempool.bytesize_limit = mempool.bytesize + rich.vsize - 1  # room for one more
-    assert mempool.add_tx(rich, 10_000) is True
-    assert not mempool.contains_tx(cheap)
-    assert mempool.contains_tx(other)
-    assert mempool.contains_tx(rich)
-
-
-def test_a_wtxid_that_left_and_came_back_ties_as_the_newest_entry() -> None:
-    """A re-added wtxid's leftover heap entry does not sort as its old self.
-
-    `b` (fee 50), `a` (fee 100), remove `a`, `c` (fee 100, tying `a`'s
-    own feerate), re-add `a` (fee 100): `a`'s first-spell heap entry is
-    still physically in `_feerate_heap`, unconsumed by the `remove_tx`
-    that dropped it, and carries `a`'s *original* insertion-order
-    tiebreak -- lower than `c`'s, since `a` was first added before `c`
-    ever was. Evicting worst-first twice has to remove `b`, then `c`,
-    the same as a plain dict tied on `min`'s own stability would (a
-    delete followed by a fresh insert moves a key to the end, past
-    every key already there when it was reinserted) -- not `b` then
-    `a`, which is what accepting that first-spell entry on membership in
-    `transactions` alone gives, `a` still being held under its second
-    spell. This is what a review of the first round of #457 caught by
-    running this exact sequence against the pre-heap `Mempool`.
-    """
-    mempool = Mempool(Logger(debug=True))
-    b = generate_random_transaction()
-    a = generate_random_transaction()
-    c = generate_random_transaction()
-    mempool.add_tx(b, 50)
-    mempool.add_tx(a, 100)
-    mempool.remove_tx(a)
-    mempool.add_tx(c, 100)
-    mempool.add_tx(a, 100)  # a's second spell
-
-    mempool.bytesize_limit = mempool.bytesize - 1
-    mempool._evict_to_limit()
-    assert not mempool.contains_tx(b)
-    assert mempool.contains_tx(a)
-    assert mempool.contains_tx(c)
-
-    mempool.bytesize_limit = mempool.bytesize - 1
-    mempool._evict_to_limit()
-    assert not mempool.contains_tx(c)
-    assert mempool.contains_tx(a)
-
-
-def test_the_feerate_heap_is_rebuilt_once_its_garbage_outgrows_its_entries() -> None:
-    """`_rebuild_feerate_heap` fires once stale entries exceed live ones.
-
-    Three transactions, none ever evicted: two plain `remove_tx` calls
-    each leave that wtxid's own heap entry behind, stale, since neither
-    goes through `_pop_worst_wtxid`. `_pop`'s own check
-    (`len(self._feerate_heap) > 2 * self.size`) fires on the second
-    removal, once garbage outnumbers what is still held two to one, and
-    `_feerate_heap` comes back holding exactly one entry per surviving
-    transaction rather than the three pushed since the mempool started.
-    btclib-org/btclib-node#457
-    """
-    mempool = Mempool(Logger(debug=True))
-    first = generate_random_transaction()
-    second = generate_random_transaction()
-    third = generate_random_transaction()
-    mempool.add_tx(first, 0)
-    mempool.add_tx(second, 0)
-    mempool.add_tx(third, 0)
-    assert len(mempool._feerate_heap) == 3
-
-    mempool.remove_tx(first)
-    assert len(mempool._feerate_heap) == 3  # 3 > 2*2 is false: no rebuild yet
-
-    mempool.remove_tx(second)
-    assert len(mempool._feerate_heap) == 1  # 3 > 2*1 was true: rebuilt
-    assert mempool.size == 1
-    assert mempool.contains_tx(third)
 
 
 def test_eviction_runs_multiple_rounds_when_one_is_not_enough() -> None:
@@ -554,29 +467,28 @@ def test_eviction_raises_the_rolling_minimum_above_what_it_evicted() -> None:
 
 def test_eviction_bumps_the_rolling_minimum_by_the_whole_package_it_evicts() -> None:
     """A CPFP-evicted package bumps the rolling minimum by its combined rate."""
-    # Core's own TrimToSize (src/txmempool.cpp:917-925,
-    # at bitcoin/bitcoin@58a7869f86) bumps the rolling minimum from the
-    # removed chunk's own aggregate feerate, not from the worst entry's
-    # own rate alone: a low-fee parent evicted together with a child
-    # overpaying for it (CPFP) bumps the rolling minimum by their
-    # combined rate, higher than the parent's own individual rate --
-    # which is what the parent alone paid nothing would otherwise give,
+    # Core's own TrimToSize (src/txmempool.cpp, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) bumps the rolling
+    # minimum from the removed chunk's own aggregate feerate, not from
+    # the worst entry's own rate alone: a low-fee parent evicted with a
+    # child overpaying for it (CPFP) bumps it by their combined rate, not
+    # by the parent's own, which paid nothing and gives
     # `test_eviction_raises_the_rolling_minimum_above_what_it_evicted`'s
-    # own 100.
+    # 100.
     mempool = Mempool(Logger(debug=True))
     parent = generate_random_transaction()
     child = generate_random_transaction(parent.id)
     keeper = generate_random_transaction()
     mempool.add_tx(parent, 0)
     mempool.add_tx(child, 100_000)
+    weight = mempool.weights[parent.hash] + mempool.weights[child.hash]
     mempool.bytesize_limit = mempool.bytesize + keeper.vsize - 1
-    mempool.add_tx(keeper, 1)
+    mempool.add_tx(keeper, 10**6)
     assert not mempool.contains_tx(parent)
     assert not mempool.contains_tx(child)
+    assert mempool.contains_tx(keeper)
 
-    package_rate = Fraction(100_000, parent.vsize + child.vsize) * 1000
-    expected = float(package_rate + 100)
-    assert mempool._rolling_min_fee_rate == expected
+    assert mempool._rolling_min_fee_rate == 100_000 * 1000 // ((weight + 3) // 4) + 100
     assert mempool._rolling_min_fee_rate != 100  # the parent's own rate alone
 
 
@@ -1072,28 +984,33 @@ def test_an_entry_is_counted_and_priced_by_the_vsize_it_came_with() -> None:
     assert mempool.vsizes == {}
 
 
-@pytest.mark.parametrize("heap", ["pushed", "rebuilt"])
-def test_eviction_ranks_by_the_vsize_an_entry_came_with(heap: str) -> None:
+def test_eviction_ranks_by_the_vsize_an_entry_came_with() -> None:
     """Two entries paying alike: the one priced larger is the worse rate.
 
-    Whether the heap is the one `add_tx` pushed to or the one
-    `_rebuild_feerate_heap` made. The rolling minimum it leaves is the
-    evicted fee over that size (btclib-org/btclib-node#1357).
+    The rolling minimum it leaves is the evicted fee over that size
+    (btclib-org/btclib-node#1357).
     """
     mempool = Mempool(Logger(debug=True))
     dense, plain, rich = (generate_random_transaction() for _ in range(3))
-    # the older of two equal rates goes first, so a size misread would
-    # evict `plain`
     mempool.add_tx(plain, 1_000)
     mempool.add_tx(dense, 1_000, 10 * dense.vsize)
-    if heap == "rebuilt":
-        mempool._rebuild_feerate_heap()
     mempool.bytesize_limit = mempool.bytesize + rich.vsize - 1
     mempool.add_tx(rich, 100_000)
     assert not mempool.contains_tx(dense)
     assert mempool.contains_tx(plain)
-    evicted_rate = Fraction(1_000, 10 * dense.vsize) * 1000
-    assert mempool._rolling_min_fee_rate == float(evicted_rate + 100)
+    assert mempool._rolling_min_fee_rate == 1_000 * 1000 // (10 * dense.vsize) + 100
+
+
+def test_the_rolling_minimum_rounds_a_chunk_weight_up_to_a_vsize() -> None:
+    """Core's `ToFeePerVSize` rounds the weight up to a vsize."""
+    mempool = Mempool(Logger(debug=True))
+    victim, keeper = generate_random_transaction(), generate_random_transaction()
+    vsize = victim.vsize
+    mempool.add_tx(victim, 1_000, vsize, 4 * vsize - 3)
+    mempool.bytesize_limit = mempool.bytesize + keeper.vsize - 1
+    mempool.add_tx(keeper, 10**6)
+    assert not mempool.contains_tx(victim)
+    assert mempool._rolling_min_fee_rate == 1_000 * 1000 // vsize + 100
 
 
 def test_add_tx_records_entry_time_and_height() -> None:
@@ -1587,7 +1504,7 @@ def test_the_feerate_it_evicts_by_includes_the_delta_of_a_new_entry() -> None:
 
 
 def test_a_delta_set_on_a_held_transaction_changes_who_is_evicted() -> None:
-    """The heap holds a fresh entry at the new rate, not the one it pushed."""
+    """The rank is the modified rate, not the one the entry came in at."""
     mempool = Mempool(Logger(debug=True))
     worse, better, keeper = (generate_random_transaction() for _ in range(3))
     mempool.add_tx(worse, 100)
@@ -1600,11 +1517,7 @@ def test_a_delta_set_on_a_held_transaction_changes_who_is_evicted() -> None:
 
 
 def test_only_the_last_delta_of_a_held_transaction_ranks_it() -> None:
-    """An entry pushed for an earlier delta no longer stands for the wtxid.
-
-    No sequence event lies between the two calls, so they need pushes
-    of their own to be told apart.
-    """
+    """An earlier delta no longer ranks the wtxid."""
     mempool = Mempool(Logger(debug=True))
     raised, other, keeper = (generate_random_transaction() for _ in range(3))
     mempool.add_tx(raised, 5_000)
@@ -1630,42 +1543,17 @@ def test_a_negative_delta_makes_a_well_paying_transaction_the_one_evicted() -> N
     assert mempool.contains_tx(plain)
 
 
-def test_a_rebuilt_heap_ranks_by_the_modified_feerate() -> None:
-    """`_rebuild_feerate_heap` is what bounds the heap, and keeps the delta."""
-    mempool = Mempool(Logger(debug=True))
-    worse, better, keeper = (generate_random_transaction() for _ in range(3))
-    mempool.add_tx(worse, 100)
-    mempool.add_tx(better, 5_000)
-    mempool.prioritise(worse.id, 10_000)
-    mempool._rebuild_feerate_heap()
-    mempool.bytesize_limit = mempool.bytesize + keeper.vsize - 1
-    assert mempool.add_tx(keeper, 20_000)
-    assert mempool.contains_tx(worse)
-    assert not mempool.contains_tx(better)
-
-
-def test_prioritising_again_and_again_does_not_grow_the_heap_without_bound() -> None:
-    """Each call leaves a stale entry; the heap is rebuilt past twice `size`."""
-    mempool = Mempool(Logger(debug=True))
-    tx = generate_random_transaction()
-    mempool.add_tx(tx, 1_000)
-    for _ in range(50):
-        mempool.prioritise(tx.id, 1)
-    assert len(mempool._feerate_heap) <= 2 * mempool.size
-    assert mempool.delta(tx.id) == 50
-
-
 def test_eviction_bumps_the_rolling_minimum_by_the_modified_rate_it_evicts() -> None:
     """Core's `removed` is the chunk's modified feerate."""
     mempool = Mempool(Logger(debug=True))
     victim, keeper = generate_random_transaction(), generate_random_transaction()
     mempool.add_tx(victim, 0)
     mempool.prioritise(victim.id, 7_000)
+    weight = mempool.weights[victim.hash]
     mempool.bytesize_limit = mempool.bytesize + keeper.vsize - 1
     mempool.add_tx(keeper, 10**6)
     assert not mempool.contains_tx(victim)
-    expected = Fraction(7_000, victim.vsize) * 1000 + 100
-    assert mempool._rolling_min_fee_rate == float(expected)
+    assert mempool._rolling_min_fee_rate == 7_000 * 1000 // ((weight + 3) // 4) + 100
 
 
 def test_a_package_is_judged_by_its_modified_feerate() -> None:
@@ -1702,7 +1590,7 @@ def a_package_at(rate: int) -> list[tuple[Tx, int, int, int | None]]:
 
 
 def test_a_refused_package_leaves_the_worst_entry_at_its_modified_rate() -> None:
-    """The entry put back after a refusal is not the base-rate one.
+    """A package is held against the modified rate of what it would evict.
 
     `worst` paid 200 sat/vB and is worth 50 with its delta, `other` pays
     100: a package at 10 is refused, and one at 60 still evicts `worst`

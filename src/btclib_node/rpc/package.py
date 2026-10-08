@@ -266,9 +266,6 @@ def _accept(node: Node, call: _Call) -> tuple[str, dict[bytes, Outcome]]:
         message = "transaction failed"
     elif together:
         message = _accept_together(node, together, call.max_feerate, outcomes)
-    # A package whose parent's own feerate is the lowest is evicted whole
-    # here, where Core keeps it by its chunk feerate:
-    # btclib-org/btclib-node#1740
     mempool.trim()
     for tx in txs:
         if outcomes[tx.hash].error is None and tx.id not in mempool.txid_index:

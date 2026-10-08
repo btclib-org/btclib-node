@@ -1321,7 +1321,7 @@ def settle_tx(node: Node, check: TxCheck, refusal: Exception | None) -> None:
         raise refusal
     # `add_tx`'s own return value is the gate: a silent no-op for one
     # `Mempool._evict_to_limit` (btclib-org/btclib-node#294) takes right
-    # back out for being the worst transaction held once its own add put
+    # back out when the trim reaches its chunk, once its own add put
     # the mempool past `bytesize_limit` -- and a transaction this node
     # declined to keep is not one to tell every other peer about, a peer
     # that then asks for it getting `notfound` for its trouble.
