@@ -152,10 +152,8 @@ def _parse(node: Node, text: str) -> list[_Source]:
     return sources
 
 
-def _scan_object(
-    node: Node, scan_object: object
-) -> tuple[list[_Source], int, int, str]:
-    """Return a scan object's descriptors, expansion indexes and text.
+def _scan_object(node: Node, scan_object: object) -> tuple[list[_Source], int, int]:
+    """Return a scan object's descriptors and expansion indexes.
 
     Core's `EvalDescriptorStringOrObject`.
     """
@@ -186,7 +184,7 @@ def _scan_object(
     sources = _parse(node, text)
     if not sources[0].descriptor.is_ranged:
         low = high = 0
-    return sources, low, high, text
+    return sources, low, high
 
 
 def scan_tx_out_set(
@@ -312,7 +310,7 @@ def _expand(
     providers: list[Provider] = []
     keys = 0
     for scan_object in scan_objects:
-        sources, low, high, text = _scan_object(node, scan_object)
+        sources, low, high = _scan_object(node, scan_object)
         merged = _Merged(node)
         for index in range(low, high + 1):
             for source in sources:
@@ -320,9 +318,15 @@ def _expand(
                     scripts = source.descriptor.script_pub_keys(index, source.prv_keys)
                     provider = source.descriptor.provider(index, source.prv_keys)
                 except BTClibException as err:
+                    # Core's rpc/util.cpp:1370 (bitcoin/bitcoin@db0bde16b9)
+                    # quotes the descriptor. This tree departs on purpose: the
+                    # descriptor may hold private keys (SECURITY.md, "Where
+                    # this node departs from Bitcoin Core"). Core's
+                    # rpc/mining.cpp:229 and rpc/output_script.cpp:241 quote
+                    # nothing.
                     raise RpcError(
                         RPCErrorCode.INVALID_ADDRESS_OR_KEY,
-                        f"Cannot derive script without private keys: '{text}'",
+                        "Cannot derive script without private keys",
                     ) from err
                 yield from merged.add(provider)
                 for script in scripts:

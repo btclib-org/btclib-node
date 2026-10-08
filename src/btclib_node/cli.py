@@ -980,8 +980,8 @@ def _parse_parameters(
     bitcoin/bitcoin@9be056a8a7): a lone `-` or the first argument not
     starting with `-` ends the options, and `--name` is `-name`. Raises
     `ValueError` under `ParseArgs`'s own prefix on an unknown option or
-    one naming a section -- "Invalid parameter", the argument quoted
-    whole -- on a negation the option forbids, and on `-includeconf`
+    one naming a section -- "Invalid parameter", the argument quoted by
+    `_quoted_line` -- on a negation the option forbids, and on `-includeconf`
     not negated. The second value is `ParseArgs`'s own "unexpected
     token", the first argument anywhere in `argv` not starting with `-`,
     which `build_config` refuses once the file is read.
@@ -998,7 +998,7 @@ def _parse_parameters(
         info = _interpret_key(key[1:])
         option = _OPTIONS.get(info.name)
         if option is None or info.section:
-            err_msg = f"{_PARSE_ERROR}Invalid parameter {arg}"
+            err_msg = f"{_PARSE_ERROR}Invalid parameter {_quoted_line(arg)}"
             raise ValueError(err_msg)
         try:
             value = _interpret_value(info, text if equals else None, option, warnings)
@@ -1017,6 +1017,26 @@ def _parse_parameters(
         raise ValueError(err_msg)
     token = next((arg for arg in argv if not arg.startswith("-")), None)
     return options, token
+
+
+def _quoted_line(line: str) -> str:
+    """Return `line` for a parse error, cut after a sensitive name.
+
+    Core's `GetConfigOptions` (`src/common/config.cpp`) and
+    `ParseParameters` (`src/common/args.cpp`) quote the whole line or
+    argument. This tree departs on purpose: it may hold a password, and the
+    refusal reaches stderr and logs (SECURITY.md, "Where this node departs
+    from Bitcoin Core"). A line holding the name of a `sensitive` option
+    (`rpcauth`, `rpcpassword`, `rpcuser`) is quoted up to the first such
+    name, wherever it sits: after a `-`, a section prefix or `no`, or after
+    text that is none of these.
+    """
+    ends = [
+        line.find(name) + len(name)
+        for name, option in _OPTIONS.items()
+        if option.sensitive and name in line
+    ]
+    return line[: min(ends)] if ends else line
 
 
 def _config_options(
@@ -1054,16 +1074,17 @@ def _config_options(
             continue
         if line[0] == "-":
             err_msg = (
-                f"parse error on line {lineno}: {line}, options in "
+                f"parse error on line {lineno}: {_quoted_line(line)}, options in "
                 "configuration file must be specified without leading -"
             )
             raise ValueError(err_msg)
         if "=" not in line:
-            err_msg = f"parse error on line {lineno}: {line}"
+            shown = _quoted_line(line)
+            err_msg = f"parse error on line {lineno}: {shown}"
             if line.startswith("no"):
                 err_msg += (
                     ", if you intended to specify a negated option, use "
-                    f"{line}=1 instead"
+                    f"{shown}=1 instead"
                 )
             raise ValueError(err_msg)
         key, _, value = line.partition("=")

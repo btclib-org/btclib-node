@@ -173,6 +173,91 @@ def test_parse_conf_text_refuses_a_line_in_core_s_words(
         cli._parse_conf_text(f"regtest=1\n{line}\n", warnings=[])
 
 
+@pytest.mark.parametrize(
+    ("line", "refusal"),
+    [
+        pytest.param(
+            "-rpcpassword=hunter2",
+            "parse error on line 2: -rpcpassword, options in configuration file "
+            "must be specified without leading -",
+            id="leading dash",
+        ),
+        pytest.param(
+            "rpcpasswordhunter2",
+            "parse error on line 2: rpcpassword",
+            id="no equals sign",
+        ),
+        pytest.param(
+            "norpcpassword hunter2",
+            "parse error on line 2: norpcpassword, if you intended to specify a "
+            "negated option, use norpcpassword=1 instead",
+            id="negated",
+        ),
+        pytest.param(
+            "-norpcuser = hunter2",
+            "parse error on line 2: -norpcuser, options in configuration file "
+            "must be specified without leading -",
+            id="negated user",
+        ),
+        pytest.param(
+            "rpcauthhunter2",
+            "parse error on line 2: rpcauth",
+            id="rpcauth",
+        ),
+        pytest.param(
+            "-main.rpcpassword=hunter2",
+            "parse error on line 2: -main.rpcpassword, options in configuration "
+            "file must be specified without leading -",
+            id="section and dash",
+        ),
+        pytest.param(
+            "regtest.rpcauthhunter2",
+            "parse error on line 2: regtest.rpcauth",
+            id="section",
+        ),
+        pytest.param(
+            "test.norpcuser hunter2",
+            "parse error on line 2: test.norpcuser",
+            id="section and negated",
+        ),
+        pytest.param(
+            "foo.rpcpassword hunter2",
+            "parse error on line 2: foo.rpcpassword",
+            id="unknown section",
+        ),
+        pytest.param(
+            "-foo.rpcpassword=hunter2",
+            "parse error on line 2: -foo.rpcpassword, options in configuration "
+            "file must be specified without leading -",
+            id="unknown section and dash",
+        ),
+        pytest.param(
+            "testnet3.rpcauth hunter2",
+            "parse error on line 2: testnet3.rpcauth",
+            id="old section name",
+        ),
+        pytest.param(
+            "mainnet.rpcpasswordhunter2",
+            "parse error on line 2: mainnet.rpcpassword",
+            id="made-up section",
+        ),
+        pytest.param(
+            "- rpcpassword=hunter2",
+            "parse error on line 2: - rpcpassword, options in configuration "
+            "file must be specified without leading -",
+            id="dash and space",
+        ),
+    ],
+)
+def test_parse_conf_text_leaves_a_sensitive_value_out_of_a_refusal(
+    line: str, refusal: str
+) -> None:
+    """Core quotes the whole line; this tree quotes it up to the option name."""
+    with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$") as caught:
+        cli._parse_conf_text(f"regtest=1\n{line}\n", warnings=[])
+    assert "hunter2" not in str(caught.value)
+
+
 def test_parse_conf_text_ends_a_line_at_a_newline_alone() -> None:
     """ISS 1267: `std::getline`'s lines, so a form feed ends none.
 
@@ -642,6 +727,23 @@ def test_parse_parameters_refuses_as_core_does(argv: list[str], message: str) ->
     full = f"Error parsing command line arguments: {message}"
     with pytest.raises(ValueError, match=f"^{re.escape(full)}$"):
         cli._parse_parameters(argv, [])
+
+
+@pytest.mark.parametrize(
+    ("arg", "message"),
+    [
+        ("-main.rpcpassword=hunter2", "Invalid parameter -main.rpcpassword"),
+        ("-foo.rpcauth=hunter2", "Invalid parameter -foo.rpcauth"),
+    ],
+)
+def test_parse_parameters_leaves_a_sensitive_value_out_of_a_refusal(
+    arg: str, message: str
+) -> None:
+    """Core quotes the whole argument; this tree stops at the option name."""
+    full = f"Error parsing command line arguments: {message}"
+    with pytest.raises(ValueError, match=f"^{re.escape(full)}$") as caught:
+        cli._parse_parameters([arg], [])
+    assert "hunter2" not in str(caught.value)
 
 
 @pytest.mark.parametrize(

@@ -172,6 +172,12 @@ _REFUSED: list[tuple[list[Any], bool]] = [
 ]
 
 
+# bitcoind quotes the descriptor after this refusal, as `: '<desc>'`. This node
+# does not (SECURITY.md, "Where this node departs from Bitcoin Core"): a
+# descriptor may hold a private key.
+_NO_KEYS = "Cannot derive script without private keys"
+
+
 def _refusal(call: Any, params: list[object]) -> tuple[int, str] | Any:
     """Return the code and message `call` is refused with, else its answer."""
     try:
@@ -242,7 +248,11 @@ def test_status_and_abort_answer_as_bitcoind_does(both: tuple[Bitcoind, Node]) -
 
 
 def test_refusals_are_bitcoind_s(both: tuple[Bitcoind, Node]) -> None:
-    """Each refusal has bitcoind's code, and its message but a parser's."""
+    """Each refusal has bitcoind's code, and its message but a parser's.
+
+    The one departure is that the "without private keys" refusal does not
+    quote the descriptor.
+    """
     bitcoind, node = both
     client = rpc_client(node)
     for params, same_message in _REFUSED:
@@ -251,7 +261,12 @@ def test_refusals_are_bitcoind_s(both: tuple[Bitcoind, Node]) -> None:
         assert isinstance(theirs, tuple), params
         assert isinstance(ours, tuple), params
         assert ours[0] == theirs[0], params
-        if same_message:
+        if theirs[1].startswith(f"{_NO_KEYS}: '"):
+            scan = params[1][0]
+            desc = scan["desc"] if isinstance(scan, dict) else scan
+            assert theirs[1] == f"{_NO_KEYS}: '{desc}'", params
+            assert ours[1] == _NO_KEYS, params
+        elif same_message:
             assert ours[1] == theirs[1], params
 
 

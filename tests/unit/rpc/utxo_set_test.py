@@ -334,12 +334,29 @@ def test_a_multipath_descriptor_is_expanded_by_each_path(node: Node) -> None:
     assert len(scan(node, f"pkh({TPUB}/<0;1>/0)")["unspents"]) == 2
 
 
-def test_a_hardened_step_needs_its_private_key(node: Node) -> None:
-    """An xpub cannot take it, and Core refuses with the text it was given."""
-    text = f"pkh({TPUB}/0h/*)"
+# a compressed testnet WIF of KEY's secret, 1
+WIF = "cMahea7zqjxrtgAbB7LSGbcQUr1uX1ojuat9jZodMN87JcbXMTcA"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"wsh(multi(1,{WIF},{TPUB}/0h/*))",
+        f"sh(multi(1,{WIF},{TPUB}/1h))",
+        f"tr({WIF},pk({TPUB}/0h/*))",
+        f"pkh({TPUB}/0h/*)",
+    ],
+    ids=["wsh", "sh", "tr", "no private key"],
+)
+def test_a_hardened_step_needs_its_private_key(node: Node, text: str) -> None:
+    """An xpub cannot take it.
+
+    Core's rpc/util.cpp:1370 quotes the descriptor, private keys included;
+    this tree does not, as Core's rpc/mining.cpp:229 does not.
+    """
     assert refusal(node, "start", [text]) == (
         -5,
-        f"Cannot derive script without private keys: '{text}'",
+        "Cannot derive script without private keys",
     )
 
 
