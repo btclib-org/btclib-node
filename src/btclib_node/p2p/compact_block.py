@@ -158,15 +158,21 @@ def block_checked(node: Node, block_hash: bytes, *, valid: bool) -> None:
     a peer (`DownloadManager.block_source`) makes it a high-bandwidth
     peer, out of initial block download and where no other block is in
     flight, as Core's "this is currently the best block we're aware of".
-    The block's source is then forgotten.
-
-    Core also punishes the peer of a block refused here. `callbacks.block`
-    punishes, before storing it, the peer of a block failing what Core's
-    `CheckBlock` and `ContextualCheckBlock` ask, and what only connecting
-    finds punishes nobody.
+    A refused one costs the peer that sent it, unless it came through
+    BIP152: Core's `MaybePunishNodeForBlock` for `BLOCK_CONSENSUS`. The
+    block's source is then forgotten.
     """
     source = node.download_manager.block_source.pop(block_hash, None)
-    if not valid or source is None or node.is_initial_block_download:
+    if source is None:
+        return
+    conn_id, may_punish = source
+    if not valid:
+        conn = node.p2p_manager.connections.get(conn_id)
+        if conn is not None and may_punish:
+            node.logger.log_debug("net", "Misbehaving: peer=%d", conn_id)
+            node.p2p_manager.maybe_discourage_and_disconnect(conn)
+        return
+    if node.is_initial_block_download:
         return
     in_flight = {
         requested
@@ -174,4 +180,4 @@ def block_checked(node: Node, block_hash: bytes, *, valid: bool) -> None:
         for requested in conn.download_queue
     }
     if in_flight <= {block_hash}:
-        maybe_set_peer_as_announcing_header_and_ids(node, source)
+        maybe_set_peer_as_announcing_header_and_ids(node, conn_id)

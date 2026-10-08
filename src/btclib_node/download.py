@@ -458,8 +458,9 @@ class DownloadManager:
         # to announce new blocks as `cmpctblock`, the oldest first
         self.hb_peers: list[int] = []
         # Core's `mapBlockSource`: the peer each stored block not yet
-        # connected came from, which `compact_block.block_checked` reads
-        self.block_source: dict[bytes, int] = {}
+        # connected came from, and whether it pays for a block that fails
+        # to connect, which `compact_block.block_checked` reads
+        self.block_source: dict[bytes, tuple[int, bool]] = {}
 
         # Core's `m_next_inv_to_inbounds_per_network_key`
         # (net_processing.cpp, the same commit): one schedule per

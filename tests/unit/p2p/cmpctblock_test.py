@@ -662,7 +662,7 @@ def test_a_peer_that_gave_a_new_block_is_asked_for_high_bandwidth(
     block = next_block(node)
     peer = a_compact_peer(node, inbound=True)
     cmpctblock(node, compact_block(block, 7).serialize(), peer)
-    assert node.download_manager.block_source == {block.header.hash: peer.id}
+    assert node.download_manager.block_source == {block.header.hash: (peer.id, False)}
     update_chain(node)
     assert node.chainstate.block_index.active_chain[-1] == block.header.hash
     assert sendcmpcts(peer) == [True]
@@ -671,24 +671,51 @@ def test_a_peer_that_gave_a_new_block_is_asked_for_high_bandwidth(
     assert node.download_manager.block_source == {}
 
 
-def test_a_block_that_fails_to_connect_chooses_nobody(
+@pytest.mark.parametrize("inbound", [False, True], ids=["outbound", "inbound"])
+@pytest.mark.parametrize("via", ["cmpctblock", "block"])
+def test_a_block_that_fails_to_connect_costs_a_peer_that_sent_it_whole(
     regtest_node: Callable[[], Node],
+    via: str,
+    inbound: bool,  # noqa: FBT001
 ) -> None:
-    """Core's `ConnectTip` signals the failure, and the source is forgotten.
+    """Core's `BlockChecked` punishes, except a block that came compact.
 
     The block spends an output nobody has, which only connecting finds.
+    Its peer is not chosen as high-bandwidth, and its source is forgotten.
     """
     node, _ = a_node(regtest_node)
     extra = generate_random_transaction()
     node.download_manager.extra_txns.append(extra)
     block = next_block(node, extra)
-    peer = a_compact_peer(node)
-    cmpctblock(node, compact_block(block, 7).serialize(), peer)
-    assert node.download_manager.block_source == {block.header.hash: peer.id}
+    # automatic: a manual outbound peer is never dropped
+    peer = a_compact_peer(node, inbound=inbound, automatic=not inbound)
+    if via == "cmpctblock":
+        cmpctblock(node, compact_block(block, 7).serialize(), peer)
+    else:
+        peer.download_queue.append(block.header.hash)
+        payload = BlockPayload(block, include_witness=True, check_validity=False)
+        block_callback(node, payload.serialize(check_validity=False), peer)
+    assert node.download_manager.block_source == {
+        block.header.hash: (peer.id, via == "block")
+    }
     update_chain(node)
     assert node.chainstate.block_index.active_chain[-1] != block.header.hash
     assert node.download_manager.block_source == {}
-    assert peer.sent == []
+    assert not sent(peer, SendCmpct)
+    assert peer.stopped == ([True] if via == "block" else [])
+
+
+def test_a_peer_gone_pays_nothing_for_a_block_that_fails_to_connect(
+    regtest_node: Callable[[], Node],
+) -> None:
+    """Core punishes a peer it still has (`State(nodeid)`)."""
+    node, _ = a_node(regtest_node)
+    peer = a_compact_peer(node, inbound=True)
+    node.download_manager.block_source[b"\x01" * 32] = (peer.id, True)
+    del node.p2p_manager.connections[peer.id]
+    block_checked(node, b"\x01" * 32, valid=False)
+    assert peer.stopped == []
+    assert node.download_manager.block_source == {}
 
 
 @pytest.mark.parametrize("case", ["ibd", "another in flight", "no source"])
@@ -708,7 +735,7 @@ def test_a_block_connected_otherwise_chooses_nobody(
     if case == "another in flight":
         other.download_queue.append(b"\x01" * 32)
     if case != "no source":
-        node.download_manager.block_source[block.header.hash] = peer.id
+        node.download_manager.block_source[block.header.hash] = (peer.id, True)
     block_checked(node, block.header.hash, valid=True)
     assert peer.sent == []
     assert node.download_manager.hb_peers == []
@@ -719,7 +746,7 @@ def test_an_invalid_block_chooses_nobody(regtest_node: Callable[[], Node]) -> No
     """Core's `BlockChecked` asks a valid block; its source goes either way."""
     node, _ = a_node(regtest_node)
     peer = a_compact_peer(node)
-    node.download_manager.block_source[b"\x01" * 32] = peer.id
+    node.download_manager.block_source[b"\x01" * 32] = (peer.id, False)
     block_checked(node, b"\x01" * 32, valid=False)
     assert peer.sent == []
     assert node.download_manager.block_source == {}
@@ -735,7 +762,7 @@ def test_a_block_not_new_forgets_its_source(regtest_node: Callable[[], Node]) ->
     first, second = a_compact_peer(node), a_compact_peer(node, 2)
     payload = compact_block(block, 7).serialize()
     cmpctblock(node, payload, first)
-    assert node.download_manager.block_source == {block.header.hash: first.id}
+    assert node.download_manager.block_source == {block.header.hash: (first.id, False)}
     second.download_queue.append(block.header.hash)
     block_callback(
         node,
