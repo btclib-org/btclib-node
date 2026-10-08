@@ -99,6 +99,7 @@ def test_a_ping_waits_for_the_verdict_on_the_tx_before_it(
         conn_id = connected(node1, node2)
         node3.p2p_manager.connect(local_addr(node1.p2p_port))
         wait_until(lambda: len(node1.p2p_manager.connections) == 2)
+        wait_until(lambda: len(node3.p2p_manager.connections) == 1)
         (other_id,) = node3.p2p_manager.connections
         wait_until(
             lambda: all(
