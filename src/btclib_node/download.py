@@ -15,7 +15,6 @@ matching Core's behaviour, always.
 """
 
 import fractions
-import heapq
 import itertools
 import math
 import time
@@ -94,25 +93,6 @@ _INVENTORY_BROADCAST_MAX = 1000
 # (`txmempool.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) puts
 # one first, so a trickle pops it before any held entry.
 _GONE_KEY = MiningKey(fractions.Fraction(-(1 << 256)), 0, b"", 0)
-
-
-class _Ranking:
-    """The wtxids queued for the due connections, ranked best-paying first.
-
-    `keys` has every one. `best` is the head, in key order, of all of them,
-    and `extend` lengthens it. Peers mostly queue the same transactions, so
-    each connection reads its own entries through `best` and few of them
-    need more than its start.
-    """
-
-    def __init__(self, queued: dict[bytes, None], keys: dict[bytes, MiningKey]) -> None:
-        self.queued = queued
-        self.keys = keys
-        self.best: list[bytes] = []
-
-    def extend(self, size: int) -> None:
-        """Make `best` the first `size` of the wtxids, or all if fewer."""
-        self.best = heapq.nsmallest(size, self.queued, key=self.keys.__getitem__)
 
 
 def _trickle_cap(queued: int) -> int:
@@ -1264,13 +1244,13 @@ class DownloadManager:
             # not it announces anything
             conn.stats.last_inv_sequence = self.node.mempool.sequence
             due_conns.append((conn, due))
-        caps = [_trickle_cap(len(conn.tx_announce_queue)) for conn, _ in due_conns]
-        ranking = self._rank_queued([conn for conn, _ in due_conns], caps)
-        for (conn, due), cap in zip(due_conns, caps, strict=True):
+        ranked = self._rank_queued([conn for conn, _ in due_conns])
+        for conn, due in due_conns:
             if conn.tx_announce_queue:
                 # The cap is Core's, from the queue's size before anything
                 # is popped (`m_tx_inventory_to_send.size()`).
-                batch = self._pop_trickle(conn, cap, ranking)
+                cap = _trickle_cap(len(conn.tx_announce_queue))
+                batch = self._pop_trickle(conn, cap, ranked)
                 if batch:
                     # `cap` is at most `_INVENTORY_BROADCAST_MAX`, below
                     # `MAX_INV_SZ`, so one `Inv` always holds a trickle.
@@ -1285,8 +1265,8 @@ class DownloadManager:
                         1 / _OUTBOUND_TX_ANNOUNCE_INTERVAL
                     )
 
-    def _rank_queued(self, conns: list[Connection], caps: list[int]) -> _Ranking:
-        """Return the ranking of what is queued for `conns`.
+    def _rank_queued(self, conns: list[Connection]) -> list[bytes]:
+        """Return every wtxid queued for `conns`, best-paying first.
 
         The mempool cannot change within a call, so the queued transactions
         of every due connection are keyed once. An entry the mempool no
@@ -1296,8 +1276,6 @@ class DownloadManager:
         (`Mempool._evict_to_limit`). Core's own trickle send does the same
         (`net_processing.cpp`, `m_mempool.info(wtxid)`).
         btclib-org/btclib-node#294
-
-        `best` starts with room for the entries a connection drops.
         """
         queued: dict[bytes, None] = {}
         for conn in conns:
@@ -1307,9 +1285,7 @@ class DownloadManager:
         keys.update(
             mempool.mining_order_keys(w for w in queued if w in mempool.transactions)
         )
-        ranking = _Ranking(queued, keys)
-        ranking.extend(2 * max(caps, default=0))
-        return ranking
+        return sorted(queued, key=keys.__getitem__)
 
     def _send_trickle(self, conn: Connection, batch: list[bytes]) -> None:
         """Send `batch` in one `Inv` and record it as known to the peer."""
@@ -1319,7 +1295,7 @@ class DownloadManager:
             conn.known_tx_inventory.add(item.hash)
 
     def _pop_trickle(
-        self, conn: Connection, cap: int, ranking: _Ranking
+        self, conn: Connection, cap: int, ranked: list[bytes]
     ) -> list[bytes]:
         """Pop what one trickle sends from `conn`'s queue, best-paying first.
 
@@ -1330,37 +1306,17 @@ class DownloadManager:
         the cap. Each is read when sending, so a change while the entry
         waited applies. What is not popped stays queued.
 
-        `ranking.best` is the head, in key order, of every due connection's
-        queued entries, so the queue is read through it first. Where it runs
-        out before the cap: while the queue is longer than `best`, `best` is
-        lengthened by the rate at which the entries read were dropped;
-        otherwise the rest of the queue is sorted.
+        `ranked` holds every due connection's entries, so the queue is read
+        through it, stopping at the cap.
         """
         queue = conn.tx_announce_queue
         batch: list[bytes] = []
-        position = 0
-        while True:
-            best = ranking.best
-            while position < len(best) and len(batch) < cap:
-                wtxid = best[position]
-                position += 1
-                if wtxid in queue:
-                    del queue[wtxid]
-                    self._offer(conn, wtxid, batch)
+        for wtxid in ranked:
             if len(batch) == cap or not queue:
                 break
-            if len(queue) > len(best):
-                # The sends so far were `len(batch)` of `position` read, so
-                # about `position * cap / len(batch)` reach the cap.
-                needed = position * cap * 5 // (4 * max(len(batch), 1))
-                ranking.extend(min(max(needed, 2 * len(best)), 16 * len(best)))
-                continue
-            for wtxid in sorted(queue, key=ranking.keys.__getitem__):
-                if len(batch) == cap:
-                    break
+            if wtxid in queue:
                 del queue[wtxid]
                 self._offer(conn, wtxid, batch)
-            break
         return batch
 
     def _offer(self, conn: Connection, wtxid: bytes, batch: list[bytes]) -> None:

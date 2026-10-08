@@ -767,7 +767,7 @@ def test_a_trickle_skips_a_long_run_of_known_entries_on_shared_queues(
     assert hashes_of(only(small, Inv)[0]) == [w for w in best_first if w in mine]
 
 
-def test_a_queue_outside_the_shared_best_is_sorted_and_cut_at_its_cap() -> None:
+def test_a_queue_ranking_below_the_others_is_cut_at_its_cap() -> None:
     """A peer queuing only what ranks below the others' is sent its best 70."""
     low, high = a_conn(1), a_conn(2)
     manager = make_manager([low, high])
