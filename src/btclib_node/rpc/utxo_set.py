@@ -319,10 +319,11 @@ def _expand(
                     provider = source.descriptor.provider(index, source.prv_keys)
                 except BTClibException as err:
                     # Core's rpc/util.cpp:1370 (bitcoin/bitcoin@db0bde16b9)
-                    # quotes the descriptor. This tree departs on purpose, by
-                    # the maintainer's decision: the descriptor may hold
-                    # private keys. Core's rpc/mining.cpp:229 and
-                    # rpc/output_script.cpp:241 quote nothing.
+                    # quotes the descriptor. This tree departs on purpose: the
+                    # descriptor may hold private keys (SECURITY.md, "Where
+                    # this node departs from Bitcoin Core"). Core's
+                    # rpc/mining.cpp:229 and rpc/output_script.cpp:241 quote
+                    # nothing.
                     raise RpcError(
                         RPCErrorCode.INVALID_ADDRESS_OR_KEY,
                         "Cannot derive script without private keys",

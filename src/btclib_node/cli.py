@@ -1022,13 +1022,14 @@ def _parse_parameters(
 def _quoted_line(line: str) -> str:
     """Return `line` for a parse error, cut after a sensitive name.
 
-    Core's `GetConfigOptions` (`src/common/config.cpp`) quotes the whole
-    line. This tree departs on purpose, by the maintainer's decision: a line
-    that fails to parse may hold a password, and the refusal reaches stderr
-    and logs. A line holding the name of a `sensitive` option (`rpcauth`,
-    `rpcpassword`, `rpcuser`) is quoted up to the first such name, wherever
-    it sits: after a `-`, a section prefix or `no`, or after text that is
-    none of these.
+    Core's `GetConfigOptions` (`src/common/config.cpp`) and
+    `ParseParameters` (`src/common/args.cpp`) quote the whole line or
+    argument. This tree departs on purpose: it may hold a password, and the
+    refusal reaches stderr and logs (SECURITY.md, "Where this node departs
+    from Bitcoin Core"). A line holding the name of a `sensitive` option
+    (`rpcauth`, `rpcpassword`, `rpcuser`) is quoted up to the first such
+    name, wherever it sits: after a `-`, a section prefix or `no`, or after
+    text that is none of these.
     """
     ends = [
         line.find(name) + len(name)
