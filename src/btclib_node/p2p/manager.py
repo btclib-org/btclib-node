@@ -366,10 +366,11 @@ def _legacy_ipv6(ip: str) -> IPv6Address:
 
 # How many hosts `P2pManager.discourage` remembers. Core keeps them in
 # `BanMan::m_discouraged`, a `CRollingBloomFilter{50000, 0.000001}`
-# (`src/banman.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). This
-# tree has no rolling bloom filter, so `P2pManager._discouraged` is an
-# insertion-ordered `dict` of at most this many hosts, the one
-# discouraged longest ago forgotten first. Core's filter answers yes
+# (`src/banman.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+# `P2pManager._discouraged` is instead an insertion-ordered `dict` of at
+# most this many hosts. btclib-org/btclib-node#1851 is whether to switch
+# it to `rolling_bloom.RollingBloomFilter`. The host discouraged longest
+# ago is forgotten first. Core's filter answers yes
 # for a host it never held, up to one time in a million, and this never
 # does. Core's forgets a host 50,000 to 75,000 insertions later, its
 # generations of 25,000 holding two or three at a time, and this
