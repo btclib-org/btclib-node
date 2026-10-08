@@ -15,7 +15,8 @@ request with no `id` is a notification, run and answered with no body.
 """
 
 import json
-from typing import Any, NamedTuple, override
+import math
+from typing import Any, NamedTuple, NoReturn, override
 
 from bitcoin_core_rpc import RPCErrorCode
 
@@ -30,6 +31,7 @@ __all__ = [
     "decode",
     "error_reply",
     "error_status",
+    "get_real",
     "transform_named_arguments",
 ]
 
@@ -65,18 +67,46 @@ class JsonObject(dict[str, Any]):
         return self._pairs
 
 
+def get_real(value: float) -> float:
+    """Return a JSON number as `UniValue::get_real` does.
+
+    Raises the `RPC_MISC_ERROR` Core throws where no double holds it
+    (`src/univalue/lib/univalue_get.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag): `1e400`, or a whole number as large. `ParseDouble`
+    reads with `istream >> double`, which in libstdc++ fails on overflow
+    only, so `1e-400` reads as 0. A macOS build of Core (libc++)
+    refuses that too; this tree follows the Linux release, which links
+    libstdc++ statically (`contrib/guix/libexec/build.sh:234`). The
+    caller has checked it is a number.
+    """
+    try:
+        real = float(value)
+    except OverflowError:  # an int past the largest double
+        real = math.inf
+    if math.isinf(real):
+        raise RpcError(RPCErrorCode.MISC_ERROR, "JSON double out of range")
+    return real
+
+
+def _no_constant(name: str) -> NoReturn:
+    """Refuse `NaN`, `Infinity` and `-Infinity`, which JSON does not have."""
+    raise ValueError(name)
+
+
 def decode(body: bytes | bytearray) -> Any:  # noqa: ANN401
     r"""Decode a request body, each object a `JsonObject`.
 
-    Raises `ValueError` where `json.loads` does, and where a string or
-    an object key holds a lone surrogate. `json.loads` reads `"\ud800"`
+    Raises `ValueError` where `json.loads` does, where the text holds
+    `NaN`, `Infinity` or `-Infinity`, which `json.loads` reads and Core's
+    `UniValue::read` does not, and where a string or an object key holds
+    a lone surrogate. `json.loads` reads `"\ud800"`
     with no low surrogate after it, and a UTF-8 encoding of one, as a
     one-character string. Core's `JSONUTF8StringFilter` refuses both
     (`src/univalue/include/univalue_utffilter.h`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and `HTTPReq_JSONRPC`
     answers the whole body as a parse error.
     """
-    value = json.loads(body, object_pairs_hook=JsonObject)
+    value = json.loads(body, object_pairs_hook=JsonObject, parse_constant=_no_constant)
     pending = [value]
     while pending:
         item = pending.pop()
