@@ -173,6 +173,64 @@ def test_parse_conf_text_refuses_a_line_in_core_s_words(
         cli._parse_conf_text(f"regtest=1\n{line}\n", warnings=[])
 
 
+@pytest.mark.parametrize(
+    ("line", "refusal"),
+    [
+        pytest.param(
+            "-rpcpassword=hunter2",
+            "parse error on line 2: -rpcpassword, options in configuration file "
+            "must be specified without leading -",
+            id="leading dash",
+        ),
+        pytest.param(
+            "rpcpasswordhunter2",
+            "parse error on line 2: rpcpassword",
+            id="no equals sign",
+        ),
+        pytest.param(
+            "norpcpassword hunter2",
+            "parse error on line 2: norpcpassword, if you intended to specify a "
+            "negated option, use norpcpassword=1 instead",
+            id="negated",
+        ),
+        pytest.param(
+            "-norpcuser = hunter2",
+            "parse error on line 2: -norpcuser, options in configuration file "
+            "must be specified without leading -",
+            id="negated user",
+        ),
+        pytest.param(
+            "rpcauthhunter2",
+            "parse error on line 2: rpcauth",
+            id="rpcauth",
+        ),
+        pytest.param(
+            "-main.rpcpassword=hunter2",
+            "parse error on line 2: -main.rpcpassword, options in configuration "
+            "file must be specified without leading -",
+            id="section and dash",
+        ),
+        pytest.param(
+            "regtest.rpcauthhunter2",
+            "parse error on line 2: regtest.rpcauth",
+            id="section",
+        ),
+        pytest.param(
+            "test.norpcuser hunter2",
+            "parse error on line 2: test.norpcuser",
+            id="section and negated",
+        ),
+    ],
+)
+def test_parse_conf_text_leaves_a_sensitive_value_out_of_a_refusal(
+    line: str, refusal: str
+) -> None:
+    """Core quotes the whole line; this tree quotes the option name alone."""
+    with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$") as caught:
+        cli._parse_conf_text(f"regtest=1\n{line}\n", warnings=[])
+    assert "hunter2" not in str(caught.value)
+
+
 def test_parse_conf_text_ends_a_line_at_a_newline_alone() -> None:
     """ISS 1267: `std::getline`'s lines, so a form feed ends none.
 

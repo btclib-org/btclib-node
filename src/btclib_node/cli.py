@@ -1019,6 +1019,28 @@ def _parse_parameters(
     return options, token
 
 
+def _quoted_line(line: str) -> str:
+    """Return `line` for a parse error, cut after a sensitive name.
+
+    Core's `GetConfigOptions` (`src/common/config.cpp`) quotes the whole
+    line. This tree departs on purpose, by the maintainer's decision: a line
+    that fails to parse may hold a password, and the refusal reaches stderr
+    and logs. A line starting, after any `-`, `<section>.` and `no`, with the
+    name of a `sensitive` option (`rpcauth`, `rpcpassword`, `rpcuser`) is
+    quoted up to that name, whether or not an `=` follows it.
+    """
+    start = len(line) - len(line.lstrip("-"))
+    section, dot, _ = line[start:].partition(".")
+    if dot and section in _RECOGNIZED_SECTIONS:
+        start += len(section) + 1
+    for skip in (start, start + 2):
+        rest = line[skip:]
+        for name, option in _OPTIONS.items():
+            if option.sensitive and rest.startswith(name):
+                return line[: skip + len(name)]
+    return line
+
+
 def _config_options(
     text: str, sections: list[_SectionInfo] | None = None, filepath: str = ""
 ) -> list[tuple[str, str]]:
@@ -1054,16 +1076,17 @@ def _config_options(
             continue
         if line[0] == "-":
             err_msg = (
-                f"parse error on line {lineno}: {line}, options in "
+                f"parse error on line {lineno}: {_quoted_line(line)}, options in "
                 "configuration file must be specified without leading -"
             )
             raise ValueError(err_msg)
         if "=" not in line:
-            err_msg = f"parse error on line {lineno}: {line}"
+            shown = _quoted_line(line)
+            err_msg = f"parse error on line {lineno}: {shown}"
             if line.startswith("no"):
                 err_msg += (
                     ", if you intended to specify a negated option, use "
-                    f"{line}=1 instead"
+                    f"{shown}=1 instead"
                 )
             raise ValueError(err_msg)
         key, _, value = line.partition("=")
