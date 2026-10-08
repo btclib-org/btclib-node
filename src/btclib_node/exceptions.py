@@ -334,7 +334,7 @@ class InvalidBlockInputError(ValueError):
 
 
 class NodeShutdownTimeoutError(TimeoutError):
-    """`Node.stop()`'s own join outlived `STOP_TIMEOUT`.
+    """`Node.stop()` waited `STOP_TIMEOUT`, and no store had begun to close.
 
     The thread it waited for is still running once this is raised, so
     -- unlike `ChainstateInconsistencyError` -- nothing downstream of
