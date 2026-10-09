@@ -124,6 +124,43 @@ def a_connection(
     return connection, logged
 
 
+def test_a_new_connection_is_due_an_address_send_at_once() -> None:
+    """ISS 1867: `m_next_addr_send` starts at 0, so the first pass sends."""
+    connection, _ = a_connection()
+    assert connection.next_addr_send == 0.0
+
+
+class CountingLock:
+    """A lock that counts how often it is taken."""
+
+    def __init__(self) -> None:
+        """Start unheld and uncounted."""
+        self.taken = 0
+        self._lock = threading.Lock()
+
+    def __enter__(self) -> None:
+        """Take the lock, counting it."""
+        self.taken += 1
+        self._lock.acquire()
+
+    def __exit__(self, *exc: object) -> None:
+        """Release the lock."""
+        self._lock.release()
+
+
+def test_a_getaddr_answer_replaces_the_queue_in_one_step() -> None:
+    """ISS 1867: the clear and the pushes are one hold of the queue's lock."""
+    connection, _ = a_connection()
+    connection.prefer_addressv2 = True
+    connection.push_address(peer_address("9.9.9.9", 8333))
+    lock = CountingLock()
+    connection._addrs_to_send_lock = cast("threading.Lock", lock)
+    answer = [peer_address(f"1.2.3.{n}", 8333) for n in range(1, 4)]
+    connection.replace_addresses(answer)
+    assert lock.taken == 1
+    assert connection.take_addresses() == answer
+
+
 @pytest.mark.parametrize(
     ("inbound_onion", "network"), [(True, Network.ONION), (False, Network.IPV4)]
 )

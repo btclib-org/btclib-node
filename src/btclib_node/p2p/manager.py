@@ -65,6 +65,7 @@ from btclib_node.p2p.address import (
     peer_address,
     service_key,
 )
+from btclib_node.p2p.addrrelay import is_relayable, relay_destinations
 from btclib_node.p2p.anchors import (
     ANCHORS_DATABASE_FILENAME,
     MAX_BLOCK_RELAY_ONLY_ANCHORS,
@@ -224,6 +225,10 @@ _REACHABLE_NETWORKS = (BIP155Network.IPV4, BIP155Network.IPV6)
 # Core's `AVG_LOCAL_ADDRESS_BROADCAST_INTERVAL` (`src/net_processing.cpp`,
 # same sha): the mean wait between two self-announcements to one peer.
 _LOCAL_ADDR_INTERVAL = 24 * 3600
+
+# Core's `AVG_ADDRESS_BROADCAST_INTERVAL` (same file and sha): the mean
+# wait between two sends of queued addresses to one peer.
+_ADDR_BROADCAST_INTERVAL = 30
 
 # How many addresses `_maybe_dial_more_peers` draws in one pass before
 # giving up until the next: `ThreadOpenConnections`'s `nTries > 100`
@@ -752,6 +757,10 @@ class P2pManager(threading.Thread):
         # once per process, so no peer can predict which netgroups the
         # eviction's first protection keeps.
         self._net_group_key = secrets.token_bytes(16)
+        # The key `relay_destinations` hashes under, Core's `nSeed0` and
+        # `nSeed1`: drawn once per process, so no peer can predict who an
+        # address it sends is relayed to.
+        self._addr_relay_key = (secrets.randbits(64), secrets.randbits(64))
         # The hosts `discourage` has recorded, by `host_key`: Core's
         # `BanMan::m_discouraged`, a `CRollingBloomFilter{50000,
         # 0.000001}` (`src/banman.h`, at bitcoin/bitcoin@9be056a8a7, the
@@ -1777,6 +1786,7 @@ class P2pManager(threading.Thread):
             if not self._keep_alive(conn, now):
                 continue
             self._maybe_send_local_addr(conn, now)
+            self._send_queued_addrs(conn, now)
         for conn in self.pending_connections.copy().values():
             # Dropped `_PEER_CONNECT_TIMEOUT` after connecting, quiet or
             # not, as Core's `InactivityCheck` drops a connection short
@@ -1794,6 +1804,42 @@ class P2pManager(threading.Thread):
             ):
                 self.remove_connection(conn.id)
 
+    def is_reachable(self, address: NetworkAddressV2) -> bool:
+        """Whether this node reaches `address`'s network, `g_reachable_nets`."""
+        return address.network_id in _REACHABLE_NETWORKS
+
+    def relay_address(
+        self, originator: Connection, address: NetworkAddressV2, now: float
+    ) -> None:
+        """Queue `address`, gossiped by `originator`, for one or two peers.
+
+        `RelayAddress` (`src/net_processing.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): an address on a
+        network this node does not reach is relayed only if
+        `is_relayable`. Only a peer taking part in address relay is
+        chosen, and one that can carry `address`: `IsAddrCompatible`.
+        Called on `Node`'s thread; `push_address` takes the
+        lock the send on this manager's thread shares.
+        """
+        reachable = self.is_reachable(address)
+        if not reachable and not is_relayable(address):
+            return
+        peers = {
+            conn.id: conn
+            for conn in self.connections.copy().values()
+            if conn.addr_relay_enabled
+            and conn.id != originator.id
+            and (conn.prefer_addressv2 or can_addrv1(address))
+        }
+        for peer_id in relay_destinations(
+            self._addr_relay_key,
+            address,
+            peers,
+            reachable=reachable,
+            now=now,
+        ):
+            peers[peer_id].push_address(address)
+
     def _maybe_send_local_addr(self, conn: Connection, now: float) -> None:
         """Tell `conn` where this node is reached, as `MaybeSendAddr` does.
 
@@ -1802,13 +1848,13 @@ class P2pManager(threading.Thread):
         to a peer that takes part in address relay, while listening and
         out of initial block download, once its turn has come -- at once
         for a new connection, then after an exponential wait of 24 hours
-        on average. Core queues a later announcement with the other
-        addresses it relays; this node relays none, so each is sent alone.
-        Nothing is announced where `address_for_peer` finds no address.
+        on average. The first is sent alone, so that the peer's rate
+        limit cannot drop it; a later one is queued with the addresses
+        relayed, for `_send_queued_addrs`. Nothing is announced where
+        `address_for_peer` finds no address.
 
         Before a later announcement `conn.addr_known` is reset, as Core
-        resets `m_addr_known`, and the address sent is then recorded in
-        it. The first is sent without either, as Core sends it.
+        resets `m_addr_known`.
         """
         if (
             not conn.addr_relay_enabled
@@ -1848,11 +1894,36 @@ class P2pManager(threading.Thread):
             "net", "Advertising address %s to peer=%s", address, conn.id
         )
         if later:
-            conn.addr_known.add(service_key(address))
-        if conn.prefer_addressv2:
+            conn.push_address(address)
+        elif conn.prefer_addressv2:
             conn.send(AddrV2([address]))
         else:
             conn.send(Addr([addr_entry(address)]))
+
+    def _send_queued_addrs(self, conn: Connection, now: float) -> None:
+        """Send `conn` the queued addresses, as `MaybeSendAddr` does.
+
+        `MaybeSendAddr` (`src/net_processing.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): once the wait since
+        the last send, 30 seconds on average, is over, whatever
+        `conn.addr_known` does not hold is sent in one message and
+        recorded in it.
+        """
+        if not conn.addr_relay_enabled or now <= conn.next_addr_send:
+            return
+        conn.next_addr_send = now + _exponential_delay(_ADDR_BROADCAST_INTERVAL)
+        unknown = []
+        for address in conn.take_addresses():
+            key = service_key(address)
+            if key not in conn.addr_known:
+                conn.addr_known.add(key)
+                unknown.append(address)
+        if not unknown:
+            return
+        if conn.prefer_addressv2:
+            conn.send(AddrV2(unknown))
+        else:
+            conn.send(Addr([addr_entry(address) for address in unknown]))
 
     def _keep_alive(self, conn: Connection, now: float) -> bool:
         """Ping `conn` or drop it as Core does; whether it was kept.
