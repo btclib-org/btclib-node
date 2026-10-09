@@ -160,7 +160,7 @@ _USER_AGENT = USER_AGENT.encode()
 
 
 # `_send` hands `sock_sendall` at most this many octets at a time, and
-# stamps `last_send` after each.
+# stamps `last_send` and counts the octets after each.
 _SEND_CHUNK = 64 * 1024
 
 
@@ -269,9 +269,10 @@ class PeerStats:
 
     The rest are Core's `nSendBytes`, `nRecvBytes` and their per-command
     tables: the octets written to and read off the socket, the tables by
-    whole message, header included. Each is written on this connection's
-    loop alone, by `_deliver` and `run`, and read from `Node`'s thread,
-    which copies a table before iterating it.
+    the message the octets are for, header included: the received one per
+    whole message, the sent one per chunk the socket takes. Each is written
+    on this connection's loop alone, by `_deliver` and `run`, and read
+    from `Node`'s thread, which copies a table before iterating it.
     """
 
     time_offset: int = 0
@@ -940,7 +941,7 @@ class Connection:
         keeps, cancelling its futures and closing the socket after. A
         write the
         socket had taken whose task has not yet stepped is cancelled all
-        the same, so `_count_sent` misses that one message.
+        the same, so `_count_sent` misses its last chunk.
         btclib-org/btclib-node#1164
         """
         fd = self.client.fileno()
@@ -1064,8 +1065,11 @@ class Connection:
         finally:
             self.stop(cancel_task=False)
 
-    async def _send(self, data: bytes) -> None:
+    async def _send(self, data: bytes, sent: list[tuple[str, int]], /) -> None:
         """Write `data`, raising `OSError` where the socket cannot take it.
+
+        `sent` says which message each octet of `data` is sent for, in
+        order, as `_frame` returns it.
 
         Core stamps `m_last_send` on every `send()` that takes octets
         (`SocketSendData`, `src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
@@ -1076,27 +1080,42 @@ class Connection:
         instead. A peer that takes less than one chunk in
         `manager._TIMEOUT_INTERVAL` is dropped where Core would keep it.
         btclib-org/btclib-node#1784
+
+        Core counts `nSendBytes` and `AccountForSentBytes` after the same
+        `send()`, so the octets are counted at the same grain, per chunk:
+        a write that fails or is cancelled is counted for the chunks the
+        socket took, and the one in flight is not counted at all.
+        btclib-org/btclib-node#1869
         """
         self._writing = asyncio.current_task()
         try:
             view = memoryview(data)
+            pending = deque(sent)
             for start in range(0, len(view), _SEND_CHUNK):
-                await self.loop.sock_sendall(
-                    self.client, view[start : start + _SEND_CHUNK]
-                )
+                chunk = view[start : start + _SEND_CHUNK]
+                await self.loop.sock_sendall(self.client, chunk)
                 self.last_send = time.time()
+                self._count_sent(pending, len(chunk))
         finally:
             self._writing = None
 
-    def _count_sent(self, sent: list[tuple[str, int]]) -> None:
-        """Add the octets the socket took to `bytes_sent`, by message.
+    def _count_sent(self, pending: deque[tuple[str, int]], taken: int) -> None:
+        """Add `taken` octets to `bytes_sent`, by message, off `pending`.
 
         Core's `SocketSendData` counts what the socket took, by the
-        command the octets were sent on behalf of.
+        command the octets were sent on behalf of, and keeps the v2
+        handshake octets, which have none, out of the table. The received
+        table has no such case: `run` counts it per message.
         """
-        for command, size in sent:
-            self.stats.bytes_sent += size
-            self.stats.bytes_sent_per_msg[command] += size
+        while taken:
+            command, size = pending.popleft()
+            count = min(size, taken)
+            if count < size:
+                pending.appendleft((command, size - count))
+            taken -= count
+            self.stats.bytes_sent += count
+            if command:  # "don't report v2 handshake bytes for now"
+                self.stats.bytes_sent_per_msg[command] += count
 
     def _collect_octets(
         self, chunks: list[memoryview], sent: list[tuple[str, int]]
@@ -1233,8 +1252,7 @@ class Connection:
                 )
                 if data:
                     with contextlib.suppress(OSError):  # probably connection dropped
-                        await self._send(data)
-                        self._count_sent(sent)
+                        await self._send(data, sent)
                 if not taken:
                     return
                 with self._send_lock:
