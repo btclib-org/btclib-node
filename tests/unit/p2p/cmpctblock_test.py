@@ -181,7 +181,7 @@ def test_a_cmpctblock_nobody_asked_of_a_peer_not_high_bandwidth_is_ignored(
     if requested:
         peer.download_queue.append(block.header.hash)
     cmpctblock(node, compact_block(block, 7).serialize(), peer)
-    assert node.chainstate.block_index.header_dict[block.header.hash]
+    assert block.header.hash in node.chainstate.block_index.header_dict
     assert bool(sent(peer, GetBlockTxn)) is requested
     assert peer.download_queue == ([block.header.hash] if requested else [])
 

@@ -3082,7 +3082,7 @@ def cmpctblock(node: Node, msg: bytes, conn: Connection) -> None:
     requested = block_hash in conn.download_queue
     if not requested and not conn.bip152_highbandwidth_to:
         node.logger.log_debug(
-            "cmpctblock",
+            "net",
             "Peer %d, not marked as high-bandwidth, sent an unsolicited compact block",
             conn.id,
         )
