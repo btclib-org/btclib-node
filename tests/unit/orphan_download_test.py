@@ -96,9 +96,24 @@ def test_a_recently_confirmed_transaction_is_already_had_by_either_hash() -> Non
     """ISS 1851: Core's `BlockConnected` records the txid and the wtxid."""
     manager = make_manager([a_conn(1)])
     tx = a_segwit(an_orphan())
-    manager.add_confirmed(cast("Block", SimpleNamespace(transactions=[tx])))
+    manager.confirm_block(cast("Block", SimpleNamespace(transactions=[tx])))
     assert manager.already_have_tx(tx.id, wtxid=False, include_reconsiderable=False)
     assert manager.already_have_tx(tx.hash, wtxid=True, include_reconsiderable=False)
+
+
+def test_a_confirmed_transaction_is_forgotten_by_either_hash() -> None:
+    """ISS 1871: Core's `BlockConnected` calls `ForgetTxHash` on both."""
+    manager = make_manager([a_conn(1), a_conn(2)])
+    tx = a_segwit(an_orphan())
+    kept = a_hash(9)
+    for peer in (1, 2):
+        for txhash in (tx.id, tx.hash, kept):
+            manager.tx_requests.received_inv(peer, txhash, preferred=True, reqtime=0)
+    manager.confirm_block(cast("Block", SimpleNamespace(transactions=[tx])))
+    for peer in (1, 2):
+        assert announced(manager, peer, tx.id) is None
+        assert announced(manager, peer, tx.hash) is None
+        assert announced(manager, peer, kept) is not None
 
 
 def test_the_recently_confirmed_filter_is_sized_as_core_s() -> None:
