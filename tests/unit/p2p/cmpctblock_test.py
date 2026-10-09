@@ -147,6 +147,20 @@ def test_a_block_whose_transactions_are_all_held_is_taken_at_once(
     assert block.header.hash not in peer.block_availability.partial_blocks
 
 
+def test_a_cmpctblock_from_a_peer_that_never_sent_sendcmpct_is_ignored(
+    regtest_node: Callable[[], Node],
+) -> None:
+    """Core's return at `net_processing.cpp:4799-4802`, before the parse."""
+    node, _ = a_node(regtest_node)
+    block = next_block(node, generate_random_transaction())
+    peer = a_compact_peer(node, provides_cmpctblocks=False)
+    cmpctblock(node, compact_block(block, 7).serialize(), peer)
+    cmpctblock(node, b"not a cmpctblock", peer)
+    assert not peer.sent
+    assert block.header.hash not in node.chainstate.block_index.header_dict
+    assert not held(node, block)
+
+
 def test_a_block_short_of_transactions_asks_for_them_and_takes_them(
     regtest_node: Callable[[], Node],
 ) -> None:
