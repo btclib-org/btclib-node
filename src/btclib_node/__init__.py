@@ -94,7 +94,22 @@ __all__ = ["Node", "install_signal_handlers"]
 # stop is reported here rather than by whichever bound expires first;
 # `tests/unit/init_test.py` asserts that ordering rather than leaving it
 # to this comment.
+#
+# It bounds the wait until the stores begin to close, not the closes:
+# `Node.stop` has why.
 STOP_TIMEOUT = 30
+
+# How long the main thread waits on the node's thread at a time
+# (`Node.start` and `Node.join`). CPython runs a signal's Python handler
+# only on the main thread, and a wait with no timeout lets it run only
+# where the signal interrupts that wait. A signal another thread takes
+# interrupts nothing, so the handler never runs, and only the handler
+# stops the node (btclib-org/btclib-node#1274). Core's main thread waits
+# on a pipe its handler writes from whichever thread it ran on
+# (`SignalInterrupt::wait`, `src/util/signalinterrupt.cpp`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag); a bounded wait is how Python
+# gets the same.
+SIGNAL_POLL_SECONDS = 0.5
 
 # How long after a SIGINT, SIGTERM or SIGTSTP the process is still
 # running before every thread's stack is written to stderr
@@ -331,6 +346,9 @@ class Node(threading.Thread):
         self._directory_locks = lock_directories(self.data_dir, blocks_dir)
 
         self.terminate_flag = threading.Event()
+        # set by `run` once the stores begin to close, which `stop`'s
+        # bound does not cover
+        self._closing_stores = threading.Event()
         log_path = self.data_dir / config.log_path if config.log_path else None
         # `rpc.callbacks.get_rpc_info`'s own `logpath`: Core's
         # `LogInstance().m_file_path.utf8string()` (`src/rpc/server.cpp`,
@@ -848,7 +866,19 @@ class Node(threading.Thread):
         a caller of `start` reads them as soon as it returns.
         """
         super().start()
-        self._load_attempted.wait()
+        while not self._load_attempted.wait(SIGNAL_POLL_SECONDS):
+            pass
+
+    @override
+    def join(self, timeout: float | None = None) -> None:
+        """Wait for the node's thread as `Thread.join` does.
+
+        With no timeout, wait `SIGNAL_POLL_SECONDS` at a time, for the
+        reason that constant gives.
+        """
+        super().join(SIGNAL_POLL_SECONDS if timeout is None else timeout)
+        while timeout is None and self.is_alive():
+            super().join(SIGNAL_POLL_SECONDS)
 
     def _start_rpc_and_load(self) -> bool:
         """Start the RPC listener, then `load`; answer whether both did.
@@ -976,6 +1006,7 @@ class Node(threading.Thread):
             self.p2p_manager.stop()
         self.rpc_manager.stop()
 
+        self._closing_stores.set()
         if self.loaded:
             self.p2p_manager.peer_db.close()
             # Core's `~BanMan` dumps the list one last time
@@ -1086,9 +1117,10 @@ class Node(threading.Thread):
             lock.release()
 
     def stop(self) -> None:
-        """Ask the main loop to stop, and wait a bounded time for it.
+        """Ask the main loop to stop, and wait for it.
 
-        Raises if the loop has not come back by then, the node having
+        The wait is bounded until the stores begin to close, and raises if
+        they have not begun by then, the node having
         no way to be sure of its chainstate or its databases while a
         thread is still inside them.
 
@@ -1143,11 +1175,23 @@ class Node(threading.Thread):
           this call and the deadline it answers, so a deadline recorded
           after it would mean this thread went that long without
           recording one: the wedge this raises for.
+
+        Once the stores begin to close, the wait has no bound, as Core's
+        `Shutdown` (`src/init.cpp`, bitcoin/bitcoin@9be056a8a7, the v31.1
+        tag) waits for each flush however long it takes. A close took
+        seconds on a loaded runner (btclib-org/btclib-node#1870), and
+        raising during it would report a wedge where there is none. The
+        cost: a close that never returns holds this call, and the teardown
+        around it, which is the hang the bound above turns into a failure
+        for the loop (btclib-org/btclib-node#115).
         """
         self.terminate_flag.set()
         if self.is_alive() and threading.current_thread() is not self:
             called_at = time.monotonic()
             while self.is_alive():
+                if self._closing_stores.is_set():
+                    self.join()
+                    break
                 deadline = self.rpc_manager.latest_reply_deadline()
                 start = called_at if deadline is None else max(called_at, deadline)
                 remaining = start + STOP_TIMEOUT - time.monotonic()

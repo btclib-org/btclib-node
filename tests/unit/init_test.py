@@ -32,7 +32,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from multiprocessing.pool import Pool, ThreadPool
 from pathlib import Path
-from types import SimpleNamespace
+from types import CodeType, SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast, override
 
 import pytest
@@ -84,10 +84,9 @@ if TYPE_CHECKING:
 # `Node.stop` grants every node, read here at import, before a test
 # patches the constant to the bound it measures.
 #
-# The tests that shorten it put it back once their last answer is given.
-# What follows that answer, closing the stores, is not their subject, and
-# on a loaded Windows runner it alone can take longer than the shortened
-# bound (btclib-org/btclib-node#1840). They join the node's thread before
+# The tests that shorten it put it back once their last answer is given:
+# what follows that answer is not their subject
+# (btclib-org/btclib-node#1840). They join the node's thread before
 # returning, so that the reset lands inside their own `monkeypatch`.
 _STOP_TIMEOUT = btclib_node.STOP_TIMEOUT
 
@@ -937,6 +936,158 @@ def test_a_signal_asks_the_node_to_stop(
     assert callable(handler)
     handler(signal_number, None)
     node.join(timeout=_STOP_TIMEOUT)
+    assert not node.is_alive()
+
+
+def _main_thread_calls(name: str, caller: CodeType) -> bool:
+    """Answer whether the main thread is in a `name` that `caller` called."""
+    frame = sys._current_frames().get(threading.main_thread().ident or 0)
+    while frame is not None and frame.f_back is not None:
+        if frame.f_code.co_name == name and frame.f_back.f_code is caller:
+            return True
+        frame = frame.f_back
+    return False
+
+
+@contextmanager
+def a_sigterm_sent_to_the_node_s_thread(
+    node: Node, name: str, caller: CodeType
+) -> Iterator[list[bool]]:
+    """Send SIGTERM to `node`'s thread once the main thread waits.
+
+    It waits in a `name` that `caller` called. `pthread_kill` hands the
+    signal to the node's thread, as the kernel may hand one sent to the
+    process. The handler is `install_signal_handlers`', and every handler
+    is put back afterwards.
+
+    The list yielded gets whether the handler had not stopped the node 10
+    seconds on, when this context stops it, so that a regression fails
+    rather than hangs.
+    """
+    # SIGTSTP where the platform has one, SIGTERM twice where it has not
+    numbers = (
+        signal.SIGINT,
+        signal.SIGTERM,
+        getattr(signal, "SIGTSTP", signal.SIGTERM),
+    )
+    previous = {number: signal.getsignal(number) for number in numbers}
+    gave_up: list[bool] = []
+
+    def send() -> None:
+        wait_until(lambda: _main_thread_calls(name, caller))
+        signal.pthread_kill(node.ident or 0, signal.SIGTERM)
+        gave_up.append(not node.terminate_flag.wait(10))
+        node.terminate_flag.set()
+
+    install_signal_handlers(node)
+    sender = threading.Thread(target=send, daemon=True)
+    sender.start()
+    try:
+        yield gave_up
+    finally:
+        sender.join(timeout=_STOP_TIMEOUT)
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+
+
+@pytest.mark.skipif(not hasattr(signal, "pthread_kill"), reason="Windows has none")
+def test_a_signal_another_thread_takes_reaches_a_joining_main_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SIGTERM taken by the node's thread stops a node `join` waits on (#1274).
+
+    CPython runs the Python handler on the main thread only, and a signal
+    handled on another thread does not interrupt the main thread's wait.
+    """
+    monkeypatch.setattr(btclib_node, "SIGNAL_POLL_SECONDS", 0.05)
+    node = a_node(tmp_path)
+    node.start()
+    caller = test_a_signal_another_thread_takes_reaches_a_joining_main_thread
+    with a_sigterm_sent_to_the_node_s_thread(node, "join", caller.__code__) as gave_up:
+        node.join()
+    assert not node.is_alive()
+    assert gave_up == [False]
+
+
+@pytest.mark.skipif(not hasattr(signal, "pthread_kill"), reason="Windows has none")
+def test_a_signal_another_thread_takes_reaches_a_starting_main_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SIGTERM taken by the node's thread while `start` waits stops it (#1274).
+
+    The stores load until the handler has set `terminate_flag`.
+    """
+    monkeypatch.setattr(btclib_node, "SIGNAL_POLL_SECONDS", 0.05)
+    node = a_node(tmp_path)
+    load = Node.load
+
+    def held_load(self: Node) -> None:
+        self.terminate_flag.wait(20)
+        load(self)
+
+    monkeypatch.setattr(Node, "load", held_load)
+    # `start`'s own wait for the stores, not `Thread.start`'s
+    with a_sigterm_sent_to_the_node_s_thread(
+        node, "wait", Node.start.__code__
+    ) as gave_up:
+        node.start()
+        node.join()
+    assert not node.is_alive()
+    assert gave_up == [False]
+
+
+def test_a_close_longer_than_the_bound_is_waited_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`stop` waits past `STOP_TIMEOUT` for a chainstate close (#1870).
+
+    The node's thread is held inside `Chainstate.close` before `stop` is
+    called, and released 0.5 seconds on, past a bound of 0.1.
+    """
+    closing = threading.Event()
+    release = threading.Event()
+    close = Chainstate.close
+
+    def held_close(chainstate: Chainstate) -> None:
+        closing.set()
+        release.wait(10)
+        close(chainstate)
+
+    monkeypatch.setattr(Chainstate, "close", held_close)
+    node = a_node(tmp_path)
+    node.start()
+    node.terminate_flag.set()
+    try:
+        assert closing.wait(10)
+        monkeypatch.setattr(btclib_node, "STOP_TIMEOUT", 0.1)
+        threading.Timer(0.5, release.set).start()
+        node.stop()  # raises NodeShutdownTimeoutError here if this regresses
+    finally:
+        release.set()
+        node.join(timeout=_STOP_TIMEOUT)
+    assert not node.is_alive()
+
+
+def test_a_shutdown_notify_that_hangs_still_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`STOP_TIMEOUT` still bounds what comes before the store closes.
+
+    `-shutdownnotify` runs before the stores begin to close, so a command
+    that does not return is a wedge `stop` reports. It is released 10
+    seconds on, so that a regression fails rather than hangs.
+    """
+    release = threading.Event()
+    monkeypatch.setattr(btclib_node, "run_shutdown_notify", lambda *_: release.wait(10))
+    node = a_node(tmp_path)
+    node.start()
+    monkeypatch.setattr(btclib_node, "STOP_TIMEOUT", 0.1)
+    try:
+        with pytest.raises(NodeShutdownTimeoutError, match="did not stop"):
+            node.stop()
+    finally:
+        release.set()
+        node.join(timeout=_STOP_TIMEOUT)
     assert not node.is_alive()
 
 
