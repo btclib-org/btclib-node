@@ -34,7 +34,7 @@ from bitcoin_core_rpc import RPCErrorCode
 from btclib.p2p.address import Addr, ServiceFlags
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 from btclib.p2p.keepalive import Ping
-from btclib.p2p.limits import PROTOCOL_VERSION
+from btclib.p2p.limits import MAX_ADDR_TO_SEND, PROTOCOL_VERSION
 
 from btclib_node.chains import Main, RegTest
 from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS, BindAddress
@@ -65,7 +65,7 @@ from btclib_node.p2p.banman import (
     Subnet,
     lookup_subnet,
 )
-from btclib_node.p2p.connection import AddrKnown, local_services
+from btclib_node.p2p.connection import AddrKnown, Connection, local_services
 from btclib_node.p2p.eviction import Network, get_network, net_group
 from btclib_node.p2p.main import handle_p2p_handshake
 from btclib_node.p2p.manager import P2pManager
@@ -170,13 +170,21 @@ def a_conn(
         transport=SimpleNamespace(should_reconnect_v1=lambda: reconnect_v1),
         addr_relay_enabled=False,
         next_local_addr_send=0.0,
+        next_addr_send=0.0,
         addr_known=AddrKnown(),
+        _addrs_to_send=[],
+        _addrs_to_send_lock=threading.Lock(),
         prefer_addressv2=True,
         sent=[],
         stopped=[],
     )
     conn.send = conn.sent.append
     conn.stop = lambda: conn.stopped.append(True)
+    # the queue is the real one's
+    conn.push_address = Connection.push_address.__get__(conn)
+    conn._push_address = Connection._push_address.__get__(conn)
+    conn.replace_addresses = Connection.replace_addresses.__get__(conn)
+    conn.take_addresses = Connection.take_addresses.__get__(conn)
 
     def send_ping() -> None:
         conn.ping_start = time.time()
@@ -2358,6 +2366,8 @@ def test_a_relaying_peer_is_told_the_local_address_once_in_a_while(
     manager._maybe_send_local_addr(conn, 1099.0)
     assert len(conn.sent) == 1
     manager._maybe_send_local_addr(conn, 1100.0)
+    assert len(conn.sent) == 1
+    manager._send_queued_addrs(conn, 1100.0)
     assert len(conn.sent) == 2
 
 
@@ -2367,7 +2377,7 @@ def test_a_later_self_announcement_resets_what_the_peer_knows(
     """ISS 1851: Core resets `m_addr_known` before every later announcement.
 
     The first is sent without being recorded; a later one empties the
-    filter and records the address it sends.
+    filter and is recorded once it is sent.
     """
     manager, conn = an_announcing_manager(a_manager)
     monkeypatch.setattr(secrets.SystemRandom, "expovariate", lambda self, rate: 100.0)
@@ -2378,9 +2388,258 @@ def test_a_later_self_announcement_resets_what_the_peer_knows(
     assert gossiped in conn.addr_known
     assert local not in conn.addr_known
     manager._maybe_send_local_addr(conn, 1100.0)
-    assert len(conn.sent) == 2
+    assert len(conn.sent) == 1
     assert gossiped not in conn.addr_known
+    manager._send_queued_addrs(conn, 1100.0)
+    assert len(conn.sent) == 2
     assert local in conn.addr_known
+
+
+def test_a_later_self_announcement_goes_with_the_relayed_addresses(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1867: Core queues a later announcement beside the other addresses."""
+    manager, conn = an_announcing_manager(a_manager)
+    monkeypatch.setattr(secrets.SystemRandom, "expovariate", lambda self, rate: 100.0)
+    manager._maybe_send_local_addr(conn, 1000.0)
+    relayed = peer_address("1.2.3.4", 18444, 1000)
+    conn.push_address(relayed)
+    manager._maybe_send_local_addr(conn, 1100.0)
+    manager._send_queued_addrs(conn, 1100.0)
+    assert [a.address for a in conn.sent[-1].addresses] == [
+        relayed.address,
+        peer_address("8.8.8.8", 7).address,
+    ]
+
+
+def test_queued_addresses_are_sent_once_in_thirty_seconds_on_average(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1867: `MaybeSendAddr` sends the queue, then draws a wait."""
+    manager = a_manager()
+    conn = a_conn(1)
+    conn.addr_relay_enabled = True
+    monkeypatch.setattr(secrets.SystemRandom, "expovariate", lambda self, rate: 30.0)
+    first = peer_address("1.2.3.4", 18444, 1000)
+    second = peer_address("1.2.3.5", 18444, 1000)
+    conn.push_address(first)
+    manager._send_queued_addrs(conn, 1000.0)
+    [sent] = conn.sent
+    assert sent.addresses == (first,)
+    assert conn.next_addr_send == 1030.0
+    assert conn.take_addresses() == []
+    conn.push_address(second)
+    manager._send_queued_addrs(conn, 1030.0)
+    assert len(conn.sent) == 1
+    manager._send_queued_addrs(conn, 1031.0)
+    assert conn.sent[-1].addresses == (second,)
+
+
+def test_queued_addresses_the_peer_knows_are_not_sent(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1867: an address that became known after it was queued is dropped."""
+    manager = a_manager()
+    conn = a_conn(1)
+    conn.addr_relay_enabled = True
+    known = peer_address("1.2.3.4", 18444, 1000)
+    new = peer_address("1.2.3.5", 18444, 1000)
+    conn.push_address(known)
+    conn.push_address(new)
+    conn.addr_known.add(service_key(known))
+    manager._send_queued_addrs(conn, 1000.0)
+    [sent] = conn.sent
+    assert sent.addresses == (new,)
+    assert service_key(new) in conn.addr_known
+
+
+def test_an_empty_queue_sends_nothing_and_the_wait_is_still_drawn(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1867: no message is sent for an empty queue."""
+    manager = a_manager()
+    conn = a_conn(1)
+    conn.addr_relay_enabled = True
+    manager._send_queued_addrs(conn, 1000.0)
+    assert conn.sent == []
+    assert conn.next_addr_send > 1000.0
+
+
+def test_a_peer_not_relaying_addresses_is_sent_none(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1867: `MaybeSendAddr` returns first for a peer without relay."""
+    manager = a_manager()
+    conn = a_conn(1)
+    conn.push_address(peer_address("1.2.3.4", 18444, 1000))
+    manager._send_queued_addrs(conn, 1000.0)
+    assert conn.sent == []
+    assert conn.next_addr_send == 0.0
+
+
+def test_a_peer_wanting_addr_version_1_is_sent_queued_addresses_in_an_addr(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1867: `ADDR` for a peer not asking `ADDRV2`."""
+    manager = a_manager()
+    conn = a_conn(1)
+    conn.addr_relay_enabled = True
+    conn.prefer_addressv2 = False
+    conn.push_address(peer_address("1.2.3.4", 18444, 1000))
+    manager._send_queued_addrs(conn, 1000.0)
+    [sent] = conn.sent
+    assert isinstance(sent, Addr)
+
+
+def an_address_on(network_id: BIP155Network) -> NetworkAddressV2:
+    """Build an address on `network_id`, which IPv4 and IPv6 are not."""
+    size = 32 if network_id in (BIP155Network.TORV3, BIP155Network.I2P) else 16
+    return NetworkAddressV2(1000, 0, network_id, b"\x11" * size, 8333)
+
+
+def test_an_address_addr_version_1_cannot_carry_is_not_queued_for_that_peer() -> None:
+    """ISS 1867: `PushAddress` asks `IsAddrCompatible`."""
+    onion = an_address_on(BIP155Network.TORV3)
+    conn = a_conn(1)
+    conn.prefer_addressv2 = False
+    conn.push_address(onion)
+    assert conn.take_addresses() == []
+    conn.prefer_addressv2 = True
+    conn.push_address(onion)
+    assert conn.take_addresses() == [onion]
+
+
+def test_a_full_queue_gives_a_random_place_to_the_next_address() -> None:
+    """ISS 1867: `PushAddress` replaces one of `MAX_ADDR_TO_SEND` at random."""
+    conn = a_conn(1)
+    for index in range(MAX_ADDR_TO_SEND):
+        conn.push_address(peer_address(f"1.2.{index // 250}.{index % 250 + 1}", 8333))
+    last = peer_address("9.9.9.9", 8333)
+    conn.push_address(last)
+    queued = conn.take_addresses()
+    assert len(queued) == MAX_ADDR_TO_SEND
+    assert last in queued
+    assert conn.take_addresses() == []
+
+
+def test_an_address_the_peer_knows_is_not_queued() -> None:
+    """ISS 1867: `PushAddress` leaves out what `m_addr_known` holds."""
+    conn = a_conn(1)
+    known = peer_address("1.2.3.4", 18444, 1000)
+    conn.addr_known.add(service_key(known))
+    conn.push_address(known)
+    assert conn.take_addresses() == []
+
+
+def peers_to_relay_to(count: int) -> list[Any]:
+    """Return `count` peers taking part in address relay."""
+    conns = [a_conn(conn_id) for conn_id in range(1, count + 1)]
+    for conn in conns:
+        conn.addr_relay_enabled = True
+    return conns
+
+
+def test_a_reachable_address_is_relayed_to_two_other_peers(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1867: `RelayAddress` pushes a reachable address to two peers."""
+    conns = peers_to_relay_to(6)
+    manager = a_manager(conns)
+    address = peer_address("5.6.7.8", 8333, 1000)
+    manager.relay_address(conns[0], address, 1000.0)
+    queued = {conn.id: conn.take_addresses() for conn in conns}
+    assert queued[1] == []
+    assert sorted(len(v) for v in queued.values()) == [0, 0, 0, 0, 1, 1]
+    assert all(v in ([], [address]) for v in queued.values())
+
+
+def test_an_address_is_not_relayed_back_to_the_peer_that_gossiped_it(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1867: `RelayAddress` leaves out the originator."""
+    conns = peers_to_relay_to(2)
+    manager = a_manager(conns)
+    address = peer_address("5.6.7.8", 8333, 1000)
+    manager.relay_address(conns[0], address, 1000.0)
+    assert conns[0].take_addresses() == []
+    assert conns[1].take_addresses() == [address]
+
+
+def test_an_address_is_relayed_only_to_peers_that_can_carry_it(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1867: `RelayAddress` asks `IsAddrCompatible` of each peer."""
+    conns = peers_to_relay_to(7)
+    v1_peers = conns[1:4]
+    for conn in v1_peers:
+        conn.prefer_addressv2 = False
+    manager = a_manager(conns)
+    for port in range(1, 21):
+        onion = replace(an_address_on(BIP155Network.TORV3), port=port)
+        manager.relay_address(conns[0], onion, 1000.0)
+        queued = {conn.id: conn.take_addresses() for conn in conns}
+        assert [conn.id for conn in v1_peers if queued[conn.id]] == []
+        assert sum(len(v) for v in queued.values()) in (1, 2)
+
+
+def test_an_address_is_not_relayed_to_a_peer_outside_address_relay(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1867: `RelayAddress` chooses among `m_addr_relay_enabled` peers."""
+    conns = peers_to_relay_to(3)
+    conns[1].addr_relay_enabled = False
+    manager = a_manager(conns)
+    manager.relay_address(conns[0], peer_address("5.6.7.8", 8333, 1000), 1000.0)
+    assert conns[1].take_addresses() == []
+    assert conns[2].take_addresses() != []
+
+
+def test_an_address_goes_to_the_same_peers_within_a_day(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1867: the peers an address is relayed to rotate every 24 hours."""
+    conns = peers_to_relay_to(20)
+    manager = a_manager(conns)
+    address = peer_address("5.6.7.8", 8333, 1000)
+    originator = a_conn(99)
+
+    def chosen(now: float) -> frozenset[int]:
+        manager.relay_address(originator, address, now)
+        return frozenset(conn.id for conn in conns if conn.take_addresses())
+
+    assert chosen(100_000.0) == chosen(100_001.0)
+    assert len({chosen(100_000.0 + day * 86_400) for day in range(8)}) > 1
+
+
+@pytest.mark.parametrize(
+    ("network_id", "relayed"),
+    [
+        (BIP155Network.TORV3, True),
+        (BIP155Network.CJDNS, True),
+        (BIP155Network.YGGDRASIL, False),
+    ],
+)
+def test_an_unreachable_address_is_relayed_only_if_relayable(
+    a_manager: AManagerFactory, network_id: BIP155Network, *, relayed: bool
+) -> None:
+    """ISS 1867: `RelayAddress` skips what is not reachable or relayable."""
+    conns = peers_to_relay_to(4)
+    manager = a_manager(conns)
+    manager.relay_address(conns[0], an_address_on(network_id), 1000.0)
+    assert any(conn.take_addresses() for conn in conns) is relayed
+
+
+def test_manage_connections_pass_sends_the_queued_addresses(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1867: the queue is sent from the per-connection pass."""
+    manager = a_manager()
+    conn = a_conn(1)
+    conn.addr_relay_enabled = True
+    manager.connections[conn.id] = conn
+    conn.push_address(peer_address("1.2.3.4", 18444, 1000))
+    manager._prune_stale_connections(time.time())
+    assert len(conn.sent) == 1
 
 
 def test_a_peer_wanting_addr_version_1_is_told_in_an_addr_message(

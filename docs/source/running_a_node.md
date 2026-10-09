@@ -210,8 +210,9 @@ Each mirrors the Core method of the same name: `getbestblockhash`,
 `getmempoolancestors`, `getmempooldescendants`, `getrawmempool`,
 `getrawtransaction`, `gettxout`, `gettxspendingprevout`, `gettxoutsetinfo`,
 `dumptxoutset`, `scantxoutset`, `decoderawtransaction`, `testmempoolaccept`,
-`sendrawtransaction`, `submitpackage`, `estimatesmartfee`, `ping`,
-`getrpcinfo`, `stop`, `help`. Core's own hidden commands -- `addconnection`,
+`sendrawtransaction`, `submitpackage`, `signrawtransactionwithkey`,
+`combinerawtransaction`, `signmessagewithprivkey`, `verifymessage`, `estimatesmartfee`,
+`ping`, `getrpcinfo`, `stop`, `help`. Core's own hidden commands -- `addconnection`,
 `generatetoaddress`, `generateblock` and `estimaterawfee` among them -- are
 left off this list the same way `bitcoin-cli help`'s bare listing leaves them
 off. The `callbacks` table in

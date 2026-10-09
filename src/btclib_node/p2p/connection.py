@@ -30,10 +30,10 @@ from typing import TYPE_CHECKING, cast, override
 
 from btclib.exceptions import BTClibRuntimeError, BTClibValueError
 from btclib.p2p.address import NetworkAddress, ServiceFlags
-from btclib.p2p.addrv2 import network_address
+from btclib.p2p.addrv2 import can_addrv1, network_address
 from btclib.p2p.handshake import Version
 from btclib.p2p.keepalive import Ping
-from btclib.p2p.limits import PROTOCOL_VERSION
+from btclib.p2p.limits import MAX_ADDR_TO_SEND, PROTOCOL_VERSION
 
 from btclib_node.constants import (
     DEFAULT_MAXRECEIVEBUFFER,
@@ -42,7 +42,7 @@ from btclib_node.constants import (
     P2pConnStatus,
 )
 from btclib_node.exceptions import RejectedMessageError
-from btclib_node.p2p.address import ip_and_port
+from btclib_node.p2p.address import ip_and_port, service_key
 from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.callbacks import handshake_callbacks
 from btclib_node.p2p.chain_sync import ChainSyncTimeoutState
@@ -62,6 +62,7 @@ from btclib_node.rolling_bloom import RollingBloomFilter
 
 if TYPE_CHECKING:
     import socket
+    from collections.abc import Iterable
     from concurrent.futures import Future
 
     from btclib.p2p.addrv2 import NetworkAddressV2
@@ -315,8 +316,9 @@ class AddrKnown(RollingBloomFilter):
     in a thousand of the addresses the peer neither sent nor was sent.
 
     Reached from `Node`'s thread, by the `addr`, `addrv2` and `getaddr`
-    callbacks, and from `P2pManager`'s, by the self-announcement. Each
-    call holds a lock, as Core's `g_msgproc_mutex` guards its filter.
+    callbacks and by `push_address` for a relayed address, and from
+    `P2pManager`'s, by the self-announcement and `_send_queued_addrs`.
+    Each call holds a lock, as Core's `g_msgproc_mutex` guards its filter.
     """
 
     __slots__ = ("_lock",)
@@ -445,6 +447,16 @@ class Connection:
     # Written and read on `P2pManager`'s loop alone; a class default for
     # the same reason as `time_received`.
     next_local_addr_send: float = 0.0
+    # Core's `Peer::m_next_addr_send`: when `P2pManager` next sends this
+    # peer the addresses `push_address` queued. Written and read on
+    # `P2pManager`'s loop alone; a class default for the same reason as
+    # `time_received`.
+    next_addr_send: float = 0.0
+    # Core's `Peer::m_getaddr_sent`: whether this node asked this peer for
+    # addresses and has not yet had an answer. Set by `callbacks.version`
+    # and cleared by `callbacks._store_gossip`, both on `Node`'s thread;
+    # a class default for the same reason as `time_received`.
+    getaddr_sent: bool = False
     # Core's `CNode::m_inbound_onion` (`src/net.h`, same sha): whether
     # this peer reached an `=onion` listener. Set by
     # `P2pManager.create_connection` before the task is scheduled, and
@@ -696,6 +708,14 @@ class Connection:
         # What this peer is known to have among addresses, so that one is
         # not sent to it again: Core's `m_addr_known`.
         self.addr_known: AddrKnown = AddrKnown()
+        # Core's `m_addrs_to_send`: the addresses waiting for the next
+        # send, at most `MAX_ADDR_TO_SEND`. `Node`'s thread pushes to it,
+        # for an address another peer gossiped, and replaces it with a
+        # `getaddr` answer; `P2pManager`'s pushes this node's own address
+        # and takes the queue to send it. The lock is Core's
+        # `g_msgproc_mutex` for it.
+        self._addrs_to_send: list[NetworkAddressV2] = []
+        self._addrs_to_send_lock = threading.Lock()
 
         # What this node last told this peer its own minimum relay
         # feerate is, and when it may next say so again -- Core's own
@@ -1270,6 +1290,46 @@ class Connection:
         message = self._queue(payload)
         if message is not None:
             await self._deliver(message)
+
+    def push_address(self, address: NetworkAddressV2) -> None:
+        """Queue `address` for this peer, as Core's `PushAddress` does.
+
+        An address the peer knows is left out, and so is one an addr
+        version 1 peer cannot read. In a full queue, `address` replaces one
+        entry at random. The check against `addr_known` only saves space:
+        the sender checks again, for what the peer came to know meanwhile.
+        """
+        with self._addrs_to_send_lock:
+            self._push_address(address)
+
+    def replace_addresses(self, addresses: Iterable[NetworkAddressV2]) -> None:
+        """Empty the queue and push `addresses`, in one step.
+
+        Core's `GETADDR` handler does this under `g_msgproc_mutex`, which
+        `MaybeSendAddr` takes too: a send never finds half the answer.
+        """
+        with self._addrs_to_send_lock:
+            self._addrs_to_send = []
+            for address in addresses:
+                self._push_address(address)
+
+    def _push_address(self, address: NetworkAddressV2) -> None:
+        """Queue `address` as `push_address` does, the lock held."""
+        if not (self.prefer_addressv2 or can_addrv1(address)):
+            return
+        if service_key(address) in self.addr_known:
+            return
+        if len(self._addrs_to_send) >= MAX_ADDR_TO_SEND:
+            index = secrets.randbelow(len(self._addrs_to_send))
+            self._addrs_to_send[index] = address
+        else:
+            self._addrs_to_send.append(address)
+
+    def take_addresses(self) -> list[NetworkAddressV2]:
+        """Return the queued addresses and empty the queue."""
+        with self._addrs_to_send_lock:
+            queued, self._addrs_to_send = self._addrs_to_send, []
+        return queued
 
     def send(self, msg: Payload) -> None:
         """Serialize and count `msg` here, and schedule its write onto the loop.

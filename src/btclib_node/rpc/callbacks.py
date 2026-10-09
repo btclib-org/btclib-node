@@ -101,6 +101,12 @@ from btclib_node.rpc.package import (
     package_test_accept,
     submit_package,
 )
+from btclib_node.rpc.signing import (
+    combine_raw_transaction,
+    sign_message_with_privkey,
+    sign_raw_transaction_with_key,
+    verify_message,
+)
 from btclib_node.rpc.snapshot import dump_tx_out_set
 from btclib_node.rpc.solver import solver
 from btclib_node.rpc.utxo_set import scan_tx_out_set
@@ -4470,6 +4476,10 @@ callbacks = {
     "decoderawtransaction": decode_raw_transaction,
     "testmempoolaccept": test_mempool_accept,
     "sendrawtransaction": send_raw_transaction,
+    "signmessagewithprivkey": sign_message_with_privkey,
+    "verifymessage": verify_message,
+    "signrawtransactionwithkey": sign_raw_transaction_with_key,
+    "combinerawtransaction": combine_raw_transaction,
     "submitpackage": submit_package,
     "estimatesmartfee": estimate_smart_fee,
     "estimaterawfee": estimate_raw_fee,
@@ -4548,6 +4558,10 @@ arg_names: dict[str, tuple[str, ...]] = {
     "decoderawtransaction": ("hexstring", "iswitness"),
     "testmempoolaccept": ("rawtxs", "maxfeerate"),
     "sendrawtransaction": ("hexstring", "maxfeerate", "maxburnamount"),
+    "signmessagewithprivkey": ("privkey", "message"),
+    "verifymessage": ("address", "signature", "message"),
+    "signrawtransactionwithkey": ("hexstring", "privkeys", "prevtxs", "sighashtype"),
+    "combinerawtransaction": ("txs",),
     "submitpackage": ("package", "maxfeerate", "maxburnamount"),
     "estimatesmartfee": ("conf_target", "estimate_mode"),
     "estimaterawfee": ("conf_target", "threshold"),

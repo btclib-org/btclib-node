@@ -162,6 +162,13 @@ btclib\_node.signet module
    :members:
    :show-inheritance:
 
+btclib\_node.signing module
+-------------------------------
+
+.. automodule:: btclib_node.signing
+   :members:
+   :show-inheritance:
+
 btclib\_node.snapshot module
 -----------------------------
 

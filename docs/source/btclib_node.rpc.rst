@@ -88,6 +88,13 @@ btclib\_node.rpc.package module
    :members:
    :show-inheritance:
 
+btclib\_node.rpc.signing module
+-----------------------------------
+
+.. automodule:: btclib_node.rpc.signing
+   :members:
+   :show-inheritance:
+
 btclib\_node.rpc.snapshot module
 -----------------------------------
 
