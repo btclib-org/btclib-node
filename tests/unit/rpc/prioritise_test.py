@@ -32,7 +32,11 @@ from btclib_node.rpc.callbacks import (
 from btclib_node.rpc.errors import RpcError
 from btclib_node.rpc.help import CATEGORY, HELP_TEXT
 from btclib_node.rpc.jsonrpc import decode, transform_named_arguments
-from tests import anyone_can_spend, anyone_can_spend_script_sig
+from tests import (
+    anyone_can_spend,
+    anyone_can_spend_script_sig,
+    txids_the_two_orders_disagree_on,
+)
 
 _CONN = cast("Any", None)
 _TXID = "1d1d4e24ed99057e84c3f80fd8fbec79ed9e1acee37da269356ecea000000000"
@@ -120,13 +124,14 @@ def test_a_held_transaction_is_listed_with_its_modified_fee() -> None:
 
 
 def test_the_list_is_in_the_order_of_the_internal_txid_bytes() -> None:
-    """Core's `std::map<Txid, CAmount>`, measured with eight random txids."""
+    """Core's `std::map<Txid, CAmount>` is not in the displayed order."""
     node = a_node()
-    txids = [secrets.token_bytes(32) for _ in range(8)]
+    txids = txids_the_two_orders_disagree_on()
     for txid in txids:
         prioritise_transaction(node, _CONN, [txid.hex(), None, 1])
     listed = list(get_prioritised_transactions(node, _CONN, []))
     assert listed == [txid.hex() for txid in sorted(txids, key=lambda txid: txid[::-1])]
+    assert listed != [txid.hex() for txid in sorted(txids)]
 
 
 def test_the_fees_of_a_held_transaction_carry_the_delta() -> None:
