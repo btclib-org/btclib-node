@@ -229,6 +229,7 @@ from btclib_node.constants import (
     DEFAULT_MAXRECEIVEBUFFER,
     DEFAULT_MAXSENDBUFFER,
     DEFAULT_MEMPOOL_EXPIRY_HOURS,
+    DIR_MODE,
     MIN_PRUNE_TARGET_MIB,
     default_data_dir,
 )
@@ -1788,9 +1789,9 @@ def _check_datadir(base_dir: Path, datadir: str) -> None:
     default (unset `-datadir`) path is never checked at all, matching
     Core's own `datadir.empty()` bypass -- `build_config` below only
     calls this when `-datadir` names a directory -- and keeps the lazy
-    creation `Node.__init__`'s own `mkdir(exist_ok=True, parents=True)`
-    (`__init__.py`) already gives it, the same shape Core's own default
-    path gets from `GetBlocksDirPath`'s `fs::create_directories`.
+    creation `Node.__init__`'s own `mkdir` (`__init__.py`) already gives it,
+    the same shape Core's own default path gets from `GetBlocksDirPath`'s
+    `fs::create_directories`.
     """
     if not base_dir.is_dir():
         err_msg = f'Specified data directory "{datadir}" does not exist.'
@@ -2456,8 +2457,8 @@ def _lock(directories: Config) -> tuple[DirectoryLock, ...]:
     the `Node` holds its own.
     """
     blocks_dir = blocks_directory(directories.data_dir, directories.blocks_dir)
-    directories.data_dir.mkdir(exist_ok=True, parents=True)
-    blocks_dir.mkdir(exist_ok=True, parents=True)
+    directories.data_dir.mkdir(mode=DIR_MODE, exist_ok=True, parents=True)
+    blocks_dir.mkdir(mode=DIR_MODE, exist_ok=True, parents=True)
     return lock_directories(directories.data_dir, blocks_dir)
 
 

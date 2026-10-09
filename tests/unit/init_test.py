@@ -22,6 +22,7 @@ import os
 import re
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -1235,6 +1236,25 @@ def test_a_stopped_node_leaves_its_directories_to_another_process(
     node.stop()
     assert lock_from_another_process(node.data_dir) == "locked"
     assert lock_from_another_process(blocks_dir) == "locked"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX modes")
+def test_a_node_creates_its_locks_and_directories_owner_only_under_any_umask(
+    tmp_path: Path,
+) -> None:
+    """Only `cli.main` sets Core's umask 077; a library caller keeps its own."""
+    umask = os.umask(0)
+    try:
+        node = a_node(tmp_path)
+    finally:
+        os.umask(umask)
+    node.start()
+    node.stop()
+    locks = list(node.data_dir.rglob(".lock"))
+    directories = [node.data_dir, *(p for p in node.data_dir.rglob("*") if p.is_dir())]
+    assert {lock.parent for lock in locks} >= {node.data_dir, node.data_dir / "blocks"}
+    assert {stat.S_IMODE(lock.stat().st_mode) for lock in locks} == {0o600}
+    assert {stat.S_IMODE(d.stat().st_mode) for d in directories} == {0o700}
 
 
 def test_a_node_is_constructible_off_the_main_thread(tmp_path: Path) -> None:

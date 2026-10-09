@@ -393,6 +393,7 @@ from rocksdict import (
     WriteOptions,
 )
 
+from btclib_node.constants import DIR_MODE
 from btclib_node.exceptions import (
     IncompatibleStoreError,
     StoreClosedError,
@@ -509,7 +510,7 @@ class KeyValueStore:
     def __init__(self, path: str | Path) -> None:
         """Open (or create) the store at `path`, refusing a sqlite3 one."""
         self.path = Path(path)
-        self.path.mkdir(exist_ok=True, parents=True)
+        self.path.mkdir(mode=DIR_MODE, exist_ok=True, parents=True)
         if (self.path / _SQLITE_MARKER).exists():
             err_msg = f"{self.path} holds a sqlite3 database, which this "
             err_msg += "version cannot read: delete the directory and sync "

@@ -13,6 +13,7 @@ than a node's knob (btclib-org/btclib#1580), and `PROTOCOL_VERSION` is
 """
 
 import enum
+import sys
 from datetime import timedelta
 from importlib.metadata import version
 from pathlib import Path
@@ -23,6 +24,7 @@ __all__ = [
     "DEFAULT_MAXRECEIVEBUFFER",
     "DEFAULT_MAXSENDBUFFER",
     "DEFAULT_MEMPOOL_EXPIRY_HOURS",
+    "DIR_MODE",
     "MAX_TIP_AGE",
     "MIN_BLOCKS_TO_KEEP",
     "MIN_PRUNE_TARGET_MIB",
@@ -44,6 +46,11 @@ DEFAULT_MAXSENDBUFFER = 1 * 1000
 # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the default of
 # `-mempoolexpiry`, in hours.
 DEFAULT_MEMPOOL_EXPIRY_HOURS = 336
+
+# Mode of the directories the node creates: Core's umask 077 makes them 0700.
+# Windows gets 0777, as Core does: since Python 3.13 a 0700 there is a
+# protected ACL where Core's directories inherit the parent's.
+DIR_MODE = 0o777 if sys.platform == "win32" else 0o700
 
 # Core's own `DEFAULT_MAX_TIP_AGE` (`src/kernel/chainstatemanager_opts.h`
 # :24, at bitcoin/bitcoin@ca7162cde5): `config.Config.max_tip_age`'s own
