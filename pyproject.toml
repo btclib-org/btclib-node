@@ -69,7 +69,9 @@ dependencies = [
     # (btclib-org/btclib#2559), which `mempool_persist.py` imports.
     #
     # 2026.10.8 is the first release with `ShortIdCollisionError`
-    # (btclib-org/btclib#2570), which `p2p/callbacks.py` imports.
+    # (btclib-org/btclib#2570), which `p2p/callbacks.py` imports, and with
+    # `verify_input`'s `signatures` (btclib-org/btclib#2564), which
+    # `signing.py` passes.
     "btclib[secp256k1,bip324]>=2026.10.8",
     # `rpc/callbacks.py` and `rpc/utxo_set.py` import from
     # `btclib_wallet.descriptors`, where btclib's own `descriptors`

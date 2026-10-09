@@ -528,8 +528,9 @@ def produce_signature(
 def data_from_transaction(signer: InputSigner) -> SignatureData:
     """Run `DataFromTransaction`: what the input already holds.
 
-    The signatures its first `VerifyScript` accepts are kept, as Core's
-    `SignatureExtractorChecker` keeps them, even where the input is refused.
+    The signatures its first `VerifyScript` accepts are kept, the first for
+    each key, as Core's `SignatureExtractorChecker` keeps them, even where
+    the input is refused.
 
     An input that passes the script checks is complete. Otherwise the
     scripts are read back and, of a partly signed multisig, the signatures,

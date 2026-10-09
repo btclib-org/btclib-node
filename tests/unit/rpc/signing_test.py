@@ -748,6 +748,67 @@ def test_a_signature_of_a_refused_input_is_kept(name: str) -> None:
     assert answers == [complete, complete, {"hex": complete, "complete": True}]
 
 
+# a bare 2-of-2 that lists one key twice, so two signatures of it are valid
+TWICE = multisig(2, PUB_A, PUB_A)
+ALL_OR_ANYONE = ("ALL", "ALL|ANYONECANPAY")
+
+
+def stack_of(hex_tx: str) -> list[bytes]:
+    """Return the stack the script_sig of the first input leaves."""
+    return _script_sig_stack(Tx.parse(bytes.fromhex(hex_tx)).vin[0].script_sig)
+
+
+def two_signatures(raw: str, prevtxs: list[dict[str, Any]], key: str) -> list[bytes]:
+    """Return `key`'s signature of `raw` under ALL, then ALL|ANYONECANPAY."""
+    return [
+        stack_of(
+            call("signrawtransactionwithkey", [raw, [key], prevtxs, hash_type])["hex"]
+        )[1]
+        for hash_type in ALL_OR_ANYONE
+    ]
+
+
+def test_the_first_signature_accepted_for_a_key_is_kept() -> None:
+    """Two signatures of one key pass the first run; the first it checks stays.
+
+    The run checks the last signature first, so it is the ANYONECANPAY one,
+    which a call with an unrelated key gives back. CLEANSTACK refuses the
+    extra push, and Core's `SignatureExtractorChecker` keeps the first it
+    accepts for each key.
+    """
+    prevtxs = [prevtx(TWICE)]
+    first, second = two_signatures(RAW, prevtxs, KA)
+    assert first != second
+    padded = hex_of(
+        a_spend(
+            (FUNDING, 0),
+            script_sig=b"\x51\x00"
+            + bytes([len(first)])
+            + first
+            + bytes([len(second)])
+            + second,
+        )
+    )
+    answer = call("signrawtransactionwithkey", [padded, [KU], prevtxs])
+    assert answer["complete"] is True
+    assert stack_of(answer["hex"])[1:] == [second, second]
+
+
+def test_the_merge_keeps_the_first_signature_of_a_key() -> None:
+    """Of two signatures of one key, the first transaction's is the merge's."""
+    script = multisig(2, PUB_A, PUB_B)
+    prevtxs = [prevtx(script)]
+    first, second = two_signatures(RAW, prevtxs, KA)
+    assert first != second
+    halves = [
+        call("signrawtransactionwithkey", [RAW, [key], prevtxs, hash_type])["hex"]
+        for key, hash_type in ((KA, "ALL"), (KA, "ALL|ANYONECANPAY"), (KB, "ALL"))
+    ]
+    node = a_node({(FUNDING, 0): TxOut(AMOUNT, script)})
+    merged = call("combinerawtransaction", [halves], node)
+    assert stack_of(merged)[1] == first
+
+
 def test_the_cases_are_all_in_the_vectors() -> None:
     """A case without a vector is one nothing holds to Core."""
     assert sorted(CASES) == sorted(VECTORS)

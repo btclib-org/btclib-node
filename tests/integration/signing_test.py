@@ -32,12 +32,14 @@ from tests.unit.rpc.signing_test import (
     RAW,
     REFUSALS,
     SIGNATURE,
+    TWICE,
     a_node,
     a_spend,
     call,
     case_call,
     hex_of,
     prevtx,
+    stack_of,
 )
 
 PARSE_ERROR = -32700
@@ -283,6 +285,41 @@ def test_a_signature_of_a_refused_input_is_extracted_as_bitcoind_extracts_it(
         "hex": complete,
         "complete": True,
     }
+
+
+def test_the_first_signature_accepted_for_a_key_is_the_one_kept(
+    bitcoind: Bitcoind,
+) -> None:
+    """Two signatures of one key pass the first run: both keep the same.
+
+    The script is a bare 2-of-2 that lists a key twice. CLEANSTACK refuses
+    the input after its signatures are checked, and a call with an unrelated
+    key gives back the one `SignatureExtractorChecker` saw first.
+    """
+    txid, out = mined_to(bitcoind, TWICE)
+    node = a_node({(txid, 0): out})
+    raw = hex_of(a_spend((txid, 0), values=(out.value - 1000,)))
+    prevtxs = [{**prevtx(TWICE, None, out.value), "txid": txid.hex()}]
+    signatures = [
+        stack_of(
+            cast(
+                "dict[str, Any]",
+                bitcoind.rpc(
+                    "signrawtransactionwithkey", [raw, [KA], prevtxs, hash_type]
+                ),
+            )["hex"]
+        )[1]
+        for hash_type in ("ALL", "ALL|ANYONECANPAY")
+    ]
+    assert signatures[0] != signatures[1]
+    script_sig = b"\x51\x00" + b"".join(bytes([len(sig)]) + sig for sig in signatures)
+    padded = hex_of(
+        a_spend((txid, 0), values=(out.value - 1000,), script_sig=script_sig)
+    )
+    params: list[Any] = [padded, [KU], prevtxs]
+    answer = bitcoind.rpc("signrawtransactionwithkey", params)
+    assert call("signrawtransactionwithkey", params, node) == answer
+    assert stack_of(cast("dict[str, Any]", answer)["hex"])[1:] == [signatures[1]] * 2
 
 
 def test_an_unknown_output_is_unsigned_in_both(bitcoind: Bitcoind) -> None:
