@@ -81,7 +81,7 @@ scans the branch's own commit text for a verb in front of a reference.
 and not the forms, which are the half a citation is got wrong in:
 `(closes #N)` cites an issue the change closes, wherever the citation
 sits — the title, the commit subject where [*Merge method*][s11] makes
-that the thing that lands, and a `CHANGELOG.md` entry — and `(issue #N)`
+that the thing that lands — and `(issue #N)`
 cites, in those same places, an issue the change advances and does *not*
 close. One token holds one meaning whichever file it sits in, so the
 pair is chosen by what is true of the change rather than by which file
@@ -93,27 +93,8 @@ before the rule stays where it is.
 file's other half. Read before opening a pull request, it is what the
 pull request will be answered against.
 
-`CHANGELOG.md` gets an entry for anything a reader would notice, and the
-release notes move only for something a user has to *act* on, in the
-repositories that publish.
-
-Where that entry goes is [section 9][s9]'s — the end of the open
-section — and a gate reads it only in part: `check-changelog` refuses an
-entry under a release older than the newest, and cannot tell where in
-the open section the branch's entry sits. The open
-section's headings, in the order the file holds them, a branch's own
-last:
-
-```shell
-awk '/^## /{n++} n==1 && /^### /' CHANGELOG.md
-```
-
-`n==1` takes the open section, from the first `##` heading to the next,
-and the scan is `/^## /` rather than `/^## v/`: a section headed
-`## Unreleased` is no match for `/^## v/`, which counts from the first
-release heading instead and prints a released section's entries — or
-nothing, where the tree has released nothing — while reading as a
-check that passed.
+A pull request adds no entry to `CHANGELOG.md` or `RELEASE_NOTES.md`, a
+release's own pull request excepted ([section 9][s9], [section 12][s12]).
 
 ### One subject, opened as soon as it is written
 
@@ -184,9 +165,10 @@ free to move under a review:
 - the reviewer answers with findings — where, what is wrong, how they
   know it, and whether each is blocking;
 - the author accepts what is reasonable, declines the rest with a reason
-  in the thread, and pushes the answer without waiting for CI;
-- the reviewer resolves the threads they opened, that being what says a
-  finding is closed, and re-reviews the delta rather than the branch.
+  in the thread, pushes the answer without waiting for CI, and resolves
+  each thread once answered;
+- the reviewer reopens a thread whose finding is still blocking, and
+  re-reviews the delta rather than the branch.
 
 **What ends the loop is the ack of record**, and the author does not
 supply their own. A reading that says what it found and delivers no
@@ -269,6 +251,7 @@ settings and why they are what they are.
 [s-what]: https://github.com/btclib-org/.github#what-this-repository-is
 [s11]: https://github.com/btclib-org/.github#11-github-settings
 [s9]: https://github.com/btclib-org/.github#9-prose-comments-and-docstrings
+[s12]: https://github.com/btclib-org/.github#12-releasing
 [s-title]: https://github.com/btclib-org/.github#what-a-pull-request-says-it-is
 [s-rev]: https://github.com/btclib-org/.github#review
 [s-sigs]: https://github.com/btclib-org/.github#signatures
@@ -525,13 +508,11 @@ when nobody carries it into the files that mention it. `CHANGELOG.md`
 starts where the record starts rather than where a tag does, for the
 reason its own introduction gives.
 
-Cutting a tag is signed and not by convention: the `tag-integrity`
-ruleset requires a signature on `refs/tags/v*` and has no bypass actor,
-so a tag made without `-s` is refused at the push rather than noticed
-afterwards. `REPOSITORY.md` carries the call that reads that rule back,
-and that rule is the whole of what `tag-integrity` holds —
-`required_signatures`, and neither `non_fast_forward` nor `deletion` —
-so nothing refuses a tag's deletion, and what follows is kept by hand.
+A tag is cut with `git tag -s`. `tag-integrity` does not check the tag's
+own signature: `REPOSITORY.md` has what it refuses and the call that
+reads it back. Its one rule is `required_signatures`, with neither
+`non_fast_forward` nor `deletion`, so nothing refuses a tag's deletion,
+and what follows is kept by hand.
 **The tag of a published version is never deleted or cut again**: the
 version stays on PyPI whatever a tag does, an index refusing a version
 that has been uploaded once, and deleting its tag takes away the only

@@ -5,6 +5,7 @@
 """`update_chain`/`verify_mempool_acceptance`: connect, reorg, reject."""
 
 import os
+import secrets
 import shutil
 import signal
 import subprocess
@@ -40,7 +41,7 @@ from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
-from btclib_node import Node, main
+from btclib_node import Node, fee_estimator, main
 from btclib_node.block_db import BlockDB
 from btclib_node.chains import RegTest, SigNet
 from btclib_node.chainstate import Chainstate
@@ -59,20 +60,24 @@ from btclib_node.exceptions import (
     MisbehavingError,
     MissingPrevoutError,
     NonStandardTxError,
+    PackageRefusedError,
     TxRejectedError,
 )
 from btclib_node.interpreter import check_scripts, get_flags
 from btclib_node.log import Logger
 from btclib_node.main import (
     check_fork_warning_conditions,
+    pre_verify_package,
     prune_up_to_height,
     update_chain,
     verify_mempool_acceptance,
 )
-from btclib_node.mempool import format_money
+from btclib_node.mempool import Mempool, format_money
 from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.callbacks import getblocks
 from btclib_node.p2p.compact_block import MostRecentBlock, compact_block
+from btclib_node.rpc.callbacks import get_mempool_entry, get_raw_mempool
+from btclib_node.rpc.callbacks import test_mempool_accept as mempool_accept
 from tests import (
     anyone_can_spend,
     anyone_can_spend_redeem_script,
@@ -84,12 +89,15 @@ from tests import (
     generate_random_transaction,
     generate_segwit_block,
 )
+from tests.unit.orphanage_test import a_tx as an_orphanage_tx
+from tests.unit.rpc.mempool_graph_test import a_tx
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from btclib_node.block_db import Coin
     from btclib_node.p2p.connection import Connection
+    from btclib_node.rpc.connection import RpcConnection
 
 
 # what a mempool candidate below pays where the test is not about its fee:
@@ -1358,7 +1366,38 @@ def test_a_sigop_dense_spend_is_priced_by_its_sigop_cost(node: Node) -> None:
     with pytest.raises(TxRejectedError) as raised:
         verify_mempool_acceptance(node, spend(999))
     assert str(raised.value) == "min relay fee not met, 999 < 1000"
-    assert verify_mempool_acceptance(node, spend(1_000)) == (1_000, 10_000)
+    assert verify_mempool_acceptance(node, spend(1_000)) == (
+        1_000,
+        10_000,
+        40_000,
+        frozenset(),
+    )
+
+
+def test_the_mempool_rpcs_tell_the_adjusted_size_from_the_bip141_one(
+    node: Node,
+) -> None:
+    """A sigop-dense spend answers 10000 adjusted and its own BIP 141 vsize.
+
+    `testmempoolaccept`, `getmempoolentry` and `getrawmempool` verbose
+    (btclib-org/btclib-node#1757).
+    """
+    tx = a_sigop_dense_spend(node, 100)(1_000)
+    assert tx.vsize < 10_000
+    expected = [10_000, 10_000, tx.vsize]
+    sizes = ("vsize_adjusted", "vsize", "vsize_bip141")
+    raw = tx.serialize(include_witness=True).hex()
+    (verdict,) = mempool_accept(node, cast("RpcConnection", None), [[raw]])
+    assert verdict["allowed"] is True
+    assert [verdict[k] for k in sizes] == expected
+    # the feerate is over the adjusted size, 1000 * 1000 // 10_000 = 100
+    assert verdict["fees"]["effective-feerate"].text == "0.00000100"
+    node.mempool.add_tx(tx, *verify_mempool_acceptance(node, tx))
+    entry = get_mempool_entry(node, cast("RpcConnection", None), [tx.id.hex()])
+    assert [entry[k] for k in sizes] == expected
+    verbose = get_raw_mempool(node, cast("RpcConnection", None), [True])
+    assert isinstance(verbose, dict)
+    assert [verbose[tx.id.hex()][k] for k in sizes] == expected
 
 
 def test_a_sigop_dense_conflict_pays_relay_for_its_sigop_cost(node: Node) -> None:
@@ -1955,27 +1994,79 @@ def test_a_version_3_transaction_has_one_parent_and_no_grandparent(
     )
 
 
-def test_a_version_3_parent_has_one_child(node: Node) -> None:
-    """A second child is refused, unless it conflicts with the first.
+def two_held_version_3_parents(node: Node) -> tuple[Tx, Tx]:
+    """Hold two version 3 spends and return them, smallest txid first.
 
-    A conflicting one is not counted twice, and reaches
-    `check_replacement`, which refuses it in the words of its own. A
-    disconnected block's transaction is not held to the rule.
+    `Txid` compares its bytes as stored, the reverse of `Tx.id`'s displayed
+    order. The second one's fee is nudged until the two orders disagree, or
+    a sort on the displayed hex would pass.
+    """
+
+    def with_fee(spend: Tx, nudge: int) -> Tx:
+        output = spend.vout[0]
+        return replace(spend, vout=[TxOut(output.value - nudge, output.script_pub_key)])
+
+    one, other = (replace(spend, version=3) for spend in funded_spends(node, 2))
+    other = next(
+        candidate
+        for nudge in range(64)
+        if (one.id < (candidate := with_fee(other, nudge)).id)
+        != (one.id[::-1] < candidate.id[::-1])
+    )
+    first, second = sorted([one, other], key=lambda spend: spend.id[::-1])
+    assert first.id > second.id
+    return hold(node, first), hold(node, second)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_a_refusal_names_the_held_parent_with_the_smallest_txid(
+    node: Node, *, reverse: bool
+) -> None:
+    """Core takes the first of a `std::set<Txid>`, whatever the input order.
+
+    Both input orders are asked, one of which is Core's own.
+    btclib-org/btclib-node#1783
+    """
+    first, second = two_held_version_3_parents(node)
+    ordered = [first, second] if reverse else [second, first]
+    child = child_of(ordered[0], version=2)
+    child.vin.append(replace(child_of(ordered[1], version=2).vin[0]))
+    refused_with(
+        node,
+        child,
+        "TRUC-violation",
+        f"non-version=3 {ids(child)} cannot spend from version=3 {ids(first)}",
+    )
+
+
+def test_a_version_3_parent_has_one_child(node: Node) -> None:
+    """A second child replaces the first where it pays to, as Core's does.
+
+    It is weighed as a replacement of its sibling: short of the fees, it
+    is refused "insufficient fee (including sibling eviction)". One that
+    conflicts with the first child is not counted twice, and replaces it.
+    A disconnected block's transaction is not held to the rule.
     """
     parent = hold(node, with_two_outputs(replace(funded_spends(node, 1)[0], version=3)))
-    hold(node, child_of(parent, 0, version=3))
+    first = hold(node, child_of(parent, 0, version=3))
     second = child_of(parent, 1, version=3)
+    relay = fee_from_vsize(second.vsize, node.mempool.incremental_relay_feerate)
     refused_with(
         node,
         second,
-        "TRUC-violation",
-        f"{ids(parent)} would exceed descendant count limit",
+        "insufficient fee (including sibling eviction)",
+        f"rejecting replacement {second.id.hex()}, not enough additional fees to "
+        f"relay; 0.00 < {format_money(relay)}",
     )
     assert verify_mempool_acceptance(node, second, bypass_limits=True).fee == FEE
+    paying = replace(
+        second, vout=[TxOut(second.vout[0].value - 2 * FEE, anyone_can_spend())]
+    )
+    assert verify_mempool_acceptance(node, paying).replaced == {first.hash}
 
     conflicting = child_of(parent, 0, version=3)
     conflicting.vout[0] = TxOut(conflicting.vout[0].value - 2 * FEE, anyone_can_spend())
-    refused_with(node, conflicting, "bip125-replacement-disallowed")
+    assert verify_mempool_acceptance(node, conflicting).replaced == {first.hash}
 
 
 def a_cluster(node: Node, root: Tx, count: int) -> list[Tx]:
@@ -2117,8 +2208,7 @@ def test_a_second_spend_of_a_held_outpoint_is_refused_as_core_refuses_it(
     `bitcoind` v31.1 on regtest, a spend paying 10000 held: a fee-free
     conflict "min relay fee not met", a 5000-sat one "insufficient fee
     ... less fees than conflicting txs; 0.00005 < 0.0001". One paying for
-    the held spend and its own relay, which Core accepts as a
-    replacement, is refused here (btclib-org/btclib-node#1244).
+    the held spend and its own relay replaces it (btclib-org/btclib-node#1244).
     """
     chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
     connect(node, chain)
@@ -2127,11 +2217,7 @@ def test_a_second_spend_of_a_held_outpoint_is_refused_as_core_refuses_it(
     held = generate_random_transaction(funding.id, value=value - 10_000)
     node.mempool.add_tx(held, *verify_mempool_acceptance(node, held))
 
-    refusals = {
-        0: "min relay fee not met",
-        5_000: "insufficient fee",
-        20_000: "bip125-replacement-disallowed",
-    }
+    refusals = {0: "min relay fee not met", 5_000: "insufficient fee"}
     for fee, reason in refusals.items():
         conflict = generate_random_transaction(funding.id, value=value - fee)
         with pytest.raises(TxRejectedError) as refused:
@@ -2141,6 +2227,8 @@ def test_a_second_spend_of_a_held_outpoint_is_refused_as_core_refuses_it(
             assert str(refused.value).endswith("; 0.00005 < 0.0001")
     assert node.mempool.size == 1
     assert node.mempool.contains_tx(held)
+    paying = generate_random_transaction(funding.id, value=value - 20_000)
+    assert verify_mempool_acceptance(node, paying).replaced == {held.hash}
 
 
 def test_a_confirmed_double_spend_evicts_the_held_spend_and_its_child(
@@ -2663,6 +2751,27 @@ def test_evict_immature_or_nonfinal_skips_a_wtxid_a_cascade_already_took(
     assert not node.mempool.contains_tx(child)
 
 
+def test_evict_immature_or_nonfinal_leaves_the_clusters_optimal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Core's `removeForReorg` ends with `DoWork(POST_CHANGE_COST)`.
+
+    `p` has children `x` and `y`; evicting `x` leaves `p` and `y` a
+    cluster to relinearize, which the eviction does before it returns.
+    """
+    p = a_tx(outputs=2)
+    x, y = a_tx((p.id, 0)), a_tx((p.id, 1))
+    mempool = Mempool(Logger(debug=True))
+    for fee, tx in enumerate((p, x, y), start=1):
+        assert mempool.add_tx(tx, 1_000 * fee)
+    assert mempool.graph.do_work(0)
+    monkeypatch.setattr(main, "_still_final_and_mature", lambda _, tx: tx is not x)
+    main._evict_immature_or_nonfinal(cast("Node", SimpleNamespace(mempool=mempool)))
+    assert x.hash not in mempool.transactions
+    assert len(mempool.transactions) == 2
+    assert mempool.graph.do_work(0)
+
+
 def test_a_connected_block_restarts_the_mempool_s_decay_clock(node: Node) -> None:
     """Connecting a block restarts the mempool's rolling-minimum decay clock."""
     # note_block_connected runs once per block update_chain connects to the
@@ -2758,6 +2867,147 @@ def test_a_reorg_still_resurrects_a_transaction_its_prevout_survives(
     assert node.mempool.contains_tx(resurrectable)
 
 
+def test_each_connected_block_reaches_the_fee_estimator_at_its_height(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's `MempoolTransactionsRemovedForBlock`, with what the block held."""
+    monkeypatch.setattr(
+        fee_estimator, "is_current_for_fee_estimation", lambda node: True
+    )
+    common = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, common)
+    estimator = node.fee_estimator
+    assert estimator.best_seen_height == len(common)
+    tx = generate_random_transaction(common[0].transactions[0].id)
+    node.mempool.add_tx(tx, FEE, height=len(common))
+    fee_estimator.track_accepted(node, tx)
+    assert list(estimator.mempool_txs) == [tx.id]
+    block = build_block(
+        common[-1].header.hash,
+        [generate_coinbase(height=len(common) + 1), tx],
+        len(common),
+    )
+    connect(node, [block])
+    assert estimator.best_seen_height == len(common) + 1
+    assert estimator.mempool_txs == {}
+    assert estimator.first_recorded_height == len(common) + 1
+
+
+def test_a_reorg_reaches_the_fee_estimator_in_core_s_order(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The new blocks first, then what putting the old ones back removes.
+
+    `child`, tracked, spends `parent`, which the abandoned block holds.
+    The heavier branch spends `parent`'s input again, so `parent` is not
+    put back and `child` leaves. Core's estimator hears of that removal
+    once it has counted both new blocks, as the control below does.
+    """
+    monkeypatch.setattr(
+        fee_estimator, "is_current_for_fee_estimation", lambda node: True
+    )
+    common = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, common)
+    funding = common[0].transactions[0].id
+    parent = generate_random_transaction(funding)
+    abandoned = build_block(
+        common[-1].header.hash,
+        [generate_coinbase(height=len(common) + 1), parent],
+        len(common),
+    )
+    connect(node, [abandoned])
+    child = generate_random_transaction(parent.id)
+    node.mempool.add_tx(child, FEE, height=len(common) + 1)
+    fee_estimator.track_accepted(node, child)
+    estimator = node.fee_estimator
+    assert list(estimator.mempool_txs) == [child.id]
+
+    double_spend = build_block(
+        common[-1].header.hash,
+        [
+            generate_coinbase(height=len(common) + 1),
+            generate_random_transaction(funding),
+        ],
+        len(common),
+    )
+    heavier = [double_spend, *_extend(double_spend.header.hash, len(common) + 1, 1)]
+    block_index.add_headers([block.header for block in heavier])
+    for block in heavier:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+    settle(node)
+    assert block_index.active_chain[-1] == heavier[-1].header.hash
+    assert not node.mempool.contains_tx(child)
+
+    control = fee_estimator.FeeEstimator(node.data_dir / "control.dat", node.logger)
+    for height in range(1, len(common) + 2):
+        control.process_block([], height)
+    control.process_transaction(
+        child.id,
+        FEE,
+        child.vsize,
+        len(common) + 1,
+        limit_bypassed=False,
+        in_package=False,
+        chain_current=True,
+        has_no_mempool_parents=True,
+    )
+    control.process_block([], len(common) + 2)
+    control.remove_tx(child.id)
+    assert estimator.write() == control.write()
+
+
+def test_a_transaction_a_reorg_puts_back_is_counted_untracked(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's `bypass_limits`, at the height of the blocks already counted."""
+    monkeypatch.setattr(
+        fee_estimator, "is_current_for_fee_estimation", lambda node: True
+    )
+    common = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, common)
+    put_back = generate_random_transaction(common[0].transactions[0].id)
+    abandoned = build_block(
+        common[-1].header.hash,
+        [generate_coinbase(height=len(common) + 1), put_back],
+        len(common),
+    )
+    connect(node, [abandoned])
+    heavier = _extend(common[-1].header.hash, len(common), 2)
+    block_index.add_headers([block.header for block in heavier])
+    for block in heavier:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+    settle(node)
+    assert node.mempool.contains_tx(put_back)
+    estimator = node.fee_estimator
+    assert (estimator.tracked_txs, estimator.untracked_txs) == (0, 1)
+
+
+def test_a_reorg_expires_what_is_too_old(node: Node) -> None:
+    """Core's `LimitMempoolSize` at a reorg's end expires what is too old."""
+    common = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, common)
+    put_back = generate_random_transaction(common[0].transactions[0].id)
+    abandoned = build_block(
+        common[-1].header.hash,
+        [generate_coinbase(height=len(common) + 1), put_back],
+        len(common),
+    )
+    connect(node, [abandoned])
+    stale = generate_random_transaction()
+    node.mempool.add_tx(stale)
+    node.mempool.set_entry_time(stale.hash, time.time() - node.mempool.expiry - 2)
+    heavier = _extend(common[-1].header.hash, len(common), 2)
+    block_index.add_headers([block.header for block in heavier])
+    for block in heavier:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+    settle(node)
+    assert block_index.active_chain[-1] == heavier[-1].header.hash
+    assert set(node.mempool.txid_index) == {put_back.id}
+
+
 @pytest.mark.parametrize("fee", [0, FEE])
 def test_a_reorg_re_adds_a_dust_spend_only_if_it_pays_no_fee(
     node: Node, fee: int
@@ -2810,8 +3060,8 @@ def test_a_reorg_re_adds_abandoned_transactions_parent_first(
     real = main.verify_mempool_acceptance
 
     def marked(node: Node, tx: Tx, *, bypass_limits: bool = False) -> Any:
-        fee, vsize = real(node, tx, bypass_limits=bypass_limits)
-        return main.MempoolAcceptance(fee, vsize + 1)
+        accepted = real(node, tx, bypass_limits=bypass_limits)
+        return accepted._replace(vsize=accepted.vsize + 1)
 
     monkeypatch.setattr(main, "verify_mempool_acceptance", marked)
     # a chain of two transactions confirmed only on the branch being
@@ -2860,6 +3110,108 @@ def test_a_reorg_re_adds_abandoned_transactions_parent_first(
     assert node.mempool.contains_tx(parent)
     assert node.mempool.contains_tx(child)
     assert node.mempool.vsizes[parent.hash] == parent.vsize + 1
+
+
+def test_a_reorg_links_what_it_re_adds_after_the_new_blocks(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's `UpdateTransactionsFromBlock` runs after `removeForBlock`.
+
+    The re-added transactions are linked in the order they came back,
+    once every block of the new chain has left the mempool, and nothing
+    is evicted until all of them are in, as Core's `bypass_limits` re-add
+    and its single `LimitMempoolSize` after.
+    """
+    calls: list[object] = []
+    mempool = node.mempool
+    remove_for_block = mempool.remove_for_block
+    add_tx = mempool.add_tx
+    update = mempool.update_transactions_from_block
+    trim = mempool.trim
+
+    def removing(transactions: Any) -> Any:
+        calls.append("remove_for_block")
+        return remove_for_block(transactions)
+
+    def adding(tx: Tx, *args: Any, **kwargs: Any) -> bool:
+        calls.append(("add_tx", kwargs.get("trim", True)))
+        return add_tx(tx, *args, **kwargs)
+
+    def updating(wtxids: Any) -> None:
+        calls.append(list(wtxids))
+        update(wtxids)
+
+    def trimming() -> None:
+        calls.append("trim")
+        trim()
+
+    monkeypatch.setattr(mempool, "remove_for_block", removing)
+    monkeypatch.setattr(mempool, "add_tx", adding)
+    monkeypatch.setattr(mempool, "update_transactions_from_block", updating)
+    monkeypatch.setattr(mempool, "trim", trimming)
+    common = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, common)
+    parent = generate_random_transaction(common[0].transactions[0].id)
+    child = generate_random_transaction(parent.id)
+    abandoned = build_block(
+        common[-1].header.hash,
+        [generate_coinbase(height=len(common) + 1), parent, child],
+        len(common),
+    )
+    block_index.add_headers([abandoned.header])
+    node.block_db.add_block(abandoned)
+    block_index.set_downloaded(abandoned.header.hash)
+    settle(node)
+    calls.clear()
+
+    heavier = _extend(common[-1].header.hash, len(common), 2)
+    block_index.add_headers([block.header for block in heavier])
+    for block in heavier:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+    settle(node)
+    assert block_index.active_chain[-1] == heavier[-1].header.hash
+    assert calls == [
+        "remove_for_block",
+        "remove_for_block",
+        ("add_tx", False),
+        ("add_tx", False),
+        [parent.hash, child.hash],
+        "trim",
+    ]
+
+
+def test_a_child_of_a_transaction_both_branches_confirm_stays(node: Node) -> None:
+    """Core's `disconnectpool.removeForBlock`: confirmed again, not re-added.
+
+    The parent is in the abandoned block and in the new one, so it is
+    neither re-added nor removed with what spends it.
+    """
+    common = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, common)
+    parent = generate_random_transaction(common[0].transactions[0].id)
+    abandoned = build_block(
+        common[-1].header.hash,
+        [generate_coinbase(height=len(common) + 1), parent],
+        len(common),
+    )
+    connect(node, [abandoned])
+    child = generate_random_transaction(parent.id)
+    node.mempool.add_tx(child, FEE, height=len(common) + 1)
+    again = build_block(
+        common[-1].header.hash,
+        [generate_coinbase(height=len(common) + 1), parent],
+        len(common) + 7,
+    )
+    heavier = [again, *_extend(again.header.hash, len(common) + 1, 1)]
+    block_index.add_headers([block.header for block in heavier])
+    for block in heavier:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+    settle(node)
+    assert block_index.active_chain[-1] == heavier[-1].header.hash
+    assert node.mempool.contains_tx(child)
+    assert not node.mempool.contains_tx(parent)
 
 
 def test_a_block_connected_before_header_sync_ends_leaves_the_mempool(
@@ -3169,6 +3521,113 @@ def test_a_reorg_during_initial_block_download_announces_nothing(
     connect(node, second)
     assert node.is_initial_block_download is True
     assert not sent
+
+
+def a_refusal(node: Node) -> bytes:
+    """Record a wtxid in both reject filters, and return it."""
+    wtxid = secrets.token_bytes(32)
+    node.mempool.mark_rejected(wtxid)
+    node.mempool.mark_rejected_reconsiderable(wtxid)
+    return wtxid
+
+
+def refused(node: Node, wtxid: bytes) -> tuple[bool, bool]:
+    """Answer whether each reject filter holds `wtxid`."""
+    return (
+        node.mempool.was_recently_rejected(wtxid),
+        node.mempool.was_recently_rejected_reconsiderable(wtxid),
+    )
+
+
+def test_a_tip_change_out_of_initial_block_download_resets_as_core_s(
+    node: Node,
+) -> None:
+    """ISS 1851: Core's `ActiveTipChange` and `BlockConnected`, past IBD.
+
+    The reject filters are reset, and what the block confirms is recorded.
+    """
+    wtxid = a_refusal(node)
+    chain = generate_random_chain(1, RegTest().genesis.hash, tip_time=datetime.now(UTC))
+    connect(node, chain)
+    assert node.is_initial_block_download is False
+    assert refused(node, wtxid) == (False, False)
+    coinbase = chain[0].transactions[0]
+    assert coinbase.id in node.download_manager.recent_confirmed
+
+
+def test_a_tip_change_in_initial_block_download_resets_nothing(node: Node) -> None:
+    """ISS 1851: Core's `PeerManagerImpl` skips both during IBD."""
+    wtxid = a_refusal(node)
+    chain = generate_random_chain(1, RegTest().genesis.hash)
+    connect(node, chain)
+    assert node.is_initial_block_download is True
+    assert refused(node, wtxid) == (True, True)
+    coinbase = chain[0].transactions[0]
+    assert coinbase.id not in node.download_manager.recent_confirmed
+
+
+def an_orphan_of_the_coinbase(node: Node, block: Block) -> None:
+    """Hold an orphan sharing an input with `block`'s coinbase."""
+    (tx_in,) = block.transactions[0].vin
+    orphan = an_orphanage_tx((tx_in.prev_out.tx_id, tx_in.prev_out.vout))
+    node.download_manager.orphanage.add_tx(orphan, 1)
+
+
+def test_a_tip_change_out_of_initial_block_download_forgets_the_orphans_and_announcements(
+    node: Node,
+) -> None:
+    """ISS 1871: Core's `TxDownloadManagerImpl::BlockConnected`, past IBD.
+
+    An orphan the block conflicts with is erased, and the announcements of
+    a confirmed transaction are forgotten, as `m_txrequest.ForgetTxHash`.
+    """
+    chain = generate_random_chain(1, RegTest().genesis.hash, tip_time=datetime.now(UTC))
+    manager = node.download_manager
+    an_orphan_of_the_coinbase(node, chain[0])
+    coinbase = chain[0].transactions[0]
+    other = secrets.token_bytes(32)
+    for txhash in (coinbase.id, coinbase.hash, other):
+        manager.tx_requests.received_inv(1, txhash, preferred=True, reqtime=0)
+    connect(node, chain)
+    assert node.is_initial_block_download is False
+    assert manager.orphanage.unique_count == 0
+    assert manager.tx_requests.count(1) == 1
+
+
+def test_a_tip_change_in_initial_block_download_keeps_the_orphans_and_announcements(
+    node: Node,
+) -> None:
+    """ISS 1871: Core's `PeerManagerImpl::BlockConnected` skips both in IBD."""
+    chain = generate_random_chain(1, RegTest().genesis.hash)
+    manager = node.download_manager
+    an_orphan_of_the_coinbase(node, chain[0])
+    coinbase = chain[0].transactions[0]
+    manager.tx_requests.received_inv(1, coinbase.id, preferred=True, reqtime=0)
+    connect(node, chain)
+    assert node.is_initial_block_download is True
+    assert manager.orphanage.unique_count == 1
+    assert manager.tx_requests.count(1) == 1
+
+
+def test_a_disconnected_block_resets_the_filters_as_core_s(node: Node) -> None:
+    """ISS 1851: Core's `BlockDisconnected`, then `ActiveTipChange`.
+
+    Every recently confirmed transaction is forgotten, not only the
+    disconnected block's, and so is every refusal.
+    """
+    chain = generate_random_chain(2, RegTest().genesis.hash, tip_time=datetime.now(UTC))
+    connect(node, chain)
+    confirmed = node.download_manager.recent_confirmed
+    tip = chain[1].transactions[0]
+    assert tip.id in confirmed
+    other = secrets.token_bytes(32)
+    confirmed.add(other)
+    wtxid = a_refusal(node)
+    main.invalidate_chain(node, chain[1].header.hash)
+    assert len(node.chainstate.block_index.active_chain) == 2
+    assert tip.id not in confirmed
+    assert other not in confirmed
+    assert refused(node, wtxid) == (False, False)
 
 
 def test_the_block_ending_initial_block_download_is_announced_before_sync(
@@ -4799,3 +5258,367 @@ def test_a_body_failing_check_block_under_an_invalid_header_is_not_cached_invali
     block_index.add_headers([block.header])
     block_index.invalidate(block.header.hash)
     assert not main.is_cached_invalid(block_index, block)
+
+
+def a_free_parent(node: Node) -> Tx:
+    """Return a spend paying no fee, which the relay floor refuses alone."""
+    parent = funded_spends(node, 1)[0]
+    value = parent.vout[0].value + FEE
+    return replace(parent, vout=[TxOut(value, parent.vout[0].script_pub_key)])
+
+
+def reason_of(error: Exception) -> str:
+    """Return the reject reason of `error`, which has to be a refusal."""
+    assert isinstance(error, TxRejectedError)
+    return error.reason
+
+
+def test_a_package_of_a_free_parent_and_a_paying_child_is_accepted(node: Node) -> None:
+    """The child pays for the parent, which the relay floor refused alone."""
+    parent = a_free_parent(node)
+    child = child_of(parent)
+    candidate = pre_verify_package(node, parent, child)
+    assert candidate.parent.fee == 0
+    assert candidate.child is not None
+    assert candidate.child.fee == FEE
+    assert candidate.parent_error is not None
+    assert candidate.parent_error.reason == "min relay fee not met"
+    assert not node.mempool.contains_tx(parent)
+    assert node.mempool.size == 0
+
+
+def test_a_parent_that_passes_alone_is_accepted_alone(node: Node) -> None:
+    """Core accepts it before it considers the child."""
+    parent = funded_spends(node, 1)[0]
+    candidate = pre_verify_package(node, parent, child_of(parent))
+    assert candidate.child is None
+    assert candidate.parent_error is None
+    assert candidate.parent.fee == FEE
+
+
+def test_a_package_spending_one_outpoint_twice_is_refused_whole(node: Node) -> None:
+    """Core's "conflict-in-package", which has an answer for neither."""
+    parent = a_free_parent(node)
+    with pytest.raises(PackageRefusedError) as refused:
+        pre_verify_package(node, parent, replace(parent, lock_time=1))
+    assert refused.value.errors == {}
+
+
+def test_a_parent_refused_for_more_than_its_fee_ends_the_package(node: Node) -> None:
+    """Its refusal is the parent's answer, and the child's a missing input."""
+    parent = replace(funded_spends(node, 1)[0], version=4)
+    child = child_of(parent)
+    with pytest.raises(PackageRefusedError) as refused:
+        pre_verify_package(node, parent, child)
+    errors = refused.value.errors
+    assert reason_of(errors[parent.hash]) == "version"
+    assert isinstance(errors[child.hash], MissingPrevoutError)
+
+
+def test_a_parent_missing_inputs_ends_the_package(node: Node) -> None:
+    """A missing input is not a fee floor the child could pay."""
+    parent = child_of(a_free_parent(node))
+    child = child_of(parent)
+    with pytest.raises(PackageRefusedError) as refused:
+        pre_verify_package(node, parent, child)
+    assert isinstance(refused.value.errors[parent.hash], MissingPrevoutError)
+
+
+def test_a_parent_the_fee_floor_hid_a_refusal_behind_ends_the_package(
+    node: Node,
+) -> None:
+    """Without the floor, the TRUC rule that came after it is what refuses."""
+    held = hold(node, funded_spends(node, 1)[0])
+    free = child_of(held, version=3)
+    parent = replace(free, vout=[replace(free.vout[0], value=free.vout[0].value + FEE)])
+    child = child_of(parent, version=3)
+    with pytest.raises(PackageRefusedError) as refused:
+        pre_verify_package(node, parent, child)
+    errors = refused.value.errors
+    assert reason_of(errors[parent.hash]) == "TRUC-violation"
+    assert isinstance(errors[child.hash], MissingPrevoutError)
+
+
+def test_a_child_that_does_not_pay_for_its_parent_is_refused(node: Node) -> None:
+    """The package's total fee is held to the floor."""
+    parent = a_free_parent(node)
+    free = child_of(parent)
+    child = replace(free, vout=[replace(free.vout[0], value=free.vout[0].value + FEE)])
+    with pytest.raises(PackageRefusedError) as refused:
+        pre_verify_package(node, parent, child)
+    errors = refused.value.errors
+    assert reason_of(errors[parent.hash]) == "min relay fee not met"
+    assert reason_of(errors[child.hash]) == "min relay fee not met"
+
+
+def test_a_child_conflicting_with_a_held_transaction_refuses_the_package_whole(
+    node: Node,
+) -> None:
+    """ISS 1782: Core's `PackageRBFChecks` has no result for either.
+
+    The parent keeps its answer from alone, the fee floor, and the child
+    a missing input, so that it stays an orphan. The package pays for the
+    replacement and does not improve the feerate diagram.
+    """
+    first, second = funded_spends(node, 2)
+    held = hold(node, first)
+    value = second.vout[0].value + FEE
+    parent = replace(second, vout=[replace(second.vout[0], value=value)])
+    child = child_of(parent)
+    child = replace(
+        child,
+        vin=[*child.vin, held.vin[0]],
+        vout=[replace(child.vout[0], value=child.vout[0].value + held.vout[0].value)],
+    )
+    with pytest.raises(PackageRefusedError) as refused:
+        pre_verify_package(node, parent, child)
+    errors = refused.value.errors
+    assert reason_of(errors[parent.hash]) == "min relay fee not met"
+    assert isinstance(errors[child.hash], MissingPrevoutError)
+
+
+def test_a_child_spending_an_output_its_parent_lacks_is_missing_inputs(
+    node: Node,
+) -> None:
+    """The staged parent has one output."""
+    parent = a_free_parent(node)
+    child = child_of(parent)
+    child.vin[0] = replace(child.vin[0], prev_out=OutPoint(parent.id, 5))
+    with pytest.raises(PackageRefusedError) as refused:
+        pre_verify_package(node, parent, child)
+    assert isinstance(refused.value.errors[child.hash], MissingPrevoutError)
+
+
+def a_free_dust_parent(node: Node) -> Tx:
+    """Return a spend paying no fee with a dust output, which `dust` allows."""
+    parent = a_free_parent(node)
+    return with_outputs(parent, TxOut(0, anyone_can_spend()))
+
+
+def a_child_spending_the_dust(parent: Tx) -> Tx:
+    """Return a child of both outputs of `parent`, paying `FEE`."""
+    child = child_of(parent)
+    dust = TxIn(OutPoint(parent.id, 1), anyone_can_spend_script_sig(), 0xFFFFFFFF)
+    return replace(child, vin=[*child.vin, dust])
+
+
+def test_a_package_must_spend_its_parent_s_ephemeral_dust(node: Node) -> None:
+    """Core's `CheckEphemeralSpends`: a child leaving the dust is refused."""
+    parent = a_free_dust_parent(node)
+    candidate = pre_verify_package(node, parent, a_child_spending_the_dust(parent))
+    assert candidate.child is not None
+    leaving = child_of(parent)
+    with pytest.raises(PackageRefusedError) as refused:
+        pre_verify_package(node, parent, leaving)
+    assert reason_of(refused.value.errors[leaving.hash]) == "missing-ephemeral-spends"
+    error = refused.value.errors[leaving.hash]
+    assert isinstance(error, TxRejectedError)
+    assert error.details == (
+        f"tx {leaving.id.hex()} (wtxid={leaving.hash.hex()}) "
+        "did not spend parent's ephemeral dust"
+    )
+    node.config.require_standard = False
+    assert pre_verify_package(node, parent, leaving).child is not None
+
+
+def test_a_connected_block_erases_the_orphans_it_conflicts_with(node: Node) -> None:
+    """Core's `BlockConnected`: an orphan the block conflicts with is gone."""
+    chain = generate_random_chain(
+        COINBASE_MATURITY + 1, RegTest().genesis.hash, tip_time=datetime.now(UTC)
+    )
+    spent = chain[-1].transactions[1].vin[0].prev_out
+    rival = generate_random_transaction(spent.tx_id)
+    unrelated = generate_random_transaction()
+    orphanage = node.download_manager.orphanage
+    orphanage.add_tx(rival, 1)
+    orphanage.add_tx(unrelated, 1)
+    connect(node, chain)
+    assert not orphanage.have_tx(rival.hash)
+    assert orphanage.have_tx(unrelated.hash)
+
+
+def test_a_delta_makes_up_a_fee_under_the_relay_floor(node: Node) -> None:
+    """The floor is asked of the modified fee, and the fee paid is answered.
+
+    `bitcoind` v31.1 accepts a free transaction prioritised by the relay
+    fee, `mining_prioritisetransaction.py` asserts. A delta short of it
+    is refused with the modified fee in the details.
+    """
+    free = a_funded_spend(node, 0)
+    floor = fee_from_vsize(free.vsize, node.config.min_relay_feerate)
+    assert floor > 1
+    refused_with(node, free, "min relay fee not met", f"0 < {floor}")
+    node.mempool.prioritise(free.id, floor - 1)
+    refused_with(node, free, "min relay fee not met", f"{floor - 1} < {floor}")
+    node.mempool.prioritise(free.id, 1)
+    assert verify_mempool_acceptance(node, free).fee == 0
+
+
+def test_a_negative_delta_takes_a_fee_under_the_relay_floor(node: Node) -> None:
+    """A delta larger than the fee refuses a transaction paying the floor.
+
+    Its modified fee is below zero. With no rolling minimum the relay floor
+    refuses it, as Core's `CheckFeeRate` asks the minimum only where it is
+    positive, and with one that does. A disconnected block's transaction is
+    not held to either.
+    """
+    spend = a_funded_spend(node, FEE)
+    floor = fee_from_vsize(spend.vsize, node.config.min_relay_feerate)
+    assert verify_mempool_acceptance(node, spend).fee == FEE
+    node.mempool.prioritise(spend.id, -(FEE + 5))
+    refused_with(node, spend, "min relay fee not met", f"-5 < {floor}")
+    node.mempool._rolling_min_fee_rate = 5000.0
+    node.mempool._block_since_last_rolling_fee_bump = False
+    rolling = fee_from_vsize(spend.vsize, FeeRate(sats_per_kvbyte=5000))
+    refused_with(node, spend, "mempool min fee not met", f"-5 < {rolling}")
+    assert verify_mempool_acceptance(node, spend, bypass_limits=True).fee == FEE
+
+
+def test_a_delta_is_held_against_the_mempool_s_rolling_minimum(node: Node) -> None:
+    """The rolling minimum is asked of the modified fee too."""
+    spend = a_funded_spend(node, 0)
+    node.mempool._rolling_min_fee_rate = 5000.0
+    node.mempool._block_since_last_rolling_fee_bump = False
+    floor = fee_from_vsize(spend.vsize, FeeRate(sats_per_kvbyte=5000))
+    node.mempool.prioritise(spend.id, floor - 1)
+    refused_with(node, spend, "mempool min fee not met", f"{floor - 1} < {floor}")
+    node.mempool.prioritise(spend.id, 1)
+    assert verify_mempool_acceptance(node, spend).fee == 0
+
+
+@pytest.mark.parametrize(("fee", "delta"), [(0, 5), (FEE, 0), (FEE, -FEE), (0, -5)])
+def test_a_dust_output_is_refused_unless_both_fees_are_zero(
+    node: Node, fee: int, delta: int
+) -> None:
+    """`PreCheckEphemeralTx` asks the base fee and the modified one.
+
+    A free spend with a dust output is refused once a delta gives it a
+    modified fee, in either direction; one paying a fee is refused whatever
+    the delta, even where it leaves a modified fee of zero.
+    """
+    spend = a_dusty_spend(node, fee)
+    node.mempool.prioritise(spend.id, delta)
+    refused_with(node, spend, "dust", "tx with dust output must be 0-fee")
+
+
+def test_a_free_dust_output_with_a_delta_that_comes_to_nothing_is_taken(
+    node: Node,
+) -> None:
+    """Both fees are zero, which is the one case a dust output is held."""
+    spend = a_dusty_spend(node, 0)
+    node.mempool.prioritise(spend.id, 5)
+    node.mempool.prioritise(spend.id, -5)
+    assert verify_mempool_acceptance(node, spend, bypass_limits=True).fee == 0
+
+
+def test_a_package_is_held_to_the_floor_by_its_modified_fee(node: Node) -> None:
+    """A delta on the child pays for the parent, and one against it does not."""
+    parent = a_free_parent(node)
+    free = child_of(parent)
+    child = replace(free, vout=[replace(free.vout[0], value=free.vout[0].value + FEE)])
+    floor = fee_from_vsize(parent.vsize + child.vsize, node.config.min_relay_feerate)
+    node.mempool.prioritise(child.id, floor - 1)
+    with pytest.raises(PackageRefusedError):
+        pre_verify_package(node, parent, child)
+    node.mempool.prioritise(child.id, 1)
+    assert pre_verify_package(node, parent, child).child is not None
+    node.mempool.prioritise(child.id, -1)
+    node.mempool.prioritise(parent.id, 1)
+    assert pre_verify_package(node, parent, child).child is not None
+    node.mempool.prioritise(parent.id, -2)
+    with pytest.raises(PackageRefusedError):
+        pre_verify_package(node, parent, child)
+
+
+def test_a_replacement_is_held_to_what_the_candidate_is_worth(node: Node) -> None:
+    """Rule 3 reads the candidate's modified fee."""
+    held = hold(node, funded_spends(node, 1)[0])
+    value = held.vout[0].value
+    conflict = replace(
+        held, lock_time=1, vout=[replace(held.vout[0], value=value - FEE)]
+    )
+    assert verify_mempool_acceptance(node, conflict).replaced == {held.hash}
+    node.mempool.prioritise(conflict.id, -(FEE + 1))
+    with pytest.raises(TxRejectedError, match="less fees than conflicting"):
+        verify_mempool_acceptance(node, conflict)
+
+
+def test_a_block_takes_the_delta_of_a_transaction_it_holds_not_held_before(
+    node: Node,
+) -> None:
+    """Core's `removeForBlock` clears every transaction of the block.
+
+    One not in the mempool too, which only the delta tells of, and the
+    coinbase, which Core's loop over `vtx` does not skip.
+    """
+    common = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, common)
+    mined = generate_random_transaction(common[0].transactions[0].id)
+    assert node.mempool.size == 0
+    node.mempool.prioritise(mined.id, 777)
+    kept = secrets.token_bytes(32)
+    node.mempool.prioritise(kept, 5)
+    coinbase = generate_coinbase(height=len(common) + 1)
+    node.mempool.prioritise(coinbase.id, 9)
+    block = build_block(common[-1].header.hash, [coinbase, mined], len(common))
+    node.chainstate.block_index.add_headers([block.header])
+    node.block_db.add_block(block)
+    node.chainstate.block_index.set_downloaded(block.header.hash)
+    settle(node)
+    assert node.chainstate.block_index.active_chain[-1] == block.header.hash
+    assert node.mempool.deltas == {kept: 5}
+
+
+def test_a_delta_set_while_a_transaction_is_mined_applies_on_a_reorg(
+    node: Node,
+) -> None:
+    """The transaction comes back with the delta given after its block.
+
+    The delta given before is gone with the block, so one given after is
+    the whole of it, as in `bitcoind` v31.1's
+    `mining_prioritisetransaction.py`.
+    """
+    common = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, common)
+    mined = generate_random_transaction(common[0].transactions[0].id)
+    node.mempool.prioritise(mined.id, 1_000_000)
+    abandoned = build_block(
+        common[-1].header.hash,
+        [generate_coinbase(height=len(common) + 1), mined],
+        len(common),
+    )
+    block_index.add_headers([abandoned.header])
+    node.block_db.add_block(abandoned)
+    block_index.set_downloaded(abandoned.header.hash)
+    settle(node)
+    assert block_index.active_chain[-1] == abandoned.header.hash
+    assert node.mempool.deltas == {}
+    node.mempool.prioritise(mined.id, 777)
+
+    heavier = _extend(common[-1].header.hash, len(common), 2)
+    block_index.add_headers([block.header for block in heavier])
+    for block in heavier:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+    settle(node)
+    assert block_index.active_chain[-1] == heavier[-1].header.hash
+    assert node.mempool.contains_tx(mined)
+    wtxid = mined.hash
+    assert node.mempool.modified_fee(wtxid) == node.mempool.fees[wtxid] + 777
+
+
+def test_a_reorg_forgets_what_was_recently_confirmed(node: Node) -> None:
+    """ISS 1851: Core's `BlockDisconnected` on an ordinary reorg."""
+    first = generate_random_chain(1, RegTest().genesis.hash, tip_time=datetime.now(UTC))
+    connect(node, first)
+    confirmed = node.download_manager.recent_confirmed
+    other = secrets.token_bytes(32)
+    confirmed.add(other)
+    second = generate_random_chain(
+        2, RegTest().genesis.hash, tip_time=datetime.now(UTC)
+    )
+    connect(node, second)
+    assert node.chainstate.block_index.active_chain[-1] == second[-1].header.hash
+    assert other not in confirmed
+    assert first[0].transactions[0].id not in confirmed
+    assert second[-1].transactions[0].id in confirmed

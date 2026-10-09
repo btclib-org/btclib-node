@@ -2,7 +2,7 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""The permissions `-whitelist` grants a peer, as Core's `NetPermissionFlags`.
+"""The permissions `-whitelist` and `-whitebind` grant a peer.
 
 `NetPermissionFlags` is Core's enum, `Whitelist` is `-whitelist` parsed as
 `NetWhitelistPermissions::TryParse` does (`src/net_permissions.cpp`) and
@@ -10,7 +10,9 @@
 all read at bitcoin/bitcoin@9be056a8a7, the v31.1 tag. A value is read by
 `lookup_subnet`, the ban list's `LookupSubNet`.
 
-`-whitebind` is not read: btclib-org/btclib-node#1625.
+`parse_whitebind_permissions` reads the permissions of a `-whitebind`
+value as `NetWhitebindPermissions::TryParse` does. A peer accepted on its
+listener holds them in `Whitelist.flags`' `granted`.
 
 Each permission does here what it does in Core, wherever this node has
 the behaviour it changes: `NO_BAN` (ban, discouragement, eviction, the
@@ -41,6 +43,7 @@ __all__ = [
     "NetPermissionFlags",
     "Whitelist",
     "WhitelistEntry",
+    "parse_whitebind_permissions",
     "permission_names",
 ]
 
@@ -49,9 +52,9 @@ class NetPermissionFlags(IntFlag):
     """Core's `NetPermissionFlags`, bit for bit.
 
     A composite holds the permission it implies: `NO_BAN` holds `DOWNLOAD`
-    and `FORCE_RELAY` holds `RELAY`. `IMPLICIT` marks a `-whitelist` value
-    that named no permission, so that `Whitelist.flags` grants the default
-    set.
+    and `FORCE_RELAY` holds `RELAY`. `IMPLICIT` marks a `-whitelist`
+    or `-whitebind` value that named no permission, so that
+    `Whitelist.flags` grants the default set.
     """
 
     NONE = 0
@@ -121,11 +124,15 @@ class WhitelistEntry:
     flags: NetPermissionFlags
 
 
-def _parse(text: str) -> tuple[WhitelistEntry, bool, bool]:
-    """Read one `-whitelist` value, as Core's `TryParse` does.
+def _parse_permissions(
+    text: str, *, whitebind: bool
+) -> tuple[NetPermissionFlags, bool, bool, int]:
+    """Read the `perm1,perm2@` prefix of a value, as `TryParsePermissionFlags`.
 
-    Returns the entry and whether it applies to incoming and to outgoing
-    connections. Raises `ValueError` with Core's message.
+    Returns the flags, whether the value applies to incoming and to
+    outgoing connections, and where its address starts. A `-whitebind`
+    value that names `out` is refused. Raises `ValueError` with Core's
+    message.
     """
     flags = NetPermissionFlags.NONE
     incoming = outgoing = False
@@ -138,6 +145,12 @@ def _parse(text: str) -> tuple[WhitelistEntry, bool, bool]:
                 flags |= _BY_NAME[name]
             elif name == "in":
                 incoming = True
+            elif name == "out" and whitebind:
+                msg = (
+                    "whitebind may only be used for incoming connections"
+                    ' ("out" was passed)'
+                )
+                raise ValueError(msg)
             elif name == "out":
                 outgoing = True
             elif name:
@@ -149,7 +162,28 @@ def _parse(text: str) -> tuple[WhitelistEntry, bool, bool]:
     elif flags == NetPermissionFlags.NONE:
         msg = f"Only direction was set, no permissions: '{text}'"
         raise ValueError(msg)
-    network = text[at + 1 :]
+    return flags, incoming, outgoing, at + 1
+
+
+def parse_whitebind_permissions(text: str) -> tuple[NetPermissionFlags, str]:
+    """Split a `-whitebind` value into its permissions and its address.
+
+    `NetWhitebindPermissions::TryParse` up to the address, which the
+    caller resolves. A value naming no permission holds `IMPLICIT`.
+    Raises `ValueError` with Core's message.
+    """
+    flags, _, _, start = _parse_permissions(text, whitebind=True)
+    return flags, text[start:]
+
+
+def _parse(text: str) -> tuple[WhitelistEntry, bool, bool]:
+    """Read one `-whitelist` value, as Core's `TryParse` does.
+
+    Returns the entry and whether it applies to incoming and to outgoing
+    connections. Raises `ValueError` with Core's message.
+    """
+    flags, incoming, outgoing, start = _parse_permissions(text, whitebind=False)
+    network = text[start:]
     subnet = lookup_subnet(network)
     if subnet is None:
         msg = f"Invalid netmask specified in -whitelist: '{network}'"
@@ -195,11 +229,14 @@ class Whitelist:
         *,
         inbound: bool,
         manual: bool = False,
+        granted: NetPermissionFlags | None = None,
     ) -> NetPermissionFlags:
         """Return what a peer at `address` is granted.
 
         Core's `AddWhitelistPermissionFlags`, whose address is empty for
-        a peer on an `=onion` listener: `None` matches no entry.
+        a peer on an `=onion` listener: `None` matches no entry. `granted`
+        is what the listener grants (`-whitebind`), where there is one,
+        which the matching entries add to.
 
         An inbound peer is matched against the incoming values and a
         manual outbound one against the outgoing values; no other
@@ -211,7 +248,7 @@ class Whitelist:
             entries = self.outgoing
         else:
             return NetPermissionFlags.NONE
-        flags = NetPermissionFlags.NONE
+        flags = granted or NetPermissionFlags.NONE
         for entry in entries:
             if address is not None and entry.subnet.matches_peer(address):
                 flags |= entry.flags

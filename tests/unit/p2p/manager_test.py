@@ -37,8 +37,13 @@ from btclib.p2p.keepalive import Ping
 from btclib.p2p.limits import PROTOCOL_VERSION
 
 from btclib_node.chains import Main, RegTest
-from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS
-from btclib_node.constants import NodeStatus, P2pConnStatus
+from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS, BindAddress
+from btclib_node.constants import (
+    DEFAULT_MAXRECEIVEBUFFER,
+    DEFAULT_MAXSENDBUFFER,
+    NodeStatus,
+    P2pConnStatus,
+)
 from btclib_node.log import Logger
 from btclib_node.p2p import address as address_module
 from btclib_node.p2p import manager as manager_module
@@ -50,6 +55,7 @@ from btclib_node.p2p.address import (
     host_key,
     internal_source,
     peer_address,
+    service_key,
 )
 from btclib_node.p2p.anchors import dump_anchors, read_anchors
 from btclib_node.p2p.banman import (
@@ -59,12 +65,14 @@ from btclib_node.p2p.banman import (
     Subnet,
     lookup_subnet,
 )
-from btclib_node.p2p.connection import local_services
+from btclib_node.p2p.connection import AddrKnown, local_services
 from btclib_node.p2p.eviction import Network, get_network, net_group
 from btclib_node.p2p.main import handle_p2p_handshake
 from btclib_node.p2p.manager import P2pManager
 from btclib_node.p2p.permissions import NetPermissionFlags, Whitelist
+from btclib_node.p2p.protocol_version import BIP0031_VERSION
 from btclib_node.p2p.selfannounce import LOCAL_BIND, LOCAL_MANUAL, LocalService
+from btclib_node.p2p.tx_checks import TxChecks
 from btclib_node.p2p.v2transport import V1PeerRefusedError, V2Transport
 from btclib_node.rpc.callbacks import add_connection
 from btclib_node.rpc.errors import RpcError
@@ -87,6 +95,7 @@ from tests import (
     wait_until,
     wait_until_listening,
 )
+from tests.unit.rolling_bloom_test import a_small_filter
 
 
 def a_conn(
@@ -94,7 +103,8 @@ def a_conn(
     *,
     status: P2pConnStatus = P2pConnStatus.Connected,
     last_receive: float | None = None,
-    ping_start: float = 0,
+    last_send: float | None = None,
+    ping_start: float | None = None,
     connected_time: int | None = None,
     address: NetworkAddressV2 | None = None,
     relay_tx: bool = True,
@@ -115,9 +125,10 @@ def a_conn(
 
     `reconnect_v1` is what its transport answers `should_reconnect_v1`.
 
-    `send_ping` on this double does not send a real ping: it records
-    one and backdates `ping_sent` well past the idle bound, standing in
-    for a ping already sent and never answered. `nonce` defaults to
+    `send_ping` on this double records a ping and stamps `ping_start`,
+    and `ping_sent` too unless `protocol` is `BIP0031_VERSION` or below,
+    as the real one does. `ping_start` defaults to now, a ping just
+    sent, and `last_send` to `last_receive`. `nonce` defaults to
     `None`, the same as a real `Connection` that has not sent a
     `version` yet -- `promote_connection` and `remove_connection` both
     read it back to clear `pending_outbound_nonces`.
@@ -128,7 +139,12 @@ def a_conn(
         status=status,
         address=address or default_address,
         last_receive=time.time() if last_receive is None else last_receive,
-        ping_start=ping_start,
+        last_send=(
+            (time.time() if last_receive is None else last_receive)
+            if last_send is None
+            else last_send
+        ),
+        ping_start=time.time() if ping_start is None else ping_start,
         connected_time=int(time.time()) if connected_time is None else connected_time,
         ping_sent=0,
         relay_tx=relay_tx,
@@ -154,6 +170,7 @@ def a_conn(
         transport=SimpleNamespace(should_reconnect_v1=lambda: reconnect_v1),
         addr_relay_enabled=False,
         next_local_addr_send=0.0,
+        addr_known=AddrKnown(),
         prefer_addressv2=True,
         sent=[],
         stopped=[],
@@ -162,10 +179,9 @@ def a_conn(
     conn.stop = lambda: conn.stopped.append(True)
 
     def send_ping() -> None:
-        # a ping already answered by nothing: the manager reads the time
-        # it was sent to decide the peer is gone
-        conn.ping_sent = time.time() - 200
         conn.ping_start = time.time()
+        if protocol > BIP0031_VERSION:
+            conn.ping_sent = conn.ping_start
         conn.sent.append("ping")
 
     conn.send_ping = send_ping
@@ -243,6 +259,7 @@ class AManagerFactory(Protocol):
         seednode: Sequence[str] = (),
         listen: bool = True,
         bind: Sequence[str] = (),
+        whitebind: Sequence[str] = (),
         externalip: Sequence[str] = (),
         discover: bool | None = None,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
@@ -277,6 +294,7 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
         seednode: Sequence[str] = (),
         listen: bool = True,
         bind: Sequence[str] = (),
+        whitebind: Sequence[str] = (),
         externalip: Sequence[str] = (),
         discover: bool | None = None,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
@@ -330,6 +348,7 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
                 seednode_args=tuple(seednode),
                 listen=listen,
                 bind=tuple(bind),
+                whitebind=tuple(whitebind),
                 externalip=tuple(externalip),
                 # `Config.__init__`'s own sentinel: `discover=None`
                 # follows `listen` and `externalip`, an explicit value
@@ -349,6 +368,8 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
                 peerblockfilters=False,
                 v2transport=v2transport,
                 v1transport=v1transport,
+                send_buffer_max_size=1000 * DEFAULT_MAXSENDBUFFER,
+                receive_flood_size=1000 * DEFAULT_MAXRECEIVEBUFFER,
             ),
             # `Connection.own_version`'s own `start_height`
             # (btclib-org/btclib-node#722), 0 matching a fresh `Node`'s
@@ -695,24 +716,33 @@ def test_a_manual_peer_is_never_discouraged(a_manager: AManagerFactory) -> None:
     assert not other.stopped
 
 
-def test_the_host_discouraged_longest_ago_is_forgotten_first(
-    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+def test_the_discouraged_record_is_sized_as_core_s(
+    a_manager: AManagerFactory,
 ) -> None:
-    """ISS 1078: past its capacity the record forgets its oldest host.
+    """ISS 1851: Core's `{50000, 0.000001}` filter.
 
-    Discouraging a host again makes it the newest, so the one forgotten
-    is the one discouraged longest ago rather than the one first seen.
+    The figures are what Core's own filter printed for those parameters, in
+    `tests/unit/_data/core_rolling_bloom_runs.txt`.
     """
-    monkeypatch.setattr(manager_module, "_DISCOURAGED_CAPACITY", 2)
+    bloom = a_manager()._discouraged
+    assert (bloom._lane_bytes // 8, bloom._per_generation, bloom._size) == (
+        20,
+        25_000,
+        67_396,
+    )
+
+
+def test_a_host_the_filter_wrongly_finds_is_discouraged(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1851: a false positive of `m_discouraged` is a discouraged host."""
     manager = a_manager()
-    first, second, third = (peer_address(f"1.2.3.{i}", 18444) for i in (1, 2, 3))
-    manager.discourage(first)
-    manager.discourage(second)
-    manager.discourage(first)
-    manager.discourage(third)
-    assert manager.is_discouraged(first)
-    assert not manager.is_discouraged(second)
-    assert manager.is_discouraged(third)
+    discouraged = peer_address("1.2.3.4", 18444)
+    manager._discouraged = a_small_filter(host_key(discouraged))
+    hosts = (peer_address(f"10.0.{i // 256}.{i % 256}", 18444) for i in range(2000))
+    never = next(host for host in hosts if manager.is_discouraged(host))
+    assert never != discouraged
+    assert manager.is_discouraged(discouraged)
 
 
 def test_add_pending_outbound_nonce_makes_it_visible_to_is_self_connect_nonce(
@@ -807,75 +837,113 @@ def test_a_connection_that_has_closed_is_let_go_of(a_manager: AManagerFactory) -
     assert not manager.connections
 
 
-def test_a_closed_connection_past_the_idle_bound_is_not_pinged(
+def test_a_closed_connection_due_a_ping_is_not_pinged(
     a_manager: AManagerFactory,
 ) -> None:
-    """#435: removal does not fall through into the idle check below it.
+    """#435: removal does not fall through into the ping check below it.
 
-    A connection `Closed` and idle at once used to be removed by the
-    first check and then, still the loop variable, found idle by the
-    second -- with `last_receive` frozen and `ping_sent` never set, so
-    `send_ping` ran on a connection already out of both tables.
+    A connection `Closed` and due a ping at once used to be removed by the
+    first check and then, still the loop variable, pinged by the
+    second: `send_ping` ran on a connection already out of both tables.
     """
-    conn = a_conn(1, status=P2pConnStatus.Closed, last_receive=time.time() - 200)
+    conn = a_conn(1, status=P2pConnStatus.Closed, ping_start=time.time() - 200)
     manager = a_manager([conn])
     asyncio.run(one_pass(manager))
     assert not manager.connections
     assert conn.sent == []
 
 
-def test_a_peer_that_has_gone_quiet_is_pinged_and_then_dropped(
-    a_manager: AManagerFactory,
-) -> None:
-    """An idle peer is pinged first, and dropped only past a second idle pass.
+# Core's `PING_INTERVAL` and `TIMEOUT_INTERVAL`, which `_keep_alive`
+# applies
+PING_INTERVAL = 120
+TIMEOUT_INTERVAL = 1200
 
-    `a_conn`'s own `send_ping` backdates `ping_sent` on the spot, so
-    the second pass finds the ping already unanswered rather than
-    waiting for a real one to time out.
-    """
-    conn = a_conn(1, last_receive=time.time() - 200)
+
+@pytest.mark.parametrize(
+    ("since_ping", "pinged"),
+    [(PING_INTERVAL + 10, True), (PING_INTERVAL - 10, False)],
+)
+def test_an_active_peer_is_pinged_every_ping_interval(
+    a_manager: AManagerFactory, since_ping: int, *, pinged: bool
+) -> None:
+    """ISS 1768: an active peer is pinged two minutes after its last ping."""
+    conn = a_conn(1, ping_start=time.time() - since_ping)
     manager = a_manager([conn])
-
-    async def pinged_then_dropped() -> None:
-        await one_pass(manager)
-        assert conn.sent == ["ping"]
-        assert list(manager.connections) == [1]
-        await one_pass(manager)
-
-    asyncio.run(pinged_then_dropped())
-    assert not manager.connections
+    asyncio.run(one_pass(manager))
+    assert conn.sent == (["ping"] if pinged else [])
+    assert list(manager.connections) == [1]
 
 
-def test_a_quiet_peer_at_bip31_or_below_is_pinged_and_dropped_on_quiet(
-    a_manager: AManagerFactory,
+@pytest.mark.parametrize(
+    ("overdue", "dropped"),
+    [(TIMEOUT_INTERVAL + 10, True), (TIMEOUT_INTERVAL - 10, False)],
+)
+def test_a_peer_that_never_answers_a_ping_is_dropped_after_the_timeout_interval(
+    a_manager: AManagerFactory, overdue: int, *, dropped: bool
 ) -> None:
-    """ISS 1180: no `pong` to wait on, so twice the idle bound is waited.
+    """ISS 1768: Core waits twenty minutes for a `pong`, not two.
 
-    ISS 1204: meanwhile it is sent a `ping`, with no nonce, where none
-    has been queued to it for the idle bound, and a second pass queues
-    no second one; the same quiet span a pinged peer gets drops it.
+    The peer keeps sending and being sent to, so only the `pong` is overdue.
     """
-    bound = manager_module._IDLE_TIMEOUT
-    long_ago = time.time() - bound - 10
-    quiet = a_conn(1, last_receive=long_ago, protocol=60000)
-    pinged = a_conn(2, last_receive=long_ago, ping_start=time.time(), protocol=60000)
-    quieter = a_conn(3, last_receive=time.time() - 2 * bound - 10, protocol=60000)
-    manager = a_manager([quiet, pinged, quieter])
+    sent_at = time.time() - overdue
+    conn = a_conn(1, ping_start=sent_at)
+    conn.ping_sent = sent_at
+    manager = a_manager([conn])
     asyncio.run(one_pass(manager))
-    asyncio.run(one_pass(manager))
-    assert quiet.sent == ["ping"]
-    assert pinged.sent == quieter.sent == []
-    assert list(manager.connections) == [1, 2]
+    assert (1 not in manager.connections) is dropped
+    assert conn.sent == []
 
 
-def test_a_peer_that_answered_recently_is_left_alone(
+def test_a_peer_sending_one_block_slowly_is_kept_without_a_pong(
     a_manager: AManagerFactory,
 ) -> None:
-    """A peer heard from recently is neither pinged nor dropped."""
+    """ISS 1768: a peer serving a block for five minutes keeps its slot.
+
+    The ping went out five minutes ago, queued behind the block this node
+    asked for, and its `pong` follows the block. The peer was last heard
+    from two minutes ago, and no second ping is sent.
+    """
+    sent_at = time.time() - 300
+    conn = a_conn(1, last_receive=time.time() - 130, ping_start=sent_at)
+    conn.last_send = time.time()
+    conn.ping_sent = sent_at
+    manager = a_manager([conn])
+    asyncio.run(one_pass(manager))
+    assert list(manager.connections) == [1]
+    assert conn.sent == []
+
+
+@pytest.mark.parametrize("side", ["last_receive", "last_send"])
+@pytest.mark.parametrize(
+    ("quiet", "dropped"),
+    [(TIMEOUT_INTERVAL + 10, True), (TIMEOUT_INTERVAL - 10, False)],
+)
+def test_a_peer_with_nothing_received_or_sent_for_the_timeout_interval_is_dropped(
+    a_manager: AManagerFactory, side: str, quiet: int, *, dropped: bool
+) -> None:
+    """ISS 1768: `InactivityCheck` drops on either direction's silence."""
     conn = a_conn(1)
+    setattr(conn, side, time.time() - quiet)
     manager = a_manager([conn])
     asyncio.run(one_pass(manager))
-    assert conn.sent == []
+    assert (1 not in manager.connections) is dropped
+
+
+def test_a_peer_at_bip31_or_below_is_pinged_without_a_pong_to_wait_for(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1180, ISS 1204, ISS 1768: a nonceless ping, and no `pong` awaited.
+
+    It is sent a ping every `PING_INTERVAL` and owes no `pong`. The first
+    pass stamps `ping_start`, so a second pass sends no second ping. Only
+    silence drops it.
+    """
+    pinged = a_conn(1, ping_start=time.time() - PING_INTERVAL - 10, protocol=60000)
+    silent = a_conn(2, last_receive=time.time() - TIMEOUT_INTERVAL - 10, protocol=60000)
+    manager = a_manager([pinged, silent])
+    asyncio.run(one_pass(manager))
+    asyncio.run(one_pass(manager))
+    assert pinged.sent == ["ping"]
     assert list(manager.connections) == [1]
 
 
@@ -914,8 +982,8 @@ def test_a_pong_landing_between_the_idle_check_and_its_reread_does_not_drop_the_
     `_prune_stale_connections` used to read `conn.ping_sent` twice -- once for
     `if not conn.ping_sent` and again for the `elif` right after -- so a
     `callbacks.pong` on the other thread clearing it to 0 between the two reads
-    made `now - 0 > _IDLE_TIMEOUT` true for a peer that had just answered its
-    ping.
+    made a just-cleared `ping_sent` read as an overdue pong, dropping a peer
+    that had just answered its ping.
 
     Driven deterministically rather than by timing an actual thread: a
     `ping_sent` that answers a recent timestamp on its first read and 0 -- what
@@ -928,7 +996,9 @@ def test_a_pong_landing_between_the_idle_check_and_its_reread_does_not_drop_the_
         id = 1
         status = P2pConnStatus.Connected
         address = peer_address("1.2.3.4", 18444)
-        last_receive = time.time() - 200
+        last_receive = time.time()
+        last_send = time.time()
+        ping_start = time.time() - 200
         relay_tx = True
         feefilter = 0
         automatic = False
@@ -2021,6 +2091,14 @@ def test_a_taken_port_closes_the_default_onion_listener(
     refers to is closed by its own finalizer, which hides the leak.
     """
     port = get_random_port()
+    # The default `=onion` listener on a port the kernel picks: one on
+    # `port + 1` fails first wherever another process holds it
+    # (btclib-org/btclib-node#1785).
+    monkeypatch.setattr(
+        manager_module,
+        "default_onion_bind",
+        lambda _port: BindAddress(IPv4Address("127.0.0.1"), 0, onion=True),
+    )
     manager = a_manager(port=port)
     bound: list[socket.socket] = []
     bind_one = manager._bind_one
@@ -2103,6 +2181,9 @@ def test_a_bound_routable_address_is_a_local_one_under_discover(
         server_socket.close()
     expected = {host_key(peer_address("8.8.8.8", 0))} if discover else set()
     assert manager.local_addresses == expected
+    assert {i.score for i in manager.local_snapshot().values()} == (
+        {LOCAL_BIND} if discover else set()
+    )
 
 
 def test_externalip_is_a_local_address_whether_or_not_it_discovers(
@@ -2278,6 +2359,28 @@ def test_a_relaying_peer_is_told_the_local_address_once_in_a_while(
     assert len(conn.sent) == 1
     manager._maybe_send_local_addr(conn, 1100.0)
     assert len(conn.sent) == 2
+
+
+def test_a_later_self_announcement_resets_what_the_peer_knows(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1851: Core resets `m_addr_known` before every later announcement.
+
+    The first is sent without being recorded; a later one empties the
+    filter and records the address it sends.
+    """
+    manager, conn = an_announcing_manager(a_manager)
+    monkeypatch.setattr(secrets.SystemRandom, "expovariate", lambda self, rate: 100.0)
+    gossiped = service_key(peer_address("1.2.3.4", 18444))
+    conn.addr_known.add(gossiped)
+    manager._maybe_send_local_addr(conn, 1000.0)
+    local = service_key(peer_address("8.8.8.8", 7))
+    assert gossiped in conn.addr_known
+    assert local not in conn.addr_known
+    manager._maybe_send_local_addr(conn, 1100.0)
+    assert len(conn.sent) == 2
+    assert gossiped not in conn.addr_known
+    assert local in conn.addr_known
 
 
 def test_a_peer_wanting_addr_version_1_is_told_in_an_addr_message(
@@ -5133,18 +5236,6 @@ def test_a_transaction_of_our_own_is_handed_to_the_download_manager(
     assert manager.node.download_manager.received_txs == [(None, tx.hash)]
 
 
-def test_a_peer_that_was_pinged_recently_is_given_time_to_answer(
-    a_manager: AManagerFactory,
-) -> None:
-    """An idle peer already pinged recently is not pinged again or dropped."""
-    conn = a_conn(1, last_receive=time.time() - 200)
-    conn.ping_sent = time.time()
-    manager = a_manager([conn])
-    asyncio.run(one_pass(manager))
-    assert conn.sent == []
-    assert list(manager.connections) == [1]
-
-
 def test_an_empty_peer_db_is_not_asked_for_an_address(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -5295,6 +5386,17 @@ def test_a_connections_id_still_resolves_to_its_address_when_the_handshake_fails
     monkeypatch.setattr(manager, "logger", logger)
     monkeypatch.setattr(manager.node, "logger", logger)
     monkeypatch.setattr(manager.node, "p2p_manager", manager, raising=False)
+    monkeypatch.setattr(manager.node, "tx_checks", TxChecks(), raising=False)
+    monkeypatch.setattr(manager.node, "pending_getdata", {}, raising=False)
+    monkeypatch.setattr(manager.node, "pending_cfilters", {}, raising=False)
+    monkeypatch.setattr(
+        manager.node,
+        "download_manager",
+        SimpleNamespace(
+            orphanage=SimpleNamespace(have_tx_to_reconsider=lambda peer: False)
+        ),
+        raising=False,
+    )
     ours, theirs = socket.socketpair()
     address = peer_address("1.2.3.4", 18444)
 
@@ -5956,7 +6058,10 @@ def test_a_manager_that_cannot_bind_stops_being_alive(
         taken.bind(("", 0))
         taken.listen()
         port = taken.getsockname()[1]
-        manager = a_manager(port=port)
+        # Without a `-bind` the node first binds an `=onion` listener on
+        # `port + 1`, which another process may hold
+        # (btclib-org/btclib-node#1785).
+        manager = a_manager(port=port, bind=[f"0.0.0.0:{port}"])
         monkeypatch.setattr(manager.logger, "exception", logged.append)
         assert not manager.start_listener()
         wait_until(lambda: not manager.is_alive())
@@ -6930,6 +7035,8 @@ def test_a_feeler_is_dialled_once_both_targets_are_met(
 
     Picking it draws the timer again, so a second pass dials nothing.
     """
+    # a draw as short as the test takes would make the second pass dial
+    monkeypatch.setattr(manager_module, "_exponential_delay", lambda _: 1000.0)
     new = peer_address("5.6.7.8", 18444, services=FULL_NODE)
     manager, made = a_feeler_manager(a_manager, monkeypatch, new)
     asyncio.run(manager._maybe_dial_more_peers())
@@ -6942,7 +7049,8 @@ def test_a_feeler_is_dialled_once_both_targets_are_met(
             "use_v2transport": False,
         }
     ]
-    assert manager._next_feeler > time.time()
+    # redrawn from the 0 the fixture sets
+    assert manager._next_feeler > 0
     asyncio.run(manager._maybe_dial_more_peers())
     assert len(made) == 1
 
@@ -7413,6 +7521,111 @@ def test_the_block_relay_only_peers_are_the_anchors_written_at_stop(
     assert not path.exists()
 
 
+def three_block_relay_conns() -> list[Any]:
+    """Block-relay-only peers opened in id order, one more than anchors hold."""
+    return [
+        a_conn(i, block_relay=True, address=peer_address(f"5.6.{i}.1", 1))
+        for i in (1, 2, 3)
+    ]
+
+
+def test_the_block_relay_only_peers_are_written_at_stop_with_the_network_off(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1753, bitcoin/bitcoin#34213: the peers held when it went off."""
+    conns = three_block_relay_conns()
+    manager = a_manager(conns, listen=False, max_connections=0)
+    manager.start()
+    wait_until(manager.loop.is_running)
+    manager.set_network_active(active=False)
+    manager.connections.clear()
+    manager.stop()
+    assert read_anchors(manager._anchors_path, RegTest().magic) == [
+        conns[0].address,
+        conns[1].address,
+    ]
+
+
+def test_anchors_held_are_kept_when_the_network_goes_off_with_no_peer(
+    a_manager: AManagerFactory,
+) -> None:
+    """Core keeps `m_anchors` where `GetCurrentBlockRelayOnlyConns` is empty."""
+    manager = a_manager([a_conn(1)], listen=False, max_connections=0)
+    manager.start()
+    wait_until(manager.loop.is_running)
+    manager.anchors = [ANCHOR]
+    manager.set_network_active(active=False)
+    assert manager.anchors == [ANCHOR]
+    manager.stop()
+    assert read_anchors(manager._anchors_path, RegTest().magic) == [ANCHOR]
+
+
+def test_stored_anchors_give_way_to_the_peers_held_when_the_network_goes_off(
+    a_manager: AManagerFactory,
+) -> None:
+    """Core's `m_anchors = std::move(anchors)`, over what was stored."""
+    conn = a_conn(1, block_relay=True, address=peer_address("5.6.1.1", 1))
+    manager = a_manager([conn], listen=False, max_connections=0)
+    manager.anchors = [ANCHOR]
+    manager.set_network_active(active=False)
+    assert manager.anchors == [conn.address]
+
+
+def test_the_peers_held_are_written_at_stop_when_the_network_is_off_with_no_anchor(
+    a_manager: AManagerFactory,
+) -> None:
+    """`StopNodes` writes `m_anchors` only where it is not empty."""
+    conn = a_conn(1, block_relay=True, address=peer_address("5.6.1.1", 1))
+    manager = a_manager([conn], listen=False, max_connections=0)
+    manager.start()
+    wait_until(manager.loop.is_running)
+    manager.network_active = False
+    manager.stop()
+    assert read_anchors(manager._anchors_path, RegTest().magic) == [conn.address]
+
+
+def test_an_anchor_is_not_chosen_while_the_network_is_off(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1753: `_next_outbound` keeps it for the day the network is on."""
+    manager = a_manager()
+    outbound = manager_module._Outbound
+    manager.anchors = [ANCHOR]
+    manager.set_network_active(active=False)
+    assert manager._next_outbound(0, 1) is outbound.FULL_RELAY
+    assert manager.anchors == [ANCHOR]
+    manager.set_network_active(active=True)
+    assert manager._next_outbound(0, 1) is outbound.ANCHOR
+
+
+@pytest.mark.parametrize("active", [True, False])
+def test_the_anchors_are_announced_only_with_the_network_on(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    active: bool,
+) -> None:
+    """Core logs `anchors will be tried` under `fNetworkActive` alone."""
+    manager = a_manager(listen=False, max_connections=0)
+    manager.network_active = active
+    logged: list[str] = []
+    monkeypatch.setattr(
+        manager,
+        "logger",
+        SimpleNamespace(
+            info=lambda fmt, *args: logged.append(fmt % args),
+            log_debug=lambda *a: None,
+            exception=lambda *a: None,
+        ),
+    )
+    an_anchors_file(manager, [ANCHOR])
+    manager.start()
+    wait_until(manager.loop.is_running)
+    announced = "1 block-relay-only anchors will be tried for connections."
+    assert (announced in logged) is active
+    assert manager.anchors == [ANCHOR]
+
+
 @pytest.mark.parametrize("started", [True, False])
 def test_no_anchor_is_written_under_connect_or_short_of_the_start(
     a_manager: AManagerFactory, *, started: bool
@@ -7530,7 +7743,9 @@ def test_an_extra_peer_is_dialled_for_a_network_no_peer_is_on(
     manager = a_network_manager(a_manager, conns, {Network.IPV6: V6}, max_connections)
     expected = manager_module._Outbound.NETWORK if dials else None
     assert manager._next_outbound(full_relay, 2) is expected
-    assert (manager._next_extra_network_peer > time.time()) is dials
+    # redrawn from the 0 the fixture sets, where it dials; a draw can be
+    # shorter than the test's own clock read
+    assert (manager._next_extra_network_peer > 0) is dials
     if dials:
         assert network_dials(manager, monkeypatch, set()) == [(V6, FULL_RELAY)]
 
@@ -9575,3 +9790,235 @@ def test_a_feeler_marks_good_a_collision_it_is_connected_to(
     asyncio.run(manager._maybe_dial_more_peers())
     assert marked == [old]
     assert list(tries_of(manager)) == [endpoint_key(new)]
+
+
+def accept_on(manager: P2pManager, port: int, stack: ExitStack) -> Any:
+    """Connect to the listener on `port` for real, and return what it made.
+
+    The connection is held open until `stack` closes, and is the pending
+    one `server` built, still in its handshake.
+    """
+    expected = manager.last_connection_id + 1
+    stack.enter_context(
+        closing(socket.create_connection(("127.0.0.1", port), timeout=20))
+    )
+    wait_until(lambda: expected in manager.pending_connections)
+    return manager.pending_connections[expected]
+
+
+def listening_manager(manager: P2pManager, stack: ExitStack) -> None:
+    """Start `manager`, wait for its listeners, and stop it with `stack`."""
+    manager.start()
+    stack.callback(manager.join, timeout=10)
+    stack.callback(manager.stop)
+    wait_until_listening(manager)
+
+
+def test_a_whitebind_listener_grants_its_peers_what_it_names(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1625: `ListenSocket::m_permissions`, which a plain listener lacks."""
+    plain, white = get_random_port(), get_random_port()
+    manager = a_manager(
+        bind=[f"127.0.0.1:{plain}"], whitebind=[f"noban,addr@127.0.0.1:{white}"]
+    )
+    with ExitStack() as stack:
+        listening_manager(manager, stack)
+        granted = accept_on(manager, white, stack)
+        assert (
+            granted.permissions == NetPermissionFlags.NO_BAN | NetPermissionFlags.ADDR
+        )
+        assert accept_on(manager, plain, stack).permissions == NetPermissionFlags.NONE
+
+
+def test_a_whitebind_naming_no_permission_grants_the_defaults(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1625: `Implicit` is resolved when a connection is accepted."""
+    white = get_random_port()
+    manager = a_manager(whitebind=[f"127.0.0.1:{white}"])
+    with ExitStack() as stack:
+        listening_manager(manager, stack)
+        assert accept_on(manager, white, stack).permissions == (
+            NetPermissionFlags.NO_BAN
+            | NetPermissionFlags.RELAY
+            | NetPermissionFlags.MEMPOOL
+        )
+
+
+def test_a_whitebind_grant_is_added_to_what_the_whitelist_grants(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1625: both are `AddFlag`ed onto one set."""
+    white = get_random_port()
+    manager = a_manager(whitebind=[f"download@127.0.0.1:{white}"])
+    manager.whitelist = Whitelist.parse(["addr@127.0.0.1"])
+    with ExitStack() as stack:
+        listening_manager(manager, stack)
+        assert accept_on(manager, white, stack).permissions == (
+            NetPermissionFlags.DOWNLOAD | NetPermissionFlags.ADDR
+        )
+
+
+def test_a_whitebind_noban_peer_is_not_refused_where_banned(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1625: the ban check reads the permissions the listener grants."""
+    white, plain = get_random_port(), get_random_port()
+    manager = a_manager(
+        bind=[f"127.0.0.1:{plain}"], whitebind=[f"noban@127.0.0.1:{white}"]
+    )
+    manager.ban_man.ban(a_subnet("127.0.0.1"))
+    with ExitStack() as stack:
+        listening_manager(manager, stack)
+        accept_on(manager, white, stack)
+        with closing(socket.create_connection(("127.0.0.1", plain), timeout=20)) as c:
+            c.settimeout(20)
+            assert c.recv(1) == b""
+        assert len(manager.pending_connections) == 1
+
+
+def test_bind_binds_a_whitebind_between_the_plain_and_the_onion_ones(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1625: `InitBinds` binds `vBinds`, `vWhiteBinds` and `onion_binds`."""
+    plain, white, tagged = (get_random_port() for _ in range(3))
+    manager = a_manager(
+        bind=[f"127.0.0.1:{tagged}=onion", f"127.0.0.1:{plain}"],
+        whitebind=[f"relay@127.0.0.1:{white}"],
+    )
+    sockets = manager._bind()
+    try:
+        assert [s.getsockname()[1] for s in sockets] == [plain, white, tagged]
+        assert [manager._listener_permissions.get(s) for s in sockets] == [
+            None,
+            NetPermissionFlags.RELAY,
+            None,
+        ]
+        assert manager._onion_binds == {(IPv4Address("127.0.0.1"), tagged)}
+    finally:
+        for server_socket in sockets:
+            server_socket.close()
+
+
+def test_a_whitebind_alone_is_bound_beside_the_default_onion_listener(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1625: `bind_on_any` is false, and no `-bind` leaves the onion one."""
+    port, white = get_random_port(), get_random_port()
+    manager = a_manager(port=port, whitebind=[f"127.0.0.1:{white}"])
+    sockets = manager._bind()
+    try:
+        assert [s.getsockname()[:2] for s in sockets] == [
+            ("127.0.0.1", white),
+            ("127.0.0.1", port + 1),
+        ]
+        assert manager._onion_binds == {(IPv4Address("127.0.0.1"), port + 1)}
+    finally:
+        for server_socket in sockets:
+            server_socket.close()
+
+
+def test_a_bind_beside_a_whitebind_leaves_no_default_onion_listener(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1625: `AppInitMain` adds the onion listener where no `-bind` is."""
+    port, plain, white = (get_random_port() for _ in range(3))
+    manager = a_manager(
+        port=port, bind=[f"127.0.0.1:{plain}"], whitebind=[f"127.0.0.1:{white}"]
+    )
+    sockets = manager._bind()
+    try:
+        assert [s.getsockname()[1] for s in sockets] == [plain, white]
+        assert manager._onion_binds == set()
+    finally:
+        for server_socket in sockets:
+            server_socket.close()
+
+
+def test_a_failed_whitebind_ends_the_bind_and_closes_the_rest(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1625: a `-whitebind` is `BF_REPORT_ERROR`: none is optional."""
+    taken = socket.socket()
+    taken.bind(("127.0.0.1", 0))
+    taken.listen()
+    plain = get_random_port()
+    manager = a_manager(
+        bind=[f"127.0.0.1:{plain}"],
+        whitebind=[f"127.0.0.1:{taken.getsockname()[1]}"],
+    )
+    try:
+        with pytest.raises(OSError, match=r"Unable to bind to 127\.0\.0\.1"):
+            manager._bind()
+        assert not manager.listening.is_set()
+        # the plain listener was closed, so its port is free again
+        with closing(socket.socket()) as again:
+            again.bind(("127.0.0.1", plain))
+    finally:
+        taken.close()
+
+
+def test_run_with_whitebind_discovers_nothing(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1625: `Discover()` is off `bind_on_any`: not under `-whitebind`."""
+    monkeypatch.setattr(
+        manager_module, "local_addresses", lambda: [ip_address("1.2.3.4")]
+    )
+    manager = a_manager(whitebind=[f"127.0.0.1:{get_random_port()}"])
+    try:
+        assert manager.start_listener()
+        wait_until(manager.loop.is_running)
+        assert manager.local_addresses == frozenset()
+    finally:
+        manager.stop()
+        manager.join(timeout=10)
+
+
+@pytest.mark.parametrize("discover", [True, False])
+def test_a_whitebind_address_is_a_local_one_unless_it_grants_noban(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, *, discover: bool
+) -> None:
+    """ISS 1625: `Bind` calls `AddLocal` for a listener holding no `noban`.
+
+    A value naming no permission is one: it is granted `noban` later.
+    """
+    manager = a_manager(
+        port=1,
+        whitebind=[
+            "8.8.8.8:5",
+            "noban@8.8.4.4:6",
+            "relay@1.1.1.1:7",
+            "all@1.0.0.1:8",
+        ],
+        discover=discover,
+    )
+    monkeypatch.setattr(manager, "_bind_one", lambda *_: socket.socket())
+    for server_socket in manager._bind():
+        server_socket.close()
+    held = {"8.8.8.8", "1.1.1.1"} if discover else set()
+    assert manager.local_addresses == {host_key(peer_address(h, 0)) for h in held}
+    assert {i.score for i in manager.local_snapshot().values()} == (
+        {LOCAL_BIND} if discover else set()
+    )
+
+
+def test_the_listen_port_is_the_first_whitebind_that_grants_no_noban(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1625: `GetListenPort` reads `-whitebind` after `-bind`."""
+    manager = a_manager(port=1, whitebind=["noban@127.0.0.1:2", "download@127.0.0.1:3"])
+    assert manager._listen_port() == 3
+    beside_bind = a_manager(port=1, bind=["127.0.0.1:9"], whitebind=["127.0.0.1:3"])
+    assert beside_bind._listen_port() == 9
+
+
+def test_a_manager_whose_whitebind_is_refused_ends_like_a_failed_bind(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1625: a hand-made `Config` can carry a `-whitebind` `cli` refuses."""
+    manager = a_manager(whitebind=["127.0.0.1"])
+    assert not manager.start_listener()
+    wait_until(lambda: not manager.is_alive())
+    assert manager.bind_error == "Need to specify a port with -whitebind: '127.0.0.1'"

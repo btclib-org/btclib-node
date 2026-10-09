@@ -61,19 +61,31 @@ dependencies = [
     # first release carrying `btclib.p2p.bip324`, which
     # `p2p/v2transport.py` imports (issue #1190).
     #
-    # The floor is 2026.10.5, the release fixing GHSA-9r97-9x22-2pp4 and
-    # GHSA-rw95-w37r-537w. 2026.10.4 fixed GHSA-9fr5-46w5-5f9r.
-    "btclib[secp256k1,bip324]>=2026.10.5",
-    # `rpc/callbacks.py` imports `add_checksum` from
+    # 2026.10.5 fixed GHSA-9r97-9x22-2pp4 and GHSA-rw95-w37r-537w.
+    # 2026.10.4 fixed GHSA-9fr5-46w5-5f9r.
+    #
+    # 2026.10.7 is the first release with `btclib.compressor`, which
+    # `dumptxoutset` reads (btclib-org/btclib#2558), and `btclib.obfuscation`
+    # (btclib-org/btclib#2559), which `mempool_persist.py` imports.
+    #
+    # 2026.10.8 is the first release with `ShortIdCollisionError`
+    # (btclib-org/btclib#2570), which `p2p/callbacks.py` imports.
+    "btclib[secp256k1,bip324]>=2026.10.8",
+    # `rpc/callbacks.py` and `rpc/utxo_set.py` import from
     # `btclib_wallet.descriptors`, where btclib's own `descriptors`
     # moved (btclib-org/btclib#2129): a runtime dependency now, not the
     # `test` group's own it used to be, carried there only for
     # `BitcoinCoreFetcher` (btclib-org/btclib-node#1181,
     # btclib-org/btclib-node#1508).
     #
-    # The floor is 2026.10.4, the first release whose `parse` refuses a
-    # key of another network, which `rpc/mining.py` relies on.
-    "btclib-wallet>=2026.10.4",
+    # The floor is 2026.10.8, the release fixing GHSA-62jf-v327-86h5:
+    # 2026.10.7 quotes a private key in a refusal that `scantxoutset`
+    # answers with.
+    # 2026.10.7 is the first release carrying `infer_descriptor` and
+    # `Provider`, which `rpc/callbacks.py` and `rpc/utxo_set.py` import.
+    # 2026.10.4 is the first whose `parse` refuses a key of another
+    # network, which `rpc/mining.py` relies on.
+    "btclib-wallet>=2026.10.8",
     # `signing.py` and `p2p/v2transport.py` import `btclib_ecc` directly: a
     # direct runtime dependency, not what btclib happens to bring
     # (btclib-org/btclib-node#1431). `tests/unit/interpreter_test.py` builds
@@ -1039,8 +1051,11 @@ ignore = [
 "src/btclib_node/p2p/callbacks.py" = ["ARG001"]
 "src/btclib_node/rpc/callbacks.py" = ["ARG001"]
 # handlers registered in rpc/callbacks.py
+"src/btclib_node/rpc/fees.py" = ["ARG001"]
 "src/btclib_node/rpc/mining.py" = ["ARG001"]
 "src/btclib_node/rpc/signing.py" = ["ARG001"]
+"src/btclib_node/rpc/snapshot.py" = ["ARG001"]
+"src/btclib_node/rpc/utxo_set.py" = ["ARG001"]
 # socket.socket.setblocking is a C-level method taking no keyword
 # arguments at all (verified directly: socket().setblocking(flag=False)
 # raises "takes no keyword arguments"), so the every-call-site half of

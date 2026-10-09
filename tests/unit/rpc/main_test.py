@@ -21,7 +21,7 @@ from bitcoin_core_rpc import RPCErrorCode
 import btclib_node.rpc.callbacks as rpc_callbacks
 from btclib_node.exceptions import StoreCorruptionError
 from btclib_node.log import Logger
-from btclib_node.rpc.callbacks import arg_names, callbacks
+from btclib_node.rpc.callbacks import arg_names, callbacks, named_only
 from btclib_node.rpc.errors import RpcError
 from btclib_node.rpc.help import HELP_TEXT
 from btclib_node.rpc.jsonrpc import NO_CONTENT, OK, HttpReply, decode
@@ -910,3 +910,12 @@ def test_a_step_that_raises_drops_its_request() -> None:
     with pytest.raises(RuntimeError):
         resume_rpc(node)
     assert not node.pending_rpc
+
+
+def test_named_only_options_are_gathered_before_the_callback_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`handle_rpc` hands `named_only` to the mapping: `bb` joins an object."""
+    monkeypatch.setitem(named_only, "named", ("bb",))
+    seen, _ = _named(monkeypatch, b'{"id":1,"method":"named","params":{"a":1,"bb":2}}')
+    assert seen == [[1, {"bb": 2}]]

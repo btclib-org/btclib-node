@@ -17,6 +17,7 @@ from ipaddress import IPv6Address
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from btclib.exceptions import BTClibValueError
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 
 from btclib_node.p2p import eviction
@@ -550,6 +551,13 @@ def test_the_net_group_of_an_overlay_address(
 ) -> None:
     """Tor and I2P by four bits, CJDNS by twelve, the rest of the byte set."""
     assert net_group(address).hex() == group
+
+
+def test_an_overlay_address_has_no_ip_class() -> None:
+    """`net_class` refuses an address of a network that is no IP one."""
+    address = NetworkAddressV2(0, 0, BIP155Network.TORV3, b"\x11" * 32, 1)
+    with pytest.raises(BTClibValueError, match="not an ip address"):
+        net_class(address)
 
 
 # (the sixteen octets of an `addr` v1 field, `CNetAddr::IsValid` of them)

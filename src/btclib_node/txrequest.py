@@ -68,6 +68,9 @@ class _Announcement:
     time: float
     state: _State = _State.DELAYED
     alive: bool = True
+    # Core's `GenTxid` tells a txid from a wtxid: `txhash` is a txid even
+    # for a peer that relays wtxids, where an orphan's parent is asked for
+    txid: bool = False
 
 
 @dataclass(slots=True)
@@ -105,18 +108,27 @@ class TxRequestTracker:
         self._last_now = float("-inf")
 
     def received_inv(
-        self, peer: int, txhash: bytes, *, preferred: bool, reqtime: float
+        self,
+        peer: int,
+        txhash: bytes,
+        *,
+        preferred: bool,
+        reqtime: float,
+        txid: bool = False,
     ) -> None:
         """Add a `DELAYED` announcement, unless `peer` has announced `txhash`.
 
         Core's `ReceivedInv`: a second announcement of the same pair is
         ignored in whatever state the first is, so a peer cannot get a
-        second chance at being asked.
+        second chance at being asked. `txid` says `txhash` is a txid and
+        not a wtxid, whatever the peer relays.
         """
         known = self._peers.get(peer)
         if known is not None and txhash in known.announcements:
             return
-        announcement = _Announcement(txhash, peer, preferred, self._sequence, reqtime)
+        announcement = _Announcement(
+            txhash, peer, preferred, self._sequence, reqtime, txid=txid
+        )
         self._sequence += 1
         self._peers.setdefault(peer, _Peer()).announcements[txhash] = announcement
         self._waiting += 1
@@ -191,6 +203,12 @@ class TxRequestTracker:
         announcement = None if known is None else known.announcements.get(txhash)
         if announcement is not None:
             self._make_completed(announcement)
+
+    def is_txid(self, peer: int, txhash: bytes) -> bool:
+        """Return whether `peer`'s announcement of `txhash` is of a txid."""
+        known = self._peers.get(peer)
+        announcement = None if known is None else known.announcements.get(txhash)
+        return announcement is not None and announcement.txid
 
     def count_in_flight(self, peer: int) -> int:
         """Return how many requests to `peer` are outstanding."""

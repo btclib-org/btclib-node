@@ -15,7 +15,8 @@ request with no `id` is a notification, run and answered with no body.
 """
 
 import json
-from typing import Any, NamedTuple, override
+import math
+from typing import Any, NamedTuple, NoReturn, override
 
 from bitcoin_core_rpc import RPCErrorCode
 
@@ -30,6 +31,7 @@ __all__ = [
     "decode",
     "error_reply",
     "error_status",
+    "get_real",
     "transform_named_arguments",
 ]
 
@@ -65,18 +67,46 @@ class JsonObject(dict[str, Any]):
         return self._pairs
 
 
+def get_real(value: float) -> float:
+    """Return a JSON number as `UniValue::get_real` does.
+
+    Raises the `RPC_MISC_ERROR` Core throws where no double holds it
+    (`src/univalue/lib/univalue_get.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag): `1e400`, or a whole number as large. `ParseDouble`
+    reads with `istream >> double`, which in libstdc++ fails on overflow
+    only, so `1e-400` reads as 0. A macOS build of Core (libc++)
+    refuses that too; this tree follows the Linux release, which links
+    libstdc++ statically (`contrib/guix/libexec/build.sh:234`). The
+    caller has checked it is a number.
+    """
+    try:
+        real = float(value)
+    except OverflowError:  # an int past the largest double
+        real = math.inf
+    if math.isinf(real):
+        raise RpcError(RPCErrorCode.MISC_ERROR, "JSON double out of range")
+    return real
+
+
+def _no_constant(name: str) -> NoReturn:
+    """Refuse `NaN`, `Infinity` and `-Infinity`, which JSON does not have."""
+    raise ValueError(name)
+
+
 def decode(body: bytes | bytearray) -> Any:  # noqa: ANN401
     r"""Decode a request body, each object a `JsonObject`.
 
-    Raises `ValueError` where `json.loads` does, and where a string or
-    an object key holds a lone surrogate. `json.loads` reads `"\ud800"`
+    Raises `ValueError` where `json.loads` does, where the text holds
+    `NaN`, `Infinity` or `-Infinity`, which `json.loads` reads and Core's
+    `UniValue::read` does not, and where a string or an object key holds
+    a lone surrogate. `json.loads` reads `"\ud800"`
     with no low surrogate after it, and a UTF-8 encoding of one, as a
     one-character string. Core's `JSONUTF8StringFilter` refuses both
     (`src/univalue/include/univalue_utffilter.h`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and `HTTPReq_JSONRPC`
     answers the whole body as a parse error.
     """
-    value = json.loads(body, object_pairs_hook=JsonObject)
+    value = json.loads(body, object_pairs_hook=JsonObject, parse_constant=_no_constant)
     pending = [value]
     while pending:
         item = pending.pop()
@@ -192,13 +222,39 @@ class JsonRpcRequest:
         return reply
 
 
+def _take_position(
+    args_in: dict[str, Any], pattern: str, named_only: tuple[str, ...]
+) -> tuple[str, list[Any]] | None:
+    """Pop what `pattern`'s position is given from `args_in`.
+
+    Return None where nothing is given, else the position's own names
+    and the one value it takes: the argument, or the object of its
+    `named_only` options. Giving both is refused.
+    """
+    names = pattern.split("|")
+    options = {n: args_in.pop(n) for n in names if n in named_only and n in args_in}
+    own = [n for n in names if n not in named_only]
+    name = next((n for n in own if n in args_in), None)
+    if name is None:
+        return ("|".join(own), [options]) if options else None
+    if options:
+        message = f"Parameter {name} conflicts with parameter {next(iter(options))}"
+        raise RpcError(RPCErrorCode.INVALID_PARAMETER, message)
+    return "|".join(own), [args_in.pop(name)]
+
+
 def transform_named_arguments(
-    params: dict[str, Any], arg_names: tuple[str, ...]
+    params: dict[str, Any],
+    arg_names: tuple[str, ...],
+    named_only: tuple[str, ...] = (),
 ) -> list[Any]:
     """Map `params`' keys onto positions as `transformNamedArguments` does.
 
     `src/rpc/server.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag.
     `arg_names` is the method's own, `a|b` two names for one position.
+    `named_only` are the names of an `OBJ_NAMED_PARAMS` argument's own
+    options: those given are gathered into one object, which fills that
+    argument's position, and giving that argument too is refused.
     A position left out ahead of one given is a JSON null, and one left
     out after the last given is not there at all. An `args` array holds
     the leading positions, the named ones filling in after it, and an
@@ -223,17 +279,18 @@ def transform_named_arguments(
     initial_hole_size = 0
     initial_param: str | None = None
     for pattern in arg_names:
-        name = next((n for n in pattern.split("|") if n in args_in), None)
-        if name is None:
+        taken = _take_position(args_in, pattern, named_only)
+        if taken is None:
             hole += 1
             if not out:
                 initial_hole_size = hole
             continue
+        label, values = taken
         out.extend([None] * hole)
         hole = 0
         if initial_param is None:
-            initial_param = pattern
-        out.append(args_in.pop(name))
+            initial_param = label
+        out.extend(values)
     positional = args_in.pop("args", None)
     if isinstance(positional, list):
         if initial_param is not None and initial_hole_size < len(positional):

@@ -16,6 +16,7 @@ an asyncio loop of their own; this module is what calls into them and
 what they hand work back to.
 """
 
+import faulthandler
 import multiprocessing
 import os
 import signal
@@ -23,22 +24,26 @@ import sys
 import threading
 import time
 from collections import deque
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from math import log2
 from multiprocessing.pool import Pool, ThreadPool
 from typing import TYPE_CHECKING, override
 
+from bitcoin_core_rpc import chain_from_network
+
 from btclib_node.block_db import BlockDB, blocks_directory
 from btclib_node.chainstate import Chainstate
 from btclib_node.config import Config
-from btclib_node.constants import RPC_THREADS, NodeStatus
+from btclib_node.constants import DIR_MODE, RPC_THREADS, NodeStatus
 from btclib_node.dirlock import lock_directories
 from btclib_node.download import DownloadManager
 from btclib_node.exceptions import NodeShutdownTimeoutError, ReimportedMainProcessError
+from btclib_node.fee_estimator import FeeEstimator
 from btclib_node.interpreter import warm
 from btclib_node.log import open_history_log
 from btclib_node.main import check_fork_warning_conditions, update_chain
 from btclib_node.mempool import Mempool
+from btclib_node.mempool_persist import FILENAME, dump_mempool, load_mempool
 from btclib_node.notify import Warnings, run_detached, run_shutdown_notify
 from btclib_node.p2p.address import PeerDB
 from btclib_node.p2p.banman import BanMan
@@ -57,6 +62,7 @@ from btclib_node.rpc.manager import RpcManager
 from btclib_node.versionbits import UnknownActivations
 
 if TYPE_CHECKING:
+    from collections.abc import Generator
     from types import FrameType
 
     from btclib.p2p.inventory import Inventory
@@ -88,7 +94,32 @@ __all__ = ["Node", "install_signal_handlers"]
 # stop is reported here rather than by whichever bound expires first;
 # `tests/unit/init_test.py` asserts that ordering rather than leaving it
 # to this comment.
+#
+# It bounds the wait until the stores begin to close, not the closes:
+# `Node.stop` has why.
 STOP_TIMEOUT = 30
+
+# How long the main thread waits on the node's thread at a time
+# (`Node.start` and `Node.join`). CPython runs a signal's Python handler
+# only on the main thread, and a wait with no timeout lets it run only
+# where the signal interrupts that wait. A signal another thread takes
+# interrupts nothing, so the handler never runs, and only the handler
+# stops the node (btclib-org/btclib-node#1274). Core's main thread waits
+# on a pipe its handler writes from whichever thread it ran on
+# (`SignalInterrupt::wait`, `src/util/signalinterrupt.cpp`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag); a bounded wait is how Python
+# gets the same.
+SIGNAL_POLL_SECONDS = 0.5
+
+# How long after a SIGINT, SIGTERM or SIGTSTP the process is still
+# running before every thread's stack is written to stderr
+# (`install_signal_handlers`). Below `STOP_TIMEOUT`, and below the wait
+# after which bitcoin-node-tests' adapter kills the node, so the dump is
+# out before anything gives up on the process. That wait is
+# `scaled(_STARTUP_TIMEOUT)` in `NodeAdapter._terminate`
+# (`src/bitcoin_node_tests/node.py`), at btclib-org/bitcoin-node-tests@037126c.
+# `tests/unit/init_test.py` asserts the first.
+STOP_DUMP_DELAY = 15
 
 # How long the loop below sleeps once a pass finds nothing waiting in
 # either queue. The figure it replaces, 0.0001, sat below the
@@ -302,12 +333,12 @@ class Node(threading.Thread):
         self.config = config
         self.chain = config.chain
         self.data_dir = config.data_dir
-        self.data_dir.mkdir(exist_ok=True, parents=True)
+        self.data_dir.mkdir(mode=DIR_MODE, exist_ok=True, parents=True)
         # Core's own `GetBlocksDirPath` creates the blocks directory where
         # `AppInitParameterInteraction` first asks for it, ahead of the locks
         # (`src/common/args.cpp`, `src/init.cpp`, at bitcoin/bitcoin@9be056a8a7)
         blocks_dir = blocks_directory(self.data_dir, config.blocks_dir)
-        blocks_dir.mkdir(exist_ok=True, parents=True)
+        blocks_dir.mkdir(mode=DIR_MODE, exist_ok=True, parents=True)
 
         # Core's own `AppInitLockDirectories`: the data directory, then the
         # blocks directory, both before the log or any store is opened
@@ -315,6 +346,9 @@ class Node(threading.Thread):
         self._directory_locks = lock_directories(self.data_dir, blocks_dir)
 
         self.terminate_flag = threading.Event()
+        # set by `run` once the stores begin to close, which `stop`'s
+        # bound does not cover
+        self._closing_stores = threading.Event()
         log_path = self.data_dir / config.log_path if config.log_path else None
         # `rpc.callbacks.get_rpc_info`'s own `logpath`: Core's
         # `LogInstance().m_file_path.utf8string()` (`src/rpc/server.cpp`,
@@ -339,24 +373,22 @@ class Node(threading.Thread):
         )
 
         # A `getcfilters` answer `p2p.callbacks.get_cfilters` could not
-        # finish scheduling under its own pacing bound, keyed by
+        # finish scheduling before `Connection.pause_send` was set, keyed by
         # connection id: the connection itself and the block hashes
         # still owed, resolved along the request's own stop block
         # ancestry (`p2p.callbacks._filter_range`) rather than active
         # chain heights, so a reorg mid-pause cannot change what this
         # entry finishes sending (btclib-org/btclib-node#1476).
-        # `p2p.callbacks.advance_cfilters` and `p2p.main.resume_cfilters`
-        # are the only two that read or write this, and both run on this
-        # thread -- `run`'s own loop below, under `handle_p2p` or under
-        # `resume_cfilters` directly -- so nothing here needs a lock.
+        # Everything that reads or writes it runs on this thread, so it
+        # needs no lock.
         # btclib-org/btclib-node#442
         self.pending_cfilters: dict[int, tuple[Connection, deque[bytes]]] = {}
 
         # The same shape as `pending_cfilters` above, for a `getdata`
         # `p2p.callbacks.getdata` could not finish serving: the
-        # connection and the items still owed, read and written only by
-        # `p2p.callbacks.advance_getdata` and `p2p.main.resume_getdata`,
-        # both on this thread. btclib-org/btclib-node#470
+        # connection and the items still owed. Everything that reads or
+        # writes it runs on this thread, so it needs no lock.
+        # btclib-org/btclib-node#470
         self.pending_getdata: dict[int, tuple[Connection, deque[Inventory]]] = {}
 
         # relayed transactions waiting on a script check, read and
@@ -419,7 +451,8 @@ class Node(threading.Thread):
         # nonce (btclib-org/btclib-node#1336). Core guards them with
         # `m_most_recent_block_mutex`. No lock here: the one writer,
         # `new_pow_valid_block`, and the readers, `_announce_added_blocks`,
-        # `callbacks._serve_getdata_item` and `getblocktxn`, all run on
+        # `callbacks._serve_getdata_tx`, `_serve_getdata_block` and
+        # `getblocktxn`, all run on
         # `Node`'s own loop, never on `P2pManager`'s or `RpcManager`'s
         # thread.
         self.most_recent_block: MostRecentBlock | None = None
@@ -459,6 +492,8 @@ class Node(threading.Thread):
         # set by `run` once `load` has run or start-up has ended before
         # it, which `start` waits on
         self._load_attempted = threading.Event()
+        # the load of `mempool.dat` `run` begins and the loop steps
+        self._mempool_load: Generator[None, None, bool] | None = None
 
     def load(self) -> None:
         """Open the address table, the ban list, the chainstate and the blocks.
@@ -488,6 +523,20 @@ class Node(threading.Thread):
         )
         self.p2p_manager = P2pManager(self, self.p2p_port, peer_db, ban_man)
         self._opened.callback(self.p2p_manager.loop.close)
+        # where Core's step 6 builds its estimator, with its refusal of
+        # `-acceptstalefeeestimates` (`src/init.cpp`, at
+        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+        if self.config.accept_stale_fee_estimates and self.chain.name != "regtest":
+            chain = chain_from_network(self.chain.name)
+            msg = f"acceptstalefeeestimates is not supported on {chain} chain."
+            raise ValueError(msg)
+        self.fee_estimator = FeeEstimator(
+            self.data_dir / "fee_estimates.dat",
+            self.logger,
+            read_stale=self.config.accept_stale_fee_estimates,
+        )
+        # Core's `Shutdown` writes it even where a later step fails
+        self._opened.callback(self.fee_estimator.flush)
         warmup("Loading block index…")
         self.chainstate = Chainstate(self.data_dir, self.chain, self.logger)
         self._opened.callback(self.chainstate.close)
@@ -509,7 +558,12 @@ class Node(threading.Thread):
         self.chainstate.filter_index.catch_up(
             self.chainstate.block_index.active_chain, self.block_db
         )
-        self.mempool = Mempool(self.logger, self.config.incremental_relay_feerate)
+        self.mempool = Mempool(
+            self.logger,
+            self.config.incremental_relay_feerate,
+            self.config.mempool_expiry,
+        )
+        self.mempool.removal_listener = self.fee_estimator.remove_tx
 
         # update_chain's own record of the most recent block its trial
         # loop refused and why: the hash failed_hash already names
@@ -522,6 +576,11 @@ class Node(threading.Thread):
         # which is the only reading that needs telling apart from a
         # stale one. btclib-org/btclib-node#587
         self.last_rejected_block: tuple[bytes, BaseException] | None = None
+
+        # What `main._log_script_check_reason` last logged, so that a
+        # change is logged once: Core's own
+        # `m_last_script_check_reason_logged`
+        self.script_check_reason_logged: tuple[str | None] | None = None
 
         # This node's own active-chain tip height, at the moment
         # `main._finalize_fork` last moved it -- read by
@@ -664,12 +723,13 @@ class Node(threading.Thread):
         they did not expect -- and leaving `run`'s own loop by exception
         skips every close below it, so the databases would stay open.
 
-        `resume_rpc`, `resume_cfilters`, `resume_getdata` and
-        `resume_tx_checks` are last and unconditional, not one more queue
-        to size a share from: nothing is queued to trigger them, a waiting
-        request, a paused `getcfilters` or `getdata` answer, or a script
-        check's verdict being owed regardless of what else this pass finds
-        waiting.
+        `resume_rpc`, `resume_cfilters`, `resume_getdata`,
+        `resume_tx_checks` and the load of `mempool.dat` are last and
+        unconditional, not one more queue to size a share from: nothing is
+        queued to trigger them, a waiting request, a paused `getcfilters`
+        or `getdata` answer, a script check's verdict, or the next
+        transaction of the file being owed regardless of what else this
+        pass finds waiting.
 
         A request is started only while fewer than `RPC_THREADS` are
         waiting in `pending_rpc`, the rest staying on `rpc_manager.messages`
@@ -681,7 +741,7 @@ class Node(threading.Thread):
         and without the push `stop`'s bound would run out on them before
         the drain's first request (btclib-org/btclib-node#1651).
 
-        A connection paused on `MAX_QUEUED_RECV_BYTES`
+        A connection paused on its `recv_flood_size`
         (`p2p/connection.py`) waits here and nowhere of its own: what
         resumes it is `handle_p2p` popping enough of that connection's
         own items off `p2p_manager.messages`, and that queue is shared by
@@ -718,17 +778,44 @@ class Node(threading.Thread):
             for _ in range(int(log2(len(self.p2p_manager.messages) + 1))):
                 handle_p2p(self)
                 wait = False
-            if resume_rpc(self):
-                wait = False
-            if resume_cfilters(self):
-                wait = False
-            if resume_getdata(self):
-                wait = False
-            if resume_tx_checks(self):
+            resumed = [
+                resume_rpc(self),
+                resume_cfilters(self),
+                resume_getdata(self),
+                resume_tx_checks(self),
+                self._resume_mempool_load(),
+            ]
+            if any(resumed):
                 wait = False
         except Exception:
             self.logger.exception("Exception occurred handling a message")
         return wait
+
+    def _start_mempool_load(self) -> None:
+        """Begin loading `mempool.dat`, which the loop then steps.
+
+        Core loads it on its `initload` thread, once the blocks are
+        imported (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        tag); here the loop adds one transaction per pass, serving peers
+        and RPC calls between them. With `-persistmempool=0` nothing is read
+        and the load counts as tried, as Core's `LoadMempool` returns at
+        once for an empty path.
+        """
+        if self.config.persist_mempool:
+            self._mempool_load = load_mempool(self, self.data_dir / FILENAME)
+        else:
+            self.mempool.load_tried = True
+
+    def _resume_mempool_load(self) -> bool:
+        """Take one step of the load, and answer whether there was one."""
+        if self._mempool_load is None:
+            return False
+        try:
+            next(self._mempool_load)
+        except StopIteration:
+            self._mempool_load = None
+            self.mempool.load_tried = True
+        return True
 
     def _step_chain(self) -> bool:
         """Advance the chain one step, and answer whether `run` should stop.
@@ -779,7 +866,19 @@ class Node(threading.Thread):
         a caller of `start` reads them as soon as it returns.
         """
         super().start()
-        self._load_attempted.wait()
+        while not self._load_attempted.wait(SIGNAL_POLL_SECONDS):
+            pass
+
+    @override
+    def join(self, timeout: float | None = None) -> None:
+        """Wait for the node's thread as `Thread.join` does.
+
+        With no timeout, wait `SIGNAL_POLL_SECONDS` at a time, for the
+        reason that constant gives.
+        """
+        super().join(SIGNAL_POLL_SECONDS if timeout is None else timeout)
+        while timeout is None and self.is_alive():
+            super().join(SIGNAL_POLL_SECONDS)
 
     def _start_rpc_and_load(self) -> bool:
         """Start the RPC listener, then `load`; answer whether both did.
@@ -907,10 +1006,25 @@ class Node(threading.Thread):
             self.p2p_manager.stop()
         self.rpc_manager.stop()
 
+        self._closing_stores.set()
         if self.loaded:
             self.p2p_manager.peer_db.close()
             # Core's `~BanMan` dumps the list one last time
             self.p2p_manager.ban_man.dump()
+            # Core's `Shutdown` writes the mempool once the peers are gone,
+            # before the fee estimates and the chainstate (`src/init.cpp`, at
+            # bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and only where
+            # the load at start ended without a stop, so a node stopped
+            # while loading keeps the file it was reading
+            if self.mempool.load_tried and self.config.persist_mempool:
+                dump_mempool(
+                    self.mempool,
+                    self.data_dir / FILENAME,
+                    v1=self.config.persist_mempool_v1,
+                )
+            # Core's `Shutdown`: what is still unconfirmed counts as a
+            # failure, and the estimates are written
+            self.fee_estimator.flush()
             self.chainstate.close()
             self.block_db.close()
 
@@ -967,6 +1081,7 @@ class Node(threading.Thread):
             # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): run once, on a
             # thread nothing waits for.
             run_detached(self.logger, self.config.startup_notify)
+            self._start_mempool_load()
         # `config.connect` and `config.addnode` are each dialled by a
         # loop of `P2pManager`'s own, `_open_connect_peers` and
         # `_open_added_peers`, started from `P2pManager.run` once the
@@ -985,6 +1100,7 @@ class Node(threading.Thread):
             # read.
             if self.terminate_flag.is_set() or self._step_chain():
                 break
+            self.fee_estimator.flush_if_due()
         self._stop_managers_and_close_stores()
 
         # joined before the read below, not asked for: the same race
@@ -1001,9 +1117,10 @@ class Node(threading.Thread):
             lock.release()
 
     def stop(self) -> None:
-        """Ask the main loop to stop, and wait a bounded time for it.
+        """Ask the main loop to stop, and wait for it.
 
-        Raises if the loop has not come back by then, the node having
+        The wait is bounded until the stores begin to close, and raises if
+        they have not begun by then, the node having
         no way to be sure of its chainstate or its databases while a
         thread is still inside them.
 
@@ -1058,11 +1175,23 @@ class Node(threading.Thread):
           this call and the deadline it answers, so a deadline recorded
           after it would mean this thread went that long without
           recording one: the wedge this raises for.
+
+        Once the stores begin to close, the wait has no bound, as Core's
+        `Shutdown` (`src/init.cpp`, bitcoin/bitcoin@9be056a8a7, the v31.1
+        tag) waits for each flush however long it takes. A close took
+        seconds on a loaded runner (btclib-org/btclib-node#1870), and
+        raising during it would report a wedge where there is none. The
+        cost: a close that never returns holds this call, and the teardown
+        around it, which is the hang the bound above turns into a failure
+        for the loop (btclib-org/btclib-node#115).
         """
         self.terminate_flag.set()
         if self.is_alive() and threading.current_thread() is not self:
             called_at = time.monotonic()
             while self.is_alive():
+                if self._closing_stores.is_set():
+                    self.join()
+                    break
                 deadline = self.rpc_manager.latest_reply_deadline()
                 start = called_at if deadline is None else max(called_at, deadline)
                 remaining = start + STOP_TIMEOUT - time.monotonic()
@@ -1113,9 +1242,28 @@ def install_signal_handlers(node: Node) -> None:
     `return` -- SIGINT and SIGTERM registering correctly ahead of it was
     not enough to save a caller that let this propagate
     (btclib-org/btclib-node#430).
+
+    The handler also arms `faulthandler.dump_traceback_later`, so that a
+    process still alive `STOP_DUMP_DELAY` seconds later writes the stack
+    of every thread to stderr (btclib-org/btclib-node#1274). It is armed
+    in the handler rather than at install time, so that a process which
+    stops in time prints nothing, and it is not cancelled when `stop`
+    returns, since the process can still be held open after that, by a
+    thread that is not a daemon. The
+    watchdog is a C thread, so the dump comes out whichever thread is
+    blocked, but it is armed only once the Python handler runs: a main
+    thread stuck in a C call that never returns to the interpreter never
+    gets here, and `faulthandler.register` would be the way to see that,
+    at the price of a dump on every clean stop. A second signal re-arms
+    the delay. Bitcoin Core's `Shutdown` writes no stack
+    (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7).
     """
 
     def stop_handler(_signum: int, _frame: FrameType | None) -> None:
+        # a diagnostic never stops the stop: arming raises where stderr has
+        # no file descriptor (closed, `None`, a `StringIO`)
+        with suppress(Exception):
+            faulthandler.dump_traceback_later(STOP_DUMP_DELAY, exit=False)
         node.stop()
 
     signal.signal(signal.SIGINT, stop_handler)

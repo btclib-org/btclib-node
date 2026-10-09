@@ -2,18 +2,19 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""The mining RPCs, and `waitforblockheight`, which waits on the same tip.
+"""The mining RPCs, and the three that wait on the same tip.
 
 Core's `generatetoaddress`, `generateblock` and `getblocktemplate` are in
-`src/rpc/mining.cpp`, and `waitforblockheight` in `src/rpc/blockchain.cpp`,
-where it waits through the mining interface's `waitTipChanged`, at
+`src/rpc/mining.cpp`, and `waitfornewblock`, `waitforblock` and
+`waitforblockheight` in `src/rpc/blockchain.cpp`, where each waits
+through the mining interface's `waitTipChanged`, at
 bitcoin/bitcoin@9be056a8a7, the v31.1 tag. Each handler has
 `rpc.callbacks`' signature and runs on `Node`'s thread, so it may build a
 block and hand it to `update_chain` without a lock (`ARCHITECTURE.md`).
 `btclib_node.mining` builds and checks the blocks.
 
 The nonce search of `generatetoaddress` and `generateblock`, a
-`getblocktemplate` long poll and `waitforblockheight` are generators that
+`getblocktemplate` long poll and the three waits are generators that
 `rpc.main` resumes on each pass of `Node`'s loop, where Core runs them on
 an RPC thread of their own.
 """
@@ -21,7 +22,6 @@ an RPC thread of their own.
 from __future__ import annotations
 
 import re
-import string
 from time import monotonic
 from typing import TYPE_CHECKING, Any
 
@@ -49,7 +49,9 @@ from btclib_node.mining import (
 from btclib_node.rpc.errors import (
     RpcError,
     bool_param,
+    is_hex,
     json_type_name,
+    parse_hash_v,
     type_error,
     type_errors,
 )
@@ -57,7 +59,7 @@ from btclib_node.rpc.help import HELP_TEXT
 from btclib_node.signet import SIGNET_CHALLENGE
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Callable, Generator
 
     from btclib_node import Node
     from btclib_node.rpc.connection import RpcConnection
@@ -66,10 +68,10 @@ __all__ = [
     "generate_block",
     "generate_to_address",
     "get_block_template",
+    "wait_for_block",
     "wait_for_block_height",
+    "wait_for_new_block",
 ]
-
-_HEX_DIGITS = frozenset(string.hexdigits)
 
 # `getInt<int>()`'s own range
 _INT_RANGE = range(-(2**31), 2**31)
@@ -257,14 +259,9 @@ def _generate_blocks(
     return hashes
 
 
-def _is_hex(text: str) -> bool:
-    """Core's `IsHex`: a non-empty even-length string of hexadecimal digits."""
-    return bool(text) and len(text) % 2 == 0 and all(c in _HEX_DIGITS for c in text)
-
-
 def _parse_hex_tx(text: str) -> Tx | None:
     """Decode a hex transaction as `DecodeHexTx` does, `None` where it fails."""
-    if not _is_hex(text):
+    if not is_hex(text):
         return None
     try:
         return Tx.parse(bytes.fromhex(text), check_validity=False)
@@ -278,7 +275,7 @@ def _parse_hex_block(text: str) -> Block | None:
     Core ignores bytes after the block; btclib's parser refuses them, so
     here a block with a trailing byte fails to decode.
     """
-    if not _is_hex(text):
+    if not is_hex(text):
         return None
     try:
         return Block.parse(bytes.fromhex(text), check_validity=False)
@@ -298,7 +295,7 @@ def _string_item(value: object) -> str:
 
 def _generateblock_transaction(node: Node, text: str) -> Tx:
     """Return one transaction of `generateblock`'s list, a txid or a raw one."""
-    if len(text) == 64 and _is_hex(text):  # noqa: PLR2004
+    if len(text) == 64 and is_hex(text):  # noqa: PLR2004
         tx = node.mempool.get_tx(bytes.fromhex(text))
         if tx is None:
             raise RpcError(
@@ -551,7 +548,7 @@ def _long_poll_id(node: Node, long_poll_id: object) -> tuple[bytes, int]:
             RPCErrorCode.INVALID_PARAMETER,
             f"longpollid must be of length 64 (not {len(raw)}, for '{head}')",
         )
-    if not _is_hex(head):
+    if not is_hex(head):
         raise RpcError(
             RPCErrorCode.INVALID_PARAMETER,
             f"longpollid must be hexadecimal string (not '{head}')",
@@ -623,6 +620,20 @@ def get_block_template(
     return _long_poll(node, client_rules, watched, counter, check_at)
 
 
+def _deadline(timeout: object) -> float | None:
+    """Return when a wait of `timeout` milliseconds ends, `None` for none.
+
+    Core reads the number with `getInt<int>()`, refuses a negative one,
+    and takes 0, or no number, as no timeout.
+    """
+    if timeout is None:
+        return None
+    milliseconds = _int_param(timeout)
+    if milliseconds < 0:
+        raise RpcError(RPCErrorCode.MISC_ERROR, "Negative timeout")
+    return monotonic() + milliseconds / 1000 if milliseconds else None
+
+
 def wait_for_block_height(
     node: Node, conn: RpcConnection, params: list[Any]
 ) -> Generator[bool, None, dict[str, Any]]:
@@ -645,23 +656,97 @@ def wait_for_block_height(
     if mismatches:
         raise type_errors(*mismatches)
     target = _int_param(height)
-    milliseconds = 0 if timeout is None else _int_param(timeout)
-    if milliseconds < 0:
-        raise RpcError(RPCErrorCode.MISC_ERROR, "Negative timeout")
-    deadline = monotonic() + milliseconds / 1000 if milliseconds else None
-    return _wait_for_height(node, target, deadline)
+    deadline = _deadline(timeout)
+    return _wait_for_tip(
+        node,
+        lambda _tip, tip_height: tip_height >= target,
+        deadline,
+    )
 
 
-def _wait_for_height(
-    node: Node, height: int, deadline: float | None
+def wait_for_new_block(
+    node: Node, conn: RpcConnection, params: list[Any]
 ) -> Generator[bool, None, dict[str, Any]]:
-    """Wait for the tip to reach `height`, until `deadline` if there is one."""
+    """Answer `waitfornewblock`: the tip, once it is not `current_tip`.
+
+    Core's `waitfornewblock`: `current_tip` is the tip at the call where
+    it is left out, and a `current_tip` that is not the tip is answered
+    at once. `timeout` is `waitforblockheight`'s, and where the node stops
+    the answer is the tip at the call (`_wait_for_tip`).
+    """
+    timeout = params[0] if params else None
+    current_tip = params[1] if len(params) > 1 else None
+    mismatches: list[tuple[int, str, object, str]] = []
+    if timeout is not None and not _is_number(timeout):
+        mismatches.append((1, "timeout", timeout, "number"))
+    if current_tip is not None and not isinstance(current_tip, str):
+        mismatches.append((2, "current_tip", current_tip, "string"))
+    if mismatches:
+        raise type_errors(*mismatches)
+    deadline = _deadline(timeout)
+    if current_tip is None:
+        tip = node.chainstate.block_index.active_chain[-1]
+    else:
+        tip = parse_hash_v("current_tip", current_tip)
+    return _wait_for_tip(node, lambda hash_, _height: hash_ != tip, deadline)
+
+
+def wait_for_block(
+    node: Node, conn: RpcConnection, params: list[Any]
+) -> Generator[bool, None, dict[str, Any]]:
+    """Answer `waitforblock`: the tip, once it is `blockhash`.
+
+    Core's `waitforblock`, whose `blockhash` is read before `timeout`.
+    `timeout` is `waitforblockheight`'s, and the tip is compared once per
+    pass of the loop (`_wait_for_tip`).
+    """
+    if not params:
+        raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["waitforblock"])
+    block_hash = params[0]
+    timeout = params[1] if len(params) > 1 else None
+    mismatches: list[tuple[int, str, object, str]] = []
+    if not isinstance(block_hash, str):
+        mismatches.append((1, "blockhash", block_hash, "string"))
+    if timeout is not None and not _is_number(timeout):
+        mismatches.append((2, "timeout", timeout, "number"))
+    if mismatches:
+        raise type_errors(*mismatches)
+    wanted = parse_hash_v("blockhash", block_hash)
+    deadline = _deadline(timeout)
+    return _wait_for_tip(node, lambda hash_, _height: hash_ == wanted, deadline)
+
+
+def _wait_for_tip(
+    node: Node,
+    done: Callable[[bytes, int], bool],
+    deadline: float | None,
+) -> Generator[bool, None, dict[str, Any]]:
+    """Wait until `done(hash, height)` holds of the tip, or until `deadline`.
+
+    The tip is read once per pass of `Node`'s loop. A tip that is `done`
+    and moves on within one pass is never seen, where Core's
+    `WaitTipChanged` wakes on a condition variable and misses only a
+    notification that arrives before the waiter runs
+    (`src/node/miner.cpp`, at bitcoin/bitcoin@9be056a8a7).
+
+    A timeout answers the tip. Where the node stops, which Core's
+    `WaitTipChanged` reports as no tip, the answer is the tip
+    of the previous pass, as `waitforblock` and `waitforblockheight` keep
+    it. For `waitfornewblock`, which ends at the first tip that differs,
+    that is the tip at the call. A stop wins over a pass that finds the
+    wait `done`, as it does there.
+    """
     block_index = node.chainstate.block_index
-    while len(block_index.active_chain) <= height:
-        if node.terminate_flag.is_set() or (
-            deadline is not None and monotonic() >= deadline
-        ):
+
+    def read() -> tuple[bytes, int]:
+        return block_index.active_chain[-1], len(block_index.active_chain) - 1
+
+    current = read()
+    while not done(*current):
+        if deadline is not None and monotonic() >= deadline:
             break
         yield False
-    active_chain = block_index.active_chain
-    return {"hash": active_chain[-1], "height": len(active_chain) - 1}
+        if node.terminate_flag.is_set():
+            break
+        current = read()
+    return {"hash": current[0], "height": current[1]}

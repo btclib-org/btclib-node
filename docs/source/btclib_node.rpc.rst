@@ -39,6 +39,13 @@ btclib\_node.rpc.errors module
    :members:
    :show-inheritance:
 
+btclib\_node.rpc.fees module
+----------------------------
+
+.. automodule:: btclib_node.rpc.fees
+   :members:
+   :show-inheritance:
+
 btclib\_node.rpc.help module
 --------------------------------
 
@@ -74,6 +81,13 @@ btclib\_node.rpc.mining module
    :members:
    :show-inheritance:
 
+btclib\_node.rpc.package module
+-----------------------------------
+
+.. automodule:: btclib_node.rpc.package
+   :members:
+   :show-inheritance:
+
 btclib\_node.rpc.signing module
 -----------------------------------
 
@@ -81,10 +95,24 @@ btclib\_node.rpc.signing module
    :members:
    :show-inheritance:
 
+btclib\_node.rpc.snapshot module
+-----------------------------------
+
+.. automodule:: btclib_node.rpc.snapshot
+   :members:
+   :show-inheritance:
+
 btclib\_node.rpc.solver module
 -----------------------------------
 
 .. automodule:: btclib_node.rpc.solver
+   :members:
+   :show-inheritance:
+
+btclib\_node.rpc.utxo\_set module
+-----------------------------------
+
+.. automodule:: btclib_node.rpc.utxo_set
    :members:
    :show-inheritance:
 

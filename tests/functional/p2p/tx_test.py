@@ -135,3 +135,68 @@ def test_send_tx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         node2.stop()
         node1.join()
         node2.join()
+
+
+def test_an_unbroadcast_tx_reaches_a_peer_connected_later(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1816: the periodic re-announcement reaches a peer that came late.
+
+    `node2` holds the transaction as unbroadcast with no peer to announce
+    it to, as after `sendrawtransaction` on a node without peers. Once
+    `node1` connects, the next reattempt announces it. The interval is
+    pinned to a fraction of a second, Core's 10 to 15 minutes being
+    the production value.
+    """
+    monkeypatch.setattr(download_module._rng, "expovariate", lambda lambd: 0.0)
+    monkeypatch.setattr(download_module, "_REATTEMPT_BROADCAST_INTERVAL", 0.2)
+    monkeypatch.setattr(download_module, "_REATTEMPT_BROADCAST_JITTER", 0)
+    node1 = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path / "node1",
+            p2p_port=get_random_port(),
+            allow_rpc=False,
+        )
+    )
+    node2 = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path / "node2",
+            p2p_port=get_random_port(),
+            allow_rpc=False,
+        )
+    )
+    node1.start()
+    node2.start()
+    try:
+        wait_until_listening(node1.p2p_manager)
+        wait_until_listening(node2.p2p_manager)
+        chain = generate_random_chain(
+            COINBASE_MATURITY, RegTest().genesis.hash, tip_time=datetime.now(UTC)
+        )
+        for node in (node1, node2):
+            block_index = node.chainstate.block_index
+            block_index.add_headers([block.header for block in chain])
+            node.status = NodeStatus.HeaderSynced
+            for block in chain:
+                node.block_db.add_block(block)
+                block_index.set_downloaded(block.header.hash)
+            wait_until(lambda: len(block_index.active_chain) == len(chain) + 1)  # noqa: B023
+            wait_until(lambda: node.is_initial_block_download is False)  # noqa: B023
+
+        funding = chain[0].transactions[0]
+        tx = generate_random_transaction(funding.id, value=funding.vout[0].value - 1000)
+        node2.mempool.add_tx(tx, 1000)
+        node2.mempool.mark_broadcast_locally(tx.id)
+        assert tx.id in node2.mempool.unbroadcast
+
+        node2.p2p_manager.connect(local_addr(node1.p2p_port))
+        wait_until(lambda: node1.mempool.size)
+        # node1's `getdata` is what ends the repeats
+        wait_until(lambda: not node2.mempool.unbroadcast)
+    finally:
+        node1.stop()
+        node2.stop()
+        node1.join()
+        node2.join()

@@ -396,6 +396,17 @@ class Row:
     sequence: int
 
 
+def test_an_announcement_is_of_a_txid_only_when_it_says_so() -> None:
+    """The flag is kept per announcement; an unknown peer or hash has none."""
+    tracker = a_tracker()
+    tracker.received_inv(1, a_hash(1), preferred=True, reqtime=0)
+    tracker.received_inv(1, a_hash(2), preferred=True, reqtime=0, txid=True)
+    assert not tracker.is_txid(1, a_hash(1))
+    assert tracker.is_txid(1, a_hash(2))
+    assert not tracker.is_txid(1, a_hash(3))
+    assert not tracker.is_txid(2, a_hash(2))
+
+
 class Model:
     """The rules of `txrequest.h` as a table, with nothing incremental.
 

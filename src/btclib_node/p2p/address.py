@@ -67,6 +67,7 @@ __all__ = [
     "ip_and_port",
     "network_class",
     "peer_address",
+    "service_key",
 ]
 
 # Core's `IsBadPort` (`src/netbase.cpp`, at bitcoin/bitcoin@9be056a8a7,
@@ -747,6 +748,16 @@ def host_key(address: NetworkAddressV2) -> bytes:
     if can_addrv1(address):
         return network_address(address).ip.packed
     return address.address
+
+
+def service_key(address: NetworkAddressV2) -> bytes:
+    """Return the octets Core's `CService::GetKey` gives: the port added.
+
+    `host_key`, then the port big-endian (`src/netaddress.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). What
+    `Connection.addr_known` keys on, as Core's `m_addr_known` does.
+    """
+    return host_key(address) + address.port.to_bytes(2, "big")
 
 
 def _new_bucket_key() -> bytes:

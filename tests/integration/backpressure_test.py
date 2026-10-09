@@ -2,7 +2,7 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""`MAX_QUEUED_RECV_BYTES` watched against a real bitcoind serving big blocks.
+"""`recv_flood_size` watched against a real bitcoind serving big blocks.
 
 The receive-side bound is the one half of this node's backpressure a
 daemon can actually reach: a peer serving a chain faster than
@@ -41,7 +41,6 @@ from btclib_node.chains import RegTest
 from btclib_node.config import Config
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.p2p.address import peer_address
-from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES
 from tests import (
     GENESIS_TIME,
     brute_force_nonce,
@@ -59,8 +58,8 @@ if TYPE_CHECKING:
 # How much of one block is the unspendable payload, how many outputs
 # follow it, and how many such blocks the chain carries.
 #
-# A block's serialized size is what `MAX_QUEUED_RECV_BYTES` is measured
-# against, and consensus caps a witnessless block's own weight at four
+# A block's serialized size is about what `recv_flood_size` weighs it
+# at, and consensus caps a witnessless block's own weight at four
 # times that size -- so a megabyte is the most one of these can be, and
 # the payload is sized just under it. `_BLOCKS` is comfortably past what
 # `MAX_BLOCKS_IN_TRANSIT_PER_PEER` (`btclib_node/download.py`) asks one
@@ -82,7 +81,7 @@ class RecordingResume(asyncio.Event):
     """A `Connection._recv_resume` that counts the pauses it was cleared for.
 
     `_weigh_against_recv_bound` clears this event only where
-    `queued_recv_bytes` has just crossed `MAX_QUEUED_RECV_BYTES`, so a
+    `queued_recv_bytes` has just crossed `recv_flood_size`, so a
     count of clears is a count of pauses -- taken on the loop's own
     thread as it happens, rather than by a poll from the test's, which
     would have to catch a pause that lasts milliseconds.
@@ -221,7 +220,7 @@ def test_a_node_paces_a_bitcoind_serving_it_megabyte_blocks(
     assert block_index.active_chain[-1].hex() == tip
     assert recv_resume.pauses
     assert connection.status == P2pConnStatus.Connected
-    assert connection.queued_recv_bytes <= MAX_QUEUED_RECV_BYTES
+    assert connection.queued_recv_bytes <= connection.recv_flood_size
 
     node.stop()
     node.join()

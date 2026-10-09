@@ -22,13 +22,28 @@ release was cut, and it promises nothing about compatibility, so a
 breaking change is announced in this file — read it before upgrading,
 rather than a digit.
 
-## Unreleased
+## v2026.10.8
 
-The `2026.11` cycle is open and nothing has been cut from it. This
-section fills in one landed change at a time — what a user of the
-release below would have to act on to move past it — and
-`RELEASING.md`'s *Release to PyPI* is what retitles it to the version
-on release day.
+**The fifth release.** Everything below is measured against `v2026.10.4`.
+`CHANGELOG.md`'s own `v2026.10.8` section is the record of everything
+that went into it.
+
+### Security
+
+- **A refusal quoted a configuration line or a command-line argument whole,
+  and an RPC password in it reached stderr**
+  ([GHSA-74pj-5cgg-3m66](https://github.com/btclib-org/btclib-node/security/advisories/GHSA-74pj-5cgg-3m66)).
+  From 2026.9.4 to 2026.10.4, a configuration line that fails to parse, such
+  as `rpcpassword <pw>` or `main.rpcpassword <pw>`, and a refused argument,
+  such as `-main.rpcpassword=<pw>`, were quoted whole. A configuration line
+  starting with `-`, such as `-rpcpassword=<pw>`, was quoted in 2026.10.4
+  alone. Upgrade, and treat an RPC password that such a line or argument may
+  have printed as exposed: a service manager can keep stderr in its journal.
+- **Such a line or argument is quoted only up to the first `rpcauth`,
+  `rpcpassword` or `rpcuser` in it**, which departs from Core, as
+  `SECURITY.md` says. A misspelled name, as in `-rpcpasword=<pw>`, is still
+  quoted whole. `scantxoutset`, not yet in a release, does not quote the
+  descriptor in "Cannot derive script without private keys".
 
 ### Breaking changes
 
@@ -50,6 +65,23 @@ on release day.
 - **A bare `gettxoutsetinfo` answers `hash_serialized_3`, not `muhash`**
   (closes #1598). Pass `"muhash"` to get the old answer. The call scans every
   stored coin, as Core's does, so it takes longer the larger the set.
+- **A JSON number no double holds, and `NaN`, `Infinity` and `-Infinity`,
+  are refused** (closes #1826, closes #1830). `1e400`, or a whole number as
+  large, is answered "JSON double out of range" where a method reads a
+  double, and the three names are a parse error, `-32700`, as in Core.
+- **A full send buffer pauses a peer and never drops it** (closes #1775,
+  closes #1789, closes #1805, closes #1812). `MAX_QUEUED_SEND_BYTES`,
+  `MAX_GETDATA_INFLIGHT_BYTES`, `MAX_CFILTERS_INFLIGHT_BYTES`,
+  `MAX_PENDING_GETDATA_ITEMS`, `MAX_PENDING_CFILTER_HASHES`,
+  `Connection.queued_send_bytes` and the module
+  `btclib_node.p2p.filter_size` are gone, and `MAX_QUEUED_RECV_BYTES` is
+  `Connection.recv_flood_size`, from `-maxreceivebuffer`.
+- **`config.listen_port` takes `whitebind` after `bind`,
+  `Mempool.cluster` takes `max_weight` in place of `max_vsize`, and
+  `Connection.tx_announce_queue` is a `dict` used as an ordered set, not a
+  list** (closes #1625, closes #1499, closes #1810), for a program that
+  uses them. The tables `callbacks` of `p2p` and of `rpc`, `arg_names`,
+  `HELP_TEXT` and `CATEGORY` gained the messages and methods now served.
 
 ### Worth knowing, though nothing raises
 
@@ -62,6 +94,37 @@ on release day.
 - **A request sent while the node starts is answered `-28`**, as in Core
   (closes #1317). A client that waits for the node by sending a request
   retries on `-28`, as it does for `bitcoind`.
+- **`-assumevalid=<hash>` skips the script checks of the blocks under that
+  block, as in Core** (issue #1576). Nothing is assumed valid by default
+  yet: the node verifies every script unless you pass the option. Pass
+  only a hash you have verified, since a block under it with an invalid
+  script can be accepted.
+- **A peer is pinged every two minutes, and dropped when its `pong` is
+  twenty minutes overdue or when nothing is received from it, or sent whole
+  to it, for twenty**, as in Core v31.1 (closes #1768).
+- **`-maxsendbuffer` and `-maxreceivebuffer` are read**, in thousands of
+  bytes, as in Core, with defaults of 1000 and 5000 (closes #1812).
+- **`estimatesmartfee` and `estimaterawfee` are served from `fee_estimates.dat`
+  in Core's format**, read at start, written every hour and at shutdown
+  (closes #1543). A file over 60 hours old is not read unless
+  `-acceptstalefeeestimates` is set, which is refused off regtest.
+- **The mempool is kept across a restart**, in `mempool.dat` in Core's
+  format: written at shutdown, loaded at start, and turned off by
+  `-persistmempool=0` (issue #1746). `getmempoolinfo`'s `loaded` says
+  whether the load has ended.
+- **A reorg trims the mempool, and a full one evicts the worst chunk**, as
+  bitcoind v31.1 does (closes #1823, closes #1740). A package admitted
+  through its child is no longer the first evicted, and the members a trim
+  leaves are kept.
+- **A short-id collision in a `cmpctblock` is answered by asking for the
+  block**, as in Core (closes #1859).
+- **The dependency floors are `btclib>=2026.10.8` and
+  `btclib-wallet>=2026.10.8`.** The first is the release with
+  `btclib.compressor`, which `dumptxoutset` reads, `btclib.obfuscation`,
+  which the mempool file reads, and the `ShortIdCollisionError` that a
+  collision raises (btclib-org/btclib#2570). The second fixes
+  [GHSA-62jf-v327-86h5](https://github.com/btclib-org/btclib-wallet/security/advisories/GHSA-62jf-v327-86h5),
+  a private key in a refusal that `scantxoutset` answers with.
 
 ## v2026.10.4
 

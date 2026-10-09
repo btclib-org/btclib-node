@@ -102,7 +102,8 @@ def test_bitcoind_dialling_in_v1_is_refused_without_v1transport(
                 for c in node.p2p_manager.pending_connections.values()
             )
         )
-        assert bitcoind.rpc("getpeerinfo") == []
+        # bitcoind sees the close after we make it
+        wait_until(lambda: bitcoind.rpc("getpeerinfo") == [], timeout=30)
     finally:
         node.stop()
         node.join()

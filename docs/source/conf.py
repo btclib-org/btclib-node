@@ -184,6 +184,10 @@ intersphinx_cache_limit = 0
 #   Coin.parse carries BinaryData, btclib's own alias.py type alias,
 #   undocumented there, so `:members:` renders no page for a signature
 #   naming it to link to
+# - settings_file.Json, a `type` alias: autodoc lists it as data, and a
+#   signature names it as a class, which no page has
+# - R, txgraph.py's own PEP 695 type parameter for a transaction's
+#   name: a signature names it as a class, which no page has
 nitpick_ignore = [
     ("py:class", "Tx"),
     ("py:class", "TxOut"),
@@ -208,6 +212,8 @@ nitpick_ignore = [
     ("py:class", "ScriptFlags"),
     ("py:class", "ConsensusParams"),
     ("py:class", "ScriptPubKey"),
+    ("py:class", "btclib_node.settings_file.Json"),
+    ("py:class", "R"),
 ]
 
 # anchors for h1 to h6, which is what makes a link to a heading of the same

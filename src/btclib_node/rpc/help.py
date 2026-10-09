@@ -23,6 +23,12 @@ and `setban`'s own invalid-command refusal, byte for byte). `help_rpc`
 below answers it for a command named explicitly, and un-truncated, where
 Core's own bare listing keeps only each entry's first line.
 
+The `vsize_adjusted`, `vsize` and `vsize_bip141` lines of
+`getmempoolentry`, `getrawmempool` and `testmempoolaccept` are Core 32's
+(`src/rpc/mempool.cpp`, at bitcoin/bitcoin@aef8a04966), laid out as
+`RPCHelpMan::ToString` lays them out. No bitcoind carrying them was read
+back (btclib-org/btclib-node#1757).
+
 `CATEGORY` is each command's own heading in Core's `help`'s bare
 listing (`CRPCTable::help`, `src/rpc/server.cpp:69-117`, at
 bitcoin/bitcoin@9be056a8a7, the v31.1 tag), sorted the way that
@@ -47,6 +53,99 @@ from typing import Any
 from btclib_node.rpc.errors import type_error
 
 __all__ = ["CATEGORY", "HELP_TEXT", "answer_help"]
+
+_HELP_ESTIMATESMARTFEE = (
+    'estimatesmartfee conf_target ( "estimate_mode" )\n'
+    "\n"
+    "Estimates the approximate fee per kilobyte needed for a transaction to begin\n"
+    "confirmation within conf_target blocks if possible and return the number of blocks\n"
+    "for which the estimate is valid. Uses virtual transaction size as defined\n"
+    "in BIP 141 (witness data is discounted).\n"
+    "\n"
+    "Arguments:\n"
+    "1. conf_target      (numeric, required) Confirmation target in blocks (1 - 1008)\n"
+    '2. estimate_mode    (string, optional, default="economical") The fee estimate mode.\n'
+    "                    unset, economical, conservative \n"
+    "                    unset means no mode set (default mode will be used). \n"
+    "                    economical estimates use a shorter time horizon, making them more\n"
+    "                    responsive to short-term drops in the prevailing fee market. This mode\n"
+    "                    potentially returns a lower fee rate estimate.\n"
+    "                    conservative estimates use a longer time horizon, making them\n"
+    "                    less responsive to short-term drops in the prevailing fee market. This mode\n"
+    "                    potentially returns a higher fee rate estimate.\n"
+    "                    \n"
+    "\n"
+    "Result:\n"
+    "{                   (json object)\n"
+    '  "feerate" : n,    (numeric, optional) estimate fee rate in BTC/kvB (only present if no errors were encountered)\n'
+    '  "errors" : [      (json array, optional) Errors encountered during processing (if there are any)\n'
+    '    "str",          (string) error\n'
+    "    ...\n"
+    "  ],\n"
+    '  "blocks" : n      (numeric) block number where estimate was found\n'
+    "                    The request target will be clamped between 2 and the highest target\n"
+    "                    fee estimation is able to return based on how long it has been running.\n"
+    "                    An error is returned if not enough transactions and blocks\n"
+    "                    have been observed to make an estimate for any number of blocks.\n"
+    "}\n"
+    "\n"
+    "Examples:\n"
+    "> bitcoin-cli estimatesmartfee 6\n"
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "estimatesmartfee", "params": [6]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
+_HELP_ESTIMATERAWFEE = (
+    "estimaterawfee conf_target ( threshold )\n"
+    "\n"
+    "WARNING: This interface is unstable and may disappear or change!\n"
+    "\n"
+    "WARNING: This is an advanced API call that is tightly coupled to the specific\n"
+    "implementation of fee estimation. The parameters it can be called with\n"
+    "and the results it returns will change if the internal implementation changes.\n"
+    "\n"
+    "Estimates the approximate fee per kilobyte needed for a transaction to begin\n"
+    "confirmation within conf_target blocks if possible. Uses virtual transaction size as\n"
+    "defined in BIP 141 (witness data is discounted).\n"
+    "\n"
+    "Arguments:\n"
+    "1. conf_target    (numeric, required) Confirmation target in blocks (1 - 1008)\n"
+    "2. threshold      (numeric, optional, default=0.95) The proportion of transactions in a given feerate range that must have been\n"
+    "                  confirmed within conf_target in order to consider those feerates as high enough and proceed to check\n"
+    "                  lower buckets.\n"
+    "\n"
+    "Result:\n"
+    "{                              (json object) Results are returned for any horizon which tracks blocks up to the confirmation target\n"
+    '  "short" : {                  (json object, optional) estimate for short time horizon\n'
+    '    "feerate" : n,             (numeric, optional) estimate fee rate in BTC/kvB\n'
+    '    "decay" : n,               (numeric) exponential decay (per block) for historical moving average of confirmation data\n'
+    '    "scale" : n,               (numeric) The resolution of confirmation targets at this time horizon\n'
+    '    "pass" : {                 (json object, optional) information about the lowest range of feerates to succeed in meeting the threshold\n'
+    '      "startrange" : n,        (numeric) start of feerate range\n'
+    '      "endrange" : n,          (numeric) end of feerate range\n'
+    '      "withintarget" : n,      (numeric) number of txs over history horizon in the feerate range that were confirmed within target\n'
+    '      "totalconfirmed" : n,    (numeric) number of txs over history horizon in the feerate range that were confirmed at any point\n'
+    '      "inmempool" : n,         (numeric) current number of txs in mempool in the feerate range unconfirmed for at least target blocks\n'
+    '      "leftmempool" : n        (numeric) number of txs over history horizon in the feerate range that left mempool unconfirmed after target\n'
+    "    },\n"
+    '    "fail" : {                 (json object, optional) information about the highest range of feerates to fail to meet the threshold\n'
+    "      ...\n"
+    "    },\n"
+    '    "errors" : [               (json array, optional) Errors encountered during processing (if there are any)\n'
+    '      "str",                   (string)\n'
+    "      ...\n"
+    "    ]\n"
+    "  },\n"
+    '  "medium" : {                 (json object, optional) estimate for medium time horizon\n'
+    "    ...\n"
+    "  },\n"
+    '  "long" : {                   (json object, optional) estimate for long time horizon\n'
+    "    ...\n"
+    "  }\n"
+    "}\n"
+    "\n"
+    "Examples:\n"
+    "> bitcoin-cli estimaterawfee 6 0.9\n"
+)
 
 _HELP_GETBESTBLOCKHASH = (
     "getbestblockhash\n"
@@ -296,7 +395,11 @@ _HELP_GETMEMPOOLENTRY = (
     "\n"
     "Result:\n"
     "{                                       (json object)\n"
-    '  "vsize" : n,                          (numeric) virtual transaction size as defined in BIP 141. This is different from actual serialized size for witness transactions as witness data is discounted.\n'
+    '  "vsize" : n,                          (numeric) (DEPRECATED) Was previously erroneously described as the BIP 141 vsize, but is actually sigops-adjusted vsize.\n'
+    "                                        Use vsize_bip141 to actually get that behavior or switch to the explicit vsize_adjusted for retained behavior.\n"
+    '  "vsize_bip141" : n,                   (numeric) Virtual transaction size as defined in BIP 141.\n'
+    "                                        This is different from actual serialized size for witness transactions as witness data is discounted.\n"
+    '  "vsize_adjusted" : n,                 (numeric) Maximum of sigop-adjusted size (-bytespersigop) and virtual transaction size as defined in BIP 141.\n'
     '  "weight" : n,                         (numeric) transaction weight as defined in BIP 141.\n'
     '  "time" : xxx,                         (numeric) local time transaction entered pool in seconds since 1 Jan 1970 GMT\n'
     '  "height" : n,                         (numeric) block height when transaction entered pool\n'
@@ -331,6 +434,206 @@ _HELP_GETMEMPOOLENTRY = (
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "getmempoolentry", "params": ["mytxid"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
+_HELP_GETMEMPOOLANCESTORS = (
+    'getmempoolancestors "txid" ( verbose )\n'
+    "\n"
+    "If txid is in the mempool, returns all in-mempool ancestors.\n"
+    "\n"
+    "Arguments:\n"
+    "1. txid       (string, required) The transaction id (must be in mempool)\n"
+    "2. verbose    (boolean, optional, default=false) True for a json object, false for array of transaction ids\n"
+    "\n"
+    "Result (for verbose = false):\n"
+    "[           (json array)\n"
+    '  "hex",    (string) The transaction id of an in-mempool ancestor transaction\n'
+    "  ...\n"
+    "]\n"
+    "\n"
+    "Result (for verbose = true):\n"
+    "{                                         (json object)\n"
+    '  "transactionid" : {                     (json object)\n'
+    '    "vsize" : n,                          (numeric) virtual transaction size as defined in BIP 141. This is different from actual serialized size for witness transactions as witness data is discounted.\n'
+    '    "weight" : n,                         (numeric) transaction weight as defined in BIP 141.\n'
+    '    "time" : xxx,                         (numeric) local time transaction entered pool in seconds since 1 Jan 1970 GMT\n'
+    '    "height" : n,                         (numeric) block height when transaction entered pool\n'
+    '    "descendantcount" : n,                (numeric) number of in-mempool descendant transactions (including this one)\n'
+    '    "descendantsize" : n,                 (numeric) virtual transaction size of in-mempool descendants (including this one)\n'
+    '    "ancestorcount" : n,                  (numeric) number of in-mempool ancestor transactions (including this one)\n'
+    '    "ancestorsize" : n,                   (numeric) virtual transaction size of in-mempool ancestors (including this one)\n'
+    "    \"chunkweight\" : n,                    (numeric) sigops-adjusted weight (as defined in BIP 141 and modified by '-bytespersigop') of this transaction's chunk\n"
+    '    "wtxid" : "hex",                      (string) hash of serialized transaction, including witness data\n'
+    '    "fees" : {                            (json object)\n'
+    '      "base" : n,                         (numeric) transaction fee, denominated in BTC\n'
+    '      "modified" : n,                     (numeric) transaction fee with fee deltas used for mining priority, denominated in BTC\n'
+    '      "ancestor" : n,                     (numeric) transaction fees of in-mempool ancestors (including this one) with fee deltas used for mining priority, denominated in BTC\n'
+    '      "descendant" : n,                   (numeric) transaction fees of in-mempool descendants (including this one) with fee deltas used for mining priority, denominated in BTC\n'
+    '      "chunk" : n                         (numeric) transaction fees of chunk, denominated in BTC\n'
+    "    },\n"
+    '    "depends" : [                         (json array) unconfirmed transactions used as inputs for this transaction\n'
+    '      "hex",                              (string) parent transaction id\n'
+    "      ...\n"
+    "    ],\n"
+    '    "spentby" : [                         (json array) unconfirmed transactions spending outputs from this transaction\n'
+    '      "hex",                              (string) child transaction id\n'
+    "      ...\n"
+    "    ],\n"
+    '    "bip125-replaceable" : true|false,    (boolean) Whether this transaction signals BIP125 replaceability or has an unconfirmed ancestor signaling BIP125 replaceability. (DEPRECATED)\n'
+    "                                          \n"
+    '    "unbroadcast" : true|false            (boolean) Whether this transaction is currently unbroadcast (initial broadcast not yet acknowledged by any peers)\n'
+    "  },\n"
+    "  ...\n"
+    "}\n"
+    "\n"
+    "Examples:\n"
+    '> bitcoin-cli getmempoolancestors "mytxid"\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "getmempoolancestors", "params": ["mytxid"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
+_HELP_GETMEMPOOLDESCENDANTS = (
+    'getmempooldescendants "txid" ( verbose )\n'
+    "\n"
+    "If txid is in the mempool, returns all in-mempool descendants.\n"
+    "\n"
+    "Arguments:\n"
+    "1. txid       (string, required) The transaction id (must be in mempool)\n"
+    "2. verbose    (boolean, optional, default=false) True for a json object, false for array of transaction ids\n"
+    "\n"
+    "Result (for verbose = false):\n"
+    "[           (json array)\n"
+    '  "hex",    (string) The transaction id of an in-mempool descendant transaction\n'
+    "  ...\n"
+    "]\n"
+    "\n"
+    "Result (for verbose = true):\n"
+    "{                                         (json object)\n"
+    '  "transactionid" : {                     (json object)\n'
+    '    "vsize" : n,                          (numeric) virtual transaction size as defined in BIP 141. This is different from actual serialized size for witness transactions as witness data is discounted.\n'
+    '    "weight" : n,                         (numeric) transaction weight as defined in BIP 141.\n'
+    '    "time" : xxx,                         (numeric) local time transaction entered pool in seconds since 1 Jan 1970 GMT\n'
+    '    "height" : n,                         (numeric) block height when transaction entered pool\n'
+    '    "descendantcount" : n,                (numeric) number of in-mempool descendant transactions (including this one)\n'
+    '    "descendantsize" : n,                 (numeric) virtual transaction size of in-mempool descendants (including this one)\n'
+    '    "ancestorcount" : n,                  (numeric) number of in-mempool ancestor transactions (including this one)\n'
+    '    "ancestorsize" : n,                   (numeric) virtual transaction size of in-mempool ancestors (including this one)\n'
+    "    \"chunkweight\" : n,                    (numeric) sigops-adjusted weight (as defined in BIP 141 and modified by '-bytespersigop') of this transaction's chunk\n"
+    '    "wtxid" : "hex",                      (string) hash of serialized transaction, including witness data\n'
+    '    "fees" : {                            (json object)\n'
+    '      "base" : n,                         (numeric) transaction fee, denominated in BTC\n'
+    '      "modified" : n,                     (numeric) transaction fee with fee deltas used for mining priority, denominated in BTC\n'
+    '      "ancestor" : n,                     (numeric) transaction fees of in-mempool ancestors (including this one) with fee deltas used for mining priority, denominated in BTC\n'
+    '      "descendant" : n,                   (numeric) transaction fees of in-mempool descendants (including this one) with fee deltas used for mining priority, denominated in BTC\n'
+    '      "chunk" : n                         (numeric) transaction fees of chunk, denominated in BTC\n'
+    "    },\n"
+    '    "depends" : [                         (json array) unconfirmed transactions used as inputs for this transaction\n'
+    '      "hex",                              (string) parent transaction id\n'
+    "      ...\n"
+    "    ],\n"
+    '    "spentby" : [                         (json array) unconfirmed transactions spending outputs from this transaction\n'
+    '      "hex",                              (string) child transaction id\n'
+    "      ...\n"
+    "    ],\n"
+    '    "bip125-replaceable" : true|false,    (boolean) Whether this transaction signals BIP125 replaceability or has an unconfirmed ancestor signaling BIP125 replaceability. (DEPRECATED)\n'
+    "                                          \n"
+    '    "unbroadcast" : true|false            (boolean) Whether this transaction is currently unbroadcast (initial broadcast not yet acknowledged by any peers)\n'
+    "  },\n"
+    "  ...\n"
+    "}\n"
+    "\n"
+    "Examples:\n"
+    '> bitcoin-cli getmempooldescendants "mytxid"\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "getmempooldescendants", "params": ["mytxid"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
+# Core's text, word for word, including its mentions of the
+# txospenderindex. This node has no `-txospenderindex`: the answer is
+# the mempool's alone, and `blockhash` is never in it.
+_HELP_GETTXSPENDINGPREVOUT = (
+    'gettxspendingprevout [{"txid":"hex","vout":n},...] ( {"mempool_only":bool,"return_spending_tx":bool,...} )\n'
+    "\n"
+    "Scans the mempool (and the txospenderindex, if available) to find transactions spending any of the given outputs\n"
+    "\n"
+    "Arguments:\n"
+    "1. outputs                 (json array, required) The transaction outputs that we want to check, and within each, the txid (string) vout (numeric).\n"
+    "     [\n"
+    "       {                   (json object)\n"
+    '         "txid": "hex",    (string, required) The transaction id\n'
+    '         "vout": n,        (numeric, required) The output number\n'
+    "       },\n"
+    "       ...\n"
+    "     ]\n"
+    "2. options                 (json object, optional) Options object that can be used to pass named arguments, listed below.\n"
+    "\n"
+    "Named Arguments:\n"
+    "mempool_only          (boolean, optional, default=true if txospenderindex unavailable, otherwise false) If false and mempool lacks a relevant spend, use txospenderindex (throws an exception if not available).\n"
+    "return_spending_tx    (boolean, optional, default=false) If true, return the full spending tx.\n"
+    "\n"
+    "Result:\n"
+    "[                              (json array)\n"
+    "  {                            (json object)\n"
+    '    "txid" : "hex",            (string) the transaction id of the checked output\n'
+    '    "vout" : n,                (numeric) the vout value of the checked output\n'
+    '    "spendingtxid" : "hex",    (string, optional) the transaction id of the mempool transaction spending this output (omitted if unspent)\n'
+    '    "spendingtx" : "hex",      (string, optional) the transaction spending this output (only if return_spending_tx is set, omitted if unspent)\n'
+    '    "blockhash" : "hex"        (string, optional) the hash of the spending block (omitted if unspent or the spending tx is not confirmed)\n'
+    "  },\n"
+    "  ...\n"
+    "]\n"
+    "\n"
+    "Examples:\n"
+    '> bitcoin-cli gettxspendingprevout "[{\\"txid\\":\\"a08e6907dbbd3d809776dbfc5d82e371b764ed838b5655e72f463568df1aadf0\\",\\"vout\\":3}]"\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "gettxspendingprevout", "params": ["[{\\"txid\\":\\"a08e6907dbbd3d809776dbfc5d82e371b764ed838b5655e72f463568df1aadf0\\",\\"vout\\":3}]"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+    '> bitcoin-cli -named gettxspendingprevout outputs=\'[{"txid":"a08e6907dbbd3d809776dbfc5d82e371b764ed838b5655e72f463568df1aadf0","vout":3}]\' return_spending_tx=true\n'
+)
+
+_HELP_GETMEMPOOLCLUSTER = (
+    'getmempoolcluster "txid"\n'
+    "\n"
+    "Returns mempool data for given cluster\n"
+    "\n"
+    "Arguments:\n"
+    "1. txid    (string, required) The txid of a transaction in the cluster\n"
+    "\n"
+    "Result:\n"
+    "{                           (json object)\n"
+    "  \"clusterweight\" : n,      (numeric) total sigops-adjusted weight (as defined in BIP 141 and modified by '-bytespersigop')\n"
+    '  "txcount" : n,            (numeric) number of transactions\n'
+    '  "chunks" : [              (json array) chunks in this cluster (in mining order)\n'
+    "    {                       (json object)\n"
+    '      "chunkfee" : n,       (numeric) fees of the transactions in this chunk\n'
+    '      "chunkweight" : n,    (numeric) sigops-adjusted weight of all transactions in this chunk\n'
+    '      "txs" : [             (json array) transactions in this chunk in mining order\n'
+    '        "hex",              (string) transaction id\n'
+    "        ...\n"
+    "      ]\n"
+    "    },\n"
+    "    ...\n"
+    "  ]\n"
+    "}\n"
+    "\n"
+    "Examples:\n"
+    "> bitcoin-cli getmempoolcluster txid\n"
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "getmempoolcluster", "params": [txid]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
+_HELP_GETMEMPOOLFEERATEDIAGRAM = (
+    "getmempoolfeeratediagram\n"
+    "\n"
+    "Returns the feerate diagram for the whole mempool.\n"
+    "\n"
+    "Result (mempool chunks):\n"
+    "[                    (json array)\n"
+    "  {                  (json object)\n"
+    '    "weight" : n,    (numeric) cumulative sigops-adjusted weight\n'
+    '    "fee" : n        (numeric) cumulative fee\n'
+    "  },\n"
+    "  ...\n"
+    "]\n"
+    "\n"
+    "Examples:\n"
+    "> bitcoin-cli getmempoolfeeratediagram \n"
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "getmempoolfeeratediagram", "params": []}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
 _HELP_GETMEMPOOLINFO = (
     "getmempoolinfo\n"
     "\n"
@@ -361,6 +664,50 @@ _HELP_GETMEMPOOLINFO = (
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "getmempoolinfo", "params": []}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
+_HELP_SAVEMEMPOOL = (
+    "savemempool\n"
+    "\n"
+    "Dumps the mempool to disk. It will fail until the previous dump is fully loaded.\n"
+    "\n"
+    "Result:\n"
+    "{                        (json object)\n"
+    '  "filename" : "str"     (string) the directory and file where the mempool was saved\n'
+    "}\n"
+    "\n"
+    "Examples:\n"
+    "> bitcoin-cli savemempool \n"
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "savemempool", "params": []}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
+_HELP_IMPORTMEMPOOL = (
+    'importmempool "filepath" ( options )\n'
+    "\n"
+    "Import a mempool.dat file and attempt to add its contents to the mempool.\n"
+    "Warning: Importing untrusted files is dangerous, especially if metadata from the file is taken over.\n"
+    "\n"
+    "Arguments:\n"
+    "1. filepath    (string, required) The mempool file\n"
+    "2. options     (json object, optional) Options object that can be used to pass named arguments, listed below.\n"
+    "\n"
+    "Named Arguments:\n"
+    "use_current_time            (boolean, optional, default=true) Whether to use the current system time or use the entry time metadata from the mempool file.\n"
+    "                            Warning: Importing untrusted metadata may lead to unexpected issues and undesirable behavior.\n"
+    "apply_fee_delta_priority    (boolean, optional, default=false) Whether to apply the fee delta metadata from the mempool file.\n"
+    "                            It will be added to any existing fee deltas.\n"
+    "                            The fee delta can be set by the prioritisetransaction RPC.\n"
+    "                            Warning: Importing untrusted metadata may lead to unexpected issues and undesirable behavior.\n"
+    "                            Only set this bool if you understand what it does.\n"
+    "apply_unbroadcast_set       (boolean, optional, default=false) Whether to apply the unbroadcast set metadata from the mempool file.\n"
+    "                            Warning: Importing untrusted metadata may lead to unexpected issues and undesirable behavior.\n"
+    "\n"
+    "Result:\n"
+    "{}    (empty JSON object)\n"
+    "\n"
+    "Examples:\n"
+    "> bitcoin-cli importmempool /path/to/mempool.dat\n"
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "importmempool", "params": [/path/to/mempool.dat]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
 _HELP_GETRAWMEMPOOL = (
     "getrawmempool ( verbose mempool_sequence )\n"
     "\n"
@@ -381,7 +728,11 @@ _HELP_GETRAWMEMPOOL = (
     "Result (for verbose = true):\n"
     "{                                         (json object)\n"
     '  "transactionid" : {                     (json object)\n'
-    '    "vsize" : n,                          (numeric) virtual transaction size as defined in BIP 141. This is different from actual serialized size for witness transactions as witness data is discounted.\n'
+    '    "vsize" : n,                          (numeric) (DEPRECATED) Was previously erroneously described as the BIP 141 vsize, but is actually sigops-adjusted vsize.\n'
+    "                                          Use vsize_bip141 to actually get that behavior or switch to the explicit vsize_adjusted for retained behavior.\n"
+    '    "vsize_bip141" : n,                   (numeric) Virtual transaction size as defined in BIP 141.\n'
+    "                                          This is different from actual serialized size for witness transactions as witness data is discounted.\n"
+    '    "vsize_adjusted" : n,                 (numeric) Maximum of sigop-adjusted size (-bytespersigop) and virtual transaction size as defined in BIP 141.\n'
     '    "weight" : n,                         (numeric) transaction weight as defined in BIP 141.\n'
     '    "time" : xxx,                         (numeric) local time transaction entered pool in seconds since 1 Jan 1970 GMT\n'
     '    "height" : n,                         (numeric) block height when transaction entered pool\n'
@@ -427,6 +778,61 @@ _HELP_GETRAWMEMPOOL = (
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "getrawmempool", "params": [true]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
+_HELP_GETORPHANTXS = (
+    "getorphantxs ( verbosity )\n"
+    "\n"
+    "Shows transactions in the tx orphanage.\n"
+    "\n"
+    "EXPERIMENTAL warning: this call may be changed in future releases.\n"
+    "\n"
+    "Arguments:\n"
+    "1. verbosity    (numeric, optional, default=0) 0 for an array of txids (may contain duplicates), 1 for an array of objects with tx details, and 2 for details from (1) and tx hex\n"
+    "\n"
+    "Result (for verbose = 0):\n"
+    "[           (json array)\n"
+    '  "hex",    (string) The transaction hash in hex\n'
+    "  ...\n"
+    "]\n"
+    "\n"
+    "Result (for verbose = 1):\n"
+    "[                       (json array)\n"
+    "  {                     (json object)\n"
+    '    "txid" : "hex",     (string) The transaction hash in hex\n'
+    '    "wtxid" : "hex",    (string) The transaction witness hash in hex\n'
+    '    "bytes" : n,        (numeric) The serialized transaction size in bytes\n'
+    '    "vsize" : n,        (numeric) The virtual transaction size as defined in BIP 141. This is different from actual serialized size for witness transactions as witness data is discounted.\n'
+    '    "weight" : n,       (numeric) The transaction weight as defined in BIP 141.\n'
+    '    "from" : [          (json array)\n'
+    "      n,                (numeric) Peer ID\n"
+    "      ...\n"
+    "    ]\n"
+    "  },\n"
+    "  ...\n"
+    "]\n"
+    "\n"
+    "Result (for verbose = 2):\n"
+    "[                       (json array)\n"
+    "  {                     (json object)\n"
+    '    "txid" : "hex",     (string) The transaction hash in hex\n'
+    '    "wtxid" : "hex",    (string) The transaction witness hash in hex\n'
+    '    "bytes" : n,        (numeric) The serialized transaction size in bytes\n'
+    '    "vsize" : n,        (numeric) The virtual transaction size as defined in BIP 141. This is different from actual serialized size for witness transactions as witness data is discounted.\n'
+    '    "weight" : n,       (numeric) The transaction weight as defined in BIP 141.\n'
+    '    "from" : [          (json array)\n'
+    "      n,                (numeric) Peer ID\n"
+    "      ...\n"
+    "    ],\n"
+    '    "hex" : "hex"       (string) The serialized, hex-encoded transaction data\n'
+    "  },\n"
+    "  ...\n"
+    "]\n"
+    "\n"
+    "Examples:\n"
+    "> bitcoin-cli getorphantxs 2\n"
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "getorphantxs", "params": [2]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+    "\n"
+)
+
 _HELP_GETTXOUT = (
     'gettxout "txid" n ( include_mempool )\n'
     "\n"
@@ -465,6 +871,39 @@ _HELP_GETTXOUT = (
     "\n"
     "As a JSON-RPC call\n"
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "gettxout", "params": ["txid", 1]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
+_HELP_DUMPTXOUTSET = (
+    'dumptxoutset "path" ( "type" {"rollback":n,...} )\n'
+    "\n"
+    "Write the serialized UTXO set to a file. This can be used in loadtxoutset afterwards if this snapshot height is supported in the chainparams as well.\n"
+    "\n"
+    'Unless the "latest" type is requested, the node will roll back to the requested height and network activity will be suspended during this process. Because of this it is discouraged to interact with the node in any other way during the execution of this call to avoid inconsistent results and race conditions, particularly RPCs that interact with blockstorage.\n'
+    "\n"
+    "This call may take several minutes. Make sure to use no RPC timeout (bitcoin-cli -rpcclienttimeout=0)\n"
+    "\n"
+    "Arguments:\n"
+    "1. path       (string, required) Path to the output file. If relative, will be prefixed by datadir.\n"
+    '2. type       (string, optional, default="") The type of snapshot to create. Can be "latest" to create a snapshot of the current UTXO set or "rollback" to temporarily roll back the state of the node to a historical block before creating the snapshot of a historical UTXO set. This parameter can be omitted if a separate "rollback" named parameter is specified indicating the height or hash of a specific historical block. If "rollback" is specified and separate "rollback" named parameter is not specified, this will roll back to the latest valid snapshot block that can currently be loaded with loadtxoutset.\n'
+    "3. options    (json object, optional) Options object that can be used to pass named arguments, listed below.\n"
+    "\n"
+    "Named Arguments:\n"
+    "rollback    (string or numeric, optional) Height or hash of the block to roll back to before creating the snapshot. Note: The further this number is from the tip, the longer this process will take. Consider setting a higher -rpcclienttimeout value in this case.\n"
+    "\n"
+    "Result:\n"
+    "{                             (json object)\n"
+    '  "coins_written" : n,        (numeric) the number of coins written in the snapshot\n'
+    '  "base_hash" : "hex",        (string) the hash of the base of the snapshot\n'
+    '  "base_height" : n,          (numeric) the height of the base of the snapshot\n'
+    '  "path" : "str",             (string) the absolute path that the snapshot was written to\n'
+    '  "txoutset_hash" : "hex",    (string) the hash of the UTXO set contents\n'
+    '  "nchaintx" : n              (numeric) the number of transactions in the chain up to and including the base block\n'
+    "}\n"
+    "\n"
+    "Examples:\n"
+    "> bitcoin-cli -rpcclienttimeout=0 dumptxoutset utxo.dat latest\n"
+    "> bitcoin-cli -rpcclienttimeout=0 dumptxoutset utxo.dat rollback\n"
+    "> bitcoin-cli -rpcclienttimeout=0 -named dumptxoutset utxo.dat rollback=853456\n"
 )
 
 _HELP_GETTXOUTSETINFO = (
@@ -516,6 +955,86 @@ _HELP_GETTXOUTSETINFO = (
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "gettxoutsetinfo", "params": ["none", "00000000c937983704a73af28acdec37b049d214adbda81d7e2a3dd146f6ed09"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
+_HELP_SCANTXOUTSET = (
+    'scantxoutset "action" ( [scanobjects,...] )\n'
+    "\n"
+    "Scans the unspent transaction output set for entries that match certain output descriptors.\n"
+    "Examples of output descriptors are:\n"
+    "    addr(<address>)                      Outputs whose output script corresponds to the specified address (does not include P2PK)\n"
+    "    raw(<hex script>)                    Outputs whose output script equals the specified hex-encoded bytes\n"
+    "    combo(<pubkey>)                      P2PK, P2PKH, P2WPKH, and P2SH-P2WPKH outputs for the given pubkey\n"
+    "    pkh(<pubkey>)                        P2PKH outputs for the given pubkey\n"
+    "    sh(multi(<n>,<pubkey>,<pubkey>,...)) P2SH-multisig outputs for the given threshold and pubkeys\n"
+    "    tr(<pubkey>)                         P2TR\n"
+    "    tr(<pubkey>,{pk(<pubkey>)})          P2TR with single fallback pubkey in tapscript\n"
+    "    rawtr(<pubkey>)                      P2TR with the specified key as output key rather than inner\n"
+    "    wsh(and_v(v:pk(<pubkey>),after(2)))  P2WSH miniscript with mandatory pubkey and a timelock\n"
+    "\n"
+    "In the above, <pubkey> either refers to a fixed public key in hexadecimal notation, or to an xpub/xprv optionally followed by one\n"
+    'or more path elements separated by "/", and optionally ending in "/*" (unhardened), or "/*\'" or "/*h" (hardened) to specify all\n'
+    "unhardened or hardened child keys.\n"
+    "In the latter case, a range needs to be specified by below if different from 1000.\n"
+    "For more information on output descriptors, see the documentation in the doc/descriptors.md file.\n"
+    "\n"
+    "Arguments:\n"
+    "1. action                        (string, required) The action to execute\n"
+    '                                 "start" for starting a scan\n'
+    '                                 "abort" for aborting the current scan (returns true when abort was successful)\n'
+    '                                 "status" for progress report (in %) of the current scan\n'
+    '2. scanobjects                   (json array, optional) Array of scan objects. Required for "start" action\n'
+    "                                 Every scan object is either a string descriptor or an object:\n"
+    "     [\n"
+    '       "descriptor",             (string) An output descriptor\n'
+    "       {                         (json object) An object with output descriptor and metadata\n"
+    '         "desc": "str",          (string, required) An output descriptor\n'
+    '         "range": n or [n,n],    (numeric or array, optional, default=1000) The range of HD chain indexes to explore (either end or [begin,end])\n'
+    "       },\n"
+    "       ...\n"
+    "     ]\n"
+    "\n"
+    "Result (when action=='start'; only returns after scan completes):\n"
+    "{                                 (json object)\n"
+    '  "success" : true|false,         (boolean) Whether the scan was completed\n'
+    '  "txouts" : n,                   (numeric) The number of unspent transaction outputs scanned\n'
+    '  "height" : n,                   (numeric) The block height at which the scan was done\n'
+    '  "bestblock" : "hex",            (string) The hash of the block at the tip of the chain\n'
+    '  "unspents" : [                  (json array)\n'
+    "    {                             (json object)\n"
+    '      "txid" : "hex",             (string) The transaction id\n'
+    '      "vout" : n,                 (numeric) The vout value\n'
+    '      "scriptPubKey" : "hex",     (string) The output script\n'
+    '      "desc" : "str",             (string) A specialized descriptor for the matched output script\n'
+    '      "amount" : n,               (numeric) The total amount in BTC of the unspent output\n'
+    '      "coinbase" : true|false,    (boolean) Whether this is a coinbase output\n'
+    '      "height" : n,               (numeric) Height of the unspent transaction output\n'
+    '      "blockhash" : "hex",        (string) Blockhash of the unspent transaction output\n'
+    '      "confirmations" : n         (numeric) Number of confirmations of the unspent transaction output when the scan was done\n'
+    "    },\n"
+    "    ...\n"
+    "  ],\n"
+    '  "total_amount" : n              (numeric) The total amount of all found unspent outputs in BTC\n'
+    "}\n"
+    "\n"
+    "Result (when action=='abort'):\n"
+    "true|false    (boolean) True if scan will be aborted (not necessarily before this RPC returns), or false if there is no scan to abort\n"
+    "\n"
+    "Result (when action=='status' and a scan is currently in progress):\n"
+    "{                    (json object)\n"
+    '  "progress" : n     (numeric) Approximate percent complete\n'
+    "}\n"
+    "\n"
+    "Result (when action=='status' and no scan is in progress - possibly already completed):\n"
+    "null    (json null)\n"
+    "\n"
+    "Examples:\n"
+    "> bitcoin-cli scantxoutset start '[\"raw(76a91411b366edfc0a8b66feebae5c2e25a7b6a5d1cf3188ac)#fm24fxxy\"]'\n"
+    "> bitcoin-cli scantxoutset status\n"
+    "> bitcoin-cli scantxoutset abort\n"
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "scantxoutset", "params": ["start", ["raw(76a91411b366edfc0a8b66feebae5c2e25a7b6a5d1cf3188ac)#fm24fxxy"]]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "scantxoutset", "params": ["status"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "scantxoutset", "params": ["abort"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
 _HELP_PRUNEBLOCKCHAIN = (
     "pruneblockchain height\n"
     "\n"
@@ -532,6 +1051,54 @@ _HELP_PRUNEBLOCKCHAIN = (
     "Examples:\n"
     "> bitcoin-cli pruneblockchain 1000\n"
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "pruneblockchain", "params": [1000]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
+_HELP_WAITFORBLOCK = (
+    'waitforblock "blockhash" ( timeout )\n'
+    "\n"
+    "Waits for a specific new block and returns useful info about it.\n"
+    "\n"
+    "Returns the current block on timeout or exit.\n"
+    "\n"
+    "Make sure to use no RPC timeout (bitcoin-cli -rpcclienttimeout=0)\n"
+    "\n"
+    "Arguments:\n"
+    "1. blockhash    (string, required) Block hash to wait for.\n"
+    "2. timeout      (numeric, optional, default=0) Time in milliseconds to wait for a response. 0 indicates no timeout.\n"
+    "\n"
+    "Result:\n"
+    "{                    (json object)\n"
+    '  "hash" : "hex",    (string) The blockhash\n'
+    '  "height" : n       (numeric) Block height\n'
+    "}\n"
+    "\n"
+    "Examples:\n"
+    '> bitcoin-cli waitforblock "0000000000079f8ef3d2c688c244eb7a4570b24c9ed7b4a8c619eb02596f8862" 1000\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "waitforblock", "params": ["0000000000079f8ef3d2c688c244eb7a4570b24c9ed7b4a8c619eb02596f8862", 1000]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
+_HELP_WAITFORNEWBLOCK = (
+    'waitfornewblock ( timeout "current_tip" )\n'
+    "\n"
+    "Waits for any new block and returns useful info about it.\n"
+    "\n"
+    "Returns the current block on timeout or exit.\n"
+    "\n"
+    "Make sure to use no RPC timeout (bitcoin-cli -rpcclienttimeout=0)\n"
+    "\n"
+    "Arguments:\n"
+    "1. timeout        (numeric, optional, default=0) Time in milliseconds to wait for a response. 0 indicates no timeout.\n"
+    "2. current_tip    (string, optional) Method waits for the chain tip to differ from this.\n"
+    "\n"
+    "Result:\n"
+    "{                    (json object)\n"
+    '  "hash" : "hex",    (string) The blockhash\n'
+    '  "height" : n       (numeric) Block height\n'
+    "}\n"
+    "\n"
+    "Examples:\n"
+    "> bitcoin-cli waitfornewblock 1000\n"
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "waitfornewblock", "params": [1000]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
 _HELP_WAITFORBLOCKHEIGHT = (
@@ -847,6 +1414,48 @@ _HELP_GETBLOCKTEMPLATE = (
     "Examples:\n"
     '> bitcoin-cli getblocktemplate \'{"rules": ["segwit"]}\'\n'
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "getblocktemplate", "params": [{"rules": ["segwit"]}]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
+_HELP_GETPRIORITISEDTRANSACTIONS = (
+    "getprioritisedtransactions\n"
+    "\n"
+    "Returns a map of all user-created (see prioritisetransaction) fee deltas by txid, and whether the tx is present in mempool.\n"
+    "\n"
+    "Result:\n"
+    "{                                 (json object) prioritisation keyed by txid\n"
+    '  "<transactionid>" : {           (json object)\n'
+    '    "fee_delta" : n,              (numeric) transaction fee delta in satoshis\n'
+    '    "in_mempool" : true|false,    (boolean) whether this transaction is currently in mempool\n'
+    '    "modified_fee" : n            (numeric, optional) modified fee in satoshis. Only returned if in_mempool=true\n'
+    "  },\n"
+    "  ...\n"
+    "}\n"
+    "\n"
+    "Examples:\n"
+    "> bitcoin-cli getprioritisedtransactions \n"
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "getprioritisedtransactions", "params": []}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
+_HELP_PRIORITISETRANSACTION = (
+    'prioritisetransaction "txid" ( dummy ) fee_delta\n'
+    "\n"
+    "Accepts the transaction into mined blocks at a higher (or lower) priority\n"
+    "\n"
+    "Arguments:\n"
+    "1. txid         (string, required) The transaction id.\n"
+    "2. dummy        (numeric, optional) API-Compatibility for previous API. Must be zero or null.\n"
+    "                DEPRECATED. For forward compatibility use named arguments and omit this parameter.\n"
+    "3. fee_delta    (numeric, required) The fee value (in satoshis) to add (or subtract, if negative).\n"
+    "                Note, that this value is not a fee rate. It is a value to modify absolute fee of the TX.\n"
+    "                The fee is not actually paid, only the algorithm for selecting transactions into a block\n"
+    "                considers the transaction as it would have paid a higher (or lower) fee.\n"
+    "\n"
+    "Result:\n"
+    "true|false    (boolean) Returns true\n"
+    "\n"
+    "Examples:\n"
+    '> bitcoin-cli prioritisetransaction "txid" 0.0 10000\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "prioritisetransaction", "params": ["txid", 0.0, 10000]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
 _HELP_ADDNODE = (
@@ -1426,6 +2035,62 @@ _HELP_SENDRAWTRANSACTION = (
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "sendrawtransaction", "params": ["signedhex"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
+_HELP_SUBMITPACKAGE = (
+    'submitpackage ["rawtx",...] ( maxfeerate maxburnamount )\n'
+    "\n"
+    "Submit a package of raw transactions (serialized, hex-encoded) to local node.\n"
+    "The package will be validated according to consensus and mempool policy rules. If any transaction passes, it will be accepted to mempool.\n"
+    "This RPC is experimental and the interface may be unstable. Refer to doc/policy/packages.md for documentation on package policies.\n"
+    "Warning: successful submission does not mean the transactions will propagate throughout the network.\n"
+    "\n"
+    "Arguments:\n"
+    "1. package          (json array, required) An array of raw transactions.\n"
+    "                    The package must consist of a transaction with (some, all, or none of) its unconfirmed parents. A single transaction is permitted.\n"
+    "                    None of the parents may depend on each other. Parents that are already in mempool do not need to be present in the package.\n"
+    "                    The package must be topologically sorted, with the child being the last element in the array if there are multiple elements.\n"
+    "     [\n"
+    '       "rawtx",     (string)\n'
+    "       ...\n"
+    "     ]\n"
+    '2. maxfeerate       (numeric or string, optional, default="0.10") Reject transactions whose fee rate is higher than the specified value, expressed in BTC/kvB.\n'
+    "                    Fee rates larger than 1BTC/kvB are rejected.\n"
+    "                    Set to 0 to accept any fee rate.\n"
+    "3. maxburnamount    (numeric or string, optional, default=\"0.00\") Reject transactions with provably unspendable outputs (e.g. 'datacarrier' outputs that use the OP_RETURN opcode) greater than the specified value, expressed in BTC.\n"
+    "                    If burning funds through unspendable outputs is desired, increase this value.\n"
+    "                    This check is based on heuristics and does not guarantee spendability of outputs.\n"
+    "                    \n"
+    "\n"
+    "Result:\n"
+    "{                                   (json object)\n"
+    '  "package_msg" : "str",            (string) The transaction package result message. "success" indicates all transactions were accepted into or are already in the mempool.\n'
+    '  "tx-results" : {                  (json object) The transaction results keyed by wtxid. An entry is returned for every submitted wtxid.\n'
+    '    "wtxid" : {                     (json object) transaction wtxid\n'
+    '      "txid" : "hex",               (string) The transaction hash in hex\n'
+    '      "other-wtxid" : "hex",        (string, optional) The wtxid of a different transaction with the same txid but different witness found in the mempool. This means the submitted transaction was ignored.\n'
+    '      "vsize" : n,                  (numeric, optional) Sigops-adjusted virtual transaction size.\n'
+    '      "fees" : {                    (json object, optional) Transaction fees\n'
+    '        "base" : n,                 (numeric) transaction fee in BTC\n'
+    '        "effective-feerate" : n,    (numeric, optional) if the transaction was not already in the mempool, the effective feerate in BTC per KvB. For example, the package feerate and/or feerate with modified fees from prioritisetransaction.\n'
+    '        "effective-includes" : [    (json array, optional) if effective-feerate is provided, the wtxids of the transactions whose fees and vsizes are included in effective-feerate.\n'
+    '          "hex",                    (string) transaction wtxid in hex\n'
+    "          ...\n"
+    "        ]\n"
+    "      },\n"
+    '      "error" : "str"               (string, optional) Error string if rejected from mempool, or "package-not-validated" when the package aborts before any per-tx processing.\n'
+    "    },\n"
+    "    ...\n"
+    "  },\n"
+    '  "replaced-transactions" : [       (json array, optional) List of txids of replaced transactions\n'
+    '    "hex",                          (string) The transaction id\n'
+    "    ...\n"
+    "  ]\n"
+    "}\n"
+    "\n"
+    "Examples:\n"
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "submitpackage", "params": [["raw-parent-tx-1", "raw-parent-tx-2", "raw-child-tx"]]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+    "> bitcoin-cli submitpackage '[\"raw-tx-without-unconfirmed-parents\"]'\n"
+)
+
 _HELP_TESTMEMPOOLACCEPT = (
     'testmempoolaccept ["rawtx",...] ( maxfeerate )\n'
     "\n"
@@ -1461,7 +2126,11 @@ _HELP_TESTMEMPOOLACCEPT = (
     '    "wtxid" : "hex",              (string) The transaction witness hash in hex\n'
     '    "package-error" : "str",      (string, optional) Package validation error, if any (only possible if rawtxs had more than 1 transaction).\n'
     '    "allowed" : true|false,       (boolean, optional) Whether this tx would be accepted to the mempool and pass client-specified maxfeerate. If not present, the tx was not fully validated due to a failure in another tx in the list.\n'
-    "    \"vsize\" : n,                  (numeric, optional) Virtual transaction size as defined in BIP 141. This is different from actual serialized size for witness transactions as witness data is discounted (only present when 'allowed' is true)\n"
+    "    \"vsize_adjusted\" : n,         (numeric, optional) Maximum of sigop-adjusted size (-bytespersigop) and virtual transaction size as defined in BIP 141 (only present when 'allowed' is true).\n"
+    '    "vsize" : n,                  (numeric, optional) (DEPRECATED) Was previously erroneously described as the BIP 141 vsize, but is actually sigops-adjusted vsize.\n'
+    "                                  Use vsize_bip141 to actually get that behavior or switch to the explicit vsize_adjusted for retained behavior.\n"
+    '    "vsize_bip141" : n,           (numeric, optional) Virtual transaction size as defined in BIP 141.\n'
+    "                                  This is different from actual serialized size for witness transactions as witness data is discounted (only present when 'allowed' is true).\n"
     "    \"fees\" : {                    (json object, optional) Transaction fees (only present if 'allowed' is true)\n"
     '      "base" : n,                 (numeric) transaction fee in BTC\n'
     '      "effective-feerate" : n,    (numeric) the effective feerate in BTC per KvB. May differ from the base feerate if, for example, there are modified fees from prioritisetransaction or a package feerate was used.\n'
@@ -1641,18 +2310,32 @@ HELP_TEXT: dict[str, str] = {
     "reconsiderblock": _HELP_RECONSIDERBLOCK,
     "preciousblock": _HELP_PRECIOUSBLOCK,
     "getmempoolentry": _HELP_GETMEMPOOLENTRY,
+    "getmempoolcluster": _HELP_GETMEMPOOLCLUSTER,
+    "getmempoolfeeratediagram": _HELP_GETMEMPOOLFEERATEDIAGRAM,
+    "getmempoolancestors": _HELP_GETMEMPOOLANCESTORS,
+    "getmempooldescendants": _HELP_GETMEMPOOLDESCENDANTS,
+    "gettxspendingprevout": _HELP_GETTXSPENDINGPREVOUT,
     "getmempoolinfo": _HELP_GETMEMPOOLINFO,
+    "savemempool": _HELP_SAVEMEMPOOL,
+    "importmempool": _HELP_IMPORTMEMPOOL,
     "getrawmempool": _HELP_GETRAWMEMPOOL,
+    "getorphantxs": _HELP_GETORPHANTXS,
     "gettxout": _HELP_GETTXOUT,
     "gettxoutsetinfo": _HELP_GETTXOUTSETINFO,
+    "dumptxoutset": _HELP_DUMPTXOUTSET,
+    "scantxoutset": _HELP_SCANTXOUTSET,
     "pruneblockchain": _HELP_PRUNEBLOCKCHAIN,
+    "waitforblock": _HELP_WAITFORBLOCK,
     "waitforblockheight": _HELP_WAITFORBLOCKHEIGHT,
+    "waitfornewblock": _HELP_WAITFORNEWBLOCK,
     "help": _HELP_HELP,
     "stop": _HELP_STOP,
     "getrpcinfo": _HELP_GETRPCINFO,
     "submitblock": _HELP_SUBMITBLOCK,
     "submitheader": _HELP_SUBMITHEADER,
     "getblocktemplate": _HELP_GETBLOCKTEMPLATE,
+    "prioritisetransaction": _HELP_PRIORITISETRANSACTION,
+    "getprioritisedtransactions": _HELP_GETPRIORITISEDTRANSACTIONS,
     "generatetoaddress": _HELP_GENERATETOADDRESS,
     "generateblock": _HELP_GENERATEBLOCK,
     "addnode": _HELP_ADDNODE,
@@ -1676,6 +2359,9 @@ HELP_TEXT: dict[str, str] = {
     "verifymessage": _HELP_VERIFYMESSAGE,
     "signrawtransactionwithkey": _HELP_SIGNRAWTRANSACTIONWITHKEY,
     "combinerawtransaction": _HELP_COMBINERAWTRANSACTION,
+    "submitpackage": _HELP_SUBMITPACKAGE,
+    "estimatesmartfee": _HELP_ESTIMATESMARTFEE,
+    "estimaterawfee": _HELP_ESTIMATERAWFEE,
 }
 
 # Each command's own category, Core's own `RPCMethod`'s registration
@@ -1694,18 +2380,32 @@ CATEGORY: dict[str, str] = {
     "reconsiderblock": "hidden",
     "preciousblock": "Blockchain",
     "getmempoolentry": "Blockchain",
+    "getmempoolcluster": "Blockchain",
+    "getmempoolfeeratediagram": "hidden",
+    "getmempoolancestors": "Blockchain",
+    "getmempooldescendants": "Blockchain",
+    "gettxspendingprevout": "Blockchain",
     "getmempoolinfo": "Blockchain",
+    "savemempool": "Blockchain",
+    "importmempool": "Blockchain",
     "getrawmempool": "Blockchain",
+    "getorphantxs": "hidden",
     "gettxout": "Blockchain",
     "gettxoutsetinfo": "Blockchain",
+    "dumptxoutset": "Blockchain",
+    "scantxoutset": "Blockchain",
     "pruneblockchain": "Blockchain",
+    "waitforblock": "Blockchain",
     "waitforblockheight": "Blockchain",
+    "waitfornewblock": "Blockchain",
     "help": "Control",
     "stop": "Control",
     "getrpcinfo": "Control",
     "submitblock": "Mining",
     "submitheader": "Mining",
     "getblocktemplate": "Mining",
+    "prioritisetransaction": "Mining",
+    "getprioritisedtransactions": "Mining",
     "generatetoaddress": "hidden",
     "generateblock": "hidden",
     "addnode": "Network",
@@ -1738,6 +2438,9 @@ CATEGORY: dict[str, str] = {
     "verifymessage": "Util",
     "signrawtransactionwithkey": "Rawtransactions",
     "combinerawtransaction": "Rawtransactions",
+    "submitpackage": "Rawtransactions",
+    "estimatesmartfee": "Util",
+    "estimaterawfee": "hidden",
 }
 
 # `CRPCTable::help`'s own sort key, `category + name`

@@ -50,8 +50,8 @@ CHAIN_LENGTH = 3
 
 
 # what Connection.parse_messages puts on the queue: the command, the
-# payload behind it, which connection it came in on, its own wire size,
-# weighed against MAX_QUEUED_RECV_BYTES (btclib-org/btclib-node#462), and
+# payload behind it, which connection it came in on, its own weight,
+# weighed against `recv_flood_size` (btclib-org/btclib-node#462), and
 # the time it was read off the socket, last_receive's own value
 Message = tuple[str, bytes, int, int, float]
 

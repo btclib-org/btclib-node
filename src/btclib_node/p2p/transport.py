@@ -33,9 +33,9 @@ being constants.
   Either way the transport can go on.
 - `get_bytes_to_send` returns a `memoryview` of the octets the transport
   holds, as Core returns a span, so a block is not copied to be sent.
-- There is no `GetSendMemoryUsage`: `Connection.queued_send_bytes` is
-  what bounds the send buffer, and counts a message before it reaches
-  the transport.
+- There is no `GetSendMemoryUsage`: `Connection.send_memusage` weighs
+  a message from when it is queued until it is written whole, the one
+  the transport holds included.
 """
 
 from abc import ABC, abstractmethod

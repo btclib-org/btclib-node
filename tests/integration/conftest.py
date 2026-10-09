@@ -183,7 +183,8 @@ def _started_bitcoind(
     rpc_port = get_random_port()
     p2p_port = get_random_port()
     datadir = tmp_path / "bitcoind"
-    datadir.mkdir()
+    # it may hold a file the test put there for bitcoind to read
+    datadir.mkdir(parents=True, exist_ok=True)
     process = subprocess.Popen(  # noqa: S603
         [
             bitcoind_path,
@@ -202,6 +203,12 @@ def _started_bitcoind(
             "-debug=rpc",
             "-logtimemicros",
             "-logthreadnames",
+            # bitcoind closes a kept-alive RPC connection idle for 30 s, and
+            # a call sent as the close lands is reset. Bitcoin Core's own
+            # functional tests, which also keep one connection open, switch
+            # the timeout off for the same reason (test_framework/util.py,
+            # `rpcservertimeout=99000`, "to avoid intermittent issues").
+            "-rpcservertimeout=99000",
             *args,
         ],
     )

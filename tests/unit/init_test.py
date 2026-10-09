@@ -13,12 +13,18 @@ messages directly and what it does with them does not depend on
 scheduling.
 """
 
+import faulthandler
+import hashlib
+import io
 import logging
 import multiprocessing
 import os
 import re
 import signal
 import socket
+import stat
+import subprocess
+import sys
 import threading
 import time
 from collections import deque
@@ -26,7 +32,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from multiprocessing.pool import Pool, ThreadPool
 from pathlib import Path
-from types import SimpleNamespace
+from types import CodeType, SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast, override
 
 import pytest
@@ -40,6 +46,7 @@ from btclib_node.config import Config
 from btclib_node.constants import (
     CLIENT_NAME,
     CLIENT_VERSION,
+    DEFAULT_MAXRECEIVEBUFFER,
     RPC_THREADS,
     NodeStatus,
 )
@@ -51,7 +58,6 @@ from btclib_node.exceptions import (
 )
 from btclib_node.interpreter import warm
 from btclib_node.main import prune_up_to_height, update_chain
-from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES
 from btclib_node.rpc.auth import COOKIE_FILE
 from btclib_node.rpc.callbacks import callbacks
 from btclib_node.rpc.connection import RpcConnection
@@ -69,6 +75,7 @@ from tests import (
     wait_until_listening,
 )
 from tests.conftest import node_context, unstarted_node_context
+from tests.unit.fee_estimator_test import _CORE_EMPTY_FILE_SHA256, _busy
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
@@ -76,6 +83,11 @@ if TYPE_CHECKING:
 # How long a test waits for a node's own thread to end: the bound
 # `Node.stop` grants every node, read here at import, before a test
 # patches the constant to the bound it measures.
+#
+# The tests that shorten it put it back once their last answer is given:
+# what follows that answer is not their subject
+# (btclib-org/btclib-node#1840). They join the node's thread before
+# returning, so that the reset lands inside their own `monkeypatch`.
 _STOP_TIMEOUT = btclib_node.STOP_TIMEOUT
 
 
@@ -292,6 +304,12 @@ def test_the_mempool_is_built_with_the_configured_incremental_relay_fee(
     rate = FeeRate(sats_per_kvbyte=777)
     with unstarted_node_context(tmp_path, incremental_relay_feerate=rate) as node:
         assert node.mempool.incremental_relay_feerate == rate
+
+
+def test_the_mempool_is_built_with_the_configured_expiry(tmp_path: Path) -> None:
+    """`-mempoolexpiry` reaches `Mempool`."""
+    with unstarted_node_context(tmp_path, mempool_expiry=7200) as node:
+        assert node.mempool.expiry == 7200
 
 
 def test_pending_getdata_starts_empty(tmp_path: Path) -> None:
@@ -551,25 +569,40 @@ def test_drain_progress_extends_stop_s_wait_past_stop_timeout(
     event to keep the ten `getblockcount` calls sent behind it queued
     rather than answered as they arrive, `node.stop()` runs once all ten
     are on `rpc_manager.messages`, and only then is the first released,
-    so `_drain_rpc_queue` answers all ten -- 0.15 seconds apiece -- after
+    so `_drain_rpc_queue` answers all ten -- 0.5 seconds apiece -- after
     `Node.stop`'s own wait loop has already started timing it.
     `STOP_TIMEOUT` measured from the call to `stop` alone would run out
     partway through, on a node that was answering requests the entire
     time; `extend_reply_deadline` is what `Node.stop`'s wait loop reads
     instead, exactly as it already does for a delayed `stop` reply
     (#1467).
+
+    The deadline is not pushed during a pause: one longer than
+    `STOP_TIMEOUT` between two answers still fails `stop`. So
+    `STOP_TIMEOUT` is wide enough to absorb a stall on a busy machine,
+    and still below what the ten answers sum to
+    (btclib-org/btclib-node#1790).
+
+    The last answer puts `STOP_TIMEOUT` back, as `_STOP_TIMEOUT` says.
     """
-    monkeypatch.setattr(btclib_node, "STOP_TIMEOUT", 1.0)
+    monkeypatch.setattr(btclib_node, "STOP_TIMEOUT", 4.0)
+    in_first = threading.Event()
     hold = threading.Event()
     original_get_best_block_hash = callbacks["getbestblockhash"]
     original_get_block_count = callbacks["getblockcount"]
+    queued = 10
+    answered: list[None] = []
 
     def held_get_best_block_hash(node: Node, conn: Any, params: Any) -> Any:
+        in_first.set()
         hold.wait(10)
         return original_get_best_block_hash(node, conn, params)
 
     def slow_get_block_count(node: Node, conn: Any, params: Any) -> Any:
-        time.sleep(0.15)
+        time.sleep(0.5)
+        answered.append(None)
+        if len(answered) == queued:
+            monkeypatch.setattr(btclib_node, "STOP_TIMEOUT", _STOP_TIMEOUT)
         return original_get_block_count(node, conn, params)
 
     monkeypatch.setitem(callbacks, "getbestblockhash", held_get_best_block_hash)
@@ -580,8 +613,9 @@ def test_drain_progress_extends_stop_s_wait_past_stop_timeout(
         target=lambda: rpc_client(node).call_raw("getbestblockhash"), daemon=True
     )
     first.start()
+    # held in a pass of its own, so the drain answers all ten
+    assert in_first.wait(30)
 
-    queued = 10
     callers = [
         threading.Thread(
             target=lambda: rpc_client(node, timeout=30).call_raw("getblockcount"),
@@ -593,11 +627,15 @@ def test_drain_progress_extends_stop_s_wait_past_stop_timeout(
         caller.start()
     wait_until(lambda: len(node.rpc_manager.messages) == queued)
 
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        stopping = pool.submit(node.stop)
-        hold.set()
-        # re-raises NodeShutdownTimeoutError here if this regresses
-        stopping.result(timeout=30)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            stopping = pool.submit(node.stop)
+            wait_until(node.terminate_flag.is_set)
+            hold.set()
+            # re-raises NodeShutdownTimeoutError here if this regresses
+            stopping.result(timeout=30)
+    finally:
+        node.join(timeout=_STOP_TIMEOUT)
 
     for caller in callers:
         caller.join(timeout=10)
@@ -605,22 +643,36 @@ def test_drain_progress_extends_stop_s_wait_past_stop_timeout(
     assert not node.is_alive()
 
 
+@pytest.mark.parametrize(
+    "answer_seconds",
+    [(2, 2, 2), (0, 0, 2, 2, 2)],
+    ids=["pass-pushes", "drain-pushes"],
+)
 def test_requests_answered_by_the_loop_after_stop_extend_stop_s_wait(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, answer_seconds: tuple[int, ...]
 ) -> None:
     """`stop` called mid-pass is not outlasted by the pass's other requests.
 
     The loop answers `log2(queued + 1)` requests per pass, and `stop`
-    can arrive during the first. Here the pass answers a second one
-    ahead of `_drain_rpc_queue`, which answers the third. The three
-    finish 1, 2 and 3 seconds after the call, and `STOP_TIMEOUT` is 2.5.
-    Measured from the call alone, the wait runs out before the drain's
-    answer; with every answer pushing the deadline forward, no gap is
-    longer than 1 second. A runner may stall for up to 1.5 seconds
-    before the wait runs out, and a stall only makes the unpushed wait
+    can arrive during the first. The rest are answered by
+    `_drain_rpc_queue`. `answer_seconds` is how long each request takes
+    after `stop`'s call; `STOP_TIMEOUT` is 5. No answer is more than 2
+    seconds after the one before, so with every answer pushing the
+    deadline forward the wait never runs out. A runner may stall for up
+    to 3 seconds before it does, and a stall only makes an unpushed wait
     fail sooner (btclib-org/btclib-node#1651, #1712).
+
+    The last answer puts `STOP_TIMEOUT` back, as `_STOP_TIMEOUT` says.
+
+    - `pass-pushes`: three requests, the pass answers two and the drain
+      one, at 2, 4 and 6 seconds. Without the push after the pass's
+      `handle_rpc` the wait runs out at 5, before the drain's answer.
+    - `drain-pushes`: five, the pass answers two at once and the drain
+      three, at 2, 4 and 6 seconds. Only the drain's own pushes cover its last
+      answers: without them the wait runs out at 5 from the pass's last
+      push.
     """
-    monkeypatch.setattr(btclib_node, "STOP_TIMEOUT", 2.5)
+    monkeypatch.setattr(btclib_node, "STOP_TIMEOUT", 5)
     in_first = threading.Event()
     hold_first = threading.Event()
     in_pass = threading.Event()
@@ -633,25 +685,29 @@ def test_requests_answered_by_the_loop_after_stop_extend_stop_s_wait(
         hold_first.wait(10)
         return original_get_best_block_hash(node, conn, params)
 
+    answers = list(answer_seconds)
+
     def slow_get_block_count(node: Node, conn: Any, params: Any) -> Any:
         in_pass.set()
         hold_pass.wait(10)
-        time.sleep(1)
+        time.sleep(answers.pop(0))
+        if not answers:
+            monkeypatch.setattr(btclib_node, "STOP_TIMEOUT", _STOP_TIMEOUT)
         return original_get_block_count(node, conn, params)
 
     monkeypatch.setitem(callbacks, "getbestblockhash", held_get_best_block_hash)
     monkeypatch.setitem(callbacks, "getblockcount", slow_get_block_count)
 
     node = a_stopping_rpc_node(tmp_path)
-    # held in a pass of its own, so the next pass starts with all three
-    # queued and answers two of them
+    # held in a pass of its own, so the next pass starts with all of them
+    # queued
     first = threading.Thread(
         target=lambda: rpc_client(node).call_raw("getbestblockhash"), daemon=True
     )
     first.start()
     assert in_first.wait(30)
 
-    queued = 3
+    queued = len(answer_seconds)
     callers = [
         threading.Thread(
             target=lambda: rpc_client(node, timeout=30).call_raw("getblockcount"),
@@ -665,12 +721,15 @@ def test_requests_answered_by_the_loop_after_stop_extend_stop_s_wait(
     hold_first.set()
     assert in_pass.wait(30)
 
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        stopping = pool.submit(node.stop)
-        wait_until(node.terminate_flag.is_set)
-        hold_pass.set()
-        # re-raises NodeShutdownTimeoutError here if this regresses
-        stopping.result(timeout=30)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            stopping = pool.submit(node.stop)
+            wait_until(node.terminate_flag.is_set)
+            hold_pass.set()
+            # re-raises NodeShutdownTimeoutError here if this regresses
+            stopping.result(timeout=30)
+    finally:
+        node.join(timeout=_STOP_TIMEOUT)
 
     for caller in callers:
         caller.join(timeout=10)
@@ -678,28 +737,33 @@ def test_requests_answered_by_the_loop_after_stop_extend_stop_s_wait(
     assert not node.is_alive()
 
 
+# A fresh connection's `recv_flood_size`, Core's `-maxreceivebuffer` default.
+_RECV_FLOOD_SIZE = 1000 * DEFAULT_MAXRECEIVEBUFFER
+
 # How many items one busy connection's own queued bytes are split into,
 # and what one of them weighs. Equal sizes are what make a pass's own
 # share countable, and this many of them leaves the watched connection
-# back under `MAX_QUEUED_RECV_BYTES` on its first pop, so what the
+# back under `recv_flood_size` on its first pop, so what the
 # measurement below counts is when that pop happens rather than how many
 # it takes.
 _ITEMS_PER_BUSY_PEER = 8
-_ONE_QUEUED_MESSAGE = MAX_QUEUED_RECV_BYTES // _ITEMS_PER_BUSY_PEER
+_ONE_QUEUED_MESSAGE = _RECV_FLOOD_SIZE // _ITEMS_PER_BUSY_PEER
 
 
 def a_paused_connection(resumed: list[bool]) -> Any:
     """Return a connection queued past its own bound, recording its resume.
 
     Only what `handle_p2p` (`btclib_node/p2p/main.py`) reads off a
-    connection while weighing a message back off it: the counter, the
-    lock around it, the event it sets to resume the reads, and a loop
-    stand-in that runs a threadsafe call inline -- the same stand-in
-    `tests/unit/p2p/main_test.py` builds, there being no running loop
-    under an unstarted node.
+    connection while weighing a message back off it: the counter, its
+    bound, the lock around it, the event it sets to resume the reads,
+    and a loop stand-in that runs a threadsafe call inline -- the same
+    stand-in `tests/unit/p2p/main_test.py` builds, there being no running
+    loop under an unstarted node. An empty send queue holds nothing back.
     """
     return SimpleNamespace(
-        queued_recv_bytes=MAX_QUEUED_RECV_BYTES + 1,
+        queued_recv_bytes=_RECV_FLOOD_SIZE + 1,
+        recv_flood_size=_RECV_FLOOD_SIZE,
+        pause_send=False,
         _recv_lock=threading.Lock(),
         _recv_resume=SimpleNamespace(set=lambda: resumed.append(True)),
         loop=SimpleNamespace(call_soon_threadsafe=lambda fn: fn()),
@@ -739,7 +803,7 @@ def test_a_paused_connection_resumes_on_the_first_pass_with_nobody_else_busy(
 ) -> None:
     """One busy peer is its own first item, so the next pass resumes it.
 
-    This is the whole of what `MAX_QUEUED_RECV_BYTES`
+    This is the whole of what `recv_flood_size`
     (`btclib_node/p2p/connection.py`) promises on its own, and the
     control for the measurement below: a wait longer than this one is
     another peer's traffic and not the bound's own doing.
@@ -845,6 +909,13 @@ def test_the_node_asking_itself_to_stop_does_not_wait_for_itself(
     assert not exceptions
 
 
+@pytest.fixture(autouse=True)
+def _no_stack_dump_left_armed() -> Iterator[None]:
+    """Cancel the dump a handler called in this process armed (#1274)."""
+    yield
+    faulthandler.cancel_dump_traceback_later()
+
+
 @pytest.mark.parametrize("signal_number", [signal.SIGTERM, signal.SIGINT])
 def test_a_signal_asks_the_node_to_stop(
     tmp_path: Path, signal_number: signal.Signals
@@ -866,6 +937,257 @@ def test_a_signal_asks_the_node_to_stop(
     handler(signal_number, None)
     node.join(timeout=_STOP_TIMEOUT)
     assert not node.is_alive()
+
+
+def _main_thread_calls(name: str, caller: CodeType) -> bool:
+    """Answer whether the main thread is in a `name` that `caller` called."""
+    frame = sys._current_frames().get(threading.main_thread().ident or 0)
+    while frame is not None and frame.f_back is not None:
+        if frame.f_code.co_name == name and frame.f_back.f_code is caller:
+            return True
+        frame = frame.f_back
+    return False
+
+
+@contextmanager
+def a_sigterm_sent_to_the_node_s_thread(
+    node: Node, name: str, caller: CodeType
+) -> Iterator[list[bool]]:
+    """Send SIGTERM to `node`'s thread once the main thread waits.
+
+    It waits in a `name` that `caller` called. `pthread_kill` hands the
+    signal to the node's thread, as the kernel may hand one sent to the
+    process. The handler is `install_signal_handlers`', and every handler
+    is put back afterwards.
+
+    The list yielded gets whether the handler had not stopped the node 10
+    seconds on, when this context stops it, so that a regression fails
+    rather than hangs.
+    """
+    # SIGTSTP where the platform has one, SIGTERM twice where it has not
+    numbers = (
+        signal.SIGINT,
+        signal.SIGTERM,
+        getattr(signal, "SIGTSTP", signal.SIGTERM),
+    )
+    previous = {number: signal.getsignal(number) for number in numbers}
+    gave_up: list[bool] = []
+
+    def send() -> None:
+        wait_until(lambda: _main_thread_calls(name, caller))
+        signal.pthread_kill(node.ident or 0, signal.SIGTERM)
+        gave_up.append(not node.terminate_flag.wait(10))
+        node.terminate_flag.set()
+
+    install_signal_handlers(node)
+    sender = threading.Thread(target=send, daemon=True)
+    sender.start()
+    try:
+        yield gave_up
+    finally:
+        sender.join(timeout=_STOP_TIMEOUT)
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+
+
+@pytest.mark.skipif(not hasattr(signal, "pthread_kill"), reason="Windows has none")
+def test_a_signal_another_thread_takes_reaches_a_joining_main_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SIGTERM taken by the node's thread stops a node `join` waits on (#1274).
+
+    CPython runs the Python handler on the main thread only, and a signal
+    handled on another thread does not interrupt the main thread's wait.
+    """
+    monkeypatch.setattr(btclib_node, "SIGNAL_POLL_SECONDS", 0.05)
+    node = a_node(tmp_path)
+    node.start()
+    caller = test_a_signal_another_thread_takes_reaches_a_joining_main_thread
+    with a_sigterm_sent_to_the_node_s_thread(node, "join", caller.__code__) as gave_up:
+        node.join()
+    assert not node.is_alive()
+    assert gave_up == [False]
+
+
+@pytest.mark.skipif(not hasattr(signal, "pthread_kill"), reason="Windows has none")
+def test_a_signal_another_thread_takes_reaches_a_starting_main_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SIGTERM taken by the node's thread while `start` waits stops it (#1274).
+
+    The stores load until the handler has set `terminate_flag`.
+    """
+    monkeypatch.setattr(btclib_node, "SIGNAL_POLL_SECONDS", 0.05)
+    node = a_node(tmp_path)
+    load = Node.load
+
+    def held_load(self: Node) -> None:
+        self.terminate_flag.wait(20)
+        load(self)
+
+    monkeypatch.setattr(Node, "load", held_load)
+    # `start`'s own wait for the stores, not `Thread.start`'s
+    with a_sigterm_sent_to_the_node_s_thread(
+        node, "wait", Node.start.__code__
+    ) as gave_up:
+        node.start()
+        node.join()
+    assert not node.is_alive()
+    assert gave_up == [False]
+
+
+def test_a_close_longer_than_the_bound_is_waited_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`stop` waits past `STOP_TIMEOUT` for a chainstate close (#1870).
+
+    The node's thread is held inside `Chainstate.close` before `stop` is
+    called, and released 0.5 seconds on, past a bound of 0.1.
+    """
+    closing = threading.Event()
+    release = threading.Event()
+    close = Chainstate.close
+
+    def held_close(chainstate: Chainstate) -> None:
+        closing.set()
+        release.wait(10)
+        close(chainstate)
+
+    monkeypatch.setattr(Chainstate, "close", held_close)
+    node = a_node(tmp_path)
+    node.start()
+    node.terminate_flag.set()
+    try:
+        assert closing.wait(10)
+        monkeypatch.setattr(btclib_node, "STOP_TIMEOUT", 0.1)
+        threading.Timer(0.5, release.set).start()
+        node.stop()  # raises NodeShutdownTimeoutError here if this regresses
+    finally:
+        release.set()
+        node.join(timeout=_STOP_TIMEOUT)
+    assert not node.is_alive()
+
+
+def test_a_shutdown_notify_that_hangs_still_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`STOP_TIMEOUT` still bounds what comes before the store closes.
+
+    `-shutdownnotify` runs before the stores begin to close, so a command
+    that does not return is a wedge `stop` reports. It is released 10
+    seconds on, so that a regression fails rather than hangs.
+    """
+    release = threading.Event()
+    monkeypatch.setattr(btclib_node, "run_shutdown_notify", lambda *_: release.wait(10))
+    node = a_node(tmp_path)
+    node.start()
+    monkeypatch.setattr(btclib_node, "STOP_TIMEOUT", 0.1)
+    try:
+        with pytest.raises(NodeShutdownTimeoutError, match="did not stop"):
+            node.stop()
+    finally:
+        release.set()
+        node.join(timeout=_STOP_TIMEOUT)
+    assert not node.is_alive()
+
+
+# What `install_signal_handlers` runs in a process of its own: a stand-in
+# node whose `stop` takes `stop_seconds`, a thread that is not a daemon
+# holding the process open for `hold_seconds`, and `idle` seconds before
+# the signal. The dump is `faulthandler`'s, written to a real file
+# descriptor, which a subprocess has and pytest's capture of `sys.stderr`
+# does not.
+_STOPPING_PROCESS = """
+import os, signal, sys, threading, time
+import btclib_node
+
+stop_seconds, hold_seconds, delay, idle = (float(arg) for arg in sys.argv[1:])
+btclib_node.STOP_DUMP_DELAY = delay
+
+
+class Node:
+    def stop(self):
+        time.sleep(stop_seconds)
+
+
+btclib_node.install_signal_handlers(Node())
+threading.Thread(target=time.sleep, args=(hold_seconds,)).start()
+time.sleep(idle)
+os.kill(os.getpid(), signal.SIGTERM)
+"""
+
+
+def _stderr_of_a_stopping_process(
+    stop_seconds: float, hold_seconds: float, delay: float = 0.5, idle: float = 0
+) -> str:
+    """Run `_STOPPING_PROCESS` to its exit; return what it wrote to stderr."""
+    done = subprocess.run(  # noqa: S603
+        [
+            sys.executable,
+            "-c",
+            _STOPPING_PROCESS,
+            str(stop_seconds),
+            str(hold_seconds),
+            str(delay),
+            str(idle),
+        ],
+        capture_output=True,
+        encoding="utf-8",
+        check=True,
+        timeout=_STOP_TIMEOUT,
+    )
+    return done.stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.kill(SIGTERM) kills there")
+def test_a_stop_that_takes_too_long_writes_every_threads_stack() -> None:
+    """A process alive `STOP_DUMP_DELAY` after SIGTERM dumps its stacks."""
+    stderr = _stderr_of_a_stopping_process(stop_seconds=3, hold_seconds=0)
+    # the main thread is inside `stop`, the call that blocked
+    assert "most recent call first" in stderr
+    assert "in stop" in stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.kill(SIGTERM) kills there")
+def test_a_process_held_open_after_stop_returns_writes_every_threads_stack() -> None:
+    """`stop` returning leaves the dump armed while a thread holds on."""
+    stderr = _stderr_of_a_stopping_process(stop_seconds=0, hold_seconds=3)
+    assert "most recent call first" in stderr
+    # the main thread waits in `threading._shutdown` for the sleeping one
+    assert "_shutdown" in stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.kill(SIGTERM) kills there")
+def test_a_clean_stop_writes_nothing_to_stderr() -> None:
+    """A process that exits within `STOP_DUMP_DELAY` leaves stderr empty."""
+    # idle for longer than the delay before the signal, so that arming at
+    # install time, not in the handler, would dump; and a delay far above
+    # the time the process takes to exit, so that a loaded machine cannot
+    # make this one
+    assert not _stderr_of_a_stopping_process(0, 0, delay=4, idle=5)
+
+
+@pytest.mark.parametrize("stderr", [None, io.StringIO()])
+def test_a_stderr_that_cannot_arm_the_dump_does_not_stop_the_stop(
+    monkeypatch: pytest.MonkeyPatch, stderr: io.StringIO | None
+) -> None:
+    """A stderr with no file descriptor still lets the handler stop the node."""
+    handlers = {}
+    monkeypatch.setattr(
+        signal, "signal", lambda number, handler: handlers.update({number: handler})
+    )
+    stopped = []
+    install_signal_handlers(
+        cast("Node", SimpleNamespace(stop=lambda: stopped.append(1)))
+    )
+    monkeypatch.setattr(sys, "stderr", stderr)
+    handlers[signal.SIGTERM](signal.SIGTERM, None)
+    assert stopped
+
+
+def test_the_stack_dump_comes_out_before_the_stop_gives_up() -> None:
+    """`STOP_DUMP_DELAY` is below `STOP_TIMEOUT`, which `stop` raises at."""
+    assert btclib_node.STOP_DUMP_DELAY < _STOP_TIMEOUT
 
 
 def test_install_signal_handlers_skips_sigtstp_where_the_platform_has_none(
@@ -1065,6 +1387,25 @@ def test_a_stopped_node_leaves_its_directories_to_another_process(
     node.stop()
     assert lock_from_another_process(node.data_dir) == "locked"
     assert lock_from_another_process(blocks_dir) == "locked"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX modes")
+def test_a_node_creates_its_locks_and_directories_owner_only_under_any_umask(
+    tmp_path: Path,
+) -> None:
+    """Only `cli.main` sets Core's umask 077; a library caller keeps its own."""
+    umask = os.umask(0)
+    try:
+        node = a_node(tmp_path)
+    finally:
+        os.umask(umask)
+    node.start()
+    node.stop()
+    locks = list(node.data_dir.rglob(".lock"))
+    directories = [node.data_dir, *(p for p in node.data_dir.rglob("*") if p.is_dir())]
+    assert {lock.parent for lock in locks} >= {node.data_dir, node.data_dir / "blocks"}
+    assert {stat.S_IMODE(lock.stat().st_mode) for lock in locks} == {0o600}
+    assert {stat.S_IMODE(d.stat().st_mode) for d in directories} == {0o700}
 
 
 def test_a_node_is_constructible_off_the_main_thread(tmp_path: Path) -> None:
@@ -1647,6 +1988,10 @@ def test_a_node_whose_p2p_port_is_taken_stops_and_frees_its_rpc_port(
                 chain="regtest",
                 data_dir=tmp_path,
                 p2p_port=p2p_port,
+                # Without a `-bind` the node first binds an `=onion` listener on
+                # `p2p_port + 1`, which another process may hold
+                # (btclib-org/btclib-node#1785).
+                bind=(f"0.0.0.0:{p2p_port}",),
                 rpc_port=rpc_port,
                 debug=True,
             )
@@ -2299,6 +2644,8 @@ def test_a_store_that_cannot_be_opened_ends_start_up_with_the_rest_closed(
     peer_db = node.p2p_manager.peer_db.db
     assert peer_db is not None
     assert peer_db.closed
+    # Core's `Shutdown` writes the fee estimates whatever step failed
+    assert (node.data_dir / "fee_estimates.dat").exists()
     reopened = Node(config=config)
     try:
         reopened.start()
@@ -2420,3 +2767,69 @@ def test_a_node_hands_its_whitelist_to_the_p2p_manager(tmp_path: Path) -> None:
     assert [str(entry.subnet) for entry in whitelist.outgoing] == ["5.6.7.8/32"]
     assert (whitelist.relay, whitelist.force_relay) == (False, True)
     assert node.init_errors == []
+
+
+def test_a_stopped_node_writes_the_fee_estimates_core_writes(tmp_path: Path) -> None:
+    """A fresh node's `fee_estimates.dat` is a fresh bitcoind's, to the byte."""
+    node = Node(
+        config=Config(
+            chain="regtest", data_dir=tmp_path, allow_p2p=False, allow_rpc=False
+        )
+    )
+    node.start()
+    node.stop()
+    data = (node.data_dir / "fee_estimates.dat").read_bytes()
+    assert hashlib.sha256(data).hexdigest() == _CORE_EMPTY_FILE_SHA256
+
+
+def test_a_running_node_writes_its_fee_estimates_once_due(tmp_path: Path) -> None:
+    """Core's hourly `FlushFeeEstimates`, from the node's own loop."""
+    node = Node(
+        config=Config(
+            chain="regtest", data_dir=tmp_path, allow_p2p=False, allow_rpc=False
+        )
+    )
+    path = node.data_dir / "fee_estimates.dat"
+    node.start()
+    try:
+        wait_until(lambda: node.loaded)
+        assert not path.exists()
+        node.fee_estimator._next_flush = 0
+        wait_until(path.exists)
+    finally:
+        node.stop()
+
+
+def test_a_node_starts_from_the_fee_estimates_it_finds(tmp_path: Path) -> None:
+    """The file in the chain's directory is read, and told of removals."""
+    written = _busy(tmp_path).write()
+    (tmp_path / "regtest").mkdir()
+    (tmp_path / "regtest" / "fee_estimates.dat").write_bytes(written)
+    with unstarted_node_context(tmp_path) as node:
+        assert node.fee_estimator.write() == written
+        assert node.mempool.removal_listener == node.fee_estimator.remove_tx
+
+
+@pytest.mark.parametrize(("chain", "name"), [("mainnet", "main"), ("signet", "signet")])
+def test_stale_fee_estimates_are_refused_off_regtest(
+    tmp_path: Path, chain: str, name: str
+) -> None:
+    """Core's `InitError`, in its words, before the block index is read."""
+    node = Node(
+        config=Config(
+            chain=chain,
+            data_dir=tmp_path,
+            allow_p2p=False,
+            allow_rpc=False,
+            accept_stale_fee_estimates=True,
+        )
+    )
+    try:
+        node.start()
+        wait_until(lambda: not node.is_alive())
+    finally:
+        node.stop()
+    assert node.init_errors == [
+        f"acceptstalefeeestimates is not supported on {name} chain."
+    ]
+    assert not (node.data_dir / "chainstate").exists()
