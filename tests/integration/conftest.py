@@ -203,6 +203,12 @@ def _started_bitcoind(
             "-debug=rpc",
             "-logtimemicros",
             "-logthreadnames",
+            # bitcoind closes a kept-alive RPC connection idle for 30 s, and
+            # a call sent as the close lands is reset. Bitcoin Core's own
+            # functional tests, which also keep one connection open, switch
+            # the timeout off for the same reason (test_framework/util.py,
+            # `rpcservertimeout=99000`, "to avoid intermittent issues").
+            "-rpcservertimeout=99000",
             *args,
         ],
     )
