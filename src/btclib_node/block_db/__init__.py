@@ -35,6 +35,7 @@ from btclib.tx.out_point import OutPoint
 from btclib.tx.tx_out import TxOut
 from btclib.utils import bytesio_from_binarydata
 
+from btclib_node.constants import DIR_MODE
 from btclib_node.db import KeyValueStore
 from btclib_node.exceptions import ChainstateInconsistencyError
 
@@ -298,7 +299,7 @@ class BlockDB:
         self._lock = threading.RLock()
 
         self.data_dir = blocks_directory(data_dir, blocks_dir)
-        self.data_dir.mkdir(exist_ok=True, parents=True)
+        self.data_dir.mkdir(mode=DIR_MODE, exist_ok=True, parents=True)
         self.db = KeyValueStore(self.data_dir)
         self.files: dict[str, FileMetadata] = {}
         self.blocks: dict[bytes, BlockLocation] = {}

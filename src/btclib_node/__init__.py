@@ -34,7 +34,7 @@ from bitcoin_core_rpc import chain_from_network
 from btclib_node.block_db import BlockDB, blocks_directory
 from btclib_node.chainstate import Chainstate
 from btclib_node.config import Config
-from btclib_node.constants import RPC_THREADS, NodeStatus
+from btclib_node.constants import DIR_MODE, RPC_THREADS, NodeStatus
 from btclib_node.dirlock import lock_directories
 from btclib_node.download import DownloadManager
 from btclib_node.exceptions import NodeShutdownTimeoutError, ReimportedMainProcessError
@@ -318,12 +318,12 @@ class Node(threading.Thread):
         self.config = config
         self.chain = config.chain
         self.data_dir = config.data_dir
-        self.data_dir.mkdir(exist_ok=True, parents=True)
+        self.data_dir.mkdir(mode=DIR_MODE, exist_ok=True, parents=True)
         # Core's own `GetBlocksDirPath` creates the blocks directory where
         # `AppInitParameterInteraction` first asks for it, ahead of the locks
         # (`src/common/args.cpp`, `src/init.cpp`, at bitcoin/bitcoin@9be056a8a7)
         blocks_dir = blocks_directory(self.data_dir, config.blocks_dir)
-        blocks_dir.mkdir(exist_ok=True, parents=True)
+        blocks_dir.mkdir(mode=DIR_MODE, exist_ok=True, parents=True)
 
         # Core's own `AppInitLockDirectories`: the data directory, then the
         # blocks directory, both before the log or any store is opened

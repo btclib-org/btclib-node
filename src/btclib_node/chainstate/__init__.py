@@ -20,6 +20,7 @@ docstring is where the crash this is the other half of is argued.
 
 from typing import TYPE_CHECKING
 
+from btclib_node.constants import DIR_MODE
 from btclib_node.db import KeyValueStore
 
 from .block_index import BlockIndex
@@ -45,7 +46,7 @@ class Chainstate:
     def __init__(self, data_dir: Path, chain: Chain, logger: Logger) -> None:
         """Open the store under `data_dir` and build all three indexes on it."""
         data_dir = data_dir / "chainstate"
-        data_dir.mkdir(exist_ok=True, parents=True)
+        data_dir.mkdir(mode=DIR_MODE, exist_ok=True, parents=True)
         self.db = KeyValueStore(data_dir)
 
         self.block_index = BlockIndex(self.db, chain, logger)

@@ -86,8 +86,11 @@ class DirectoryLock:
             try:
                 # Core's `fopen(..., "a")` and then `open(O_RDWR)`, as one:
                 # a write-only `.lock` alone tells them apart, Core then
-                # answering with the lock message and this with the write one
-                fd = os.open(self._key, os.O_RDWR | os.O_CREAT, 0o666)
+                # answering with the lock message and this with the write one.
+                # Core's umask 077 makes its `.lock` 0600. Only `cli.main`
+                # sets it here, so a library caller's umask could widen it
+                # and let another user hold a shared lock on the file
+                fd = os.open(self._key, os.O_RDWR | os.O_CREAT, 0o600)
             except OSError as error:
                 err_msg = f"Cannot write to directory '{directory}'; "
                 err_msg += "check permissions."
