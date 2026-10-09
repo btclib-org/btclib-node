@@ -38,8 +38,6 @@ from btclib.p2p.addrv2 import (
     BIP155Network,
     NetworkAddressV2,
     SendAddrV2,
-    addr_entry,
-    can_addrv1,
     peer_from_addr_entry,
 )
 from btclib.p2p.block_filters import (
@@ -543,6 +541,7 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     if not conn.inbound and not conn.block_relay:
         conn.addr_relay_enabled = True
         conn.send(GetAddr())
+        conn.getaddr_sent = True
         conn.addr_token_bucket += MAX_ADDR_TO_SEND
 
     # Right after that `getaddr`, Core calls `m_addrman.Good(pfrom.addr)`
@@ -905,30 +904,12 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
         sample = _draw_sample(node)
     else:
         sample = _cached_sample(node, conn)
-    # either message class, and not whichever the first branch names:
-    # Addr and AddrV2 are siblings under Payload rather than one a
-    # subclass of the other, so each is built from its own list rather
-    # than through a shared name of a type the other could not accept.
-    # `PeerDB.get_addr` already keeps this under MAX_ADDR_TO_SEND, the
-    # bound btclib's Addr and AddrV2 refuse a longer message than, so one
-    # message is always enough.
-    # an addr version 1 message has nowhere to put a tor, i2p or cjdns
-    # address, so those are left out rather than made up
-    compatible = [a for a in sample if conn.prefer_addressv2 or can_addrv1(a)]
-    # Core's `PushAddress` and `MaybeSendAddr` leave out what the peer
-    # knows, and record the rest as known
-    unknown = []
-    for address in compatible:
-        key = service_key(address)
-        if key not in conn.addr_known:
-            conn.addr_known.add(key)
-            unknown.append(address)
-    if not unknown:
-        return
-    if conn.prefer_addressv2:
-        conn.send(AddrV2(unknown))
-    else:
-        conn.send(Addr([addr_entry(address) for address in unknown]))
+    # Core's `GETADDR` handler clears the peer's queue and queues the
+    # answer. `push_address` leaves out what the peer knows and, for an
+    # addr version 1 peer, what has nowhere to go in its message: a tor,
+    # i2p or cjdns address. `P2pManager._send_queued_addrs` sends the
+    # rest. `PeerDB.get_addr` draws at most MAX_ADDR_TO_SEND.
+    conn.replace_addresses(sample)
 
 
 def addr(node: Node, msg: bytes, conn: Connection) -> None:
@@ -999,6 +980,33 @@ _MAX_ADDR_PROCESSING_TOKEN_BUCKET = MAX_ADDR_TO_SEND
 _GOSSIP_MIN_TIME = 100_000_000
 _GOSSIP_REDATE = 5 * 24 * 3600
 
+# the most addresses in a message that `RelayAddress` still relays from
+# (`src/net_processing.cpp`, same sha)
+_MAX_ADDR_RELAYED_MESSAGE = 10
+
+
+def _is_relayed(
+    conn: Connection, address: NetworkAddressV2, received: int, now: float
+) -> bool:
+    """Whether `RelayAddress` is called for `address`, one of `received`."""
+    return (
+        address.timestamp > now - 600
+        and not conn.getaddr_sent
+        and received <= _MAX_ADDR_RELAYED_MESSAGE
+        and is_routable(address)
+    )
+
+
+def _refill_address_tokens(conn: Connection, now: float) -> None:
+    """Top up `conn`'s address tokens, at a tenth of a token per second."""
+    if conn.addr_token_bucket < _MAX_ADDR_PROCESSING_TOKEN_BUCKET:
+        elapsed = max(now - conn.addr_token_timestamp, 0)
+        conn.addr_token_bucket = min(
+            conn.addr_token_bucket + elapsed * _MAX_ADDR_RATE_PER_SECOND,
+            _MAX_ADDR_PROCESSING_TOKEN_BUCKET,
+        )
+    conn.addr_token_timestamp = now
+
 
 def _store_gossip(
     node: Node, conn: Connection, addresses: Iterable[NetworkAddressV2]
@@ -1018,16 +1026,13 @@ def _store_gossip(
     self-announcements" (same loop, same sha) -- of `addresses` as
     received, ahead of every filter above, matching Core's own
     `vAddr.size()` (btclib-org/btclib-node#1284). A time Core finds
-    implausible is replaced first (btclib-org/btclib-node#1605).
+    implausible is replaced first (btclib-org/btclib-node#1605). An address
+    that passes them, is recent and routable, and comes in a message of at
+    most ten, is relayed to one or two peers (`RelayAddress`, same
+    sha), unless this node's own `getaddr` to `conn` is unanswered.
     """
     now = time.time()
-    if conn.addr_token_bucket < _MAX_ADDR_PROCESSING_TOKEN_BUCKET:
-        elapsed = max(now - conn.addr_token_timestamp, 0)
-        conn.addr_token_bucket = min(
-            conn.addr_token_bucket + elapsed * _MAX_ADDR_RATE_PER_SECOND,
-            _MAX_ADDR_PROCESSING_TOKEN_BUCKET,
-        )
-    conn.addr_token_timestamp = now
+    _refill_address_tokens(conn, now)
     received = list(addresses)
     secrets.SystemRandom().shuffle(received)
     manager = node.p2p_manager
@@ -1058,8 +1063,15 @@ def _store_gossip(
         if manager.is_discouraged(dated) or manager.ban_man.is_peer_banned(dated):
             continue
         kept.append(dated)
+        # Core relays what is recent and routable, in a message small
+        # enough not to be a dump, and nothing while it waits for the
+        # answer to its own `getaddr`
+        if _is_relayed(conn, dated, len(received), now):
+            manager.relay_address(conn, dated, now)
     conn.stats.addr_processed += len(kept)
     conn.stats.addr_rate_limited += rate_limited
+    if len(received) < MAX_ADDR_TO_SEND:
+        conn.getaddr_sent = False
     # `source=conn.address`: Core's own `m_addrman.Add(vAddrOk,
     # pfrom.addr, /*time_penalty=*/2h)` (same loop, same sha) passes the
     # connection's own address as `AddSingle`'s `source`, which exempts

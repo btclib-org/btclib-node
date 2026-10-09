@@ -124,7 +124,6 @@ from btclib_node.p2p.callbacks import (
     get_cfcheckpt,
     get_cfheaders,
     get_cfilters,
-    getaddr,
     getblocks,
     getblocktxn,
     getdata,
@@ -144,6 +143,9 @@ from btclib_node.p2p.callbacks import (
     wtxidrelay,
 )
 from btclib_node.p2p.callbacks import block as block_callback
+from btclib_node.p2p.callbacks import (
+    getaddr as answer_getaddr,
+)
 from btclib_node.p2p.chain_sync import (
     ChainSyncTimeoutState,
     disconnect_if_insufficient_work,
@@ -156,6 +158,7 @@ from btclib_node.p2p.connection import (
     PeerStats,
 )
 from btclib_node.p2p.headers_sync import HeadersSyncState, State
+from btclib_node.p2p.manager import P2pManager
 from btclib_node.p2p.permissions import NetPermissionFlags
 from btclib_node.p2p.protocol_version import (
     BIP0031_VERSION,
@@ -192,7 +195,6 @@ if TYPE_CHECKING:
     from btclib_node import Node
     from btclib_node.chains import Chain
     from btclib_node.chainstate.block_index import BlockIndex
-    from btclib_node.p2p.manager import P2pManager
 
 # BIP155's table, for the networks these tests build an address of
 _ADDRESS_SIZE = {
@@ -241,6 +243,24 @@ def a_different_cache_key() -> tuple[int, str, int]:
     return (BIP155Network.IPV4, "127.0.0.1", 8334)
 
 
+def with_address_queue(conn: Any) -> Any:
+    """Give the peer stand-in `Connection`'s own queue of addresses to send."""
+    conn.next_addr_send = 0.0
+    conn._addrs_to_send = []
+    conn._addrs_to_send_lock = threading.Lock()
+    conn.push_address = Connection.push_address.__get__(conn)
+    conn._push_address = Connection._push_address.__get__(conn)
+    conn.replace_addresses = Connection.replace_addresses.__get__(conn)
+    conn.take_addresses = Connection.take_addresses.__get__(conn)
+    return conn
+
+
+def getaddr(node: Any, msg: bytes, conn: Any) -> None:
+    """Run the `getaddr` callback, then the pass that sends what it queued."""
+    answer_getaddr(node, msg, conn)
+    P2pManager._send_queued_addrs(cast("P2pManager", None), conn, 1000.0)
+
+
 def make_node(
     addresses: Sequence[NetworkAddressV2],
     *,
@@ -260,15 +280,17 @@ def make_node(
     for address in addresses:
         peer_db.addresses.add(address)
     sent: list[Any] = []
-    conn = SimpleNamespace(
-        prefer_addressv2=prefer_addressv2,
-        send=sent.append,
-        answered_getaddr=False,
-        addr_relay_enabled=False,
-        inbound=inbound,
-        addr_cache_key=addr_cache_key,
-        permissions=NetPermissionFlags.NONE,
-        addr_known=AddrKnown(),
+    conn = with_address_queue(
+        SimpleNamespace(
+            prefer_addressv2=prefer_addressv2,
+            send=sent.append,
+            answered_getaddr=False,
+            addr_relay_enabled=False,
+            inbound=inbound,
+            addr_cache_key=addr_cache_key,
+            permissions=NetPermissionFlags.NONE,
+            addr_known=AddrKnown(),
+        )
     )
     keys = {host_key(address) for address in discouraged}
     node = SimpleNamespace(
@@ -404,6 +426,33 @@ def test_a_getaddr_answer_is_capped_at_max_addr_to_send() -> None:
     assert len(answer.addresses) == MAX_ADDR_TO_SEND
 
 
+def test_a_getaddr_answer_replaces_what_was_queued_and_waits_for_the_send() -> None:
+    """ISS 1867: Core's `GETADDR` handler clears the queue, then queues."""
+    address = an_address()
+    node, conn, sent = make_node([address])
+    queued = an_address(5)
+    conn.push_address(queued)
+    answer_getaddr(node, b"", conn)
+    assert sent == []
+    assert conn.take_addresses() == [address]
+
+
+def test_a_getaddr_answer_goes_through_one_replacement_of_the_queue() -> None:
+    """ISS 1867: a send never finds half the answer, so it is one call."""
+    address = an_address()
+    node, conn, _ = make_node([address])
+    calls: list[list[NetworkAddressV2]] = []
+    replace = conn.replace_addresses
+
+    def recording(addresses: Sequence[NetworkAddressV2]) -> None:
+        calls.append(list(addresses))
+        replace(addresses)
+
+    conn.replace_addresses = recording
+    answer_getaddr(node, b"", conn)
+    assert calls == [[address]]
+
+
 def test_a_second_getaddr_on_the_same_connection_is_ignored() -> None:
     """A peer asking `getaddr` twice on one connection is served the table once.
 
@@ -424,14 +473,16 @@ def another_conn(
     `addr_cache_key` defaults to the same key `make_node` does, so the
     two share one `getaddr` cache unless a test asks otherwise.
     """
-    return SimpleNamespace(
-        prefer_addressv2=False,
-        send=sent.append,
-        answered_getaddr=False,
-        permissions=NetPermissionFlags.NONE,
-        inbound=True,
-        addr_cache_key=addr_cache_key,
-        addr_known=AddrKnown(),
+    return with_address_queue(
+        SimpleNamespace(
+            prefer_addressv2=False,
+            send=sent.append,
+            answered_getaddr=False,
+            permissions=NetPermissionFlags.NONE,
+            inbound=True,
+            addr_cache_key=addr_cache_key,
+            addr_known=AddrKnown(),
+        )
     )
 
 
@@ -738,6 +789,7 @@ def a_peer(**attributes: Any) -> Any:
         addr_token_timestamp=time.time(),
         # what `Connection` starts every connection at (ISS 1178)
         addr_relay_enabled=False,
+        getaddr_sent=False,
     )
     peer.__dict__.update(attributes)
     return peer
@@ -804,6 +856,7 @@ def a_handshake_node(
     """
     discouraged, record = discourage_recorder()
     seen: list[Any] = []
+    relayed: list[Any] = []
     discouraged_keys = {host_key(peer_address(host, 0)) for host in discouraged_hosts}
     own_nonces = set(pending_outbound_nonces)
     return SimpleNamespace(
@@ -829,6 +882,8 @@ def a_handshake_node(
             is_discouraged=lambda address: host_key(address) in discouraged_keys,
             ban_man=a_ban_man(*banned),
             seen_local=seen.append,
+            relay_address=lambda conn, address, now: relayed.append((conn, address)),
+            relayed=relayed,
         ),
         chainstate=SimpleNamespace(
             block_index=SimpleNamespace(
@@ -1912,6 +1967,79 @@ def test_the_addresses_a_peer_sends_are_kept() -> None:
         node = a_handshake_node(peer_db=peer_db)
         callback(node, message.serialize(), a_gossiping_peer())
         assert peer_db.addresses == {_as_stored(address) for address in given}
+
+
+def test_a_recent_routable_address_is_relayed() -> None:
+    """ISS 1867: `RelayAddress` is called for what a small message gossips."""
+    node = a_handshake_node()
+    peer = a_gossiping_peer()
+    address = a_gossiped_address("8.8.8.8")
+    addrv2(node, AddrV2([address]).serialize(), peer)
+    assert node.p2p_manager.relayed == [(peer, address)]
+
+
+@pytest.mark.parametrize(
+    "reason",
+    ["stale", "unroutable", "getaddr unanswered", "message too large", "discouraged"],
+)
+def test_an_address_core_does_not_relay_is_not_relayed(reason: str) -> None:
+    """ISS 1867: recent, routable, not a dump, and no `getaddr` unanswered."""
+    node = a_handshake_node(discouraged_hosts=["8.8.8.8"])
+    peer = a_gossiping_peer()
+    address = a_gossiped_address("8.8.8.8" if reason == "discouraged" else "8.8.4.4")
+    others = []
+    if reason == "stale":
+        address = replace(address, timestamp=int(time.time()) - 601)
+    elif reason == "unroutable":
+        address = a_gossiped_address("192.168.1.1")
+    elif reason == "getaddr unanswered":
+        peer.getaddr_sent = True
+    elif reason == "message too large":
+        others = [a_gossiped_address(f"8.8.{n}.1") for n in range(10, 20)]
+    addrv2(node, AddrV2([address, *others]).serialize(), peer)
+    relayed = node.p2p_manager.relayed
+    assert [a for _, a in relayed if a == address] == []
+
+
+def test_a_message_of_ten_is_relayed_and_of_eleven_is_not() -> None:
+    """ISS 1867: `vAddr.size() <= 10`."""
+    given = [a_gossiped_address(f"8.8.{n}.1") for n in range(11)]
+    node = a_handshake_node()
+    addrv2(node, AddrV2(given[:10]).serialize(), a_gossiping_peer())
+    assert len(node.p2p_manager.relayed) == 10
+    addrv2(node, AddrV2(given).serialize(), a_gossiping_peer())
+    assert len(node.p2p_manager.relayed) == 10
+
+
+def test_a_short_message_ends_the_wait_for_the_getaddr_answer() -> None:
+    """ISS 1867: `m_getaddr_sent` is cleared by a message of under 1000."""
+    node = a_handshake_node()
+    peer = a_gossiping_peer(getaddr_sent=True)
+    addrv2(node, AddrV2([a_gossiped_address("8.8.8.8")]).serialize(), peer)
+    assert peer.getaddr_sent is False
+
+
+def test_a_full_getaddr_answer_leaves_the_wait_for_more() -> None:
+    """ISS 1867: a message of 1000 is not taken to be the whole answer."""
+    node = a_handshake_node()
+    peer = a_gossiping_peer(getaddr_sent=True)
+    given = [
+        a_gossiped_address(f"8.{n // 250 + 1}.{n % 250}.1")
+        for n in range(MAX_ADDR_TO_SEND)
+    ]
+    addrv2(node, AddrV2(given).serialize(), peer)
+    assert peer.getaddr_sent is True
+
+
+def test_a_version_marks_the_getaddr_it_sends_as_unanswered() -> None:
+    """ISS 1867: `m_getaddr_sent` is set where `GETADDR` is sent."""
+    node = a_handshake_node()
+    outbound = a_peer(inbound=False)
+    inbound = a_peer(inbound=True)
+    version(node, a_version(), outbound)
+    version(node, a_version(), inbound)
+    assert outbound.getaddr_sent is True
+    assert inbound.getaddr_sent is False
 
 
 def test_an_inbound_peer_s_self_announcement_costs_no_penalty_port_aside() -> None:
