@@ -100,13 +100,17 @@ def next_block(node: Node, *transactions: Tx) -> Block:
 
 
 def a_compact_peer(node: Node, conn_id: int = 1, **attributes: Any) -> Any:
-    """Return a connected peer that sent `sendcmpct(2)` and serves witnesses."""
+    """Return a connected peer that sent `sendcmpct(2)` and serves witnesses.
+
+    It is marked high-bandwidth, so that a block nobody asked of it is taken.
+    """
     services = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
     peer = a_peer(
         **{
             "id": conn_id,
             "status": P2pConnStatus.Connected,
             "provides_cmpctblocks": True,
+            "bip152_highbandwidth_to": True,
             "version_message": a_version(services),
             **attributes,
         }
@@ -159,6 +163,39 @@ def test_a_cmpctblock_from_a_peer_that_never_sent_sendcmpct_is_ignored(
     assert not peer.sent
     assert block.header.hash not in node.chainstate.block_index.header_dict
     assert not held(node, block)
+
+
+@pytest.mark.parametrize("requested", [False, True], ids=["unasked", "asked"])
+def test_a_cmpctblock_nobody_asked_of_a_peer_not_high_bandwidth_is_ignored(
+    regtest_node: Callable[[], Node],
+    requested: bool,  # noqa: FBT001
+) -> None:
+    """Core's return at `net_processing.cpp:4888-4891`, after the header.
+
+    The header is taken, as Core takes it. Where the block was asked of
+    the peer, it is rebuilt whatever the peer's bandwidth.
+    """
+    node, _ = a_node(regtest_node)
+    block = next_block(node, generate_random_transaction())
+    peer = a_compact_peer(node, bip152_highbandwidth_to=False)
+    if requested:
+        peer.download_queue.append(block.header.hash)
+    cmpctblock(node, compact_block(block, 7).serialize(), peer)
+    assert node.chainstate.block_index.header_dict[block.header.hash]
+    assert bool(sent(peer, GetBlockTxn)) is requested
+    assert peer.download_queue == ([block.header.hash] if requested else [])
+
+
+def test_a_cmpctblock_nobody_asked_of_a_high_bandwidth_peer_is_taken(
+    regtest_node: Callable[[], Node],
+) -> None:
+    """A peer this node sent `sendcmpct(1)` announces blocks unasked."""
+    node, _ = a_node(regtest_node)
+    block = next_block(node, generate_random_transaction())
+    peer = a_compact_peer(node, bip152_highbandwidth_to=True)
+    cmpctblock(node, compact_block(block, 7).serialize(), peer)
+    assert len(sent(peer, GetBlockTxn)) == 1
+    assert peer.download_queue == [block.header.hash]
 
 
 def test_a_block_short_of_transactions_asks_for_them_and_takes_them(
@@ -497,7 +534,9 @@ def test_a_peer_asked_after_another_does_not_ask_for_what_is_missing(
     block = next_block(node, generate_random_transaction())
     first = a_compact_peer(node, 2)
     first.download_queue.append(block.header.hash)
-    peer = a_compact_peer(node)
+    peer = a_compact_peer(node, bip152_highbandwidth_to=False)
+    peer.download_queue.append(block.header.hash)
+    peer.block_availability.request_order[block.header.hash] = 5
     cmpctblock(node, compact_block(block, 7).serialize(), peer)
     assert peer.sent == []
     assert peer.download_queue == []
@@ -711,7 +750,7 @@ def test_a_peer_asked_second_does_not_ask_for_what_is_missing(
     block = next_block(node, generate_random_transaction())
     first = a_compact_peer(node, 2)
     first.download_queue.append(block.header.hash)
-    peer = a_compact_peer(node)
+    peer = a_compact_peer(node, bip152_highbandwidth_to=False)
     peer.download_queue.append(block.header.hash)
     peer.block_availability.request_order[block.header.hash] = 5
     cmpctblock(node, compact_block(block, 7).serialize(), peer)

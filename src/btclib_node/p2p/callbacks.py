@@ -3057,6 +3057,14 @@ def cmpctblock(node: Node, msg: bytes, conn: Connection) -> None:
     added it at bitcoin/bitcoin@4bacf21a13 (`net_processing.cpp:4799-4802`,
     first in v32.0rc1). This node asks for a `cmpctblock` only of a peer
     that sent `sendcmpct`, so the return drops nothing it asked for.
+
+    A block not asked of this peer, from a peer not marked high-bandwidth
+    (`bip152_highbandwidth_to`), is ignored once its header is taken. The
+    v31.1 handler has no such return either; bitcoin/bitcoin#32606 added
+    it at bitcoin/bitcoin@4bacf21a13 (`net_processing.cpp:4888-4891`,
+    first in v32.0rc1). A peer is marked only where this node sent it
+    `sendcmpct(1)`, and a block this node asked of a peer is in its
+    `download_queue`, so the return drops only what neither asked for.
     """
     # deferred: `download` imports this module
     from btclib_node.download import MAX_BLOCKS_IN_TRANSIT_PER_PEER  # noqa: PLC0415
@@ -3072,6 +3080,13 @@ def cmpctblock(node: Node, msg: bytes, conn: Connection) -> None:
     chainwork = block_index.chainwork
     holders = in_flight_from(node.p2p_manager.connections.copy().values(), block_hash)
     requested = block_hash in conn.download_queue
+    if not requested and not conn.bip152_highbandwidth_to:
+        node.logger.log_debug(
+            "cmpctblock",
+            "Peer %d, not marked as high-bandwidth, sent an unsolicited compact block",
+            conn.id,
+        )
+        return
     # Core also asks this of a block it held and pruned, which is
     # `MIN_BLOCKS_TO_KEEP` below the tip and so has less work
     if chainwork[block_hash] <= chainwork[block_index.active_chain[-1]]:
