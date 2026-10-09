@@ -772,7 +772,8 @@ def test_a_peer_that_gave_a_new_block_is_asked_for_high_bandwidth(
     """
     node, _ = a_node(regtest_node)
     block = next_block(node)
-    peer = a_compact_peer(node, inbound=True)
+    peer = a_compact_peer(node, inbound=True, bip152_highbandwidth_to=False)
+    peer.download_queue.append(block.header.hash)
     cmpctblock(node, compact_block(block, 7).serialize(), peer)
     assert node.download_manager.block_source == {block.header.hash: (peer.id, False)}
     update_chain(node)
@@ -894,7 +895,10 @@ def test_three_peers_are_high_bandwidth_at_once(
     One chosen again moves to the end, and is sent nothing.
     """
     node, _ = a_node(regtest_node)
-    peers = [a_compact_peer(node, conn_id) for conn_id in (1, 2, 3, 4)]
+    peers = [
+        a_compact_peer(node, conn_id, bip152_highbandwidth_to=False)
+        for conn_id in (1, 2, 3, 4)
+    ]
     for peer in peers[:3]:
         maybe_set_peer_as_announcing_header_and_ids(node, peer.id)
     maybe_set_peer_as_announcing_header_and_ids(node, 1)
@@ -920,7 +924,7 @@ def test_an_inbound_peer_does_not_take_the_last_outbound_slot(
 ) -> None:
     """Core swaps the last outbound peer out of the front before dropping it."""
     node, _ = a_node(regtest_node)
-    outbound = a_compact_peer(node, 1, inbound=False)
+    outbound = a_compact_peer(node, 1, inbound=False, bip152_highbandwidth_to=False)
     inbound = [a_compact_peer(node, conn_id, inbound=True) for conn_id in (2, 3, 4)]
     for conn_id in (1, 2, 3, 4):
         maybe_set_peer_as_announcing_header_and_ids(node, conn_id)
