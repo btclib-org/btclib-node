@@ -24,7 +24,11 @@ from btclib_node.exceptions import TxRejectedError
 from btclib_node.fee_estimator import RemovedTx
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
-from tests import LogLines, generate_random_transaction
+from tests import (
+    LogLines,
+    generate_random_transaction,
+    txids_the_two_orders_disagree_on,
+)
 
 
 def a_witness_transaction() -> Tx:
@@ -1399,7 +1403,7 @@ def test_a_delta_is_applied_once_the_transaction_enters() -> None:
 def test_prioritised_lists_by_internal_txid_bytes() -> None:
     """Core's `std::map<Txid, CAmount>` orders by the bytes it holds."""
     mempool = Mempool(Logger(debug=True))
-    txids = [secrets.token_bytes(32) for _ in range(8)]
+    txids = txids_the_two_orders_disagree_on()
     for txid in txids:
         mempool.prioritise(txid, 1)
     listed = [txid for txid, _, _ in mempool.prioritised()]

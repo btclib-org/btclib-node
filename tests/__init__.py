@@ -277,6 +277,16 @@ def anyone_can_spend_script_sig() -> bytes:
     return script.serialize([secrets.token_bytes(32), anyone_can_spend_redeem_script()])
 
 
+def txids_the_two_orders_disagree_on() -> list[bytes]:
+    """Return eight txids whose displayed and internal orders are opposite.
+
+    The first byte rises and the last falls across the eight, so sorting by
+    the displayed bytes and by the internal bytes (their reverse) give
+    opposite lists. Neither is the list returned.
+    """
+    return [bytes([n]) + bytes(30) + bytes([7 - n]) for n in (0, 2, 4, 6, 1, 3, 5, 7)]
+
+
 def generate_random_transaction(
     prevouthash: bytes | None = None, value: int = 50 * 10**8
 ) -> Tx:

@@ -148,7 +148,10 @@ def test_the_unique_parents_are_each_listed_once_in_order() -> None:
     """Two inputs of one parent name it once, in Core's `Txid` order."""
     from tests.unit.orphanage_test import a_tx  # noqa: PLC0415
 
-    a, b = secrets.token_bytes(32), secrets.token_bytes(32)
+    # Displayed bytes order `b` before `a`; internal bytes order `a` before `b`.
+    # The inputs name `b` first, so only the internal order lists `a` first.
+    a = b"\x01" + bytes(31)
+    b = bytes(31) + b"\xff"
     tx = a_tx((b, 0), (a, 0), (b, 1))
     assert download_module.DownloadManager.unique_parents(tx) == sorted(
         {a, b}, key=lambda txid: txid[::-1]
