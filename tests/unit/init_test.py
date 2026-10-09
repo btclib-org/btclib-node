@@ -82,6 +82,12 @@ if TYPE_CHECKING:
 # How long a test waits for a node's own thread to end: the bound
 # `Node.stop` grants every node, read here at import, before a test
 # patches the constant to the bound it measures.
+#
+# The tests that shorten it put it back once their last answer is given.
+# What follows that answer, closing the stores, is not their subject, and
+# on a loaded Windows runner it alone can take longer than the shortened
+# bound (btclib-org/btclib-node#1840). They join the node's thread before
+# returning, so that the reset lands inside their own `monkeypatch`.
 _STOP_TIMEOUT = btclib_node.STOP_TIMEOUT
 
 
@@ -572,22 +578,31 @@ def test_drain_progress_extends_stop_s_wait_past_stop_timeout(
     (#1467).
 
     The deadline is not pushed during a pause: one longer than
-    `STOP_TIMEOUT` between two answers, or after the last, still fails
-    `stop`. So `STOP_TIMEOUT` is wide enough to absorb a stall on a busy
-    machine, and still below what the ten answers sum to
+    `STOP_TIMEOUT` between two answers still fails `stop`. So
+    `STOP_TIMEOUT` is wide enough to absorb a stall on a busy machine,
+    and still below what the ten answers sum to
     (btclib-org/btclib-node#1790).
+
+    The last answer puts `STOP_TIMEOUT` back, as `_STOP_TIMEOUT` says.
     """
     monkeypatch.setattr(btclib_node, "STOP_TIMEOUT", 4.0)
+    in_first = threading.Event()
     hold = threading.Event()
     original_get_best_block_hash = callbacks["getbestblockhash"]
     original_get_block_count = callbacks["getblockcount"]
+    queued = 10
+    answered: list[None] = []
 
     def held_get_best_block_hash(node: Node, conn: Any, params: Any) -> Any:
+        in_first.set()
         hold.wait(10)
         return original_get_best_block_hash(node, conn, params)
 
     def slow_get_block_count(node: Node, conn: Any, params: Any) -> Any:
         time.sleep(0.5)
+        answered.append(None)
+        if len(answered) == queued:
+            monkeypatch.setattr(btclib_node, "STOP_TIMEOUT", _STOP_TIMEOUT)
         return original_get_block_count(node, conn, params)
 
     monkeypatch.setitem(callbacks, "getbestblockhash", held_get_best_block_hash)
@@ -598,8 +613,9 @@ def test_drain_progress_extends_stop_s_wait_past_stop_timeout(
         target=lambda: rpc_client(node).call_raw("getbestblockhash"), daemon=True
     )
     first.start()
+    # held in a pass of its own, so the drain answers all ten
+    assert in_first.wait(30)
 
-    queued = 10
     callers = [
         threading.Thread(
             target=lambda: rpc_client(node, timeout=30).call_raw("getblockcount"),
@@ -611,11 +627,15 @@ def test_drain_progress_extends_stop_s_wait_past_stop_timeout(
         caller.start()
     wait_until(lambda: len(node.rpc_manager.messages) == queued)
 
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        stopping = pool.submit(node.stop)
-        hold.set()
-        # re-raises NodeShutdownTimeoutError here if this regresses
-        stopping.result(timeout=30)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            stopping = pool.submit(node.stop)
+            wait_until(node.terminate_flag.is_set)
+            hold.set()
+            # re-raises NodeShutdownTimeoutError here if this regresses
+            stopping.result(timeout=30)
+    finally:
+        node.join(timeout=_STOP_TIMEOUT)
 
     for caller in callers:
         caller.join(timeout=10)
@@ -640,7 +660,9 @@ def test_requests_answered_by_the_loop_after_stop_extend_stop_s_wait(
     seconds after the one before, so with every answer pushing the
     deadline forward the wait never runs out. A runner may stall for up
     to 3 seconds before it does, and a stall only makes an unpushed wait
-    fail sooner (btclib-org/btclib-node#1651, #1712, #1840).
+    fail sooner (btclib-org/btclib-node#1651, #1712).
+
+    The last answer puts `STOP_TIMEOUT` back, as `_STOP_TIMEOUT` says.
 
     - `pass-pushes`: three requests, the pass answers two and the drain
       one, at 2, 4 and 6 seconds. Without the push after the pass's
@@ -663,12 +685,14 @@ def test_requests_answered_by_the_loop_after_stop_extend_stop_s_wait(
         hold_first.wait(10)
         return original_get_best_block_hash(node, conn, params)
 
-    answers = iter(answer_seconds)
+    answers = list(answer_seconds)
 
     def slow_get_block_count(node: Node, conn: Any, params: Any) -> Any:
         in_pass.set()
         hold_pass.wait(10)
-        time.sleep(next(answers))
+        time.sleep(answers.pop(0))
+        if not answers:
+            monkeypatch.setattr(btclib_node, "STOP_TIMEOUT", _STOP_TIMEOUT)
         return original_get_block_count(node, conn, params)
 
     monkeypatch.setitem(callbacks, "getbestblockhash", held_get_best_block_hash)
@@ -697,12 +721,15 @@ def test_requests_answered_by_the_loop_after_stop_extend_stop_s_wait(
     hold_first.set()
     assert in_pass.wait(30)
 
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        stopping = pool.submit(node.stop)
-        wait_until(node.terminate_flag.is_set)
-        hold_pass.set()
-        # re-raises NodeShutdownTimeoutError here if this regresses
-        stopping.result(timeout=30)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            stopping = pool.submit(node.stop)
+            wait_until(node.terminate_flag.is_set)
+            hold_pass.set()
+            # re-raises NodeShutdownTimeoutError here if this regresses
+            stopping.result(timeout=30)
+    finally:
+        node.join(timeout=_STOP_TIMEOUT)
 
     for caller in callers:
         caller.join(timeout=10)
