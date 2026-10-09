@@ -717,8 +717,10 @@ addopts = "-ra --cov --durations=8 -n auto --strict-config --strict-markers"
 #
 # -- so this is a ratchet at zero cost, not a climb, the same shape as
 # `xfail_strict` below.
-# A strict `xfail` fails the day the test passes, so one waiting on
-# btclib stops being a silent marker the moment btclib delivers.
+# This suite has no `xfail` today (`grep -rn xfail tests/` matches only
+# a comment in tests/_data/README.md, not a call), so this too costs
+# nothing to turn on now rather than when the first one is written and
+# nobody notices it stopped meaning anything.
 xfail_strict = true
 # What a single test is given before the run says which test hung and
 # where, instead of sitting there. Measured rather than picked, on the
