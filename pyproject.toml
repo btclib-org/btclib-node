@@ -69,7 +69,9 @@ dependencies = [
     # (btclib-org/btclib#2559), which `mempool_persist.py` imports.
     #
     # 2026.10.8 is the first release with `ShortIdCollisionError`
-    # (btclib-org/btclib#2570), which `p2p/callbacks.py` imports.
+    # (btclib-org/btclib#2570), which `p2p/callbacks.py` imports, and with
+    # `verify_input`'s `signatures` (btclib-org/btclib#2564), which
+    # `signing.py` passes.
     "btclib[secp256k1,bip324]>=2026.10.8",
     # `rpc/callbacks.py` and `rpc/utxo_set.py` import from
     # `btclib_wallet.descriptors`, where btclib's own `descriptors`
@@ -86,6 +88,14 @@ dependencies = [
     # 2026.10.4 is the first whose `parse` refuses a key of another
     # network, which `rpc/mining.py` relies on.
     "btclib-wallet>=2026.10.8",
+    # `signing.py` and `p2p/v2transport.py` import `btclib_ecc` directly: a
+    # direct runtime dependency, not what btclib happens to bring
+    # (btclib-org/btclib-node#1431). `tests/unit/interpreter_test.py` builds
+    # its signatures through the same package.
+    #
+    # The floor is 2026.10.2, the release fixing GHSA-r5pw-9wrg-m3mj
+    # and GHSA-m38m-987v-j55h.
+    "btclib-ecc>=2026.10.2",
     "rocksdict>=0.3.29",
     # `rpc/errors.py` imports `RPCErrorCode` directly now, so this is a
     # direct runtime dependency rather than the transitive arrival
@@ -314,17 +324,6 @@ test = [
     #
     # The floor is 2026.10.4, the security release (issue #1685).
     "bitcoin-core-rpc>=2026.10.4",
-    # tests/unit/interpreter_test.py builds signatures through
-    # `btclib_ecc.ecc.dsa`/`ssa` directly rather than through btclib's own
-    # re-export, ahead of btclib dropping that re-export
-    # (btclib-org/btclib#2404, decided 2026-09-28): `src/` imports
-    # nothing from it, and stays declared against btclib alone, so this
-    # is a test dependency landing before the re-export it replaces is
-    # gone rather than a runtime one (btclib-org/btclib-node#1431).
-    #
-    # The floor is 2026.10.2, the release fixing GHSA-r5pw-9wrg-m3mj
-    # and GHSA-m38m-987v-j55h.
-    "btclib-ecc>=2026.10.2",
     # btclib-ecc's own bindings import (`_libsecp256k1.py`) reaches
     # `btclib_secp256k1.ecdh.shared_point`, absent below 0.8.0.8 --
     # measured directly, an older install answers plain `ImportError`
@@ -1058,6 +1057,7 @@ ignore = [
 # handlers registered in rpc/callbacks.py
 "src/btclib_node/rpc/fees.py" = ["ARG001"]
 "src/btclib_node/rpc/mining.py" = ["ARG001"]
+"src/btclib_node/rpc/signing.py" = ["ARG001"]
 "src/btclib_node/rpc/snapshot.py" = ["ARG001"]
 "src/btclib_node/rpc/utxo_set.py" = ["ARG001"]
 # socket.socket.setblocking is a C-level method taking no keyword

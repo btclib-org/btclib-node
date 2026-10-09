@@ -2159,6 +2159,142 @@ _HELP_TESTMEMPOOLACCEPT = (
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "testmempoolaccept", "params": [["signedhex"]]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
+_HELP_SIGNMESSAGEWITHPRIVKEY = (
+    'signmessagewithprivkey "privkey" "message"\n'
+    "\n"
+    "Sign a message with the private key of an address\n"
+    "\n"
+    "Arguments:\n"
+    "1. privkey    (string, required) The private key to sign the message with.\n"
+    "2. message    (string, required) The message to create a signature of.\n"
+    "\n"
+    "Result:\n"
+    '"str"    (string) The signature of the message encoded in base 64\n'
+    "\n"
+    "Examples:\n"
+    "\n"
+    "Create the signature\n"
+    '> bitcoin-cli signmessagewithprivkey "privkey" "my message"\n'
+    "\n"
+    "Verify the signature\n"
+    '> bitcoin-cli verifymessage "1D1ZrZNe3JUo7ZycKEYQQiQAWd9y54F4XX" "signature" "my message"\n'
+    "\n"
+    "As a JSON-RPC call\n"
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "signmessagewithprivkey", "params": ["privkey", "my message"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
+_HELP_VERIFYMESSAGE = (
+    'verifymessage "address" "signature" "message"\n'
+    "\n"
+    "Verify a signed message.\n"
+    "\n"
+    "Arguments:\n"
+    "1. address      (string, required) The bitcoin address to use for the signature.\n"
+    "2. signature    (string, required) The signature provided by the signer in base 64 encoding (see signmessage).\n"
+    "3. message      (string, required) The message that was signed.\n"
+    "\n"
+    "Result:\n"
+    "true|false    (boolean) If the signature is verified or not.\n"
+    "\n"
+    "Examples:\n"
+    "\n"
+    "Unlock the wallet for 30 seconds\n"
+    '> bitcoin-cli walletpassphrase "mypassphrase" 30\n'
+    "\n"
+    "Create the signature\n"
+    '> bitcoin-cli signmessage "1D1ZrZNe3JUo7ZycKEYQQiQAWd9y54F4XX" "my message"\n'
+    "\n"
+    "Verify the signature\n"
+    '> bitcoin-cli verifymessage "1D1ZrZNe3JUo7ZycKEYQQiQAWd9y54F4XX" "signature" "my message"\n'
+    "\n"
+    "As a JSON-RPC call\n"
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "verifymessage", "params": ["1D1ZrZNe3JUo7ZycKEYQQiQAWd9y54F4XX", "signature", "my message"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
+_HELP_SIGNRAWTRANSACTIONWITHKEY = (
+    'signrawtransactionwithkey "hexstring" ["privatekey",...] ( [{"txid":"hex","vout":n,"scriptPubKey":"hex","redeemScript":"hex","witnessScript":"hex","amount":amount},...] "sighashtype" )\n'
+    "\n"
+    "Sign inputs for raw transaction (serialized, hex-encoded).\n"
+    "The second argument is an array of base58-encoded private\n"
+    "keys that will be the only keys used to sign the transaction.\n"
+    "The third optional argument (may be null) is an array of previous transaction outputs that\n"
+    "this transaction depends on but may not yet be in the block chain.\n"
+    "\n"
+    "Arguments:\n"
+    "1. hexstring                        (string, required) The transaction hex string\n"
+    "2. privkeys                         (json array, required) The base58-encoded private keys for signing\n"
+    "     [\n"
+    '       "privatekey",                (string) private key in base58-encoding\n'
+    "       ...\n"
+    "     ]\n"
+    "3. prevtxs                          (json array, optional) The previous dependent transaction outputs\n"
+    "     [\n"
+    "       {                            (json object)\n"
+    '         "txid": "hex",             (string, required) The transaction id\n'
+    '         "vout": n,                 (numeric, required) The output number\n'
+    '         "scriptPubKey": "hex",     (string, required) output script\n'
+    '         "redeemScript": "hex",     (string, optional) (required for P2SH) redeem script\n'
+    '         "witnessScript": "hex",    (string, optional) (required for P2WSH or P2SH-P2WSH) witness script\n'
+    '         "amount": amount,          (numeric or string, optional) (required for Segwit inputs) the amount spent\n'
+    "       },\n"
+    "       ...\n"
+    "     ]\n"
+    '4. sighashtype                      (string, optional, default="DEFAULT for Taproot, ALL otherwise") The signature hash type. Must be one of:\n'
+    '                                    "DEFAULT"\n'
+    '                                    "ALL"\n'
+    '                                    "NONE"\n'
+    '                                    "SINGLE"\n'
+    '                                    "ALL|ANYONECANPAY"\n'
+    '                                    "NONE|ANYONECANPAY"\n'
+    '                                    "SINGLE|ANYONECANPAY"\n'
+    "                                    \n"
+    "\n"
+    "Result:\n"
+    "{                             (json object)\n"
+    '  "hex" : "hex",              (string) The hex-encoded raw transaction with signature(s)\n'
+    '  "complete" : true|false,    (boolean) If the transaction has a complete set of signatures\n'
+    '  "errors" : [                (json array, optional) Script verification errors (if there are any)\n'
+    "    {                         (json object)\n"
+    '      "txid" : "hex",         (string) The hash of the referenced, previous transaction\n'
+    '      "vout" : n,             (numeric) The index of the output to spent and used as input\n'
+    '      "witness" : [           (json array)\n'
+    '        "hex",                (string)\n'
+    "        ...\n"
+    "      ],\n"
+    '      "scriptSig" : "hex",    (string) The hex-encoded signature script\n'
+    '      "sequence" : n,         (numeric) Script sequence number\n'
+    '      "error" : "str"         (string) Verification or signing error related to the input\n'
+    "    },\n"
+    "    ...\n"
+    "  ]\n"
+    "}\n"
+    "\n"
+    "Examples:\n"
+    '> bitcoin-cli signrawtransactionwithkey "myhex" "[\\"key1\\",\\"key2\\"]"\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "signrawtransactionwithkey", "params": ["myhex", "[\\"key1\\",\\"key2\\"]"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+)
+
+_HELP_COMBINERAWTRANSACTION = (
+    'combinerawtransaction ["hexstring",...]\n'
+    "\n"
+    "Combine multiple partially signed transactions into one transaction.\n"
+    "The combined transaction may be another partially signed transaction or a \n"
+    "fully signed transaction.\n"
+    "\n"
+    "Arguments:\n"
+    "1. txs                 (json array, required) The hex strings of partially signed transactions\n"
+    "     [\n"
+    '       "hexstring",    (string) A hex-encoded raw transaction\n'
+    "       ...\n"
+    "     ]\n"
+    "\n"
+    "Result:\n"
+    '"str"    (string) The hex-encoded raw transaction with signature(s)\n'
+    "\n"
+    "Examples:\n"
+    '> bitcoin-cli combinerawtransaction \'["myhex1", "myhex2", "myhex3"]\'\n'
+)
+
 # Core's own per-method help text, keyed by RPC name -- `arg_names`'s own
 # keys in `rpc.callbacks`, checked against them by
 # `tests/unit/rpc/help_test.py`.
@@ -2219,6 +2355,10 @@ HELP_TEXT: dict[str, str] = {
     "getrawtransaction": _HELP_GETRAWTRANSACTION,
     "sendrawtransaction": _HELP_SENDRAWTRANSACTION,
     "testmempoolaccept": _HELP_TESTMEMPOOLACCEPT,
+    "signmessagewithprivkey": _HELP_SIGNMESSAGEWITHPRIVKEY,
+    "verifymessage": _HELP_VERIFYMESSAGE,
+    "signrawtransactionwithkey": _HELP_SIGNRAWTRANSACTIONWITHKEY,
+    "combinerawtransaction": _HELP_COMBINERAWTRANSACTION,
     "submitpackage": _HELP_SUBMITPACKAGE,
     "estimatesmartfee": _HELP_ESTIMATESMARTFEE,
     "estimaterawfee": _HELP_ESTIMATERAWFEE,
@@ -2294,6 +2434,10 @@ CATEGORY: dict[str, str] = {
     "getrawtransaction": "Rawtransactions",
     "sendrawtransaction": "Rawtransactions",
     "testmempoolaccept": "Rawtransactions",
+    "signmessagewithprivkey": "Util",  # pragma: allowlist secret
+    "verifymessage": "Util",
+    "signrawtransactionwithkey": "Rawtransactions",
+    "combinerawtransaction": "Rawtransactions",
     "submitpackage": "Rawtransactions",
     "estimatesmartfee": "Util",
     "estimaterawfee": "hidden",
