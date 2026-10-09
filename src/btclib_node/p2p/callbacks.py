@@ -3051,10 +3051,18 @@ def cmpctblock(node: Node, msg: bytes, conn: Connection) -> None:
     `add_headers` checks the header and `_reconstruct` the rest. More
     than 65535 transactions is refused by the parse and the peer kept, as
     Core's deserializer throws "indexes overflowed 16 bits".
+
+    A peer that never sent `sendcmpct` is ignored before the message is
+    read. The v31.1 handler has no such return; bitcoin/bitcoin#32606
+    added it at bitcoin/bitcoin@4bacf21a13 (`net_processing.cpp:4799-4802`,
+    first in v32.0rc1). This node asks for a `cmpctblock` only of a peer
+    that sent `sendcmpct`, so the return drops nothing it asked for.
     """
     # deferred: `download` imports this module
     from btclib_node.download import MAX_BLOCKS_IN_TRANSIT_PER_PEER  # noqa: PLC0415
 
+    if not conn.provides_cmpctblocks:
+        return
     compact = CmpctBlock.parse(msg, check_validity=False)
     header = compact.header
     block_hash = header.hash
