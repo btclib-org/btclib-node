@@ -95,17 +95,17 @@ from btclib_node.rpc.mining import (
     wait_for_block_height,
     wait_for_new_block,
 )
-from btclib_node.rpc.signing import (
-    combine_raw_transaction,
-    sign_message_with_privkey,
-    sign_raw_transaction_with_key,
-    verify_message,
-)
 from btclib_node.rpc.package import (
     Outcome,
     accepted,
     package_test_accept,
     submit_package,
+)
+from btclib_node.rpc.signing import (
+    combine_raw_transaction,
+    sign_message_with_privkey,
+    sign_raw_transaction_with_key,
+    verify_message,
 )
 from btclib_node.rpc.snapshot import dump_tx_out_set
 from btclib_node.rpc.solver import solver
