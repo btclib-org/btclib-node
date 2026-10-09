@@ -240,7 +240,6 @@ def test_a_script_sig_that_is_evaluated_is_merged_as_bitcoind_merges_it(
                 ), name
 
 
-@pytest.mark.xfail(raises=AssertionError, reason="btclib-org/btclib#2552")
 @pytest.mark.parametrize("name", ["p2pk", "p2pkh", "p2wsh-pubkey-hash"])
 def test_a_signature_of_a_refused_input_is_extracted_as_bitcoind_extracts_it(
     bitcoind: Bitcoind, name: str
@@ -249,8 +248,6 @@ def test_a_signature_of_a_refused_input_is_extracted_as_bitcoind_extracts_it(
 
     Core keeps every signature its first script run accepts, so the merge
     and a call with an unrelated key both give the input back complete.
-    bitcoind's answers are asserted first: they hold now, and the node's,
-    which wait on the hook, do not.
     """
     case = CASES[name]
     txid, out = mined_to(bitcoind, case.script)

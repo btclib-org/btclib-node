@@ -280,12 +280,16 @@ class InputSigner:
         witness: Sequence[bytes],
         *,
         taproot_data: bool = True,
+        signatures: list[tuple[bytes, bytes]] | None = None,
     ) -> ScriptErrorCode | None:
         """Run `VerifyScript` over the input with this solution.
 
         The code of the error that refuses it, `None` where it is accepted.
         Without `taproot_data` the checker is `DataFromTransaction`'s, which
-        has none and fails every signature of a taproot spend.
+        has none and fails every signature of a taproot spend. The ECDSA
+        signatures the run accepts are appended to `signatures`, as
+        `SignatureExtractorChecker` collects them, even where the input is
+        then refused.
         """
         tx, precomputed = self.tx, self.precomputed
         if not taproot_data and solver(self.spent_script)[0] == "witness_v1_taproot":
@@ -294,7 +298,14 @@ class InputSigner:
         held = txin.script_sig, txin.script_witness
         txin.script_sig, txin.script_witness = script_sig, Witness(witness)
         try:
-            verify_input(self.prevouts, tx, self.vin_i, STANDARD_FLAGS, precomputed)
+            verify_input(
+                self.prevouts,
+                tx,
+                self.vin_i,
+                STANDARD_FLAGS,
+                precomputed,
+                signatures=signatures,
+            )
         except ScriptError as error:
             return error.code
         finally:
@@ -517,10 +528,8 @@ def produce_signature(
 def data_from_transaction(signer: InputSigner) -> SignatureData:
     """Run `DataFromTransaction`: what the input already holds.
 
-    Core keeps the signatures its first `VerifyScript` accepts, through
-    `SignatureExtractorChecker`, even where it refuses the input. btclib's
-    engine offers no hook for that, so this node drops them until
-    btclib-org/btclib#2552 lands.
+    The signatures its first `VerifyScript` accepts are kept, as Core's
+    `SignatureExtractorChecker` keeps them, even where the input is refused.
 
     An input that passes the script checks is complete. Otherwise the
     scripts are read back and, of a partly signed multisig, the signatures,
@@ -530,10 +539,13 @@ def data_from_transaction(signer: InputSigner) -> SignatureData:
     data = SignatureData(
         script_sig=txin.script_sig, script_witness=txin.script_witness.stack
     )
-    if (
-        signer.verify_script(data.script_sig, data.script_witness, taproot_data=False)
-        is None
-    ):
+    accepted: list[tuple[bytes, bytes]] = []
+    code = signer.verify_script(
+        data.script_sig, data.script_witness, taproot_data=False, signatures=accepted
+    )
+    for pubkey, signature in accepted:
+        data.signatures.setdefault(hash160(pubkey), (pubkey, signature))
+    if code is None:
         data.complete = True
         return data
     script_stack = _script_sig_stack(data.script_sig)

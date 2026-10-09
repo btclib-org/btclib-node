@@ -715,7 +715,6 @@ def test_a_complete_case_passes_the_script_checks(name: str) -> None:
     assert accepted(sign_case(name)["hex"], CASES[name].script)
 
 
-@pytest.mark.xfail(raises=AssertionError, reason="btclib-org/btclib#2552")
 @pytest.mark.parametrize("name", ["p2pk", "p2pkh", "p2wsh-pubkey-hash"])
 def test_a_signature_of_a_refused_input_is_kept(name: str) -> None:
     """An extra push fails CLEANSTACK after the signature has been checked.
