@@ -4253,7 +4253,7 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
         # btclib-org/btclib-node#1375
         raise RpcError(RPCErrorCode.VERIFY_REJECTED, reason)
     try:
-        fee, vsize, weight = verify_mempool_acceptance(node, tx)
+        fee, vsize, weight, replaced = verify_mempool_acceptance(node, tx)
     except MissingPrevoutError as exc:
         # Core's own missing-inputs code, RPC_VERIFY_ERROR
         # (src/rpc/protocol.h): a transaction this node cannot verify
@@ -4283,7 +4283,9 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
     # this transaction was kept when it was not -- the same defect #277
     # fixed on the peer-to-peer path, `p2p/callbacks.py`'s `tx` handler.
     tip_height = len(node.chainstate.block_index.active_chain) - 1
-    if not node.mempool.add_tx(tx, fee, vsize, height=tip_height, weight=weight):
+    if not node.mempool.add_tx(
+        tx, fee, vsize, height=tip_height, weight=weight, replaced=replaced
+    ):
         # Not kept: `Mempool._evict_to_limit` ran
         # and took this transaction right back out when the trim reached
         # its chunk, once `Mempool.bytesize_limit` was restored -- exactly

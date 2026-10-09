@@ -33,7 +33,10 @@ from btclib_node.rpc.errors import RpcError
 from btclib_node.rpc.help import CATEGORY, HELP_TEXT
 from btclib_node.rpc.jsonrpc import transform_named_arguments
 from tests import finish
-from tests.unit.mempool_persist_test import funded  # noqa: F401  (a fixture)
+from tests.unit.mempool_persist_test import (  # noqa: F401  (a fixture)
+    funded,
+    spend,
+)
 
 if TYPE_CHECKING:
     from btclib.tx.tx import Tx
@@ -199,6 +202,24 @@ def test_importmempool_takes_what_its_options_name(
     assert mempool.delta(fan.id) == 500
     assert len(mempool.deltas) == 2
     assert mempool.unbroadcast == {fan.id}
+
+
+def test_importmempool_replaces_what_a_file_s_transaction_pays_for(
+    synced: tuple[Node, Tx],
+) -> None:
+    """Core's `LoadMempool` accepts each one as `AcceptToMemoryPool` does."""
+    node, fan = synced
+    tip = len(node.chainstate.block_index.active_chain) - 1
+    held = spend(fan, 0, 1_000)
+    node.mempool.add_tx(fan, 4_000, height=tip)
+    node.mempool.add_tx(held, 1_000, height=tip)
+    rival = spend(fan, 0, 50_000)
+    path = node.data_dir / "other.dat"
+    entries = [(rival, int(time.time()), 0)]
+    path.write_bytes(serialize_mempool(entries, {}, [], _KEY))
+    assert finish(import_mempool(node, _CONN, [str(path)])) == {}
+    assert node.mempool.contains_tx(rival)
+    assert not node.mempool.contains_tx(held)
 
 
 def test_importmempool_ends_refused_where_the_node_stops(

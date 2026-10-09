@@ -416,19 +416,12 @@ def test_a_package_refused_for_its_cluster_leaves_the_child_an_orphan(
     assert not node.mempool.was_recently_rejected(pair.child.hash)
 
 
-@pytest.mark.parametrize("child_fee", [100_000, 10_000_000])
-def test_a_package_conflicting_with_a_held_transaction_leaves_the_child_an_orphan(
+def a_package_conflicting_with_a_held_transaction(
     regtest_node: Callable[..., Node], child_fee: int
-) -> None:
-    """ISS 1782: Core's `PackageRBFChecks` answers for neither member.
+) -> tuple[Chain, Any, Tx, Tx]:
+    """Relay a held spend, then a child that also spends what it spends.
 
-    The child also spends what a held transaction spends. Where it does not
-    pay for the replacement, Core fails the package in `PackageRBFChecks`
-    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
-    with no result for either transaction, so `ProcessPackageResult` passes
-    the child its answer from alone, a missing input: it stays an orphan.
-    Where it pays, Core replaces the held transaction; this node refuses
-    it the same way, which is btclib-org/btclib-node#1334.
+    Return the pair, the peer, the held spend and the child, an orphan.
     """
     pair = a_pair(regtest_node, spare=True)
     node, peer = pair.node, a_connected_peer(pair.node)
@@ -448,6 +441,25 @@ def test_a_package_conflicting_with_a_held_transaction_leaves_the_child_an_orpha
     )
     relay(node, peer, child)
     assert node.download_manager.orphanage.have_tx(child.hash)
+    return pair, peer, held, child
+
+
+def test_a_package_conflicting_with_a_held_transaction_leaves_the_child_an_orphan(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """ISS 1782: Core's `PackageRBFChecks` answers for neither member.
+
+    The child also spends what a held transaction spends. Where the package
+    does not improve the feerate diagram, Core fails it in
+    `PackageRBFChecks` (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag) with no result for either transaction, so
+    `ProcessPackageResult` passes the child its answer from alone, a
+    missing input: it stays an orphan.
+    """
+    pair, peer, held, child = a_package_conflicting_with_a_held_transaction(
+        regtest_node, 100_000
+    )
+    node = pair.node
     relay(node, peer, pair.parent)
     assert node.mempool.size == 1
     assert node.mempool.contains_tx(held)
@@ -457,6 +469,45 @@ def test_a_package_conflicting_with_a_held_transaction_leaves_the_child_an_orpha
     assert node.mempool.was_recently_rejected_reconsiderable(
         package_hash([pair.parent.hash, child.hash])
     )
+
+
+def test_a_package_that_pays_replaces_the_held_transaction(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Core's package replacement: the pair is taken, the conflict kept aside.
+
+    What is replaced is kept for compact blocks, as Core's
+    `ProcessValidTx` keeps it.
+    """
+    pair, peer, held, child = a_package_conflicting_with_a_held_transaction(
+        regtest_node, 10_000_000
+    )
+    node = pair.node
+    relay(node, peer, pair.parent)
+    assert node.mempool.contains_tx(pair.parent)
+    assert node.mempool.contains_tx(child)
+    assert not node.mempool.contains_tx(held)
+    assert held in node.download_manager.extra_txns
+
+
+def test_a_replacement_relayed_is_taken_and_what_it_replaced_kept_aside(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Core's `ProcessValidTx` for a lone replacement."""
+    pair = a_pair(regtest_node, floor=0.0)
+    node, peer = pair.node, a_connected_peer(pair.node)
+    relay(node, peer, pair.parent)
+    assert node.mempool.contains_tx(pair.parent)
+    funding = pair.parent.vin[0].prev_out
+    rival = replace(
+        pair.parent,
+        vout=[replace(pair.parent.vout[0], value=pair.parent.vout[0].value - 5_000)],
+    )
+    assert rival.vin[0].prev_out == funding
+    relay(node, peer, rival)
+    assert node.mempool.contains_tx(rival)
+    assert not node.mempool.contains_tx(pair.parent)
+    assert pair.parent in node.download_manager.extra_txns
 
 
 def test_a_package_that_no_longer_pays_when_its_scripts_are_in_is_refused(

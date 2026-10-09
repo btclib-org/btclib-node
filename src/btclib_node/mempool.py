@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from btclib.fee import FeeRate, fee_from_vsize
 
-from btclib_node.cluster_linearize import FeeFrac
+from btclib_node.cluster_linearize import FeeFrac, compare_chunks
 from btclib_node.config import DEFAULT_INCREMENTAL_RELAY_FEERATE
 from btclib_node.constants import DEFAULT_MEMPOOL_EXPIRY_HOURS
 from btclib_node.exceptions import TxRejectedError
@@ -64,6 +64,13 @@ def _named(tx: Tx) -> str:
 # commit). btclib-org/btclib-node#1383
 _CLUSTER_LIMIT = 64
 _CLUSTER_WEIGHT_LIMIT = 101 * 1000 * 4
+
+# `MAX_REPLACEMENT_CANDIDATES` (`src/policy/rbf.h`, same commit): the most
+# clusters the conflicts of a replacement may be in, Core's rule 5
+_MAX_REPLACEMENT_CANDIDATES = 100
+
+# `ImprovesFeerateDiagram`'s refusal (`src/policy/rbf.cpp`, same commit)
+_NO_IMPROVEMENT = "insufficient feerate: does not improve feerate diagram"
 
 
 class MempoolEntry(NamedTuple):
@@ -134,6 +141,19 @@ def format_money(amount: int) -> str:
     whole, fraction = divmod(amount, _COIN)
     decimals = f"{fraction:08d}".rstrip("0").ljust(2, "0")
     return f"{whole}.{decimals}"
+
+
+def _fee_rate_text(fee: int, vsize: int) -> str:
+    """Return Core's `CFeeRate(fee, vsize).ToString()`, in BTC per kvB.
+
+    `GetFeePerK` rounds down, and C++'s `/` and `%` then split it toward
+    zero (`src/policy/feerate.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag).
+    """
+    per_k = fee * 1000 // vsize
+    sign = -1 if per_k < 0 else 1
+    whole, fraction = divmod(abs(per_k), _COIN)
+    return f"{sign * whole}.{sign * fraction:08d} BTC/kvB"
 
 
 def package_hash(wtxids: Iterable[bytes]) -> bytes:
@@ -426,6 +446,7 @@ class Mempool:
         fee: int = 0,
         vsize: int | None = None,
         weight: int | None = None,
+        replaced: Iterable[bytes] = (),
         *,
         height: int = 0,
         trim: bool = True,
@@ -436,6 +457,12 @@ class Mempool:
         With `trim` false nothing is evicted, and the caller calls `trim`
         itself once it has added what it will: Core's package submission,
         which trims once at the end.
+
+        `replaced` are the wtxids `check_replacement` answered for `tx`.
+        `replaced` follows `weight`, so a `main.MempoolAcceptance` unpacks
+        into these arguments. They are removed first, as Core's
+        `FinalizeSubpackage` removes them, so a replacement the trim then
+        takes has still replaced them.
 
         `weight` is the sigop-adjusted weight; `_weight` says what stands
         in for it where a caller has none. The clusters are relinearized
@@ -492,10 +519,11 @@ class Mempool:
         wtxid, txid = tx.hash, tx.id
         if txid in self.txid_index:
             return False
+        self._remove_replaced(replaced)
         outpoints = [(vin.prev_out.tx_id, vin.prev_out.vout) for vin in tx.vin]
         if any(outpoint in self.outpoint_spender for outpoint in outpoints):
-            # a caller that skipped `main.verify_mempool_acceptance`, whose
-            # `check_replacement` call refuses this first
+            # a conflict left out of `replaced`, by a caller that skipped
+            # `main.verify_mempool_acceptance`
             return False
         self._insert(tx, fee, vsize, height, weight)
         if entry_time is not None:
@@ -510,16 +538,21 @@ class Mempool:
         self._evict_to_limit()
 
     def add_package(
-        self, members: Sequence[tuple[Tx, int, int, int | None]], *, height: int
+        self,
+        members: Sequence[tuple[Tx, int, int, int | None]],
+        *,
+        height: int,
+        replaced: Iterable[bytes] = (),
     ) -> list[bool]:
         """Add a package's transactions, parents first, and say which stayed.
 
         `members` are `(tx, fee, vsize, weight)` of the parents and the
         child paying for them, each already refused by none of
-        `main.pre_verify_subpackage`'s checks on this very state. They are
-        added and the mempool trimmed once, as Core's `LimitMempoolSize`
-        after `SubmitPackage` does (`src/validation.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so the worst chunk
+        `main.pre_verify_subpackage`'s checks on this very state, and
+        `replaced` what `check_package_replacement` answered, which goes
+        first. They are added and the mempool trimmed once, as Core's
+        `LimitMempoolSize` after `SubmitPackage` does (`src/validation.cpp`,
+        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so the worst chunk
         goes, which is the package where it pays less than what the
         mempool holds.
 
@@ -527,6 +560,7 @@ class Mempool:
         in Core's `AcceptPackage`, which refuses only those "mempool full".
         The answer is one `bool` per member, in order.
         """
+        self._remove_replaced(replaced)
         for tx, member_fee, vsize, weight in members:
             self._insert(tx, member_fee, vsize, height, weight)
         self.graph.do_work(POST_CHANGE_COST)
@@ -713,48 +747,218 @@ class Mempool:
         conflicts = self.direct_conflicts(tx)
         return set().union(*(self._descendants(wtxid) for wtxid in conflicts))
 
-    def check_replacement(self, tx: Tx, fee: int, vsize: int) -> None:
-        """Refuse `tx` if it spends an outpoint a held transaction spends.
+    def check_replacement(
+        self,
+        tx: Tx,
+        fee: int,
+        vsize: int,
+        weight: int | None = None,
+        *,
+        sibling: bytes | None = None,
+    ) -> frozenset[bytes]:
+        """Return what `tx` replaces, or refuse it as Core does.
 
-        Core replaces the held transactions where the candidate pays for
-        them (`ReplacementChecks`, `src/validation.cpp`,
-        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag); this mempool has
-        no replacement, so every conflicting candidate is refused. Where
-        Core's `PaysForRBF` (`src/policy/rbf.cpp`, same commit) would
-        refuse it too, it is refused in the same words: "insufficient
-        fee", with a fee under the conflicts' and their descendants', or
-        an increase under the incremental relay fee for `vsize`, the
-        candidate's sigop-adjusted size (btclib-org/btclib-node#1357). A
-        candidate that pays for them, which Core may accept, is refused
-        "bip125-replacement-disallowed", Core's reason where it allows no
-        replacement; replacing is btclib-org/btclib-node#1334. Both sides of
-        the comparison are modified fees, as `PaysForRBF`'s are: `fee` is
-        what `tx` pays, and its own delta is added here.
+        Core's `ReplacementChecks` (`src/validation.cpp`, with
+        `src/policy/rbf.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        tag). The conflicts are the held spenders of what `tx` spends, and
+        `sibling`, the child of its parent that `check_truc` offers to
+        evict. What `tx` replaces is the conflicts and their descendants,
+        whatever they signal: Core has no `-mempoolfullrbf` since v29. In
+        Core's order, `tx` is refused:
+
+        1. "too many potential replacements", with conflicts in more than
+           `_MAX_REPLACEMENT_CANDIDATES` clusters (rule 5);
+        2. "insufficient fee", for a fee under what it replaces, or an
+           increase under the incremental relay fee for `vsize` (rules 3
+           and 4);
+        3. "too-large-cluster", for a cluster past Core's limits once the
+           change is made;
+        4. "replacement-failed", where the change does not make the chunk
+           feerate diagram of the clusters it touches strictly better.
+
+        With a `sibling`, the first two reasons end " (including sibling
+        eviction)". The fees are modified fees, as `PaysForRBF`'s: `fee`
+        is what `tx` pays, and its delta is added here. `vsize` is the
+        sigop-adjusted size, and `weight`, as in `add_tx`, the size it is
+        chunked by. No conflict is an empty answer.
         btclib-org/btclib-node#1244, btclib-org/btclib-node#1502
         """
-        replaced = self._replaced(tx)
-        if not replaced:
-            return
-        original = sum(self.modified_fee(wtxid) for wtxid in replaced)
+        conflicts = self.direct_conflicts(tx)
+        if sibling is not None:
+            conflicts.add(sibling)
+        if not conflicts:
+            return frozenset()
+        suffix = "" if sibling is None else " (including sibling eviction)"
+        replaced = self._all_conflicts(
+            tx.id, conflicts, "too many potential replacements" + suffix
+        )
         fee += self.delta(tx.id)
-        txid = tx.id.hex()
+        self._check_pays_for(tx.id, replaced, fee, vsize, "insufficient fee" + suffix)
+        weight = _weight(tx, vsize) if weight is None else weight
+        added = [(tx.hash, FeeFrac(fee, weight), tx.id[::-1], self._parents(tx))]
+        self._check_diagram(replaced, added, "replacement-failed", _NO_IMPROVEMENT)
+        return frozenset(replaced)
+
+    def check_package_replacement(
+        self, members: Sequence[tuple[Tx, int, int, int | None]]
+    ) -> frozenset[bytes]:
+        """Return what a package replaces, or refuse it as Core does.
+
+        Core's `PackageRBFChecks` (`src/validation.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), for `members` as
+        `add_package` takes them, against the mempool without them. Each
+        refusal is the package's, "package RBF failed: " and why: a package
+        that is not one parent and its child, a member with a held parent,
+        conflicts in too many clusters, a fee that does not pay for what it
+        replaces, a package feerate no higher than the parent's, and a
+        diagram it does not improve. A cluster past the limits is
+        "too-large-cluster". The child's txid is the one the details name.
+        No conflict is an empty answer.
+        """
+        conflicts = set().union(*(self.direct_conflicts(tx) for tx, *_ in members))
+        if not conflicts:
+            return frozenset()
+        failed = "package RBF failed: "
+        if len(members) != 2:  # noqa: PLR2004 -- Core's "1-parent-1-child"
+            raise TxRejectedError(failed + "package must be 1-parent-1-child")
+        if any(self._parents(tx) for tx, *_ in members):
+            reason = failed + "new transaction cannot have mempool ancestors"
+            raise TxRejectedError(reason)
+        (parent, parent_fee, parent_vsize, parent_weight), child_member = members
+        child, child_fee, child_vsize, child_weight = child_member
+        replaced = self._all_conflicts(
+            child.id, conflicts, failed + "too many potential replacements"
+        )
+        parent_fee += self.delta(parent.id)
+        child_fee += self.delta(child.id)
+        fee, vsize = parent_fee + child_fee, parent_vsize + child_vsize
+        reason = failed + "insufficient anti-DoS fees"
+        self._check_pays_for(child.id, replaced, fee, vsize, reason)
+        if fee * parent_vsize <= parent_fee * vsize:
+            reason = failed + "package feerate is less than or equal to parent feerate"
+            details = (
+                f"package feerate {_fee_rate_text(fee, vsize)} <= parent feerate "
+                f"is {_fee_rate_text(parent_fee, parent_vsize)}"
+            )
+            raise TxRejectedError(reason, details)
+        spent = {vin.prev_out.tx_id for vin in child.vin}
+        parent_weight = (
+            _weight(parent, parent_vsize) if parent_weight is None else parent_weight
+        )
+        child_weight = (
+            _weight(child, child_vsize) if child_weight is None else child_weight
+        )
+        added = [
+            (parent.hash, FeeFrac(parent_fee, parent_weight), parent.id[::-1], []),
+            (
+                child.hash,
+                FeeFrac(child_fee, child_weight),
+                child.id[::-1],
+                [parent.hash] if parent.id in spent else [],
+            ),
+        ]
+        self._check_diagram(replaced, added, failed + _NO_IMPROVEMENT)
+        return frozenset(replaced)
+
+    def _all_conflicts(
+        self, txid: bytes, conflicts: set[bytes], reason: str
+    ) -> set[bytes]:
+        """Return `conflicts` and their descendants, or refuse them.
+
+        Core's `GetEntriesForConflicts`: refused `reason` where `conflicts`
+        are in more than `_MAX_REPLACEMENT_CANDIDATES` clusters, `txid`
+        being the replacement's (`src/policy/rbf.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+        """
+        clusters = self.graph.count_distinct_clusters(conflicts)
+        if clusters > _MAX_REPLACEMENT_CANDIDATES:
+            details = (
+                f"rejecting replacement {txid.hex()}; too many conflicting "
+                f"clusters ({clusters} > {_MAX_REPLACEMENT_CANDIDATES})"
+            )
+            raise TxRejectedError(reason, details)
+        return set().union(*(self._descendants(wtxid) for wtxid in conflicts))
+
+    def _check_pays_for(
+        self, txid: bytes, replaced: set[bytes], fee: int, vsize: int, reason: str
+    ) -> None:
+        """Refuse `reason` a modified `fee` short of Core's `PaysForRBF`.
+
+        `fee` has to reach the modified fees of `replaced` (rule 3), and
+        exceed them by the incremental relay fee for `vsize` (rule 4), in
+        `PaysForRBF`'s words, which name `txid` (`src/policy/rbf.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+        """
+        original = sum(self.modified_fee(wtxid) for wtxid in replaced)
         if fee < original:
             details = (
-                f"rejecting replacement {txid}, less fees than conflicting txs; "
-                f"{format_money(fee)} < {format_money(original)}"
+                f"rejecting replacement {txid.hex()}, less fees than conflicting "
+                f"txs; {format_money(fee)} < {format_money(original)}"
             )
-            reason = "insufficient fee"
             raise TxRejectedError(reason, details)
         relay_fee = fee_from_vsize(vsize, self.incremental_relay_feerate)
         if fee - original < relay_fee:
             details = (
-                f"rejecting replacement {txid}, not enough additional fees to "
-                f"relay; {format_money(fee - original)} < {format_money(relay_fee)}"
+                f"rejecting replacement {txid.hex()}, not enough additional fees "
+                f"to relay; {format_money(fee - original)} < {format_money(relay_fee)}"
             )
-            reason = "insufficient fee"
             raise TxRejectedError(reason, details)
-        reason = "bip125-replacement-disallowed"
-        raise TxRejectedError(reason)
+
+    def _check_diagram(
+        self,
+        replaced: set[bytes],
+        added: list[tuple[bytes, FeeFrac, bytes, list[bytes]]],
+        reason: str,
+        details: str = "",
+    ) -> None:
+        """Refuse a change that does not improve the feerate diagram.
+
+        Core's `ImprovesFeerateDiagram` (`src/policy/rbf.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `replaced` removed and
+        `added` added, as `TxGraph.staged_diagrams` takes them, has to give
+        a diagram strictly better than the one before, or `reason` and
+        `details` refuse it. A cluster past the limits is
+        "too-large-cluster" first, Core's `CheckMemPoolPolicyLimits` with
+        the change staged.
+        """
+        diagrams = self.graph.staged_diagrams(
+            replaced, added, _CLUSTER_LIMIT, _CLUSTER_WEIGHT_LIMIT
+        )
+        if diagrams is None:
+            reason = "too-large-cluster"
+            raise TxRejectedError(reason)
+        before, after = diagrams
+        if compare_chunks(after, before) != 1:
+            raise TxRejectedError(reason, details)
+
+    def check_spends_conflicts(self, tx: Tx, sibling: bytes | None = None) -> None:
+        """Refuse `tx` if a held ancestor of it is one it conflicts with.
+
+        Core's `EntriesAndTxidsDisjoint` (`src/policy/rbf.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
+        "bad-txns-spends-conflicting-tx", over the direct conflicts and
+        `sibling`, naming the first ancestor by internal txid, the order
+        of Core's `setEntries`.
+        """
+        conflicts = {self.txids[wtxid] for wtxid in self.direct_conflicts(tx)}
+        if sibling is not None:
+            conflicts.add(self.txids[sibling])
+        if not conflicts:
+            return
+        ancestors = set().union(*(self._ancestors(p) for p in self._parents(tx)))
+        for wtxid in sorted(ancestors, key=lambda w: self.txids[w][::-1]):
+            if self.txids[wtxid] in conflicts:
+                reason = "bad-txns-spends-conflicting-tx"
+                details = (
+                    f"{tx.id.hex()} spends conflicting transaction "
+                    f"{self.txids[wtxid].hex()}"
+                )
+                raise TxRejectedError(reason, details)
+
+    def _remove_replaced(self, replaced: Iterable[bytes]) -> None:
+        """Remove what a replacement replaces, by internal txid as Core does."""
+        for wtxid in sorted(replaced, key=lambda w: self.txids[w][::-1]):
+            self._pop(wtxid)
 
     def _parents(self, tx: Tx) -> list[bytes]:
         """Return the wtxids of the held transactions `tx` spends, each once.
@@ -784,7 +988,9 @@ class Mempool:
             self._parents(tx), key=lambda wtxid: self.transactions[wtxid].id[::-1]
         )
 
-    def check_truc(self, tx: Tx, vsize: int) -> None:
+    def check_truc(
+        self, tx: Tx, vsize: int, *, sibling_eviction: bool = False
+    ) -> bytes | None:
         """Refuse `tx` if BIP431 does, "TRUC-violation" in Core's words.
 
         Core's `SingleTRUCChecks` (`src/policy/truc_policy.cpp`,
@@ -795,9 +1001,11 @@ class Mempool:
         that has no held parent of its own, is then at most 1,000 vbytes,
         and is the only child its parent has.
 
-        A second child is refused even where it pays to replace the first,
-        which Core's sibling eviction would try: this mempool replaces
-        nothing, `check_replacement`. What needs the package is
+        With `sibling_eviction`, Core's `m_allow_sibling_eviction`, a
+        second child is not refused where the parent's only other
+        descendant is a child with no other held parent: that child is
+        returned, for `check_replacement` to weigh as a conflict. Otherwise
+        the answer is `None`. What needs the package is
         `check_package_truc`'s.
         btclib-org/btclib-node#1399
         """
@@ -815,14 +1023,24 @@ class Mempool:
                 details = f"non-version=3 {who} cannot spend from version=3 {held}"
                 raise TxRejectedError(reason, details)
         if not truc:
-            return
+            return None
         if vsize > _TRUC_MAX_VSIZE:
             details = (
                 f"version=3 {who} is too big: {vsize} > {_TRUC_MAX_VSIZE} virtual bytes"
             )
             raise TxRejectedError(reason, details)
         if not parents:
-            return
+            return None
+        return self._check_single_truc_child(
+            tx, parents, vsize, sibling_eviction=sibling_eviction
+        )
+
+    def _check_single_truc_child(
+        self, tx: Tx, parents: list[bytes], vsize: int, *, sibling_eviction: bool
+    ) -> bytes | None:
+        """Refuse a version 3 `tx` with held `parents`, `check_truc`'s end."""
+        reason = "TRUC-violation"
+        who = _named(tx)
         parent = parents[0]
         if len(parents) > 1 or len(self._ancestors(parent)) > 1:
             details = f"{who} would have too many ancestors"
@@ -836,13 +1054,18 @@ class Mempool:
         # a child this candidate conflicts with is not counted: whether it
         # pays to replace it is `check_replacement`'s to say
         siblings = self._descendants(parent) - {parent}
-        if siblings and not siblings & self.direct_conflicts(tx):
-            parent_tx = self.transactions[parent]
-            details = (
-                f"tx {parent_tx.id.hex()} (wtxid={parent_tx.hash.hex()}) "
-                "would exceed descendant count limit"
-            )
-            raise TxRejectedError(reason, details)
+        if not siblings or siblings & self.direct_conflicts(tx):
+            return None
+        if sibling_eviction and len(siblings) == 1:
+            (sibling,) = siblings
+            if len(self._ancestors(sibling)) == _TRUC_ANCESTORS:
+                return sibling
+        parent_tx = self.transactions[parent]
+        details = (
+            f"tx {parent_tx.id.hex()} (wtxid={parent_tx.hash.hex()}) "
+            "would exceed descendant count limit"
+        )
+        raise TxRejectedError(reason, details)
 
     def check_package_truc(self, package: Sequence[Tx], index: int, vsize: int) -> None:
         """Refuse `package[index]` if BIP431 does of a package, as Core does.
@@ -1273,11 +1496,8 @@ class Mempool:
         an ancestor this mempool still holds unconfirmed -- a child of a
         replaceable parent is itself replaceable, its own parent being
         free to leave and be replaced by something that double-spends it
-        too. This mempool has no replacement of its own yet
-        (`check_replacement`'s own docstring, btclib-org/btclib-node#1334),
-        so this only ever answers the signal, the way Core's own
-        `getmempoolentry` does whether or not `-mempoolreplacement` is
-        set to allow acting on it.
+        too. It answers the signal alone: `check_replacement` replaces
+        what pays to be replaced, signal or not, as Core does.
         """
         return any(
             vin.sequence < _MAX_BIP125_RBF_SEQUENCE

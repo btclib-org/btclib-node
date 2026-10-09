@@ -12,13 +12,10 @@ checks scripts and changes the mempool without a lock (`ARCHITECTURE.md`).
 functions that use them. `package_test_accept` is `testmempoolaccept`'s
 judgement of several transactions, which adds none of them.
 
-Package replacement is not served, whatever Core does with the same call
-(btclib-org/btclib-node#1334): a transaction that conflicts with a held one
-is refused as `sendrawtransaction` refuses it, where Core replaces it or
-refuses the package with a "package RBF failed" message. The same holds for
-the TRUC sibling eviction, which is a replacement.
-`replaced-transactions` is therefore always empty, Core's form for a
-package that replaces nothing.
+A transaction taken alone may replace what it conflicts with, as
+`sendrawtransaction`'s does, and so may a parent and its child taken
+together (`Mempool.check_package_replacement`). `replaced-transactions`
+lists what each transaction still held at the end replaced.
 """
 
 from __future__ import annotations
@@ -79,6 +76,7 @@ class Outcome(NamedTuple):
     another witness of it instead. `effective` is the modified fee and the
     vsize its effective feerate is of, with the wtxids they are the sums
     over, where the transaction was taken, or would be, now and not before.
+    `replaced` are the txids of what taking it replaced.
     """
 
     error: Exception | None = None
@@ -86,15 +84,18 @@ class Outcome(NamedTuple):
     vsize: int = 0
     base_fee: int = 0
     effective: tuple[int, int, list[bytes]] | None = None
+    replaced: tuple[bytes, ...] = ()
 
 
-def accepted(node: Node, tx: Tx, fee: int, vsize: int) -> Outcome:
+def accepted(
+    node: Node, tx: Tx, fee: int, vsize: int, replaced: tuple[bytes, ...] = ()
+) -> Outcome:
     """Return the outcome of `tx` passing with `fee` and `vsize`.
 
     Its effective feerate is its own modified fee over its own vsize.
     """
     effective = (fee + node.mempool.delta(tx.id), vsize, [tx.hash])
-    return Outcome(vsize=vsize, base_fee=fee, effective=effective)
+    return Outcome(vsize=vsize, base_fee=fee, effective=effective, replaced=replaced)
 
 
 def submit_package(
@@ -109,6 +110,10 @@ def submit_package(
     holds each in the mempool already when it calls `BroadcastTransaction`,
     which marks only what it adds itself (`src/node/transaction.cpp`,
     at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+
+    `replaced-transactions` are the txids each transaction taken
+    replaced, by their internal bytes, as Core's `std::set<Txid>` orders
+    them (`src/rpc/mempool.cpp`, same tag).
     """
     call = _read(params)
     package_msg, outcomes = _accept(node, call)
@@ -117,12 +122,20 @@ def submit_package(
         held = mempool.get_tx(tx.id)
         if held is not None:
             node.p2p_manager.broadcast_raw_transaction(held, mempool.fees[held.hash])
+    replaced = {
+        txid
+        for outcome in outcomes.values()
+        if outcome.error is None
+        for txid in outcome.replaced
+    }
     return {
         "package_msg": package_msg,
         "tx-results": {
             tx.hash.hex(): _tx_result(tx, outcomes[tx.hash]) for tx in call.txs
         },
-        "replaced-transactions": [],
+        "replaced-transactions": [
+            txid.hex() for txid in sorted(replaced, key=lambda txid: txid[::-1])
+        ],
     }
 
 
@@ -300,6 +313,7 @@ def _accept_alone(node: Node, tx: Tx, call: _Call) -> Outcome:
     except (MissingPrevoutError, TxRejectedError) as refusal:
         return Outcome(error=refusal)
     tip_height = len(node.chainstate.block_index.active_chain) - 1
+    replaced = tuple(mempool.txids[wtxid] for wtxid in candidate.replaced)
     mempool.add_tx(
         tx,
         candidate.fee,
@@ -307,9 +321,10 @@ def _accept_alone(node: Node, tx: Tx, call: _Call) -> Outcome:
         height=tip_height,
         trim=False,
         weight=candidate.weight,
+        replaced=candidate.replaced,
     )
     track_accepted(node, tx, in_package=True)
-    return accepted(node, tx, candidate.fee, candidate.vsize)
+    return accepted(node, tx, candidate.fee, candidate.vsize, replaced)
 
 
 def _accept_together(
@@ -350,7 +365,9 @@ def _accept_together(
         (tx, candidate.fee, candidate.vsize, candidate.weight)
         for tx, candidate in zip(txs, candidates, strict=True)
     ]
-    mempool.add_package(members, height=tip_height)
+    wtxids = candidates[0].replaced
+    replaced = tuple(mempool.txids[wtxid] for wtxid in wtxids)
+    mempool.add_package(members, height=tip_height, replaced=wtxids)
     for tx in txs:
         track_accepted(node, tx, in_package=True)
     effective = (
@@ -359,7 +376,9 @@ def _accept_together(
         [tx.hash for tx in txs],
     )
     for tx, fee, vsize, _ in members:
-        outcomes[tx.hash] = Outcome(vsize=vsize, base_fee=fee, effective=effective)
+        outcomes[tx.hash] = Outcome(
+            vsize=vsize, base_fee=fee, effective=effective, replaced=replaced
+        )
     return "success"
 
 
@@ -367,13 +386,13 @@ def _package_error(refusal: Exception) -> str | None:
     """Return Core's message for a refusal of a package as a whole, or `None`.
 
     Core's `PCKG_POLICY` states (`src/validation.cpp`, same tag) name the
-    TRUC rule with its details, and the cluster limit without. A conflict
-    with a held transaction has none here: Core's is a package replacement's
-    (btclib-org/btclib-node#1334).
+    TRUC rule and a failed package replacement with their details, and the
+    cluster limit without.
     """
     reason = refusal.reason if isinstance(refusal, TxRejectedError) else ""
-    named = {"TRUC-violation": str(refusal), "too-large-cluster": reason}
-    return named.get(reason)
+    if reason == "TRUC-violation" or reason.startswith("package RBF failed: "):
+        return str(refusal)
+    return reason if reason == "too-large-cluster" else None
 
 
 def package_test_accept(

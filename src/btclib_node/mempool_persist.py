@@ -300,12 +300,18 @@ def _outcome(node: Node, tx: Tx, entry_time: int, now: int) -> str:
     mempool = node.mempool
     try:
         tx.assert_valid()
-        fee, vsize, weight = verify_mempool_acceptance(node, tx)
+        accepted = verify_mempool_acceptance(node, tx)
     except MissingPrevoutError, BTClibValueError, BTClibTypeError:
         return "failed" if mempool.get_tx(tx.id) is None else "already there"
     tip_height = len(node.chainstate.block_index.active_chain) - 1
     if not mempool.add_tx(
-        tx, fee, vsize, height=tip_height, weight=weight, entry_time=entry_time
+        tx,
+        accepted.fee,
+        accepted.vsize,
+        height=tip_height,
+        weight=accepted.weight,
+        replaced=accepted.replaced,
+        entry_time=entry_time,
     ):
         return "failed"
     # Core's `AcceptToMemoryPool` signals `TransactionAddedToMempool` as

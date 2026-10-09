@@ -652,19 +652,40 @@ def test_the_truc_rules_are_asked_before_the_package_fee_floor(node: Node) -> No
     assert answer["package_msg"].startswith("TRUC-violation, ")
 
 
-def test_a_conflict_is_asked_before_the_cluster_limit(
-    node: Node, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A conflict and a large cluster are refused for the conflict."""
+def a_rival(node: Node) -> tuple[Tx, Tx]:
+    """Hold a spend, and return it and a rival paying one satoshi less."""
     held = hold(node, funded_spends(node, 1)[0])
     rival = replace(
         held,
         lock_time=1,
         vout=[replace(held.vout[0], value=held.vout[0].value + 1)],
     )
+    return held, rival
+
+
+def test_a_package_replacement_s_fees_are_asked_before_the_cluster_limit(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A package short of what it replaces is refused for that first."""
+    _, rival = a_rival(node)
+    child = free(child_of(rival))
+    monkeypatch.setattr(mempool_module, "_CLUSTER_LIMIT", 1)
+    answer = submit(node, [rival, child])
+    assert answer["package_msg"] == (
+        "package RBF failed: insufficient anti-DoS fees, rejecting replacement "
+        f"{child.id.hex()}, less fees than conflicting txs; 0.00000999 < 0.00001"
+    )
+    assert result(answer, rival)["error"].startswith("insufficient fee, ")
+
+
+def test_a_package_replacement_past_the_cluster_limit_is_refused(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's limits with the change staged, before the diagram."""
+    _, rival = a_rival(node)
     monkeypatch.setattr(mempool_module, "_CLUSTER_LIMIT", 1)
     answer = submit(node, [rival, child_of(rival)])
-    assert answer["package_msg"] == "transaction failed"
+    assert answer["package_msg"] == "too-large-cluster"
     assert result(answer, rival)["error"].startswith("insufficient fee, ")
 
 
@@ -718,27 +739,73 @@ def test_a_script_that_fails_in_a_package_is_that_transaction_s_refusal(
     assert node.mempool.size == 0
 
 
-def test_a_conflict_is_refused_as_a_lone_transaction_is(node: Node) -> None:
-    """Package replacement is btclib-org/btclib-node#1334.
+def test_a_package_that_does_not_improve_the_diagram_is_refused(
+    node: Node,
+) -> None:
+    """Core's `PackageRBFChecks`; a lone transaction that pays replaces.
 
-    `bitcoind` v31.1 answers the pair `package RBF failed: insufficient
-    anti-DoS fees`, and each transaction as here.
+    The pair pays for the replacement, at a feerate under the conflict's.
     """
-    held = hold(node, funded_spends(node, 1)[0])
-    rival = replace(
-        held,
-        lock_time=1,
-        vout=[replace(held.vout[0], value=held.vout[0].value + 1)],
-    )
+    held, rival = a_rival(node)
     child = child_of(rival)
     answer = submit(node, [rival, child])
-    assert answer["package_msg"] == "transaction failed"
+    assert answer["package_msg"] == (
+        "package RBF failed: insufficient feerate: does not improve feerate diagram"
+    )
     assert result(answer, rival)["error"].startswith("insufficient fee, ")
     assert answer["replaced-transactions"] == []
     assert node.mempool.contains_tx(held)
-    paying = replace(held, lock_time=2, vout=[replace(held.vout[0], value=1_000)])
-    alone = submit(node, [paying])
-    assert result(alone, paying)["error"] == "bip125-replacement-disallowed"
+    payer = paying(replace(held, lock_time=2), 10 * FEE)
+    alone = submit(node, [payer])
+    assert alone["package_msg"] == "success"
+    assert alone["replaced-transactions"] == [held.id.hex()]
+    assert not node.mempool.contains_tx(held)
+    assert node.mempool.contains_tx(payer)
+
+
+def test_a_package_that_pays_replaces(node: Node) -> None:
+    """A parent short alone is taken with a child that pays for both."""
+    held, rival = a_rival(node)
+    child = paying(child_of(rival), 10 * FEE)
+    answer = submit(node, [rival, child])
+    assert answer["package_msg"] == "success"
+    assert answer["replaced-transactions"] == [held.id.hex()]
+    assert "fees" in result(answer, rival)
+    assert "fees" in result(answer, child)
+    assert not node.mempool.contains_tx(held)
+
+
+def test_replaced_transactions_are_by_internal_txid_and_none_once_trimmed(
+    node: Node,
+) -> None:
+    """Core's `std::set<Txid>`, of the transactions still held at the end."""
+    spends = funded_spends(node, 3)
+    first = hold(node, spends[0])
+    # a second txid whose internal order is not its displayed one
+    second = next(
+        tx
+        for tx in (
+            replace(spends[1], vout=[replace(spends[1].vout[0], value=value)])
+            for value in range(spends[1].vout[0].value, 0, -1)
+        )
+        if (tx.id < first.id) != (tx.id[::-1] < first.id[::-1])
+    )
+    hold(node, second)
+    coins = [first.vin[0], second.vin[0]]
+    value = first.vout[0].value + second.vout[0].value
+    both = replace(
+        spends[2], vin=coins, vout=[TxOut(value - 10 * FEE, anyone_can_spend())]
+    )
+    expected = sorted([first.id, second.id], key=lambda txid: txid[::-1])
+    node.mempool.bytesize_limit = 10**9
+    answer = submit(node, [both])
+    assert answer["replaced-transactions"] == [txid.hex() for txid in expected]
+    third = hold(node, spends[2])
+    over = paying(replace(third, lock_time=3), 10 * FEE)
+    node.mempool.bytesize_limit = 1
+    trimmed = submit(node, [over])
+    assert result(trimmed, over)["error"] == "mempool full"
+    assert trimmed["replaced-transactions"] == []
 
 
 def test_a_child_conflicting_with_a_held_transaction_is_missing_inputs(
@@ -746,9 +813,8 @@ def test_a_child_conflicting_with_a_held_transaction_is_missing_inputs(
 ) -> None:
     """ISS 1792: Core's `PackageRBFChecks` has no result for either.
 
-    Each keeps its answer from alone, the child's a missing input.
-    `bitcoind` v31.1 answers the pair `package RBF failed: insufficient
-    anti-DoS fees`; the message is btclib-org/btclib-node#1334.
+    Each keeps its answer from alone, the child's a missing input. The
+    package does not improve the feerate diagram.
     """
     first, second = funded_spends(node, 2)
     held = hold(node, first)
@@ -761,7 +827,9 @@ def test_a_child_conflicting_with_a_held_transaction_is_missing_inputs(
         vout=[replace(child.vout[0], value=child.vout[0].value + held.vout[0].value)],
     )
     answer = submit(node, [parent, child])
-    assert answer["package_msg"] == "transaction failed"
+    assert answer["package_msg"] == (
+        "package RBF failed: insufficient feerate: does not improve feerate diagram"
+    )
     assert result(answer, parent)["error"].startswith("min relay fee not met")
     assert result(answer, child)["error"] == "bad-txns-inputs-missingorspent"
     assert node.mempool.size == 1

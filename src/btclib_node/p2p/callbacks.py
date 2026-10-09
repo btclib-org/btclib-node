@@ -1225,14 +1225,18 @@ def _rejected(
         _start_package(node, conn, *package)
 
 
-def _accepted(node: Node, tx: Tx, conn: Connection) -> None:
+def _accepted(
+    node: Node, tx: Tx, conn: Connection, replaced: Sequence[Tx] = ()
+) -> None:
     """Take in that `tx` is in the mempool, and have it announced.
 
     Core's `ProcessValidTx`: the orphans that spend it are to be
-    reconsidered, and every other peer is told of it.
+    reconsidered, every other peer is told of it, and what it `replaced`
+    is kept for compact blocks (`AddToCompactExtraTransactions`).
     """
     node.download_manager.mempool_accepted_tx(tx)
     node.download_manager.received_txs.append((conn.id, tx.hash))
+    node.download_manager.extra_txns.extend(replaced)
 
 
 def _start_package(node: Node, conn: Connection, parent: Tx, child: Tx) -> None:
@@ -1350,8 +1354,14 @@ def settle_tx(node: Node, check: TxCheck, refusal: Exception | None) -> None:
     # that then asks for it getting `notfound` for its trouble.
     # btclib-org/btclib-node#277
     tip_height = len(node.chainstate.block_index.active_chain) - 1
+    replaced = _replaced_txs(node, candidate.replaced)
     if not node.mempool.add_tx(
-        tx, candidate.fee, candidate.vsize, height=tip_height, weight=candidate.weight
+        tx,
+        candidate.fee,
+        candidate.vsize,
+        height=tip_height,
+        weight=candidate.weight,
+        replaced=candidate.replaced,
     ):
         # Core's `TX_RECONSIDERABLE` "mempool full": it no longer meets the
         # minimum the eviction left, though a child may pay for it
@@ -1365,15 +1375,30 @@ def settle_tx(node: Node, check: TxCheck, refusal: Exception | None) -> None:
         # `m_last_tx_time` records for eviction (`net_processing.cpp`'s
         # `ProcessMessage`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
         conn.last_novel_tx_time = int(time.time())
-    _accepted(node, tx, conn)
+    _accepted(node, tx, conn, replaced)
+
+
+def _replaced_txs(node: Node, replaced: Iterable[bytes]) -> list[Tx]:
+    """Return the held transactions `replaced` names, by internal txid.
+
+    Core's order for them, `CTxMemPool::setEntries` (`src/txmempool.h`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    """
+    mempool = node.mempool
+    wtxids = sorted(replaced, key=lambda wtxid: mempool.txids[wtxid][::-1])
+    return [mempool.transactions[wtxid] for wtxid in wtxids]
 
 
 def _add_package(
     node: Node,
     conn: Connection,
     members: list[tuple[Tx, int, int, int | None]],
+    replaced: frozenset[bytes],
 ) -> None:
     """Add a parent and its child to the mempool, and settle each.
+
+    What the package `replaced` goes first, and is kept for compact blocks
+    with the parent's result, which carries it in Core's `SubmitPackage`.
 
     `AcceptPackage` trims once after adding, and refuses "mempool full" only
     the members the trim took (`src/validation.cpp:1748`, at
@@ -1385,7 +1410,8 @@ def _add_package(
     """
     (parent, *_), (child, *_) = members
     tip_height = len(node.chainstate.block_index.active_chain) - 1
-    held = node.mempool.add_package(members, height=tip_height)
+    replaced_txs = _replaced_txs(node, replaced)
+    held = node.mempool.add_package(members, height=tip_height, replaced=replaced)
     kept = dict(zip((parent.hash, child.hash), held, strict=True))
     for member in (parent, child):
         if kept[member.hash]:
@@ -1396,7 +1422,7 @@ def _add_package(
         )
     for member in (child, parent):
         if kept[member.hash]:
-            _accepted(node, member, conn)
+            _accepted(node, member, conn, replaced_txs if member is parent else ())
         else:
             error = BTClibValueError("mempool full")
             _rejected(node, member, error, conn, first_time=False)
@@ -1443,7 +1469,7 @@ def _settle_package(
             (tx, member.fee, member.vsize, member.weight)
             for tx, member in ((parent, candidate.parent), (child, candidate.child))
         ]
-        _add_package(node, conn, members)
+        _add_package(node, conn, members, candidate.child.replaced)
         return
     assert candidate.parent_error is not None  # noqa: S101
     errors: dict[bytes, Exception] = {

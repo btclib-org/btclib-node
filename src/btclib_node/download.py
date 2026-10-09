@@ -453,8 +453,9 @@ class DownloadManager:
         # in a million queries. `add_confirmed` fills it.
         self.recent_confirmed = RollingBloomFilter(48_000, 0.000_001)
         # Core's `vExtraTxnForCompact`: the transactions most recently
-        # refused, which `callbacks.cmpctblock` rebuilds a block from
-        # beside the mempool. `mempool_rejected_tx` fills it.
+        # refused or replaced, which `callbacks.cmpctblock` rebuilds a block
+        # from beside the mempool. `mempool_rejected_tx` and the `tx`
+        # callback's acceptance fill it.
         self.extra_txns: deque[Tx] = deque(maxlen=MAX_EXTRA_TXNS)
         # Where `callbacks.cmpctblock` queues a block among the peers it is
         # asked of: `BlockAvailability.request_order`.
@@ -994,9 +995,7 @@ class DownloadManager:
 
         A first refusal keeps `tx` in `extra_txns`, Core's
         `AddToCompactExtraTransactions`, unless `_keep_orphan` found it
-        kept already or it weighs `MAX_EXTRA_TX_WEIGHT` or more. Core also
-        keeps there what a replacement evicts, and this mempool replaces
-        nothing (btclib-org/btclib-node#1334).
+        kept already or it weighs `MAX_EXTRA_TX_WEIGHT` or more.
 
         Left out is what Core does for a witness-stripped refusal and for
         `TX_INPUTS_NOT_STANDARD`, which tell the txid apart from the wtxid
