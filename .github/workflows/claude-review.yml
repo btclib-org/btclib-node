@@ -19,9 +19,9 @@ name: claude-review
 # ceiling on concurrent jobs is the organization's, and the other
 # repositories' matrices compete for the same slots. REPOSITORY.md's
 # *Plan-gated settings* has the command that reads the plan the limit is
-# documented for. It earns the slot by being short -- it reads a diff and
-# may run the pull request's code in isolated namespaces, which the
-# called workflow sets up -- and by skipping a draft.
+# documented for. It earns the slot by being short -- it reads a diff,
+# searches the tree with Grep and has no interpreter to run the pull
+# request's code -- and by skipping a draft.
 #
 # What this tree adds to the shared review is a paragraph and the tools
 # that paragraph asks for. The called workflow checks out at depth 1, so
