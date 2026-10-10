@@ -1035,10 +1035,16 @@ def test_the_raw_mempool_verbose_table_names_each_transaction() -> None:
     verbose = get_raw_mempool(node, _CONN, [True])
     assert isinstance(verbose, dict)
     assert list(verbose) == [tx.id.hex()]
-    
+    answer = verbose[tx.id.hex()]
     entry = get_mempool_entry(node, _CONN, [tx.id.hex()])
-    assert verbose[tx.id.hex()] == entry
-    assert "size" not in verbose[tx.id.hex()]
+    # `RawJSON` compares by identity, so each fee is compared as its text
+    assert {**answer, "fees": {k: v.text for k, v in answer["fees"].items()}} == {
+        **entry,
+        "fees": {k: v.text for k, v in entry["fees"].items()},
+    }
+    # Core's sigop-adjusted `GetTxSize` (btclib-org/btclib-node#1357)
+    assert answer["vsize"] == tx.vsize + 7
+    assert "size" not in answer
 
 
 def test_mempool_sequence_attaches_the_mempool_s_own_counter() -> None:
