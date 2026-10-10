@@ -3176,12 +3176,11 @@ def test_an_oversize_tx_with_no_other_violation_answers_bad_txns_oversize() -> N
 def test_a_tx_of_24391_inputs_is_refused_as_oversize() -> None:
     """Core's "A really large transaction" is refused as `bad-txns-oversize`.
 
-    Core's functional test repeats the reference transaction's one input,
-    with an empty `scriptSig`, until the stripped size passes
-    `MAX_BLOCK_WEIGHT / WITNESS_SCALE_FACTOR`. That input count is above
-    `MAX_TX_IN_COUNT`, so the node reaches the refusal only with btclib
-    2026.10.9, whose `Tx.parse` decodes it under `check_validity=False`
-    (btclib-org/btclib#2593). btclib-org/btclib-node#1889
+    Core's functional test (`test/functional/mempool_accept.py`) repeats the
+    reference transaction's one input, with an empty `scriptSig`, until the
+    stripped size passes `MAX_BLOCK_WEIGHT / WITNESS_SCALE_FACTOR`. That count
+    is above `MAX_TX_IN_COUNT`, which `Tx.parse` does not apply under
+    `check_validity=False` (btclib-org/btclib#2593). btclib-org/btclib-node#1889
     """
     prev = TxIn(prev_out=OutPoint(b"\x11" * 32, 0), script_sig=b"", sequence=0xFFFFFFFF)
     input_size = len(prev.serialize(check_validity=False))
