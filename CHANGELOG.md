@@ -34,12 +34,6 @@ keeps whichever shape it was written in.
 
 ## v2026.10.8
 
-### `getrawmempool` verbose answers `getmempoolentry`'s object
-
-- **`getrawmempool`'s verbose response** now builds each entry using
-  `Mempool.entry(wtxid)`, matching `getmempoolentry`'s answer for the
-  same txid exactly, and dropping `size` (closes #1764).
-
 ### The redownload buffer test stops counting other threads
 
 - **`test_the_redownload_buffer_holds_headers_compressed` counts only
