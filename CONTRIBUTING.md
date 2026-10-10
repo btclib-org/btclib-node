@@ -538,7 +538,7 @@ line is shaped by C++, never a design weighed against Core's on its own
 merits. The second is a departure the maintainer decided, which
 SECURITY.md's *Where this node departs from Bitcoin Core* lists and
 argues, and which the code it changes cites. Refusing v1 by default is
-one (btclib-org/btclib-node#1190). What differs from Core in consensus or
+one (btclib-org/btclib-node#1190). Core v31.1 sets `MAX_BLOCK_WEIGHT` at line 15 of `src/consensus/consensus.h`. What differs from Core in consensus or
 in relay is a difference the network sees, so the default is not a matter
 of taste.
 
