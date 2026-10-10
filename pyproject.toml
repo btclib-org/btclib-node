@@ -72,7 +72,12 @@ dependencies = [
     # (btclib-org/btclib#2570), which `p2p/callbacks.py` imports, and with
     # `verify_input`'s `signatures` (btclib-org/btclib#2564), which
     # `signing.py` passes.
-    "btclib[secp256k1,bip324]>=2026.10.8",
+    #
+    # 2026.10.9 is the first release whose `Tx.parse` reads an input count
+    # above `MAX_TX_IN_COUNT` under `check_validity=False`, so
+    # `testmempoolaccept` answers `bad-txns-oversize` for a transaction of
+    # 24391 inputs (btclib-org/btclib#2593, btclib-org/btclib-node#1889).
+    "btclib[secp256k1,bip324]>=2026.10.9",
     # `rpc/callbacks.py` and `rpc/utxo_set.py` import from
     # `btclib_wallet.descriptors`, where btclib's own `descriptors`
     # moved (btclib-org/btclib#2129): a runtime dependency now, not the
