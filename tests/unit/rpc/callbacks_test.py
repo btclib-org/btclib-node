@@ -3173,6 +3173,35 @@ def test_an_oversize_tx_with_no_other_violation_answers_bad_txns_oversize() -> N
     assert verdict["reject-reason"] == "bad-txns-oversize"
 
 
+def test_a_tx_of_24391_inputs_is_refused_as_oversize() -> None:
+    """Core's "A really large transaction" is refused as `bad-txns-oversize`.
+
+    Core's functional test repeats the reference transaction's one input,
+    with an empty `scriptSig`, until the stripped size passes
+    `MAX_BLOCK_WEIGHT / WITNESS_SCALE_FACTOR`. That input count is above
+    `MAX_TX_IN_COUNT`, so the node reaches the refusal only with btclib
+    2026.10.9, whose `Tx.parse` decodes it under `check_validity=False`
+    (btclib-org/btclib#2593). btclib-org/btclib-node#1889
+    """
+    prev = TxIn(
+        prev_out=OutPoint(b"\x11" * 32, 0), script_sig=b"", sequence=0xFFFFFFFF
+    )
+    input_size = len(prev.serialize(check_validity=False))
+    copies = math.ceil((MAX_BLOCK_WEIGHT // 4) / input_size)
+    assert copies == 24391
+    tx = a_malformed_tx(vin=[prev] * copies)
+    raw = tx.serialize(include_witness=False, check_validity=False).hex()
+
+    with pytest.raises(RpcError) as raised:
+        send_raw_transaction(a_node(), _CONN, [raw])
+    assert raised.value.code == RPCErrorCode.VERIFY_REJECTED
+    assert raised.value.message == "bad-txns-oversize"
+
+    (verdict,) = mempool_accept(a_node(), _CONN, [[raw]])
+    assert verdict["allowed"] is False
+    assert verdict["reject-reason"] == "bad-txns-oversize"
+
+
 def test_an_unrecognized_assert_valid_message_is_not_swallowed() -> None:
     """`_reject_reason` re-raises what it does not recognize.
 
