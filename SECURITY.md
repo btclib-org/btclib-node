@@ -123,6 +123,25 @@ and the cost is peers:
 turns v1 on by itself, and `-v2transport=0 -v1transport=0` is refused at
 start.
 
+This node does not make a `wallets` directory (btclib-org/btclib-node#1523).
+Bitcoin Core's `InitConfig` makes `<datadir>/wallets` and
+`<datadir>/<chain>/wallets` with each data directory it creates, at
+bitcoin/bitcoin@9be056a8a7 (v31.1), so that a wallet enabled later does not
+mix with the other files. This node has no wallet. A data directory it made
+is opened by Core with its wallets in the top-level directory, since Core
+uses `wallets` only where it exists.
+
+The `scantxoutset` refusal "Cannot derive script without private keys" does
+not quote the descriptor, which may hold a private key. A config line that
+fails to parse, and a command-line argument refused as an invalid parameter,
+are quoted only up to the first `rpcauth`, `rpcpassword` or `rpcuser` in
+them; a misspelled name, such as `-rpcpasword=...`, is quoted whole.
+Bitcoin Core quotes all of
+these whole: `rpc/util.cpp:1370`, `GetConfigOptions` (`src/common/config.cpp`)
+and `ParseParameters` (`src/common/args.cpp:234`), at
+bitcoin/bitcoin@db0bde16b9. A refusal reaches stderr, logs and the RPC
+caller.
+
 ## Limitations, not vulnerabilities
 
 The [assurance case](./ASSURANCE_CASE.md) is the threat model these are

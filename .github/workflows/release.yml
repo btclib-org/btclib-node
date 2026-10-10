@@ -60,8 +60,9 @@ jobs:
   # The rehearsal runs this too, so a mismatch cannot wait for release day
   # to surface; only the tag comparison is release-only, there being no
   # tag to compare against otherwise.
-  # The checkout, the ancestry check, the lock check, the version and
-  # retitling comparisons and the rehearsal suffix are btclib-org/.github's:
+  # The checkout, the ancestry check, the lock check, the version check,
+  # the release-notes check on RELEASE_NOTES.md and CHANGELOG.md and the
+  # rehearsal suffix are btclib-org/.github's:
   # reusable-version-check.yml, called at @main so a fix there reaches
   # this tree in one landing (section 10 of its README.md). What stays
   # here is the `needs:` edge test and documented below place on this

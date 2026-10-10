@@ -59,6 +59,15 @@ a `bitcoin.conf` refuses to start, as `bitcoind` refuses, that file's
 settings going unread; `-allowignoredconf` starts it anyway, the refusal
 written to the log as a warning.
 
+The node also keeps `settings.json` in the chain's data directory, the
+file Bitcoin Core keeps there for the values a program sets while it
+runs. It is read at every start and written back whole, under a
+`_warning_` key. A value in it wins over `bitcoin.conf` and loses to the
+command line. `-settings=<path>` names another file, relative to the
+chain's data directory, and `-nosettings` neither reads nor writes one. A
+file that is not valid JSON, not an object, or names a key twice refuses
+the start; removing it resets the settings.
+
 On POSIX, `btclib-node` sets its umask to 0077 before it reads its
 options, as `bitcoind` does. Every directory it creates is then 0700 and
 every file 0600, the chain directory and `history.log` included, the
@@ -123,8 +132,16 @@ of every interface, at `-port` where one names no port. It turns
 `-listen` on, and `-nolisten` beside it is refused. A name is not looked
 up. `-externalip=<ip or name>[:port]`, repeatable, tells the node an
 address it is reached at, at the port of the first `-bind` that names
-one, or `-port`. The node keeps it as its own, which its automatic
+one, then that of the first `-whitebind` that does not grant `noban`,
+then `-port`. The node keeps it as its own, which its automatic
 outbound draw skips, tells its peers of it, and turns `-discover` off.
+
+`-whitebind=<[permissions@]addr>`, repeatable, listens on an address
+that has to name a port, and grants every peer that connects to it the
+permissions named, added to those `-whitelist` grants. A value naming
+none grants what `-whitelist` grants one (`download,noban,mempool,relay`
+by default). Like `-bind`, it turns `-listen` on, `-nolisten` beside it is
+refused, and it stops the node listening on every interface.
 
 ## Reading progress
 
@@ -183,33 +200,49 @@ without a whitelist even where none is set.
 
 Each mirrors the Core method of the same name: `getbestblockhash`,
 `getblockcount`, `getblockchaininfo`, `getchaintips`, `pruneblockchain`,
-`waitforblockheight`, `preciousblock`, `getblockhash`, `getblockheader`,
-`getblock`, `submitblock`, `submitheader`, `getblocktemplate`,
+`waitforblockheight`, `waitfornewblock`, `waitforblock`, `preciousblock`,
+`getblockhash`, `getblockheader`, `getblock`, `submitblock`, `submitheader`,
+`getblocktemplate`, `prioritisetransaction`, `getprioritisedtransactions`,
 `getpeerinfo`, `getconnectioncount`, `getnetworkinfo`, `getnodeaddresses`,
 `setnetworkactive`, `addnode`, `disconnectnode`, `setban`, `listbanned`,
-`clearbanned`, `getmempoolinfo`, `getmempoolentry`, `getrawmempool`,
-`getrawtransaction`, `gettxout`, `gettxoutsetinfo`,
-`decoderawtransaction`, `testmempoolaccept`, `sendrawtransaction`,
-`ping`, `getrpcinfo`, `stop`, `help`. Core's own hidden commands --
-`addconnection`, `generatetoaddress` and `generateblock` among them --
-are left off this list the same way `bitcoin-cli help`'s bare listing
-leaves them off. The `callbacks` table in
+`clearbanned`, `getmempoolinfo`, `savemempool`, `importmempool`,
+`getmempoolentry`, `getmempoolcluster`,
+`getmempoolancestors`, `getmempooldescendants`, `getrawmempool`,
+`getrawtransaction`, `gettxout`, `gettxspendingprevout`, `gettxoutsetinfo`,
+`dumptxoutset`, `scantxoutset`, `decoderawtransaction`, `testmempoolaccept`,
+`sendrawtransaction`, `submitpackage`, `signrawtransactionwithkey`,
+`combinerawtransaction`, `signmessagewithprivkey`, `verifymessage`, `estimatesmartfee`,
+`ping`, `getrpcinfo`, `stop`, `help`. Core's own hidden commands -- `addconnection`,
+`generatetoaddress`, `generateblock` and `estimaterawfee` among them -- are
+left off this list the same way `bitcoin-cli help`'s bare listing leaves them
+off. The `callbacks` table in
 `src/btclib_node/rpc/callbacks.py` is the list the node serves.
 
-A call that waits -- `waitforblockheight`, or `getblocktemplate` with a
-`longpollid` -- or searches nonces -- `generatetoaddress` and
-`generateblock` -- leaves the node serving its peers and every other call
-meanwhile, `stop` included, which ends it. As in Core, 16 such calls run
-at once and 64 more may wait for one to end; a request arriving past that
-is answered `503` "Work queue depth exceeded". Unlike Core's, these two
-numbers cannot be set.
+The mempool and the fee deltas `prioritisetransaction` sets are written
+to `mempool.dat` in the chain's data directory at shutdown and read back
+at start, each transaction checked again as a new one, in Bitcoin Core's
+format: either node reads the other's file. `-persistmempool=0` does
+neither, and `-persistmempoolv1` writes the file without its obfuscation
+key. `savemempool` writes the file at once, and `importmempool` loads
+another. A transaction held longer than `-mempoolexpiry` hours, 336 by
+default, is dropped with what spends it, and one that old in the file is
+not loaded.
+
+A call that waits -- `waitforblockheight`, `waitfornewblock`,
+`waitforblock`, or `getblocktemplate` with a `longpollid` -- or searches
+nonces -- `generatetoaddress` and `generateblock` -- leaves the node
+serving its peers and every other call meanwhile, `stop` included, which
+ends it. As in Core, 16 such calls run at once and 64 more may wait for one
+to end; a request arriving past that is answered `503` "Work queue depth
+exceeded". Unlike Core's, these two numbers cannot be set.
 
 ## What is validated, and what is not
 
 Every header's proof of work, and its retarget and median-time-past
 against its ancestors, and its version against BIP34, BIP66 and BIP65
 from their heights; a block's own structure against its difficulty
-bound, on receipt; every script and every signature in it; a coinbase
+bound, on receipt; every script and every signature in it, unless
+`-assumevalid` names it or a block above it, on Core's conditions; a coinbase
 that pays no more than subsidy plus fees and commits to its own height
 under BIP34
 ([#568](https://github.com/btclib-org/btclib-node/issues/568) and

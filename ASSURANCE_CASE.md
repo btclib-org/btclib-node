@@ -38,10 +38,12 @@ here are the ones [ARCHITECTURE](./ARCHITECTURE.md) describes.
   handlers of `p2p/callbacks.py` through a `Node`, which the property
   test leaves out. Nothing here fuzzes the `json.loads` of an RPC body.
 - **What one connection may cost this node, and how many inbound
-  connections it holds, are bounded.** A single peer cannot commit this
-  node past `MAX_QUEUED_SEND_BYTES`, a fixed sum of a block's and a
-  filter answer's own sizes (`src/btclib_node/p2p/connection.py`),
-  closed as btclib-org/btclib-node#101. Past `Config.max_connections`'s
+  connections it holds, are bounded.** A peer whose send buffer passes
+  `-maxsendbuffer` has nothing more read from it until the buffer
+  drains, as in Core, and one that stops reading is dropped by the ping
+  timeout; the comment beside `Connection.send_buffer_max_size`
+  (`src/btclib_node/p2p/connection.py`) argues what the two leave it
+  able to cost, closed as btclib-org/btclib-node#1805. Past `Config.max_connections`'s
   inbound share, `P2pManager.server` evicts an inbound peer by Core's
   own rules and closes the new one, before building anything for it,
   only where every peer held is protected. A peer from a host this node
@@ -98,17 +100,19 @@ what `P2pManager` and `RpcManager` open their listeners and connections
 through; `rocksdict` is the store; `multiprocessing` is `Node.worker_pool`
 under a GIL interpreter.
 
-`btclib_wallet` is a required dependency: `rpc/callbacks.py` takes
-`add_checksum` from its `descriptors` to write the descriptor of a
-decoded script (`_infer_descriptor`), so what it returns reaches a
+`btclib_wallet` is a required dependency: `rpc/callbacks.py` and
+`rpc/utxo_set.py` take `infer_descriptor` from its `descriptors` to write
+a script's descriptor, and `rpc/utxo_set.py` parses with its `parse` the
+descriptors a `scantxoutset` caller sends, so what it returns reaches a
 caller's answer.
 
 `ctypes` is imported by `p2p/netif.py` alone, which loads the C library
 with `CDLL(None)`, calls `getifaddrs` and reads the `ifaddrs` memory it
-returns, the standard library having no binding of it. That is a trust
-item: the C library and the layout `_IfAddrs` declares are
-trusted without a check, and what is read is this machine's own interface
-table, never a peer's.
+returns, the standard library having no binding of it. On Windows it loads
+`iphlpapi`, calls `GetAdaptersAddresses` and reads the memory it fills. That
+is a trust item: the C library, `iphlpapi` and the layouts `_IfAddrs`,
+`_Adapter` and `_UnicastAddress` declare are trusted without a check, and
+what is read is this machine's own interface table, never a peer's.
 
 `subprocess` runs an operator's `-*notify` command through the shell
 (`notify.py`).
@@ -205,16 +209,13 @@ garbage is longer than `MAX_GARBAGE_LEN`, 4095 bytes, before its
 terminator, a packet whose length field exceeds a message's largest
 contents before it decrypts the contents, and a packet that does not
 authenticate. The connection bounds what it will buffer in either
-direction — `MAX_QUEUED_RECV_BYTES` on what may sit unprocessed,
-`MAX_QUEUED_SEND_BYTES` on what this node will queue back out —
-`getdata` and `getcfilters` paced against that last bound, checked
-before every item rather than
-once a whole answer is built, and `headers` and `addr` sized into
-headroom of their own since each answers a request in one message and
-neither is frequent enough to need a pacing point, the module's own
-comment beside `MAX_QUEUED_SEND_BYTES` arguing the sizing in full
-(btclib-org/btclib-node#101). What crosses this boundary already framed
-is handed to btclib's own `Message.parse` for the codec itself.
+direction — `recv_flood_size` (`-maxreceivebuffer`) on what may sit
+unprocessed, `send_buffer_max_size` (`-maxsendbuffer`) on what this node
+may owe a peer before it reads nothing more from it — with `getdata` and
+`getcfilters` answers checked against that last bound before every item,
+the comment beside it arguing what bounds the rest. What crosses this
+boundary already framed is handed to btclib's own `Message.parse` for the
+codec itself.
 
 **The store.** `src/btclib_node/db.py` is what every index opens its
 datadir through, and it is the one place a bit flipped on disk is
@@ -231,9 +232,10 @@ CLI flag `cli.py` reads, and `bitcoin.conf` inside the datadir it names,
 are the operator's own input, not a remote party's — `cli.py`'s own
 module docstring is where each flag is named against Bitcoin Core's
 equivalent. The datadir holds the stores, `banlist.json`, `anchors.dat`,
-the log file and the RPC cookie `.cookie`; `-blocksdir` moves the block
-files, `-rpccookiefile` the cookie, and `-conf` and `-includeconf` name
-the files read for options. Beside these, `dirlock.py` creates a `.lock`
+`fee_estimates.dat`, the log file and the RPC cookie `.cookie`;
+`-blocksdir` moves the block files, `-rpccookiefile` the cookie, and
+`-conf` and `-includeconf` name the files read for options. Beside these,
+`dirlock.py` creates a `.lock`
 file in the datadir and in the blocks directory, `rpc/auth.py` writes the
 cookie through a `.tmp` file beside it, and `p2p/anchors.py` writes
 `anchors.dat` through a temporary file beside it. Nothing under `src/`
@@ -337,7 +339,7 @@ and what counters each.
   above).
 - **Uncontrolled resource consumption (CWE-400, CWE-770).**
   `MAX_HEADER_BYTES`/`MAX_BODY_BYTES` on the RPC surface,
-  `MAX_PROTOCOL_MESSAGE_LENGTH`/`MAX_QUEUED_RECV_BYTES`/`MAX_QUEUED_SEND_BYTES`
+  `MAX_PROTOCOL_MESSAGE_LENGTH`, `-maxreceivebuffer` and `-maxsendbuffer`
   and the pacing beside them on the p2p surface. SECURITY.md's
   *Limitations* states what is bounded and what is not yet.
 - **Weak randomness (CWE-330, CWE-338).** `ruff`'s flake8-bandit family,

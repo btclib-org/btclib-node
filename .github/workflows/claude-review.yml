@@ -19,26 +19,25 @@ name: claude-review
 # ceiling on concurrent jobs is the organization's, and the other
 # repositories' matrices compete for the same slots. REPOSITORY.md's
 # *Plan-gated settings* has the command that reads the plan the limit is
-# documented for. It earns the slot by being short -- it reads a diff, it
-# does not build anything -- and by skipping a draft.
+# documented for. It earns the slot by being short -- it reads a diff and
+# may run the pull request's code in isolated namespaces, which the
+# called workflow sets up -- and by skipping a draft.
 #
 # What this tree adds to the shared review is a paragraph and the tools
 # that paragraph asks for. The called workflow checks out at depth 1, so
 # the reviewer holds no history, and a review of consensus code checks
 # claims about what a rule looked like before the diff: extra-prompt
-# below says how to reach an earlier revision and extra-allowed-tools
+# below says how to reach the base's version and extra-allowed-tools
 # grants the commands it names. The two travel together -- a paragraph
 # telling a reviewer to run a command it may not run buys a refusal.
 #
 # Each grant is the read the prompt asks for and no wider: `git:*` runs
-# any command through `git -c alias.x='!cmd' x`, and `gh api:*` lets a
-# diff's prompt injection post an approval as the App. The `gh api` rule
-# ends in `*`, not `:*`, which matches `contents/` and `contents/ <args>`
-# and refuses the read itself. No rule here can refuse `--output=`
-# on `git log` and `git diff`, or `-X` after the `gh api` path.
+# any command through `git -c alias.x='!cmd' x`. No rule here can refuse
+# `--output=` on `git diff`. No `gh api` rule is granted: a
+# prefix rule cannot refuse `-X` or `--method` after the path.
 #
 # The paragraph goes where the called workflow puts every caller's,
-# between the verdict paragraph and the instruction not to run the gates.
+# between the findings paragraph and the instruction not to run the gates.
 # Nothing in it turns on the position, its subject being the checkout and
 # the tools rather than the gates, and the alternative is a second
 # insertion point in a shared prompt -- an input whose only job is to
@@ -121,17 +120,16 @@ jobs:
     with:
       extra-prompt: |
         The checkout is fetch-depth 1: it holds this one commit and
-        no history, so `git log` and `git diff` see nothing by
+        no history, so `git diff` sees nothing by
         themselves. To check a claim about what a file looked like
-        at some earlier commit, read it with `gh api
-        repos/${{ github.repository }}/contents/<path>?ref=<sha>`
-        rather than a local git command -- that answers regardless
-        of the checkout's depth. Where the check is a real range
-        rather than one file's content -- `git log` or `git diff`
-        against the base branch -- fetch it first: `git fetch origin
-        ${{ github.event.pull_request.base.ref }}`, then read the
-        range against
-        `origin/${{ github.event.pull_request.base.ref }}`.
+        before the diff, fetch the base first: `git fetch origin
+        ${{ github.event.pull_request.base.ref }}`. Then read the
+        difference with `git diff
+        origin/${{ github.event.pull_request.base.ref }} -- <path>`.
+      # Bitcoin Core's source for the review to read: the commit of the
+      # v31.1 tag, the release integration-bitcoind.yml pins and
+      # CONTRIBUTING.md's *Following Bitcoin Core* follows
+      bitcoin-core-ref: 9be056a8a72b624dae9623b2f7bded92c2a21c91
       # no leading comma: the called workflow writes the one that joins
       # this to its own list
       #
@@ -140,6 +138,5 @@ jobs:
       # which git runs, and its abbreviation `--upl`. An exact rule
       # refuses both, before or after the ref.
       extra-allowed-tools: "Bash(git fetch origin \
-        ${{ github.event.pull_request.base.ref }}),Bash(git log:*),\
-        Bash(git diff:*),Bash(gh issue view:*),\
-        Bash(gh api repos/btclib-org/btclib-node/contents/*)"
+        ${{ github.event.pull_request.base.ref }}),\
+        Bash(git diff:*),Bash(gh issue view:*)"

@@ -9,6 +9,7 @@ node goes on serving: each runs in a thread of the test's own, and an
 event set at the request's first step says it is under way.
 """
 
+import itertools
 import threading
 import time
 from typing import TYPE_CHECKING, Any
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
 
     from btclib_node import Node
 
+ZERO = "00" * 32
 ADDRESS = ScriptPubKey(anyone_can_spend(), "regtest").address
 
 # how long a test waits for a request it started, or for its first step
@@ -68,14 +70,18 @@ class Pending:
         return self.reply
 
 
-def started(monkeypatch: pytest.MonkeyPatch, name: str) -> threading.Event:
-    """Return an event set by the first step of `rpc.mining.<name>`'s job."""
+def started(
+    monkeypatch: pytest.MonkeyPatch, name: str, jobs: int = 1
+) -> threading.Event:
+    """Return an event set once `jobs` jobs of `rpc.mining.<name>` began."""
     event = threading.Event()
     build = getattr(rpc_mining, name)
+    begun = itertools.count(1)
 
-    def spy(*args: Any) -> Generator[bool, None, Any]:
-        job = build(*args)
-        event.set()
+    def spy(*args: Any, **kwargs: Any) -> Generator[bool, None, Any]:
+        job = build(*args, **kwargs)
+        if next(begun) == jobs:
+            event.set()
         return (yield from job)
 
     monkeypatch.setattr(rpc_mining, name, spy)
@@ -161,13 +167,14 @@ def test_a_search_without_end_leaves_the_node_serving_until_stop(
 def test_a_wait_and_a_long_poll_are_answered_by_a_block_mined_meanwhile(
     rpc_node: Node, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Both wait on the node's loop, and the block ends both waits."""
+    """The waits and the long poll are on the node's loop; a block ends them."""
     node = rpc_node
     wait_until_listening(node.rpc_manager)
-    waiting = started(monkeypatch, "_wait_for_height")
+    waiting = started(monkeypatch, "_wait_for_tip", 2)
     polling = started(monkeypatch, "_long_poll")
     template = call(node, "getblocktemplate", [{"rules": ["segwit"]}])["result"]
     wait = Pending(node, "waitforblockheight", [1])
+    new_block = Pending(node, "waitfornewblock", [])
     poll = Pending(
         node,
         "getblocktemplate",
@@ -179,6 +186,7 @@ def test_a_wait_and_a_long_poll_are_answered_by_a_block_mined_meanwhile(
     [mined] = call(node, "generatetoaddress", [1, ADDRESS])["result"]
 
     assert wait.result()["result"] == {"hash": mined, "height": 1}
+    assert new_block.result()["result"] == {"hash": mined, "height": 1}
     assert poll.result()["result"]["previousblockhash"] == mined
 
 
@@ -188,15 +196,18 @@ def test_stop_answers_a_wait_and_a_long_poll(
     """As Core answers them at shutdown: the tip, and `Shutting down`."""
     node = rpc_node
     wait_until_listening(node.rpc_manager)
-    waiting = started(monkeypatch, "_wait_for_height")
+    waiting = started(monkeypatch, "_wait_for_tip", 3)
     polling = started(monkeypatch, "_long_poll")
     tip = call(node, "getbestblockhash", [])["result"]
     wait = Pending(node, "waitforblockheight", [100])
+    new_block = Pending(node, "waitfornewblock", [])
+    block = Pending(node, "waitforblock", [ZERO])
     poll = Pending(node, "getblocktemplate", [{"rules": ["segwit"], "longpollid": 0}])
     assert waiting.wait(BOUND)
     assert polling.wait(BOUND)
 
     assert call(node, "stop", [])["result"] == "Btclib node stopping"
 
-    assert wait.result()["result"] == {"hash": tip, "height": 0}
+    for pending in (wait, new_block, block):
+        assert pending.result()["result"] == {"hash": tip, "height": 0}
     assert poll.result()["error"] == {"code": -9, "message": "Shutting down"}

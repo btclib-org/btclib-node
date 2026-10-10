@@ -18,6 +18,7 @@ import time
 from collections import Counter
 from collections.abc import Generator
 from dataclasses import replace
+from datetime import UTC, datetime
 from ipaddress import ip_address
 from pathlib import Path
 from types import SimpleNamespace
@@ -49,6 +50,7 @@ from btclib_node.chains import Chain, HeadersSyncParams, Main, RegTest
 from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.block_index import BlockStatus, block_time, calculate_work
 from btclib_node.chainstate.muhash import CoinStats
+from btclib_node.cluster_linearize import FeeFrac
 from btclib_node.config import DEFAULT_MAX_DATACARRIER_BYTES, DEFAULT_MIN_RELAY_FEERATE
 from btclib_node.constants import (
     MIN_BLOCKS_TO_KEEP,
@@ -62,6 +64,7 @@ from btclib_node.exceptions import (
     StoreCorruptionError,
     TxRejectedError,
 )
+from btclib_node.fee_estimator import FeeEstimator
 from btclib_node.log import Logger
 from btclib_node.main import (
     MempoolAcceptance,
@@ -268,11 +271,12 @@ def a_peer(
         ),
         stats=PeerStats(),
         block_availability=BlockAvailability(),
-        tx_announce_queue=[],
+        tx_announce_queue={},
         download_queue=[],
         feefilter=0,
         requested_hb_cmpctblocks=False,
         # what `Connection` starts every connection at
+        bip152_highbandwidth_to=False,
         addr_relay_enabled=False,
         headers_sync=None,
     )
@@ -304,7 +308,7 @@ def a_node(
     a block index answering the height of each hash in `heights` --
     nothing else these tests' own callbacks look at. `confirmed_outpoints`
     names the serialized outpoints (`OutPoint.serialize(check_validity=
-    False)`) `send_raw_transaction`'s own `_already_confirmed` reads as
+    False)`) `send_raw_transaction`'s own `already_confirmed` reads as
     already in the UTXO set; empty by default, so nothing here answers
     already confirmed. btclib-org/btclib-node#1373. `pruned` and
     `peerblockfilters` and `v2transport` are `p2p.connection.local_services`'s
@@ -328,6 +332,14 @@ def a_node(
                 # for `Mempool.add_tx`'s own `height`, and no test here
                 # asserts on the value it stores.
                 active_chain=[b"\x00" * 32],
+                # that one block, timed now and the best header: a
+                # transaction accepted here is one the fee estimator tracks
+                header_dict={
+                    b"\x00" * 32: SimpleNamespace(
+                        header=SimpleNamespace(time=datetime.now(UTC))
+                    )
+                },
+                header_index=[b"\x00" * 32],
             ),
             utxo_index=SimpleNamespace(
                 get_coin=lambda prevout: object() if prevout in confirmed else None
@@ -350,6 +362,11 @@ def a_node(
             max_datacarrier_bytes=max_datacarrier_bytes,
         ),
         warnings=Warnings(),
+        # a file that is not there: an estimator with no history
+        fee_estimator=FeeEstimator(
+            Path("/nonexistent/fee_estimates.dat"), Logger(debug=True)
+        ),
+        is_initial_block_download=False,
         active_rpc_commands=(
             active_rpc_commands if active_rpc_commands is not None else []
         ),
@@ -650,7 +667,7 @@ def test_the_fields_this_node_keeps_state_for_read_that_state() -> None:
         bytes_sent_per_msg=Counter({"version": 60, "ping": 40}),
         bytes_recv_per_msg=Counter({"verack": 24, "*other*": 176}),
     )
-    peer.tx_announce_queue = [b"\x01" * 32, b"\x02" * 32]
+    peer.tx_announce_queue = dict.fromkeys([b"\x01" * 32, b"\x02" * 32])
     peer.download_queue = [b"\x0b" * 32, b"\x0a" * 32]
     peer.feefilter = 1234
     peer.addr_relay_enabled = True
@@ -677,7 +694,7 @@ def test_a_peer_that_asked_for_no_relay_has_no_tx_relay() -> None:
     """Core's `TxRelay`-backed fields answer 0 and false for such a peer."""
     peer = a_peer(relay=False)
     peer.stats = PeerStats(last_inv_sequence=42)
-    peer.tx_announce_queue = [b"\x01" * 32]
+    peer.tx_announce_queue = dict.fromkeys([b"\x01" * 32])
     peer.feefilter = 1234
     (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
     assert info["relaytxes"] is False
@@ -725,7 +742,7 @@ def test_a_block_relay_only_peer_has_no_tx_relay_nor_addr_relay() -> None:
     """
     peer = a_peer(inbound=False, automatic=True, block_relay=True, relay=True)
     peer.stats = PeerStats(last_inv_sequence=42)
-    peer.tx_announce_queue = [b"\x01" * 32]
+    peer.tx_announce_queue = dict.fromkeys([b"\x01" * 32])
     peer.feefilter = 1234
     (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
     assert info["relaytxes"] is False
@@ -763,10 +780,15 @@ def test_the_synced_heights_are_the_peer_s_best_known_and_last_common_blocks(
     assert (info["synced_headers"], info["synced_blocks"]) == expected
 
 
-def test_the_fields_this_node_has_no_state_for_answer_core_s_value() -> None:
-    """No high-bandwidth peer chosen here."""
-    (info,) = get_peer_info(a_node({7: a_peer()}), _CONN, [])
-    assert info["bip152_hb_to"] is False
+@pytest.mark.parametrize("chosen", [False, True])
+def test_bip152_hb_to_is_whether_this_node_chose_the_peer(
+    chosen: bool,  # noqa: FBT001
+) -> None:
+    """Core's `m_bip152_highbandwidth_to`."""
+    peer = a_peer()
+    peer.bip152_highbandwidth_to = chosen
+    (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
+    assert info["bip152_hb_to"] is chosen
 
 
 @pytest.mark.parametrize(
@@ -914,11 +936,14 @@ def test_the_connection_count_includes_a_peer_still_mid_handshake() -> None:
 def test_the_mempool_reports_its_size_and_bytes() -> None:
     """`getmempoolinfo`'s size and bytes fields read the mempool's own tally.
 
-    `size` is its transaction count and `bytes` its total vsize.
+    `size` is its transaction count and `bytes` its total vsize. `loaded`
+    is whether the load of `mempool.dat` has ended.
     """
     mempool = Mempool(Logger(debug=True))
     tx = a_tx()
     mempool.add_tx(tx)
+    assert get_mempool_info(a_node(mempool=mempool), _CONN, [])["loaded"] is False
+    mempool.load_tried = True
     out = get_mempool_info(a_node(mempool=mempool), _CONN, [])
     assert out["loaded"] is True
     assert out["size"] == 1
@@ -2429,20 +2454,32 @@ def test_mempool_acceptance_reports_a_reason_for_each_refusal(
         ) -> MempoolAcceptance:
             if error is not None:
                 raise error
-            return MempoolAcceptance(0, 81)
+            return MempoolAcceptance(0, tx.vsize + 7)
 
         monkeypatch.setattr(cb, "verify_mempool_acceptance", verify)
         (result,) = mempool_accept(a_node(), _CONN, [[raw]])
         verdict = {
-            k: v for k, v in result.items() if k not in {"txid", "wtxid", "vsize"}
+            k: v
+            for k, v in result.items()
+            if k
+            not in {"txid", "wtxid", "vsize_adjusted", "vsize", "vsize_bip141", "fees"}
         }
         assert verdict == expected
         # the size verification answered, and only for an accepted one,
-        # as Core answers it (btclib-org/btclib-node#1357)
+        # as Core answers it, with the transaction's own BIP 141 size
+        # beside it (btclib-org/btclib-node#1357, btclib-org/btclib-node#1757)
+        sizes = ("vsize_adjusted", "vsize", "vsize_bip141")
         if name == "accepted":
-            assert result["vsize"] == 81
+            assert [result[k] for k in sizes] == [tx.vsize + 7, tx.vsize + 7, tx.vsize]
+            assert [k for k in result if k in sizes] == list(sizes)
+            assert set(result["fees"]) == {
+                "base",
+                "effective-feerate",
+                "effective-includes",
+            }
         else:
-            assert "vsize" not in result
+            assert not set(sizes) & result.keys()
+            assert "fees" not in result
 
 
 def test_mempool_acceptance_propagates_a_store_error_rather_than_reporting_it(
@@ -2520,7 +2557,7 @@ def test_an_array_outside_one_to_twenty_five_is_refused(count: int) -> None:
 def test_twenty_five_rawtxs_are_each_answered(monkeypatch: pytest.MonkeyPatch) -> None:
     """The bound's own edge is inside it."""
     monkeypatch.setattr(
-        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, 0)
+        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, 1)
     )
     raw = a_tx().serialize(include_witness=True).hex()
     assert len(mempool_accept(a_node(), _CONN, [[raw] * 25])) == 25
@@ -3132,6 +3169,32 @@ def test_an_oversize_tx_with_no_other_violation_answers_bad_txns_oversize() -> N
     assert verdict["reject-reason"] == "bad-txns-oversize"
 
 
+def test_a_tx_of_24391_inputs_is_refused_as_oversize() -> None:
+    """Core's "A really large transaction" is refused as `bad-txns-oversize`.
+
+    Core's functional test (`test/functional/mempool_accept.py`) repeats the
+    reference transaction's one input, with an empty `scriptSig`, until the
+    stripped size passes `MAX_BLOCK_WEIGHT / WITNESS_SCALE_FACTOR`. That count
+    is above `MAX_TX_IN_COUNT`, which `Tx.parse` does not apply under
+    `check_validity=False` (btclib-org/btclib#2593). btclib-org/btclib-node#1889
+    """
+    prev = TxIn(prev_out=OutPoint(b"\x11" * 32, 0), script_sig=b"", sequence=0xFFFFFFFF)
+    input_size = len(prev.serialize(check_validity=False))
+    copies = math.ceil((MAX_BLOCK_WEIGHT // 4) / input_size)
+    assert copies == 24391
+    tx = a_malformed_tx(vin=[prev] * copies)
+    raw = tx.serialize(include_witness=False, check_validity=False).hex()
+
+    with pytest.raises(RpcError) as raised:
+        send_raw_transaction(a_node(), _CONN, [raw])
+    assert raised.value.code == RPCErrorCode.VERIFY_REJECTED
+    assert raised.value.message == "bad-txns-oversize"
+
+    (verdict,) = mempool_accept(a_node(), _CONN, [[raw]])
+    assert verdict["allowed"] is False
+    assert verdict["reject-reason"] == "bad-txns-oversize"
+
+
 def test_an_unrecognized_assert_valid_message_is_not_swallowed() -> None:
     """`_reject_reason` re-raises what it does not recognize.
 
@@ -3214,28 +3277,18 @@ def test_a_script_with_no_key_or_destination_infers_raw(
 
 
 @pytest.mark.parametrize(
-    ("x", "on_curve"),
+    "script_hex",
     [
-        (1, True),
-        (5, False),
-        (cb._SECP256K1_P + 1, False),
+        "5120" + "00" * 31 + "05",
+        # an x at or above the field prime
+        "5120" + "ff" * 32,
     ],
 )
-def test_an_x_only_key_is_on_the_curve_when_xonlypubkey_says_so(
-    x: int, *, on_curve: bool
+def test_an_off_curve_taproot_program_is_an_address_not_rawtr(
+    script_hex: str,
 ) -> None:
-    """`_is_x_only_key` answers `XOnlyPubKey::IsFullyValid`.
-
-    1 is the x of a point (the generator's is another), 5 has no point
-    above it, and the prime plus 1, which is 1 in the field, is no
-    coordinate for all that.
-    """
-    assert cb._is_x_only_key(x.to_bytes(32, "big")) is on_curve
-
-
-def test_an_off_curve_taproot_program_is_an_address_not_rawtr() -> None:
     """A program off the curve is `addr(...)`: `rawtr` refuses it."""
-    script_bytes = bytes.fromhex("5120" + "00" * 31 + "05")
+    script_bytes = bytes.fromhex(script_hex)
     entry = cb._script_pub_key_dict(script_bytes, "regtest")
     assert entry["type"] == "witness_v1_taproot"
     assert entry["desc"] == add_checksum(f"addr({entry['address']})")
@@ -6998,7 +7051,7 @@ def test_invalidate_block_drops_a_disconnected_transaction_past_the_ten_block_ca
     connect(node, chain)
     capped = extra_blocks[0]
     child = generate_random_transaction(capped_tx.id, value=capped_tx.vout[0].value)
-    fee, vsize = verify_mempool_acceptance(node, child, bypass_limits=True)
+    fee, vsize, *_ = verify_mempool_acceptance(node, child, bypass_limits=True)
     node.mempool.add_tx(child, fee, vsize)
     assert node.mempool.contains_tx(child)
 
@@ -7057,7 +7110,7 @@ def test_invalidate_block_evicts_an_orphan_left_by_a_failed_readd(
     connect(node, chain)
     deepest = extra_blocks[0]
     c = generate_random_transaction(t.id, value=t.vout[0].value)
-    fee, vsize = verify_mempool_acceptance(node, c, bypass_limits=True)
+    fee, vsize, *_ = verify_mempool_acceptance(node, c, bypass_limits=True)
     node.mempool.add_tx(c, fee, vsize)
     assert node.mempool.contains_tx(c)
 
@@ -7086,7 +7139,7 @@ def test_invalidate_block_evicts_a_spend_of_a_disconnected_coinbase(
     common = generate_random_chain(COINBASE_MATURITY, node.chain.genesis.hash)
     connect(node, common)
     spend = generate_random_transaction(common[0].transactions[0].id)
-    fee, vsize = verify_mempool_acceptance(node, spend, bypass_limits=True)
+    fee, vsize, *_ = verify_mempool_acceptance(node, spend, bypass_limits=True)
     node.mempool.add_tx(spend, fee, vsize)
     assert node.mempool.contains_tx(spend)
 
@@ -7125,7 +7178,7 @@ def test_invalidate_block_evicts_a_mempool_transaction_a_disconnect_makes_immatu
     )
     connect(node, [extra])
     mature_spend = generate_random_transaction(common[0].transactions[0].id)
-    fee, vsize = verify_mempool_acceptance(node, mature_spend, bypass_limits=True)
+    fee, vsize, *_ = verify_mempool_acceptance(node, mature_spend, bypass_limits=True)
     node.mempool.add_tx(mature_spend, fee, vsize, height=len(common) + 1)
     assert node.mempool.contains_tx(mature_spend)
 
@@ -7992,6 +8045,8 @@ def test_test_mempool_accept_default_maxfeerate_refuses_a_high_fee(
     assert result["allowed"] is False
     assert result["reject-reason"] == "max-fee-exceeded"
     assert "vsize" not in result
+    assert "vsize_adjusted" not in result
+    assert "vsize_bip141" not in result
     assert "reject-details" not in result
 
 
@@ -8005,6 +8060,66 @@ def test_test_mempool_accept_maxfeerate_zero_accepts_any_fee(
     )
     assert result["allowed"] is True
     assert result["vsize"] == 200
+    assert result["vsize_adjusted"] == 200
+    assert result["vsize_bip141"] == a_tx().vsize
+
+
+def _fees_of(result: dict[str, Any]) -> dict[str, Any]:
+    """Return `result`'s `fees`, its amounts as the strings put on the wire."""
+    fees = result["fees"]
+    return {
+        key: value.text if isinstance(value, RawJSON) else value
+        for key, value in fees.items()
+    }
+
+
+def test_test_mempool_accept_an_allowed_tx_answers_core_s_fees(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`fees` is `base`, `effective-feerate` and its own wtxid, as Core's.
+
+    The key order and the amounts are `src/rpc/mempool.cpp`'s, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag: BTC, and the feerate in
+    BTC per kvB, rounded down. btclib-org/btclib-node#1799
+    """
+
+    def cheap(node: Any, transaction: Any) -> MempoolAcceptance:
+        return MempoolAcceptance(fee=1_001, vsize=3)
+
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", cheap)
+    tx = a_tx()
+    (result,) = mempool_accept(
+        a_node(), _CONN, [[tx.serialize(include_witness=True).hex()]]
+    )
+    assert result["allowed"] is True
+    assert list(result["fees"]) == ["base", "effective-feerate", "effective-includes"]
+    # 1001 * 1000 // 3 = 333_666 sat/kvB
+    assert _fees_of(result) == {
+        "base": "0.00001001",
+        "effective-feerate": "0.00333666",
+        "effective-includes": [tx.hash.hex()],
+    }
+
+
+def test_test_mempool_accept_the_effective_feerate_reads_the_modified_fee(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `prioritisetransaction` delta is in `effective-feerate`, not `base`."""
+
+    def cheap(node: Any, transaction: Any) -> MempoolAcceptance:
+        return MempoolAcceptance(fee=1_000, vsize=200)
+
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", cheap)
+    tx = a_tx()
+    node = a_node()
+    node.mempool.prioritise(tx.id, 500)
+    (result,) = mempool_accept(
+        node, _CONN, [[tx.serialize(include_witness=True).hex()]]
+    )
+    # (1000 + 500) * 1000 // 200 = 7_500 sat/kvB
+    fees = _fees_of(result)
+    assert fees["base"] == "0.00001000"
+    assert fees["effective-feerate"] == "0.00007500"
 
 
 def test_test_mempool_accept_a_lower_maxfeerate_still_refuses_a_cheaper_fee(
@@ -8297,6 +8412,21 @@ def test_send_raw_transaction_marks_a_kept_transaction_unbroadcast(
     assert mempool.unbroadcast == {tx.id}
 
 
+def test_send_raw_transaction_hands_a_kept_transaction_to_the_fee_estimator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Core's `TransactionAddedToMempool`, outside any package."""
+    monkeypatch.setattr(
+        cb, "verify_mempool_acceptance", lambda node, tx: MempoolAcceptance(0, 100)
+    )
+    node = a_node()
+    node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: None
+    tx = a_tx()
+
+    send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
+    assert list(node.fee_estimator.mempool_txs) == [tx.id]
+
+
 def test_getmempoolinfo_reports_the_relay_options() -> None:
     """The four fields the relay options set, in Core's units and defaults.
 
@@ -8309,6 +8439,18 @@ def test_getmempoolinfo_reports_the_relay_options() -> None:
     assert out["incrementalrelayfee"].text == "0.00000100"
     assert out["permitbaremultisig"] is True
     assert out["maxdatacarriersize"] == 100_000
+
+
+def test_getmempoolinfo_optimal_is_what_the_graph_s_work_answers() -> None:
+    """`optimal` is Core's `DoWork(0)`: false while a cluster waits for work."""
+    mempool = Mempool(Logger(debug=True))
+    assert get_mempool_info(a_node(mempool=mempool), _CONN, [])["optimal"] is True
+    mempool.graph.add_transaction(b"a", FeeFrac(1, 4), b"a")
+    mempool.graph.add_transaction(b"b", FeeFrac(9, 4), b"b")
+    mempool.graph.add_dependency(b"a", b"b")
+    assert get_mempool_info(a_node(mempool=mempool), _CONN, [])["optimal"] is False
+    mempool.graph.do_work(10**9)
+    assert get_mempool_info(a_node(mempool=mempool), _CONN, [])["optimal"] is True
 
 
 def test_getmempoolinfo_reports_the_relay_options_it_was_given() -> None:
@@ -8349,11 +8491,11 @@ def test_get_mempool_entry_refuses_a_txid_not_held() -> None:
 
 
 def test_get_mempool_entry_with_no_params_is_core_s_own_help_shape() -> None:
-    """No `txid` at all answers `RPC_MISC_ERROR` with the usage string."""
+    """No `txid` at all answers `RPC_MISC_ERROR` with the whole help."""
     with pytest.raises(RpcError) as raised:
         get_mempool_entry(a_node(), _CONN, [])
     assert raised.value.code == RPCErrorCode.MISC_ERROR
-    assert raised.value.message == 'getmempoolentry "txid"'
+    assert raised.value.message == HELP_TEXT["getmempoolentry"]
 
 
 def test_get_mempool_entry_a_non_string_txid_is_a_type_error() -> None:
@@ -8389,7 +8531,7 @@ def test_get_mempool_entry_a_txid_holding_whitespace_is_invalid_parameter() -> N
 
 
 def test_get_mempool_entry_answers_core_s_own_shape() -> None:
-    """`getmempoolentry` answers vsize, weight, fees, ancestors and descendants.
+    """`getmempoolentry` answers sizes, weight, fees, ancestors and descendants.
 
     `parent` <- `tx` <- `child`, one held entry each, `tx` in the middle
     read back. btclib-org/btclib-node#1397
@@ -8399,12 +8541,15 @@ def test_get_mempool_entry_answers_core_s_own_shape() -> None:
     tx = generate_random_transaction(parent.id)
     child = generate_random_transaction(tx.id)
     mempool.add_tx(parent, 1_000, height=100)
-    mempool.add_tx(tx, 2_000, height=100)
+    mempool.add_tx(tx, 2_000, tx.vsize + 7, height=100)
     mempool.add_tx(child, 3_000, height=100)
     node = a_node(mempool=mempool)
 
     entry = get_mempool_entry(node, _CONN, [tx.id.hex()])
-    assert entry["vsize"] == mempool.vsizes[tx.hash]
+    assert entry["vsize_adjusted"] == tx.vsize + 7
+    assert entry["vsize"] == tx.vsize + 7
+    assert entry["vsize_bip141"] == tx.vsize
+    assert list(entry)[:3] == ["vsize_adjusted", "vsize", "vsize_bip141"]
     assert entry["weight"] == tx.weight
     assert entry["height"] == 100
     assert entry["wtxid"] == tx.hash

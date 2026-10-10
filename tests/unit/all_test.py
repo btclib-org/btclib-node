@@ -38,14 +38,17 @@ if TYPE_CHECKING:
 # pass is one that was about to become public by accident.
 UNEXPORTED = {
     # the loop's own idle-wait tuning, read by nothing outside it
-    # (IDLE_SLEEP_SECONDS); STOP_TIMEOUT is read and patched in place by
-    # the shutdown tests, and P2P_INIT_ERROR and RPC_INIT_ERROR read by
-    # the start-up ones, which is the suite exercising its own module
-    # rather than a caller importing the name
+    # (IDLE_SLEEP_SECONDS); STOP_DUMP_DELAY, STOP_TIMEOUT and
+    # SIGNAL_POLL_SECONDS are read or patched by the shutdown tests, and
+    # P2P_INIT_ERROR and RPC_INIT_ERROR read by the start-up ones, which is
+    # the suite exercising its own module rather than a caller importing
+    # the name
     "btclib_node": [
         "IDLE_SLEEP_SECONDS",
         "P2P_INIT_ERROR",
         "RPC_INIT_ERROR",
+        "SIGNAL_POLL_SECONDS",
+        "STOP_DUMP_DELAY",
         "STOP_TIMEOUT",
     ],
     # called only by the four leaves' own constructors, in this module
@@ -53,8 +56,6 @@ UNEXPORTED = {
     # the module-level singleton `Config.chain`'s default already closes
     # over; nothing outside config.py reaches for the constant itself
     "btclib_node.config": ["DEFAULT_CHAIN"],
-    # download.py's per-peer in-flight bound, read only where it is defined
-    "btclib_node.download": ["MAX_BLOCKS_IN_TRANSIT_PER_PEER"],
     # finish_sync: called only from settle_at_no_candidate; update_ibd_status:
     # from that and _after_tip_change, which main.py alone calls, as it
     # alone calls settle_at_no_candidate; update_header_index:
@@ -64,12 +65,6 @@ UNEXPORTED = {
         "settle_at_no_candidate",
         "update_header_index",
         "update_ibd_status",
-    ],
-    # inputs to the one figure filter_size.py publishes, not needed on
-    # their own outside it
-    "btclib_node.p2p.filter_size": [
-        "BYTES_PER_FILTER_ELEMENT",
-        "ELEMENTS_PER_BUSY_MODERN_BLOCK",
     ],
     # type_error's own vocabulary lookup, called from nowhere else
     "btclib_node.rpc.errors": ["json_type_name"],

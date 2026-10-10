@@ -25,7 +25,8 @@ this repository carried a release path at all
 [ISS btclib-org/btclib-node#286][iss-286] carrying that decision.
 **A release's version is the date it is cut, `YYYY.M.D`, and not the
 placeholder's month with a day added**: the release sets it in the same
-pull request that retitles `CHANGELOG.md` and `RELEASE_NOTES.md`.
+pull request that writes the release's sections of `CHANGELOG.md` and
+`RELEASE_NOTES.md`.
 
 This file no longer argues from a `v0.1.0` tag. **It was deleted, with
 its release, on 2026-08-23**, on the maintainer's decision closing
@@ -202,7 +203,9 @@ step — and publishes the very files those checks passed to
 [TestPyPI](https://test.pypi.org/project/btclib-node/) instead of PyPI.
 
 1. On GitHub, Actions → release → Run workflow, and pick the branch to
-   rehearse (usually `main`).
+   rehearse (usually `main`). A release that breaks the public API is
+   rehearsed from the release pull request's branch, after its notes are
+   written, so that `public-api` reads the release's own section.
 
 1. The workflow appends `.dev<run*100+attempt>` to whatever
    `pyproject.toml` declares on the branch dispatched. Every rehearsal is
@@ -285,26 +288,30 @@ this release included.
    `.github/actions/` is one the tag is about to run, so leaving it in
    review means running the defect it fixes on the release.
 
-1. Retitle the `## Unreleased` sections of
-   [RELEASE_NOTES.md](./RELEASE_NOTES.md) and
-   [CHANGELOG.md](./CHANGELOG.md) to `## v<version>` — the heading must
-   be the version alone, and the section must not be empty.
-   `release.yml` checks both before anything is built, because PyPI never
-   accepts a version's file names twice, even once the release is deleted.
+1. Write the release's section of [RELEASE_NOTES.md](./RELEASE_NOTES.md)
+   and of [CHANGELOG.md](./CHANGELOG.md): `## v<version>`, above the
+   previous release's. The heading must be the version alone, and the
+   section must not be empty. `release.yml` checks both before anything
+   is built, because PyPI never accepts a version's file names twice,
+   even once the release is deleted.
 
-   In the same pull request, open the next cycle's `## Unreleased`
-   section in both files, above the one just retitled, with no entry
-   under it yet. That is what keeps the topmost heading of either file
-   on `main` a work-in-progress heading at every commit. Opening the
-   next cycle in a pull request of its own after this one, ahead of
-   anything else landing, is the rejected alternative: until that pull
-   request lands the topmost section of each file is the release's, so
-   a branch landing in between files its entry under a release it is
-   not in, and nothing reports it, the release commit having touched
-   only the heading. `release.yml`'s check reads the `## v<version>` section
-   alone, so an `## Unreleased` above it is nothing it sees, and it is
-   not what the release publishes: the notes are lifted from the
-   section whose heading is the tag's own.
+   The changelog's section is written from the squash subjects since the
+   previous tag, grouped and shortened:
+
+   ```shell
+   tag=v<previous version>
+   ```
+
+   ```shell
+   git log "${tag:?}"..HEAD --format=%s
+   ```
+
+   The release notes take what a user has to act on. No other pull
+   request adds an entry, so no `## Unreleased` is opened afterwards.
+
+   An `## Unreleased` section, where one remains, predates that rule:
+   this pull request folds what it holds into the release's section and
+   deletes the heading.
 
 1. Set the version in `pyproject.toml`, which is the one place it is
    declared, to the date the release is cut, `YYYY.M.D`, and re-lock so
@@ -324,67 +331,14 @@ this release included.
    PyPI never accepts that version's file names again, even once the
    release is deleted.
 
-   **If `main` moves while the gates run, the default is to throw the
-   branch away and redo these edits on top of it, and never to merge
-   `main` into it.**
-
-   The reset takes this release's edits away with it, so what follows is
-   making them again on the new base: retitle, set the version, `uv lock`,
-   and gate again.
-
-   ```shell
-   git fetch origin
-   git reset --hard origin/main
-   ```
-
-   **A rebase is allowed where it is checked, and the check is the redo
-   itself, done in a scratch file.** Rebuild what the redo would have
-   produced, from `git show` rather than from the working tree, and
-   compare it byte for byte against what the rebase left:
-
-   ```shell
-   version=<the version being released>
-   ```
-
-   ```shell
-   : "${version:?}" &&
-   git rebase origin/main &&
-   scratch=$(mktemp -d) &&
-   git show origin/main:CHANGELOG.md > "$scratch/expected.md"
-   ```
-
-   Apply this release's own edits to `$scratch/expected.md` by hand:
-   retitle `## Unreleased` to `## v<version>`, open the next
-   `## Unreleased` above it, and whatever the intro needs. That step is
-   a person's, so it ends the chain rather than sitting inside it, and
-   what follows is a fence of its own, whose `cmp` prints nothing where
-   it passes:
-
-   ```shell
-   git show HEAD:CHANGELOG.md > "${scratch:?}/actual.md" &&
-   cmp "${scratch:?}/expected.md" "${scratch:?}/actual.md"
-   ```
-
-   and the same pair, in a `scratch=$(mktemp -d)` of its own, for
-   `RELEASE_NOTES.md`: a fixed name is a name a second run of this
-   same step, or a second person on the same machine, can silently
-   overwrite or read back stale. Identical bytes are a proof the
-   rebase produced what the redo would have; a difference is both the
-   defect and, in `$scratch/expected.md`, the file that should have
-   been there. `v2026.8.27` was rebased when #551 landed in front of
-   the tag, and this is what licensed it.
-
 1. Give the release pull request its title and its body, before merging
    it and not after. The title is the version; the body says what the
    release is — what moved, what did not, and which of the two a user
    would notice. A squash leaves one commit whose message is that title,
    so the pull request is where the rest stays.
 
-   The section of `RELEASE_NOTES.md` the retitle step renamed is what
-   that body is written from. Check it against
-   `git log v<previous version>..main --oneline` regardless of how
-   current it looks, rather than trust that every line landed when it
-   should have.
+   The section of `RELEASE_NOTES.md` this pull request wrote is what
+   that body is written from.
 
 1. Run `uv run pre-commit run --all-files` and `uv run pytest` before
    pressing anything, then
@@ -397,6 +351,26 @@ this release included.
    the same build `docs.yml` runs on every pull request and `release.yml`
    runs again on the tag, `-W`, `-n` and all — checked here too, ahead of
    a tag, rather than trusted to a run this step already duplicates.
+
+   **If `main` moves while the gates run, never merge `main` into the
+   branch.** A rebase would apply cleanly, but the release's section would
+   miss what `main` just landed. Reset the branch to the new `main`:
+
+   ```shell
+   git fetch origin
+   git reset --hard origin/main
+   ```
+
+   then make the sections, the version and the pull request's body again,
+   as above, and gate again. The branch then goes up with
+   `git push --force-with-lease`.
+
+1. Run the dependents' suites with this release in place of its PyPI
+   version: `btclib-node` has none, so there is nothing to run.
+   Section 12 of the
+   [organization standard](https://github.com/btclib-org/.github#12-releasing)
+   has the rule and the loop that derives the dependents; re-derive
+   them before each release rather than carry this answer.
 
 1. Merge it the way every other pull request here lands: once somebody
    other than its author has approved the head and the checks are in,
@@ -442,6 +416,19 @@ this release included.
    `git show` above is the same check one step earlier, where it costs
    nothing, and the chain is what makes it binding — `grep` fails where
    the line is not there, and the push below it does not run.
+
+1. Read the tag's signature back from the API, now that it is pushed. It
+   answers `true`: an unsigned annotated tag answers `false`, and a
+   lightweight tag answers 404 at the second call. `version` is the one
+   set above:
+
+   ```shell
+   tagsha=$(gh api \
+     repos/btclib-org/btclib-node/git/refs/tags/"v${version:?}" \
+     --jq '.object.sha') &&
+   gh api repos/btclib-org/btclib-node/git/tags/"${tagsha:?}" \
+     --jq '.verification.verified'
+   ```
 
 1. Approve the `pypi` environment when the workflow asks. Up to here
    nothing is public and the tag can still be deleted; the upload that
@@ -666,13 +653,10 @@ this release included.
    uv lock
    ```
 
-   The `## Unreleased` sections of `RELEASE_NOTES.md` and `CHANGELOG.md`
-   are already there, the retitle step above having opened them in the
-   release's own pull request. What stays here is the version, which
-   cannot move earlier with them: `version-check` compares the tag
-   against what `pyproject.toml` declares, so a tree already bumped
-   would offer it the next cycle's month instead of the version being
-   released.
+   The next cycle's version is not set in the release's own pull
+   request: `version-check` compares the tag against what
+   `pyproject.toml` declares, so a tree already bumped would offer it the
+   next cycle's month instead of the version being released.
 
 ## Rebuild a release from its tag
 

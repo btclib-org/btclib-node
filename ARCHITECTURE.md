@@ -14,8 +14,9 @@ expectations hold is the [assurance case](./ASSURANCE_CASE.md).
 `Node` (`src/btclib_node/__init__.py`) is a thread running one loop: it
 drains the handshake queue, then a share of the RPC queue and a share of
 the peer-to-peer queue, steps the RPC requests still waiting, moves the
-script checks of relayed transactions along, then steps the download
-manager and extends the chain. A message that raises is logged and the
+script checks of relayed transactions along, loads the next transaction
+of `mempool.dat` while that load lasts, then steps the download manager
+and extends the chain. A message that raises is logged and the
 loop continues; a failure in the download manager's step or in
 `update_chain` is logged and ends the node, the databases below being
 closed on the way out.
@@ -26,6 +27,9 @@ closed on the way out.
   manager, the address book and the message handlers the loop calls.
 - `src/btclib_node/rpc/` is the JSON-RPC surface, on the same shape of
   manager and handler.
+
+A peer's messages are handled in the order received. `_hold_message`
+(`src/btclib_node/p2p/main.py`) says what makes the later ones wait.
 
 `P2pManager` and `RpcManager` are each a thread of their own, running an
 asyncio loop, and a coroutine enters that loop only through
@@ -45,6 +49,9 @@ book above, is not so lucky: `add_active_address` arrives from the
 gossip on one thread, a DNS answer on the other. It carries two locks
 for that reason, one per table, taken separately and never nested, and
 a third, taken first, that a move between the tables holds throughout.
+
+`FeeEstimator` (`src/btclib_node/fee_estimator.py`) is reached from
+`Node`'s thread alone, so it carries no lock.
 
 While `Node.load` opens the stores, `Node`'s thread reads no queue.
 `RpcManager` is then in warmup: `RpcConnection.run` answers each request
@@ -66,6 +73,27 @@ chainstate and opens a cursor over the stored coins, whose view RocksDB
 fixes there; a thread of the call's own hashes them, reading no state of
 `Node`'s but `terminate_flag`, and the call is a generator waiting for
 it, as the others are. `stop` ends the scan at its next coin.
+
+`dumptxoutset` is not: it writes the snapshot on `Node`'s thread, a step of
+coins at a time. A rollback dump invalidates the block after its target,
+writes, and reconsiders it, with the network off meanwhile. The invalidate
+and the reconsider run without yielding, so a deep rollback holds `Node`'s
+loop, where Core does it on an HTTP worker thread.
+
+`scantxoutset` is not either: it walks the same cursor on `Node`'s thread,
+a step of coins at a time, and yields between steps. `status` and `abort` are
+served between two steps, so the scan's state needs no lock.
+
+`importmempool` and the load of `mempool.dat` at start run on `Node`'s thread
+a transaction at a time, the file read as they go. Core reads with a blocking
+`fread`, on an HTTP worker for `importmempool` and on its `initload` thread at
+start; here only a regular file is read, a pipe or a device being refused
+before any read, as a read of one would hold the loop.
+A step holds the loop for one transaction, or the file's header or tail, and
+for a read from a slow file system.
+
+A `cmpctblock` holds `Node`'s loop while it is rebuilt: the short id of
+every mempool transaction is hashed there without yielding.
 
 ## The transport
 
@@ -102,18 +130,21 @@ the consensus rules `btclib.script.engine` implements, fanned out across
 under a free-threaded one, one script check per worker. The rules
 themselves, and the objects they run against — a `Tx`, a `Block`, a
 script — are btclib's; what is here is the dispatch across workers and
-the chain state a verdict is checked against.
+the chain state a verdict is checked against. `-assumevalid` skips a
+block's script checks, and only those, under Core's conditions.
 
 A transaction a peer relays has its scripts checked on `Node.worker_pool`
-too, one transaction at a time, so the loop goes on serving every peer
-while they run (`src/btclib_node/p2p/tx_checks.py`). `Node`'s thread runs
+too, one candidate at a time (a transaction, or a parent with its child),
+so the loop goes on serving other peers while they run, the sending
+peer's later messages waiting for the verdict and for any orphan it is to
+reconsider (`src/btclib_node/p2p/tx_checks.py`). `Node`'s thread runs
 every other check first, and applies the verdict once it is in, after
 running those checks again against the chain and the mempool as they
-are then. The worker reads only the transaction and its prevouts; the
+are then. The worker reads only the transactions and their prevouts; the
 queue of candidates, the mempool and the chain state stay on `Node`'s
-thread. `sendrawtransaction`, `testmempoolaccept` and the transactions a
-reorg puts back in the mempool are checked on `Node`'s thread, scripts
-included.
+thread. `sendrawtransaction`, `submitpackage`, `testmempoolaccept`, the
+transactions a reorg puts back in the mempool and those `mempool.dat`
+loads are checked on `Node`'s thread, scripts included.
 
 ## What is delegated, and what is not
 

@@ -12,7 +12,7 @@ already built, or a network's name, into the `Chain` a `Config` carries.
 `split_host_port` and `lookup_host_port` split a "host[:port]": the first
 is `-rpcbind`'s, the second a peer's. `lookup_service`, `parse_bind` and
 `listen_port` read an address Core's `Lookup` reads, for `-externalip`
-and `-bind`.
+and `-bind`, `parse_whitebind` that of `-whitebind`.
 `get_path_arg` is `cli.py`'s reader of `-datadir`, `-conf` and
 `-blocksdir`. All of these are public here because other modules read
 them.
@@ -43,9 +43,16 @@ from typing import TYPE_CHECKING
 from btclib.fee import FeeRate
 
 from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet, TestNet4
-from btclib_node.constants import MAX_TIP_AGE, default_data_dir
+from btclib_node.constants import (
+    DEFAULT_MAXRECEIVEBUFFER,
+    DEFAULT_MAXSENDBUFFER,
+    DEFAULT_MEMPOOL_EXPIRY_HOURS,
+    MAX_TIP_AGE,
+    default_data_dir,
+)
 from btclib_node.exceptions import InvalidChainTypeError, UnknownChainError
 from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME, Host, lookup_host
+from btclib_node.p2p.permissions import NetPermissionFlags, parse_whitebind_permissions
 from btclib_node.rpc.auth import (
     COOKIE_FILE,
     RpcAuthEntry,
@@ -66,6 +73,7 @@ __all__ = [
     "DEFAULT_MIN_RELAY_FEERATE",
     "BindAddress",
     "Config",
+    "WhitebindAddress",
     "default_onion_bind",
     "get_path_arg",
     "listen_port",
@@ -73,6 +81,7 @@ __all__ = [
     "lookup_service",
     "onion_port",
     "parse_bind",
+    "parse_whitebind",
     "service_text",
     "split_host_port",
 ]
@@ -281,29 +290,68 @@ def parse_bind(arg: str, default_port: int) -> BindAddress:
     return BindAddress(*service, onion)
 
 
-def listen_port(bind: Sequence[str], default_port: int) -> int:
+@dataclass(frozen=True)
+class WhitebindAddress:
+    """One `-whitebind` value: where to listen, and what its peers hold."""
+
+    host: Host
+    port: int
+    flags: NetPermissionFlags
+
+
+def parse_whitebind(arg: str) -> WhitebindAddress:
+    """Return the address and permissions `-whitebind=<arg>` names.
+
+    `NetWhitebindPermissions::TryParse` (`src/net_permissions.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a numeric address, which
+    has to name a port. Raises `ValueError` in Core's words.
+    """
+    flags, spec = parse_whitebind_permissions(arg)
+    service = lookup_service(spec, 0)
+    if service is None:
+        err_msg = f"Cannot resolve -whitebind address: '{spec}'"
+        raise ValueError(err_msg)
+    if service[1] == 0:
+        err_msg = f"Need to specify a port with -whitebind: '{spec}'"
+        raise ValueError(err_msg)
+    return WhitebindAddress(*service, flags)
+
+
+def listen_port(
+    bind: Sequence[str], whitebind: Sequence[str], default_port: int
+) -> int:
     """Return the port this node is said to listen on, as `GetListenPort` does.
 
     `GetListenPort` (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag) is the port of the first `-bind` that names one, and
-    `default_port` otherwise. An `=onion` value resolves to nothing there,
-    and so is passed over.
+    v31.1 tag) is the port of the first `-bind` that names one, then that
+    of the first `-whitebind` that grants no `noban`, and `default_port`
+    otherwise. A `-whitebind` naming no permission is not one that grants
+    `noban`: it is granted it later. An `=onion` value resolves to nothing
+    there, and so is passed over, as is a `-whitebind` Core refuses.
     """
     for value in bind:
         service = lookup_service(value, 0)
         if service is not None and service[1] != 0:
             return service[1]
+    for value in whitebind:
+        try:
+            address = parse_whitebind(value)
+        except ValueError:
+            continue
+        if NetPermissionFlags.NO_BAN not in address.flags:
+            return address.port
     return default_port
 
 
-def _refuse_bind_without_listen(bind: Sequence[str], *, listen: bool) -> None:
-    """Refuse a `-bind` beside `-listen=0`, in the words of Core's refusal.
+def _refuse_bind_without_listen(
+    bind: Sequence[str], whitebind: Sequence[str], *, listen: bool
+) -> None:
+    """Refuse a `-bind` or `-whitebind` beside `-listen=0`, in Core's words.
 
     `AppInitParameterInteraction` (`src/init.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), whose words name
-    `-whitebind` too.
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
     """
-    if bind and not listen:
+    if (bind or whitebind) and not listen:
         err_msg = "Cannot set -bind or -whitebind together with -listen=0"
         raise ValueError(err_msg)
 
@@ -594,6 +642,18 @@ class Config:
     permit_bare_multisig: bool
     max_datacarrier_bytes: int | None
     require_standard: bool
+    # Core's own `-persistmempool`, `DEFAULT_PERSIST_MEMPOOL` true, and
+    # `-persistmempoolv1`, `DEFAULT_PERSIST_V1_DAT` false
+    # (`src/node/mempool_persist_args.h` and `src/kernel/mempool_options.h`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): whether `Node` loads
+    # `mempool.dat` at start and writes it at shutdown, and whether it
+    # writes version 1, with no obfuscation key (`mempool_persist`).
+    persist_mempool: bool
+    persist_mempool_v1: bool
+    # Core's own `-mempoolexpiry`, `MemPoolOptions::expiry`, in seconds: a
+    # held transaction older than that is removed (`Mempool.expire`), and
+    # one of `mempool.dat` that old is not loaded (`mempool_persist`)
+    mempool_expiry: int
     # Core's own `-minimumchainwork`: the chain work below which
     # `main.update_ibd_status` and the `getheaders` handler in
     # `p2p.callbacks` treat the active tip as not caught up, and below
@@ -609,7 +669,8 @@ class Config:
     # Core's own `-assumevalid`: the hash of a block whose ancestors
     # script verification may skip, `None` where it is off (`0`,
     # `-noassumevalid`, or not given: Core's default per network is not
-    # read yet, btclib-org/btclib-node#1576). Nothing reads it yet.
+    # read yet, btclib-org/btclib-node#1576). `main.script_check_reason`
+    # reads it.
     assume_valid: bytes | None
     # Core's own `-maxtipage`, in seconds rather than as a `timedelta`
     # for the same reason `ban_time` above is an `int`: the value is an
@@ -620,6 +681,9 @@ class Config:
     # a tip's age against this, in seconds, rather than building a
     # `timedelta` from it.
     max_tip_age: int
+    # Core's own `-acceptstalefeeestimates`: read `fee_estimates.dat`
+    # however old it is, on regtest alone (`FeeEstimator`)
+    accept_stale_fee_estimates: bool
     # (host, port) pairs, split by `_split_peers` above, host unresolved:
     # Core's own `-connect`, which dials these alone and turns off DNS
     # seeding and
@@ -692,8 +756,13 @@ class Config:
     # and `parse_bind` reads each. With any, `P2pManager` binds those
     # and not every interface (`bind_on_any`, `src/init.cpp`, at
     # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Core refuses one beside
-    # `-listen=0`, and its `-whitebind` is not read here.
+    # `-listen=0`.
     bind: tuple[str, ...]
+    # Core's own `-whitebind` values, as given: `cli` refuses a malformed
+    # one and `parse_whitebind` reads each. `P2pManager` binds each beside
+    # `bind`'s, grants its peers what it names, and counts it as a `-bind`
+    # for `bind_on_any`. Core refuses one beside `-listen=0`.
+    whitebind: tuple[str, ...]
     # Core's own `-externalip` values, each an address `lookup_service`
     # reads without a lookup: `cli` resolves a name before it gets here.
     # `P2pManager` records each as a local address, as `AddLocal` at
@@ -713,7 +782,8 @@ class Config:
     # itself goes on to succeed, as Core's `Discover()`
     # (`src/net.cpp:3376-3384`, same sha) does: `AppInitMain` calls it
     # off `bind_on_any` (`src/init.cpp:2163`, same sha), never off
-    # `fListen`, so `P2pManager` calls it unless `bind` above is given.
+    # `fListen`, so `P2pManager` calls it unless `bind` or `whitebind`
+    # above is given.
     discover: bool
     # Core's own `-peerblockfilters`: whether `NODE_COMPACT_FILTERS` is
     # advertised in `version` and whether a BIP157 request is answered
@@ -765,6 +835,12 @@ class Config:
     # Core's own `-bantime`: how long a `setban` ban lasts, in seconds,
     # where the call names no length. `Node` hands it to its `BanMan`.
     ban_time: int
+    # Core's `nSendBufferMaxSize` and `nReceiveFloodSize`, `-maxsendbuffer`
+    # and `-maxreceivebuffer` in bytes: the bounds a `Connection`
+    # (`p2p/connection.py`) holds a peer's messages past and stops reading
+    # past.
+    send_buffer_max_size: int
+    receive_flood_size: int
     # Core's own `-blocknotify`: the command `main._after_tip_change` runs
     # through the shell each time a fork commits outside initial block
     # download, `%s` replaced by the new tip's hash
@@ -838,14 +914,19 @@ class Config:
         permit_bare_multisig: bool = True,
         max_datacarrier_bytes: int | None = DEFAULT_MAX_DATACARRIER_BYTES,
         require_standard: bool = True,
+        persist_mempool: bool = True,
+        persist_mempool_v1: bool = False,
+        mempool_expiry: int = DEFAULT_MEMPOOL_EXPIRY_HOURS * 3600,
         minimum_chain_work: int | None = None,
         assume_valid: bytes | None = None,
         max_tip_age: int = DEFAULT_MAX_TIP_AGE,
+        accept_stale_fee_estimates: bool = False,
         connect: Sequence[str] = (),
         addnode: Sequence[str] = (),
         seednode: Sequence[str] = (),
         listen: bool = True,
         bind: Sequence[str] = (),
+        whitebind: Sequence[str] = (),
         externalip: Sequence[str] = (),
         discover: bool | None = None,
         peerblockfilters: bool = False,
@@ -856,6 +937,8 @@ class Config:
         forcednsseed: bool = False,
         fixed_seeds: bool = True,
         ban_time: int = DEFAULT_MISBEHAVING_BANTIME,
+        send_buffer_max_size: int = 1000 * DEFAULT_MAXSENDBUFFER,
+        receive_flood_size: int = 1000 * DEFAULT_MAXRECEIVEBUFFER,
         block_notify: str = "",
         startup_notify: str = "",
         shutdown_notify: Sequence[str] = (),
@@ -881,6 +964,7 @@ class Config:
         )
         self.assume_valid = assume_valid
         self.max_tip_age = max_tip_age
+        self.accept_stale_fee_estimates = accept_stale_fee_estimates
 
         data_dir = Path(data_dir) if data_dir else default_data_dir()
         self.data_dir = data_dir.absolute() / self.chain.name
@@ -921,6 +1005,7 @@ class Config:
         self.seednode_args = tuple(seednode)
         self.listen = listen
         self.bind = tuple(bind)
+        self.whitebind = tuple(whitebind)
         self.externalip = tuple(externalip)
         self.discover = (
             self.listen and not self.externalip if discover is None else discover
@@ -941,7 +1026,7 @@ class Config:
         )
         self.forcednsseed = forcednsseed
 
-        _refuse_bind_without_listen(self.bind, listen=self.listen)
+        _refuse_bind_without_listen(self.bind, self.whitebind, listen=self.listen)
 
         if max_connections < 0:
             # Core's own wording (`AppInitParameterInteraction`, same
@@ -951,6 +1036,8 @@ class Config:
         self.max_connections = max_connections
         self.fixed_seeds = fixed_seeds
         self.ban_time = ban_time
+        self.send_buffer_max_size = send_buffer_max_size
+        self.receive_flood_size = receive_flood_size
         self.block_notify = block_notify
         self.startup_notify = startup_notify
         self.shutdown_notify = tuple(shutdown_notify)
@@ -1024,3 +1111,6 @@ class Config:
         self.permit_bare_multisig = permit_bare_multisig
         self.max_datacarrier_bytes = max_datacarrier_bytes
         self.require_standard = require_standard
+        self.persist_mempool = persist_mempool
+        self.persist_mempool_v1 = persist_mempool_v1
+        self.mempool_expiry = mempool_expiry

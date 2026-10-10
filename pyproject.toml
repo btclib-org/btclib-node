@@ -61,19 +61,46 @@ dependencies = [
     # first release carrying `btclib.p2p.bip324`, which
     # `p2p/v2transport.py` imports (issue #1190).
     #
-    # The floor is 2026.10.5, the release fixing GHSA-9r97-9x22-2pp4 and
-    # GHSA-rw95-w37r-537w. 2026.10.4 fixed GHSA-9fr5-46w5-5f9r.
-    "btclib[secp256k1,bip324]>=2026.10.5",
-    # `rpc/callbacks.py` imports `add_checksum` from
+    # 2026.10.5 fixed GHSA-9r97-9x22-2pp4 and GHSA-rw95-w37r-537w.
+    # 2026.10.4 fixed GHSA-9fr5-46w5-5f9r.
+    #
+    # 2026.10.7 is the first release with `btclib.compressor`, which
+    # `dumptxoutset` reads (btclib-org/btclib#2558), and `btclib.obfuscation`
+    # (btclib-org/btclib#2559), which `mempool_persist.py` imports.
+    #
+    # 2026.10.8 is the first release with `ShortIdCollisionError`
+    # (btclib-org/btclib#2570), which `p2p/callbacks.py` imports, and with
+    # `verify_input`'s `signatures` (btclib-org/btclib#2564), which
+    # `signing.py` passes.
+    #
+    # 2026.10.9 is the first release whose `Tx.parse` reads an input count
+    # above `MAX_TX_IN_COUNT` under `check_validity=False`, so
+    # `testmempoolaccept` answers `bad-txns-oversize` for a transaction of
+    # 24391 inputs (btclib-org/btclib#2593, btclib-org/btclib-node#1889).
+    "btclib[secp256k1,bip324]>=2026.10.9",
+    # `rpc/callbacks.py` and `rpc/utxo_set.py` import from
     # `btclib_wallet.descriptors`, where btclib's own `descriptors`
     # moved (btclib-org/btclib#2129): a runtime dependency now, not the
     # `test` group's own it used to be, carried there only for
     # `BitcoinCoreFetcher` (btclib-org/btclib-node#1181,
     # btclib-org/btclib-node#1508).
     #
-    # The floor is 2026.10.4, the first release whose `parse` refuses a
-    # key of another network, which `rpc/mining.py` relies on.
-    "btclib-wallet>=2026.10.4",
+    # The floor is 2026.10.8, the release fixing GHSA-62jf-v327-86h5:
+    # 2026.10.7 quotes a private key in a refusal that `scantxoutset`
+    # answers with.
+    # 2026.10.7 is the first release carrying `infer_descriptor` and
+    # `Provider`, which `rpc/callbacks.py` and `rpc/utxo_set.py` import.
+    # 2026.10.4 is the first whose `parse` refuses a key of another
+    # network, which `rpc/mining.py` relies on.
+    "btclib-wallet>=2026.10.8",
+    # `signing.py` and `p2p/v2transport.py` import `btclib_ecc` directly: a
+    # direct runtime dependency, not what btclib happens to bring
+    # (btclib-org/btclib-node#1431). `tests/unit/interpreter_test.py` builds
+    # its signatures through the same package.
+    #
+    # The floor is 2026.10.2, the release fixing GHSA-r5pw-9wrg-m3mj
+    # and GHSA-m38m-987v-j55h.
+    "btclib-ecc>=2026.10.2",
     "rocksdict>=0.3.29",
     # `rpc/errors.py` imports `RPCErrorCode` directly now, so this is a
     # direct runtime dependency rather than the transitive arrival
@@ -302,17 +329,6 @@ test = [
     #
     # The floor is 2026.10.4, the security release (issue #1685).
     "bitcoin-core-rpc>=2026.10.4",
-    # tests/unit/interpreter_test.py builds signatures through
-    # `btclib_ecc.ecc.dsa`/`ssa` directly rather than through btclib's own
-    # re-export, ahead of btclib dropping that re-export
-    # (btclib-org/btclib#2404, decided 2026-09-28): `src/` imports
-    # nothing from it, and stays declared against btclib alone, so this
-    # is a test dependency landing before the re-export it replaces is
-    # gone rather than a runtime one (btclib-org/btclib-node#1431).
-    #
-    # The floor is 2026.10.2, the release fixing GHSA-r5pw-9wrg-m3mj
-    # and GHSA-m38m-987v-j55h.
-    "btclib-ecc>=2026.10.2",
     # btclib-ecc's own bindings import (`_libsecp256k1.py`) reaches
     # `btclib_secp256k1.ecdh.shared_point`, absent below 0.8.0.8 --
     # measured directly, an older install answers plain `ImportError`
@@ -1044,7 +1060,11 @@ ignore = [
 "src/btclib_node/p2p/callbacks.py" = ["ARG001"]
 "src/btclib_node/rpc/callbacks.py" = ["ARG001"]
 # handlers registered in rpc/callbacks.py
+"src/btclib_node/rpc/fees.py" = ["ARG001"]
 "src/btclib_node/rpc/mining.py" = ["ARG001"]
+"src/btclib_node/rpc/signing.py" = ["ARG001"]
+"src/btclib_node/rpc/snapshot.py" = ["ARG001"]
+"src/btclib_node/rpc/utxo_set.py" = ["ARG001"]
 # socket.socket.setblocking is a C-level method taking no keyword
 # arguments at all (verified directly: socket().setblocking(flag=False)
 # raises "takes no keyword arguments"), so the every-call-site half of

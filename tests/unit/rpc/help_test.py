@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 # is caught here rather than only by eye.
 _EXPECTED_BARE_LISTING = (
     "== Blockchain ==\n"
+    'dumptxoutset "path" ( "type" {"rollback":n,...} )\n'
     "getbestblockhash\n"
     'getblock "blockhash" ( verbosity )\n'
     "getblockchaininfo\n"
@@ -33,14 +34,23 @@ _EXPECTED_BARE_LISTING = (
     "getblockhash height\n"
     'getblockheader "blockhash" ( verbose )\n'
     "getchaintips\n"
+    'getmempoolancestors "txid" ( verbose )\n'
+    'getmempoolcluster "txid"\n'
+    'getmempooldescendants "txid" ( verbose )\n'
     'getmempoolentry "txid"\n'
     "getmempoolinfo\n"
     "getrawmempool ( verbose mempool_sequence )\n"
     'gettxout "txid" n ( include_mempool )\n'
     'gettxoutsetinfo ( "hash_type" hash_or_height use_index )\n'
+    'gettxspendingprevout [{"txid":"hex","vout":n},...] ( {"mempool_only":bool,"return_spending_tx":bool,...} )\n'
+    'importmempool "filepath" ( options )\n'
     'preciousblock "blockhash"\n'
     "pruneblockchain height\n"
+    "savemempool\n"
+    'scantxoutset "action" ( [scanobjects,...] )\n'
+    'waitforblock "blockhash" ( timeout )\n'
     "waitforblockheight height ( timeout )\n"
+    'waitfornewblock ( timeout "current_tip" )\n'
     "\n"
     "== Control ==\n"
     "getrpcinfo\n"
@@ -49,6 +59,8 @@ _EXPECTED_BARE_LISTING = (
     "\n"
     "== Mining ==\n"
     'getblocktemplate {"mode":"str","capabilities":["str",...],"rules":["segwit","str",...],"longpollid":"str","data":"hex"}\n'
+    "getprioritisedtransactions\n"
+    'prioritisetransaction "txid" ( dummy ) fee_delta\n'
     'submitblock "hexdata" ( "dummy" )\n'
     'submitheader "hexdata"\n'
     "\n"
@@ -66,10 +78,18 @@ _EXPECTED_BARE_LISTING = (
     "setnetworkactive state\n"
     "\n"
     "== Rawtransactions ==\n"
+    'combinerawtransaction ["hexstring",...]\n'
     'decoderawtransaction "hexstring" ( iswitness )\n'
     'getrawtransaction "txid" ( verbosity "blockhash" )\n'
     'sendrawtransaction "hexstring" ( maxfeerate maxburnamount )\n'
-    'testmempoolaccept ["rawtx",...] ( maxfeerate )'
+    'signrawtransactionwithkey "hexstring" ["privatekey",...] ( [{"txid":"hex","vout":n,"scriptPubKey":"hex","redeemScript":"hex","witnessScript":"hex","amount":amount},...] "sighashtype" )\n'
+    'submitpackage ["rawtx",...] ( maxfeerate maxburnamount )\n'
+    'testmempoolaccept ["rawtx",...] ( maxfeerate )\n'
+    "\n"
+    "== Util ==\n"
+    'estimatesmartfee conf_target ( "estimate_mode" )\n'
+    'signmessagewithprivkey "privkey" "message"\n'
+    'verifymessage "address" "signature" "message"'
 )
 
 
@@ -279,3 +299,22 @@ def test_stop_help_names_what_stop_actually_returns() -> None:
     node = cast("Node", None)
     conn = cast("RpcConnection", None)
     assert match.group(1) == stop(node, conn, [])
+
+
+@pytest.mark.parametrize(
+    ("command", "order"),
+    [
+        ("getmempoolentry", ["vsize", "vsize_bip141", "vsize_adjusted"]),
+        ("getrawmempool", ["vsize", "vsize_bip141", "vsize_adjusted"]),
+        ("testmempoolaccept", ["vsize_adjusted", "vsize", "vsize_bip141"]),
+    ],
+)
+def test_mempool_help_lists_the_three_vsize_fields_in_core_s_order(
+    command: str, order: list[str]
+) -> None:
+    """Each mempool RPC's help lists the sizes in Core's `RPCResult` order.
+
+    `MempoolEntryDescription` and `testmempoolaccept`'s result list, at
+    bitcoin/bitcoin@aef8a04966 (btclib-org/btclib-node#1757).
+    """
+    assert re.findall(r'"(vsize\w*)" :', HELP_TEXT[command]) == order

@@ -39,11 +39,14 @@ from btclib.p2p.addrv2 import (
 )
 
 from btclib_node.config import (
+    BindAddress,
+    WhitebindAddress,
     default_onion_bind,
     listen_port,
     lookup_host_port,
     lookup_service,
     parse_bind,
+    parse_whitebind,
     service_text,
 )
 from btclib_node.constants import CLIENT_NAME, P2pConnStatus
@@ -60,7 +63,9 @@ from btclib_node.p2p.address import (
     internal_source,
     ip_and_port,
     peer_address,
+    service_key,
 )
+from btclib_node.p2p.addrrelay import is_relayable, relay_destinations
 from btclib_node.p2p.anchors import (
     ANCHORS_DATABASE_FILENAME,
     MAX_BLOCK_RELAY_ONLY_ANCHORS,
@@ -92,7 +97,6 @@ from btclib_node.p2p.eviction import (
 )
 from btclib_node.p2p.netif import local_addresses
 from btclib_node.p2p.permissions import NetPermissionFlags, Whitelist
-from btclib_node.p2p.protocol_version import BIP0031_VERSION, common_version
 from btclib_node.p2p.selfannounce import (
     LOCAL_BIND,
     LOCAL_IF,
@@ -100,6 +104,7 @@ from btclib_node.p2p.selfannounce import (
     LocalService,
     address_for_peer,
 )
+from btclib_node.rolling_bloom import RollingBloomFilter
 
 if TYPE_CHECKING:
     from btclib.p2p.addrv2 import NetworkAddressV2
@@ -131,15 +136,16 @@ _AUTOMATIC_DIAL_INTERVAL = 0.5
 # `-peertimeout` to set it.
 _PEER_CONNECT_TIMEOUT = 60
 
-# `manage_connections`'s own idle bound, not Core's `TIMEOUT_INTERVAL`
-# (20 minutes, `net.h`, aed80c7395) -- a shorter one of this tree's own:
-# a connection quiet this long is sent a `ping`, and one still quiet
-# this long again after that is dropped. A pending connection is held
-# to `_PEER_CONNECT_TIMEOUT` above instead. A peer at `BIP0031_VERSION`
-# or below answers its `ping` with no `pong` (`Connection.send_ping`), so
-# it is sent one whenever none has been queued to it this long, and is
-# dropped once quiet twice this long.
-_IDLE_TIMEOUT = 120
+# Core's `PING_INTERVAL` (`src/net_processing.cpp`) and `TIMEOUT_INTERVAL`
+# (`src/net.h`), at bitcoin/bitcoin@9be056a8a7, the v31.1 tag, in
+# seconds: the wait before a connection with no ping outstanding is sent
+# one, and the silence, or the delay of a `pong`, that drops it.
+# `_keep_alive` applies them.
+#
+# bitcoin/bitcoin#36080, which keeps a peer that owes a pong while it is
+# serving a block this node asked for, is not in v31.1 and is not here.
+_PING_INTERVAL = 120
+_TIMEOUT_INTERVAL = 1200
 
 # The two loops Core dials `-connect` and `-addnode` from, each its own
 # thread (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
@@ -219,6 +225,10 @@ _REACHABLE_NETWORKS = (BIP155Network.IPV4, BIP155Network.IPV6)
 # Core's `AVG_LOCAL_ADDRESS_BROADCAST_INTERVAL` (`src/net_processing.cpp`,
 # same sha): the mean wait between two self-announcements to one peer.
 _LOCAL_ADDR_INTERVAL = 24 * 3600
+
+# Core's `AVG_ADDRESS_BROADCAST_INTERVAL` (same file and sha): the mean
+# wait between two sends of queued addresses to one peer.
+_ADDR_BROADCAST_INTERVAL = 30
 
 # How many addresses `_maybe_dial_more_peers` draws in one pass before
 # giving up until the next: `ThreadOpenConnections`'s `nTries > 100`
@@ -361,19 +371,6 @@ def _legacy_ipv6(ip: str) -> IPv6Address:
     return IPv6Address(b"\0" * 10 + b"\xff\xff" + parsed.packed)
 
 
-# How many hosts `P2pManager.discourage` remembers. Core keeps them in
-# `BanMan::m_discouraged`, a `CRollingBloomFilter{50000, 0.000001}`
-# (`src/banman.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). This
-# tree has no rolling bloom filter, so `P2pManager._discouraged` is an
-# insertion-ordered `dict` of at most this many hosts, the one
-# discouraged longest ago forgotten first. Core's filter answers yes
-# for a host it never held, up to one time in a million, and this never
-# does. Core's forgets a host 50,000 to 75,000 insertions later, its
-# generations of 25,000 holding two or three at a time, and this
-# forgets it once 50,000 other hosts have been discouraged since.
-_DISCOURAGED_CAPACITY = 50_000
-
-
 def _exponential_delay(mean: float) -> float:
     """Core's `rand_exp_duration`: an exponential draw of mean `mean`.
 
@@ -495,9 +492,11 @@ class P2pManager(threading.Thread):
         # reason: whether `_discover` below runs at all, independent of
         # `self.listen` (btclib-org/btclib-node#1330's own "Expected").
         self.discover = node.config.discover
-        # Core's `-bind` and `-externalip`, as given and read the same
-        # way: `_bind` and `_add_externalip` parse them when `run` starts
+        # Core's `-bind`, `-whitebind` and `-externalip`, as given and read
+        # the same way: `_bind` and `_add_externalip` parse them when `run`
+        # starts
         self.bind = node.config.bind
+        self.whitebind = node.config.whitebind
         self.externalip = node.config.externalip
         # Core's own `fNetworkActive` (`src/net.h`,
         # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), always true at
@@ -543,7 +542,11 @@ class P2pManager(threading.Thread):
         # each anchor dial pops from the back, and its
         # `fAddressesInitialized`, which `run` sets once past the bind
         # and `stop` reads before dumping the anchors back.
+        # `m_anchors_mutex` guards it: `set_network_active` replaces it
+        # on `Node`'s thread, an anchor dial pops it on this manager's
+        # loop. Never held with `_connections_lock`.
         self.anchors: list[NetworkAddressV2] = []
+        self._anchors_lock = threading.Lock()
         self._anchors_path = node.data_dir / ANCHORS_DATABASE_FILENAME
         self._addresses_initialized = False
         # Core's own `-dnsseed`, `Config.dnsseed` having taken its
@@ -604,10 +607,9 @@ class P2pManager(threading.Thread):
         # the `addnode` RPC's own `add` (`add_added_peer`, reached from
         # `rpc/callbacks.py`) has appended and `remove`
         # (`remove_added_peer`) not yet taken back out. `dict[str,
-        # bool]`, not a `set`, for the same insertion-order reason
-        # `_discouraged` (above) is one: `GetAddedNodeInfo` dials this
-        # list in the order `AddNode`'s own `push_back` built it,
-        # oldest first. Read by `_open_added_peers` (the dial loop) and
+        # bool]`, not a `set`, for its insertion order: `GetAddedNodeInfo`
+        # dials this list in the order `AddNode`'s own `push_back` built
+        # it, oldest first. Read by `_open_added_peers` (the dial loop) and
         # by `_added_node` (`_should_pass_over_draw`'s own bound check),
         # each on this manager's own thread; written by
         # `add_added_peer`/`remove_added_peer`, reached from
@@ -687,12 +689,11 @@ class P2pManager(threading.Thread):
         self._reconnections: deque[_Reconnection] = deque()
         self._retrying: list[_Reconnection] = []
         self._reconnections_lock = threading.Lock()
-        # (command, payload, connection id, wire size, receive time) --
-        # the size, `Connection.parse_messages`'s own addition since
-        # #462, is what
+        # (command, payload, connection id, weight, receive time) --
+        # the weight, Core's `CNetMessage::GetMemoryUsage`, is what
         # `handle_p2p`/`handle_p2p_handshake` (`p2p/main.py`) weigh back
-        # off `queued_recv_bytes`, `MAX_QUEUED_RECV_BYTES`'s own comment
-        # (`p2p/connection.py`) arguing why. `handshake_messages` is
+        # off `queued_recv_bytes`, `Connection.recv_flood_size`'s own
+        # comment (`p2p/connection.py`) arguing why. `handshake_messages` is
         # drained whole every pass of `Node`'s own loop rather than
         # sharing `messages`'s own log2-scaled share
         # (btclib-org/btclib-node#462), and now paces its own reads
@@ -756,16 +757,19 @@ class P2pManager(threading.Thread):
         # once per process, so no peer can predict which netgroups the
         # eviction's first protection keeps.
         self._net_group_key = secrets.token_bytes(16)
-        # The hosts `discourage` has recorded, by `host_key`, oldest
-        # first, as values of nothing: `_DISCOURAGED_CAPACITY` is where
-        # this is set against Core's `BanMan::m_discouraged`. Process
-        # lifetime, not `peer_db`'s own tables, as Core's filter is not
-        # written to disk, so a restart forgets them. Locked, as Core's
-        # `m_banned_mutex` guards its filter: `discourage` runs on
-        # `Node`'s thread and on this manager's, and forgetting the
-        # oldest host is a read and a delete that another write must
-        # not land between.
-        self._discouraged: dict[bytes, None] = {}
+        # The key `relay_destinations` hashes under, Core's `nSeed0` and
+        # `nSeed1`: drawn once per process, so no peer can predict who an
+        # address it sends is relayed to.
+        self._addr_relay_key = (secrets.randbits(64), secrets.randbits(64))
+        # The hosts `discourage` has recorded, by `host_key`: Core's
+        # `BanMan::m_discouraged`, a `CRollingBloomFilter{50000,
+        # 0.000001}` (`src/banman.h`, at bitcoin/bitcoin@9be056a8a7, the
+        # v31.1 tag). Like Core's, it treats a host never discouraged as
+        # discouraged up to once in a million queries, and nothing resets
+        # it. Not written to disk, so a restart forgets them. Locked, as
+        # Core's `m_banned_mutex` guards its filter: `discourage` and
+        # `is_discouraged` run on `Node`'s thread and on this manager's.
+        self._discouraged = RollingBloomFilter(50_000, 0.000_001)
         self._discouraged_lock = threading.Lock()
         # Overwritten by `_arm_dial_loop` before any loop ever reads it
         # (`manage_connections` calls it first thing); the value here is
@@ -827,6 +831,10 @@ class P2pManager(threading.Thread):
         # listener, which `server` finds a socket's own among. Filled by
         # `_bind` and read by `server`, both on this manager's thread.
         self._onion_binds: set[tuple[Host, int]] = set()
+        # Core's `ListenSocket::m_permissions`: what each `-whitebind`
+        # listener grants, which `server` reads for its own socket. Filled
+        # by `_bind`, on this manager's thread, as `_onion_binds` is.
+        self._listener_permissions: dict[socket.socket, NetPermissionFlags] = {}
         # `server`'s own accept queue, one per listening socket, kept
         # here rather than only local to `server`'s own frame so the two
         # `manager_test.py` tests naming btclib-org/btclib-node#386 can
@@ -924,6 +932,7 @@ class P2pManager(threading.Thread):
         addr_name: str | None = None,
         local_address: tuple[str, int] | None = None,
         inbound_onion: bool = False,
+        granted: NetPermissionFlags | None = None,
         use_v2transport: bool = False,
     ) -> None:
         """Build a `Connection` for `client`, hold it pending, and start it.
@@ -977,6 +986,9 @@ class P2pManager(threading.Thread):
         `inbound_onion` is Core's own: the connection reached an `=onion`
         listener. Its peer's address is then the Tor daemon's, so no
         `-whitelist` entry is matched against it.
+
+        `granted` is what the listener the connection reached grants
+        (`-whitebind`), which `-whitelist` adds to.
         """
         client.settimeout(0.0)
         self.last_connection_id += 1
@@ -995,6 +1007,8 @@ class P2pManager(threading.Thread):
             inbound=inbound,
             use_v2transport=use_v2transport,
             allow_v1=self.node.config.v1transport,
+            send_buffer_max_size=self.node.config.send_buffer_max_size,
+            recv_flood_size=self.node.config.receive_flood_size,
         )
         conn.automatic = automatic
         conn.inbound_onion = inbound_onion
@@ -1002,6 +1016,7 @@ class P2pManager(threading.Thread):
             None if inbound_onion else address,
             inbound=inbound,
             manual=not (automatic or addr_fetch),
+            granted=granted,
         )
         conn.block_relay = block_relay
         conn.feeler = feeler
@@ -1295,16 +1310,11 @@ class P2pManager(threading.Thread):
 
         Keyed by `host_key`, without the port, as Core's
         `BanMan::Discourage` is (`src/banman.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Discouraging a host
-        already held moves it to the newest, as a second insert into
-        Core's filter does.
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
         """
         key = host_key(address)
         with self._discouraged_lock:
-            self._discouraged.pop(key, None)
-            self._discouraged[key] = None
-            if len(self._discouraged) > _DISCOURAGED_CAPACITY:
-                del self._discouraged[next(iter(self._discouraged))]
+            self._discouraged.add(key)
 
     def is_discouraged(self, address: NetworkAddressV2) -> bool:
         """Whether `address`'s host is discouraged, Core's `IsDiscouraged`."""
@@ -1398,10 +1408,15 @@ class P2pManager(threading.Thread):
         """Flip `network_active`, dropping every held connection on a `false`.
 
         Core's own `CConnman::SetNetworkActive` (`src/net.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): only where `active`
-        actually changed, drop every connection this node holds at
+        bitcoin/bitcoin@aef8a04966, past bitcoin/bitcoin#34213): only where
+        `active` actually changed, drop every connection this node holds at
         once, `_disconnect_if_inactive`'s own docstring arguing why
         that is not the only time it runs.
+
+        On a `false`, the block-relay-only peers held, the first two
+        opened, become `anchors` before they are dropped, so they are
+        dialled again once the network is active and are what `stop`
+        writes. Anchors not yet tried stay where no peer is held.
 
         Reached from the `setnetworkactive` RPC, on `Node`'s own thread
         -- the same thread `disconnect_node` already calls
@@ -1410,6 +1425,11 @@ class P2pManager(threading.Thread):
         """
         if self.network_active == active:
             return
+        if not active:
+            held = self._block_relay_addresses()
+            if held:
+                with self._anchors_lock:
+                    self.anchors = held
         self.network_active = active
         self._disconnect_if_inactive()
 
@@ -1763,16 +1783,17 @@ class P2pManager(threading.Thread):
                 )
                 self.remove_connection(conn.id)
                 continue
-            if now - conn.last_receive > _IDLE_TIMEOUT:
-                self._ping_or_drop_idle(conn, now)
+            if not self._keep_alive(conn, now):
+                continue
             self._maybe_send_local_addr(conn, now)
+            self._send_queued_addrs(conn, now)
         for conn in self.pending_connections.copy().values():
             # Dropped `_PEER_CONNECT_TIMEOUT` after connecting, quiet or
             # not, as Core's `InactivityCheck` drops a connection short
             # of `fSuccessfullyConnected` (btclib-org/btclib-node#1169).
             # No ping in between: `ping` is as much a message the
             # handshake has to clear before it is sent as `inv` or `tx`
-            # is (#131). The idle bound above is not asked here, being
+            # is (#131). `_TIMEOUT_INTERVAL` is not asked here, being
             # longer: a connection quiet that long is past this one.
             # A v2 outbound attempt a v1-only peer refuses ends here, as a
             # `Closed` pending connection: `remove_connection` is Core's
@@ -1783,6 +1804,42 @@ class P2pManager(threading.Thread):
             ):
                 self.remove_connection(conn.id)
 
+    def is_reachable(self, address: NetworkAddressV2) -> bool:
+        """Whether this node reaches `address`'s network, `g_reachable_nets`."""
+        return address.network_id in _REACHABLE_NETWORKS
+
+    def relay_address(
+        self, originator: Connection, address: NetworkAddressV2, now: float
+    ) -> None:
+        """Queue `address`, gossiped by `originator`, for one or two peers.
+
+        `RelayAddress` (`src/net_processing.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): an address on a
+        network this node does not reach is relayed only if
+        `is_relayable`. Only a peer taking part in address relay is
+        chosen, and one that can carry `address`: `IsAddrCompatible`.
+        Called on `Node`'s thread; `push_address` takes the
+        lock the send on this manager's thread shares.
+        """
+        reachable = self.is_reachable(address)
+        if not reachable and not is_relayable(address):
+            return
+        peers = {
+            conn.id: conn
+            for conn in self.connections.copy().values()
+            if conn.addr_relay_enabled
+            and conn.id != originator.id
+            and (conn.prefer_addressv2 or can_addrv1(address))
+        }
+        for peer_id in relay_destinations(
+            self._addr_relay_key,
+            address,
+            peers,
+            reachable=reachable,
+            now=now,
+        ):
+            peers[peer_id].push_address(address)
+
     def _maybe_send_local_addr(self, conn: Connection, now: float) -> None:
         """Tell `conn` where this node is reached, as `MaybeSendAddr` does.
 
@@ -1791,9 +1848,13 @@ class P2pManager(threading.Thread):
         to a peer that takes part in address relay, while listening and
         out of initial block download, once its turn has come -- at once
         for a new connection, then after an exponential wait of 24 hours
-        on average. Core queues a later announcement with the other
-        addresses it relays; this node relays none, so each is sent alone.
-        Nothing is announced where `address_for_peer` finds no address.
+        on average. The first is sent alone, so that the peer's rate
+        limit cannot drop it; a later one is queued with the addresses
+        relayed, for `_send_queued_addrs`. Nothing is announced where
+        `address_for_peer` finds no address.
+
+        Before a later announcement `conn.addr_known` is reset, as Core
+        resets `m_addr_known`.
         """
         if (
             not conn.addr_relay_enabled
@@ -1802,6 +1863,9 @@ class P2pManager(threading.Thread):
             or now < conn.next_local_addr_send
         ):
             return
+        later = conn.next_local_addr_send != 0
+        if later:
+            conn.addr_known.reset()
         conn.next_local_addr_send = now + _exponential_delay(_LOCAL_ADDR_INTERVAL)
         peer = ip_address(conn.address.address)
         seen_as = None
@@ -1829,31 +1893,67 @@ class P2pManager(threading.Thread):
         self.logger.log_debug(
             "net", "Advertising address %s to peer=%s", address, conn.id
         )
-        if conn.prefer_addressv2:
+        if later:
+            conn.push_address(address)
+        elif conn.prefer_addressv2:
             conn.send(AddrV2([address]))
         else:
             conn.send(Addr([addr_entry(address)]))
 
-    def _ping_or_drop_idle(self, conn: Connection, now: float) -> None:
-        """Ping or drop `conn`, quiet for `_IDLE_TIMEOUT`, as argued there."""
-        # One read, not `conn.ping_sent` re-read in the `elif` below:
-        # `callbacks.pong`, on the other thread, clears it the moment a
-        # pong answers this connection's own ping, and a second read
-        # landing right after that clear turned `now - 0 > _IDLE_TIMEOUT`
-        # true for every `now`, dropping a peer for having just answered.
+    def _send_queued_addrs(self, conn: Connection, now: float) -> None:
+        """Send `conn` the queued addresses, as `MaybeSendAddr` does.
+
+        `MaybeSendAddr` (`src/net_processing.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): once the wait since
+        the last send, 30 seconds on average, is over, whatever
+        `conn.addr_known` does not hold is sent in one message and
+        recorded in it.
+        """
+        if not conn.addr_relay_enabled or now <= conn.next_addr_send:
+            return
+        conn.next_addr_send = now + _exponential_delay(_ADDR_BROADCAST_INTERVAL)
+        unknown = []
+        for address in conn.take_addresses():
+            key = service_key(address)
+            if key not in conn.addr_known:
+                conn.addr_known.add(key)
+                unknown.append(address)
+        if not unknown:
+            return
+        if conn.prefer_addressv2:
+            conn.send(AddrV2(unknown))
+        else:
+            conn.send(Addr([addr_entry(address) for address in unknown]))
+
+    def _keep_alive(self, conn: Connection, now: float) -> bool:
+        """Ping `conn` or drop it as Core does; whether it was kept.
+
+        `MaybeSendPing` and `CConnman::InactivityCheck`
+        (`src/net_processing.cpp` and `src/net.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a peer whose
+        `last_receive` or `last_send` is `_TIMEOUT_INTERVAL` old, or whose
+        `pong` is that overdue, is dropped; otherwise it is sent a `ping`
+        once `_PING_INTERVAL` has passed since the last and none is
+        outstanding. A peer at `BIP0031_VERSION` or below has none
+        outstanding, so only its silence drops it.
+        """
+        # One read, not `conn.ping_sent` re-read below: `callbacks.pong`,
+        # on the other thread, clears it the moment a pong answers this
+        # connection's own ping, and a second read landing right after
+        # that clear turned `now - 0` into an overdue pong, dropping a
+        # peer for having just answered.
         # btclib-org/btclib-node#357
         ping_sent = conn.ping_sent
-        if common_version(conn) <= BIP0031_VERSION:
-            # no `pong` to wait on (`Connection.send_ping`), so the whole
-            # quiet span is waited out here instead
-            if now - conn.last_receive > 2 * _IDLE_TIMEOUT:
-                self.remove_connection(conn.id)
-            elif now - conn.ping_start > _IDLE_TIMEOUT:
-                conn.send_ping()
-        elif not ping_sent:
-            conn.send_ping()
-        elif now - ping_sent > _IDLE_TIMEOUT:
+        if (
+            now - conn.last_receive > _TIMEOUT_INTERVAL
+            or now - conn.last_send > _TIMEOUT_INTERVAL
+            or (ping_sent and now - ping_sent > _TIMEOUT_INTERVAL)
+        ):
             self.remove_connection(conn.id)
+            return False
+        if not ping_sent and now - conn.ping_start > _PING_INTERVAL:
+            conn.send_ping()
+        return True
 
     def _maybe_add_fixed_seeds(self) -> None:
         """Add the chain's fixed seeds for every reachable network held empty.
@@ -2300,9 +2400,13 @@ class P2pManager(threading.Thread):
             await asyncio.sleep(secrets.SystemRandom().uniform(0, _FEELER_SLEEP_WINDOW))
         # `OpenNetworkConnection`'s `fNetworkActive` gate, where Core
         # reaches it: past the grant, the fixed seeds, the `-seednode`
-        # queue and the draw, so an inactive network still seeds and
-        # still pops the anchor it would have dialled
-        # (`async_connect`'s docstring has the citation).
+        # queue and the draw, so an inactive network still seeds
+        # (`async_connect`'s docstring has the citation). While the
+        # network is off `_next_outbound` chooses no anchor. A flip
+        # between that check and `_pop_anchor` still loses the one
+        # popped: Core's `ThreadOpenConnections` reads `fNetworkActive`
+        # and pops `m_anchors` in two steps too (`src/net.cpp`, at
+        # bitcoin/bitcoin@aef8a04966).
         if not self.network_active:
             return
         # `OpenNetworkConnection` (`src/net.cpp`,
@@ -2341,8 +2445,11 @@ class P2pManager(threading.Thread):
         services, one `_v1_only` refuses, and one in a network group an
         outbound peer already holds.
         """
-        while self.anchors:
-            anchor = self.anchors.pop()
+        while True:
+            with self._anchors_lock:
+                if not self.anchors:
+                    return None
+                anchor = self.anchors.pop()
             if (
                 can_connect(anchor)
                 and is_valid(network_address(anchor).ip)
@@ -2360,7 +2467,6 @@ class P2pManager(threading.Thread):
                     ip_and_port(str(endpoint.ip), endpoint.port),
                 )
                 return anchor
-        return None
 
     def _draw(
         self,
@@ -2435,20 +2541,28 @@ class P2pManager(threading.Thread):
         """Which automatic connection to open next, `None` for none.
 
         The order is `ThreadOpenConnections`'s own (`src/net.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): an anchor while one is
-        left and the block-relay-only target is unmet, then full-relay up
-        to its target, then block-relay-only up to its own, then one
-        full-relay peer past the target while `try_new_outbound_peer` is
-        set, then one more block-relay-only peer each time its exponential
-        timer comes due, once `start_extra_block_relay_peers` is set, then
-        a feeler each time its own timer does, then, with eight full-relay
-        peers, one more on a network none of them is on each time its own
-        timer does. A timer is drawn again when it is picked, whatever the
-        draw from the table then finds. `DownloadManager` drops an extra
-        peer, or another, once it is connected, and `callbacks.version` a
-        feeler as soon as it has answered.
+        bitcoin/bitcoin@aef8a04966, past bitcoin/bitcoin#34213): an anchor while
+        the network is active, one is left and the block-relay-only target is
+        unmet, then full-relay up to its target, then block-relay-only up
+        to its own, then one full-relay peer past the target while
+        `try_new_outbound_peer` is set, then one more block-relay-only
+        peer each time its exponential timer comes due, once
+        `start_extra_block_relay_peers` is set, then a feeler each time
+        its own timer does, then, with eight full-relay peers, one more
+        on a network none of them is on each time its own timer does. A
+        timer is drawn again when it is picked, whatever the draw from
+        the table then finds. `DownloadManager` drops an extra peer, or
+        another, once it is connected, and `callbacks.version` a feeler
+        as soon as it has answered.
         """
-        if self.anchors and block_relay < self.max_outbound_block_relay:
+        # An inactive network leaves the anchors alone: `_pop_anchor`
+        # would pop one and `_dial_one_draw` drop it at its
+        # `network_active` gate.
+        if (
+            self.network_active
+            and self.anchors
+            and block_relay < self.max_outbound_block_relay
+        ):
             return _Outbound.ANCHOR
         if full_relay < self.max_outbound_full_relay:
             return _Outbound.FULL_RELAY
@@ -3028,7 +3142,7 @@ class P2pManager(threading.Thread):
     def _listen_port(self) -> int:
         """Return `GetListenPort`: what local addresses are recorded at."""
         # set wherever `run` binds, which is where it calls this
-        return listen_port(self.bind, cast("int", self.port))
+        return listen_port(self.bind, self.whitebind, cast("int", self.port))
 
     def _add_local(self, host: Host, port: int, score: int) -> bool:
         """Keep `host` as one of this node's own addresses, as `AddLocal` does.
@@ -3101,10 +3215,11 @@ class P2pManager(threading.Thread):
         `AppInitMain` calls `Discover` (`src/net.cpp:3376-3384`, at
         bitcoin/bitcoin@9be056a8a7, the v31.1 tag) off `bind_on_any`
         (`src/init.cpp:2163`, `:2193-2196`, same sha) -- whether the
-        node would bind every interface, which is to say no `-bind` was
-        given -- never off `fListen`, which is why `run` below calls this
-        off `self.discover` rather than off `self.listen`: an explicit
-        `-discover=1` still records these addresses under `-listen=0`
+        node would bind every interface, which is to say no `-bind` or
+        `-whitebind` was given -- never off `fListen`, which is why `run`
+        below calls this off `self.discover` rather than off `self.listen`:
+        an explicit `-discover=1` still records these addresses under
+        `-listen=0`
         (btclib-org/btclib-node#1330). `self.discover` is itself Core's
         own soft `-discover=0` under `-listen=0` or `-externalip`
         (`Config.discover`'s own comment; this node has no `-proxy`).
@@ -3128,16 +3243,15 @@ class P2pManager(threading.Thread):
         host OS may not have IPv6 support" (net.cpp, 58a7869f86) -- while
         a failure to bind "0.0.0.0" is `BF_REPORT_ERROR` there too.
 
-        With a `-bind` it is those addresses alone that are bound, the
-        plain ones before the `=onion` ones as `InitBinds` has it, each
-        required: a failure of any ends `run`, the sockets already bound
-        closed. Without one, the loopback `=onion` listener
-        `default_onion_bind` names comes first, as there, and is
-        required too (btclib-org/btclib-node#1666). A connection an
-        `=onion` listener accepts is tagged `inbound_onion`
+        With a `-bind` or a `-whitebind` it is those addresses alone that
+        are bound, as `InitBinds` has it, each required: a failure of any
+        ends `run`, the sockets already bound closed. Without either, the
+        loopback `=onion` listener `default_onion_bind` names comes first,
+        as there, and is required too (btclib-org/btclib-node#1666). A
+        connection an `=onion` listener accepts is tagged `inbound_onion`
         (btclib-org/btclib-node#1644).
         """
-        if self.bind:
+        if self.bind or self.whitebind:
             sockets = self._bind_given()
         else:
             onion = default_onion_bind(cast("int", self.port))
@@ -3162,15 +3276,26 @@ class P2pManager(threading.Thread):
         return sockets
 
     def _bind_given(self) -> list[socket.socket]:
-        """Bind every `-bind` address, `CConnman::Bind` for each.
+        """Bind each `-bind` and `-whitebind` address, as `CConnman::Bind` does.
 
-        A bound address `AddLocal` keeps is recorded at `LOCAL_BIND`
-        unless it is tagged `=onion`, which `BF_DONT_ADVERTISE` keeps out.
+        In `InitBinds`' order: the plain binds, the `-whitebind` ones, the
+        `=onion` ones. With no `-bind`, the default `=onion` one is the
+        last, as `AppInitMain` adds it. A bound address `AddLocal` keeps
+        is recorded at `LOCAL_BIND` unless it is tagged `=onion`, which
+        `BF_DONT_ADVERTISE` keeps out, or grants `noban`.
         """
-        addresses = sorted(
-            (parse_bind(value, cast("int", self.port)) for value in self.bind),
+        port = cast("int", self.port)
+        binds = sorted(
+            (parse_bind(value, port) for value in self.bind),
             key=lambda address: address.onion,
         )
+        addresses: list[BindAddress | WhitebindAddress] = [
+            *(address for address in binds if not address.onion),
+            *(parse_whitebind(value) for value in self.whitebind),
+            *(address for address in binds if address.onion),
+        ]
+        if not self.bind:
+            addresses.append(default_onion_bind(port))
         sockets: list[socket.socket] = []
         try:
             for address in addresses:
@@ -3185,8 +3310,13 @@ class P2pManager(threading.Thread):
                 family = (
                     socket.AF_INET if isinstance(host, IPv4Address) else socket.AF_INET6
                 )
-                sockets.append(self._bind_one(family, str(host), address.port))
-                if address.onion:
+                listener = self._bind_one(family, str(host), address.port)
+                sockets.append(listener)
+                if isinstance(address, WhitebindAddress):
+                    self._listener_permissions[listener] = address.flags
+                    if self.discover and NetPermissionFlags.NO_BAN not in address.flags:
+                        self._add_local(host, address.port, LOCAL_BIND)
+                elif address.onion:
                     self._onion_binds.add((host, address.port))
                 elif self.discover:
                     self._add_local(host, address.port, LOCAL_BIND)
@@ -3405,8 +3535,11 @@ class P2pManager(threading.Thread):
                         )
                         sock.close()
                         continue
+                    granted = self._listener_permissions.get(server_socket)
                     permissions = self.whitelist.flags(
-                        None if inbound_onion else address, inbound=True
+                        None if inbound_onion else address,
+                        inbound=True,
+                        granted=granted,
                     )
                     no_ban = NetPermissionFlags.NO_BAN in permissions
                     if not no_ban and self.ban_man.is_peer_banned(address):
@@ -3447,6 +3580,7 @@ class P2pManager(threading.Thread):
                         prefer_evict=discouraged,
                         local_address=bound,
                         inbound_onion=inbound_onion,
+                        granted=granted,
                         # the v2 transport falls back to v1 on its own where
                         # -v1transport allows, as Core's always does
                         use_v2transport=self.supports_v2transport(),
@@ -3515,7 +3649,7 @@ class P2pManager(threading.Thread):
             self.logger.info("Starting P2P manager")
             asyncio.set_event_loop(loop)
             self._add_externalip()
-            if self.discover and not self.bind:
+            if self.discover and not (self.bind or self.whitebind):
                 self._discover()
             if self.listen:
                 server_sockets = self._bind()
@@ -3532,14 +3666,16 @@ class P2pManager(threading.Thread):
         # `CConnman::Start`'s own order: past the bind, before any
         # connection is opened
         if self.use_addrman_outgoing:
-            self.anchors = read_anchors(
-                self._anchors_path, self.node.chain.magic, self.logger.info
-            )
-            del self.anchors[MAX_BLOCK_RELAY_ONLY_ANCHORS:]
-            self.logger.info(
-                "%i block-relay-only anchors will be tried for connections.",
-                len(self.anchors),
-            )
+            with self._anchors_lock:
+                self.anchors = read_anchors(
+                    self._anchors_path, self.node.chain.magic, self.logger.info
+                )
+                del self.anchors[MAX_BLOCK_RELAY_ONLY_ANCHORS:]
+                if self.network_active:
+                    self.logger.info(
+                        "%i block-relay-only anchors will be tried for connections.",
+                        len(self.anchors),
+                    )
         self._addresses_initialized = True
         if self.use_dns_seed:
             asyncio.run_coroutine_threadsafe(self._dns_address_seed(), loop)
@@ -3738,6 +3874,23 @@ class P2pManager(threading.Thread):
         self.listening.clear()
         self.logger.info("Stopping P2P Manager")
 
+    def _block_relay_addresses(self) -> list[NetworkAddressV2]:
+        """Return the first two block-relay-only peers held, pending included.
+
+        Core's `GetCurrentBlockRelayOnlyConns`, in the order opened, cut
+        to `MAX_BLOCK_RELAY_ONLY_ANCHORS` as its callers cut it.
+        """
+        with self._connections_lock:
+            connected = (
+                *self.connections.values(),
+                *self.pending_connections.values(),
+            )
+        return [
+            conn.address
+            for conn in sorted(connected, key=lambda conn: conn.id)
+            if conn.block_relay
+        ][:MAX_BLOCK_RELAY_ONLY_ANCHORS]
+
     def _dump_anchors(self) -> None:
         """Write the block-relay-only peers held at shutdown to `anchors.dat`.
 
@@ -3745,22 +3898,19 @@ class P2pManager(threading.Thread):
         `-connect`: `GetCurrentBlockRelayOnlyConns` takes every
         block-relay-only connection in `m_nodes`, pending ones included,
         in the order they were opened, and the first two are kept. The
-        address is the one dialled, as `CNode::addr` is. A write that
-        fails is logged, as `SerializeFileDB` logs it, and stops nothing.
+        address is the one dialled, as `CNode::addr` is. While the
+        network is inactive, `anchors` is written instead when it holds
+        any (bitcoin/bitcoin#34213). A write that fails is logged, as
+        `SerializeFileDB` logs it, and stops nothing.
         """
         if not (self._addresses_initialized and self.use_addrman_outgoing):
             return
         self._addresses_initialized = False
-        with self._connections_lock:
-            connected = (
-                *self.connections.values(),
-                *self.pending_connections.values(),
-            )
-        anchors = [
-            conn.address
-            for conn in sorted(connected, key=lambda conn: conn.id)
-            if conn.block_relay
-        ][:MAX_BLOCK_RELAY_ONLY_ANCHORS]
+        anchors = self._block_relay_addresses()
+        if not self.network_active:
+            with self._anchors_lock:
+                anchors = list(self.anchors) or anchors
+            del anchors[MAX_BLOCK_RELAY_ONLY_ANCHORS:]
         try:
             dump_anchors(self._anchors_path, self.node.chain.magic, anchors)
         except OSError:

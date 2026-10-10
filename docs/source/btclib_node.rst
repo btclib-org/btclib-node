@@ -29,6 +29,13 @@ btclib\_node.cli module
    :members:
    :show-inheritance:
 
+btclib\_node.cluster\_linearize module
+---------------------------------------
+
+.. automodule:: btclib_node.cluster_linearize
+   :members:
+   :show-inheritance:
+
 btclib\_node.config module
 ---------------------------
 
@@ -71,6 +78,13 @@ btclib\_node.exceptions module
    :members:
    :show-inheritance:
 
+btclib\_node.fee\_estimator module
+----------------------------------
+
+.. automodule:: btclib_node.fee_estimator
+   :members:
+   :show-inheritance:
+
 btclib\_node.interpreter module
 --------------------------------
 
@@ -99,6 +113,13 @@ btclib\_node.mempool module
    :members:
    :show-inheritance:
 
+btclib\_node.mempool\_persist module
+-------------------------------------
+
+.. automodule:: btclib_node.mempool_persist
+   :members:
+   :show-inheritance:
+
 btclib\_node.mining module
 ---------------------------
 
@@ -113,10 +134,52 @@ btclib\_node.notify module
    :members:
    :show-inheritance:
 
+btclib\_node.orphanage module
+-----------------------------
+
+.. automodule:: btclib_node.orphanage
+   :members:
+   :show-inheritance:
+
+btclib\_node.rolling\_bloom module
+-----------------------------------
+
+.. automodule:: btclib_node.rolling_bloom
+   :members:
+   :show-inheritance:
+
+btclib\_node.settings\_file module
+-----------------------------------
+
+.. automodule:: btclib_node.settings_file
+   :members:
+   :show-inheritance:
+
 btclib\_node.signet module
 ---------------------------
 
 .. automodule:: btclib_node.signet
+   :members:
+   :show-inheritance:
+
+btclib\_node.signing module
+-------------------------------
+
+.. automodule:: btclib_node.signing
+   :members:
+   :show-inheritance:
+
+btclib\_node.snapshot module
+-----------------------------
+
+.. automodule:: btclib_node.snapshot
+   :members:
+   :show-inheritance:
+
+btclib\_node.txgraph module
+----------------------------
+
+.. automodule:: btclib_node.txgraph
    :members:
    :show-inheritance:
 

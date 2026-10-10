@@ -14,6 +14,7 @@ __all__ = [
     "bool_mismatch",
     "bool_param",
     "is_hex",
+    "parse_hash_v",
     "type_error",
     "type_errors",
 ]
@@ -129,6 +130,38 @@ def type_errors(*mismatches: tuple[int, str, object, str]) -> RpcError:
         for position, name, value, expected in mismatches
     )
     return RpcError(RPCErrorCode.TYPE_ERROR, f"Wrong type passed:\n{{\n{entries}\n}}")
+
+
+def parse_hash_v(name: str, value: str) -> bytes:
+    """Answer Core's own `ParseHashV`: a hash from its own 64-character hex.
+
+    `ParseHashV` (`src/rpc/util.cpp:116-124`, at bitcoin/bitcoin@9be056a8a7)
+    checks the string's own length before it ever tries to decode it:
+    `uint256::FromHex` answers `nullopt` for anything but exactly 64
+    characters, so a wrong length is `"<name> must be of length 64 (not
+    <n>, for '<value>')"` even where every character is a valid hex
+    digit (`"aabb"`, four of them) -- and only a 64-character string
+    that is not all hex digits reaches the second message, `"<name>
+    must be hexadecimal string (not '<value>')"`: `FromHex` takes digits
+    only, so whitespace, which `bytes.fromhex` skips, is refused here.
+    `name` is each call site's own choice, matching Core's: `"hash"` for
+    `getblockheader`, `"blockhash"` for `getblock`, `"txid"` for
+    `gettxout` (`src/rpc/blockchain.cpp:678,828,1258`, same sha), and
+    `"parameter 1"`/`"parameter 3"` for `getrawtransaction`'s own two
+    hash arguments, Core's own names for them
+    (`src/rpc/rawtransaction.cpp:304,317`, same sha).
+    """
+    if len(value) != 64:  # noqa: PLR2004
+        raise RpcError(
+            RPCErrorCode.INVALID_PARAMETER,
+            f"{name} must be of length 64 (not {len(value)}, for '{value}')",
+        )
+    if not is_hex(value):
+        raise RpcError(
+            RPCErrorCode.INVALID_PARAMETER,
+            f"{name} must be hexadecimal string (not '{value}')",
+        )
+    return bytes.fromhex(value)
 
 
 def bool_mismatch(

@@ -110,11 +110,12 @@ repos:
         # prettier below is what formats them instead -- at its own indent,
         # which is not this hook's and does not have to be, no other tool
         # reading them.
-        # tests/**/_data/ is the vendored directory, as tests/_data/
-        # README.md declares it: what is in there is upstream's file byte
-        # for byte, pinned by a git blob sha, and a reformat voids the pin
-        # and the verdict together -- silently, this hook correcting
-        # rather than reporting. Excluded by directory rather than by name
+        # tests/**/_data/ holds two kinds of file, and tests/_data/
+        # README.md says which each is: upstream's file byte for byte,
+        # pinned by a git blob sha, or one derived here, which matches the
+        # recipe its entry gives. A reformat voids the pin or the match,
+        # and the verdict with it -- silently, this hook correcting rather
+        # than reporting. Excluded by directory rather than by name
         # so that the next file vendored into it is safe before anyone
         # remembers this line; check-json above still asks the question
         # worth asking of them, which is whether they parse.
@@ -208,7 +209,7 @@ repos:
   # it runs ahead of markdownlint-cli2 below on purpose: that hook's
   # `--fix` repairs the very seam this hook exists to name
   - repo: https://github.com/btclib-org/.github
-    rev: f668578c07124c632dc36f9c4a92a3a4db8914e8
+    rev: 70f5915abed3b982009996ae52254fbc68c00dfc
     hooks:
       - id: check-changelog
         args: [--grandfathered, "56"]

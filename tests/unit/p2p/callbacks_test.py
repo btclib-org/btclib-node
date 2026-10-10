@@ -22,6 +22,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from io import BytesIO
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, cast, override
 
@@ -90,6 +91,7 @@ from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.block_index import BlockStatus, calculate_work
 from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, NodeStatus, P2pConnStatus
+from btclib_node.download import DownloadManager
 from btclib_node.exceptions import (
     ChainstateInconsistencyError,
     MisbehavingError,
@@ -97,19 +99,23 @@ from btclib_node.exceptions import (
     NonStandardTxError,
     TxRejectedError,
 )
+from btclib_node.fee_estimator import FeeEstimator
 from btclib_node.log import Logger
 from btclib_node.main import MempoolCandidate, pre_verify_mempool_acceptance
 from btclib_node.mempool import Mempool
 from btclib_node.notify import Warnings
-from btclib_node.p2p.address import PeerDB, endpoint_key, host_key, peer_address
+from btclib_node.p2p.address import (
+    PeerDB,
+    endpoint_key,
+    host_key,
+    peer_address,
+    service_key,
+)
 from btclib_node.p2p.banman import BanMan, lookup_subnet
 from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.callbacks import (
     MAX_BLOCKTXN_DEPTH,
-    MAX_CFILTERS_INFLIGHT_BYTES,
     MAX_CMPCTBLOCK_DEPTH,
-    MAX_GETDATA_INFLIGHT_BYTES,
-    MAX_PENDING_CFILTER_HASHES,
     addr,
     addrv2,
     advance_cfilters,
@@ -118,7 +124,6 @@ from btclib_node.p2p.callbacks import (
     get_cfcheckpt,
     get_cfheaders,
     get_cfilters,
-    getaddr,
     getblocks,
     getblocktxn,
     getdata,
@@ -138,13 +143,22 @@ from btclib_node.p2p.callbacks import (
     wtxidrelay,
 )
 from btclib_node.p2p.callbacks import block as block_callback
+from btclib_node.p2p.callbacks import (
+    getaddr as answer_getaddr,
+)
 from btclib_node.p2p.chain_sync import (
     ChainSyncTimeoutState,
     disconnect_if_insufficient_work,
 )
 from btclib_node.p2p.compact_block import MostRecentBlock, compact_block
-from btclib_node.p2p.connection import Connection, PeerStats
+from btclib_node.p2p.connection import (
+    AddrKnown,
+    Connection,
+    KnownTxInventory,
+    PeerStats,
+)
 from btclib_node.p2p.headers_sync import HeadersSyncState, State
+from btclib_node.p2p.manager import P2pManager
 from btclib_node.p2p.permissions import NetPermissionFlags
 from btclib_node.p2p.protocol_version import (
     BIP0031_VERSION,
@@ -166,12 +180,14 @@ from tests import (
     log_recorder,
 )
 from tests.conftest import unstarted_node_context
+from tests.unit.download_test import a_conn, a_hash, make_manager, only
+from tests.unit.download_test import a_version as a_services_version
 from tests.unit.main_test import a_dusty_spend
+from tests.unit.rolling_bloom_test import a_small_filter
 from tests.unit.rpc.callbacks_test import a_node_holding, a_twin
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-    from pathlib import Path
 
     from btclib.fee import FeeRate
     from btclib.tx.tx import Tx
@@ -179,7 +195,6 @@ if TYPE_CHECKING:
     from btclib_node import Node
     from btclib_node.chains import Chain
     from btclib_node.chainstate.block_index import BlockIndex
-    from btclib_node.p2p.manager import P2pManager
 
 # BIP155's table, for the networks these tests build an address of
 _ADDRESS_SIZE = {
@@ -228,6 +243,24 @@ def a_different_cache_key() -> tuple[int, str, int]:
     return (BIP155Network.IPV4, "127.0.0.1", 8334)
 
 
+def with_address_queue(conn: Any) -> Any:
+    """Give the peer stand-in `Connection`'s own queue of addresses to send."""
+    conn.next_addr_send = 0.0
+    conn._addrs_to_send = []
+    conn._addrs_to_send_lock = threading.Lock()
+    conn.push_address = Connection.push_address.__get__(conn)
+    conn._push_address = Connection._push_address.__get__(conn)
+    conn.replace_addresses = Connection.replace_addresses.__get__(conn)
+    conn.take_addresses = Connection.take_addresses.__get__(conn)
+    return conn
+
+
+def getaddr(node: Any, msg: bytes, conn: Any) -> None:
+    """Run the `getaddr` callback, then the pass that sends what it queued."""
+    answer_getaddr(node, msg, conn)
+    P2pManager._send_queued_addrs(cast("P2pManager", None), conn, 1000.0)
+
+
 def make_node(
     addresses: Sequence[NetworkAddressV2],
     *,
@@ -247,14 +280,17 @@ def make_node(
     for address in addresses:
         peer_db.addresses.add(address)
     sent: list[Any] = []
-    conn = SimpleNamespace(
-        prefer_addressv2=prefer_addressv2,
-        send=sent.append,
-        answered_getaddr=False,
-        addr_relay_enabled=False,
-        inbound=inbound,
-        addr_cache_key=addr_cache_key,
-        permissions=NetPermissionFlags.NONE,
+    conn = with_address_queue(
+        SimpleNamespace(
+            prefer_addressv2=prefer_addressv2,
+            send=sent.append,
+            answered_getaddr=False,
+            addr_relay_enabled=False,
+            inbound=inbound,
+            addr_cache_key=addr_cache_key,
+            permissions=NetPermissionFlags.NONE,
+            addr_known=AddrKnown(),
+        )
     )
     keys = {host_key(address) for address in discouraged}
     node = SimpleNamespace(
@@ -390,6 +426,33 @@ def test_a_getaddr_answer_is_capped_at_max_addr_to_send() -> None:
     assert len(answer.addresses) == MAX_ADDR_TO_SEND
 
 
+def test_a_getaddr_answer_replaces_what_was_queued_and_waits_for_the_send() -> None:
+    """ISS 1867: Core's `GETADDR` handler clears the queue, then queues."""
+    address = an_address()
+    node, conn, sent = make_node([address])
+    queued = an_address(5)
+    conn.push_address(queued)
+    answer_getaddr(node, b"", conn)
+    assert sent == []
+    assert conn.take_addresses() == [address]
+
+
+def test_a_getaddr_answer_goes_through_one_replacement_of_the_queue() -> None:
+    """ISS 1867: a send never finds half the answer, so it is one call."""
+    address = an_address()
+    node, conn, _ = make_node([address])
+    calls: list[list[NetworkAddressV2]] = []
+    replace = conn.replace_addresses
+
+    def recording(addresses: Sequence[NetworkAddressV2]) -> None:
+        calls.append(list(addresses))
+        replace(addresses)
+
+    conn.replace_addresses = recording
+    answer_getaddr(node, b"", conn)
+    assert calls == [[address]]
+
+
 def test_a_second_getaddr_on_the_same_connection_is_ignored() -> None:
     """A peer asking `getaddr` twice on one connection is served the table once.
 
@@ -410,13 +473,16 @@ def another_conn(
     `addr_cache_key` defaults to the same key `make_node` does, so the
     two share one `getaddr` cache unless a test asks otherwise.
     """
-    return SimpleNamespace(
-        prefer_addressv2=False,
-        send=sent.append,
-        answered_getaddr=False,
-        permissions=NetPermissionFlags.NONE,
-        inbound=True,
-        addr_cache_key=addr_cache_key,
+    return with_address_queue(
+        SimpleNamespace(
+            prefer_addressv2=False,
+            send=sent.append,
+            answered_getaddr=False,
+            permissions=NetPermissionFlags.NONE,
+            inbound=True,
+            addr_cache_key=addr_cache_key,
+            addr_known=AddrKnown(),
+        )
     )
 
 
@@ -536,6 +602,58 @@ def test_a_discouraged_host_is_left_out_of_a_getaddr_answer(
     assert answer.addresses == (kept,)
 
 
+def test_what_the_peer_knows_is_left_out_of_a_getaddr_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1851: Core's `PushAddress` and `MaybeSendAddr` read `m_addr_known`.
+
+    An address the filter holds is left out, and so is one it finds
+    without having held it; what is sent is recorded in it.
+    """
+    monkeypatch.setattr(PeerDB, "get_addr", an_unsampled_table)
+    now = int(time.time())
+    held = peer_address("1.2.3.4", 18444, timestamp=now)
+    bloom = a_small_filter(service_key(held))
+    hosts = (f"10.0.{i // 256}.{i % 256}" for i in range(2000))
+    candidates = (peer_address(host, 18444, timestamp=now) for host in hosts)
+    never = next(a for a in candidates if service_key(a) in bloom)
+    sent_one = peer_address("1.2.3.5", 18444, timestamp=now)
+    node, conn, sent = make_node([held, never, sent_one], prefer_addressv2=True)
+    conn.addr_known = bloom
+    getaddr(node, b"", conn)
+    (answer,) = sent
+    assert answer.addresses == (sent_one,)
+    assert service_key(sent_one) in conn.addr_known
+
+
+def test_an_address_a_peer_gossips_is_known_to_it_discouraged_or_not() -> None:
+    """ISS 1851: Core's `AddAddressKnown` runs before the discouraged check."""
+    kept = a_gossiped_address("1.2.3.4")
+    discouraged = a_gossiped_address("1.2.3.5")
+    node = a_handshake_node(
+        peer_db=PeerDB(cast("Chain", None), cast("Path", None)),
+        discouraged_hosts=["1.2.3.5"],
+    )
+    peer = a_gossiping_peer()
+    addrv2(node, AddrV2([kept, discouraged]).serialize(), peer)
+    assert service_key(kept) in peer.addr_known
+    assert service_key(discouraged) in peer.addr_known
+
+
+def test_the_record_of_known_addresses_is_sized_as_core_s() -> None:
+    """ISS 1851: Core's `{5000, 0.001}` filter.
+
+    The figures are what Core's own filter printed for those parameters, in
+    `tests/unit/_data/core_rolling_bloom_runs.txt`.
+    """
+    bloom = AddrKnown()
+    assert (bloom._lane_bytes // 8, bloom._per_generation, bloom._size) == (
+        10,
+        2_500,
+        3_370,
+    )
+
+
 def test_a_banned_host_is_left_out_of_a_getaddr_answer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -612,11 +730,10 @@ def a_peer(**attributes: Any) -> Any:
         # recorded among what was sent, so that its place after them shows
         stop_when_sent=lambda: sent.append("stop_when_sent"),
         status=P2pConnStatus.Open,
-        # what Connection starts every fresh connection at, and what
-        # `advance_cfilters` reads to pace a `getcfilters` answer: never
-        # written here, so it never trips that pacing bound, the same
-        # way a real connection whose peer reads promptly never would
-        queued_send_bytes=0,
+        # Core's `fPauseSend`, as a fresh connection starts: never set
+        # here, as a real connection whose peer reads promptly never
+        # sets it
+        pause_send=False,
         version_message=None,
         block_availability=BlockAvailability(),
         chain_sync=ChainSyncTimeoutState(),
@@ -624,6 +741,8 @@ def a_peer(**attributes: Any) -> Any:
         prefer_addressv2=False,
         prefers_headers=False,
         requested_hb_cmpctblocks=False,
+        provides_cmpctblocks=False,
+        bip152_highbandwidth_to=False,
         # what Connection sets, and what the version callback overwrites
         relay_tx=True,
         download_queue=[],
@@ -662,12 +781,15 @@ def a_peer(**attributes: Any) -> Any:
         permissions=NetPermissionFlags.NONE,
         address=peer_address("1.2.3.4", 18444),
         stats=PeerStats(),
+        known_tx_inventory=KnownTxInventory(),
+        addr_known=AddrKnown(),
         # what `Connection` starts every connection at, and what
         # `verack`, `addr` and `addrv2` spend and top up (ISS 1166)
         addr_token_bucket=1.0,
         addr_token_timestamp=time.time(),
         # what `Connection` starts every connection at (ISS 1178)
         addr_relay_enabled=False,
+        getaddr_sent=False,
     )
     peer.__dict__.update(attributes)
     return peer
@@ -734,6 +856,7 @@ def a_handshake_node(
     """
     discouraged, record = discourage_recorder()
     seen: list[Any] = []
+    relayed: list[Any] = []
     discouraged_keys = {host_key(peer_address(host, 0)) for host in discouraged_hosts}
     own_nonces = set(pending_outbound_nonces)
     return SimpleNamespace(
@@ -759,6 +882,8 @@ def a_handshake_node(
             is_discouraged=lambda address: host_key(address) in discouraged_keys,
             ban_man=a_ban_man(*banned),
             seen_local=seen.append,
+            relay_address=lambda conn, address, now: relayed.append((conn, address)),
+            relayed=relayed,
         ),
         chainstate=SimpleNamespace(
             block_index=SimpleNamespace(
@@ -768,6 +893,14 @@ def a_handshake_node(
                 # own `height`, and no test here asserts on the value it
                 # stores. btclib-org/btclib-node#1397
                 active_chain=[b"\x00" * 32],
+                # that one block, timed now and the best header: a
+                # transaction accepted here is one the fee estimator tracks
+                header_dict={
+                    b"\x00" * 32: SimpleNamespace(
+                        header=SimpleNamespace(time=datetime.now(UTC))
+                    )
+                },
+                header_index=[b"\x00" * 32],
             )
         ),
         logger=SimpleNamespace(
@@ -1307,6 +1440,19 @@ def test_a_verack_completes_the_handshake() -> None:
     assert promoted == [9]
 
 
+def test_a_verack_stamps_ping_start_before_the_peer_is_promoted() -> None:
+    """ISS 1768: `_keep_alive` cannot ping a peer as it is promoted."""
+    stamped: list[float] = []
+    peer = a_peer(id=9, version_message=a_parsed_version(), wtxidrelay_received=True)
+    peer.ping_start = 0
+    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+    node = a_handshake_node(
+        promote_connection=lambda _: stamped.append(peer.ping_start), peer_db=peer_db
+    )
+    verack(node, b"", peer)
+    assert stamped[0] > 0
+
+
 def test_a_verack_from_an_inbound_peer_asks_it_for_no_addresses() -> None:
     """ISS 1166: Core sends `getaddr` to an outbound peer alone.
 
@@ -1590,11 +1736,12 @@ def test_a_sendcmpct_of_version_two_records_the_peer_s_choice(
     """The announce octet is whether this node was chosen high-bandwidth.
 
     Core's `SENDCMPCT` handler sets `m_requested_hb_cmpctblocks` from it
-    (btclib-org/btclib-node#1223).
+    (btclib-org/btclib-node#1223), and `m_provides_cmpctblocks` either way.
     """
     peer = a_peer(requested_hb_cmpctblocks=not requested)
     sendcmpct(a_handshake_node(), payload, peer)
     assert peer.requested_hb_cmpctblocks is requested
+    assert peer.provides_cmpctblocks
 
 
 def test_a_sendcmpct_announce_octet_above_one_is_misbehaving() -> None:
@@ -1623,6 +1770,7 @@ def test_a_sendcmpct_of_another_version_is_ignored() -> None:
     peer = a_peer()
     sendcmpct(a_handshake_node(), SendCmpct(announce=True, version=1).serialize(), peer)
     assert not peer.requested_hb_cmpctblocks
+    assert not peer.provides_cmpctblocks
 
 
 def test_a_short_sendcmpct_is_refused() -> None:
@@ -1819,6 +1967,79 @@ def test_the_addresses_a_peer_sends_are_kept() -> None:
         node = a_handshake_node(peer_db=peer_db)
         callback(node, message.serialize(), a_gossiping_peer())
         assert peer_db.addresses == {_as_stored(address) for address in given}
+
+
+def test_a_recent_routable_address_is_relayed() -> None:
+    """ISS 1867: `RelayAddress` is called for what a small message gossips."""
+    node = a_handshake_node()
+    peer = a_gossiping_peer()
+    address = a_gossiped_address("8.8.8.8")
+    addrv2(node, AddrV2([address]).serialize(), peer)
+    assert node.p2p_manager.relayed == [(peer, address)]
+
+
+@pytest.mark.parametrize(
+    "reason",
+    ["stale", "unroutable", "getaddr unanswered", "message too large", "discouraged"],
+)
+def test_an_address_core_does_not_relay_is_not_relayed(reason: str) -> None:
+    """ISS 1867: recent, routable, not a dump, and no `getaddr` unanswered."""
+    node = a_handshake_node(discouraged_hosts=["8.8.8.8"])
+    peer = a_gossiping_peer()
+    address = a_gossiped_address("8.8.8.8" if reason == "discouraged" else "8.8.4.4")
+    others = []
+    if reason == "stale":
+        address = replace(address, timestamp=int(time.time()) - 601)
+    elif reason == "unroutable":
+        address = a_gossiped_address("192.168.1.1")
+    elif reason == "getaddr unanswered":
+        peer.getaddr_sent = True
+    elif reason == "message too large":
+        others = [a_gossiped_address(f"8.8.{n}.1") for n in range(10, 20)]
+    addrv2(node, AddrV2([address, *others]).serialize(), peer)
+    relayed = node.p2p_manager.relayed
+    assert [a for _, a in relayed if a == address] == []
+
+
+def test_a_message_of_ten_is_relayed_and_of_eleven_is_not() -> None:
+    """ISS 1867: `vAddr.size() <= 10`."""
+    given = [a_gossiped_address(f"8.8.{n}.1") for n in range(11)]
+    node = a_handshake_node()
+    addrv2(node, AddrV2(given[:10]).serialize(), a_gossiping_peer())
+    assert len(node.p2p_manager.relayed) == 10
+    addrv2(node, AddrV2(given).serialize(), a_gossiping_peer())
+    assert len(node.p2p_manager.relayed) == 10
+
+
+def test_a_short_message_ends_the_wait_for_the_getaddr_answer() -> None:
+    """ISS 1867: `m_getaddr_sent` is cleared by a message of under 1000."""
+    node = a_handshake_node()
+    peer = a_gossiping_peer(getaddr_sent=True)
+    addrv2(node, AddrV2([a_gossiped_address("8.8.8.8")]).serialize(), peer)
+    assert peer.getaddr_sent is False
+
+
+def test_a_full_getaddr_answer_leaves_the_wait_for_more() -> None:
+    """ISS 1867: a message of 1000 is not taken to be the whole answer."""
+    node = a_handshake_node()
+    peer = a_gossiping_peer(getaddr_sent=True)
+    given = [
+        a_gossiped_address(f"8.{n // 250 + 1}.{n % 250}.1")
+        for n in range(MAX_ADDR_TO_SEND)
+    ]
+    addrv2(node, AddrV2(given).serialize(), peer)
+    assert peer.getaddr_sent is True
+
+
+def test_a_version_marks_the_getaddr_it_sends_as_unanswered() -> None:
+    """ISS 1867: `m_getaddr_sent` is set where `GETADDR` is sent."""
+    node = a_handshake_node()
+    outbound = a_peer(inbound=False)
+    inbound = a_peer(inbound=True)
+    version(node, a_version(), outbound)
+    version(node, a_version(), inbound)
+    assert outbound.getaddr_sent is True
+    assert inbound.getaddr_sent is False
 
 
 def test_an_inbound_peer_s_self_announcement_costs_no_penalty_port_aside() -> None:
@@ -2266,6 +2487,10 @@ def a_data_node(
     node = a_handshake_node(status=status)
     node.is_initial_block_download = is_initial_block_download
     node.mempool = mempool if mempool is not None else Mempool(Logger(debug=True))
+    # a file that is not there: an estimator with no history
+    node.fee_estimator = FeeEstimator(
+        Path("/nonexistent/fee_estimates.dat"), Logger(debug=True)
+    )
     node.config.chain = node.chain
     # `new_pow_valid_block`'s own high-water mark, Core's
     # `m_highest_fast_announce`, zero until a call moves it
@@ -2273,18 +2498,11 @@ def a_data_node(
     # `main.new_pow_valid_block`'s last block, Core's `m_most_recent_block`
     node.most_recent_block = None
     node.block_db = block_db
-    node.download_manager = SimpleNamespace(
-        received_txs=[],
-        inv_txs=[],
-        # every (peer, txid, wtxid) `tx` completed an announcement for
-        tx_responses=[],
-        headers_sync_timeouts={},
-        inv_triggered_getheaders=set(),
-        last_block_inv_triggering_headers_sync=None,
-        last_getheaders_timestamps={},
-        # every (peer, header) `headers` asked to direct-fetch towards
-        direct_fetches=[],
-    )
+    node.download_manager = DownloadManager(node, node.logger)
+    # every (peer, txid, wtxid) `tx` completed an announcement for
+    node.download_manager.tx_responses = []
+    # every (peer, header) `headers` asked to direct-fetch towards
+    node.download_manager.direct_fetches = []
     node.download_manager.received_tx_response = lambda conn_id, txid, wtxid: (
         node.download_manager.tx_responses.append((conn_id, txid, wtxid))
     )
@@ -2292,8 +2510,9 @@ def a_data_node(
         node.download_manager.direct_fetches.append((conn.id, last_header))
     )
     # written by `getdata` only where `advance_getdata` pauses; empty
-    # here for every test that never trips that pacing bound
+    # here for every test that never sets `pause_send`
     node.pending_getdata = {}
+    node.pending_cfilters = {}
     if block_index is not None:
         node.chainstate.block_index = block_index
     node.tx_checks = TxChecks()
@@ -2330,6 +2549,8 @@ def test_a_transaction_that_verifies_is_kept_and_reported(
     assert node.download_manager.received_txs == [(3, transaction.hash)]
     # a novel transaction the mempool took: what eviction reads (ISS 1064)
     assert peer.last_novel_tx_time > 0
+    # Core's `TransactionAddedToMempool`, on a chain the double keeps current
+    assert list(node.fee_estimator.mempool_txs) == [transaction.id]
 
 
 @pytest.mark.parametrize(
@@ -2571,7 +2792,7 @@ def test_a_transaction_missing_its_parent_is_reverified_on_resubmission(
 
     Unlike a genuine refusal: the missing parent can arrive on its own,
     with no block having to connect first, so nothing tells
-    `Mempool`'s reject cache when a `MissingPrevoutError` might stop
+    `Mempool`'s reject filter when a `MissingPrevoutError` might stop
     holding -- Core's identical exemption is `TX_MISSING_INPUTS`, never
     added to `m_recent_rejects` either.
     """
@@ -2614,6 +2835,35 @@ def test_a_transaction_already_held_skips_reverification(
     node = a_data_node()
     node.mempool.add_tx(transaction)
     tx(node, TxMsg(transaction, include_witness=True).serialize(), a_peer(id=3))
+    assert calls == []
+
+
+@pytest.mark.parametrize("site", ["confirmed", "rejects"])
+def test_what_a_filter_finds_skips_verification(
+    monkeypatch: pytest.MonkeyPatch, site: str
+) -> None:
+    """ISS 1851: Core's `ReceivedTx` drops what `AlreadyHaveTx` finds.
+
+    Whether recently confirmed or refused: a transaction the filter
+    holds, and one it finds without having held it, are not verified.
+    """
+    calls: list[bytes] = []
+    monkeypatch.setattr(
+        cb,
+        "pre_verify_mempool_acceptance",
+        lambda node, transaction: calls.append(transaction.hash),
+    )
+    node = a_data_node()
+    held = a_transaction()
+    bloom = a_small_filter(held.hash)
+    if site == "confirmed":
+        node.download_manager.recent_confirmed = bloom
+    else:
+        node.mempool._recent_rejects = bloom
+    candidates = (a_transaction() for _ in range(2000))
+    never = next(t for t in candidates if t.hash in bloom)
+    for transaction in (held, never):
+        tx(node, TxMsg(transaction, include_witness=True).serialize(), a_peer(id=3))
     assert calls == []
 
 
@@ -3419,7 +3669,7 @@ def test_a_transaction_is_taken_in_out_of_ibd_below_block_synced(
     assert node.mempool.contains_tx(transaction)
     items = [Inventory(InventoryType.MSG_WTX, announced.hash)]
     inv(node, Inv(items).serialize(), peer)
-    assert node.download_manager.inv_txs == [(3, announced.hash)]
+    assert node.download_manager.inv_txs == [(3, announced.hash, False)]
 
 
 def test_a_transaction_announced_in_initial_block_download_is_ignored() -> None:
@@ -3571,7 +3821,7 @@ def test_a_transaction_announced_that_we_lack_is_wanted() -> None:
     peer = a_peer(id=4, wtxidrelay_received=True)
     items = [Inventory(InventoryType.MSG_WTX, transaction.hash)]
     inv(node, Inv(items).serialize(), peer)
-    assert node.download_manager.inv_txs == [(4, transaction.hash)]
+    assert node.download_manager.inv_txs == [(4, transaction.hash, False)]
     assert not peer.sent
 
 
@@ -3593,7 +3843,67 @@ def test_a_transaction_inv_is_read_in_the_peer_s_own_relay_mode(
     ]
     inv(node, Inv(items).serialize(), peer)
     kept = transaction.hash if by_wtxid else transaction.id
-    assert node.download_manager.inv_txs == [(4, kept)]
+    assert node.download_manager.inv_txs == [(4, kept, not by_wtxid)]
+
+
+@pytest.mark.parametrize(
+    ("kinds", "services"),
+    [
+        ((InventoryType.MSG_WITNESS_TX,), ServiceFlags.NODE_WITNESS),
+        (
+            (InventoryType.MSG_TX, InventoryType.MSG_WITNESS_TX),
+            ServiceFlags.NODE_WITNESS,
+        ),
+        ((InventoryType.MSG_WITNESS_TX,), ServiceFlags.NODE_NONE),
+    ],
+)
+def test_a_witness_tx_inv_is_a_txid_announcement_without_wtxidrelay(
+    kinds: tuple[InventoryType, ...], services: ServiceFlags
+) -> None:
+    """ISS 1772: Core reads `MSG_WITNESS_TX` as a txid announcement.
+
+    From a peer that did not send `wtxidrelay` it leads to one `getdata` for
+    the txid, once even where `MSG_TX` names it too. The `getdata` is by
+    `MSG_WITNESS_TX` where the peer offers `NODE_WITNESS`, else by `MSG_TX`.
+    """
+    peer = a_conn(
+        1,
+        inbound=False,
+        wtxidrelay_received=False,
+        version_message=a_services_version(services | ServiceFlags.NODE_NETWORK),
+    )
+    manager = make_manager([peer])
+    txid = a_hash(7)
+    items = [Inventory(kind, txid) for kind in kinds]
+    inv(manager.node, Inv(items).serialize(), peer)
+    manager.tx_download()
+    fetch = (
+        InventoryType.MSG_WITNESS_TX
+        if services & ServiceFlags.NODE_WITNESS
+        else InventoryType.MSG_TX
+    )
+    (asked_for,) = only(peer, GetData)
+    assert asked_for.items == (Inventory(fetch, txid),)
+
+
+@pytest.mark.parametrize("held", [False, True])
+def test_a_witness_tx_inv_from_a_wtxid_relay_peer_is_a_txid_announcement(
+    *, held: bool
+) -> None:
+    """ISS 1774: Core reads `MSG_WITNESS_TX` as a txid from a wtxid-relay peer.
+
+    It is queued as a txid, and not queued where the mempool holds that txid.
+    """
+    transaction = a_transaction()
+    mempool = Mempool(Logger(debug=True))
+    if held:
+        mempool.add_tx(transaction)
+    node = a_data_node(mempool=mempool)
+    peer = a_peer(id=4, wtxidrelay_received=True)
+    items = [Inventory(InventoryType.MSG_WITNESS_TX, transaction.id)]
+    inv(node, Inv(items).serialize(), peer)
+    expected = [] if held else [(4, transaction.id, True)]
+    assert node.download_manager.inv_txs == expected
 
 
 @pytest.mark.parametrize("by_wtxid", [True, False])
@@ -4313,19 +4623,20 @@ def test_getblocktxn_on_a_pruned_node_is_silent_for_a_block_it_lacks(
 
 
 def test_an_inventory_of_neither_kind_is_skipped() -> None:
-    """A `getdata` item neither a tx type nor a block type is skipped."""
+    """A `getdata` item of neither family is popped and skipped."""
     node = a_data_node(block_db=SimpleNamespace(get_block=lambda h: None))
     peer = a_peer()
     items = [Inventory(InventoryType.MSG_FILTERED_BLOCK, b"\x11" * 32)]
     getdata(node, GetData(items).serialize(), peer)
     assert not peer.sent
+    assert peer.id not in node.pending_getdata
 
 
 def test_getdata_pauses_once_the_queue_is_full_and_registers_the_rest() -> None:
-    """`getdata` stops serving once `conn` is at its pacing bound.
+    """`getdata` serves nothing while `conn.pause_send` is set.
 
-    Nothing is sent -- the peer was already at the bound before this
-    request arrived -- and the item is left on `node.pending_getdata`,
+    Nothing is sent -- the peer was already paused before this request
+    arrived -- and the item is left on `node.pending_getdata`,
     keyed by the connection's own id, for `p2p.main.resume_getdata` to
     pick up later.
     """
@@ -4333,7 +4644,7 @@ def test_getdata_pauses_once_the_queue_is_full_and_registers_the_rest() -> None:
     mempool = Mempool(Logger(debug=True))
     mempool.add_tx(transaction)
     node = a_data_node(mempool=mempool)
-    peer = a_peer(queued_send_bytes=MAX_GETDATA_INFLIGHT_BYTES)
+    peer = a_peer(pause_send=True)
     item = Inventory(InventoryType.MSG_WTX, transaction.hash)
     getdata(node, GetData([item]).serialize(), peer)
     assert not peer.sent
@@ -4355,13 +4666,13 @@ def test_a_paused_getdata_answer_resumes_once_the_queue_drains() -> None:
     mempool = Mempool(Logger(debug=True))
     mempool.add_tx(transaction)
     node = a_data_node(mempool=mempool)
-    peer = a_peer(queued_send_bytes=MAX_GETDATA_INFLIGHT_BYTES)
+    peer = a_peer(pause_send=True)
     item = Inventory(InventoryType.MSG_WTX, transaction.hash)
     getdata(node, GetData([item]).serialize(), peer)
     assert not peer.sent
     _conn, items = node.pending_getdata[peer.id]
 
-    peer.queued_send_bytes = 0
+    peer.pause_send = False
     assert advance_getdata(node, peer, items) is True
     assert not items
     (answer,) = peer.sent
@@ -4369,38 +4680,11 @@ def test_a_paused_getdata_answer_resumes_once_the_queue_drains() -> None:
     assert answer.tx == transaction
 
 
-def test_a_second_getdata_while_the_first_is_still_paused_is_not_lost() -> None:
-    """A second `getdata` arriving while the first is paused extends it.
-
-    Neither request is dropped: both are served in full, in the order
-    the two arrived, once the connection's own queue drains -- the same
-    rule `get_cfilters`'s own pending range follows.
-    """
-    first = a_transaction()
-    second = a_transaction()
-    mempool = Mempool(Logger(debug=True))
-    mempool.add_tx(first)
-    mempool.add_tx(second)
-    node = a_data_node(mempool=mempool)
-    peer = a_peer(queued_send_bytes=MAX_GETDATA_INFLIGHT_BYTES)
-    item1 = Inventory(InventoryType.MSG_WTX, first.hash)
-    item2 = Inventory(InventoryType.MSG_WTX, second.hash)
-    getdata(node, GetData([item1]).serialize(), peer)
-    assert not peer.sent
-    getdata(node, GetData([item2]).serialize(), peer)
-    _conn, items = node.pending_getdata[peer.id]
-    assert list(items) == [item1, item2]
-
-    peer.queued_send_bytes = 0
-    assert advance_getdata(node, peer, items) is True
-    assert [msg.tx for msg in peer.sent] == [first, second]
-
-
 def test_getdata_notfound_covers_only_what_a_call_actually_served() -> None:
     """`notfound` batches misses served this call, not ones still pending.
 
-    A miss found before the pacing bound trips is reported; an item
-    never reached because the bound tripped first is left on
+    A miss found before the pause is reported; an item never reached
+    because the pause came first is left on
     `node.pending_getdata` instead, unreported until a later call
     actually gets to it -- matching Core's own `vNotFound`, built fresh
     by every `ProcessGetData` call rather than carried across them.
@@ -4413,15 +4697,14 @@ def test_getdata_notfound_covers_only_what_a_call_actually_served() -> None:
     hit = Inventory(InventoryType.MSG_WTX, held.hash)
     never_reached = Inventory(InventoryType.MSG_TX, b"\x22" * 32)
 
-    peer = a_peer(queued_send_bytes=0)
+    peer = a_peer()
     sent = peer.sent
 
     def send_then_fill(msg: Any) -> None:
         sent.append(msg)
-        # stands in for what `Connection.send` would actually do: this
-        # send is what fills the connection's own queue up to the bound,
-        # tripping the pause before `never_reached` is looked at
-        peer.queued_send_bytes = MAX_GETDATA_INFLIGHT_BYTES
+        # stands in for what `Connection.send` would do: this send fills
+        # the queue past the bound, pausing before `never_reached`
+        peer.pause_send = True
 
     peer.send = send_then_fill
     getdata(node, GetData([missing, hit, never_reached]).serialize(), peer)
@@ -4443,12 +4726,11 @@ def test_getdata_stops_sending_once_the_connection_closes_mid_answer() -> None:
     found closed is dropped rather than parked, nothing more ever being
     owed to it.
     """
-    blocks = [a_block() for _ in range(4)]
-    lookup = {b.header.hash: b for b in blocks}
-    node = a_data_node(
-        block_index=a_tall_block_index(0, *lookup),
-        block_db=SimpleNamespace(get_block=lookup.get),
-    )
+    transactions = [a_transaction() for _ in range(4)]
+    mempool = Mempool(Logger(debug=True))
+    for transaction in transactions:
+        mempool.add_tx(transaction)
+    node = a_data_node(mempool=mempool)
     peer = a_peer()
     sent = peer.sent
 
@@ -4458,44 +4740,10 @@ def test_getdata_stops_sending_once_the_connection_closes_mid_answer() -> None:
             peer.status = P2pConnStatus.Closed
 
     peer.send = send_then_close
-    items = [Inventory(InventoryType.MSG_BLOCK, b.header.hash) for b in blocks]
+    items = [Inventory(InventoryType.MSG_WTX, tx.hash) for tx in transactions]
     getdata(node, GetData(items).serialize(), peer)
     assert len(peer.sent) == 2
     assert peer.id not in node.pending_getdata
-
-
-def test_a_getdata_past_the_pending_cap_is_silent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A third request stacked past `MAX_PENDING_GETDATA_ITEMS` is silent.
-
-    The same answer `get_cfilters` already gives a request past its own
-    `MAX_PENDING_CFILTER_HASHES`, and `getdata`'s own docstring is
-    where the reasoning behind it, and Core's own different one, are
-    argued.
-
-    `MAX_PENDING_GETDATA_ITEMS` is `2 * MAX_INV_SZ` -- fifty thousand
-    apiece, where `get_cfilters`'s own cap is two full requests of
-    `MAX_GETCFILTERS_SIZE` (one thousand) -- so this test monkeypatches
-    it down rather than actually building on the order of a hundred
-    thousand `Inventory` entries to reach the same branch.
-    """
-    monkeypatch.setattr(cb, "MAX_PENDING_GETDATA_ITEMS", 4)
-    node = a_data_node(block_db=SimpleNamespace(get_block=lambda h: None))
-    peer = a_peer(queued_send_bytes=MAX_GETDATA_INFLIGHT_BYTES)
-    hashes = [bytes([i]) * 32 for i in range(5)]
-    first = [Inventory(InventoryType.MSG_BLOCK, h) for h in hashes[:2]]
-    second = [Inventory(InventoryType.MSG_BLOCK, h) for h in hashes[2:4]]
-    getdata(node, GetData(first).serialize(), peer)
-    getdata(node, GetData(second).serialize(), peer)
-    _conn, items = node.pending_getdata[peer.id]
-    assert len(items) == 4
-
-    third = [Inventory(InventoryType.MSG_BLOCK, hashes[4])]
-    getdata(node, GetData(third).serialize(), peer)
-    assert not peer.sent
-    _conn, items = node.pending_getdata[peer.id]
-    assert len(items) == 4
 
 
 class FakeHeaderIndex:
@@ -5255,7 +5503,7 @@ def a_filters_node(
             info=lambda *a: None, warning=lambda *a: None, log_debug=lambda *a: None
         ),
         # written by `get_cfilters` only where `advance_cfilters` pauses;
-        # empty here for every test that never trips that pacing bound
+        # empty here for every test that never sets `pause_send`
         pending_cfilters={},
     )
 
@@ -5322,15 +5570,15 @@ def test_one_block_is_a_range_of_one() -> None:
 
 
 def test_get_cfilters_pauses_once_the_queue_is_full_and_registers_the_rest() -> None:
-    """`get_cfilters` stops scheduling once `conn` is at its pacing bound.
+    """`get_cfilters` sends nothing while `conn.pause_send` is set.
 
-    Nothing is sent -- the peer was already at the bound before this
-    request arrived -- and every block hash is left on
+    Nothing is sent -- the peer was already paused before this request
+    arrived -- and every block hash is left on
     `node.pending_cfilters`, keyed by the connection's own id, for
     `p2p.main.resume_cfilters` to pick up later.
     """
     node = a_filters_node(length=8)
-    peer = a_peer(queued_send_bytes=MAX_CFILTERS_INFLIGHT_BYTES)
+    peer = a_peer(pause_send=True)
     a_getcfilters(node, peer, 2, 5)
     assert not peer.sent
     conn, block_hashes = node.pending_cfilters[peer.id]
@@ -5347,12 +5595,12 @@ def test_a_paused_answer_resumes_once_the_queue_drains() -> None:
     loop around it, which `tests/unit/p2p/main_test.py` already covers.
     """
     node = a_filters_node(length=8)
-    peer = a_peer(queued_send_bytes=MAX_CFILTERS_INFLIGHT_BYTES)
+    peer = a_peer(pause_send=True)
     a_getcfilters(node, peer, 2, 5)
     assert not peer.sent
     _conn, block_hashes = node.pending_cfilters[peer.id]
 
-    peer.queued_send_bytes = 0
+    peer.pause_send = False
     assert advance_cfilters(node, peer, block_hashes) is True
     assert not block_hashes
     assert [msg.block_hash for msg in peer.sent] == [
@@ -5360,77 +5608,12 @@ def test_a_paused_answer_resumes_once_the_queue_drains() -> None:
     ]
 
 
-def test_a_second_getcfilters_while_the_first_is_still_paused_is_not_lost() -> None:
-    """A second `getcfilters` arriving while the first is paused extends it.
-
-    Neither range is dropped: both are answered in full, in the order
-    the two requests arrived, once the connection's own queue drains --
-    rather than the second overwriting `node.pending_cfilters`'s entry
-    for this connection and discarding the first range's own remaining
-    block hashes, which is what a plain assignment there used to do.
-    """
-    node = a_filters_node(length=20)
-    peer = a_peer(queued_send_bytes=MAX_CFILTERS_INFLIGHT_BYTES)
-    a_getcfilters(node, peer, 0, 5)
-    assert not peer.sent
-    a_getcfilters(node, peer, 10, 12)
-    _conn, block_hashes = node.pending_cfilters[peer.id]
-    assert list(block_hashes) == [
-        h.to_bytes(32, "big") for h in (0, 1, 2, 3, 4, 5, 10, 11, 12)
-    ]
-
-    peer.queued_send_bytes = 0
-    assert advance_cfilters(node, peer, block_hashes) is True
-    assert [msg.block_hash for msg in peer.sent] == [
-        h.to_bytes(32, "big") for h in (0, 1, 2, 3, 4, 5, 10, 11, 12)
-    ]
-
-
-def test_a_getcfilters_past_the_pending_cap_is_silent() -> None:
-    """A third request stacked past `MAX_PENDING_CFILTER_HASHES` is silent.
-
-    Two requests of `MAX_GETCFILTERS_SIZE` heights apiece -- `_filter_range`'s
-    own bound on any one of them -- already reach the cap between them; a
-    third is refused whole rather than partially extending it.
-
-    `_prepare_filter_request` now disconnects a request it declines on
-    protocol-validity grounds -- an unsupported filter type, an invalid
-    stop hash, a range too long -- matching Core (ISS 1477). A peer
-    pipelining past what this connection still extends for is not one of
-    those: it is ordinary pipelining this node already tolerates
-    elsewhere, so this bound answers it with silence instead, for lack
-    of a defined refusal message BIP157 leaves it to send -- the same
-    reasoning `MAX_PENDING_CFILTER_HASHES`'s own comment argues.
-    """
-    node = a_filters_node(length=MAX_PENDING_CFILTER_HASHES + 20)
-    peer = a_peer(queued_send_bytes=MAX_CFILTERS_INFLIGHT_BYTES)
-    a_getcfilters(node, peer, 0, MAX_GETCFILTERS_SIZE - 1)
-    a_getcfilters(node, peer, MAX_GETCFILTERS_SIZE, MAX_PENDING_CFILTER_HASHES - 1)
-    _conn, block_hashes = node.pending_cfilters[peer.id]
-    assert len(block_hashes) == MAX_PENDING_CFILTER_HASHES
-
-    a_getcfilters(
-        node,
-        peer,
-        MAX_PENDING_CFILTER_HASHES,
-        MAX_PENDING_CFILTER_HASHES,
-    )
-    assert not peer.sent
-    assert not peer.stopped
-    _conn, block_hashes = node.pending_cfilters[peer.id]
-    assert len(block_hashes) == MAX_PENDING_CFILTER_HASHES
-
-
 def test_get_cfilters_stops_once_the_connection_closes_mid_answer() -> None:
     """`get_cfilters` stops sending once the peer's own connection has closed.
 
-    What Connection.send's own send-buffer bound (#101) looks like
-    from here: conn.status turns P2pConnStatus.Closed partway through
-    the range, and nothing further in it is worth serializing.
+    `conn.status` turns `P2pConnStatus.Closed` partway through the range,
+    and nothing further in it is worth serializing.
     """
-    # what Connection.send's own send-buffer bound (#101) looks like
-    # from here: conn.status turns P2pConnStatus.Closed partway through
-    # the range, and nothing further in it is worth serializing
     node = a_filters_node(length=10)
     peer = a_peer()
     sent = peer.sent
@@ -7213,3 +7396,51 @@ def test_a_transaction_the_mempool_holds_is_announced_for_a_force_relay_peer(
     assert node.download_manager.received_txs == []
     tx(node, message, a_peer(id=5, permissions=NetPermissionFlags.FORCE_RELAY))
     assert node.download_manager.received_txs == [(5, transaction.hash)]
+
+
+@pytest.mark.parametrize("ibd", [True, False])
+@pytest.mark.parametrize("by_wtxid", [True, False])
+def test_a_transaction_inv_is_recorded_in_the_peer_s_own_relay_mode(
+    by_wtxid: bool,  # noqa: FBT001
+    ibd: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1630: Core's `AddKnownTx` runs on the matching items, in IBD too."""
+    transaction = a_transaction()
+    node = a_data_node(is_initial_block_download=ibd)
+    peer = a_peer(id=4, wtxidrelay_received=by_wtxid)
+    items = [
+        Inventory(InventoryType.MSG_WTX, transaction.hash),
+        Inventory(InventoryType.MSG_TX, transaction.id),
+    ]
+    inv(node, Inv(items).serialize(), peer)
+    kept, skipped = (
+        (transaction.hash, transaction.id)
+        if by_wtxid
+        else (transaction.id, transaction.hash)
+    )
+    assert kept in peer.known_tx_inventory
+    assert skipped not in peer.known_tx_inventory
+
+
+@pytest.mark.parametrize("by_wtxid", [True, False])
+def test_a_transaction_a_peer_sent_is_recorded_as_known_to_it(
+    monkeypatch: pytest.MonkeyPatch,
+    by_wtxid: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1630: Core's `AddKnownTx` on a received `tx`, by the peer's hash."""
+    monkeypatch.setattr(
+        cb,
+        "pre_verify_mempool_acceptance",
+        lambda node, tx: MempoolCandidate(0, 999, []),
+    )
+    transaction = a_transaction()
+    node = a_data_node()
+    peer = a_peer(id=4, wtxidrelay_received=by_wtxid)
+    tx(node, TxMsg(transaction, include_witness=True).serialize(), peer)
+    kept, skipped = (
+        (transaction.hash, transaction.id)
+        if by_wtxid
+        else (transaction.id, transaction.hash)
+    )
+    assert kept in peer.known_tx_inventory
+    assert skipped not in peer.known_tx_inventory

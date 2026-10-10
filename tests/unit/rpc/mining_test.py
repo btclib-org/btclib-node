@@ -40,7 +40,9 @@ from btclib_node.rpc.help import CATEGORY, HELP_TEXT
 from btclib_node.rpc.mining import (
     _long_poll_id,
     get_block_template,
+    wait_for_block,
     wait_for_block_height,
+    wait_for_new_block,
 )
 from btclib_node.signet import SIGNET_CHALLENGE
 from btclib_node.versionbits import UnknownActivations
@@ -1252,14 +1254,19 @@ def test_waitforblockheight_is_served_as_core_names_it() -> None:
     assert CATEGORY["waitforblockheight"] == "Blockchain"
 
 
-def wrong_type(*positions: tuple[int, str, str]) -> str:
+def wrong_types(*positions: tuple[int, str, str, str]) -> str:
     """Return Core's `Wrong type passed` message for `positions`."""
     lines = ",\n".join(
         f'    "Position {position} ({name})": "JSON value of type {kind} '
-        'is not of expected type number"'
-        for position, name, kind in positions
+        f'is not of expected type {expected}"'
+        for position, name, kind, expected in positions
     )
     return "Wrong type passed:\n{\n" + lines + "\n}"
+
+
+def wrong_type(*positions: tuple[int, str, str]) -> str:
+    """Return Core's `Wrong type passed` message for number `positions`."""
+    return wrong_types(*((*position, "number") for position in positions))
 
 
 @pytest.mark.parametrize(
@@ -1348,3 +1355,265 @@ def test_waitforblockheight_answers_the_tip_once_the_node_stops(node: Node) -> N
     node.terminate_flag.set()
 
     assert finish(job) == {"hash": tip(node), "height": 0}
+
+
+ZERO = "00" * 32
+
+
+def test_the_other_waits_are_served_as_core_names_them() -> None:
+    """In the table, with Core's argument names and category."""
+    assert callbacks["waitfornewblock"] is wait_for_new_block
+    assert callbacks["waitforblock"] is wait_for_block
+    assert arg_names["waitfornewblock"] == ("timeout", "current_tip")
+    assert arg_names["waitforblock"] == ("blockhash", "timeout")
+    assert CATEGORY["waitfornewblock"] == "Blockchain"
+    assert CATEGORY["waitforblock"] == "Blockchain"
+
+
+@pytest.mark.parametrize(
+    ("params", "code", "message"),
+    [
+        (["x"], -3, wrong_types((1, "timeout", "string", "number"))),
+        ([True], -3, wrong_types((1, "timeout", "bool", "number"))),
+        ([1, 1], -3, wrong_types((2, "current_tip", "number", "string"))),
+        ([1, []], -3, wrong_types((2, "current_tip", "array", "string"))),
+        (
+            ["x", 5],
+            -3,
+            wrong_types(
+                (1, "timeout", "string", "number"),
+                (2, "current_tip", "number", "string"),
+            ),
+        ),
+        ([1.5], -1, "JSON integer out of range"),
+        ([2**31], -1, "JSON integer out of range"),
+        ([-1], -1, "Negative timeout"),
+        ([-1, "zz"], -1, "Negative timeout"),
+        ([1.5, "zz"], -1, "JSON integer out of range"),
+        (
+            [1, "zz"],
+            -8,
+            "current_tip must be of length 64 (not 2, for 'zz')",
+        ),
+        (
+            [1, ZERO + " "],
+            -8,
+            f"current_tip must be of length 64 (not 65, for '{ZERO} ')",
+        ),
+        (
+            [1, "g" * 64],
+            -8,
+            f"current_tip must be hexadecimal string (not '{'g' * 64}')",
+        ),
+    ],
+)
+def test_waitfornewblock_refuses_what_core_refuses(
+    node: Node, params: list[Any], code: int, message: str
+) -> None:
+    """The codes and messages are `bitcoind` v31.1.0's, on regtest."""
+    assert refusal(lambda: wait_for_new_block(node, CONN, params)) == (code, message)
+
+
+def test_waitfornewblock_answers_once_the_tip_changes(node: Node) -> None:
+    """The tip at the call is the one it waits to see replaced."""
+    job = wait_for_new_block(node, CONN, [])
+    assert next(job) is False
+    assert next(job) is False
+
+    generate_to_address(node, CONN, [1, ADDRESS])
+
+    assert finish(job) == {"hash": tip(node), "height": 1}
+
+
+def test_waitfornewblock_waits_for_a_tip_other_than_its_current_tip(
+    node: Node,
+) -> None:
+    """A `current_tip` the node has already left is answered at once."""
+    old = tip(node)
+    generate_to_address(node, CONN, [1, ADDRESS])
+    with pytest.raises(StopIteration) as done:
+        next(wait_for_new_block(node, CONN, [None, old.hex()]))
+    assert done.value.value == {"hash": tip(node), "height": 1}
+
+    job = wait_for_new_block(node, CONN, [None, tip(node).hex()])
+    assert next(job) is False
+    generate_to_address(node, CONN, [1, ADDRESS])
+
+    assert finish(job) == {"hash": tip(node), "height": 2}
+
+
+def test_waitfornewblock_takes_a_hash_it_does_not_know_for_a_changed_tip(
+    node: Node,
+) -> None:
+    """As Core's `waitTipChanged` compares only hashes."""
+    with pytest.raises(StopIteration) as done:
+        next(wait_for_new_block(node, CONN, [1, ZERO]))
+    assert done.value.value == {"hash": tip(node), "height": 0}
+
+
+@pytest.mark.parametrize("timeout", [0, None])
+def test_waitfornewblock_without_a_timeout_waits_on(
+    node: Node, clock: Clock, timeout: int | None
+) -> None:
+    """0, its default, is no timeout."""
+    job = wait_for_new_block(node, CONN, [timeout])
+    clock.now += 10**6
+
+    assert next(job) is False
+
+
+def test_waitfornewblock_answers_the_tip_at_its_timeout(
+    node: Node, clock: Clock
+) -> None:
+    """The timeout is in milliseconds."""
+    job = wait_for_new_block(node, CONN, [1_000])
+    clock.now += 0.75
+    assert next(job) is False
+
+    clock.now += 0.25
+
+    assert finish(job) == {"hash": tip(node), "height": 0}
+
+
+def test_waitfornewblock_answers_the_tip_once_the_node_stops(node: Node) -> None:
+    """As Core's answers it on shutdown."""
+    job = wait_for_new_block(node, CONN, [])
+    assert next(job) is False
+
+    node.terminate_flag.set()
+
+    assert finish(job) == {"hash": tip(node), "height": 0}
+
+
+@pytest.mark.parametrize(
+    ("params", "code", "message"),
+    [
+        ([], -1, HELP_TEXT["waitforblock"]),
+        ([1], -3, wrong_types((1, "blockhash", "number", "string"))),
+        ([None], -3, wrong_types((1, "blockhash", "null", "string"))),
+        ([{}, None], -3, wrong_types((1, "blockhash", "object", "string"))),
+        ([ZERO, "x"], -3, wrong_types((2, "timeout", "string", "number"))),
+        ([ZERO, True], -3, wrong_types((2, "timeout", "bool", "number"))),
+        (
+            [1, "x"],
+            -3,
+            wrong_types(
+                (1, "blockhash", "number", "string"),
+                (2, "timeout", "string", "number"),
+            ),
+        ),
+        (["aa", -1], -8, "blockhash must be of length 64 (not 2, for 'aa')"),
+        (
+            ["g" * 64],
+            -8,
+            f"blockhash must be hexadecimal string (not '{'g' * 64}')",
+        ),
+        ([ZERO, 1.5], -1, "JSON integer out of range"),
+        ([ZERO, 2**31], -1, "JSON integer out of range"),
+        ([ZERO, -1], -1, "Negative timeout"),
+    ],
+)
+def test_waitforblock_refuses_what_core_refuses(
+    node: Node, params: list[Any], code: int, message: str
+) -> None:
+    """The codes and messages are `bitcoind` v31.1.0's, on regtest."""
+    assert refusal(lambda: wait_for_block(node, CONN, params)) == (code, message)
+
+
+@pytest.mark.parametrize("timeout", [[], [None], [10]])
+def test_waitforblock_answers_at_once_where_the_tip_is_the_block(
+    node: Node, timeout: list[Any]
+) -> None:
+    """The tip, with no step that waits, in either case of its hex."""
+    for text in (tip(node).hex(), tip(node).hex().upper()):
+        with pytest.raises(StopIteration) as done:
+            next(wait_for_block(node, CONN, [text, *timeout]))
+        assert done.value.value == {"hash": tip(node), "height": 0}
+
+
+def test_waitforblock_answers_once_the_tip_is_the_block(node: Node) -> None:
+    """The block is the tip again once it is reconsidered."""
+    [wanted] = generate_to_address(node, CONN, [1, ADDRESS])
+    callbacks["invalidateblock"](node, CONN, [wanted.hex()])
+    job = wait_for_block(node, CONN, [wanted.hex()])
+    assert next(job) is False
+    assert next(job) is False
+
+    callbacks["reconsiderblock"](node, CONN, [wanted.hex()])
+
+    assert finish(job) == {"hash": wanted, "height": 1}
+
+
+@pytest.mark.parametrize("timeout", [0, None])
+def test_waitforblock_without_a_timeout_waits_on(
+    node: Node, clock: Clock, timeout: int | None
+) -> None:
+    """0, its default, is no timeout."""
+    job = wait_for_block(node, CONN, [ZERO, timeout])
+    clock.now += 10**6
+
+    assert next(job) is False
+
+
+def test_waitforblock_answers_the_tip_at_its_timeout(node: Node, clock: Clock) -> None:
+    """The timeout is in milliseconds, and the tip then is answered."""
+    job = wait_for_block(node, CONN, [ZERO, 1_000])
+    clock.now += 0.75
+    assert next(job) is False
+    generate_to_address(node, CONN, [1, ADDRESS])
+
+    clock.now += 0.25
+
+    assert finish(job) == {"hash": tip(node), "height": 1}
+
+
+def test_waitforblock_answers_the_tip_once_the_node_stops(node: Node) -> None:
+    """As Core's answers it on shutdown."""
+    job = wait_for_block(node, CONN, [ZERO])
+    assert next(job) is False
+
+    node.terminate_flag.set()
+
+    assert finish(job) == {"hash": tip(node), "height": 0}
+
+
+def test_waitfornewblock_answers_the_tip_at_the_call_where_the_node_stops(
+    node: Node,
+) -> None:
+    """Core's `waitTipChanged` answers nothing at stop, even past a change."""
+    job = wait_for_new_block(node, CONN, [])
+    first = tip(node)
+    assert next(job) is False
+    generate_to_address(node, CONN, [1, ADDRESS])
+
+    node.terminate_flag.set()
+
+    assert finish(job) == {"hash": first, "height": 0}
+
+
+def test_waitforblock_answers_the_tip_last_seen_where_the_node_stops(
+    node: Node,
+) -> None:
+    """The tip of the last pass, as Core's loop keeps its `current_block`."""
+    job = wait_for_block(node, CONN, [ZERO])
+    assert next(job) is False
+    generate_to_address(node, CONN, [1, ADDRESS])
+    assert next(job) is False
+
+    node.terminate_flag.set()
+
+    assert finish(job) == {"hash": tip(node), "height": 1}
+
+
+def test_waitforblockheight_answers_the_tip_last_seen_where_the_node_stops(
+    node: Node,
+) -> None:
+    """As `waitforblock` does."""
+    job = wait_for_block_height(node, CONN, [5])
+    assert next(job) is False
+    generate_to_address(node, CONN, [1, ADDRESS])
+    assert next(job) is False
+
+    node.terminate_flag.set()
+
+    assert finish(job) == {"hash": tip(node), "height": 1}

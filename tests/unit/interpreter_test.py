@@ -41,6 +41,7 @@ from btclib_node.exceptions import (
 )
 from btclib_node.interpreter import (
     STANDARD_FLAGS,
+    check_package,
     check_scripts,
     check_transaction,
     f,
@@ -773,7 +774,7 @@ def test_sig_op_cost_is_core_s(
 ) -> None:
     """Core's `GetTransactionSigOpCost`, term by term, is btclib's.
 
-    What `main._sigop_adjusted_vsize` relies on (btclib-org/btclib-node#1586).
+    What `main._sigop_adjusted_weight` relies on (btclib-org/btclib-node#1586).
     """
     tx_in = TxIn(OutPoint(b"\x33" * 32, 0), script_sig, 0xFFFFFFFF, Witness(stack))
     tx = Tx(version=2, lock_time=0, vin=[tx_in], vout=[TxOut(1, output)])
@@ -837,3 +838,38 @@ def test_a_failed_signature_is_refused_as_core_s_nullfail() -> None:
         "mempool-script-verify-flag-failed "
         "(Signature must be zero for failed CHECK(MULTI)SIG operation)"
     )
+
+
+def _a_spend_of(prevout_script: bytes, txid: bytes) -> tuple[list[TxOut], Tx]:
+    """Return the prevouts and a spend of an output with `prevout_script`."""
+    tx = Tx(
+        version=1,
+        lock_time=0,
+        vin=[TxIn(OutPoint(txid, 0), b"", 0xFFFFFFFF)],
+        vout=[TxOut(49 * 10**8, script.serialize(["OP_1"]))],
+    )
+    return [TxOut(50 * 10**8, prevout_script)], tx
+
+
+def test_a_package_that_verifies_answers_nothing() -> None:
+    """`check_package` answers `None`, as many transactions as there are."""
+    passes = script.serialize(["OP_1"])
+    items = [_a_spend_of(passes, bytes([i]) * 32) for i in (1, 2)]
+    assert check_package(items) is None
+    assert check_package([]) is None
+
+
+def test_a_package_answers_the_position_of_the_first_refusal() -> None:
+    """A refusal is answered with the position, not raised."""
+    passes, fails = script.serialize(["OP_1"]), script.serialize(["OP_0"])
+    items = [
+        _a_spend_of(passes, b"\x01" * 32),
+        _a_spend_of(fails, b"\x02" * 32),
+        _a_spend_of(fails, b"\x03" * 32),
+    ]
+    answer = check_package(items)
+    assert answer is not None
+    position, refusal = answer
+    assert position == 1
+    assert isinstance(refusal, TxRejectedError)
+    assert refusal.reason.startswith("mempool-script-verify-flag-failed")

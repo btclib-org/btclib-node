@@ -35,6 +35,7 @@ from btclib.tx.out_point import OutPoint
 from btclib.tx.tx_out import TxOut
 from btclib.utils import bytesio_from_binarydata
 
+from btclib_node.constants import DIR_MODE
 from btclib_node.db import KeyValueStore
 from btclib_node.exceptions import ChainstateInconsistencyError
 
@@ -116,6 +117,10 @@ class Coin(_BtclibCoin):
 # VARINT_MODE, not ReadCompactSize (src/flatfile.h). var_int's own
 # encoding ceiling, 8 bytes, is the only bound left here.
 _LOCAL_BOOKKEEPING_MAX = 0xFFFF_FFFF_FFFF_FFFF
+
+# a block's header, and the widest compact size that can follow it
+_BLOCK_HEADER_SIZE = 80
+_VAR_INT_MAX_SIZE = 9
 
 
 @dataclass
@@ -294,7 +299,7 @@ class BlockDB:
         self._lock = threading.RLock()
 
         self.data_dir = blocks_directory(data_dir, blocks_dir)
-        self.data_dir.mkdir(exist_ok=True, parents=True)
+        self.data_dir.mkdir(mode=DIR_MODE, exist_ok=True, parents=True)
         self.db = KeyValueStore(self.data_dir)
         self.files: dict[str, FileMetadata] = {}
         self.blocks: dict[bytes, BlockLocation] = {}
@@ -530,6 +535,24 @@ class BlockDB:
                 file, block_location.index, block_location.size
             )
         return Block.parse(block_data, check_validity=False)
+
+    def tx_count(self, block_hash: bytes) -> int | None:
+        """Return the transaction count of a block, or `None` if it is not held.
+
+        Read from the eighty bytes of header and the count after them, so
+        the block is not parsed. `None` is a block this store does not hold.
+        """
+        with self._lock:
+            if block_hash not in self.blocks:
+                return None
+            block_location = self.blocks[block_hash]
+            file = self.__get_block_file(block_location.filename)
+            head = self.__get_data_from_file(
+                file,
+                block_location.index,
+                min(block_location.size, _BLOCK_HEADER_SIZE + _VAR_INT_MAX_SIZE),
+            )
+        return var_int.parse(head[_BLOCK_HEADER_SIZE:])
 
     def get_rev_block(self, block_hash: bytes) -> RevBlock | None:
         """Return the reverse patch for `block_hash`, or `None` if not held."""

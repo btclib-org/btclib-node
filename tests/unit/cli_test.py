@@ -12,6 +12,7 @@ import runpy
 import socket
 import stat
 import sys
+import tempfile
 from contextlib import redirect_stderr, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -21,8 +22,9 @@ import pytest
 from btclib_node import Node, cli
 from btclib_node.chains import Main, RegTest, SigNet, TestNet, TestNet4
 from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS, DEFAULT_MAX_TIP_AGE, Config
-from btclib_node.constants import MIN_PRUNE_TARGET_MIB, default_data_dir
+from btclib_node.constants import CLIENT_NAME, MIN_PRUNE_TARGET_MIB, default_data_dir
 from btclib_node.rpc.auth import COOKIE_FILE, RpcAuthEntry, password_hmac, to_bytes
+from btclib_node.settings_file import read_settings
 from tests import (
     RPCAUTH,
     cookie_path,
@@ -34,6 +36,21 @@ from tests import (
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
+
+
+@pytest.fixture(autouse=True)
+def home(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """Make `~` an empty directory of the test's own.
+
+    `-datadir` defaults to `~/.btclib`, where every start writes
+    `settings.json` and reads `bitcoin.conf`.
+    """
+    path = tmp_path_factory.mktemp("home")
+    monkeypatch.setenv("HOME", str(path))
+    monkeypatch.setenv("USERPROFILE", str(path))
+    return path
 
 
 @pytest.fixture(autouse=True)
@@ -154,6 +171,91 @@ def test_parse_conf_text_refuses_a_line_in_core_s_words(
     """ISS 1267: Core's message, numbered as Core numbers it, naming no path."""
     with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$"):
         cli._parse_conf_text(f"regtest=1\n{line}\n", warnings=[])
+
+
+@pytest.mark.parametrize(
+    ("line", "refusal"),
+    [
+        pytest.param(
+            "-rpcpassword=hunter2",
+            "parse error on line 2: -rpcpassword, options in configuration file "
+            "must be specified without leading -",
+            id="leading dash",
+        ),
+        pytest.param(
+            "rpcpasswordhunter2",
+            "parse error on line 2: rpcpassword",
+            id="no equals sign",
+        ),
+        pytest.param(
+            "norpcpassword hunter2",
+            "parse error on line 2: norpcpassword, if you intended to specify a "
+            "negated option, use norpcpassword=1 instead",
+            id="negated",
+        ),
+        pytest.param(
+            "-norpcuser = hunter2",
+            "parse error on line 2: -norpcuser, options in configuration file "
+            "must be specified without leading -",
+            id="negated user",
+        ),
+        pytest.param(
+            "rpcauthhunter2",
+            "parse error on line 2: rpcauth",
+            id="rpcauth",
+        ),
+        pytest.param(
+            "-main.rpcpassword=hunter2",
+            "parse error on line 2: -main.rpcpassword, options in configuration "
+            "file must be specified without leading -",
+            id="section and dash",
+        ),
+        pytest.param(
+            "regtest.rpcauthhunter2",
+            "parse error on line 2: regtest.rpcauth",
+            id="section",
+        ),
+        pytest.param(
+            "test.norpcuser hunter2",
+            "parse error on line 2: test.norpcuser",
+            id="section and negated",
+        ),
+        pytest.param(
+            "foo.rpcpassword hunter2",
+            "parse error on line 2: foo.rpcpassword",
+            id="unknown section",
+        ),
+        pytest.param(
+            "-foo.rpcpassword=hunter2",
+            "parse error on line 2: -foo.rpcpassword, options in configuration "
+            "file must be specified without leading -",
+            id="unknown section and dash",
+        ),
+        pytest.param(
+            "testnet3.rpcauth hunter2",
+            "parse error on line 2: testnet3.rpcauth",
+            id="old section name",
+        ),
+        pytest.param(
+            "mainnet.rpcpasswordhunter2",
+            "parse error on line 2: mainnet.rpcpassword",
+            id="made-up section",
+        ),
+        pytest.param(
+            "- rpcpassword=hunter2",
+            "parse error on line 2: - rpcpassword, options in configuration "
+            "file must be specified without leading -",
+            id="dash and space",
+        ),
+    ],
+)
+def test_parse_conf_text_leaves_a_sensitive_value_out_of_a_refusal(
+    line: str, refusal: str
+) -> None:
+    """Core quotes the whole line; this tree quotes it up to the option name."""
+    with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$") as caught:
+        cli._parse_conf_text(f"regtest=1\n{line}\n", warnings=[])
+    assert "hunter2" not in str(caught.value)
 
 
 def test_parse_conf_text_ends_a_line_at_a_newline_alone() -> None:
@@ -628,6 +730,23 @@ def test_parse_parameters_refuses_as_core_does(argv: list[str], message: str) ->
 
 
 @pytest.mark.parametrize(
+    ("arg", "message"),
+    [
+        ("-main.rpcpassword=hunter2", "Invalid parameter -main.rpcpassword"),
+        ("-foo.rpcauth=hunter2", "Invalid parameter -foo.rpcauth"),
+    ],
+)
+def test_parse_parameters_leaves_a_sensitive_value_out_of_a_refusal(
+    arg: str, message: str
+) -> None:
+    """Core quotes the whole argument; this tree stops at the option name."""
+    full = f"Error parsing command line arguments: {message}"
+    with pytest.raises(ValueError, match=f"^{re.escape(full)}$") as caught:
+        cli._parse_parameters([arg], [])
+    assert "hunter2" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
     "argv",
     [["foo", "-notaflag"], ["-conf", "other.conf"], ["-listen", "0"]],
     ids=["token first", "a value after -conf", "a value after -listen"],
@@ -661,6 +780,39 @@ def test_build_config_reads_bantime(
 ) -> None:
     """ISS 1219: `-bantime` is a `setban` ban's default length, as in Core."""
     assert _build(tmp_path, *argv, conf=conf).ban_time == ban_time
+
+
+@pytest.mark.parametrize(
+    ("argv", "conf", "send", "receive"),
+    [
+        ([], "", 1_000_000, 5_000_000),
+        (["-maxsendbuffer=8000", "-maxreceivebuffer=1"], "", 8_000_000, 1_000),
+        ([], "maxsendbuffer=0\nmaxreceivebuffer=2\n", 0, 2_000),
+        # `unsigned int`, as `AppInitMain` stores `1000 * GetIntArg`
+        (["-maxsendbuffer=-1"], "", 2**32 - 1_000, 5_000_000),
+    ],
+    ids=["Core's defaults", "command line", "file", "negative wraps"],
+)
+def test_build_config_reads_the_buffer_options_in_thousands_of_bytes(
+    tmp_path: Path, argv: list[str], conf: str, send: int, receive: int
+) -> None:
+    """ISS 1812: `-maxsendbuffer` and `-maxreceivebuffer`, `<n>*1000` bytes."""
+    config = _build(tmp_path, *argv, conf=conf)
+    assert config.send_buffer_max_size == send
+    assert config.receive_flood_size == receive
+
+
+def test_help_names_the_buffer_options() -> None:
+    """ISS 1812: in `bitcoind` v31.1.0's words, among the connection options."""
+    message = " ".join(cli._help_message(show_debug=False).split())
+    assert (
+        "-maxreceivebuffer=<n> Maximum per-connection receive buffer, <n>*1000 "
+        "bytes (default: 5000)"
+    ) in message
+    assert (
+        "-maxsendbuffer=<n> Maximum per-connection memory usage for the send "
+        "buffer, <n>*1000 bytes (default: 1000)"
+    ) in message
 
 
 def test_help_names_bantime() -> None:
@@ -1879,6 +2031,27 @@ def test_build_config_maxtipage_defaults_negates_and_reads_in_seconds(
     assert from_file.max_tip_age == 120
 
 
+def test_build_config_acceptstalefeeestimates_is_a_debug_only_flag(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Core's `-acceptstalefeeestimates`: off unless set, in `-help-debug`."""
+    assert not _build(tmp_path, "-regtest").accept_stale_fee_estimates
+    flag = _build(tmp_path, "-regtest", "-acceptstalefeeestimates")
+    assert flag.accept_stale_fee_estimates
+    with pytest.raises(SystemExit):
+        _build(tmp_path, "-help")
+    assert "-acceptstalefeeestimates" not in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        _build(tmp_path, "-help-debug")
+    # bitcoind v31.1.0's own `-help-debug`
+    assert (
+        "  -acceptstalefeeestimates\n"
+        "       Read fee estimates even if they are stale (regtest only; default: "
+        "0) fee\n"
+        "       estimates are considered stale if they are 60 hours old\n"
+    ) in capsys.readouterr().out
+
+
 def test_build_config_maxtipage_is_debug_only(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -3021,6 +3194,90 @@ def test_build_config_a_bind_defaults_its_port_to_dash_port() -> None:
         cli.build_config(["-regtest", "-port=9", "-bind=1.2.3.4:9", "-bind=1.2.3.4"])
 
 
+def test_build_config_whitebind_is_a_list_and_turns_listen_on() -> None:
+    """ISS 1625: `-whitebind` soft-sets `-listen` on, ahead of `-connect`."""
+    argv = ["-regtest", "-connect=10.0.0.1", "-whitebind=noban@127.0.0.1:7"]
+    config = cli.build_config([*argv, "-whitebind=[::1]:8"])
+    assert config.whitebind == ("noban@127.0.0.1:7", "[::1]:8")
+    assert config.listen is True
+    assert cli.build_config(["-regtest"]).whitebind == ()
+
+
+def test_build_config_whitebind_does_not_overrule_listen_0() -> None:
+    """ISS 1625: the soft-set yields, and `-listen=0` is then refused."""
+    message = "Cannot set -bind or -whitebind together with -listen=0"
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        cli.build_config(["-regtest", "-whitebind=127.0.0.1:7", "-nolisten"])
+
+
+@pytest.mark.parametrize(
+    "value", ["127.0.0.1:0", "noban@127.0.0.1:0", "[::1]:x", "noban@127.0.0.1:7,"]
+)
+def test_build_config_a_whitebind_with_a_bad_port_is_refused(value: str) -> None:
+    """ISS 1625: `CheckHostPortOptions` reads the value with its permissions."""
+    message = f"Invalid port specified in -whitebind: '{value}'"
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        cli.build_config(["-regtest", f"-whitebind={value}"])
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ("127.0.0.1", "Need to specify a port with -whitebind: '127.0.0.1'"),
+        ("localhost:7", "Cannot resolve -whitebind address: 'localhost:7'"),
+        (
+            "out@127.0.0.1:7",
+            'whitebind may only be used for incoming connections ("out" was passed)',
+        ),
+        ("bogus@127.0.0.1:7", "Invalid P2P permission: 'bogus'"),
+    ],
+)
+def test_build_config_a_whitebind_core_refuses_is_refused_in_its_words(
+    value: str, message: str
+) -> None:
+    """ISS 1625: `NetWhitebindPermissions::TryParse`'s errors."""
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        cli.build_config(["-regtest", f"-whitebind={value}"])
+
+
+@pytest.mark.parametrize(
+    ("argv", "duplicate"),
+    [
+        (["-whitebind=1.2.3.4:7", "-whitebind=noban@1.2.3.4:7"], "1.2.3.4:7"),
+        (["-whitebind=1.2.3.4:7", "-bind=1.2.3.4:7"], "1.2.3.4:7"),
+        (["-whitebind=1.2.3.4:18445", "-bind=1.2.3.4=onion"], "1.2.3.4:18445"),
+        # the default onion bind, which `-whitebind` alone leaves in place
+        (["-whitebind=127.0.0.1:18445"], "127.0.0.1:18445"),
+        (["-port=9", "-whitebind=127.0.0.1:10"], "127.0.0.1:10"),
+    ],
+)
+def test_build_config_an_address_bound_twice_with_a_whitebind_is_refused(
+    argv: list[str], duplicate: str
+) -> None:
+    """ISS 1625: `CheckBindingConflicts` sees the `-whitebind` ones first."""
+    message = (
+        f"Duplicate binding configuration for address {duplicate}. Please check "
+        "your -bind, -bind=...=onion and -whitebind settings."
+    )
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        cli.build_config(["-regtest", *argv])
+
+
+def test_build_config_a_bind_beside_a_whitebind_adds_no_onion_bind() -> None:
+    """ISS 1625: `AppInitMain` adds the onion bind where no `-bind` is."""
+    argv = ["-regtest", "-bind=127.0.0.2:5", "-whitebind=127.0.0.1:18445"]
+    assert cli.build_config(argv).whitebind == ("127.0.0.1:18445",)
+
+
+def test_build_config_externalip_is_at_the_whitebind_listen_port() -> None:
+    """ISS 1625: `GetListenPort` takes a `-whitebind` that grants no `noban`."""
+    argv = ["-regtest", "-externalip=8.8.8.8", "-whitebind=noban@127.0.0.1:7"]
+    assert cli.build_config([*argv, "-whitebind=127.0.0.1:77"]).externalip == (
+        "8.8.8.8:77",
+    )
+    assert cli.build_config(argv).externalip == ("8.8.8.8:18444",)
+
+
 def test_build_config_externalip_turns_discover_off() -> None:
     """ISS 1445: the soft-set yields to an explicit value."""
     config = cli.build_config(["-regtest", "-externalip=8.8.8.8"])
@@ -3046,6 +3303,7 @@ def _bad_port_warning(option: str, port: int) -> str:
         (["-bind=127.0.0.1:22"], _bad_port_warning("-bind", 22)),
         (["-port=22", "-bind=127.0.0.1"], _bad_port_warning("-bind", 22)),
         (["-port=22", "-bind=127.0.0.1:8333"], ""),
+        (["-port=22", "-whitebind=127.0.0.1:8333"], ""),
         (["-bind=127.0.0.1:22=onion"], ""),
         (
             ["-bind=127.0.0.1:22", "-bind=127.0.0.2:25"],
@@ -3056,7 +3314,10 @@ def _bad_port_warning(option: str, port: int) -> str:
 def test_build_config_warns_of_a_bad_port_as_core_does(
     argv: list[str], expected: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """ISS 1645: each plain `-bind`, and `-port` only where no `-bind` is."""
+    """ISS 1645: each plain `-bind`, and `-port` only where no `-bind` is.
+
+    `-whitebind` is never warned of, and ignores `-port` as `-bind` does.
+    """
     cli.build_config(["-regtest", *argv])
     assert capsys.readouterr().err == expected
 
@@ -3162,6 +3423,65 @@ def test_help_names_v1transport() -> None:
     """The option is listed beside `-v2transport`, in Core's shape."""
     message = " ".join(cli._help_message(show_debug=False).split())
     assert "Support v1 transport (default: 0)" in message
+
+
+def test_help_names_persistmempool_in_core_s_words() -> None:
+    """`bitcoind` v31.1.0's `-help` text for both options."""
+    message = " ".join(cli._help_message(show_debug=False).split())
+    assert (
+        "-persistmempool Whether to save the mempool on shutdown and load on "
+        "restart (default: 1)"
+    ) in message
+    assert (
+        "-persistmempoolv1 Whether a mempool.dat file created by -persistmempool "
+        "or the savemempool RPC will be written in the legacy format (version 1) "
+        "or the current format (version 2). This temporary option will be "
+        "removed in the future. (default: 0)"
+    ) in message
+
+
+def test_help_names_mempoolexpiry_in_core_s_words() -> None:
+    """`bitcoind` v31.1.0's `-help` text."""
+    assert (
+        "  -mempoolexpiry=<n>\n"
+        "       Do not keep transactions in the mempool longer than <n> hours (default:\n"
+        "       336)\n"
+    ) in cli._help_message(show_debug=False)
+
+
+@pytest.mark.parametrize(
+    ("args", "expiry"),
+    [
+        ((), 336 * 3600),
+        (("-mempoolexpiry=2",), 7200),
+        (("-mempoolexpiry=-1",), -3600),
+        (("-nomempoolexpiry",), 0),
+    ],
+)
+def test_build_config_reads_mempoolexpiry_in_hours(
+    args: tuple[str, ...], expiry: int
+) -> None:
+    """Core's `GetIntArg`, kept in seconds as `MemPoolOptions::expiry` is."""
+    assert cli.build_config(["-regtest", *args]).mempool_expiry == expiry
+
+
+@pytest.mark.parametrize(
+    ("args", "persist", "v1"),
+    [
+        ((), True, False),
+        (("-persistmempool=0",), False, False),
+        (("-nopersistmempool",), False, False),
+        (("-persistmempoolv1",), True, True),
+    ],
+)
+def test_build_config_reads_persistmempool(
+    args: tuple[str, ...],
+    persist: bool,  # noqa: FBT001
+    v1: bool,  # noqa: FBT001
+) -> None:
+    """Core's defaults: persisted, and written as version 2."""
+    config = cli.build_config(["-regtest", *args])
+    assert (config.persist_mempool, config.persist_mempool_v1) == (persist, v1)
 
 
 def test_build_config_seednode_reaches_config() -> None:
@@ -4099,3 +4419,432 @@ def test_help_names_the_whitelist_options() -> None:
         "default permissions. This lifts the limit on their transaction "
         "announcements (default: 1)" in message
     )
+
+
+# ISS 1523: `settings.json`
+
+_SETTINGS_WARNING = (
+    f"This file is automatically generated and updated by {CLIENT_NAME}. "
+    "Please do not edit this file while the node is running, as any changes "
+    "might be ignored or overwritten."
+)
+
+
+def _settings(tmp_path: Path, content: str | None = None) -> Path:
+    """Return the regtest `settings.json` in `tmp_path`, holding `content`."""
+    path = tmp_path / "regtest" / "settings.json"
+    if content is not None:
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    return path
+
+
+def _read(tmp_path: Path, *argv: str, conf: str = "") -> cli._Settings:
+    """Read `argv` over `tmp_path`, as `_read_settings` does."""
+    (tmp_path / "bitcoin.conf").write_text(conf, encoding="utf-8")
+    return cli._read_settings([f"-datadir={tmp_path}", "-regtest", *argv])[0]
+
+
+def test_a_start_writes_the_settings_file_under_the_warning(tmp_path: Path) -> None:
+    """`bitcoind` v31.1.0 writes `_warning_` alone at a first start."""
+    _read(tmp_path)
+    assert _settings(tmp_path).read_bytes().decode("utf-8") == (
+        f'{{\n    "_warning_": "{_SETTINGS_WARNING}"\n}}\n'.replace("\n", os.linesep)
+    )
+
+
+def test_a_start_writes_a_file_without_the_warning_back_with_it(
+    tmp_path: Path,
+) -> None:
+    """Every init writes the file, keys in order, `_warning_` first."""
+    _settings(tmp_path, '{"b":1,"a":"x"}')
+    _read(tmp_path)
+    assert _settings(tmp_path).read_bytes().decode("utf-8") == (
+        f'{{\n    "_warning_": "{_SETTINGS_WARNING}",\n    "a": "x",\n    "b": 1\n}}\n'
+    ).replace("\n", os.linesep)
+
+
+def test_nosettings_reads_and_writes_nothing(tmp_path: Path) -> None:
+    """A malformed file does not refuse the start, and is not touched."""
+    _settings(tmp_path, "invalid json")
+    settings = _read(tmp_path, "-nosettings")
+    assert settings.rw_settings == {}
+    assert _settings(tmp_path).read_text(encoding="utf-8") == "invalid json"
+
+
+def test_nosettings_in_bitcoin_conf_is_read_too(tmp_path: Path) -> None:
+    """Core's functional test puts `nosettings=1` in the chain's section."""
+    _settings(tmp_path, "invalid json")
+    settings = _read(tmp_path, conf="[regtest]\nnosettings=1\n")
+    assert cli._log_args(settings)[0] == "Config file arg: [regtest] settings=false"
+    assert _settings(tmp_path).read_text(encoding="utf-8") == "invalid json"
+
+
+def test_nosettings_still_creates_the_directory_without_wallets(
+    tmp_path: Path,
+) -> None:
+    """`InitConfig` makes the chain's directory before it asks for the file.
+
+    It also makes `wallets` there, which this node, having no wallet, does not.
+    """
+    _read(tmp_path, "-nosettings")
+    assert list((tmp_path / "regtest").iterdir()) == []
+
+
+@pytest.mark.parametrize("relative", [True, False])
+def test_settings_names_another_file(tmp_path: Path, *, relative: bool) -> None:
+    """A relative path is the chain's directory's, an absolute one stands."""
+    name = "other.json" if relative else str(tmp_path / "abs.json")
+    other = tmp_path / ("regtest" if relative else ".") / Path(name).name
+    (tmp_path / "regtest").mkdir()
+    other.write_text('{"key":"value"}', encoding="utf-8")
+    settings = _read(tmp_path, f"-settings={name}")
+    assert settings.rw_settings == {"key": "value"}
+    assert not _settings(tmp_path).exists()
+    assert "_warning_" in other.read_text(encoding="utf-8")
+
+
+def test_an_empty_settings_is_the_default_file(tmp_path: Path) -> None:
+    """`-settings=` names nothing, and `GetPathArg` takes the default."""
+    _read(tmp_path, "-settings=")
+    assert _settings(tmp_path).exists()
+
+
+@pytest.mark.parametrize(
+    ("content", "detail"),
+    [
+        ("invalid json", "Settings file {p} does not contain valid JSON."),
+        ('"string"', 'Found non-object value "string" in settings file {p}'),
+        ('{"key": 1, "key": 2}', "Found duplicate key key in settings file {p}"),
+    ],
+)
+def test_a_malformed_file_refuses_the_start(
+    tmp_path: Path, content: str, detail: str
+) -> None:
+    """Core's words, and the file is left as it was."""
+    path = _settings(tmp_path, content)
+    with pytest.raises(ValueError, match=r".") as refused:
+        _read(tmp_path)
+    assert str(refused.value).startswith(
+        "Settings file could not be read:\n- " + detail.format(p=path)
+    )
+    assert path.read_text(encoding="utf-8") == content
+
+
+@pytest.mark.usefixtures("no_node")
+def test_main_prints_a_malformed_file_as_core_does(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`bitcoind` v31.1.0 prints the refusal and its detail on stderr."""
+    _settings(tmp_path, '{"key": 1, "key": 2}')
+    with pytest.raises(SystemExit) as exit_:
+        cli.main([f"-datadir={tmp_path}", "-regtest"])
+    assert exit_.value.code == 1
+    assert capsys.readouterr().err == (
+        "Error: Settings file could not be read:\n"
+        f"- Found duplicate key key in settings file {_settings(tmp_path)}\n"
+    )
+
+
+def test_a_file_that_cannot_be_written_refuses_the_start(tmp_path: Path) -> None:
+    """`bitcoind` v31.1.0 for `-settings=sub/s.json` with no `sub`."""
+    with pytest.raises(ValueError, match=r".") as refused:
+        _read(tmp_path, "-settings=sub/s.json")
+    assert str(refused.value) == (
+        "Settings file could not be written:\n- Error: Unable to open settings "
+        f"file {tmp_path / 'regtest' / 'sub' / 's.json'}.tmp for writing"
+    )
+
+
+def test_a_chain_directory_that_cannot_be_made_refuses_the_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Python's words for what `create_directories` throws."""
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "mkdir", refuse)
+    with pytest.raises(ValueError, match="Permission denied"):
+        _read(tmp_path)
+
+
+def test_the_settings_file_is_written_ahead_of_help_and_a_stray_token(
+    tmp_path: Path,
+) -> None:
+    """`InitConfig` runs before both, as `bitcoind` v31.1.0 does."""
+    with pytest.raises(SystemExit):
+        _read(tmp_path, "-help")
+    assert _settings(tmp_path).exists()
+    _settings(tmp_path).unlink()
+    with pytest.raises(ValueError, match="unexpected token"):
+        _read(tmp_path, "token")
+    assert _settings(tmp_path).exists()
+
+
+def test_a_settings_key_moves_the_file_the_write_goes_to(tmp_path: Path) -> None:
+    """`WriteSettingsFile` reads `-settings` again, and the file now sets it."""
+    _settings(tmp_path, '{"settings":"other.json"}')
+    _read(tmp_path)
+    assert (tmp_path / "regtest" / "other.json").exists()
+    assert (
+        _settings(tmp_path).read_text(encoding="utf-8") == '{"settings":"other.json"}'
+    )
+
+
+def test_a_false_settings_key_refuses_the_write(tmp_path: Path) -> None:
+    """`bitcoind` v31.1.0: the `logic_error` `WriteSettingsFile` throws."""
+    _settings(tmp_path, '{"settings":false}')
+    with pytest.raises(
+        ValueError, match=r"^Attempt to write settings file when dynamic settings"
+    ):
+        _read(tmp_path)
+
+
+def test_an_array_settings_key_is_refused_as_core_refuses_it(tmp_path: Path) -> None:
+    """`Error: JSON value of type array is not of expected type string`."""
+    _settings(tmp_path, '{"settings":["a.json"]}')
+    with pytest.raises(ValueError, match="type array is not of expected type string"):
+        _read(tmp_path)
+
+
+def test_a_chain_selector_in_the_file_is_refused_beside_the_command_line_one(
+    tmp_path: Path,
+) -> None:
+    """`GetChainType` is asked again once the file is read, as Core does."""
+    _settings(tmp_path, '{"testnet":true}')
+    with pytest.raises(ValueError, match=r"^Invalid combination of -regtest, "):
+        _read(tmp_path)
+
+
+def test_a_chain_selector_in_the_file_is_refused_as_a_number(tmp_path: Path) -> None:
+    """`GetChainArg` reads `value.get_str()`, which a number is not."""
+    _settings(tmp_path, '{"signet":1}')
+    with pytest.raises(ValueError, match="type number is not of expected type string"):
+        _read(tmp_path)
+
+
+def test_a_negated_chain_selector_in_the_file_is_skipped(tmp_path: Path) -> None:
+    """`GetSetting` skips a negated chain selector at every level.
+
+    `bitcoind` v31.1.0 refuses `regtest=1` in `bitcoin.conf` beside
+    `{"regtest": false, "signet": true}` in `settings.json`: the file's
+    negation does not hide the conf's `regtest`.
+    """
+    _settings(tmp_path, '{"regtest":false,"signet":true}')
+    (tmp_path / "bitcoin.conf").write_text("regtest=1\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"^Invalid combination of -regtest, "):
+        cli._read_settings([f"-datadir={tmp_path}"])
+
+
+def test_the_values_are_logged_and_the_unknown_names_warned_of(
+    tmp_path: Path,
+) -> None:
+    """Core's own `_VALUES`, `LogArgs`' "Setting file arg:" in key order."""
+    _settings(
+        tmp_path,
+        '{"string":"string","num":5,"bool":true,"null":null,"list":[6,7],'
+        '"nolisten":true,"regtest.port":5,"rpcuser":"x","nozzz":1}',
+    )
+    settings = _read(tmp_path, conf="rpcuser=conf\n")
+    assert settings.log_warnings == [
+        "Ignoring unknown rw_settings value bool",
+        "Ignoring unknown rw_settings value list",
+        "Ignoring unknown rw_settings value nozzz",
+        "Ignoring unknown rw_settings value null",
+        "Ignoring unknown rw_settings value num",
+        "Ignoring unknown rw_settings value string",
+    ]
+    lines = cli._log_args(settings)
+    assert lines[:2] == (
+        "Config file arg: rpcuser=****",
+        "Setting file arg: bool = true",
+    )
+    assert lines[2:11] == (
+        "Setting file arg: list = [6,7]",
+        "Setting file arg: nolisten = true",
+        "Setting file arg: nozzz = 1",
+        "Setting file arg: null = null",
+        "Setting file arg: num = 5",
+        "Setting file arg: regtest.port = 5",
+        'Setting file arg: rpcuser = "x"',
+        'Setting file arg: string = "string"',
+        f"Command-line arg: datadir={cli._setting_to_write_str(str(tmp_path))}",
+    )
+
+
+def test_the_help_names_settings_as_core_does() -> None:
+    """`bitcoind` v31.1.0's `-help` text for `-settings`."""
+    message = " ".join(cli._help_message(show_debug=False).split())
+    assert (
+        "-settings=<file> Specify path to dynamic settings data file. Can be "
+        "disabled with -nosettings. File is written at runtime and not meant "
+        "to be edited by users (use bitcoin.conf instead for custom "
+        "settings). Relative paths will be prefixed by datadir location. "
+        "(default: settings.json)" in message
+    )
+
+
+def _file_settings(content: str, *argv: str, conf: str = "") -> cli._Settings:
+    """Return the settings of a command line, a file and a `bitcoin.conf`."""
+    options, _ = cli._parse_parameters(argv, [])
+    warnings: list[str] = []
+    settings = cli._Settings(
+        options,
+        cli._parse_conf_text(conf, warnings=warnings),
+        network="regtest",
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "settings.json"
+        path.write_text(content, encoding="utf-8")
+        settings.rw_settings = read_settings(str(path))
+    return settings
+
+
+def test_a_value_of_the_file_is_between_the_command_line_and_the_conf() -> None:
+    """`MergeSettings`: forced, command line, `settings.json`, the conf."""
+    conf = "rpcuser=conf\n"
+    file = '{"rpcuser":"file"}'
+    assert cli._get_arg(_file_settings(file, conf=conf), "rpcuser") == "file"
+    assert (
+        cli._get_arg(_file_settings(file, "-rpcuser=cli", conf=conf), "rpcuser")
+        == "cli"
+    )
+    assert cli._get_arg(_file_settings("{}", conf=conf), "rpcuser") == "conf"
+
+
+def test_a_false_in_the_file_negates_the_conf() -> None:
+    """`bitcoind` v31.1.0: `{"blocksonly": false}` beats `blocksonly=1`."""
+    settings = _file_settings('{"listen":false}', conf="listen=1\n")
+    assert cli._get_bool(settings, "listen") is False
+    assert cli._is_negated(settings, "listen")
+
+
+def test_the_values_of_a_list_option_are_the_command_line_the_file_the_conf() -> None:
+    """`bitcoind` v31.1.0: `(cli; rw1; rw2; conf)`; an array is its values."""
+    settings = _file_settings(
+        '{"rpcwhitelist":["rw1","rw2"]}',
+        "-rpcwhitelist=cli",
+        conf="rpcwhitelist=conf\n",
+    )
+    assert cli._get_args(settings, "rpcwhitelist") == ["cli", "rw1", "rw2", "conf"]
+
+
+def test_a_value_of_the_file_is_not_a_zombie() -> None:
+    """`bitcoind` v31.1.0: a negation brings the conf back, not the file."""
+    settings = _file_settings(
+        '{"rpcwhitelist":"rw"}',
+        "-norpcwhitelist",
+        "-rpcwhitelist=cli",
+        conf="rpcwhitelist=conf\n",
+    )
+    assert cli._get_args(settings, "rpcwhitelist") == ["cli", "conf"]
+
+
+def test_a_negation_on_the_command_line_hides_the_file_and_the_conf() -> None:
+    """`bitcoind` v31.1.0: `-nouacomment` leaves neither."""
+    settings = _file_settings(
+        '{"rpcwhitelist":"rw"}', "-norpcwhitelist", conf="rpcwhitelist=conf\n"
+    )
+    assert cli._get_args(settings, "rpcwhitelist") == []
+
+
+def test_a_false_in_the_file_hides_the_conf_in_a_list() -> None:
+    """`bitcoind` v31.1.0: `{"uacomment": false}` with `uacomment=conf`."""
+    settings = _file_settings('{"rpcwhitelist":false}', conf="rpcwhitelist=conf\n")
+    assert cli._get_args(settings, "rpcwhitelist") == []
+
+
+def test_a_null_is_no_value_and_hides_the_conf() -> None:
+    """One value reads it as unset, as `bitcoind` v31.1.0 reads `settings`."""
+    settings = _file_settings('{"rpcuser":null}', conf="rpcuser=conf\n")
+    assert cli._get_arg(settings, "rpcuser") is None
+    assert not cli._is_set(settings, "rpcuser")
+
+
+@pytest.mark.parametrize(
+    ("name", "content", "reader"),
+    [
+        ("listen", "1", cli._get_bool),
+        ("listen", "{}", cli._get_bool),
+        ("listen", "[]", cli._get_bool),
+        ("rpcuser", "{}", cli._get_arg),
+        ("rpcuser", "[]", cli._get_arg),
+        ("maxconnections", "{}", cli._get_int),
+        ("maxconnections", "[1]", cli._get_int),
+        ("connect", "5", cli._get_args),
+        ("connect", "null", cli._get_args),
+        ("connect", "{}", cli._get_args),
+        ("connect", "[5]", cli._get_args),
+        ("connect", "[null]", cli._get_args),
+    ],
+)
+def test_a_json_type_an_option_cannot_read_is_refused(
+    name: str, content: str, reader: object
+) -> None:
+    """`bitcoind` v31.1.0 throws `JSON value of type <type> is not ...`."""
+    settings = _file_settings(f'{{"{name}":{content}}}')
+    with pytest.raises(ValueError, match="is not of expected type string"):
+        reader(settings, name)  # type: ignore[operator]
+
+
+def test_a_status_that_cannot_be_read_is_refused_as_the_library_words_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`fs::exists` throws; `InitConfig` shows the exception's text alone."""
+
+    def refuse(_path: str) -> dict[str, object]:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(cli, "read_settings", refuse)
+    path = tmp_path / "regtest" / "settings.json"
+    with pytest.raises(
+        ValueError, match=r"^filesystem error: cannot get file status: "
+    ) as refused:
+        _read(tmp_path)
+    assert str(refused.value) == (
+        f"filesystem error: cannot get file status: Permission denied [{path}]"
+    )
+
+
+def test_get_args_refuses_the_first_value_it_cannot_read() -> None:
+    """`GetArgs` throws in list order: `{}` ahead of `5` is an object."""
+    settings = _file_settings('{"connect":[{},5]}')
+    with pytest.raises(ValueError, match="type object is not of expected type string"):
+        cli._get_args(settings, "connect")
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [("12", 12), ('"12"', 12), ("-0", 0), ("9223372036854775807", 2**63 - 1)],
+)
+def test_a_number_is_an_integer_option(content: str, expected: int) -> None:
+    """`bitcoind` v31.1.0: `{"maxconnections": 12}` and `"12"` alike."""
+    settings = _file_settings(f'{{"maxconnections":{content}}}')
+    assert cli._get_int(settings, "maxconnections") == expected
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["1.5", "1e1", "12.0", "9223372036854775808", "-9223372036854775809"],
+)
+def test_a_number_that_is_no_int64_is_out_of_range(content: str) -> None:
+    """`bitcoind` v31.1.0: `JSON integer out of range`."""
+    settings = _file_settings(f'{{"maxconnections":{content}}}')
+    with pytest.raises(ValueError, match=r"^JSON integer out of range$"):
+        cli._get_int(settings, "maxconnections")
+
+
+def test_a_number_is_a_string_option_in_its_own_text() -> None:
+    """`bitcoind` v31.1.0 names the file `5` for `{"settings": 5}`."""
+    assert cli._get_arg(_file_settings('{"rpcuser":1.50}'), "rpcuser") == "1.50"
+
+
+def test_a_value_of_the_file_is_another_source_of_a_network_only_option() -> None:
+    """`OnlyHasDefaultSectionSetting`: the file is a source beside the conf."""
+    conf = "port=1234\n"
+    assert cli._unsuitable_section_only_args(_file_settings("{}", conf=conf)) == [
+        "port"
+    ]
+    file = '{"port":5}'
+    assert cli._unsuitable_section_only_args(_file_settings(file, conf=conf)) == []

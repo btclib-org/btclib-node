@@ -83,12 +83,13 @@ _COIN_STATS_META_KEY = b"coinstats"
 # `_undo_log`'s own entry shape is one of two, discriminated by the
 # first element: a dict/set mutation, whose second and third elements
 # are the key and the prior value `_put`/`_pop`/`_mark_removed`/
-# `_unmark_removed` above already carry; or a `coin_stats` mutation,
-# whose second element is `True` for an insert and `False` for a
-# remove (`rollback` below reads it that way) and whose third is the
-# `(out_point_bytes, coin)` pair `_hash_insert`/`_hash_remove` replay
-# the opposite call with -- not a prior value, `coin_stats` needing
-# none (the class docstring's own paragraph on it argues why).
+# `_unmark_removed`/`_log_and_set_stored` above already carry; or a
+# `coin_stats` mutation, whose second element is `True` for an insert
+# and `False` for a remove (`rollback` below reads it that way) and
+# whose third is the `(out_point_bytes, coin)` pair
+# `_hash_insert`/`_hash_remove` replay the opposite call with -- not a
+# prior value, `coin_stats` needing none (the class docstring's own
+# paragraph on it argues why).
 _DictOrSetUndoEntry = tuple[dict[bytes, Any] | set[bytes], bytes, Any]
 _CoinStatsUndoEntry = tuple[CoinStats, bool, tuple[bytes, Coin]]
 _UndoEntry = _DictOrSetUndoEntry | _CoinStatsUndoEntry
@@ -133,6 +134,9 @@ class UtxoIndex:
 
         self.removed_utxos: set[bytes] = set()
         self.updated_utxo_set: dict[bytes, Coin] = {}
+        # keys in `updated_utxo_set` that the store holds too, as a coin
+        # not FRESH is in Core's cache: a spend must erase them there
+        self._stored_utxos: set[bytes] = set()
         self._undo_log: list[_UndoEntry] = []
 
         stored_stats = parent_db.get_meta(_COIN_STATS_META_KEY)
@@ -224,20 +228,45 @@ class UtxoIndex:
         self.removed_utxos.add(out_point_bytes)
 
     def _unmark_removed(self, out_point_bytes: bytes) -> None:
-        """`removed_utxos.discard(out_point_bytes)`, logged for `rollback`.
+        """Stage a key for a coin to be put: `removed_utxos` forgets it.
 
-        `apply_rev_block` below is the one caller: restoring a prevout a
-        block spent has to undo whichever of `_pop` or `_mark_removed`
-        `add_block` used to stage that spend, and only `_mark_removed`
-        touches `removed_utxos` -- so this runs unconditionally, the same
-        way `_mark_removed` itself logs unconditionally, and is a no-op
-        precisely when the spend it undoes never reached `removed_utxos`
-        in the first place.
+        Logged for `rollback`. `apply_rev_block` restoring a prevout a
+        block spent and `_stage_creation` staging a new output both call
+        this, before `_put`. A key in `removed_utxos` was read from the
+        store, so the store holds a record for it still: the key goes into
+        `_stored_utxos`, and a later spend of the coin staged now must
+        erase that record. Where the key is not in `removed_utxos` this
+        only logs, and is a no-op.
         """
+        if out_point_bytes in self.removed_utxos:
+            self._log_and_set_stored(out_point_bytes, present=True)
         self._undo_log.append(
             (self.removed_utxos, out_point_bytes, out_point_bytes in self.removed_utxos)
         )
         self.removed_utxos.discard(out_point_bytes)
+
+    def _log_and_set_stored(self, out_point_bytes: bytes, *, present: bool) -> None:
+        """Add to or discard from `_stored_utxos`, logged for `rollback`."""
+        self._undo_log.append(
+            (self._stored_utxos, out_point_bytes, out_point_bytes in self._stored_utxos)
+        )
+        if present:
+            self._stored_utxos.add(out_point_bytes)
+        else:
+            self._stored_utxos.discard(out_point_bytes)
+
+    def _spend_staged(self, out_point_bytes: bytes) -> Coin:
+        """Take a coin out of `updated_utxo_set`, and from the store if held.
+
+        A coin only staged leaves nothing behind. One the store holds too,
+        a restored one (`_unmark_removed`), is marked removed, for
+        `finalize` to delete the record.
+        """
+        coin = self._pop(out_point_bytes)
+        if out_point_bytes in self._stored_utxos:
+            self._log_and_set_stored(out_point_bytes, present=False)
+            self._mark_removed(out_point_bytes)
+        return coin
 
     def _stored_prevout(self, prevout_bytes: bytes) -> Coin | None:
         """Return the `Coin` a stored `utxo-` record still resolves to.
@@ -444,7 +473,7 @@ class UtxoIndex:
                     err_msg = "prevout already spent in this batch"
                     raise InvalidBlockInputError(err_msg)
                 if prevout_bytes in self.updated_utxo_set:
-                    coin = self._pop(prevout_bytes)
+                    coin = self._spend_staged(prevout_bytes)
                     prev_coins.append(coin)
                 else:
                     # _stored_prevout's own docstring is where
@@ -578,7 +607,7 @@ class UtxoIndex:
                 err_msg = "output already removed"
                 raise ChainstateInconsistencyError(err_msg)
             if out_point_bytes in self.updated_utxo_set:
-                coin = self._pop(out_point_bytes)
+                coin = self._spend_staged(out_point_bytes)
             else:
                 coin_data = self.db.get(b"utxo-" + out_point_bytes)
                 if not coin_data:
@@ -636,6 +665,7 @@ class UtxoIndex:
         db.put_meta(_COIN_STATS_META_KEY, self.coin_stats.serialize())
         self.removed_utxos = set()
         self.updated_utxo_set = {}
+        self._stored_utxos = set()
         self._undo_log = []
 
     def cursor(self) -> Iterator[tuple[bytes, bytes]]:
@@ -650,7 +680,7 @@ class UtxoIndex:
         return self.db.scan_prefix(b"utxo-")
 
     @staticmethod
-    def _by_txid(
+    def by_txid(
         cursor: Iterator[tuple[bytes, bytes]],
     ) -> Iterator[list[tuple[int, bytes, bytes]]]:
         """Yield each txid's `(n, out_point_bytes, value)` rows, `n` ascending.
@@ -683,7 +713,7 @@ class UtxoIndex:
     ) -> bytes | None:
         """Return Core's `hash_serialized_3` over `cursor`'s coins, or `None`.
 
-        SHA256d over `tx_out_ser` of every coin, in `_by_txid`'s order:
+        SHA256d over `tx_out_ser` of every coin, in `by_txid`'s order:
         `ApplyHash` over `ComputeUTXOStats`' cursor
         (`src/kernel/coinstats.cpp`, at bitcoin/bitcoin@9be056a8a7, the
         v31.1 tag). The digest is `HashWriter::GetHash`'s own byte order,
@@ -696,7 +726,7 @@ class UtxoIndex:
         stats.
         """
         hasher = hashlib.sha256()
-        for rows in UtxoIndex._by_txid(cursor):
+        for rows in UtxoIndex.by_txid(cursor):
             for _, out_point_bytes, value in rows:
                 interruption_point()
                 try:

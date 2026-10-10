@@ -20,7 +20,9 @@ from btclib_node.p2p.block_availability import (
     BLOCK_DOWNLOAD_WINDOW,
     BlockAvailability,
     find_next_blocks_to_download,
+    first_in_flight,
     get_ancestor,
+    in_flight_from,
     peer_has_header,
     process_block_availability,
     remove_block_request,
@@ -474,3 +476,36 @@ def test_a_block_received_from_one_peer_leaves_that_peer_s_queue_alone() -> None
     remove_block_request([first, second], block, 10.0, 2)
     assert first.download_queue == [block]
     assert second.download_queue == []
+
+
+def test_a_request_dropped_takes_its_partial_block_and_order_with_it() -> None:
+    """Core's `QueuedBlock` goes whole, its `partialBlock` with it."""
+    block = b"\x01" * 32
+    other = b"\x02" * 32
+    peer = a_peer(1, [block, other])
+    state = peer.block_availability
+    state.partial_blocks.update({block: None, other: None})
+    state.request_order.update({block: 1, other: 2})
+    remove_block_request([peer], block, 10.0)
+    assert state.partial_blocks == {other: None}
+    assert state.request_order == {other: 2}
+
+
+def test_the_peers_a_block_is_asked_of_come_in_the_order_asked() -> None:
+    """Core's `mapBlocksInFlight` multimap: one asked unordered comes first.
+
+    `first_in_flight` names that peer for every block in flight.
+    """
+    block = b"\x01" * 32
+    other = b"\x02" * 32
+    third = a_peer(3, [block])
+    third.block_availability.request_order[block] = 7
+    second = a_peer(2, [block, other])
+    second.block_availability.request_order[block] = 5
+    first = a_peer(1, [block])
+    unasked = a_peer(4, [])
+    last = a_peer(5, [block])
+    last.block_availability.request_order[block] = 9
+    peers = [third, unasked, second, first, last]
+    assert in_flight_from(peers, block) == [first, second, third, last]
+    assert first_in_flight(peers) == {block: 1, other: 2}
