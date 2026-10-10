@@ -2866,19 +2866,7 @@ def get_raw_mempool(
 
     if verbose:
         return {
-            tx.id.hex(): {
-                "size": tx.size,
-                # Core's `GetTxSize`, the sigop-adjusted one, as
-                # `vsize_adjusted` and the deprecated `vsize`, then the
-                # BIP 141 size (`entryToJSON`, `src/rpc/mempool.cpp`, at
-                # bitcoin/bitcoin@aef8a04966). btclib-org/btclib-node#1357,
-                # btclib-org/btclib-node#1757
-                "vsize_adjusted": node.mempool.vsizes[wtxid],
-                "vsize": node.mempool.vsizes[wtxid],
-                "vsize_bip141": tx.vsize,
-                "weight": tx.weight,
-                "wtxid": tx.hash.hex(),
-            }
+            tx.id.hex(): _mempool_entry_json(node.mempool, wtxid)
             for wtxid, tx in node.mempool.transactions.items()
         }
 

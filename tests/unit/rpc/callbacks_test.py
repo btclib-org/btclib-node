@@ -1024,25 +1024,31 @@ def test_the_raw_mempool_is_a_plain_list_of_txids_by_default() -> None:
 def test_the_raw_mempool_verbose_table_names_each_transaction() -> None:
     """`getrawmempool` verbose answers an object keyed by txid.
 
-    Each entry names its own wtxid, sizes and weight; `vsize_adjusted` and
-    `vsize` are the one the entry was added with, Core's sigop-adjusted
-    `GetTxSize` (btclib-org/btclib-node#1357), and `vsize_bip141` is the
-    transaction's own (btclib-org/btclib-node#1757).
+    Each entry equals `getmempoolentry`'s answer for the same txid, and
+    `size` is absent.
     """
     mempool = Mempool(Logger(debug=True))
-    tx = a_tx()
-    mempool.add_tx(tx, 0, tx.vsize + 7)
+    first, second = a_tx(b"\x11"), a_tx(b"\x22")
+    # distinct sigop adjustments, so an entry cannot pass as the other's
+    mempool.add_tx(first, 0, first.vsize + 7)
+    mempool.add_tx(second, 0, second.vsize + 13)
     node = a_node(mempool=mempool)
 
     verbose = get_raw_mempool(node, _CONN, [True])
     assert isinstance(verbose, dict)
-    assert list(verbose) == [tx.id.hex()]
-    assert verbose[tx.id.hex()]["wtxid"] == tx.hash.hex()
-    assert verbose[tx.id.hex()]["vsize_adjusted"] == tx.vsize + 7
-    assert verbose[tx.id.hex()]["vsize"] == tx.vsize + 7
-    assert verbose[tx.id.hex()]["vsize_bip141"] == tx.vsize
-    assert list(verbose[tx.id.hex()])[:3] == ["size", "vsize_adjusted", "vsize"]
-    assert verbose[tx.id.hex()]["weight"] == tx.weight
+    assert list(verbose) == [first.id.hex(), second.id.hex()]
+    for tx, extra in ((first, 7), (second, 13)):
+        answer = verbose[tx.id.hex()]
+        entry = get_mempool_entry(node, _CONN, [tx.id.hex()])
+        # `RawJSON` compares by identity, so each fee is compared as its text
+        assert {**answer, "fees": {k: v.text for k, v in answer["fees"].items()}} == {
+            **entry,
+            "fees": {k: v.text for k, v in entry["fees"].items()},
+        }
+        assert answer["wtxid"] == tx.hash
+        # Core's sigop-adjusted `GetTxSize` (btclib-org/btclib-node#1357)
+        assert answer["vsize"] == tx.vsize + extra
+        assert "size" not in answer
 
 
 def test_mempool_sequence_attaches_the_mempool_s_own_counter() -> None:
