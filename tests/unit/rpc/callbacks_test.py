@@ -3183,9 +3183,7 @@ def test_a_tx_of_24391_inputs_is_refused_as_oversize() -> None:
     2026.10.9, whose `Tx.parse` decodes it under `check_validity=False`
     (btclib-org/btclib#2593). btclib-org/btclib-node#1889
     """
-    prev = TxIn(
-        prev_out=OutPoint(b"\x11" * 32, 0), script_sig=b"", sequence=0xFFFFFFFF
-    )
+    prev = TxIn(prev_out=OutPoint(b"\x11" * 32, 0), script_sig=b"", sequence=0xFFFFFFFF)
     input_size = len(prev.serialize(check_validity=False))
     copies = math.ceil((MAX_BLOCK_WEIGHT // 4) / input_size)
     assert copies == 24391
