@@ -564,14 +564,14 @@ jobs:
   # until somebody remembers where the rule lives. This job depends on
   # the others instead, so the rule names one thing that never changes
   # and a job added here is gated on by being added.
-  # It carries it: this name is a required check on main today, one of
-  # four, set through classic branch protection and not through any of
-  # the three rulesets -- main-integrity, main-self-merge and
+  # It carries it: this name is a required check on main today, set
+  # through classic branch protection and not through any of the three
+  # rulesets -- main-integrity, main-self-merge and
   # tag-integrity hold signatures, linear history, no force push,
   # deletion and pull_request between them, and none of them a
   # required_status_checks rule. REPOSITORY.md's *Required checks on
   # main* is where that is read back off both endpoints, and is the one
-  # place it is stated: no list of the four is repeated here.
+  # place it is stated: no list of them is repeated here.
   # This comment said the opposite until issue #749 -- that nothing
   # required a status check and the classic protection was empty, citing
   # btclib-org/.github#88. That was true when it was written and stopped

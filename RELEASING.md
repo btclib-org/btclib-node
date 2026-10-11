@@ -372,13 +372,12 @@ this release included.
    has the rule and the loop that derives the dependents; re-derive
    them before each release rather than carry this answer.
 
-1. Merge it the way every other pull request here lands: once somebody
-   other than its author has approved the head and the checks are in,
-   "Squash and merge", or auto-merge. `gh pr merge <n> --squash
+1. Merge it the way every other pull request here lands, as
+   `CONTRIBUTING.md`'s *Landing it* says. `gh pr merge <n> --squash
    --match-head-commit <head> --body-file <path> --subject <title>` is the
    form that names the release commit explicitly rather than leaving it to
-   `squash_merge_commit_message`'s repository default. `--admin` is the
-   emergency path, which a release does not need.
+   `squash_merge_commit_message`'s repository default. A merge through
+   the maintainer's bypass adds `--admin`.
 
    Then read `lint` and `test` on the commit `main` ends up at before
    tagging, rather than trust the pull request's own green run:
