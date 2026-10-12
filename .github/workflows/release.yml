@@ -27,8 +27,10 @@ name: release
 # windows-latest cell adds instead, issue #430), and a release is not
 # carved out as the one place that changes. integration-bitcoind.yml
 # exists and is a required check on every pull request, so the ancestry
-# check below -- the tag has to be merged into the default branch -- is
-# what already carries its answer for the tree being released.
+# check below -- the tag has to be merged into the default branch --
+# carries its answer for the tree being released only where the merge
+# waited for the required checks. A merge through the maintainer's
+# bypass does not (issue #1910).
 on:
   push:
     tags: ["v*"]

@@ -43,8 +43,10 @@ gh api repos/btclib-org/btclib-node/rulesets --jq '.[].id' \
 #
 ```
 
-A red run on any of them blocks the merge. Each is produced by the
-workflow that answers for it:
+A red run on any of them blocks the merge. A merge through the
+maintainer's bypass waits for none of these checks, as
+`CONTRIBUTING.md`'s *Landing it* says. Each is produced by the workflow
+that answers for it:
 
 | Check | Produced by |
 | --- | --- |
@@ -207,11 +209,11 @@ gh api repos/<owner>/<repo>/git/tags/<sha> --jq .verification
 
 **The bypass mode is the whole of the design.** `pull_request` excuses
 its holder from the rule while merging a pull request and at no other
-time, so it answers the one thing an emergency cannot wait for — an
-approving review from somebody else — and answers nothing else. The
-bypass carries no condition; policy limits its use to emergencies, and
-every other pull request, the maintainer's included, waits for that
-approval.
+time, which is all the bypass is for: a pull request landing without
+an approval. The bypass carries no condition.
+[`GOVERNANCE.md`](https://github.com/btclib-org/.github/blob/main/GOVERNANCE.md)'s
+*How a decision is made* says when the maintainer uses it, and
+`CONTRIBUTING.md`'s *Landing it* has the command.
 `always` in that field would mean a direct push to `main` had become
 possible for its holder, which is the drift the command above exists to
 catch.
