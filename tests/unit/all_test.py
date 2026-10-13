@@ -56,11 +56,13 @@ UNEXPORTED = {
     # the module-level singleton `Config.chain`'s default already closes
     # over; nothing outside config.py reaches for the constant itself
     "btclib_node.config": ["DEFAULT_CHAIN"],
-    # finish_sync: called only from settle_at_no_candidate; update_ibd_status:
-    # from that and _after_tip_change, which main.py alone calls, as it
-    # alone calls settle_at_no_candidate; update_header_index:
+    # finish_sync: called only from settle_at_no_candidate; finish_reindex:
+    # from that and _ready_fork; update_ibd_status: from
+    # settle_at_no_candidate, _after_tip_change, invalidate_chain and
+    # finish_reindex, all in main.py; update_header_index:
     # update_chain's own failure-path helper, called from nowhere else
     "btclib_node.main": [
+        "finish_reindex",
         "finish_sync",
         "settle_at_no_candidate",
         "update_header_index",

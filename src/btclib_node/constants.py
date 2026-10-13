@@ -174,9 +174,30 @@ class NodeStatus(enum.IntEnum):
     so a node whose peers all serve chains below the anti-DoS work
     threshold (`p2p.headers_sync`) stays in it: none of their headers is
     indexed.
+
+    `Reindexing` is the stored blocks connecting at start, on any start
+    where a stored branch outranks the active tip
+    (`BlockIndex.stored_branch_outranks_tip`): after `-reindex-chainstate`,
+    after a stop part-way through one, or after a stop with downloaded
+    blocks not yet connected. It holds three of the gates of Core's
+    `LoadingBlocks()`, which `ImportBlocks` holds on every start while
+    it connects what is stored: no header sync starts
+    (`src/net_processing.cpp:5797`), initial block download does not end
+    (`src/validation.cpp:3334`), and `mempool.dat` is not loaded
+    (`src/init.cpp:2047`, after `ImportBlocks` at `:2029`), all at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag. Core's other gates are
+    btclib-org/btclib-node#1915.
+
+    `Node.load` sets it and `main.finish_reindex` puts back the stage it
+    replaced. It sits below `BlockSynced`, so `>= BlockSynced` reads it
+    as still syncing. `main.update_ibd_status` does not leave initial
+    block download while it holds, as Core's `UpdateIBDStatus` does not
+    while blocks load (`src/validation.cpp`, same sha). It is neither
+    `SyncingHeaders` nor `HeaderSynced`, so no header batch moves it on.
     """
 
     Starting = 1
     SyncingHeaders = 2
     HeaderSynced = 3
+    Reindexing = 4
     BlockSynced = 5

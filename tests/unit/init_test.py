@@ -2625,7 +2625,7 @@ def test_a_store_that_cannot_be_opened_ends_start_up_with_the_rest_closed(
     """
     message = "the block store cannot be opened"
 
-    def refuse(*_args: object) -> None:
+    def refuse(*_args: object, **_kwargs: object) -> None:
         raise OSError(message)
 
     config = Config(
@@ -2665,10 +2665,10 @@ def test_a_stop_asked_for_while_the_stores_load_starts_no_p2p_side(
     entered, release = threading.Event(), threading.Event()
     real_chainstate = Chainstate
 
-    def held(*args: Any) -> Any:
+    def held(*args: Any, **kwargs: Any) -> Any:
         entered.set()
         release.wait(timeout=10)
-        return real_chainstate(*args)
+        return real_chainstate(*args, **kwargs)
 
     monkeypatch.setattr(btclib_node, "Chainstate", held)
     node = Node(

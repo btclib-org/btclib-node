@@ -304,11 +304,12 @@ class BlockStatus(enum.IntEnum):
 
     `valid_header` is a header on its own, content not yet checked;
     `in_active_chain` is on the active chain now; `valid` is a block
-    whose content passed validation but that a reorg has since removed
-    from the active chain (`_finalize_fork`'s own `to_remove` loop is
-    the only place that sets it). `invalid` is set on a block itself or
-    on any block built on one already marked `invalid` -- not terminal,
-    since `reconsider` below is exactly what clears it again.
+    whose content passed validation but that is off the active chain,
+    set by `_finalize_fork`'s own `to_remove` loop after a reorg and by
+    `-reindex-chainstate`'s wipe (`leave_active_chain`). `invalid` is set
+    on a block itself or on any block built on one already marked
+    `invalid` -- not terminal, since `reconsider` below is exactly what
+    clears it again.
     """
 
     valid_header = 1
@@ -529,6 +530,23 @@ class BlockIndex:
 
         self.sorted_header_dict = []
 
+    @staticmethod
+    def leave_active_chain(db: KeyValueStore, genesis_hash: bytes) -> None:
+        """Mark every block of the active chain but genesis `valid`.
+
+        `Chainstate`'s module docstring says when. `valid` is a block
+        whose content passed once and that is off the active chain, so
+        `generate_block_candidates` offers it again while its data is
+        held, and `main.update_chain` connects it again.
+        """
+        for key, value in db.scan_prefix(b"blkinfo-"):
+            block_info = BlockInfo.deserialize(value, check_validity=False)
+            if (
+                block_info.status == BlockStatus.in_active_chain
+                and key[8:] != genesis_hash
+            ):
+                db.put(key, replace(block_info, status=BlockStatus.valid).serialize())
+
     def calculate_chainwork(self) -> None:
         """Compute every header's cumulative work into `chainwork`.
 
@@ -696,9 +714,10 @@ class BlockIndex:
         may now outrank the tip.
 
         `valid` is offered alongside `valid_header` so that a branch a
-        reorg has since displaced -- `_finalize_fork`'s own `to_remove`
-        loop is what sets it -- becomes a candidate again once whatever
-        displaced it is itself invalidated. Core's own `InvalidateBlock`
+        reorg has since displaced (`_finalize_fork`'s own `to_remove` loop
+        sets it) becomes a candidate again once whatever displaced it is
+        itself invalidated, and so that a block `leave_active_chain` took
+        off the chain connects again. Core's own `InvalidateBlock`
         (`src/validation.cpp:3663-3684`, at bitcoin/bitcoin@9be056a8a7,
         the v31.1 tag) re-inserts such an out-of-chain header into
         `setBlockIndexCandidates` only where
@@ -1312,6 +1331,20 @@ class BlockIndex:
     def _branch_is_downloaded(self, block_hash: bytes) -> bool:
         to_add, _ = self.get_fork_details(block_hash)
         return all(self.get_block_info(h).downloaded for h in to_add)
+
+    def stored_branch_outranks_tip(self) -> bool:
+        """Answer whether `main.update_chain` has stored blocks to connect.
+
+        That is, whether `get_first_candidate` picks a candidate whose
+        whole branch is stored: the test `main._ready_fork` makes before
+        it connects, and whose failure ends `NodeStatus.Reindexing`
+        there. Its 100-candidate window is therefore the same at start
+        as on every pass after it.
+        """
+        candidate = self.get_first_candidate()
+        return candidate is not None and self._branch_is_downloaded(
+            candidate.header.hash
+        )
 
     def _outranks(self, block_hash: bytes, other: bytes) -> bool:
         """Answer whether `block_hash` sorts above `other`.

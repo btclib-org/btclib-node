@@ -30,7 +30,7 @@ from btclib.p2p.negotiation import FeeFilter, SendHeaders
 
 from btclib_node.chainstate.block_index import BlockStatus, block_time
 from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
-from btclib_node.constants import P2pConnStatus
+from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.exceptions import MissingPrevoutError, TxRejectedError
 from btclib_node.mempool import package_hash
 from btclib_node.orphanage import TxOrphanage
@@ -1537,8 +1537,10 @@ class DownloadManager:
         here it is the size of `headers_sync_timeouts` once every entry
         for a connection no longer connected is dropped, which is where
         a peer that disconnects hands its turn on. Core's
-        `LoadingBlocks()` gate has nothing to read: this tree does not
-        import blocks from disk.
+        `LoadingBlocks()` gate on that start is `NodeStatus.Reindexing`:
+        no peer is newly asked by this sync while the stored blocks
+        connect. Core's other `LoadingBlocks()` gates are
+        btclib-org/btclib-node#1915.
 
         A peer with a `getheaders` already in flight is not asked and
         takes no turn, Core setting `fSyncStarted` only where
@@ -1569,8 +1571,9 @@ class DownloadManager:
             del timeouts[conn_id]
         self._forget_peers_gone()
         sync_started = len(timeouts)
+        reindexing = node.status == NodeStatus.Reindexing
         for conn in connections:
-            if conn.id in timeouts or not _can_serve_blocks(conn):
+            if conn.id in timeouts or not _can_serve_blocks(conn) or reindexing:
                 continue
             # Core's `sync_blocks_and_headers_from_peer`: a peer that is
             # not preferred is still one to sync from where there is no

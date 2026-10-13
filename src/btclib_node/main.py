@@ -400,13 +400,18 @@ def update_ibd_status(node: Node) -> None:
     cached flag back to `true` either, `UpdateIBDStatus`'s own comment
     naming that explicitly.
 
-    Called by `_after_tip_change` whenever a fork commits, where Core's
-    `ConnectTip` and `DisconnectTip` call it, and by
-    `settle_at_no_candidate`, which reaches a tip no fork has moved yet:
-    the one loaded from disk, where Core's `LoadChainTip` calls it
-    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    Called by `_after_tip_change` whenever a fork commits, and by
+    `invalidate_chain` once it has disconnected, where Core's `ConnectTip`
+    and `DisconnectTip` call it; by `settle_at_no_candidate`, which
+    reaches a tip no fork has moved yet: the one loaded from disk, where
+    Core's `LoadChainTip` calls it (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag); and by `finish_reindex`,
+    where Core's `initload` calls it after `ImportBlocks`.
     """
     if not node.is_initial_block_download:
+        return
+    # Core's `if (m_blockman.LoadingBlocks()) return;`, same function
+    if node.status == NodeStatus.Reindexing:
         return
     block_index = node.chainstate.block_index
     tip_hash = block_index.active_chain[-1]
@@ -418,14 +423,29 @@ def update_ibd_status(node: Node) -> None:
     node.is_initial_block_download = False
 
 
-def settle_at_no_candidate(node: Node) -> None:
-    """Run `finish_sync` and `update_ibd_status` together, at one call site.
+def finish_reindex(node: Node) -> None:
+    """End `NodeStatus.Reindexing`: the best branch has no stored block left.
 
-    The two are separate latches over separate conditions, and "there
+    `status` goes back to the stage `Node.load` found it at, and
+    `update_ibd_status` runs. Core ends `m_importing` once `ImportBlocks`
+    has run `ActivateBestChains` (`src/node/blockstorage.cpp`), then calls
+    `UpdateIBDStatus` (`src/init.cpp`), both at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag. A no-op where the node is not reindexing.
+    """
+    if node.status == NodeStatus.Reindexing:
+        node.status = node.status_after_reindex
+        update_ibd_status(node)
+
+
+def settle_at_no_candidate(node: Node) -> None:
+    """Run `finish_reindex`, `finish_sync` and `update_ibd_status` in turn.
+
+    The three are separate latches over separate conditions, and "there
     is no candidate left to beat the active chain right now" is reason
-    to check both, so this is what `_ready_fork` and `update_chain`
+    to check each, so this is what `_ready_fork` and `update_chain`
     below each call.
     """
+    finish_reindex(node)
     finish_sync(node)
     update_ibd_status(node)
 
@@ -1016,7 +1036,9 @@ def _ready_fork(node: Node) -> tuple[list[bytes], list[bytes]] | None:
             # arrived, so a branch missing its tip is stepped over; a
             # branch missing a block behind its tip is not, and until
             # that block arrives nothing queued behind it connects,
-            # however complete: btclib-org/btclib-node#121
+            # however complete: btclib-org/btclib-node#121. The best
+            # branch waits on a block not stored, which ends a reindex.
+            finish_reindex(node)
             return None
 
     return to_add_hash, to_remove_hash

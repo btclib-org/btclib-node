@@ -142,6 +142,21 @@ and `ParseParameters` (`src/common/args.cpp:234`), at
 bitcoin/bitcoin@db0bde16b9. A refusal reaches stderr, logs and the RPC
 caller.
 
+`-reindex-chainstate` wipes the block filters and the undo data with the
+coins (btclib-org/btclib-node#1415). Bitcoin Core keeps both: it wipes its
+block filter index only on `-reindex` (`src/init.cpp`), and
+`BlockManager::WriteBlockUndo` writes no undo data for a block that has
+some (`src/node/blockstorage.cpp`), at bitcoin/bitcoin@9be056a8a7 (v31.1).
+This node writes both again as it connects each block. Both are wiped
+for one reason: `FilterIndex.add_block` and `catch_up` skip a block
+that already has a filter, and `BlockDB.add_rev_block` skips one that
+already has a patch, so without the wipe a corrupt record would survive
+the rebuild. A stop between the chainstate wipe and the undo wipe keeps
+the old patches until a start with the option wipes them. The undo
+wipe stays. The filter wipe lasts until btclib-org/btclib-node#1940
+gives the filters a store of their own, after which
+`-reindex-chainstate` keeps them as Core does.
+
 ## Limitations, not vulnerabilities
 
 The [assurance case](./ASSURANCE_CASE.md) is the threat model these are
