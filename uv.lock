@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.14"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -373,7 +373,7 @@ requires-dist = [
     { name = "bitcoin-core-rpc", specifier = ">=2026.10.4" },
     { name = "btclib", extras = ["secp256k1", "bip324"], specifier = ">=2026.10.9" },
     { name = "btclib-ecc", specifier = ">=2026.10.2" },
-    { name = "btclib-wallet", specifier = ">=2026.10.8" },
+    { name = "btclib-wallet", specifier = ">=2026.10.9" },
     { name = "rocksdict", specifier = ">=0.3.29" },
 ]
 
@@ -491,7 +491,7 @@ wheels = [
 
 [[package]]
 name = "btclib-wallet"
-version = "2026.10.8"
+version = "2026.10.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "bitcoin-core-rpc" },
@@ -500,9 +500,9 @@ dependencies = [
     { name = "btclib-mnemonics" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4c/26/d38e82197dac9deed6be7fc5ec3b3d9ab18720e96e95d9b347dde6de8170/btclib_wallet-2026.10.8.tar.gz", hash = "sha256:78f6216d0ab942224215aa0284a74e2ac826535a04b1a359f1c90bee62fb2a57", size = 2941032, upload-time = "2026-10-07T22:57:41.517Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/4d/8d/4834b246dfa85367c1b549e9e04d6127fceec3985a54180d29b1633c988f/btclib_wallet-2026.10.9.tar.gz", hash = "sha256:0b9ddc30f6bceab70793767968302a7f2cf550b9cfed1edcbd4a0e7e2507c251", size = 2945762, upload-time = "2026-10-08T16:57:33.883Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/dd/37/c394b4017d1df97c70fa2f7a5d72f55efdbcb6b08e034b339a81b18b05af/btclib_wallet-2026.10.8-py3-none-any.whl", hash = "sha256:fab58ebe34bea108e80362ff8ff0e43ddf512e3acbc8fc758f044de7a4cc5e29", size = 466808, upload-time = "2026-10-07T22:57:39.491Z" },
+    { url = "https://files.pythonhosted.org/packages/45/23/5e649332d326cfe300735bca7fe0de71f6c4d4491ba770223b656bdf4aee/btclib_wallet-2026.10.9-py3-none-any.whl", hash = "sha256:2f2d84598ab92abc853fbc6011099bf8e6824bd46ed41bf0b7546042b2d95d24", size = 468277, upload-time = "2026-10-08T16:57:32.193Z" },
 ]
 
 [[package]]
