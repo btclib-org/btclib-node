@@ -391,7 +391,7 @@ own block is where those are read: `codeql.yml`'s `codeql-passed` takes
 
 `release.yml`'s `test` job names a `permissions:` block for a different
 reason: not that the job needs more itself, but that
-`uses: ./.github/workflows/test.yml` makes the caller's grant the cap on
+`uses: $/.github/workflows/test.yml` makes the caller's grant the cap on
 every job of the called workflow. A scope a job over there declares and
 the caller leaves off is not quietly dropped: the run is refused before
 any job of it starts, `release.yml`'s own jobs included

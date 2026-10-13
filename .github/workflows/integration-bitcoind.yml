@@ -70,6 +70,13 @@ on:
     # the dispatch below and nowhere else.
     - cron: "20 5 * * 2"
   workflow_call:
+    inputs:
+      concurrency-suffix:
+        description: >
+          Appended to the concurrency group, and release.yml is the only
+          caller that passes one. See the group below.
+        type: string
+        default: ""
   workflow_dispatch:
   pull_request:
     # ready_for_review, so a pull request marked ready gets the run the
@@ -101,11 +108,13 @@ permissions:
 # pull_request events, so a push run (ref refs/heads/main) still gets
 # its own group, and a pull_request run -- closed and merged ones
 # included -- never collides with a push's group the way a bare ref
-# would
+# would. The suffix keeps a release call out of the branch groups: inside
+# a called workflow `github.ref` is the caller's, so a rehearsal from a
+# branch would otherwise share that branch's group
 concurrency:
   group: >-
     integration-bitcoind-${{ github.event.pull_request.number ||
-    github.ref }}
+    github.ref }}${{ inputs.concurrency-suffix }}
   cancel-in-progress: true
 
 jobs:

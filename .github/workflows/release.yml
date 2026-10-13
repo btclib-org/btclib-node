@@ -2,10 +2,11 @@
 name: release
 
 # one pipeline, two targets:
-# - pushing a v<version> tag runs the test and lint workflows, builds and
-#   signs the distribution files with btclib-org/.github's
-#   reusable-build.yml, checks them, publishes them to PyPI, and turns the
-#   tag into a GitHub release whose notes come from RELEASE_NOTES.md
+# - pushing a v<version> tag runs the test, lint, docs and
+#   integration-bitcoind workflows, builds and signs the distribution
+#   files with btclib-org/.github's reusable-build.yml, checks them,
+#   publishes them to PyPI, and turns the tag into a GitHub
+#   release whose notes come from RELEASE_NOTES.md
 # - workflow_dispatch is the rehearsal: the same pipeline from any
 #   branch, publishing to TestPyPI under a unique .dev<N> version. A
 #   rehearsal is never tagged
@@ -25,12 +26,13 @@ name: release
 # review only where waiting for it costs less than the review does;
 # test.yml's own header says what each sentinel adds and what its own
 # windows-latest cell adds instead, issue #430), and a release is not
-# carved out as the one place that changes. integration-bitcoind.yml
-# exists and is a required check on every pull request, so the ancestry
-# check below -- the tag has to be merged into the default branch --
-# carries its answer for the tree being released only where the merge
-# waited for the required checks. A merge through the maintainer's
-# bypass does not (issue #1910).
+# carved out as the one place that changes.
+#
+# The `integration-bitcoind:` job below runs the regtest check on the
+# tag's own tree. That check is required on every pull request, but a
+# merge through the maintainer's bypass does not wait for it, so the
+# merge cannot be taken to have answered for the tree released (issue
+# #1910).
 on:
   push:
     tags: ["v*"]
@@ -47,7 +49,7 @@ permissions:
 # one halfway is how a version reaches PyPI with no release cut for it.
 # Named literally, as everywhere else: github.workflow in a called
 # workflow is the caller's name, and this one calls several --
-# `grep -n 'uses: \./\.github/workflows' .github/workflows/release.yml`
+# `grep -n 'uses: \$/\.github/workflows/' .github/workflows/release.yml`
 # is which, in the tree that is asking, rather than a number here that
 # the next reusable workflow added below makes wrong
 concurrency:
@@ -151,7 +153,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read # the changes job inside test.yml reads a pull request's files
-    uses: ./.github/workflows/test.yml # zizmor: ignore[self-repository]
+    uses: $/.github/workflows/test.yml
     with:
       # what keeps this run out of the branch concurrency groups: see the
       # group in test.yml
@@ -166,7 +168,7 @@ jobs:
   # version-check: this is the cheap one, and it runs in parallel with it
   lint:
     name: Run the lint workflow
-    uses: ./.github/workflows/lint.yml # zizmor: ignore[self-repository]
+    uses: $/.github/workflows/lint.yml
     with:
       concurrency-suffix: "-release"
 
@@ -176,8 +178,17 @@ jobs:
   # not: it is the cheap one, and runs in parallel with it
   docs:
     name: Run the docs workflow
-    uses: ./.github/workflows/docs.yml # zizmor: ignore[self-repository]
+    uses: $/.github/workflows/docs.yml
     with:
+      concurrency-suffix: "-release"
+
+  # the regtest check against Bitcoin Core, on the tree being released:
+  # this file's own header has why it is called here
+  integration-bitcoind:
+    name: Run the integration-bitcoind workflow
+    uses: $/.github/workflows/integration-bitcoind.yml
+    with:
+      # see the test job above
       concurrency-suffix: "-release"
 
   publish-testpypi:
@@ -191,12 +202,13 @@ jobs:
     # btclib-org/btclib#1461 is where this exact shape blocked
     # publish-testpypi from ever starting, on the first cycle to run
     # public-api against a real breaking change
-    needs: [build, public-api, audit, test, lint, docs]
+    needs: [build, public-api, audit, test, lint, docs, integration-bitcoind]
     if: >-
       always() && github.event_name == 'workflow_dispatch' &&
       github.repository == 'btclib-org/btclib-node' &&
       needs.test.result == 'success' && needs.lint.result == 'success' &&
       needs.docs.result == 'success' &&
+      needs.integration-bitcoind.result == 'success' &&
       needs.audit.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -237,12 +249,13 @@ jobs:
     # See publish-testpypi's own comment: public-api stays a need for
     # ordering, not for its result, the same issue applying to a tag
     # push as to a rehearsal
-    needs: [build, public-api, audit, test, lint, docs]
+    needs: [build, public-api, audit, test, lint, docs, integration-bitcoind]
     if: >-
       always() && github.event_name == 'push' &&
       github.repository == 'btclib-org/btclib-node' &&
       needs.test.result == 'success' && needs.lint.result == 'success' &&
       needs.docs.result == 'success' &&
+      needs.integration-bitcoind.result == 'success' &&
       needs.audit.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -293,7 +306,7 @@ jobs:
     # fix to publish-pypi itself. Guarded against here from this job's
     # first day rather than after it recurs
     if: always() && needs.publish-pypi.result == 'success'
-    uses: ./.github/workflows/pypi-install.yml # zizmor: ignore[self-repository]
+    uses: $/.github/workflows/pypi-install.yml
     with:
       version: ${{ github.ref_name }}
 

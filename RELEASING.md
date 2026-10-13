@@ -3,8 +3,9 @@
 Releases are published by GitHub Actions
 ([release.yml](./.github/workflows/release.yml)), not from a developer
 machine. Pushing a `v<version>` tag runs the test workflow, the lint
-workflow and the documentation build, builds and checks the distribution
-files, publishes them to PyPI, and creates the GitHub release. The test
+workflow, the documentation build and the regtest check against Bitcoin
+Core, builds and checks the distribution files, publishes them to PyPI,
+and creates the GitHub release. The test
 workflow it calls carries the Windows cell along with it (issue #430);
 it does not call the platform sentinels beside that workflow --
 `os-macos.yml` and `os-ubuntu.yml` gate no commit and no merge today,
@@ -198,8 +199,8 @@ one change that makes this section live again.
 
 A rehearsal runs the identical pipeline — the `build` job's build and
 signature, the test workflow (whose `dist` job checks the distribution
-files), the lint workflow, the documentation build, and the publish
-step — and publishes the very files those checks passed to
+files), the lint workflow, the documentation build, the regtest check,
+and the publish step — and publishes the very files those checks passed to
 [TestPyPI](https://test.pypi.org/project/btclib-node/) instead of PyPI.
 
 1. On GitHub, Actions → release → Run workflow, and pick the branch to
@@ -280,13 +281,14 @@ this release included.
    path itself:
 
    ```shell
-   gh pr list --state open --search "release.yml OR test.yml OR lint.yml"
+   gh pr list --state open --search "release.yml OR test.yml OR lint.yml OR integration-bitcoind.yml"
    ```
 
    A pull request touching `release.yml`, `test.yml`'s `dist` job,
-   `lint.yml`, or anything under `.github/scripts/` or
-   `.github/actions/` is one the tag is about to run, so leaving it in
-   review means running the defect it fixes on the release.
+   `lint.yml`, `integration-bitcoind.yml`, or anything under
+   `.github/scripts/` or `.github/actions/` is one the tag is about to
+   run, so leaving it in review means running the defect it fixes on the
+   release.
 
 1. Write the release's section of [RELEASE_NOTES.md](./RELEASE_NOTES.md)
    and of [CHANGELOG.md](./CHANGELOG.md): `## v<version>`, above the
