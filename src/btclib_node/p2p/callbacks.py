@@ -19,7 +19,6 @@ many turns of `Node`'s own loop that answer takes to drain.
 """
 
 import secrets
-import time
 from collections import deque
 from dataclasses import replace
 from io import BytesIO
@@ -84,6 +83,7 @@ from btclib.p2p.limits import (
 )
 from btclib.p2p.negotiation import FeeFilter, GetAddr, WtxidRelay
 
+from btclib_node import clock
 from btclib_node.chainstate.block_index import (
     BlockStatus,
     block_time,
@@ -349,7 +349,7 @@ def maybe_send_getheaders(node: Node, conn: Connection, locator: list[bytes]) ->
     is sent until `headers` clears it or `_HEADERS_RESPONSE_TIME` passes.
     Returns whether it was sent.
     """
-    now = time.time()
+    now = clock.now()
     timestamps = node.download_manager.last_getheaders_timestamps
     if now - timestamps.get(conn.id, 0.0) > _HEADERS_RESPONSE_TIME:
         conn.send(GetHeaders(PROTOCOL_VERSION, locator, b"\x00" * 32))
@@ -582,7 +582,7 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     )
     # where Core's `ProcessMessage` sets `m_time_offset`, once every
     # refusal above is behind it
-    conn.stats.time_offset = version_msg.timestamp - int(time.time())
+    conn.stats.time_offset = version_msg.timestamp - int(clock.now())
     # and where it sends the final `alert` to a peer "old enough to have
     # the old alert system". btclib-org/btclib-node#1205
     if common_version(conn) <= _FINAL_ALERT_VERSION:
@@ -619,7 +619,7 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
     # Ahead of `promote_connection`: `P2pManager._keep_alive`, on another
     # thread, pings a connection whose `ping_start` is old, and would
     # ping this one as it arrives. btclib-org/btclib-node#1768
-    conn.ping_start = time.time()
+    conn.ping_start = clock.now()
     # out of P2pManager.pending_connections and into connections, the
     # dict every send iterates: btclib-org/btclib-node#131
     node.p2p_manager.promote_connection(conn.id)
@@ -831,7 +831,7 @@ def _draw_sample(node: Node) -> list[NetworkAddressV2]:
 def _cached_sample(node: Node, conn: Connection) -> list[NetworkAddressV2]:
     """Return the sample cached under `conn`'s key, redrawn once expired."""
     peer_db = node.p2p_manager.peer_db
-    now = time.time()
+    now = clock.now()
     # Every inbound connection this callback ever reaches carries a key
     # -- `P2pManager.server`/`create_connection` set it on acceptance,
     # the only path into an inbound `Connection` -- so this is never
@@ -1031,7 +1031,7 @@ def _store_gossip(
     most ten, is relayed to one or two peers (`RelayAddress`, same
     sha), unless this node's own `getaddr` to `conn` is unanswered.
     """
-    now = time.time()
+    now = clock.now()
     _refill_address_tokens(conn, now)
     received = list(addresses)
     secrets.SystemRandom().shuffle(received)
@@ -1386,7 +1386,7 @@ def settle_tx(node: Node, check: TxCheck, refusal: Exception | None) -> None:
         # novel and accepted into the mempool: what Core's own
         # `m_last_tx_time` records for eviction (`net_processing.cpp`'s
         # `ProcessMessage`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
-        conn.last_novel_tx_time = int(time.time())
+        conn.last_novel_tx_time = int(clock.now())
     _accepted(node, tx, conn, replaced)
 
 
@@ -1655,7 +1655,7 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
     # no longer awaited from this peer, whatever it turns out to be: the
     # `RemoveBlockRequest` of Core's `BLOCK` handling (`net_processing.cpp`,
     # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
-    remove_block_request(connections, block_hash, time.time(), conn.id)
+    remove_block_request(connections, block_hash, clock.now(), conn.id)
 
     block_index = node.chainstate.block_index
     _refuse_before_indexing(node, block, conn)
@@ -1734,7 +1734,7 @@ def _accept_block(
     # `m_last_block_time` records for eviction, whether or not the
     # block later connects (`PeerManagerImpl::ProcessBlock`,
     # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
-    conn.last_novel_block_time = int(time.time())
+    conn.last_novel_block_time = int(clock.now())
     node.logger.info("Received new block with hash:%s", block_hash.hex())
     block_index.set_downloaded(block_hash)
     # Core's `AcceptBlock` calls `NewPoWValidBlock` from inside
@@ -1744,7 +1744,7 @@ def _accept_block(
     new_pow_valid_block(node, block)
     # stored, so awaited from nobody: Core's `ProcessBlock`
     connections = list(node.p2p_manager.connections.values())
-    remove_block_request(connections, block_hash, time.time())
+    remove_block_request(connections, block_hash, clock.now())
 
 
 # The transaction items Core's `IsGenTxMsg` answers for, and the one its
@@ -1894,7 +1894,7 @@ def _can_direct_fetch(node: Node) -> bool:
     block_index = node.chainstate.block_index
     tip = block_index.header_dict[block_index.active_chain[-1]].header
     spacing = node.chain.consensus.pow_target_spacing
-    return tip.time.timestamp() > time.time() - spacing * _DIRECT_FETCH_SPACINGS
+    return tip.time.timestamp() > clock.now() - spacing * _DIRECT_FETCH_SPACINGS
 
 
 def _block_answer(node: Node, item: Inventory, block: Block) -> BlockMsg | CmpctBlock:
@@ -2244,7 +2244,7 @@ def _process_headers(
         and block_index.chainwork[tip]
         > block_index.chainwork[block_index.active_chain[-1]]
     ):
-        conn.last_block_announcement = int(time.time())
+        conn.last_block_announcement = int(clock.now())
     # The batch's last header is a block the peer has: Core's
     # `UpdatePeerStateForReceivedHeaders`
     update_block_availability(block_index, conn.block_availability, tip)
@@ -3150,7 +3150,7 @@ def _index_compact_header(node: Node, conn: Connection, header: BlockHeader) -> 
         received_new_header
         and chainwork[block_hash] > chainwork[block_index.active_chain[-1]]
     ):
-        conn.last_block_announcement = int(time.time())
+        conn.last_block_announcement = int(clock.now())
     return not block_index.get_block_info(block_hash).downloaded
 
 
@@ -3179,7 +3179,7 @@ def _queue_compact_block(
     else:
         # Core's `BlockRequested`
         if not conn.download_queue:
-            conn.block_availability.downloading_since = time.time()
+            conn.block_availability.downloading_since = clock.now()
         conn.download_queue.append(block_hash)
         order = next(node.download_manager.request_orders)
         conn.block_availability.request_order[block_hash] = order
@@ -3188,14 +3188,14 @@ def _queue_compact_block(
     try:
         partial = _reconstruct(node, compact)
     except MisbehavingError:
-        remove_block_request(connections, block_hash, time.time(), conn.id)
+        remove_block_request(connections, block_hash, clock.now(), conn.id)
         raise
     if partial is None:
         if first_in_flight:
             partials[block_hash] = _prefilled_only(compact)
             _ask_full_block(conn, block_hash)
         else:
-            remove_block_request(connections, block_hash, time.time(), conn.id)
+            remove_block_request(connections, block_hash, clock.now(), conn.id)
         return
     partials[block_hash] = partial
     missing = partial.missing_indexes
@@ -3211,7 +3211,7 @@ def _queue_compact_block(
     ):
         conn.send(GetBlockTxn(block_hash, missing))
     else:
-        remove_block_request(connections, block_hash, time.time(), conn.id)
+        remove_block_request(connections, block_hash, clock.now(), conn.id)
 
 
 def _reconstruct_optimistically(
@@ -3276,13 +3276,13 @@ def _process_compact_block_txns(
         return
     partial = partials[block_hash]
     if partial is None:
-        remove_block_request(connections, block_hash, time.time(), conn.id)
+        remove_block_request(connections, block_hash, clock.now(), conn.id)
         err_msg = "previous compact block reconstruction attempt failed"
         raise MisbehavingError(err_msg)
     try:
         block = partial.fill(transactions, check_validity=False)
     except BTClibValueError as e:
-        remove_block_request(connections, block_hash, time.time(), conn.id)
+        remove_block_request(connections, block_hash, clock.now(), conn.id)
         err_msg = "invalid compact block/non-matching block transactions"
         raise MisbehavingError(err_msg) from e
     # Core's `FillBlock` nulls the header, so that it is not filled twice
@@ -3293,9 +3293,9 @@ def _process_compact_block_txns(
         if first_in_flight:
             _ask_full_block(conn, block_hash)
         else:
-            remove_block_request(connections, block_hash, time.time(), conn.id)
+            remove_block_request(connections, block_hash, clock.now(), conn.id)
         return
-    remove_block_request(connections, block_hash, time.time(), conn.id)
+    remove_block_request(connections, block_hash, clock.now(), conn.id)
     _check_block(node, block, conn, via_compact_block=True)
     _accept_block(node, block, conn, requested=True, via_compact_block=True)
 

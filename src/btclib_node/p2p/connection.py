@@ -22,7 +22,6 @@ import contextlib
 import math
 import secrets
 import threading
-import time
 from collections import Counter, deque
 from dataclasses import dataclass, field
 from functools import cached_property
@@ -35,6 +34,7 @@ from btclib.p2p.handshake import Version
 from btclib.p2p.keepalive import Ping
 from btclib.p2p.limits import MAX_ADDR_TO_SEND, PROTOCOL_VERSION
 
+from btclib_node import clock
 from btclib_node.constants import (
     DEFAULT_MAXRECEIVEBUFFER,
     DEFAULT_MAXSENDBUFFER,
@@ -640,8 +640,8 @@ class Connection:
         # `m_last_tx_time` are all read off `NodeClock`, its mockable
         # system clock (`src/util/time.h`, at bitcoin/bitcoin@9be056a8a7,
         # the v31.1 tag).
-        self.last_receive: float = time.time()
-        self.last_send: float = time.time()
+        self.last_receive: float = clock.now()
+        self.last_send: float = clock.now()
         self.ping_nonce: int | None = None
         self.ping_sent: float = 0
         self.latency: float = 0
@@ -675,7 +675,7 @@ class Connection:
         # give its own reader. `callbacks.pong` updates `min_ping_time`
         # inside its `_ping_lock` block, where it reads the `ping_sent` the
         # round trip is measured from.
-        self.connected_time: int = int(time.time())
+        self.connected_time: int = int(clock.now())
         self.min_ping_time: float = math.inf
         self.last_novel_block_time: int = 0
         self.last_novel_tx_time: int = 0
@@ -689,7 +689,7 @@ class Connection:
         # When `addr_token_bucket`, above, was last topped up: Core's
         # `Peer::m_addr_token_timestamp`, which starts at the peer's
         # creation.
-        self.addr_token_timestamp: float = time.time()
+        self.addr_token_timestamp: float = clock.now()
 
         # What `DownloadManager.tx_download` is waiting to tell this peer
         # about, and when it may next do so -- Core's `TxRelay` holds the
@@ -1114,7 +1114,7 @@ class Connection:
             for start in range(0, len(view), _SEND_CHUNK):
                 chunk = view[start : start + _SEND_CHUNK]
                 await self.loop.sock_sendall(self.client, chunk)
-                self.last_send = time.time()
+                self.last_send = clock.now()
                 self._count_sent(pending, len(chunk))
         finally:
             self._writing = None
@@ -1384,7 +1384,7 @@ class Connection:
         return Version(
             version=PROTOCOL_VERSION,
             services=services,
-            timestamp=int(time.time()),
+            timestamp=int(clock.now()),
             # a `version` message's address carries no timestamp, which
             # is what the narrowest of btclib's address types is
             addr_recv=network_address(self.address),
@@ -1430,7 +1430,7 @@ class Connection:
         v31.1 tag): no `pong` answers it, so nothing is recorded as
         outstanding. btclib-org/btclib-node#1204
         """
-        self.ping_start = time.time()
+        self.ping_start = clock.now()
         if common_version(self) <= BIP0031_VERSION:
             self.send(NoncelessPing())
             return
@@ -1441,7 +1441,7 @@ class Connection:
         # that answers it indistinguishable from no pong at all.
         ping_msg = Ping(1 + secrets.randbelow(2**64 - 1))
         with self._ping_lock:
-            self.ping_sent = time.time()
+            self.ping_sent = clock.now()
             self.ping_nonce = ping_msg.nonce
         self.send(ping_msg)
 
@@ -1490,7 +1490,7 @@ class Connection:
         # `CNode::ReceiveMsgBytes` stamps `m_last_recv`: a block arriving
         # slowly keeps its peer from being dropped as silent.
         # btclib-org/btclib-node#1768
-        received = self.last_receive = time.time()
+        received = self.last_receive = clock.now()
         try:
             while remaining:
                 remaining = self.transport.received_bytes(remaining)

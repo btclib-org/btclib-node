@@ -38,6 +38,7 @@ from btclib.p2p.addrv2 import (
     network_address,
 )
 
+from btclib_node import clock
 from btclib_node.config import (
     BindAddress,
     WhitebindAddress,
@@ -470,7 +471,7 @@ class P2pManager(threading.Thread):
         # Core's scheduler first dumps the ban list one interval after
         # start (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
         # tag)
-        self._last_ban_dump = time.time()
+        self._last_ban_dump = time.monotonic()
         # Core's own `-connect`: dial only the peers it names, with DNS
         # seeding and every automatically-drawn outbound connection off
         # (`connOptions.m_use_addrman_outgoing = false`, `src/init.cpp`
@@ -585,7 +586,7 @@ class P2pManager(threading.Thread):
         self._seednode_addr_fetch_due = False
         self._next_seednode_at = 0.0
         # Core's `start`, reset when `manage_connections` begins.
-        self._dial_start = time.time()
+        self._dial_start = clock.now()
         self._next_fixed_seeds_check = 0.0
 
         # `-connect`, each exactly as given -- a hostname included, and a
@@ -1964,10 +1965,11 @@ class P2pManager(threading.Thread):
         seeding is off and neither `-addnode` nor `-seednode` was given,
         and once only.
         """
-        now = time.time()
-        if not self.add_fixed_seeds or now < self._next_fixed_seeds_check:
+        now = clock.now()
+        checked_at = time.monotonic()
+        if not self.add_fixed_seeds or checked_at < self._next_fixed_seeds_check:
             return
-        self._next_fixed_seeds_check = now + _FIXED_SEEDS_CHECK_INTERVAL
+        self._next_fixed_seeds_check = checked_at + _FIXED_SEEDS_CHECK_INTERVAL
         empty = [
             network
             for network in _REACHABLE_NETWORKS
@@ -2173,7 +2175,7 @@ class P2pManager(threading.Thread):
         the drip-feed exists to take (btclib-org/btclib-node#1192,
         review round 2).
         """
-        self._dial_start = time.time()
+        self._dial_start = clock.now()
         # Anchored at the same instant as `_dial_start`, not backdated:
         # Core's own first pass sleeps its full 500ms before its first
         # draw exactly as every later pass does --
@@ -2185,7 +2187,7 @@ class P2pManager(threading.Thread):
         # `_AUTOMATIC_DIAL_INTERVAL` too, the same as every pass after
         # it -- no shortcut for a loop armed a while after this manager
         # was built (btclib-org/btclib-node#1379, review round 2).
-        self._last_dial_pass = self._dial_start
+        self._last_dial_pass = time.monotonic()
         # Core's own `add_addr_fetch`'s initial value: the first
         # `-seednode` is queued as soon as this pass starts where
         # `peer_db` holds nothing at all yet, rather than waiting for the
@@ -2215,7 +2217,7 @@ class P2pManager(threading.Thread):
         """
         if not self._seednodes:
             return
-        now = time.time()
+        now = clock.now()
         if self._seednode_addr_fetch_due:
             self._seednode_addr_fetch_due = False
             self._next_seednode_at = now + _ADD_SEEDNODE_INTERVAL
@@ -2234,6 +2236,11 @@ class P2pManager(threading.Thread):
         self._addr_fetches.append(self._seednodes.pop())
 
     def _maybe_dump_banlist(self, now: float) -> None:
+        """Dump the ban list every `DUMP_BANS_INTERVAL` seconds of steady time.
+
+        `now` is a `time.monotonic()` reading: Core's scheduler runs
+        `DumpBanlist` on the steady clock, which `setmocktime` leaves alone.
+        """
         if now - self._last_ban_dump < DUMP_BANS_INTERVAL:
             return
         self._last_ban_dump = now
@@ -2499,7 +2506,7 @@ class P2pManager(threading.Thread):
         # `continue`s on either: one draw a pass would stall wherever
         # the table is mostly such peers (btclib-org/btclib-node#1201).
         draw = self.peer_db.address_sampler(new_only=feeler, network=network)
-        now = time.time()
+        now = clock.now()
         # Core's `nTries`, which counts the draw it is about to make
         for tries in range(1, _MAX_DRAWS_PER_PASS + 1):
             address = self.peer_db.select_tried_collision() if feeler else None
@@ -2570,7 +2577,7 @@ class P2pManager(threading.Thread):
             return _Outbound.BLOCK_RELAY
         if self.try_new_outbound_peer:
             return _Outbound.FULL_RELAY
-        now = time.time()
+        now = clock.now()
         if self.start_extra_block_relay_peers and now > self._next_extra_block_relay:
             self._next_extra_block_relay = now + _exponential_delay(
                 _EXTRA_BLOCK_RELAY_ONLY_PEER_INTERVAL
@@ -3034,12 +3041,16 @@ class P2pManager(threading.Thread):
         """
         self._arm_dial_loop()
         while True:
-            now = time.time()
+            now = clock.now()
+            steady = time.monotonic()
             self._prune_stale_connections(now)
-            self._maybe_dump_banlist(now)
+            self._maybe_dump_banlist(steady)
             self._disconnect_if_inactive()
-            if now - self._last_dial_pass >= _AUTOMATIC_DIAL_INTERVAL:
-                self._last_dial_pass = now
+            # a pass is due on the steady clock, as Core's
+            # `m_interrupt_net->sleep_for(500ms)` is, so a mock time held
+            # or set back does not stop the dials
+            if steady - self._last_dial_pass >= _AUTOMATIC_DIAL_INTERVAL:
+                self._last_dial_pass = steady
                 await self._maybe_dial_more_peers()
             await asyncio.sleep(0.1)
 
@@ -3691,7 +3702,7 @@ class P2pManager(threading.Thread):
             asyncio.run_coroutine_threadsafe(
                 self.server(loop, server_socket), loop
             ).add_done_callback(self._report_server_failure)
-        now = time.time()
+        now = clock.now()
         # Core's `start + rand_exp_duration(...)`, drawn as
         # `ThreadOpenConnections` starts.
         self._next_extra_block_relay = now + _exponential_delay(

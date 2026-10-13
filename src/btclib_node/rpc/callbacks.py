@@ -39,6 +39,7 @@ from btclib.tx import Tx
 from btclib.tx.out_point import OutPoint
 from btclib_wallet.descriptors import Provider, infer_descriptor
 
+from btclib_node import clock
 from btclib_node.block_db import Coin
 from btclib_node.chainstate.block_index import BlockStatus, block_time
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, USER_AGENT
@@ -170,6 +171,7 @@ __all__ = [
     "send_raw_transaction",
     "service_names",
     "set_ban",
+    "set_mock_time",
     "set_network_active",
     "stop",
     "stop_wait_param",
@@ -1399,7 +1401,7 @@ def _peer_entry(
     # own test of `m_ping_nonce_sent` asks.
     ping_sent = p2p_conn.ping_sent
     if ping_sent:
-        ping_wait = time.time() - ping_sent
+        ping_wait = clock.now() - ping_sent
         if ping_wait > 0:
             entry["pingwait"] = ping_wait
     entry["version"] = 0 if version_message is None else version_message.version
@@ -2088,7 +2090,7 @@ def add_peer_address(
         )
         octets = host.packed
     address = NetworkAddressV2(
-        int(time.time()), SEEDS_SERVICE_FLAGS, network_id, octets, port
+        int(clock.now()), SEEDS_SERVICE_FLAGS, network_id, octets, port
     )
     peer_db = node.p2p_manager.peer_db
     result: dict[str, Any] = {}
@@ -2194,7 +2196,7 @@ def set_ban(node: Node, conn: RpcConnection, params: list[Any]) -> None:
     ):
         raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
     bantime = bantime or 0
-    if absolute and bantime < int(time.time()):
+    if absolute and bantime < int(clock.now()):
         raise RpcError(
             RPCErrorCode.INVALID_PARAMETER, "Error: Absolute timestamp is in the past"
         )
@@ -2204,7 +2206,7 @@ def set_ban(node: Node, conn: RpcConnection, params: list[Any]) -> None:
 
 def list_banned(node: Node, conn: RpcConnection, _: list[Any]) -> list[dict[str, Any]]:
     """Answer `listbanned`, every unexpired ban in the list's own order."""
-    now = int(time.time())
+    now = int(clock.now())
     return [
         {
             "address": str(subnet),
@@ -4372,6 +4374,44 @@ def stop_wait_param(params: list[Any]) -> int | None:
     return value
 
 
+def set_mock_time(node: Node, conn: RpcConnection, params: list[Any]) -> None:
+    """Answer `setmocktime`: hold the node's clock at `timestamp`, regtest only.
+
+    Core's own (`src/rpc/node.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag), in Core's order: the generic missing-argument and
+    wrong-type refusals, then the chain gate -- `RPC_MISC_ERROR`, as the
+    plain `std::runtime_error` Core throws becomes -- then the range, a
+    non-integer number being "JSON integer out of range" as `getInt`
+    answers it. A `timestamp` outside `[0, MAX_MOCK_TIME]` is
+    `RPC_INVALID_PARAMETER`. `MAX_MOCK_TIME` is the v31.1 tag's bound,
+    `nanoseconds::max()` in seconds; master narrows it to `uint32_t`'s
+    maximum (406c2348dd, "rpc: tighten setmocktime upper bound to
+    UINT32_MAX", read at bitcoin/bitcoin@badc957481), which v31.1
+    lacks. Every refusal here matches a regtest bitcoind v31.1.0.
+
+    The callback runs on `Node`'s thread between two steps of the loop,
+    so no validation is in flight, as Core's `LOCK(cs_main)` ensures.
+    `clock`'s module docstring says which reads the mock time moves.
+    """
+    if not params:
+        raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["setmocktime"])
+    if isinstance(params[0], bool) or not isinstance(params[0], (int, float)):
+        raise type_error(1, "timestamp", params[0], "number")
+    if node.chain.name != "regtest":
+        raise RpcError(
+            RPCErrorCode.MISC_ERROR,
+            "setmocktime is for regression testing (-regtest mode) only",
+        )
+    timestamp = _integer(params[0], -_INT64_BOUND, _INT64_BOUND - 1)
+    if not 0 <= timestamp <= clock.MAX_MOCK_TIME:
+        raise RpcError(
+            RPCErrorCode.INVALID_PARAMETER,
+            f"Mocktime must be in the range [0, {clock.MAX_MOCK_TIME}], "
+            f"not {timestamp}.",
+        )
+    clock.set_mock_time(timestamp)
+
+
 def stop(node: Node, conn: RpcConnection, params: list[Any]) -> str:
     """Answer `stop`; `rpc.main._step` delays this reply by `wait`, then stops.
 
@@ -4472,6 +4512,7 @@ callbacks = {
     "estimatesmartfee": estimate_smart_fee,
     "estimaterawfee": estimate_raw_fee,
     "ping": ping,
+    "setmocktime": set_mock_time,
     "stop": stop,
     "help": help_rpc,
     "getrpcinfo": get_rpc_info,
@@ -4554,6 +4595,7 @@ arg_names: dict[str, tuple[str, ...]] = {
     "estimatesmartfee": ("conf_target", "estimate_mode"),
     "estimaterawfee": ("conf_target", "threshold"),
     "ping": (),
+    "setmocktime": ("timestamp",),
     "stop": ("wait",),
     "help": ("command",),
     "getrpcinfo": (),

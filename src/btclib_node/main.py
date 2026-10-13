@@ -16,9 +16,7 @@ thread.
 """
 
 import secrets
-import time
 from contextlib import ExitStack, contextmanager
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, NamedTuple, cast
 
 from btclib.block import (
@@ -49,6 +47,7 @@ from btclib.tx.tx_context import (
     is_final,
 )
 
+from btclib_node import clock
 from btclib_node.block_db import Coin
 from btclib_node.chains import SigNet
 from btclib_node.chainstate.block_index import (
@@ -413,7 +412,7 @@ def update_ibd_status(node: Node) -> None:
     if block_index.chainwork[tip_hash] < node.config.minimum_chain_work:
         return
     tip_header = block_index.header_dict[tip_hash].header
-    if (datetime.now(UTC) - tip_header.time).total_seconds() > node.config.max_tip_age:
+    if (clock.now_utc() - tip_header.time).total_seconds() > node.config.max_tip_age:
         return
     node.is_initial_block_download = False
 
@@ -820,7 +819,7 @@ def _finalize_fork(node: Node, to_add: list[Block], to_remove: list[RevBlock]) -
         block_index.stage_status(block_hash, BlockStatus.in_active_chain)
         node.logger.info("Added block %s", block_hash.hex())
         # Core's `BlockConnected` stamping `m_last_tip_update`
-        node.download_manager.last_tip_update = time.time()
+        node.download_manager.last_tip_update = clock.now()
     # `Node.best_height`'s own comment (`__init__.py`) is where reading
     # this cross-thread, off `active_chain` rather than off a lock, is
     # argued -- this call is the "tip changed" moment that comment cites.
@@ -1390,7 +1389,7 @@ def contextual_check_block(node: Node, block: Block, index: int) -> tuple[int, b
     # than assumed, in case that invariant is ever wrong.
     try:
         block.assert_valid_contextual(
-            BlockContext(index, datetime.now(UTC), node.chain.consensus.bip34_height)
+            BlockContext(index, clock.now_utc(), node.chain.consensus.bip34_height)
         )
     except BTClibValueError as error:
         if index >= node.chain.consensus.bip34_height and "coinbase height" in str(

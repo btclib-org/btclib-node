@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from btclib import var_int
 
+from btclib_node import clock
 from btclib_node.chainstate.block_index import block_time
 
 if TYPE_CHECKING:
@@ -906,7 +907,7 @@ def is_current_for_fee_estimation(node: Node) -> bool:
         return False
     block_index = node.chainstate.block_index
     tip = block_index.header_dict[block_index.active_chain[-1]].header
-    if block_time(tip) < int(time.time()) - _MAX_FEE_ESTIMATION_TIP_AGE:
+    if block_time(tip) < int(clock.now()) - _MAX_FEE_ESTIMATION_TIP_AGE:
         return False
     return len(block_index.active_chain) >= len(block_index.header_index) - 1
 

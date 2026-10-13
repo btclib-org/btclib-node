@@ -32,6 +32,7 @@ from btclib.p2p.limits import MAX_INV_SZ, MAX_PROTOCOL_MESSAGE_LENGTH, PROTOCOL_
 from btclib.p2p.message import Message
 
 from btclib_node import Node
+from btclib_node import clock as clock_module
 from btclib_node.chains import RegTest
 from btclib_node.constants import DEFAULT_MAXSENDBUFFER, NodeStatus, P2pConnStatus
 from btclib_node.orphanage import TxOrphanage
@@ -1120,8 +1121,7 @@ def test_a_long_write_stamps_last_send_after_each_chunk_the_socket_takes(
     connection, _ = a_connection()
     connection.last_send = 0.0
     ticks = iter(float(n) for n in range(1, 100))
-    clock = SimpleNamespace(time=lambda: next(ticks))
-    monkeypatch.setattr(connection_module, "time", clock)
+    monkeypatch.setattr(clock_module, "now", lambda: next(ticks))
     offered: list[tuple[int, float]] = []
 
     async def sock_sendall(_sock: object, data: bytes) -> None:

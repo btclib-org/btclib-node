@@ -29,6 +29,7 @@ from btclib.p2p.limits import MAX_INV_SZ, PROTOCOL_VERSION
 from btclib.p2p.negotiation import FeeFilter, SendHeaders
 
 import btclib_node.download as download_module
+from btclib_node import clock as clock_module
 from btclib_node.chains import RegTest
 from btclib_node.chainstate.block_index import BlockStatus, block_time
 from btclib_node.cluster_linearize import FeeFrac
@@ -1043,11 +1044,9 @@ def test_a_transaction_this_node_originated_is_announced_like_any_other() -> Non
 
 @pytest.fixture
 def clock(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
-    """Hold `download`'s clock at `clock.now` until a test moves it."""
+    """Hold the whole process's clock at `clock.now` until a test moves it."""
     clock = SimpleNamespace(now=1_000.0)
-    monkeypatch.setattr(
-        download_module, "time", SimpleNamespace(time=lambda: clock.now)
-    )
+    monkeypatch.setattr(clock_module, "now", lambda: clock.now)
     return clock
 
 
@@ -2569,18 +2568,39 @@ def test_an_extra_block_relay_only_peer_is_kept_while_young_or_busy() -> None:
         manager = an_extra_peer_manager(peers)
         manager._check_for_stale_tip_and_evict_peers()
         assert not any(peer.stopped for peer in peers)
-        assert manager._next_extra_peer_check > time.time() + 40
+        assert manager._next_extra_peer_check > time.monotonic() + 40
+
+
+@pytest.mark.parametrize("mocked", [1_700_000_000, 100])
+def test_a_held_or_set_back_mock_time_leaves_the_scheduled_checks_running(
+    mocked: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The extra-peer check and the reattempt are Core scheduler jobs.
+
+    They run on the steady clock, so a mock time held still or set back
+    does not stop them, while what runs inside still reads the mock time.
+    """
+    clock_module.set_mock_time(mocked)
+    due = time.monotonic() - 1
+    manager = an_extra_peer_manager(block_relay_peers(0, 0, 0))
+    manager._next_extra_peer_check = due
+    manager._check_for_stale_tip_and_evict_peers()
+    assert manager._next_extra_peer_check > time.monotonic() + 40
+    manager, _ = an_unbroadcast_manager([a_conn(1)], monkeypatch)
+    manager._next_reattempt_broadcast = due
+    manager._reattempt_initial_broadcast()
+    assert manager._next_reattempt_broadcast > time.monotonic() + 590
 
 
 def test_the_extra_peer_check_waits_for_its_interval() -> None:
     """Core's `EXTRA_PEER_CHECK_INTERVAL`, from start-up on."""
     peers = block_relay_peers(0, 0, 0)
     manager = an_extra_peer_manager(peers)
-    manager._next_extra_peer_check = time.time() + 1
+    manager._next_extra_peer_check = time.monotonic() + 1
     manager._check_for_stale_tip_and_evict_peers()
     assert not any(peer.stopped for peer in peers)
     fresh = make_manager([])
-    assert fresh._next_extra_peer_check > time.time() + 40
+    assert fresh._next_extra_peer_check > time.monotonic() + 40
 
 
 @pytest.mark.parametrize(
@@ -2876,10 +2896,10 @@ def an_active_chain(block_index: BlockIndex, length: int) -> list[bytes]:
 def a_clock_at(
     monkeypatch: pytest.MonkeyPatch, block_index: BlockIndex, age: float
 ) -> float:
-    """Stop `download`'s clock `age` seconds after the active tip's time."""
+    """Stop the process's clock `age` seconds after the active tip's time."""
     tip = block_index.get_block_info(block_index.active_chain[-1]).header
     now = block_time(tip) + age
-    monkeypatch.setattr(download_module, "time", SimpleNamespace(time=lambda: now))
+    monkeypatch.setattr(clock_module, "now", lambda: now)
     return now
 
 
@@ -3252,15 +3272,15 @@ def test_the_reattempt_is_scheduled_10_to_15_minutes_ahead(
         return 42.0
 
     monkeypatch.setattr(download_module._rng, "uniform", draw)
-    before = time.time()
+    before = time.monotonic()
     manager = make_manager([])
     assert bounds == [(0, 300)]
-    assert before + 642 <= manager._next_reattempt_broadcast <= time.time() + 642
+    assert before + 642 <= manager._next_reattempt_broadcast <= time.monotonic() + 642
     manager._next_reattempt_broadcast = 0
-    before = time.time()
+    before = time.monotonic()
     manager._reattempt_initial_broadcast()
     assert len(bounds) == 2
-    assert before + 642 <= manager._next_reattempt_broadcast <= time.time() + 642
+    assert before + 642 <= manager._next_reattempt_broadcast <= time.monotonic() + 642
 
 
 def test_an_unbroadcast_transaction_is_announced_again_when_due(
@@ -3274,7 +3294,7 @@ def test_an_unbroadcast_transaction_is_announced_again_when_due(
     assert [hashes_of(inv) for inv in only(other, Inv)] == [[wtxid]]
     # the next run is 10 minutes away, and the transaction stays unbroadcast
     # until a peer asks for it
-    assert manager._next_reattempt_broadcast > time.time() + 590
+    assert manager._next_reattempt_broadcast > time.monotonic() + 590
     assert manager.node.mempool.unbroadcast
 
 
@@ -3284,7 +3304,7 @@ def test_nothing_is_announced_before_the_reattempt_is_due(
     """ISS 1816: the run waits for its schedule."""
     peer = a_conn(1)
     manager, _ = an_unbroadcast_manager([peer], monkeypatch)
-    manager._next_reattempt_broadcast = time.time() + 60
+    manager._next_reattempt_broadcast = time.monotonic() + 60
     manager.step()
     assert not only(peer, Inv)
 

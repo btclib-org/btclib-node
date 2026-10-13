@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import enum
 import secrets
-import time
 from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, NamedTuple
@@ -45,6 +44,7 @@ from btclib.block.limits import MAX_FUTURE_BLOCK_TIME
 from btclib.block.proof_of_work import permitted_difficulty_transition
 from btclib.hashes import siphash
 
+from btclib_node import clock
 from btclib_node.chainstate.block_index import calculate_work
 
 if TYPE_CHECKING:
@@ -238,7 +238,7 @@ class HeadersSyncState:
         self._salt = (
             (secrets.randbits(64), secrets.randbits(64)) if salt is None else salt
         )
-        now = time.time() if now is None else now
+        now = clock.now() if now is None else now
         # the longest chain the median-time-past rule allows between the
         # chain start and now, at six blocks a second, in commitments:
         # a peer offering more is offering what cannot be a valid chain

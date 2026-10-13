@@ -28,6 +28,7 @@ from btclib.p2p.addrv2 import BIP155Network
 from btclib.p2p.inventory import GetData, Inv, Inventory, InventoryType
 from btclib.p2p.negotiation import FeeFilter, SendHeaders
 
+from btclib_node import clock
 from btclib_node.chainstate.block_index import BlockStatus, block_time
 from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
 from btclib_node.constants import P2pConnStatus
@@ -525,10 +526,10 @@ class DownloadManager:
         # When `_check_for_stale_tip_and_evict_peers` next runs, which
         # Core schedules `EXTRA_PEER_CHECK_INTERVAL` from start-up, and
         # Core's `m_initial_sync_finished`.
-        self._next_extra_peer_check = time.time() + _EXTRA_PEER_CHECK_INTERVAL
+        self._next_extra_peer_check = time.monotonic() + _EXTRA_PEER_CHECK_INTERVAL
         self._initial_sync_finished = False
         # When `_reattempt_initial_broadcast` next runs
-        self._next_reattempt_broadcast = time.time() + _reattempt_broadcast_delay()
+        self._next_reattempt_broadcast = time.monotonic() + _reattempt_broadcast_delay()
         # Core's `m_last_tip_update`, which `main._finalize_fork` stamps
         # as each block connects, zero until then, and
         # `m_stale_tip_check_time`, when the stale-tip check next runs.
@@ -568,10 +569,10 @@ class DownloadManager:
         `received_txs`. Core, on its scheduler thread, takes `m_peer_mutex`
         instead. btclib-org/btclib-node#1816
         """
-        now = time.time()
-        if now < self._next_reattempt_broadcast:
+        steady = time.monotonic()
+        if steady < self._next_reattempt_broadcast:
             return
-        self._next_reattempt_broadcast = now + _reattempt_broadcast_delay()
+        self._next_reattempt_broadcast = steady + _reattempt_broadcast_delay()
         mempool = self.node.mempool
         for txid in sorted(mempool.unbroadcast):
             wtxid = mempool.txid_index.get(txid)
@@ -592,10 +593,11 @@ class DownloadManager:
         `P2pManager` dial an extra block-relay-only peer, once and for
         good, as `StartExtraBlockRelayPeers` does.
         """
-        now = time.time()
-        if now < self._next_extra_peer_check:
+        steady = time.monotonic()
+        if steady < self._next_extra_peer_check:
             return
-        self._next_extra_peer_check = now + _EXTRA_PEER_CHECK_INTERVAL
+        self._next_extra_peer_check = steady + _EXTRA_PEER_CHECK_INTERVAL
+        now = clock.now()
         self._evict_extra_block_relay_peer(now)
         self._evict_extra_full_relay_peer(now)
         manager = self.node.p2p_manager
@@ -843,7 +845,7 @@ class DownloadManager:
         for peer in self.orphanage.peers():
             if peer not in connections:
                 self.orphanage.erase_for_peer(peer)
-        now = time.time()
+        now = clock.now()
         wtxid_peers = sum(conn.wtxidrelay_received for conn in connections.values())
         for conn_id, announced, txid in self.inv_txs:
             conn = connections.get(conn_id)
@@ -1073,7 +1075,7 @@ class DownloadManager:
                 )
             ]
             self._add_known_txs(conn_id, unique_parents)
-            now = time.time()
+            now = clock.now()
             wtxid_peers = self._wtxid_peer_count()
             candidates = [conn_id]
             candidates += self.tx_requests.get_candidate_peers(txid)
@@ -1233,7 +1235,7 @@ class DownloadManager:
         # timer comes due, rather than the instant something is queued,
         # so the gap between a `tx` this node receives and the `inv` it
         # sends on carries no information about when that arrival was.
-        now = time.time()
+        now = clock.now()
         due_conns = []
         for conn in self.node.p2p_manager.connections.copy().values():
             if not conn.relay_tx:
@@ -1361,7 +1363,7 @@ class DownloadManager:
         `p2p/chain_sync.py` is where it is argued; Core runs it from
         `SendMessages`, once per peer past its handshake.
         """
-        now = time.time()
+        now = clock.now()
         for conn in list(self.node.p2p_manager.connections.values()):
             if conn.status == P2pConnStatus.Connected:
                 consider_eviction(self.node, conn, now, maybe_send_getheaders)
@@ -1414,7 +1416,7 @@ class DownloadManager:
         Core's `GetCommonVersion() < FEEFILTER_VERSION` return is kept:
         a peer that old is sent none.
         """
-        now = time.time()
+        now = clock.now()
         # Core's own `MaybeSendFeefilter` (`net_processing.cpp`,
         # at bitcoin/bitcoin@ca7162cde5) gates this same decision on
         # `m_chainman.IsInitialBlockDownload()`, which `main.
@@ -1559,7 +1561,7 @@ class DownloadManager:
         # Core's `pindexStart->pprev`, where there is one: genesis has none
         header_index = block_index.header_index
         start = header_index[-2] if len(header_index) > 1 else header_index[-1]
-        now = time.time()
+        now = clock.now()
         best_header_age = now - best_header.time.timestamp()
         recent = best_header_age < _RECENT_BEST_HEADER
         preferred = sum(_is_preferred_download(conn) for conn in connections)
@@ -1689,7 +1691,7 @@ class DownloadManager:
         downloading_from = sum(bool(conn.download_queue) for conn in connections)
         preferred = sum(_is_preferred_download(conn) for conn in connections)
         by_id = {conn.id: conn for conn in connections}
-        now = time.time()
+        now = clock.now()
         for conn in connections:
             if self._stalling_or_timed_out(conn, now, downloading_from):
                 conn.stop()
@@ -1756,7 +1758,7 @@ class DownloadManager:
         tip = active_chain[-1]
         if (
             block_time(header_dict[tip].header)
-            <= time.time() - _POW_TARGET_SPACING * _DIRECT_FETCH_SPACINGS
+            <= clock.now() - _POW_TARGET_SPACING * _DIRECT_FETCH_SPACINGS
             or header_dict[last_header].status == BlockStatus.invalid
             or chainwork[tip] > chainwork[last_header]
         ):
@@ -1807,7 +1809,7 @@ class DownloadManager:
             and not in_flight
             and parent.status in (BlockStatus.valid, BlockStatus.in_active_chain)
         )
-        self._request_blocks(conn, blocks, time.time(), compact=compact)
+        self._request_blocks(conn, blocks, clock.now(), compact=compact)
         if len(blocks) > 1:
             self.logger.log_debug(
                 "net",

@@ -39,6 +39,7 @@ from btclib.exceptions import BTClibTypeError, BTClibValueError
 from btclib.obfuscation import KEY_SIZE, obfuscate, parse_key, serialize_key
 from btclib.tx.tx import Tx
 
+from btclib_node import clock
 from btclib_node.exceptions import MissingPrevoutError
 from btclib_node.fee_estimator import track_accepted
 from btclib_node.main import verify_mempool_acceptance
@@ -377,7 +378,7 @@ def load_mempool(
     except OSError, ValueError:
         logger.info("Failed to open mempool file. Continuing anyway.")
         return False
-    now = int(time.time())
+    now = int(clock.now())
     counts = Counter[str]()
     try:
         with file:

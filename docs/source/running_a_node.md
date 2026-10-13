@@ -213,9 +213,9 @@ Each mirrors the Core method of the same name: `getbestblockhash`,
 `sendrawtransaction`, `submitpackage`, `signrawtransactionwithkey`,
 `combinerawtransaction`, `signmessagewithprivkey`, `verifymessage`, `estimatesmartfee`,
 `ping`, `getrpcinfo`, `stop`, `help`. Core's own hidden commands -- `addconnection`,
-`generatetoaddress`, `generateblock` and `estimaterawfee` among them -- are
-left off this list the same way `bitcoin-cli help`'s bare listing leaves them
-off. The `callbacks` table in
+`generatetoaddress`, `generateblock`, `setmocktime` and `estimaterawfee` among
+them -- are left off this list the same way `bitcoin-cli help`'s bare listing
+leaves them off. The `callbacks` table in
 `src/btclib_node/rpc/callbacks.py` is the list the node serves.
 
 The mempool and the fee deltas `prioritisetransaction` sets are written

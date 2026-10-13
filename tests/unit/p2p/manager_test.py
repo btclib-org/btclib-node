@@ -36,6 +36,7 @@ from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 from btclib.p2p.keepalive import Ping
 from btclib.p2p.limits import MAX_ADDR_TO_SEND, PROTOCOL_VERSION
 
+from btclib_node import clock as clock_module
 from btclib_node.chains import Main, RegTest
 from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS, BindAddress
 from btclib_node.constants import (
@@ -1164,6 +1165,25 @@ def test_the_automatic_dial_pass_repeats_once_its_interval_passes_again(
     """
     manager = a_manager()
     assert asyncio.run(_dial_call_count_over(manager, 1.2)) == 2
+
+
+@pytest.mark.parametrize("mocked", [1_700_000_000, 1_296_688_602, 100])
+def test_a_held_or_set_back_mock_time_leaves_the_scheduled_work_running(
+    a_manager: AManagerFactory, mocked: int
+) -> None:
+    """The dial pass and the ban dump run on the steady clock, as Core's do.
+
+    Core runs them on `m_interrupt_net->sleep_for(500ms)` and its
+    scheduler, neither of which `setmocktime` moves. A mock time held
+    still, or set back before the manager started, must not stop them.
+    """
+    clock_module.set_mock_time(mocked)
+    manager = a_manager()
+    dumps: list[None] = []
+    manager.ban_man = cast("Any", SimpleNamespace(dump=lambda: dumps.append(None)))
+    manager._last_ban_dump = time.monotonic() - DUMP_BANS_INTERVAL
+    assert asyncio.run(_dial_call_count_over(manager, 1.2)) == 2
+    assert dumps
 
 
 def test_a_pending_connection_still_within_the_window_is_left_alone(
@@ -8836,10 +8856,12 @@ def test_the_ban_list_is_written_once_every_interval(
             subnet: replace(entry, ban_until=entry.ban_until - 2_000)
             for subnet, entry in ban_man._banned.items()
         }
-    now = manager._last_ban_dump + DUMP_BANS_INTERVAL
-    manager._maybe_dump_banlist(now - 1)
+    # a second either side of the interval: `last + interval - last` is not
+    # exactly `interval` for every `time.monotonic()` reading
+    due = manager._last_ban_dump + DUMP_BANS_INTERVAL
+    manager._maybe_dump_banlist(due - 1)
     assert "1.2.3.4/32" in path.read_text(encoding="utf-8")
-    manager._maybe_dump_banlist(now)
+    manager._maybe_dump_banlist(due + 1)
     assert "1.2.3.4/32" not in path.read_text(encoding="utf-8")
 
 

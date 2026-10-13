@@ -17,6 +17,7 @@ from btclib.p2p.inventory import GetData, InventoryType
 from btclib.script.witness import Witness
 
 import btclib_node.download as download_module
+from btclib_node import clock as clock_module
 from btclib_node.exceptions import MissingPrevoutError, TxRejectedError
 from btclib_node.mempool import package_hash
 from btclib_node.p2p.compact_block import MAX_EXTRA_TX_WEIGHT, MAX_EXTRA_TXNS
@@ -38,11 +39,9 @@ if TYPE_CHECKING:
 
 @pytest.fixture
 def clock(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
-    """Hold `download`'s clock at `clock.now` until a test moves it."""
+    """Hold the whole process's clock at `clock.now` until a test moves it."""
     clock = SimpleNamespace(now=1_000.0)
-    monkeypatch.setattr(
-        download_module, "time", SimpleNamespace(time=lambda: clock.now)
-    )
+    monkeypatch.setattr(clock_module, "now", lambda: clock.now)
     return clock
 
 

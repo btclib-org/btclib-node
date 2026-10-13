@@ -55,7 +55,7 @@ import pytest
 from btclib.fee import FeeRate  # noqa: TC002
 from hypothesis import settings
 
-from btclib_node import Node
+from btclib_node import Node, clock
 from btclib_node.config import DEFAULT_INCREMENTAL_RELAY_FEERATE, Config
 from btclib_node.constants import DEFAULT_MEMPOOL_EXPIRY_HOURS, NodeStatus
 from btclib_node.p2p import address as address_module
@@ -726,6 +726,19 @@ def regtest_node(tmp_path: Path) -> Iterator[Callable[..., Node]]:
             return node
 
         yield make
+
+
+@pytest.fixture(autouse=True)
+def release_mock_time() -> Iterator[None]:
+    """Give every test the system clock, whatever `setmocktime` set before it.
+
+    The mock time is process-wide, as Core's is, and a node's threads read
+    it: a test that leaves one set changes the answer of the next test in
+    its worker.
+    """
+    clock.set_mock_time(0)
+    yield
+    clock.set_mock_time(0)
 
 
 @pytest.fixture(autouse=True)

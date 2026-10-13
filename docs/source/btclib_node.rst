@@ -29,6 +29,13 @@ btclib\_node.cli module
    :members:
    :show-inheritance:
 
+btclib\_node.clock module
+---------------------------
+
+.. automodule:: btclib_node.clock
+   :members:
+   :show-inheritance:
+
 btclib\_node.cluster\_linearize module
 ---------------------------------------
 
