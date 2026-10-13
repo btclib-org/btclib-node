@@ -32,10 +32,12 @@ same point the original defect fired on. `history.log`'s own
 use"` is the other half, the two ports the second `Node` collided on.
 """
 
+import importlib.metadata
 import subprocess
-import sys
+from importlib.metadata import PackagePath
 from pathlib import Path
 
+import pytest
 from bitcoin_core_rpc import BitcoinCoreRpcClient, FetchError
 
 from btclib_node import Node
@@ -57,12 +59,50 @@ from tests import (
 # `GetData` regardless of how many more are still owed.
 _CHAIN_LENGTH = 5
 
-# `.venv/bin/btclib-node` beside the interpreter running this suite:
-# `uv sync` installs the console script there, into the same
-# virtualenv `uv run pytest` runs from, so this is the shim built off
-# this checkout's own `[project.scripts]` entry rather than one PyPI
-# published.
-_CONSOLE_SCRIPT = Path(sys.executable).parent / "btclib-node"
+
+def _is_console_script(path: PackagePath) -> bool:
+    """Say whether a `RECORD` entry is the `btclib-node` shim.
+
+    The shim is `bin/btclib-node` on POSIX and `Scripts/btclib-node.exe`
+    on Windows.
+    """
+    return path.name in {"btclib-node", "btclib-node.exe"} and path.parent.name in {
+        "bin",
+        "Scripts",
+    }
+
+
+def _console_script() -> Path:
+    """Return the `btclib-node` shim that `uv sync` built off this checkout.
+
+    The installed distribution's own `RECORD` names it, so the answer is
+    the same whether the interpreter running the suite is the project's
+    `.venv` or an environment `uv run --with` layers over it: the layered
+    one has no `bin/btclib-node` beside its interpreter, whereas the
+    `RECORD` of the distribution it imports still points at the project's
+    own.
+    """
+    distribution = importlib.metadata.distribution("btclib-node")
+    (entry,) = filter(_is_console_script, distribution.files or ())
+    return Path(str(distribution.locate_file(entry))).resolve()
+
+
+@pytest.mark.parametrize(
+    ("record_entry", "is_shim"),
+    [
+        ("../../../bin/btclib-node", True),
+        ("../../Scripts/btclib-node.exe", True),
+        ("../../../bin/btclib-node-other", False),
+        ("../../../bin/btclib-node.py", False),
+        ("../../Scripts/btclib-node.sh", False),
+        ("btclib_node/cli.py", False),
+    ],
+)
+def test_the_record_entry_of_the_shim_is_recognised(
+    record_entry: str, *, is_shim: bool
+) -> None:
+    """The matcher accepts both platforms' shim and nothing else."""
+    assert _is_console_script(PackagePath(record_entry)) is is_shim
 
 
 def test_a_run_through_the_console_script_stays_one_process(tmp_path: Path) -> None:
@@ -77,12 +117,14 @@ def test_a_run_through_the_console_script_stays_one_process(tmp_path: Path) -> N
     subprocess is ever given, `Config.chain`'s own DNS seeds
     (`chains.py`) being empty for regtest in any case.
 
-    Not guarded by an existence check on `_CONSOLE_SCRIPT`: `uv sync`
-    installing it is this whole gate's own precondition, so a missing
-    shim is `subprocess.Popen`'s own `FileNotFoundError`, as loud a
-    failure as a check written here would be and one this suite does
-    not have to carry an unreachable branch to produce.
+    Not guarded by an existence check on the script: `uv sync`
+    installing it is this whole gate's own precondition, so a `RECORD`
+    without the entry fails `_console_script` with a `ValueError` and a
+    missing shim is `subprocess.Popen`'s own `FileNotFoundError`, each as
+    loud a failure as a check written here would be and neither one this
+    suite has to carry an unreachable branch to produce.
     """
+    console_script = _console_script()
     chain = generate_random_chain(_CHAIN_LENGTH, RegTest().genesis.hash)
     headers = [block.header for block in chain]
 
@@ -120,7 +162,7 @@ def test_a_run_through_the_console_script_stays_one_process(tmp_path: Path) -> N
         rpc_port = get_random_port()
         process = subprocess.Popen(  # noqa: S603
             [
-                str(_CONSOLE_SCRIPT),
+                str(console_script),
                 "-regtest",
                 f"-datadir={data_dir}",
                 f"-port={get_random_port()}",
