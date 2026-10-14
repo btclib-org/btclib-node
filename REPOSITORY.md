@@ -36,14 +36,16 @@ gh api repos/btclib-org/btclib-node/branches/main/protection \
 #   {"app_id":15368,"context":"regtest / Regtest against Bitcoin Core"},
 #   {"app_id":15368,"context":"lint / Dependency review"},
 #   {"app_id":15368,"context":"lint / Sign-off"}],
-#   "strict":true}
+#   "strict":false}
 gh api repos/btclib-org/btclib-node/rulesets --jq '.[].id' \
   | xargs -I{} gh api repos/btclib-org/btclib-node/rulesets/{} \
     --jq '.rules[] | select(.type=="required_status_checks")'
 #
 ```
 
-A red run on any of them blocks the merge. A merge through the
+A red run on any of them blocks the merge. `strict` is `false`: a pull
+request need not be up to date with `main` to merge (section 11 of the
+organization standard gives the ground). A merge through the
 maintainer's bypass waits for none of these checks, as
 `CONTRIBUTING.md`'s *Landing it* says. Each is produced by the workflow
 that answers for it:
@@ -100,7 +102,7 @@ as a JSON body on stdin:
 gh api -X PATCH \
   repos/btclib-org/btclib-node/branches/main/protection/required_status_checks \
   --input - <<'JSON'
-{"strict": true,
+{"strict": false,
  "checks": [{"context": "test: every job passed", "app_id": 15368},
             {"context": "docs / Build the documentation", "app_id": 15368},
             {"context": "lint / Lint and type-check", "app_id": 15368},
