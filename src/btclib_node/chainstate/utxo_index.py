@@ -668,6 +668,16 @@ class UtxoIndex:
         self._stored_utxos = set()
         self._undo_log = []
 
+    @staticmethod
+    def wipe(db: KeyValueStore) -> None:
+        """Remove every stored coin, and reset the commitment to them.
+
+        `Chainstate`'s module docstring says when: before an index is
+        built on the store, so nothing is staged to lose.
+        """
+        db.delete_prefix(b"utxo-")
+        db.put_meta(_COIN_STATS_META_KEY, CoinStats().serialize())
+
     def cursor(self) -> Iterator[tuple[bytes, bytes]]:
         """Return a cursor over the stored `utxo-` records, as they are now.
 

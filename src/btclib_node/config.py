@@ -356,6 +356,22 @@ def _refuse_bind_without_listen(
         raise ValueError(err_msg)
 
 
+def _refuse_reindex_chainstate_when_pruned(
+    *, pruned: bool, reindex_chainstate: bool
+) -> None:
+    """Refuse `-reindex-chainstate` beside `-prune`, in Core's words.
+
+    `AppInitParameterInteraction` refuses it after a missing blocks
+    directory and before `-forcednsseed` (`src/init.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). This node has no
+    `-reindex` yet: btclib-org/btclib-node#1415.
+    """
+    if pruned and reindex_chainstate:
+        err_msg = "Prune mode is incompatible with -reindex-chainstate. "
+        err_msg += "Use full -reindex instead."
+        raise ValueError(err_msg)
+
+
 def _split_peers(
     specs: Sequence[str], default_port: int
 ) -> tuple[tuple[str, int], ...]:
@@ -603,6 +619,10 @@ class Config:
     # reached. Read only where `pruned` is `True`; `main._prune_chain`
     # and `rpc.callbacks.get_blockchain_info` both check `pruned` first.
     prune_target_mib: int | None
+    # Core's own `-reindex-chainstate`: `Node.load` wipes the chainstate
+    # and connects the stored blocks again (`chainstate`'s module
+    # docstring). Refused beside `pruned`, as Core refuses it.
+    reindex_chainstate: bool
     debug: bool
     # the categories `-debug` names, `log.Logger.log_debug`'s filter:
     # empty where `debug` is on for every category
@@ -903,6 +923,7 @@ class Config:
         allow_rpc: bool = True,
         pruned: bool = False,
         prune_target_mib: int | None = None,
+        reindex_chainstate: bool = False,
         debug: bool = False,
         debug_categories: Collection[str] = (),
         debug_exclude: Collection[str] = (),
@@ -985,6 +1006,10 @@ class Config:
                 err_msg = f'Specified blocks directory "{blocks_dir}" does not exist.'
                 raise ValueError(err_msg)
             self.blocks_dir = resolved / self.chain.name
+
+        _refuse_reindex_chainstate_when_pruned(
+            pruned=pruned, reindex_chainstate=reindex_chainstate
+        )
 
         self.connect_given = bool(connect)
         # Core's own "-connect=0": still the -connect arm above, but
@@ -1095,6 +1120,7 @@ class Config:
 
         self.pruned = pruned
         self.prune_target_mib = prune_target_mib
+        self.reindex_chainstate = reindex_chainstate
 
         self.debug = debug
         self.debug_categories = frozenset(debug_categories)

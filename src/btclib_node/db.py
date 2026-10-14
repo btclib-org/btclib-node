@@ -4,12 +4,13 @@
 
 """The ordered key-value store every index of this node is kept in.
 
-Read a key, write one, delete one, write several as one, walk the whole
-store or one prefix of it in key order, and close: that is everything any
-index here asks of it. They are behind one class so that what implements
-them is one decision in one file -- `src/btclib_node/db.py` -- rather than
-a library named in as many modules as import it. None of that surface
-moved with this file's own implementation, below.
+Read a key, write one, delete one or every key of a prefix, write several
+as one, walk the whole store or one prefix of it in key order, and close:
+that is everything any index here asks of it. They are behind one class
+so that what implements them is one decision in one file --
+`src/btclib_node/db.py` -- rather than a library named in as many modules
+as import it. None of that surface moved with this file's own
+implementation, below.
 
 The implementation is RocksDB, through `rocksdict`, and the reason is
 not speed, even though it is markedly faster
@@ -637,6 +638,24 @@ class KeyValueStore:
                 self._pending_batch.delete(key)
                 return
             self._db.delete(key, write_opt=_WRITE_OPTIONS)
+
+    def delete_prefix(self, prefix: bytes) -> None:
+        """Remove every key that starts with `prefix`, in one write.
+
+        One RocksDB range delete, from `prefix` up to the first key that
+        sorts after every key carrying it: `prefix` with its last byte
+        raised by one. `prefix` must not be empty or end in `0xff`, which
+        has no successor: an empty one raises `IndexError` and one ending
+        in `0xff` raises `ValueError`, before anything is deleted. Inside
+        a `write_batch` it is staged with the batch's other writes.
+        """
+        end = prefix[:-1] + bytes([prefix[-1] + 1])
+        with self._lock:
+            self._ensure_open()
+            if self._pending_batch is not None:
+                self._pending_batch.delete_range(prefix, end)
+                return
+            self._db.delete_range(prefix, end, write_opt=_WRITE_OPTIONS)
 
     def get_meta(self, key: bytes) -> bytes | None:
         """Return the value stored under `key` in the meta column family.

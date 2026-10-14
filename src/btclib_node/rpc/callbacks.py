@@ -702,9 +702,10 @@ def get_chain_tips(
     whole branch's data and not merely this tip's -- `_branch_is_downloaded`'s
     own reasoning, inlined here rather than called, since its own fork
     is this call's own `fork` already); `"valid-fork"` for
-    `BlockStatus.valid`, the one status `_finalize_fork`'s own
-    `to_remove` loop sets, for a block that was connected once and a
-    reorg has since dropped (Core's `IsValid(BLOCK_VALID_SCRIPTS)`); and
+    `BlockStatus.valid`, which `_finalize_fork`'s own `to_remove` loop
+    and `-reindex-chainstate`'s wipe set, for a block that was connected
+    once and is off the active chain (Core's
+    `IsValid(BLOCK_VALID_SCRIPTS)`); and
     `"valid-headers"` for a fully downloaded `BlockStatus.valid_header`
     that never was (Core's `IsValid(BLOCK_VALID_TREE)`) -- the one status
     left once the other four are ruled out, since every header this

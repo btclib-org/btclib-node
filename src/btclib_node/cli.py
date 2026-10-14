@@ -724,6 +724,15 @@ _OPTIONS: dict[str, _Option] = {
         _CHAINPARAMS_TITLE,
         debug_only=True,
     ),
+    # Core's text (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    # v31.1 tag) where it is true here: the blocks are this node's own
+    # store, never Core's blk*.dat files (btclib-org/btclib-node#573),
+    # and no assumeutxo snapshot can be loaded
+    "reindex-chainstate": _Option(
+        "",
+        "If enabled, wipe chain state, and rebuild it from the blocks stored on disk.",
+        _OPTIONS_TITLE,
+    ),
     "rpcallowip": _Option(
         "=<ip>",
         "Allow JSON-RPC connections from specified source. Valid values for "
@@ -2236,8 +2245,9 @@ class _BeforeLock:
 
     `prune` is `_prune_target_mib`'s. `directories` is a `Config` of the
     chain, the data directory and `-blocksdir`, the fields that name the
-    directories `Node.__init__` locks, and of `-dnsseed`'s soft-set,
-    `-forcednsseed` and `-maxconnections`, which `Config.__init__`
+    directories `Node.__init__` locks, and of `-prune` beside
+    `-reindex-chainstate`, `-dnsseed`'s soft-set, `-forcednsseed` and
+    `-maxconnections`, which `Config.__init__`
     refuses in that order just after a missing blocks directory, as
     Core does.
     """
@@ -2375,8 +2385,9 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     `InitConfig`, then `AppInitParameterInteraction` (`src/init.cpp`, at
     bitcoin/bitcoin@9be056a8a7) in its order: a `NETWORK_ONLY` option set
     only in the default section off `main`, the warning about a section
-    naming no chain, a missing blocks directory, `-forcednsseed` beside
-    a `-dnsseed` that is off, a negative `-maxconnections`, `-debug`'s
+    naming no chain, a missing blocks directory, `-prune` beside
+    `-reindex-chainstate`, `-forcednsseed` beside a `-dnsseed` that is
+    off, a negative `-maxconnections`, `-debug`'s
     categories, `-minimumchainwork`, `-assumevalid`, `-maxtipage` (the order
     `node::ApplyArgsManOptions`'s own chainstate-manager options are
     read in, `src/node/chainstatemanager_args.cpp`, same sha), `-prune`,
@@ -2418,6 +2429,10 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
         listen=_resolve_listen(settings, max_connections_arg),
         bind=_get_args(settings, "bind"),
         whitebind=_get_args(settings, "whitebind"),
+        # `-prune` nonzero as `GetIntArg` reads it, before it is parsed
+        # below: what Core's refusal beside `-reindex-chainstate` asks
+        pruned=bool(_get_int(settings, "prune")),
+        reindex_chainstate=bool(_get_bool(settings, "reindex-chainstate")),
     )
     debug, debug_categories, debug_exclude = _resolve_debug(settings)
     # after `-debug`'s categories, where `AppInitParameterInteraction`
@@ -2654,6 +2669,7 @@ def _after_lock(before: _BeforeLock) -> Config:
         allow_rpc=server is None or server,
         pruned=bool(prune),
         prune_target_mib=prune if prune >= MIN_PRUNE_TARGET_MIB else None,
+        reindex_chainstate=bool(_get_bool(settings, "reindex-chainstate")),
         debug=before.debug,
         debug_categories=before.debug_categories,
         debug_exclude=before.debug_exclude,

@@ -16,6 +16,29 @@ filters served over p2p.
 `flush` is what writes all three indexes' own staged changes in one
 batch, and `close` calls it before closing the store -- `db.py`'s
 docstring is where the crash this is the other half of is argued.
+
+`wipe` is `-reindex-chainstate`, Core's `InitCoinsDB` with
+`should_wipe` (`src/validation.cpp`, `src/node/chainstate.cpp`, at
+bitcoin/bitcoin@9be056a8a7, the v31.1 tag). It removes the coins, their
+running commitment and the filters, and takes every block of the active
+chain but genesis off it, all in one batch. The headers stay, and so do
+the blocks `block_db` holds: `main.update_chain` then connects them
+again from genesis, as Core's `ImportBlocks` does through
+`ActivateBestChains`. A stop part-way leaves what the last flush wrote,
+a shorter active chain and its coins, so the next start carries on from
+there with no marker, as Core's own coins database does.
+
+Wiping the filters departs from Core, which keeps its block filter
+index, a database of its own, and wipes it only on `-reindex`:
+SECURITY.md's *Where this node departs from Bitcoin Core* records it.
+Here the filters share the store the rebuild is recovering, and the
+reconnect builds each one again from the block and the undo data it
+computes anyway. `FilterIndex.add_block` and `catch_up` skip a block
+that already has a filter, so without the wipe a corrupt filter in the
+shared store would survive the rebuild, and there is no way here to
+rebuild the filters alone. The departure lasts until
+btclib-org/btclib-node#1940 gives the filters a store of their own,
+after which `-reindex-chainstate` keeps them as Core does.
 """
 
 from typing import TYPE_CHECKING
@@ -43,11 +66,24 @@ class Chainstate:
     `KeyValueStore` they share, are argued.
     """
 
-    def __init__(self, data_dir: Path, chain: Chain, logger: Logger) -> None:
-        """Open the store under `data_dir` and build all three indexes on it."""
+    def __init__(
+        self, data_dir: Path, chain: Chain, logger: Logger, *, wipe: bool = False
+    ) -> None:
+        """Open the store under `data_dir` and build all three indexes on it.
+
+        With `wipe`, the store is wiped first, as the module docstring says.
+        """
         data_dir = data_dir / "chainstate"
         data_dir.mkdir(mode=DIR_MODE, exist_ok=True, parents=True)
         self.db = KeyValueStore(data_dir)
+        if wipe:
+            # where Core's `CDBWrapper` logs "Wiping LevelDB in <path>"
+            # (`src/dbwrapper.cpp`, at bitcoin/bitcoin@9be056a8a7)
+            logger.info("Wiping the chainstate in %s", data_dir)
+            with self.db.write_batch() as wb:
+                UtxoIndex.wipe(wb)
+                FilterIndex.wipe(wb)
+                BlockIndex.leave_active_chain(wb, chain.genesis.hash)
 
         self.block_index = BlockIndex(self.db, chain, logger)
         self.utxo_index = UtxoIndex(self.db, logger)

@@ -6521,9 +6521,11 @@ def test_get_chain_tips_answers_a_reorged_away_fork(
 ) -> None:
     """A downloaded fork `BlockStatus.valid` marks is `valid-fork`.
 
-    `_finalize_fork`'s own `to_remove` loop is the only place that sets
-    that status, on a block a reorg has dropped from the active chain
-    after it was itself once connected; `set_status` reaches the same
+    `_finalize_fork`'s own `to_remove` loop sets that status on a block
+    a reorg has dropped from the active chain after it was itself once
+    connected, and `BlockIndex.leave_active_chain` sets it on every
+    block of the active chain but genesis for `-reindex-chainstate`;
+    `set_status` reaches the same
     state directly, the same shortcut
     `tests/unit/p2p/callbacks_test.py`'s own reorg tests already take.
     """

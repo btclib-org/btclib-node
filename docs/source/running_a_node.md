@@ -100,6 +100,18 @@ answer at all, or the connection dropped outright, over the wire.
 serving another pruned node is between the two operators to arrange,
 same as it is for Core.
 
+## Rebuilding the chainstate
+
+`-reindex-chainstate` wipes the UTXO set, the block filters and the undo
+data at start, keeps the headers and the stored blocks, and connects
+those blocks again from genesis, checking each as it goes. The node
+comes back at the most-work tip its stored blocks reach. Where two
+stored branches tie on work, either can win, as in Core. A stop part-way
+is safe. The next start without the option connects the rest, from the
+last flush, before it loads `mempool.dat` or leaves initial block
+download, as Core does on every start. A start with the option starts
+over. With `-prune` it refuses to start, as Core refuses.
+
 ## Pointing it at a peer of your own
 
 `-connect=<ip>[:port]`, repeatable, dials only the peers named this

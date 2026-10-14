@@ -88,6 +88,16 @@ class FilterIndex:
             self.add_block(chain.genesis_block, [])
             self.finalize()
 
+    @staticmethod
+    def wipe(db: KeyValueStore) -> None:
+        """Remove every stored filter and filter header.
+
+        `Chainstate`'s module docstring says when, and why the filters go
+        with the coins.
+        """
+        db.delete_prefix(_FILTER)
+        db.delete_prefix(_HEADER)
+
     def get_filter(self, block_hash: bytes) -> bytes | None:
         """Return the serialized filter of a block, or None."""
         if block_hash in self.pending:

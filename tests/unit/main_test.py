@@ -4357,6 +4357,7 @@ def an_ibd_node(
                 )
             ),
             is_initial_block_download=is_initial_block_download,
+            status=NodeStatus.SyncingHeaders,
         ),
     )
 

@@ -283,9 +283,24 @@ class BlockDB:
     """
 
     def __init__(
-        self, data_dir: Path, logger: Logger, blocks_dir: Path | None = None
+        self,
+        data_dir: Path,
+        logger: Logger,
+        blocks_dir: Path | None = None,
+        *,
+        wipe_undo: bool = False,
     ) -> None:
         """Open the store under `blocks_dir` or `data_dir`, and load its index.
+
+        `wipe_undo` deletes every reverse patch before the index loads,
+        for `-reindex-chainstate` (`Chainstate`'s module docstring), which
+        writes each one again as it connects its block. `add_rev_block`
+        skips a block that already has a patch, so without the wipe a
+        corrupt patch would survive the rebuild. `init_from_db`
+        then counts no patch in any `.rev` file, and `_sweep_empty_files`
+        unlinks every one but the current file's. Core keeps its undo
+        data; SECURITY.md's *Where this node departs from Bitcoin Core*
+        records the departure (btclib-org/btclib-node#1415).
 
         `blocks_dir` is `Config`'s own field of the same name -- already
         absolute and chain-suffixed there, `None` unless a caller named
@@ -328,6 +343,8 @@ class BlockDB:
         self.open_rev_file: BinaryIO | None = None
         self.file_index = 0
 
+        if wipe_undo:
+            self.db.delete_prefix(b"r")
         self.init_from_db()
 
     def init_from_db(self) -> None:

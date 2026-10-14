@@ -62,7 +62,7 @@ from btclib_node.rpc.manager import RpcManager
 from btclib_node.versionbits import UnknownActivations
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Iterator
     from types import FrameType
 
     from btclib.p2p.inventory import Inventory
@@ -415,6 +415,9 @@ class Node(threading.Thread):
         self._worker_pool_warmup: threading.Thread | None = None
 
         self.status = NodeStatus.Starting
+        # the stage `load` found `status` at before setting `Reindexing`,
+        # which `main.finish_reindex` puts back
+        self.status_after_reindex = NodeStatus.Starting
         # Set by `run` where start-up fails, before its own teardown:
         # the messages Core shows as errors for that failure, in Core's
         # order, which `cli.main` prints before exiting nonzero. Empty
@@ -493,7 +496,7 @@ class Node(threading.Thread):
         # it, which `start` waits on
         self._load_attempted = threading.Event()
         # the load of `mempool.dat` `run` begins and the loop steps
-        self._mempool_load: Generator[None, None, bool] | None = None
+        self._mempool_load: Iterator[None] | None = None
 
     def load(self) -> None:
         """Open the address table, the ban list, the chainstate and the blocks.
@@ -538,10 +541,29 @@ class Node(threading.Thread):
         # Core's `Shutdown` writes it even where a later step fails
         self._opened.callback(self.fee_estimator.flush)
         warmup("Loading block index…")
-        self.chainstate = Chainstate(self.data_dir, self.chain, self.logger)
+        # `-reindex-chainstate` wipes the chainstate first, then the undo
+        # data: a stop between the two keeps the old patches, which a
+        # plain start reuses, until a start with the option wipes them
+        reindex = self.config.reindex_chainstate
+        self.chainstate = Chainstate(
+            self.data_dir, self.chain, self.logger, wipe=reindex
+        )
         self._opened.callback(self.chainstate.close)
-        self.block_db = BlockDB(self.data_dir, self.logger, self.config.blocks_dir)
+        self.block_db = BlockDB(
+            self.data_dir, self.logger, self.config.blocks_dir, wipe_undo=reindex
+        )
         self._opened.callback(self.block_db.close)
+        # Core holds `LoadingBlocks()` on every start while `ImportBlocks`
+        # connects what is stored (`ImportingNow` at
+        # `src/node/blockstorage.cpp:1263`, `ActivateBestChains` at
+        # `:1312`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag); here
+        # only where there is something to connect, `-reindex-chainstate`
+        # included: on a start with nothing stored above the tip, Core's
+        # window closes in the `ActivateBestChains` call that finds
+        # nothing, before a peer can normally reach it
+        if self.chainstate.block_index.stored_branch_outranks_tip():
+            self.status_after_reindex = self.status
+            self.status = NodeStatus.Reindexing
         # Core's own `Chainstate::LoadGenesisBlock` (`src/validation.cpp:4974`,
         # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) writes the genesis
         # block to disk at start, so `getblock` and a peer's `getdata` are
@@ -797,18 +819,25 @@ class Node(threading.Thread):
         Core loads it on its `initload` thread, once the blocks are
         imported (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
         tag); here the loop adds one transaction per pass, serving peers
-        and RPC calls between them. With `-persistmempool=0` nothing is read
-        and the load counts as tried, as Core's `LoadMempool` returns at
-        once for an empty path.
+        and RPC calls between them. With `-persistmempool=0` nothing is read:
+        the load is an empty step, tried at the first pass, as Core's
+        `LoadMempool` returns at once for an empty path.
+
+        While `NodeStatus.Reindexing` holds, `_resume_mempool_load` takes
+        no step, so the load waits for the stored blocks to connect, as
+        Core's waits for `ImportBlocks`. A stop before then leaves the
+        load untried, and shutdown does not write `mempool.dat` over the
+        file it has not read.
         """
-        if self.config.persist_mempool:
-            self._mempool_load = load_mempool(self, self.data_dir / FILENAME)
-        else:
-            self.mempool.load_tried = True
+        self._mempool_load = (
+            load_mempool(self, self.data_dir / FILENAME)
+            if self.config.persist_mempool
+            else iter(())
+        )
 
     def _resume_mempool_load(self) -> bool:
         """Take one step of the load, and answer whether there was one."""
-        if self._mempool_load is None:
+        if self._mempool_load is None or self.status == NodeStatus.Reindexing:
             return False
         try:
             next(self._mempool_load)
