@@ -109,7 +109,13 @@ jobs:
   # The credential is named rather than inherited: `secrets: inherit`
   # hands the called workflow every secret this repository can see, where
   # the one it declares is the one it needs
+  #
+  # `cache-mode: none` caps the cache access of the called workflow on
+  # every trigger here. `issue_comment` is the low-trust one actionlint
+  # flags, and the call is at @main, so nothing here keeps a cache step
+  # out of the callee
   claude:
+    cache-mode: none
     uses: btclib-org/.github/.github/workflows/reusable-claude-review.yml@main
     permissions:
       contents: read
