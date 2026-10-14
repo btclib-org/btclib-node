@@ -312,12 +312,16 @@ harness = [
     # tests/README.md is where the choice of it over hand-rolled
     # properties is argued (btclib-org/btclib-node#742).
     "hypothesis>=6.140.3",
+    # `addopts` below passes --cov, so the plugin that reads it is the
+    # runner's. No "toml" extra: pytest-cov absorbed it and warns on the
+    # name now. coverage is declared beside it so that uv.lock pins it
+    # as a direct requirement rather than whatever pytest-cov brings.
+    "pytest-cov>=7.1.0",
+    "coverage>=7.16.2",
 ]
 # harness, plus what the suite delegates to.
 test = [
     { include-group = "harness" },
-    # No "toml" extra: pytest-cov absorbed it and warns on the name now.
-    "pytest-cov>=7.1.0",
     # tests/functional/rpc and tests/integration/conftest.py both import
     # this at module top, the former against this node's own rpc surface
     # and the latter as the client for a real bitcoind. It arrives
@@ -904,7 +908,7 @@ precision = 2
 # here so that the check and the rule move together.
 # A line that cannot be reached is not covered by lowering this, it is
 # covered by deleting the line or by writing the test that reaches it.
-fail_under = 100
+fail_under = 100.0
 
 [tool.ruff]
 # target-version is inferred from project.requires-python
