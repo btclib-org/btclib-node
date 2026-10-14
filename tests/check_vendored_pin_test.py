@@ -4,9 +4,8 @@
 
 """Tests for the retry of `_run` in `.github/scripts/check_vendored_pin.py`.
 
-A `gh api` call failed once on a public endpoint and passed on a re-run of
-the same commit (btclib-org/btclib-node#1934). `subprocess.run` is faked,
-so no test reaches the network or sleeps.
+`subprocess.run` is faked and `time.sleep` is patched, so no test reaches
+the network or sleeps.
 
 The script is loaded by path, `.github/scripts` being no package.
 """
@@ -112,3 +111,16 @@ def test_the_pause_is_taken_between_attempts_only(
     with pytest.raises(SystemExit):
         script._run("gh")
     assert pauses == [script._PAUSE_SECONDS] * (script._ATTEMPTS - 1)
+
+
+def test_a_recovered_attempt_leaves_its_stderr_in_the_log(
+    monkeypatch: pytest.MonkeyPatch,
+    script: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A failed attempt that a retry recovers prints its stderr."""
+    _fake_run(monkeypatch, script, [(1, "HTTP 502\n"), (0, "main\n")])
+    assert script._run("gh", "api", "repos/x/y") == "main"
+    err = capsys.readouterr().err
+    assert "gh api repos/x/y" in err
+    assert "HTTP 502" in err

@@ -28,8 +28,8 @@ speaks to a real `bitcoind` instead, which the repository does not ship,
 and every test in it skips itself without one.
 
 `tests/` root holds what neither of those is the subject of: a script
-under `.github/scripts/` (`check_core_citation_pin_test.py`,
-`check_vendored_pin_test.py` and the release-wait siblings), the corpus
+under `.github/scripts/` (`check_core_citation_pin_test.py`
+and `check_vendored_pin_test.py`), the corpus
 and property layer over `fuzz/`'s own harnesses (`fuzz_corpus_test.py`,
 `property_test.py`), or a rule or fact recorded across files no one
 directory owns, such as `interpreters_test.py`'s reading of

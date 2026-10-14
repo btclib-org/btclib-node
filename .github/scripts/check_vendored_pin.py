@@ -119,14 +119,19 @@ def _once(args: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
 def _run(*args: str) -> str:
     """Run a read-only command and return its stripped stdout.
 
-    A failed command is run again, `_ATTEMPTS` times in all. The last
-    failure exits with the command and its stderr, which a
-    `CalledProcessError` traceback does not carry.
+    A failed command is run again, `_ATTEMPTS` times in all, and each
+    failed attempt but the last prints its stderr before the pause. The
+    last failure exits with the command, its exit status and its stderr.
     """
     result = _once(args)
     for _ in range(_ATTEMPTS - 1):
         if result.returncode == 0:
             break
+        print(
+            f"{' '.join(args)} failed, exit status {result.returncode}:"
+            f" {result.stderr.strip()}",
+            file=sys.stderr,
+        )
         time.sleep(_PAUSE_SECONDS)
         result = _once(args)
     if result.returncode != 0:
