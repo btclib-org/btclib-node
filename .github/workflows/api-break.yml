@@ -1,0 +1,53 @@
+---
+name: api-break
+
+# A pull request that breaks the public API is told so by a label,
+# `api-break`, and by nothing that gates a merge (btclib-org/.github#1674).
+# Before 1.0 this package breaks its surface deliberately, so the answer is
+# advice for the reviewer, never a failure.
+#
+# The checkout, the griffe walk against the pull request's base commit and
+# the label are btclib-org/.github's: reusable-api-break.yml, called at
+# @main so a fix there reaches this tree in one landing (section 10 of its
+# README.md). What stays here is the trigger, the concurrency group and the
+# package name, the one `release.yml` passes to reusable-public-api.yml.
+# A fork's pull request is not labelled: its token is read-only, and
+# `pull_request_target`, the way round that, is a trigger the organization
+# declines.
+
+on:
+  pull_request:
+    # ready_for_review, so a pull request marked ready gets the run the
+    # draft condition in reusable-api-break.yml withheld while it was a
+    # draft. closed too, so that a run still held in this pull request's
+    # own concurrency group is superseded rather than left to finish: the
+    # called job declines the real work on it
+    types: [opened, reopened, synchronize, ready_for_review, closed]
+  # the escape hatch. The called job runs only for a pull request, so on
+  # this trigger it is skipped
+  workflow_dispatch:
+
+# least privilege for the GITHUB_TOKEN: read-only here, and the one job
+# below elevates it for the label alone
+permissions:
+  contents: read
+
+# cancel superseded runs: the subject is the commit, which a newer one
+# supersedes. By the pull request's own number rather than by github.ref,
+# which for a closed, merged pull request resolves to the base branch's
+# ref, as docs.yml's own concurrency block says
+concurrency:
+  group: api-break-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # the draft and closed declines, the checkout, the griffe walk and the
+  # label are the called workflow's own. `pull-requests: write` is the
+  # label, and the called job asks for no more than this grant
+  api-break:
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: btclib-org/.github/.github/workflows/reusable-api-break.yml@main
+    with:
+      package: btclib_node

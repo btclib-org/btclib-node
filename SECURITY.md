@@ -142,6 +142,10 @@ and `ParseParameters` (`src/common/args.cpp:234`), at
 bitcoin/bitcoin@db0bde16b9. A refusal reaches stderr, logs and the RPC
 caller.
 
+What a refusal may print about a secret is the organization's rule, section 7's
+*A refusal carries no secret* in
+[btclib-org/.github's README.md](https://github.com/btclib-org/.github/blob/main/README.md).
+
 `-reindex-chainstate` wipes the block filters and the undo data with the
 coins (btclib-org/btclib-node#1415). Bitcoin Core keeps both: it wipes its
 block filter index only on `-reindex` (`src/init.cpp`), and
