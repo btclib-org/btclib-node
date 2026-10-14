@@ -62,7 +62,7 @@ from btclib_node.p2p import address as address_module
 from tests import get_random_port
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
 
 # Which test's own execution a thread was started during. Keyed on the
@@ -530,6 +530,33 @@ def configuration_went_unread(
     # `inipath` is what the message has to name, so a run pytest read no
     # configuration for is one this cannot tell anybody anything about
     return cov_config.config_file is None and inipath is not None
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Add `--run-slow`, which lets the tests marked `slow` run."""
+    parser.addoption(
+        "--run-slow",
+        action="store_true",
+        default=False,
+        help="run the tests marked `slow`, which a run without it skips",
+    )
+
+
+def skip_slow(items: Sequence[pytest.Item], *, run_slow: bool) -> None:
+    """Mark every test carrying `slow` as skipped, unless `run_slow`."""
+    if run_slow:
+        return
+    skip = pytest.mark.skip(reason="slow: pass --run-slow to run it")
+    for item in items:
+        if item.get_closest_marker("slow"):
+            item.add_marker(skip)
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    """Skip the slow tests unless the run asked for them."""
+    skip_slow(items, run_slow=config.getoption("--run-slow"))
 
 
 @pytest.hookimpl(trylast=True)
