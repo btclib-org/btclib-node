@@ -66,21 +66,18 @@ def _is_console_script(path: PackagePath) -> bool:
     The shim is `bin/btclib-node` on POSIX and `Scripts/btclib-node.exe`
     on Windows.
     """
-    return path.name in {"btclib-node", "btclib-node.exe"} and path.parent.name in {
-        "bin",
-        "Scripts",
+    return (path.parent.name, path.name) in {
+        ("bin", "btclib-node"),
+        ("Scripts", "btclib-node.exe"),
     }
 
 
 def _console_script() -> Path:
     """Return the `btclib-node` shim that `uv sync` built off this checkout.
 
-    The installed distribution's own `RECORD` names it, so the answer is
-    the same whether the interpreter running the suite is the project's
-    `.venv` or an environment `uv run --with` layers over it: the layered
-    one has no `bin/btclib-node` beside its interpreter, whereas the
-    `RECORD` of the distribution it imports still points at the project's
-    own.
+    The installed distribution's own `RECORD` names it, so the answer
+    does not depend on a `bin/btclib-node` beside the interpreter running
+    the suite.
     """
     distribution = importlib.metadata.distribution("btclib-node")
     (entry,) = filter(_is_console_script, distribution.files or ())
@@ -95,13 +92,16 @@ def _console_script() -> Path:
         ("../../../bin/btclib-node-other", False),
         ("../../../bin/btclib-node.py", False),
         ("../../Scripts/btclib-node.sh", False),
+        ("../../Scripts/btclib-node", False),
+        ("../../../bin/btclib-node.exe", False),
+        ("btclib-node", False),
         ("btclib_node/cli.py", False),
     ],
 )
 def test_the_record_entry_of_the_shim_is_recognised(
     record_entry: str, *, is_shim: bool
 ) -> None:
-    """The matcher accepts both platforms' shim and nothing else."""
+    """The matcher accepts each platform's shim and refuses the near-misses."""
     assert _is_console_script(PackagePath(record_entry)) is is_shim
 
 
