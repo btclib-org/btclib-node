@@ -2868,3 +2868,48 @@ def test_stale_fee_estimates_are_refused_off_regtest(
         f"acceptstalefeeestimates is not supported on {name} chain."
     ]
     assert not (node.data_dir / "chainstate").exists()
+
+
+def test_a_pruned_data_directory_is_refused_without_prune_and_accepted_with_it(
+    tmp_path: Path,
+) -> None:
+    """ISS 1916: Core refuses an unpruned start on blocks it has pruned.
+
+    The stores were opened by then, so `run`'s teardown closes them.
+    """
+    with unstarted_node_context(tmp_path, pruned=True) as node:
+        prune_up_to_height(node, 0)
+        assert node.block_db.pruned_up_to == 0
+    unpruned = Node(
+        config=Config(
+            chain="regtest", data_dir=tmp_path, allow_p2p=False, allow_rpc=False
+        )
+    )
+    try:
+        unpruned.start()
+        wait_until(lambda: not unpruned.is_alive())
+    finally:
+        unpruned.stop()
+    assert unpruned.init_errors == [
+        (
+            "You need to rebuild the database using -reindex to go back to "
+            "unpruned mode.  This will redownload the entire blockchain"
+        )
+    ]
+    assert not unpruned.loaded
+    assert unpruned.chainstate.db.closed
+    pruned = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path,
+            allow_p2p=False,
+            allow_rpc=False,
+            pruned=True,
+        )
+    )
+    try:
+        pruned.start()
+        assert pruned.loaded
+        assert pruned.block_db.pruned_up_to == 0
+    finally:
+        pruned.stop()
