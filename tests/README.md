@@ -36,6 +36,8 @@ directory owns, such as `interpreters_test.py`'s reading of
 `pyproject.toml`, `.python-version` and every workflow at once, and
 `pragma_test.py`'s reading of every tracked `.py` file for
 `pyproject.toml`'s own pragma-reason rule.
+`secret_free_test.py` tests the helper copied verbatim from
+btclib-org/.github, so it sits beside its package, `secret_free/`.
 `pyproject.toml`'s `testpaths` names each of those individually, beside
 the three directories, so a bare run is the whole suite for that reason
 as well as because the three directories are each in it.
