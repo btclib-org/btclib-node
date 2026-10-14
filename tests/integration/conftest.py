@@ -79,15 +79,16 @@ class Bitcoind:
     unlike this node's own listener (`connections_test.py`, the
     functional rpc suite), a real bitcoind keeps an rpc connection
     alive across calls the way `SessionTransport`'s own docstring
-    describes, and `reorg_test.py` and `backpressure_test.py` beside
-    this one each drive bitcoind through dozens of individual calls --
-    a block per `submitblock`. Measured directly against a live regtest
-    bitcoind, one connection kept open across many sequential calls
-    answers each measurably faster than a fresh connection would. What
-    that does not move is either integration test module's own wall
-    time: both are dominated by bitcoind's own block validation, not by
-    the rpc round trip, so the saving is real at the call and invisible
-    at the module.
+    describes, and `reorg_test.py` beside this one drives bitcoind
+    through dozens of individual calls -- a block per `submitblock`.
+    Measured directly against a live regtest bitcoind, one connection
+    kept open across many sequential calls answers each measurably
+    faster than a fresh connection would. What that does not move is
+    that module's own wall time: it is dominated by bitcoind's own block
+    validation, not by the rpc round trip, so the saving is real at the
+    call and invisible at the module. A call made with `rpc`'s
+    `own_connection` is the exception: it does not use the kept
+    connection.
     """
 
     def __init__(self, rpc_port: int, p2p_port: int, cookie_path: Path) -> None:
@@ -129,14 +130,10 @@ class Bitcoind:
         An `RpcError` is an answer, and carries none.
 
         `own_connection` sends the call on a connection opened for it and
-        closed after it, instead of the one kept across calls. A request
-        of megabytes wants it: on the GitHub runner (Linux 6.17), a kept
-        connection carrying one now and then stalled for the whole
-        30 s timeout. bitcoind's end advertised a receive window of 2048
-        octets with nothing queued to read on it (`ss -m` showed a
-        receive buffer of 1239), and a new connection to the same
-        daemon was answered at once (btclib-org/btclib-node#1936).
+        closed after it, instead of the one kept across calls.
         """
+        # a request of megabytes stalled on the kept connection:
+        # btclib-org/btclib-node#1936
         client = self._one_shot_client if own_connection else self._client
         try:
             return client.call(method, params)
