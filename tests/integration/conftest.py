@@ -79,15 +79,16 @@ class Bitcoind:
     unlike this node's own listener (`connections_test.py`, the
     functional rpc suite), a real bitcoind keeps an rpc connection
     alive across calls the way `SessionTransport`'s own docstring
-    describes, and `reorg_test.py` and `backpressure_test.py` beside
-    this one each drive bitcoind through dozens of individual calls --
-    a block per `submitblock`. Measured directly against a live regtest
-    bitcoind, one connection kept open across many sequential calls
-    answers each measurably faster than a fresh connection would. What
-    that does not move is either integration test module's own wall
-    time: both are dominated by bitcoind's own block validation, not by
-    the rpc round trip, so the saving is real at the call and invisible
-    at the module.
+    describes, and `reorg_test.py` beside this one drives bitcoind
+    through dozens of individual calls -- a block per `submitblock`.
+    Measured directly against a live regtest bitcoind, one connection
+    kept open across many sequential calls answers each measurably
+    faster than a fresh connection would. What that does not move is
+    that module's own wall time: it is dominated by bitcoind's own block
+    validation, not by the rpc round trip, so the saving is real at the
+    call and invisible at the module. A call made with `rpc`'s
+    `own_connection` is the exception: it does not use the kept
+    connection.
     """
 
     def __init__(self, rpc_port: int, p2p_port: int, cookie_path: Path) -> None:
@@ -108,17 +109,34 @@ class Bitcoind:
             cookie_path=cookie_path,
             transport=self._transport,
         )
+        # the default transport sends `Connection: close`, one connection
+        # per call
+        self._one_shot_client = BitcoinCoreRpcClient(
+            f"http://127.0.0.1:{rpc_port}", cookie_path=cookie_path
+        )
 
-    def rpc(self, method: str, params: list[object] | None = None) -> object:
+    def rpc(
+        self,
+        method: str,
+        params: list[object] | None = None,
+        *,
+        own_connection: bool = False,
+    ) -> object:
         """Call `method` over bitcoind's JSON-RPC, and return its result.
 
         A call that got no answer -- a timeout, a refused connection --
         raises the client's own `FetchError`, with the end of bitcoind's
         `debug.log` added as a note, which pytest prints under the error.
         An `RpcError` is an answer, and carries none.
+
+        `own_connection` sends the call on a connection opened for it and
+        closed after it, instead of the one kept across calls.
         """
+        # a request of megabytes stalled on the kept connection:
+        # btclib-org/btclib-node#1936
+        client = self._one_shot_client if own_connection else self._client
         try:
-            return self._client.call(method, params)
+            return client.call(method, params)
         except RpcError:
             raise
         except FetchError as exc:

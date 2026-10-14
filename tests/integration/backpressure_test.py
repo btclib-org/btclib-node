@@ -167,7 +167,9 @@ def fill(bitcoind: Bitcoind) -> None:
         # otherwise, rather than raising: an unread answer here would
         # leave the chain short and the assertion below blaming the sync
         refused = bitcoind.rpc(
-            "submitblock", [block.serialize(check_validity=False).hex()]
+            "submitblock",
+            [block.serialize(check_validity=False).hex()],
+            own_connection=True,
         )
         assert refused is None, refused
 
