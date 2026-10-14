@@ -179,14 +179,19 @@ class NodeStatus(enum.IntEnum):
     where a stored branch outranks the active tip
     (`BlockIndex.stored_branch_outranks_tip`): after `-reindex-chainstate`,
     after a stop part-way through one, or after a stop with downloaded
-    blocks not yet connected. It holds three of the gates of Core's
+    blocks not yet connected. It holds the gates of Core's
     `LoadingBlocks()`, which `ImportBlocks` holds on every start while
-    it connects what is stored: no header sync starts
-    (`src/net_processing.cpp:5797`), initial block download does not end
+    it connects what is stored. No header sync starts
+    (`src/net_processing.cpp:5797`), and a block `inv` asks for no
+    headers (`:4158`). A `getheaders` is not answered (`:4405`), and a
+    `cmpctblock`, `blocktxn`, `headers` or `block` is dropped unread
+    (`:4557`, `:4805`, `:4819`, `:4860`). A stale tip asks for no extra
+    outbound peer (`:5471`). Initial block download does not end
     (`src/validation.cpp:3334`), and `mempool.dat` is not loaded
-    (`src/init.cpp:2047`, after `ImportBlocks` at `:2029`), all at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag. Core's other gates are
-    btclib-org/btclib-node#1915.
+    (`src/init.cpp:2047`, after `ImportBlocks` at `:2029`). All are at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag. Core's gate on
+    `getblockfrompeer` (`src/net_processing.cpp:1964`) has nothing to
+    gate here: this node has no such call.
 
     `Node.load` sets it and `main.finish_reindex` puts back the stage it
     replaced. It sits below `BlockSynced`, so `>= BlockSynced` reads it
