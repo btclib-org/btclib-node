@@ -702,6 +702,7 @@ package = ["src/btclib_node"]
 # `relax_coverage_floor` drops.
 testpaths = [
     "tests/check_core_citation_pin_test.py",
+    "tests/check_vendored_pin_test.py",
     "tests/fuzz_corpus_test.py",
     "tests/interpreters_test.py",
     "tests/pragma_test.py",
