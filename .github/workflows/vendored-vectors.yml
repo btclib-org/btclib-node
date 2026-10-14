@@ -65,8 +65,8 @@ jobs:
     # on the commit a merge creates before the next schedule
     if: ${{ !github.event.pull_request.draft && github.event.action != 'closed' }}
     runs-on: ubuntu-latest
-    # a handful of gh api calls against the pinned repositories; a job past
-    # this is hung on the API rather than working through the rest
+    # gh api calls against the pinned repositories; a job past this is hung
+    # on the API rather than working through the rest
     timeout-minutes: 10
     steps:
       # every action pinned to a commit SHA with the tag in the comment:

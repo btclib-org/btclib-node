@@ -58,7 +58,7 @@ _FLORESTA = Path(__file__).parent / "_data" / "floresta"
 # the four bytes opening every record of a block file: btcd's `wire.MainNet`
 _MAINNET_MAGIC = bytes.fromhex("f9beb4d9")
 
-# `compressScript`'s special script types, and how many there are
+# `putCompressedScript`'s special script types, and how many there are
 # (`numSpecialScripts`, `compress.go`)
 _P2PKH, _P2SH, _P2PK_EVEN, _P2PK_ODD, _P2PK_UNCOMPRESSED_EVEN = 0, 1, 2, 3, 4
 _P2PK_UNCOMPRESSED_ODD = 5
@@ -215,10 +215,23 @@ def _stored_utxo_set(node: Node) -> dict[bytes, _Row]:
 
 @pytest.mark.parametrize(
     ("compressed", "amount"),
-    [(0, 0), (4, 1000), (111111101, 12345678), (9, 10**8), (10, 10**9)],
+    [
+        (0, 0),
+        (4, 1000),
+        (5, 10000),
+        (111111101, 12345678),
+        (48, 5 * 10**7),
+        (9, 10**8),
+        (49, 5 * 10**8),
+        (10, 10**9),
+    ],
 )
 def test_the_amounts_btcd_documents_decompress(compressed: int, amount: int) -> None:
-    """The examples in the comment above `compressTxOutAmount`."""
+    """The examples in the comment above `compressTxOutAmount`.
+
+    The comment says 47 for 50000000; the code and `TestAmountCompression`
+    (`compress_test.go`) say 48.
+    """
     assert _decompress_amount(compressed) == amount
 
 
