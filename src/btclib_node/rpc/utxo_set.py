@@ -315,8 +315,7 @@ def _expand(
         for index in range(low, high + 1):
             for source in sources:
                 try:
-                    scripts = source.descriptor.script_pub_keys(index, source.prv_keys)
-                    provider = source.descriptor.provider(index, source.prv_keys)
+                    scripts, provider = source.descriptor.expand(index, source.prv_keys)
                 except BTClibException as err:
                     # Core's rpc/util.cpp:1370 (bitcoin/bitcoin@db0bde16b9)
                     # quotes the descriptor. This tree departs on purpose: the

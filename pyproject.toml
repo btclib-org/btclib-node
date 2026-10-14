@@ -85,14 +85,18 @@ dependencies = [
     # `BitcoinCoreFetcher` (btclib-org/btclib-node#1181,
     # btclib-org/btclib-node#1508).
     #
-    # The floor is 2026.10.8, the release fixing GHSA-62jf-v327-86h5:
-    # 2026.10.7 quotes a private key in a refusal that `scantxoutset`
-    # answers with.
+    # The floor is 2026.10.9, the first release carrying `Descriptor.expand`,
+    # which returns the scripts and the provider from one derivation of each
+    # key and which `scantxoutset` expands with (btclib-org/btclib-wallet#303,
+    # btclib-org/btclib-node#1850).
+    #
+    # 2026.10.8 is the release fixing GHSA-62jf-v327-86h5: 2026.10.7 quotes
+    # a private key in a refusal that `scantxoutset` answers with.
     # 2026.10.7 is the first release carrying `infer_descriptor` and
     # `Provider`, which `rpc/callbacks.py` and `rpc/utxo_set.py` import.
     # 2026.10.4 is the first whose `parse` refuses a key of another
     # network, which `rpc/mining.py` relies on.
-    "btclib-wallet>=2026.10.8",
+    "btclib-wallet>=2026.10.9",
     # `signing.py` and `p2p/v2transport.py` import `btclib_ecc` directly: a
     # direct runtime dependency, not what btclib happens to bring
     # (btclib-org/btclib-node#1431). `tests/unit/interpreter_test.py` builds
