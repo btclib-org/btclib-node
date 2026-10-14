@@ -1009,6 +1009,41 @@ def test_a_signal_another_thread_takes_reaches_a_joining_main_thread(
     assert gave_up == [False]
 
 
+def test_join_without_a_timeout_waits_again_while_the_thread_lives(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`join()` waits again for a node still running after one wait (#1920).
+
+    The node's thread runs until `terminate_flag` is set, and the test sets
+    it only inside the second bounded wait, which `Node.join` makes only
+    from its loop: a first wait that has returned with the thread alive
+    is what the loop is for. The bound is shortened to keep the run short,
+    and the hold never depends on it.
+    """
+    monkeypatch.setattr(btclib_node, "SIGNAL_POLL_SECONDS", 0.05)
+    node = a_node(tmp_path)
+    node.start()
+    joined: list[tuple[threading.Thread, float | None]] = []
+    real_join = threading.Thread.join
+
+    def counting_join(self: threading.Thread, timeout: float | None = None) -> None:
+        joined.append((self, timeout))
+        if len([thread for thread, _ in joined if thread is node]) == 2:
+            node.terminate_flag.set()
+        real_join(self, timeout)
+
+    monkeypatch.setattr(threading.Thread, "join", counting_join)
+    try:
+        node.join()
+    finally:
+        node.terminate_flag.set()
+        monkeypatch.undo()
+        real_join(node, _STOP_TIMEOUT)
+    assert not node.is_alive()
+    waits = [wait for thread, wait in joined if thread is node]
+    assert waits[:2] == [0.05, 0.05]
+
+
 @pytest.mark.skipif(not hasattr(signal, "pthread_kill"), reason="Windows has none")
 def test_a_signal_another_thread_takes_reaches_a_starting_main_thread(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
