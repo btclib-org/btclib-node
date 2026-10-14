@@ -110,6 +110,10 @@ jobs:
   # hands the called workflow every secret this repository can see, where
   # the one it declares is the one it needs
   claude:
+    # the callee has no cache step, and `none` keeps it so: a run started
+    # by a comment gets no cache access, which is what actionlint's
+    # cache-call-unrestricted asks for
+    cache-mode: none
     uses: btclib-org/.github/.github/workflows/reusable-claude-review.yml@main
     permissions:
       contents: read
