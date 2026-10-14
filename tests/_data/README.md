@@ -134,6 +134,68 @@ the file are the check:
 uv run pytest tests/unit/chainstate/utxo_index_test.py -k serialized_hash
 ```
 
+## `tests/unit/chainstate/_data/mainnet_headers_1_32300.xz`
+
+Not vendored -- derived. The mainnet headers of heights 1 to 32,300, each
+as `getblockheader <hash> false` of a Bitcoin Core v31.1.0 node printed it,
+over its RPC. Height 32,256 is the first retarget that changes the target.
+The expected hashes, bits and chain work in
+`tests/unit/chainstate/real_header_chains_test.py` are that node's
+`getblockheader` answers at heights 32,255, 32,256 and 32,300; a second
+Core v31.1.0 with no peer, given the same headers by `submitheader`,
+answered the same tip and chain work. `chainparams.cpp` holds no
+checkpoint to compare a hash with.
+
+The file keeps, for each header, the 48 bytes its predecessor does not
+give (version, merkle root, time, bits, nonce: the 80 bytes less the
+previous hash, bytes 4 to 36), concatenated and compressed. From the
+80-byte headers, in order, as `headers`:
+
+```python
+import lzma
+
+records = b"".join(header[:4] + header[36:] for header in headers)
+data = lzma.compress(
+    records,
+    format=lzma.FORMAT_XZ,
+    check=lzma.CHECK_CRC64,
+    preset=9 | lzma.PRESET_EXTREME,
+)
+```
+
+A regenerated file need not match byte for byte, only
+`lzma.decompress` of it. The test pins the file's sha256,
+`ce13c5e5b6be2a2022542151b4039dd8b4d8492a793caa876e1960e9d8d42274`,
+and is the check:
+
+```shell
+shasum -a 256 tests/unit/chainstate/_data/mainnet_headers_1_32300.xz
+uv run pytest tests/unit/chainstate/real_header_chains_test.py
+```
+
+The three nonces in that test's `CORRUPTIONS` were found offline, one
+search each over the 32-bit nonce, and cannot be regenerated from this
+file. `assert_valid_pow` in the test checks that each meets its own
+target, which is what makes the context the only reason to refuse it.
+
+## `tests/unit/chainstate/_data/testnet4_headers_1_8100.xz`
+
+Not vendored -- derived. The testnet4 headers of heights 1 to 8,100, the
+answer of a testnet4 peer (`seed.testnet4.wiz.biz`) to `getheaders` from
+the genesis. The heights 1 to 8,100 of
+`https://mempool.space/testnet4/api/v1/blocks/` are the same bytes.
+Height 7,465 is a minimum difficulty block and height 8,064 the retarget
+after it. The expected hashes, bits and chain work are the
+`getblockheader` answers of a Bitcoin Core v31.1.0 on testnet4 with no
+peer, given the headers by `submitheader`, at heights 7,464, 7,465,
+8,063, 8,064 and 8,100.
+
+The 48-byte records and the compression are the mainnet entry's. The
+test pins the sha256
+`860b6d82c242de36076b1229c2444c09e1a39419718f3dbfeaa7c6829be2a591` and is
+the check, as above. The nonces of the corruption tests are those the
+mainnet entry names.
+
 ## `tests/unit/_data/cluster_linearize_tests.cpp`
 
 ```text
