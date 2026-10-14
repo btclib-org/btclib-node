@@ -684,6 +684,41 @@ def test_a_coinbase_spend_at_exactly_maturity_connects(node: Node) -> None:
     assert len(block_index.active_chain) == connected + 1
 
 
+def test_a_block_spends_an_output_only_after_the_transaction_creating_it(
+    node: Node,
+) -> None:
+    """An output is created before it is spent: the reverse order is refused."""
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, chain)
+    connected = len(block_index.active_chain)
+
+    funding = chain[0].transactions[0]
+    parent = spend(funding, funding.vout[0].value)
+    child = spend(parent, parent.vout[0].value)
+    height = len(chain)
+    bad = build_block(
+        chain[-1].header.hash,
+        [generate_coinbase(height=height + 1), child, parent],
+        height,
+    )
+    good = build_block(
+        chain[-1].header.hash,
+        [generate_coinbase(height=height + 1), parent, child],
+        height,
+    )
+
+    connect(node, [bad])
+
+    assert bad.header.hash not in block_index.active_chain
+    assert len(block_index.active_chain) == connected
+    rejected_because(node, bad, "prevout not found")
+
+    connect(node, [good])
+
+    assert good.header.hash in block_index.active_chain
+    assert len(block_index.active_chain) == connected + 1
+
+
 def test_reject_a_mempool_spend_of_an_immature_coinbase(node: Node) -> None:
     """`verify_mempool_acceptance` refuses the same premature spend.
 
