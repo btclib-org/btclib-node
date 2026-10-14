@@ -137,6 +137,11 @@ repos:
       # only files being *added* are measured, the hook intersecting its
       # arguments with git's added set
       - id: check-added-large-files
+        # tests/**/_data/ is excluded: a pinned fixture is as large as
+        # its upstream file, and tests/_data/README.md records each one
+        # with its source and pin. The limit stays the default 500 kB
+        # everywhere else.
+        exclude: ^tests/(.*/)?_data/
       # there are none, and a submodule is the one dependency that would
       # not be in uv.lock, not be pinned by dependabot, and not be
       # visible in an sdist
