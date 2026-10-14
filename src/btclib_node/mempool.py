@@ -14,12 +14,12 @@ below being `ROLLING_FEE_HALFLIFE` (`src/txmempool.h`).
 
 import hashlib
 import math
-import time
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, NamedTuple
 
 from btclib.fee import FeeRate, fee_from_vsize
 
+from btclib_node import clock
 from btclib_node.cluster_linearize import FeeFrac, compare_chunks
 from btclib_node.config import DEFAULT_INCREMENTAL_RELAY_FEERATE
 from btclib_node.constants import DEFAULT_MEMPOOL_EXPIRY_HOURS
@@ -238,7 +238,7 @@ class Mempool:
         # wtxid -> Core's own `CTxMemPoolEntry::GetTime`
         # (`src/kernel/mempool_entry.h`, at bitcoin/bitcoin@9be056a8a7, the
         # v31.1 tag): the wall-clock second this entry was accepted,
-        # `add_tx` below's own `time.time()`, or for an entry loaded from
+        # `add_tx` below's own `clock.now()`, or for an entry loaded from
         # `mempool.dat` the time the file gives (`mempool_persist`).
         # `getmempoolentry`'s own `time` field. btclib-org/btclib-node#1397
         # `set_entry_time` writes it.
@@ -624,7 +624,7 @@ class Mempool:
         self.modified_fees[wtxid] = _saturate(fee + self.delta(txid))
         self.vsizes[wtxid] = tx.vsize if vsize is None else vsize
         self.weights[wtxid] = _weight(tx, vsize) if weight is None else weight
-        self.set_entry_time(wtxid, time.time())
+        self.set_entry_time(wtxid, clock.now())
         self.heights[wtxid] = height
         for vin in tx.vin:
             self.spent_by.setdefault(vin.prev_out.tx_id, set()).add(wtxid)
@@ -1602,7 +1602,7 @@ class Mempool:
         Each is removed as Core removes it with reason `EXPIRY`, so
         `removal_listener` is told. Returns how many were removed.
         """
-        cutoff = int(time.time()) - self.expiry
+        cutoff = int(clock.now()) - self.expiry
         if self._oldest_entry_time >= cutoff:
             return 0
         stage: set[bytes] = set()
@@ -1676,7 +1676,7 @@ class Mempool:
         into `remove_tx`, which already runs once per transaction inside
         that same loop rather than once per block.
         """
-        self._last_rolling_fee_update = time.time()
+        self._last_rolling_fee_update = clock.now()
         self._block_since_last_rolling_fee_bump = True
 
     def active_tip_change(self) -> None:
@@ -1725,7 +1725,7 @@ class Mempool:
         ):
             return FeeRate(sats_per_kvbyte=round(self._rolling_min_fee_rate))
 
-        now = time.time()
+        now = clock.now()
         if now > self._last_rolling_fee_update + 10:
             halflife: float = _ROLLING_FEE_HALFLIFE
             if self.bytesize < self.bytesize_limit / 4:

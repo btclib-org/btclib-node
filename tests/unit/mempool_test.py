@@ -7,7 +7,6 @@
 import hashlib
 import secrets
 import time
-from types import SimpleNamespace
 from typing import Any, override
 
 import pytest
@@ -19,6 +18,7 @@ from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
+from btclib_node import clock as clock_module
 from btclib_node import mempool as mempool_module
 from btclib_node.exceptions import TxRejectedError
 from btclib_node.fee_estimator import RemovedTx
@@ -1956,8 +1956,8 @@ def test_a_block_on_an_empty_mempool_returns_nothing() -> None:
 
 
 def a_clock(monkeypatch: pytest.MonkeyPatch, now: list[float]) -> None:
-    """Make `now[0]` the time `mempool` reads."""
-    monkeypatch.setattr(mempool_module, "time", SimpleNamespace(time=lambda: now[0]))
+    """Make `now[0]` the time every module reads from `clock`."""
+    monkeypatch.setattr(clock_module, "now", lambda: now[0])
 
 
 def test_the_default_expiry_is_core_s() -> None:

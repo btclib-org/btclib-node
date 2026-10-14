@@ -355,7 +355,7 @@ def test_a_transaction_that_expires_as_it_is_loaded_fails(
     now = int(time.time())
     write(path, [(fan, now - 3599, 0)], {}, [])
     monkeypatch.setattr(
-        mempool_module, "time", SimpleNamespace(time=lambda: time.time() + 3)
+        mempool_module, "clock", SimpleNamespace(now=lambda: time.time() + 3)
     )
     lines = LogLines()
     node.logger.addHandler(lines)
@@ -385,7 +385,7 @@ def test_a_full_mempool_expires_a_loaded_transaction_before_it_evicts(
     path = node.data_dir / "mempool.dat"
     write(path, [(fan, int(time.time()) - 3599, 0)], {}, [])
     monkeypatch.setattr(
-        mempool_module, "time", SimpleNamespace(time=lambda: time.time() + 3)
+        mempool_module, "clock", SimpleNamespace(now=lambda: time.time() + 3)
     )
     assert run(load_mempool(node, path))
     assert set(mempool.txid_index) == {keeper.id}

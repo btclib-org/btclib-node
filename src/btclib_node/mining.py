@@ -41,7 +41,6 @@ Where this module differs from Core:
 from __future__ import annotations
 
 import re
-import time
 from datetime import UTC, datetime
 from fractions import Fraction
 from typing import TYPE_CHECKING, NamedTuple
@@ -68,6 +67,7 @@ from btclib.script.witness import Witness
 from btclib.tx import OutPoint, Tx, TxIn, TxOut
 from btclib.tx.tx_context import is_final
 
+from btclib_node import clock
 from btclib_node.chainstate.block_index import block_time
 from btclib_node.exceptions import (
     InvalidBlockInputError,
@@ -330,7 +330,7 @@ def _assemble(
         check_validity=False,
     )
 
-    when = datetime.fromtimestamp(max(min_time, int(time.time())), UTC)
+    when = datetime.fromtimestamp(max(min_time, int(clock.now())), UTC)
     merkle_root, _ = merkle_root_and_mutated_from_transactions(transactions)
     version = node.unknown_activations.status(
         block_index.active_chain, block_index.header_dict
@@ -470,7 +470,7 @@ def _contextual_header_reason(node: Node, header: BlockHeader) -> str | None:
     except BTClibValueError:
         return "time-timewarp-attack"
     try:
-        header.assert_valid_time(datetime.now(UTC))
+        header.assert_valid_time(clock.now_utc())
     except BTClibValueError:
         return "time-too-new"
     return _version_reason(node, header)

@@ -23,7 +23,6 @@ import hashlib
 import secrets
 import socket
 import threading
-import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from functools import partial
@@ -41,6 +40,7 @@ from btclib.p2p.addrv2 import (
     network_address,
 )
 
+from btclib_node import clock
 from btclib_node.db import KeyValueStore
 from btclib_node.exceptions import UnsupportedAddressTypeError
 from btclib_node.p2p.eviction import get_network, is_routable, net_class, net_group
@@ -610,7 +610,7 @@ def _dns_seed_timestamp() -> int:
     what a predictable draw would let single out which entry came from
     a seed rather than gossip.
     """
-    now = time.time()
+    now = clock.now()
     age = secrets.SystemRandom().uniform(_DNS_SEED_MIN_AGE, _DNS_SEED_MAX_AGE)
     return int(now - age)
 
@@ -628,7 +628,7 @@ def _fixed_seed_timestamp() -> int:
     draw `_dns_seed_timestamp` above already uses for the identical
     reason.
     """
-    now = time.time()
+    now = clock.now()
     age = secrets.SystemRandom().uniform(_FIXED_SEED_MIN_AGE, _FIXED_SEED_MAX_AGE)
     return int(now - age)
 
@@ -1515,7 +1515,7 @@ class PeerDB:
         def chance(row: NetworkAddressV2) -> float:
             entry = self._stats.get(_endpoint(row))
             return _chance(
-                time.time(), self.last_try(row), entry.attempts if entry else 0
+                clock.now(), self.last_try(row), entry.attempts if entry else 0
             )
 
         # Locked, unlike `is_empty` above: a copy of a dict another thread
@@ -1617,7 +1617,7 @@ class PeerDB:
         # what each endpoint kept was gossiped with, for its answered row
         gossiped: dict[bytes, ServiceFlags] = {}
         added = 0
-        now = time.time()
+        now = clock.now()
         source_host = _host(source) if source is not None else None
         source_group = net_group(source) if source is not None else None
         with self._addresses_lock, self._write_batch() as wb:
@@ -1779,7 +1779,7 @@ class PeerDB:
         """
         key = endpoint_key(address)
         endpoint = _endpoint(address)
-        now = time.time()
+        now = clock.now()
         with self._addresses_lock, self._write_batch() as wb:
             if endpoint not in self._rows:
                 return
@@ -1817,7 +1817,7 @@ class PeerDB:
         test's own two-node regtest, would otherwise answer none
         (btclib-org/btclib-node#71).
         """
-        now = time.time()
+        now = clock.now()
         with self._addresses_lock:
             rows = list(self.addresses)
         size = len(rows)
@@ -1864,7 +1864,7 @@ class PeerDB:
         `_active_lock` in turn, never nested.
         """
         with self._move_lock:
-            return self._good(addr, time.time(), test_before_evict=test_before_evict)
+            return self._good(addr, clock.now(), test_before_evict=test_before_evict)
 
     def _good(
         self, addr: NetworkAddressV2, now: float, *, test_before_evict: bool
@@ -1965,7 +1965,7 @@ class PeerDB:
         `select_tried_collision` names is what gives it a success to read.
         Takes `_move_lock`.
         """
-        now = time.time()
+        now = clock.now()
         with self._move_lock:
             with self._addresses_lock:
                 waiting = list(self._collisions)
@@ -2038,7 +2038,7 @@ class PeerDB:
         is written: the answered row's timestamp is `m_last_success`.
         Takes `_addresses_lock`.
         """
-        now = int(time.time())
+        now = int(clock.now())
         key = endpoint_key(address)
         with self._addresses_lock, self._write_batch() as wb:
             existing = self._held(address)

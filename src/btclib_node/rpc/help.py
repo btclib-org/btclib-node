@@ -36,9 +36,8 @@ function sorts `vCommands`: by category, and by
 name within it. `help_rpc` groups this node's own served commands
 under those same headings and in that same order, the way Core's own
 bare listing would if run against a `bitcoind` serving only this
-node's own method table -- `addconnection`, `generatetoaddress`,
-`generateblock`, `invalidateblock` and `reconsiderblock` being this
-table's hidden entries, `category == "hidden"` is left out of that
+node's own method table -- the entries `CATEGORY` marks `"hidden"` being
+this table's hidden ones, `category == "hidden"` is left out of that
 listing the same way Core's own bare listing leaves a `category ==
 "hidden"` entry out of its
 (`answer_help`'s own docstring is where that check is
@@ -1516,6 +1515,19 @@ _HELP_DISCONNECTNODE = (
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "disconnectnode", "params": ["", 1]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
+_HELP_SETMOCKTIME = (
+    "setmocktime timestamp\n"
+    "\n"
+    "Set the local time to given timestamp (-regtest only)\n"
+    "\n"
+    "Arguments:\n"
+    "1. timestamp    (numeric, required) UNIX epoch time\n"
+    "                Pass 0 to go back to using the system time.\n"
+    "\n"
+    "Result:\n"
+    "null    (json null)\n"
+)
+
 _HELP_SETNETWORKACTIVE = (
     "setnetworkactive state\n"
     "\n"
@@ -2345,6 +2357,7 @@ HELP_TEXT: dict[str, str] = {
     "clearbanned": _HELP_CLEARBANNED,
     "disconnectnode": _HELP_DISCONNECTNODE,
     "setnetworkactive": _HELP_SETNETWORKACTIVE,
+    "setmocktime": _HELP_SETMOCKTIME,
     "getconnectioncount": _HELP_GETCONNECTIONCOUNT,
     "getnetworkinfo": _HELP_GETNETWORKINFO,
     "getpeerinfo": _HELP_GETPEERINFO,
@@ -2420,7 +2433,8 @@ CATEGORY: dict[str, str] = {
     "ping": "Network",
     "setban": "Network",
     # Core's own `{"hidden", &addconnection}` (`src/rpc/net.cpp`) and
-    # `generatetoaddress` and `generateblock` (`src/rpc/mining.cpp`), at
+    # `generatetoaddress` and `generateblock` (`src/rpc/mining.cpp`) and
+    # `setmocktime` (`src/rpc/node.cpp`), at
     # bitcoin/bitcoin@9be056a8a7, the v31.1 tag: no heading of its own
     # in the bare listing, `_BARE_LISTING`'s own construction excluding
     # this category rather than sorting it in alphabetically where
@@ -2430,6 +2444,7 @@ CATEGORY: dict[str, str] = {
     # `CRPCTable::help` skipping a `"hidden"` category the identical way.
     "addconnection": "hidden",
     "addpeeraddress": "hidden",
+    "setmocktime": "hidden",
     "decoderawtransaction": "Rawtransactions",
     "getrawtransaction": "Rawtransactions",
     "sendrawtransaction": "Rawtransactions",

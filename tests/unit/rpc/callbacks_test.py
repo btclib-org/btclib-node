@@ -16,7 +16,7 @@ import math
 import threading
 import time
 from collections import Counter
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from dataclasses import replace
 from datetime import UTC, datetime
 from ipaddress import ip_address
@@ -45,8 +45,17 @@ from btclib_wallet.descriptors import add_checksum, from_address
 
 import btclib_node.p2p.banman as banman_module
 import btclib_node.rpc.callbacks as cb
+from btclib_node import clock
 from btclib_node.block_db import Coin, RevBlock
-from btclib_node.chains import Chain, HeadersSyncParams, Main, RegTest
+from btclib_node.chains import (
+    Chain,
+    HeadersSyncParams,
+    Main,
+    RegTest,
+    SigNet,
+    TestNet,
+    TestNet4,
+)
 from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.block_index import BlockStatus, block_time, calculate_work
 from btclib_node.chainstate.muhash import CoinStats
@@ -115,6 +124,7 @@ from btclib_node.rpc.callbacks import (
     send_raw_transaction,
     service_names,
     set_ban,
+    set_mock_time,
     set_network_active,
     stop,
     submit_block,
@@ -139,7 +149,7 @@ from tests import (
 from tests.unit.main_test import a_dusty_spend, connect, locked_spend, spend
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Iterator
 
     from btclib_node import Node
     from btclib_node.rpc.connection import RpcConnection
@@ -5439,6 +5449,97 @@ def test_setnetworkactive_type_checks_state() -> None:
         with pytest.raises(RpcError) as raised:
             set_network_active(node, _CONN, [bad])
         assert raised.value.code == RPCErrorCode.TYPE_ERROR
+
+
+def test_setmocktime_is_served_with_its_one_argument() -> None:
+    """The dispatch table and the argument names carry it."""
+    assert callbacks["setmocktime"] is set_mock_time
+    assert cb.arg_names["setmocktime"] == ("timestamp",)
+
+
+def test_setmocktime_holds_the_clock_and_zero_releases_it() -> None:
+    """The timestamp is every later read of the clock; 0 is the system time."""
+    node = cast("Node", SimpleNamespace(chain=RegTest()))
+    set_mock_time(node, _CONN, [1_600_000_000])
+    assert clock.now() == 1_600_000_000.0
+    set_mock_time(node, _CONN, [0])
+    assert clock.mock_time() == 0
+    assert clock.now() > 1_600_000_000.0
+
+
+def test_setmocktime_accepts_the_largest_timestamp_and_refuses_the_next() -> None:
+    """Core v31.1.0's bound `[0, 9223372036]`, measured at both ends."""
+    node = cast("Node", SimpleNamespace(chain=RegTest()))
+    set_mock_time(node, _CONN, [clock.MAX_MOCK_TIME])
+    assert clock.mock_time() == 9223372036
+    with pytest.raises(RpcError) as raised:
+        set_mock_time(node, _CONN, [9223372037])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert raised.value.message == (
+        "Mocktime must be in the range [0, 9223372036], not 9223372037."
+    )
+    assert clock.mock_time() == 9223372036
+
+
+def test_setmocktime_refuses_a_negative_timestamp_and_keeps_the_clock() -> None:
+    """`-8`, with Core's message, and the mock time already set stands."""
+    node = cast("Node", SimpleNamespace(chain=RegTest()))
+    set_mock_time(node, _CONN, [1_600_000_000])
+    with pytest.raises(RpcError) as raised:
+        set_mock_time(node, _CONN, [-1])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert raised.value.message == (
+        "Mocktime must be in the range [0, 9223372036], not -1."
+    )
+    assert clock.mock_time() == 1_600_000_000
+
+
+@pytest.mark.parametrize("chain", [Main, TestNet, TestNet4, SigNet])
+def test_setmocktime_refuses_a_chain_that_is_not_regtest(
+    chain: Callable[[], Chain],
+) -> None:
+    """`RPC_MISC_ERROR`, ahead of the range check, and nothing is set."""
+    node = cast("Node", SimpleNamespace(chain=chain()))
+    for timestamp in (1_600_000_000, -1):
+        with pytest.raises(RpcError) as raised:
+            set_mock_time(node, _CONN, [timestamp])
+        assert raised.value.code == RPCErrorCode.MISC_ERROR
+        assert raised.value.message == (
+            "setmocktime is for regression testing (-regtest mode) only"
+        )
+    assert clock.mock_time() == 0
+
+
+def test_setmocktime_with_no_arguments_is_answered_with_the_usage() -> None:
+    """The one required argument is refused with the help, as Core's is."""
+    node = cast("Node", SimpleNamespace(chain=RegTest()))
+    with pytest.raises(RpcError) as raised:
+        set_mock_time(node, _CONN, [])
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
+    assert raised.value.message == HELP_TEXT["setmocktime"]
+
+
+@pytest.mark.parametrize("bad", ["1", True, None, [1]])
+def test_setmocktime_type_checks_timestamp(bad: object) -> None:
+    """A `timestamp` that is no JSON number is named, `null` and `true` too."""
+    node = cast("Node", SimpleNamespace(chain=RegTest()))
+    with pytest.raises(RpcError) as raised:
+        set_mock_time(node, _CONN, [bad])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert '"Position 1 (timestamp)"' in raised.value.message
+    assert clock.mock_time() == 0
+
+
+@pytest.mark.parametrize("bad", [1.5, 2.0, 2**63, -(2**63) - 1])
+def test_setmocktime_refuses_what_is_no_int64_as_json_integer_out_of_range(
+    bad: float,
+) -> None:
+    """Core's `getInt<int64_t>`, ahead of the range check: `-1`, not `-8`."""
+    node = cast("Node", SimpleNamespace(chain=RegTest()))
+    with pytest.raises(RpcError) as raised:
+        set_mock_time(node, _CONN, [bad])
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
+    assert raised.value.message == "JSON integer out of range"
 
 
 def an_addconnection_node(

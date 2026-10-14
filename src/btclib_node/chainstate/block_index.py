@@ -47,7 +47,6 @@ import itertools
 import math
 from collections import deque
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
 from btclib import var_int
@@ -62,6 +61,7 @@ from btclib.block.proof_of_work import block_work
 from btclib.exceptions import BTClibValueError
 from btclib.utils import bytesio_from_binarydata
 
+from btclib_node import clock
 from btclib_node.exceptions import (
     ChainstateInconsistencyError,
     LowWorkHeaderError,
@@ -70,6 +70,7 @@ from btclib_node.exceptions import (
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
+    from datetime import datetime
 
     from btclib_node.chains import Chain
     from btclib_node.db import KeyValueStore
@@ -1130,7 +1131,7 @@ class BlockIndex:
         punish_cached_invalid: bool,
         min_pow_checked: bool,
     ) -> None:
-        now = datetime.now(UTC)
+        now = clock.now_utc()
         current_work = self.chainwork[self.active_chain[-1]]
 
         # every header already indexed by this same call is in

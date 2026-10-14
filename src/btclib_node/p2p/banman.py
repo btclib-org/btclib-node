@@ -23,13 +23,13 @@ import hashlib
 import json
 import socket
 import threading
-import time
 from dataclasses import dataclass, field
 from ipaddress import IPv4Address, IPv6Address
 from typing import TYPE_CHECKING, Any, cast, override
 
 from btclib.p2p.addrv2 import BIP155Network, can_addrv1, network_address
 
+from btclib_node import clock
 from btclib_node.constants import CLIENT_NAME
 from btclib_node.p2p.eviction import _INTERNAL, _TORV2, is_valid
 
@@ -401,7 +401,7 @@ def _json_int(entry: _JsonObject, key: str, bits: int) -> int:
 
 def _now() -> int:
     """Core's `GetTime()`: whole seconds since the epoch."""
-    return int(time.time())
+    return int(clock.now())
 
 
 class BanMan:
