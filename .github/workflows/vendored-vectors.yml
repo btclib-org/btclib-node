@@ -2,7 +2,7 @@
 name: vendored-vectors
 
 # tests/_data/README.md and scripts/seeds/README.md each pin a vendored
-# file to a Bitcoin Core commit and a git blob SHA-1, with a documented
+# file to an upstream commit and a git blob SHA-1, with a documented
 # manual procedure to re-check it -- last done by hand on the date each
 # file itself records. This runs that procedure once a week instead, and
 # fails where either has moved.
@@ -39,7 +39,8 @@ on:
       - scripts/seeds/README.md
 
 # least privilege for the GITHUB_TOKEN: the script reads this repository
-# and Bitcoin Core's, both public, and writes nothing anywhere
+# and the upstream repositories it pins, all public, and writes nothing
+# anywhere
 permissions:
   contents: read
 
@@ -64,8 +65,8 @@ jobs:
     # on the commit a merge creates before the next schedule
     if: ${{ !github.event.pull_request.draft && github.event.action != 'closed' }}
     runs-on: ubuntu-latest
-    # a handful of gh api calls against two repositories; a job past
-    # this is hung on the API rather than working through the rest
+    # gh api calls against the pinned repositories; a job past this is hung
+    # on the API rather than working through the rest
     timeout-minutes: 10
     steps:
       # every action pinned to a commit SHA with the tag in the comment:

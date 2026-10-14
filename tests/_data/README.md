@@ -371,3 +371,163 @@ Bitcoin Core's licence, MIT, which `cluster_linearize_tests.cpp` is
 distributed under, travelling with it as
 `tests/unit/chainstate/_data/BITCOIN_CORE_COPYING` travels with
 `blockfilters.json`.
+
+## `tests/unit/chainstate/_data/btcd/blk_0_to_4.dat.bz2`
+
+```text
+repo    btcsuite/btcd
+path    blockchain/testdata/blk_0_to_4.dat.bz2
+commit  b69a849114ea871b49a27bda2ebad36d460f8137  2015-01-30
+blob    274c710d275f032791bcbd4b463be9c1901b85ed
+sha256  e5844b96629a675c169d013c1eb86ce542a1936fcf199f6f60de4ffc2a5b1a64
+pulled  2026-10-14
+behind  0 revisions; that commit is the tip of the path
+```
+
+The genesis block and four blocks mined on top of it at mainnet's easiest
+target, as btcd's `TestHaveBlock` and `TestCheckConnectBlockTemplate` load
+them: records of `<magic><length><block>`, bzip2-compressed, vendored
+byte for byte. The blocks after the genesis are not mainnet's: block 1's
+hash is `00000000ebe5ec3e...`, not `00000000839a8e68...`. Blocks 2 and 4
+spend the coinbases of blocks 1 and 2, which btcd's tests allow by
+lowering coinbase maturity to 1.
+
+## `tests/unit/chainstate/_data/btcd/blk_3A.dat.bz2`
+
+```text
+repo    btcsuite/btcd
+path    blockchain/testdata/blk_3A.dat.bz2
+commit  b69a849114ea871b49a27bda2ebad36d460f8137  2015-01-30
+blob    01266565d573ca0f7e7601d011fb4f98e243445a
+sha256  4447be6e520ff9818a68a1c1c74ff99ca1c8085cc8b0ceaf57f4664f5fc356f7
+pulled  2026-10-14
+behind  0 revisions; that commit is the tip of the path
+```
+
+Block 3a, a second child of block 2, in the same format.
+
+## `tests/unit/chainstate/_data/btcd/blk_4A.dat.bz2`
+
+```text
+repo    btcsuite/btcd
+path    blockchain/testdata/blk_4A.dat.bz2
+commit  b69a849114ea871b49a27bda2ebad36d460f8137  2015-01-30
+blob    19b409e752f37840b271e4e9f0b90dcd06e1cad3
+sha256  c6023b85c07e8fbcbf704ea896879c3a6a0f5b88edd520197f820fd76436032c
+pulled  2026-10-14
+behind  0 revisions; that commit is the tip of the path
+```
+
+Block 4a, the child of 3a, in the same format. No test of
+btcsuite/btcd@c615bd709 loads it.
+
+## `tests/unit/chainstate/_data/btcd/blk_5A.dat.bz2`
+
+```text
+repo    btcsuite/btcd
+path    blockchain/testdata/blk_5A.dat.bz2
+commit  b69a849114ea871b49a27bda2ebad36d460f8137  2015-01-30
+blob    47bff9038bdd596708d38440ed3a748e42c79988
+sha256  f4159c24c58f86edb93482dcc7c6c972a7bc683ab264bbc4887e4f557267a325
+pulled  2026-10-14
+behind  0 revisions; that commit is the tip of the path
+```
+
+Block 5a, the child of 4a, in the same format. No test of
+btcsuite/btcd@c615bd709 loads it. It spends the coinbase of block 2.
+
+## `tests/unit/chainstate/_data/btcd/277647.dat.bz2`
+
+```text
+repo    btcsuite/btcd
+path    blockchain/testdata/277647.dat.bz2
+commit  b69a849114ea871b49a27bda2ebad36d460f8137  2015-01-30
+blob    598420a65ab8b2801d2d917147fb58e53ee6014a
+sha256  0e9236eea4eb0e02649598169ff710ec695be59f6296799a6f04ba5364760496
+pulled  2026-10-14
+behind  0 revisions; that commit is the tip of the path
+```
+
+Mainnet block 277647, in the same format, which btcd's `TestCheckBlockScripts`
+verifies.
+
+## `tests/unit/chainstate/_data/btcd/277647.utxostore.bz2`
+
+```text
+repo    btcsuite/btcd
+path    blockchain/testdata/277647.utxostore.bz2
+commit  a59ac5b18f028fabbd0f537094c995702a942dd3  2018-05-27
+blob    c12b65e2a712c5a712ad4aef2ebdc9538a09e606
+sha256  0b107034d984f1d6251ba5a32dc4617207bf502c6def49deb9ace2bbd93a91f0
+pulled  2026-10-14
+behind  0 revisions; that commit is the tip of the path
+```
+
+The outputs block 277647 spends, bzip2-compressed: records of
+`<txid><index><length><entry>`, the entry in btcd's compressed UTXO
+serialization. `tests/unit/chainstate/mainnet_blocks_test.py` is its only
+reader.
+
+## `tests/unit/chainstate/_data/btcd/LICENSE`
+
+```text
+repo    btcsuite/btcd
+path    LICENSE
+commit  75a1d4134a02208b627930ce83d2db0aaa1319ab  2025-01-15
+blob    5eed08580dbd2d31013813aefe936db3a3994997
+sha256  10db068dbe11e2b3d652a3d4ae3cdd7998b84b12cdefe3d8083a2b63c295c13f
+pulled  2026-10-14
+behind  0 revisions; that commit is the tip of the path
+```
+
+btcd's licence, ISC, which the btcd files above are distributed under and
+which travels with them.
+
+## `tests/unit/chainstate/_data/floresta/raw.zst`
+
+```text
+repo    getfloresta/Floresta
+path    crates/floresta-chain/testdata/invalid_block_783426/raw.zst
+commit  d3166e832b3b92e71c80137df3f47d9383b31df4  2026-09-09
+blob    27d080b7bb699a608655413f326b1de2f67724cd
+sha256  5763d43678698fbebaa723e96dd7c7dd56118dc90a2e2d00656177c66dffbde9
+pulled  2026-10-14
+behind  0 revisions; that commit is the tip of the path
+```
+
+Mainnet block candidate 783426, serialized and zstd-compressed, vendored
+byte for byte. F2Pool mined it with valid proof of work and Bitcoin Core
+refused it as `bad-blk-sigops`: its sigop cost is 80,003 against a limit of
+80,000 (<https://b10c.me/observations/11-invalid-blocks-783426-and-784121/>).
+Floresta added it in getfloresta/Floresta#1300.
+
+## `tests/unit/chainstate/_data/floresta/spent_utxos.zst`
+
+```text
+repo    getfloresta/Floresta
+path    crates/floresta-chain/testdata/invalid_block_783426/spent_utxos.zst
+commit  d3166e832b3b92e71c80137df3f47d9383b31df4  2026-09-09
+blob    305c936792e15ddfe7427fd8e6fc54a57c9763a9
+sha256  2985a5d414a669e6828432e0df3ca89a6bd0beb65aa889f96e49d12d78dddc2b
+pulled  2026-10-14
+behind  0 revisions; that commit is the tip of the path
+```
+
+The outputs that candidate spends, as a zstd-compressed JSON list in the
+order the candidate's inputs spend them. It also lists the outputs earlier
+transactions of the candidate create and later ones spend.
+
+## `tests/unit/chainstate/_data/floresta/LICENSE-MIT`
+
+```text
+repo    getfloresta/Floresta
+path    LICENSE-MIT
+commit  1e1f22177d0d57e863b922167f76fe2316001a9c  2026-03-16
+blob    e7b4e70c90113c6273528025b5b21c58e593e311
+sha256  f0ba1af4e8236d88591450d05c54ac4c39436075f0bf8b8967cba53e5de727a2
+pulled  2026-10-14
+behind  0 revisions; that commit is the tip of the path
+```
+
+Floresta's MIT licence, one of the two its `LICENSE.md` offers, which the two
+files above are distributed under and which travels with them.
