@@ -572,6 +572,18 @@ class Node(threading.Thread):
         # not know genesis yet, never back over a prune.
         if self.block_db.pruned_up_to < 0:
             self.block_db.add_block(self.chain.genesis_block)
+        # Core's `CompleteChainstateInitialization` refuses a start without
+        # `-prune` on blocks it has pruned (`src/node/chainstate.cpp:57`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), in these words.
+        # Core names `-reindex`, which this tree does not offer yet
+        # (btclib-org/btclib-node#1415 adds it), so nothing here can
+        # rebuild the database.
+        if self.block_db.pruned_up_to >= 0 and not self.config.pruned:
+            msg = (
+                "You need to rebuild the database using -reindex to go back "
+                "to unpruned mode.  This will redownload the entire blockchain"
+            )
+            raise ValueError(msg)
         # the two halves of a filter live in different databases -- the
         # block and its reverse patch in one, the index in the other --
         # so catching up is here, where both are built, and before the
