@@ -28,13 +28,14 @@ speaks to a real `bitcoind` instead, which the repository does not ship,
 and every test in it skips itself without one.
 
 `tests/` root holds what neither of those is the subject of: a script
-under `.github/scripts/` (`check_core_citation_pin_test.py` and the
-release-wait siblings), the corpus and property layer over `fuzz/`'s own
-harnesses (`fuzz_corpus_test.py`, `property_test.py`), or a rule or fact
-recorded across files no one directory owns, such as
-`interpreters_test.py`'s reading of `pyproject.toml`, `.python-version`
-and every workflow at once, and `pragma_test.py`'s reading of every
-tracked `.py` file for `pyproject.toml`'s own pragma-reason rule.
+under `.github/scripts/` (`check_core_citation_pin_test.py`,
+`check_vendored_pin_test.py` and the release-wait siblings), the corpus
+and property layer over `fuzz/`'s own harnesses (`fuzz_corpus_test.py`,
+`property_test.py`), or a rule or fact recorded across files no one
+directory owns, such as `interpreters_test.py`'s reading of
+`pyproject.toml`, `.python-version` and every workflow at once, and
+`pragma_test.py`'s reading of every tracked `.py` file for
+`pyproject.toml`'s own pragma-reason rule.
 `pyproject.toml`'s `testpaths` names each of those individually, beside
 the three directories, so a bare run is the whole suite for that reason
 as well as because the three directories are each in it.

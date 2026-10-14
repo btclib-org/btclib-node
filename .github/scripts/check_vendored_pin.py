@@ -39,6 +39,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -57,6 +58,12 @@ _HEADING = re.compile(r"^## `(.+)`$", re.MULTILINE)
 # resolved, which is the decision neither this script nor the workflow
 # it runs in gets to make
 _FIELD = re.compile(r"^(repo|path|commit|blob|ref)\s+(\S+)", re.MULTILINE)
+
+# a `gh api` call on public data failed once and passed on a re-run of
+# the same commit (btclib-org/btclib-node#1934), so a failed call is
+# tried again a few times before it fails the check
+_ATTEMPTS = 3
+_PAUSE_SECONDS = 5
 
 # argv[0] plus the README path -- not a choice of anybody's
 _ARGV = 2
@@ -102,11 +109,31 @@ def _entries(readme: str) -> list[Entry]:
     return entries
 
 
-def _run(*args: str) -> str:
-    """Run a read-only command and return its stripped stdout."""
-    result = subprocess.run(  # noqa: S603
-        args, capture_output=True, check=True, encoding="utf-8"
+def _once(args: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
+    """Run a read-only command once, whatever its exit status."""
+    return subprocess.run(  # noqa: S603
+        args, capture_output=True, check=False, encoding="utf-8"
     )
+
+
+def _run(*args: str) -> str:
+    """Run a read-only command and return its stripped stdout.
+
+    A failed command is run again, `_ATTEMPTS` times in all. The last
+    failure exits with the command and its stderr, which a
+    `CalledProcessError` traceback does not carry.
+    """
+    result = _once(args)
+    for _ in range(_ATTEMPTS - 1):
+        if result.returncode == 0:
+            break
+        time.sleep(_PAUSE_SECONDS)
+        result = _once(args)
+    if result.returncode != 0:
+        sys.exit(
+            f"{' '.join(args)} failed {_ATTEMPTS} times, last exit status"
+            f" {result.returncode}: {result.stderr.strip()}"
+        )
     return result.stdout.strip()
 
 
