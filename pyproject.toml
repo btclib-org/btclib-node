@@ -709,6 +709,7 @@ testpaths = [
     "tests/property_test.py",
     "tests/release_digests_test.py",
     "tests/sdist_dotted_names_test.py",
+    "tests/secret_free_test.py",
     "tests/unit",
     "tests/functional",
     "tests/integration",

@@ -347,7 +347,8 @@ not a file**, and `REPOSITORY.md` reads it back from the endpoint rather
 than restating it here. Read that file before assuming a red run stops
 anything.
 
-Everything else reports. `codeql.yml` follows a value from a peer's
+Everything else reports. `api-break.yml` labels a pull request that
+breaks the public API and gates nothing. `codeql.yml` follows a value from a peer's
 message or an RPC request body to where it is used, which no hook here
 does. `os-macos.yml` runs the suite on the one platform
 `pyproject.toml` classifies that the gate does not run, and its header

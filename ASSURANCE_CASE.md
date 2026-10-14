@@ -368,7 +368,8 @@ and what counters each.
   log line or an `assert` message prints no secret: section 7's *A
   refusal carries no secret* in btclib-org/.github's README.md has the
   rule, and `tests/secret_free/__init__.py`'s `assert_secret_free` is the
-  helper a test of it calls. No test here calls it yet:
+  helper a test of it calls. Its own self-test is the only caller; no test of a
+  refusal here calls it yet:
   btclib-org/btclib-node#1908 owes them, with the fix to the one refusal
   known to quote a header line.
 - **Type confusion (CWE-843).** mypy runs with `strict = true`
