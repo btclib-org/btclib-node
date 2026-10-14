@@ -120,12 +120,15 @@ def _fetch_and_clear_signet_section(script: bytes) -> tuple[bytes, bytes | None]
     walks `script` op by op, rebuilding it unchanged except for the
     first push whose data both starts with `_SIGNET_HEADER` and carries
     more than just it -- trimmed to the header alone, its own remainder
-    returned as the solution. Every push is re-emitted through
+    returned as the solution. Every non-empty push is re-emitted through
     `serialize`, Core's own `CScript::operator<<`, which always writes
     the minimal push encoding regardless of how the original was
     encoded -- a non-minimal push elsewhere in the script comes back
     minimal, matching Core's own rebuild rather than a byte-for-byte
-    copy of it. `(script, None)` where nothing matches, BIP325's own
+    copy of it. An empty push (`OP_PUSHDATA1 0`, `OP_PUSHDATA2 0`) and
+    every other op code is re-emitted as its opcode byte alone, Core's
+    `replacement << opcode`, so the length bytes of an empty push are
+    dropped. `(script, None)` where nothing matches, BIP325's own
     licence for the trivial `OP_TRUE` challenge: nothing to sign is what
     an empty solution already is.
     """
@@ -145,7 +148,7 @@ def _fetch_and_clear_signet_section(script: bytes) -> tuple[bytes, bytes | None]
                 found = True
             out += serialize([data])
         else:
-            out += script[start:stop]
+            out.append(op_code)
     if not found:
         return script, None
     return bytes(out), solution

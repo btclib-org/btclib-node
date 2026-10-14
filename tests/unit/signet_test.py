@@ -18,7 +18,11 @@ from btclib.block import Block
 
 from btclib_node.chains import SigNet
 from btclib_node.exceptions import MisbehavingError
-from btclib_node.signet import SIGNET_CHALLENGE, assert_valid_solution
+from btclib_node.signet import (
+    SIGNET_CHALLENGE,
+    _fetch_and_clear_signet_section,
+    assert_valid_solution,
+)
 
 # signet_blocks, feature_signet.py, at bitcoin/bitcoin@9be056a8a7 (v31.1)
 _SIGNET_BLOCKS = [
@@ -210,3 +214,23 @@ def test_a_solution_with_a_byte_past_the_witness_stack_is_refused() -> None:
     )
     with pytest.raises(MisbehavingError, match="bad-signet-blksig"):
         assert_valid_solution(block, SigNet())
+
+
+@pytest.mark.parametrize(
+    ("empty_push", "opcode"),
+    [(b"\x4c\x00", b"\x4c"), (b"\x4d\x00\x00", b"\x4d")],
+)
+def test_an_empty_push_is_rebuilt_as_its_opcode_byte_alone(
+    empty_push: bytes, opcode: bytes
+) -> None:
+    """An empty OP_PUSHDATA1 or OP_PUSHDATA2 loses its length bytes.
+
+    `FetchAndClearCommitmentSection` (`src/signet.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) writes `replacement <<
+    opcode` for a push of no data, and a bare opcode is one byte. The
+    signet section after it makes the script a match, so it is rebuilt.
+    """
+    section = b"\x05\xec\xc7\xda\xa2\x01"  # header and one solution byte
+    stripped, solution = _fetch_and_clear_signet_section(b"\x51" + empty_push + section)
+    assert stripped == b"\x51" + opcode + b"\x04\xec\xc7\xda\xa2"
+    assert solution == b"\x01"
