@@ -108,17 +108,38 @@ class Bitcoind:
             cookie_path=cookie_path,
             transport=self._transport,
         )
+        # the default transport sends `Connection: close`, one connection
+        # per call
+        self._one_shot_client = BitcoinCoreRpcClient(
+            f"http://127.0.0.1:{rpc_port}", cookie_path=cookie_path
+        )
 
-    def rpc(self, method: str, params: list[object] | None = None) -> object:
+    def rpc(
+        self,
+        method: str,
+        params: list[object] | None = None,
+        *,
+        own_connection: bool = False,
+    ) -> object:
         """Call `method` over bitcoind's JSON-RPC, and return its result.
 
         A call that got no answer -- a timeout, a refused connection --
         raises the client's own `FetchError`, with the end of bitcoind's
         `debug.log` added as a note, which pytest prints under the error.
         An `RpcError` is an answer, and carries none.
+
+        `own_connection` sends the call on a connection opened for it and
+        closed after it, instead of the one kept across calls. A request
+        of megabytes wants it: on the GitHub runner (Linux 6.17), a kept
+        connection carrying one now and then stalled for the whole
+        30 s timeout. bitcoind's end advertised a receive window of 2048
+        octets with nothing queued to read on it (`ss -m` showed a
+        receive buffer of 1239), and a new connection to the same
+        daemon was answered at once (btclib-org/btclib-node#1936).
         """
+        client = self._one_shot_client if own_connection else self._client
         try:
-            return self._client.call(method, params)
+            return client.call(method, params)
         except RpcError:
             raise
         except FetchError as exc:
