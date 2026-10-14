@@ -9,7 +9,6 @@ does -- so the chains here are built unsolved, which is what lets them
 be as long as Core's own test chains.
 """
 
-import tracemalloc
 from dataclasses import FrozenInstanceError, replace
 from datetime import timedelta
 from types import SimpleNamespace
@@ -25,7 +24,6 @@ from btclib_node.chains import HeadersSyncParams, RegTest
 from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.block_index import calculate_work
 from btclib_node.log import Logger
-from btclib_node.p2p import headers_sync
 from btclib_node.p2p.headers_sync import (
     ChainStart,
     HeadersSyncState,
@@ -865,35 +863,24 @@ def test_the_bit_queue_gives_back_what_it_took_in_order() -> None:
 def test_the_redownload_buffer_holds_headers_compressed() -> None:
     """The buffer holds a `bytes` per 48-byte header, not a `BlockHeader`.
 
-    Measured with `tracemalloc` around the buffering of a redownload held
-    short of both the buffer's size and the target: a `BlockHeader` per
-    entry would cost several times the bound here. Only blocks allocated
-    under a `headers_sync.py` frame count, so code outside that file does
-    not.
+    Measured on the buffer itself, after the buffering of a redownload held
+    short of both the buffer's size and the target: each entry is a `bytes`
+    of 48 bytes. `tracemalloc` is not used, since it counts the allocations
+    of every thread in the process.
+
+    It checks the buffer's entries, not other per-header state the sync
+    object might hold beside it.
     """
     buffered = 2_000
     chain = unsolved_chain(buffered + 10)
     sync = redownloading(buffered + 11, chain, buffer=buffered)
-    only_this_module = [
-        tracemalloc.Filter(
-            inclusive=True, filename_pattern=headers_sync.__file__, all_frames=True
-        )
-    ]
-
-    def held() -> int:
-        snapshot = tracemalloc.take_snapshot().filter_traces(only_this_module)
-        return sum(stat.size for stat in snapshot.statistics("filename"))
-
-    tracemalloc.start(25)
-    try:
-        before = held()
-        result = sync.process_next_headers(chain[:buffered], full_headers_message=True)
-        grown = held() - before
-    finally:
-        tracemalloc.stop()
+    result = sync.process_next_headers(chain[:buffered], full_headers_message=True)
     assert not result.pow_validated_headers
     assert len(sync._redownloaded_headers) == buffered
-    assert grown < 128 * buffered
+    assert all(
+        type(entry) is bytes and len(entry) == 48
+        for entry in sync._redownloaded_headers
+    )
 
 
 def test_a_commitment_offset_past_256_is_kept_and_checked() -> None:
