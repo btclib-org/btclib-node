@@ -47,7 +47,7 @@ jobs:
   api-break:
     permissions:
       contents: read
-      pull-requests: write
+      pull-requests: write # the label; read-only on a fork
     uses: btclib-org/.github/.github/workflows/reusable-api-break.yml@main
     with:
       package: btclib_node
