@@ -304,14 +304,14 @@ harness = [
     "pytest-timeout>=2.4.0",
     # shuffles every run and prints the seed, section 7's default;
     # tests/README.md says what pytest-order above still holds under it.
-    "pytest-randomly>=4.1.0",
+    "pytest-randomly>=5.0.0",
     # section 7's named shape for the property layer, and a pytest
     # plugin of its own: it registers the `hypothesis` mark and the
     # --hypothesis-* options, and tests/conftest.py registers the
     # profiles. tests/property_test.py is what draws with it, and
     # tests/README.md is where the choice of it over hand-rolled
     # properties is argued (btclib-org/btclib-node#742).
-    "hypothesis>=6.140.3",
+    "hypothesis>=6.168.0",
     # `addopts` below passes --cov, so the plugin that reads it is the
     # runner's. No "toml" extra: pytest-cov absorbed it and warns on the
     # name now. coverage is declared beside it so that uv.lock pins it
@@ -722,6 +722,10 @@ testpaths = [
 # wider than pytest's own `test` prefix. Restating either is a second
 # place for a fact pytest already states, and the second one to fall out
 # of step with the tree.
+#
+# `--dist` is xdist's default, `load`: `worksteal` is no faster on
+# `test.yml`'s ubuntu-latest and windows-latest cells, run to run
+# (btclib-org/btclib-node#1942).
 addopts = "-ra --cov --durations=8 -n auto --strict-config --strict-markers"
 # No `markers = [...]` table needed beside `--strict-markers`: the only
 # markers this suite uses are `pytest.mark.parametrize` (pytest's own)
