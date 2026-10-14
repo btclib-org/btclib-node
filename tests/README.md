@@ -14,9 +14,9 @@ taken whole rather than one file of it -- `unit/all_test.py`'s `__all__`
 convention, `unit/docs_test.py`'s documentation convention -- or the
 suite's own machinery: `tests/__init__.py`, `conftest.py`, or the pytest
 configuration it runs under, which is what `unit/helpers_test.py`,
-`unit/coverage_floor_test.py`, `unit/harness_test.py` and
-`unit/thread_exception_origin_test.py` each read, and a declaration this
-file keeps about the suite itself, which
+`unit/coverage_floor_test.py`, `unit/harness_test.py`,
+`unit/slow_test.py` and `unit/thread_exception_origin_test.py` each
+read, and a declaration this file keeps about the suite itself, which
 `unit/conventions_test.py` reads (a module named without a leading
 `tests/` anywhere in this file is resolved against `tests/`, `unit/`
 marking one under `tests/unit/`). `tests/functional/` and
@@ -25,7 +25,8 @@ apart by what each needs:
 `functional/` starts a `Node` itself and speaks to it over its p2p or RPC
 socket, needing nothing the repository does not ship; `integration/`
 speaks to a real `bitcoind` instead, which the repository does not ship,
-and every test in it skips itself without one.
+and every test in it skips itself without one. `slow/` holds what a node
+can be tested with but not within every run (*Slow tests*).
 
 `tests/` root holds what neither of those is the subject of: a script
 under `.github/scripts/` (`check_core_citation_pin_test.py` and the
@@ -62,6 +63,26 @@ here being the statement section 9 refuses.
 Not tested here: the copyright header; the import graph;
 the changelog; the build system; the calling convention;
 input validation; the suite opens no socket.
+
+## Slow tests
+
+A test too slow for every run lives in `slow/`, carries
+`pytest.mark.slow`, and is skipped unless the run is given `--run-slow`.
+`conftest.py` holds the option and the skip; `pyproject.toml` registers
+the marker, so `--strict-markers` accepts it.
+
+The default run keeps its coverage floor over the code it runs, so a slow
+test is never the only one covering a line of `src/`. `slow/` is left out
+of the ratchet as `integration/` is, a test body that is skipped being an
+uncovered line. The run that executes the tier passes `--no-cov`: it
+selects a subset, and the floor is a claim about the whole suite.
+
+`pyproject.toml`'s `timeout` bounds every test, a slow one included. A test
+that needs longer sets its own with `pytest.mark.timeout`.
+
+`slow.yml` runs the tier weekly and on demand. It is not a required check.
+`CONTRIBUTING.md`'s *The environment and the gates* has the command for a
+local run.
 
 ## Order
 

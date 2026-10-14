@@ -318,6 +318,13 @@ over the whole suite is a claim about, so it is not held to one —
 narrowing a run is added. `--cov-fail-under` asked for explicitly still
 applies.
 
+The tests marked `slow` are skipped by a run without `--run-slow`, and
+`tests/README.md`'s *Slow tests* says why. To run them, and only them:
+
+```shell
+uv run pytest -m slow --run-slow --no-cov
+```
+
 Every test is bounded, too. A node that stops answering fails the test
 that built it, named, with a stack of every thread it left running,
 instead of holding the run open until something outside it gives up. The
@@ -347,7 +354,8 @@ not a file**, and `REPOSITORY.md` reads it back from the endpoint rather
 than restating it here. Read that file before assuming a red run stops
 anything.
 
-Everything else reports. `codeql.yml` follows a value from a peer's
+Everything else reports. `slow.yml` runs the tests marked `slow`, which a
+bare run skips, weekly and on demand. `codeql.yml` follows a value from a peer's
 message or an RPC request body to where it is used, which no hook here
 does. `os-macos.yml` runs the suite on the one platform
 `pyproject.toml` classifies that the gate does not run, and its header

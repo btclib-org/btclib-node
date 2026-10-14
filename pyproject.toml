@@ -707,6 +707,7 @@ testpaths = [
     "tests/unit",
     "tests/functional",
     "tests/integration",
+    "tests/slow",
 ]
 # No `python_files`/`python_functions` here: every test module under
 # tests/ is named `*_test.py`, which pytest's own default `python_files`
@@ -715,17 +716,20 @@ testpaths = [
 # place for a fact pytest already states, and the second one to fall out
 # of step with the tree.
 addopts = "-ra --cov --durations=8 -n auto --strict-config --strict-markers"
-# No `markers = [...]` table needed beside `--strict-markers`: the only
-# markers this suite uses are `pytest.mark.parametrize` (pytest's own)
-# and `pytest.mark.order` (pytest-order, which registers its own), and
-# `--strict-markers` reports nothing unregistered against this tree --
+# `slow` is the one marker this suite registers, so that
+# `--strict-markers` accepts it and refuses a misspelling of it.
+# `pytest.mark.parametrize` is pytest's own and `pytest.mark.order`
+# is pytest-order's, which registers it; `--strict-markers` reports
+# nothing else unregistered against this tree --
 #
 #   uv run pytest --collect-only -q --strict-config --strict-markers
 #
-# -- so this is a ratchet at zero cost, not a climb, the same shape as
-# `xfail_strict` below.
+# `tests/README.md`'s *Slow tests* is what the marker means.
+markers = [
+    "slow: too slow for every run; skipped unless --run-slow is given",
+]
 # This suite has no `xfail` today (`grep -rn xfail tests/` matches only
-# a comment in tests/_data/README.md, not a call), so this too costs
+# a comment in tests/_data/README.md, not a call), so turning it on costs
 # nothing to turn on now rather than when the first one is written and
 # nobody notices it stopped meaning anything.
 xfail_strict = true
@@ -875,7 +879,9 @@ branch = true
 # directory being one `testpaths` names.
 # `integration-bitcoind.yml` is what actually runs it, with its own
 # unrelated guard against reporting a skip as a pass.
-omit = ["*/site-packages/*", "tests/integration/*"]
+# `tests/slow/*` is left out for the same reason: a bare run skips every
+# test there (`tests/README.md`'s *Slow tests*), and `slow.yml` runs them.
+omit = ["*/site-packages/*", "tests/integration/*", "tests/slow/*"]
 
 [tool.coverage.report]
 show_missing = true
