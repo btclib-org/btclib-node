@@ -34,6 +34,7 @@ source: bitcoin/bitcoin@9be056a8a7, the v31.1 tag, hands the socket to
 
 import asyncio
 import contextlib
+import dataclasses
 import ipaddress
 import json
 import re
@@ -591,7 +592,7 @@ class _FieldReader:
             key, colon, value = text.partition(b":")
             value = value.lstrip(b" ").rstrip(b" \t")
             if not colon or b"\r" in key or _BARE_CR.search(value):
-                detail = f"header field {text!r}"
+                detail = f"header field {len(self.fields)} of {len(text)} octets"
                 raise MalformedRequestHeadError(detail)
             self.fields.append((key, value))
         if self.size + len(self.lines.buffer) > MAX_HEADER_BYTES:
@@ -625,14 +626,18 @@ class RequestHead:
     is then what it knows of the request, which decides whether a
     `CONNECT` keeps its connection, the next request read from the
     line after the one refused.
+
+    `raw` and `fields` hold the `Authorization` field, so `repr` leaves
+    them out (section 7 of the btclib-org standard, *A refusal carries
+    no secret*).
     """
 
-    raw: bytes
+    raw: bytes = dataclasses.field(repr=False)
     method: bytes
     target: bytes
     version: tuple[int, int] | None
     proxy: bool
-    fields: tuple[tuple[bytes, bytes], ...]
+    fields: tuple[tuple[bytes, bytes], ...] = dataclasses.field(repr=False)
     size: int
     chunked: bool
     length: int
