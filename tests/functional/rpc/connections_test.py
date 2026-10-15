@@ -96,7 +96,7 @@ def test_one_session_transport_keeps_one_socket_across_calls(rpc_node: Node) -> 
     (issue #640), so the same `SessionTransport` instance finds its
     pooled connection still open on every later call rather than paying
     a fresh accept: `RpcManager.last_connection_id` is incremented once
-    per accepted socket (`rpc/manager.py`), so it stays at the one value
+    per socket `server` takes (`rpc/manager.py`), so it stays at the one value
     the first call gave it.
     """
     node = rpc_node

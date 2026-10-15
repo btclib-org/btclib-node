@@ -623,26 +623,6 @@ def test_an_rpcallowip_value_naming_no_subnet_stops_the_listener(
     assert not cookie_path(manager.node.config.data_dir).exists()
 
 
-@pytest.mark.parametrize(
-    ("peer", "allowed"),
-    [(("127.0.0.1", 1), True), (("10.0.0.1", 1), False), (OSError(), False)],
-    ids=["loopback", "elsewhere", "gone"],
-)
-def test_client_allowed_reads_the_peer_the_socket_names(
-    a_manager: AManagerFactory, peer: tuple[str, int] | OSError, *, allowed: bool
-) -> None:
-    """ISS 1268: `getpeername`'s host, and a socket with no peer refused."""
-
-    def getpeername() -> tuple[str, int]:
-        if isinstance(peer, OSError):
-            raise peer
-        return peer
-
-    manager = a_manager(get_random_port())
-    client = cast("socket.socket", SimpleNamespace(getpeername=getpeername))
-    assert manager.client_allowed(client) is allowed
-
-
 def test_a_body_that_is_not_json_answers_parse_error_and_forgets_the_client(
     a_manager: AManagerFactory,
 ) -> None:
@@ -701,13 +681,8 @@ def test_stop_finishes_a_parse_error_reply_scheduled_right_before_it(
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so it arrives whole,
     and the connection it kept alive is closed after it
     (btclib-org/btclib-node#1539).
-
-    `client_allowed` answers yes: a socket pair's peer has no IP address
-    for it to read, and on macOS, whose socket pair is a Unix one, `run`
-    otherwise fails there, before the parse error.
     """
     manager = a_manager(get_random_port())
-    manager.client_allowed = lambda client: True  # type: ignore[method-assign]
     loop = manager.loop
     ours, theirs = socket.socketpair()
     try:
@@ -1504,8 +1479,6 @@ def test_stop_finishes_a_401_asleep_in_its_failed_attempt_delay(
     manager = a_manager(get_random_port())
     manager.start()
     wait_until_listening(manager)
-    # a socket pair's peer has no IP address for `client_allowed` to read
-    manager.client_allowed = lambda client: True  # type: ignore[method-assign]
     holding = threading.Event()
     release = threading.Event()
 
@@ -1726,6 +1699,110 @@ def test_server_holds_a_queued_client_until_there_is_room(
             theirs.close()
         manager.stop()
         manager.join(timeout=10)
+
+
+_REJECTED = "Connection from %s rejected: Client network is not allowed HTTP access"
+
+
+def closed_at_once(client: socket.socket) -> bool:
+    """Return whether the manager closed `client` without a reply."""
+    client.settimeout(10)
+    return client.recv(1) == b""
+
+
+def test_a_refused_source_is_closed_as_it_is_accepted(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1963: a source `client_allowed` refuses holds no place.
+
+    With one place and loopback refused, each client is closed before
+    it sends anything and none gets a `RpcConnection`. Once loopback is
+    allowed again, a client's request is queued as any other's.
+    """
+    debugged: list[tuple[Any, ...]] = []
+    port = get_random_port()
+    manager = a_manager(port)
+    monkeypatch.setattr(manager.logger, "log_debug", lambda *a: debugged.append(a))
+    manager.max_connections = 1
+    manager.start()
+    try:
+        wait_until_listening(manager)
+        loopback = manager.allowed_subnets
+        manager.allowed_subnets = ()
+        for _ in range(3):
+            with socket.create_connection(("127.0.0.1", port)) as client:
+                assert closed_at_once(client)
+                where = f"127.0.0.1:{client.getsockname()[1]}"
+            assert debugged[-1] == ("http", _REJECTED, where)
+            assert not manager.connections
+        manager.allowed_subnets = loopback
+        with socket.create_connection(("127.0.0.1", port)) as client:
+            client.sendall(as_http(REQUEST))
+            wait_until(lambda: manager.messages)
+    finally:
+        manager.stop()
+        manager.join(timeout=10)
+
+
+@pytest.mark.parametrize(
+    ("sockaddr", "logged"),
+    [
+        (("10.0.0.1", 45000), [("http", _REJECTED, "10.0.0.1:45000")]),
+        (
+            None,
+            [("http", "Unknown socket family"), ("http", _REJECTED, "[::]:0")],
+        ),
+    ],
+    ids=["elsewhere", "no-address"],
+)
+def test_accept_loop_closes_a_refused_source_and_queues_the_next(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    sockaddr: tuple[str, int] | None,
+    logged: list[tuple[str, ...]],
+) -> None:
+    """ISS 1963: a refused socket is closed and not queued; the next one is.
+
+    `accept` answers no address for a peer that reset before it, as
+    macOS answers an IPv6 one; Core checks the unset `[::]:0` instead.
+    """
+    manager = a_manager(get_random_port())
+    loop = manager.loop
+    accepted: asyncio.Queue[Any] = asyncio.Queue()
+    debugged: list[tuple[Any, ...]] = []
+    monkeypatch.setattr(manager.logger, "log_debug", lambda *a: debugged.append(a))
+    pairs = [socket.socketpair() for _ in range(2)]
+    refused, allowed = pairs[0][0], pairs[1][0]
+    backlog = [(allowed, ("127.0.0.1", 45001)), (refused, sockaddr)]
+
+    async def accept(
+        sock: socket.socket,
+    ) -> tuple[socket.socket, tuple[str, int] | None]:
+        if backlog:
+            return backlog.pop()
+        # an empty backlog: the accept waits
+        waiting: asyncio.Future[tuple[socket.socket, tuple[str, int] | None]] = (
+            asyncio.get_running_loop().create_future()
+        )
+        return await waiting
+
+    monkeypatch.setattr(loop, "sock_accept", accept)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+        task = loop.create_task(manager._accept_loop(server_socket, accepted))
+        try:
+            queued = loop.run_until_complete(asyncio.wait_for(accepted.get(), 60))
+            refused_closed = refused.fileno() == -1
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                loop.run_until_complete(task)
+            for ours, theirs in pairs:
+                ours.close()
+                theirs.close()
+    assert queued == (allowed, ("127.0.0.1", 45001))
+    assert accepted.empty()
+    assert refused_closed
+    assert debugged == logged
 
 
 def test_accept_loop_out_of_descriptors_logs_each_failure_and_waits(

@@ -11,8 +11,7 @@ a `Content-Length` Core's listener cannot frame, and a chunked body it
 cannot read, with 400 or 413 (`_HeadReader`, `_ChunkedReader`), answers
 an `Expect` it does not meet with 417 and `100-continue` with an interim
 `100 Continue`, answers `manager.interrupted` with 503 once
-`RpcManager.interrupt` has set it (issue #1515), answers a source
-`-rpcallowip` does not name with a bare 403, refuses a method or a path
+`RpcManager.interrupt` has set it (issue #1515), refuses a method or a path
 Core's listener refuses before Core checks a credential (`_refusal`),
 answers a request whose `Authorization` header `rpc.auth.RpcAuth` does
 not accept with 401, and decodes the body of one it does accept, which
@@ -54,7 +53,6 @@ from btclib_node.exceptions import (
 from btclib_node.p2p.address import ip_and_port
 from btclib_node.rpc.auth import (
     FAILED_ATTEMPT_DELAY,
-    FORBIDDEN,
     WWW_AUTHENTICATE,
     Refusal,
 )
@@ -916,7 +914,7 @@ def parse_request_head(data: bytes) -> RequestHead:
 class RpcConnection:
     """One accepted RPC socket, from the header read through the reply.
 
-    `RpcManager.server` builds one per accepted client, on this
+    `RpcManager.server` builds one per client `_accept_loop` queues, on this
     manager's own thread; `run` below is scheduled on the same loop and
     reads the request off `client`, queuing it onto `manager.messages`
     for `rpc.main.handle_rpc` on `Node`'s own thread to answer, through
@@ -1095,13 +1093,12 @@ class RpcConnection:
         header section `_HeadReader` refuses, an `Expect` it does not
         meet, or a chunked body `_ChunkedReader` refuses, is answered
         400, 417 or 413 by `_send_framing_error`, as soon as it is
-        refused; a method outside `_LIBEVENT_METHODS` is answered 501,
-        from any source; `manager.interrupted` is answered 503, by
+        refused; a method outside `_LIBEVENT_METHODS` is answered
+        501; `manager.interrupted` is answered 503, by
         `_refused_early` ahead of everything below it, or by
         `_send_shutdown_refusal` where it is set only once
         `_refused_early` has let the request through (issue #1515); a
-        source `manager.client_allowed` refuses is answered a
-        bare 403; a method or a target `_refusal` refuses is answered by
+        method or a target `_refusal` refuses is answered by
         `_send_refusal`, whatever the credential; a request whose
         `Authorization` header `manager.auth` does not accept is
         answered 401 by `_send_unauthorized`, its body read off the
@@ -1297,36 +1294,23 @@ class RpcConnection:
         `http_reject_request_cb`, which answers every request that
         reaches it `503` outright. A real `bitcoind` v31.1.0, a `stop`
         RPC asleep in its hidden `wait`, answers `FOO` 501 and a `POST`
-        or a `DELETE` 503, from a source `-rpcallowip` names or not.
-        Then, in `http_request_cb`'s own order (same file, same tag), a
-        source `ClientAllowed` refuses is a bare 403, and a method or a
-        target `_refusal` refuses is answered as it says. Answers
+        or a `DELETE` 503. Then a method or a target `_refusal` refuses
+        is answered as it says. A source `-rpcallowip` does not name
+        never reaches this: `RpcManager._accept_loop` closes it. Answers
         whether a reply was scheduled.
         """
-        if head.method in _LIBEVENT_METHODS:
-            if self.manager.interrupted.is_set():
-                self.manager.logger.log_debug(
-                    "http", "Rejecting request while shutting down"
+        if head.method in _LIBEVENT_METHODS and self.manager.interrupted.is_set():
+            self.manager.logger.log_debug(
+                "http", "Rejecting request while shutting down"
+            )
+            self._refusal_reply = self._start_reply(
+                self._send_refusal(
+                    _SERVICE_UNAVAILABLE,
+                    _error_page(_SERVICE_UNAVAILABLE),
+                    page=True,
                 )
-                self._refusal_reply = self._start_reply(
-                    self._send_refusal(
-                        _SERVICE_UNAVAILABLE,
-                        _error_page(_SERVICE_UNAVAILABLE),
-                        page=True,
-                    )
-                )
-                return True
-            if not self.manager.client_allowed(self.client):
-                self.manager.logger.log_debug(
-                    "http",
-                    "HTTP request from %s rejected: Client network is not "
-                    "allowed RPC access",
-                    self._peer_address(),
-                )
-                self._refusal_reply = self._start_reply(
-                    self._send_refusal(FORBIDDEN, "")
-                )
-                return True
+            )
+            return True
         refusal = _refusal(head.method, head.target)
         if refusal is None:
             return False

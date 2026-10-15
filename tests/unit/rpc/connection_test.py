@@ -62,18 +62,13 @@ BODY = b'{"jsonrpc":"2.0","id":"x","method":"getbestblockhash"}'
 
 
 def fake_manager(connections: dict[int, Any]) -> SimpleNamespace:
-    """Stand in for the `RpcManager` a connection reads, accepting `RPCAUTH`.
-
-    Every source is allowed: a socketpair's peer has no IP address for
-    `RpcManager.client_allowed` to read.
-    """
+    """Stand in for the `RpcManager` a connection reads, accepting `RPCAUTH`."""
     # what `RpcManager.track_reply` is handed, `(coroutine, due)` pairs
     # in call order, and what `extend_reply_deadline` is
     tracked: list[tuple[Any, float]] = []
     deadlines: list[float] = []
     return SimpleNamespace(
         auth=RpcAuth((RpcAuthEntry.parse(RPCAUTH),)),
-        client_allowed=lambda client: True,
         logger=Logger(debug=True),
         messages=[],
         connections=connections,
@@ -979,8 +974,6 @@ def test_send_and_close_after_returns_at_once_and_delays_the_write() -> None:
 def refused(
     data: bytes,
     *,
-    allowed: bool = True,
-    debugs: list[tuple[Any, ...]] | None = None,
     interrupted: bool = False,
     prepare: Callable[[SimpleNamespace], None] | None = None,
 ) -> tuple[bytes, float, bool, list[Any], list[tuple[Any, ...]]]:
@@ -989,14 +982,12 @@ def refused(
     Returns the reply, up to the end of the body its own
     `Content-Length` counts, the seconds from `run` starting to the
     reply arriving, whether the connection closed after it, what was
-    queued for `handle_rpc`, and every warning logged. `allowed` is
-    what `client_allowed` answers, `debugs` takes every debug line, and
-    `interrupted` sets `manager.interrupted` before `run` reads it
+    queued for `handle_rpc`, and every warning logged. `interrupted`
+    sets `manager.interrupted` before `run` reads it
     (btclib-org/btclib-node#1515), and `prepare` is handed the manager
     last, before `run` starts.
     """
     warnings: list[tuple[Any, ...]] = []
-    debug_lines: list[tuple[Any, ...]] = [] if debugs is None else debugs
 
     def whole(reply: bytes) -> bool:
         """Return whether `reply` holds its header section and its body."""
@@ -1013,9 +1004,8 @@ def refused(
         manager = fake_manager(connections={0: None})
         manager.logger = SimpleNamespace(
             warning=lambda *args: warnings.append(args),
-            log_debug=lambda *args: debug_lines.append(args),
+            log_debug=lambda *_args: None,
         )
-        manager.client_allowed = lambda client: allowed
         if interrupted:
             manager.interrupted.set()
         if prepare is not None:
@@ -1067,30 +1057,22 @@ _WRONG_CREDENTIAL = (
 
 
 @pytest.mark.parametrize(
-    ("data", "status", "allowed", "prepare"),
+    ("data", "status", "prepare"),
     [
-        (request(b"Content-Length: 0\r\n", b"", auth=b""), b"401", True, None),
+        (request(b"Content-Length: 0\r\n", b"", auth=b""), b"401", None),
         (
             request(b"Content-Length: 0\r\n", b"", auth=_WRONG_CREDENTIAL),
             b"401",
-            True,
             None,
         ),
-        (with_length(), b"403", False, None),
-        (
-            request(b"Content-Length: 0\r\n", b"", target=b"/rest/"),
-            b"404",
-            True,
-            None,
-        ),
-        (request(b"Content-Length: 0\r\n", b"", method=b"GET"), b"405", True, None),
-        (request(b"Content-Length: 3\r\n", b"bad"), b"500", True, None),
-        (with_length(), b"403", True, refusing_every_method),
+        (request(b"Content-Length: 0\r\n", b"", target=b"/rest/"), b"404", None),
+        (request(b"Content-Length: 0\r\n", b"", method=b"GET"), b"405", None),
+        (request(b"Content-Length: 3\r\n", b"bad"), b"500", None),
+        (with_length(), b"403", refusing_every_method),
     ],
     ids=[
         "401-no-credential",
         "401-wrong-credential",
-        "403-source",
         "404-target",
         "405-method",
         "500-parse-error",
@@ -1100,8 +1082,6 @@ _WRONG_CREDENTIAL = (
 def test_a_refusal_written_once_shutdown_began_closes_its_connection(
     data: bytes,
     status: bytes,
-    *,
-    allowed: bool,
     prepare: Callable[[SimpleNamespace], None] | None,
 ) -> None:
     """Once shutdown has begun, the loop's own refusal says it closes.
@@ -1113,9 +1093,7 @@ def test_a_refusal_written_once_shutdown_began_closes_its_connection(
     `FAILED_ATTEMPT_DELAY`. Every request here asks for keep-alive
     (btclib-org/btclib-node#1542).
     """
-    reply, _, closed, messages, _ = refused(
-        data, allowed=allowed, prepare=prepare or shutting_down
-    )
+    reply, _, closed, messages, _ = refused(data, prepare=prepare or shutting_down)
     head = reply.partition(b"\r\n\r\n")[0].split(b"\r\n")
     assert head[0].startswith(b"HTTP/1.1 " + status)
     assert b"Connection: close" in head
@@ -1216,123 +1194,27 @@ def test_a_body_that_is_not_json_is_not_parsed_without_a_credential() -> None:
 
 
 @pytest.mark.parametrize(
-    ("method", "auth"),
+    ("method", "status"),
     [
-        (b"POST", RPCAUTH_LINE),
-        (b"POST", b""),
-        (b"GET", b""),
-        (b"HEAD", b""),
-        (b"DELETE", b""),
-    ],
-)
-def test_a_source_rpcallowip_does_not_name_is_refused_403_first(
-    method: bytes, auth: bytes
-) -> None:
-    """ISS 1268: `ClientAllowed` is the first check of `http_request_cb`.
-
-    Measured on bitcoind v31.1.0 with `-rpcbind=0.0.0.0
-    -rpcallowip=127.0.0.1`, from another address of the same machine: a
-    bare 403 for every method libevent passes to that callback, whatever
-    the credential, and the connection kept, each further request refused
-    the same way.
-    """
-    debugs: list[tuple[Any, ...]] = []
-    reply, _, closed, messages, warnings = refused(
-        request(b"Content-Length: %d\r\n" % len(BODY), auth=auth, method=method),
-        allowed=False,
-        debugs=debugs,
-    )
-    assert reply == b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n"
-    assert not closed
-    assert not messages
-    assert not warnings
-    ((category, message, _),) = debugs
-    assert category == "http"
-    assert message == (
-        "HTTP request from %s rejected: Client network is not allowed RPC access"
-    )
-
-
-def test_a_refused_source_s_next_request_is_refused_403_too() -> None:
-    """ISS 1268: the connection kept, the request after it refused the same way.
-
-    Measured on bitcoind v31.1.0, as the test above: a second request on
-    the same connection is a second bare 403.
-    """
-    forbidden = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n"
-    one = request(b"Content-Length: %d\r\n" % len(BODY), auth=RPCAUTH_LINE)
-
-    async def main() -> tuple[bytes, list[Any]]:
-        ours, theirs = socket.socketpair()
-        ours.setblocking(False)
-        theirs.setblocking(False)
-        loop = asyncio.get_running_loop()
-        manager = fake_manager(connections={0: None})
-        manager.logger = SimpleNamespace(
-            warning=lambda *_args: None, log_debug=lambda *_args: None
-        )
-        manager.client_allowed = lambda _client: False
-        conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
-        await loop.sock_sendall(theirs, one + one)
-        await conn.run()
-        reply = b""
-        async with asyncio.timeout(5):
-            while len(reply) < 2 * len(forbidden):
-                reply += await loop.sock_recv(theirs, 4096)
-        theirs.close()
-        ours.close()
-        return reply, manager.messages
-
-    reply, messages = asyncio.run(main())
-    assert reply == forbidden + forbidden
-    assert not messages
-
-
-@pytest.mark.parametrize("method", [b"OPTIONS", b"PATCH", b"TRACE", b"FOO"])
-def test_a_method_libevent_refuses_is_501_from_a_refused_source_too(
-    method: bytes,
-) -> None:
-    """ISS 1268: libevent's `allowed_methods` check runs before `ClientAllowed`.
-
-    Measured on bitcoind v31.1.0 from a source `-rpcallowip` does not
-    name: these four answer 501, as from an allowed one.
-    """
-    debugs: list[tuple[Any, ...]] = []
-    reply, _, closed, messages, _ = refused(
-        request(b"Content-Length: %d\r\n" % len(BODY), auth=b"", method=method),
-        allowed=False,
-        debugs=debugs,
-    )
-    assert reply.startswith(b"HTTP/1.1 501 Not Implemented\r\n")
-    assert closed
-    assert not messages
-    assert not debugs
-
-
-@pytest.mark.parametrize(
-    ("method", "allowed", "status"),
-    [
-        (b"FOO", False, b"501 Not Implemented"),
-        (b"POST", False, b"503 Service Unavailable"),
-        (b"DELETE", True, b"503 Service Unavailable"),
+        (b"FOO", b"501 Not Implemented"),
+        (b"POST", b"503 Service Unavailable"),
+        (b"DELETE", b"503 Service Unavailable"),
     ],
 )
 def test_manager_interrupted_is_503_behind_libevent_s_own_501(
-    method: bytes, *, allowed: bool, status: bytes
+    method: bytes, status: bytes
 ) -> None:
-    """ISS 1515: `interrupted` is answered 503, ahead of 403 but not of 501.
+    """ISS 1515: `interrupted` is answered 503, behind libevent's own 501.
 
     `InterruptHTTPServer` swaps `http_request_cb` for
     `http_reject_request_cb`, which answers `503` to every request that
     reaches it (`src/httpserver.cpp`, at bitcoin/bitcoin@9be056a8a7, the
     v31.1 tag); libevent's own 501 comes before either callback. Measured
     on `bitcoind` v31.1.0, a `stop` RPC asleep in its hidden `wait`:
-    `FOO` is 501 and `POST` 503 from a source `-rpcallowip` does not
-    name, and `DELETE` is 503 from one it does.
+    `FOO` is 501, and `POST` and `DELETE` 503.
     """
     reply, _, closed, messages, _ = refused(
         request(b"Content-Length: %d\r\n" % len(BODY), auth=b"", method=method),
-        allowed=allowed,
         interrupted=True,
     )
     page = error_page(status)
@@ -1349,10 +1231,12 @@ def interrupt(manager: SimpleNamespace) -> None:
     RpcManager.interrupt(cast("RpcManager", manager))
 
 
-def test_an_interrupt_past_the_early_checks_is_refused_as_submit_refuses() -> None:
+def test_an_interrupt_past_the_early_checks_is_refused_as_submit_refuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """ISS 1515: interrupted after `_refused_early` let a request through.
 
-    `client_allowed`, the last check `_refused_early` makes of a `POST`,
+    `_refusal`, the last check `_refused_early` makes of a `POST`,
     interrupts the manager itself, so the request is past the 503
     `http_reject_request_cb` stands for and not yet queued. Core's
     `ThreadPool::Submit` refuses it there, reading `m_interrupt` under
@@ -1362,11 +1246,15 @@ def test_an_interrupt_past_the_early_checks_is_refused_as_submit_refuses() -> No
     """
 
     def interrupting(manager: SimpleNamespace) -> None:
-        def allowed(_client: socket.socket) -> bool:
-            interrupt(manager)
-            return True
+        refusal = connection_module._refusal
 
-        manager.client_allowed = allowed
+        def interrupt_then_refuse(
+            method: bytes, target: bytes
+        ) -> tuple[str, str] | None:
+            interrupt(manager)
+            return refusal(method, target)
+
+        monkeypatch.setattr(connection_module, "_refusal", interrupt_then_refuse)
 
     reply, _, closed, messages, warnings = refused(with_length(), prepare=interrupting)
     body = b"Request rejected during server shutdown"
