@@ -37,7 +37,7 @@ import os
 import re
 import secrets
 import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -173,8 +173,8 @@ class RpcAuthEntry:
     """
 
     user: bytes
-    salt: bytes
-    hmac: bytes
+    salt: bytes = field(repr=False)
+    hmac: bytes = field(repr=False)
 
     @classmethod
     def parse(cls, value: str) -> RpcAuthEntry:

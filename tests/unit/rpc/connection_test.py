@@ -3241,3 +3241,36 @@ def test_a_content_length_at_the_cap_is_read_whatever_is_expected() -> None:
     at_cap = b"Content-Length: %d\r\n" % MAX_BODY_BYTES
     for data in (request(at_cap, b""), expecting(b"100-continue", at_cap)):
         assert parse_request_head(data).length == MAX_BODY_BYTES
+
+
+# issue #1957: section 7 of the btclib-org standard, *A refusal carries no
+# secret*, for the Authorization header a head holds
+
+_CREDENTIAL = "Basic YWxpY2U6WnQ5cUsybVdwN1J0"
+
+
+def assert_free_of_credential(*texts: str) -> None:
+    """Assert that no 12-character piece of `_CREDENTIAL` is in `texts`."""
+    size = 12
+    pieces = [
+        _CREDENTIAL[i : i + size].lower() for i in range(len(_CREDENTIAL) - size + 1)
+    ]
+    for text in texts:
+        for piece in pieces:
+            assert piece not in text.lower()
+
+
+def test_a_head_prints_no_authorization_in_its_repr_or_str() -> None:
+    """`raw` and `fields` hold the header, so neither shows in a repr."""
+    head = head_with(b"Authorization: " + _CREDENTIAL.encode() + b"\r\n")
+    assert head.authorization == _CREDENTIAL
+    assert_free_of_credential(repr(head), str(head))
+
+
+def test_a_refused_header_field_is_named_by_index_and_length() -> None:
+    """A field with no colon is refused by its index, not echoed."""
+    line = b"Authorization " + _CREDENTIAL.encode()
+    with pytest.raises(MalformedRequestHeadError) as refused:
+        head_with(b"Host: x\r\n" + line + b"\r\n")
+    assert_free_of_credential(str(refused.value), repr(refused.value))
+    assert str(refused.value).endswith(f"header field 1 of {len(line)} octets")

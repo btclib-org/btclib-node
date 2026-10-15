@@ -535,3 +535,12 @@ def test_from_config_carries_what_start_refuses(tmp_path: Path) -> None:
     assert auth.rpcauth_invalid
     assert auth.rpcauth_set
     assert not RpcAuth.from_config(Config(chain="regtest")).rpcauth_invalid
+
+
+def test_an_entry_prints_neither_its_salt_nor_its_hmac() -> None:
+    """A salted HMAC confirms a guess at the password, so a repr omits it."""
+    entry = RpcAuthEntry.from_password("alice", "Zt9qK2mWp7Rt")
+    shown = repr(entry) + str(entry)
+    assert entry.salt.decode() not in shown
+    assert entry.hmac.decode() not in shown
+    assert "alice" in shown
