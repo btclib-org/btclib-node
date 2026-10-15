@@ -183,6 +183,7 @@ def test_rebuilds_the_same_tip_utxo_set_and_undo_and_keeps_the_filters(
             for block_hash in filters
         }
         assert node.block_db.rev_patches == {}
+        assert not [n for n in node.block_db.live if n.endswith(".rev")]
         activate_best_chain(node)
         assert _status(node) == NodeStatus.Starting
         assert _state(node) == before

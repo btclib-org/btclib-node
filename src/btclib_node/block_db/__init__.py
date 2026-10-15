@@ -336,12 +336,12 @@ class BlockDB:
     def wipe_undo(self) -> None:
         """Delete every reverse patch, for `-reindex-chainstate`.
 
-        `Chainstate`'s module docstring is where that option is argued: it
-        writes each patch again as it connects its block. `add_rev_block`
-        skips a block that already has a patch, so without the wipe a
-        corrupt patch would survive the rebuild. No patch is then counted
-        in any `.rev` file, and `_sweep_empty_files` unlinks every one but
-        the current file's. Core keeps its undo data; SECURITY.md's *Where
+        The option is argued in `Chainstate`'s module docstring, and writes
+        each patch again as it connects its block. `add_rev_block` skips a
+        block that already has a patch, so without the wipe a corrupt
+        patch would survive the rebuild. No patch is then counted in any
+        `.rev` file, and `_sweep_empty_files` unlinks every one but the
+        current file's. Core keeps its undo data; SECURITY.md's *Where
         this node departs from Bitcoin Core* records the departure
         (btclib-org/btclib-node#1415).
 
