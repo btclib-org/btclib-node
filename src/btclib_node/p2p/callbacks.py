@@ -1889,9 +1889,9 @@ def inv(node: Node, msg: bytes, conn: Connection) -> None:
 
 # The two families `advance_getdata` below dispatches on -- everything
 # else a `getdata` may name (`UNDEFINED`, an unrecognised code) is
-# neither, and is popped off the front of the
-# pending items and otherwise ignored, the same silence `_filter_range`
-# already answers a request it declines with elsewhere in this module.
+# neither, and is popped off the front of the pending items and
+# otherwise ignored, the same silence `_filter_range` already answers a
+# request it declines with elsewhere in this module.
 _GETDATA_TX_TYPES = (
     InventoryType.MSG_TX,
     InventoryType.MSG_WTX,
@@ -2032,12 +2032,8 @@ def _serve_getdata_block(node: Node, conn: Connection, item: Inventory) -> None:
     v32.0rc1, not in v31.1, the release `integration-bitcoind.yml` pins.
     v31.1, at bitcoin/bitcoin@9be056a8a7, refuses every `filterload`
     without `NODE_BLOOM`, so the item finds no bloom filter and gets no
-    answer. It drops the peer where it drops one for any block item:
-    below a pruned node's threshold (`_below_prune_threshold`), on a
-    failed read, and past `-maxuploadtarget`, which is not an option of
-    this node (`permissions.py`). *Following Bitcoin Core* in
-    `CONTRIBUTING.md` lets a peer-refusal rule follow master ahead of a
-    release.
+    answer. *Following Bitcoin Core* in `CONTRIBUTING.md` lets a
+    peer-refusal rule follow master ahead of a release.
     """
     if item.type_code == InventoryType.MSG_FILTERED_BLOCK:
         node.logger.log_debug(
@@ -2114,7 +2110,7 @@ def advance_getdata(node: Node, conn: Connection, items: deque[Inventory]) -> bo
     `_below_prune_threshold`'s own docstring is where a pruned node's
     other answer to a block item -- disconnecting rather than staying
     silent -- is argued against the same function, and
-    `_serve_getdata_block`'s is where a `MSG_FILTERED_BLOCK` is, which
+    `_serve_getdata_block`'s argues why a `MSG_FILTERED_BLOCK`
     disconnects whether or not the block is held.
 
     The misses of a call go in one `notfound`, sent once the call has
