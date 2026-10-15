@@ -4,9 +4,10 @@
 
 """`RpcManager`, the thread listening for JSON-RPC connections.
 
-Runs its own asyncio loop, accepting a `RpcConnection` per accepted
-socket -- one request or several, `connection.RpcConnection`'s own
-docstring has the keep-alive that decides which -- and queuing what
+Runs its own asyncio loop, with a `RpcConnection` per socket
+`_accept_loop` accepts from an allowed source -- one request or
+several, `connection.RpcConnection`'s own docstring has the keep-alive
+that decides which -- and queuing what
 each one parses onto `messages` for `Node`'s own thread to read in
 `rpc.main.handle_rpc`. `listening` is what a caller waits on rather
 than `is_alive()` alone, that flag being true before anything is bound.
@@ -45,6 +46,7 @@ from typing import TYPE_CHECKING, Any, override
 
 from btclib_node.config import split_host_port
 from btclib_node.exceptions import RpcCredentialRefusedError
+from btclib_node.p2p.address import ip_and_port
 from btclib_node.p2p.manager import network_error_string
 from btclib_node.rpc.allow import allowed_subnets, client_allowed
 from btclib_node.rpc.auth import RpcAuth
@@ -574,14 +576,6 @@ class RpcManager(threading.Thread):
         self.ever_listened.set()
         return self._server_sockets
 
-    def client_allowed(self, client: socket.socket) -> bool:
-        """Core's `ClientAllowed` of the peer `client` is connected to."""
-        try:
-            host = client.getpeername()[0]
-        except OSError:
-            return False
-        return client_allowed(str(host), self.allowed_subnets)
-
     def start_listener(self) -> bool:
         """Start this thread, and answer whether it came up listening.
 
@@ -616,6 +610,16 @@ class RpcManager(threading.Thread):
         Where no descriptor is left, each failure is logged at debug, as
         Core logs it, and the accept tried again `_ACCEPT_RETRY_DELAY`
         seconds later, until one succeeds.
+
+        A socket from a source `client_allowed` refuses is closed as it is
+        accepted, before anything is read off it, and logged at debug:
+        Core's `HTTPServer::AcceptConnection` (`src/httpserver.cpp`, at
+        bitcoin/bitcoin@cce32b1687, and in v32.0rc1). The release
+        `integration-bitcoind.yml` pins, v31.1, reads the request first,
+        up to `-rpcservertimeout`, answers it a bare 403 and keeps the
+        connection. This node takes `master`'s, since otherwise a refused
+        source holds one of `max_connections` places for as long as it
+        likes (btclib-org/btclib-node#1963).
 
         `loop.sock_accept` retries a `BlockingIOError`/`InterruptedError`
         internally on both loop families this node runs on (a selector
@@ -654,6 +658,24 @@ class RpcManager(threading.Thread):
                 self.logger.exception("Accepting an inbound connection failed")
                 await asyncio.sleep(0)
                 continue
+            if sockaddr:
+                host, port = sockaddr[:2]
+            else:
+                # no address, as `accept` answers for a peer that reset
+                # before it: Core's `SetSockAddr` fails, and the unset
+                # `CService` it checks instead is `[::]:0`, which
+                # `client_allowed` refuses
+                self.logger.log_debug("http", "Unknown socket family")
+                host, port = "::", 0
+            if not client_allowed(str(host), self.allowed_subnets):
+                self.logger.log_debug(
+                    "http",
+                    "Connection from %s rejected: Client network is not allowed "
+                    "HTTP access",
+                    ip_and_port(host, port),
+                )
+                sock.close()
+                continue
             sock.settimeout(0.0)
             accepted.put_nowait((sock, sockaddr))
 
@@ -666,7 +688,7 @@ class RpcManager(threading.Thread):
 
         Awaits `_accept_queue` for what `_accept_loop` fills, a task of
         its own per listening socket, one `RpcConnection` and one
-        `conn.run` task per accepted socket -- rather than a bare
+        `conn.run` task per socket `_accept_loop` queues -- rather than a bare
         `await loop.sock_accept(...)` right here, which does not have the
         property the comment below argues for.
         """

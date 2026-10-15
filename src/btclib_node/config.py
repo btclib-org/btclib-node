@@ -574,8 +574,8 @@ class Config:
     # where it does not, as `HTTPBindAddresses` does.
     rpcbind: tuple[str, ...]
     # Core's `-rpcallowip` values, which `RpcManager` parses when it
-    # starts, as `InitHTTPServer` parses them, and answers a request
-    # from no source they or loopback name with a 403.
+    # starts, as `InitHTTPServer` parses them, and closes a connection
+    # from a source neither they nor loopback name as it accepts it.
     rpcallowip: tuple[str, ...]
     # Core's `-whitelist` values, each exactly as given: `Node.run` reads
     # them with `-whitelistrelay` and `-whitelistforcerelay`

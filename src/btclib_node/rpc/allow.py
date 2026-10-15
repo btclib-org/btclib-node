@@ -43,11 +43,10 @@ def allowed_subnets(values: tuple[str, ...]) -> tuple[Subnet, ...]:
 
 
 def client_allowed(host: str, subnets: tuple[Subnet, ...]) -> bool:
-    """Core's `ClientAllowed` of the peer at `host`, as `getpeername` names it.
+    """Core's `ClientAllowed` of the peer at `host`, as `accept` names it.
 
-    `HTTPRequest::GetPeer` reads the peer's numeric address through
-    `LookupNumeric`, which `lookup_host` is, and `Subnet.matches` refuses
-    one `CNetAddr::IsValid` refuses.
+    `lookup_host` reads `host` as an address, and `Subnet.matches`
+    refuses one `CNetAddr::IsValid` refuses.
     """
     peer = lookup_host(host)
     return peer is not None and any(subnet.matches(peer) for subnet in subnets)
