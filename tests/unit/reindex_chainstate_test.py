@@ -8,15 +8,24 @@
 stored branch, restarted with the option, comes back at the same tip,
 with the same UTXO set, its commitment, its filters and its undo data,
 and a stop part-way resumes on a plain start. That start, like any with
-stored blocks to connect, is `NodeStatus.Reindexing` until they are.
-Under `-prune` the option is refused, as Core refuses it.
+stored blocks to connect, is `NodeStatus.Reindexing` until they are,
+and holds Core's `LoadingBlocks()` gates meanwhile. Under `-prune` the
+option is refused, as Core refuses it.
 """
 
+import math
+import time
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, NamedTuple
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 import pytest
+from btclib import var_int
+from btclib.p2p.compact_blocks import BlockTxn
+from btclib.p2p.data import BlockPayload as BlockMsg
+from btclib.p2p.inventory import GetHeaders, Headers
+from btclib.p2p.limits import MAX_HEADERS_RESULTS, PROTOCOL_VERSION
 from btclib.tx.limits import COINBASE_MATURITY
 
 from btclib_node import Node
@@ -28,13 +37,35 @@ from btclib_node.cli import _help_message, build_config
 from btclib_node.config import Config
 from btclib_node.constants import NodeStatus
 from btclib_node.db import KeyValueStore
+from btclib_node.exceptions import MisbehavingError
 from btclib_node.log import Logger
 from btclib_node.main import activate_best_chain, update_chain, update_ibd_status
-from tests import generate_random_chain
-from tests.unit.download_test import _OLD, HeaderIndex, an_outbound, asked, make_manager
+from btclib_node.p2p.callbacks import block as block_callback
+from btclib_node.p2p.callbacks import blocktxn, cmpctblock, getheaders, headers, inv
+from btclib_node.p2p.compact_block import compact_block
+from tests import generate_random_chain, generate_random_transaction
+from tests.unit.download_test import (
+    _OLD,
+    HeaderIndex,
+    an_extra_peer_manager,
+    an_outbound,
+    asked,
+    make_manager,
+)
+from tests.unit.p2p.callbacks_test import (
+    FakeBlockIndex,
+    a_block,
+    a_data_node,
+    a_peer,
+    an_info,
+    an_inv_index,
+    block_inv,
+)
+from tests.unit.p2p.cmpctblock_test import a_compact_peer, held, next_block
+from tests.unit.p2p.cmpctblock_test import a_node as compact_node
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
     from btclib.block import Block
@@ -303,6 +334,120 @@ def test_no_peer_is_newly_asked_for_headers_while_reindexing() -> None:
     manager.node.status = NodeStatus.SyncingHeaders
     manager.sync_headers()
     assert asked(peer)
+
+
+def test_a_getheaders_is_not_answered_while_reindexing(tmp_path: Path) -> None:
+    """Core's `LoadingBlocks()` return in `GETHEADERS`."""
+    with _node(tmp_path) as real:
+        node = a_data_node(
+            block_index=real.chainstate.block_index, status=NodeStatus.Reindexing
+        )
+        request = GetHeaders(PROTOCOL_VERSION, [RegTest().genesis.hash], b"\0" * 32)
+        peer = a_peer()
+        getheaders(node, request.serialize(), peer)
+        assert not peer.sent
+        node.status = NodeStatus.BlockSynced
+        getheaders(node, request.serialize(), peer)
+        assert peer.sent == [Headers([])]
+
+
+def test_a_headers_is_dropped_unread_while_reindexing() -> None:
+    """Core's `LoadingBlocks()` return in `HEADERS`, ahead of the count."""
+    node = a_data_node(status=NodeStatus.Reindexing)
+    past_the_bound = var_int.serialize(MAX_HEADERS_RESULTS + 1)
+    headers(node, past_the_bound, a_peer())
+    node.status = NodeStatus.BlockSynced
+    with pytest.raises(MisbehavingError):
+        headers(node, past_the_bound, a_peer())
+
+
+def test_a_block_is_dropped_unread_while_reindexing() -> None:
+    """Core's `LoadingBlocks()` return in `BLOCK`; the request stays queued."""
+    block = a_block()
+    block_hash = block.header.hash
+    added: list[Block] = []
+    node = a_data_node(
+        block_index=FakeBlockIndex({block_hash: an_info(downloaded=False, index=1)}),
+        block_db=SimpleNamespace(add_block=added.append),
+        status=NodeStatus.Reindexing,
+    )
+    peer = a_peer(download_queue=[block_hash])
+    node.p2p_manager.connections = {peer.id: peer}
+    payload = BlockMsg(block, include_witness=True, check_validity=False).serialize(
+        check_validity=False
+    )
+    block_callback(node, payload, peer)
+    assert added == []
+    assert peer.download_queue == [block_hash]
+    node.status = NodeStatus.BlockSynced
+    block_callback(node, payload, peer)
+    assert added == [block]
+
+
+def test_a_block_inv_asks_for_no_headers_while_reindexing() -> None:
+    """Core's `LoadingBlocks()` gate on the `getheaders` of a block `inv`."""
+    node = a_data_node(block_index=an_inv_index(), status=NodeStatus.Reindexing)
+    peer = a_peer()
+    node.download_manager.headers_sync_timeouts[peer.id] = math.inf
+    inv(node, block_inv(b"\x11" * 32), peer)
+    assert not peer.sent
+    node.status = NodeStatus.BlockSynced
+    inv(node, block_inv(b"\x11" * 32), peer)
+    assert [type(message) for message in peer.sent] == [GetHeaders]
+
+
+def test_a_cmpctblock_is_dropped_unread_while_reindexing(
+    regtest_node: Callable[[], Node],
+) -> None:
+    """Core's `LoadingBlocks()` return in `CMPCTBLOCK`."""
+    node, _ = compact_node(regtest_node)
+    block = next_block(node, generate_random_transaction())
+    peer = a_compact_peer(node)
+    node.status = NodeStatus.Reindexing
+    cmpctblock(node, compact_block(block, 7).serialize(), peer)
+    assert block.header.hash not in node.chainstate.block_index.header_dict
+    assert not peer.sent
+    node.status = NodeStatus.BlockSynced
+    cmpctblock(node, compact_block(block, 7).serialize(), peer)
+    assert block.header.hash in node.chainstate.block_index.header_dict
+
+
+def test_a_blocktxn_is_dropped_unread_while_reindexing(
+    regtest_node: Callable[[], Node],
+) -> None:
+    """Core's `LoadingBlocks()` return in `BLOCKTXN`."""
+    node, _ = compact_node(regtest_node)
+    missing = generate_random_transaction()
+    block = next_block(node, missing)
+    peer = a_compact_peer(node)
+    cmpctblock(node, compact_block(block, 7).serialize(), peer)
+    answer = BlockTxn(block.header.hash, [missing]).serialize()
+    node.status = NodeStatus.Reindexing
+    blocktxn(node, answer, peer)
+    assert not held(node, block)
+    node.status = NodeStatus.BlockSynced
+    blocktxn(node, answer, peer)
+    assert held(node, block)
+
+
+def test_a_stale_tip_asks_for_no_extra_peer_while_reindexing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Core's `LoadingBlocks()` gate on a stale tip, which clears the flag."""
+    now = 1_000_000
+    monkeypatch.setattr(time, "time", lambda: now)
+    manager = an_extra_peer_manager([])
+    manager.node.status = NodeStatus.Reindexing
+    p2p_manager = cast("Any", manager.node).p2p_manager
+    p2p_manager.try_new_outbound_peer = True
+    manager.last_tip_update = now - 1801
+    manager._check_for_stale_tip_and_evict_peers()
+    assert not p2p_manager.try_new_outbound_peer
+    manager.node.status = NodeStatus.BlockSynced
+    manager._next_extra_peer_check = 0
+    manager._stale_tip_check_time = 0
+    manager._check_for_stale_tip_and_evict_peers()
+    assert p2p_manager.try_new_outbound_peer
 
 
 @pytest.mark.parametrize("batched", [False, True])

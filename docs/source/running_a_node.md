@@ -109,8 +109,10 @@ comes back at the most-work tip its stored blocks reach. Where two
 stored branches tie on work, either can win, as in Core. A stop part-way
 is safe. The next start without the option connects the rest, from the
 last flush, before it loads `mempool.dat` or leaves initial block
-download, as Core does on every start. A start with the option starts
-over. With `-prune` it refuses to start, as Core refuses.
+download, as Core does on every start. While the stored blocks connect,
+the node takes no headers or blocks from peers and answers no
+`getheaders`, as Core does. A start with the option starts over. With
+`-prune` it refuses to start, as Core refuses.
 
 ## Pointing it at a peer of your own
 

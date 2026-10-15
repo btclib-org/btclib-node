@@ -1298,6 +1298,8 @@ def _headers_node(logger: Logger) -> Any:
         status=P2pConnStatus.Connected,
         logger=logger,
     )
+    # read by `headers` before the payload, which a reindexing node drops
+    node.status = NodeStatus.BlockSynced
     return node
 
 

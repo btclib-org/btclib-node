@@ -588,7 +588,9 @@ class DownloadManager:
         bitcoin/bitcoin@9be056a8a7, the v31.1 tag), every
         `_EXTRA_PEER_CHECK_INTERVAL`. Every `_STALE_CHECK_INTERVAL` it
         sets `try_new_outbound_peer` where the tip may be stale, under no
-        `-connect`, and clears it where not. Once the active tip is
+        `-connect` and not while the stored blocks connect
+        (`NodeStatus.Reindexing`, Core's `LoadingBlocks()`), and clears it
+        where not. Once the active tip is
         within `CanDirectFetch`'s reach of the clock, it lets
         `P2pManager` dial an extra block-relay-only peer, once and for
         good, as `StartExtraBlockRelayPeers` does.
@@ -602,7 +604,11 @@ class DownloadManager:
         self._evict_extra_full_relay_peer(now)
         manager = self.node.p2p_manager
         if now > self._stale_tip_check_time:
-            if manager.use_addrman_outgoing and self._tip_may_be_stale(now):
+            if (
+                self.node.status != NodeStatus.Reindexing
+                and manager.use_addrman_outgoing
+                and self._tip_may_be_stale(now)
+            ):
                 self.logger.info(
                     "Potential stale tip detected, will try using extra outbound "
                     "peer (last tip update: %d seconds ago)",
@@ -1541,8 +1547,7 @@ class DownloadManager:
         a peer that disconnects hands its turn on. Core's
         `LoadingBlocks()` gate on that start is `NodeStatus.Reindexing`:
         no peer is newly asked by this sync while the stored blocks
-        connect. Core's other `LoadingBlocks()` gates are
-        btclib-org/btclib-node#1915.
+        connect. `NodeStatus` lists the gates that state holds.
 
         A peer with a `getheaders` already in flight is not asked and
         takes no turn, Core setting `fSyncStarted` only where

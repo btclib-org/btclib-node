@@ -323,6 +323,24 @@ def _refuse_past_bound(msg_type: str, count: int) -> None:
         raise MisbehavingError(err_msg)
 
 
+def _ignored_while_reindexing(node: Node, msg_type: str, conn: Connection) -> bool:
+    """Answer whether `msg_type` from `conn` is dropped as the blocks load.
+
+    Core's `LoadingBlocks()` returns in `ProcessMessage`
+    (`net_processing.cpp:4557`, `:4805`, `:4819` and `:4860`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a `cmpctblock`,
+    `blocktxn`, `headers` or `block` is dropped unread while the stored
+    blocks connect, which is `NodeStatus.Reindexing` here, and the peer
+    is kept. btclib-org/btclib-node#1915
+    """
+    if node.status != NodeStatus.Reindexing:
+        return False
+    node.logger.log_debug(
+        "net", "Unexpected %s message received from peer %d", msg_type, conn.id
+    )
+    return True
+
+
 def has_all_desirable_services(node: Node, services: int) -> bool:
     """Core's `HasAllDesirableServiceFlags`, argued in `version` below."""
     desirable = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
@@ -1633,7 +1651,12 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
     (`_min_pow_checked`) is not indexed, and the block is dropped with it,
     its peer kept: Core's `too-little-chainwork`
     (btclib-org/btclib-node#1505).
+
+    While the stored blocks connect, the message is dropped unread
+    (`_ignored_while_reindexing`).
     """
+    if _ignored_while_reindexing(node, "block", conn):
+        return
     # btclib's BlockPayload validates against mainnet's pow limit by
     # default, which no regtest or signet block meets. Its own docstring
     # names the shape: build unchecked and ask afterwards, which is what
@@ -1783,8 +1806,11 @@ def inv(node: Node, msg: bytes, conn: Connection) -> None:
     new block, so that header sync takes on one more peer for each block
     found. Either way `maybe_send_getheaders` drops the request while one
     to this peer is in flight, and a peer not yet syncing has its turn
-    spent all the same, as in Core. Transactions are queued only out of
-    initial block download, where Core calls `AddTxAnnouncement`.
+    spent all the same, as in Core. While the stored blocks connect,
+    `NodeStatus.Reindexing`, no block announced asks for headers, as
+    Core's `LoadingBlocks()` gates it (`net_processing.cpp:4158`, same
+    sha; btclib-org/btclib-node#1915). Transactions are queued only out
+    of initial block download, where Core calls `AddTxAnnouncement`.
 
     A block-relay-only peer announcing a transaction is disconnected
     there and then, as Core's loop does on the first such item where
@@ -1812,6 +1838,7 @@ def inv(node: Node, msg: bytes, conn: Connection) -> None:
         for x in inv.items
         if x.type_code == InventoryType.MSG_BLOCK
         and x.hash not in block_index.header_dict
+        and node.status != NodeStatus.Reindexing
     ]
     if unknown:
         manager = node.download_manager
@@ -2142,7 +2169,12 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     connecting to nothing may be an announcement, and answers nothing.
 
     A peer holding `NO_BAN` skips the work check, as in Core.
+
+    While the stored blocks connect, the message is dropped unread, its
+    count included (`_ignored_while_reindexing`).
     """
+    if _ignored_while_reindexing(node, "headers", conn):
+        return
     # Core reads the count alone before it compares, so no entry is
     # needed in the payload for it to call `Misbehaving`
     _refuse_past_bound("headers", _count_past(msg, MAX_HEADERS_RESULTS, 0))
@@ -2444,6 +2476,10 @@ def getheaders(node: Node, msg: bytes, conn: Connection) -> None:
     headers and up to `hash_stop`: empty where that block is the tip.
     The peer's `best_header_sent` becomes the last header sent, or the
     tip where none is.
+
+    While the stored blocks connect, `NodeStatus.Reindexing`, a `getheaders`
+    within the locator's bound is not answered: Core's `LoadingBlocks()`
+    return (`net_processing.cpp:4405`, same sha). btclib-org/btclib-node#1915
     """
     # Core drops a peer whose locator passes `MAX_LOCATOR_SZ`, and does
     # not discourage it. The locator follows a four-octet version, and
@@ -2452,6 +2488,13 @@ def getheaders(node: Node, msg: bytes, conn: Connection) -> None:
         conn.stop()
         return
     getheaders = GetHeaders.parse(msg)
+    if node.status == NodeStatus.Reindexing:
+        node.logger.log_debug(
+            "net",
+            "Ignoring getheaders from peer=%d while importing/reindexing",
+            conn.id,
+        )
+        return
     block_index = node.chainstate.block_index
     active_chain = block_index.active_chain
     tip = active_chain[-1]
@@ -3077,11 +3120,17 @@ def cmpctblock(node: Node, msg: bytes, conn: Connection) -> None:
     first in v32.0rc1). A peer is marked only where this node sent it
     `sendcmpct(1)`, and a block this node asked of a peer is in its
     `download_queue`, so the return drops only what neither asked for.
+
+    While the stored blocks connect, the message is dropped unread
+    before anything else (`_ignored_while_reindexing`), as v31.1 does.
     """
     # deferred: `download` imports this module
     from btclib_node.download import MAX_BLOCKS_IN_TRANSIT_PER_PEER  # noqa: PLC0415
 
-    if not conn.provides_cmpctblocks:
+    if (
+        _ignored_while_reindexing(node, "cmpctblock", conn)
+        or not conn.provides_cmpctblocks
+    ):
         return
     compact = CmpctBlock.parse(msg, check_validity=False)
     header = compact.header
@@ -3244,7 +3293,12 @@ def blocktxn(node: Node, msg: bytes, conn: Connection) -> None:
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The transactions are read
     unchecked, as Core's deserializer reads them: one that is not valid
     leaves a block `_check_block` refuses.
+
+    While the stored blocks connect, the message is dropped unread
+    (`_ignored_while_reindexing`).
     """
+    if _ignored_while_reindexing(node, "blocktxn", conn):
+        return
     answer = BlockTxn.parse(msg, check_validity=False)
     _process_compact_block_txns(node, conn, answer.block_hash, answer.transactions)
 
