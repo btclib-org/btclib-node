@@ -1917,6 +1917,9 @@ _GETDATA_BLOCK_TYPES = (
 CMPCTBLOCKS_VERSION = 2
 MAX_CMPCTBLOCK_DEPTH = 5
 MAX_BLOCKTXN_DEPTH = 10
+# the blocks `_blocktxn_block` keeps: one per height a `getblocktxn`
+# reaches on the active chain
+_BLOCKTXN_BLOCKS_KEPT = MAX_BLOCKTXN_DEPTH + 1
 # Core's `CanDirectFetch`: the tip is within this many target spacings
 # of now
 _DIRECT_FETCH_SPACINGS = 20
@@ -3100,6 +3103,7 @@ def getblocktxn(node: Node, msg: bytes, conn: Connection) -> None:
     its last transaction being misbehaviour; and for an older one the
     full block, queued as a `MSG_WITNESS_BLOCK` item of this connection's
     own `getdata`, whose serving pays for the disk read the request cost.
+    A block within the depth is read once (`_blocktxn_block`).
 
     An empty `indexes` is dropped, undiscouraged, ahead of any lookup:
     Core commit 28641fd195db2a175fd43fee2e32758aef9816a6 ("p2p: reject
@@ -3137,10 +3141,45 @@ def getblocktxn(node: Node, msg: bytes, conn: Connection) -> None:
         item = Inventory(InventoryType.MSG_WITNESS_BLOCK, request.block_hash)
         getdata(node, GetData([item]).serialize(), conn)
         return
-    block = node.block_db.get_block(request.block_hash)
+    block = _blocktxn_block(node, request.block_hash, block_info.index)
     if block is None:
         return
     _send_block_transactions(conn, request, block)
+
+
+def _blocktxn_block(node: Node, block_hash: bytes, height: int) -> Block | None:
+    """Return the block a `getblocktxn` names, kept if at or below the tip.
+
+    Core reads the block from disk for every `getblocktxn` (`ReadBlock`,
+    `net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    Here that read parses the whole block on the node thread. A request
+    is a few dozen bytes and its `blocktxn` can be as small, so
+    `conn.pause_send` does not pace a peer repeating it. The block read
+    is kept in `node.blocktxn_blocks` instead, and the answer is still
+    Core's.
+
+    A block above the tip is stored but not connected, and the download
+    window holds many of them, so it is read for every request, as in
+    Core. Each block kept drops those deeper than `MAX_BLOCKTXN_DEPTH`,
+    then the lowest past `_BLOCKTXN_BLOCKS_KEPT`, which a stale block
+    within the depth can reach.
+    btclib-org/btclib-node#1954
+    """
+    kept = node.blocktxn_blocks.get(block_hash)
+    if kept is not None:
+        return kept[1]
+    block = node.block_db.get_block(block_hash)
+    tip_height = len(node.chainstate.block_index.active_chain) - 1
+    if block is None or height > tip_height:
+        return block
+    floor = tip_height - MAX_BLOCKTXN_DEPTH
+    others = sorted(
+        (item for item in node.blocktxn_blocks.items() if item[1][0] >= floor),
+        key=lambda item: item[1][0],
+    )
+    others.append((block_hash, (height, block)))
+    node.blocktxn_blocks = dict(others[-_BLOCKTXN_BLOCKS_KEPT:])
+    return block
 
 
 def _send_block_transactions(
