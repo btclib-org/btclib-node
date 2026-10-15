@@ -17,9 +17,9 @@ on:
   pull_request:
     # ready_for_review, so a pull request marked ready gets the run the
     # draft condition in reusable-api-break.yml withheld while it was a
-    # draft. closed too, so that a run still held in this pull request's
-    # own concurrency group is superseded rather than left to finish: the
-    # called job declines the real work on it
+    # draft. closed too, so that the closed run enters this pull request's
+    # own concurrency group: a close supersedes the run still held there, a
+    # merge queues behind it. The called job declines the real work on it
     types: [opened, reopened, synchronize, ready_for_review, closed]
   # the escape hatch. The called job runs only for a pull request, so on
   # this trigger it is skipped
@@ -33,10 +33,12 @@ permissions:
 # cancel superseded runs: the subject is the commit, which a newer one
 # supersedes. By the pull request's own number rather than by github.ref,
 # which for a closed, merged pull request resolves to the base branch's
-# ref, as docs.yml's `pull_request` trigger comment says
+# ref, as docs.yml's `pull_request` trigger comment says. There is no
+# push trigger, so the run in flight is the only reading a merged pull
+# request gets
 concurrency:
   group: api-break-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ !(github.event.action == 'closed' && github.event.pull_request.merged) }}
 
 jobs:
   # the draft and closed declines, the checkout, the griffe walk and the
