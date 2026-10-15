@@ -4626,10 +4626,29 @@ def test_an_inventory_of_neither_kind_is_skipped() -> None:
     """A `getdata` item of neither family is popped and skipped."""
     node = a_data_node(block_db=SimpleNamespace(get_block=lambda h: None))
     peer = a_peer()
-    items = [Inventory(InventoryType.MSG_FILTERED_BLOCK, b"\x11" * 32)]
+    items = [Inventory(InventoryType.UNDEFINED, b"\x11" * 32)]
     getdata(node, GetData(items).serialize(), peer)
     assert not peer.sent
+    assert not peer.stopped
     assert peer.id not in node.pending_getdata
+
+
+@pytest.mark.parametrize("indexed", [True, False], ids=["held", "unindexed"])
+def test_a_getdata_for_a_filtered_block_drops_the_peer(*, indexed: bool) -> None:
+    """ISS 1949: a `getdata` for a filtered block drops the peer.
+
+    Core master: "A filtered-block can only ever be requested if we offer
+    NODE_BLOOM", checked first in `ProcessGetBlockData`, so a hash the
+    node never indexed drops the peer as a held block does.
+    """
+    block_index = a_tall_block_index(3)
+    node = a_data_node(block_index=block_index, block_db=a_block_store(a_block()))
+    peer = a_peer()
+    wanted = block_index.active_chain[-1] if indexed else b"\xee" * 32
+    items = [Inventory(InventoryType.MSG_FILTERED_BLOCK, wanted)]
+    getdata(node, GetData(items).serialize(), peer)
+    assert not peer.sent
+    assert peer.stopped == [True]
 
 
 def test_getdata_pauses_once_the_queue_is_full_and_registers_the_rest() -> None:
