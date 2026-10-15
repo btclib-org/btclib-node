@@ -170,11 +170,17 @@ Known and recorded, rather than something to report again.
   (btclib-org/btclib-node#1055, btclib-org/btclib-node#1070), and with
   no `-rpcwhitelist`, Core's default too, whoever holds one of those
   credentials can call `stop` and `sendrawtransaction`. The credential
-  crosses the wire as HTTP Basic, unencrypted, as Core's has since Core
-  dropped `-rpcssl`. The listener binds loopback by default
+  crosses the wire as HTTP Basic, unencrypted: the listener has no TLS,
+  as Core's has none. Core
+  [dropped `-rpcssl`](https://github.com/bitcoin/bitcoin/blob/master/doc/release-notes/release-notes-0.12.0.md#rpc-ssl-support-dropped)
+  to remove OpenSSL from the daemon, and says its RPC
+  ["does not use encryption" and "has not been hardened to withstand
+  arbitrary Internet traffic"](https://github.com/bitcoin/bitcoin/blob/master/doc/JSON-RPC-interface.md#security).
+  The listener binds loopback by default
   (btclib-org/btclib-node#27), and `-rpcbind` binds elsewhere only beside
   `-rpcallowip`, which then decides which sources are answered at all, as
-  in Core: do not widen either past a network whose traffic you trust.
+  in Core. Reach it from another machine only through a tunnel (SSH,
+  stunnel or a VPN), and never expose it to the Internet.
 - **BIP324 does not authenticate the peer.** A party in the middle of the
   handshake reads and relays everything; comparing `getpeerinfo`'s
   `session_id` with the peer's operator over another channel is what
