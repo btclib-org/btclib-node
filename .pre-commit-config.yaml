@@ -448,12 +448,10 @@ repos:
   # Every invariant the workflows here promise in a comment -- the SHA
   # pins, the permissions block, persist-credentials: false -- is a
   # comment until this hook reads it. actionlint reports nothing on this
-  # tree today, which is the state it is here to keep, but one finding is
-  # declined rather than absent: .github/actionlint.yaml, whose comment
-  # names the issue that removes it. zizmor reports nothing too, but only
-  # because the findings below are declined rather than absent -- the
-  # ignore comments are what keep it green, not an audit that found
-  # nothing to flag
+  # tree today, which is the state it is here to keep. zizmor reports
+  # nothing too, but only because the findings below are declined rather
+  # than absent -- the ignore comments are what keep it green, not an
+  # audit that found nothing to flag
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
     # self-repository flags a reusable-workflow or composite-action
     # reference that reads `uses: ./...` and recommends `uses: $/...`,
