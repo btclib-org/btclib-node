@@ -89,6 +89,17 @@ __all__ = [
 # which libevent counts over every line of a header section without its
 # line ending (`_FieldReader`), and `MAX_SIZE` to
 # `evhttp_set_max_body_size`.
+#
+# Core's own HTTP server, which replaces libevent from v32.0rc1, counts
+# the same 8192 another way: the field lines with their endings, the
+# empty line after them included and the request line left out, a
+# chunked body's trailer counted on from them (`HTTPHeaders::Read`,
+# `src/httpserver.cpp`, at bitcoin/bitcoin@cce32b1687). So it refuses with
+# 400 a header section of many short lines that libevent reads. This node
+# keeps libevent's count: `tests/integration/rpc_framing_test.py` holds
+# it to the bitcoind release `integration-bitcoind.yml` pins, its
+# `size-8192-many-lines` case included. Issue #1972 is the change for a
+# v32 pin.
 MAX_HEADER_BYTES = 8192
 MAX_BODY_BYTES = 32 * 1024 * 1024
 # What bounds how *long* a read may take, where the two above only bound
