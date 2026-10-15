@@ -171,6 +171,7 @@ def test_rebuilds_the_same_tip_utxo_set_filters_and_undo(tmp_path: Path) -> None
         assert node.chainstate.filter_index.get_filter(chain[0].header.hash) is None
         assert node.chainstate.filter_index.get_filter(regtest.genesis.hash)
         assert node.block_db.rev_patches == {}
+        assert not [n for n in node.block_db.live if n.endswith(".rev")]
         activate_best_chain(node)
         assert _status(node) == NodeStatus.Starting
         assert _state(node) == before
