@@ -3,17 +3,15 @@ name: api-break
 
 # A pull request that breaks the public API is told so by a label,
 # `api-break`, and by nothing that gates a merge (btclib-org/.github#1674).
-# Before 1.0 this package breaks its surface deliberately, so the answer is
-# advice for the reviewer, never a failure.
+# Section 12 of btclib-org/.github's README.md has why it gates nothing and
+# what a fork's pull request gets.
 #
 # The checkout, the griffe walk against the pull request's base commit and
 # the label are btclib-org/.github's: reusable-api-break.yml, called at
 # @main so a fix there reaches this tree in one landing (section 10 of its
-# README.md). What stays here is the trigger, the concurrency group and the
-# package name, the one `release.yml` passes to reusable-public-api.yml.
-# A fork's pull request is not labelled: its token is read-only, and
-# `pull_request_target`, the way round that, is a trigger the organization
-# declines.
+# README.md). What stays here is the trigger, the concurrency group, the
+# job's permissions and the package name, the one `release.yml` passes to
+# reusable-public-api.yml.
 
 on:
   pull_request:
@@ -35,7 +33,7 @@ permissions:
 # cancel superseded runs: the subject is the commit, which a newer one
 # supersedes. By the pull request's own number rather than by github.ref,
 # which for a closed, merged pull request resolves to the base branch's
-# ref, as docs.yml's own concurrency block says
+# ref, as docs.yml's `pull_request` trigger comment says
 concurrency:
   group: api-break-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true

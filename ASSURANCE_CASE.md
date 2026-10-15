@@ -371,7 +371,7 @@ and what counters each.
   does not keep the rule yet: btclib-org/btclib-node#1908,
   btclib-org/btclib-node#1946, btclib-org/btclib-node#1956 and
   btclib-org/btclib-node#1957 each name a refusal, warning or repr that
-  prints a secret, and owe the fix with its test.
+  holds or prints a secret, and owe the fix with its test.
 - **Type confusion (CWE-843).** mypy runs with `strict = true`
   (`pyproject.toml`) over this tree and its suite, as a hook of the lint
   gate in `.pre-commit-config.yaml`.
