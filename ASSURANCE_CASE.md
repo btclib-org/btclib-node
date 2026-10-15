@@ -364,14 +364,13 @@ and what counters each.
   and `WriteBatch`, so no stored value is unpickled. The census under
   *Threat model* lists neither `pickle` nor `marshal` nor `shelve`.
   `.github/workflows/codeql.yml` analyses the code and the workflows.
-- **Exposure of sensitive information (CWE-209).** A refusal, a repr, a
-  log line or an `assert` message prints no secret: section 7's *A
-  refusal carries no secret* in btclib-org/.github's README.md has the
-  rule, and `tests/secret_free/__init__.py`'s `assert_secret_free` is the
-  helper a test of it calls. Its own self-test is the only caller; no test of a
-  refusal here calls it yet:
-  btclib-org/btclib-node#1908 owes them, with the fix to the one refusal
-  known to quote a header line.
+- **Exposure of sensitive information (CWE-209).** The rule is section
+  7's *A refusal carries no secret* in btclib-org/.github's README.md.
+  `tests/secret_free/__init__.py`'s `assert_secret_free` is the helper a
+  test of it calls, and no test of a refusal here calls it yet. This tree
+  does not keep the rule yet: btclib-org/btclib-node#1908, #1946, #1956
+  and #1957 each name a refusal, warning or repr that prints a secret, and
+  owe the fix with its test.
 - **Type confusion (CWE-843).** mypy runs with `strict = true`
   (`pyproject.toml`) over this tree and its suite, as a hook of the lint
   gate in `.pre-commit-config.yaml`.
