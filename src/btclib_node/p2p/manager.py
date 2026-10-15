@@ -114,7 +114,7 @@ if TYPE_CHECKING:
 
     from btclib_node import Node
 
-__all__ = ["P2pManager"]
+__all__ = ["P2pManager", "network_error_string"]
 
 # How often `manage_connections`' own loop calls `_maybe_dial_more_peers`,
 # the "draw a candidate and dial it" arm of Core's `ThreadOpenConnections`
@@ -381,7 +381,7 @@ def _exponential_delay(mean: float) -> float:
     return secrets.SystemRandom().expovariate(1 / mean)
 
 
-def _network_error_string(error: OSError) -> str:
+def network_error_string(error: OSError) -> str:
     """Core's `NetworkErrorString` of a failed socket call: text, then number.
 
     Core's `"%s (%d)"` carries `SysErrorString`'s errno off Windows and
@@ -3105,7 +3105,7 @@ class P2pManager(threading.Thread):
         except OSError as error:
             msg = (
                 "Couldn't open socket for incoming connections (socket returned"
-                f" error {_network_error_string(error)})"
+                f" error {network_error_string(error)})"
             )
             raise OSError(msg) from error
         try:
@@ -3130,7 +3130,7 @@ class P2pManager(threading.Thread):
                 else:
                     msg = (
                         f"Unable to bind to {address} on this computer (bind"
-                        f" returned error {_network_error_string(error)})"
+                        f" returned error {network_error_string(error)})"
                     )
                 raise OSError(msg) from error
             try:
@@ -3138,7 +3138,7 @@ class P2pManager(threading.Thread):
             except OSError as error:
                 msg = (
                     "Listening for incoming connections failed (listen returned"
-                    f" error {_network_error_string(error)})"
+                    f" error {network_error_string(error)})"
                 )
                 raise OSError(msg) from error
             server_socket.settimeout(0.0)

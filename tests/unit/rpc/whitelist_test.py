@@ -306,13 +306,17 @@ def exchange(auth: RpcAuth, requests: list[Any]) -> tuple[bytes, list[Any], list
         theirs.settimeout(0.0)
         loop = asyncio.get_running_loop()
         messages: list[Any] = []
+        connections: dict[int, Any] = {0: None}
         # every source allowed: a socketpair's peer has no IP address
         manager = SimpleNamespace(
             auth=auth,
             client_allowed=lambda client: True,
             logger=SimpleNamespace(warning=lambda *args: warnings.append(args)),
             messages=messages,
-            connections={0: None},
+            connections=connections,
+            forget_connection=lambda connection_id: connections.pop(
+                connection_id, None
+            ),
             # a node not shutting down, whose replies `send` schedules
             # as they come
             node=SimpleNamespace(terminate_flag=threading.Event()),

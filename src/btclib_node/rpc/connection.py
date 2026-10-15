@@ -1161,7 +1161,7 @@ class RpcConnection:
         # `finally` here, so narrowing this would leak a socket anybody
         # reaching the port can open, credential or not, on top of
         # losing the exception itself to that same unread Future.
-        # `self.manager.connections.pop` below covers every other way
+        # `self.manager.forget_connection` below covers every other way
         # this method fails: `ConnectionError` (an unterminated header, a
         # peer that goes away mid-request) and `TimeoutError`
         # (`REQUEST_TIMEOUT` elapsing) never reach `send()` or
@@ -1175,7 +1175,7 @@ class RpcConnection:
         # thread, before this method's own frame returns.
         except Exception:  # noqa: BLE001
             self.client.close()
-            self.manager.connections.pop(self.id, None)
+            self.manager.forget_connection(self.id)
 
     def _queue(self, head: RequestHead, body_bytes: bytes) -> None:
         """Answer what Core refuses at or past the credential; queue the rest.
@@ -1600,7 +1600,7 @@ class RpcConnection:
             # rather than only kept reachable for `RpcManager.stop`'s own
             # socket-closing sweep in the meantime (issue #640 review
             # round 2).
-            self.manager.connections.pop(self.id, None)
+            self.manager.forget_connection(self.id)
 
     def _start_reply(
         self, reply: Coroutine[Any, Any, None], delay: float = 0.0

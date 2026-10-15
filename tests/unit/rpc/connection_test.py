@@ -77,6 +77,7 @@ def fake_manager(connections: dict[int, Any]) -> SimpleNamespace:
         logger=Logger(debug=True),
         messages=[],
         connections=connections,
+        forget_connection=lambda connection_id: connections.pop(connection_id, None),
         # a node not shutting down; `refused`'s `prepare` is what sets
         # the flag (btclib-org/btclib-node#1542)
         node=SimpleNamespace(terminate_flag=threading.Event()),
