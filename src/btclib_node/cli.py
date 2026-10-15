@@ -939,26 +939,32 @@ class _KeyInfo:
 
 @dataclass
 class _Settings:
-    """Core's `Settings`, with `m_network`: every source a getter merges."""
+    """Core's `Settings`, with `m_network`: every source a getter merges.
 
-    command_line: dict[str, list[_Value]]
-    ro_config: _RoConfig = field(default_factory=dict)
+    The sources hold values as they were read, `-rpcpassword` among them,
+    and a section name may hold one too, as may a warning quoting it, so
+    `repr` and `str` leave them out (section 7 of the btclib-org
+    standard, *A refusal carries no secret*).
+    """
+
+    command_line: dict[str, list[_Value]] = field(repr=False)
+    ro_config: _RoConfig = field(default_factory=dict, repr=False)
     network: str = ""
     # Core's `m_config_sections`: every section the files read named
-    config_sections: list[_SectionInfo] = field(default_factory=list)
+    config_sections: list[_SectionInfo] = field(default_factory=list, repr=False)
     # the warnings Core buffers while it reads its settings, in order;
     # `open_history_log` logs each once its own log is open, ahead of
     # its version line
-    log_warnings: list[str] = field(default_factory=list)
+    log_warnings: list[str] = field(default_factory=list, repr=False)
     # `_warn_unrecognized_sections`'s one warning, logged after the
     # version line; `""` where no section is unrecognised
-    section_warning: str = ""
+    section_warning: str = field(default="", repr=False)
     # `init::StartLogging`'s "Config file:" line, logged after the data
     # directory's; `_read_settings` sets it
     config_file_line: str = ""
     # `settings.json`'s values by name, in key order: Core's
     # `Settings::rw_settings`, empty until `_init_settings_file` reads it
-    rw_settings: dict[str, Json] = field(default_factory=dict)
+    rw_settings: dict[str, Json] = field(default_factory=dict, repr=False)
 
 
 def _interpret_key(key: str) -> _KeyInfo:

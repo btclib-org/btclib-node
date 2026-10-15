@@ -4909,3 +4909,67 @@ def test_a_value_of_the_file_is_another_source_of_a_network_only_option() -> Non
     ]
     file = '{"port":5}'
     assert cli._unsuitable_section_only_args(_file_settings(file, conf=conf)) == []
+
+
+# ISS 1965: section 7 of the btclib-org standard, *A refusal carries no
+# secret* (*Reprs and logs*), for what a `_Settings` holds
+
+_CREDENTIAL = "Zt9qK2mWp7RtXv4n"
+
+
+def assert_free_of_credential(*texts: str) -> None:
+    """Assert that no 8-character piece of `_CREDENTIAL` is in `texts`."""
+    size = 8
+    pieces = [
+        _CREDENTIAL[i : i + size].lower() for i in range(len(_CREDENTIAL) - size + 1)
+    ]
+    for text in texts:
+        for piece in pieces:
+            assert piece not in text.lower()
+
+
+def test_settings_print_no_credential_from_the_command_line(tmp_path: Path) -> None:
+    """`command_line` holds `-rpcpassword` as typed."""
+    settings = _read(tmp_path, "-rpcuser=alice", f"-rpcpassword={_CREDENTIAL}")
+    assert settings.command_line["rpcpassword"] == [_CREDENTIAL]
+    assert_free_of_credential(repr(settings), str(settings))
+
+
+def test_settings_print_no_credential_from_the_config(tmp_path: Path) -> None:
+    """`ro_config` holds `rpcpassword` as the file has it."""
+    settings = _read(tmp_path, conf=f"rpcpassword={_CREDENTIAL}\n")
+    assert settings.ro_config[""]["rpcpassword"] == [_CREDENTIAL]
+    assert_free_of_credential(repr(settings), str(settings))
+
+
+def test_settings_print_no_credential_from_the_settings_file() -> None:
+    """`rw_settings` holds any name of `settings.json`, a password included."""
+    settings = cli._Settings({}, rw_settings={"rpcpassword": _CREDENTIAL})
+    assert_free_of_credential(repr(settings), str(settings))
+
+
+def test_settings_print_no_credential_from_a_section_name(tmp_path: Path) -> None:
+    """A section may be named `rpcpassword=<password>`."""
+    settings = _read(tmp_path, conf=f"[rpcpassword={_CREDENTIAL}]\nx=1\n")
+    assert [name for name, _, _ in settings.config_sections] == [
+        f"rpcpassword={_CREDENTIAL}"
+    ]
+    assert_free_of_credential(repr(settings), str(settings))
+
+
+def test_settings_print_no_credential_from_a_warning() -> None:
+    """`log_warnings` holds text quoting what the files named."""
+    settings = cli._Settings({}, log_warnings=[f"unknown {_CREDENTIAL}.x"])
+    assert_free_of_credential(repr(settings), str(settings))
+
+
+def test_settings_print_no_credential_from_the_section_warning() -> None:
+    """`section_warning` is the warning's text, a section name in it."""
+    warning = f"f.conf:1 Section [rpcpassword={_CREDENTIAL}] is not recognized.\n"
+    settings = cli._Settings({}, section_warning=warning)
+    assert_free_of_credential(repr(settings), str(settings))
+
+
+def test_settings_still_print_what_holds_no_secret(tmp_path: Path) -> None:
+    """The network stays in the repr, so a repr says which settings it is."""
+    assert "network='regtest'" in repr(_read(tmp_path))
