@@ -366,11 +366,12 @@ and what counters each.
   `.github/workflows/codeql.yml` analyses the code and the workflows.
 - **Exposure of sensitive information (CWE-209).** The rule is section
   7's *A refusal carries no secret* in btclib-org/.github's README.md.
-  `tests/secret_free/__init__.py`'s `assert_secret_free` is the helper a
-  test of it calls, and no test of a refusal here calls it yet. This tree
-  does not keep the rule yet: btclib-org/btclib-node#1908, #1946, #1956
-  and #1957 each name a refusal, warning or repr that prints a secret, and
-  owe the fix with its test.
+  `tests/secret_free/__init__.py`'s `assert_secret_free` is the helper the
+  rule's tests call, and no test of a refusal here calls it yet. This tree
+  does not keep the rule yet: btclib-org/btclib-node#1908,
+  btclib-org/btclib-node#1946, btclib-org/btclib-node#1956 and
+  btclib-org/btclib-node#1957 each name a refusal, warning or repr that
+  prints a secret, and owe the fix with its test.
 - **Type confusion (CWE-843).** mypy runs with `strict = true`
   (`pyproject.toml`) over this tree and its suite, as a hook of the lint
   gate in `.pre-commit-config.yaml`.
