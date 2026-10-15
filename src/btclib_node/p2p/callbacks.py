@@ -3161,10 +3161,10 @@ def _blocktxn_block(node: Node, block_hash: bytes, height: int) -> Block | None:
     Core's.
 
     A block above the tip is stored but not connected, and the download
-    window holds many of them, so it is read for every request, as in
-    Core. Each block kept drops those deeper than `MAX_BLOCKTXN_DEPTH`,
-    then the lowest past `_BLOCKTXN_BLOCKS_KEPT`, which a stale block
-    within the depth can reach.
+    window, or a reindex, holds many of them, so it is read for every
+    request, as in Core. Each block kept drops those deeper than
+    `MAX_BLOCKTXN_DEPTH`, then the lowest past `_BLOCKTXN_BLOCKS_KEPT`,
+    which a stale block within the depth can reach.
     btclib-org/btclib-node#1954
     """
     kept = node.blocktxn_blocks.get(block_hash)

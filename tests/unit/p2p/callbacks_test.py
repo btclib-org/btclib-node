@@ -4729,8 +4729,10 @@ def test_a_block_kept_for_getblocktxn_goes_once_past_the_depth() -> None:
 def test_a_getblocktxn_above_the_tip_is_answered_and_not_kept() -> None:
     """ISS 1954: a block stored but not connected is read for every request.
 
-    Up to the download window of such blocks can be stored, so keeping
-    them would not be bounded by `MAX_BLOCKTXN_DEPTH`.
+    Every stored block above the tip can be asked for: the download
+    window's, and while `NodeStatus.Reindexing` holds, the stored chain
+    still to connect. Keeping them would not be bounded by
+    `MAX_BLOCKTXN_DEPTH`.
     """
     length = MAX_BLOCKTXN_DEPTH + 10
     block_index = a_tall_block_index(length)
