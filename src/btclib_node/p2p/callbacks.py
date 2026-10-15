@@ -1888,10 +1888,10 @@ def inv(node: Node, msg: bytes, conn: Connection) -> None:
 
 
 # The two families `advance_getdata` below dispatches on -- everything
-# else a `getdata` may name (`MSG_FILTERED_BLOCK`, `UNDEFINED`, an
-# unrecognised code) is neither, and is popped off the front of the
-# pending items and otherwise ignored, the same silence `_filter_range`
-# already answers a request it declines with elsewhere in this module.
+# else a `getdata` may name (`UNDEFINED`, an unrecognised code) is
+# neither, and is popped off the front of the pending items and
+# otherwise ignored, the same silence `_filter_range` already answers a
+# request it declines with elsewhere in this module.
 _GETDATA_TX_TYPES = (
     InventoryType.MSG_TX,
     InventoryType.MSG_WTX,
@@ -1901,6 +1901,7 @@ _GETDATA_BLOCK_TYPES = (
     InventoryType.MSG_BLOCK,
     InventoryType.MSG_WITNESS_BLOCK,
     InventoryType.MSG_CMPCT_BLOCK,
+    InventoryType.MSG_FILTERED_BLOCK,
 )
 
 # BIP152's compact blocks as Core serves them (`net_processing.cpp`,
@@ -2020,7 +2021,28 @@ def _serve_getdata_block(node: Node, conn: Connection, item: Inventory) -> None:
     ignores a block it has no index entry for, then one
     `BlockRequestAllowed` refuses -- off the active chain and not
     recently valid -- before the prune threshold.
+
+    A `MSG_FILTERED_BLOCK` drops the peer ahead of all that. Core master,
+    at bitcoin/bitcoin@cce32b1687, opens `ProcessGetBlockData` with "A
+    filtered-block can only ever be requested if we offer NODE_BLOOM",
+    and sets `fDisconnect` where it does not. This node offers
+    `NODE_BLOOM` to no peer (`connection.local_services`), a
+    `bloomfilter` permission included (`permissions.py`). The check is
+    bitcoin/bitcoin@9871fb726c, merged by bitcoin/bitcoin#35832: in
+    v32.0rc1, not in v31.1, the release `integration-bitcoind.yml` pins.
+    v31.1, at bitcoin/bitcoin@9be056a8a7, refuses every `filterload`
+    without `NODE_BLOOM`, so the item finds no bloom filter and gets no
+    answer. *Following Bitcoin Core* in `CONTRIBUTING.md` lets a
+    peer-refusal rule follow master ahead of a release.
     """
+    if item.type_code == InventoryType.MSG_FILTERED_BLOCK:
+        node.logger.log_debug(
+            "net",
+            "filtered block request received when NODE_BLOOM service disabled, peer=%s",
+            conn.id,
+        )
+        conn.stop()
+        return
     if item.hash not in node.chainstate.block_index.header_dict:
         return
     if not _block_request_allowed(node, item.hash):
@@ -2087,7 +2109,9 @@ def advance_getdata(node: Node, conn: Connection, items: deque[Inventory]) -> bo
     and never touched by the function it calls out to for a block item.
     `_below_prune_threshold`'s own docstring is where a pruned node's
     other answer to a block item -- disconnecting rather than staying
-    silent -- is argued against the same function.
+    silent -- is argued against the same function, and
+    `_serve_getdata_block`'s argues why a `MSG_FILTERED_BLOCK`
+    disconnects whether or not the block is held.
 
     The misses of a call go in one `notfound`, sent once the call has
     served what it could, as Core's `vNotFound` is a per-call local.
