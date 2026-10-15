@@ -28,6 +28,7 @@ from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
 from btclib_node import mempool as mempool_module
+from btclib_node import mempool_persist as persist_module
 from btclib_node.chains import RegTest
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
@@ -354,9 +355,8 @@ def test_a_transaction_that_expires_as_it_is_loaded_fails(
     path = node.data_dir / "mempool.dat"
     now = int(time.time())
     write(path, [(fan, now - 3599, 0)], {}, [])
-    monkeypatch.setattr(
-        mempool_module, "clock", SimpleNamespace(now=lambda: time.time() + 3)
-    )
+    monkeypatch.setattr(persist_module, "clock", SimpleNamespace(now=lambda: now))
+    monkeypatch.setattr(mempool_module, "clock", SimpleNamespace(now=lambda: now + 3))
     lines = LogLines()
     node.logger.addHandler(lines)
     with patch.object(node.fee_estimator, "process_transaction") as process:
@@ -383,10 +383,10 @@ def test_a_full_mempool_expires_a_loaded_transaction_before_it_evicts(
     mempool.add_tx(keeper, 0)
     mempool.bytesize_limit = keeper.vsize + fan.vsize - 1
     path = node.data_dir / "mempool.dat"
-    write(path, [(fan, int(time.time()) - 3599, 0)], {}, [])
-    monkeypatch.setattr(
-        mempool_module, "clock", SimpleNamespace(now=lambda: time.time() + 3)
-    )
+    now = int(time.time())
+    write(path, [(fan, now - 3599, 0)], {}, [])
+    monkeypatch.setattr(persist_module, "clock", SimpleNamespace(now=lambda: now))
+    monkeypatch.setattr(mempool_module, "clock", SimpleNamespace(now=lambda: now + 3))
     assert run(load_mempool(node, path))
     assert set(mempool.txid_index) == {keeper.id}
 
