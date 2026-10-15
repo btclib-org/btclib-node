@@ -12,10 +12,12 @@ messages addressed to a connection that is no longer there.
 
 import asyncio
 import errno
+import json
 import math
 import re
 import secrets
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -7193,6 +7195,144 @@ def test_accept_loop_logs_and_retries_on_a_refused_accept(
             with suppress(asyncio.CancelledError):
                 loop.run_until_complete(task)
     assert accepted.empty()
+
+
+def test_accept_loop_out_of_descriptors_logs_each_failure_and_waits(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1961: an accept failing `EMFILE` is retried at a pace, not in a spin.
+
+    While every accept fails, the attempts are few, and each is logged at
+    info in Core's words, not as an exception with a traceback; once one
+    succeeds, the connection is queued as any other.
+    """
+    manager = a_manager()
+    loop = manager.loop
+    accepted: asyncio.Queue[Any] = asyncio.Queue()
+    informed: list[Any] = []
+    failed: list[Any] = []
+    monkeypatch.setattr(manager.logger, "info", lambda *a: informed.append(a))
+    monkeypatch.setattr(manager.logger, "exception", lambda *a, **k: failed.append(a))
+    ours, theirs = socket.socketpair()
+    refusals: list[float] = []
+    fail_until = time.monotonic() + 0.35
+    backlog = [(ours, ("127.0.0.1", 45000))]
+
+    async def out_of_descriptors(
+        sock: socket.socket,
+    ) -> tuple[socket.socket, tuple[str, int]]:
+        if time.monotonic() < fail_until:
+            refusals.append(time.monotonic())
+            raise OSError(errno.EMFILE, "Too many open files")
+        if backlog:
+            return backlog.pop()
+        # an empty backlog: the accept waits
+        waiting: asyncio.Future[tuple[socket.socket, tuple[str, int]]] = (
+            asyncio.get_running_loop().create_future()
+        )
+        return await waiting
+
+    monkeypatch.setattr(loop, "sock_accept", out_of_descriptors)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+        task = loop.create_task(manager._accept_loop(server_socket, accepted))
+        try:
+            loop.run_until_complete(asyncio.wait_for(accepted.get(), 60))
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                loop.run_until_complete(task)
+            theirs.close()
+            ours.close()
+    # a spin is refused at every pass of the loop in this window
+    assert len(refusals) <= 6
+    line = ("socket error accept failed: %s", f"Too many open files ({errno.EMFILE})")
+    assert informed == [line] * len(refusals)
+    assert not failed
+
+
+# Run in a subprocess, since it lowers `RLIMIT_NOFILE` for the process: a
+# listener with connections queued, every descriptor taken, then two
+# freed 0.35 seconds in and one more client connected. It prints the
+# accepts tried, the lines logged and whether a connection was accepted.
+_EXHAUST_DESCRIPTORS = """
+import asyncio, json, os, resource, socket, time
+from types import SimpleNamespace
+from btclib_node.p2p.manager import P2pManager
+
+logged = []
+logger = SimpleNamespace(
+    info=lambda *a: logged.append(a[0] % a[1:]),
+    exception=lambda *a, **k: logged.append("exception"),
+)
+attempts = 0
+
+
+async def main():
+    loop = asyncio.get_running_loop()
+    real = loop.sock_accept
+
+    async def counted(sock):
+        global attempts
+        attempts += 1
+        return await real(sock)
+
+    loop.sock_accept = counted
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    listener.setblocking(False)
+    clients = [socket.create_connection(listener.getsockname()) for _ in range(3)]
+    resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
+    held = []
+    try:
+        while True:
+            held.append(os.open(os.devnull, os.O_RDONLY))
+    except OSError:
+        pass
+    queue = asyncio.Queue()
+    task = loop.create_task(
+        P2pManager._accept_loop(SimpleNamespace(logger=logger), listener, queue)
+    )
+    await asyncio.sleep(0.35)
+    os.close(held.pop())
+    os.close(held.pop())
+    clients.append(socket.create_connection(listener.getsockname()))
+    try:
+        await asyncio.wait_for(queue.get(), 10)
+        got = True
+    except TimeoutError:
+        got = False
+    task.cancel()
+    print(json.dumps({"attempts": attempts, "logged": logged, "accepted": got}))
+
+
+asyncio.run(main())
+"""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="`resource` is POSIX only")
+def test_accept_loop_survives_the_kernel_running_out_of_descriptors() -> None:
+    """ISS 1961: a real `EMFILE`, from a lowered `RLIMIT_NOFILE`, is not a spin.
+
+    Where the kernel keeps the connection queued, each accept fails at
+    once; macOS drops it, so the loop there fails once per queued
+    connection. On either, the loop tries a few times, logs each, and
+    accepts once a descriptor is free.
+    """
+    run = subprocess.run(  # noqa: S603 -- this interpreter, a script above
+        [sys.executable, "-c", _EXHAUST_DESCRIPTORS],
+        capture_output=True,
+        encoding="utf-8",
+        timeout=60,
+        check=True,
+    )
+    report = json.loads(run.stdout)
+    assert report["accepted"]
+    # a spin tries an accept at every pass of the loop in this window
+    assert report["attempts"] <= 8
+    refused = f"socket error accept failed: Too many open files ({errno.EMFILE})"
+    assert report["logged"]
+    assert set(report["logged"]) == {refused}
 
 
 def test_report_server_failure_logs_a_real_exception(

@@ -116,6 +116,18 @@ if TYPE_CHECKING:
 
 __all__ = ["P2pManager", "network_error_string"]
 
+# What `accept` fails with where no descriptor is left, for this process
+# or for the system. A connection the kernel leaves queued makes the next
+# accept fail at once too. Core logs each failure at info and tries again
+# on its loop's next pass (`CConnman::AcceptConnection`, `src/net.cpp`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag, and at
+# bitcoin/bitcoin@cce32b1687), a pass that can come at once while the
+# listening socket stays readable. `_ACCEPT_RETRY_DELAY` is the seconds
+# `_accept_loop` waits instead, a departure so that it does not spin this
+# manager's loop (btclib-org/btclib-node#1961).
+_OUT_OF_DESCRIPTORS = frozenset((errno.EMFILE, errno.ENFILE))
+_ACCEPT_RETRY_DELAY = 0.1
+
 # How often `manage_connections`' own loop calls `_maybe_dial_more_peers`,
 # the "draw a candidate and dial it" arm of Core's `ThreadOpenConnections`
 # (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
@@ -3378,8 +3390,11 @@ class P2pManager(threading.Thread):
         `AcceptEx`) and raises anything else -- `ECONNABORTED` being the
         ordinary way, a peer resetting the connection between the kernel
         reporting it readable and the accept reaching it -- which is what
-        the `except OSError` below answers exactly as `server`'s own
-        former reader callback used to.
+        the `except OSError` below answers, as `server`'s own former
+        reader callback used to, except where no descriptor is left: then
+        each failure is logged at info, as Core logs it, and the accept
+        tried again `_ACCEPT_RETRY_DELAY` seconds later, until one
+        succeeds.
 
         `sock_accept`'s own internal future is already resolved with
         that exception by the time this coroutine's `await` reaches it
@@ -3396,7 +3411,13 @@ class P2pManager(threading.Thread):
                 sock, sockaddr = await asyncio.get_running_loop().sock_accept(
                     server_socket
                 )
-            except OSError:
+            except OSError as error:
+                if error.errno in _OUT_OF_DESCRIPTORS:
+                    self.logger.info(
+                        "socket error accept failed: %s", network_error_string(error)
+                    )
+                    await asyncio.sleep(_ACCEPT_RETRY_DELAY)
+                    continue
                 self.logger.exception("Accepting an inbound connection failed")
                 await asyncio.sleep(0)
                 continue
