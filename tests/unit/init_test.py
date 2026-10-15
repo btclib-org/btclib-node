@@ -2658,7 +2658,7 @@ def test_a_store_that_cannot_be_opened_ends_start_up_with_the_rest_closed(
     What `load` opened before it is closed again, so the same directory
     opens whole once the store can be.
     """
-    message = "the block store cannot be opened"
+    message = "the chainstate cannot be opened"
 
     def refuse(*_args: object, **_kwargs: object) -> None:
         raise OSError(message)
@@ -2667,14 +2667,14 @@ def test_a_store_that_cannot_be_opened_ends_start_up_with_the_rest_closed(
         chain="regtest", data_dir=tmp_path, allow_p2p=False, allow_rpc=False
     )
     with monkeypatch.context() as patch:
-        patch.setattr(btclib_node, "BlockDB", refuse)
+        patch.setattr(btclib_node, "Chainstate", refuse)
         node = Node(config=config)
         node.start()
         wait_until(lambda: not node.is_alive())
         node.stop()
     assert node.init_errors == [message]
     assert not node.loaded
-    assert node.chainstate.db.closed
+    assert node.block_db.db.closed
     assert node.p2p_manager.loop.is_closed()
     peer_db = node.p2p_manager.peer_db.db
     assert peer_db is not None
@@ -2897,7 +2897,7 @@ def test_a_pruned_data_directory_is_refused_without_prune_and_accepted_with_it(
         )
     ]
     assert not unpruned.loaded
-    assert unpruned.chainstate.db.closed
+    assert unpruned.block_db.db.closed
     pruned = Node(
         config=Config(
             chain="regtest",
