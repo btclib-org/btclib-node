@@ -3103,7 +3103,9 @@ def getblocktxn(node: Node, msg: bytes, conn: Connection) -> None:
     its last transaction being misbehaviour; and for an older one the
     full block, queued as a `MSG_WITNESS_BLOCK` item of this connection's
     own `getdata`, whose serving pays for the disk read the request cost.
-    A block within the depth is read once (`_blocktxn_block`).
+    A block at or below the tip is kept once read, until later reads drop
+    it, and one above the tip is read for every request
+    (`_blocktxn_block`).
 
     An empty `indexes` is dropped, undiscouraged, ahead of any lookup:
     Core commit 28641fd195db2a175fd43fee2e32758aef9816a6 ("p2p: reject
