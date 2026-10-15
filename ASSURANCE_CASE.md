@@ -367,11 +367,22 @@ and what counters each.
 - **Exposure of sensitive information (CWE-209).** The rule is section
   7's *A refusal carries no secret* in btclib-org/.github's README.md.
   `tests/secret_free/__init__.py`'s `assert_secret_free` is the helper the
-  rule's tests call, and no test of a refusal here calls it yet. This tree
-  does not keep the rule yet: btclib-org/btclib-node#1908,
-  btclib-org/btclib-node#1946, btclib-org/btclib-node#1956 and
-  btclib-org/btclib-node#1967 each name a refusal, warning or log line
-  that holds or prints a secret, and owe the fix with its test.
+  rule's tests call. A configuration line, a command-line
+  argument, an unknown configuration key and an unrecognized section name
+  are quoted up to the first sensitive option's name and the first `=`,
+  and only where that is at most 16 characters, a longer one being given
+  by its length (`cli.py`'s `_quoted_line`). A malformed RPC header field
+  is named by its index and its length (`rpc/connection.py`'s
+  `_FieldReader`), and `RequestHead`'s repr leaves out the
+  `Authorization` header.
+  `tests/unit/cli_test.py`'s
+  `test_parse_parameters_leaves_a_value_out_of_a_refusal` and
+  `test_parse_conf_text_leaves_a_value_out_of_a_refusal`, and
+  `tests/unit/rpc/connection_test.py`'s
+  `test_a_malformed_header_is_named_by_index_not_by_its_text`, call it on
+  those refusals. This tree does not keep the rule yet:
+  btclib-org/btclib-node#1967 names a log line that prints a secret, and
+  owes the fix with its test.
 - **Type confusion (CWE-843).** mypy runs with `strict = true`
   (`pyproject.toml`) over this tree and its suite, as a hook of the lint
   gate in `.pre-commit-config.yaml`.

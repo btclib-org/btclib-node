@@ -134,11 +134,11 @@ uses `wallets` only where it exists.
 The `scantxoutset` refusal "Cannot derive script without private keys" does
 not quote the descriptor, which may hold a private key. A config line that
 fails to parse, and a command-line argument refused as an invalid parameter,
-are quoted only up to the first `rpcauth`, `rpcpassword` or `rpcuser` in
-them; a misspelled name, such as `-rpcpasword=...`, is quoted whole.
-Bitcoin Core quotes all of
-these whole: `rpc/util.cpp:1370`, `GetConfigOptions` (`src/common/config.cpp`)
-and `ParseParameters` (`src/common/args.cpp:234`), at
+are quoted as ASSURANCE_CASE.md's CWE-209 entry says. So are the key of an
+unknown configuration value, which is also given its file and line, and an
+unrecognized section name. Bitcoin Core quotes all of these whole:
+`rpc/util.cpp:1370`, `GetConfigOptions` (`src/common/config.cpp`) and
+`ParseParameters` (`src/common/args.cpp:234`), at
 bitcoin/bitcoin@db0bde16b9. A refusal reaches stderr, logs and the RPC
 caller.
 

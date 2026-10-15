@@ -33,6 +33,7 @@ from tests import (
     lock_from_another_process,
     wait_until_listening,
 )
+from tests.secret_free import assert_secret_free
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -112,6 +113,9 @@ def test_parse_conf_text_reads_a_no_prefix_as_a_negation(
     assert cli._parse_conf_text(text, warnings=[]) == {"": {"listen": [value]}}
 
 
+LEAK = "correct-horse-battery-staple"
+
+
 # `GetConfigOptions`, `IsConfSupported` and `InterpretValue`'s words
 # (`src/common/config.cpp`, `src/common/args.cpp`,
 # at bitcoin/bitcoin@9be056a8a7), each measured on `bitcoind` v31.1.0 with
@@ -136,7 +140,7 @@ def test_parse_conf_text_reads_a_no_prefix_as_a_negation(
         ),
         pytest.param(
             "  -foo = 1 # c",
-            "parse error on line 2: -foo = 1, options in configuration file must "
+            "parse error on line 2: -foo, options in configuration file must "
             "be specified without leading -",
             id="leading dash",
         ),
@@ -177,85 +181,135 @@ def test_parse_conf_text_refuses_a_line_in_core_s_words(
     ("line", "refusal"),
     [
         pytest.param(
-            "-rpcpassword=hunter2",
+            f"-rpcpassword={LEAK}",
             "parse error on line 2: -rpcpassword, options in configuration file "
             "must be specified without leading -",
             id="leading dash",
         ),
         pytest.param(
-            "rpcpasswordhunter2",
+            f"rpcpassword{LEAK}",
             "parse error on line 2: rpcpassword",
             id="no equals sign",
         ),
         pytest.param(
-            "norpcpassword hunter2",
+            f"norpcpassword {LEAK}",
             "parse error on line 2: norpcpassword, if you intended to specify a "
             "negated option, use norpcpassword=1 instead",
             id="negated",
         ),
         pytest.param(
-            "-norpcuser = hunter2",
+            f"-norpcuser = {LEAK}",
             "parse error on line 2: -norpcuser, options in configuration file "
             "must be specified without leading -",
             id="negated user",
         ),
         pytest.param(
-            "rpcauthhunter2",
-            "parse error on line 2: rpcauth",
-            id="rpcauth",
-        ),
-        pytest.param(
-            "-main.rpcpassword=hunter2",
-            "parse error on line 2: -main.rpcpassword, options in configuration "
+            f"-main.rpcpassword={LEAK}",
+            "parse error on line 2: <17 characters>, options in configuration "
             "file must be specified without leading -",
             id="section and dash",
         ),
         pytest.param(
-            "regtest.rpcauthhunter2",
+            f"regtest.rpcauth {LEAK}",
             "parse error on line 2: regtest.rpcauth",
             id="section",
         ),
         pytest.param(
-            "test.norpcuser hunter2",
-            "parse error on line 2: test.norpcuser",
-            id="section and negated",
-        ),
-        pytest.param(
-            "foo.rpcpassword hunter2",
-            "parse error on line 2: foo.rpcpassword",
-            id="unknown section",
-        ),
-        pytest.param(
-            "-foo.rpcpassword=hunter2",
-            "parse error on line 2: -foo.rpcpassword, options in configuration "
-            "file must be specified without leading -",
-            id="unknown section and dash",
-        ),
-        pytest.param(
-            "testnet3.rpcauth hunter2",
-            "parse error on line 2: testnet3.rpcauth",
-            id="old section name",
-        ),
-        pytest.param(
-            "mainnet.rpcpasswordhunter2",
-            "parse error on line 2: mainnet.rpcpassword",
-            id="made-up section",
-        ),
-        pytest.param(
-            "- rpcpassword=hunter2",
+            f"- rpcpassword={LEAK}",
             "parse error on line 2: - rpcpassword, options in configuration "
             "file must be specified without leading -",
             id="dash and space",
         ),
+        pytest.param(
+            f"no{LEAK}",
+            "parse error on line 2: <30 characters>",
+            id="long negation",
+        ),
+        pytest.param(
+            f"rpcpasword {LEAK}",
+            "parse error on line 2: <39 characters>",
+            id="misspelled name",
+        ),
     ],
 )
-def test_parse_conf_text_leaves_a_sensitive_value_out_of_a_refusal(
+def test_parse_conf_text_leaves_a_value_out_of_a_refusal(
     line: str, refusal: str
 ) -> None:
-    """Core quotes the whole line; this tree quotes it up to the option name."""
+    """Core quotes the whole line; this tree quotes the name before the `=`.
+
+    A name too long is given by its length.
+    """
     with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$") as caught:
         cli._parse_conf_text(f"regtest=1\n{line}\n", warnings=[])
-    assert "hunter2" not in str(caught.value)
+    assert_secret_free(caught.value, [LEAK])
+
+
+@pytest.mark.parametrize(
+    ("line", "short", "refusal"),
+    [
+        ("rpcauthhunter2", "hunter2", "parse error on line 2: rpcauth"),
+        ("rpcpassword pw12", "pw12", "parse error on line 2: rpcpassword"),
+        ("rpcuser hunter2", "hunter2", "parse error on line 2: rpcuser"),
+        pytest.param(
+            "norpcpassword pw",
+            "pw",
+            "parse error on line 2: norpcpassword, if you intended to specify a "
+            "negated option, use norpcpassword=1 instead",
+            id="negated",
+        ),
+        pytest.param(
+            "-rpcpasswordpw12",
+            "pw12",
+            "parse error on line 2: -rpcpassword, options in configuration file "
+            "must be specified without leading -",
+            id="dash",
+        ),
+    ],
+)
+def test_parse_conf_text_cuts_a_short_line_at_a_sensitive_name(
+    line: str, short: str, refusal: str
+) -> None:
+    """A line short enough to be quoted whole stops after a sensitive name."""
+    with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$") as caught:
+        cli._parse_conf_text(f"regtest=1\n{line}\n", warnings=[])
+    assert_secret_free(caught.value, [short])
+
+
+@pytest.mark.parametrize(
+    ("arg", "short", "message"),
+    [
+        ("-rpcpasswordpw12", "pw12", "Invalid parameter -rpcpassword"),
+        ("-rpcuser.hunter2", "hunter2", "Invalid parameter -rpcuser"),
+    ],
+)
+def test_parse_parameters_cuts_a_short_argument_at_a_sensitive_name(
+    arg: str, short: str, message: str
+) -> None:
+    """An argument short enough to be quoted whole stops after the name."""
+    full = f"Error parsing command line arguments: {message}"
+    with pytest.raises(ValueError, match=f"^{re.escape(full)}$") as caught:
+        cli._parse_parameters([arg], [])
+    assert_secret_free(caught.value, [short])
+
+
+@pytest.mark.parametrize(
+    ("line", "short", "warning"),
+    [
+        (f"rpcpasword {LEAK}=1", LEAK, "<39 characters>"),
+        ("rpcpassword pw12=1", "pw12", "rpcpassword"),
+    ],
+)
+def test_an_unknown_key_is_warned_about_by_its_name_alone(
+    line: str, short: str, warning: str
+) -> None:
+    """An ignored key may hold a secret.
+
+    Its warning quotes it as a refusal does.
+    """
+    warnings: list[str] = []
+    cli._parse_conf_text(f"{line}\n", filepath="f.conf", warnings=warnings)
+    assert warnings == [f"f.conf:1 Ignoring unknown configuration value {warning}"]
+    assert_secret_free(ValueError(*warnings), [short])
 
 
 def test_parse_conf_text_ends_a_line_at_a_newline_alone() -> None:
@@ -352,12 +406,79 @@ def test_parse_conf_text_warns_about_an_unknown_key_with_its_section(
 
     As written, section and all: `bitcoind` v31.1.0 logs `[y]`'s `bar=2`
     as "Ignoring unknown configuration value y.bar", and writes nothing
-    on stderr.
+    on stderr. This tree puts the file and line first, and bounds a long name.
     """
     warnings: list[str] = []
-    assert cli._parse_conf_text("[regtest]\nwalletnotify=x\n", warnings=warnings) == {}
-    assert warnings == ["Ignoring unknown configuration value regtest.walletnotify"]
+    text = "[regtest]\nbar=x\n"
+    assert cli._parse_conf_text(text, filepath="f.conf", warnings=warnings) == {}
+    assert warnings == ["f.conf:2 Ignoring unknown configuration value regtest.bar"]
     assert capsys.readouterr().err == ""
+
+
+def test_parse_conf_text_gives_a_long_unknown_key_by_length_and_line() -> None:
+    """A key past 16 characters, its section included, is found by its line."""
+    warnings: list[str] = []
+    text = f"regtest=1\n[main]\nwalletnotify=x\n[main]\n{LEAK}=x\n"
+    cli._parse_conf_text(text, filepath="f.conf", warnings=warnings)
+    assert warnings == [
+        "f.conf:3 Ignoring unknown configuration value <17 characters>",
+        "f.conf:5 Ignoring unknown configuration value <33 characters>",
+    ]
+    assert_secret_free(ValueError(*warnings), [LEAK])
+
+
+def test_load_conf_tree_names_the_included_file_in_an_unknown_key_warning(
+    tmp_path: Path,
+) -> None:
+    """A warning for a key in an included file gives that file and its line."""
+    (tmp_path / "extra.conf").write_text(
+        f"port=1\n{LEAK}=x\n[main]\nwalletnotify=x\n", encoding="utf-8"
+    )
+    conf = tmp_path / "bitcoin.conf"
+    conf.write_text("includeconf=extra.conf\nfoo=1\n", encoding="utf-8")
+    warnings: list[str] = []
+    cli._load_conf_tree(
+        conf,
+        conf_explicit=False,
+        base_dir=tmp_path,
+        use_includes=True,
+        warnings=warnings,
+    )
+    assert sorted(warnings) == [
+        f"{conf}:2 Ignoring unknown configuration value foo",
+        "extra.conf:2 Ignoring unknown configuration value <28 characters>",
+        "extra.conf:4 Ignoring unknown configuration value <17 characters>",
+    ]
+    assert_secret_free(ValueError(*warnings), [LEAK])
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        (
+            f"[rpcpassword={LEAK}]\n",
+            "Warning: f.conf:1 Section [rpcpassword] is not recognized.\n\n",
+        ),
+        (
+            f"{LEAK}.x=1\n",
+            "Warning: f.conf:1 Section [<28 characters>] is not recognized.\n\n",
+        ),
+        ("[foo]\n", "Warning: f.conf:1 Section [foo] is not recognized.\n\n"),
+    ],
+    ids=["bracket", "key", "short"],
+)
+def test_an_unrecognized_section_is_warned_about_by_its_name_alone(
+    capsys: pytest.CaptureFixture[str], text: str, message: str
+) -> None:
+    """ISS 1956: a section name may hold a secret; it is quoted as a key is."""
+    sections: list[tuple[str, str, int]] = []
+    cli._parse_conf_text(text, sections, "f.conf", warnings=[])
+    settings = cli._Settings({})
+    settings.config_sections = sections
+    cli._warn_unrecognized_sections(settings)
+    err = capsys.readouterr().err
+    assert err == message
+    assert_secret_free(ValueError(err), [LEAK])
 
 
 def test_parse_conf_text_warns_specifically_about_datadir(
@@ -365,7 +486,7 @@ def test_parse_conf_text_warns_specifically_about_datadir(
 ) -> None:
     """`datadir=` gets its own message, not the generic unrecognised one.
 
-    `datadir` is a real, documented option -- unlike `walletnotify`
+    `datadir` is a real, documented option -- unlike `bar`
     above, which this reader genuinely does not know -- so the message
     it gets says why it is never read from a file rather than implying
     it is a typo.
@@ -695,9 +816,9 @@ def test_parse_parameters_takes_a_value_only_after_the_equals_sign(
 @pytest.mark.parametrize(
     ("argv", "message"),
     [
-        (["-notaflag=1", "foo"], "Invalid parameter -notaflag=1"),
+        (["-notaflag=1", "foo"], "Invalid parameter -notaflag"),
         (["--notaflag"], "Invalid parameter --notaflag"),
-        (["-regtest.port=1"], "Invalid parameter -regtest.port=1"),
+        (["-regtest.port=1"], "Invalid parameter -regtest.port"),
         (["-nodatadir"], "Negating of -datadir is meaningless and therefore forbidden"),
         (
             ["-includeconf=x"],
@@ -723,7 +844,10 @@ def test_parse_parameters_takes_a_value_only_after_the_equals_sign(
     ],
 )
 def test_parse_parameters_refuses_as_core_does(argv: list[str], message: str) -> None:
-    """Each message as `bitcoind` v31.1.0 printed it for the same argument."""
+    """Each message as `bitcoind` v31.1.0 printed it, but for the argument.
+
+    Core quotes the argument whole; `_quoted_line` stops at the `=`.
+    """
     full = f"Error parsing command line arguments: {message}"
     with pytest.raises(ValueError, match=f"^{re.escape(full)}$"):
         cli._parse_parameters(argv, [])
@@ -732,18 +856,21 @@ def test_parse_parameters_refuses_as_core_does(argv: list[str], message: str) ->
 @pytest.mark.parametrize(
     ("arg", "message"),
     [
-        ("-main.rpcpassword=hunter2", "Invalid parameter -main.rpcpassword"),
-        ("-foo.rpcauth=hunter2", "Invalid parameter -foo.rpcauth"),
+        (f"-main.rpcpassword={LEAK}", "Invalid parameter <17 characters>"),
+        (f"-foo.rpcauth={LEAK}", "Invalid parameter -foo.rpcauth"),
+        (f"-rpcpasword={LEAK}", "Invalid parameter -rpcpasword"),
+        (f"-{LEAK}", "Invalid parameter <29 characters>"),
     ],
+    ids=["section", "unknown section", "misspelled name", "no equals sign"],
 )
-def test_parse_parameters_leaves_a_sensitive_value_out_of_a_refusal(
+def test_parse_parameters_leaves_a_value_out_of_a_refusal(
     arg: str, message: str
 ) -> None:
     """Core quotes the whole argument; this tree stops at the option name."""
     full = f"Error parsing command line arguments: {message}"
     with pytest.raises(ValueError, match=f"^{re.escape(full)}$") as caught:
         cli._parse_parameters([arg], [])
-    assert "hunter2" not in str(caught.value)
+    assert_secret_free(caught.value, [LEAK])
 
 
 @pytest.mark.parametrize(
@@ -1005,9 +1132,9 @@ def test_build_config_orders_the_log_warnings_as_bitcoind_logs_them(
     )
     assert config.log_warnings == (
         "Parsed potentially confusing double-negative -listen=0",
-        "Ignoring unknown configuration value foo",
+        f"{path}:2 Ignoring unknown configuration value foo",
         "Parsed potentially confusing double-negative -server=0",
-        "Ignoring unknown configuration value y.bar",
+        f"{path}:6 Ignoring unknown configuration value y.bar",
     )
     assert config.section_warning == sections
     assert capsys.readouterr().err == f"Warning: {sections}\n"
