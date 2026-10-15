@@ -3390,11 +3390,12 @@ class P2pManager(threading.Thread):
         `AcceptEx`) and raises anything else -- `ECONNABORTED` being the
         ordinary way, a peer resetting the connection between the kernel
         reporting it readable and the accept reaching it -- which is what
-        the `except OSError` below answers, as `server`'s own former
-        reader callback used to, except where no descriptor is left: then
-        each failure is logged at info, as Core logs it, and the accept
-        tried again `_ACCEPT_RETRY_DELAY` seconds later, until one
-        succeeds.
+        the `except OSError` below answers exactly as `server`'s own
+        former reader callback used to.
+
+        Where no descriptor is left, each failure is logged at info, as
+        Core logs it, and the accept tried again `_ACCEPT_RETRY_DELAY`
+        seconds later, until one succeeds.
 
         `sock_accept`'s own internal future is already resolved with
         that exception by the time this coroutine's `await` reaches it
