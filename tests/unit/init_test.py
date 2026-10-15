@@ -2875,7 +2875,7 @@ def test_a_pruned_data_directory_is_refused_without_prune_and_accepted_with_it(
 ) -> None:
     """ISS 1916: Core refuses an unpruned start on blocks it has pruned.
 
-    The stores were opened by then, so `run`'s teardown closes them.
+    The stores were opened by then, so `_load_or_abort` closes them.
     """
     with unstarted_node_context(tmp_path, pruned=True) as node:
         prune_up_to_height(node, 0)
