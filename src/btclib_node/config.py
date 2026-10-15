@@ -593,10 +593,8 @@ class Config:
     # own docstring).
     rpcservertimeout: int
     # Core's own `-rpcmaxconnections`: how many RPC clients
-    # `RpcManager` holds at once. At the limit its accept loops stop
-    # accepting, so a new client waits in the kernel's queue until a held
-    # one leaves; `RpcManager._accept_loop` has the one client per
-    # listening socket that can be accepted past it.
+    # `RpcManager` holds at once. `rpc.manager`'s module docstring has
+    # what happens at the limit.
     rpcmaxconnections: int
     # Core's own `-rpcauth`, one entry per value: users the RPC listener
     # accepts beside the cookie and `rpc_password_entry`. Where a value

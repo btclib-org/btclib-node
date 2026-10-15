@@ -72,9 +72,9 @@ _LOOPBACK_HOSTS = ("::1", "127.0.0.1")
 # accept fail at once too. Core logs each failure at debug and tries
 # again on its loop's next pass (`HTTPServer::AcceptConnection`,
 # `src/httpserver.cpp`, at bitcoin/bitcoin@649bc0a645), a pass that can
-# come at once while the listening socket stays readable. `_accept_loop`
-# logs the same line but waits this many seconds before it tries again,
-# a departure so that it does not spin this manager's loop
+# come at once while the listening socket stays readable.
+# `_ACCEPT_RETRY_DELAY` is the seconds `_accept_loop` waits instead, a
+# departure so that it does not spin this manager's loop
 # (btclib-org/btclib-node#1953).
 _OUT_OF_DESCRIPTORS = frozenset((errno.EMFILE, errno.ENFILE))
 _ACCEPT_RETRY_DELAY = 0.1
