@@ -210,6 +210,7 @@ from btclib_node.config import (
     DEFAULT_DUST_RELAY_FEERATE,
     DEFAULT_INCREMENTAL_RELAY_FEERATE,
     DEFAULT_MAX_DATACARRIER_BYTES,
+    DEFAULT_MAX_HTTP_CONNECTIONS,
     DEFAULT_MAX_PEER_CONNECTIONS,
     DEFAULT_MAX_TIP_AGE,
     DEFAULT_MIN_RELAY_FEERATE,
@@ -285,6 +286,7 @@ _TRIMMED = " \f\n\r\t\v"
 _LEADING_INTEGER = re.compile(r"-?[0-9]+")
 _INT64_MIN, _INT64_MAX = -(2**63), 2**63 - 1
 _INT_MIN = -(2**31)
+_INT_MAX = 2**31 - 1
 # the MiB a `uint64_t` byte count wraps at
 _PRUNE_MIB_WRAP = 2**64 // 2**20
 
@@ -772,6 +774,12 @@ _OPTIONS: dict[str, _Option] = {
         "=<readable-by>",
         "Set permissions on the RPC auth cookie file so that it is readable by "
         "[owner|group|all] (default: owner)",
+        _RPC_TITLE,
+    ),
+    "rpcmaxconnections": _Option(
+        "=<n>",
+        "The maximum number of connected HTTP clients (default: "
+        f"{DEFAULT_MAX_HTTP_CONNECTIONS})",
         _RPC_TITLE,
     ),
     "rpcpassword": _Option(
@@ -1582,6 +1590,26 @@ def _to_int(value: int) -> int:
     return (value - _INT_MIN) % 2**32 + _INT_MIN
 
 
+def _get_rpcmaxconnections(settings: _Settings) -> int:
+    """Return `-rpcmaxconnections` as Core's `GetArg<int>` reads it.
+
+    `SettingTo<int>` (`src/common/args.cpp`, at bitcoin/bitcoin@649bc0a645)
+    reads a JSON number with `UniValue::getInt<int>`, which refuses one
+    past a 32-bit `int` as "JSON integer out of range". A string past it
+    saturates, as `LocaleIndependentAtoi<int>` does
+    (`src/util/strencodings.h`, same sha), rather than wrapping as
+    `_to_int` does.
+    """
+    value = _get_int(settings, "rpcmaxconnections")
+    if value is None:
+        return DEFAULT_MAX_HTTP_CONNECTIONS
+    in_range = _INT_MIN <= value <= _INT_MAX
+    if not in_range and isinstance(_get_setting(settings, "rpcmaxconnections"), Number):
+        err_msg = "JSON integer out of range"
+        raise ValueError(err_msg)
+    return min(max(value, _INT_MIN), _INT_MAX)
+
+
 def _get_thousands(settings: _Settings, name: str, default: int) -> int:
     """Return `1000 * GetIntArg(name, default)` as an `unsigned int` holds it.
 
@@ -2387,11 +2415,13 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     only in the default section off `main`, the warning about a section
     naming no chain, a missing blocks directory, `-prune` beside
     `-reindex-chainstate`, `-forcednsseed` beside a `-dnsseed` that is
-    off, a negative `-maxconnections`, `-debug`'s
-    categories, `-minimumchainwork`, `-assumevalid`, `-maxtipage` (the order
-    `node::ApplyArgsManOptions`'s own chainstate-manager options are
-    read in, `src/node/chainstatemanager_args.cpp`, same sha), `-prune`,
-    the mempool's options.
+    off, a negative `-maxconnections`, a `-rpcmaxconnections` below one
+    (where Core's `master` refuses it, at bitcoin/bitcoin@649bc0a645),
+    `-debug`'s categories, `-minimumchainwork`, `-assumevalid`,
+    `-maxtipage` (the order `node::ApplyArgsManOptions`'s own
+    chainstate-manager options are read in,
+    `src/node/chainstatemanager_args.cpp`, at bitcoin/bitcoin@9be056a8a7),
+    `-prune`, the mempool's options.
     """
     settings, base_dir, chain_name = _read_settings(argv)
     _check_network_only_args(settings)
@@ -2424,6 +2454,7 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
         data_dir=base_dir,
         blocks_dir=blocksdir,
         max_connections=max_connections,
+        rpcmaxconnections=_get_rpcmaxconnections(settings),
         dnsseed=dnsseed,
         forcednsseed=bool(_get_bool(settings, "forcednsseed")),
         listen=_resolve_listen(settings, max_connections_arg),
@@ -2666,6 +2697,7 @@ def _after_lock(before: _BeforeLock) -> Config:
         whitelist_relay=whitelist_relay,
         whitelist_force_relay=bool(_get_bool(settings, "whitelistforcerelay")),
         rpcservertimeout=rpcservertimeout,
+        rpcmaxconnections=_get_rpcmaxconnections(settings),
         allow_rpc=server is None or server,
         pruned=bool(prune),
         prune_target_mib=prune if prune >= MIN_PRUNE_TARGET_MIB else None,

@@ -68,6 +68,7 @@ __all__ = [
     "DEFAULT_DUST_RELAY_FEERATE",
     "DEFAULT_INCREMENTAL_RELAY_FEERATE",
     "DEFAULT_MAX_DATACARRIER_BYTES",
+    "DEFAULT_MAX_HTTP_CONNECTIONS",
     "DEFAULT_MAX_PEER_CONNECTIONS",
     "DEFAULT_MAX_TIP_AGE",
     "DEFAULT_MIN_RELAY_FEERATE",
@@ -112,6 +113,14 @@ DEFAULT_MAX_DATACARRIER_BYTES = 400_000 // 4
 # inbound slots; this node has no such split, so it takes the value the
 # pinned release pairs with no split either.
 DEFAULT_MAX_PEER_CONNECTIONS = 125
+# Core's own `-rpcmaxconnections` default, `DEFAULT_MAX_HTTP_CONNECTIONS`
+# (`src/httpserver.h`, at bitcoin/bitcoin@649bc0a645, in v32.0rc4 too):
+# the most RPC clients connected at once. The release
+# `integration-bitcoind.yml` pins, v31.1, has no such option and sets no
+# limit. This node takes `master`'s, since without a limit any client
+# that reaches the port can use up the descriptors the peers and the
+# store need (btclib-org/btclib-node#1953).
+DEFAULT_MAX_HTTP_CONNECTIONS = 16
 # A named module-level singleton rather than `Main()` written straight
 # into __init__'s own signature below: a call there is made once, at
 # import time, and B008 is what a reader would otherwise have to notice
@@ -356,6 +365,20 @@ def _refuse_bind_without_listen(
         raise ValueError(err_msg)
 
 
+def _refuse_rpcmaxconnections(rpcmaxconnections: int) -> None:
+    """Refuse a `-rpcmaxconnections` below one, in Core's words.
+
+    `AppInitParameterInteraction` refuses it whatever `-server` says
+    (`src/init.cpp`, at bitcoin/bitcoin@649bc0a645).
+    """
+    if rpcmaxconnections < 1:
+        err_msg = (
+            "-rpcmaxconnections must be greater than zero. "
+            "Use -server=0 to disable HTTP."
+        )
+        raise ValueError(err_msg)
+
+
 def _refuse_reindex_chainstate_when_pruned(
     *, pruned: bool, reindex_chainstate: bool
 ) -> None:
@@ -569,6 +592,10 @@ class Config:
     # Core's own `evhttp_set_timeout` (`rpc.manager._request_timeout`'s
     # own docstring).
     rpcservertimeout: int
+    # Core's own `-rpcmaxconnections`: how many RPC clients
+    # `RpcManager` holds at once. `rpc.manager`'s module docstring has
+    # what happens at the limit.
+    rpcmaxconnections: int
     # Core's own `-rpcauth`, one entry per value: users the RPC listener
     # accepts beside the cookie and `rpc_password_entry`. Where a value
     # is malformed, the values ahead of it, and `rpc_auth_invalid` set.
@@ -919,6 +946,7 @@ class Config:
         whitelist_relay: bool = True,
         whitelist_force_relay: bool = False,
         rpcservertimeout: int = int(REQUEST_TIMEOUT),
+        rpcmaxconnections: int = DEFAULT_MAX_HTTP_CONNECTIONS,
         allow_p2p: bool = True,
         allow_rpc: bool = True,
         pruned: bool = False,
@@ -1059,6 +1087,8 @@ class Config:
             err_msg = "-maxconnections must be greater or equal than zero"
             raise ValueError(err_msg)
         self.max_connections = max_connections
+        _refuse_rpcmaxconnections(rpcmaxconnections)
+        self.rpcmaxconnections = rpcmaxconnections
         self.fixed_seeds = fixed_seeds
         self.ban_time = ban_time
         self.send_buffer_max_size = send_buffer_max_size

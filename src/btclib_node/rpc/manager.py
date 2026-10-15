@@ -18,9 +18,19 @@ bitcoin/bitcoin@9be056a8a7): `InitHTTPServer` binds before
 `StartHTTPRPC` writes the cookie, so a bind that fails leaves no cookie
 behind. `start_listener` is how `Node` learns that
 either step failed, which Core turns into an `InitError`.
+
+At most `max_connections` clients are held at once, Core's
+`-rpcmaxconnections` (`config.DEFAULT_MAX_HTTP_CONNECTIONS` has the
+default and the version that sets it). At the limit the accept loops
+stop accepting, so a new client waits in the kernel's queue, holding no
+descriptor of this process, until a held one leaves, as
+`HTTPServer::GenerateWaitSockets` leaves it (`src/httpserver.cpp`, at
+bitcoin/bitcoin@649bc0a645). `_accept_loop` has the one client per
+listening socket that can be accepted past it.
 """
 
 import asyncio
+import errno
 import os
 import re
 import socket
@@ -35,13 +45,14 @@ from typing import TYPE_CHECKING, Any, override
 
 from btclib_node.config import split_host_port
 from btclib_node.exceptions import RpcCredentialRefusedError
+from btclib_node.p2p.manager import network_error_string
 from btclib_node.rpc.allow import allowed_subnets, client_allowed
 from btclib_node.rpc.auth import RpcAuth
 from btclib_node.rpc.connection import RpcConnection
 from btclib_node.rpc.main import answer_warmup
 
 if TYPE_CHECKING:
-    from collections.abc import Coroutine, Sequence
+    from collections.abc import Callable, Coroutine, Sequence
     from concurrent.futures import Future
 
     from btclib_node import Node
@@ -54,6 +65,19 @@ __all__ = ["RpcManager"]
 # both given, in its order (`src/httpserver.cpp`,
 # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
 _LOOPBACK_HOSTS = ("::1", "127.0.0.1")
+
+
+# What `accept` fails with where no descriptor is left, for this process
+# or for the system. A connection the kernel leaves queued makes the next
+# accept fail at once too. Core logs each failure at debug and tries
+# again on its loop's next pass (`HTTPServer::AcceptConnection`,
+# `src/httpserver.cpp`, at bitcoin/bitcoin@649bc0a645), a pass that can
+# come at once while the listening socket stays readable.
+# `_ACCEPT_RETRY_DELAY` is the seconds `_accept_loop` waits instead, a
+# departure so that it does not spin this manager's loop
+# (btclib-org/btclib-node#1953).
+_OUT_OF_DESCRIPTORS = frozenset((errno.EMFILE, errno.ENFILE))
+_ACCEPT_RETRY_DELAY = 0.1
 
 
 def _is_bind_any(host: str) -> bool:
@@ -225,6 +249,13 @@ class RpcManager(threading.Thread):
         # for no bound at all -- `_request_timeout`'s own docstring has
         # Core's `0` and `-1`.
         self.request_timeout = _request_timeout(node.config.rpcservertimeout)
+        # `-rpcmaxconnections`: the most entries `connections` holds. An
+        # instance attribute, as `request_timeout` is, so a test can lower
+        # it on a live manager.
+        self.max_connections = node.config.rpcmaxconnections
+        # Set by `forget_connection` as an entry leaves `connections`,
+        # awaited by `_until_room` on this manager's loop alone
+        self._room = asyncio.Event()
         # `Config`'s users and whitelists, and the cookie's once `run`
         # writes it: what `RpcConnection.run` checks every request against
         self.auth = RpcAuth.from_config(node.config)
@@ -407,6 +438,20 @@ class RpcManager(threading.Thread):
         self.connections[self.last_connection_id] = new_connection
         return new_connection
 
+    def forget_connection(self, connection_id: int) -> None:
+        """Drop `connection_id` from `connections`, freeing its place.
+
+        Called on this manager's loop, as its connection closes.
+        """
+        self.connections.pop(connection_id, None)
+        self._room.set()
+
+    async def _until_room(self, held: Callable[[], int]) -> None:
+        """Return once `held()` is under `max_connections`."""
+        while held() >= self.max_connections:
+            self._room.clear()
+            await self._room.wait()
+
     def _bind(self) -> list[socket.socket]:
         """Bind and listen on every endpoint, before anything is scheduled.
 
@@ -561,6 +606,17 @@ class RpcManager(threading.Thread):
         handing it a socket that only duck-types `.accept()`, without a
         live listener.
 
+        It accepts only while the connections held and those queued in
+        `accepted` are fewer than `max_connections`; the module docstring
+        has why. Each listening socket has a loop of its own, and loops
+        that pass that check together can each accept one, so `accepted`
+        can go past the limit by one per listening socket at most.
+        `server` leaves those there until there is room.
+
+        Where no descriptor is left, each failure is logged at debug, as
+        Core logs it, and the accept tried again `_ACCEPT_RETRY_DELAY`
+        seconds later, until one succeeds.
+
         `loop.sock_accept` retries a `BlockingIOError`/`InterruptedError`
         internally on both loop families this node runs on (a selector
         loop's own reader callback, a Windows Proactor loop's overlapped
@@ -581,11 +637,20 @@ class RpcManager(threading.Thread):
         cancelled, `Task.cancel` reaching a task only on its next step.
         """
         while True:
+            await self._until_room(lambda: len(self.connections) + accepted.qsize())
             try:
                 sock, sockaddr = await asyncio.get_running_loop().sock_accept(
                     server_socket
                 )
-            except OSError:
+            except OSError as error:
+                if error.errno in _OUT_OF_DESCRIPTORS:
+                    self.logger.log_debug(
+                        "http",
+                        "Cannot accept new connection: %s",
+                        network_error_string(error),
+                    )
+                    await asyncio.sleep(_ACCEPT_RETRY_DELAY)
+                    continue
                 self.logger.exception("Accepting an inbound connection failed")
                 await asyncio.sleep(0)
                 continue
@@ -653,6 +718,7 @@ class RpcManager(threading.Thread):
             ]
             try:
                 while True:
+                    await self._until_room(lambda: len(self.connections))
                     client, _ = await accepted.get()
                     self.last_connection_id += 1
                     conn = self.create_connection(self.loop, client)

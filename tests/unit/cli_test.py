@@ -901,6 +901,49 @@ def test_help_names_rpcservertimeout_under_debug_alone() -> None:
     assert "-rpcservertimeout" not in cli._help_message(show_debug=False)
 
 
+@pytest.mark.parametrize(
+    ("argv", "conf", "limit"),
+    [
+        ([], "", 16),
+        (["-rpcmaxconnections=4"], "", 4),
+        ([], "rpcmaxconnections=5\n", 5),
+        (["-rpcmaxconnections=99999999999"], "", 2**31 - 1),
+    ],
+    ids=["Core's default", "command line", "file", "saturated"],
+)
+def test_build_config_reads_rpcmaxconnections(
+    tmp_path: Path, argv: list[str], conf: str, limit: int
+) -> None:
+    """ISS 1953: `-rpcmaxconnections` reaches `Config`.
+
+    It is read as Core's `GetArg<int>` reads it: a value past a 32-bit
+    `int` saturates.
+    """
+    assert _build(tmp_path, *argv, conf=conf).rpcmaxconnections == limit
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "x", "-99999999999"])
+def test_an_rpcmaxconnections_below_one_is_refused(tmp_path: Path, value: str) -> None:
+    """ISS 1953: Core's refusal, whatever `-server` says."""
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"^-rpcmaxconnections must be greater than zero\. "
+            r"Use -server=0 to disable HTTP\.$"
+        ),
+    ):
+        _build(tmp_path, f"-rpcmaxconnections={value}", "-server=0")
+
+
+def test_help_names_rpcmaxconnections() -> None:
+    """ISS 1953: `-rpcmaxconnections` is in the help, in Core's words."""
+    message = " ".join(cli._help_message(show_debug=False).split())
+    assert (
+        "-rpcmaxconnections=<n> The maximum number of connected HTTP clients "
+        "(default: 16)" in message
+    )
+
+
 def test_help_names_dnsseed_fixedseeds_and_seednode() -> None:
     """ISS 1192: `-dnsseed`, `-fixedseeds` and `-seednode`, in Core's words."""
     message = " ".join(cli._help_message(show_debug=False).split())
@@ -4833,6 +4876,24 @@ def test_a_number_that_is_no_int64_is_out_of_range(content: str) -> None:
     settings = _file_settings(f'{{"maxconnections":{content}}}')
     with pytest.raises(ValueError, match=r"^JSON integer out of range$"):
         cli._get_int(settings, "maxconnections")
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [("2147483647", 2**31 - 1), ('"3000000000"', 2**31 - 1), ("5", 5)],
+)
+def test_rpcmaxconnections_in_the_file_is_an_int(content: str, expected: int) -> None:
+    """ISS 1953: a 32-bit `int` as a number, a string saturated to one."""
+    settings = _file_settings(f'{{"rpcmaxconnections":{content}}}')
+    assert cli._get_rpcmaxconnections(settings) == expected
+
+
+@pytest.mark.parametrize("content", ["2147483648", "3000000000", "-2147483649"])
+def test_an_rpcmaxconnections_number_past_an_int_is_out_of_range(content: str) -> None:
+    """ISS 1953: Core's `UniValue::getInt<int>` refuses it, ending the start."""
+    settings = _file_settings(f'{{"rpcmaxconnections":{content}}}')
+    with pytest.raises(ValueError, match=r"^JSON integer out of range$"):
+        cli._get_rpcmaxconnections(settings)
 
 
 def test_a_number_is_a_string_option_in_its_own_text() -> None:

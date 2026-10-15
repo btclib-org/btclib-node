@@ -12,6 +12,7 @@ go of both -- and until now only a functional test reached any of it.
 
 import asyncio
 import base64
+import errno
 import inspect
 import json
 import os
@@ -1391,6 +1392,19 @@ def test_stop_waits_unbounded_for_a_reply_once_request_timeout_is_none(
     assert ours.fileno() == -1
 
 
+def test_manager_takes_max_connections_from_rpcmaxconnections(
+    tmp_path: Path,
+) -> None:
+    """ISS 1953: `-rpcmaxconnections` is how many clients the manager holds."""
+    config = Config(chain="regtest", data_dir=tmp_path, rpcmaxconnections=3)
+    node = SimpleNamespace(logger=Logger(), chain=RegTest(), config=config)
+    manager = RpcManager(cast("Node", node), None)
+    try:
+        assert manager.max_connections == 3
+    finally:
+        manager.loop.close()
+
+
 def test_manager_takes_request_timeout_from_rpcservertimeout(
     a_manager: AManagerFactory,
 ) -> None:
@@ -1640,6 +1654,132 @@ def test_accept_loop_logs_and_retries_on_a_refused_accept(
             with suppress(asyncio.CancelledError):
                 loop.run_until_complete(task)
     assert accepted.empty()
+
+
+def test_past_the_limit_a_client_waits_outside_connections(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1953: at `max_connections`, nothing is accepted until one leaves.
+
+    Two clients that send a byte and stop hold both places. A third, with
+    a whole request, is neither in `connections` nor read until one of
+    them hangs up; then it is accepted and its request queued.
+    """
+    port = get_random_port()
+    manager = a_manager(port)
+    manager.max_connections = 2
+    manager.start()
+    try:
+        wait_until_listening(manager)
+        idle = [socket.create_connection(("127.0.0.1", port)) for _ in range(2)]
+        for client in idle:
+            client.sendall(b"P")
+        wait_until(lambda: len(manager.connections) == 2)
+        with socket.create_connection(("127.0.0.1", port)) as waiting:
+            waiting.sendall(as_http(REQUEST))
+            # long enough for the manager to accept and read it, were it
+            # allowed to
+            time.sleep(0.5)
+            assert len(manager.connections) == 2
+            assert not manager.messages
+            idle[0].close()
+            wait_until(lambda: manager.messages)
+            assert len(manager.connections) == 2
+        idle[1].close()
+    finally:
+        manager.stop()
+        manager.join(timeout=10)
+
+
+def test_server_holds_a_queued_client_until_there_is_room(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1953: `server` leaves a client queued while `connections` is full.
+
+    Two accept loops can each accept at once, so the queue can hold one
+    client past the limit; it waits there, not in `connections`.
+    """
+    manager = a_manager(get_random_port())
+    manager.max_connections = 1
+    manager.start()
+    pairs = [socket.socketpair() for _ in range(2)]
+    try:
+        wait_until_listening(manager)
+        wait_until(lambda: manager._accept_queue is not None)
+        queue = manager._accept_queue
+        assert queue is not None
+        for ours, _ in pairs:
+            manager.loop.call_soon_threadsafe(
+                queue.put_nowait, (ours, ("127.0.0.1", 45000))
+            )
+        wait_until(lambda: len(manager.connections) == 1)
+        (first,) = manager.connections.values()
+        assert first.client is pairs[0][0]
+        time.sleep(0.2)
+        assert queue.qsize() == 1
+        pairs[0][1].close()
+        wait_until(queue.empty)
+        (second,) = manager.connections.values()
+        assert second.client is pairs[1][0]
+    finally:
+        for _, theirs in pairs:
+            theirs.close()
+        manager.stop()
+        manager.join(timeout=10)
+
+
+def test_accept_loop_out_of_descriptors_logs_each_failure_and_waits(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1953: an accept failing `EMFILE` is retried at a pace, not in a spin.
+
+    While every accept fails, the attempts are few, and each is logged at
+    debug in Core's words; once one succeeds, the client is queued as any
+    other.
+    """
+    manager = a_manager(get_random_port())
+    loop = manager.loop
+    accepted: asyncio.Queue[Any] = asyncio.Queue()
+    debugged: list[Any] = []
+    failed: list[Any] = []
+    monkeypatch.setattr(manager.logger, "log_debug", lambda *a: debugged.append(a))
+    monkeypatch.setattr(manager.logger, "exception", lambda *a, **k: failed.append(a))
+    ours, theirs = socket.socketpair()
+    refusals: list[float] = []
+    fail_until = time.monotonic() + 0.35
+    backlog = [(ours, ("127.0.0.1", 45000))]
+
+    async def out_of_descriptors(
+        sock: socket.socket,
+    ) -> tuple[socket.socket, tuple[str, int]]:
+        if time.monotonic() < fail_until:
+            refusals.append(time.monotonic())
+            raise OSError(errno.EMFILE, "Too many open files")
+        if backlog:
+            return backlog.pop()
+        # an empty backlog: the accept waits
+        waiting: asyncio.Future[tuple[socket.socket, tuple[str, int]]] = (
+            asyncio.get_running_loop().create_future()
+        )
+        return await waiting
+
+    monkeypatch.setattr(loop, "sock_accept", out_of_descriptors)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+        task = loop.create_task(manager._accept_loop(server_socket, accepted))
+        try:
+            loop.run_until_complete(asyncio.wait_for(accepted.get(), 60))
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                loop.run_until_complete(task)
+            theirs.close()
+            ours.close()
+    # a spin is refused tens of thousands of times in this window
+    assert len(refusals) <= 6
+    text = f"Too many open files ({errno.EMFILE})"
+    line = ("http", "Cannot accept new connection: %s", text)
+    assert debugged == [line] * len(refusals)
+    assert not failed
 
 
 def test_report_server_failure_logs_a_real_exception(
