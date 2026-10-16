@@ -1506,11 +1506,12 @@ def _log_args(settings: _Settings) -> tuple[str, ...]:
     so Core's own `if (flags)` guard around this has nothing left here to
     be false for. `LogArgs`'s middle category, "Setting file arg:", is
     `settings.json`'s: every name it holds, known or not, in key order,
-    its value as `write_json` writes it.
+    its value as `write_json` writes it. A section is quoted by
+    `_quoted_line`, which Core's is not: its name may hold a password.
     """
     lines: list[str] = []
     for section, args in sorted(settings.ro_config.items()):
-        prefix = f"[{section}] " if section else ""
+        prefix = f"[{_quoted_line(section)}] " if section else ""
         for name, values in sorted(args.items()):
             sensitive = _OPTIONS[name].sensitive
             for value in values:

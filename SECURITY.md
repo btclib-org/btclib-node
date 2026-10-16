@@ -135,11 +135,15 @@ The `scantxoutset` refusal "Cannot derive script without private keys" does
 not quote the descriptor, which may hold a private key. A config line that
 fails to parse, and a command-line argument refused as an invalid parameter,
 are quoted as ASSURANCE_CASE.md's CWE-209 entry says. So are the key of an
-unknown configuration value, which is also given its file and line, and an
-unrecognized section name. Bitcoin Core quotes all of these whole:
-`rpc/util.cpp:1370`, `GetConfigOptions` (`src/common/config.cpp`) and
-`ParseParameters` (`src/common/args.cpp:234`), at
-bitcoin/bitcoin@db0bde16b9. A refusal reaches stderr, logs and the RPC
+unknown configuration value, which is also given its file and line, and a
+section name, in the unrecognized-section warning and in the log of the
+configuration. Bitcoin Core quotes each of these whole, at
+bitcoin/bitcoin@db0bde16b9: the descriptor at `rpc/util.cpp:1370`, the line
+in `GetConfigOptions` (`src/common/config.cpp`), the argument in
+`ParseParameters` (`src/common/args.cpp:234`), the key in `ReadConfigStream`
+(`src/common/config.cpp:110`), and the section in
+`AppInitParameterInteraction` (`src/init.cpp:992`) and `logArgsPrefix`
+(`src/common/args.cpp:988`). A refusal reaches stderr, logs and the RPC
 caller.
 
 What a refusal may print about a secret is the organization's rule, section 7's

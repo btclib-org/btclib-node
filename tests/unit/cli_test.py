@@ -481,6 +481,29 @@ def test_an_unrecognized_section_is_warned_about_by_its_name_alone(
     assert_secret_free(ValueError(err), [LEAK])
 
 
+@pytest.mark.parametrize(
+    ("conf", "line"),
+    [
+        (
+            f"[rpcpassword={LEAK}]\nserver=1\n",
+            'Config file arg: [rpcpassword] server="1"',
+        ),
+        (
+            f"{LEAK}.server=1\n",
+            'Config file arg: [<28 characters>] server="1"',
+        ),
+    ],
+    ids=["bracket", "key"],
+)
+def test_log_args_quotes_a_section_by_its_name_alone(
+    tmp_path: Path, conf: str, line: str
+) -> None:
+    """A section name may hold a secret; the log quotes it as a warning does."""
+    lines = cli._log_args(_read(tmp_path, conf=conf))
+    assert line in lines
+    assert_secret_free(ValueError(*lines), [LEAK])
+
+
 def test_parse_conf_text_warns_specifically_about_datadir(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
