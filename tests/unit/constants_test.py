@@ -36,7 +36,9 @@ def test_the_wire_user_agent_and_getnetworkinfo_s_subversion_are_one_constant() 
                 v2transport=False,
                 v1transport=True,
             ),
-            p2p_manager=SimpleNamespace(local_snapshot=dict),
+            p2p_manager=SimpleNamespace(
+                local_snapshot=dict, connections={}, pending_connections={}
+            ),
             warnings=Warnings(),
         ),
     )
