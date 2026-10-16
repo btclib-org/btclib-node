@@ -130,15 +130,17 @@ names whether or not each is bound to an app, which is why the record
 above reads `.checks[]`.
 
 **`links.yml`, `os-macos.yml` and `bootstrap-dns.yml` must not become
-required checks**, and neither must `claude-review.yml` nor
-`scorecard.yml`. `links.yml` and `bootstrap-dns.yml` ask whether
+required checks**, and neither must `claude-review.yml`, `scorecard.yml`
+nor `verified-signatures.yml`. `links.yml` and `bootstrap-dns.yml` ask whether
 somebody else's server answered, `os-macos.yml` runs on a schedule and
 reports what a sweep sees rather than what a pull request introduced,
 and `claude-review.yml` writes an opinion for an author to weigh.
 `scorecard.yml` carries neither a `pull_request` trigger nor
 `workflow_dispatch` (`CONTRIBUTING.md`'s *What gates a merge, and what
 only reports*), so a required check on it could never be satisfied by
-any pull request at all. Each says so in its own header.
+any pull request at all, and `verified-signatures.yml` runs after a push, so a
+context no pull request reports would wait for ever. Each says so in its own
+header.
 
 `codeql.yml` is not among them. It runs on `pull_request` and carries an
 aggregate job, `codeql: every job passed`, so its result is one context
@@ -172,9 +174,9 @@ gh api repos/btclib-org/btclib-node/branches/main/protection \
 through the bypass possible at all: the ruleset bypass below reaches the
 ruleset's own rule and nothing else.
 
-`signatures: false` is classic protection's own copy of the rule
-`main-integrity` below carries: [section 11 states that value for every
-repository](https://github.com/btclib-org/.github#branch-protection-and-rulesets).
+`signatures: false` is classic protection's own copy of the signature rule,
+off as it is in every ruleset over `main`: [section 11 states that value for
+every repository](https://github.com/btclib-org/.github#branch-protection-and-rulesets).
 
 ```shell
 gh api repos/btclib-org/btclib-node/rulesets --jq '.[].id' \
@@ -182,16 +184,15 @@ gh api repos/btclib-org/btclib-node/rulesets --jq '.[].id' \
     --jq '{name, target, rules: [.rules[].type],
            bypass: [.bypass_actors[]?.bypass_mode]}'
 # {"bypass":[],"name":"main-integrity","target":"branch",
-#  "rules":["required_signatures","required_linear_history",
-#           "non_fast_forward","deletion"]}
+#  "rules":["required_linear_history","non_fast_forward","deletion"]}
 # {"bypass":["pull_request"],"name":"main-self-merge","target":"branch",
 #  "rules":["pull_request"]}
 # {"bypass":[],"name":"tag-integrity","target":"tag",
 #  "rules":["required_signatures"]}
 ```
 
-- `main-integrity` — required signatures, required linear history, no
-  force pushes, no deletions — with **no bypass actor at all**, which is
+- `main-integrity` — required linear history, no force pushes, no
+  deletions — with **no bypass actor at all**, which is
   what makes every one of those true of an administrator too.
 - `main-self-merge` — a pull request, an approving review, stale reviews
   dismissed on push, conversations resolved, and `squash` as the only
@@ -242,20 +243,24 @@ gh api repos/btclib-org/btclib-node/commits/main \
 # {"reason":"valid","verified":true}
 ```
 
-`required_signatures` refuses an unsigned commit at the push rather than
-noticing it afterwards, and with an empty bypass list it refuses one from
-everybody. What that call answers for is the squash GitHub composed at
-the merge, signed with its own web-flow key rather than the maintainer's,
-which satisfies the rule: it asks for a valid signature and not for a
-particular signer.
+No ruleset over `main` carries `required_signatures`, so nothing refuses an
+unsigned commit at the push. `verified-signatures.yml` checks after the push:
+for each commit pushed it reads the call above and fails naming any whose
+`verified` is not `true`. A red run is read in the Actions tab; the check is
+not a required one.
+
+What the call answers for is the squash GitHub composed at the merge,
+signed with its own web-flow key rather than the maintainer's. It is
+`verified`: the check asks for a verified commit and not for a particular
+signer.
 
 The call above answers for whichever commit sits at the tip today, so it
 is a fact about a changing world rather than a setting: the next merge
 changes what it answers, with nothing here having decided differently,
 and section 11's readback is not asked of it for that reason. Read at
-2026-09-21T22:23:08Z.
+2026-10-15T16:51:11Z.
 
-What no rule covers is a commit before it is pushed:
+What the check cannot see is a commit before it is pushed:
 `git log -1 --format='%G? %GS'`, an `N` being a defect to fix rather than
 to explain.
 

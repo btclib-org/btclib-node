@@ -357,7 +357,9 @@ says what differs beneath it. `os-ubuntu.yml` runs it on
 Linux is exercised at all. `links.yml` asks whether somebody else's
 server answered, and
 `bootstrap-dns.yml` asks the same question of the DNS seeds
-`src/btclib_node/chains.py` names. `claude-review.yml` writes the review
+`src/btclib_node/chains.py` names. `verified-signatures.yml` reports after each
+push to `main` whether every commit pushed is `verified`; [the standard's
+*Signatures*][s-sigs] has the rule. `claude-review.yml` writes the review
 and its own header says it must not become a required check.
 `vendored-vectors.yml` re-checks `tests/_data/README.md`'s and
 `scripts/seeds/README.md`'s pins against upstream, `deps-latest.yml`
