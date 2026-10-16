@@ -816,8 +816,8 @@ def _after_tip_change(
 # block_index's own status change is staged, not written, on every
 # call -- stage_status rather than set_status -- and chainstate.flush
 # only runs once utxo_index.should_flush says the staged UTXO cache has
-# reached its own bound, writing block_index and filter_index in the
-# same batch the UTXO cache flushes in rather than once per block. This
+# reached its own bound (`Chainstate.flush` says what it writes), rather
+# than once per block. This
 # is what btclib-org/btclib-node#586 is about, and db.py's own docstring
 # is where what a crash before that flush costs is decided: block_db's
 # own rev patches above are not held back the same way, and do not need

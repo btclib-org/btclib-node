@@ -18,9 +18,33 @@ and coming back costs nothing -- which is why there is no counterpart
 here to `UtxoIndex.apply_rev_block`.
 
 Writes are held until `finalize`, the way `UtxoIndex` holds them: a
-block connects in the same write batch as the chainstate it advances,
-and until that batch is written the parent of the block being indexed
+block connects across more than one trial before `Chainstate.flush`
+writes anything, and until then the parent of the block being indexed
 is not in the database yet.
+
+The filters are kept in a `KeyValueStore` of their own, `indexes/blockfilter`
+under the chain's directory, as Core keeps its block filter index in
+`indexes/blockfilter/` (`src/index/blockfilterindex.cpp`, at
+bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The store holds a best-block
+locator, Core's `DB_BEST_BLOCK` (`BaseIndex::DB::ReadBestBlock` and
+`WriteBestBlock`, `src/index/base.cpp`, same commit): the index's own
+progress, a block whose ancestors all have their filters stored. It is
+not the chainstate's tip. It moves in the batch of the filters that make
+it true: in `catch_up`, after each batch it writes, and in
+`Chainstate.flush` only once `catch_up` has finished at start. So a flush
+on the way out of a failed start leaves it where the index had got to.
+
+`Chainstate.flush` writes the filters after the chainstate, so a crash
+between the two leaves the locator behind the active tip and never ahead
+of a filter. `catch_up` closes the gap at start, from the fork point of
+the locator and the active chain, as `BaseIndex::Sync` does in Core. A
+reorg needs no rewind, the filters being keyed by block hash.
+
+`-reindex-chainstate` does not wipe the store, as Core's `src/init.cpp`
+does, and wipes only the chainstate; `-reindex` will wipe this store too
+(btclib-org/btclib-node#1415). A corrupt filter is rebuilt by deleting
+the directory. A datadir from before the store existed keeps its filters
+in the chainstate's store: `adopt_legacy` moves them.
 
 BIP157 asks for exactly this: "Nodes SHOULD NOT generate filters
 dynamically on request, as malicious peers may be able to perform DoS
@@ -38,6 +62,7 @@ if TYPE_CHECKING:
 
     from btclib_node.block_db import BlockDB, RevBlock
     from btclib_node.chains import Chain
+    from btclib_node.chainstate.block_index import BlockIndex
     from btclib_node.db import KeyValueStore
     from btclib_node.log import Logger
 
@@ -45,6 +70,8 @@ __all__ = ["NO_PREVIOUS_FILTER_HEADER", "FilterIndex"]
 
 _FILTER = b"cfilter-"
 _HEADER = b"cfheader-"
+# in the store's meta column family, away from the filters' key order
+_BEST_BLOCK = b"best-block"
 
 # BIP157: "The previous filter header used to calculate that of the
 # genesis block is defined to be the 32-byte array of 0's."
@@ -61,8 +88,9 @@ _CATCH_UP_BATCH = 500
 class FilterIndex:
     """The BIP157/BIP158 filter and header for every connected block.
 
-    The module docstring above is where the keying, the write-batch
-    discipline and the lack of a reorg-time undo are all argued.
+    The module docstring above is where the keying, the store, the
+    locator, the write-batch discipline and the lack of a reorg-time undo
+    are all argued. `best_block` is the locator as last written.
 
     `pending` now survives more than one trial of `main.update_chain`,
     the same way `UtxoIndex`'s own staging does, so `rollback` cannot
@@ -73,30 +101,75 @@ class FilterIndex:
     prior value for exactly the mutations here that never happen.
     """
 
-    def __init__(self, parent_db: KeyValueStore, chain: Chain, logger: Logger) -> None:
-        """Build the genesis block's own filter, if the store lacks one."""
-        self.db = parent_db
+    def __init__(self, db: KeyValueStore, chain: Chain, logger: Logger) -> None:
+        """Read the locator, and build the genesis filter if absent."""
+        self.db = db
         self.logger = logger
+        self.best_block: bytes | None = db.get_meta(_BEST_BLOCK)
 
         self.pending: dict[bytes, tuple[bytes, bytes]] = {}
         self._trial_log: list[bytes] = []
+        # set by `catch_up`; until then `advance` leaves the locator alone
+        self.synced = False
 
         # genesis never goes through the connect path every other block
         # does, so its filter is built from the chain's own copy, here
         self.genesis_hash = chain.genesis.hash
         if self.get_filter(self.genesis_hash) is None:
             self.add_block(chain.genesis_block, [])
-            self.finalize()
+            self.finalize(best_block=self.best_block or self.genesis_hash)
 
     @staticmethod
-    def wipe(db: KeyValueStore) -> None:
-        """Remove every stored filter and filter header.
+    def adopt_legacy(legacy: KeyValueStore, db: KeyValueStore, logger: Logger) -> int:
+        """Move the filters a chainstate store holds into `db`, if it holds any.
 
-        `Chainstate`'s module docstring says when, and why the filters go
-        with the coins.
+        A datadir from before the filters had a store of their own keeps
+        them in the chainstate's, under the same keys. They are copied,
+        then removed there, so a stop in between copies them again on the
+        next start, and one after leaves nothing to do. A header with no
+        filter is dropped, as is a filter with no header, which
+        `finalize` never wrote. The locator is left to `catch_up`, which
+        starts from genesis and finds every filter in place.
+
+        Returns how many filters it moved.
         """
-        db.delete_prefix(_FILTER)
-        db.delete_prefix(_HEADER)
+        if not FilterIndex._has_legacy_filters(legacy):
+            return 0
+        logger.info("Moving the block filters to their own store in %s", db.path)
+        moved = 0
+        batch: list[tuple[bytes, bytes, bytes]] = []
+        for key, filter_bytes in legacy.scan_prefix(_FILTER):
+            block_hash = key[len(_FILTER) :]
+            header = legacy.get(_HEADER + block_hash)
+            if header is None:
+                continue
+            batch.append((block_hash, filter_bytes, header))
+            moved += 1
+            if len(batch) >= _CATCH_UP_BATCH:
+                FilterIndex._copy(db, batch)
+                batch = []
+        FilterIndex._copy(db, batch)
+        with legacy.write_batch() as wb:
+            wb.delete_prefix(_FILTER)
+            wb.delete_prefix(_HEADER)
+        logger.info("Moved %s block filters", moved)
+        return moved
+
+    @staticmethod
+    def _has_legacy_filters(legacy: KeyValueStore) -> bool:
+        # the iterator holds the store's directory lock until dropped, as
+        # it is, with the call
+        return any(
+            next(legacy.scan_prefix(prefix), None) is not None
+            for prefix in (_FILTER, _HEADER)
+        )
+
+    @staticmethod
+    def _copy(db: KeyValueStore, batch: list[tuple[bytes, bytes, bytes]]) -> None:
+        with db.write_batch() as wb:
+            for block_hash, filter_bytes, header in batch:
+                wb.put(_HEADER + block_hash, header)
+                wb.put(_FILTER + block_hash, filter_bytes)
 
     def get_filter(self, block_hash: bytes) -> bytes | None:
         """Return the serialized filter of a block, or None."""
@@ -159,21 +232,28 @@ class FilterIndex:
         utxos = {out_point: coin.tx_out for out_point, coin in rev_block.to_add}
         self.add_block(block, prevout_scripts_from_utxos(block, utxos))
 
-    def catch_up(self, active_chain: list[bytes], block_db: BlockDB) -> int:
-        """Index every block of the active chain that has no filter yet.
+    def catch_up(self, block_index: BlockIndex, block_db: BlockDB) -> int:
+        """Index every block of the active chain the locator does not cover.
 
-        A datadir synced before this index existed has the blocks and
-        the reverse patches and none of the filters, and a node that
-        answers `getcfilters` for some of its chain is worse than one
-        that does not answer at all -- BIP157's service bit is a promise
-        about the whole of it. Walked from the bottom so that each
-        block's parent is indexed before it is.
+        Core's `BaseIndex::Sync`: from the block after the fork point of
+        the locator and the active tip, up to the tip. The locator is
+        behind after a stop between `Chainstate.flush`'s two writes, and
+        on its fork's far side after a reorg that stop interrupted. A
+        block whose filter is stored is skipped, so a datadir that has
+        none, the filters having just been moved into this store or
+        deleted, is built from genesis. A node that answers `getcfilters`
+        for some of its chain is worse than one that does not answer at
+        all: BIP157's service bit is a promise about the whole of it.
+        Walked from the bottom so that each block's parent is indexed
+        before it is.
 
         Returns how many it built, which is zero on every start but the
-        first after the index appears.
+        first after the index appears, or after a stop it had to repair.
         """
+        active_chain = block_index.active_chain
         built = 0
-        for block_hash in active_chain:
+        for height in range(self._first_uncovered(block_index), len(active_chain)):
+            block_hash = active_chain[height]
             if self.get_filter(block_hash) is not None:
                 continue
             block = block_db.get_block(block_hash)
@@ -191,14 +271,33 @@ class FilterIndex:
                 # Node.load, so on a long chain it is the only thing
                 # between starting the node and the node appearing hung
                 self.logger.info("Building block filters: %s so far", built)
-                self.finalize()
+                self.finalize(best_block=block_hash)
         if built:
             self.logger.info("Built %s missing block filters", built)
-        self.finalize()
+        self.finalize(best_block=active_chain[-1])
+        self.synced = True
         return built
 
-    def finalize(self, wb: KeyValueStore | None = None) -> None:
-        """Write what is held, into `wb` if there is one and atomically.
+    def advance(self, tip: bytes) -> None:
+        """Write what is held, and move the locator to `tip` once synced."""
+        self.finalize(best_block=tip if self.synced else None)
+
+    def _first_uncovered(self, block_index: BlockIndex) -> int:
+        """Return the height after the fork point of the locator and the tip."""
+        if self.best_block is None:
+            return 0
+        if self.best_block not in block_index.header_dict:
+            # Core's `BaseIndex::Init` refuses the same way
+            err_msg = "the best block of the block filter index is not in the "
+            err_msg += "block index; delete indexes/blockfilter to rebuild it"
+            raise ChainstateInconsistencyError(err_msg)
+        fork = block_index.last_common_ancestor(
+            self.best_block, block_index.active_chain[-1]
+        )
+        return block_index.header_dict[fork].index + 1
+
+    def finalize(self, best_block: bytes | None = None) -> None:
+        """Write what is held, and the locator if there is one, atomically.
 
         The header before the filter, and the pair in one write. Both
         skip guards ask `get_filter`, so a filter written without its
@@ -206,17 +305,18 @@ class FilterIndex:
         ever and its child cannot be indexed at all, which leaves the
         datadir unopenable. The other half of the pair is harmless --
         a header with no filter is simply rebuilt.
-        """
-        if wb is not None:
-            self._write(wb)
-            return
-        with self.db.write_batch() as batch:
-            self._write(batch)
 
-    def _write(self, db: KeyValueStore) -> None:
-        for block_hash, (filter_bytes, header) in self.pending.items():
-            db.put(_HEADER + block_hash, header)
-            db.put(_FILTER + block_hash, filter_bytes)
+        `best_block` moves the locator in the same batch, which is only
+        right where every ancestor of it has its filter stored or held.
+        """
+        with self.db.write_batch() as batch:
+            for block_hash, (filter_bytes, header) in self.pending.items():
+                batch.put(_HEADER + block_hash, header)
+                batch.put(_FILTER + block_hash, filter_bytes)
+            if best_block is not None:
+                batch.put_meta(_BEST_BLOCK, best_block)
+        if best_block is not None:
+            self.best_block = best_block
         self.pending = {}
         # everything just written is durable, so nothing recorded before
         # now can ever be rolled back to -- UtxoIndex.finalize's own

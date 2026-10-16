@@ -116,6 +116,11 @@ SECURITY.md's *Where this node departs from Bitcoin Core* says why.
   check wants, a transaction there being judged as if it were in the
   next block, and is Core's own `GetSpendHeight`
   (`m_chain.Height() + 1`).
+- The filter index has a store of its own
+  (`src/btclib_node/chainstate/filter_index.py`'s docstring says how).
+  `Node.load` catches it up on `Node`'s thread, which owns it like the
+  rest of the chain state, before the P2P listener opens, with RPC in
+  warmup.
 - `src/btclib_node/db.py` is the ordered key-value store all of those are
   kept in, RocksDB through `rocksdict`. Its own docstring is where that
   choice is argued against Bitcoin Core's LevelDB, and **key order is

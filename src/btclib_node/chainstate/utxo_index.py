@@ -365,9 +365,8 @@ class UtxoIndex:
         """Whether the staged size has reached `_FLUSH_BOUND`.
 
         `main._finalize_fork` is the one caller, and it is not asking
-        this alone: `Chainstate.flush` writes `BlockIndex` and
-        `FilterIndex` in the same batch this triggers, which is what
-        keeps the three in step (`db.py`'s own docstring argues why).
+        this alone: `Chainstate.flush` says what else it writes (`db.py`'s
+        own docstring argues why the two are written together).
         """
         return len(self.removed_utxos) + len(self.updated_utxo_set) >= _FLUSH_BOUND
 
