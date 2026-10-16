@@ -17,6 +17,7 @@ import math
 import re
 import secrets
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -331,6 +332,7 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
                 info=lambda *a: None,
                 log_debug=lambda *a: None,
                 exception=lambda *a: None,
+                warning=lambda *a: None,
             ),
             # `broadcast_raw_transaction` no longer sends anything of its
             # own: it hands the transaction to this, the same queue a
@@ -7248,6 +7250,100 @@ def test_accept_loop_out_of_descriptors_logs_each_failure_and_waits(
     line = ("socket error accept failed: %s", f"Too many open files ({errno.EMFILE})")
     assert informed == [line] * len(refusals)
     assert not failed
+
+
+def test_accept_loop_queues_an_address_accept_cannot_name_as_unset(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1981: no address from `accept` is warned over and queued `[::]:0`."""
+    manager = a_manager()
+    loop = manager.loop
+    accepted: asyncio.Queue[Any] = asyncio.Queue()
+    warned: list[Any] = []
+    monkeypatch.setattr(manager.logger, "warning", lambda *a: warned.append(a))
+    ours, theirs = socket.socketpair()
+    backlog: list[tuple[socket.socket, None]] = [(ours, None)]
+
+    async def no_address(sock: socket.socket) -> tuple[socket.socket, None]:
+        if backlog:
+            return backlog.pop()
+        # an empty backlog: the accept waits
+        waiting: asyncio.Future[tuple[socket.socket, None]] = (
+            asyncio.get_running_loop().create_future()
+        )
+        return await waiting
+
+    monkeypatch.setattr(loop, "sock_accept", no_address)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+        task = loop.create_task(manager._accept_loop(server_socket, accepted))
+        try:
+            queued = loop.run_until_complete(asyncio.wait_for(accepted.get(), 60))
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                loop.run_until_complete(task)
+            theirs.close()
+            ours.close()
+    assert queued == (ours, ("::", 0))
+    assert warned == [("Unknown socket family",)]
+
+
+def test_server_takes_a_peer_at_the_unset_address(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1981: a peer queued at `[::]:0` is a pending connection."""
+    manager = a_manager(port=get_random_port())
+    manager.start()
+    wait_until_listening(manager)
+    try:
+        _, theirs = land_an_inbound_peer(manager, "::", 0)
+        with closing(theirs):
+            wait_until(lambda: manager.pending_connections)
+            (conn,) = manager.pending_connections.values()
+            assert conn.inbound
+            assert conn.address.network_id == BIP155Network.IPV6
+            assert conn.address.address == bytes(16)
+            assert conn.address.port == 0
+    finally:
+        manager.stop()
+        manager.join(timeout=10)
+
+
+def test_an_ipv6_peer_reset_before_the_accept_leaves_the_listener_up(  # pragma: no cover -- the body needs IPv6
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1981: after peers that reset before the accept, the next is taken.
+
+    On macOS `accept` answers no address for such an IPv6 peer, at least
+    some of the time, depending on whether the reset beats the accept.
+    """
+    port = get_random_port()
+    manager = a_running_manager(a_manager, port)
+    wait_until_listening(manager)
+    try:
+        try:
+            socket.create_connection(("::1", port), timeout=20).close()
+        except OSError as refused:
+            pytest.skip(f"this host has no IPv6: {refused}")
+        for _ in range(3):
+            resetting = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+            resetting.connect(("::1", port))
+            resetting.setsockopt(
+                socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)
+            )
+            resetting.close()
+            time.sleep(0.2)
+        with socket.create_connection(("::1", port), timeout=20) as peer:
+            ours = peer.getsockname()[1]
+            wait_until(
+                lambda: any(
+                    conn.address.port == ours
+                    for conn in list(manager.pending_connections.values())
+                )
+            )
+    finally:
+        manager.stop()
+        manager.join(timeout=10)
 
 
 # Run in a subprocess, since it lowers `RLIMIT_NOFILE` for the process: a
