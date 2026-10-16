@@ -943,6 +943,25 @@ def test_the_connection_count_includes_a_peer_still_mid_handshake() -> None:
     assert get_connection_count(node, _CONN, []) == 2
 
 
+def test_get_network_info_counts_connections_by_direction() -> None:
+    """ISS 1973: `connections` splits into an inbound and an outbound count.
+
+    A pending connection counts, and a connection is inbound where
+    `getpeerinfo` answers `inbound` true.
+    """
+    node = a_node(
+        {1: a_peer(inbound=True), 2: a_peer(inbound=False), 3: a_peer(inbound=False)},
+        pending={4: a_peer(P2pConnStatus.Open, inbound=False)},
+    )
+    result = get_network_info(node, _CONN, [])
+    assert (
+        result["connections"],
+        result["connections_in"],
+        result["connections_out"],
+    ) == (4, 1, 3)
+    assert result["connections"] == get_connection_count(node, _CONN, [])
+
+
 def test_the_mempool_reports_its_size_and_bytes() -> None:
     """`getmempoolinfo`'s size and bytes fields read the mempool's own tally.
 
@@ -4984,6 +5003,9 @@ def test_get_network_info_answers_this_node_s_own_subversion_and_protocol() -> N
         "protocolversion": PROTOCOL_VERSION,
         "localservices": f"{ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_NETWORK_LIMITED | ServiceFlags.NODE_WITNESS | ServiceFlags.NODE_P2P_V2:016x}",
         "localservicesnames": ["NETWORK", "WITNESS", "NETWORK_LIMITED", "P2P_V2"],
+        "connections": 0,
+        "connections_in": 0,
+        "connections_out": 0,
         "localaddresses": [],
         "warnings": [],
     }

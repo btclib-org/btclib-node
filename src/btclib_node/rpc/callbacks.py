@@ -1579,7 +1579,7 @@ def set_network_active(node: Node, conn: RpcConnection, params: list[Any]) -> bo
 
 
 def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str, Any]:
-    """Answer `getnetworkinfo` with `connect_nodes`'s fields, plus `warnings`.
+    """Answer `getnetworkinfo` with the fields argued below.
 
     Core's own `getnetworkinfo` (`rpc/net.cpp:674-800`, at
     bitcoin/bitcoin@bb529657) answers two dozen fields, most either this
@@ -1614,6 +1614,15 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     `bb529657` above, this paragraph's own citation), so the two RPCs
     never disagree here either.
 
+    `connections`, `connections_in` and `connections_out` are Core's
+    `CConnman::GetNodeCount` for `Both`, `In` and `Out` (`rpc/net.cpp:717-719`,
+    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Each counts a pending
+    connection too, as `get_connection_count` above does, and a connection
+    is inbound exactly where `getpeerinfo` answers `inbound` true: Core's
+    `IsInboundConn`, so every other connection type, a feeler included,
+    counts as outbound. Both directions are counted off one table, so
+    `connections_in + connections_out == connections` always.
+
     `localaddresses` is what `P2pManager.local_snapshot` holds, as Core's
     `mapLocalHost` is read under its mutex (`rpc/net.cpp:728-738`, same
     sha), in the order of its `std::map` of `CNetAddr`: IPv4 before IPv6,
@@ -1624,11 +1633,17 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
         node.p2p_manager.local_snapshot().values(),
         key=lambda info: (info.address.version, info.address.packed),
     )
+    manager = node.p2p_manager
+    peers = {**manager.pending_connections, **manager.connections}
+    connections_in = sum(1 for p2p_conn in peers.values() if p2p_conn.inbound)
     return {
         "subversion": USER_AGENT,
         "protocolversion": PROTOCOL_VERSION,
         "localservices": f"{services:016x}",
         "localservicesnames": service_names(services),
+        "connections": len(peers),
+        "connections_in": connections_in,
+        "connections_out": len(peers) - connections_in,
         "localaddresses": [
             {"address": str(info.address), "port": info.port, "score": info.score}
             for info in local
