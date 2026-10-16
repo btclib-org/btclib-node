@@ -30,7 +30,7 @@ name: release
 #
 # The `integration-bitcoind:` job below runs the regtest check on the
 # tag's own tree. That check is required on every pull request, but a
-# merge through the maintainer's bypass does not wait for it, so the
+# merge through the emergency bypass does not wait for it, so the
 # merge cannot be taken to have answered for the tree released (issue
 # #1910).
 on:
