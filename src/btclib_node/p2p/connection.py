@@ -1347,8 +1347,8 @@ class Connection:
         Serializing the payload here rather than on the loop is what that
         costs, and it is paid by the thread that asked for the message:
         for the largest of them, a block, that is the thread which has just
-        parsed the same block out of `block_db` to build the payload at
-        all. The transport adds the header, and its checksum, on the loop.
+        read it out of `block_db`. The transport adds the header, and its
+        checksum, on the loop.
         """
         message = self._queue(msg)
         if message is not None:

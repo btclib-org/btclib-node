@@ -149,17 +149,20 @@ from btclib_node.p2p.protocol_version import (
     WTXID_RELAY_VERSION,
     common_version,
 )
+from btclib_node.p2p.raw_block import RawBlock, assert_well_formed, strip_witnesses
 from btclib_node.p2p.tx_checks import TxCheck
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
     from btclib.block import Block, BlockHeader
+    from btclib.p2p.payload import Payload
     from btclib.tx.tx import Tx
 
     from btclib_node import Node
     from btclib_node.chainstate.block_index import BlockIndex
     from btclib_node.main import MempoolCandidate
+    from btclib_node.p2p.compact_block import MostRecentBlock
     from btclib_node.p2p.connection import Connection
 
 __all__ = [
@@ -1925,29 +1928,71 @@ def _can_direct_fetch(node: Node) -> bool:
     return tip.time.timestamp() > clock.now() - spacing * _DIRECT_FETCH_SPACINGS
 
 
-def _block_answer(node: Node, item: Inventory, block: Block) -> BlockMsg | CmpctBlock:
+def _compact_answer(
+    node: Node, item: Inventory, recent: MostRecentBlock | None
+) -> CmpctBlock | None:
+    """Answer a `MSG_CMPCT_BLOCK` item with a `cmpctblock`, if it is held.
+
+    The one `new_pow_valid_block` built where the block is
+    `recent`, and one under a fresh nonce otherwise.
+    """
+    if recent is not None:
+        return recent.compact
+    block = node.block_db.get_block(item.hash)
+    if block is None:
+        return None
+    return compact_block(block, secrets.randbits(64))
+
+
+def _stored_answer(
+    node: Node, block_hash: bytes, *, include_witness: bool
+) -> RawBlock | None:
+    """Answer with the octets `node.block_db` holds, or `None` if it holds none.
+
+    They are not parsed: served as they are for a witness block, and with
+    the witnesses cut out for a `MSG_BLOCK`. `p2p.raw_block` refuses octets
+    `Block.parse` would.
+    """
+    raw = node.block_db.get_raw_block(block_hash)
+    if raw is None:
+        return None
+    if include_witness:
+        assert_well_formed(raw)
+        return RawBlock(raw)
+    return RawBlock(strip_witnesses(raw))
+
+
+def _block_answer(node: Node, item: Inventory) -> Payload | None:
     """Answer a block item as Core's `ProcessGetBlockData` does.
 
     A `MSG_CMPCT_BLOCK` for a block at most `MAX_CMPCTBLOCK_DEPTH` below
-    a recent tip gets a `cmpctblock`, the one `new_pow_valid_block` built
-    where the block is `node.most_recent_block` and one under a fresh
-    nonce otherwise; one for an older block gets the full block with
-    witnesses, "we're almost guaranteed they won't have a useful mempool
-    to match against".
+    a recent tip gets a `cmpctblock`; one for an older block gets the full
+    block with witnesses, "we're almost guaranteed they won't have a useful
+    mempool to match against".
+
+    A full block comes from `node.most_recent_block` where it is that
+    one, and from the stored octets otherwise. `None` is a block the store
+    does not hold.
     """
+    # Core's `a_recent_block`, ahead of the read
+    recent = node.most_recent_block
+    if recent is not None and recent.hash != item.hash:
+        recent = None
+    include_witness = item.type_code in (
+        InventoryType.MSG_CMPCT_BLOCK,
+        InventoryType.MSG_WITNESS_BLOCK,
+    )
     if item.type_code == InventoryType.MSG_CMPCT_BLOCK:
         block_index = node.chainstate.block_index
         height = block_index.header_dict[item.hash].index
         tip_height = len(block_index.active_chain) - 1
         if _can_direct_fetch(node) and height >= tip_height - MAX_CMPCTBLOCK_DEPTH:
-            recent = node.most_recent_block
-            if recent is not None and recent.hash == item.hash:
-                return recent.compact
-            return compact_block(block, secrets.randbits(64))
-        include_witness = True
-    else:
-        include_witness = item.type_code == InventoryType.MSG_WITNESS_BLOCK
-    return BlockMsg(block, include_witness=include_witness, check_validity=False)
+            return _compact_answer(node, item, recent)
+    if recent is not None:
+        return BlockMsg(
+            recent.block, include_witness=include_witness, check_validity=False
+        )
+    return _stored_answer(node, item.hash, include_witness=include_witness)
 
 
 def _below_prune_threshold(node: Node, block_hash: bytes) -> bool:
@@ -2054,15 +2099,9 @@ def _serve_getdata_block(node: Node, conn: Connection, item: Inventory) -> None:
     ):
         conn.stop()
         return
-    # Core's `a_recent_block`, ahead of the read
-    recent = node.most_recent_block
-    block = (
-        recent.block
-        if recent is not None and recent.hash == item.hash
-        else node.block_db.get_block(item.hash)
-    )
-    if block:
-        conn.send(_block_answer(node, item, block))
+    answer = _block_answer(node, item)
+    if answer is not None:
+        conn.send(answer)
         # Core's `m_continuation_block`, right after the block and even
         # where redundant; a block with no data returns before it
         if item.hash == conn.continuation_block:
