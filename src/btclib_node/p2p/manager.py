@@ -3397,6 +3397,14 @@ class P2pManager(threading.Thread):
         Core logs it, and the accept tried again `_ACCEPT_RETRY_DELAY`
         seconds later, until one succeeds.
 
+        `accept` can answer no address: on macOS it does for an IPv6
+        peer that reset before the accept. Core's
+        `CConnman::AcceptConnection` (`src/net.cpp`, at
+        bitcoin/bitcoin@cce32b1687) warns "Unknown socket family" and goes
+        on with the address unset, `[::]:0`, and so does this loop
+        (btclib-org/btclib-node#1981). `server` reads a host and a port
+        off every address it takes.
+
         `sock_accept`'s own internal future is already resolved with
         that exception by the time this coroutine's `await` reaches it
         where the failure is synchronous rather than a readiness wait --
@@ -3422,6 +3430,9 @@ class P2pManager(threading.Thread):
                 self.logger.exception("Accepting an inbound connection failed")
                 await asyncio.sleep(0)
                 continue
+            if not sockaddr:
+                self.logger.warning("Unknown socket family")
+                sockaddr = ("::", 0)
             sock.settimeout(0.0)
             accepted.put_nowait((sock, sockaddr))
 
