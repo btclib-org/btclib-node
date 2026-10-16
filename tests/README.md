@@ -77,8 +77,8 @@ the marker, so `--strict-markers` accepts it.
 The default run keeps its coverage floor over the code it runs, so a slow
 test is never the only one covering a line of `src/`. `slow/` is left out
 of the ratchet as `integration/` is, a test body that is skipped being an
-uncovered line. The run that executes the tier passes `--no-cov`: it
-selects a subset, and the floor is a claim about the whole suite.
+uncovered line. `slow.yml`'s header says why the run that executes the
+tier passes `--no-cov`.
 
 `pyproject.toml`'s `timeout` bounds every test, a slow one included. A test
 that needs longer sets its own with `pytest.mark.timeout`.

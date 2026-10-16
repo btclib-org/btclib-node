@@ -6,17 +6,14 @@ name: slow
 # the tier is and how it stays out of the coverage floor; this file is
 # what runs it, weekly and on demand.
 #
-# `--no-cov` because the tier is a subset, and section 8's floor is a
-# claim about the whole suite on the default run.
+# `--no-cov` because, in section 10 of btclib-org/.github's README.md,
+# "a sentinel cell that runs the suite passes `--no-cov`".
 #
-# pytest exits 5 when no test is selected, and that is accepted below:
-# the tier is allowed to be empty, and a green run then says nothing
-# about it. A marker lost from every test would read the same, which the
-# default run's `tests/unit/slow_test.py` does not catch; it holds the
-# skip, not the marks.
+# pytest exits 5 when no test is selected, and that fails the job: a
+# marker lost from every test would otherwise read as a green run.
 #
 # It gates nothing and is not a required check. A pull request that
-# touches only this file runs it, to check the file.
+# touches this file runs it, to check the file.
 
 on:
   schedule:
@@ -63,11 +60,4 @@ jobs:
         with:
           enable-cache: true
       - name: Run the tests marked slow
-        run: |
-          status=0
-          uv run --locked pytest -m slow --run-slow --no-cov || status=$?
-          if [ "$status" -eq 5 ]; then
-            echo "::notice::no test is marked slow yet"
-            exit 0
-          fi
-          exit "$status"
+        run: uv run --locked pytest -m slow --run-slow --no-cov

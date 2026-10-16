@@ -356,10 +356,10 @@ anything.
 
 Everything else reports. `api-break.yml` labels a pull request that
 breaks the public API and gates nothing. `slow.yml` runs the tests marked
-`slow`, which a bare run skips, weekly and on demand. `codeql.yml`
-follows a value from a peer's message or an RPC request body to where it is used, which no hook here
-does. `os-macos.yml` runs the suite on the one platform
-`pyproject.toml` classifies that the gate does not run, and its header
+`slow` weekly and on demand. `codeql.yml`
+follows a value from a peer's message or an RPC request body to where it
+is used, which no hook here does. `os-macos.yml` runs the suite on the one
+platform `pyproject.toml` classifies that the gate does not run, and its header
 says what differs beneath it. `os-ubuntu.yml` runs it on
 `ubuntu-24.04-arm` beside the gate's own image, which is where aarch64
 Linux is exercised at all. `links.yml` asks whether somebody else's
