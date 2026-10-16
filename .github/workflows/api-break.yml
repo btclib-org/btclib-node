@@ -1,0 +1,53 @@
+---
+name: api-break
+
+# A pull request that breaks the public API is told so by a label,
+# `api-break`, and by nothing that gates a merge (btclib-org/.github#1674).
+# Section 12 of btclib-org/.github's README.md has why it gates nothing and
+# what a fork's pull request gets.
+#
+# The checkout, the griffe walk against the pull request's base commit and
+# the label are btclib-org/.github's: reusable-api-break.yml, called at
+# @main so a fix there reaches this tree in one landing (section 10 of its
+# README.md). What stays here is the trigger, the concurrency group, the
+# job's permissions and the package name, the one `release.yml` passes to
+# reusable-public-api.yml.
+
+on:
+  pull_request:
+    # ready_for_review, so a pull request marked ready gets the run the
+    # draft condition in reusable-api-break.yml withheld while it was a
+    # draft. closed too, so that the closed run enters this pull request's
+    # own concurrency group: a close supersedes the run still held there, a
+    # merge queues behind it. The called job declines the real work on it
+    types: [opened, reopened, synchronize, ready_for_review, closed]
+  # the escape hatch. The called job runs only for a pull request, so on
+  # this trigger it is skipped
+  workflow_dispatch:
+
+# least privilege for the GITHUB_TOKEN: read-only here, and the one job
+# below elevates it for the label alone
+permissions:
+  contents: read
+
+# cancel superseded runs: the subject is the commit, which a newer one
+# supersedes. By the pull request's own number rather than by github.ref,
+# which for a closed, merged pull request resolves to the base branch's
+# ref, as docs.yml's `pull_request` trigger comment says. There is no
+# push trigger, so the run in flight is the only reading a merged pull
+# request gets
+concurrency:
+  group: api-break-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ !(github.event.action == 'closed' && github.event.pull_request.merged) }}
+
+jobs:
+  # the draft and closed declines, the checkout, the griffe walk and the
+  # label are the called workflow's own. `pull-requests: write` is the
+  # label, and the called job asks for no more than this grant
+  api-break:
+    permissions:
+      contents: read
+      pull-requests: write # the label; read-only on a fork
+    uses: btclib-org/.github/.github/workflows/reusable-api-break.yml@main
+    with:
+      package: btclib_node

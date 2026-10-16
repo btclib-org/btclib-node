@@ -378,6 +378,8 @@ one token in this repository that writes to it, and `id-token: write` on
 trusts. `build`, the job that calls `reusable-build.yml`, takes
 `id-token: write` and `attestations: write` for the callee's `attest`
 job.
+`api-break.yml` takes `pull-requests: write` on the job that calls
+`reusable-api-break.yml`, to set the label.
 `claude-review.yml` takes `pull-requests: write` to post a comment and
 `id-token: write` for the token the action mints at startup, on the
 `claude` job that calls `btclib-org/.github`'s
