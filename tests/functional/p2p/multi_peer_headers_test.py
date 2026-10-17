@@ -28,20 +28,27 @@ same host, needs. `tests/unit/p2p/manager_test.py` holds the discouraging
 half.
 """
 
-from typing import TYPE_CHECKING
+import socket
+import struct
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
+from btclib_node.chains import RegTest
 from btclib_node.p2p import callbacks as cb
 from tests import wait_until
 from tests.functional.p2p import (
     Lie,
+    ScriptedPeer,
     a_node_among_peers,
     shorten_block_download_timeout,
 )
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from btclib_node import Node
 
 # three full batches, and the liars start lying with the second
 _BATCH = 10
@@ -107,3 +114,26 @@ def test_nine_lying_peers_and_one_honest_one_end_on_the_honest_tip(
         (conn,) = node.p2p_manager.connections.values()
         assert not honest.dropped.is_set()
         assert not node.p2p_manager.is_discouraged(conn.address)
+
+
+def test_a_peer_whose_connection_is_reset_counts_as_dropped() -> None:
+    """A reset ends the peer the way a clean close does, with `dropped` set.
+
+    A node dropping a liar does not always close the connection cleanly:
+    the liar's next read or write can fail instead, which the tests above
+    meet only at random. Here the listener closes with a zero linger,
+    which always resets.
+    """
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+        node = SimpleNamespace(chain=RegTest(), p2p_port=listener.getsockname()[1])
+        peer = ScriptedPeer(cast("Node", node), [], genesis=RegTest().genesis.hash)
+        accepted, _ = listener.accept()
+        accepted.setsockopt(
+            socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)
+        )
+        accepted.close()
+        try:
+            peer._serve()
+        finally:
+            peer._socket.close()
+    assert peer.dropped.is_set()
