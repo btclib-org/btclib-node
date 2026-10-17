@@ -5,11 +5,12 @@
 """`p2p.main.resume_tx_checks`: one script check at a time, peers in turn."""
 
 import multiprocessing
+import multiprocessing.pool
 import os
 import threading
 from collections import deque
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, cast, override
 
 from btclib.p2p.block_filters import BlockFilterType, CFilter, GetCFilters
 from btclib.p2p.data import TxPayload as TxMsg
@@ -659,6 +660,21 @@ def exit_worker(prev_outputs: list[Any], tx: Tx) -> None:
     os._exit(1)  # pragma: no cover -- a pool worker's, which coverage skips
 
 
+class KilledPool(multiprocessing.pool.Pool):
+    """A pool whose workers' `terminate` is `Process.kill`.
+
+    SIGKILL cannot be caught or ignored, so the pool's `terminate`, which
+    `with` calls on exit, does not wait on a worker that ignores SIGTERM.
+    """
+
+    @staticmethod
+    @override
+    def Process(ctx: Any, *args: Any, **kwargs: Any) -> Any:
+        process = ctx.Process(*args, **kwargs)
+        process.terminate = process.kill
+        return process
+
+
 def test_a_check_whose_worker_dies_is_dropped_at_its_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -670,7 +686,7 @@ def test_a_check_whose_worker_dies_is_dropped_at_its_deadline(
     node.logger.warning = lambda *args: warned.append(args)
     a, b = a_relay_peer(node, 1), a_relay_peer(node, 2)
     first, second = a_transaction(), a_transaction()
-    with multiprocessing.get_context("spawn").Pool(1) as pool:
+    with KilledPool(1, context=multiprocessing.get_context("spawn")) as pool:
         (worker,) = cast("Any", pool)._pool
         node.worker_pool = pool
         send(node, a, first)
