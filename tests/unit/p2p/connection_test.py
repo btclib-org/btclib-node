@@ -57,12 +57,19 @@ from btclib_node.p2p.transport import (
 )
 from btclib_node.p2p.tx_checks import TxChecks
 from btclib_node.p2p.v2transport import V2Transport
-from tests import debug_recorder, discourage_recorder, log_recorder, wait_until
+from tests import (
+    debug_recorder,
+    discourage_recorder,
+    generate_random_header_chain,
+    log_recorder,
+    wait_until,
+)
 
 if TYPE_CHECKING:
     import concurrent.futures
     from collections.abc import Iterable
 
+    from btclib.block import BlockHeader
     from btclib.p2p.payload import Payload
 
     from btclib_node.p2p.manager import P2pManager
@@ -1682,8 +1689,11 @@ def test_a_flood_of_pings_pauses_the_peer_at_cores_count() -> None:
     assert not connection.pause_send
 
 
-def _raw_block_of(size: int) -> bytes:
-    """Return a block of exactly `size` octets, one input script padded.
+def _raw_block_of(header: BlockHeader, size: int) -> bytes:
+    """Return a block of exactly `size` octets under `header`, one input padded.
+
+    `getdata` serves a stored block only under its own header's hash, so
+    the header is a solved one.
 
     `advance_getdata` (`callbacks.py`) reads the stored octets and hands
     them on whole, so a synthetic size stands in for a real block's the
@@ -1695,7 +1705,7 @@ def _raw_block_of(size: int) -> bytes:
     assert length >= 0x0001_0000  # a four-octet CompactSize, written below
     return b"".join(
         [
-            bytes(80),
+            header.serialize(check_validity=False),
             b"\x01",
             bytes(4),
             b"\x01",
@@ -1772,7 +1782,8 @@ def test_a_getdata_answer_pauses_once_the_send_buffer_is_full() -> None:
     Once the buffer drains, the next call serves the next block.
     """
     size = 1000 * DEFAULT_MAXSENDBUFFER // 3
-    blocks = {bytes([i]) + b"\x00" * 31: _raw_block_of(size) for i in range(6)}
+    headers = generate_random_header_chain(6, RegTest().genesis.hash)
+    blocks = {header.hash: _raw_block_of(header, size) for header in headers}
     items = [Inventory(InventoryType.MSG_BLOCK, h) for h in blocks]
 
     async def drive() -> tuple[Connection, list[int], bool, int]:
