@@ -2658,7 +2658,7 @@ def test_a_store_that_cannot_be_opened_ends_start_up_with_the_rest_closed(
     What `load` opened before it is closed again, so the same directory
     opens whole once the store can be.
     """
-    message = "the block store cannot be opened"
+    message = "the chainstate cannot be opened"
 
     def refuse(*_args: object, **_kwargs: object) -> None:
         raise OSError(message)
@@ -2667,14 +2667,14 @@ def test_a_store_that_cannot_be_opened_ends_start_up_with_the_rest_closed(
         chain="regtest", data_dir=tmp_path, allow_p2p=False, allow_rpc=False
     )
     with monkeypatch.context() as patch:
-        patch.setattr(btclib_node, "BlockDB", refuse)
+        patch.setattr(btclib_node, "Chainstate", refuse)
         node = Node(config=config)
         node.start()
         wait_until(lambda: not node.is_alive())
         node.stop()
     assert node.init_errors == [message]
     assert not node.loaded
-    assert node.chainstate.db.closed
+    assert node.block_db.db.closed
     assert node.p2p_manager.loop.is_closed()
     peer_db = node.p2p_manager.peer_db.db
     assert peer_db is not None
@@ -2868,3 +2868,48 @@ def test_stale_fee_estimates_are_refused_off_regtest(
         f"acceptstalefeeestimates is not supported on {name} chain."
     ]
     assert not (node.data_dir / "chainstate").exists()
+
+
+def test_a_pruned_data_directory_is_refused_without_prune_and_accepted_with_it(
+    tmp_path: Path,
+) -> None:
+    """ISS 1916: Core refuses an unpruned start on blocks it has pruned.
+
+    The stores were opened by then, so `_load_or_abort` closes them.
+    """
+    with unstarted_node_context(tmp_path, pruned=True) as node:
+        prune_up_to_height(node, 0)
+        assert node.block_db.pruned_up_to == 0
+    unpruned = Node(
+        config=Config(
+            chain="regtest", data_dir=tmp_path, allow_p2p=False, allow_rpc=False
+        )
+    )
+    try:
+        unpruned.start()
+        wait_until(lambda: not unpruned.is_alive())
+    finally:
+        unpruned.stop()
+    assert unpruned.init_errors == [
+        (
+            "You need to rebuild the database using -reindex to go back to "
+            "unpruned mode.  This will redownload the entire blockchain"
+        )
+    ]
+    assert not unpruned.loaded
+    assert unpruned.block_db.db.closed
+    pruned = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path,
+            allow_p2p=False,
+            allow_rpc=False,
+            pruned=True,
+        )
+    )
+    try:
+        pruned.start()
+        assert pruned.loaded
+        assert pruned.block_db.pruned_up_to == 0
+    finally:
+        pruned.stop()
