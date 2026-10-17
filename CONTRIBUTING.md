@@ -318,6 +318,13 @@ over the whole suite is a claim about, so it is not held to one —
 narrowing a run is added. `--cov-fail-under` asked for explicitly still
 applies.
 
+The tests marked `slow` are skipped by a run without `--run-slow`, and
+`tests/README.md`'s *Slow tests* says why. To run them, and only them:
+
+```shell
+uv run pytest -m slow --run-slow --no-cov
+```
+
 Every test is bounded, too. A node that stops answering fails the test
 that built it, named, with a stack of every thread it left running,
 instead of holding the run open until something outside it gives up. The
@@ -348,10 +355,11 @@ than restating it here. Read that file before assuming a red run stops
 anything.
 
 Everything else reports. `api-break.yml` labels a pull request that
-breaks the public API and gates nothing. `codeql.yml` follows a value from a peer's
-message or an RPC request body to where it is used, which no hook here
-does. `os-macos.yml` runs the suite on the one platform
-`pyproject.toml` classifies that the gate does not run, and its header
+breaks the public API and gates nothing. `slow.yml` runs the tests marked
+`slow` weekly and on demand. `codeql.yml`
+follows a value from a peer's message or an RPC request body to where it
+is used, which no hook here does. `os-macos.yml` runs the suite on the one
+platform `pyproject.toml` classifies that the gate does not run, and its header
 says what differs beneath it. `os-ubuntu.yml` runs it on
 `ubuntu-24.04-arm` beside the gate's own image, which is where aarch64
 Linux is exercised at all. `links.yml` asks whether somebody else's

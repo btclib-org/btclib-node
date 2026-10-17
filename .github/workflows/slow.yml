@@ -1,0 +1,63 @@
+---
+name: slow
+
+# The tests too slow for every run: the ones marked `slow`, which a run
+# without `--run-slow` skips. `tests/README.md`'s *Slow tests* says what
+# the tier is and how it stays out of the coverage floor; this file is
+# what runs it, weekly and on demand.
+#
+# `--no-cov` because, in section 10 of btclib-org/.github's README.md,
+# "a sentinel cell that runs the suite passes `--no-cov`".
+#
+# pytest exits 5 when no test is selected, and that fails the job: a
+# marker lost from every test would otherwise read as a green run.
+#
+# It gates nothing and is not a required check. A pull request that
+# touches this file runs it, to check the file.
+
+on:
+  schedule:
+    # section 10 of btclib-org/.github's README.md is the calendar: the
+    # day for the workflow, the minute for the repository. Only the
+    # default branch schedules anything
+    - cron: "20 3 * * 5"
+  workflow_dispatch:
+  pull_request:
+    # the type list every workflow here carries, for the reasons the same
+    # list carries in test.yml
+    types: [opened, reopened, synchronize, ready_for_review, closed]
+    paths:
+      - .github/workflows/slow.yml
+
+# least privilege for the GITHUB_TOKEN: nothing here writes
+permissions:
+  contents: read
+
+# cancel superseded runs, for the reasons os-ubuntu.yml's group gives
+concurrency:
+  group: slow-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ !(github.event.action == 'closed' && github.event.pull_request.merged) }}
+
+jobs:
+  slow:
+    name: Run the slow tests
+    # a draft pull request spends no runner, nor does a closed one: the
+    # trigger takes that event only for the concurrency group's sake
+    if: ${{ !github.event.pull_request.draft && github.event.action != 'closed' }}
+    runs-on: ubuntu-latest
+    # far above the work: it bounds a hung job holding a runner. A test
+    # that needs longer than pyproject.toml's `timeout` sets its own
+    timeout-minutes: 60
+    steps:
+      # every action is pinned to a commit SHA, the tag in the comment
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # no interpreter named: `uv run` resolves what .python-version pins
+      - name: Setup uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Run the tests marked slow
+        run: uv run --locked pytest -m slow --run-slow --no-cov
