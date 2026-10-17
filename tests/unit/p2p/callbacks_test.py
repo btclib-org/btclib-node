@@ -166,6 +166,7 @@ from btclib_node.p2p.protocol_version import (
     SHORT_IDS_BLOCKS_VERSION,
     WTXID_RELAY_VERSION,
 )
+from btclib_node.p2p.raw_block import RawBlock
 from btclib_node.p2p.tx_checks import TxChecks
 from tests import (
     brute_force_nonce,
@@ -4078,7 +4079,7 @@ def test_a_peer_that_declined_relay_is_still_served_a_block() -> None:
     node = a_data_node(
         mempool=mempool,
         block_index=a_tall_block_index(0, block.header.hash),
-        block_db=SimpleNamespace(get_block=lambda h: block),
+        block_db=a_block_store(block),
     )
     peer = a_peer(relay_tx=False)
     items = [
@@ -4086,17 +4087,28 @@ def test_a_peer_that_declined_relay_is_still_served_a_block() -> None:
         Inventory(InventoryType.MSG_BLOCK, block.header.hash),
     ]
     getdata(node, GetData(items).serialize(), peer)
-    (answer,) = peer.sent
-    assert isinstance(answer, BlockMsg)
-    assert answer.block.header.hash == block.header.hash
+    assert peer.sent == [a_wire_block(block, include_witness=False)]
+
+
+def a_wire_block(block: Block, *, include_witness: bool) -> RawBlock:
+    """Build the `block` message a `getdata` for `block` is answered with."""
+    return RawBlock(
+        block.serialize(include_witness=include_witness, check_validity=False)
+    )
 
 
 def test_a_block_this_node_holds_is_served() -> None:
-    """A `getdata` for a held block is served, witness included when asked."""
-    block = a_block()
+    """A `getdata` for a held block is served, witness included when asked.
+
+    The block carries witnesses, so that the two answers differ.
+    """
+    block = a_block_with_transactions(2)
+    assert block.serialize(
+        include_witness=True, check_validity=False
+    ) != block.serialize(include_witness=False, check_validity=False)
     node = a_data_node(
         block_index=a_tall_block_index(0, block.header.hash),
-        block_db=SimpleNamespace(get_block=lambda h: block),
+        block_db=a_block_store(block),
     )
     for type_code, with_witness in (
         (InventoryType.MSG_BLOCK, False),
@@ -4105,21 +4117,47 @@ def test_a_block_this_node_holds_is_served() -> None:
         peer = a_peer()
         items = [Inventory(type_code, block.header.hash)]
         getdata(node, GetData(items).serialize(), peer)
-        (answer,) = peer.sent
-        assert isinstance(answer, BlockMsg)
-        assert answer.block.header.hash == block.header.hash
-        assert answer.include_witness is with_witness
+        assert peer.sent == [a_wire_block(block, include_witness=with_witness)]
 
 
 def test_a_block_this_node_does_not_hold_is_not_answered() -> None:
     """A `getdata` for a block indexed and not held gets silence, as in Core."""
     node = a_data_node(
         block_index=a_tall_block_index(0, b"\x11" * 32),
-        block_db=SimpleNamespace(get_block=lambda h: None),
+        block_db=a_block_store(None),
     )
     peer = a_peer()
     items = [Inventory(InventoryType.MSG_BLOCK, b"\x11" * 32)]
     getdata(node, GetData(items).serialize(), peer)
+    assert not peer.sent
+
+
+@pytest.mark.parametrize(
+    "type_code",
+    [
+        InventoryType.MSG_BLOCK,
+        InventoryType.MSG_WITNESS_BLOCK,
+        InventoryType.MSG_CMPCT_BLOCK,
+    ],
+)
+def test_a_stored_block_that_does_not_parse_is_not_served(
+    type_code: InventoryType,
+) -> None:
+    """A corrupted record raises `BTClibValueError` and sends nothing.
+
+    For every way of asking for the block.
+    """
+    block = a_block_with_transactions(2)
+    raw = block.serialize(check_validity=False)[:-1]
+    store = a_block_store(block)
+    store.get_raw_block = lambda h: raw
+    store.get_block = lambda h: Block.parse(raw, check_validity=False)
+    block_index = a_recent_block_index(5)
+    node = a_data_node(block_index=block_index, block_db=store)
+    peer = a_peer()
+    items = [Inventory(type_code, block_index.active_chain[4])]
+    with pytest.raises(BTClibValueError):
+        getdata(node, GetData(items).serialize(), peer)
     assert not peer.sent
 
 
@@ -4152,9 +4190,7 @@ def test_a_pruned_node_disconnects_a_getdata_below_its_own_retained_depth() -> N
     block asked for, which is why `get_block` here still answers one.
     """
     block_index = a_tall_block_index(MIN_BLOCKS_TO_KEEP + 10)
-    node = a_data_node(
-        block_index=block_index, block_db=SimpleNamespace(get_block=lambda h: a_block())
-    )
+    node = a_data_node(block_index=block_index, block_db=a_block_store(a_block()))
     node.config.pruned = True
     peer = a_peer()
     old_hash = block_index.active_chain[0]
@@ -4168,16 +4204,13 @@ def test_a_pruned_node_serves_a_block_within_its_own_retained_depth() -> None:
     """A pruned node still answers a `getdata` inside `MIN_BLOCKS_TO_KEEP`."""
     block_index = a_tall_block_index(MIN_BLOCKS_TO_KEEP + 10)
     block = a_block()
-    node = a_data_node(
-        block_index=block_index, block_db=SimpleNamespace(get_block=lambda h: block)
-    )
+    node = a_data_node(block_index=block_index, block_db=a_block_store(block))
     node.config.pruned = True
     peer = a_peer()
     recent_hash = block_index.active_chain[-1]
     items = [Inventory(InventoryType.MSG_BLOCK, recent_hash)]
     getdata(node, GetData(items).serialize(), peer)
-    (answer,) = peer.sent
-    assert isinstance(answer, BlockMsg)
+    assert peer.sent == [a_wire_block(block, include_witness=False)]
     assert not peer.stopped
 
 
@@ -4196,19 +4229,13 @@ def test_a_fresh_node_serves_its_genesis_block(tmp_path: Path) -> None:
         peer = a_peer()
         items = [Inventory(InventoryType.MSG_BLOCK, genesis.header.hash)]
         getdata(node, GetData(items).serialize(), peer)
-    (answer,) = peer.sent
-    assert isinstance(answer, BlockMsg)
-    assert answer.block.serialize(check_validity=False) == genesis.serialize(
-        check_validity=False
-    )
+    assert peer.sent == [a_wire_block(genesis, include_witness=False)]
 
 
 def test_an_unpruned_node_never_disconnects_over_a_stale_getdata() -> None:
     """`Config.pruned=False` never reaches `_below_prune_threshold` at all."""
     block_index = a_tall_block_index(MIN_BLOCKS_TO_KEEP + 10)
-    node = a_data_node(
-        block_index=block_index, block_db=SimpleNamespace(get_block=lambda h: None)
-    )
+    node = a_data_node(block_index=block_index, block_db=a_block_store(None))
     peer = a_peer()
     old_hash = block_index.active_chain[0]
     items = [Inventory(InventoryType.MSG_BLOCK, old_hash)]
@@ -4224,9 +4251,7 @@ def test_a_pruned_node_ignores_a_hash_it_has_never_indexed() -> None:
     `_below_prune_threshold` mirrors.
     """
     block_index = a_tall_block_index(MIN_BLOCKS_TO_KEEP + 10)
-    node = a_data_node(
-        block_index=block_index, block_db=SimpleNamespace(get_block=lambda h: None)
-    )
+    node = a_data_node(block_index=block_index, block_db=a_block_store(None))
     node.config.pruned = True
     peer = a_peer()
     items = [Inventory(InventoryType.MSG_BLOCK, b"\xff" * 32)]
@@ -4245,9 +4270,7 @@ def test_a_pruned_node_s_own_threshold_is_strictly_greater_than_the_buffer() -> 
     length = MIN_BLOCKS_TO_KEEP + 10
     block_index = a_tall_block_index(length)
     block = a_block()
-    node = a_data_node(
-        block_index=block_index, block_db=SimpleNamespace(get_block=lambda h: block)
-    )
+    node = a_data_node(block_index=block_index, block_db=a_block_store(block))
     node.config.pruned = True
     tip_index = length - 1
 
@@ -4324,9 +4347,7 @@ def test_a_cmpct_block_item_is_answered_as_core_answers_it(
     length = MAX_CMPCTBLOCK_DEPTH + 10
     block_index = a_recent_block_index(length, age=age)
     block = a_block_with_transactions(2)
-    node = a_data_node(
-        block_index=block_index, block_db=SimpleNamespace(get_block=lambda h: block)
-    )
+    node = a_data_node(block_index=block_index, block_db=a_block_store(block))
     peer = a_peer()
     wanted = block_index.active_chain[length - 1 - depth]
     items = [Inventory(InventoryType.MSG_CMPCT_BLOCK, wanted)]
@@ -4336,7 +4357,19 @@ def test_a_cmpct_block_item_is_answered_as_core_answers_it(
         assert isinstance(answer, CmpctBlock)
         assert answer.header == block.header
     else:
-        assert answer == BlockMsg(block, include_witness=True, check_validity=False)
+        assert answer == a_wire_block(block, include_witness=True)
+
+
+def test_a_cmpct_block_item_of_a_block_not_held_is_not_answered() -> None:
+    """A recent block the store lost is silence, as a full block is."""
+    length = MAX_CMPCTBLOCK_DEPTH + 10
+    block_index = a_recent_block_index(length)
+    node = a_data_node(block_index=block_index, block_db=a_block_store(None))
+    peer = a_peer()
+    wanted = block_index.active_chain[length - 1]
+    items = [Inventory(InventoryType.MSG_CMPCT_BLOCK, wanted)]
+    getdata(node, GetData(items).serialize(), peer)
+    assert not peer.sent
 
 
 def a_most_recent(block: Block, block_hash: bytes) -> Any:
@@ -4361,9 +4394,7 @@ def test_a_cmpct_block_item_of_the_most_recent_block_is_the_one_announced(
     length = MAX_CMPCTBLOCK_DEPTH + 10
     block_index = a_recent_block_index(length)
     block = a_block_with_transactions(2)
-    node = a_data_node(
-        block_index=block_index, block_db=SimpleNamespace(get_block=lambda h: block)
-    )
+    node = a_data_node(block_index=block_index, block_db=a_block_store(block))
     wanted = block_index.active_chain[length - 1]
     node.most_recent_block = a_most_recent(
         block, wanted if recent else block_index.active_chain[length - 2]
@@ -4384,9 +4415,7 @@ def test_a_cmpct_block_item_past_the_depth_is_the_block_whatever_was_cached() ->
     length = MAX_CMPCTBLOCK_DEPTH + 10
     block_index = a_recent_block_index(length)
     block = a_block_with_transactions(2)
-    node = a_data_node(
-        block_index=block_index, block_db=SimpleNamespace(get_block=lambda h: block)
-    )
+    node = a_data_node(block_index=block_index, block_db=a_block_store(block))
     wanted = block_index.active_chain[length - 2 - MAX_CMPCTBLOCK_DEPTH]
     node.most_recent_block = a_most_recent(block, wanted)
     peer = a_peer()
@@ -4408,12 +4437,12 @@ def test_a_block_item_of_the_most_recent_block_is_not_read_from_the_store(
     block = a_block_with_transactions(2)
     reads: list[bytes] = []
 
-    def get_block(block_hash: bytes) -> Block:
+    def get_raw_block(block_hash: bytes) -> bytes:
         reads.append(block_hash)
-        return block
+        return block.serialize(check_validity=False)
 
     node = a_data_node(
-        block_index=block_index, block_db=SimpleNamespace(get_block=get_block)
+        block_index=block_index, block_db=SimpleNamespace(get_raw_block=get_raw_block)
     )
     wanted = block_index.active_chain[length - 1]
     node.most_recent_block = a_most_recent(
@@ -4422,14 +4451,23 @@ def test_a_block_item_of_the_most_recent_block_is_not_read_from_the_store(
     peer = a_peer()
     item = Inventory(InventoryType.MSG_WITNESS_BLOCK, wanted)
     getdata(node, GetData([item]).serialize(), peer)
-    assert peer.sent == [BlockMsg(block, include_witness=True, check_validity=False)]
+    served = (
+        BlockMsg(block, include_witness=True, check_validity=False)
+        if recent
+        else a_wire_block(block, include_witness=True)
+    )
+    assert peer.sent == [served]
     assert reads == ([] if recent else [wanted])
 
 
 def a_block_store(block: Block | None) -> Any:
     """Build a `block_db` holding `block` under every hash, or nothing."""
     return SimpleNamespace(
-        get_block=lambda h: block, has_block=lambda h: block is not None
+        get_block=lambda h: block,
+        get_raw_block=lambda h: (
+            None if block is None else block.serialize(check_validity=False)
+        ),
+        has_block=lambda h: block is not None,
     )
 
 
@@ -4575,7 +4613,7 @@ def test_getblocktxn_for_an_older_block_is_answered_with_the_block() -> None:
     peer = a_peer()
     wanted = block_index.active_chain[length - 2 - MAX_BLOCKTXN_DEPTH]
     getblocktxn(node, GetBlockTxn(wanted, [1]).serialize(), peer)
-    assert peer.sent == [BlockMsg(block, include_witness=True, check_validity=False)]
+    assert peer.sent == [a_wire_block(block, include_witness=True)]
 
 
 @pytest.mark.parametrize(
@@ -4624,7 +4662,7 @@ def test_getblocktxn_on_a_pruned_node_is_silent_for_a_block_it_lacks(
 
 def test_an_inventory_of_neither_kind_is_skipped() -> None:
     """A `getdata` item of neither family is popped and skipped."""
-    node = a_data_node(block_db=SimpleNamespace(get_block=lambda h: None))
+    node = a_data_node(block_db=a_block_store(None))
     peer = a_peer()
     items = [Inventory(InventoryType.UNDEFINED, b"\x11" * 32)]
     getdata(node, GetData(items).serialize(), peer)
@@ -5313,9 +5351,7 @@ def a_block_getdata(
 ) -> Any:
     """Ask a node over `block_index` for `block_hash`, held; return the peer."""
     block = a_block()
-    node = a_data_node(
-        block_index=block_index, block_db=SimpleNamespace(get_block=lambda h: block)
-    )
+    node = a_data_node(block_index=block_index, block_db=a_block_store(block))
     node.config.pruned = pruned
     peer = a_peer()
     items = [Inventory(InventoryType.MSG_WITNESS_BLOCK, block_hash)]
@@ -6452,9 +6488,7 @@ def test_a_getblocks_cut_at_the_limit_is_continued_by_the_getdata_of_its_last(
 ) -> None:
     """ISS 1385: 500 blocks, then an `inv` of the tip after the last."""
     active = activated(an_index, generate_random_header_chain(502, _GENESIS))
-    node = a_data_node(
-        block_index=an_index, block_db=SimpleNamespace(get_block=lambda h: a_block())
-    )
+    node = a_data_node(block_index=an_index, block_db=a_block_store(a_block()))
     hashes, peer = ask_getblocks(node, [_GENESIS])
     assert hashes == active[:500]
     assert peer.continuation_block == active[499]
@@ -6463,14 +6497,14 @@ def test_a_getblocks_cut_at_the_limit_is_continued_by_the_getdata_of_its_last(
     getdata(
         node, GetData([Inventory(InventoryType.MSG_BLOCK, active[0])]).serialize(), peer
     )
-    assert [type(sent) for sent in peer.sent] == [BlockMsg]
+    assert [type(sent) for sent in peer.sent] == [RawBlock]
     peer.sent.clear()
     getdata(
         node,
         GetData([Inventory(InventoryType.MSG_BLOCK, active[499])]).serialize(),
         peer,
     )
-    assert [type(sent) for sent in peer.sent] == [BlockMsg, Inv]
+    assert [type(sent) for sent in peer.sent] == [RawBlock, Inv]
     assert peer.sent[1].items == (Inventory(InventoryType.MSG_BLOCK, active[-1]),)
     assert peer.continuation_block is None
 
@@ -6478,9 +6512,7 @@ def test_a_getblocks_cut_at_the_limit_is_continued_by_the_getdata_of_its_last(
 def test_a_block_with_no_data_gets_no_continuation_inv(an_index: BlockIndex) -> None:
     """ISS 1385: a block with no data returns before the continuation."""
     active = activated(an_index, generate_random_header_chain(502, _GENESIS))
-    node = a_data_node(
-        block_index=an_index, block_db=SimpleNamespace(get_block=lambda h: None)
-    )
+    node = a_data_node(block_index=an_index, block_db=a_block_store(None))
     _, peer = ask_getblocks(node, [_GENESIS])
     peer.sent.clear()
     getdata(
@@ -7379,15 +7411,13 @@ def test_a_peer_holding_download_is_answered_below_the_minimum_work(
 def test_a_pruned_node_serves_a_no_ban_peer_below_its_retained_depth() -> None:
     """ISS 1320: Core's prune-height guard is `!HasPermission(NoBan)`."""
     block_index = a_tall_block_index(MIN_BLOCKS_TO_KEEP + 10)
-    node = a_data_node(
-        block_index=block_index, block_db=SimpleNamespace(get_block=lambda h: a_block())
-    )
+    node = a_data_node(block_index=block_index, block_db=a_block_store(a_block()))
     node.config.pruned = True
     peer = a_peer(permissions=NetPermissionFlags.NO_BAN)
     items = [Inventory(InventoryType.MSG_BLOCK, block_index.active_chain[0])]
     getdata(node, GetData(items).serialize(), peer)
     (answer,) = peer.sent
-    assert isinstance(answer, BlockMsg)
+    assert isinstance(answer, RawBlock)
     assert not peer.stopped
 
 

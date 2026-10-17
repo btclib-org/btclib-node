@@ -2,12 +2,13 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""The p2p payloads this node carries itself: two, for old peers only.
+"""The p2p payloads this node sends only to old peers.
 
 Every other wire message this node speaks is `btclib.p2p`'s, imported
-where it is used. The two here are what Core still sends a peer too old
-for the rest, and they are sent and never parsed: `p2p.callbacks` is
-where every command received is dispatched to a handler. BIP61's
+where it is used, except the stored block `p2p.raw_block` serves. The
+payloads here are what Core still sends a peer too old for the rest, and
+they are sent and never parsed: `p2p.callbacks` is where every command
+received is dispatched to a handler. BIP61's
 `reject` has none: Core's `ProcessMessage` ignores it as an unknown type
 (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7).
 """

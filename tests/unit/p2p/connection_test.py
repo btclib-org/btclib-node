@@ -1682,23 +1682,33 @@ def test_a_flood_of_pings_pauses_the_peer_at_cores_count() -> None:
     assert not connection.pause_send
 
 
-class _FakeBigBlock:
-    """A `Block`-shaped stand-in whose serialized size is exactly `size`.
+def _raw_block_of(size: int) -> bytes:
+    """Return a block of exactly `size` octets, one input script padded.
 
-    `advance_getdata` (`callbacks.py`) only ever calls `.serialize` on
-    what `node.block_db` hands it, through `BlockPayload`'s own
-    `check_validity=False` path all the way to `Connection._queue`'s
-    own `payload.serialize` call -- so a synthetic size stands in for a
-    real block's the same way `_burst_summing_to` above already stands a
-    `CFilter` in for whatever a connection has queued.
+    `advance_getdata` (`callbacks.py`) reads the stored octets and hands
+    them on whole, so a synthetic size stands in for a real block's the
+    same way `_burst_summing_to` above already stands a `CFilter` in for
+    whatever a connection has queued.
     """
-
-    def __init__(self, size: int) -> None:
-        self.size = size
-
-    def serialize(self, *_args: object, check_validity: bool = True) -> bytes:
-        """Ignore whatever `BlockPayload.serialize` passes, padded to `size`."""
-        return b"\x00" * self.size
+    fixed = 80 + 1 + 4 + 1 + 36 + 4 + 1 + 8 + 1 + 4
+    length = size - fixed - 5
+    assert length >= 0x0001_0000  # a four-octet CompactSize, written below
+    return b"".join(
+        [
+            bytes(80),
+            b"\x01",
+            bytes(4),
+            b"\x01",
+            bytes(36),
+            b"\xfe" + length.to_bytes(4, "little"),
+            bytes(length),
+            bytes(4),
+            b"\x01",
+            bytes(8),
+            b"\x00",
+            bytes(4),
+        ]
+    )
 
 
 def a_chainstate_holding(block_hashes: Iterable[bytes]) -> Any:
@@ -1762,14 +1772,14 @@ def test_a_getdata_answer_pauses_once_the_send_buffer_is_full() -> None:
     Once the buffer drains, the next call serves the next block.
     """
     size = 1000 * DEFAULT_MAXSENDBUFFER // 3
-    blocks = {bytes([i]) + b"\x00" * 31: _FakeBigBlock(size) for i in range(6)}
+    blocks = {bytes([i]) + b"\x00" * 31: _raw_block_of(size) for i in range(6)}
     items = [Inventory(InventoryType.MSG_BLOCK, h) for h in blocks]
 
     async def drive() -> tuple[Connection, list[int], bool, int]:
         loop = asyncio.get_running_loop()
         connection = a_running_connection(loop, socket.socket())
         node = connection.node
-        node.block_db = SimpleNamespace(get_block=blocks.get)  # type: ignore[assignment]
+        node.block_db = SimpleNamespace(get_raw_block=blocks.get)  # type: ignore[assignment]
         node.most_recent_block = None
         node.chainstate = a_chainstate_holding(blocks)
         node.pending_getdata = {}

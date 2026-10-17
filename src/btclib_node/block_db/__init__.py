@@ -541,16 +541,26 @@ class BlockDB:
         with self._lock:
             return block_hash in self.blocks
 
-    def get_block(self, block_hash: bytes) -> Block | None:
-        """Return the block stored under `block_hash`, or `None` if not held."""
+    def get_raw_block(self, block_hash: bytes) -> bytes | None:
+        """Return the octets stored under `block_hash`, or `None` if not held.
+
+        The block as `add_block` wrote it, with its witnesses and
+        unparsed: what a `getdata` is served from.
+        """
         with self._lock:
             if block_hash not in self.blocks:
                 return None
             block_location = self.blocks[block_hash]
             file = self.__get_block_file(block_location.filename)
-            block_data = self.__get_data_from_file(
+            return self.__get_data_from_file(
                 file, block_location.index, block_location.size
             )
+
+    def get_block(self, block_hash: bytes) -> Block | None:
+        """Return the block stored under `block_hash`, or `None` if not held."""
+        block_data = self.get_raw_block(block_hash)
+        if block_data is None:
+            return None
         return Block.parse(block_data, check_validity=False)
 
     def tx_count(self, block_hash: bytes) -> int | None:

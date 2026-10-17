@@ -107,6 +107,20 @@ def test_blocks(a_db: Callable[[Path | None], BlockDB], tmp_path: Path) -> None:
             assert stored_block == block
 
 
+def test_a_raw_block_is_the_octets_that_were_written(
+    a_db: Callable[[Path | None], BlockDB],
+) -> None:
+    """`get_raw_block` answers the serialization `add_block` appended."""
+    block_db = a_db(None)
+    first, second = generate_random_chain(2, RegTest().genesis.hash)
+    block_db.add_block(first)
+    block_db.add_block(second)
+    for block in (first, second):
+        assert block_db.get_raw_block(block.header.hash) == block.serialize(
+            check_validity=False
+        )
+
+
 def test_a_rev_patch_survives_the_wire() -> None:
     """`RevBlock.deserialize` undoes `RevBlock.serialize` exactly."""
     rev_block = a_rev_block()
@@ -206,9 +220,10 @@ def test_a_rev_patch_is_read_back_from_the_file_it_went_into(
 def test_what_was_never_stored_is_not_found(
     a_db: Callable[[Path | None], BlockDB],
 ) -> None:
-    """`get_block` and `get_rev_block` answer `None` for an unknown hash."""
+    """`get_block`, `get_raw_block` and `get_rev_block` answer `None`."""
     block_db = a_db(None)
     assert block_db.get_block(b"\x11" * 32) is None
+    assert block_db.get_raw_block(b"\x11" * 32) is None
     assert block_db.get_rev_block(b"\x11" * 32) is None
 
 
