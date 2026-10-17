@@ -310,6 +310,7 @@ def a_node(
     permit_bare_multisig: bool = True,
     max_datacarrier_bytes: int | None = DEFAULT_MAX_DATACARRIER_BYTES,
     local_addresses: dict[bytes, LocalService] | None = None,
+    network_active: bool = True,
 ) -> Any:
     """Build a `Node` double carrying only what these callbacks read.
 
@@ -328,6 +329,7 @@ def a_node(
     and unset by default -- nothing else here reads either.
     """
     known = heights if heights is not None else {}
+    flag = [network_active]
     confirmed = confirmed_outpoints if confirmed_outpoints is not None else frozenset()
     return SimpleNamespace(
         # the network `decoderawtransaction` spells its addresses for
@@ -360,6 +362,8 @@ def a_node(
             pending_connections=pending if pending is not None else {},
             ping_all=lambda: None,
             local_snapshot=lambda: local_addresses or {},
+            get_network_active=lambda: flag[0],
+            set_network_active=lambda *, active: flag.__setitem__(0, active),
         ),
         mempool=mempool if mempool is not None else Mempool(Logger(debug=True)),
         config=SimpleNamespace(
@@ -5003,12 +5007,23 @@ def test_get_network_info_answers_this_node_s_own_subversion_and_protocol() -> N
         "protocolversion": PROTOCOL_VERSION,
         "localservices": f"{ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_NETWORK_LIMITED | ServiceFlags.NODE_WITNESS | ServiceFlags.NODE_P2P_V2:016x}",
         "localservicesnames": ["NETWORK", "WITNESS", "NETWORK_LIMITED", "P2P_V2"],
+        "networkactive": True,
         "connections": 0,
         "connections_in": 0,
         "connections_out": 0,
         "localaddresses": [],
         "warnings": [],
     }
+
+
+def test_get_network_info_answers_networkactive_as_setnetworkactive_left_it() -> None:
+    """ISS 1984: `networkactive` is true until `setnetworkactive false`."""
+    node = a_node()
+    assert get_network_info(node, _CONN, [])["networkactive"] is True
+    set_network_active(node, _CONN, [False])
+    assert get_network_info(node, _CONN, [])["networkactive"] is False
+    set_network_active(node, _CONN, [True])
+    assert get_network_info(node, _CONN, [])["networkactive"] is True
 
 
 def test_get_network_info_s_localservices_follows_pruned_and_peerblockfilters() -> None:

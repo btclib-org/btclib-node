@@ -1614,6 +1614,10 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     `bb529657` above, this paragraph's own citation), so the two RPCs
     never disagree here either.
 
+    `networkactive` is Core's `CConnman::GetNetworkActive`
+    (`rpc/net.cpp:716`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), the
+    flag `setnetworkactive` sets, and it precedes `connections` as in Core.
+
     `connections`, `connections_in` and `connections_out` are Core's
     `CConnman::GetNodeCount` for `Both`, `In` and `Out` (`rpc/net.cpp:717-719`,
     at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Each counts a pending
@@ -1641,6 +1645,7 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
         "protocolversion": PROTOCOL_VERSION,
         "localservices": f"{services:016x}",
         "localservicesnames": service_names(services),
+        "networkactive": manager.get_network_active(),
         "connections": len(peers),
         "connections_in": connections_in,
         "connections_out": len(peers) - connections_in,
