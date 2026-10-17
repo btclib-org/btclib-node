@@ -638,12 +638,13 @@ repos:
   # maintainer's job.
   #
   # `language: system` and `uv run --locked` are the form section 4 gives
-  # a local hook of this shape, and uv is on PATH because the lint gate
-  # is itself started by it. `--only-group check` adds that group to the
-  # environment the gate runs from and installs no project, so nothing is
-  # compiled. `-d --min=10 .`, `pass_filenames` and `always_run` are the
-  # upstream hook's own definition, written out because a local hook
-  # inherits none of it.
+  # a local hook of this shape, and uv is on PATH because the lint gate is
+  # itself started by it. `--only-group check` adds that group to the
+  # environment the gate runs from and installs no project; `--no-build`
+  # makes a dependency with no wheel fail rather than compile, as section
+  # 4 of the organization standard says. `-d --min=10 .`, `pass_filenames`
+  # and `always_run` are the upstream hook's own definition, written out
+  # because a local hook inherits none of it.
   #
   # The backend is pyproject.toml's `uv_build`, in the same group: pyroma
   # reads this project's metadata through `build`, and its command line
@@ -667,7 +668,7 @@ repos:
       - id: pyroma
         name: pyroma (the packaging rating of the source tree)
         language: system
-        entry: uv run --locked --only-group check pyroma
+        entry: uv run --locked --no-build --only-group check pyroma
         args: [-d, --min=10, .]
         pass_filenames: false
         always_run: true
