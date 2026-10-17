@@ -379,7 +379,7 @@ this release included.
    --match-head-commit <head> --body-file <path> --subject <title>` is the
    form that names the release commit explicitly rather than leaving it to
    `squash_merge_commit_message`'s repository default. A merge through
-   the maintainer's bypass adds `--admin`.
+   the emergency bypass adds `--admin`.
 
    Then read `lint` and `test` on the commit `main` ends up at before
    tagging, rather than trust the pull request's own green run:
