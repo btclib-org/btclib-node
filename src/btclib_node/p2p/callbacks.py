@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, cast
 
 from btclib import var_int
 from btclib.amount import valid_sats_amount
+from btclib.block import Block, BlockHeader
 from btclib.exceptions import (
     BTClibException,
     BTClibValueError,
@@ -84,6 +85,7 @@ from btclib.p2p.limits import (
 from btclib.p2p.negotiation import FeeFilter, GetAddr, WtxidRelay
 
 from btclib_node import clock
+from btclib_node.chains import SigNet
 from btclib_node.chainstate.block_index import (
     BlockStatus,
     block_time,
@@ -151,11 +153,11 @@ from btclib_node.p2p.protocol_version import (
 )
 from btclib_node.p2p.raw_block import RawBlock, assert_well_formed, strip_witnesses
 from btclib_node.p2p.tx_checks import TxCheck
+from btclib_node.signet import assert_valid_solution
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
-    from btclib.block import Block, BlockHeader
     from btclib.p2p.payload import Payload
     from btclib.tx.tx import Tx
 
@@ -1938,22 +1940,51 @@ def _compact_answer(
     """
     if recent is not None:
         return recent.compact
-    block = node.block_db.get_block(item.hash)
-    if block is None:
+    raw = _read_stored(node, item)
+    if raw is None:
         return None
+    block = Block.parse(raw, check_validity=False)
     return compact_block(block, secrets.randbits(64))
 
 
+def _read_stored(node: Node, item: Inventory) -> bytes | None:
+    """Return the octets `node.block_db` holds for `item`, or `None`.
+
+    Checked as Core's `ProcessGetBlockData` reads them
+    (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag). A `MSG_WITNESS_BLOCK` is read with `ReadRawBlock`, which checks
+    nothing of the block. Every other item is read with `ReadBlock(...,
+    inv.hash)`, which refuses, in this order, a header missing its proof
+    of work, on signet a block whose solution does not verify, and a
+    header that hashes to another hash than the one asked for
+    (`src/node/blockstorage.cpp`, same sha). Each refusal here is a
+    `BTClibValueError`. Off signet, only the eighty header octets are
+    parsed.
+    """
+    raw = node.block_db.get_raw_block(item.hash)
+    if raw is None or item.type_code == InventoryType.MSG_WITNESS_BLOCK:
+        return raw
+    # a stream, so that the octets past the header are left unread
+    header = BlockHeader.parse(BytesIO(raw), check_validity=False)
+    header.assert_valid_pow(node.chain.pow_limit_bits)
+    if isinstance(node.chain, SigNet):
+        assert_valid_solution(Block.parse(raw, check_validity=False), node.chain)
+    if header.hash != item.hash:
+        err_msg = f"stored block hashes to {header.hash.hex()}, not {item.hash.hex()}"
+        raise BTClibValueError(err_msg)
+    return raw
+
+
 def _stored_answer(
-    node: Node, block_hash: bytes, *, include_witness: bool
+    node: Node, item: Inventory, *, include_witness: bool
 ) -> RawBlock | None:
     """Answer with the octets `node.block_db` holds, or `None` if it holds none.
 
-    They are not parsed: served as they are for a witness block, and with
-    the witnesses cut out for a `MSG_BLOCK`. `p2p.raw_block` refuses octets
-    `Block.parse` would.
+    They are served as stored, never written out again: as they are for a
+    witness block, and with the witnesses cut out for a `MSG_BLOCK`.
+    `p2p.raw_block` refuses octets `Block.parse` would.
     """
-    raw = node.block_db.get_raw_block(block_hash)
+    raw = _read_stored(node, item)
     if raw is None:
         return None
     if include_witness:
@@ -1992,7 +2023,7 @@ def _block_answer(node: Node, item: Inventory) -> Payload | None:
         return BlockMsg(
             recent.block, include_witness=include_witness, check_validity=False
         )
-    return _stored_answer(node, item.hash, include_witness=include_witness)
+    return _stored_answer(node, item, include_witness=include_witness)
 
 
 def _below_prune_threshold(node: Node, block_hash: bytes) -> bool:
@@ -2099,7 +2130,16 @@ def _serve_getdata_block(node: Node, conn: Connection, item: Inventory) -> None:
     ):
         conn.stop()
         return
-    answer = _block_answer(node, item)
+    try:
+        answer = _block_answer(node, item)
+    except BTClibValueError as e:
+        # Core logs a block it cannot read and drops the peer
+        # (`ProcessGetBlockData`, at bitcoin/bitcoin@9be056a8a7)
+        node.logger.error(  # noqa: TRY400
+            "Cannot load block from disk (%.200s), disconnecting peer=%d", e, conn.id
+        )
+        conn.stop()
+        return
     if answer is not None:
         conn.send(answer)
         # Core's `m_continuation_block`, right after the block and even
