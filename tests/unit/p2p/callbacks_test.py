@@ -2498,6 +2498,8 @@ def a_data_node(
     node.highest_fast_announce = 0
     # `main.new_pow_valid_block`'s last block, Core's `m_most_recent_block`
     node.most_recent_block = None
+    # `getblocktxn`'s blocks read from the store
+    node.blocktxn_blocks = {}
     node.block_db = block_db
     node.download_manager = DownloadManager(node, node.logger)
     # every (peer, txid, wtxid) `tx` completed an announcement for
@@ -4482,6 +4484,92 @@ def test_getblocktxn_is_answered_with_the_transactions_asked_for() -> None:
     getblocktxn(node, GetBlockTxn(wanted, [1, 3]).serialize(), peer)
     (answer,) = peer.sent
     assert answer == BlockTxn(wanted, [block.transactions[1], block.transactions[3]])
+
+
+def a_counting_store(block: Block) -> tuple[Any, list[bytes]]:
+    """Build a `block_db` holding `block` under every hash, and its reads."""
+    reads: list[bytes] = []
+
+    def get_block(block_hash: bytes) -> Block:
+        reads.append(block_hash)
+        return block
+
+    return SimpleNamespace(get_block=get_block, has_block=lambda h: True), reads
+
+
+def test_a_repeated_getblocktxn_reads_the_block_once() -> None:
+    """ISS 1954: a block read for `getblocktxn` is kept, and answers again."""
+    length = MAX_BLOCKTXN_DEPTH + 10
+    block_index = a_tall_block_index(length)
+    block = a_block_with_transactions(3)
+    block_db, reads = a_counting_store(block)
+    node = a_data_node(block_index=block_index, block_db=block_db)
+    peer = a_peer()
+    wanted = block_index.active_chain[length - 1 - MAX_BLOCKTXN_DEPTH]
+    getblocktxn(node, GetBlockTxn(wanted, [1, 3]).serialize(), peer)
+    getblocktxn(node, GetBlockTxn(wanted, [2]).serialize(), peer)
+    assert peer.sent == [
+        BlockTxn(wanted, [block.transactions[1], block.transactions[3]]),
+        BlockTxn(wanted, [block.transactions[2]]),
+    ]
+    assert reads == [wanted]
+
+
+def test_a_block_kept_for_getblocktxn_goes_once_past_the_depth() -> None:
+    """ISS 1954: a block read drops those `MAX_BLOCKTXN_DEPTH` cannot reach."""
+    length = MAX_BLOCKTXN_DEPTH + 10
+    block_index = a_tall_block_index(length)
+    block_db, reads = a_counting_store(a_block_with_transactions(1))
+    node = a_data_node(block_index=block_index, block_db=block_db)
+    deepest = block_index.active_chain[length - 1 - MAX_BLOCKTXN_DEPTH]
+    above = block_index.active_chain[length - MAX_BLOCKTXN_DEPTH]
+    for wanted in (deepest, above):
+        getblocktxn(node, GetBlockTxn(wanted, [1]).serialize(), a_peer())
+    assert set(node.blocktxn_blocks) == {deepest, above}
+    tip = length.to_bytes(32, "big")
+    block_index.active_chain.append(tip)
+    block_index.header_dict[tip] = SimpleNamespace(index=length)
+    getblocktxn(node, GetBlockTxn(tip, [1]).serialize(), a_peer())
+    assert set(node.blocktxn_blocks) == {above, tip}
+    assert reads == [deepest, above, tip]
+
+
+def test_a_getblocktxn_above_the_tip_is_answered_and_not_kept() -> None:
+    """ISS 1954: a block stored but not connected is read for every request.
+
+    Every stored block above the tip can be asked for: the download
+    window's, and while `NodeStatus.Reindexing` holds, the stored chain
+    still to connect. Keeping them would not be bounded by
+    `MAX_BLOCKTXN_DEPTH`.
+    """
+    length = MAX_BLOCKTXN_DEPTH + 10
+    block_index = a_tall_block_index(length)
+    above = length.to_bytes(32, "big")
+    block_index.header_dict[above] = SimpleNamespace(index=length)
+    block = a_block_with_transactions(1)
+    block_db, reads = a_counting_store(block)
+    node = a_data_node(block_index=block_index, block_db=block_db)
+    peer = a_peer()
+    for _ in range(2):
+        getblocktxn(node, GetBlockTxn(above, [1]).serialize(), peer)
+    assert peer.sent == [BlockTxn(above, [block.transactions[1]])] * 2
+    assert reads == [above, above]
+    assert not node.blocktxn_blocks
+
+
+def test_the_blocks_kept_for_getblocktxn_are_capped() -> None:
+    """ISS 1954: a stale block within the depth drops the lowest kept."""
+    length = MAX_BLOCKTXN_DEPTH + 10
+    block_index = a_tall_block_index(length)
+    stale = b"\xee" * 32
+    block_index.header_dict[stale] = SimpleNamespace(index=length - 1)
+    block_db, reads = a_counting_store(a_block_with_transactions(1))
+    node = a_data_node(block_index=block_index, block_db=block_db)
+    reachable = block_index.active_chain[length - 1 - MAX_BLOCKTXN_DEPTH :]
+    for wanted in (*reachable, stale):
+        getblocktxn(node, GetBlockTxn(wanted, [1]).serialize(), a_peer())
+    assert set(node.blocktxn_blocks) == {*reachable[1:], stale}
+    assert reads == [*reachable, stale]
 
 
 @pytest.mark.parametrize(

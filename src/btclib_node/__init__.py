@@ -65,6 +65,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
     from types import FrameType
 
+    from btclib.block import Block
     from btclib.p2p.inventory import Inventory
 
     from btclib_node.p2p.compact_block import MostRecentBlock
@@ -459,18 +460,13 @@ class Node(threading.Thread):
         # `Node`'s own loop, never on `P2pManager`'s or `RpcManager`'s
         # thread.
         self.most_recent_block: MostRecentBlock | None = None
+        # `p2p.callbacks.getblocktxn`'s blocks read from the store, by
+        # hash, each with its height (`_blocktxn_block`). Read and
+        # written on this thread only, so it needs no lock.
+        self.blocktxn_blocks: dict[bytes, tuple[int, Block]] = {}
 
-        self.p2p_port: int | None
-        if config.p2p_port:
-            self.p2p_port = config.p2p_port
-        else:
-            self.p2p_port = None
-
-        self.rpc_port: int | None
-        if config.rpc_port:
-            self.rpc_port = config.rpc_port
-        else:
-            self.rpc_port = None
+        self.p2p_port: int | None = config.p2p_port or None
+        self.rpc_port: int | None = config.rpc_port or None
         self.rpc_manager = RpcManager(self, self.rpc_port)
         # The requests `rpc.main.handle_rpc` started and did not answer,
         # each with its connection, for `rpc.main.resume_rpc` to step on
