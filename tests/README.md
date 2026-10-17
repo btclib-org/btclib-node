@@ -12,7 +12,8 @@ to reach into the object under test directly. A module there with no
 source counterpart still belongs where its subject is `src/btclib_node/`
 taken whole rather than one file of it -- `unit/all_test.py`'s `__all__`
 convention, `unit/docs_test.py`'s documentation convention -- or the
-suite's own machinery: `tests/__init__.py`, `conftest.py`, or the pytest
+suite's own machinery: `tests/__init__.py`,
+`tests/functional/p2p/__init__.py`, `conftest.py`, or the pytest
 configuration it runs under, which is what `unit/helpers_test.py`,
 `unit/coverage_floor_test.py`, `unit/harness_test.py`,
 `unit/slow_test.py` and `unit/thread_exception_origin_test.py` each
