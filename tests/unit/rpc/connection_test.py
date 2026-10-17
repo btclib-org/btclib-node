@@ -53,6 +53,7 @@ from btclib_node.rpc.connection import (
 from btclib_node.rpc.jsonrpc import NO_CONTENT, OK, HttpReply, decode
 from btclib_node.rpc.manager import RpcManager
 from tests import RPCAUTH, RPCAUTH_LINE
+from tests.secret_free import assert_secret_free
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -1866,6 +1867,27 @@ def test_a_content_length_past_strtoll_is_refused_as_libevent_refuses_it(
     """
     with pytest.raises(error):
         parse_request_head(b"POST / HTTP/1.1\r\nContent-Length: " + value + b"\r\n\r\n")
+
+
+CREDENTIAL = b"dXNlcjpjb3JyZWN0LWhvcnNl"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        b"Authorization Basic " + CREDENTIAL,
+        b"Authorization: Basic " + CREDENTIAL + b"\r" + CREDENTIAL,
+        b"Authorization\r: Basic " + CREDENTIAL,
+    ],
+    ids=["no colon", "bare CR in the value", "CR in the name"],
+)
+def test_a_malformed_header_is_named_by_index_not_by_its_text(line: bytes) -> None:
+    """ISS 1908: a malformed `Authorization` line is not in the refusal."""
+    head = b"POST / HTTP/1.1\r\nHost: h\r\n" + line + b"\r\n\r\n"
+    with pytest.raises(MalformedRequestHeadError) as raised:
+        parse_request_head(head)
+    assert "header field 1" in str(raised.value)
+    assert_secret_free(raised.value, [CREDENTIAL.decode(), "Authorization"])
 
 
 # A run of zeros two digit quantifiers could split between them, which

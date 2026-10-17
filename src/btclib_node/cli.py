@@ -185,7 +185,7 @@ Core logs it, and ignored -- Core's own default (`ReadConfigFiles(error,
 the fatal alternative that flag also allows. An unrecognised option on
 the command line is refused the way Core's `InitError` refuses it,
 "Error: Error parsing command line arguments: Invalid parameter
-<argument>" on stderr and exit 1.
+<name>" on stderr and exit 1.
 
 A boolean, wherever it is read from, is Core's `InterpretBool`
 (`src/common/args.cpp`, same sha): `_interpret_bool` below.
@@ -360,6 +360,9 @@ _TITLES = (
 
 # `ParseArgs`'s own prefix on a `ParseParameters` refusal.
 _PARSE_ERROR = "Error parsing command line arguments: "
+# The longest name a refusal quotes: btclib-org/.github's README.md, section 7,
+# *A refusal carries no secret*.
+_MAX_QUOTED_NAME = 16
 
 # `ToIntegral<uint16_t>`'s own bound on a port (`CheckHostPortOptions`).
 _MAX_PORT = 0xFFFF
@@ -1063,30 +1066,43 @@ def _parse_parameters(
     return options, token
 
 
-def _quoted_line(line: str) -> str:
-    """Return `line` for a parse error, cut after a sensitive name.
+def _name_of(line: str) -> str:
+    """Return `line` cut after the first `sensitive` option's name, then at `=`.
 
-    Core's `GetConfigOptions` (`src/common/config.cpp`) and
-    `ParseParameters` (`src/common/args.cpp`) quote the whole line or
-    argument. This tree departs on purpose: it may hold a password, and the
-    refusal reaches stderr and logs (SECURITY.md, "Where this node departs
-    from Bitcoin Core"). A line holding the name of a `sensitive` option
-    (`rpcauth`, `rpcpassword`, `rpcuser`) is quoted up to the first such
-    name, wherever it sits: after a `-`, a section prefix or `no`, or after
-    text that is none of these.
+    The names are `rpcauth`, `rpcpassword` and `rpcuser`, found wherever
+    they sit in `line`.
     """
     ends = [
         line.find(name) + len(name)
         for name, option in _OPTIONS.items()
         if option.sensitive and name in line
     ]
-    return line[: min(ends)] if ends else line
+    if ends:
+        line = line[: min(ends)]
+    return line.partition("=")[0].rstrip(" \t")
+
+
+def _quoted_line(line: str) -> str:
+    """Return the part of `line` a parse error may quote.
+
+    Core's `GetConfigOptions` (`src/common/config.cpp`) and
+    `ParseParameters` (`src/common/args.cpp`) quote the whole line or
+    argument. This tree departs on purpose: the refusal reaches stderr and
+    logs, and the line may hold a password (ASSURANCE_CASE.md, "Common
+    implementation weaknesses"). `_name_of` is quoted only where it has at
+    most `_MAX_QUOTED_NAME` characters, too short for a key; any other is
+    given by its length.
+    """
+    name = _name_of(line)
+    if len(name) <= _MAX_QUOTED_NAME:
+        return name
+    return f"<{len(name)} characters>"
 
 
 def _config_options(
     text: str, sections: list[_SectionInfo] | None = None, filepath: str = ""
-) -> list[tuple[str, str]]:
-    """Return every `key=value` of `text`, with its section prefix.
+) -> list[tuple[str, str, int]]:
+    """Return every `key=value` of `text` and its line, with its section prefix.
 
     Every section named is appended to `sections`, where given, with
     `filepath` and its line: a `[section]` line, and the part of a key
@@ -1104,7 +1120,7 @@ def _config_options(
     a comment. A line ends at a newline alone, as `std::getline` ends
     one, so that the number in a refusal is the one Core counts.
     """
-    options: list[tuple[str, str]] = []
+    options: list[tuple[str, str, int]] = []
     prefix = ""
     for lineno, raw in enumerate(text.split("\n"), start=1):
         line, used_hash, _ = raw.partition("#")
@@ -1125,7 +1141,8 @@ def _config_options(
         if "=" not in line:
             shown = _quoted_line(line)
             err_msg = f"parse error on line {lineno}: {shown}"
-            if line.startswith("no"):
+            # the hint repeats the name, which is quoted only when short
+            if line.startswith("no") and len(_name_of(line)) <= _MAX_QUOTED_NAME:
                 err_msg += (
                     ", if you intended to specify a negated option, use "
                     f"{shown}=1 instead"
@@ -1139,7 +1156,7 @@ def _config_options(
                 "ambiguous and should be avoided"
             )
             raise ValueError(err_msg)
-        options.append((name, value.strip(" \t\r\n")))
+        options.append((name, value.strip(" \t\r\n"), lineno))
         dot = name.rfind(".")
         if sections is not None and dot != -1 and len(prefix) <= dot:
             sections.append((name[:dot], filepath, lineno))
@@ -1165,10 +1182,12 @@ def _parse_conf_text(
     option forbids, each in `IsConfSupported`'s and `InterpretValue`'s
     words, which name no line. An unknown key is left out, and its
     warning appended to `warnings` for the log alone, as Core's
-    `LogWarning` there; `datadir` is left out, and warned about on stderr.
+    `LogWarning` there, with `filepath` and the line in front and the key
+    bounded by `_quoted_line`; `datadir` is left out, and warned about on
+    stderr.
     """
     config: _RoConfig = {}
-    for name, value in _config_options(text, sections, filepath):
+    for name, value, lineno in _config_options(text, sections, filepath):
         info = _interpret_key(name)
         if info.name == "conf":
             err_msg = (
@@ -1178,7 +1197,10 @@ def _parse_conf_text(
             raise ValueError(err_msg)
         option = _OPTIONS.get(info.name)
         if option is None:
-            warnings.append(f"Ignoring unknown configuration value {name}")
+            shown = _quoted_line(name)
+            warnings.append(
+                f"{filepath}:{lineno} Ignoring unknown configuration value {shown}"
+            )
             continue
         setting = _interpret_value(info, value, option, warnings)
         if info.name == "datadir":
@@ -1484,11 +1506,12 @@ def _log_args(settings: _Settings) -> tuple[str, ...]:
     so Core's own `if (flags)` guard around this has nothing left here to
     be false for. `LogArgs`'s middle category, "Setting file arg:", is
     `settings.json`'s: every name it holds, known or not, in key order,
-    its value as `write_json` writes it.
+    its value as `write_json` writes it. A section is quoted by
+    `_quoted_line`, which Core's is not: its name may hold a password.
     """
     lines: list[str] = []
     for section, args in sorted(settings.ro_config.items()):
-        prefix = f"[{section}] " if section else ""
+        prefix = f"[{_quoted_line(section)}] " if section else ""
         for name, values in sorted(args.items()):
             sensitive = _OPTIONS[name].sensitive
             for value in values:
@@ -2401,10 +2424,11 @@ def _warn_unrecognized_sections(settings: _Settings) -> None:
     `Warning: ` with a newline of its own, as `noui_ThreadSafeMessageBox`
     prints it, and set as `settings.section_warning` too, that function
     logging it as well -- after Core's own version line, `open_history_log`'s
-    own order for it.
+    own order for it. A name is quoted by `_quoted_line`, which Core's
+    does not: it may hold a password.
     """
     lines = "".join(
-        f"{filepath}:{lineno} Section [{name}] is not recognized.\n"
+        f"{filepath}:{lineno} Section [{_quoted_line(name)}] is not recognized.\n"
         for name, filepath, lineno in settings.config_sections
         if name not in _RECOGNIZED_SECTIONS
     )

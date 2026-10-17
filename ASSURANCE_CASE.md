@@ -367,11 +367,27 @@ and what counters each.
 - **Exposure of sensitive information (CWE-209).** The rule is section
   7's *A refusal carries no secret* in btclib-org/.github's README.md.
   `tests/secret_free/__init__.py`'s `assert_secret_free` is the helper the
-  rule's tests call, and no test of a refusal here calls it yet. This tree
-  does not keep the rule yet: btclib-org/btclib-node#1908,
-  btclib-org/btclib-node#1946, btclib-org/btclib-node#1956 and
-  btclib-org/btclib-node#1967 each name a refusal, warning or log line
-  that holds or prints a secret, and owe the fix with its test.
+  rule's tests call. A configuration line that fails to parse, a refused
+  command-line argument, an unknown configuration key, and a section name
+  in its warning and in the configuration log are quoted up to the first
+  sensitive option's name and the first `=`, and only where that is at most
+  16 characters, a longer one being given by its length (`cli.py`'s
+  `_quoted_line`). A malformed RPC header field is named by its index and
+  its length (`rpc/connection.py`'s `_FieldReader`), and the reprs of
+  `RequestHead` and `_Settings` leave out the fields that hold a
+  credential. `tests/unit/cli_test.py`'s
+  `test_parse_parameters_leaves_a_value_out_of_a_refusal`,
+  `test_parse_conf_text_leaves_a_value_out_of_a_refusal`,
+  `test_an_unrecognized_section_is_warned_about_by_its_name_alone` and
+  `test_log_args_quotes_a_section_by_its_name_alone`, and
+  `tests/unit/rpc/connection_test.py`'s
+  `test_a_malformed_header_is_named_by_index_not_by_its_text`, call it on
+  those refusals, warnings and log lines. This tree does not keep the rule
+  yet: `_log_args` writes each `settings.json` value as read, a sensitive
+  option's included, and btclib-org/btclib-node#1967 owes the fix with its
+  test. `_log_args` and `_init_settings_file`'s warning write each
+  `settings.json` name whole, and btclib-org/btclib-node#1986 owes the fix
+  with its test.
 - **Type confusion (CWE-843).** mypy runs with `strict = true`
   (`pyproject.toml`) over this tree and its suite, as a hook of the lint
   gate in `.pre-commit-config.yaml`.
