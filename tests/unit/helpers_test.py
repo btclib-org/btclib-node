@@ -10,11 +10,12 @@ fails as a bare traceback in the middle of somebody else's test.
 """
 
 import socket
+import struct
 import threading
 import time
 from itertools import pairwise
 from types import SimpleNamespace
-from typing import override
+from typing import TYPE_CHECKING, cast, override
 
 import pytest
 from btclib.block import (
@@ -50,6 +51,10 @@ from tests import (
     wait_until_listening,
     worker_ports,
 )
+from tests.functional.p2p import ScriptedPeer
+
+if TYPE_CHECKING:
+    from btclib_node import Node
 
 
 def test_the_port_offered_is_one_that_can_be_bound() -> None:
@@ -494,3 +499,26 @@ def test_a_local_address_names_loopback() -> None:
     assert address.network_id == BIP155Network.IPV4
     assert address.port == 18444
     assert local_addr(18444, timestamp=7, services=9).timestamp == 7
+
+
+def test_a_scripted_peer_whose_connection_is_reset_counts_as_dropped() -> None:
+    """A reset ends the peer the way a clean close does, with `dropped` set.
+
+    A node dropping a liar does not always close the connection cleanly:
+    the liar's next read or write can fail instead, which
+    `functional/p2p/multi_peer_headers_test.py` meets only at random. Here
+    the accepted end closes with a zero linger, which always resets.
+    """
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+        node = SimpleNamespace(chain=RegTest(), p2p_port=listener.getsockname()[1])
+        peer = ScriptedPeer(cast("Node", node), [], genesis=RegTest().genesis.hash)
+        accepted, _ = listener.accept()
+        accepted.setsockopt(
+            socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)
+        )
+        accepted.close()
+        try:
+            peer._serve()
+        finally:
+            peer._socket.close()
+    assert peer.dropped.is_set()
