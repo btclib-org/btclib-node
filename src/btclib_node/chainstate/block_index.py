@@ -502,8 +502,8 @@ class BlockIndex:
 
         Stops at the first key that is not a `blkinfo-` record: the
         shared store's own key order (`db.py`'s docstring) sorts this
-        index's own keys ahead of the filter and UTXO indexes sharing
-        the same store.
+        index's own keys ahead of the UTXO index's sharing the same
+        store.
         """
         self.logger.info("Start Index initialization")
         for key, value in self.db:
@@ -877,8 +877,8 @@ class BlockIndex:
     def finalize(self, wb: KeyValueStore | None = None) -> None:
         """Write every status `stage_status` staged, into `wb` if there is one.
 
-        Mirrors `FilterIndex.finalize`: a write_batch of its own when no
-        `wb` is given, one write inside a caller's own batch otherwise.
+        A write_batch of its own when no `wb` is given, one write inside a
+        caller's own batch otherwise.
         """
         if wb is not None:
             self._write(wb)

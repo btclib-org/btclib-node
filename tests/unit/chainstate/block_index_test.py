@@ -630,6 +630,7 @@ def test_simple_init(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
     block_index = chainstate.block_index
     block_index.add_headers(generate_random_header_chain(2000, RegTest().genesis.hash))
     chainstate.db.close()
+    chainstate.filter_db.close()
     new_chainstate = a_chainstate(None)
     new_block_index = new_chainstate.block_index
     assert block_index.header_dict == new_block_index.header_dict
@@ -656,6 +657,7 @@ def test_init_with_fork(a_chainstate: Callable[[Path | None], Chainstate]) -> No
     block_index.add_headers(chain)
     block_index.add_headers(fork)
     chainstate.db.close()
+    chainstate.filter_db.close()
     new_chainstate = a_chainstate(None)
     new_block_index = new_chainstate.block_index
     assert block_index.header_dict == new_block_index.header_dict
@@ -701,6 +703,7 @@ def test_generate_block_candidates(
     for x in chain:
         block_index.set_status(x.hash, BlockStatus.in_active_chain)
     chainstate.db.close()
+    chainstate.filter_db.close()
     new_chainstate = a_chainstate(None)
     new_block_index = new_chainstate.block_index
     assert len(new_block_index.block_candidates) == 190
@@ -728,6 +731,7 @@ def test_generate_block_candidates_2(
     for x in fork:
         block_index.set_status(x.hash, BlockStatus.invalid)
     chainstate.db.close()
+    chainstate.filter_db.close()
     new_chainstate = a_chainstate(None)
     new_block_index = new_chainstate.block_index
     assert len(new_block_index.block_candidates) == 2000
@@ -979,6 +983,7 @@ def test_invalidated_headers_stay_out_of_header_index_after_a_restart(
     block_index.invalidate(chain[0].hash)
     header_index_before = list(block_index.header_index)
     chainstate.db.close()
+    chainstate.filter_db.close()
 
     new_chainstate = a_chainstate(None)
     new_block_index = new_chainstate.block_index
@@ -1067,6 +1072,7 @@ def test_best_invalid_survives_a_restart(
     block_index.add_headers([header])
     block_index.invalidate(header.hash)
     chainstate.db.close()
+    chainstate.filter_db.close()
 
     new_chainstate = a_chainstate(None)
     assert new_chainstate.block_index.best_invalid == header.hash
@@ -1270,6 +1276,7 @@ def test_long_init(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
     for x in range(length):
         block_index.add_headers(chain[x * 2000 : (x + 1) * 2000])
     chainstate.db.close()
+    chainstate.filter_db.close()
     new_chainstate = a_chainstate(None)
     new_block_index = new_chainstate.block_index
     assert block_index.header_dict == new_block_index.header_dict
@@ -1599,10 +1606,8 @@ def test_finalize_with_no_batch_opens_its_own_and_writes_pending(
 ) -> None:
     """`finalize()`, called with no `wb`, still writes and clears `pending`.
 
-    `main._finalize_fork` always hands `finalize` the batch
-    `UtxoIndex`/`FilterIndex` share (`Chainstate.flush`), so this is the
-    other path: a caller with no batch of its own, mirroring
-    `FilterIndex.finalize`'s own bare form.
+    `Chainstate.flush` always hands `finalize` the batch `UtxoIndex`
+    shares, so this is the other path: a caller with no batch of its own.
     """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
@@ -1894,6 +1899,7 @@ def test_a_stored_block_whose_parent_has_no_data_waits_for_it(
     block_index.add_headers(chain)
     block_index.set_downloaded(chain[1].hash)
     chainstate.db.close()
+    chainstate.filter_db.close()
 
     block_index = a_chainstate(None).block_index
     assert chain[1].hash not in block_index.sequence_id
@@ -1921,6 +1927,7 @@ def test_the_stored_blocks_are_numbered_zero_and_one_on_load(
     block_index.set_downloaded(other[0].hash)
     block_index.set_status(active[0].hash, BlockStatus.in_active_chain)
     chainstate.db.close()
+    chainstate.filter_db.close()
 
     block_index = a_chainstate(None).block_index
 
