@@ -78,9 +78,8 @@ dependencies = [
     # `testmempoolaccept` answers `bad-txns-oversize` for a transaction of
     # 24391 inputs (btclib-org/btclib#2593, btclib-org/btclib-node#1889).
     #
-    # 2026.10.17 is the release the suite is run against beside
-    # btclib-wallet 2026.10.16 (btclib-org/btclib-node#2003): btclib-wallet
-    # 2026.10.9 does not import beside it.
+    # 2026.10.17 is the release btclib-org/btclib-node#2003 asks for:
+    # btclib-wallet 2026.10.16 imports beside it, and 2026.10.9 does not.
     "btclib[secp256k1,bip324]>=2026.10.17",
     # `rpc/callbacks.py` and `rpc/utxo_set.py` import from
     # `btclib_wallet.descriptors`, where btclib's own `descriptors`
@@ -89,7 +88,12 @@ dependencies = [
     # `BitcoinCoreFetcher` (btclib-org/btclib-node#1181,
     # btclib-org/btclib-node#1508).
     #
-    # The floor is 2026.10.9, the first release carrying `Descriptor.expand`,
+    # The floor is 2026.10.16, which imports `btclib_ecc`'s
+    # `point_from_octets_var`, the name btclib-ecc 2026.10.17 gives it;
+    # 2026.10.9 imports `point_from_octets` and fails at import beside it
+    # (btclib-org/btclib-node#2003).
+    #
+    # 2026.10.9 is the first release carrying `Descriptor.expand`,
     # which returns the scripts and the provider from one derivation of each
     # key and which `scantxoutset` expands with (btclib-org/btclib-wallet#303,
     # btclib-org/btclib-node#1850).
@@ -100,7 +104,7 @@ dependencies = [
     # `Provider`, which `rpc/callbacks.py` and `rpc/utxo_set.py` import.
     # 2026.10.4 is the first whose `parse` refuses a key of another
     # network, which `rpc/mining.py` relies on.
-    "btclib-wallet>=2026.10.9",
+    "btclib-wallet>=2026.10.16",
     # `signing.py` and `p2p/v2transport.py` import `btclib_ecc` directly: a
     # direct runtime dependency, not what btclib happens to bring
     # (btclib-org/btclib-node#1431). `tests/unit/interpreter_test.py` builds
