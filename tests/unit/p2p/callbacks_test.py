@@ -4228,7 +4228,7 @@ def a_record_missing_its_work() -> bytes:
 
 
 def test_a_record_whose_header_misses_its_work_is_refused() -> None:
-    """ISS 1990: `ReadBlock` asks `CheckProofOfWork` ahead of the hash.
+    """ISS 1990: `ReadBlock` refuses a header missing its proof of work.
 
     The header is the one asked for.
     """
@@ -4289,6 +4289,46 @@ def test_a_signet_record_is_served_only_with_its_solution(*, forged: bool) -> No
     getdata(node, GetData([item]).serialize(), peer)
     block = Block.parse(raw, check_validity=False)
     assert peer.sent == [a_wire_block(block, include_witness=False)]
+
+
+def test_a_forged_signet_record_under_another_hash_is_refused_first() -> None:
+    """ISS 1990: on signet the solution is refused before the hash.
+
+    The record's solution is forged and it holds another block than the
+    one asked for.
+    """
+    raw = bytes.fromhex(_SIGNET_BLOCKS[0].replace("2591c23e7e01", "2691c23e7e01"))
+    wanted = a_block().header.hash
+    assert wanted != hash256(raw[:80])[::-1]
+    node = a_data_node(
+        block_index=a_tall_block_index(0, wanted),
+        block_db=SimpleNamespace(get_raw_block=lambda h: raw),
+    )
+    node.chain = node.config.chain = SigNet()
+    (error,) = a_refused_getdata(node, Inventory(InventoryType.MSG_BLOCK, wanted))
+    assert "bad-signet-blksig" in error
+    assert "stored block hashes" not in error
+
+
+def test_a_forged_signet_record_missing_its_work_is_refused_for_its_work() -> None:
+    """ISS 1990: on signet the work is refused before the solution.
+
+    The record misses its work and its solution is forged; the header is
+    the one asked for.
+    """
+    forged = _SIGNET_BLOCKS[0].replace("2591c23e7e01", "2691c23e7e01")
+    raw = bytes.fromhex(forged)
+    # bits 0x03000001, a target of one, at the header's offset 72
+    raw = raw[:72] + bytes.fromhex("01000003") + raw[76:]
+    wanted = hash256(raw[:80])[::-1]
+    node = a_data_node(
+        block_index=a_tall_block_index(0, wanted),
+        block_db=SimpleNamespace(get_raw_block=lambda h: raw),
+    )
+    node.chain = node.config.chain = SigNet()
+    (error,) = a_refused_getdata(node, Inventory(InventoryType.MSG_BLOCK, wanted))
+    assert f"invalid proof-of-work: {wanted.hex()} > " in error
+    assert "bad-signet-blksig" not in error
 
 
 def a_tall_block_index(length: int, *held: bytes) -> Any:
