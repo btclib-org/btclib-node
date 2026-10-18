@@ -32,6 +32,223 @@ why it does not stay there once the bullet has it, and that section's
 *Nothing already written is rewritten* is why an entry already landed
 keeps whichever shape it was written in.
 
+## v2026.10.18
+
+### A refusal, a warning and the configuration log quote a short name only
+
+They quote at most 16 characters, cut after `rpcauth`, `rpcpassword` or
+`rpcuser` and at `=`, and give a longer name by its length. An unknown key's
+warning starts with `file:line` (closes #1908, closes #1946, closes #1956).
+
+### A request head, an `-rpcauth` entry and the settings print no secret
+
+The reprs of `RequestHead`, `RpcAuthEntry` and `_Settings` leave out the
+`Authorization` line, the salt and HMAC, and the sources read. A malformed
+header field is refused by its index and length (closes #1957, closes #1965).
+
+### The datadir `.lock` is 0600 and its directories 0700
+
+They are created no wider, whatever the caller's umask, as Core's `umask 077`
+makes them. On Windows the directories are created 0777 (closes #1887).
+
+### `savemempool` and `importmempool` are served
+
+They are served as in Core v31.1, on the file and the load the node already
+has (closes #1746).
+
+### The message and raw-transaction signing RPCs are served
+
+`signmessagewithprivkey`, `verifymessage`, `signrawtransactionwithkey` and
+`combinerawtransaction`, the last in Core master's shape. `btclib-ecc` is a
+runtime dependency (closes #1538, closes #1400).
+
+### `setmocktime` holds the node's clock on regtest
+
+A hidden command, in Core's shape: regtest only, and `0` returns to the
+system time (closes #1479).
+
+### `getnetworkinfo` answers the network state and the connection counts
+
+It answers `networkactive`, `connections`, `connections_in` and
+`connections_out`, as Core does (closes #1984, closes #1973).
+
+### `getrawmempool` verbose answers each entry as `getmempoolentry`
+
+Each entry is `getmempoolentry`'s object, and the `size` field is gone
+(closes #1764).
+
+### `testmempoolaccept` refuses a transaction of 24391 inputs as oversize
+
+It answers `bad-txns-oversize`, through btclib 2026.10.9's `Tx.parse`
+(closes #1889).
+
+### `scantxoutset` derives each key once per index
+
+It reads the scripts and the provider from btclib-wallet's
+`Descriptor.expand` (closes #1850).
+
+### The RPC server holds at most `-rpcmaxconnections` clients
+
+The default is 16, as in Core master. A client past the limit waits in the
+kernel's queue (closes #1953).
+
+### A source `-rpcallowip` refuses is closed as it is accepted
+
+It gets no reply, where it got `403 Forbidden`, and holds no client place.
+`RpcManager.client_allowed` is gone (closes #1963).
+
+### An accept that runs out of descriptors waits before it retries
+
+The P2P listener logs an `EMFILE` or `ENFILE` accept at info, as the RPC one
+does at debug, and retries 0.1 seconds later (closes #1961).
+
+### The P2P listener keeps a peer whose address accept cannot name
+
+The peer is queued at `[::]:0`, as Core does, where the listener ended
+(closes #1981).
+
+### The RPC header limit keeps libevent's count
+
+The comment beside `MAX_HEADER_BYTES` says why it is not Core's own server's
+count (closes #1950).
+
+### Each peer's known transactions are a rolling bloom filter
+
+`KnownTxInventory` is Core's `CRollingBloomFilter{50000, 0.000001}`.
+`KNOWN_TX_INVENTORY_CAPACITY` is gone (closes #1743).
+
+### Discouraged hosts, recent rejects and known addresses are bloom filters
+
+So are the recently confirmed transactions. The known addresses and the
+confirmations are new records, and each filter has Core's size and reset
+(closes #1851).
+
+### The node relays the addresses peers gossip
+
+An address from `addr` or `addrv2` is relayed to one or two peers, as Core's
+`RelayAddress` chooses them (closes #1867).
+
+### A send is counted and stamped after each chunk the socket takes
+
+`last_send` and `bytes_sent` move after each 64 KiB chunk. The v2 handshake's
+octets count in no `bytessent_per_msg` entry (closes #1784, closes #1880,
+closes #1869).
+
+### A `cmpctblock` is ignored where Core master ignores it
+
+The node ignores one from a peer that never sent `sendcmpct`, and an unasked
+one from a peer not marked high-bandwidth (closes #1890, closes #1897).
+
+### A `getdata` for a filtered block drops the peer
+
+This node offers `NODE_BLOOM` to no peer, and Core master drops the peer
+(closes #1949).
+
+### A stored block is served from its octets, unparsed
+
+A `getdata` for a stored block sends the stored octets, with the witnesses cut
+for `MSG_BLOCK`, and the walk refuses what `Block.parse` refuses (closes #1982).
+
+### A block connected out of IBD clears what it confirms
+
+It erases the orphans it includes or conflicts with, and forgets the
+announcements of its transactions. One connected in IBD does not (closes #1871).
+
+### The mempool replaces what pays to replace
+
+A transaction, and a parent and its child in `submitpackage`, replace as
+bitcoind v31.1 does, signalling ignored (closes #1494, closes #1334).
+
+### Held transactions expire after `-mempoolexpiry`
+
+The option is read in hours, 336 by default, and the expiry also runs on each
+transaction `mempool.dat` loads (closes #1815).
+
+### `-reindex-chainstate` rebuilds the chainstate from the stored blocks
+
+The coins, the filters and the undo data are wiped, and the stored blocks are
+connected again. It is refused beside `-prune` (issue #1415).
+
+### A reindexing node takes no headers or blocks from peers
+
+It answers no `getheaders` and drops `cmpctblock`, `blocktxn`, `headers` and
+`block` unread, as Core's `LoadingBlocks()` gates do (closes #1915).
+
+### signet rebuilds an empty push as its opcode byte
+
+The cleared coinbase matches Core's, so a block Core accepts passes the signet
+check (closes #1896).
+
+### A SIGTERM is handled while the main thread waits, and `stop` waits
+
+The handler runs within a bounded wait. `stop` waits as long as the stores
+take to close, and `STOP_TIMEOUT` bounds only what runs before (closes #1274,
+closes #1870).
+
+### The dependency floors are btclib 2026.10.17 and btclib-wallet 2026.10.16
+
+btclib-wallet 2026.10.9 fails at import beside btclib 2026.10.17. `uv.lock`
+resolves both releases (closes #2003).
+
+### pytest-cov and coverage are in the harness group
+
+The suite keeps xdist's default distribution, `load` (closes #1941,
+closes #1942).
+
+### The tests reach more of the real chain
+
+The suite replays real mainnet and testnet4 header chains, btcd's mainnet
+blocks and Floresta's `bad-blk-sigops` candidate (closes #1893, closes #1913,
+closes #1898).
+
+### Header sync among lying peers runs in a new slow tier
+
+`tests/slow/` runs with `--run-slow`, weekly in `slow.yml` (closes #1894,
+closes #1899).
+
+### Tests that failed by timing or by chance pass on their own terms
+
+Each test waits for, pins or builds what it asserts (closes #1840,
+closes #1873, closes #1878, closes #1885, closes #1918, closes #1924,
+closes #1936, closes #2001, issue #1976).
+
+### Tests cover a prefilled index past 65535 and a second `Node.join` wait
+
+The index and the wait are tested (closes #1860, closes #1920). A test checks
+that a block spending an output before its creation is refused (#1917). The
+console-script test finds its script by RECORD (closes #1904).
+
+### The release runs the regtest check, and actionlint is kjanat's fork
+
+The review call sets `cache-mode: none`, so no actionlint ignore is left
+(closes #1909, closes #1910, closes #1919).
+
+### `check_vendored_pin` retries a failed `gh` call
+
+It reports the command and its stderr (closes #1934). The large-files hook
+skips `tests/**/_data/` (closes #1937).
+
+### The organization's shared documents are ported
+
+btclib-org/.github#1635, btclib-org/.github#1647, btclib-org/.github#1660,
+btclib-org/.github#1695, btclib-org/.github#1697, btclib-org/.github#1712,
+btclib-org/.github#1740, btclib-org/.github#1771.
+
+### The organization's workflows are ported
+
+The review, api-break, the signature check on `main` and the pyroma hook
+(btclib-org/.github#1642, btclib-org/.github#1674, btclib-org/.github#1738,
+btclib-org/.github#1763).
+
+### SECURITY.md says why the RPC listener has no TLS
+
+It says how to reach the listener from another machine (closes #1968).
+
+### Dependency and hook bumps
+
+Dependabot's actions and dev-tooling groups (#1959, #1960), pre-commit.ci's
+hook revisions (#1912), and the 2026.11 cycle opened (#1866).
+
 ## v2026.10.8
 
 ### The redownload buffer test stops counting other threads

@@ -22,6 +22,86 @@ release was cut, and it promises nothing about compatibility, so a
 breaking change is announced in this file — read it before upgrading,
 rather than a digit.
 
+## v2026.10.18
+
+Everything below is measured against `v2026.10.8`. `CHANGELOG.md`'s own
+`v2026.10.18` section is the record of everything that went into it.
+
+### Breaking changes
+
+- **A client from a source `-rpcallowip` refuses is closed as it connects,
+  with no reply**, where it got `403 Forbidden` (closes #1963).
+  `RpcManager.client_allowed` is gone.
+- **The RPC server holds at most `-rpcmaxconnections` clients, 16 by
+  default**, as Core master does (closes #1953). A client past the limit
+  waits until one leaves. Raise the option if you hold more connections
+  open.
+- **`getrawmempool true` answers each entry as `getmempoolentry` does, and
+  the `size` field is gone** (closes #1764). Read `vsize` or `weight`.
+- **`getpeerinfo`'s `bytessent_per_msg` has no `""` entry**: the v2
+  handshake's octets count in `bytessent` alone, as in Core (closes #1880).
+- **The data, blocks, chainstate and index directories are created at most
+  0700, and `.lock` at most 0600, whatever the caller's umask**
+  (closes #1887). A directory that exists keeps its mode. On Windows the
+  directories are created 0777.
+- **A refused configuration line or argument, an unknown key's warning and
+  the configuration log quote at most a 16-character name** (closes #1908).
+  A longer name is given by its length, and an unknown key's warning starts
+  with `file:line`. Match on the new text if you parse these messages.
+- **`Node.stop` waits as long as the stores take to close**, and raises
+  `NodeShutdownTimeoutError` only where what runs before the closes overruns
+  `STOP_TIMEOUT` (closes #1870). A close that never returns holds `stop`.
+- **`KNOWN_TX_INVENTORY_CAPACITY` is gone**, and `KnownTxInventory` is a
+  rolling bloom filter, as Core's (closes #1743). Like Core's, it withholds
+  a transaction from a peer about once in a million queries.
+- **The reprs of `RequestHead`, `RpcAuthEntry` and `_Settings` leave out
+  what may hold a secret** (closes #1957, closes #1965): the `Authorization`
+  line, the salt and HMAC, and the sources read.
+- **The tables of `rpc.callbacks`, `callbacks`, `arg_names` and
+  `named_only`, and of `rpc.help`, `HELP_TEXT` and `CATEGORY`, hold the
+  methods this release serves.**
+
+  `Connection`'s `last_receive`, `last_send`, `connected_time` and
+  `addr_token_timestamp` start from `clock.now()`, which `setmocktime`
+  holds on regtest.
+
+### New
+
+- **`savemempool` and `importmempool` are served**, as in Core v31.1
+  (closes #1746).
+- **`signmessagewithprivkey`, `verifymessage`, `signrawtransactionwithkey`
+  and `combinerawtransaction` are served** (closes #1538, closes #1400).
+- **`setmocktime` holds the node's clock on regtest**, a hidden command as
+  in Core (closes #1479).
+- **`getnetworkinfo` answers `networkactive`, `connections`,
+  `connections_in` and `connections_out`** (closes #1984, closes #1973).
+- **`-reindex-chainstate` rebuilds the chainstate from the stored blocks**
+  (issue #1415). It is refused beside `-prune`. While it runs, the node takes
+  no headers or blocks from peers (closes #1915).
+- **Held transactions expire after `-mempoolexpiry=<n>` hours, 336 by
+  default**, as in Core (closes #1815). A load of `mempool.dat` expires
+  them too.
+
+### Worth knowing, though nothing raises
+
+- **A transaction that conflicts with held ones replaces them where
+  bitcoind v31.1 would**, whatever it signals (closes #1494). `submitpackage`
+  replaces for a parent and its child, and lists `replaced-transactions`.
+- **On signet, a block whose commitment holds an empty push is checked as
+  Core checks it** (closes #1896). Such a block Core accepts was refused.
+- **The node relays the addresses peers gossip**, as Core's `RelayAddress`
+  does (closes #1867).
+- **A `getdata` for a filtered block drops the peer**, as Core master does
+  (closes #1949). An unasked `cmpctblock` is ignored, as in Core master
+  (closes #1890, closes #1897).
+- **A SIGTERM stops the node while its main thread waits on it**
+  (closes #1274).
+- **The dependency floors are `btclib>=2026.10.17` and
+  `btclib-wallet>=2026.10.16`** (closes #2003). btclib-wallet 2026.10.9
+  fails at import beside btclib 2026.10.17. `btclib-ecc>=2026.10.2` is a
+  runtime dependency, which `signing.py` and `p2p/v2transport.py` import
+  (#1742).
+
 ## v2026.10.8
 
 **The fifth release.** Everything below is measured against `v2026.10.4`.
