@@ -86,7 +86,7 @@ from btclib.script.witness import Witness
 
 import btclib_node.p2p.address as address_module
 import btclib_node.p2p.callbacks as cb
-from btclib_node.chains import HeadersSyncParams, RegTest
+from btclib_node.chains import HeadersSyncParams, RegTest, SigNet
 from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.block_index import BlockStatus, calculate_work
 from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
@@ -186,6 +186,7 @@ from tests.unit.download_test import a_version as a_services_version
 from tests.unit.main_test import a_dusty_spend
 from tests.unit.rolling_bloom_test import a_small_filter
 from tests.unit.rpc.callbacks_test import a_node_holding, a_twin
+from tests.unit.signet_test import _SIGNET_BLOCKS
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -4143,22 +4144,191 @@ def test_a_block_this_node_does_not_hold_is_not_answered() -> None:
 def test_a_stored_block_that_does_not_parse_is_not_served(
     type_code: InventoryType,
 ) -> None:
-    """A corrupted record raises `BTClibValueError` and sends nothing.
+    """A corrupted record sends nothing and drops the peer.
 
-    For every way of asking for the block.
+    For every way of asking for the block. Its header is the block's own,
+    so that it is the body that fails.
     """
     block = a_block_with_transactions(2)
     raw = block.serialize(check_validity=False)[:-1]
     store = a_block_store(block)
     store.get_raw_block = lambda h: raw
-    store.get_block = lambda h: Block.parse(raw, check_validity=False)
     block_index = a_recent_block_index(5)
+    wanted = held_at(block_index, 4, block)
     node = a_data_node(block_index=block_index, block_db=store)
     peer = a_peer()
-    items = [Inventory(type_code, block_index.active_chain[4])]
-    with pytest.raises(BTClibValueError):
-        getdata(node, GetData(items).serialize(), peer)
+    getdata(node, GetData([Inventory(type_code, wanted)]).serialize(), peer)
     assert not peer.sent
+    assert peer.stopped == [True]
+
+
+def a_refused_getdata(node: Any, item: Inventory) -> list[str]:
+    """Send `getdata` for `item`, check it is refused; return the errors logged.
+
+    Refused as Core refuses a block it cannot read: nothing sent, the peer
+    dropped.
+    """
+    errors, error = log_recorder()
+    node.logger.error = error
+    peer = a_peer()
+    getdata(node, GetData([item]).serialize(), peer)
+    assert not peer.sent
+    assert peer.stopped == [True]
+    return errors
+
+
+@pytest.mark.parametrize(
+    ("type_code", "depth"),
+    [
+        (InventoryType.MSG_BLOCK, 0),
+        (InventoryType.MSG_CMPCT_BLOCK, 0),
+        (InventoryType.MSG_CMPCT_BLOCK, MAX_CMPCTBLOCK_DEPTH + 1),
+    ],
+    ids=["block", "cmpct-block", "cmpct-block-past-depth"],
+)
+def test_a_record_holding_another_block_is_refused(
+    *, type_code: InventoryType, depth: int
+) -> None:
+    """ISS 1990: a stored block whose header hashes to another hash is refused.
+
+    Core reads these items with `ReadBlock(..., inv.hash)`.
+    """
+    length = MAX_CMPCTBLOCK_DEPTH + 10
+    block_index = a_recent_block_index(length)
+    asked, stored = a_block(), a_block_with_transactions(2)
+    assert asked.header.hash != stored.header.hash
+    wanted = held_at(block_index, length - 1 - depth, asked)
+    node = a_data_node(block_index=block_index, block_db=a_block_store(stored))
+    errors = a_refused_getdata(node, Inventory(type_code, wanted))
+    refusal = f"stored block hashes to {stored.header.hash.hex()}, not {wanted.hex()}"
+    assert errors == [f"Cannot load block from disk ({refusal}), disconnecting peer=0"]
+
+
+def test_a_witness_block_is_served_from_a_record_holding_another_block() -> None:
+    """ISS 1990: Core reads a `MSG_WITNESS_BLOCK` with `ReadRawBlock`.
+
+    Which checks no hash, so the record goes out as it is.
+    """
+    block_index = a_recent_block_index(5)
+    asked, stored = a_block(), a_block_with_transactions(2)
+    wanted = held_at(block_index, 4, asked)
+    node = a_data_node(block_index=block_index, block_db=a_block_store(stored))
+    peer = a_peer()
+    items = [Inventory(InventoryType.MSG_WITNESS_BLOCK, wanted)]
+    getdata(node, GetData(items).serialize(), peer)
+    assert peer.sent == [a_wire_block(stored, include_witness=True)]
+    assert not peer.stopped
+
+
+def a_record_missing_its_work() -> bytes:
+    """Build a stored block under a target its header's hash cannot meet."""
+    raw = a_block().serialize(check_validity=False)
+    # bits 0x03000001, a target of one, at the header's offset 72
+    return raw[:72] + bytes.fromhex("01000003") + raw[76:]
+
+
+def test_a_record_whose_header_misses_its_work_is_refused() -> None:
+    """ISS 1990: `ReadBlock` refuses a header missing its proof of work.
+
+    The header is the one asked for.
+    """
+    raw = a_record_missing_its_work()
+    wanted = hash256(raw[:80])[::-1]
+    node = a_data_node(
+        block_index=a_tall_block_index(0, wanted),
+        block_db=SimpleNamespace(get_raw_block=lambda h: raw),
+    )
+    (error,) = a_refused_getdata(node, Inventory(InventoryType.MSG_BLOCK, wanted))
+    assert error.startswith("Cannot load block from disk (")
+    assert "stored block hashes" not in error
+
+
+def test_a_record_missing_its_work_under_another_hash_is_refused_for_its_work() -> None:
+    """ISS 1990: the work is refused first, as `ReadBlock` checks it first.
+
+    The record both misses its work and holds another block than the one
+    asked for.
+    """
+    raw = a_record_missing_its_work()
+    stored = hash256(raw[:80])[::-1]
+    wanted = a_block().header.hash
+    assert wanted != stored
+    node = a_data_node(
+        block_index=a_tall_block_index(0, wanted),
+        block_db=SimpleNamespace(get_raw_block=lambda h: raw),
+    )
+    (error,) = a_refused_getdata(node, Inventory(InventoryType.MSG_BLOCK, wanted))
+    assert error.startswith(
+        f"Cannot load block from disk (invalid proof-of-work: {stored.hex()} > "
+    )
+
+
+@pytest.mark.parametrize("forged", [False, True])
+def test_a_signet_record_is_served_only_with_its_solution(*, forged: bool) -> None:
+    """ISS 1990: on signet `ReadBlock` also checks the block's solution.
+
+    The forged record changes one byte of the solution's signature, which
+    leaves the header the one asked for.
+    """
+    block_hex = _SIGNET_BLOCKS[0]
+    if forged:
+        block_hex = block_hex.replace("2591c23e7e01", "2691c23e7e01")
+    raw = bytes.fromhex(block_hex)
+    wanted = hash256(raw[:80])[::-1]
+    node = a_data_node(
+        block_index=a_tall_block_index(0, wanted),
+        block_db=SimpleNamespace(get_raw_block=lambda h: raw),
+    )
+    node.chain = node.config.chain = SigNet()
+    item = Inventory(InventoryType.MSG_BLOCK, wanted)
+    if forged:
+        (error,) = a_refused_getdata(node, item)
+        assert "bad-signet-blksig" in error
+        return
+    peer = a_peer()
+    getdata(node, GetData([item]).serialize(), peer)
+    block = Block.parse(raw, check_validity=False)
+    assert peer.sent == [a_wire_block(block, include_witness=False)]
+
+
+def test_a_forged_signet_record_under_another_hash_is_refused_first() -> None:
+    """ISS 1990: on signet the solution is refused before the hash.
+
+    The record's solution is forged and it holds another block than the
+    one asked for.
+    """
+    raw = bytes.fromhex(_SIGNET_BLOCKS[0].replace("2591c23e7e01", "2691c23e7e01"))
+    wanted = a_block().header.hash
+    assert wanted != hash256(raw[:80])[::-1]
+    node = a_data_node(
+        block_index=a_tall_block_index(0, wanted),
+        block_db=SimpleNamespace(get_raw_block=lambda h: raw),
+    )
+    node.chain = node.config.chain = SigNet()
+    (error,) = a_refused_getdata(node, Inventory(InventoryType.MSG_BLOCK, wanted))
+    assert "bad-signet-blksig" in error
+    assert "stored block hashes" not in error
+
+
+def test_a_forged_signet_record_missing_its_work_is_refused_for_its_work() -> None:
+    """ISS 1990: on signet the work is refused before the solution.
+
+    The record misses its work and its solution is forged; the header is
+    the one asked for.
+    """
+    forged = _SIGNET_BLOCKS[0].replace("2591c23e7e01", "2691c23e7e01")
+    raw = bytes.fromhex(forged)
+    # bits 0x03000001, a target of one, at the header's offset 72
+    raw = raw[:72] + bytes.fromhex("01000003") + raw[76:]
+    wanted = hash256(raw[:80])[::-1]
+    node = a_data_node(
+        block_index=a_tall_block_index(0, wanted),
+        block_db=SimpleNamespace(get_raw_block=lambda h: raw),
+    )
+    node.chain = node.config.chain = SigNet()
+    (error,) = a_refused_getdata(node, Inventory(InventoryType.MSG_BLOCK, wanted))
+    assert f"invalid proof-of-work: {wanted.hex()} > " in error
+    assert "bad-signet-blksig" not in error
 
 
 def a_tall_block_index(length: int, *held: bytes) -> Any:
@@ -4178,6 +4348,20 @@ def a_tall_block_index(length: int, *held: bytes) -> Any:
         header_dict=header_dict,
         get_block_info=header_dict.__getitem__,
     )
+
+
+def held_at(block_index: Any, height: int, block: Block) -> bytes:
+    """Put `block`'s hash at `height` of a `block_index` double; return it.
+
+    `a_block_store` answers its block under every hash. `getdata` serves
+    a stored `MSG_BLOCK` only under its own hash.
+    """
+    held = block.header.hash
+    block_index.header_dict[held] = block_index.header_dict.pop(
+        block_index.active_chain[height]
+    )
+    block_index.active_chain[height] = held
+    return held
 
 
 def test_a_pruned_node_disconnects_a_getdata_below_its_own_retained_depth() -> None:
@@ -4207,7 +4391,7 @@ def test_a_pruned_node_serves_a_block_within_its_own_retained_depth() -> None:
     node = a_data_node(block_index=block_index, block_db=a_block_store(block))
     node.config.pruned = True
     peer = a_peer()
-    recent_hash = block_index.active_chain[-1]
+    recent_hash = held_at(block_index, -1, block)
     items = [Inventory(InventoryType.MSG_BLOCK, recent_hash)]
     getdata(node, GetData(items).serialize(), peer)
     assert peer.sent == [a_wire_block(block, include_witness=False)]
@@ -4275,7 +4459,7 @@ def test_a_pruned_node_s_own_threshold_is_strictly_greater_than_the_buffer() -> 
     tip_index = length - 1
 
     peer = a_peer()
-    at_buffer_hash = block_index.active_chain[tip_index - (MIN_BLOCKS_TO_KEEP + 2)]
+    at_buffer_hash = held_at(block_index, tip_index - (MIN_BLOCKS_TO_KEEP + 2), block)
     getdata(
         node,
         GetData([Inventory(InventoryType.MSG_BLOCK, at_buffer_hash)]).serialize(),
@@ -4349,7 +4533,7 @@ def test_a_cmpct_block_item_is_answered_as_core_answers_it(
     block = a_block_with_transactions(2)
     node = a_data_node(block_index=block_index, block_db=a_block_store(block))
     peer = a_peer()
-    wanted = block_index.active_chain[length - 1 - depth]
+    wanted = held_at(block_index, length - 1 - depth, block)
     items = [Inventory(InventoryType.MSG_CMPCT_BLOCK, wanted)]
     getdata(node, GetData(items).serialize(), peer)
     (answer,) = peer.sent
@@ -4395,7 +4579,7 @@ def test_a_cmpct_block_item_of_the_most_recent_block_is_the_one_announced(
     block_index = a_recent_block_index(length)
     block = a_block_with_transactions(2)
     node = a_data_node(block_index=block_index, block_db=a_block_store(block))
-    wanted = block_index.active_chain[length - 1]
+    wanted = held_at(block_index, length - 1, block)
     node.most_recent_block = a_most_recent(
         block, wanted if recent else block_index.active_chain[length - 2]
     )
@@ -4469,6 +4653,14 @@ def a_block_store(block: Block | None) -> Any:
         ),
         has_block=lambda h: block is not None,
     )
+
+
+def a_store_of(*blocks: Block) -> Any:
+    """Build a `block_db` holding each of `blocks` under its own hash."""
+    held = {
+        block.header.hash: block.serialize(check_validity=False) for block in blocks
+    }
+    return SimpleNamespace(get_raw_block=held.get)
 
 
 def test_getblocktxn_is_answered_with_the_transactions_asked_for() -> None:
@@ -6488,7 +6680,14 @@ def test_a_getblocks_cut_at_the_limit_is_continued_by_the_getdata_of_its_last(
 ) -> None:
     """ISS 1385: 500 blocks, then an `inv` of the tip after the last."""
     active = activated(an_index, generate_random_header_chain(502, _GENESIS))
-    node = a_data_node(block_index=an_index, block_db=a_block_store(a_block()))
+    body = a_block().transactions
+    store = a_store_of(
+        *(
+            Block(an_index.header_dict[held].header, body, check_validity=False)
+            for held in (active[0], active[499])
+        )
+    )
+    node = a_data_node(block_index=an_index, block_db=store)
     hashes, peer = ask_getblocks(node, [_GENESIS])
     assert hashes == active[:500]
     assert peer.continuation_block == active[499]
@@ -7411,10 +7610,11 @@ def test_a_peer_holding_download_is_answered_below_the_minimum_work(
 def test_a_pruned_node_serves_a_no_ban_peer_below_its_retained_depth() -> None:
     """ISS 1320: Core's prune-height guard is `!HasPermission(NoBan)`."""
     block_index = a_tall_block_index(MIN_BLOCKS_TO_KEEP + 10)
-    node = a_data_node(block_index=block_index, block_db=a_block_store(a_block()))
+    block = a_block()
+    node = a_data_node(block_index=block_index, block_db=a_block_store(block))
     node.config.pruned = True
     peer = a_peer(permissions=NetPermissionFlags.NO_BAN)
-    items = [Inventory(InventoryType.MSG_BLOCK, block_index.active_chain[0])]
+    items = [Inventory(InventoryType.MSG_BLOCK, held_at(block_index, 0, block))]
     getdata(node, GetData(items).serialize(), peer)
     (answer,) = peer.sent
     assert isinstance(answer, RawBlock)
