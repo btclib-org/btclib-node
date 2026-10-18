@@ -499,7 +499,7 @@ class Node(threading.Thread):
         self._mempool_load: Iterator[None] | None = None
 
     def load(self) -> None:
-        """Open the address table, the ban list, the chainstate and the blocks.
+        """Open the address table, the ban list, the blocks and the chainstate.
 
         Core's `AppInitMain` loads `peers.dat` and `banlist.json` at step
         6 and the chainstate and block index at step 7 (`src/init.cpp`, at
