@@ -117,12 +117,13 @@ the node takes no headers or blocks from peers and answers no
 The block filters are in `indexes/blockfilter` under the chain's data
 directory, as in Core. To rebuild them alone, stop the node and delete
 that directory: the next start builds them again from the stored blocks
-and their undo data, so a pruned node cannot. After a crash the filters may
-trail the chain by the blocks since the last flush, and the next start
-builds those. Either way it builds the active chain's alone, as Core
-does, so a block off it may be left without a filter, and a peer asking
-for one gets no answer. A data directory from before the filters had a
-store of their own has them moved on its first start.
+and their undo data, so a pruned node cannot, and then refuses to start.
+After a crash between a flush's two writes the filters may trail the
+chain by the blocks of that flush, and the next start builds those.
+Either way it builds the active chain's alone, as Core does, so a block
+off it may be left without a filter, and a peer asking for one gets no
+answer. A data directory from before the filters had a store of their
+own has them moved on its first start.
 
 ## Pointing it at a peer of your own
 
