@@ -214,9 +214,9 @@ closes #1936, closes #2001, issue #1976).
 
 ### Tests cover a prefilled index past 65535 and a second `Node.join` wait
 
-A test refuses a block spending an output before its creation (#1917)
-(closes #1860, closes #1920). The console-script test finds the script
-through the distribution's RECORD (closes #1904).
+The index and the wait are tested (closes #1860, closes #1920). A test checks
+that a block spending an output before its creation is refused (#1917). The
+console-script test finds its script by RECORD (closes #1904).
 
 ### The release runs the regtest check, and actionlint is kjanat's fork
 

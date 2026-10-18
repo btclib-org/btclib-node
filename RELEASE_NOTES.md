@@ -59,9 +59,11 @@ Everything below is measured against `v2026.10.8`. `CHANGELOG.md`'s own
   line, the salt and HMAC, and the sources read.
 - **The tables of `rpc.callbacks`, `callbacks`, `arg_names` and
   `named_only`, and of `rpc.help`, `HELP_TEXT` and `CATEGORY`, hold the
-  methods now served.** `Connection`'s `last_receive`, `last_send`,
-  `connected_time` and `addr_token_timestamp` start from `clock.now()`,
-  which `setmocktime` holds on regtest.
+  methods this release serves.**
+
+  `Connection`'s `last_receive`, `last_send`, `connected_time` and
+  `addr_token_timestamp` start from `clock.now()`, which `setmocktime`
+  holds on regtest.
 
 ### New
 
@@ -94,11 +96,11 @@ Everything below is measured against `v2026.10.8`. `CHANGELOG.md`'s own
   (closes #1890, closes #1897).
 - **A SIGTERM stops the node while its main thread waits on it**
   (closes #1274).
-- **The dependency floors are `btclib>=2026.10.17`,
-  `btclib-wallet>=2026.10.16` and `btclib-ecc>=2026.10.2`** (closes #2003).
-  btclib-wallet 2026.10.9 fails at import beside btclib 2026.10.17.
-  `btclib-ecc` is a runtime dependency, which `signing.py` and
-  `p2p/v2transport.py` import.
+- **The dependency floors are `btclib>=2026.10.17` and
+  `btclib-wallet>=2026.10.16`** (closes #2003). btclib-wallet 2026.10.9
+  fails at import beside btclib 2026.10.17. `btclib-ecc>=2026.10.2` is a
+  runtime dependency, which `signing.py` and `p2p/v2transport.py` import
+  (#1742).
 
 ## v2026.10.8
 
