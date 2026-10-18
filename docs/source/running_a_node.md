@@ -119,8 +119,10 @@ directory, as in Core. To rebuild them alone, stop the node and delete
 that directory: the next start builds them again from the stored blocks
 and their undo data, so a pruned node cannot. After a crash the filters may
 trail the chain by the blocks since the last flush, and the next start
-builds those. A data directory from before the filters had a store of
-their own has them moved on its first start.
+builds those. Either way it builds the active chain's alone, as Core
+does, so a block off it may be left without a filter, and a peer asking
+for one gets no answer. A data directory from before the filters had a
+store of their own has them moved on its first start.
 
 ## Pointing it at a peer of your own
 

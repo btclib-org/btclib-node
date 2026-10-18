@@ -19,8 +19,15 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 import pytest
+from btclib.p2p.block_filters import (
+    BlockFilterType,
+    GetCFCheckpt,
+    GetCFHeaders,
+    GetCFilters,
+)
 
 import btclib_node.chainstate.filter_index as filter_index_module
+import btclib_node.p2p.callbacks as cb
 from btclib_node import Node
 from btclib_node.chains import RegTest
 from btclib_node.chainstate import Chainstate
@@ -33,6 +40,7 @@ from btclib_node.main import prune_up_to_height, update_chain
 from tests import generate_random_chain
 from tests.unit.chainstate.filter_index_test import a_chain
 from tests.unit.main_test import connect
+from tests.unit.p2p.callbacks_test import a_peer
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -490,3 +498,81 @@ def test_a_pruned_node_missing_its_filters_refuses_every_start(
         assert "cannot build the block filter index" in refused.init_errors[0]
         put_away(refused)
     assert locator(filters_dir(node)) == GENESIS.hash
+
+
+def a_branch_with_no_filters(
+    regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch, case: str
+) -> tuple[Node, list[Block]]:
+    """Leave a validated branch off the active chain, with no filter stored.
+
+    `rebuild`: the branch connects, a longer one replaces it, and the
+    filter store is deleted, as `docs/source/running_a_node.md` says to
+    rebuild it. `crash`: both branches connect before one flush, which
+    dies between the chainstate's write and the filters'. Either way the
+    reopened node's catch-up builds the active chain's filters alone.
+    """
+    node = regtest_node()
+    old = generate_random_chain(2, GENESIS.hash)
+    new = generate_random_chain(3, GENESIS.hash)
+    if case == "rebuild":
+        connect(node, old)
+        connect(node, new)
+        stop(node)
+        shutil.rmtree(filters_dir(node))
+    else:
+        stage(node, old)
+        stage(node, new)
+
+        def die(*_args: object, **_kwargs: object) -> None:
+            raise Crash
+
+        monkeypatch.setattr(node.chainstate.filter_index, "finalize", die)
+        with pytest.raises(Crash):
+            node.chainstate.flush()
+        stop(node)
+    reopened = regtest_node()
+    reopened.config.peerblockfilters = True
+    return reopened, old
+
+
+@pytest.mark.parametrize("case", ["rebuild", "crash"])
+def test_a_stale_block_with_no_filter_is_answered_with_nothing(
+    regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """A request reaching a block with no filter sends nothing, as in Core.
+
+    The stale branch is still one `_block_request_allowed` serves, and its
+    filters are not stored. Core's `ProcessGetCFilters`, `ProcessGetCFHeaders`
+    and `ProcessGetCFCheckPt` then log a `net` line, send nothing, and keep
+    the peer.
+    """
+    node, old = a_branch_with_no_filters(regtest_node, monkeypatch, case)
+    stale = old[-1].header.hash
+    assert stale not in node.chainstate.block_index.active_chain
+    assert cb._block_request_allowed(node, stale)
+    for block in old:
+        assert node.chainstate.filter_index.get_filter(block.header.hash) is None
+
+    logged: list[tuple[str, str]] = []
+
+    def log_debug(category: str, msg: str, *args: object) -> None:
+        logged.append((category, msg % args))
+
+    monkeypatch.setattr(node.logger, "log_debug", log_debug)
+    monkeypatch.setattr(cb, "CFCHECKPT_INTERVAL", 1)
+    basic = BlockFilterType.BASIC
+    for handler, request, expected in (
+        (cb.get_cfilters, GetCFilters(basic, 0, stale), "filter in index"),
+        (cb.get_cfheaders, GetCFHeaders(basic, 1, stale), "filter hashes"),
+        (cb.get_cfheaders, GetCFHeaders(basic, 2, stale), "filter header"),
+        (cb.get_cfcheckpt, GetCFCheckpt(basic, stale), "filter header"),
+    ):
+        peer = a_peer()
+        logged.clear()
+        handler(node, request.serialize(), peer)
+        assert not peer.sent, expected
+        assert not peer.stopped, expected
+        ((category, line),) = logged
+        assert category == "net"
+        assert line.startswith(f"Failed to find block {expected}"), line
+    assert not node.pending_cfilters

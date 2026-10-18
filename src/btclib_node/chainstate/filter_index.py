@@ -40,11 +40,17 @@ of a filter. `catch_up` closes the gap at start, from the fork point of
 the locator and the active chain, as `BaseIndex::Sync` does in Core. A
 reorg needs no rewind, the filters being keyed by block hash.
 
-`-reindex-chainstate` does not wipe the store, as Core's `src/init.cpp`
-does, and wipes only the chainstate; `-reindex` will wipe this store too
-(btclib-org/btclib-node#1415). A corrupt filter is rebuilt by deleting
-the directory. A datadir from before the store existed keeps its filters
-in the chainstate's store: `adopt_legacy` moves them.
+`catch_up` builds the active chain alone, as `BaseIndex::Sync` does. So
+a block off it has no filter where a crash between the two writes lost
+it, or where the store was deleted, and a peer asking for it is
+answered with nothing, as in Core (`p2p.callbacks._log_missing_filters`).
+
+`-reindex-chainstate` wipes the chainstate and keeps this store, as Core
+does (`src/init.cpp`, same commit). Core wipes it on `-reindex`, which
+this node lacks (btclib-org/btclib-node#1415). A corrupt filter is
+rebuilt by deleting the directory. A datadir from before the store
+existed keeps its filters in the chainstate's store: `adopt_legacy`
+moves them.
 
 BIP157 asks for exactly this: "Nodes SHOULD NOT generate filters
 dynamically on request, as malicious peers may be able to perform DoS

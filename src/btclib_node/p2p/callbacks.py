@@ -2784,6 +2784,41 @@ def _filter_range(  # noqa: PLR0913, PLR0917
     ]
 
 
+def _log_missing_filters(
+    node: Node, what: str, start_height: int, stop_hash: bytes
+) -> None:
+    """Log, as Core does, a range the filter index cannot answer.
+
+    A block `_block_request_allowed` serves can lack its filter: one off
+    the active chain whose filter a stop between `Chainstate.flush`'s two
+    writes lost, or that a rebuild of the store did not build again
+    (`chainstate.filter_index`'s module docstring). Core's
+    `ProcessGetCFilters`, `ProcessGetCFHeaders` and `ProcessGetCFCheckPt`
+    (`src/net_processing.cpp:3336-3340`, `:3368-3372`, `:3376-3379` and
+    `:3415-3418`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) then write
+    this `net` line, send nothing and keep the peer, having looked the
+    whole range up before sending any of it. Only the basic type reaches
+    here (`_prepare_filter_request`).
+    """
+    node.logger.log_debug(
+        "net",
+        "Failed to find block %s in index: filter_type=basic, start_height=%d, "
+        "stop_hash=%s",
+        what,
+        start_height,
+        stop_hash.hex(),
+    )
+
+
+def _log_missing_header(node: Node, block_hash: bytes) -> None:
+    """Log a filter header the index lacks, as `_log_missing_filters` says."""
+    node.logger.log_debug(
+        "net",
+        "Failed to find block filter header in index: filter_type=basic, block_hash=%s",
+        block_hash.hex(),
+    )
+
+
 def advance_cfilters(node: Node, conn: Connection, block_hashes: deque[bytes]) -> bool:
     """Send from the front of `block_hashes` until `conn.pause_send` is set.
 
@@ -2815,12 +2850,8 @@ def advance_cfilters(node: Node, conn: Connection, block_hashes: deque[bytes]) -
         if conn.pause_send:
             return False
         block_hash = block_hashes.popleft()
-        # `_filter_range` only ever names a block this node has indexed
-        # and that `_block_request_allowed` still permits serving -- on
-        # the active chain, or off it and validated, where its filter
-        # was computed while it was still connected and stays keyed by
-        # hash afterwards (`chainstate.filter_index`'s own module
-        # docstring)
+        # `get_cfilters` found every filter of the range before sending
+        # the first, and a running node removes none
         block_filter = filter_index.get_filter(block_hash)
         if block_filter is None:
             err_msg = f"no filter for a block this node has indexed: {block_hash.hex()}"
@@ -2855,6 +2886,9 @@ def get_cfilters(node: Node, msg: bytes, conn: Connection) -> None:
     The messages held are weighed against `conn.queued_recv_bytes`, so
     reads from the connection pause past `conn.recv_flood_size`: that
     bounds what a peer can pile up behind a paused answer.
+
+    A range with a block whose filter is not stored is answered with
+    nothing, the peer kept: `_log_missing_filters`' own docstring.
     """
     request = GetCFilters.parse(msg)
     block_hashes = _filter_range(
@@ -2867,6 +2901,10 @@ def get_cfilters(node: Node, msg: bytes, conn: Connection) -> None:
     )
     if block_hashes is None:
         return
+    filter_index = node.chainstate.filter_index
+    if any(filter_index.get_filter(block_hash) is None for block_hash in block_hashes):
+        _log_missing_filters(node, "filter", request.start_height, request.stop_hash)
+        return
     pending = deque(block_hashes)
     if not advance_cfilters(node, conn, pending):
         node.pending_cfilters[conn.id] = (conn, pending)
@@ -2876,7 +2914,9 @@ def get_cfheaders(node: Node, msg: bytes, conn: Connection) -> None:
     """Answer a BIP157 `getcfheaders` with the requested range's filter headers.
 
     Disconnects on a request `_filter_range` refuses; see its own
-    docstring and `_prepare_filter_request`'s.
+    docstring and `_prepare_filter_request`'s. A range whose filter hashes,
+    or the header before it, are not stored is answered with nothing, the
+    peer kept: `_log_missing_filters`' own docstring.
     """
     request = GetCFHeaders.parse(msg)
     block_hashes = _filter_range(
@@ -2898,24 +2938,20 @@ def get_cfheaders(node: Node, msg: bytes, conn: Connection) -> None:
     # own docstring). BIP157: "The previous filter header used to
     # calculate that of the genesis block is defined to be the 32-byte
     # array of 0's."
-    previous = (
-        filter_index.get_header(_ancestor(block_index, request.stop_hash, start - 1))
-        if start
-        else NO_PREVIOUS_FILTER_HEADER
-    )
-    # every block `_filter_range` named has been connected at some point
-    # -- `_block_request_allowed` -- so its filter and its header are
-    # still in the index (`chainstate.filter_index`'s own module
-    # docstring)
-    if previous is None:
-        err_msg = "no filter header for the parent of the requested range"
-        raise ChainstateInconsistencyError(err_msg)
+    previous = NO_PREVIOUS_FILTER_HEADER
+    if start:
+        previous_hash = _ancestor(block_index, request.stop_hash, start - 1)
+        header = filter_index.get_header(previous_hash)
+        if header is None:
+            _log_missing_header(node, previous_hash)
+            return
+        previous = header
     filter_hashes = []
     for block_hash in block_hashes:
         filter_hash = filter_index.get_filter_hash(block_hash)
         if filter_hash is None:
-            err_msg = f"no filter for a block this node has indexed: {block_hash.hex()}"
-            raise ChainstateInconsistencyError(err_msg)
+            _log_missing_filters(node, "filter hashes", start, request.stop_hash)
+            return
         filter_hashes.append(filter_hash)
     conn.send(
         CFHeaders(
@@ -2933,7 +2969,8 @@ def get_cfcheckpt(node: Node, msg: bytes, conn: Connection) -> None:
     Disconnects for an unsupported filter type, a type not advertised
     under `-peerblockfilters`, or a stop hash `_block_request_allowed`
     refuses -- `_prepare_filter_request`'s own docstring, matching Core
-    (ISS 1477).
+    (ISS 1477). A checkpoint whose header is not stored is answered with
+    nothing, the peer kept: `_log_missing_filters`' own docstring.
     """
     request = GetCFCheckpt.parse(msg)
     # not _filter_range: this request carries no start height, a
@@ -2962,9 +2999,8 @@ def get_cfcheckpt(node: Node, msg: bytes, conn: Connection) -> None:
         block_hash = _ancestor(block_index, request.stop_hash, height)
         header = filter_index.get_header(block_hash)
         if header is None:
-            err_msg = "no filter header for a block this node has indexed: "
-            err_msg += block_hash.hex()
-            raise ChainstateInconsistencyError(err_msg)
+            _log_missing_header(node, block_hash)
+            return
         checkpoints.append(header)
     conn.send(
         CFCheckpt(
