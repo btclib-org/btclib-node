@@ -572,13 +572,13 @@ class Node(threading.Thread):
         # not know genesis yet, never back over a prune.
         if self.block_db.pruned_up_to < 0:
             self.block_db.add_block(self.chain.genesis_block)
-        # the two halves of a filter live in different databases -- the
-        # block and its reverse patch in one, the index in the other --
-        # so catching up is here, where both are built, and before the
-        # P2P listener: the version message this node sends
-        # says it serves filters for the whole chain
+        # `filter_index.py`'s docstring says why the filters need catching
+        # up. Here, where the blocks and the filter store are both open:
+        # on this thread, which owns the chain state (ARCHITECTURE.md),
+        # and before the P2P listener, since the version message this node
+        # sends says it serves filters for the whole chain.
         self.chainstate.filter_index.catch_up(
-            self.chainstate.block_index.active_chain, self.block_db
+            self.chainstate.block_index, self.block_db
         )
         self.mempool = Mempool(
             self.logger,

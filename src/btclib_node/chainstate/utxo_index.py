@@ -67,8 +67,8 @@ _UNSET = object()
 # (btclib-org/btclib-node#586): height 964,000 staged 7,778 deletes and
 # 8,100 puts, 15,878 entries, so the bound holds a little over thirty
 # blocks that dense before a flush is due -- amortizing each flush's own
-# fixed cost (one write_batch, one BlockIndex/FilterIndex write) across
-# that many blocks instead of one. A block far earlier in the chain, an
+# fixed cost (a write_batch in each of the two stores) across that many
+# blocks instead of one. A block far earlier in the chain, an
 # order of magnitude smaller, holds proportionally more of them staged
 # at once, which is the other side of the same bound rather than a
 # second one: what it costs on a crash is argued in db.py's docstring.
@@ -365,9 +365,8 @@ class UtxoIndex:
         """Whether the staged size has reached `_FLUSH_BOUND`.
 
         `main._finalize_fork` is the one caller, and it is not asking
-        this alone: `Chainstate.flush` writes `BlockIndex` and
-        `FilterIndex` in the same batch this triggers, which is what
-        keeps the three in step (`db.py`'s own docstring argues why).
+        this alone: `Chainstate.flush` says what else it writes (`db.py`'s
+        own docstring argues why the two are written together).
         """
         return len(self.removed_utxos) + len(self.updated_utxo_set) >= _FLUSH_BOUND
 

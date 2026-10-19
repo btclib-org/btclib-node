@@ -16,7 +16,7 @@ import secrets
 import socket
 import threading
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from contextlib import suppress
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -5877,21 +5877,53 @@ def test_get_cfilters_stops_once_the_connection_closes_mid_answer() -> None:
     ]
 
 
-def test_get_cfilters_refuses_a_gap_in_a_promised_index() -> None:
-    """A missing filter mid-range raises, rather than answering `notfound`.
+def logged_lines(node: Any) -> list[str]:
+    """Record every `net` debug line `node.logger` is asked to write."""
+    lines: list[str] = []
 
-    BIP157's service bit promises a filter for every block of the active chain;
-    a gap here is the index breaking that promise rather than a request this
-    node can decline.
+    def log_debug(category: str, msg: str, *args: object) -> None:
+        assert category == "net"
+        lines.append(msg % args)
+
+    node.logger.log_debug = log_debug
+    return lines
+
+
+def without(get: Any, missing: bytes) -> Any:
+    """Answer as `get` does, except `None` for `missing`."""
+    return lambda h: None if h == missing else get(h)
+
+
+def test_a_getcfilters_range_with_a_missing_filter_gets_nothing() -> None:
+    """A missing filter mid-range sends nothing at all, and keeps the peer.
+
+    Core's `ProcessGetCFilters` looks the whole range up before sending
+    (`_log_missing_filters`' own docstring), so the filters before the gap
+    are not sent either.
     """
-    # BIP157's service bit promises a filter for every block of the
-    # active chain; a gap here is the index breaking that promise
-    # rather than a request this node can decline
+    node = a_filters_node()
+    filter_index = node.chainstate.filter_index
+    filter_index.get_filter = without(filter_index.get_filter, (4).to_bytes(32, "big"))
+    lines = logged_lines(node)
+    peer = a_peer()
+    a_getcfilters(node, peer, 2, 5)
+    assert not peer.sent
+    assert not peer.stopped
+    assert not node.pending_cfilters
+    (line,) = lines
+    assert line.startswith("Failed to find block filter in index: "), line
+
+
+def test_advance_cfilters_refuses_a_filter_gone_mid_answer() -> None:
+    """A filter `get_cfilters` found and that is gone later raises.
+
+    A running node removes no filter, so this is the index breaking, not
+    a request this node can decline.
+    """
     node = a_filters_node()
     node.chainstate.filter_index.get_filter = lambda h: None
-    peer = a_peer()
     with pytest.raises(ChainstateInconsistencyError, match="no filter for a block"):
-        a_getcfilters(node, peer, 2, 2)
+        advance_cfilters(node, a_peer(), deque([(2).to_bytes(32, "big")]))
 
 
 def test_a_filter_type_this_node_does_not_serve_is_not_answered() -> None:
@@ -6216,32 +6248,45 @@ def test_a_getcfheaders_this_node_cannot_answer_is_not_answered() -> None:
     assert peer.stopped == [True]
 
 
-def test_get_cfheaders_refuses_a_gap_in_the_header_before_the_range() -> None:
-    """A missing filter header before the range raises, not `notfound`."""
+def test_a_getcfheaders_missing_the_header_before_the_range_gets_nothing() -> None:
+    """A missing filter header before the range sends nothing, peer kept."""
     node = a_filters_node()
     node.chainstate.filter_index.get_header = lambda h: None
+    lines = logged_lines(node)
     peer = a_peer()
-    with pytest.raises(
-        ChainstateInconsistencyError, match="no filter header for the parent"
-    ):
-        get_cfheaders(
-            node,
-            GetCFHeaders(BlockFilterType.BASIC, 3, (5).to_bytes(32, "big")).serialize(),
-            peer,
+    get_cfheaders(
+        node,
+        GetCFHeaders(BlockFilterType.BASIC, 3, (5).to_bytes(32, "big")).serialize(),
+        peer,
+    )
+    assert not peer.sent
+    assert not peer.stopped
+    assert lines == [
+        (
+            "Failed to find block filter header in index: filter_type=basic, "
+            f"block_hash={(2).to_bytes(32, 'big').hex()}"
         )
+    ]
 
 
-def test_get_cfheaders_refuses_a_gap_in_a_promised_index() -> None:
-    """A missing filter hash in the range raises, not a `notfound`."""
+def test_a_getcfheaders_range_with_a_missing_filter_hash_gets_nothing() -> None:
+    """A missing filter hash in the range sends nothing, and keeps the peer."""
     node = a_filters_node()
-    node.chainstate.filter_index.get_filter_hash = lambda h: None
+    filter_index = node.chainstate.filter_index
+    filter_index.get_filter_hash = without(
+        filter_index.get_filter_hash, (1).to_bytes(32, "big")
+    )
+    lines = logged_lines(node)
     peer = a_peer()
-    with pytest.raises(ChainstateInconsistencyError, match="no filter for a block"):
-        get_cfheaders(
-            node,
-            GetCFHeaders(BlockFilterType.BASIC, 0, (2).to_bytes(32, "big")).serialize(),
-            peer,
-        )
+    get_cfheaders(
+        node,
+        GetCFHeaders(BlockFilterType.BASIC, 0, (2).to_bytes(32, "big")).serialize(),
+        peer,
+    )
+    assert not peer.sent
+    assert not peer.stopped
+    (line,) = lines
+    assert line.startswith("Failed to find block filter hashes in index: "), line
 
 
 def test_the_checkpoints_are_every_thousandth_block_and_not_the_first() -> None:
@@ -6309,18 +6354,24 @@ def test_a_chain_shorter_than_the_interval_has_no_checkpoints() -> None:
     assert not msg.filter_headers
 
 
-def test_get_cfcheckpt_refuses_a_gap_in_a_promised_index() -> None:
-    """A missing filter header at a checkpoint raises, not `notfound`."""
+def test_a_getcfcheckpt_missing_a_checkpoint_header_gets_nothing() -> None:
+    """A missing filter header at a checkpoint sends nothing, peer kept."""
     node = a_filters_node(length=CFCHECKPT_INTERVAL + 1)
     node.chainstate.filter_index.get_header = lambda h: None
+    lines = logged_lines(node)
     peer = a_peer()
     stop_hash = CFCHECKPT_INTERVAL.to_bytes(32, "big")
-    with pytest.raises(
-        ChainstateInconsistencyError, match="no filter header for a block"
-    ):
-        get_cfcheckpt(
-            node, GetCFCheckpt(BlockFilterType.BASIC, stop_hash).serialize(), peer
+    get_cfcheckpt(
+        node, GetCFCheckpt(BlockFilterType.BASIC, stop_hash).serialize(), peer
+    )
+    assert not peer.sent
+    assert not peer.stopped
+    assert lines == [
+        (
+            "Failed to find block filter header in index: filter_type=basic, "
+            f"block_hash={stop_hash.hex()}"
         )
+    ]
 
 
 def test_a_getcfcheckpt_this_node_cannot_answer_is_not_answered() -> None:

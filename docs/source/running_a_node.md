@@ -102,8 +102,8 @@ same as it is for Core.
 
 ## Rebuilding the chainstate
 
-`-reindex-chainstate` wipes the UTXO set, the block filters and the undo
-data at start, keeps the headers and the stored blocks, and connects
+`-reindex-chainstate` wipes the UTXO set and the undo data at start,
+keeps the headers, the stored blocks and the block filters, and connects
 those blocks again from genesis, checking each as it goes. The node
 comes back at the most-work tip its stored blocks reach. Where two
 stored branches tie on work, either can win, as in Core. A stop part-way
@@ -113,6 +113,17 @@ download, as Core does on every start. While the stored blocks connect,
 the node takes no headers or blocks from peers and answers no
 `getheaders`, as Core does. A start with the option starts over. With
 `-prune` it refuses to start, as Core refuses.
+
+The block filters are in `indexes/blockfilter` under the chain's data
+directory, as in Core. To rebuild them alone, stop the node and delete
+that directory: the next start builds them again from the stored blocks
+and their undo data, so a pruned node cannot, and then refuses to start.
+After a crash between a flush's two writes the filters may trail the
+chain by the blocks of that flush, and the next start builds those.
+Either way it builds the active chain's alone, as Core does, so a block
+off it may be left without a filter, and a peer asking for one gets no
+answer. A data directory from before the filters had a store of their
+own has them moved on its first start.
 
 ## Pointing it at a peer of your own
 

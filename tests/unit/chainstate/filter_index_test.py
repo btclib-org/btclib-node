@@ -11,6 +11,8 @@ that the header chain a peer would check against is the one BIP157
 defines.
 """
 
+import shutil
+from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
@@ -35,7 +37,7 @@ from tests import (
 from tests.unit.main_test import connect, rejected_because, spend
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
     from contextlib import AbstractContextManager
 
     from btclib_node.block_db import RevBlock
@@ -265,15 +267,14 @@ def test_a_chain_indexed_before_the_index_existed_is_caught_up(
 ) -> None:
     """catch_up rebuilds every filter and header a chain is missing, unchanged.
 
-    With the whole chain's filters and headers deleted, catch_up
-    reports building all of them and writes them rather than only
-    holding them pending, and each rebuilt header matches what was
-    stored the first time.
+    With the whole chain's filters and headers deleted and the locator
+    forgotten, catch_up reports building all of them and writes them
+    rather than only holding them pending, and each rebuilt header
+    matches what was stored the first time.
     """
     node = regtest_node()
     chain = a_chain(node, 3)
     filter_index = node.chainstate.filter_index
-    active_chain = node.chainstate.block_index.active_chain
 
     built_first_time = {
         block.header.hash: filter_index.get_header(block.header.hash) for block in chain
@@ -281,8 +282,11 @@ def test_a_chain_indexed_before_the_index_existed_is_caught_up(
     for block in chain:
         filter_index.db.delete(b"cfilter-" + block.header.hash)
         filter_index.db.delete(b"cfheader-" + block.header.hash)
+    filter_index.best_block = None
 
-    assert filter_index.catch_up(active_chain, node.block_db) == len(chain)
+    assert filter_index.catch_up(node.chainstate.block_index, node.block_db) == len(
+        chain
+    )
     # written, not held: nothing calls finalize after this, so a
     # catch-up that only filled `pending` would be lost on the next
     # rollback and would never reach the disk
@@ -302,7 +306,7 @@ def test_a_chain_that_is_already_indexed_is_not_rebuilt(
     a_chain(node, 2)
     assert (
         node.chainstate.filter_index.catch_up(
-            node.chainstate.block_index.active_chain, node.block_db
+            node.chainstate.block_index, node.block_db
         )
         == 0
     )
@@ -322,13 +326,14 @@ def test_a_catch_up_that_cannot_reach_a_block_says_so(
     filter_index = node.chainstate.filter_index
     filter_index.db.delete(b"cfilter-" + block.header.hash)
     filter_index.db.delete(b"cfheader-" + block.header.hash)
+    filter_index.best_block = None
     block_db = node.block_db
     block_db.blocks.pop(block.header.hash)
 
     with pytest.raises(
         ChainstateInconsistencyError, match="cannot build the block filter index"
     ):
-        filter_index.catch_up(node.chainstate.block_index.active_chain, block_db)
+        filter_index.catch_up(node.chainstate.block_index, block_db)
 
 
 def test_an_index_survives_the_node_being_closed_and_opened(
@@ -378,17 +383,15 @@ def test_the_index_is_caught_up_when_the_node_loads(
 
     `Node.load` is where the two databases meet, ahead of the P2P
     listener, and a node that advertises the service bit with a
-    half-built index would be promising filters it cannot serve.
+    half-built index would be promising filters it cannot serve. The
+    store is deleted, which is how an operator rebuilds the filters.
     """
     node = regtest_node()
     chain = a_chain(node, 2)
-    filter_index = node.chainstate.filter_index
-    for block in chain:
-        filter_index.db.delete(b"cfilter-" + block.header.hash)
-        filter_index.db.delete(b"cfheader-" + block.header.hash)
     node.p2p_manager.peer_db.close()
     node.chainstate.close()
     node.block_db.close()
+    shutil.rmtree(node.data_dir / "indexes" / "blockfilter")
 
     reopened = regtest_node()
     for block in chain:
@@ -593,9 +596,9 @@ def test_the_testnet_genesis_block_this_node_builds_is_the_one_core_filtered() -
 
 
 def test_the_header_is_written_before_the_filter(
-    regtest_node: Callable[[], Node],
+    regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`_write` puts a block's cfheader key before its cfilter key.
+    """`finalize` puts a block's cfheader key before its cfilter key.
 
     Both skip guards ask get_filter, so a filter on disk without its
     header is the state nothing repairs: the block is skipped for
@@ -609,12 +612,17 @@ def test_the_header_is_written_before_the_filter(
     filter_index.add_block(block, [])
 
     written: list[bytes] = []
-    filter_index._write(
-        cast(
-            "KeyValueStore",
-            SimpleNamespace(put=lambda key, _: written.append(key[:-32])),
-        )
+
+    @contextmanager
+    def recording_batch() -> Iterator[SimpleNamespace]:
+        yield SimpleNamespace(put=lambda key, _: written.append(key[:-32]))
+
+    monkeypatch.setattr(
+        filter_index,
+        "db",
+        cast("KeyValueStore", SimpleNamespace(write_batch=recording_batch)),
     )
+    filter_index.finalize()
     assert written == [b"cfheader-", b"cfilter-"]
 
 
@@ -631,7 +639,7 @@ def test_the_pair_reaches_the_database_as_one_write(
     batches: list[bool] = []
 
     class CountingDb:
-        """The chainstate database, counting the batches asked of it."""
+        """The filter store, counting the batches asked of it."""
 
         def write_batch(self) -> AbstractContextManager[KeyValueStore]:
             batches.append(True)
@@ -663,10 +671,9 @@ def test_a_header_left_without_its_filter_is_simply_rebuilt(
     filter_index = node.chainstate.filter_index
     header = filter_index.get_header(block.header.hash)
     filter_index.db.delete(b"cfilter-" + block.header.hash)
+    filter_index.best_block = None
 
-    assert filter_index.catch_up(
-        node.chainstate.block_index.active_chain, node.block_db
-    )
+    assert filter_index.catch_up(node.chainstate.block_index, node.block_db)
     assert filter_index.get_header(block.header.hash) == header
 
 
@@ -684,54 +691,29 @@ def test_a_long_catch_up_writes_as_it_goes(
     node = regtest_node()
     chain = a_chain(node, 4)
     filter_index = node.chainstate.filter_index
-    active_chain = node.chainstate.block_index.active_chain
     for block in chain:
         filter_index.db.delete(b"cfilter-" + block.header.hash)
         filter_index.db.delete(b"cfheader-" + block.header.hash)
+    filter_index.best_block = None
 
     monkeypatch.setattr(filter_index_module, "_CATCH_UP_BATCH", 2)
     held: list[int] = []
+    located: list[bytes | None] = []
     real_add = filter_index.add_connected_block
 
     def watched(block: Block, rev_block: RevBlock) -> None:
         real_add(block, rev_block)
         held.append(len(filter_index.pending))
+        located.append(filter_index.best_block)
 
     monkeypatch.setattr(filter_index, "add_connected_block", watched)
-    assert filter_index.catch_up(active_chain, node.block_db) == len(chain)
+    assert filter_index.catch_up(node.chainstate.block_index, node.block_db) == len(
+        chain
+    )
 
     # never more than the batch held at once, and something on disk
-    # before the walk was over
+    # before the walk was over, the locator on the last block written
     assert max(held) <= 2
+    assert located[2] == chain[1].header.hash
     for block in chain:
         assert filter_index.db.get(b"cfilter-" + block.header.hash) is not None
-
-
-def test_the_filters_of_a_connected_batch_go_in_the_chainstate_s_own_write(
-    regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Connecting a block finalizes its filter into the chainstate's own write.
-
-    The filters and the chain advance are one fact, so they are one
-    write: finalized with the batch update_chain opened rather than
-    straight to the database beside it, where a crash between the two
-    would leave a chain whose tip has no filter.
-    """
-    node = regtest_node()
-    filter_index = node.chainstate.filter_index
-    given: list[KeyValueStore | None] = []
-    real = filter_index.finalize
-
-    def recording_finalize(wb: KeyValueStore | None = None) -> None:
-        # a statement rather than `given.append(wb) or real(wb)`: the
-        # real call was reached through the right-hand side of an `or`
-        # whose left one is `None` every time, which reads as a
-        # fallback and is a sequence point
-        given.append(wb)
-        return real(wb)
-
-    monkeypatch.setattr(filter_index, "finalize", recording_finalize)
-
-    a_chain(node, 1)
-    assert given
-    assert all(wb is not None for wb in given)

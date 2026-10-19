@@ -6,11 +6,11 @@
 
 `chainstate`'s module docstring is what is checked: a node with one
 stored branch, restarted with the option, comes back at the same tip,
-with the same UTXO set, its commitment, its filters and its undo data,
-and a stop part-way resumes on a plain start. That start, like any with
-stored blocks to connect, is `NodeStatus.Reindexing` until they are,
-and holds Core's `LoadingBlocks()` gates meanwhile. Under `-prune` the
-option is refused, as Core refuses it.
+with the same UTXO set, its commitment and its undo data, the filters it
+never wiped, and a stop part-way resumes on a plain start. That start,
+like any with stored blocks to connect, is `NodeStatus.Reindexing` until
+they are, and holds Core's `LoadingBlocks()` gates meanwhile. Under
+`-prune` the option is refused, as Core refuses it.
 """
 
 import math
@@ -141,7 +141,9 @@ def _state(node: Node) -> _State:
     )
 
 
-def test_rebuilds_the_same_tip_utxo_set_filters_and_undo(tmp_path: Path) -> None:
+def test_rebuilds_the_same_tip_utxo_set_and_undo_and_keeps_the_filters(
+    tmp_path: Path,
+) -> None:
     """The option wipes at load, and the reconnect gives every piece back."""
     regtest = RegTest()
     # past maturity, so that blocks spend as well as create
@@ -150,19 +152,33 @@ def test_rebuilds_the_same_tip_utxo_set_filters_and_undo(tmp_path: Path) -> None
         _store(node, chain, chain)
         activate_best_chain(node)
         before = _state(node)
+        filters = {
+            block.header.hash: node.chainstate.filter_index.get_filter(
+                block.header.hash
+            )
+            for block in chain
+        }
     assert len(before.active_chain) == len(chain) + 1
     assert len(before.rev_patches) == len(chain)
+    assert None not in filters.values()
 
     with _node(tmp_path, reindex_chainstate=True) as node:
         assert node.status == NodeStatus.Reindexing
         assert node.chainstate.block_index.active_chain == [regtest.genesis.hash]
         assert list(node.chainstate.utxo_index.cursor()) == []
-        assert node.chainstate.filter_index.get_filter(chain[0].header.hash) is None
-        assert node.chainstate.filter_index.get_filter(regtest.genesis.hash)
+        # Core keeps its block filter index on `-reindex-chainstate`
+        assert filters == {
+            block_hash: node.chainstate.filter_index.get_filter(block_hash)
+            for block_hash in filters
+        }
         assert node.block_db.rev_patches == {}
         activate_best_chain(node)
         assert _status(node) == NodeStatus.Starting
         assert _state(node) == before
+        assert filters == {
+            block_hash: node.chainstate.filter_index.get_filter(block_hash)
+            for block_hash in filters
+        }
 
     with _node(tmp_path) as node:
         assert _state(node) == before

@@ -4160,7 +4160,7 @@ def test_the_utxo_cache_stays_staged_until_the_bound_then_flushes_all_three(
     assert (
         stored_status(node.chainstate, chain[0].header.hash) == BlockStatus.valid_header
     )
-    assert node.chainstate.db.get(b"cfilter-" + chain[0].header.hash) is None
+    assert node.chainstate.filter_db.get(b"cfilter-" + chain[0].header.hash) is None
     # still answers correctly, staged rather than written
     assert filter_index.get_filter(chain[0].header.hash) is not None
 
@@ -4175,7 +4175,9 @@ def test_the_utxo_cache_stays_staged_until_the_bound_then_flushes_all_three(
             stored_status(node.chainstate, block.header.hash)
             == BlockStatus.in_active_chain
         )
-        assert node.chainstate.db.get(b"cfilter-" + block.header.hash) is not None
+        assert (
+            node.chainstate.filter_db.get(b"cfilter-" + block.header.hash) is not None
+        )
 
 
 def test_a_store_closed_without_a_flush_redoes_only_what_was_never_flushed(
@@ -4219,6 +4221,7 @@ def test_a_store_closed_without_a_flush_redoes_only_what_was_never_flushed(
     first._close_worker_pool()
     first.p2p_manager.peer_db.close()
     first.chainstate.db.close()
+    first.chainstate.filter_db.close()
     first.block_db.close()
     first.p2p_manager.loop.close()
     first.rpc_manager.loop.close()
