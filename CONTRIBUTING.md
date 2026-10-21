@@ -246,9 +246,10 @@ Run `git fetch origin` in the primary checkout, then check that
 worktree for each task with
 `git worktree add <path> origin/main -b <branch>`. After committing, remove it
 with `git worktree remove <path>`. If initialized submodules make that fail,
-check `git -C <path> status --porcelain` is empty before retrying with
-`git worktree remove --force <path>`; the flag can delete uncommitted or
-untracked files. Keep the primary checkout clean and on `main`; do not
+check for uncommitted, untracked, and ignored files in the worktree and
+its initialized submodules. Preserve anything needed before retrying with
+`git worktree remove --force <path>`; it can delete those files. Keep the
+primary checkout clean and on `main`; do not Keep the primary checkout clean and on `main`; do not
 switch branches or stash there. Hooks can fix files in place, and the local
 `main` and `refs/stash` are shared by all worktrees.
 
