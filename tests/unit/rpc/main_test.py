@@ -55,8 +55,9 @@ def make_node(
     `send_and_wait` and `stop` each append to -- the answer `handle_rpc`
     produces. `logger` defaults to a stand-in recording nothing, but a
     real `Logger` is what a test proving a log line needs instead,
-    `Node.logger` never reaching `caplog` for `log.py`'s own reason
-    (CLAUDE.md, btclib-org/btclib-node#587) -- the same default
+    `Node.logger` is constructed directly rather than through
+    `logging.getLogger()`, so its records do not reach `caplog` -- the
+    same default
     `p2p/main_test.py`'s own `make_node` already carries. What a delayed
     `stop` hands `send_and_close_after` lands in the connection's own
     `delayed`, `(reply, delay)` pairs, reached as
@@ -344,8 +345,8 @@ def test_testmempoolaccept_own_store_error_reaches_the_log(
     rather than `test_mempool_accept` folding it into one entry's own
     `"reject-reason"` (btclib-org/btclib-node#668). A real `Logger`
     writing to a real file, read back after, is what proves the line
-    exists: `caplog` sees nothing from this tree's own logger
-    (CLAUDE.md, btclib-org/btclib-node#587).
+    exists: `Node.logger` is constructed directly rather than through
+    `logging.getLogger()`, so its records do not reach `caplog`.
     """
 
     def corrupted(node: Any, tx: Any) -> NoReturn:

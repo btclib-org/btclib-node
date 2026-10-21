@@ -144,9 +144,7 @@ def test_many_unpaced_calls_over_one_session_transport_do_not_reset(
     `bitcoin_core_rpc.transport`'s own fresh, per-call timeout rather
     than one shared across all 300, so a single-test `FetchError: ...
     timed out` here means one of 300 individually stalled that long --
-    a far larger exposure to external load than any other test carries,
-    for a shape neither this file nor `CLAUDE.md`'s own coverage-floor
-    bullet (issue #372, issue #617) already cover.
+    a far larger exposure to external load than any other test carries.
 
     issue #664 read a run of this test failing standalone as that
     exposure to ordinary contention rather than as a defect, on the

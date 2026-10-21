@@ -108,11 +108,10 @@ that only calls `handle_p2p` and trusts what escapes it would therefore
 never see a callback's own bug either -- `main.py`'s own `except` is
 exactly the boundary this harness has to see past rather than trust,
 which is what `_CrashCapture` below is for: a `logging.Handler`
-attached directly to `node.logger` -- the one way `CLAUDE.md`'s own
-*Non-obvious facts* says this tree's logger can be observed at all,
-`node.logger` being a `Logger(logging.Logger)` built directly rather
-than through `logging.getLogger()`, so nothing propagates to a root
-handler such as `caplog`'s own -- reading `record.exc_info` off every
+attached directly to `node.logger`, a `Logger(logging.Logger)` built
+directly rather than through `logging.getLogger()`, so its records do
+not propagate to root handlers such as `caplog`'s -- reading
+`record.exc_info` off every
 `node.logger.exception(...)` call `handle_p2p`/`handle_p2p_handshake`
 themselves make, or the exception among the arguments of the `net`
 debug line they write for a `BTClibValueError`, and sorting it on this

@@ -28,9 +28,8 @@ import os
 # -- answers the tenth with a broken cross-reference to a synthetic
 # `__annotationlib_name_N__` placeholder rather than the bare source
 # string it falls back to for the first nine, failing the docs gate's
-# own `-W`. A name TYPE_CHECKING alone cannot resolve is what forces
-# that fallback in the first place (CLAUDE.md's own note on
-# `autodoc_typehints_format`); importing it for real removes the need
+# own `-W`. A name guarded only by TYPE_CHECKING is what forces that
+# fallback in the first place; importing it for real removes the need
 # for any fallback at all, for every `Sequence[str]` below at once,
 # rather than trading the tenth's placeholder for an eleventh later.
 # btclib-org/btclib-node#1519
