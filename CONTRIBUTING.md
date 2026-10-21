@@ -19,6 +19,13 @@ How the organization decides, and who holds which role, is
 deliberately does not, is [`ROADMAP.md`][roadmap]. Both are the
 organization's, one copy each beside the standard.
 
+## Worktrees
+
+Fetch `origin/main`, create a separate worktree for each task with
+`git worktree add <path> origin/main -b <branch>`, and remove it with
+`git worktree remove <path>` when done. Keep the primary checkout clean
+and on `main`; do not switch branches or stash there.
+
 ## The issue tracker
 
 Where an issue is filed, and what an alignment finding has to name, is
@@ -422,10 +429,8 @@ profile, and is run the same way with its own name in place of
 `interpreter`: `headers_sync.toml` mutates `p2p/headers_sync.py`.
 
 `test-command` in `.github/mutation/interpreter.toml` runs with `-n0`,
-overriding `addopts`' own `-n auto` for the one process that reads the
-mutated file: the file-edit form is the one CLAUDE.md's *Non-obvious
-facts* names as reaching a worker, and cosmic-ray's own mutation is the
-same form, applied to the file rather than to a running process.
+overriding `addopts`' own `-n auto` so the test process reads the
+mutated file.
 
 ### Building the distribution and checking it
 

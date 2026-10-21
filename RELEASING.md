@@ -668,9 +668,8 @@ check is one command short of the provenance one above: verify the
 *rebuilt* file rather than a downloaded one, and it can only pass if the
 digests agree.
 
-A worktree and not `git checkout`, for the reason `CLAUDE.md` gives: the
-primary checkout is the maintainer's, and a rebuild wants a tree of its
-own regardless.
+Use a worktree rather than `git checkout`; see `CONTRIBUTING.md` for
+the worktree procedure.
 
 The version is a fence of its own, for the reason the introduction
 gives. The `&&` below carries the `${version:?}` failure down the block,
