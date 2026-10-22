@@ -1500,14 +1500,21 @@ def _log_args(settings: _Settings) -> tuple[str, ...]:
     bitcoin/bitcoin@9be056a8a7): `std::map` order -- a section, then a
     name inside it, each sorted, and each value in the order it was
     read -- masked to `****` where `_Option.sensitive` is Core's own
-    `SENSITIVE` flag. Every name reaching this is already in `_OPTIONS`:
-    `_parse_conf_text` drops an unknown config key with its own warning,
-    and `_parse_parameters` refuses an unknown command-line one outright,
-    so Core's own `if (flags)` guard around this has nothing left here to
-    be false for. `LogArgs`'s middle category, "Setting file arg:", is
-    `settings.json`'s: every name it holds, known or not, in key order,
-    its value as `write_json` writes it. A section is quoted by
-    `_quoted_line`, which Core's is not: its name may hold a password.
+    `SENSITIVE` flag. Every config-file and command-line name reaching this
+    is already in `_OPTIONS`: `_parse_conf_text` drops an unknown config
+    key with its own warning, and `_parse_parameters` refuses an unknown
+    command-line one outright, so Core's own `if (flags)` guard around this
+    has nothing left here to be false for. `LogArgs`'s middle category,
+    "Setting file arg:", is `settings.json`'s: every name it holds, known
+    or not, in key order.
+
+    This tree departs from Core on purpose where a log line may hold a
+    secret (ASSURANCE_CASE.md, "Common implementation weaknesses"). A
+    section and a `settings.json` name are quoted by `_quoted_line`, which
+    Core's are not: either may hold a password. A `settings.json` value is
+    written as `write_json` writes it only where its name is a known option
+    that is not `sensitive`; Core writes every one in clear. An unknown name
+    may be a sensitive option misspelled, so its value is `****`.
     """
     lines: list[str] = []
     for section, args in sorted(settings.ro_config.items()):
@@ -1517,10 +1524,10 @@ def _log_args(settings: _Settings) -> tuple[str, ...]:
             for value in values:
                 shown = "****" if sensitive else _setting_to_write_str(value)
                 lines.append(f"Config file arg: {prefix}{name}={shown}")
-    lines.extend(
-        f"Setting file arg: {name} = {write_json(value)}"
-        for name, value in settings.rw_settings.items()
-    )
+    for name, setting in settings.rw_settings.items():
+        option = _OPTIONS.get(_interpret_key(name).name)
+        shown = "****" if option is None or option.sensitive else write_json(setting)
+        lines.append(f"Setting file arg: {_quoted_line(name)} = {shown}")
     for name, values in sorted(settings.command_line.items()):
         sensitive = _OPTIONS[name].sensitive
         for value in values:
@@ -1964,9 +1971,10 @@ def _init_settings_file(settings: _Settings, net_dir: str) -> None:
     over `ArgsManager::ReadSettingsFile` and `WriteSettingsFile`
     (`src/common/args.cpp`), each failure refused in Core's words: "Settings
     file could not be read", or "written", and what `settings_file.py` says.
-    A name no option has is warned of in the log alone. The path is asked
-    for again by the write, as `WriteSettingsFile` does, after the file's
-    own `settings` key has had its say.
+    A name no option has is warned of in the log alone, quoted by
+    `_quoted_line`, which Core's warning is not: the name may be a secret.
+    The path is asked for again by the write, as `WriteSettingsFile` does,
+    after the file's own `settings` key has had its say.
     """
     path = _settings_path(settings, net_dir)
     if path is None:
@@ -1983,7 +1991,7 @@ def _init_settings_file(settings: _Settings, net_dir: str) -> None:
         err_msg = f"Settings file could not be read:\n- {error}"
         raise ValueError(err_msg) from None
     settings.log_warnings.extend(
-        f"Ignoring unknown rw_settings value {name}"
+        f"Ignoring unknown rw_settings value {_quoted_line(name)}"
         for name in settings.rw_settings
         if _interpret_key(name).name not in _OPTIONS
     )

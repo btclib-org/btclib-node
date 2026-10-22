@@ -6,6 +6,7 @@
 
 import functools
 import io
+import json
 import os
 import re
 import runpy
@@ -4833,7 +4834,12 @@ def test_a_negated_chain_selector_in_the_file_is_skipped(tmp_path: Path) -> None
 def test_the_values_are_logged_and_the_unknown_names_warned_of(
     tmp_path: Path,
 ) -> None:
-    """Core's own `_VALUES`, `LogArgs`' "Setting file arg:" in key order."""
+    """Core's own `_VALUES`, `LogArgs`' "Setting file arg:" in key order.
+
+    Core writes every value. This tree writes `****` for the value of a
+    sensitive option and of a name no option has, which may be one
+    misspelled.
+    """
     _settings(
         tmp_path,
         '{"string":"string","num":5,"bool":true,"null":null,"list":[6,7],'
@@ -4851,19 +4857,51 @@ def test_the_values_are_logged_and_the_unknown_names_warned_of(
     lines = cli._log_args(settings)
     assert lines[:2] == (
         "Config file arg: rpcuser=****",
-        "Setting file arg: bool = true",
+        "Setting file arg: bool = ****",
     )
     assert lines[2:11] == (
-        "Setting file arg: list = [6,7]",
+        "Setting file arg: list = ****",
         "Setting file arg: nolisten = true",
-        "Setting file arg: nozzz = 1",
-        "Setting file arg: null = null",
-        "Setting file arg: num = 5",
+        "Setting file arg: nozzz = ****",
+        "Setting file arg: null = ****",
+        "Setting file arg: num = ****",
         "Setting file arg: regtest.port = 5",
-        'Setting file arg: rpcuser = "x"',
-        'Setting file arg: string = "string"',
+        "Setting file arg: rpcuser = ****",
+        "Setting file arg: string = ****",
         f"Command-line arg: datadir={cli._setting_to_write_str(str(tmp_path))}",
     )
+
+
+@pytest.mark.parametrize(
+    ("name", "logged"),
+    [
+        ("rpcpassword", "rpcpassword"),
+        ("regtest.rpcpassword", "<19 characters>"),
+        ("rpcauth", "rpcauth"),
+        ("rpcpasword", "rpcpasword"),
+        (LEAK, "<28 characters>"),
+        (f"rpcpassword={LEAK}", "rpcpassword"),
+    ],
+    ids=["sensitive", "in a section", "rpcauth", "misspelled", "long", "with value"],
+)
+def test_a_settings_value_is_logged_by_its_name_and_never_as_written(
+    tmp_path: Path, name: str, logged: str
+) -> None:
+    """A `settings.json` name and value may hold a secret; the log omits it."""
+    _settings(tmp_path, json.dumps({name: LEAK}))
+    settings = _read(tmp_path)
+    lines = cli._log_args(settings)
+    assert f"Setting file arg: {logged} = ****" in lines
+    assert_secret_free(ValueError(*lines, *settings.log_warnings), [LEAK])
+
+
+def test_a_known_settings_name_past_the_limit_is_given_by_its_length(
+    tmp_path: Path,
+) -> None:
+    """A known name is quoted by the same rule as an unknown one."""
+    _settings(tmp_path, '{"rpcwhitelistdefault":true}')
+    lines = cli._log_args(_read(tmp_path))
+    assert "Setting file arg: <19 characters> = true" in lines
 
 
 def test_the_help_names_settings_as_core_does() -> None:
