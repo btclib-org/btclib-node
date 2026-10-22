@@ -85,7 +85,6 @@ from btclib.p2p.limits import (
 from btclib.p2p.negotiation import FeeFilter, GetAddr, WtxidRelay
 
 from btclib_node import clock
-from btclib_node.chains import SigNet
 from btclib_node.chainstate.block_index import (
     BlockStatus,
     block_time,
@@ -153,7 +152,7 @@ from btclib_node.p2p.protocol_version import (
 )
 from btclib_node.p2p.raw_block import RawBlock, assert_well_formed, strip_witnesses
 from btclib_node.p2p.tx_checks import TxCheck
-from btclib_node.signet import assert_valid_solution
+from btclib_node.stored_block import read_checked_block, read_checked_raw
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -1950,29 +1949,15 @@ def _compact_answer(
 def _read_stored(node: Node, item: Inventory) -> bytes | None:
     """Return the octets `node.block_db` holds for `item`, or `None`.
 
-    Checked as Core's `ProcessGetBlockData` reads them
+    Read as Core's `ProcessGetBlockData` reads them
     (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
     tag). A `MSG_WITNESS_BLOCK` is read with `ReadRawBlock`, which checks
     nothing of the block. Every other item is read with `ReadBlock(...,
-    inv.hash)`, which refuses, in this order, a header missing its proof
-    of work, on signet a block whose solution does not verify, and a
-    header that hashes to another hash than the one asked for
-    (`src/node/blockstorage.cpp`, same sha). Each refusal here is a
-    `BTClibValueError`. Off signet, only the eighty header octets are
-    parsed.
+    inv.hash)`, which `read_checked_raw` follows.
     """
-    raw = node.block_db.get_raw_block(item.hash)
-    if raw is None or item.type_code == InventoryType.MSG_WITNESS_BLOCK:
-        return raw
-    # a stream, so that the octets past the header are left unread
-    header = BlockHeader.parse(BytesIO(raw), check_validity=False)
-    header.assert_valid_pow(node.chain.pow_limit_bits)
-    if isinstance(node.chain, SigNet):
-        assert_valid_solution(Block.parse(raw, check_validity=False), node.chain)
-    if header.hash != item.hash:
-        err_msg = f"stored block hashes to {header.hash.hex()}, not {item.hash.hex()}"
-        raise BTClibValueError(err_msg)
-    return raw
+    if item.type_code == InventoryType.MSG_WITNESS_BLOCK:
+        return node.block_db.get_raw_block(item.hash)
+    return read_checked_raw(node, item.hash)
 
 
 def _stored_answer(
@@ -2135,10 +2120,7 @@ def _serve_getdata_block(node: Node, conn: Connection, item: Inventory) -> None:
     except BTClibValueError as e:
         # Core logs a block it cannot read and drops the peer
         # (`ProcessGetBlockData`, at bitcoin/bitcoin@9be056a8a7)
-        node.logger.error(  # noqa: TRY400
-            "Cannot load block from disk (%.200s), disconnecting peer=%d", e, conn.id
-        )
-        conn.stop()
+        _drop_for_unreadable_block(node, conn, e)
         return
     if answer is not None:
         conn.send(answer)
@@ -3101,6 +3083,11 @@ def getblocktxn(node: Node, msg: bytes, conn: Connection) -> None:
     full block, queued as a `MSG_WITNESS_BLOCK` item of this connection's
     own `getdata`, whose serving pays for the disk read the request cost.
 
+    A block within the depth is read with `ReadBlock(..., req.blockhash)`
+    (`src/net_processing.cpp`, same sha), which `read_checked_block`
+    follows. Core asserts that the read succeeds and aborts; a refusal
+    here is logged and drops the peer, as it does for a `getdata`.
+
     An empty `indexes` is dropped, undiscouraged, ahead of any lookup:
     Core commit 28641fd195db2a175fd43fee2e32758aef9816a6 ("p2p: reject
     empty getblocktxn requests"), on master and not yet in a release,
@@ -3137,10 +3124,25 @@ def getblocktxn(node: Node, msg: bytes, conn: Connection) -> None:
         item = Inventory(InventoryType.MSG_WITNESS_BLOCK, request.block_hash)
         getdata(node, GetData([item]).serialize(), conn)
         return
-    block = node.block_db.get_block(request.block_hash)
-    if block is None:
-        return
-    _send_block_transactions(conn, request, block)
+    try:
+        block = read_checked_block(node, request.block_hash)
+    except BTClibValueError as e:
+        # Core asserts that `ReadBlock(..., req.blockhash)` succeeds and
+        # aborts; this node drops the peer, as `getdata` does
+        _drop_for_unreadable_block(node, conn, e)
+        block = None
+    if block is not None:
+        _send_block_transactions(conn, request, block)
+
+
+def _drop_for_unreadable_block(
+    node: Node, conn: Connection, error: BTClibValueError
+) -> None:
+    """Log a stored block `error` refused, and drop the peer that asked."""
+    node.logger.error(
+        "Cannot load block from disk (%.200s), disconnecting peer=%d", error, conn.id
+    )
+    conn.stop()
 
 
 def _send_block_transactions(

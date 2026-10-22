@@ -111,6 +111,7 @@ from btclib_node.rpc.signing import (
 from btclib_node.rpc.snapshot import dump_tx_out_set
 from btclib_node.rpc.solver import solver
 from btclib_node.rpc.utxo_set import scan_tx_out_set
+from btclib_node.stored_block import read_checked_block
 
 if TYPE_CHECKING:
     from collections.abc import Generator, Iterator
@@ -1015,7 +1016,18 @@ def get_block(
             RPCErrorCode.INVALID_ADDRESS_OR_KEY, "Block not found"
         ) from error
 
-    block = node.block_db.get_block(block_hash)
+    try:
+        # `GetRawBlockChecked` reads verbosity 0 with `ReadRawBlock`, which
+        # checks nothing of the block; `GetBlockChecked` reads the rest with
+        # `ReadBlock(block, index)`, which `read_checked_block` follows
+        # (`rpc/blockchain.cpp`, at bitcoin/bitcoin@9be056a8a7)
+        block = (
+            node.block_db.get_block(block_hash)
+            if verbosity <= 0
+            else read_checked_block(node, block_hash)
+        )
+    except BTClibValueError as error:
+        raise RpcError(RPCErrorCode.MISC_ERROR, "Block not found on disk") from error
     if block is None:
         # `CheckBlockDataAvailability`'s own two messages
         # (`rpc/blockchain.cpp`, same sha), matching `_find_transaction`
@@ -3357,6 +3369,15 @@ class _FoundTransaction(NamedTuple):
     position: int
 
 
+def _no_such_transaction_in_block() -> RpcError:
+    """Return the error for a transaction the named block does not yield."""
+    return RpcError(
+        RPCErrorCode.INVALID_ADDRESS_OR_KEY,
+        "No such transaction found in the provided block. Use "
+        "gettransaction for wallet transactions.",
+    )
+
+
 def _find_transaction(
     node: Node, txid: bytes, block_hash: bytes | None
 ) -> _FoundTransaction:
@@ -3379,7 +3400,13 @@ def _find_transaction(
         raise RpcError(
             RPCErrorCode.INVALID_ADDRESS_OR_KEY, "Block hash not found"
         ) from error
-    block = node.block_db.get_block(block_hash)
+    try:
+        block = read_checked_block(node, block_hash)
+    except BTClibValueError as error:
+        # Core's `GetTransaction` reads with `ReadBlock(block, index)`, and
+        # a block it cannot read finds no transaction
+        # (`node/transaction.cpp`, at bitcoin/bitcoin@9be056a8a7)
+        raise _no_such_transaction_in_block() from error
     if block is None:
         # Core's own `CheckBlockDataAvailability` (`rpc/blockchain.cpp`,
         # at bitcoin/bitcoin@ca7162cde5): "Block not available (pruned
@@ -3396,11 +3423,7 @@ def _find_transaction(
         )
     position = next((i for i, t in enumerate(block.transactions) if t.id == txid), None)
     if position is None:
-        raise RpcError(
-            RPCErrorCode.INVALID_ADDRESS_OR_KEY,
-            "No such transaction found in the provided block. Use "
-            "gettransaction for wallet transactions.",
-        )
+        raise _no_such_transaction_in_block()
     return _FoundTransaction(
         block.transactions[position], block_info.index, block, position
     )

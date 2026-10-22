@@ -4670,7 +4670,7 @@ def test_getblocktxn_is_answered_with_the_transactions_asked_for() -> None:
     block = a_block_with_transactions(3)
     node = a_data_node(block_index=block_index, block_db=a_block_store(block))
     peer = a_peer()
-    wanted = block_index.active_chain[length - 1 - MAX_BLOCKTXN_DEPTH]
+    wanted = held_at(block_index, length - 1 - MAX_BLOCKTXN_DEPTH, block)
     getblocktxn(node, GetBlockTxn(wanted, [1, 3]).serialize(), peer)
     (answer,) = peer.sent
     assert answer == BlockTxn(wanted, [block.transactions[1], block.transactions[3]])
@@ -4790,7 +4790,7 @@ def test_getblocktxn_past_the_last_transaction_is_misbehaviour() -> None:
     block = a_block_with_transactions(1)
     node = a_data_node(block_index=block_index, block_db=a_block_store(block))
     peer = a_peer()
-    request = GetBlockTxn(block_index.active_chain[-1], [2])
+    request = GetBlockTxn(held_at(block_index, 2, block), [2])
     with pytest.raises(MisbehavingError, match="out-of-bounds"):
         getblocktxn(node, request.serialize(), peer)
     assert not peer.sent
@@ -4821,13 +4821,73 @@ def test_getblocktxn_for_a_block_not_held_is_silent(
     `pruned-meanwhile` is a block pruned between `has_block` and the read.
     """
     block_index = a_tall_block_index(3)
-    block_db = SimpleNamespace(get_block=lambda h: None, has_block=lambda h: has_block)
+    block_db = SimpleNamespace(
+        get_raw_block=lambda h: None, has_block=lambda h: has_block
+    )
     node = a_data_node(block_index=block_index, block_db=block_db)
     peer = a_peer()
     wanted = block_index.active_chain[-1] if indexed else b"\xee" * 32
     getblocktxn(node, GetBlockTxn(wanted, [0]).serialize(), peer)
     assert not peer.sent
     assert not peer.stopped
+
+
+def a_refused_getblocktxn(node: Any, wanted: bytes) -> list[str]:
+    """Send `getblocktxn` for `wanted`, check it is refused; return the errors.
+
+    Nothing sent and the peer dropped, as `getdata` refuses a block it
+    cannot read.
+    """
+    errors, error = log_recorder()
+    node.logger.error = error
+    peer = a_peer()
+    getblocktxn(node, GetBlockTxn(wanted, [0]).serialize(), peer)
+    assert not peer.sent
+    assert peer.stopped == [True]
+    return errors
+
+
+def test_getblocktxn_refuses_a_record_holding_another_block() -> None:
+    """ISS 2002: Core reads the block with `ReadBlock(..., req.blockhash)`.
+
+    The block asked for is within `MAX_BLOCKTXN_DEPTH` of the tip, and the
+    store holds another one under its hash.
+    """
+    length = MAX_BLOCKTXN_DEPTH + 10
+    block_index = a_recent_block_index(length)
+    asked, stored = a_block(), a_block_with_transactions(2)
+    assert asked.header.hash != stored.header.hash
+    wanted = held_at(block_index, length - 1 - MAX_BLOCKTXN_DEPTH, asked)
+    node = a_data_node(block_index=block_index, block_db=a_block_store(stored))
+    errors = a_refused_getblocktxn(node, wanted)
+    refusal = f"stored block hashes to {stored.header.hash.hex()}, not {wanted.hex()}"
+    assert errors == [f"Cannot load block from disk ({refusal}), disconnecting peer=0"]
+
+
+def test_getblocktxn_refuses_a_record_whose_header_misses_its_work() -> None:
+    """ISS 2002: `ReadBlock` refuses a header missing its proof of work."""
+    raw = a_record_missing_its_work()
+    wanted = hash256(raw[:80])[::-1]
+    node = a_data_node(
+        block_index=a_tall_block_index(0, wanted),
+        block_db=SimpleNamespace(get_raw_block=lambda h: raw, has_block=lambda h: True),
+    )
+    (error,) = a_refused_getblocktxn(node, wanted)
+    assert f"invalid proof-of-work: {wanted.hex()} > " in error
+
+
+def test_getblocktxn_refuses_a_signet_record_with_a_forged_solution() -> None:
+    """ISS 2002: on signet `ReadBlock` also checks the block's solution."""
+    forged = _SIGNET_BLOCKS[0].replace("2591c23e7e01", "2691c23e7e01")
+    raw = bytes.fromhex(forged)
+    wanted = hash256(raw[:80])[::-1]
+    node = a_data_node(
+        block_index=a_tall_block_index(0, wanted),
+        block_db=SimpleNamespace(get_raw_block=lambda h: raw, has_block=lambda h: True),
+    )
+    node.chain = node.config.chain = SigNet()
+    (error,) = a_refused_getblocktxn(node, wanted)
+    assert "bad-signet-blksig" in error
 
 
 @pytest.mark.parametrize("held", [False, True], ids=["not-held", "held"])
