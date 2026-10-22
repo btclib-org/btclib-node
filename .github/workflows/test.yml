@@ -246,7 +246,7 @@ jobs:
           # on the gate, which runs on every pull request
           persist-credentials: false
       - name: Setup uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           # the cache holds what uv.lock resolves, which is wheels and
           # no build: what this job spends its time on is the suite
@@ -290,7 +290,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Setup uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           # the cache holds what uv.lock resolves: btclib_secp256k1 and
           # cffi both publish a wheel for this interpreter on this
@@ -330,7 +330,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Setup uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           enable-cache: true
           python-version: "3.14t"
@@ -414,7 +414,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Setup uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           enable-cache: true
       # the files the checks below read, from the signed build
