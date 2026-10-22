@@ -1016,18 +1016,11 @@ def get_block(
             RPCErrorCode.INVALID_ADDRESS_OR_KEY, "Block not found"
         ) from error
 
-    try:
-        # `GetRawBlockChecked` reads verbosity 0 with `ReadRawBlock`, which
-        # checks nothing of the block; `GetBlockChecked` reads the rest with
-        # `ReadBlock(block, index)`, which `read_checked_block` follows
-        # (`rpc/blockchain.cpp`, at bitcoin/bitcoin@9be056a8a7)
-        block = (
-            node.block_db.get_block(block_hash)
-            if verbosity <= 0
-            else read_checked_block(node, block_hash)
-        )
-    except BTClibValueError as error:
-        raise RpcError(RPCErrorCode.MISC_ERROR, "Block not found on disk") from error
+    # Core reads the block with `GetRawBlockChecked`, which calls
+    # `ReadRawBlock` and checks nothing of the block, at every verbosity
+    # (`rpc/blockchain.cpp:859`, at bitcoin/bitcoin@9be056a8a7, since
+    # bitcoin/bitcoin@95ce0783a6)
+    block = node.block_db.get_block(block_hash)
     if block is None:
         # `CheckBlockDataAvailability`'s own two messages
         # (`rpc/blockchain.cpp`, same sha), matching `_find_transaction`

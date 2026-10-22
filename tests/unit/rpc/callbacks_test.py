@@ -6542,37 +6542,27 @@ def a_node_holding_another_block_under(
     return node, asked, other
 
 
-@pytest.mark.parametrize("verbosity", [1, 2, 3])
-def test_get_block_refuses_a_record_holding_another_block(
+@pytest.mark.parametrize("verbosity", [0, 1, 2, 3])
+def test_get_block_answers_from_the_record_as_stored(
     regtest_node: Callable[..., Node],
     monkeypatch: pytest.MonkeyPatch,
     verbosity: int,
 ) -> None:
-    """ISS 2002: Core's `GetBlockChecked` reads with `ReadBlock(block, index)`.
+    """ISS 2002: Core's `getblock` reads with `ReadRawBlock` at every verbosity.
 
-    That passes the index's hash, and a block that does not hash to it
-    is "Block not found on disk".
-    """
-    node, asked, _ = a_node_holding_another_block_under(regtest_node, monkeypatch)
-
-    with pytest.raises(RpcError) as raised:
-        get_block(node, _CONN, [asked.header.hash.hex(), verbosity])
-    assert raised.value.code == RPCErrorCode.MISC_ERROR
-    assert raised.value.message == "Block not found on disk"
-
-
-def test_get_block_verbosity_0_answers_the_record_as_stored(
-    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """ISS 2002: Core's `GetRawBlockChecked` reads with `ReadRawBlock`.
-
-    Which checks nothing of the block, so the record goes out as it is.
+    Which checks nothing of the block, so a record holding another block
+    is answered from, not refused.
     """
     node, asked, other = a_node_holding_another_block_under(regtest_node, monkeypatch)
 
-    answer = get_block(node, _CONN, [asked.header.hash.hex(), 0])
+    answer = get_block(node, _CONN, [asked.header.hash.hex(), verbosity])
 
-    assert answer == other.serialize(check_validity=False).hex()
+    if verbosity == 0:
+        assert answer == other.serialize(check_validity=False).hex()
+        return
+    assert isinstance(answer, dict)
+    assert answer["size"] == other.size
+    assert len(answer["tx"]) == len(other.transactions)
 
 
 def test_getrawtransaction_refuses_a_record_holding_another_block(

@@ -4832,6 +4832,15 @@ def test_getblocktxn_for_a_block_not_held_is_silent(
     assert not peer.stopped
 
 
+def a_raw_store(raw: bytes) -> Any:
+    """Build a `block_db` holding the octets `raw` under every hash."""
+    return SimpleNamespace(
+        get_block=lambda h: Block.parse(raw, check_validity=False),
+        get_raw_block=lambda h: raw,
+        has_block=lambda h: True,
+    )
+
+
 def a_refused_getblocktxn(node: Any, wanted: bytes) -> list[str]:
     """Send `getblocktxn` for `wanted`, check it is refused; return the errors.
 
@@ -4870,7 +4879,7 @@ def test_getblocktxn_refuses_a_record_whose_header_misses_its_work() -> None:
     wanted = hash256(raw[:80])[::-1]
     node = a_data_node(
         block_index=a_tall_block_index(0, wanted),
-        block_db=SimpleNamespace(get_raw_block=lambda h: raw, has_block=lambda h: True),
+        block_db=a_raw_store(raw),
     )
     (error,) = a_refused_getblocktxn(node, wanted)
     assert f"invalid proof-of-work: {wanted.hex()} > " in error
@@ -4883,7 +4892,7 @@ def test_getblocktxn_refuses_a_signet_record_with_a_forged_solution() -> None:
     wanted = hash256(raw[:80])[::-1]
     node = a_data_node(
         block_index=a_tall_block_index(0, wanted),
-        block_db=SimpleNamespace(get_raw_block=lambda h: raw, has_block=lambda h: True),
+        block_db=a_raw_store(raw),
     )
     node.chain = node.config.chain = SigNet()
     (error,) = a_refused_getblocktxn(node, wanted)

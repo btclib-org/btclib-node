@@ -3130,7 +3130,7 @@ def getblocktxn(node: Node, msg: bytes, conn: Connection) -> None:
         # Core asserts that `ReadBlock(..., req.blockhash)` succeeds and
         # aborts; this node drops the peer, as `getdata` does
         _drop_for_unreadable_block(node, conn, e)
-        block = None
+        return
     if block is not None:
         _send_block_transactions(conn, request, block)
 
