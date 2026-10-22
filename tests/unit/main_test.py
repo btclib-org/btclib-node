@@ -13,6 +13,7 @@ import sys
 import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from itertools import count
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
@@ -2033,20 +2034,31 @@ def two_held_version_3_parents(node: Node) -> tuple[Tx, Tx]:
     """Hold two version 3 spends and return them, smallest txid first.
 
     `Txid` compares its bytes as stored, the reverse of `Tx.id`'s displayed
-    order. The second one's fee is nudged until the two orders disagree, or
-    a sort on the displayed hex would pass.
+    order. Both fees are nudged until the two orders disagree, or a sort on
+    the displayed hex would pass.
+
+    The search has no bound: one txid kept fixed can have both end bytes
+    near 0x00 or near 0xff, where almost every partner sorts the same in
+    both orders. Nudging both makes a pair disagree about half the time.
     """
 
     def with_fee(spend: Tx, nudge: int) -> Tx:
         output = spend.vout[0]
         return replace(spend, vout=[TxOut(output.value - nudge, output.script_pub_key)])
 
-    one, other = (replace(spend, version=3) for spend in funded_spends(node, 2))
-    other = next(
-        candidate
-        for nudge in range(64)
-        if (one.id < (candidate := with_fee(other, nudge)).id)
-        != (one.id[::-1] < candidate.id[::-1])
+    def disagree(a: Tx, b: Tx) -> bool:
+        return (a.id < b.id) != (a.id[::-1] < b.id[::-1])
+
+    base_one, base_other = (
+        replace(spend, version=3) for spend in funded_spends(node, 2)
+    )
+    one, other = next(
+        (a, b)
+        for total in count()
+        for nudge in range(total + 1)
+        if disagree(
+            a := with_fee(base_one, nudge), b := with_fee(base_other, total - nudge)
+        )
     )
     first, second = sorted([one, other], key=lambda spend: spend.id[::-1])
     assert first.id > second.id

@@ -10,6 +10,7 @@ bitcoind v31.1's.
 
 import secrets
 from dataclasses import replace
+from itertools import count
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -256,13 +257,14 @@ def test_what_a_relayed_replacement_replaced_is_kept_by_internal_txid(
     mempool: Mempool,
 ) -> None:
     """Core's `setEntries` order, whatever order the wtxids come in."""
-    first = held(mempool, [a_coin()], 1_000)
-    # a second txid whose internal order is not its displayed one
-    second = next(
-        tx
-        for tx in (a_spend([a_coin()]) for _ in range(64))
-        if (tx.id < first.id) != (tx.id[::-1] < first.id[::-1])
+    # two txids that sort one way as stored and the other way as displayed;
+    # the pairs are not bounded, as `two_held_version_3_parents` says
+    first, second = next(
+        (a, b)
+        for a, b in ((a_spend([a_coin()]), a_spend([a_coin()])) for _ in count())
+        if (a.id < b.id) != (a.id[::-1] < b.id[::-1])
     )
+    assert mempool.add_tx(first, 1_000)
     assert mempool.add_tx(second, 1_000)
     expected = sorted([first, second], key=lambda tx: tx.id[::-1])
     node = cast("Node", SimpleNamespace(mempool=mempool))
