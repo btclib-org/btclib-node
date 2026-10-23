@@ -6,8 +6,9 @@ changing repository settings, and [REVIEWING.md](./REVIEWING.md) before
 reviewing a pull request. Read [ARCHITECTURE.md](./ARCHITECTURE.md)
 before changing the P2P or RPC design.
 
-Use a separate worktree for each concurrent task, and keep the primary
-checkout clean and on `main`; see `CONTRIBUTING.md` for setup and cleanup.
+Keep the primary checkout clean and on `main`; use a separate worktree
+for each task, following the setup and cleanup commands in
+`CONTRIBUTING.md`.
 
 Choose the least capable model that can reliably complete the task: use
 a fast model for straightforward execution, a reasoning-focused model
