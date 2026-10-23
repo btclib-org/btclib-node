@@ -449,8 +449,15 @@ profile, and is run the same way with its own name in place of
 `interpreter`: `headers_sync.toml` mutates `p2p/headers_sync.py`.
 
 `test-command` in `.github/mutation/interpreter.toml` runs with `-n0`,
-overriding `addopts`' own `-n auto` so the test process reads the
-mutated file.
+overriding `addopts`' own `-n auto`.
+
+**A mutation offered as proof that a test can fail must reach the process
+that runs the test.** `addopts` carries `-n auto`, so the test runs in an
+xdist worker. A mutation applied in the controlling process (a
+monkeypatch before `pytest.main`) never reaches a worker, which imports
+the module from disk, and the test passes. Edit the file and revert it,
+proving the revert with `git diff --stat`. cosmic-ray edits the file, so
+its mutants reach a worker either way.
 
 ### Building the distribution and checking it
 
@@ -630,3 +637,20 @@ nothing an honest peer's messages achieve. `sendcmpct`'s announce octet
 is the case in point: master reads it as a byte and calls `Misbehaving`
 on a value above one, where the release reads a bare bool and refuses
 nothing.
+
+### Ignored state that a second run or a second worktree shares
+
+- **A second `pytest` in the same rootdir, even `--help`, erases a
+  running suite's `.coverage*`** (btclib-org/btclib-node#191). Give each
+  run its own data with `COVERAGE_FILE=$(mktemp -d)/.coverage`.
+- **A `.venv` reused from another worktree imports that worktree's
+  `src/`.** `btclib_node.pth` in `site-packages` is an absolute path
+  written by `uv sync`. Read `btclib_node.__file__` with the interpreter,
+  directory and environment of the test run, before trusting its result.
+- **`.hypothesis/` is per worktree and replays recorded failures.**
+  The `default` and `thorough` profiles in `tests/conftest.py` name no
+  `database`, so every failing example is recorded under
+  `.hypothesis/examples` and replayed on later runs in that worktree. A
+  red property test that does not reproduce elsewhere is not a flake for
+  that reason alone; use a fresh worktree
+  (btclib-org/btclib-node#835).

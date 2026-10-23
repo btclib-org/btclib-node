@@ -526,5 +526,5 @@ because that document, and not this one, is where the rule lives.
   run that hangs until something outside it gives up.
 - **Does a mutation offered as proof a test can fail reach the process
   the test actually runs in?** `addopts` carries `-n auto`, so a test
-  runs in an xdist worker subprocess; verify that a mutation reaches the
-  process that executes the test.
+  runs in an xdist worker subprocess; CONTRIBUTING.md's *Mutation
+  testing* says which form of mutation reaches it.
