@@ -3104,8 +3104,7 @@ def getblocktxn(node: Node, msg: bytes, conn: Connection) -> None:
     full block, queued as a `MSG_WITNESS_BLOCK` item of this connection's
     own `getdata`, whose serving pays for the disk read the request cost.
     A block at or below the tip is kept once read, until later reads drop
-    it, and one above the tip is read for every request
-    (`_blocktxn_block`).
+    it, and one read above the tip is not kept (`_blocktxn_block`).
 
     An empty `indexes` is dropped, undiscouraged, ahead of any lookup:
     Core commit 28641fd195db2a175fd43fee2e32758aef9816a6 ("p2p: reject
@@ -3155,16 +3154,18 @@ def _blocktxn_block(node: Node, block_hash: bytes, height: int) -> Block | None:
     Core reads the block from disk for every `getblocktxn` (`ReadBlock`,
     `net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
     Here that read parses the whole block on the node thread. A request
-    is a few dozen bytes and its `blocktxn` can be as small, so
+    is a few dozen bytes and its `blocktxn` can be about 100, so
     `conn.pause_send` does not pace a peer repeating it. The block read
     is kept in `node.blocktxn_blocks` instead, and the answer is still
     Core's.
 
     A block above the tip is stored but not connected, and the download
-    window, or a reindex, holds many of them, so it is read for every
-    request, as in Core. Each block kept drops those deeper than
-    `MAX_BLOCKTXN_DEPTH`, then the lowest past `_BLOCKTXN_BLOCKS_KEPT`,
-    which a stale block within the depth can reach.
+    window, or a reindex, holds many of them, so a block read above the
+    tip is not kept. A block kept earlier is still served from the
+    cache after the tip falls back below it. Each block kept drops those
+    deeper than `MAX_BLOCKTXN_DEPTH`, then the lowest past
+    `_BLOCKTXN_BLOCKS_KEPT`, which a stale block within the depth can
+    reach.
     btclib-org/btclib-node#1954
     """
     kept = node.blocktxn_blocks.get(block_hash)

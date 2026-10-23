@@ -4727,7 +4727,7 @@ def test_a_block_kept_for_getblocktxn_goes_once_past_the_depth() -> None:
 
 
 def test_a_getblocktxn_above_the_tip_is_answered_and_not_kept() -> None:
-    """ISS 1954: a block stored but not connected is read for every request.
+    """ISS 1954: a block read above the tip is answered and not kept.
 
     Every stored block above the tip can be asked for: the download
     window's, and while `NodeStatus.Reindexing` holds, the stored chain
