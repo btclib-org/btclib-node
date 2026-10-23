@@ -22,8 +22,8 @@ from btclib.p2p.bip324 import (
     Cipher,
 )
 from btclib.p2p.message import Message
-from btclib_ecc.curves import secp256k1
-from btclib_ecc.ecc import ellswift
+from ecc.curves import secp256k1
+from ecc.ecc import ellswift
 
 from btclib_node.chains import Main, RegTest
 from btclib_node.exceptions import RejectedMessageError
@@ -78,7 +78,7 @@ class Peer:
         )
         self.initiator = initiator
         self.prv_key = rng.randrange(1, secp256k1.n)
-        self.ell = ellswift.create_var(self.prv_key)
+        self.ell = ellswift.create(self.prv_key)
         self.cipher: Cipher
         self.sent_garbage = b""
         self.recv_garbage = b""

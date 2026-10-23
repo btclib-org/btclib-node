@@ -11,7 +11,7 @@ tag: `SignTransaction`, `ProduceSignature` with its `SignStep`,
 scripts a caller names, with no key origin, taproot spend data or MuSig2,
 so a taproot output is signed only where a key is its output key itself.
 
-Signatures are made and checked with `btclib_ecc`, the signature hashes are
+Signatures are made and checked with `ecc`, the signature hashes are
 `btclib.script.sig_hash`'s, a script is verified and evaluated by
 `btclib.script.engine` and a witness script that is a miniscript is satisfied by
 `btclib_wallet.descriptors.miniscript`. What is Core's here is the order
@@ -35,9 +35,9 @@ from btclib.script.engine.script import eval_script
 from btclib.script.script import serialize
 from btclib.script.witness import Witness
 from btclib.tx.tx_out import TxOut
-from btclib_ecc.curves import bytes_from_prv_key_int
-from btclib_ecc.ecc import dsa, ssa
 from btclib_wallet.descriptors.miniscript import SpendContext, from_script
+from ecc.curves import bytes_from_prv_key_int
+from ecc.ecc import dsa, ssa
 
 from btclib_node.interpreter import STANDARD_FLAGS
 from btclib_node.rpc.solver import solver

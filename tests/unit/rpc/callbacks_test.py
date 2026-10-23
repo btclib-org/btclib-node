@@ -34,7 +34,11 @@ from btclib.key import PrvKeyData
 from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.p2p.limits import PROTOCOL_VERSION
 from btclib.script import script, script_to_dict
-from btclib.script.script_pub_key import ScriptPubKey, p2ms_m_and_keys, type_and_payload
+from btclib.script.script_pub_key import (
+    ScriptPubKey,
+    p2ms_m_and_keys_var,
+    type_and_payload,
+)
 from btclib.script.witness import Witness
 from btclib.tx.limits import COINBASE_MATURITY
 from btclib.tx.out_point import OutPoint
@@ -1268,7 +1272,7 @@ def test_tx_out_set_info_answers_core_s_own_field_names() -> None:
     """`gettxoutsetinfo` answers height, bestblock, txouts, bogosize, amount.
 
     `hash_type: "muhash"` also carries `muhash`, the digest reversed to
-    match `uint256::GetHex()` rather than `CoinStats.digest`'s own
+    match `uint256::GetHex()` rather than `CoinStats.digest_var`'s own
     byte order.
     """
     coin_stats = CoinStats()
@@ -1282,7 +1286,7 @@ def test_tx_out_set_info_answers_core_s_own_field_names() -> None:
     assert result["txouts"] == 1
     assert result["bogosize"] == coin_stats.bogo_size
     assert result["total_amount"].text == "50.00000000"
-    assert result["muhash"] == coin_stats.digest[::-1]
+    assert result["muhash"] == coin_stats.digest_var[::-1]
 
 
 def test_tx_out_set_info_hash_type_none_omits_the_muhash_field() -> None:
@@ -1787,7 +1791,7 @@ def test_get_tx_out_answers_multi_desc_for_a_p2ms_coin(
     script_pub_key_dict = _stage_coin_and_get_tx_out(node, script_pub_key)
 
     assert script_pub_key_dict["type"] == "multisig"
-    threshold, keys = p2ms_m_and_keys(script_pub_key.script)
+    threshold, keys = p2ms_m_and_keys_var(script_pub_key.script)
     key_list = ",".join(key.hex() for key in keys)
     assert script_pub_key_dict["desc"] == add_checksum(f"multi({threshold},{key_list})")
 
