@@ -429,7 +429,7 @@ dev = [
 # the oldest uv that may read uv.lock, at most the uv a Dependabot run's
 # log names -- section 1 of the organization standard has the argument,
 # section 15 the commands that measure it
-required-version = ">=0.12.18"
+required-version = ">=0.13.4"
 
 [build-system]
 # What declares the contents of a distribution here is a set of glob
