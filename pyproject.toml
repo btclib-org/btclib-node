@@ -625,11 +625,11 @@ source-exclude = [
 # files git reads, and COPYRIGHT. Patterns are gitignore's, so a
 # directory covers what is under it at any depth.
 #
-# CLAUDE.md travels with the archive under `*.md` and .claude/ does not,
-# where section 13 of btclib-org/.github puts the two in one class. The
-# split is the one .vscode/ sits on the far side of as well: root prose is
-# what a reader of the archive reads, and a workspace configures working
-# *in* the repository, which an unpacked archive is not.
+# Root prose, AGENTS.md included, travels with the archive under `*.md`,
+# and .claude/ does not. Section 13 of btclib-org/.github tracks .claude/
+# with the same argument as .vscode/, and the archive leaves out both:
+# root prose is what a reader of the archive reads, and a workspace
+# configures working *in* the repository, which an unpacked archive is not.
 #
 # .github/ is not here because check-sdist's default ignore list already
 # suppresses a report about it. That is not why the archive lacks it --

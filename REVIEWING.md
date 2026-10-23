@@ -8,7 +8,7 @@ review is not about.
 This is the reviewer's half of [CONTRIBUTING.md](./CONTRIBUTING.md),
 which is the author's. It does not restate the rules a review cites —
 most are in the organization's standard, the rest in that file, in
-REPOSITORY.md and in CLAUDE.md — and a finding names the line that
+REPOSITORY.md and in AGENTS.md — and a finding names the line that
 states them rather than a copy kept here.
 
 **This file is the same in every repository of the organization**, and
@@ -79,8 +79,7 @@ directions:
    child, the author answers it twice and resolves it once.
 1. **The tree at that sha**, checked out and gated. `gh pr checkout <N>`,
    and whatever this repository's `CONTRIBUTING.md` says builds its
-   environment; `CLAUDE.md` has where a checkout may be made and where it
-   may not.
+   environment; `CONTRIBUTING.md` has the worktree procedure.
 
 Read the whole diff before writing the first comment. A comment on line
 5 that line 60 answers costs the author a reply and the reviewer their
@@ -527,6 +526,5 @@ because that document, and not this one, is where the rule lives.
   run that hangs until something outside it gives up.
 - **Does a mutation offered as proof a test can fail reach the process
   the test actually runs in?** `addopts` carries `-n auto`, so a test
-  runs in an xdist worker subprocess, and CLAUDE.md's *Non-obvious facts*
-  names which form of mutation reaches it and which reads as a pass
-  while proving nothing.
+  runs in an xdist worker subprocess; CONTRIBUTING.md's *Mutation
+  testing* says which form of mutation reaches it.

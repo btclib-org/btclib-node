@@ -154,17 +154,27 @@ whose).
 
 CI is read once, and this is where: on the head that lands. `main` does
 not ask that head to be up to date with it, and [section 11][s-branch]
-says why. So a branch is rebased only where it conflicts with `main`, or
-where its checks ran on a `main` that has since been repaired, because
-re-running its checks would test the same merge commit. A rebase that
-moved nothing but the base leaves the ack standing; one that resolved a
-conflict does not, that resolution being a change no reviewer has seen.
+says why. So a branch is rebased only where it conflicts with `main`. A
+rebase that moved nothing but the base leaves the ack standing; one that
+resolved a conflict does not, that resolution being a change no reviewer
+has seen.
 
-When `main`'s CI is red after a merge, its repair lands before any other
-pull request, and no `--auto` below stays armed until then: what lands
-meanwhile is merged onto a tree known to be broken, and `main`'s next run
-cannot tell a new failure from the one already there. An armed pull
-request whose checks ran before the break merges on them all the same.
+When `main`'s CI is red after a merge, its repair takes priority over
+every other pull request, because until it lands `main`'s runs cannot
+tell a new failure from the one already there. A pull request armed with
+`--auto` (below) stays armed, and others keep landing meanwhile. Holding
+every landing for a repair costs more than the break it guards against,
+so the risk of landing on a red `main` is accepted
+(btclib-org/.github#1777).
+
+A pull request whose required check is red only because `main` was red
+is closed and reopened once the repair lands (`gh pr close <n>`, then
+`gh pr reopen <n>`). GitHub then runs its checks on a fresh merge with
+the repaired `main`, where a re-run would test the old merge commit. No
+push is made, so its approvals and its ack of record stand. `--auto`,
+where closing dropped it, is armed again once the checks are green. The
+reopen also runs the review bot again, and changes that review requests
+are answered like any other review's.
 
 Then squash, [the only method the rule accepts][s11].
 
@@ -236,6 +246,23 @@ settings and why they are what they are.
 [governance]: https://github.com/btclib-org/.github/blob/main/GOVERNANCE.md
 [roadmap]: https://github.com/btclib-org/.github/blob/main/ROADMAP.md
 [good-first]: https://github.com/search?q=org%3Abtclib-org+label%3A%22good+first+issue%22+is%3Aopen&type=issues
+
+## Worktrees
+
+Run `git fetch origin` in the primary checkout, then check that
+`git status --porcelain` is empty and `git branch --show-current` is
+`main`. Run `git pull --ff-only` only when both checks pass, then verify
+`git rev-parse HEAD origin/main` prints the same sha twice. Create a separate
+worktree for each task with
+`git worktree add <path> origin/main -b <branch>`. After committing,
+remove it with `git worktree remove <path>`. If initialized submodules
+make that fail,
+check for uncommitted, untracked, and ignored files in the worktree and
+its initialized submodules. Preserve anything needed before retrying with
+`git worktree remove --force <path>`; it can delete those files. Keep the
+primary checkout clean and on `main`; do not
+switch branches or stash there. Hooks can fix files in place, and the local
+`main` and `refs/stash` are shared by all worktrees.
 
 ## This repository in particular
 
@@ -422,10 +449,15 @@ profile, and is run the same way with its own name in place of
 `interpreter`: `headers_sync.toml` mutates `p2p/headers_sync.py`.
 
 `test-command` in `.github/mutation/interpreter.toml` runs with `-n0`,
-overriding `addopts`' own `-n auto` for the one process that reads the
-mutated file: the file-edit form is the one CLAUDE.md's *Non-obvious
-facts* names as reaching a worker, and cosmic-ray's own mutation is the
-same form, applied to the file rather than to a running process.
+overriding `addopts`' own `-n auto`.
+
+**A mutation offered as proof that a test can fail must reach the process
+that runs the test.** `addopts` carries `-n auto`, so the test runs in an
+xdist worker. A mutation applied in the controlling process (a
+monkeypatch before `pytest.main`) never reaches a worker, which imports
+the module from disk, and the test passes. Edit the file and revert it,
+proving the revert with `git diff --stat`. cosmic-ray edits the file, so
+its mutants reach a worker either way.
 
 ### Building the distribution and checking it
 
@@ -605,3 +637,20 @@ nothing an honest peer's messages achieve. `sendcmpct`'s announce octet
 is the case in point: master reads it as a byte and calls `Misbehaving`
 on a value above one, where the release reads a bare bool and refuses
 nothing.
+
+### Ignored state that a second run or a second worktree shares
+
+- **A second `pytest` in the same rootdir, even `--help`, erases a
+  running suite's `.coverage*`** (btclib-org/btclib-node#191). Give each
+  run its own data with `COVERAGE_FILE=$(mktemp -d)/.coverage`.
+- **A `.venv` reused from another worktree imports that worktree's
+  `src/`.** `btclib_node.pth` in `site-packages` is an absolute path
+  written by `uv sync`. Read `btclib_node.__file__` with the interpreter,
+  directory and environment of the test run, before trusting its result.
+- **`.hypothesis/` is per worktree and replays recorded failures.**
+  The `default` and `thorough` profiles in `tests/conftest.py` name no
+  `database`, so every failing example is recorded under
+  `.hypothesis/examples` and replayed on later runs in that worktree. A
+  red property test that does not reproduce elsewhere is not a flake for
+  that reason alone; use a fresh worktree
+  (btclib-org/btclib-node#835).
