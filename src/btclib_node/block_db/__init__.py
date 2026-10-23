@@ -287,20 +287,8 @@ class BlockDB:
         data_dir: Path,
         logger: Logger,
         blocks_dir: Path | None = None,
-        *,
-        wipe_undo: bool = False,
     ) -> None:
         """Open the store under `blocks_dir` or `data_dir`, and load its index.
-
-        `wipe_undo` deletes every reverse patch before the index loads,
-        for `-reindex-chainstate` (`Chainstate`'s module docstring), which
-        writes each one again as it connects its block. `add_rev_block`
-        skips a block that already has a patch, so without the wipe a
-        corrupt patch would survive the rebuild. `init_from_db`
-        then counts no patch in any `.rev` file, and `_sweep_empty_files`
-        unlinks every one but the current file's. Core keeps its undo
-        data; SECURITY.md's *Where this node departs from Bitcoin Core*
-        records the departure (btclib-org/btclib-node#1415).
 
         `blocks_dir` is `Config`'s own field of the same name -- already
         absolute and chain-suffixed there, `None` unless a caller named
@@ -343,9 +331,29 @@ class BlockDB:
         self.open_rev_file: BinaryIO | None = None
         self.file_index = 0
 
-        if wipe_undo:
-            self.db.delete_prefix(b"r")
         self.init_from_db()
+
+    def wipe_undo(self) -> None:
+        """Delete every reverse patch, for `-reindex-chainstate`.
+
+        The option is argued in `Chainstate`'s module docstring, and writes
+        each patch again as it connects its block. `add_rev_block` skips a
+        block that already has a patch, so without the wipe a corrupt
+        patch would survive the rebuild. No patch is then counted in any
+        `.rev` file, and `_sweep_empty_files` unlinks every one but the
+        current file's. Core keeps its undo data; SECURITY.md's *Where
+        this node departs from Bitcoin Core* records the departure
+        (btclib-org/btclib-node#1415).
+
+        A method and not an option of the constructor, so that the caller
+        reads `pruned_up_to` first: a wipe is not undone by a refusal that
+        follows it.
+        """
+        with self._lock:
+            self.db.delete_prefix(b"r")
+            self.rev_patches.clear()
+            self._count_live()
+            self._sweep_empty_files()
 
     def init_from_db(self) -> None:
         """Rebuild the in-memory index from what the store already holds."""
@@ -362,12 +370,14 @@ class BlockDB:
             elif key == b"p":
                 pruned = var_int.parse(value, max_size=_LOCAL_BOOKKEEPING_MAX)
                 self.pruned_up_to = pruned - 1
-        for location in self.blocks.values():
-            self.live[location.filename] = self.live.get(location.filename, 0) + 1
-        for location in self.rev_patches.values():
-            self.live[location.filename] = self.live.get(location.filename, 0) + 1
+        self._count_live()
         self._sweep_empty_files()
         self.logger.info("Finished Block database initialization")
+
+    def _count_live(self) -> None:
+        self.live = {}
+        for location in (*self.blocks.values(), *self.rev_patches.values()):
+            self.live[location.filename] = self.live.get(location.filename, 0) + 1
 
     def _sweep_empty_files(self) -> None:
         # a stop inside `_release`, after the last `b` or `r` key of a

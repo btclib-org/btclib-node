@@ -10,7 +10,8 @@ with the same UTXO set, its commitment and its undo data, the filters it
 never wiped, and a stop part-way resumes on a plain start. That start,
 like any with stored blocks to connect, is `NodeStatus.Reindexing` until
 they are, and holds Core's `LoadingBlocks()` gates meanwhile. Under
-`-prune` the option is refused, as Core refuses it.
+`-prune` the option is refused, as Core refuses it. A start without
+`-prune` on a pruned directory is refused before either wipe.
 """
 
 import math
@@ -39,7 +40,12 @@ from btclib_node.constants import NodeStatus
 from btclib_node.db import KeyValueStore
 from btclib_node.exceptions import MisbehavingError
 from btclib_node.log import Logger
-from btclib_node.main import activate_best_chain, update_chain, update_ibd_status
+from btclib_node.main import (
+    activate_best_chain,
+    prune_up_to_height,
+    update_chain,
+    update_ibd_status,
+)
 from btclib_node.p2p.callbacks import block as block_callback
 from btclib_node.p2p.callbacks import blocktxn, cmpctblock, getheaders, headers, inv
 from btclib_node.p2p.compact_block import compact_block
@@ -77,7 +83,11 @@ _PRUNE_REFUSAL = (
 
 @contextmanager
 def _node(
-    tmp_path: Path, *, reindex_chainstate: bool = False, persist_mempool: bool = True
+    tmp_path: Path,
+    *,
+    reindex_chainstate: bool = False,
+    persist_mempool: bool = True,
+    pruned: bool = False,
 ) -> Iterator[Node]:
     """Load a regtest node on `tmp_path`, unstarted, and close it after."""
     node = Node(
@@ -88,6 +98,7 @@ def _node(
             allow_rpc=False,
             reindex_chainstate=reindex_chainstate,
             persist_mempool=persist_mempool,
+            pruned=pruned,
         )
     )
     node.load()
@@ -172,6 +183,7 @@ def test_rebuilds_the_same_tip_utxo_set_and_undo_and_keeps_the_filters(
             for block_hash in filters
         }
         assert node.block_db.rev_patches == {}
+        assert not [n for n in node.block_db.live if n.endswith(".rev")]
         activate_best_chain(node)
         assert _status(node) == NodeStatus.Starting
         assert _state(node) == before
@@ -486,6 +498,46 @@ def test_delete_prefix_removes_that_prefix_and_no_other(
         assert sorted(key for key, _ in store) == sorted(kept)
     finally:
         store.close()
+
+
+def test_an_unpruned_reindex_of_a_pruned_directory_is_refused_before_it_wipes(
+    tmp_path: Path,
+) -> None:
+    """ISS 1916: the refusal comes before `-reindex-chainstate`'s wipes.
+
+    Core refuses at `src/node/chainstate.cpp:57`, before `InitCoinsDB`
+    wipes. Here the chainstate and the undo data of the blocks pruning
+    kept are what a wipe would destroy.
+    """
+    chain = generate_random_chain(5, RegTest().genesis.hash)
+    with _node(tmp_path) as node:
+        _store(node, chain, chain)
+        activate_best_chain(node)
+        prune_up_to_height(node, 2)
+        before = _state(node)
+    # the patches of heights 3 to 5, which a wipe would delete
+    assert len(before.rev_patches) == 3
+
+    refused = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path,
+            allow_p2p=False,
+            allow_rpc=False,
+            reindex_chainstate=True,
+        )
+    )
+    try:
+        with pytest.raises(ValueError, match="rebuild the database using -reindex"):
+            refused.load()
+    finally:
+        refused._opened.close()
+        refused.rpc_manager.loop.close()
+        refused.logger.close()
+
+    with _node(tmp_path, pruned=True) as node:
+        assert node.block_db.pruned_up_to == 2
+        assert _state(node) == before
 
 
 def test_prune_refuses_the_option(tmp_path: Path) -> None:

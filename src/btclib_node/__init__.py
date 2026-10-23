@@ -499,7 +499,7 @@ class Node(threading.Thread):
         self._mempool_load: Iterator[None] | None = None
 
     def load(self) -> None:
-        """Open the address table, the ban list, the chainstate and the blocks.
+        """Open the address table, the ban list, the blocks and the chainstate.
 
         Core's `AppInitMain` loads `peers.dat` and `banlist.json` at step
         6 and the chainstate and block index at step 7 (`src/init.cpp`, at
@@ -541,6 +541,21 @@ class Node(threading.Thread):
         # Core's `Shutdown` writes it even where a later step fails
         self._opened.callback(self.fee_estimator.flush)
         warmup("Loading block index…")
+        self.block_db = BlockDB(self.data_dir, self.logger, self.config.blocks_dir)
+        self._opened.callback(self.block_db.close)
+        # Core's `CompleteChainstateInitialization` refuses a start without
+        # `-prune` on blocks it has pruned (`src/node/chainstate.cpp:57`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), in these words,
+        # before `InitCoinsDB` wipes for `-reindex-chainstate` (`:90-93`):
+        # so here before either wipe below. Core names `-reindex`, which
+        # this tree does not offer yet (btclib-org/btclib-node#1415 adds
+        # it), so nothing here can rebuild the database.
+        if self.block_db.pruned_up_to >= 0 and not self.config.pruned:
+            msg = (
+                "You need to rebuild the database using -reindex to go back "
+                "to unpruned mode.  This will redownload the entire blockchain"
+            )
+            raise ValueError(msg)
         # `-reindex-chainstate` wipes the chainstate first, then the undo
         # data: a stop between the two keeps the old patches, which a
         # plain start reuses, until a start with the option wipes them
@@ -549,10 +564,8 @@ class Node(threading.Thread):
             self.data_dir, self.chain, self.logger, wipe=reindex
         )
         self._opened.callback(self.chainstate.close)
-        self.block_db = BlockDB(
-            self.data_dir, self.logger, self.config.blocks_dir, wipe_undo=reindex
-        )
-        self._opened.callback(self.block_db.close)
+        if reindex:
+            self.block_db.wipe_undo()
         # Core holds `LoadingBlocks()` on every start while `ImportBlocks`
         # connects what is stored (`ImportingNow` at
         # `src/node/blockstorage.cpp:1263`, `ActivateBestChains` at
