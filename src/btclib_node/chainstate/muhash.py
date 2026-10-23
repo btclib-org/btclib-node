@@ -136,7 +136,7 @@ class CoinStats(_BtclibCoinStats):
     """`btclib.coinstats.CoinStats`, plus this store's own on-disk shape.
 
     The accumulator and the three counters beside it, `insert`,
-    `remove` and `digest` included, are all `btclib.coinstats.CoinStats`'s
+    `remove` and `digest_var` included, are all `btclib.coinstats.CoinStats`'s
     own; the module docstring above is where the seam between what
     lives there and what lives here is argued. `serialize` and
     `deserialize` below are this store's own decision: the muhash

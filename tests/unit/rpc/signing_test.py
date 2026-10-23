@@ -28,7 +28,7 @@ from btclib.script.engine import verify_input
 from btclib.script.script_pub_key import ScriptPubKey
 from btclib.script.witness import Witness
 from btclib.tx import OutPoint, Tx, TxIn, TxOut
-from btclib_ecc.curves import bytes_from_prv_key_int, secp256k1
+from ecc.curves import bytes_from_prv_key_int, secp256k1
 
 from btclib_node.interpreter import STANDARD_FLAGS
 from btclib_node.rpc.errors import RpcError

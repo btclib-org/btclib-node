@@ -105,7 +105,7 @@ dependencies = [
     # 2026.10.4 is the first whose `parse` refuses a key of another
     # network, which `rpc/mining.py` relies on.
     "btclib-wallet>=2026.10.16",
-    # `signing.py` and `p2p/v2transport.py` import `btclib_ecc` directly: a
+    # `signing.py` and `p2p/v2transport.py` import `ecc` directly: a
     # direct runtime dependency, not what btclib happens to bring
     # (btclib-org/btclib-node#1431). `tests/unit/interpreter_test.py` builds
     # its signatures through the same package.
