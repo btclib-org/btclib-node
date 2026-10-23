@@ -30,7 +30,7 @@ from btclib.tx.out_point import OutPoint
 from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
-from btclib_ecc.ecc import dsa, ssa
+from ecc.ecc import dsa, ssa
 
 from btclib_node.block_db import Coin
 from btclib_node.chains import RegTest
@@ -493,7 +493,9 @@ def _taproot_spend(
 ) -> tuple[list[TxOut], Tx]:
     """Return a p2tr prevout and the script-path spend of its one leaf."""
     merkle_root = taproot.leaf_hash(leaf_version, leaf_script)
-    output_key, parity = taproot.output_pubkey_from_merkle_root(_PUB[1:33], merkle_root)
+    output_key, parity = taproot.output_pubkey_from_merkle_root_var(
+        _PUB[1:33], merkle_root
+    )
     prevouts, tx = _spend(script.serialize(["OP_1", output_key.hex()]))
     # BIP341's control block for a tree of one leaf: the parity bit and
     # the leaf version, the x-only internal key, and an empty path

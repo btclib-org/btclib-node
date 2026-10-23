@@ -698,13 +698,13 @@ def test_coin_stats_returns_to_the_empty_digest_after_a_full_reorg(
     for height, block in enumerate(chain, start=1):
         _, rev_patch = utxo_index.add_block(block, height)
         rev_patches.append(rev_patch)
-    assert utxo_index.coin_stats.digest != CoinStats().digest
+    assert utxo_index.coin_stats.digest_var != CoinStats().digest_var
 
     rev_patches.reverse()
     for rev_patch in rev_patches:
         utxo_index.apply_rev_block(rev_patch)
 
-    assert utxo_index.coin_stats.digest == CoinStats().digest
+    assert utxo_index.coin_stats.digest_var == CoinStats().digest_var
     chainstate.close()
 
 
@@ -722,12 +722,12 @@ def test_coin_stats_persists_across_a_restart(tmp_path: Path) -> None:
     for height, block in enumerate(chain, start=1):
         utxo_index.add_block(block, height)
     utxo_index.finalize()
-    digest = utxo_index.coin_stats.digest
+    digest = utxo_index.coin_stats.digest_var
     chainstate.close()
 
     new_chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     new_utxo_index = new_chainstate.utxo_index
-    assert new_utxo_index.coin_stats.digest == digest
+    assert new_utxo_index.coin_stats.digest_var == digest
     new_chainstate.close()
 
 
@@ -748,7 +748,7 @@ def test_add_block_skips_hashing_a_bip30_exempt_coinbase(tmp_path: Path) -> None
         _BIP30_ORIGINAL_HEIGHT,
         check_bip30=False,
     )
-    assert utxo_index.coin_stats.digest == CoinStats().digest
+    assert utxo_index.coin_stats.digest_var == CoinStats().digest_var
     out = OutPoint(exempt.id, 0)
     assert utxo_index.get_coin(out.serialize(check_validity=False)) is not None
     chainstate.close()
@@ -772,11 +772,11 @@ def test_apply_rev_block_skips_bip30_exempt_coins_on_both_sides(
         _BIP30_ORIGINAL_HEIGHT,
         check_bip30=False,
     )
-    assert utxo_index.coin_stats.digest == CoinStats().digest
+    assert utxo_index.coin_stats.digest_var == CoinStats().digest_var
 
     # to_remove: undoing the exempt coinbase's own creation
     utxo_index.apply_rev_block(rev_block)
-    assert utxo_index.coin_stats.digest == CoinStats().digest
+    assert utxo_index.coin_stats.digest_var == CoinStats().digest_var
 
     # to_add: restoring the same exempt coin, the other side of the gate
     out = OutPoint(exempt.id, 0)
@@ -786,7 +786,7 @@ def test_apply_rev_block_skips_bip30_exempt_coins_on_both_sides(
         to_remove=[],
     )
     utxo_index.apply_rev_block(restore)
-    assert utxo_index.coin_stats.digest == CoinStats().digest
+    assert utxo_index.coin_stats.digest_var == CoinStats().digest_var
     chainstate.close()
 
 
@@ -816,7 +816,7 @@ def test_apply_rev_block_hashes_in_an_ordinary_output_of_the_exempt_block(
     funding = coinbase(b"\x25")
     utxo_index.add_block(one_tx_block([funding], b"\x25" * 32), 1)
     utxo_index.finalize()
-    before = utxo_index.coin_stats.digest
+    before = utxo_index.coin_stats.digest_var
 
     exempt_cb = coinbase(b"\x26")
     ordinary = spending(OutPoint(funding.id, 0), b"\x27")
@@ -825,10 +825,10 @@ def test_apply_rev_block_hashes_in_an_ordinary_output_of_the_exempt_block(
         _BIP30_ORIGINAL_HEIGHT,
         check_bip30=False,
     )
-    assert utxo_index.coin_stats.digest != before
+    assert utxo_index.coin_stats.digest_var != before
 
     utxo_index.apply_rev_block(rev_block)
-    assert utxo_index.coin_stats.digest == before
+    assert utxo_index.coin_stats.digest_var == before
     chainstate.close()
 
 
@@ -847,7 +847,7 @@ def test_apply_rev_block_hashes_in_a_non_coinbase_restore_via_to_add(
     """
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     utxo_index = chainstate.utxo_index
-    before = utxo_index.coin_stats.digest
+    before = utxo_index.coin_stats.digest_var
 
     tx_out = TxOut(value=1000, script_pub_key=script.serialize(["OP_1"]))
     out = OutPoint(b"\x28" * 32, 0, check_validity=False)
@@ -857,7 +857,7 @@ def test_apply_rev_block_hashes_in_a_non_coinbase_restore_via_to_add(
         to_remove=[],
     )
     utxo_index.apply_rev_block(restore)
-    assert utxo_index.coin_stats.digest != before
+    assert utxo_index.coin_stats.digest_var != before
     chainstate.close()
 
 
@@ -878,11 +878,11 @@ def test_apply_rev_block_reads_a_flushed_coin_for_coin_stats_too(
     funding = coinbase(b"\x22")
     _, rev_block = utxo_index.add_block(one_tx_block([funding], b"\x22" * 32), 1)
     utxo_index.finalize()
-    before = utxo_index.coin_stats.digest
-    assert before != CoinStats().digest
+    before = utxo_index.coin_stats.digest_var
+    assert before != CoinStats().digest_var
 
     utxo_index.apply_rev_block(rev_block)
-    assert utxo_index.coin_stats.digest == CoinStats().digest
+    assert utxo_index.coin_stats.digest_var == CoinStats().digest_var
     chainstate.close()
 
 
@@ -934,7 +934,7 @@ def test_mutating_coin_stats_removal_out_of_apply_rev_block_breaks_the_reorg(
     funding = coinbase(b"\x24")
     _, rev_block = utxo_index.add_block(one_tx_block([funding], b"\x24" * 32), 1)
     utxo_index.apply_rev_block(rev_block)
-    assert utxo_index.coin_stats.digest == CoinStats().digest
+    assert utxo_index.coin_stats.digest_var == CoinStats().digest_var
     chainstate.close()
 
 
@@ -1031,7 +1031,7 @@ def test_serialized_hash_is_core_s_over_a_chain_with_a_wide_transaction(
     serialized_hash = utxo_index.serialized_hash(utxo_index.cursor())
     assert serialized_hash is not None
     assert serialized_hash[::-1].hex() == expected["hash_serialized_3"]
-    assert utxo_index.coin_stats.digest[::-1].hex() == expected["muhash"]
+    assert utxo_index.coin_stats.digest_var[::-1].hex() == expected["muhash"]
     assert utxo_index.coin_stats.transaction_output_count == expected["txouts"]
     chainstate.close()
 

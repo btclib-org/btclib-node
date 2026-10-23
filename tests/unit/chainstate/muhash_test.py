@@ -115,7 +115,7 @@ def test_coin_stats_insert_updates_all_three_counters() -> None:
     assert stats.transaction_output_count == 1
     assert stats.total_amount == 1234
     assert stats.bogo_size == 50 + len(coin.tx_out.script_pub_key.script)
-    assert stats.digest != CoinStats().digest
+    assert stats.digest_var != CoinStats().digest_var
 
 
 def test_coin_stats_remove_undoes_insert_exactly() -> None:
@@ -125,7 +125,7 @@ def test_coin_stats_remove_undoes_insert_exactly() -> None:
     stats.insert(out_point_bytes, coin)
     stats.remove(out_point_bytes, coin)
     empty = CoinStats()
-    assert stats.digest == empty.digest
+    assert stats.digest_var == empty.digest_var
     assert stats.transaction_output_count == empty.transaction_output_count
     assert stats.total_amount == empty.total_amount
     assert stats.bogo_size == empty.bogo_size
@@ -137,12 +137,12 @@ def test_coin_stats_skips_an_unspendable_coin_entirely() -> None:
     out_point_bytes, coin = _a_coin(unspendable=True)
     stats.insert(out_point_bytes, coin)
     empty = CoinStats()
-    assert stats.digest == empty.digest
+    assert stats.digest_var == empty.digest_var
     assert stats.transaction_output_count == 0
     assert stats.total_amount == 0
     assert stats.bogo_size == 0
     stats.remove(out_point_bytes, coin)
-    assert stats.digest == empty.digest
+    assert stats.digest_var == empty.digest_var
 
 
 def test_coin_stats_serialize_round_trips() -> None:
@@ -150,7 +150,7 @@ def test_coin_stats_serialize_round_trips() -> None:
     stats = CoinStats()
     stats.insert(*_a_coin(value=777))
     restored = CoinStats.deserialize(stats.serialize())
-    assert restored.digest == stats.digest
+    assert restored.digest_var == stats.digest_var
     assert restored.transaction_output_count == stats.transaction_output_count
     assert restored.total_amount == stats.total_amount
     assert restored.bogo_size == stats.bogo_size

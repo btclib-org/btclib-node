@@ -21,7 +21,7 @@ from btclib.tx.out_point import OutPoint
 from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
-from btclib_ecc.curves import bytes_from_prv_key_int
+from ecc.curves import bytes_from_prv_key_int
 
 from tests import anyone_can_spend, rpc_client, wait_until_listening
 

@@ -146,6 +146,9 @@ _CONNECT_REASONS = {
 
 _REASON = re.compile(r"[a-z0-9-]+")
 
+# how btclib starts the message of a witness or weight refusal
+_BTCLIB_WITNESS_WORDS = ("unexpected witness", "invalid witness", "invalid weight")
+
 # the least header version once each of BIP34, BIP66 and BIP65 binds
 # (`ContextualCheckBlockHeader`), with the `ConsensusParams` field
 # holding the height it binds from
@@ -512,7 +515,12 @@ def _contextual_block_reason(node: Node, block: Block, height: int) -> str | Non
     try:
         contextual_check_block(node, block, height)
     except BTClibValueError as error:
-        return str(error)
+        reason = str(error)
+        # btclib words the witness and weight rules its own way; Core's
+        # words for them are `_witness_reason`'s
+        if reason.startswith(_BTCLIB_WITNESS_WORDS):
+            return _witness_reason(node, block, height)
+        return reason
     return _witness_reason(node, block, height)
 
 
