@@ -449,9 +449,9 @@ repos:
   # pins, the permissions block, persist-credentials: false -- is a
   # comment until this hook reads it. actionlint reports nothing on this
   # tree today, which is the state it is here to keep. zizmor reports
-  # nothing too, but only because the findings below are declined rather
-  # than absent -- the ignore comments are what keep it green, not an
-  # audit that found nothing to flag
+  # nothing too, but because each finding is answered -- a reason on a
+  # grant's line, an inline ignore, `.github/zizmor.yml`'s policy -- not
+  # because none was raised
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
     # self-repository flags a reusable-workflow or composite-action
     # reference that reads `uses: ./...` and recommends `uses: $/...`,
@@ -474,8 +474,8 @@ repos:
         # one; it is just not a restriction on today's behaviour.
         # --persona=auditor widens the ruleset past the default
         # `regular` persona, accepting a false positive in exchange for
-        # catching more; the ignore comments in the workflows below are
-        # what that widening costs here.
+        # catching more; here that costs a reason on each grant's own line
+        # and test.yml's template-injection ignore.
         # --no-progress is repeated rather than added: args replaces what
         # the hook declares, and that flag is the whole of what it
         # declares, so passing --offline and --persona=auditor alone
