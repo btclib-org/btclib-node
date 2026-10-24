@@ -119,7 +119,7 @@ if TYPE_CHECKING:
     from collections.abc import Generator, Iterator
 
     from btclib_node import Node
-    from btclib_node.chainstate.block_index import BlockIndex
+    from btclib_node.chainstate.block_index import BlockIndex, BlockInfo
     from btclib_node.chainstate.utxo_index import UtxoIndex
     from btclib_node.mempool import Mempool
     from btclib_node.p2p.block_availability import BlockAvailability
@@ -1122,6 +1122,44 @@ def _add_witness_nonce(block: Block, *, segwit: bool) -> None:
         )
 
 
+def _submitted_body_refusal(
+    node: Node, block: Block, parent: BlockInfo | None, *, segwit: bool
+) -> str | None:
+    """Answer why a submitted body is refused, marking its header if Core does.
+
+    A body failing `assert_valid_block` where `main.is_block_failed` holds
+    marks its header invalid. A body that passes `CheckBlock` and is still
+    mutated (`main.is_block_mutated`) is answered with Core's word for its
+    witness (`mining.witness_reason`), and its header is left alone:
+    Core's `AcceptBlock` refuses it, and `InvalidBlockFound` leaves a
+    `BLOCK_MUTATED` block unmarked (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so the same header may
+    still arrive with the right body. Any other refusal is btclib's text.
+    """
+    block_index = node.chainstate.block_index
+    error_text = None
+    try:
+        assert_valid_block(block, node.chain)
+    except BTClibException as error:
+        error_text = str(error)
+        # is_block_failed requires passes_check_block itself, so a body
+        # that never got this far indexed (ISS 1339) has nothing here to
+        # invalidate
+        if is_block_failed(block, check_witness_root=segwit):
+            block_index.invalidate(block.header.hash)
+            # Core's own `InvalidChainFound` call, same citation as
+            # `main.check_fork_warning_conditions`'s own docstring
+            check_fork_warning_conditions(node)
+    # `passes_check_block` first: a body that was never indexed has no
+    # parent here to read a height from
+    if passes_check_block(block) and is_block_mutated(block, check_witness_root=segwit):
+        assert parent is not None  # noqa: S101
+        reason = witness_reason(node, block, parent.index + 1)
+        assert reason is not None  # noqa: S101
+        return reason
+    return error_text
+
+
 def _validate_extending_tip(node: Node, block_hash: bytes) -> str | None:
     """Run `main.update_chain` here, and answer its verdict on `block_hash`.
 
@@ -1198,8 +1236,9 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     commits to a witness and carries none gets its nonce first, as Core's
     `submitblock` does (`_add_witness_nonce`). A body still mutated after
     that (`main.is_block_mutated`) is answered with Core's word for it
-    (`mining.witness_reason`), is not stored and its header is not marked
-    invalid, so the same block, whole, is accepted afterwards.
+    (`mining.witness_reason`) wherever it passes `CheckBlock`, is not
+    stored and its header is not marked invalid (`_submitted_body_refusal`),
+    so the same block, whole, is accepted afterwards.
 
     `main._validate_block`'s own `bad-txns-nonfinal` and `bad-cb-height`
     are Core's literal reasons already; `interpreter.check_scripts`
@@ -1248,29 +1287,9 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     if refusal is not None:
         return refusal
 
-    try:
-        assert_valid_block(block, node.chain)
-    except BTClibException as error:
-        # is_block_failed requires passes_check_block itself, so a body
-        # that never got this far indexed (ISS 1339) has nothing here to
-        # invalidate
-        if is_block_failed(block, check_witness_root=segwit):
-            block_index.invalidate(block_hash)
-            # Core's own `InvalidChainFound` call, same citation as
-            # `main.check_fork_warning_conditions`'s own docstring
-            check_fork_warning_conditions(node)
-        return str(error)
-
-    # Core's `AcceptBlock` refuses a body whose witness is not what its
-    # header commits to, and `InvalidBlockFound` leaves a `BLOCK_MUTATED`
-    # block unmarked (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7):
-    # the same header may still arrive with the right body. The header
-    # stays indexed, and the body is not stored.
-    if is_block_mutated(block, check_witness_root=segwit):
-        assert parent is not None  # noqa: S101
-        reason = witness_reason(node, block, parent.index + 1)
-        assert reason is not None  # noqa: S101
-        return reason
+    refusal = _submitted_body_refusal(node, block, parent, segwit=segwit)
+    if refusal is not None:
+        return refusal
 
     extends_tip = block.header.previous_block_hash == block_index.active_chain[-1]
     node.block_db.add_block(block)

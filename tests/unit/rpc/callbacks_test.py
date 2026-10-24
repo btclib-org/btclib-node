@@ -7493,6 +7493,33 @@ def test_submit_block_leaves_a_body_with_an_unexpected_witness_unmarked(
     assert block_index.active_chain[-1] == block_hash
 
 
+def test_submit_block_answers_core_s_word_for_a_short_nonce_and_leaves_it_unmarked(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A 31-byte nonce is `bad-witness-nonce-size`, a `BLOCK_MUTATED` refusal.
+
+    Measured against bitcoind v31.1: `CheckWitnessMalleation` answers it
+    with that word, nothing is stored, and the header stays valid-header,
+    so the whole block is accepted afterwards. btclib's own text for it
+    is `invalid witness nonce: [31] stack element size(s) instead of: [32]`.
+    """
+    node = regtest_node()
+    whole = a_block_committing_to_a_witness_only_its_nonce_holds()
+    short = Block.parse(whole.serialize(check_validity=False), check_validity=False)
+    short.transactions[0].vin[0].script_witness = Witness([bytes(31)])
+    raw = short.serialize(check_validity=False).hex()
+    block_hash = whole.header.hash
+
+    assert submit_block(node, _CONN, [raw]) == "bad-witness-nonce-size"
+    assert submit_block(node, _CONN, [raw]) == "bad-witness-nonce-size"
+
+    block_index = node.chainstate.block_index
+    assert block_index.header_dict[block_hash].status != BlockStatus.invalid
+    assert node.block_db.get_block(block_hash) is None
+    whole_hex = whole.serialize(check_validity=False).hex()
+    assert submit_block(node, _CONN, [whole_hex]) is None
+
+
 def test_submit_block_refuses_a_body_with_no_transactions_at_its_merkle_root(
     regtest_node: Callable[..., Node],
 ) -> None:
@@ -8197,7 +8224,8 @@ def test_submit_block_invalidates_a_committed_body_over_the_weight(
     """ISS 1242: `bad-blk-weight` marks the block, its witness committed to.
 
     Where segwit binds only after the block's own height, its witness makes
-    the body mutated and the header is left alone.
+    the body mutated: Core's `unexpected-witness`, ahead of the weight, and
+    the header is left alone.
     """
     node = regtest_node()
     consensus = replace(node.chain.consensus, segwit_height=segwit_height)
@@ -8211,7 +8239,7 @@ def test_submit_block_invalidates_a_committed_body_over_the_weight(
     result = submit_block(node, _CONN, [over.serialize(check_validity=False).hex()])
 
     assert isinstance(result, str)
-    assert result.startswith("invalid weight")
+    assert result.startswith("invalid weight" if invalid else "unexpected-witness")
     block_info = node.chainstate.block_index.get_block_info(over.header.hash)
     assert (block_info.status == BlockStatus.invalid) is invalid
 
