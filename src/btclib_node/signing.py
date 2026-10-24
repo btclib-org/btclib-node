@@ -33,6 +33,7 @@ from btclib.script.engine import verify_input
 from btclib.script.engine.flags import ScriptFlag
 from btclib.script.engine.script import eval_script
 from btclib.script.script import serialize
+from btclib.script.solver import solver
 from btclib.script.witness import Witness
 from btclib.tx.tx_out import TxOut
 from btclib_ecc.curves import bytes_from_prv_key_int
@@ -40,7 +41,6 @@ from btclib_ecc.ecc import dsa, ssa
 from btclib_wallet.descriptors.miniscript import SpendContext, from_script
 
 from btclib_node.interpreter import STANDARD_FLAGS
-from btclib_node.rpc.solver import solver
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
