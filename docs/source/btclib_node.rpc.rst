@@ -102,13 +102,6 @@ btclib\_node.rpc.snapshot module
    :members:
    :show-inheritance:
 
-btclib\_node.rpc.solver module
------------------------------------
-
-.. automodule:: btclib_node.rpc.solver
-   :members:
-   :show-inheritance:
-
 btclib\_node.rpc.utxo\_set module
 -----------------------------------
 

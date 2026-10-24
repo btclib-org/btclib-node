@@ -34,6 +34,7 @@ from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 from btclib.p2p.limits import PROTOCOL_VERSION
 from btclib.policy import dust_outputs
 from btclib.script.script import op_code_spans, script_to_dict
+from btclib.script.solver import solver
 from btclib.script.spendability import is_unspendable
 from btclib.script.witness import Witness
 from btclib.tx import Tx
@@ -112,7 +113,6 @@ from btclib_node.rpc.signing import (
     verify_message,
 )
 from btclib_node.rpc.snapshot import dump_tx_out_set
-from btclib_node.rpc.solver import solver
 from btclib_node.rpc.utxo_set import scan_tx_out_set
 
 if TYPE_CHECKING:
