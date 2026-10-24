@@ -20,6 +20,7 @@ functions the tests import directly, in `tests/unit/`,
 """
 
 import base64
+import errno
 import json
 import logging
 import os
@@ -775,22 +776,38 @@ def assert_loopbacks_free(port: int) -> None:
             probe.bind((host, port))
 
 
+# how many ports `taken_loopbacks` tries before it gives up
+HOLD_ATTEMPTS = 8
+
+
 @contextmanager
 def taken_loopbacks() -> Iterator[int]:
     """Hold every one of `LOOPBACKS` at one port, answering the port.
 
     What the JSON-RPC listener binds by default, as `bitcoind` binds
-    both, so a test that needs its bind to fail holds them all.
+    both, so a test that needs its bind to fail holds them all. The
+    kernel picks the port on the first loopback; where another process
+    holds it on a later one, the whole binding starts again at a fresh
+    port, up to `HOLD_ATTEMPTS` tries in all.
     """
-    with ExitStack() as stack:
-        port = 0
-        for host in LOOPBACKS:
-            holder = stack.enter_context(socket.socket(_family(host)))
-            holder.bind((host, port))
-            holder.listen()
-            port = holder.getsockname()[1]
-        assert isinstance(port, int)
-        yield port
+    attempt = 0
+    while True:
+        attempt += 1
+        with ExitStack() as stack:
+            port = 0
+            try:
+                for host in LOOPBACKS:
+                    holder = stack.enter_context(socket.socket(_family(host)))
+                    holder.bind((host, port))
+                    holder.listen()
+                    port = holder.getsockname()[1]
+            except OSError as error:
+                if error.errno != errno.EADDRINUSE or attempt == HOLD_ATTEMPTS:
+                    raise
+                continue
+            assert isinstance(port, int)
+            yield port
+            return
 
 
 def taken_port_bind_error(port: int) -> re.Pattern[str]:
