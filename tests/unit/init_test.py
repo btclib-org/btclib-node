@@ -42,6 +42,7 @@ import btclib_node
 from btclib_node import Node, install_signal_handlers
 from btclib_node.chains import RegTest
 from btclib_node.chainstate import Chainstate
+from btclib_node.chainstate.block_index import BlockInfo
 from btclib_node.config import Config
 from btclib_node.constants import (
     CLIENT_NAME,
@@ -75,6 +76,7 @@ from tests import (
     wait_until_listening,
 )
 from tests.conftest import node_context, unstarted_node_context
+from tests.unit.chainstate.block_index_test import unmined_header
 from tests.unit.fee_estimator_test import _CORE_EMPTY_FILE_SHA256, _busy
 
 if TYPE_CHECKING:
@@ -2914,3 +2916,27 @@ def test_a_pruned_data_directory_is_refused_without_prune_and_accepted_with_it(
         assert pruned.block_db.pruned_up_to == 0
     finally:
         pruned.stop()
+
+
+def test_a_stored_header_missing_its_proof_of_work_ends_start_up(
+    tmp_path: Path,
+) -> None:
+    """ISS 1997: Core's start-up ends on "Error loading block database"."""
+    with unstarted_node_context(tmp_path) as node:
+        header = unmined_header(node.chain.genesis.hash, b"\x03\x00\x00\x01")
+        node.chainstate.db.put(
+            b"blkinfo-" + header.hash, BlockInfo(header, 1).serialize()
+        )
+    refused = Node(
+        config=Config(
+            chain="regtest", data_dir=tmp_path, allow_p2p=False, allow_rpc=False
+        )
+    )
+    try:
+        refused.start()
+        wait_until(lambda: not refused.is_alive())
+    finally:
+        refused.stop()
+    assert refused.init_errors == ["Error loading block database"]
+    assert not refused.loaded
+    assert refused.block_db.db.closed

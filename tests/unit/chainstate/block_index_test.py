@@ -1078,6 +1078,49 @@ def test_best_invalid_survives_a_restart(
     assert new_chainstate.block_index.best_invalid == header.hash
 
 
+def test_a_stored_header_missing_its_proof_of_work_refuses_the_load(
+    a_chainstate: Callable[[Path | None], Chainstate],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """ISS 1997: Core's `LoadBlockIndexGuts` fails on such a record.
+
+    The header is stored under its own hash, so only its work is wrong.
+    The log names it, as Core's does.
+    """
+    chainstate = a_chainstate(None)
+    header = unmined_header(RegTest().genesis.hash, b"\x03\x00\x00\x01")
+    chainstate.db.put(b"blkinfo-" + header.hash, BlockInfo(header, 1).serialize())
+    chainstate.close()
+
+    with pytest.raises(
+        ChainstateInconsistencyError, match=r"^Error loading block database$"
+    ) as refusal:
+        a_chainstate(None)
+    assert isinstance(refusal.value.__cause__, BTClibValueError)
+    log = capsys.readouterr().err
+    assert f"CheckProofOfWork failed: block {header.hash.hex()} at height 1" in log
+
+
+def test_a_stored_header_is_indexed_under_its_own_hash_not_its_key(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """ISS 1997: Core's `LoadBlockIndexGuts` does not read the key's hash.
+
+    A mined header stored under another hash is indexed under its own,
+    and the hash in the key indexes nothing.
+    """
+    chainstate = a_chainstate(None)
+    (header,) = generate_random_header_chain(1, RegTest().genesis.hash)
+    wrong_hash = secrets.token_bytes(32)
+    chainstate.db.put(b"blkinfo-" + wrong_hash, BlockInfo(header, 1).serialize())
+    chainstate.close()
+
+    block_index = a_chainstate(None).block_index
+    assert block_index.get_block_info(header.hash) == BlockInfo(header, 1)
+    assert wrong_hash not in block_index.header_dict
+    assert block_index.header_index == [RegTest().genesis.hash, header.hash]
+
+
 def test_first_candidate_skips_a_hole_behind_a_downloaded_tip(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
