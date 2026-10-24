@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any, NoReturn, cast, override
 
 import pytest
 from bitcoin_core_rpc import RPCErrorCode
-from btclib.block import Block, BlockHeader
+from btclib.block import Block, BlockHeader, witness_commitment_output
 from btclib.consensus import MAX_BLOCK_WEIGHT
 from btclib.exceptions import BTClibValueError
 from btclib.fee import FeeRate
@@ -7423,6 +7423,88 @@ def test_submit_block_stores_valid_a_block_off_a_known_non_tip_ancestor(
     assert block_info.downloaded
     assert node.block_db.get_block(fork.header.hash) is not None
     assert node.chainstate.block_index.active_chain[-1] == chain[1].header.hash
+
+
+def a_block_committing_to_a_witness_only_its_nonce_holds() -> Block:
+    """Return a height-1 block whose only witness is its coinbase nonce."""
+    nonce = bytes(32)
+    coinbase = generate_coinbase(height=1)
+    coinbase.vout = [*coinbase.vout, witness_commitment_output([coinbase], nonce)]
+    coinbase.vin[0].script_witness = Witness([nonce])
+    return build_block(RegTest().genesis.hash, [coinbase], 0)
+
+
+def test_submit_block_adds_the_nonce_a_committed_body_lacks_as_core_does(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Core adds the missing nonce, and the whole block is then `duplicate`.
+
+    The body without its coinbase nonce has the hash of the block with
+    it. Core's `submitblock` adds the 32 zero bytes before
+    `ProcessNewBlock` (`src/rpc/mining.cpp`, at bitcoin/bitcoin@9be056a8a7),
+    so the body is accepted and stored as the whole block, and the whole
+    block is then `duplicate`. Without the nonce, `update_chain` refused
+    the stored body and marked its hash invalid.
+    """
+    node = regtest_node()
+    whole = a_block_committing_to_a_witness_only_its_nonce_holds()
+    stripped = whole.serialize(include_witness=False, check_validity=False)
+    assert stripped != whole.serialize(check_validity=False)
+
+    assert submit_block(node, _CONN, [stripped.hex()]) is None
+
+    block_hash = whole.header.hash
+    assert node.chainstate.block_index.active_chain[-1] == block_hash
+    stored = node.block_db.get_block(block_hash)
+    assert stored is not None
+    assert stored.serialize(check_validity=False) == whole.serialize(
+        check_validity=False
+    )
+    whole_hex = whole.serialize(check_validity=False).hex()
+    assert submit_block(node, _CONN, [whole_hex]) == "duplicate"
+
+
+def test_submit_block_leaves_a_body_with_an_unexpected_witness_unmarked(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `BLOCK_MUTATED` body is refused, stored nowhere and never marked.
+
+    A witness below segwit's height is refused by `ContextualCheckBlock`
+    as `unexpected-witness`, and `InvalidBlockFound` leaves such a block
+    alone (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7): the same
+    header is not `duplicate-invalid` afterwards, and the block with its
+    witness removed is accepted.
+    """
+    node = regtest_node()
+    consensus = replace(node.chain.consensus, segwit_height=2)
+    monkeypatch.setattr(type(node.chain), "consensus", property(lambda _: consensus))
+    mutated = a_block_committing_to_a_witness_only_its_nonce_holds()
+    raw = mutated.serialize(check_validity=False).hex()
+    block_hash = mutated.header.hash
+
+    assert submit_block(node, _CONN, [raw]) == "unexpected-witness"
+    assert submit_block(node, _CONN, [raw]) == "unexpected-witness"
+
+    block_index = node.chainstate.block_index
+    assert block_index.header_dict[block_hash].status != BlockStatus.invalid
+    assert node.block_db.get_block(block_hash) is None
+    clean = mutated.serialize(include_witness=False, check_validity=False).hex()
+    assert submit_block(node, _CONN, [clean]) is None
+    assert block_index.active_chain[-1] == block_hash
+
+
+def test_submit_block_refuses_a_body_with_no_transactions_at_its_merkle_root(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A body of no transactions has no coinbase to give a nonce to."""
+    node = regtest_node()
+    block = a_block_committing_to_a_witness_only_its_nonce_holds()
+    empty = Block(block.header, [], check_validity=False)
+
+    result = submit_block(node, _CONN, [empty.serialize(check_validity=False).hex()])
+
+    assert result is not None
+    assert result.startswith("invalid merkle root")
 
 
 def test_submit_block_answers_duplicate_for_a_block_already_downloaded(
