@@ -504,15 +504,38 @@ class BlockIndex:
         shared store's own key order (`db.py`'s docstring) sorts this
         index's own keys ahead of the UTXO index's sharing the same
         store.
+
+        Each record is read as Core's `BlockTreeDB::LoadBlockIndexGuts`
+        reads it (`src/node/blockstorage.cpp`, at bitcoin/bitcoin@9be056a8a7,
+        the v31.1 tag). It is indexed under its header's own hash, and the
+        hash in its key is not read. A header that fails
+        `CheckProofOfWork` fails the load: Core logs the header, and its
+        start-up ends on "Error loading block database"
+        (`src/node/chainstate.cpp`, same sha), the text `cli.main` prints
+        here. Core then suggests `-reindex` or `-reindex-chainstate`
+        (`src/init.cpp`, same sha); this tree has no `-reindex` yet
+        (btclib-org/btclib-node#1415). A signet block's solution is not
+        checked here, as in Core: it is in the coinbase, which the record
+        does not hold.
         """
         self.logger.info("Start Index initialization")
         for key, value in self.db:
-            prefix, block_hash = key[:8], key[8:]
-            if prefix != b"blkinfo-":  # utxo_index
+            if key[:8] != b"blkinfo-":  # utxo_index
                 break
-            self.header_dict[block_hash] = BlockInfo.deserialize(
-                value, check_validity=False
-            )
+            block_info = BlockInfo.deserialize(value, check_validity=False)
+            header = block_info.header
+            try:
+                header.assert_valid_pow(self.chain.pow_limit_bits)
+            except BTClibValueError as e:
+                self.logger.error(  # noqa: TRY400
+                    "CheckProofOfWork failed: block %s at height %s (%s)",
+                    header.hash.hex(),
+                    block_info.index,
+                    e,
+                )
+                err_msg = "Error loading block database"
+                raise ChainstateInconsistencyError(err_msg) from e
+            self.header_dict[header.hash] = block_info
 
         self.sorted_header_dict: list[bytes] = sorted(
             self.header_dict, key=lambda x: self.header_dict[x].index
