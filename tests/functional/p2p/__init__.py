@@ -54,6 +54,7 @@ from btclib.p2p.keepalive import Ping, Pong
 from btclib.p2p.limits import MAX_HEADERS_RESULTS, PROTOCOL_VERSION
 from btclib.p2p.message import Message
 from btclib.p2p.negotiation import WtxidRelay
+from btclib.tx import Tx, TxIn
 
 from btclib_node import download
 from btclib_node.chains import RegTest
@@ -308,10 +309,29 @@ _HEADER_LIES: dict[Lie, DoctorHeaders] = {
 
 
 def _mutate(block: Block) -> Block:
-    """Repeat the first transaction, which the merkle root rules out."""
-    return Block(
-        block.header, [*block.transactions, block.transactions[0]], check_validity=False
+    """Pad the coinbase's scriptSig, which only the merkle root catches.
+
+    The coinbase keeps its BIP34 height and stays the only one, so the
+    header's commitment to the transactions is the one check that refuses it.
+    """
+    coinbase, *rest = block.transactions
+    (txin,) = coinbase.vin
+    forged = Tx(
+        coinbase.version,
+        coinbase.lock_time,
+        [
+            TxIn(
+                txin.prev_out,
+                txin.script_sig + b"\x00",
+                txin.sequence,
+                txin.script_witness,
+                check_validity=False,
+            )
+        ],
+        coinbase.vout,
+        check_validity=False,
     )
+    return Block(block.header, [forged, *rest], check_validity=False)
 
 
 def a_peer(
