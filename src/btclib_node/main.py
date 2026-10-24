@@ -1300,14 +1300,14 @@ def _log_script_check_reason(
 # coinbase paying too much is refused before a failing script
 # (btclib-org/btclib-node#1587). What comes before it is
 # `contextual_check_block`'s, Core's `ContextualCheckBlock`: every
-# transaction's finality, and bad-cb-height wherever BIP34 binds
-# (Chain.consensus.bip34_height, per network), via
-# Block.assert_valid_contextual. BIP30 runs earlier still, inside
-# utxo_index.add_block, before this is ever called: its own docstring is
-# where that ordering and the two 2010 exceptions are argued. A function
-# of its own rather than statements inline: update_chain's own trial loop
-# is already long enough that PLR0915 counts every statement gained here
-# against it.
+# transaction's finality, bad-cb-height wherever BIP34 binds
+# (Chain.consensus.bip34_height, per network), and the witness and
+# weight rules, via Block.assert_valid_contextual. BIP30 runs earlier
+# still, inside utxo_index.add_block, before this is ever called: its own
+# docstring is where that ordering and the two 2010 exceptions are argued.
+# A function of its own rather than statements inline: update_chain's own
+# trial loop is already long enough that PLR0915 counts every statement
+# gained here against it.
 def _validate_block(
     node: Node, block: Block, transactions: list[tuple[list[Coin], Tx]], index: int
 ) -> None:
@@ -1408,7 +1408,10 @@ def contextual_check_block(node: Node, block: Block, index: int) -> tuple[int, b
     # nonce", "invalid witness commitment", "invalid weight") pass through
     # in btclib's wording: `mining.py`'s `_BTCLIB_WITNESS_WORDS` maps them
     # to Core's, and `update_chain` rejects the block on any
-    # `BTClibValueError`.
+    # `BTClibValueError`. "invalid version (outdated)" does not reach this
+    # handler, `BlockIndex.add_headers` having refused it as `bad-version`,
+    # nor does "non-final transaction", the loop above having refused it as
+    # `bad-txns-nonfinal`.
     try:
         block.assert_valid_contextual(
             BlockContext(index, clock.now_utc(), node.chain.consensus)
