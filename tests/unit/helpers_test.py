@@ -9,13 +9,15 @@ and with nothing else, and a helper whose failure path is untested
 fails as a bare traceback in the middle of somebody else's test.
 """
 
+import errno
 import socket
 import struct
 import threading
 import time
+from contextlib import ExitStack
 from itertools import pairwise
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, cast, override
+from typing import TYPE_CHECKING, Any, cast, override
 
 import pytest
 from btclib.block import (
@@ -32,6 +34,8 @@ from btclib.tx.limits import COINBASE_MATURITY
 from btclib_node.chains import RegTest
 from btclib_node.interpreter import STANDARD_FLAGS
 from tests import (
+    HOLD_ATTEMPTS,
+    LOOPBACKS,
     TEST_PORTS,
     ListenerEndedError,
     PortPool,
@@ -47,6 +51,7 @@ from tests import (
     generate_random_transaction,
     get_random_port,
     local_addr,
+    taken_loopbacks,
     wait_until,
     wait_until_listening,
     worker_ports,
@@ -105,6 +110,81 @@ def test_each_worker_hands_out_ports_of_its_own(count: int) -> None:
             assert not ports & other
             assert not {port + 1 for port in ports} & other
     assert worker_ports(f"gw{2 * count}", count) == worker_ports("gw0", count)
+
+
+class _FlakySockets:
+    """`socket` as `tests` sees it, its bind on the second loopback refused.
+
+    Refused with `code` `refusals` times, `EADDRINUSE` as when another
+    process holds the port there; `binds` lists each `(host, port)` asked.
+    """
+
+    def __init__(self, refusals: int, code: int = errno.EADDRINUSE) -> None:
+        """Refuse the second loopback `refusals` times with `code`."""
+        self.refusals = refusals
+        self.code = code
+        self.binds: list[tuple[str, int]] = []
+        flaky = self
+
+        class Socket(socket.socket):
+            @override
+            def bind(self, address: Any, /) -> None:
+                flaky.binds.append(address)
+                if address[0] == LOOPBACKS[1] and flaky.refusals:
+                    flaky.refusals -= 1
+                    raise OSError(flaky.code, "refused")
+                super().bind(address)
+
+        self.socket = Socket
+
+    def __getattr__(self, name: str) -> object:
+        """Answer the rest of the `socket` module."""
+        return getattr(socket, name)
+
+
+@pytest.mark.skipif(len(LOOPBACKS) < 2, reason="needs a second loopback")
+def test_a_port_taken_on_a_later_loopback_is_retried_at_another(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 2014: `taken_loopbacks` yields a port held on every loopback."""
+    flaky = _FlakySockets(refusals=1)
+    monkeypatch.setattr("tests.socket", flaky)
+    with taken_loopbacks() as port:
+        for host in LOOPBACKS:
+            family = socket.AF_INET6 if ":" in host else socket.AF_INET
+            with (
+                socket.socket(family) as probe,
+                pytest.raises(
+                    OSError, match=rf"\[(Errno|WinError) {errno.EADDRINUSE}\]"
+                ),
+            ):
+                probe.bind((host, port))
+    assert flaky.binds[0] == flaky.binds[2] == (LOOPBACKS[0], 0)
+    assert flaky.refusals == 0
+
+
+@pytest.mark.skipif(len(LOOPBACKS) < 2, reason="needs a second loopback")
+def test_a_port_always_taken_on_a_later_loopback_is_reported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The retry is bounded: a second loopback that never binds raises."""
+    flaky = _FlakySockets(refusals=1_000)
+    monkeypatch.setattr("tests.socket", flaky)
+    with pytest.raises(OSError, match="refused"), ExitStack() as stack:
+        stack.enter_context(taken_loopbacks())
+    assert [host for host, _ in flaky.binds].count(LOOPBACKS[1]) == HOLD_ATTEMPTS
+
+
+@pytest.mark.skipif(len(LOOPBACKS) < 2, reason="needs a second loopback")
+def test_an_error_other_than_a_taken_port_is_not_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second loopback refused for another reason raises at the first bind."""
+    flaky = _FlakySockets(refusals=1, code=errno.EACCES)
+    monkeypatch.setattr("tests.socket", flaky)
+    with pytest.raises(OSError, match="refused"), ExitStack() as stack:
+        stack.enter_context(taken_loopbacks())
+    assert [host for host, _ in flaky.binds].count(LOOPBACKS[1]) == 1
 
 
 def test_a_held_port_is_passed_over() -> None:
