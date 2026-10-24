@@ -414,7 +414,7 @@ check = [
     # [build-system]'s own specifier, so the environment satisfies
     # `requires` by construction and the isolated fallback -- which needs
     # an index -- is never asked for
-    "uv_build>=0.12.0,<0.13",
+    "uv_build>=0.12.0,<0.14",
 ]
 dev = [
     { include-group = "test" },
@@ -460,7 +460,7 @@ required-version = ">=0.13.4"
 # puts a breaking change, this backend releasing with uv and versioned by
 # it. btclib-org/.github#118 is where a pure-Python project was decided
 # onto this backend
-requires = ["uv_build>=0.12.0,<0.13"]
+requires = ["uv_build>=0.12.0,<0.14"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
