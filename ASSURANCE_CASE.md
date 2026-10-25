@@ -378,6 +378,9 @@ and what counters each.
   credential. `tests/unit/cli_test.py`'s
   `test_parse_parameters_leaves_a_value_out_of_a_refusal`,
   `test_parse_conf_text_leaves_a_value_out_of_a_refusal`,
+  `test_an_unknown_key_is_warned_about_by_its_name_alone`,
+  `test_parse_conf_text_gives_a_long_unknown_key_by_length_and_line`,
+  `test_load_conf_tree_names_the_included_file_in_an_unknown_key_warning`,
   `test_an_unrecognized_section_is_warned_about_by_its_name_alone` and
   `test_log_args_quotes_a_section_by_its_name_alone`, and
   `tests/unit/rpc/connection_test.py`'s
