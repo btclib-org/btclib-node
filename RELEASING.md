@@ -609,13 +609,19 @@ this release included.
    gh release download "v${version:?}" --repo btclib-org/btclib-node &&
    wheel=btclib_node-${version:?}-py3-none-any.whl &&
    repo=btclib-org/btclib-node &&
+   id=$(gh api "repos/$repo" --jq .id) &&
+   cert='.[].verificationResult.signature.certificate' &&
    workflows=btclib-org/.github/.github/workflows &&
    signer=$workflows/reusable-build.yml &&
-   gh attestation verify "$wheel" --repo "$repo" \
-     --signer-workflow "$signer" --source-ref "refs/tags/v${version:?}" &&
-   gh attestation verify "$wheel" --repo "$repo" \
+   gh attestation verify "$wheel" --owner btclib-org \
      --signer-workflow "$signer" --source-ref "refs/tags/v${version:?}" \
-     --bundle "v${version:?}.intoto.jsonl"
+     --format json --jq "${cert:?}.sourceRepositoryIdentifier" |
+     grep -qx "${id:?}" &&
+   gh attestation verify "$wheel" --owner btclib-org \
+     --signer-workflow "$signer" --source-ref "refs/tags/v${version:?}" \
+     --bundle "v${version:?}.intoto.jsonl" \
+     --format json --jq "${cert:?}.sourceRepositoryIdentifier" |
+     grep -qx "${id:?}"
    ```
 
    the first asks the attestations API for the signed statement, the
@@ -626,16 +632,19 @@ this release included.
 
    `signer` is the workflow that signed the tag's attestation, the
    organization's `reusable-build.yml`, which `release.yml`'s `build` job
-   calls, and `--signer-workflow` is required: without it the command
-   refuses the release. `--source-ref` names the tag, which is what stops
-   a rehearsal dispatched from a branch from verifying as this release. A
-   release from v2026.9.24 on, made before this repository called
-   `reusable-build.yml`, was signed by `reusable-attest.yml`, with no
-   `--source-ref`. A tag through v2026.9.4 was signed by `release.yml` itself,
-   and for one of those `signer` is
-   `"$repo/.github/workflows/release.yml"`, the flag there only
-   narrowing what passes. Each path verifies only the releases its own
-   workflow signed.
+   calls. `--signer-workflow` narrows what passes: under `--owner` the
+   command passes without it. `--owner` names the organization, and the
+   check of `sourceRepositoryIdentifier` names this repository by its id,
+   which a rename keeps: `--repo` compares the current name, and refuses
+   every release signed before a rename. The exit code is `0` only where a
+   verified attestation names this repository. `--source-ref` names the
+   tag, which is what stops a rehearsal dispatched from a branch from
+   verifying as this release. A release from v2026.9.24 on, made before
+   this repository called `reusable-build.yml`, was signed by
+   `reusable-attest.yml`, named the same way. A tag through v2026.9.4 was
+   signed by `release.yml` itself, and for one of those `signer` is
+   `"$repo/.github/workflows/release.yml"`. Each path verifies only the
+   releases its own workflow signed.
 
 1. **Review the bestpractices.dev answers.** Refresh the saved answers
    with `btclib-org/.github`'s `.github/scripts/bestpractices.py`, and run
@@ -692,14 +701,18 @@ cd /tmp/btclib-node-rebuild &&
 python=$(grep -Ev '^[[:space:]]*(#|$)' .python-version) &&
 export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct) &&
 repo=btclib-org/btclib-node &&
+id=$(gh api "repos/$repo" --jq .id) &&
+cert='.[].verificationResult.signature.certificate' &&
 workflows=btclib-org/.github/.github/workflows &&
 signer=$workflows/reusable-build.yml &&
 tag="v${version:?}" &&
 wheels=$(mktemp -d) &&
 gh release download "v${version:?}" --repo "$repo" --dir "$wheels" \
   --pattern '*.whl' &&
-gh attestation verify "$wheels"/*.whl \
-  --repo "$repo" --signer-workflow "$signer" --source-ref "refs/tags/$tag" &&
+gh attestation verify "$wheels"/*.whl --owner btclib-org \
+  --signer-workflow "$signer" --source-ref "refs/tags/$tag" \
+  --format json --jq "${cert:?}.sourceRepositoryIdentifier" |
+  grep -qx "${id:?}" &&
 uv_version=$(unzip -p "$wheels"/*.whl '*.dist-info/WHEEL' |
   sed -n 's/^Generator: uv //p') &&
 [[ $uv_version =~ ^[0-9]+([.][0-9]+)*$ ]] &&
@@ -713,21 +726,28 @@ git -C "$served" sparse-checkout set .github/scripts &&
 uv run --no-project --python "$python" \
   "$served"/.github/scripts/generate_sbom.py dist/ sbom/ &&
 gh attestation verify "dist/btclib_node-${version:?}.tar.gz" \
-  --repo "$repo" --signer-workflow "$signer" --source-ref "refs/tags/$tag" &&
+  --owner btclib-org \
+  --signer-workflow "$signer" --source-ref "refs/tags/$tag" \
+  --format json --jq "${cert:?}.sourceRepositoryIdentifier" |
+  grep -qx "${id:?}" &&
 gh attestation verify "dist/btclib_node-${version:?}-py3-none-any.whl" \
-  --repo "$repo" --signer-workflow "$signer" --source-ref "refs/tags/$tag" &&
+  --owner btclib-org \
+  --signer-workflow "$signer" --source-ref "refs/tags/$tag" \
+  --format json --jq "${cert:?}.sourceRepositoryIdentifier" |
+  grep -qx "${id:?}" &&
 gh attestation verify "sbom/btclib_node-${version:?}.cdx.json" \
-  --repo "$repo" --signer-workflow "$signer" --source-ref "refs/tags/$tag"
+  --owner btclib-org \
+  --signer-workflow "$signer" --source-ref "refs/tags/$tag" \
+  --format json --jq "${cert:?}.sourceRepositoryIdentifier" |
+  grep -qx "${id:?}"
 ```
 
 `signer` is the workflow that signed the tag's attestation,
-`reusable-build.yml`, and `--signer-workflow` is required: without it the
-command refuses the release. A tag from v2026.9.24 on, made before this
+`reusable-build.yml`. A tag from v2026.9.24 on, made before this
 repository called `reusable-build.yml`, was signed by
 `reusable-attest.yml`, named the same way. A tag through v2026.9.4
 was signed by `release.yml` itself, and for one of those `signer` is
-`"$repo/.github/workflows/release.yml"`, the flag there only narrowing
-what passes. Each path verifies only the
+`"$repo/.github/workflows/release.yml"`. Each path verifies only the
 releases its own workflow signed.
 
 `python` is the interpreter the tag's own `.python-version` pins, its
