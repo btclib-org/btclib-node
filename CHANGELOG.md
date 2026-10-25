@@ -32,6 +32,71 @@ why it does not stay there once the bullet has it, and that section's
 *Nothing already written is rewritten* is why an entry already landed
 keeps whichever shape it was written in.
 
+## v2026.10.25
+
+### The floors are btclib 2026.10.24, ecc 2026.10.23 and btclib-wallet 2026.10.25
+
+btclib renames `CoinStats.digest` and two more names with no alias, and
+`BlockContext` takes a `ConsensusParams`. `ecc` replaces `btclib-ecc`
+(closes #2008, closes #2032).
+
+### `submitblock` answers Core's words for a mutated body
+
+A coinbase that commits to a witness and carries none gets its 32-byte nonce.
+A mutated body is answered with Core's word for its witness, not stored, its
+header unmarked. `mining.witness_reason` is public (#2041).
+
+### The block filters are kept in a store of their own
+
+They live in `indexes/blockfilter`, as Core's block filter index does, and
+`-reindex-chainstate` keeps them. The first start migrates an older data
+directory (closes #1940).
+
+### A data directory that has pruned is refused without `-prune`
+
+The refusal is Core's message, before `-reindex-chainstate` wipes anything.
+`BlockDB.wipe_undo` replaces the constructor option of that name
+(closes #1916).
+
+### A stored block is served only under its own hash
+
+A `getdata` for `MSG_BLOCK` or `MSG_CMPCT_BLOCK` refuses a record that is
+another block's, misses its proof of work or fails its signet solution, and
+drops the peer, as Core's `ReadBlock` does (closes #1990).
+
+### `getblocktxn` reads a recent block from the store once
+
+The block is kept in `Node.blocktxn_blocks`, at most `MAX_BLOCKTXN_DEPTH + 1`
+blocks, and only `getblocktxn` fills it (closes #1954).
+
+### The tests and the tree's own files
+
+A txid pair search has no bound (closes #2026). The tests take the shared
+secret check (btclib-org/.github#1697).
+
+### Files that follow the organization
+
+zizmor's answers are in `.pre-commit-config.yaml` and `claude-review.yml`
+(btclib-org/.github#1813), `dependabot.yml` names the `uv.lock` exception
+(btclib-org/.github#1818), and `AGENTS.md` is shared (btclib-org/.github#1808).
+
+### The publish jobs and the tree require patched releases
+
+The publish jobs use `pypa/gh-action-pypi-publish` v1.14.3, and the tree
+requires uv 0.13.4 or later, past the compromised emSign roots
+(btclib-org/.github#1844).
+
+### The lock moves past advisories
+
+`uv.lock` lifts aiohttp (closes #2015), the CA bundle (#2020), virtualenv
+(btclib-org/.github#1824, btclib-org/.github#1844), GitPython
+(btclib-org/.github#1835), setuptools and filelock (btclib-org/.github#1849).
+
+### Hook revisions, setup-uv and the next cycle
+
+The pinned pre-commit hooks (#2017) and `astral-sh/setup-uv` 10.3.0 (#2030)
+move, and #2011 opened the 2026.11 cycle, which this release replaces.
+
 ## v2026.10.18
 
 ### A refusal, a warning and the configuration log quote a short name only

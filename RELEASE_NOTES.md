@@ -22,6 +22,73 @@ release was cut, and it promises nothing about compatibility, so a
 breaking change is announced in this file — read it before upgrading,
 rather than a digit.
 
+## v2026.10.25
+
+Everything below is measured against `v2026.10.18`. `CHANGELOG.md`'s own
+`v2026.10.25` section is the record of what went into it.
+
+**Upgrade from 2026.10.18 at once.** It declares `btclib>=2026.10.17` with
+no ceiling, so a fresh install resolves btclib 2026.10.24, which renamed or
+changed what 2026.10.18 calls. Measured on such an install, `BlockContext`
+raises `BTClibTypeError: invalid consensus type: int`, which
+`contextual_check_block` meets for every block that passes its finality
+check, and `CoinStats.digest` is gone, which `gettxoutsetinfo` reads for
+`muhash`.
+This release is written against btclib 2026.10.24.
+
+### Breaking changes
+
+- **The floors are `btclib>=2026.10.24`, `ecc>=2026.10.23` and
+  `btclib-wallet>=2026.10.25`**, and `ecc` replaces `btclib-ecc` as the
+  runtime dependency (closes #2008, closes #2032). Import `ecc` where your
+  own code imported `btclib_ecc`. `btclib_node.chainstate.muhash.CoinStats`
+  inherits btclib's `digest`, now `digest_var`, so a caller of
+  `coin_stats.digest` breaks.
+- **The block filters live in `indexes/blockfilter`, a store of their own**
+  (closes #1940). The first start copies an older data directory's filters
+  there and removes them from the chainstate's store, one way.
+  `-reindex-chainstate` keeps them. Deleting `indexes/blockfilter` rebuilds
+  them from the stored blocks, which a pruned node cannot do, and it then
+  refuses to start.
+- **`getcfilters`, `getcfheaders` and `getcfcheckpt` send nothing and keep
+  the peer for a range with a missing filter or header**, and no longer
+  raise `ChainstateInconsistencyError` (closes #1940).
+- **`FilterIndex` changes its API** (closes #1940). `FilterIndex.wipe` is
+  gone. `FilterIndex.catch_up(active_chain, block_db)` is
+  `catch_up(block_index, block_db)`. `FilterIndex.finalize(wb=None)` is
+  `finalize(best_block=None)` and writes no caller's batch.
+  `FilterIndex.__init__` takes the filter store as `db` where it took the
+  chainstate's as `parent_db`, so `FilterIndex.db` is the filter store.
+  `Chainstate.filter_index` is built on `Chainstate.filter_db`, and
+  `Chainstate.db` no longer holds filters.
+- **`BlockDB`'s `wipe_undo` argument is gone**, `BlockDB.wipe_undo()` taking
+  its place (closes #1916).
+- **A node whose block store records pruning refuses to start without
+  `-prune`**, with Core's message (closes #1916). The refusal comes before
+  `-reindex-chainstate` wipes anything.
+- **`submitblock` answers Core's words for a mutated body** (#2041). A
+  coinbase that commits to a witness and carries none gets its 32-byte nonce
+  first, as Core's `UpdateUncommittedBlockStructures` does. A body that
+  passes `CheckBlock` and is still mutated is answered with Core's word for
+  its witness, is not stored, and leaves its header unmarked, so the same
+  block, whole, is accepted afterwards. Any other refusal keeps btclib's
+  text. `mining.witness_reason`, once private, is public.
+
+### Worth knowing, though nothing raises
+
+- **A `getdata` for `MSG_BLOCK` or `MSG_CMPCT_BLOCK` is answered only with
+  the block of that hash** (closes #1990). A stored record that holds
+  another block, misses its proof of work, or on signet fails its solution,
+  is refused: the node logs "Cannot load block from disk" and drops the
+  peer, as Core does.
+- **`getblocktxn` keeps the blocks it reads in `Node.blocktxn_blocks`**
+  (closes #1954), those at most `MAX_BLOCKTXN_DEPTH` below the tip, so a
+  peer that repeats the request for one of them no longer makes the node
+  parse it each time. The cache holds at most `MAX_BLOCKTXN_DEPTH + 1`
+  blocks, about 280 MB at the largest parsed size measured on synthetic
+  blocks. A block above the tip is still read on every request, and so is
+  each block of a set larger than the cache that a peer asks for in turn.
+
 ## v2026.10.18
 
 Everything below is measured against `v2026.10.8`. `CHANGELOG.md`'s own
