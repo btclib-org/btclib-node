@@ -450,8 +450,7 @@ repos:
   # comment until this hook reads it. actionlint reports nothing on this
   # tree today, which is the state it is here to keep. zizmor reports
   # nothing too, but because each finding is answered -- a reason on a
-  # grant's line, an inline ignore, `.github/zizmor.yml`'s policy -- not
-  # because none was raised
+  # grant's line, an inline ignore -- not because none was raised
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
     # self-repository flags a reusable-workflow or composite-action
     # reference that reads `uses: ./...` and recommends `uses: $/...`,
