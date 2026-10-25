@@ -3,10 +3,10 @@ name: claude-review
 
 # Claude reading a pull request against REVIEWING.md. The prompt, the
 # credential guard, the action, the verdict check and the @claude answer
-# are btclib-org/.github's reusable-claude-review.yml, called at @main so
-# that a fix there reaches this tree in one landing (section 10 of its
-# README.md); what stays here is the trigger, the concurrency group, the
-# workflow-level permissions and this header.
+# are btclib-org/.github's reusable-claude-review.yml, called at a tagged
+# commit (section 10 of btclib-org/.github's README.md); what stays here is the
+# trigger, the concurrency group, the workflow-level permissions and this
+# header.
 #
 # Not a required check, and it must not become one. What it produces is a
 # review of type COMMENT, an opinion for the author to weigh; a review
@@ -120,7 +120,7 @@ jobs:
     # by a comment gets no cache access, which is what actionlint's
     # cache-call-unrestricted asks for
     cache-mode: none
-    uses: btclib-org/.github/.github/workflows/reusable-claude-review.yml@main
+    uses: btclib-org/.github/.github/workflows/reusable-claude-review.yml@0f5684ab3d7bf310b0d7a2e4dd91a03522f75d67 # v2026.10.25
     permissions:
       contents: read
       pull-requests: write # posting the review, and the reply to a mention
