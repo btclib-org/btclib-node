@@ -25,11 +25,11 @@ name: deps-latest
 # early warning belongs on a schedule, off the critical path.
 #
 # The upgrade, the session loop, the lint hooks and the suite run are
-# btclib-org/.github's reusable-deps-latest.yml, called at @main so a fix
-# there reaches this tree in one landing (issue btclib-org/.github#35).
-# What stays here is the trigger, the schedule, the concurrency group,
-# the permissions and dist-latest below, which the callee does not carry
-# and says so in its own header.
+# btclib-org/.github's reusable-deps-latest.yml, called at a tagged commit
+# (section 10 of btclib-org/.github's README.md, issue btclib-org/.github#35).
+# What stays here is the trigger, the schedule, the concurrency group, the
+# permissions and dist-latest below, which the callee does not carry and says so
+# in its own header.
 #
 # One interpreter and one image, as this tree ran before the call:
 # .python-version pins 3.14 and requires-python is >=3.14, so the runners
@@ -86,7 +86,7 @@ concurrency:
 
 jobs:
   deps-latest:
-    uses: btclib-org/.github/.github/workflows/reusable-deps-latest.yml@main
+    uses: btclib-org/.github/.github/workflows/reusable-deps-latest.yml@0f5684ab3d7bf310b0d7a2e4dd91a03522f75d67 # v2026.10.25
     with:
       runners: '["ubuntu-latest"]'
       python-versions: '["3.14"]'

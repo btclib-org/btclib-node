@@ -410,8 +410,8 @@ _NAMES_ONE = (
     ".github/workflows/fuzz.yml",
     # mutation.yml's Setup uv step used to pin the interpreter on its own
     # line, the number a mutant's kill was measured against; the job is
-    # now a call to btclib-org/.github's reusable-mutation.yml at @main,
-    # whose own Setup uv step names none, `uv run --locked` there
+    # now a call to btclib-org/.github's reusable-mutation.yml at a tagged
+    # commit, whose own Setup uv step names none, `uv run --locked` there
     # resolving what this tree's .python-version names instead
     # (btclib-org/.github#35)
     ".github/workflows/os-macos.yml",
@@ -426,16 +426,16 @@ _NAMES_ONE = (
     # `documented` job used to run the read the docs wait through
     # `uv run --no-project`, naming the interpreter on its own command
     # line (btclib-org/.github#644); that wait is btclib-org/.github's
-    # reusable-documented.yml now, called at @main, and the interpreter
-    # it names lives in that file rather than in this one
+    # reusable-documented.yml now, called at a tagged commit, and the
+    # interpreter it names lives in that file rather than in this one
     # (btclib-org/.github#35)
     ".github/workflows/release.yml",
     # sdist-rebuild.yml's `rebuild` job used to run the tag's sdist
     # normalizer through `uv run --no-project --python 3.14` on its own
     # command line, as test.yml's dist job does; the job is now a call to
-    # btclib-org/.github's reusable-sdist-rebuild.yml at @main, and the
-    # interpreter that step runs on lives in that file rather than in
-    # this one (btclib-org/.github#35)
+    # btclib-org/.github's reusable-sdist-rebuild.yml at a tagged commit,
+    # and the interpreter that step runs on lives in that file rather than
+    # in this one (btclib-org/.github#35)
     ".github/workflows/test.yml",
 )
 

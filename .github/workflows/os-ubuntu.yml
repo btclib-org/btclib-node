@@ -88,13 +88,12 @@ jobs:
     if: ${{ !github.event.pull_request.draft && github.event.action != 'closed' }}
     # the checkout, the interpreter setup and the suite run over each
     # cell are btclib-org/.github's: reusable-os-suite.yml, called at
-    # @main so a fix there reaches this tree in one landing (section 10
-    # of its README.md). What stays here is the trigger, the
-    # concurrency group and this job's own id, and the two lists below,
-    # which are this tree's own claim about the images and the
-    # interpreter it sweeps rather than a value the called workflow
-    # could default (btclib-org/.github#35)
-    uses: btclib-org/.github/.github/workflows/reusable-os-suite.yml@main
+    # a tagged commit (section 10 of btclib-org/.github's README.md). What stays
+    # here is the trigger, the concurrency group and this job's own id, and the
+    # two lists below, which are this tree's own claim about the images and the
+    # interpreter it sweeps rather than a value the called workflow could
+    # default (btclib-org/.github#35)
+    uses: btclib-org/.github/.github/workflows/reusable-os-suite.yml@0f5684ab3d7bf310b0d7a2e4dd91a03522f75d67 # v2026.10.25
     with:
       runners: '["ubuntu-latest", "ubuntu-24.04-arm"]'
       python-versions: '["3.14"]'

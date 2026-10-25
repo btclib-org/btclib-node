@@ -8,10 +8,9 @@ name: api-break
 #
 # The checkout, the griffe walk against the pull request's base commit and
 # the label are btclib-org/.github's: reusable-api-break.yml, called at
-# @main so a fix there reaches this tree in one landing (section 10 of its
-# README.md). What stays here is the trigger, the concurrency group, the
-# job's permissions and the package name, the one `release.yml` passes to
-# reusable-public-api.yml.
+# a tagged commit (section 10 of btclib-org/.github's README.md). What stays
+# here is the trigger, the concurrency group, the job's permissions and the
+# package name, the one `release.yml` passes to reusable-public-api.yml.
 
 on:
   pull_request:
@@ -48,6 +47,6 @@ jobs:
     permissions:
       contents: read
       pull-requests: write # the label; read-only on a fork
-    uses: btclib-org/.github/.github/workflows/reusable-api-break.yml@main
+    uses: btclib-org/.github/.github/workflows/reusable-api-break.yml@0f5684ab3d7bf310b0d7a2e4dd91a03522f75d67 # v2026.10.25
     with:
       package: btclib_node

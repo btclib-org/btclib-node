@@ -36,11 +36,10 @@ name: integration-bitcoind
 #
 # The checkout, the node install, the test run and the report upload
 # move into btclib-org/.github's reusable-integration-bitcoind.yml,
-# called at @main so a fix there reaches this tree in one landing
-# (section 10 of its README.md). `btclib` calls the same file. What
-# stays here is the trigger, the schedule minute, the concurrency group,
-# and this tree's own pinned release, digest and environment-variable
-# names.
+# called at a tagged commit (section 10 of btclib-org/.github's README.md).
+# `btclib` calls the same file. What stays here is the trigger, the schedule
+# minute, the concurrency group, and this tree's own pinned release, digest and
+# environment-variable names.
 #
 # A reusable workflow changes the check context a required check reports
 # under -- GitHub composes it from the calling job's own id and the
@@ -119,7 +118,7 @@ concurrency:
 
 jobs:
   regtest:
-    uses: btclib-org/.github/.github/workflows/reusable-integration-bitcoind.yml@main
+    uses: btclib-org/.github/.github/workflows/reusable-integration-bitcoind.yml@0f5684ab3d7bf310b0d7a2e4dd91a03522f75d67 # v2026.10.25
     # permissions do not inherit through a call: the called workflow's
     # own job asks for contents: read alone, which the workflow-level
     # block above already grants, and this is what caps it rather than

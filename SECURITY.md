@@ -68,7 +68,7 @@ them:
 ```shell
 repo=btclib-org/btclib-node
 workflows=btclib-org/.github/.github/workflows
-signer=$workflows/reusable-build.yml@refs/heads/main
+signer=$workflows/reusable-build.yml
 gh attestation verify btclib_node-<version>-py3-none-any.whl \
   --repo "$repo" --signer-workflow "$signer" --source-ref refs/tags/v<version>
 ```
