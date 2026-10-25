@@ -7,10 +7,9 @@ name: docs
 # a service whose failure is not a check on the pull request.
 #
 # The build itself, the checkout and the unresolved-link check are
-# btclib-org/.github's: reusable-docs.yml, called at @main so a fix there
-# reaches this tree in one landing (section 10 of its README.md). What
-# stays here is the trigger and the concurrency group
-# (btclib-org/.github#35)
+# btclib-org/.github's: reusable-docs.yml, called at a tagged commit (section 10
+# of btclib-org/.github's README.md). What stays here is the trigger and the
+# concurrency group (btclib-org/.github#35)
 
 on:
   push:
@@ -83,4 +82,4 @@ jobs:
   # run against the built pages, so both inputs are left at their
   # defaults
   docs:
-    uses: btclib-org/.github/.github/workflows/reusable-docs.yml@main
+    uses: btclib-org/.github/.github/workflows/reusable-docs.yml@0f5684ab3d7bf310b0d7a2e4dd91a03522f75d67 # v2026.10.25

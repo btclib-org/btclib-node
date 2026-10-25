@@ -197,7 +197,7 @@ jobs:
   # `true` outside a pull request, or the suite would skip on main too
   changes:
     name: Decide whether the suite has anything to check
-    uses: btclib-org/.github/.github/workflows/reusable-changes.yml@main
+    uses: btclib-org/.github/.github/workflows/reusable-changes.yml@0f5684ab3d7bf310b0d7a2e4dd91a03522f75d67 # v2026.10.25
     # REPOSITORY.md's *Token permissions* section has why this job
     # names a permissions: block of its own -- the callee's own job
     # needs pull-requests: read to list a pull request's files, which

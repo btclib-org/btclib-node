@@ -29,9 +29,10 @@
 # somebody can still read and revert, where a month of it arrives as one.
 #
 # The seven-day cooldown is what the interval is really trading against.
-# A compromised release is usually yanked within days, and nothing here
-# is offered before it has been public a week; the interval decides how
-# long after that week the offer comes, not whether it waits at all.
+# A compromised release is usually yanked within days, and nothing but
+# btclib-org/.github's tags, excluded in the github-actions block, is
+# offered before it has been public a week; the interval decides how long
+# after that week the offer comes, not whether it waits at all.
 version: 2
 updates:
   # every action in .github/workflows is pinned to a commit SHA, and
@@ -50,6 +51,9 @@ updates:
         patterns: ["*"]
     cooldown:
       default-days: 7
+      # the exclude section 11 of btclib-org/.github's README.md gives for
+      # that repository's own tags, which the calls in .github/workflows pin
+      exclude: ["btclib-org/.github/*"]
 
   # uv.lock is committed and the workflows install from it with --locked, bar
   # the jobs that re-lock without committing or install a published or built

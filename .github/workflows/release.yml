@@ -67,14 +67,14 @@ jobs:
   # The checkout, the ancestry check, the lock check, the version check,
   # the release-notes check on RELEASE_NOTES.md and CHANGELOG.md and the
   # rehearsal suffix are btclib-org/.github's:
-  # reusable-version-check.yml, called at @main so a fix there reaches
-  # this tree in one landing (section 10 of its README.md). What stays
-  # here is the `needs:` edge test and documented below place on this
-  # job's id, which the call keeps unchanged (btclib-org/.github#35). This
-  # tree is calendar-versioned, so tag-requires-day is left at its
-  # default of true rather than passed explicitly
+  # reusable-version-check.yml, called at a tagged commit (section 10 of
+  # btclib-org/.github's README.md). What stays here is the `needs:` edge test
+  # and documented below place on this job's id, which the call keeps unchanged
+  # (btclib-org/.github#35). This tree is calendar-versioned, so
+  # tag-requires-day is left at its default of true rather than passed
+  # explicitly
   version-check:
-    uses: btclib-org/.github/.github/workflows/reusable-version-check.yml@main
+    uses: btclib-org/.github/.github/workflows/reusable-version-check.yml@0f5684ab3d7bf310b0d7a2e4dd91a03522f75d67 # v2026.10.25
 
   # walks the public API of the release before this one against the one
   # being cut and reports what broke: a removed object, a changed
@@ -92,39 +92,38 @@ jobs:
   # two publish jobs below name it, so no upload happens before the
   # surface has been read.
   # The checkout, the previous-tag resolution and the griffe comparison
-  # are btclib-org/.github's: reusable-public-api.yml, called at @main so
-  # a fix there reaches this tree in one landing (section 10 of its
-  # README.md). What stays here is the package name; the --exclude
-  # 'v0.1.0' this job used to pass to git describe excluded a tag no
-  # longer in the candidate set (btclib-org/.github#105,
+  # are btclib-org/.github's: reusable-public-api.yml, called at a tagged commit
+  # (section 10 of btclib-org/.github's README.md). What stays here is the
+  # package name; the --exclude 'v0.1.0' this job used to pass to git describe
+  # excluded a tag no longer in the candidate set (btclib-org/.github#105,
   # btclib-org/btclib-node#553) and the called workflow does not carry it
   # (btclib-org/.github#35)
   public-api:
-    uses: btclib-org/.github/.github/workflows/reusable-public-api.yml@main
+    uses: btclib-org/.github/.github/workflows/reusable-public-api.yml@0f5684ab3d7bf310b0d7a2e4dd91a03522f75d67 # v2026.10.25
     with:
       package: btclib_node
 
   # `uv audit` over what the wheel declares, before anything is published:
-  # btclib-org/.github's reusable-audit.yml, called at @main so that the uv
-  # version, the flags and what it refuses are written once. An
-  # advisory or an unreachable service fails it, and the publish jobs
-  # below name it in `needs:` and in their `if:`, `always()` there being
-  # what would otherwise let them run past a red one. The callee asks only
-  # for the `contents: read` this workflow grants, as the calls above do.
-  # github-release does not name it: it runs only after publish-pypi
+  # btclib-org/.github's reusable-audit.yml, called at a tagged commit (section
+  # 10 of btclib-org/.github's README.md) so that the uv version, the flags and
+  # what it refuses are written once. An advisory or an unreachable service
+  # fails it, and the publish jobs below name it in `needs:` and in their `if:`,
+  # `always()` there being what would otherwise let them run past a red one. The
+  # callee asks only for the `contents: read` this workflow grants, as the calls
+  # above do. github-release does not name it: it runs only after publish-pypi
   # succeeds
   audit:
-    uses: btclib-org/.github/.github/workflows/reusable-audit.yml@main
+    uses: btclib-org/.github/.github/workflows/reusable-audit.yml@0f5684ab3d7bf310b0d7a2e4dd91a03522f75d67 # v2026.10.25
 
   # the build and its signature: btclib-org/.github's reusable-build.yml,
-  # called at @main (section 10 of its README.md). It builds the
-  # distribution files and the bill of materials, uploads them as `dist`
-  # and `sbom`, and signs them before any publish job waits for its
-  # environment's approval, which is how the signer is a workflow this
-  # tree's own steps cannot alter (SLSA Build L3). It uploads the bundle
-  # as `attestation` for github-release. The version-suffix output is
-  # empty on the tag path, where version-check skips the step that writes
-  # it: a release ships the version the tree declares
+  # called at a tagged commit (section 10 of btclib-org/.github's README.md). It
+  # builds the distribution files and the bill of materials, uploads them as
+  # `dist` and `sbom`, and signs them before any publish job waits for its
+  # environment's approval, which is how the signer is a workflow this tree's
+  # own steps cannot alter (SLSA Build L3). It uploads the bundle as
+  # `attestation` for github-release. The version-suffix output is empty on the
+  # tag path, where version-check skips the step that writes it: a release ships
+  # the version the tree declares
   build:
     name: Build and sign the distribution files
     needs: version-check
@@ -136,7 +135,7 @@ jobs:
       contents: read
       id-token: write # the OIDC token the callee's attest job mints
       attestations: write # the build provenance attestation it writes
-    uses: btclib-org/.github/.github/workflows/reusable-build.yml@main
+    uses: btclib-org/.github/.github/workflows/reusable-build.yml@0f5684ab3d7bf310b0d7a2e4dd91a03522f75d67 # v2026.10.25
     with:
       python: "3.14"
       version-suffix: ${{ needs.version-check.outputs.version-suffix }}
@@ -316,11 +315,10 @@ jobs:
   # written against
   #
   # The checkout, the downloads and the release creation are
-  # btclib-org/.github's: reusable-github-release.yml, called at @main
-  # so a fix there reaches this tree in one landing (section 10 of its
-  # README.md). What stays here is the `needs:`, the `if:` and the
-  # calling job's own `permissions:`, which the callee does not carry
-  # and says so in its own header (btclib-org/.github#35)
+  # btclib-org/.github's: reusable-github-release.yml, called at a tagged commit
+  # (section 10 of btclib-org/.github's README.md). What stays here is the
+  # `needs:`, the `if:` and the calling job's own `permissions:`, which the
+  # callee does not carry and says so in its own header (btclib-org/.github#35)
   github-release:
     needs: [publish-pypi, build]
     if: >-
@@ -328,10 +326,11 @@ jobs:
       needs.build.result == 'success'
     permissions:
       contents: write # what creates the GitHub release
-    uses: btclib-org/.github/.github/workflows/reusable-github-release.yml@main
+    uses: btclib-org/.github/.github/workflows/reusable-github-release.yml@0f5684ab3d7bf310b0d7a2e4dd91a03522f75d67 # v2026.10.25
     with:
       dist-artifact: dist
-      # refuses the files unless their digests are the ones the build job printed
+      # refuses the files unless their digests are the ones the build job
+      # printed
       digests: ${{ needs.build.outputs.digests }}
 
   # the sentinel on the documentation, which nothing else here asks
@@ -390,17 +389,16 @@ jobs:
   # waited.
   #
   # The sparse checkout and the wait itself are btclib-org/.github's:
-  # reusable-documented.yml, called at @main so a fix there reaches this
-  # tree in one landing (section 10 of its README.md). It checks
-  # `btclib-org/.github` out at `main` for the checkout and the wait
-  # alike, so `wait_for_readthedocs_build.py` is read from there and not
-  # from this tree. What stays here is the `needs:` edge onto
-  # version-check and the `if: github.event_name == 'push'` guard, which
-  # the called workflow's own header says is the caller's
-  # (btclib-org/.github#35)
+  # reusable-documented.yml, called at a tagged commit (section 10 of
+  # btclib-org/.github's README.md). It checks `btclib-org/.github` out
+  # itself, so `wait_for_readthedocs_build.py` is read from there and not
+  # from this tree.
+  # What stays here is the `needs:` edge onto version-check and the
+  # `if: github.event_name == 'push'` guard, which the called workflow's own
+  # header says is the caller's (btclib-org/.github#35)
   documented:
     needs: version-check
     if: github.event_name == 'push'
-    uses: btclib-org/.github/.github/workflows/reusable-documented.yml@main
+    uses: btclib-org/.github/.github/workflows/reusable-documented.yml@0f5684ab3d7bf310b0d7a2e4dd91a03522f75d67 # v2026.10.25
     with:
       readthedocs-slug: btclib-node

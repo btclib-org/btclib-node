@@ -84,8 +84,8 @@ on:
   # more
   #
   # The wait's own logic is btclib-org/.github's wait_for_pypi_release.py,
-  # which reusable-wait-for-index.yml below checks out at @main rather
-  # than a copy this tree holds.
+  # which reusable-wait-for-index.yml below checks out from that repository
+  # rather than a copy this tree holds.
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
     paths:
@@ -113,13 +113,13 @@ jobs:
   # a run: block, which is what section 10 of btclib-org/.github's
   # README.md asks of a wait (btclib-org/.github#641). The checkout, the
   # uv setup and the wait itself are btclib-org/.github's
-  # reusable-wait-for-index.yml, called at @main so a fix there reaches
-  # this tree in one landing (btclib-org/.github#35). What stays here is
-  # the trigger, the workflow-level permissions, the concurrency group
-  # and this job's own `if:`, which the callee does not carry and says
-  # so in its own header. `package` is btclib-org/.github's
-  # `wait_for_pypi_release.py`'s own argument, `btclib-node`, read off
-  # this file rather than off the repository's name.
+  # reusable-wait-for-index.yml, called at a tagged commit (section 10 of
+  # btclib-org/.github's README.md, btclib-org/.github#35). What stays here is
+  # the trigger, the workflow-level permissions, the concurrency group and this
+  # job's own `if:`, which the callee does not carry and says so in its own
+  # header. `package` is btclib-org/.github's `wait_for_pypi_release.py`'s own
+  # argument, `btclib-node`, read off this file rather than off the repository's
+  # name.
   #
   # Nothing here is conditioned on the version: the input is empty
   # wherever no release is calling, and an empty tag is nothing to wait
@@ -133,7 +133,7 @@ jobs:
   # release
   wait-for-index:
     if: ${{ !github.event.pull_request.draft }}
-    uses: btclib-org/.github/.github/workflows/reusable-wait-for-index.yml@main
+    uses: btclib-org/.github/.github/workflows/reusable-wait-for-index.yml@0f5684ab3d7bf310b0d7a2e4dd91a03522f75d67 # v2026.10.25
     with:
       package: btclib-node
       version: ${{ inputs.version }}

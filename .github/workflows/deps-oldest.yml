@@ -7,12 +7,11 @@ name: deps-oldest
 # resolution direction.
 #
 # The resolution, the lock it writes and the suite run over that lock are
-# btclib-org/.github's: reusable-deps-oldest.yml, called at @main so a
-# fix there reaches this tree in one landing (section 10 of its
-# README.md). What stays here is the trigger, the concurrency group, the
-# workflow-level permissions, and the one fact the called workflow asks
-# a caller for rather than states itself: the interpreter, which is
-# requires-python's own floor of 3.14 and not a newer pin
+# btclib-org/.github's: reusable-deps-oldest.yml, called at a tagged commit
+# (section 10 of btclib-org/.github's README.md). What stays here is the
+# trigger, the concurrency group, the workflow-level permissions, and the one
+# fact the called workflow asks a caller for rather than states itself: the
+# interpreter, which is requires-python's own floor of 3.14 and not a newer pin
 # (btclib-org/.github#35).
 #
 # What the resolution verifies at a floor is every specifier uv resolves
@@ -57,6 +56,6 @@ concurrency:
 
 jobs:
   suite-oldest:
-    uses: btclib-org/.github/.github/workflows/reusable-deps-oldest.yml@main
+    uses: btclib-org/.github/.github/workflows/reusable-deps-oldest.yml@0f5684ab3d7bf310b0d7a2e4dd91a03522f75d67 # v2026.10.25
     with:
       python-version: "3.14"

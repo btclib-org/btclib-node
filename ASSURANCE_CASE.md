@@ -411,5 +411,7 @@ and what counters each.
   admits. `deps-latest.yml` and `deps-oldest.yml` resolve fresh,
   deliberately, so a break in what the lock hides is caught on a
   schedule rather than never. Every third-party action is pinned to a
-  commit sha; `actionlint`, `zizmor` and `detect-secrets` run as hooks in
-  `.pre-commit-config.yaml`.
+  commit sha, and so is every call of the organization's own reusable
+  workflows but `claude-review.yml`'s, which `.github/zizmor.yml` permits
+  at `@main`; `actionlint`, `zizmor` and `detect-secrets` run as hooks
+  in `.pre-commit-config.yaml`.
