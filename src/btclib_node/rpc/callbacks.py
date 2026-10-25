@@ -1235,10 +1235,8 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     Where the parent is indexed and segwit binds after it, a coinbase that
     commits to a witness and carries none gets its nonce first, as Core's
     `submitblock` does (`_add_witness_nonce`). A body still mutated after
-    that (`main.is_block_mutated`) is answered with Core's word for it
-    (`mining.witness_reason`) wherever it passes `CheckBlock`, is not
-    stored and its header is not marked invalid (`_submitted_body_refusal`),
-    so the same block, whole, is accepted afterwards.
+    that is refused as `_submitted_body_refusal` says, so the same block,
+    whole, is accepted afterwards.
 
     `main._validate_block`'s own `bad-txns-nonfinal` and `bad-cb-height`
     are Core's literal reasons already; `interpreter.check_scripts`
