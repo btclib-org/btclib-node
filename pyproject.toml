@@ -78,9 +78,12 @@ dependencies = [
     # `testmempoolaccept` answers `bad-txns-oversize` for a transaction of
     # 24391 inputs (btclib-org/btclib#2593, btclib-org/btclib-node#1889).
     #
-    # 2026.10.17 is the release btclib-org/btclib-node#2003 asks for:
-    # btclib-wallet 2026.10.16 imports beside it, and 2026.10.9 does not.
-    "btclib[secp256k1,bip324]>=2026.10.17",
+    # 2026.10.24 is the first release on `ecc` rather than `btclib-ecc`,
+    # with the `_var` names (`CoinStats.digest_var`, `p2ms_m_and_keys_var`,
+    # `taproot.output_pubkey_from_merkle_root_var`) and the
+    # `BlockContext(index, now, consensus)` this tree is written to
+    # (btclib-org/btclib-node#2008).
+    "btclib[secp256k1,bip324]>=2026.10.24",
     # `rpc/callbacks.py` and `rpc/utxo_set.py` import from
     # `btclib_wallet.descriptors`, where btclib's own `descriptors`
     # moved (btclib-org/btclib#2129): a runtime dependency now, not the
@@ -88,10 +91,11 @@ dependencies = [
     # `BitcoinCoreFetcher` (btclib-org/btclib-node#1181,
     # btclib-org/btclib-node#1508).
     #
-    # The floor is 2026.10.16, which imports `btclib_ecc`'s
-    # `point_from_octets_var`, the name btclib-ecc 2026.10.17 gives it;
-    # 2026.10.9 imports `point_from_octets` and fails at import beside it
-    # (btclib-org/btclib-node#2003).
+    # The floor is 2026.10.25, the first release that asks for
+    # `btclib>=2026.10.24` and `ecc>=2026.10.23`: an earlier one imports
+    # btclib names that 2026.10.24 renames, such as
+    # `taproot.output_pubkey_from_merkle_root`, and fails at import beside
+    # it (btclib-org/btclib-node#2008).
     #
     # 2026.10.9 is the first release carrying `Descriptor.expand`,
     # which returns the scripts and the provider from one derivation of each
@@ -104,15 +108,15 @@ dependencies = [
     # `Provider`, which `rpc/callbacks.py` and `rpc/utxo_set.py` import.
     # 2026.10.4 is the first whose `parse` refuses a key of another
     # network, which `rpc/mining.py` relies on.
-    "btclib-wallet>=2026.10.16",
-    # `signing.py` and `p2p/v2transport.py` import `btclib_ecc` directly: a
-    # direct runtime dependency, not what btclib happens to bring
+    "btclib-wallet>=2026.10.25",
+    # `signing.py` and `p2p/v2transport.py` import `ecc` directly, so it
+    # is a direct runtime dependency, not what btclib happens to bring
     # (btclib-org/btclib-node#1431). `tests/unit/interpreter_test.py` builds
     # its signatures through the same package.
     #
-    # The floor is 2026.10.2, the release fixing GHSA-r5pw-9wrg-m3mj
-    # and GHSA-m38m-987v-j55h.
-    "btclib-ecc>=2026.10.2",
+    # The floor is 2026.10.23, the release btclib 2026.10.24 asks for.
+    # 2026.10.2 fixed GHSA-r5pw-9wrg-m3mj and GHSA-m38m-987v-j55h.
+    "ecc>=2026.10.23",
     "rocksdict>=0.3.29",
     # `rpc/errors.py` imports `RPCErrorCode` directly now, so this is a
     # direct runtime dependency rather than the transitive arrival
@@ -345,16 +349,8 @@ test = [
     #
     # The floor is 2026.10.4, the security release (issue #1685).
     "bitcoin-core-rpc>=2026.10.4",
-    # btclib-ecc's own bindings import (`_libsecp256k1.py`) reaches
-    # `btclib_secp256k1.ecdh.shared_point`, absent below 0.8.0.8 --
-    # measured directly, an older install answers plain `ImportError`
-    # there rather than the `ModuleNotFoundError` that import is guarded
-    # against, so the bindings-missing fallback never catches it. `btclib
-    # [secp256k1]`'s own floor above resolves 0.8.0.6 on its own; this
-    # raises what the two together resolve rather than what either
-    # alone asks for.
-    #
     # The floor is 0.8.0.10, the release fixing GHSA-8h6f-34jj-7p6c.
+    # `ecc[secp256k1]`, which `btclib[secp256k1]` brings, asks for 0.8.0.12.
     "btclib-secp256k1>=0.8.0.10",
 ]
 # mypy runs from this environment rather than from a hook's own --

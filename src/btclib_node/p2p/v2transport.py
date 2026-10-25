@@ -37,8 +37,8 @@ from btclib.p2p.bip324 import (
     message_from_contents,
 )
 from btclib.p2p.limits import MAX_PROTOCOL_MESSAGE_LENGTH
-from btclib_ecc.curves import secp256k1
-from btclib_ecc.ecc import ellswift
+from ecc.curves import secp256k1
+from ecc.ecc import ellswift
 
 from btclib_node.exceptions import RejectedMessageError
 from btclib_node.p2p.transport import (
@@ -138,7 +138,7 @@ class V2Transport(Transport):
         # reached only once `_allow_v1` let the v1 state begin
         self._v1 = cast("Transport", v1_fallback)
         self._prv_key = prv_key
-        self._ell_ours = ellswift.create_var(prv_key)
+        self._ell_ours = ellswift.create(prv_key)
 
         self._recv_lock = Lock()
         self._recv_len = 0

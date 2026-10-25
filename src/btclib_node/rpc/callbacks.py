@@ -35,6 +35,7 @@ from btclib.p2p.limits import PROTOCOL_VERSION
 from btclib.policy import dust_outputs
 from btclib.script.script import op_code_spans, script_to_dict
 from btclib.script.spendability import is_unspendable
+from btclib.script.witness import Witness
 from btclib.tx import Tx
 from btclib.tx.out_point import OutPoint
 from btclib_wallet.descriptors import Provider, infer_descriptor
@@ -51,6 +52,7 @@ from btclib_node.main import (
     check_fork_warning_conditions,
     invalidate_chain,
     is_block_failed,
+    is_block_mutated,
     is_cached_invalid,
     new_pow_valid_block,
     parent_lookup,
@@ -63,6 +65,7 @@ from btclib_node.main import (
 )
 from btclib_node.mempool_persist import FILENAME as MEMPOOL_FILENAME
 from btclib_node.mempool_persist import dump_mempool, load_mempool
+from btclib_node.mining import witness_reason
 from btclib_node.p2p.address import SEEDS_SERVICE_FLAGS, ip_and_port, network_class
 from btclib_node.p2p.banman import (
     SpecialAddress,
@@ -116,7 +119,7 @@ if TYPE_CHECKING:
     from collections.abc import Generator, Iterator
 
     from btclib_node import Node
-    from btclib_node.chainstate.block_index import BlockIndex
+    from btclib_node.chainstate.block_index import BlockIndex, BlockInfo
     from btclib_node.chainstate.utxo_index import UtxoIndex
     from btclib_node.mempool import Mempool
     from btclib_node.p2p.block_availability import BlockAvailability
@@ -1095,6 +1098,68 @@ def _index_submitted_header(block_index: BlockIndex, block: Block) -> str | None
     return None
 
 
+def _add_witness_nonce(block: Block, *, segwit: bool) -> None:
+    """Give a committed coinbase that carries no witness its nonce.
+
+    Core's `UpdateUncommittedBlockStructures` (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which `submitblock` runs
+    ahead of `ProcessNewBlock` (`src/rpc/mining.cpp`, same sha): where
+    `segwit` binds after the block's parent, the witness reserved value,
+    32 zero bytes, goes into the coinbase input. A block with no other
+    witness serializes without it, and its hash and merkle root do not
+    change.
+    """
+    transactions = block.transactions
+    if (
+        segwit
+        and transactions
+        and transactions[0].is_coinbase
+        and block.witness_commitment is not None
+        and not transactions[0].is_segwit
+    ):
+        transactions[0].vin[0].script_witness = Witness(
+            [bytes(32)], check_validity=False
+        )
+
+
+def _submitted_body_refusal(
+    node: Node, block: Block, parent: BlockInfo | None, *, segwit: bool
+) -> str | None:
+    """Answer why a submitted body is refused, marking its header if Core does.
+
+    A body failing `assert_valid_block` where `main.is_block_failed` holds
+    marks its header invalid. A body that passes `CheckBlock` and is still
+    mutated (`main.is_block_mutated`) is answered with Core's word for its
+    witness (`mining.witness_reason`), and its header is left alone:
+    Core's `AcceptBlock` refuses it, and `InvalidBlockFound` leaves a
+    `BLOCK_MUTATED` block unmarked (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so the same header may
+    still arrive with the right body. Any other refusal is btclib's text.
+    """
+    block_index = node.chainstate.block_index
+    error_text = None
+    try:
+        assert_valid_block(block, node.chain)
+    except BTClibException as error:
+        error_text = str(error)
+        # is_block_failed requires passes_check_block itself, so a body
+        # that never got this far indexed (ISS 1339) has nothing here to
+        # invalidate
+        if is_block_failed(block, check_witness_root=segwit):
+            block_index.invalidate(block.header.hash)
+            # Core's own `InvalidChainFound` call, same citation as
+            # `main.check_fork_warning_conditions`'s own docstring
+            check_fork_warning_conditions(node)
+    # `passes_check_block` first: a body that was never indexed has no
+    # parent here to read a height from
+    if passes_check_block(block) and is_block_mutated(block, check_witness_root=segwit):
+        assert parent is not None  # noqa: S101
+        reason = witness_reason(node, block, parent.index + 1)
+        assert reason is not None  # noqa: S101
+        return reason
+    return error_text
+
+
 def _validate_extending_tip(node: Node, block_hash: bytes) -> str | None:
     """Run `main.update_chain` here, and answer its verdict on `block_hash`.
 
@@ -1167,6 +1232,12 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     but a competing, lower branch is not what either issue measured,
     and this tree does not chase it synchronously.
 
+    Where the parent is indexed and segwit binds after it, a coinbase that
+    commits to a witness and carries none gets its nonce first, as Core's
+    `submitblock` does (`_add_witness_nonce`). A body still mutated after
+    that is refused as `_submitted_body_refusal` says, so the same block,
+    whole, is accepted afterwards.
+
     `main._validate_block`'s own `bad-txns-nonfinal` and `bad-cb-height`
     are Core's literal reasons already; `interpreter.check_scripts`
     wraps a script failure into `BlockScriptVerifyError`, whose own
@@ -1202,6 +1273,11 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
 
     block_hash = block.header.hash
     block_index = node.chainstate.block_index
+    parent = block_index.header_dict.get(block.header.previous_block_hash)
+    segwit = parent is not None and (
+        parent.index + 1 >= node.chain.consensus.segwit_height
+    )
+    _add_witness_nonce(block, segwit=segwit)
 
     if is_cached_invalid(block_index, block):
         return "duplicate-invalid"
@@ -1209,22 +1285,9 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     if refusal is not None:
         return refusal
 
-    try:
-        assert_valid_block(block, node.chain)
-    except BTClibException as error:
-        # passes_check_block is what is_block_failed itself requires, so
-        # a body that never got this far indexed (ISS 1339) has nothing
-        # here to invalidate either -- checked before touching the
-        # parent, which such a body's own header may never have named
-        if passes_check_block(block):
-            parent = block_index.get_block_info(block.header.previous_block_hash)
-            segwit = parent.index + 1 >= node.chain.consensus.segwit_height
-            if is_block_failed(block, check_witness_root=segwit):
-                block_index.invalidate(block_hash)
-                # Core's own `InvalidChainFound` call, same citation as
-                # `main.check_fork_warning_conditions`'s own docstring
-                check_fork_warning_conditions(node)
-        return str(error)
+    refusal = _submitted_body_refusal(node, block, parent, segwit=segwit)
+    if refusal is not None:
+        return refusal
 
     extends_tip = block.header.previous_block_hash == block_index.active_chain[-1]
     node.block_db.add_block(block)
@@ -2414,7 +2477,7 @@ def get_tx_out_set_info(
     `get_mempool_info`'s own `mempoolminfee` already is; `muhash` itself
     is the raw digest bytes reversed before this returns, matching
     `uint256::GetHex()`'s own convention rather than this class's
-    `digest` (`chainstate/muhash.py`'s own comment beside
+    `digest_var` (`chainstate/muhash.py`'s own comment beside
     `is_bip30_unspendable` is where that reversal is confirmed against
     the well-known genesis hash rather than assumed).
 
@@ -2497,7 +2560,7 @@ def get_tx_out_set_info(
             utxo_index, utxo_index.cursor(), node, result, total_amount
         )
     if hash_type == "muhash":
-        result["muhash"] = coin_stats.digest[::-1]
+        result["muhash"] = coin_stats.digest_var[::-1]
     result["total_amount"] = total_amount
     return result
 

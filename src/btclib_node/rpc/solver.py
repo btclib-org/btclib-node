@@ -4,13 +4,13 @@
 
 """Bitcoin Core's `Solver`, as `scriptPubKey.type` and its `address` read it.
 
-A stand-in for `btclib.script.solver.solver` (btclib-org/btclib#2458,
-merged, not yet released), which this tree cannot import while its btclib
-floor is a release without it: once the floor moves, delete this module
-and import `solver` from there. Its source is the one this is copied
-from, which reads `Solver` and `GetTxnOutputType` (`src/script/solver.cpp`)
-at bitcoin/bitcoin@9be056a8a7, and it is kept to what an RPC answer needs:
-the type name and the solutions, nothing a standardness check adds.
+A stand-in for `btclib.script.solver.solver` (btclib-org/btclib#2458),
+which the btclib floor carries: btclib-org/btclib-node#2055 removes this
+module and imports `solver` from there. Its source is the one this is
+copied from, which reads `Solver` and `GetTxnOutputType`
+(`src/script/solver.cpp`) at bitcoin/bitcoin@9be056a8a7, and it is kept
+to what an RPC answer needs: the type name and the solutions, nothing a
+standardness check adds.
 
 `btclib.script.script_pub_key.type_and_payload` is not a substitute. It
 names its types its own way and classifies differently on purpose: it

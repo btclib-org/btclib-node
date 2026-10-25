@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any, NoReturn, cast, override
 
 import pytest
 from bitcoin_core_rpc import RPCErrorCode
-from btclib.block import Block, BlockHeader
+from btclib.block import Block, BlockHeader, witness_commitment_output
 from btclib.consensus import MAX_BLOCK_WEIGHT
 from btclib.exceptions import BTClibValueError
 from btclib.fee import FeeRate
@@ -34,7 +34,11 @@ from btclib.key import PrvKeyData
 from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.p2p.limits import PROTOCOL_VERSION
 from btclib.script import script, script_to_dict
-from btclib.script.script_pub_key import ScriptPubKey, p2ms_m_and_keys, type_and_payload
+from btclib.script.script_pub_key import (
+    ScriptPubKey,
+    p2ms_m_and_keys_var,
+    type_and_payload,
+)
 from btclib.script.witness import Witness
 from btclib.tx.limits import COINBASE_MATURITY
 from btclib.tx.out_point import OutPoint
@@ -1268,7 +1272,7 @@ def test_tx_out_set_info_answers_core_s_own_field_names() -> None:
     """`gettxoutsetinfo` answers height, bestblock, txouts, bogosize, amount.
 
     `hash_type: "muhash"` also carries `muhash`, the digest reversed to
-    match `uint256::GetHex()` rather than `CoinStats.digest`'s own
+    match `uint256::GetHex()` rather than `CoinStats.digest_var`'s own
     byte order.
     """
     coin_stats = CoinStats()
@@ -1282,7 +1286,7 @@ def test_tx_out_set_info_answers_core_s_own_field_names() -> None:
     assert result["txouts"] == 1
     assert result["bogosize"] == coin_stats.bogo_size
     assert result["total_amount"].text == "50.00000000"
-    assert result["muhash"] == coin_stats.digest[::-1]
+    assert result["muhash"] == coin_stats.digest_var[::-1]
 
 
 def test_tx_out_set_info_hash_type_none_omits_the_muhash_field() -> None:
@@ -1787,7 +1791,7 @@ def test_get_tx_out_answers_multi_desc_for_a_p2ms_coin(
     script_pub_key_dict = _stage_coin_and_get_tx_out(node, script_pub_key)
 
     assert script_pub_key_dict["type"] == "multisig"
-    threshold, keys = p2ms_m_and_keys(script_pub_key.script)
+    threshold, keys = p2ms_m_and_keys_var(script_pub_key.script)
     key_list = ",".join(key.hex() for key in keys)
     assert script_pub_key_dict["desc"] == add_checksum(f"multi({threshold},{key_list})")
 
@@ -7421,6 +7425,115 @@ def test_submit_block_stores_valid_a_block_off_a_known_non_tip_ancestor(
     assert node.chainstate.block_index.active_chain[-1] == chain[1].header.hash
 
 
+def a_block_committing_to_a_witness_only_its_nonce_holds() -> Block:
+    """Return a height-1 block whose only witness is its coinbase nonce."""
+    nonce = bytes(32)
+    coinbase = generate_coinbase(height=1)
+    coinbase.vout = [*coinbase.vout, witness_commitment_output([coinbase], nonce)]
+    coinbase.vin[0].script_witness = Witness([nonce])
+    return build_block(RegTest().genesis.hash, [coinbase], 0)
+
+
+def test_submit_block_adds_the_nonce_a_committed_body_lacks_as_core_does(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Core adds the missing nonce, and the whole block is then `duplicate`.
+
+    The body without its coinbase nonce has the hash of the block with
+    it. Core's `submitblock` adds the 32 zero bytes before
+    `ProcessNewBlock` (`src/rpc/mining.cpp`, at bitcoin/bitcoin@9be056a8a7),
+    so the body is accepted and stored as the whole block, and the whole
+    block is then `duplicate`. Without the nonce, `update_chain` would refuse
+    the stored body and mark its hash invalid.
+    """
+    node = regtest_node()
+    whole = a_block_committing_to_a_witness_only_its_nonce_holds()
+    stripped = whole.serialize(include_witness=False, check_validity=False)
+    assert stripped != whole.serialize(check_validity=False)
+
+    assert submit_block(node, _CONN, [stripped.hex()]) is None
+
+    block_hash = whole.header.hash
+    assert node.chainstate.block_index.active_chain[-1] == block_hash
+    stored = node.block_db.get_block(block_hash)
+    assert stored is not None
+    assert stored.serialize(check_validity=False) == whole.serialize(
+        check_validity=False
+    )
+    whole_hex = whole.serialize(check_validity=False).hex()
+    assert submit_block(node, _CONN, [whole_hex]) == "duplicate"
+
+
+def test_submit_block_leaves_a_body_with_an_unexpected_witness_unmarked(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `BLOCK_MUTATED` body is refused, stored nowhere and never marked.
+
+    A witness below segwit's height is refused by `ContextualCheckBlock`
+    as `unexpected-witness`, and `InvalidBlockFound` leaves such a block
+    alone (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7): the same
+    header is not `duplicate-invalid` afterwards, and the block with its
+    witness removed is accepted.
+    """
+    node = regtest_node()
+    consensus = replace(node.chain.consensus, segwit_height=2)
+    monkeypatch.setattr(type(node.chain), "consensus", property(lambda _: consensus))
+    mutated = a_block_committing_to_a_witness_only_its_nonce_holds()
+    raw = mutated.serialize(check_validity=False).hex()
+    block_hash = mutated.header.hash
+
+    assert submit_block(node, _CONN, [raw]) == "unexpected-witness"
+    assert submit_block(node, _CONN, [raw]) == "unexpected-witness"
+
+    block_index = node.chainstate.block_index
+    assert block_index.header_dict[block_hash].status != BlockStatus.invalid
+    assert node.block_db.get_block(block_hash) is None
+    clean = mutated.serialize(include_witness=False, check_validity=False).hex()
+    assert submit_block(node, _CONN, [clean]) is None
+    assert block_index.active_chain[-1] == block_hash
+
+
+def test_submit_block_answers_core_s_word_for_a_short_nonce_and_leaves_it_unmarked(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A 31-byte nonce is `bad-witness-nonce-size`, a `BLOCK_MUTATED` refusal.
+
+    Measured against bitcoind v31.1: `CheckWitnessMalleation` answers it
+    with that word, nothing is stored, and the header stays valid-header,
+    so the whole block is accepted afterwards. btclib's own text for it
+    is `invalid witness nonce: [31] stack element size(s) instead of: [32]`.
+    """
+    node = regtest_node()
+    whole = a_block_committing_to_a_witness_only_its_nonce_holds()
+    short = Block.parse(whole.serialize(check_validity=False), check_validity=False)
+    short.transactions[0].vin[0].script_witness = Witness([bytes(31)])
+    raw = short.serialize(check_validity=False).hex()
+    block_hash = whole.header.hash
+
+    assert submit_block(node, _CONN, [raw]) == "bad-witness-nonce-size"
+    assert submit_block(node, _CONN, [raw]) == "bad-witness-nonce-size"
+
+    block_index = node.chainstate.block_index
+    assert block_index.header_dict[block_hash].status != BlockStatus.invalid
+    assert node.block_db.get_block(block_hash) is None
+    whole_hex = whole.serialize(check_validity=False).hex()
+    assert submit_block(node, _CONN, [whole_hex]) is None
+
+
+def test_submit_block_refuses_a_body_with_no_transactions_at_its_merkle_root(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A body of no transactions has no coinbase to give a nonce to."""
+    node = regtest_node()
+    block = a_block_committing_to_a_witness_only_its_nonce_holds()
+    empty = Block(block.header, [], check_validity=False)
+
+    result = submit_block(node, _CONN, [empty.serialize(check_validity=False).hex()])
+
+    assert result is not None
+    assert result.startswith("invalid merkle root")
+
+
 def test_submit_block_answers_duplicate_for_a_block_already_downloaded(
     regtest_node: Callable[..., Node],
 ) -> None:
@@ -8111,7 +8224,8 @@ def test_submit_block_invalidates_a_committed_body_over_the_weight(
     """ISS 1242: `bad-blk-weight` marks the block, its witness committed to.
 
     Where segwit binds only after the block's own height, its witness makes
-    the body mutated and the header is left alone.
+    the body mutated: Core's `unexpected-witness`, ahead of the weight, and
+    the header is left alone.
     """
     node = regtest_node()
     consensus = replace(node.chain.consensus, segwit_height=segwit_height)
@@ -8125,7 +8239,7 @@ def test_submit_block_invalidates_a_committed_body_over_the_weight(
     result = submit_block(node, _CONN, [over.serialize(check_validity=False).hex()])
 
     assert isinstance(result, str)
-    assert result.startswith("invalid weight")
+    assert result.startswith("invalid weight" if invalid else "unexpected-witness")
     block_info = node.chainstate.block_index.get_block_info(over.header.hash)
     assert (block_info.status == BlockStatus.invalid) is invalid
 

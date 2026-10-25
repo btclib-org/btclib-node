@@ -33,7 +33,7 @@ Where this module differs from Core:
 - A reject reason is Core's `GetRejectReason`, the word BIP22 answers
   and never the debug text after it: `TxRejectedError.reason` for what
   connecting refuses, and Core's word where `_check_block`,
-  `_contextual_header_reason`, `_witness_reason` and `_CONNECT_REASONS`
+  `_contextual_header_reason`, `witness_reason` and `_CONNECT_REASONS`
   have one. The rest is the exception's own text, as `submitblock`
   answers.
 """
@@ -100,6 +100,7 @@ __all__ = [
     "check_block_validity",
     "create_new_block",
     "solve_block",
+    "witness_reason",
 ]
 
 # `DEFAULT_MAX_TRIES` (`src/rpc/mining.cpp`): the nonces `generatetoaddress`
@@ -145,6 +146,9 @@ _CONNECT_REASONS = {
 }
 
 _REASON = re.compile(r"[a-z0-9-]+")
+
+# how btclib starts the message of a witness or weight refusal
+_BTCLIB_WITNESS_WORDS = ("unexpected witness", "invalid witness", "invalid weight")
 
 # the least header version once each of BIP34, BIP66 and BIP65 binds
 # (`ContextualCheckBlockHeader`), with the `ConsensusParams` field
@@ -485,7 +489,7 @@ def _version_reason(node: Node, header: BlockHeader) -> str | None:
     return None
 
 
-def _witness_reason(node: Node, block: Block, height: int) -> str | None:
+def witness_reason(node: Node, block: Block, height: int) -> str | None:
     """Return why `block` fails `CheckWitnessMalleation` or the weight limit."""
     transactions = block.transactions
     commitment = (
@@ -512,8 +516,13 @@ def _contextual_block_reason(node: Node, block: Block, height: int) -> str | Non
     try:
         contextual_check_block(node, block, height)
     except BTClibValueError as error:
-        return str(error)
-    return _witness_reason(node, block, height)
+        reason = str(error)
+        # btclib words the witness and weight rules its own way; Core's
+        # words for them are `witness_reason`'s
+        if reason.startswith(_BTCLIB_WITNESS_WORDS):
+            return witness_reason(node, block, height)
+        return reason
+    return witness_reason(node, block, height)
 
 
 def _connect_reason(node: Node, block: Block, height: int) -> str | None:
