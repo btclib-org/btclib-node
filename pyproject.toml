@@ -410,7 +410,7 @@ check = [
     # [build-system]'s own specifier, so the environment satisfies
     # `requires` by construction and the isolated fallback -- which needs
     # an index -- is never asked for
-    "uv_build>=0.12.0,<0.13",
+    "uv_build>=0.12.0,<0.14",
 ]
 dev = [
     { include-group = "test" },
@@ -452,11 +452,11 @@ required-version = ">=0.13.4"
 #     uv run --no-project --with uv_build=="${version:?}" python -c \
 #       "import uv_build; print(uv_build.build_sdist('<outdir>'))"
 #
-# The ceiling is the next minor, which is where uv's versioning policy
-# puts a breaking change, this backend releasing with uv and versioned by
-# it. btclib-org/.github#118 is where a pure-Python project was decided
-# onto this backend
-requires = ["uv_build>=0.12.0,<0.13"]
+# The ceiling is the minor after the newest one uv.lock locks, which is
+# where uv's versioning policy puts a breaking change, this backend
+# releasing with uv and versioned by it. btclib-org/.github#118 is where
+# a pure-Python project was decided onto this backend
+requires = ["uv_build>=0.12.0,<0.14"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
@@ -968,8 +968,7 @@ extend-select = ["unspecified-encoding"]
 # entry, with no code left to look up between them
 ignore = [
     # ruff's own docs/formatter.md, under "Conflicting lint rules",
-    # fetched at the ruff revision pyproject.toml and
-    # .pre-commit-config.yaml both pin (v0.16.4): each of these is
+    # at the ruff `rev:` .pre-commit-config.yaml pins: each of these is
     # undone by the formatter's own rewriting, so selecting it is a
     # lint failure the next `ruff format` produces again. The list is
     # the vendor's, and does not change with this tree.

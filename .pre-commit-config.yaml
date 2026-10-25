@@ -615,7 +615,7 @@ repos:
         # than extending it; --no-isolation stays in the manifest's
         # entry:, which args: does not touch
         args: [--inject-junk, --installer=pip]
-        additional_dependencies: ["uv_build>=0.12.0,<0.13"]
+        additional_dependencies: ["uv_build>=0.12.0,<0.14"]
   # section 4 of btclib-org/.github gives pyroma and check-sdist the same
   # subject -- both build the project through the backend [build-system]
   # admits -- so the metadata pyroma rates is caught on the commit that
