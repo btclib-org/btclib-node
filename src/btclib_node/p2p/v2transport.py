@@ -278,8 +278,9 @@ class V2Transport(Transport):
         ):
             err_msg = f"V1 peer with wrong MessageStart {bytes(buffer[:offset]).hex()}"
             raise V2TransportError(err_msg)
-        if len(buffer) < _KEY_LEN or self._prv_key is None:
+        if len(buffer) < _KEY_LEN:
             return
+        assert self._prv_key is not None  # noqa: S101 -- None only after this state
         self._cipher = Cipher(
             self._prv_key,
             self._ell_ours,
