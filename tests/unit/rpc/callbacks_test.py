@@ -7443,8 +7443,8 @@ def test_submit_block_adds_the_nonce_a_committed_body_lacks_as_core_does(
     it. Core's `submitblock` adds the 32 zero bytes before
     `ProcessNewBlock` (`src/rpc/mining.cpp`, at bitcoin/bitcoin@9be056a8a7),
     so the body is accepted and stored as the whole block, and the whole
-    block is then `duplicate`. Without the nonce, `update_chain` refused
-    the stored body and marked its hash invalid.
+    block is then `duplicate`. Without the nonce, `update_chain` would refuse
+    the stored body and mark its hash invalid.
     """
     node = regtest_node()
     whole = a_block_committing_to_a_witness_only_its_nonce_holds()
