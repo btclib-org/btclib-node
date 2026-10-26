@@ -137,7 +137,7 @@ class V2Transport(Transport):
         self._allow_v1 = v1_fallback is not None
         # reached only once `_allow_v1` let the v1 state begin
         self._v1 = cast("Transport", v1_fallback)
-        self._prv_key = prv_key
+        self._prv_key: int | None = prv_key
         self._ell_ours = ellswift.create(prv_key)
 
         self._recv_lock = Lock()
@@ -280,6 +280,7 @@ class V2Transport(Transport):
             raise V2TransportError(err_msg)
         if len(buffer) < _KEY_LEN:
             return
+        assert self._prv_key is not None  # noqa: S101 -- None only after this state
         self._cipher = Cipher(
             self._prv_key,
             self._ell_ours,
@@ -287,6 +288,7 @@ class V2Transport(Transport):
             self._initiating,
             self._magic,
         )
+        self._prv_key = None
         self._recv_state = RecvState.GARB_GARBTERM
         self._recv_buffer = bytearray()
         with self._send_lock:

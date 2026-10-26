@@ -685,10 +685,12 @@ def test_the_states_after_a_handshake() -> None:
     """With the key in, the sender is ready and the receiver awaits the end."""
     tester = Peer(random.Random(0), initiator=True)
     assert states(tester.transport) == (SendState.AWAITING_KEY, RecvState.KEY)
+    assert tester.transport._prv_key is not None
     tester.send_key()
     tester.send_garbage(3)
     assert tester.interact() == []
     assert states(tester.transport) == (SendState.READY, RecvState.GARB_GARBTERM)
+    assert tester.transport._prv_key is None
 
 
 def test_a_responder_without_a_fallback_refuses_the_v1_prefix_at_16_bytes() -> None:
