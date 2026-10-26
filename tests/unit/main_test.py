@@ -1023,6 +1023,60 @@ def test_a_time_based_relative_lock_satisfied_by_elapsed_time_connects(
     assert len(block_index.active_chain) == connected + 1
 
 
+@pytest.mark.parametrize("sequence", [0, 1 << 22], ids=["height", "time"])
+def test_a_same_block_relative_lock_of_zero_connects(node: Node, sequence: int) -> None:
+    """A version-2 spend of a same-block output with a lock of 0 connects.
+
+    The coin created by the parent carries the connecting block's height,
+    so height and time locks of zero are both satisfied immediately.
+    """
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, chain)
+    connected = len(block_index.active_chain)
+
+    funding = chain[0].transactions[0]
+    parent = spend(funding, funding.vout[0].value)
+    child = relative_locked_spend(parent, parent.vout[0].value, sequence=sequence)
+    good = build_block(
+        chain[-1].header.hash,
+        [generate_coinbase(height=len(chain) + 1), parent, child],
+        len(chain),
+    )
+    connect(node, [good])
+
+    assert good.header.hash in block_index.active_chain
+    assert len(block_index.active_chain) == connected + 1
+
+
+@pytest.mark.parametrize("sequence", [1, (1 << 22) | 1], ids=["height", "time"])
+def test_reject_block_whose_same_block_relative_lock_is_not_satisfied(
+    node: Node, sequence: int
+) -> None:
+    """A version-2 spend of a same-block output with a lock of 1 fails.
+
+    A relative lock of 1 requires at least one block or 512-second interval
+    past the parent's confirmation, which a transaction confirmed in the
+    very same block cannot satisfy.
+    """
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, chain)
+    connected = len(block_index.active_chain)
+
+    funding = chain[0].transactions[0]
+    parent = spend(funding, funding.vout[0].value)
+    child = relative_locked_spend(parent, parent.vout[0].value, sequence=sequence)
+    bad = build_block(
+        chain[-1].header.hash,
+        [generate_coinbase(height=len(chain) + 1), parent, child],
+        len(chain),
+    )
+    connect(node, [bad])
+
+    assert bad.header.hash not in block_index.active_chain
+    assert len(block_index.active_chain) == connected
+    rejected_because(node, bad, "bad-txns-nonfinal")
+
+
 def test_reject_a_mempool_spend_that_is_not_final(node: Node) -> None:
     """`verify_mempool_acceptance` refuses the same non-final transaction.
 
