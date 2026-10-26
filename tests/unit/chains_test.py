@@ -2,14 +2,13 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""Every `Chain` subclass's own constants, checked against Bitcoin Core's own.
+"""Every `Chain` subclass, checked against Bitcoin Core.
 
-Consensus -- an activation height, the easiest target, the subsidy
-interval, the exceptions a chain's own history forces -- is
-`btclib.consensus`'s, transcribed and tested there; what this file
-still owns is what identifies a *node*'s own copy of a network rather
-than the network itself: the genesis block and the magic built from it,
-and that `Chain.consensus` reaches the row of the chain it is asked of.
+Consensus, the headers-sync parameters, the genesis block and the magic
+are btclib's, looked up by `name`. This file checks that each
+subclass's name reaches Core's genesis hash, magic and easiest target,
+and btclib's own rows. Its seeds and its `min_bip9_warning_height`,
+which the subclass holds itself, are checked against Core's.
 """
 
 import runpy

@@ -303,7 +303,7 @@ def get_blockchain_info(
     answering this member under Core's own name would answer a number
     carrying none of Core's meaning behind it, rather than a truthful
     one; `signet_challenge`, `SigNet` here carrying no configurable
-    challenge (chains.py's own genesis is the one public signet);
+    challenge (`SigNet`'s genesis is the one public signet);
     `backgroundvalidation`, present on Core's own side only behind an
     assumeutxo snapshot this node has no counterpart to.
     """

@@ -601,14 +601,15 @@ def test_the_index_holds_the_filters_this_tree_derived_at_scale(
     _index_a_vector_and_check_it(regtest_node(), vector)
 
 
-def test_the_testnet_genesis_block_this_node_builds_is_the_one_core_filtered() -> None:
-    """The testnet genesis block this node builds matches Core's, byte for byte.
+def test_the_testnet_genesis_block_this_node_holds_is_the_one_core_filtered() -> None:
+    """The testnet genesis block this node holds matches Core's, byte for byte.
 
-    chains.py builds the genesis block out of a coinbase it writes
-    rather than parsing one, and row 0 of Core's file is that block:
-    what the filter says is that the transaction this node made is the
-    transaction the network has. It is the one block a peer never
-    serves, so nothing else would ever catch it being wrong.
+    `btclib.block.genesis_block`, which `TestNet` takes it from, builds
+    the block out of a coinbase it writes rather than parsing one, and
+    row 0 of Core's file is that block: what the filter says is that the
+    transaction this node holds is the transaction the network has. It
+    is the one block a peer never serves, so nothing else would ever
+    catch it being wrong.
     """
     _, block_hash, block_hex, _, previous, expected, header = _CORE_VECTORS[0][:7]
     genesis_block = TestNet().genesis_block
