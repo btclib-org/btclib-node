@@ -19,7 +19,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from btclib.block import Block, BlockHeader, merkle_root_and_mutated_from_transactions
-from btclib.consensus import CONSENSUS_PARAMS, ConsensusParams
+from btclib.consensus import (
+    CONSENSUS_PARAMS,
+    HEADERS_SYNC_PARAMS,
+    ConsensusParams,
+    HeadersSyncParams,
+)
 from btclib.p2p.magic import magic_from_network
 from btclib.script import script
 from btclib.tx.out_point import OutPoint
@@ -36,7 +41,6 @@ from btclib_node._chainparamsseeds import (
 
 __all__ = [
     "Chain",
-    "HeadersSyncParams",
     "Main",
     "RegTest",
     "SigNet",
@@ -116,21 +120,6 @@ def create_genesis(  # noqa: PLR0913, PLR0917
     return Block(header, [tx], check_validity=False)
 
 
-@dataclass(frozen=True)
-class HeadersSyncParams:
-    """Core's `HeadersSyncParams`: what `p2p.headers_sync` spends per peer.
-
-    `commitment_period` is how many headers apart the presync phase keeps
-    a one-bit commitment, and `redownload_buffer_size` how many
-    redownloaded headers are held back before any is released
-    (`src/kernel/chainparams.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-    tag). Each leaf below carries Core's own pair for its network.
-    """
-
-    commitment_period: int
-    redownload_buffer_size: int
-
-
 @dataclass
 class Chain:
     """A network this node can join: its magic, its seeds and its genesis.
@@ -173,9 +162,6 @@ class Chain:
     # Each leaf's own `__init__` below cites the line its value comes
     # from.
     prune_after_height: int
-    # Core's `m_headers_sync_params`, the low-work headers sync's memory
-    # per peer; each leaf's own `__init__` cites the line it copies
-    headers_sync_params: HeadersSyncParams
     # Core's `MinBIP9WarningHeight`, the height below which no block
     # counts towards the unknown-versionbit warning
     # (`versionbits.check_unknown_activations`); each leaf's own
@@ -200,6 +186,15 @@ class Chain:
         rather than held here a second time.
         """
         return CONSENSUS_PARAMS[self.name]
+
+    @property
+    def headers_sync_params(self) -> HeadersSyncParams:
+        """This chain's row of `btclib.consensus.HEADERS_SYNC_PARAMS`.
+
+        What `btclib.p2p.headers_sync` spends on one peer, keyed by `name`
+        as `consensus` is.
+        """
+        return HEADERS_SYNC_PARAMS[self.name]
 
     @property
     def magic(self) -> bytes:
@@ -251,8 +246,6 @@ class Main(Chain):
         )
         # src/kernel/chainparams.cpp:154, at bitcoin/bitcoin@ca7162cde5
         self.prune_after_height = 100000
-        # src/kernel/chainparams.cpp:201, at bitcoin/bitcoin@9be056a8a7
-        self.headers_sync_params = HeadersSyncParams(641, 15218)
         # src/kernel/chainparams.cpp:95, at bitcoin/bitcoin@9be056a8a7
         self.min_bip9_warning_height = 483840
 
@@ -281,8 +274,6 @@ class TestNet(Chain):
         )
         # src/kernel/chainparams.cpp:273, at bitcoin/bitcoin@ca7162cde5
         self.prune_after_height = 1000
-        # src/kernel/chainparams.cpp:310, at bitcoin/bitcoin@9be056a8a7
-        self.headers_sync_params = HeadersSyncParams(673, 14460)
         # src/kernel/chainparams.cpp:226, at bitcoin/bitcoin@9be056a8a7
         self.min_bip9_warning_height = 836640
 
@@ -313,8 +304,6 @@ class SigNet(Chain):
         )
         # src/kernel/chainparams.cpp:518, at bitcoin/bitcoin@ca7162cde5
         self.prune_after_height = 1000
-        # src/kernel/chainparams.cpp:548, at bitcoin/bitcoin@9be056a8a7
-        self.headers_sync_params = HeadersSyncParams(620, 15724)
         # src/kernel/chainparams.cpp:490, at bitcoin/bitcoin@9be056a8a7
         self.min_bip9_warning_height = 0
 
@@ -349,8 +338,6 @@ class RegTest(Chain):
         # `-fastprune`, Core's own knob for a lower regtest value in its
         # test suite, so 1000 is the one value that applies here
         self.prune_after_height = 1000
-        # src/kernel/chainparams.cpp:684, at bitcoin/bitcoin@9be056a8a7
-        self.headers_sync_params = HeadersSyncParams(275, 7017)
         # src/kernel/chainparams.cpp:574, at bitcoin/bitcoin@9be056a8a7
         self.min_bip9_warning_height = 0
 
@@ -398,7 +385,5 @@ class TestNet4(Chain):
         )
         # src/kernel/chainparams.cpp:374, at bitcoin/bitcoin@ca7162cde5
         self.prune_after_height = 1000
-        # src/kernel/chainparams.cpp:423, at bitcoin/bitcoin@9be056a8a7
-        self.headers_sync_params = HeadersSyncParams(606, 16092)
         # src/kernel/chainparams.cpp:333, at bitcoin/bitcoin@9be056a8a7
         self.min_bip9_warning_height = 0

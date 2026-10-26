@@ -143,9 +143,7 @@ intersphinx_cache_limit = 0
 #   own add_block), NetworkAddressV2 and Payload (p2p/connection.py,
 #   p2p/manager.py), Path (p2p/address.py, chainstate/__init__.py,
 #   log.py), ScriptFlag/ScriptFlags (interpreter.py's own get_flags
-#   and f), ConsensusParams (p2p/headers_sync.py's own
-#   HeadersSyncState) and ScriptPubKey (mining.py's own create_new_block)
-#   are
+#   and f) and ScriptPubKey (mining.py's own create_new_block) are
 #   this tree's own public API doing exactly what "TC"'s own reason asks
 #   of it. p2p/manager.py's own Tx is besides imported under the alias
 #   BtclibTx, which resolves to nothing under that name for the same
@@ -210,7 +208,6 @@ nitpick_ignore = [
     ("py:class", "BinaryData"),
     ("py:class", "ScriptFlag"),
     ("py:class", "ScriptFlags"),
-    ("py:class", "ConsensusParams"),
     ("py:class", "ScriptPubKey"),
     ("py:class", "btclib_node.settings_file.Json"),
     ("py:class", "R"),

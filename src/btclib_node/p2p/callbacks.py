@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, cast
 
 from btclib import var_int
 from btclib.amount import valid_sats_amount
-from btclib.block import Block, BlockHeader
+from btclib.block import Block, BlockHeader, median_time_past
 from btclib.exceptions import (
     BTClibException,
     BTClibValueError,
@@ -60,6 +60,12 @@ from btclib.p2p.compact_blocks import (
 from btclib.p2p.data import BlockPayload as BlockMsg
 from btclib.p2p.data import TxPayload as TxMsg
 from btclib.p2p.handshake import Verack, Version
+from btclib.p2p.headers_sync import (
+    ChainStart,
+    HeadersSyncState,
+    State,
+    anti_dos_work_threshold,
+)
 from btclib.p2p.inventory import (
     GetBlocks,
     GetData,
@@ -136,12 +142,6 @@ from btclib_node.p2p.compact_block import (
     compact_block,
 )
 from btclib_node.p2p.eviction import is_routable
-from btclib_node.p2p.headers_sync import (
-    ChainStart,
-    HeadersSyncState,
-    State,
-    anti_dos_work_threshold,
-)
 from btclib_node.p2p.messages import FinalAlert
 from btclib_node.p2p.permissions import NetPermissionFlags
 from btclib_node.p2p.protocol_version import (
@@ -1598,14 +1598,13 @@ def _min_pow_checked(node: Node, header: BlockHeader) -> bool:
 
     Core's `min_pow_checked` in its `BLOCK` arm (`net_processing.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the parent is indexed,
-    and its work plus the block's own reaches
-    `headers_sync.anti_dos_work_threshold`.
+    and its work plus the block's own reaches `_anti_dos_work_threshold`.
     """
     block_index = node.chainstate.block_index
     parent = header.previous_block_hash
     return parent in block_index.header_dict and (
         block_index.chainwork[parent] + calculate_work(header)
-        >= anti_dos_work_threshold(block_index, node.config.minimum_chain_work)
+        >= _anti_dos_work_threshold(node)
     )
 
 
@@ -2262,7 +2261,7 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     one runs (`_is_continuation_of_low_work_headers_sync`), which may
     keep it all. A batch connecting to nothing known asks again from
     what this node already has. A connecting batch whose chain has less
-    work than `headers_sync.anti_dos_work_threshold` is not indexed: a
+    work than `_anti_dos_work_threshold` is not indexed: a
     full one starts a low-work sync, a short one is ignored
     (`_try_low_work_headers_sync`), and neither costs the peer anything.
     A batch past all that is indexed, asks for the next one where it was
@@ -2424,12 +2423,43 @@ def _is_continuation_of_low_work_headers_sync(
     if result.success:
         node.download_manager.last_getheaders_timestamps.pop(conn.id, None)
     if result.request_more:
-        maybe_send_getheaders(node, conn, sync.next_headers_request_locator())
+        maybe_send_getheaders(node, conn, sync.next_headers_request_locator)
     if sync.state is State.FINAL:
         conn.headers_sync = None
     if result.success:
         return True, result.pow_validated_headers
     return False, headers
+
+
+def _anti_dos_work_threshold(node: Node) -> int:
+    """Return btclib's `anti_dos_work_threshold` at this node's active tip.
+
+    The active chain always holds genesis, so there is always a tip.
+    `Config.minimum_chain_work` is `-minimumchainwork`.
+    """
+    block_index = node.chainstate.block_index
+    tip = block_index.active_chain[-1]
+    return anti_dos_work_threshold(
+        block_index.chainwork[tip],
+        block_index.get_block_info(tip).header.bits,
+        node.config.minimum_chain_work,
+    )
+
+
+def _chain_start(block_index: BlockIndex, block_hash: bytes) -> ChainStart:
+    """Read the `ChainStart` of the indexed block `block_hash` off the index."""
+    block_info = block_index.get_block_info(block_hash)
+
+    def parent_of(header: BlockHeader) -> BlockHeader:
+        return block_index.get_block_info(header.previous_block_hash).header
+
+    return ChainStart(
+        block_info.header,
+        block_info.index,
+        block_index.chainwork[block_hash],
+        median_time_past(block_info.header, block_info.index, parent_of),
+        block_index.locator_entries(block_hash),
+    )
 
 
 def _try_low_work_headers_sync(
@@ -2440,7 +2470,7 @@ def _try_low_work_headers_sync(
     Core's `TryLowWorkHeadersSync` (`net_processing.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `chain_start`, where the
     batch connects, plus the work the batch claims, below
-    `anti_dos_work_threshold` is a chain this node does not index yet. A
+    `_anti_dos_work_threshold` is a chain this node does not index yet. A
     full batch starts `conn`'s low-work sync from `chain_start`, towards
     that threshold as it stands now, and hands it the batch; a short one
     has nothing behind it to reach the threshold with, and is ignored.
@@ -2451,15 +2481,16 @@ def _try_low_work_headers_sync(
     total_work = block_index.chainwork[chain_start] + sum(
         calculate_work(header) for header in headers
     )
-    threshold = anti_dos_work_threshold(block_index, node.config.minimum_chain_work)
+    threshold = _anti_dos_work_threshold(node)
     if total_work >= threshold:
         return False
     if len(headers) == MAX_HEADERS_RESULTS:
         conn.headers_sync = HeadersSyncState(
             node.chain.consensus,
             node.chain.headers_sync_params,
-            ChainStart.from_index(block_index, chain_start),
+            _chain_start(block_index, chain_start),
             threshold,
+            now=clock.now_utc(),
         )
         _is_continuation_of_low_work_headers_sync(node, conn, headers)
     else:

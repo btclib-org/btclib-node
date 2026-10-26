@@ -1313,7 +1313,7 @@ class BlockIndex:
         whether a header already marked invalid is a `MisbehavingError`,
         as Core has it for an outbound peer, rather than a
         `BTClibValueError`. `min_pow_checked` is whether the caller has
-        checked the chain's work against `p2p.headers_sync`'s anti-DoS
+        checked the chain's work against `btclib.p2p.headers_sync`'s anti-DoS
         threshold, a `LowWorkHeaderError` being what a new header gets
         where it has not. True by default: `p2p.callbacks.headers` checks
         before calling, and Core's RPCs pass true, which leaves

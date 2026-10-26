@@ -30,7 +30,7 @@ import pytest
 from btclib import var_int
 from btclib.amount import sats_from_btc
 from btclib.block import Block, BlockHeader
-from btclib.consensus import MAX_BLOCK_WEIGHT
+from btclib.consensus import MAX_BLOCK_WEIGHT, HeadersSyncParams
 from btclib.exceptions import BTClibException, BTClibValueError
 from btclib.hashes import hash256
 from btclib.p2p.address import Addr, NetworkAddress, ServiceFlags
@@ -60,6 +60,7 @@ from btclib.p2p.compact_blocks import (
 from btclib.p2p.data import BlockPayload as BlockMsg
 from btclib.p2p.data import TxPayload as TxMsg
 from btclib.p2p.handshake import Verack, Version
+from btclib.p2p.headers_sync import HeadersSyncState, State
 from btclib.p2p.inventory import (
     GetBlocks,
     GetData,
@@ -86,7 +87,8 @@ from btclib.script.witness import Witness
 
 import btclib_node.p2p.address as address_module
 import btclib_node.p2p.callbacks as cb
-from btclib_node.chains import HeadersSyncParams, RegTest, SigNet
+from btclib_node import clock
+from btclib_node.chains import RegTest, SigNet
 from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.block_index import BlockStatus, calculate_work
 from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
@@ -157,7 +159,6 @@ from btclib_node.p2p.connection import (
     KnownTxInventory,
     PeerStats,
 )
-from btclib_node.p2p.headers_sync import HeadersSyncState, State
 from btclib_node.p2p.manager import P2pManager
 from btclib_node.p2p.permissions import NetPermissionFlags
 from btclib_node.p2p.protocol_version import (
@@ -7310,6 +7311,44 @@ def sent_getheaders(peer: Any) -> list[GetHeaders]:
     return [message for message in peer.sent if isinstance(message, GetHeaders)]
 
 
+def test_the_anti_dos_threshold_is_read_at_the_active_tip() -> None:
+    """The tip's chain work and its own bits, and `-minimumchainwork`.
+
+    The tip is the active chain's last block, genesis being its first,
+    and the 144 blocks btclib takes off are the tip's own work.
+    """
+    work = calculate_work(RegTest().genesis)
+    tip = SimpleNamespace(header=SimpleNamespace(bits=RegTest().genesis.bits))
+    block_index = SimpleNamespace(
+        active_chain=[b"genesis", b"tip"],
+        chainwork={b"genesis": work, b"tip": 10**6},
+        get_block_info={b"tip": tip}.__getitem__,
+    )
+    node: Any = SimpleNamespace(
+        chainstate=SimpleNamespace(block_index=block_index),
+        config=SimpleNamespace(minimum_chain_work=0),
+    )
+    assert cb._anti_dos_work_threshold(node) == 10**6 - 144 * work
+    node.config.minimum_chain_work = 10**7
+    assert cb._anti_dos_work_threshold(node) == 10**7
+
+
+def test_a_chain_start_is_read_off_the_index(tmp_path: Path) -> None:
+    """The header, its height, work and median time past, and its locator."""
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    block_index = chainstate.block_index
+    chain = generate_random_header_chain(12, RegTest().genesis.hash)
+    block_index.add_headers(chain)
+    start = cb._chain_start(block_index, chain[-1].hash)
+    assert start.header == chain[-1]
+    assert start.height == 12
+    assert start.chain_work == 13 * calculate_work(RegTest().genesis)
+    # the eleven latest, a second apart: the median is the sixth from the top
+    assert start.median_time_past == int(chain[6].time.timestamp())
+    assert start.locator == tuple(block_index.locator_entries(chain[-1].hash))
+    chainstate.close()
+
+
 def test_low_work_headers_are_stored_nowhere_even_after_a_reopen(
     tmp_path: Path,
 ) -> None:
@@ -7397,13 +7436,37 @@ def test_a_full_low_work_batch_starts_a_sync_and_asks_on_from_it(
     headers(node, Headers(chain).serialize(), peer)
     assert isinstance(peer.headers_sync, HeadersSyncState)
     assert peer.headers_sync.state is State.PRESYNC
-    assert peer.headers_sync.minimum_required_work == (
+    assert peer.headers_sync._minimum_required_work == (
         50 * calculate_work(RegTest().genesis)
     )
     assert chain[0].hash not in node.chainstate.block_index.header_dict
     (request,) = sent_getheaders(peer)
     assert request.locator == (chain[-1].hash, RegTest().genesis.hash)
     assert peer.id in node.download_manager.last_getheaders_timestamps
+    node.chainstate.close()
+
+
+def test_a_clock_far_behind_the_chain_start_starts_no_sync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A clock over two hours behind the chain start starts no sync.
+
+    btclib refuses to build it. The chain start is genesis, whose median
+    time past is its own time. The batch is not indexed, and the error is
+    no `MisbehavingError`, so `handle_p2p` keeps the peer.
+    """
+    monkeypatch.setattr(cb, "MAX_HEADERS_RESULTS", 3)
+    genesis_time = RegTest().genesis.time
+    late = genesis_time - timedelta(hours=2, seconds=1)
+    monkeypatch.setattr(clock, "now_utc", lambda: late)
+    node = a_low_work_node(tmp_path, minimum_blocks=50)
+    chain = generate_random_header_chain(3, RegTest().genesis.hash)
+    peer = a_peer()
+    with pytest.raises(BTClibValueError, match="the clock is more than 120 minutes"):
+        headers(node, Headers(chain).serialize(), peer)
+    assert peer.headers_sync is None
+    assert chain[0].hash not in node.chainstate.block_index.header_dict
+    assert not sent_getheaders(peer)
     node.chainstate.close()
 
 
