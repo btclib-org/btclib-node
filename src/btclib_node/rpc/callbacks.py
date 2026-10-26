@@ -66,7 +66,7 @@ from btclib_node.main import (
 )
 from btclib_node.mempool_persist import FILENAME as MEMPOOL_FILENAME
 from btclib_node.mempool_persist import dump_mempool, load_mempool
-from btclib_node.mining import witness_reason
+from btclib_node.mining import contextual_block_reason
 from btclib_node.p2p.address import SEEDS_SERVICE_FLAGS, ip_and_port, network_class
 from btclib_node.p2p.banman import (
     SpecialAddress,
@@ -1129,12 +1129,18 @@ def _submitted_body_refusal(
 
     A body failing `assert_valid_block` where `main.is_block_failed` holds
     marks its header invalid. A body that passes `CheckBlock` and is still
-    mutated (`main.is_block_mutated`) is answered with Core's word for its
-    witness (`mining.witness_reason`), and its header is left alone:
+    mutated (`main.is_block_mutated`) is answered with the first rule of
+    Core's `ContextualCheckBlock` it fails (`mining.contextual_block_reason`),
+    which may come before the witness, and its header is left alone:
     Core's `AcceptBlock` refuses it, and `InvalidBlockFound` leaves a
     `BLOCK_MUTATED` block unmarked (`src/validation.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so the same header may
     still arrive with the right body. Any other refusal is btclib's text.
+
+    Where that first rule is not a witness rule, such as
+    `bad-txns-nonfinal` or `bad-cb-height`, Core's result is
+    `BLOCK_CONSENSUS` and `InvalidBlockFound` marks the header failed.
+    This node leaves it unmarked (btclib-org/btclib-node#2075).
     """
     block_index = node.chainstate.block_index
     error_text = None
@@ -1154,7 +1160,7 @@ def _submitted_body_refusal(
     # parent here to read a height from
     if passes_check_block(block) and is_block_mutated(block, check_witness_root=segwit):
         assert parent is not None  # noqa: S101
-        reason = witness_reason(node, block, parent.index + 1)
+        reason = contextual_block_reason(node, block, parent.index + 1)
         assert reason is not None  # noqa: S101
         return reason
     return error_text
@@ -1235,8 +1241,8 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     Where the parent is indexed and segwit binds after it, a coinbase that
     commits to a witness and carries none gets its nonce first, as Core's
     `submitblock` does (`_add_witness_nonce`). A body still mutated after
-    that is refused as `_submitted_body_refusal` says, so the same block,
-    whole, is accepted afterwards.
+    that is refused as `_submitted_body_refusal` says. The same block,
+    whole, is accepted afterwards where no other rule refuses it.
 
     `main._validate_block`'s own `bad-txns-nonfinal` and `bad-cb-height`
     are Core's literal reasons already; `interpreter.check_scripts`
@@ -1246,11 +1252,12 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     A spend of an immature coinbase and one over its inputs are Core's
     `bad-txns-premature-spend-of-coinbase` and `bad-txns-in-belowout`,
     the reason alone as `GetRejectReason` gives it, and so are
-    `bad-txns-accumulated-fee-outofrange` and `bad-blk-sigops`. Anything
-    else `update_chain`'s
-    trial raises for this exact hash is answered with btclib's own
-    text, the same divergence the paragraph above already argues for
-    every reason this function has no literal word for.
+    `bad-txns-accumulated-fee-outofrange` and `bad-blk-sigops`, and the
+    words `main._CONTEXTUAL_REASONS` gives btclib's contextual refusals.
+    Anything else `update_chain`'s trial raises for this exact hash is
+    answered with btclib's own text, the same divergence the paragraph
+    above already argues for every reason this function has no literal
+    word for.
 
     A failure `update_chain`'s own trial does not swallow into a
     rejection -- this node's own storage or bookkeeping, not the

@@ -2483,8 +2483,7 @@ def a_data_node(
     Out of initial block download by default, since a transaction callback
     only accepts there; `is_initial_block_download` moves that to test the
     gate. `config.chain` is `node.chain` itself, as `Node.__init__` keeps
-    them (`self.chain = config.chain`), which `new_pow_valid_block`'s own
-    `contextual_check_block` reads through `config` rather than `node`.
+    them (`self.chain = config.chain`).
     """
     node = a_handshake_node(status=status)
     node.is_initial_block_download = is_initial_block_download

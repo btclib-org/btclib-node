@@ -33,9 +33,9 @@ Where this module differs from Core:
 - A reject reason is Core's `GetRejectReason`, the word BIP22 answers
   and never the debug text after it: `TxRejectedError.reason` for what
   connecting refuses, and Core's word where `_check_block`,
-  `_contextual_header_reason`, `witness_reason` and `_CONNECT_REASONS`
-  have one. The rest is the exception's own text, as `submitblock`
-  answers.
+  `_contextual_header_reason`, `main.contextual_check_block` and
+  `_CONNECT_REASONS` have one. The rest is the exception's own text, as
+  `submitblock` answers.
 """
 
 from __future__ import annotations
@@ -49,7 +49,6 @@ from btclib.block import (
     Block,
     BlockHeader,
     assert_not_timewarp,
-    coinbase_witness_commitment,
     median_time_past,
     next_bits_required,
     witness_commitment_output,
@@ -98,9 +97,9 @@ __all__ = [
     "accept_block",
     "block_with_transactions",
     "check_block_validity",
+    "contextual_block_reason",
     "create_new_block",
     "solve_block",
-    "witness_reason",
 ]
 
 # `DEFAULT_MAX_TRIES` (`src/rpc/mining.cpp`): the nonces `generatetoaddress`
@@ -146,9 +145,6 @@ _CONNECT_REASONS = {
 }
 
 _REASON = re.compile(r"[a-z0-9-]+")
-
-# how btclib starts the message of a witness or weight refusal
-_BTCLIB_WITNESS_WORDS = ("unexpected witness", "invalid witness", "invalid weight")
 
 # the least header version once each of BIP34, BIP66 and BIP65 binds
 # (`ContextualCheckBlockHeader`), with the `ConsensusParams` field
@@ -489,40 +485,13 @@ def _version_reason(node: Node, header: BlockHeader) -> str | None:
     return None
 
 
-def witness_reason(node: Node, block: Block, height: int) -> str | None:
-    """Return why `block` fails `CheckWitnessMalleation` or the weight limit."""
-    transactions = block.transactions
-    commitment = (
-        block.witness_commitment
-        if height >= node.chain.consensus.segwit_height
-        else None
-    )
-    if commitment is None:
-        if any(tx.is_segwit for tx in transactions):
-            return "unexpected-witness"
-    else:
-        stack = transactions[0].vin[0].script_witness.stack
-        if len(stack) != 1 or len(stack[0]) != len(_WITNESS_NONCE):
-            return "bad-witness-nonce-size"
-        if coinbase_witness_commitment(transactions, stack[0]) != commitment:
-            return "bad-witness-merkle-match"
-    if block.weight > MAX_BLOCK_WEIGHT:
-        return "bad-blk-weight"
-    return None
-
-
-def _contextual_block_reason(node: Node, block: Block, height: int) -> str | None:
+def contextual_block_reason(node: Node, block: Block, height: int) -> str | None:
     """Return why `block` fails `ContextualCheckBlock` at `height`."""
     try:
         contextual_check_block(node, block, height)
     except BTClibValueError as error:
-        reason = str(error)
-        # btclib words the witness and weight rules its own way; Core's
-        # words for them are `witness_reason`'s
-        if reason.startswith(_BTCLIB_WITNESS_WORDS):
-            return witness_reason(node, block, height)
-        return reason
-    return witness_reason(node, block, height)
+        return str(error)
+    return None
 
 
 def _connect_reason(node: Node, block: Block, height: int) -> str | None:
@@ -566,7 +535,7 @@ def check_block_validity(
     return (
         _check_block(block, check_merkle_root=check_merkle_root)
         or _contextual_header_reason(node, block.header)
-        or _contextual_block_reason(node, block, height)
+        or contextual_block_reason(node, block, height)
         or _connect_reason(node, block, height)
     )
 

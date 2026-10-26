@@ -8117,6 +8117,41 @@ def test_submit_block_answers_a_contextual_failure_for_a_block_extending_the_tip
     assert node.block_db.get_block(bad.header.hash) is not None
 
 
+def test_submit_block_answers_finality_before_the_witness_of_a_mutated_body(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A mutated body that is also non-final is `bad-txns-nonfinal`.
+
+    Core's `AcceptBlock` asks `ContextualCheckBlock`, which refuses a
+    non-final transaction before it asks `CheckWitnessMalleation`
+    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    """
+    node = regtest_node()
+    chain = generate_random_chain(COINBASE_MATURITY, node.chain.genesis.hash)
+    connect(node, chain)
+
+    funding = chain[0].transactions[0]
+    nonfinal = locked_spend(
+        funding, funding.vout[0].value, lock_time=2_000_000_000, sequence=0
+    )
+    coinbase = generate_coinbase(height=len(chain) + 1)
+    nonce = bytes(32)
+    coinbase.vout = [
+        *coinbase.vout,
+        witness_commitment_output([coinbase, nonfinal], nonce),
+    ]
+    # a 31-byte nonce: Core's `bad-witness-nonce-size` on its own
+    coinbase.vin[0].script_witness = Witness([bytes(31)])
+    bad = build_block(
+        node.chainstate.block_index.active_chain[-1], [coinbase, nonfinal], len(chain)
+    )
+
+    result = submit_block(node, _CONN, [bad.serialize(check_validity=False).hex()])
+
+    assert result == "bad-txns-nonfinal"
+    assert node.block_db.get_block(bad.header.hash) is None
+
+
 def test_submit_block_answers_a_script_failure_for_a_block_extending_the_tip(
     regtest_node: Callable[..., Node],
 ) -> None:
