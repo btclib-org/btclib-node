@@ -643,8 +643,8 @@ this release included.
    this repository called `reusable-build.yml`, was signed by
    `reusable-attest.yml`, named the same way. A tag through v2026.9.4 was
    signed by `release.yml` itself, and for one of those `signer` is
-   `"$repo/.github/workflows/release.yml"`. Each path verifies only the
-   releases its own workflow signed.
+   `btclib-org/btclib-node/.github/workflows/release.yml`. Each path verifies
+   only the releases its own workflow signed.
 
 1. **Review the bestpractices.dev answers.** Refresh the saved answers
    with `btclib-org/.github`'s `.github/scripts/bestpractices.py`, and run
@@ -747,8 +747,8 @@ gh attestation verify "sbom/btclib_node-${version:?}.cdx.json" \
 repository called `reusable-build.yml`, was signed by
 `reusable-attest.yml`, named the same way. A tag through v2026.9.4
 was signed by `release.yml` itself, and for one of those `signer` is
-`"$repo/.github/workflows/release.yml"`. Each path verifies only the
-releases its own workflow signed.
+`btclib-org/btclib-node/.github/workflows/release.yml`. Each path verifies
+only the releases its own workflow signed.
 
 `python` is the interpreter the tag's own `.python-version` pins, its
 comment and blank lines dropped, and not the one `main` pins:
