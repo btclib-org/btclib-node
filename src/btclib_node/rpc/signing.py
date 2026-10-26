@@ -25,6 +25,7 @@ from btclib.exceptions import BTClibException
 from btclib.hashes import hash160, sha256
 from btclib.script.script import script_to_asm
 from btclib.script.sig_hash import PrecomputedTxData
+from btclib.script.solver import solver
 from btclib.script.witness import Witness
 from btclib.tx import Tx
 from btclib.tx.out_point import OutPoint
@@ -32,7 +33,6 @@ from btclib.tx.tx_out import TxOut
 
 from btclib_node.rpc.errors import RpcError, is_hex, json_type_name, type_errors
 from btclib_node.rpc.help import HELP_TEXT
-from btclib_node.rpc.solver import solver
 from btclib_node.signing import (
     MAX_MONEY,
     MISSING_AMOUNT,
