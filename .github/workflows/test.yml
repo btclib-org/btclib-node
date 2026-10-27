@@ -280,11 +280,9 @@ jobs:
       && needs.changes.outputs.code == 'true' }}
     needs: changes
     runs-on: windows-latest
-    # 45 minutes, raised from 30 (issue #2006): the suite takes 16 to 21
-    # minutes here without coverage, so 30 left less than 2x headroom and
-    # tripped when a runner slowed down under contention or throttling.
-    # What this bounds is a runner wedged before or between the tests,
-    # not the work
+    # well above the suite's wall time on this image, which a slowed
+    # runner stretches (issue #2006): what this bounds is a runner wedged
+    # before or between the tests, not the work
     timeout-minutes: 45
     steps:
       - name: Checkout code
