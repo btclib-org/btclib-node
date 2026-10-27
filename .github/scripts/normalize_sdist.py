@@ -41,10 +41,11 @@ are what `uv_build` writes today, so the line is a no-op against the
 current backend and an answer of this tree's own against any other --
 one that could take the mode from the working directory it walks, and
 so put the umask of a checkout in the published archive. Nothing in the
-sdist needs the executable bit -- no source file here opens with a
-shebang, which `.pre-commit-config.yaml` records as a decision rather
-than an accident -- so one mode for files and one for directories is
-the whole of it.
+sdist needs the executable bit -- none of this tree's own files opens
+with a shebang, and the files vendored under
+`tests/unit/_data/test_framework/` that do are loaded by path, never
+run -- so one mode for files and one for directories is the whole of
+it.
 
 `PAX_FORMAT` with the extended headers cleared, rather than
 `USTAR_FORMAT`: an integral timestamp needs no PAX record, so the two

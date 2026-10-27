@@ -902,7 +902,14 @@ branch = true
 # unrelated guard against reporting a skip as a pass.
 # `tests/slow/*` is left out for the same reason: a bare run skips every
 # test there (`tests/README.md`'s *Slow tests*), and `slow.yml` runs them.
-omit = ["*/site-packages/*", "tests/integration/*", "tests/slow/*"]
+# `tests/*/_data/*` is upstream's code, vendored byte for byte
+# (tests/_data/README.md): it is not this tree's to cover.
+omit = [
+    "*/site-packages/*",
+    "tests/integration/*",
+    "tests/slow/*",
+    "tests/*/_data/*",
+]
 
 [tool.coverage.report]
 show_missing = true
@@ -931,6 +938,10 @@ fail_under = 100.0
 
 [tool.ruff]
 # target-version is inferred from project.requires-python
+#
+# the Python under tests/**/_data/ is upstream's, byte for byte, which
+# tests/_data/README.md pins: a fix or a reformat voids the pin.
+extend-exclude = ["tests/**/_data"]
 
 [tool.ruff.lint]
 # The pair only makes sense together: naming a rule in `ignore` below
@@ -1258,6 +1269,9 @@ extend-exclude = [
 # that reason ever justified skipping -- the harness itself is this
 # tree's own code and gets the same check as everything above.
 files = ["src/btclib_node", "tests", "scripts", ".github/scripts", "fuzz"]
+# the Python vendored byte for byte under tests/**/_data/ is Core's,
+# untyped, and the tests load it by path rather than import it
+exclude = '^tests/(.*/)?_data/'
 # the floor `project.requires-python` declares, and not the interpreter
 # that happens to be running: a name added to the standard library
 # later passes here and fails for whoever is on the oldest version this
