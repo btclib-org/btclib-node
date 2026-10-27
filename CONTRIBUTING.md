@@ -657,6 +657,16 @@ is the case in point: master reads it as a byte and calls `Misbehaving`
 on a value above one, where the release reads a bare bool and refuses
 nothing.
 
+### A defect rooted in btclib
+
+A defect rooted in btclib's behaviour is fixed in btclib, not worked
+around here. The node branch that needs the fix does not land before the
+btclib release that carries it, and the issue it closes carries the
+`waits-release` label. Until that release, the code states the
+divergence as *Following Bitcoin Core* asks, and cites the btclib issue.
+`Tx.assert_valid`'s check order is the case in point
+(btclib-org/btclib#2417).
+
 ### Ignored state that a second run or a second worktree shares
 
 - **A second `pytest` in the same rootdir, even `--help`, erases a
