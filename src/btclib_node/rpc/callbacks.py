@@ -49,12 +49,13 @@ from btclib_node.exceptions import MissingPrevoutError, TxRejectedError
 from btclib_node.fee_estimator import track_accepted
 from btclib_node.main import (
     already_confirmed,
-    assert_valid_block,
+    assert_valid_block_proof,
     check_fork_warning_conditions,
     invalidate_chain,
     is_block_failed,
     is_block_mutated,
     is_cached_invalid,
+    mark_contextual_failure,
     new_pow_valid_block,
     parent_lookup,
     passes_check_block,
@@ -1132,42 +1133,50 @@ def _submitted_body_refusal(
 ) -> str | None:
     """Answer why a submitted body is refused, marking its header if Core does.
 
-    A body failing `assert_valid_block` where `main.is_block_failed` holds
-    marks its header invalid. A body that passes `CheckBlock` and is still
-    mutated (`main.is_block_mutated`) is answered with the first rule of
-    Core's `ContextualCheckBlock` it fails (`mining.contextual_block_reason`),
-    which may come before the witness, and its header is left alone:
-    Core's `AcceptBlock` refuses it, and `InvalidBlockFound` leaves a
-    `BLOCK_MUTATED` block unmarked (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so the same header may
-    still arrive with the right body. Any other refusal is btclib's text.
-
-    Where that first rule is not a witness rule, such as
-    `bad-txns-nonfinal` or `bad-cb-height`, Core's result is
-    `BLOCK_CONSENSUS` and `InvalidBlockFound` marks the header failed.
-    This node leaves it unmarked (btclib-org/btclib-node#2075).
+    A body failing `main.assert_valid_block_proof` (on signet, its
+    solution) is refused for it, and nothing is marked: Core asks it in
+    `CheckBlock`, and `ProcessNewBlock` marks nothing for a body failing
+    that. A body that passes `CheckBlock` (`main.passes_check_block`) is
+    then asked Core's `ContextualCheckBlock`
+    (`mining.contextual_block_reason`), weight included, as Core's
+    `AcceptBlock` asks it before storing the block (`src/validation.cpp`,
+    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Where
+    `main.mark_contextual_failure` marks its header, the body is refused
+    with that rule's word. A mutated body (`main.is_block_mutated`) is
+    refused with the first rule it fails, whichever it is, which may come
+    before the witness. A witness rule leaves its header alone
+    (`main.mark_contextual_failure`). A body over the weight behind a
+    header rule `contextual_check_block` asks again is refused in
+    btclib's text and marked (`main.is_block_failed`). Any other refusal
+    is btclib's text.
     """
-    block_index = node.chainstate.block_index
+    try:
+        assert_valid_block_proof(block, node.chain)
+    except BTClibException as error:
+        return str(error)
     error_text = None
     try:
-        assert_valid_block(block, node.chain)
+        block.assert_valid_structure()
     except BTClibException as error:
         error_text = str(error)
-        # is_block_failed requires passes_check_block itself, so a body
-        # that never got this far indexed (ISS 1339) has nothing here to
-        # invalidate
-        if is_block_failed(block, check_witness_root=segwit):
-            block_index.invalidate(block.header.hash)
-            # Core's own `InvalidChainFound` call, same citation as
-            # `main.check_fork_warning_conditions`'s own docstring
-            check_fork_warning_conditions(node)
     # `passes_check_block` first: a body that was never indexed has no
     # parent here to read a height from
-    if passes_check_block(block) and is_block_mutated(block, check_witness_root=segwit):
-        assert parent is not None  # noqa: S101
-        reason = contextual_block_reason(node, block, parent.index + 1)
-        assert reason is not None  # noqa: S101
+    if not passes_check_block(block):
+        return error_text
+    mutated = is_block_mutated(block, check_witness_root=segwit)
+    assert parent is not None  # noqa: S101
+    reason = contextual_block_reason(node, block, parent.index + 1)
+    # what `is_block_mutated` finds past `CheckBlock` is a witness rule
+    assert reason is not None or not mutated  # noqa: S101
+    if reason is not None and (
+        mark_contextual_failure(node, block.header.hash, reason) or mutated
+    ):
         return reason
+    if error_text is not None and is_block_failed(block, check_witness_root=segwit):
+        node.chainstate.block_index.invalidate(block.header.hash)
+        # Core's own `InvalidChainFound` call, same citation as
+        # `main.check_fork_warning_conditions`'s own docstring
+        check_fork_warning_conditions(node)
     return error_text
 
 
@@ -1249,11 +1258,10 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     that is refused as `_submitted_body_refusal` says. The same block,
     whole, is accepted afterwards where no other rule refuses it.
 
-    `main._validate_block`'s own `bad-txns-nonfinal` and `bad-cb-height`
-    are Core's literal reasons already; `interpreter.check_scripts`
-    wraps a script failure into `BlockScriptVerifyError`, whose own
-    `str()` is Core's `block-script-verify-flag-failed (%s)`
-    (`CheckInputScripts`, same file and sha) with `ScriptErrorString`.
+    `interpreter.check_scripts` wraps a script failure into
+    `BlockScriptVerifyError`, whose own `str()` is Core's
+    `block-script-verify-flag-failed (%s)` (`CheckInputScripts`, same
+    file and sha) with `ScriptErrorString`.
     A spend of an immature coinbase and one over its inputs are Core's
     `bad-txns-premature-spend-of-coinbase` and `bad-txns-in-belowout`,
     the reason alone as `GetRejectReason` gives it, and so are
