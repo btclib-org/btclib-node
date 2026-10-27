@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 
 import btclib_node.rpc.snapshot as rpc_snapshot
+from btclib_node.exceptions import ChainstateInconsistencyError
 from btclib_node.main import invalidate_chain
 from btclib_node.rpc.callbacks import arg_names, callbacks, named_only
 from btclib_node.rpc.errors import RpcError
@@ -144,6 +145,26 @@ def test_a_rollback_dumps_an_earlier_block_and_comes_back(
         ]
         == 3
     )
+
+
+def test_a_rollback_over_a_record_holding_another_block_stops_the_node(
+    node: Node,
+) -> None:
+    """ISS 2038: `invalidate_chain` refuses the record before disconnecting.
+
+    The tip is where it was, nothing is written, and the network is on
+    again.
+    """
+    mine(node, 3)
+    chain = list(node.chainstate.block_index.active_chain)
+    node.block_db.blocks[chain[3]] = node.block_db.blocks[chain[2]]
+
+    with pytest.raises(ChainstateInconsistencyError):
+        dump(node, "old.dat", "", {"rollback": 1})
+    assert node.terminate_flag.is_set()
+    assert node.chainstate.block_index.active_chain == chain
+    assert not (node.data_dir / "old.dat").exists()
+    assert node.p2p_manager.get_network_active() is True
 
 
 def test_a_network_that_was_off_stays_off(node: Node) -> None:

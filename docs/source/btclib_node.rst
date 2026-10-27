@@ -183,6 +183,13 @@ btclib\_node.snapshot module
    :members:
    :show-inheritance:
 
+btclib\_node.stored\_block module
+---------------------------------
+
+.. automodule:: btclib_node.stored_block
+   :members:
+   :show-inheritance:
+
 btclib\_node.txgraph module
 ----------------------------
 

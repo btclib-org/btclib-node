@@ -336,6 +336,31 @@ def test_a_catch_up_that_cannot_reach_a_block_says_so(
         filter_index.catch_up(node.chainstate.block_index, block_db)
 
 
+def test_a_catch_up_refuses_a_record_holding_another_block(
+    regtest_node: Callable[[], Node],
+) -> None:
+    """ISS 2038: Core's `BaseIndex::ProcessBlock` reads it with `ReadBlock`.
+
+    The store holds genesis's octets under the block's hash.
+    """
+    node = regtest_node()
+    (block,) = a_chain(node, 1)
+    filter_index = node.chainstate.filter_index
+    filter_index.db.delete(b"cfilter-" + block.header.hash)
+    filter_index.db.delete(b"cfheader-" + block.header.hash)
+    filter_index.best_block = None
+    block_db = node.block_db
+    asked, stored = block.header.hash, node.chain.genesis.hash
+    block_db.blocks[asked] = block_db.blocks[stored]
+
+    with pytest.raises(ChainstateInconsistencyError) as raised:
+        filter_index.catch_up(node.chainstate.block_index, block_db)
+    refusal = f"stored block hashes to {stored.hex()}, not {asked.hex()}"
+    assert str(raised.value) == (
+        f"cannot read block {asked.hex()} from the store: {refusal}"
+    )
+
+
 def test_an_index_survives_the_node_being_closed_and_opened(
     regtest_node: Callable[[], Node],
 ) -> None:

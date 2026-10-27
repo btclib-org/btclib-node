@@ -62,6 +62,7 @@ from typing import TYPE_CHECKING
 from btclib.block.block_filter import BasicBlockFilter, prevout_scripts_from_utxos
 
 from btclib_node.exceptions import ChainstateInconsistencyError
+from btclib_node.stored_block import read_held_block
 
 if TYPE_CHECKING:
     from btclib.block import Block
@@ -110,6 +111,7 @@ class FilterIndex:
     def __init__(self, db: KeyValueStore, chain: Chain, logger: Logger) -> None:
         """Read the locator, and build the genesis filter if absent."""
         self.db = db
+        self.chain = chain
         self.logger = logger
         self.best_block: bytes | None = db.get_meta(_BEST_BLOCK)
 
@@ -262,7 +264,8 @@ class FilterIndex:
             block_hash = active_chain[height]
             if self.get_filter(block_hash) is not None:
                 continue
-            block = block_db.get_block(block_hash)
+            # Core's `BaseIndex::ProcessBlock` reads it (`read_held_block`)
+            block = read_held_block(block_db, self.chain, block_hash)
             rev_block = block_db.get_rev_block(block_hash)
             if block is None or rev_block is None:
                 # nothing else can be built either: the next block's

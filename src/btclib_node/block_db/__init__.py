@@ -262,23 +262,23 @@ class BlockDB:
     production caller of every method here, but the suite calls
     `add_block` directly from a test's own thread while `Node`'s thread
     is concurrently inside `update_chain` reading earlier blocks back
-    through `get_block` -- and `get_raw_transaction`
-    (`rpc/callbacks.py:535`) is one call away from doing the same for
-    real, the moment a handler is added that is not routed through
-    `Node`'s own loop. `open_block_file` and `open_rev_file` are each one
-    `BinaryIO` handle with one file position shared by every `seek`,
-    `read` and `write` that reaches it, so a write landing between a
-    reader's `seek` and its `read` moves the position out from under the
-    read and hands it back whatever is there instead
-    (btclib-org/btclib-node#432). `_lock` -- one `RLock` for the whole
-    instance, matching `KeyValueStore`'s own "one connection, and a lock
-    around every use of it" (`db.py:58-73`) -- is held for the whole of
+    through `get_raw_block`, which `stored_block.read_held_block` calls
+    -- and `get_raw_transaction` (`rpc/callbacks.py`) is one call away
+    from doing the same for real, the moment a handler is added that is
+    not routed through `Node`'s own loop. `open_block_file` and
+    `open_rev_file` are each one `BinaryIO` handle with one file
+    position shared by every `seek`, `read` and `write` that reaches it,
+    so a write landing between a reader's `seek` and its `read` moves
+    the position out from under the read and hands it back whatever is
+    there instead (btclib-org/btclib-node#432). `_lock` -- one `RLock`
+    for the whole instance, matching `KeyValueStore`'s own "a lock
+    around every use of either" (`db.py`) -- is held for the whole of
     every public method below, the write path included: the race is
     symmetric, and a write left unlocked could still move a reader's
     position it does not itself take. One lock rather than one per
     handle, because `__add_data_to_file` updates `files` -- shared by
-    both the `.blk` and the `.rev` sides -- regardless of which handle it
-    is writing through, and a second lock would only ever be taken
+    both the `.blk` and the `.rev` sides -- regardless of which handle
+    it is writing through, and a second lock would only ever be taken
     together with the first, never instead of it.
     """
 
