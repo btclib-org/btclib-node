@@ -135,9 +135,9 @@ def _set_up(node: Node, peer: socket.socket, command: str) -> Connection:
 
     Accepted for `version`, past the peer's `version` for another command
     of `handshake_callbacks`, and in `connections` for a command of
-    `callbacks`, not merely `Connected`: `verack` sets the status before
-    it moves the connection there, and `_conn_of` reads the two dicts
-    unlocked, so a read between the two steps finds it in neither.
+    `callbacks`: `verack` sets `Connected` before `promote_connection`
+    moves the connection there, and `_conn_of`, reading the two dicts
+    unlocked, can miss a connection that moves while it reads.
     """
     port = peer.getsockname()[1]
     setup: tuple[Payload, ...] = (_version(), WtxidRelay(), Verack())
