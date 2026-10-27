@@ -164,6 +164,26 @@ def test_a_port_taken_on_a_later_loopback_is_retried_at_another(
 
 
 @pytest.mark.skipif(len(LOOPBACKS) < 2, reason="needs a second loopback")
+def test_a_port_held_on_a_loopback_left_free_is_retried_at_another(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 2050: the loopbacks outside `held` are free at the port answered."""
+    flaky = _FlakySockets(refusals=1)
+    monkeypatch.setattr("tests.socket", flaky)
+    held, free = LOOPBACKS
+    with taken_loopbacks([held]) as port:
+        with (
+            socket.socket(socket.AF_INET6 if ":" in held else socket.AF_INET) as probe,
+            pytest.raises(OSError, match=rf"\[(Errno|WinError) {errno.EADDRINUSE}\]"),
+        ):
+            probe.bind((held, port))
+        with socket.socket(socket.AF_INET6 if ":" in free else socket.AF_INET) as probe:
+            probe.bind((free, port))
+    assert flaky.binds[0] == flaky.binds[2] == (LOOPBACKS[0], 0)
+    assert flaky.refusals == 0
+
+
+@pytest.mark.skipif(len(LOOPBACKS) < 2, reason="needs a second loopback")
 def test_a_port_always_taken_on_a_later_loopback_is_reported(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

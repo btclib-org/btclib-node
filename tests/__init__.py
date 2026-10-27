@@ -57,7 +57,7 @@ from btclib_node.rpc.auth import COOKIE_FILE, password_hmac
 
 if TYPE_CHECKING:
     import random
-    from collections.abc import Callable, Generator, Iterator
+    from collections.abc import Callable, Collection, Generator, Iterator
 
     from btclib.p2p.addrv2 import NetworkAddressV2
 
@@ -781,30 +781,38 @@ HOLD_ATTEMPTS = 8
 
 
 @contextmanager
-def taken_loopbacks() -> Iterator[int]:
-    """Hold every one of `LOOPBACKS` at one port, answering the port.
+def taken_loopbacks(held: Collection[str] = LOOPBACKS) -> Iterator[int]:
+    """Hold `held` of `LOOPBACKS` at one port free on the others, answering it.
 
     What the JSON-RPC listener binds by default, as `bitcoind` binds
-    both, so a test that needs its bind to fail holds them all. The
-    kernel picks the port on the first loopback; where another process
-    holds it on a later one, the whole binding starts again at a fresh
-    port, up to `HOLD_ATTEMPTS` tries in all.
+    both: a test that needs its bind to fail holds them all, and one
+    that needs one bind to fail holds that loopback alone. The kernel
+    picks the port on the first loopback. Every loopback is then bound
+    at it, and those outside `held` are released just before it is
+    answered, so the port is free there. Where another process holds it
+    on a later one, the whole binding starts again at a fresh port, up
+    to `HOLD_ATTEMPTS` tries in all.
     """
     attempt = 0
     while True:
         attempt += 1
         with ExitStack() as stack:
             port = 0
+            free: list[socket.socket] = []
             try:
                 for host in LOOPBACKS:
                     holder = stack.enter_context(socket.socket(_family(host)))
                     holder.bind((host, port))
                     holder.listen()
                     port = holder.getsockname()[1]
+                    if host not in held:
+                        free.append(holder)
             except OSError as error:
                 if error.errno != errno.EADDRINUSE or attempt == HOLD_ATTEMPTS:
                     raise
                 continue
+            for holder in free:
+                holder.close()
             assert isinstance(port, int)
             yield port
             return
