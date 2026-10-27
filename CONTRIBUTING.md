@@ -465,7 +465,7 @@ runs. `interpreter.py` is the consensus entry point ARCHITECTURE.md's
 *Validation* names as what validates. Each scope is a `.toml` of its own
 in `.github/mutation/`, the way `btclib-org/btclib`'s own holds one per
 profile, and is run the same way with its own name in place of
-`interpreter`: `headers_sync.toml` mutates `p2p/headers_sync.py`.
+`interpreter`.
 
 `test-command` in `.github/mutation/interpreter.toml` runs with `-n0`,
 overriding `addopts`' own `-n auto`.

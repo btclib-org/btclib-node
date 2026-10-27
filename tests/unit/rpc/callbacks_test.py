@@ -27,11 +27,12 @@ from typing import TYPE_CHECKING, Any, NoReturn, cast, override
 import pytest
 from bitcoin_core_rpc import RPCErrorCode
 from btclib.block import Block, BlockHeader, witness_commitment_output
-from btclib.consensus import MAX_BLOCK_WEIGHT
+from btclib.consensus import MAX_BLOCK_WEIGHT, HeadersSyncParams
 from btclib.exceptions import BTClibValueError
 from btclib.fee import FeeRate
 from btclib.key import PrvKeyData
 from btclib.p2p.address import NetworkAddress, ServiceFlags
+from btclib.p2p.headers_sync import ChainStart, HeadersSyncState, State
 from btclib.p2p.limits import PROTOCOL_VERSION
 from btclib.script import script, script_to_dict
 from btclib.script.script_pub_key import (
@@ -53,7 +54,6 @@ from btclib_node import clock
 from btclib_node.block_db import Coin, RevBlock
 from btclib_node.chains import (
     Chain,
-    HeadersSyncParams,
     Main,
     RegTest,
     SigNet,
@@ -91,7 +91,6 @@ from btclib_node.p2p.banman import BanEntry, BanMan, lookup_subnet
 from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.connection import PeerStats
 from btclib_node.p2p.eviction import Network, net_class
-from btclib_node.p2p.headers_sync import ChainStart, HeadersSyncState, State
 from btclib_node.p2p.permissions import NetPermissionFlags
 from btclib_node.p2p.selfannounce import LocalService
 from btclib_node.p2p.transport import TransportInfo, TransportProtocolType
@@ -854,7 +853,7 @@ def test_presynced_headers_is_the_height_a_low_work_sync_has_reached() -> None:
         HeadersSyncParams(commitment_period=5, redownload_buffer_size=10),
         start,
         minimum_required_work=4 * calculate_work(genesis),
-        now=0,
+        now=datetime.fromtimestamp(0, UTC),
     )
     peer = a_peer()
     node = a_node({7: peer})

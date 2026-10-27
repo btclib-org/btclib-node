@@ -66,11 +66,11 @@ if TYPE_CHECKING:
     from concurrent.futures import Future
 
     from btclib.p2p.addrv2 import NetworkAddressV2
+    from btclib.p2p.headers_sync import HeadersSyncState
     from btclib.p2p.payload import Payload
 
     from btclib_node import Node
     from btclib_node.config import Config
-    from btclib_node.p2p.headers_sync import HeadersSyncState
     from btclib_node.p2p.manager import P2pManager
 
 __all__ = [
@@ -507,7 +507,7 @@ class Connection:
     # the reason `time_received` gives. btclib-org/btclib-node#1204
     ping_start: float = 0
 
-    # Core's `Peer::m_headers_sync` (`p2p/headers_sync.py`): this peer's
+    # Core's `Peer::m_headers_sync` (`btclib.p2p.headers_sync`): this peer's
     # low-work headers sync, `None` where none runs. Written by
     # `callbacks.headers` and read by `getpeerinfo`, both on `Node`'s
     # thread; a class default for the reason `time_received` gives.

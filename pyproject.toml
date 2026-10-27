@@ -53,9 +53,7 @@ dependencies = [
     # second time itself (btclib-org/btclib-node#1375). A floor below
     # it is a release this answers wrongly on.
     # `tests/unit/interpreter_test.py` hands `ScriptPubKey` a
-    # `PubKeyData`, unchanged since 2026.9.24. 2026.9.30 also carries
-    # `permitted_difficulty_transition` (btclib-org/btclib#2418), which
-    # `p2p/headers_sync.py` imports.
+    # `PubKeyData`, unchanged since 2026.9.24.
     #
     # The `bip324` extra, which brings `cryptography`, and 2026.10.3, the
     # first release carrying `btclib.p2p.bip324`, which
@@ -82,7 +80,10 @@ dependencies = [
     # with the `_var` names (`CoinStats.digest_var`, `p2ms_m_and_keys_var`,
     # `taproot.output_pubkey_from_merkle_root_var`) and the
     # `BlockContext(index, now, consensus)` this tree is written to
-    # (btclib-org/btclib-node#2008).
+    # (btclib-org/btclib-node#2008). It is also the first with
+    # `btclib.p2p.headers_sync` and `HEADERS_SYNC_PARAMS`
+    # (btclib-org/btclib#2718), which `p2p/callbacks.py` and `chains.py`
+    # import.
     "btclib[secp256k1,bip324]>=2026.10.24",
     # `rpc/callbacks.py` and `rpc/utxo_set.py` import from
     # `btclib_wallet.descriptors`, where btclib's own `descriptors`

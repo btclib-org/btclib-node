@@ -15,11 +15,10 @@ and that `Chain.consensus` reaches the row of the chain it is asked of.
 import runpy
 from pathlib import Path
 
-from btclib.consensus import CONSENSUS_PARAMS
+from btclib.consensus import CONSENSUS_PARAMS, HEADERS_SYNC_PARAMS
 
 from btclib_node.chains import (
     Chain,
-    HeadersSyncParams,
     Main,
     RegTest,
     SigNet,
@@ -196,20 +195,10 @@ def test_each_chain_asks_core_s_dns_seeds() -> None:
     }
 
 
-def test_each_chain_carries_core_s_headers_sync_params() -> None:
-    """ISS 1246: Core's `m_headers_sync_params`, at bitcoin/bitcoin@9be056a8a7.
-
-    Read from `src/kernel/chainparams.cpp` there, the v31.1 tag, for every
-    chain this package defines: the commitment period, then the redownload
-    buffer's size.
-    """
-    assert {chain.name: chain.headers_sync_params for chain in CHAINS} == {
-        "mainnet": HeadersSyncParams(641, 15218),
-        "testnet": HeadersSyncParams(673, 14460),
-        "signet": HeadersSyncParams(620, 15724),
-        "regtest": HeadersSyncParams(275, 7017),
-        "testnet4": HeadersSyncParams(606, 16092),
-    }
+def test_each_chain_carries_btclib_s_headers_sync_params() -> None:
+    """Each chain's row of `btclib.consensus.HEADERS_SYNC_PARAMS`, by name."""
+    for chain in CHAINS:
+        assert chain.headers_sync_params is HEADERS_SYNC_PARAMS[chain.name]
 
 
 def test_each_chain_carries_core_s_min_bip9_warning_height() -> None:

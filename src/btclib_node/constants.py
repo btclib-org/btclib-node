@@ -172,7 +172,7 @@ class NodeStatus(enum.IntEnum):
 
     `SyncingHeaders` ends on a short batch of headers that was indexed,
     so a node whose peers all serve chains below the anti-DoS work
-    threshold (`p2p.headers_sync`) stays in it: none of their headers is
+    threshold (`btclib.p2p.headers_sync`) stays in it: none of their headers is
     indexed.
 
     `Reindexing` is the stored blocks connecting at start, on any start
