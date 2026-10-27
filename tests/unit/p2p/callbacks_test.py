@@ -4373,7 +4373,7 @@ def test_a_pruned_node_disconnects_a_getdata_below_its_own_retained_depth() -> N
     bitcoin/bitcoin@ca7162cde5): "Avoid leaking prune-height by never
     sending blocks below the NODE_NETWORK_LIMITED threshold" -- fired on
     height alone, whether or not this node still happens to hold the
-    block asked for, which is why `get_block` here still answers one.
+    block asked for, which is why the store here still answers one.
     """
     block_index = a_tall_block_index(MIN_BLOCKS_TO_KEEP + 10)
     node = a_data_node(block_index=block_index, block_db=a_block_store(a_block()))
@@ -4649,7 +4649,6 @@ def test_a_block_item_of_the_most_recent_block_is_not_read_from_the_store(
 def a_block_store(block: Block | None) -> Any:
     """Build a `block_db` holding `block` under every hash, or nothing."""
     return SimpleNamespace(
-        get_block=lambda h: block,
         get_raw_block=lambda h: (
             None if block is None else block.serialize(check_validity=False)
         ),

@@ -2555,19 +2555,24 @@ def test_a_reorg_refuses_a_missing_removed_block(node: Node) -> None:
     node.block_db.blocks.pop(first[-1].header.hash)
 
     second = generate_random_chain(3, RegTest().genesis.hash)
-    with pytest.raises(
-        ChainstateInconsistencyError, match="block just removed is missing"
-    ):
+    with pytest.raises(ChainstateInconsistencyError, match="removed block is missing"):
         connect(node, second)
 
 
 def test_a_reorg_refuses_a_removed_block_whose_record_holds_another(
     node: Node,
 ) -> None:
-    """ISS 2038: Core's `DisconnectTip` reads the block with `ReadBlock`."""
+    """ISS 2038: Core's `DisconnectTip` reads the block with `ReadBlock`.
+
+    The block is checked before the trial, so the chain and the UTXO set
+    are left as they were, and `Node._step_chain` sets `terminate_flag`.
+    """
     first = generate_random_chain(2, RegTest().genesis.hash)
-    connect(node, first)
+    block_index = connect(node, first)
+    utxo_index = node.chainstate.utxo_index
+    active_chain = list(block_index.active_chain)
     removed, other = first[-1].header.hash, first[0].header.hash
+    coinbase_output = OutPoint(first[-1].transactions[0].id, 0).serialize()
     node.block_db.blocks[removed] = node.block_db.blocks[other]
 
     second = generate_random_chain(3, RegTest().genesis.hash)
@@ -2577,6 +2582,12 @@ def test_a_reorg_refuses_a_removed_block_whose_record_holds_another(
     assert str(raised.value) == (
         f"cannot read block {removed.hex()} from the store: {refusal}"
     )
+    assert block_index.active_chain == active_chain
+    assert utxo_index.get_coin(coinbase_output) is not None
+    assert not utxo_index.removed_utxos
+    assert node._step_chain() is True
+    assert node.terminate_flag.is_set()
+    assert block_index.active_chain == active_chain
 
 
 def test_invalidating_a_tip_whose_record_holds_another_disconnects_nothing(
@@ -2632,6 +2643,22 @@ def test_invalidating_a_tip_whose_record_lacks_a_byte_disconnects_nothing(
     assert block_index.active_chain == active_chain
 
 
+def test_invalidating_a_tip_without_its_reverse_patch_stops_the_node(
+    node: Node,
+) -> None:
+    """A missing reverse patch sets `terminate_flag` and disconnects nothing."""
+    chain = generate_random_chain(2, RegTest().genesis.hash)
+    block_index = connect(node, chain)
+    active_chain = list(block_index.active_chain)
+    tip = chain[-1].header.hash
+    node.block_db.rev_patches.pop(tip)
+
+    with pytest.raises(ChainstateInconsistencyError, match="no reverse patch"):
+        main.invalidate_chain(node, tip)
+    assert node.terminate_flag.is_set()
+    assert block_index.active_chain == active_chain
+
+
 def test_invalidating_a_tip_the_store_lacks_disconnects_nothing(node: Node) -> None:
     """ISS 2038: a block the store lacks is refused before any disconnect."""
     chain = generate_random_chain(2, RegTest().genesis.hash)
@@ -2640,9 +2667,7 @@ def test_invalidating_a_tip_the_store_lacks_disconnects_nothing(node: Node) -> N
     tip = chain[-1].header.hash
     node.block_db.blocks.pop(tip)
 
-    with pytest.raises(
-        ChainstateInconsistencyError, match="block to remove is missing"
-    ):
+    with pytest.raises(ChainstateInconsistencyError, match="removed block is missing"):
         main.invalidate_chain(node, tip)
     assert node.terminate_flag.is_set()
     assert block_index.active_chain == active_chain

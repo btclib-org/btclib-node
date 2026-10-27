@@ -9,7 +9,7 @@ missing its proof of work, on signet a block whose solution does not
 verify, and a header that hashes to another hash than the one expected
 (`src/node/blockstorage.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
 tag). Each refusal here is a `BTClibValueError`, except in
-`read_held_block` and `check_held_block`.
+`read_held_block`.
 """
 
 from io import BytesIO
@@ -23,17 +23,10 @@ from btclib_node.exceptions import ChainstateInconsistencyError
 from btclib_node.signet import assert_valid_solution
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from btclib_node.block_db import BlockDB
     from btclib_node.chains import Chain
 
-__all__ = [
-    "check_held_block",
-    "read_checked_block",
-    "read_checked_raw",
-    "read_held_block",
-]
+__all__ = ["read_checked_block", "read_checked_raw", "read_held_block"]
 
 
 def _read(
@@ -96,23 +89,8 @@ def read_held_block(block_db: BlockDB, chain: Chain, block_hash: bytes) -> Block
     `FatalErrorf` (`src/index/base.cpp`), at the same sha. The refusal is
     a `ChainstateInconsistencyError`.
     """
-    return _held(read_checked_block, block_db, chain, block_hash)
-
-
-def check_held_block(block_db: BlockDB, chain: Chain, block_hash: bytes) -> bool:
-    """Refuse as `read_held_block` does, keeping nothing; `False` if absent."""
-    return _held(read_checked_block, block_db, chain, block_hash) is not None
-
-
-def _held[T](
-    read: Callable[[BlockDB, Chain, bytes], T],
-    block_db: BlockDB,
-    chain: Chain,
-    block_hash: bytes,
-) -> T:
-    """Return `read`, a refusal raised as a `ChainstateInconsistencyError`."""
     try:
-        return read(block_db, chain, block_hash)
+        return read_checked_block(block_db, chain, block_hash)
     except BTClibValueError as e:
         err_msg = f"cannot read block {block_hash.hex()} from the store: {e}"
         raise ChainstateInconsistencyError(err_msg) from e
