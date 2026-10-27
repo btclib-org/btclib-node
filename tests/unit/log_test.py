@@ -435,11 +435,10 @@ def test_rate_limiting_disabled_is_logged(tmp_path: Path) -> None:
 def test_a_line_escapes_control_characters_from_rpc_method(
     tmp_path: Path,
 ) -> None:
-    r"""ISS 1952: C0 controls, DEL and C1 controls are escaped as \\xNN.
+    r"""ISS 1952: C0 controls, DEL and C1 controls are escaped as \xNN.
 
-    Core's `LogEscapeMessage`: a method containing C0 controls, DEL or
-    C1 controls (U+0080 to U+009F) is escaped so a newline cannot start
-    a fake log line and control characters cannot reach a terminal.
+    A method containing them is escaped, so a newline cannot start a fake
+    log line and a control character cannot reach a terminal.
     """
     path = tmp_path / "history.log"
     logger = Logger(path)

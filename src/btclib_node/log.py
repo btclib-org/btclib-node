@@ -177,10 +177,14 @@ _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
 def _escape(text: str) -> str:
-    """Escape every C0 control, DEL and C1 control with its hex representation.
+    r"""Escape every C0 control, DEL and C1 control as `\x` and two hex digits.
 
-    Core's `BCLog::LogEscapeMessage` (`src/logging.cpp`, at
-    bitcoin/bitcoin@9be056a8a7).
+    Core master's `BCLog::LogEscapeMessage` (`src/logging.cpp`, at
+    bitcoin/bitcoin@aa76bd266d), which escapes a newline as well; the
+    v31.1 tag's, at bitcoin/bitcoin@9be056a8a7, leaves a newline as it is.
+    Core escapes bytes, so it writes a C1 control's UTF-8 as it is; this
+    escapes it too, because a terminal reading the log can act on it
+    (btclib-org/btclib-node#1952).
     """
     return _CONTROL_CHARS.sub(lambda m: f"\\x{ord(m.group()):02x}", text)
 
@@ -200,9 +204,9 @@ class _LevelFormatter(logging.Formatter):
 
     @override
     def formatMessage(self, record: logging.LogRecord) -> str:
-        # Strip a trailing newline callers may pass: Core's `Format`
-        # (`src/logging.cpp`) strips it before `LogEscapeMessage` so only
-        # embedded newlines are escaped.
+        # Strip one trailing newline a caller may pass, as Core master's
+        # `Logger::Format` does before `LogEscapeMessage` (`src/logging.cpp`,
+        # at bitcoin/bitcoin@aa76bd266d), so only embedded newlines are escaped
         message = record.message.removesuffix("\n")
         return f"{record.asctime} {_prefix(record)}{_escape(message)}"
 
