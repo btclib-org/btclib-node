@@ -64,10 +64,11 @@ from btclib_node.exceptions import (
     PackageRefusedError,
     TxRejectedError,
 )
-from btclib_node.interpreter import check_scripts, get_flags
+from btclib_node.interpreter import check_scripts
 from btclib_node.log import Logger
 from btclib_node.main import (
     check_fork_warning_conditions,
+    contextual_check_block,
     pre_verify_package,
     prune_up_to_height,
     update_chain,
@@ -607,6 +608,28 @@ def test_reject_block_whose_coinbase_does_not_commit_to_its_height(
     rejected_because(node, bad, "bad-cb-height")
 
 
+def test_contextual_check_block_leaves_a_version_in_btclib_s_text(
+    node: Node,
+) -> None:
+    """A version under the least one is refused in btclib's text.
+
+    `BlockIndex.add_headers` refuses such a header first, as Core's
+    `bad-version`, so only a direct call reaches this refusal. The
+    exception is a version under 1 below BIP34's height, which
+    `add_headers` accepts and btclib refuses (btclib-org/btclib#2833).
+    `_CONTEXTUAL_REASONS` does not translate it.
+    """
+    chain = generate_random_chain(1, RegTest().genesis.hash)
+    connect(node, chain)
+    old = build_block(
+        chain[-1].header.hash, [generate_coinbase(height=len(chain) + 1)], len(chain)
+    )
+    old.header.version = 1
+
+    with pytest.raises(BTClibValueError, match=r"^invalid version \(outdated\)"):
+        contextual_check_block(node, old, len(chain) + 1)
+
+
 def test_reject_block_whose_coinbase_height_and_a_transaction_are_both_bad(
     node: Node,
 ) -> None:
@@ -921,16 +944,14 @@ def test_relative_lock_is_not_enforced_when_bip113_is_not_active(
     calling it with a flag, `btclib.tx.tx_context`'s own module
     docstring says why -- so what this proves is the skip itself, not
     the rule `test_reject_block_whose_relative_lock_is_not_satisfied`
-    above already covers. `main.get_flags` is patched to answer as if
-    RegTest had not yet activated CHECKSEQUENCEVERIFY, which it does
-    from height 1 on (`chains.RegTest`'s own docstring), so there is no
-    real chain height this scenario reaches otherwise.
+    above already covers. RegTest's `csv_height` is moved past the
+    chain, as bitcoind's `-testactivationheight=csv@<height>` does:
+    RegTest activates CSV from height 1 on (`chains.RegTest`'s own
+    docstring), so there is no real chain height this scenario reaches
+    otherwise.
     """
-
-    def flags_without_csv(*args: Any, **kwargs: Any) -> ScriptFlag:
-        return get_flags(*args, **kwargs) & ~ScriptFlag.CHECKSEQUENCEVERIFY
-
-    monkeypatch.setattr(main, "get_flags", flags_without_csv)
+    params = replace(RegTest().consensus, csv_height=1_000)
+    monkeypatch.setattr(RegTest, "consensus", property(lambda _: params))
 
     chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
     block_index = connect(node, chain)

@@ -424,8 +424,7 @@ def candidate(
     - `main.contextual_check_block` is replaced by a parent median
       time past of 0 and BIP113 off, which also skips `_validate_block`'s
       BIP68 locks. The real one needs the eleven headers before the
-      candidate. What it refuses itself is `bad-txns-nonfinal` and
-      `bad-cb-height`, neither of them the sigop rule.
+      candidate. None of what it refuses is the sigop rule.
 
     MuHash, which the node keeps over the set and which is pure Python
     here, costs seconds a block to update and is not under test.

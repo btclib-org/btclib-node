@@ -38,7 +38,6 @@ from btclib.policy import (
     is_witness_standard,
 )
 from btclib.script.engine import sig_op_cost
-from btclib.script.engine.flags import ScriptFlag
 from btclib.tx.limits import COINBASE_MATURITY
 from btclib.tx.out_point import OutPoint
 from btclib.tx.tx_context import (
@@ -53,7 +52,6 @@ from btclib_node.chains import SigNet
 from btclib_node.chainstate.block_index import (
     BlockIndex,
     BlockStatus,
-    block_time,
     calculate_work,
 )
 from btclib_node.constants import (
@@ -1359,71 +1357,63 @@ def _validate_block(
 _MAX_MONEY = 21_000_000 * 100_000_000
 
 
+# Core's reject reason for the rules `Block.assert_valid_contextual`
+# refuses, keyed by how btclib's message for it starts
+_CONTEXTUAL_REASONS = (
+    ("invalid timestamp (not after the median past)", "time-too-old"),
+    ("invalid timestamp (too far in the future)", "time-too-new"),
+    ("non-final transaction", "bad-txns-nonfinal"),
+    ("invalid coinbase height", "bad-cb-height"),
+    ("unexpected witness", "unexpected-witness"),
+    ("invalid witness nonce", "bad-witness-nonce-size"),
+    ("invalid witness commitment", "bad-witness-merkle-match"),
+    ("invalid weight", "bad-blk-weight"),
+)
+
+
+def _contextual_reason(message: str) -> str:
+    """Return Core's reject reason for btclib's contextual `message`."""
+    for prefix, reason in _CONTEXTUAL_REASONS:
+        if message.startswith(prefix):
+            return reason
+    return message
+
+
 def contextual_check_block(node: Node, block: Block, index: int) -> tuple[int, bool]:
     """Refuse what Core's `ContextualCheckBlock` refuses of `block` at `index`.
 
-    `bad-txns-nonfinal`, then `bad-cb-height` wherever BIP34 binds, in
-    Core's order (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag). `Block.assert_valid_contextual`, which asks `bad-cb-height`,
-    asks the witness and weight rules after it, and `time-too-new` first:
-    Core asks that one of the header, in `ContextualCheckBlockHeader`,
-    which `BlockIndex.add_headers` has already done here, so a block
-    reaching this passes it unless the clock went back. The block's parent is
-    indexed, and the block need not be on the active chain. Answers the
-    parent's median time past and whether BIP113 binds, which
-    `_validate_block`'s sequence locks read too. Every caller reaches
-    `bad-cb-height` through this one call: there is no second
-    `assert_valid_contextual` left in `_validate_block` to translate it.
+    `Block.assert_valid_contextual` asks the rules, in Core's order
+    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
+    `time-too-old`, `time-too-new` and `bad-version` of the header, then
+    `bad-txns-nonfinal`, `bad-cb-height` wherever BIP34 binds, the witness
+    rules at `index` and `bad-blk-weight`. The header rules are Core's
+    `ContextualCheckBlockHeader`, which `BlockIndex.add_headers` has
+    already asked, so a block reaching this passes them unless the clock
+    went back. Core does not ask them again of a header it holds, so there
+    it answers `bad-txns-nonfinal`, or goes on to the block's other rules,
+    where this refuses `time-too-new`: btclib has no public block-only
+    check (btclib-org/btclib#2836). A version under 1 below BIP34's height
+    reaches this too: `add_headers` accepts it, as Core does, and btclib
+    refuses it (btclib-org/btclib#2833). `bad-diffbits` is left to
+    `add_headers`: the context carries no `required_bits`. The refusal is
+    raised in Core's word where `_CONTEXTUAL_REASONS` has one, and in
+    btclib's text otherwise.
+
+    The block's parent is indexed, and the block need not be on the
+    active chain. Answers the parent's median time past and whether
+    BIP113 binds, which `_validate_block`'s sequence locks read too.
     """
-    block_hash = block.header.hash
     block_index = node.chainstate.block_index
     parent_header = block_index.header_dict[block.header.previous_block_hash].header
     parent_mtp = median_time_past(parent_header, index - 1, parent_lookup(node))
-
-    # Core deploys BIP68, BIP112 (the CHECKSEQUENCEVERIFY opcode) and
-    # BIP113 (this cutoff) together, as one soft fork -- this tree has
-    # no BIP9 deployment tracking of its own, so the height get_flags
-    # already turns the opcode on at is read here too, rather than a
-    # second activation table naming the same height for the same fork.
-    # btclib.tx.tx_context's own module docstring argues this the same
-    # way, for why assert_sequence_locks in _validate_block takes no
-    # enforce_bip68 flag of its own: the caller skips the call entirely
-    # rather than passing one.
-    bip113_active = ScriptFlag.CHECKSEQUENCEVERIFY in get_flags(
-        node.config, index, block_hash
+    context = BlockContext(
+        index, clock.now_utc(), node.chain.consensus, median_time_past=parent_mtp
     )
-    lock_time_cutoff = parent_mtp if bip113_active else block_time(block.header)
-    for tx in block.transactions:
-        if not is_final(tx, index, lock_time_cutoff):
-            err_msg = "bad-txns-nonfinal"
-            raise BTClibValueError(err_msg)
-    # Core's own ContextualCheckBlock checks finality before the
-    # coinbase height commitment (src/validation.cpp,
-    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which is why this
-    # sits after the loop above rather than ahead of it. bad-diffbits and
-    # time-too-old stay unchecked here (median_time_past and required_bits
-    # are never supplied), and time-too-new is already refused on the
-    # header path. bad-cb-height is translated to Core's word here. The
-    # witness and weight refusals ("unexpected witness", "invalid witness
-    # nonce", "invalid witness commitment", "invalid weight") pass through
-    # in btclib's wording: `mining.py`'s `_BTCLIB_WITNESS_WORDS` maps them
-    # to Core's, and `update_chain` rejects the block on any
-    # `BTClibValueError`. "invalid version (outdated)" does not reach this
-    # handler, `BlockIndex.add_headers` having refused it as `bad-version`,
-    # nor does "non-final transaction", the loop above having refused it as
-    # `bad-txns-nonfinal`.
     try:
-        block.assert_valid_contextual(
-            BlockContext(index, clock.now_utc(), node.chain.consensus)
-        )
+        block.assert_valid_contextual(context)
     except BTClibValueError as error:
-        if index >= node.chain.consensus.bip34_height and "coinbase height" in str(
-            error
-        ):
-            err_msg = "bad-cb-height"
-            raise BTClibValueError(err_msg) from error
-        raise
-    return parent_mtp, bip113_active
+        raise BTClibValueError(_contextual_reason(str(error))) from error
+    return parent_mtp, context.is_bip113_active
 
 
 def _record_rejection(node: Node, failed_hash: bytes, exc: BaseException) -> None:
