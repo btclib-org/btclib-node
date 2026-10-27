@@ -2614,7 +2614,10 @@ def test_a_node_logs_the_configuration_warnings_first(tmp_path: Path) -> None:
     assert log_text.startswith("\n\n\n\n\n")
     warning_at = log_text.index("Ignoring unknown configuration value foo")
     version_at = log_text.index(f"{CLIENT_NAME} version {CLIENT_VERSION}")
-    section_at = log_text.index("Section [x] is not recognized.")
+    section_at = log_text.index(
+        "a.conf:1 Section [x] is not recognized.\\x0a"
+        "b:2 Section [y] is not recognized.\n"
+    )
     loop_at = log_text.index("Starting main loop")
     assert warning_at < version_at < section_at < loop_at
 

@@ -179,11 +179,12 @@ _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 def _escape(text: str) -> str:
     r"""Escape every C0 control, DEL and C1 control as `\x` and two hex digits.
 
-    Core master's `BCLog::LogEscapeMessage` (`src/logging.cpp`, at
-    bitcoin/bitcoin@aa76bd266d), which escapes a newline as well; the
-    v31.1 tag's, at bitcoin/bitcoin@9be056a8a7, leaves a newline as it is.
-    Core escapes bytes, so it writes a C1 control's UTF-8 as it is; this
-    escapes it too, because a terminal reading the log can act on it
+    It follows Core master's `BCLog::LogEscapeMessage` (`src/logging.cpp`,
+    at bitcoin/bitcoin@aa76bd266d), which escapes a newline too; the v31.1
+    tag's, at bitcoin/bitcoin@9be056a8a7, leaves it as it is. Core escapes
+    bytes, so it writes a C1 control's UTF-8 as it is; this escapes it too,
+    because a terminal reading the log can act on it, and SECURITY.md's
+    *Where this node departs from Bitcoin Core* lists the departure
     (btclib-org/btclib-node#1952).
     """
     return _CONTROL_CHARS.sub(lambda m: f"\\x{ord(m.group()):02x}", text)
