@@ -184,7 +184,7 @@ from tests import (
 from tests.conftest import unstarted_node_context
 from tests.unit.download_test import a_conn, a_hash, make_manager, only
 from tests.unit.download_test import a_version as a_services_version
-from tests.unit.main_test import a_dusty_spend
+from tests.unit.main_test import a_dusty_spend, locked_spend
 from tests.unit.rolling_bloom_test import a_small_filter
 from tests.unit.rpc.callbacks_test import a_node_holding, a_twin
 from tests.unit.signet_test import _SIGNET_BLOCKS
@@ -3509,6 +3509,82 @@ def test_a_committed_body_over_the_weight_invalidates_the_header(
     block_info = node.chainstate.block_index.get_block_info(over.header.hash)
     assert block_info.status == BlockStatus.invalid
     assert node.added == []
+    node.chainstate.close()
+
+
+@pytest.mark.parametrize("phrase", ["bad-txns-nonfinal", "bad-cb-height"])
+def test_a_block_failing_a_contextual_consensus_rule_invalidates_the_header(
+    tmp_path: Path, phrase: str
+) -> None:
+    """ISS 2075: Core's `AcceptBlock` marks such a block before storing it.
+
+    `bad-txns-nonfinal` and `bad-cb-height` are `ContextualCheckBlock`'s
+    `BLOCK_CONSENSUS`, which `InvalidBlockFound` marks and
+    `MaybePunishNodeForBlock` punishes (`src/validation.cpp` and
+    `src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag). The body is not mutated, so Core's `BLOCK` arm reaches them.
+    """
+    node = a_chainstate_node(tmp_path)
+    nonfinal = phrase == "bad-txns-nonfinal"
+    spend = locked_spend(
+        generate_random_transaction(),
+        1,
+        lock_time=2_000_000_000 if nonfinal else 0,
+        sequence=0,
+    )
+    coinbase = generate_coinbase(height=1 if nonfinal else 2)
+    bad = build_block(RegTest().genesis.hash, [coinbase, spend], 0)
+    with pytest.raises(MisbehavingError, match=f"^{phrase}$"):
+        block_callback(node, a_block_payload(bad), a_peer())
+    block_info = node.chainstate.block_index.get_block_info(bad.header.hash)
+    assert block_info.status == BlockStatus.invalid
+    assert node.added == []
+    node.chainstate.close()
+
+
+def test_a_compact_block_failing_a_contextual_consensus_rule_keeps_the_peer(
+    tmp_path: Path,
+) -> None:
+    """ISS 2075: through BIP152 the header is marked and the peer kept.
+
+    Core's `MaybePunishNodeForBlock` punishes no `BLOCK_CONSENSUS` block
+    that came through `cmpctblock` (`net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    """
+    node = a_chainstate_node(tmp_path)
+    bad = build_block(RegTest().genesis.hash, [generate_coinbase()], 0)
+    node.chainstate.block_index.add_headers([bad.header])
+    with pytest.raises(BTClibValueError, match=r"^bad-cb-height$") as refused:
+        cb._accept_block(node, bad, a_peer(), requested=True, via_compact_block=True)
+    assert not isinstance(refused.value, MisbehavingError)
+    block_info = node.chainstate.block_index.get_block_info(bad.header.hash)
+    assert block_info.status == BlockStatus.invalid
+    assert node.added == []
+    node.chainstate.close()
+
+
+def test_a_block_whose_header_the_clock_has_since_fallen_behind_is_stored(
+    tmp_path: Path,
+) -> None:
+    """A contextual refusal Core does not mark is left to `update_chain`.
+
+    The header was indexed while the clock read a day later, so the block
+    is `time-too-new` now, which Core does not ask again of a header it
+    holds (`main.contextual_check_block`). The block is stored, its
+    header left valid.
+    """
+    node = a_chainstate_node(tmp_path)
+    later = datetime.now(UTC).replace(microsecond=0) + timedelta(days=1)
+    block = build_block(
+        RegTest().genesis.hash, [generate_coinbase(height=1)], 0, time=later
+    )
+    clock.set_mock_time(int(later.timestamp()))
+    node.chainstate.block_index.add_headers([block.header])
+    clock.set_mock_time(0)
+    block_callback(node, a_block_payload(block), a_peer())
+    assert node.added == [block]
+    block_info = node.chainstate.block_index.get_block_info(block.header.hash)
+    assert block_info.status != BlockStatus.invalid
     node.chainstate.close()
 
 

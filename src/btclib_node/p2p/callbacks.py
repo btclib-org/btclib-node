@@ -112,9 +112,11 @@ from btclib_node.main import (
     activate_best_chain,
     assert_valid_block,
     check_fork_warning_conditions,
+    contextual_check_block,
     is_block_failed,
     is_block_mutated,
     is_cached_invalid,
+    mark_contextual_failure,
     new_pow_valid_block,
     passes_check_block,
     pre_verify_mempool_acceptance,
@@ -1619,7 +1621,8 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
     (`main.is_cached_invalid`). Past that, a no-op if this block is
     already marked downloaded. A body failing a check is refused, and
     the block asked of another peer, with the index left alone except
-    where Core marks the block failed (`main.is_block_failed`).
+    where Core marks the block failed (`main.is_block_failed`,
+    `main.mark_contextual_failure`).
 
     An unsolicited block whose own header this node has never indexed is not
     read as though `getdata` or `headers` already vouched for it:
@@ -1752,6 +1755,16 @@ def _accept_block(
             # `main.check_fork_warning_conditions`'s own docstring
             check_fork_warning_conditions(node)
         raise _block_refusal(str(e), punish=not via_compact_block) from e
+    # Core's `AcceptBlock` asks `ContextualCheckBlock` before it stores the
+    # block, and marks the block failed as `main.mark_contextual_failure`
+    # says; `MaybePunishNodeForBlock` punishes that `BLOCK_CONSENSUS`
+    # outside BIP152. A refusal Core does not mark here is left to
+    # `update_chain`.
+    try:
+        contextual_check_block(node, block, block_info.index)
+    except BTClibValueError as e:
+        if mark_contextual_failure(node, block_hash, str(e)):
+            raise _block_refusal(str(e), punish=not via_compact_block) from e
     node.block_db.add_block(block)
     node.download_manager.block_source.setdefault(
         block_hash, (conn.id, not via_compact_block)

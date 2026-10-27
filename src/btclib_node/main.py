@@ -116,6 +116,7 @@ __all__ = [
     "activate_best_chain",
     "already_confirmed",
     "assert_valid_block",
+    "assert_valid_block_proof",
     "check_fork_warning_conditions",
     "check_max_feerate",
     "contextual_check_block",
@@ -123,6 +124,7 @@ __all__ = [
     "is_block_failed",
     "is_block_mutated",
     "is_cached_invalid",
+    "mark_contextual_failure",
     "missing_prevout_refusal",
     "new_pow_valid_block",
     "package_refusal",
@@ -196,13 +198,14 @@ def check_fork_warning_conditions(node: Node) -> None:
 
     Called wherever this tree calls `BlockIndex.invalidate` (through
     `update_header_index` in `_invalidate_failed_block`, and directly in
-    `invalidate_chain`, `p2p.callbacks` and `rpc.callbacks`), or commits
-    a fork (`_after_tip_change`), and once at `Node.load`, matching Core's own
-    three call sites (`src/validation.cpp`, same sha): `InvalidChainFound`
-    itself (`:1987`) -- reached both from `InvalidateBlock`'s own direct
-    call and, for a block that fails validation, from `InvalidBlockFound`
-    calling `InvalidChainFound` in turn, the same way this tree's four
-    `invalidate` call sites above all reach this one function --
+    `invalidate_chain`, `mark_contextual_failure`, `p2p.callbacks` and
+    `rpc.callbacks`), or commits a fork (`_after_tip_change`), and once at
+    `Node.load`, matching Core's own three call sites
+    (`src/validation.cpp`, same sha): `InvalidChainFound` itself (`:1987`)
+    -- reached both from `InvalidateBlock`'s own direct call and, for a
+    block that fails validation, from `InvalidBlockFound` calling
+    `InvalidChainFound` in turn, the same way each `invalidate` call site
+    above reaches this one function --
     `ActivateBestChainStep` (`:3318`, not `ConnectTip`, which calls
     neither `InvalidChainFound` nor this function itself), and
     `LoadChainTip` (`:4643`, not `LoadBlockIndex`, which is `best_invalid`'s
@@ -1175,11 +1178,19 @@ def assert_valid_block(block: Block, chain: Chain) -> None:
     of a fourth argument to it -- the same three calls that function
     already makes, in the same order, for every chain but this one.
     """
+    assert_valid_block_proof(block, chain)
+    block.assert_valid_structure()
+
+
+def assert_valid_block_proof(block: Block, chain: Chain) -> None:
+    """Assert the steps of `assert_valid_block` before the body's structure.
+
+    The header, its proof of work and, on a signet chain, the solution.
+    """
     block.header.assert_valid()
     block.header.assert_valid_pow(chain.pow_limit_bits)
     if isinstance(chain, SigNet):
         assert_valid_solution(block, chain)
-    block.assert_valid_structure()
 
 
 def is_block_failed(block: Block, *, check_witness_root: bool) -> bool:
@@ -1393,6 +1404,31 @@ def _contextual_reason(message: str) -> str:
         if message.startswith(prefix):
             return reason
     return message
+
+
+# The reasons of `ContextualCheckBlock` that Core gives as `BLOCK_CONSENSUS`,
+# for which `InvalidBlockFound` marks the block failed (`src/validation.cpp`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Its witness reasons are
+# `BLOCK_MUTATED`, which it leaves unmarked. The header's rules, which
+# `contextual_check_block` asks again, Core does not ask of a header it holds.
+_FAILED_CONTEXTUAL_REASONS = frozenset(
+    {"bad-txns-nonfinal", "bad-cb-height", "bad-blk-weight"}
+)
+
+
+def mark_contextual_failure(node: Node, block_hash: bytes, reason: str) -> bool:
+    """Mark `block_hash` failed where Core's `AcceptBlock` does for `reason`.
+
+    `reason` is what `contextual_check_block` refused the block for.
+    Answers whether the block was marked.
+    """
+    if reason not in _FAILED_CONTEXTUAL_REASONS:
+        return False
+    node.chainstate.block_index.invalidate(block_hash)
+    # Core's own `InvalidChainFound` call, same citation as
+    # `check_fork_warning_conditions`'s own docstring
+    check_fork_warning_conditions(node)
+    return True
 
 
 def contextual_check_block(node: Node, block: Block, index: int) -> tuple[int, bool]:
