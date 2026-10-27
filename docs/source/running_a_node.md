@@ -5,9 +5,9 @@
 What `pip install btclib-node` puts on `PATH`, run against each of the
 four chains; pointing it at a peer of your own; reading its progress
 while it syncs; the RPC methods it answers; what it validates and what
-it does not; and what a mainnet sync has actually been measured to
-cost. `README.md` and `SECURITY.md` are the other two pages a new
-reader wants first — this one is what comes after `pip install`.
+it does not; and what script validation costs on mainnet. `README.md`
+and `SECURITY.md` are the other two pages a new reader wants first —
+this one is what comes after `pip install`.
 
 ## Starting a node
 
@@ -288,72 +288,24 @@ Core's default, and `muhash`
 
 ## What a sync costs
 
-The first initial block download this tree has measured
-([#576](https://github.com/btclib-org/btclib-node/issues/576)).
-Machine throughout: darwin 25.6.0, ten cores, CPython 3.14.6 (GIL
-build), `btclib-secp256k1` installed. The peer for the header sync and
-the block-validation figures was a local, fully-synced `bitcoind`
-dialled over loopback as the only peer, `-connect`, DNS seeds off —
-none of it crossed the internet.
+Script validation, measured in
+[#576](https://github.com/btclib-org/btclib-node/issues/576). It writes
+nothing to the store. Header sync and a whole sync do, so their cost
+depends on the store, and this section gives no figure for them.
+[#2046](https://github.com/btclib-org/btclib-node/issues/2046) asks for
+a script in the tree that measures header sync, script validation and
+the store's size on RocksDB.
 
-### Header sync
+### Script validation
 
 Measured 2026-08-27 at `origin/main`
-`8dfd9d82b5520547cf8df3e4c8b9c229264a7889`, load 3.7 and 5.3: 964,357
-headers — the peer's own height plus genesis — in 40.1 seconds, twice,
-to the tenth of a second, every header's proof of work and retarget
-arithmetic checked, no checkpoint and nothing assumed valid.
-
-### Block validation
-
-Measured the same day, `origin/main`
-`7da40ebcd606a7d3ef09fe2a49a2d6d63017c8b1`. Six populated blocks up to
-mainnet height 964,000, their prevouts pulled from the peer over RPC
-and handed to the same call `update_chain` itself makes
-(`interpreter.check_scripts`, no download and nothing written):
-roughly 40,000 to 65,000 inputs validated a second, at a load around
-3.0 — about 200 microseconds per input per core, one libsecp256k1
-verification and the script engine around it. A control against the
-same block with one prevout's script swapped for another's was
-refused. A second range — the emptiest 136,000 blocks from genesis,
-downloaded and validated for 750 seconds and stopped by hand — showed
-a blocks-per-second rate falling threefold, but it correlates with the
-machine's own rising load at -0.68 across that same run and is not
-offered here as an independent cost figure; the store measurement
-below, taken under a load held level, is what that falling rate was
-actually showing.
-
-### The store
-
-Measured 2026-08-28 at `origin/main`
-`0f33f69d711169cab8a2431a1cce5a83c65fc65a`, against this node's
-`KeyValueStore` filled to a range of sizes and then given one mainnet
-block's own reads, deletes and writes — **on the sqlite3 store this
-tree used at the time**; the store has been RocksDB since
-[#641](https://github.com/btclib-org/btclib-node/issues/641), and this
-figure has not been re-measured against it, there being no committed
-script in this tree to rerun. Below about four million rows the store
-is write-bound and the cost per operation is nearly flat; a cliff sits
-between eight and sixteen million rows, where reads and writes both
-jump because the working set stops fitting the page cache — measured
-at 2.9 to 16.2 microseconds an operation at eight million rows, and
-29.3 to 55.0 microseconds at sixteen million. The peer's own
-`gettxoutsetinfo` put the real UTXO set at 165,770,908 outputs, about
-ten times the largest size measured here, so every figure below is a
-floor and not a forecast. Spends were drawn uniformly across the whole
-key space, the worst case a chain can present; drawing 90% of them
-from the newest 1% of keys — the locality a real chain has and this
-measurement otherwise ignores — bought 8 to 15%, not the gap between
-this floor and a real cost.
-
-### What the whole chain would cost
-
-A sampled input count — 193 samples of `getblockstats`, mean 3,655.9
-inputs a block — puts the chain at roughly 3.5 billion inputs and 7.2
-billion store deletes-and-writes. At the input rate above, script
-validation alone is on the order of a day, spread across ten cores.
-The store is the larger half and it is single-threaded: at the
-eight-million-row cost above it comes to about 1.5 days, and at the
-sixteen-million-row cost, about 5.8 days — both measured on a store a
-tenth the size a real sync's store reaches, so both are floors on the
-true figure rather than an estimate of it.
+`7da40ebcd606a7d3ef09fe2a49a2d6d63017c8b1`, on darwin 25.6.0, ten cores,
+CPython 3.14.6 (GIL build), `btclib-secp256k1` installed. Six populated
+blocks up to mainnet height 964,000, their prevouts pulled over RPC from
+a local, fully-synced `bitcoind` on loopback, were handed to
+`interpreter.check_transactions`, the call `update_chain` makes at that
+commit, with no download and nothing written. `check_transactions`
+validated roughly 35,000 to 63,000 inputs a second, at a load around
+3.0: about 200 microseconds per input per core, one libsecp256k1
+verification and the script engine around it. A control against the same
+block with one prevout's script swapped for another's was refused.

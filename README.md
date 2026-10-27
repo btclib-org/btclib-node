@@ -85,8 +85,8 @@ day, so it is not the same thing as what pip installs;
 [Running a node](./docs/source/running_a_node.md) is what comes after
 `pip install`: the command against each of the four chains, pointing it
 at a peer of your own, reading its progress, the RPC methods it
-answers, what it validates and what it does not, and what a mainnet
-sync has actually been measured to cost.
+answers, what it validates and what it does not, and what script
+validation costs on mainnet.
 
 ## Architecture
 
