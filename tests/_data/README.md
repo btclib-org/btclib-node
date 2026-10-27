@@ -356,6 +356,108 @@ copy to pin; the test that reads the file is the check:
 uv run pytest tests/unit/rolling_bloom_test.py -k core_s_own_runs
 ```
 
+## `tests/unit/_data/test_framework/v2_p2p.py`
+
+```text
+repo    bitcoin/bitcoin
+path    test/functional/test_framework/v2_p2p.py
+commit  6a129983c9bf8efa1081f9a8b462c3635d1cfb39  2026-06-04
+blob    4057fd9a882322f8a8149bb318d383e0c97d05bc
+pulled  2026-10-27
+behind  0 revisions; that commit is the tip of the path
+```
+
+Bitcoin Core's functional-test v2 peer, `EncryptedP2PState`, vendored
+byte for byte with the crypto files below. Each was taken at
+bitcoin/bitcoin@de96f3ae6d16, and its `commit` is the last to touch it
+there. `tests/unit/p2p/v2transport_core_sender_test.py` loads them by
+path and drives `V2Transport` with decoys from a sender that shares no
+code with `btclib.p2p.bip324`.
+
+`v2_p2p.py`, `ellswift.py` and `secp256k1.py` also import from Core's
+`key.py`, `messages.py` and `util.py`, which are not vendored: the test
+module's docstring says why, and what stands in for them.
+
+## `tests/unit/_data/test_framework/crypto/bip324_cipher.py`
+
+```text
+repo    bitcoin/bitcoin
+path    test/functional/test_framework/crypto/bip324_cipher.py
+commit  fa5f29774872d18febc0df38831a6e45f3de69cc  2025-12-16
+blob    d0e94ac588ca99d3dce92adba343cccf698fff50
+pulled  2026-10-27
+behind  0 revisions; that commit is the tip of the path
+```
+
+Core's ChaCha20-Poly1305 AEAD and `FSChaCha20Poly1305`, which encrypts
+each packet.
+
+## `tests/unit/_data/test_framework/crypto/chacha20.py`
+
+```text
+repo    bitcoin/bitcoin
+path    test/functional/test_framework/crypto/chacha20.py
+commit  fa5f29774872d18febc0df38831a6e45f3de69cc  2025-12-16
+blob    00197b99db21e23df634a3ef9ad1129450c2217b
+pulled  2026-10-27
+behind  0 revisions; that commit is the tip of the path
+```
+
+Core's ChaCha20 and `FSChaCha20`, which encrypts each packet's length.
+
+## `tests/unit/_data/test_framework/crypto/poly1305.py`
+
+```text
+repo    bitcoin/bitcoin
+path    test/functional/test_framework/crypto/poly1305.py
+commit  fa5f29774872d18febc0df38831a6e45f3de69cc  2025-12-16
+blob    866a55b0c3b7ef5a08cf9b05fc67641f5423820f
+pulled  2026-10-27
+behind  0 revisions; that commit is the tip of the path
+```
+
+Core's Poly1305, which `bip324_cipher.py` imports.
+
+## `tests/unit/_data/test_framework/crypto/hkdf.py`
+
+```text
+repo    bitcoin/bitcoin
+path    test/functional/test_framework/crypto/hkdf.py
+commit  fa5f29774872d18febc0df38831a6e45f3de69cc  2025-12-16
+blob    86c551efecdd997534d7cee3313e12eb9916d3a6
+pulled  2026-10-27
+behind  0 revisions; that commit is the tip of the path
+```
+
+Core's HKDF-SHA256, which derives the session's keys.
+
+## `tests/unit/_data/test_framework/crypto/ellswift.py`
+
+```text
+repo    bitcoin/bitcoin
+path    test/functional/test_framework/crypto/ellswift.py
+commit  3fd68a95e68b4c6f3bb6c59d41dd196001110f3a  2026-04-07
+blob    e73da525e72fcf6642b8634cb0c1ff0aab59f12c
+pulled  2026-10-27
+behind  0 revisions; that commit is the tip of the path
+```
+
+Core's ElligatorSwift encoding and the x-only ECDH over it.
+
+## `tests/unit/_data/test_framework/crypto/secp256k1.py`
+
+```text
+repo    bitcoin/bitcoin
+path    test/functional/test_framework/crypto/secp256k1.py
+commit  b6fc3cf0046d3106e0dfb30f320d48514eff6fb2  2026-09-28
+blob    7978acee7d2204fcb96ab51365233bf1a6cbbc96
+pulled  2026-10-27
+behind  0 revisions; that commit is the tip of the path
+```
+
+Core's secp256k1 field and group arithmetic, which `ellswift.py`
+imports.
+
 ## `tests/unit/_data/BITCOIN_CORE_COPYING`
 
 ```text
@@ -367,9 +469,9 @@ pulled  2026-10-08
 behind  0 revisions; that commit is the tip of the path
 ```
 
-Bitcoin Core's licence, MIT, which `cluster_linearize_tests.cpp` is
-distributed under, travelling with it as
-`tests/unit/chainstate/_data/BITCOIN_CORE_COPYING` travels with
+Bitcoin Core's licence, MIT, which `cluster_linearize_tests.cpp` and
+the files under `test_framework/` are distributed under, travelling with
+them as `tests/unit/chainstate/_data/BITCOIN_CORE_COPYING` travels with
 `blockfilters.json`.
 
 ## `tests/unit/chainstate/_data/btcd/blk_0_to_4.dat.bz2`
