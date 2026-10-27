@@ -430,3 +430,29 @@ def test_rate_limiting_disabled_is_logged(tmp_path: Path) -> None:
     logger = open_history_log(path, debug=False, data_dir=tmp_path, rate_limit=False)
     logger.close()
     assert _log_lines(path)[-1] == "Log rate limiting disabled"
+
+
+def test_a_line_escapes_control_characters_from_rpc_method(
+    tmp_path: Path,
+) -> None:
+    r"""ISS 1952: C0 controls, DEL and C1 controls are escaped as \\xNN.
+
+    Core's `LogEscapeMessage`: a method containing C0 controls, DEL or
+    C1 controls (U+0080 to U+009F) is escaped so a newline cannot start
+    a fake log line and control characters cannot reach a terminal.
+    """
+    path = tmp_path / "history.log"
+    logger = Logger(path)
+    method = "fake\nmethod\r\x00\x1b[31m\x7f\x80\x9f"
+    logger.warning("RPC User alice not allowed to call method %s", method)
+    logger.close()
+    lines = _log_lines(path)
+    assert lines == [
+        (
+            "[warning] RPC User alice not allowed to call method "
+            "fake\\x0amethod\\x0d\\x00\\x1b[31m\\x7f\\x80\\x9f"
+        )
+    ]
+    raw_message = path.read_bytes().splitlines()[5]
+    assert not any(b < 0x20 or b == 0x7F for b in raw_message)
+    assert not any(bytes([0xC2, b]) in raw_message for b in range(0x80, 0xA0))
