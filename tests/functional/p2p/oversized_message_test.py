@@ -134,7 +134,10 @@ def _set_up(node: Node, peer: socket.socket, command: str) -> Connection:
     """Bring `peer` to where `command` is read, and return its connection.
 
     Accepted for `version`, past the peer's `version` for another command
-    of `handshake_callbacks`, and connected for a command of `callbacks`.
+    of `handshake_callbacks`, and in `connections` for a command of
+    `callbacks`, not merely `Connected`: `verack` sets the status before
+    it moves the connection there, and `_conn_of` reads the two dicts
+    unlocked, so a read between the two steps finds it in neither.
     """
     port = peer.getsockname()[1]
     setup: tuple[Payload, ...] = (_version(), WtxidRelay(), Verack())
@@ -150,7 +153,7 @@ def _set_up(node: Node, peer: socket.socket, command: str) -> Connection:
         if conn is None:
             return False
         if command in callbacks:
-            return conn.status == P2pConnStatus.Connected
+            return conn.id in node.p2p_manager.connections
         return not setup or conn.version_message is not None
 
     wait_until(ready)
