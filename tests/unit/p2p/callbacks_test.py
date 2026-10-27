@@ -4672,21 +4672,24 @@ def test_getblocktxn_is_answered_with_the_transactions_asked_for() -> None:
     block = a_block_with_transactions(3)
     node = a_data_node(block_index=block_index, block_db=a_block_store(block))
     peer = a_peer()
-    wanted = block_index.active_chain[length - 1 - MAX_BLOCKTXN_DEPTH]
+    wanted = held_at(block_index, length - 1 - MAX_BLOCKTXN_DEPTH, block)
     getblocktxn(node, GetBlockTxn(wanted, [1, 3]).serialize(), peer)
     (answer,) = peer.sent
     assert answer == BlockTxn(wanted, [block.transactions[1], block.transactions[3]])
 
 
-def a_counting_store(block: Block) -> tuple[Any, list[bytes]]:
-    """Build a `block_db` holding `block` under every hash, and its reads."""
+def a_counting_store(*blocks: Block) -> tuple[Any, list[bytes]]:
+    """Build a `block_db` holding each block under its hash, and its reads."""
+    held = {
+        block.header.hash: block.serialize(check_validity=False) for block in blocks
+    }
     reads: list[bytes] = []
 
-    def get_block(block_hash: bytes) -> Block:
+    def get_raw_block(block_hash: bytes) -> bytes | None:
         reads.append(block_hash)
-        return block
+        return held.get(block_hash)
 
-    return SimpleNamespace(get_block=get_block, has_block=lambda h: True), reads
+    return SimpleNamespace(get_raw_block=get_raw_block, has_block=lambda h: True), reads
 
 
 def test_a_repeated_getblocktxn_reads_the_block_once() -> None:
@@ -4697,7 +4700,7 @@ def test_a_repeated_getblocktxn_reads_the_block_once() -> None:
     block_db, reads = a_counting_store(block)
     node = a_data_node(block_index=block_index, block_db=block_db)
     peer = a_peer()
-    wanted = block_index.active_chain[length - 1 - MAX_BLOCKTXN_DEPTH]
+    wanted = held_at(block_index, length - 1 - MAX_BLOCKTXN_DEPTH, block)
     getblocktxn(node, GetBlockTxn(wanted, [1, 3]).serialize(), peer)
     getblocktxn(node, GetBlockTxn(wanted, [2]).serialize(), peer)
     assert peer.sent == [
@@ -4711,14 +4714,15 @@ def test_a_block_kept_for_getblocktxn_goes_once_past_the_depth() -> None:
     """ISS 1954: a block read drops those `MAX_BLOCKTXN_DEPTH` cannot reach."""
     length = MAX_BLOCKTXN_DEPTH + 10
     block_index = a_tall_block_index(length)
-    block_db, reads = a_counting_store(a_block_with_transactions(1))
+    blocks = [a_block_with_transactions(1) for _ in range(3)]
+    block_db, reads = a_counting_store(*blocks)
     node = a_data_node(block_index=block_index, block_db=block_db)
-    deepest = block_index.active_chain[length - 1 - MAX_BLOCKTXN_DEPTH]
-    above = block_index.active_chain[length - MAX_BLOCKTXN_DEPTH]
+    deepest = held_at(block_index, length - 1 - MAX_BLOCKTXN_DEPTH, blocks[0])
+    above = held_at(block_index, length - MAX_BLOCKTXN_DEPTH, blocks[1])
     for wanted in (deepest, above):
         getblocktxn(node, GetBlockTxn(wanted, [1]).serialize(), a_peer())
     assert set(node.blocktxn_blocks) == {deepest, above}
-    tip = length.to_bytes(32, "big")
+    tip = blocks[2].header.hash
     block_index.active_chain.append(tip)
     block_index.header_dict[tip] = SimpleNamespace(index=length)
     getblocktxn(node, GetBlockTxn(tip, [1]).serialize(), a_peer())
@@ -4736,9 +4740,9 @@ def test_a_getblocktxn_above_the_tip_is_answered_and_not_kept() -> None:
     """
     length = MAX_BLOCKTXN_DEPTH + 10
     block_index = a_tall_block_index(length)
-    above = length.to_bytes(32, "big")
-    block_index.header_dict[above] = SimpleNamespace(index=length)
     block = a_block_with_transactions(1)
+    above = block.header.hash
+    block_index.header_dict[above] = SimpleNamespace(index=length)
     block_db, reads = a_counting_store(block)
     node = a_data_node(block_index=block_index, block_db=block_db)
     peer = a_peer()
@@ -4753,11 +4757,16 @@ def test_the_blocks_kept_for_getblocktxn_are_capped() -> None:
     """ISS 1954: a stale block within the depth drops the lowest kept."""
     length = MAX_BLOCKTXN_DEPTH + 10
     block_index = a_tall_block_index(length)
-    stale = b"\xee" * 32
+    blocks = [a_block_with_transactions(1) for _ in range(MAX_BLOCKTXN_DEPTH + 2)]
+    stale = blocks[-1].header.hash
     block_index.header_dict[stale] = SimpleNamespace(index=length - 1)
-    block_db, reads = a_counting_store(a_block_with_transactions(1))
+    block_db, reads = a_counting_store(*blocks)
     node = a_data_node(block_index=block_index, block_db=block_db)
-    reachable = block_index.active_chain[length - 1 - MAX_BLOCKTXN_DEPTH :]
+    first = length - 1 - MAX_BLOCKTXN_DEPTH
+    reachable = [
+        held_at(block_index, height, block)
+        for height, block in enumerate(blocks[:-1], start=first)
+    ]
     for wanted in (*reachable, stale):
         getblocktxn(node, GetBlockTxn(wanted, [1]).serialize(), a_peer())
     assert set(node.blocktxn_blocks) == {*reachable[1:], stale}
@@ -4878,7 +4887,7 @@ def test_getblocktxn_past_the_last_transaction_is_misbehaviour() -> None:
     block = a_block_with_transactions(1)
     node = a_data_node(block_index=block_index, block_db=a_block_store(block))
     peer = a_peer()
-    request = GetBlockTxn(block_index.active_chain[-1], [2])
+    request = GetBlockTxn(held_at(block_index, 2, block), [2])
     with pytest.raises(MisbehavingError, match="out-of-bounds"):
         getblocktxn(node, request.serialize(), peer)
     assert not peer.sent
@@ -4909,13 +4918,83 @@ def test_getblocktxn_for_a_block_not_held_is_silent(
     `pruned-meanwhile` is a block pruned between `has_block` and the read.
     """
     block_index = a_tall_block_index(3)
-    block_db = SimpleNamespace(get_block=lambda h: None, has_block=lambda h: has_block)
+    block_db = SimpleNamespace(
+        get_raw_block=lambda h: None, has_block=lambda h: has_block
+    )
     node = a_data_node(block_index=block_index, block_db=block_db)
     peer = a_peer()
     wanted = block_index.active_chain[-1] if indexed else b"\xee" * 32
     getblocktxn(node, GetBlockTxn(wanted, [0]).serialize(), peer)
     assert not peer.sent
     assert not peer.stopped
+
+
+def a_raw_store(raw: bytes) -> Any:
+    """Build a `block_db` holding the octets `raw` under every hash."""
+    return SimpleNamespace(
+        get_raw_block=lambda h: raw,
+        has_block=lambda h: True,
+    )
+
+
+def a_refused_getblocktxn(node: Any, wanted: bytes) -> str:
+    """Send `getblocktxn` for `wanted`, check it ends the node; return why.
+
+    Core asserts that the read succeeds. Nothing is sent, and the peer is
+    not dropped here.
+    """
+    node.terminate_flag = threading.Event()
+    peer = a_peer()
+    with pytest.raises(ChainstateInconsistencyError) as raised:
+        getblocktxn(node, GetBlockTxn(wanted, [0]).serialize(), peer)
+    assert node.terminate_flag.is_set()
+    assert not peer.sent
+    assert not peer.stopped
+    return str(raised.value)
+
+
+def test_getblocktxn_refuses_a_record_holding_another_block() -> None:
+    """ISS 2002: Core reads the block with `ReadBlock(..., req.blockhash)`.
+
+    The block asked for is within `MAX_BLOCKTXN_DEPTH` of the tip, and the
+    store holds another one under its hash.
+    """
+    length = MAX_BLOCKTXN_DEPTH + 10
+    block_index = a_recent_block_index(length)
+    asked, stored = a_block(), a_block_with_transactions(2)
+    assert asked.header.hash != stored.header.hash
+    wanted = held_at(block_index, length - 1 - MAX_BLOCKTXN_DEPTH, asked)
+    node = a_data_node(block_index=block_index, block_db=a_block_store(stored))
+    refusal = f"stored block hashes to {stored.header.hash.hex()}, not {wanted.hex()}"
+    assert a_refused_getblocktxn(node, wanted) == (
+        f"cannot read block {wanted.hex()} from the store: {refusal}"
+    )
+    assert not node.blocktxn_blocks
+
+
+def test_getblocktxn_refuses_a_record_whose_header_misses_its_work() -> None:
+    """ISS 2002: `ReadBlock` refuses a header missing its proof of work."""
+    raw = a_record_missing_its_work()
+    wanted = hash256(raw[:80])[::-1]
+    node = a_data_node(
+        block_index=a_tall_block_index(0, wanted),
+        block_db=a_raw_store(raw),
+    )
+    error = a_refused_getblocktxn(node, wanted)
+    assert f"invalid proof-of-work: {wanted.hex()} > " in error
+
+
+def test_getblocktxn_refuses_a_signet_record_with_a_forged_solution() -> None:
+    """ISS 2002: on signet `ReadBlock` also checks the block's solution."""
+    forged = _SIGNET_BLOCKS[0].replace("2591c23e7e01", "2691c23e7e01")
+    raw = bytes.fromhex(forged)
+    wanted = hash256(raw[:80])[::-1]
+    node = a_data_node(
+        block_index=a_tall_block_index(0, wanted),
+        block_db=a_raw_store(raw),
+    )
+    node.chain = node.config.chain = SigNet()
+    assert "bad-signet-blksig" in a_refused_getblocktxn(node, wanted)
 
 
 @pytest.mark.parametrize("held", [False, True], ids=["not-held", "held"])

@@ -219,19 +219,19 @@ class NonStandardTxError(TxRejectedError):
 class ChainstateInconsistencyError(RuntimeError):
     """The node's own index promised something its data does not have.
 
-    Raised only where an earlier check already established the
-    invariant this violates -- a block marked downloaded that
-    `block_db` does not hold, a reverse patch `set_status` already
-    trusts that is not on disk, a UTXO `apply_rev_block` is asked to
-    remove that this node's own earlier `add_block` did not just add.
-    `apply_rev_block` only ever inverts a reverse patch this node
-    wrote for a block it already validated and connected, so a
-    failure there is this tree's own bookkeeping disagreeing with
-    itself, the same test that separates this class from
-    `InvalidBlockInputError` below, which shares two of its messages
-    ("prevout not found", "prevout already spent in this batch") but
-    not the invariant. A peer's bad data, or a submitted transaction's
-    own content, is refused earlier and differently
+    Raised only where an earlier check already established the invariant
+    this violates -- a block marked downloaded that `block_db` does not
+    hold, or holds as a record `stored_block.read_held_block` refuses, a
+    reverse patch `set_status` already trusts that is not on disk, a
+    UTXO `apply_rev_block` is asked to remove that this node's own
+    earlier `add_block` did not just add. `apply_rev_block` only ever
+    inverts a reverse patch this node wrote for a block it already
+    validated and connected, so a failure there is this tree's own
+    bookkeeping disagreeing with itself, the same test that separates
+    this class from `InvalidBlockInputError` below, which shares two of
+    its messages ("prevout not found", "prevout already spent in this
+    batch") but not the invariant. A peer's bad data, or a submitted
+    transaction's own content, is refused earlier and differently
     (`BTClibException`, a `None` handled in place,
     `InvalidBlockInputError`, or `MissingPrevoutError`); reaching here
     is never that.
@@ -292,20 +292,23 @@ class ChainstateInconsistencyError(RuntimeError):
     inconsistent (a hash, a count, a status) differs by call site, and
     every one of them is read exactly once, in whatever it raises to.
 
-    Unlike most of this file's classes, this one does not always end
-    the node: `update_chain`'s own reorg reconciliation lets it
-    propagate and end the node -- reasonably so, since every raise
-    above fires mid-way through applying a fork to this node's own
-    already-committed chainstate, and continuing to run this node
-    once an index has been found disagreeing with its own data
-    mid-mutation is not safe. The p2p filter callbacks (`get_cfilters`,
-    `get_cfheaders`, `get_cfcheckpt` in `p2p/callbacks.py`) raise it
-    too, over a filter or a filter header missing for a block already
-    on the active chain, and carry none of that risk -- nothing
-    downstream of answering one peer's BIP157 request is mid-mutation
-    of anything. `handle_p2p`'s own generic catch is what lets them
-    answer this without ending the node: it logs it and keeps the peer,
-    this not being a `MisbehavingError`.
+    Unlike most of this file's classes, this one does not always end the
+    node: `update_chain`'s own reorg reconciliation lets it propagate
+    and end the node -- reasonably so, since every raise above fires
+    mid-way through applying a fork to this node's own already-committed
+    chainstate, and continuing to run this node once an index has been
+    found disagreeing with its own data mid-mutation is not safe. The
+    p2p filter callbacks (`get_cfilters`, `get_cfheaders`,
+    `get_cfcheckpt` in `p2p/callbacks.py`) raise it too, over a filter
+    or a filter header missing for a block already on the active chain,
+    and carry none of that risk -- nothing downstream of answering one
+    peer's BIP157 request is mid-mutation of anything. `handle_p2p`'s
+    own generic catch is what lets them answer this without ending the
+    node: it logs it and keeps the peer, this not being a
+    `MisbehavingError`.
+
+    `getblocktxn` raises it for a record `read_held_block` refuses, and
+    sets `terminate_flag` first, as Core asserts that read.
     """
 
     def __init__(self, message: str) -> None:

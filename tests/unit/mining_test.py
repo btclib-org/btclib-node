@@ -21,7 +21,7 @@ from fractions import Fraction
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
-from btclib.block import Block, witness_commitment_output
+from btclib.block import Block, BlockHeader, witness_commitment_output
 from btclib.block.block import (
     bip34_commitment,
     merkle_root_and_mutated_from_transactions,
@@ -32,7 +32,7 @@ from btclib.script.witness import Witness
 from btclib.tx import OutPoint, Tx, TxIn, TxOut
 
 from btclib_node import Node, mining
-from btclib_node.chains import RegTest
+from btclib_node.chains import RegTest, SigNet
 from btclib_node.mining import (
     DEFAULT_MAX_TRIES,
     TemplateError,
@@ -49,8 +49,11 @@ from tests import (
     finish,
     generate_random_transaction,
 )
+from tests.conftest import unstarted_node_context
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from btclib_node.rpc.connection import RpcConnection
 
 SCRIPT = ScriptPubKey(anyone_can_spend(), "regtest")
@@ -773,6 +776,28 @@ def test_a_block_whose_parent_was_invalidated_meanwhile_is_refused(
 
     assert accept_block(node, solved) == "bad-prevblk"
     assert solved.header.hash not in node.chainstate.block_index.header_dict
+
+
+def test_a_signet_block_failing_its_solution_is_refused_unstored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 2080: Core's `CheckBlock` refuses it before `AcceptBlock` stores it.
+
+    The block is not solved: the proof of work is waived, so that the
+    signet solution is what is asked.
+    """
+    with unstarted_node_context(tmp_path, chain="signet") as node:
+        block = create_new_block(node, SCRIPT).block
+        monkeypatch.setattr(BlockHeader, "assert_valid_pow", lambda *_: None)
+
+        reason = accept_block(node, block)
+
+        assert reason is not None
+        assert reason.startswith("bad-signet-blksig: ")
+        block_index = node.chainstate.block_index
+        assert block.header.hash not in block_index.header_dict
+        assert not node.block_db.has_block(block.header.hash)
+        assert block_index.active_chain == [SigNet().genesis.hash]
 
 
 def test_a_block_whose_tip_moved_on_meanwhile_is_stored_on_its_branch(

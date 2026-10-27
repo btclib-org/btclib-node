@@ -1935,18 +1935,24 @@ def a_tx_lookup_node(
 ) -> Any:
     """Build a node with the mempool and block store get_raw_transaction reads.
 
-    `blocks` keys a `SimpleNamespace(transactions=[...])` off the hash
-    `get_block_info` would answer it for -- `a_block_index`'s own shape,
-    reused here for the height and active-chain position a verbose
-    answer names, with `block_db.get_block` a plain dict lookup beside
-    it, `None` for a hash the index carries and the block store does
-    not: BlockIndex and BlockDb are two stores for a reason (pruning),
-    and this is the one place `get_raw_transaction` reads them both.
+    `blocks` keys a `Block` off the hash `get_block_info` would answer it
+    for -- `a_block_index`'s own shape, reused here for the height and
+    active-chain position a verbose answer names, with
+    `block_db.get_raw_block` a plain dict lookup of its octets beside it,
+    `None` for a hash the index carries and the block store does not, and
+    for a `SimpleNamespace` that has only a header: BlockIndex and BlockDb
+    are two stores for a reason (pruning), and this is the one place
+    `get_raw_transaction` reads them both.
     """
     mempool = Mempool(Logger(debug=True))
     for tx in mempool_txs or []:
         mempool.add_tx(tx)
     block_index = a_block_index([])
+    raw_blocks = {
+        block_hash: block.serialize(check_validity=False)
+        for block_hash, block in (blocks or {}).items()
+        if isinstance(block, Block)
+    }
     if blocks:
         headers = [block.header for block in blocks.values()]
         block_index = a_block_index(sorted(headers, key=lambda h: h.time))
@@ -1960,7 +1966,7 @@ def a_tx_lookup_node(
             # matching the default here for the same reason `pruned=False`
             # is `Config`'s: every test not about pruning gets the answer
             # that reads as "this store has never pruned anything".
-            block_db=SimpleNamespace(get_block=(blocks or {}).get, pruned_up_to=-1),
+            block_db=SimpleNamespace(get_raw_block=raw_blocks.get, pruned_up_to=-1),
         ),
     )
 
@@ -2035,7 +2041,7 @@ def test_a_transaction_is_read_out_of_the_block_named() -> None:
     """
     tx = a_tx()
     header = generate_random_header_chain(1, RegTest().genesis.hash)[0]
-    block = SimpleNamespace(header=header, transactions=[tx])
+    block = Block(header, [tx], check_validity=False)
     node = a_tx_lookup_node(blocks={header.hash: block})
 
     hex_answer = get_raw_transaction(
@@ -2065,7 +2071,7 @@ def test_a_transaction_off_the_active_chain_is_named_but_not_confirmed() -> None
     """
     tx = a_tx()
     header = generate_random_header_chain(1, RegTest().genesis.hash)[0]
-    block = SimpleNamespace(header=header, transactions=[tx])
+    block = Block(header, [tx], check_validity=False)
     node = a_tx_lookup_node(blocks={header.hash: block})
     # this block is indexed and stored but not on the active chain --
     # a_block_index's own `validated` narrows what generate_active_chain
@@ -2184,7 +2190,7 @@ def test_a_transaction_the_named_block_does_not_hold_is_refused() -> None:
     tx = a_tx()
     other = a_tx(b"\x22")
     header = generate_random_header_chain(1, RegTest().genesis.hash)[0]
-    block = SimpleNamespace(header=header, transactions=[other])
+    block = Block(header, [other], check_validity=False)
     node = a_tx_lookup_node(blocks={header.hash: block})
 
     with pytest.raises(RpcError) as raised:
@@ -2220,7 +2226,7 @@ def test_a_block_the_index_knows_and_the_store_does_not_is_not_fully_downloaded(
     tx = a_tx()
     header = generate_random_header_chain(1, RegTest().genesis.hash)[0]
     node = a_tx_lookup_node(blocks={header.hash: SimpleNamespace(header=header)})
-    node.block_db.get_block = lambda _hash: None
+    node.block_db.get_raw_block = lambda _hash: None
 
     with pytest.raises(RpcError) as raised:
         get_raw_transaction(node, _CONN, [tx.id.hex(), False, header.hash.hex()])
@@ -2239,7 +2245,7 @@ def test_a_block_below_the_stores_own_pruned_height_is_pruned_data() -> None:
     tx = a_tx()
     header = generate_random_header_chain(1, RegTest().genesis.hash)[0]
     node = a_tx_lookup_node(blocks={header.hash: SimpleNamespace(header=header)})
-    node.block_db.get_block = lambda _hash: None
+    node.block_db.get_raw_block = lambda _hash: None
     node.block_db.pruned_up_to = 0
 
     with pytest.raises(RpcError) as raised:
@@ -6515,6 +6521,75 @@ def test_get_block_refuses_a_header_only_block_as_not_fully_downloaded(
         get_block(node, _CONN, [header.hash.hex(), 0])
     assert raised.value.code == RPCErrorCode.MISC_ERROR
     assert raised.value.message == "Block not available (not fully downloaded)"
+
+
+def a_node_holding_another_block_under(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
+) -> tuple[Node, Block, Block]:
+    """Return a node whose store holds `other`'s octets under `asked`'s hash.
+
+    A corrupted record: both blocks are connected, and the store then
+    answers the first one's hash with the second one's octets.
+    """
+    node = regtest_node()
+    asked, other = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, [asked, other])
+    swapped = other.serialize(check_validity=False)
+    held = node.block_db.get_raw_block
+    monkeypatch.setattr(
+        node.block_db,
+        "get_raw_block",
+        lambda block_hash: (
+            swapped if block_hash == asked.header.hash else held(block_hash)
+        ),
+    )
+    return node, asked, other
+
+
+@pytest.mark.parametrize("verbosity", [0, 1, 2, 3])
+def test_get_block_answers_from_the_record_as_stored(
+    regtest_node: Callable[..., Node],
+    monkeypatch: pytest.MonkeyPatch,
+    verbosity: int,
+) -> None:
+    """ISS 2002: Core's `getblock` reads with `ReadRawBlock` at every verbosity.
+
+    Which checks nothing of the block, so a record holding another block
+    is answered from, not refused.
+    """
+    node, asked, other = a_node_holding_another_block_under(regtest_node, monkeypatch)
+
+    answer = get_block(node, _CONN, [asked.header.hash.hex(), verbosity])
+
+    if verbosity == 0:
+        assert answer == other.serialize(check_validity=False).hex()
+        return
+    assert isinstance(answer, dict)
+    assert answer["size"] == other.size
+    assert len(answer["tx"]) == len(other.transactions)
+
+
+def test_getrawtransaction_refuses_a_record_holding_another_block(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 2002: Core's `GetTransaction` reads with `ReadBlock(block, index)`.
+
+    A block that fails the read finds no transaction, so the answer is the
+    one for a transaction the named block does not hold. The transaction
+    asked for is in the block the record holds.
+    """
+    node, asked, other = a_node_holding_another_block_under(regtest_node, monkeypatch)
+
+    with pytest.raises(RpcError) as raised:
+        get_raw_transaction(
+            node,
+            _CONN,
+            [other.transactions[0].id.hex(), False, asked.header.hash.hex()],
+        )
+    assert raised.value.code == RPCErrorCode.INVALID_ADDRESS_OR_KEY
+    assert raised.value.message.startswith(
+        "No such transaction found in the provided block."
+    )
 
 
 def test_get_chain_tips_answers_only_the_active_tip_on_a_single_chain(

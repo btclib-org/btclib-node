@@ -2474,6 +2474,30 @@ def test_update_chain_refuses_a_block_marked_downloaded_but_missing(
         update_chain(node)
 
 
+def test_update_chain_refuses_a_record_holding_another_block(node: Node) -> None:
+    """ISS 2038: Core's `ConnectTip` reads the block with `ReadBlock`.
+
+    The store holds the second block's octets under the first one's hash.
+    Core answers `FatalError`; this raises before the trial, so nothing
+    is connected.
+    """
+    chain = generate_random_chain(2, RegTest().genesis.hash)
+    block_index = node.chainstate.block_index
+    block_index.add_headers([block.header for block in chain])
+    for block in chain:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+    asked, stored = hashes(chain)
+    node.block_db.blocks[asked] = node.block_db.blocks[stored]
+    refusal = f"stored block hashes to {stored.hex()}, not {asked.hex()}"
+    with pytest.raises(ChainstateInconsistencyError) as raised:
+        update_chain(node)
+    assert str(raised.value) == (
+        f"cannot read block {asked.hex()} from the store: {refusal}"
+    )
+    assert block_index.active_chain == [RegTest().genesis.hash]
+
+
 def hashes(chain: list[Block]) -> list[bytes]:
     """Return every block's own header hash, in the chain's own order."""
     return [block.header.hash for block in chain]
@@ -2535,6 +2559,93 @@ def test_a_reorg_refuses_a_missing_removed_block(node: Node) -> None:
         ChainstateInconsistencyError, match="block just removed is missing"
     ):
         connect(node, second)
+
+
+def test_a_reorg_refuses_a_removed_block_whose_record_holds_another(
+    node: Node,
+) -> None:
+    """ISS 2038: Core's `DisconnectTip` reads the block with `ReadBlock`."""
+    first = generate_random_chain(2, RegTest().genesis.hash)
+    connect(node, first)
+    removed, other = first[-1].header.hash, first[0].header.hash
+    node.block_db.blocks[removed] = node.block_db.blocks[other]
+
+    second = generate_random_chain(3, RegTest().genesis.hash)
+    with pytest.raises(ChainstateInconsistencyError) as raised:
+        connect(node, second)
+    refusal = f"stored block hashes to {other.hex()}, not {removed.hex()}"
+    assert str(raised.value) == (
+        f"cannot read block {removed.hex()} from the store: {refusal}"
+    )
+
+
+def test_invalidating_a_tip_whose_record_holds_another_disconnects_nothing(
+    node: Node,
+) -> None:
+    """ISS 2038: the block is checked before anything is disconnected.
+
+    Core's `DisconnectTip` reads the block first. Here the refusal sets
+    `terminate_flag` and raises, as `invalidate_chain` answers any other
+    failure on its disconnect. The tip's coinbase output is still unspent
+    and nothing is staged.
+    """
+    chain = generate_random_chain(2, RegTest().genesis.hash)
+    block_index = connect(node, chain)
+    utxo_index = node.chainstate.utxo_index
+    active_chain = list(block_index.active_chain)
+    tip, other = chain[-1].header.hash, chain[0].header.hash
+    coinbase_output = OutPoint(chain[-1].transactions[0].id, 0).serialize()
+    assert utxo_index.get_coin(coinbase_output) is not None
+    assert not utxo_index.removed_utxos
+    node.block_db.blocks[tip] = node.block_db.blocks[other]
+
+    with pytest.raises(ChainstateInconsistencyError) as raised:
+        main.invalidate_chain(node, tip)
+    refusal = f"stored block hashes to {other.hex()}, not {tip.hex()}"
+    assert (
+        str(raised.value) == f"cannot read block {tip.hex()} from the store: {refusal}"
+    )
+    assert node.terminate_flag.is_set()
+    assert block_index.active_chain == active_chain
+    assert block_index.get_block_info(tip).status == BlockStatus.in_active_chain
+    assert utxo_index.get_coin(coinbase_output) is not None
+    assert not utxo_index.removed_utxos
+
+
+def test_invalidating_a_tip_whose_record_lacks_a_byte_disconnects_nothing(
+    node: Node,
+) -> None:
+    """ISS 2038: the body is parsed too, before anything is disconnected.
+
+    The header is intact and the record ends one byte short.
+    """
+    chain = generate_random_chain(2, RegTest().genesis.hash)
+    block_index = connect(node, chain)
+    active_chain = list(block_index.active_chain)
+    tip = chain[-1].header.hash
+    location = node.block_db.blocks[tip]
+    node.block_db.blocks[tip] = replace(location, size=location.size - 1)
+
+    with pytest.raises(ChainstateInconsistencyError, match="cannot read block"):
+        main.invalidate_chain(node, tip)
+    assert node.terminate_flag.is_set()
+    assert block_index.active_chain == active_chain
+
+
+def test_invalidating_a_tip_the_store_lacks_disconnects_nothing(node: Node) -> None:
+    """ISS 2038: a block the store lacks is refused before any disconnect."""
+    chain = generate_random_chain(2, RegTest().genesis.hash)
+    block_index = connect(node, chain)
+    active_chain = list(block_index.active_chain)
+    tip = chain[-1].header.hash
+    node.block_db.blocks.pop(tip)
+
+    with pytest.raises(
+        ChainstateInconsistencyError, match="block to remove is missing"
+    ):
+        main.invalidate_chain(node, tip)
+    assert node.terminate_flag.is_set()
+    assert block_index.active_chain == active_chain
 
 
 def test_a_reorg_whose_own_undo_raises_propagates_and_names_no_new_block(

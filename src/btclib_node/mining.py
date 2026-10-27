@@ -76,6 +76,7 @@ from btclib_node.exceptions import (
 )
 from btclib_node.interpreter import STANDARD_FLAGS
 from btclib_node.main import (
+    assert_valid_block,
     contextual_check_block,
     new_pow_valid_block,
     parent_lookup,
@@ -577,8 +578,15 @@ def accept_block(node: Node, block: Block) -> str | None:
     Core's `ProcessNewBlock` for the block a mining RPC solved
     (`src/rpc/mining.cpp`). Answers why the block was refused, or `None`.
     `rpc.callbacks.submit_block` is the same hand-over for a block from
-    outside; this block, built on the tip and checked, needs none of its
-    refusals but one. The search can end after the tip it was built on is
+    outside. Of the refusals it makes before storing, this block, built
+    on the tip, needs `main.assert_valid_block`'s and `bad-prevblk`.
+
+    A block failing `main.assert_valid_block` is refused before anything
+    is stored or marked, as `ProcessNewBlock` refuses one failing
+    `CheckBlock` (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag). A signet block whose solution does not verify is one.
+
+    The search can end after the tip the block was built on is
     invalidated, and then its header is refused `bad-prevblk`, as Core's
     `AcceptBlockHeader` refuses it. A tip that only moved on leaves the
     block stored on its branch, as in Core.
@@ -586,6 +594,10 @@ def accept_block(node: Node, block: Block) -> str | None:
     A failure that is not a verdict on the block stops `Node.run`, as
     `rpc.callbacks._validate_extending_tip` argues.
     """
+    try:
+        assert_valid_block(block, node.chain)
+    except BTClibException as error:
+        return str(error)
     block_index = node.chainstate.block_index
     block_hash = block.header.hash
     try:

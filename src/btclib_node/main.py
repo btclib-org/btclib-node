@@ -92,6 +92,7 @@ from btclib_node.p2p.protocol_version import (
     common_version,
 )
 from btclib_node.signet import assert_valid_solution
+from btclib_node.stored_block import check_held_block, read_held_block
 from btclib_node.txgraph import POST_CHANGE_COST
 from btclib_node.versionbits import check_unknown_activations
 
@@ -451,11 +452,11 @@ def settle_at_no_candidate(node: Node) -> None:
 
 # every hash here was just checked downloaded, or was on the active
 # chain this is replacing, so block_db holds it; the type is wider than
-# that invariant
+# that invariant. Read as Core's `ConnectTip` reads it (`read_held_block`)
 def _blocks_to_add(node: Node, to_add_hash: list[bytes]) -> list[Block]:
     to_add: list[Block] = []
     for block_hash in to_add_hash:
-        block = node.block_db.get_block(block_hash)
+        block = read_held_block(node.block_db, node.chain, block_hash)
         if block is None:
             err_msg = f"block just checked downloaded is missing: {block_hash.hex()}"
             raise ChainstateInconsistencyError(err_msg)
@@ -487,6 +488,18 @@ def _rev_blocks_to_remove(node: Node, to_remove_hash: list[bytes]) -> list[RevBl
 # takes it as a parameter rather than as a literal a reader would have
 # to trace back to this same citation a second time.
 _INVALIDATE_MEMPOOL_READD_LIMIT = 10
+
+
+def _check_removed_blocks(node: Node, to_remove: list[RevBlock]) -> None:
+    """Check every block `to_remove` names, keeping none of them.
+
+    As Core's `DisconnectTip` reads each (`check_held_block`). A block
+    the store does not hold raises `ChainstateInconsistencyError`.
+    """
+    for rev_block in to_remove:
+        if not check_held_block(node.block_db, node.chain, rev_block.hash):
+            err_msg = f"block to remove is missing: {rev_block.hash.hex()}"
+            raise ChainstateInconsistencyError(err_msg)
 
 
 # _after_tip_change's own step, once a fork has actually connected:
@@ -561,7 +574,8 @@ def _reconcile_mempool_for_reorg(
     # earliest transaction that had been previously seen in a
     # block" (MaybeUpdateMempoolForReorg, src/validation.cpp).
     for rev_block in reversed(to_remove):
-        removed_block = node.block_db.get_block(rev_block.hash)
+        # Core's `DisconnectTip` reads it (`read_held_block`)
+        removed_block = read_held_block(node.block_db, node.chain, rev_block.hash)
         if removed_block is None:
             err_msg = f"block just removed is missing: {rev_block.hash.hex()}"
             raise ChainstateInconsistencyError(err_msg)
@@ -1613,11 +1627,12 @@ def update_chain(node: Node) -> None:
     # given names a block this node already validated and wrote for
     # itself -- _blocks_to_add's and _rev_blocks_to_remove's own
     # comments say so -- so a raise here is this node's own storage
-    # failing to give back what it wrote (a corrupt file, a disk error,
-    # get_block/get_rev_block finding block_db's index disagreeing with
-    # chainstate's), never the fork's content turning out bad: that
-    # question is check_scripts', inside the try, and is answered
-    # by rejecting the fork rather than by stopping the node.
+    # failing to give back what it wrote (a corrupt file, a disk error, a
+    # record read_held_block refuses, read_held_block/get_rev_block
+    # finding block_db's index disagreeing with chainstate's), never the
+    # fork's content turning out bad: that question is check_scripts',
+    # inside the try, and is answered by rejecting the fork rather than
+    # by stopping the node.
     #
     # Bitcoin Core's own split (src/validation.cpp,
     # read at bitcoin/bitcoin@b91d983f66) is not symmetric between the two
@@ -1774,8 +1789,9 @@ def invalidate_chain(node: Node, block_hash: bytes) -> None:
     function's own trial loop, since there is no new block content to
     validate on the way down, only already-connected blocks to undo; a
     failure partway through -- `_rev_blocks_to_remove`'s own
-    missing-patch `ChainstateInconsistencyError`, or one
-    `apply_rev_block` raises -- is answered the way
+    missing-patch `ChainstateInconsistencyError`, a block
+    `_check_removed_blocks` refuses before anything is disconnected, or
+    one `apply_rev_block` raises -- is answered the way
     `rpc.callbacks._validate_extending_tip` already answers
     `submit_block`'s own fatal case: `node.terminate_flag` set, then
     left to propagate. What that propagation actually reaches is
@@ -1809,6 +1825,11 @@ def invalidate_chain(node: Node, block_hash: bytes) -> None:
     than silently continuing past unread data, not a divergence chosen
     for its own sake.
 
+    Core's `ReadBlock` failure is answered the same way: what
+    `stored_block.read_held_block` refuses is a record the store
+    changed. Every block to disconnect is checked before anything is
+    disconnected, so a refusal leaves the chain as it was.
+
     `block_index.invalidate` runs only once the disconnect (if any) has
     fully committed, and not before: `_finalize_fork`'s own to_remove
     loop stages every disconnected hash back to `BlockStatus.valid`
@@ -1840,8 +1861,9 @@ def invalidate_chain(node: Node, block_hash: bytes) -> None:
 
     if block_info.status == BlockStatus.in_active_chain:
         to_remove_hash = block_index.active_chain[block_info.index :]
-        to_remove = _rev_blocks_to_remove(node, to_remove_hash)
         try:
+            to_remove = _rev_blocks_to_remove(node, to_remove_hash)
+            _check_removed_blocks(node, to_remove)
             for rev_block in to_remove:
                 node.chainstate.utxo_index.apply_rev_block(rev_block)
             _finalize_fork(node, to_add=[], to_remove=to_remove)

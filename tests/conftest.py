@@ -656,6 +656,7 @@ def rpc_node(tmp_path: Path) -> Iterator[Node]:
 def unstarted_node_context(
     tmp_path: Path,
     *,
+    chain: str = "regtest",
     pruned: bool = False,
     prune_target_mib: int | None = None,
     incremental_relay_feerate: FeeRate = DEFAULT_INCREMENTAL_RELAY_FEERATE,
@@ -701,7 +702,7 @@ def unstarted_node_context(
     """
     node = Node(
         config=Config(
-            chain="regtest",
+            chain=chain,
             data_dir=tmp_path,
             allow_p2p=False,
             allow_rpc=False,
