@@ -63,7 +63,7 @@ chained onto it.
 again: what it holds this tree to is the *index* built on top —
 `FilterIndex` storing a filter, chaining its header onto the one before
 it, and answering the two back — and the genesis block `chains.py`
-builds, whose filter is row 0.
+takes from btclib, whose filter is row 0.
 
 ## `tests/unit/chainstate/_data/BITCOIN_CORE_COPYING`
 

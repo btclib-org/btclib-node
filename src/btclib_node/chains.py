@@ -2,23 +2,26 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""The networks this node can join, and the genesis block of each.
+"""The networks this node can join.
 
 `Chain` and its five leaves -- `Main`, `TestNet`, `SigNet`, `RegTest`,
-`TestNet4` -- carry a network's magic, its seed addresses, its own
-genesis block, and what identifies this node's own copy of it -- a
-pruning floor and the port it dials. Consensus, an activation height, a
-subsidy interval, the easiest target and the exceptions a chain's own
-history forces, is `btclib.consensus`'s, reached below through
-`Chain.consensus` keyed by the same `name` `magic_from_network` already
-resolves. `config.py`'s `_resolve_chain` is what turns a chain's name,
-read from the command line or a functional test, into one of these.
+`TestNet4` -- carry a network's magic, its seed addresses, its genesis
+block, and what identifies this node's own copy of it -- a pruning floor
+and the port it dials. The genesis block is `btclib.block.genesis_block`'s
+and the default RPC port `bitcoin_core_rpc.rpc_port_from_chain`'s, both
+keyed by `name`. Consensus, an activation height, a subsidy interval,
+the easiest target and the exceptions a chain's own history forces, is
+`btclib.consensus`'s, reached below through `Chain.consensus` keyed by
+the same `name` `magic_from_network` already resolves. `config.py`'s
+`_resolve_chain` is what turns a chain's name, read from the command
+line or a functional test, into one of these.
 """
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from functools import cached_property
 
-from btclib.block import Block, BlockHeader, merkle_root_and_mutated_from_transactions
+from bitcoin_core_rpc import chain_from_network, rpc_port_from_chain
+from btclib.block import Block, BlockHeader, genesis_block
 from btclib.consensus import (
     CONSENSUS_PARAMS,
     HEADERS_SYNC_PARAMS,
@@ -26,11 +29,6 @@ from btclib.consensus import (
     HeadersSyncParams,
 )
 from btclib.p2p.magic import magic_from_network
-from btclib.script import script
-from btclib.tx.out_point import OutPoint
-from btclib.tx.tx import Tx
-from btclib.tx.tx_in import TxIn
-from btclib.tx.tx_out import TxOut
 
 from btclib_node._chainparamsseeds import (
     CHAINPARAMS_SEED_MAIN,
@@ -48,103 +46,18 @@ __all__ = [
     "TestNet4",
 ]
 
-# Bitcoin's own genesis coinbase message and Satoshi's pubkey
-# (`CreateGenesisBlock`'s five-argument overload, `src/kernel/
-# chainparams.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
-# `create_genesis`'s own defaults, which is what every leaf below but
-# `TestNet4` builds its genesis with
-_GENESIS_MESSAGE = (
-    b"The Times 03/Jan/2009 Chancellor on brink of second bailout for banks"
-)
-_GENESIS_SCRIPT_PUB_KEY_OPS = (
-    "04678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38c4f35504e51ec112de5c384df7ba0b8d578a4c702b6bf11d5f",
-    "OP_CHECKSIG",
-)
-
-
-def create_genesis(  # noqa: PLR0913, PLR0917
-    time: int,
-    nonce: int,
-    difficulty: int,
-    version: int,
-    reward: int,
-    message: bytes = _GENESIS_MESSAGE,
-    script_pub_key_ops: tuple[str, ...] = _GENESIS_SCRIPT_PUB_KEY_OPS,
-) -> Block:
-    """Build a network's genesis block from its own header fields and reward.
-
-    `message` and `script_pub_key_ops` default to Bitcoin's own genesis
-    coinbase text and Satoshi's pubkey, which every leaf below but
-    `TestNet4` builds its genesis with unchanged: what makes one of
-    those networks' genesis differ from another's is the header alone,
-    its time, nonce, starting difficulty and version, plus how much the
-    one coinbase output pays. `TestNet4` passes its own message and
-    output script instead, Core doing the same in `CTestNet4Params`
-    (`src/kernel/chainparams.cpp:368-371`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) -- the first network this
-    node defines whose genesis is not Bitcoin's original one.
-    """
-    script_sig = script.serialize(["FFFF001D", b"\x04", message])
-    script_pub_key = script.serialize(list(script_pub_key_ops))
-    tx_in = TxIn(
-        prev_out=OutPoint(),
-        script_sig=script_sig,
-        sequence=0xFFFFFFFF,
-    )
-    tx_out = TxOut(
-        value=reward,
-        script_pub_key=script_pub_key,
-    )
-    tx = Tx(
-        version=1,
-        lock_time=0,
-        vin=[tx_in],
-        vout=[tx_out],
-    )
-    header = BlockHeader(
-        version=version,
-        previous_block_hash="00" * 32,
-        merkle_root="00" * 32,
-        time=datetime.fromtimestamp(time, UTC),
-        bits=difficulty.to_bytes(4, "big"),
-        nonce=nonce,
-        check_validity=False,
-    )
-    # btclib's own, so that the root this builds and the root
-    # Block.assert_valid compares against are one implementation
-    header.merkle_root = merkle_root_and_mutated_from_transactions([tx])[0]
-    header.assert_valid()
-    # the block and not the header alone: `Node.load` writes it to
-    # `block_db`, and the block filter of height zero is built from its
-    # output script like every other block's
-    return Block(header, [tx], check_validity=False)
-
 
 @dataclass
 class Chain:
     """A network this node can join: its magic, its seeds and its genesis.
 
-    `Main`, `TestNet`, `SigNet` and `RegTest` below are its four leaves,
-    each hardcoding one network's own constants in its `__init__` rather
-    than taking them as arguments, since there is exactly one of each
-    and nothing else ever builds one.
+    Each leaf below sets one network's own constants in its `__init__`
+    rather than taking them as arguments, since there is exactly one of
+    each and nothing else ever builds one.
     """
 
     name: str
     port: int
-    # Core's own rpc port for this chain, `CreateBaseChainParams`
-    # (`src/chainparamsbase.cpp`, at bitcoin/bitcoin@05e49b342f): one
-    # below `port` on every leaf below, not `port + 1` -- the client on
-    # the other end is `bitcoin-cli` or another program written against
-    # Core, so CONTRIBUTING.md's own `Following Bitcoin Core` is what decides
-    # this rather than any pattern internal to this file.
-    # `config.py`'s `Config.__init__` used to compute `port + 1`
-    # instead (btclib-org/btclib-node#605), which happens to be Core's
-    # own *Tor* incoming-connection port for each of these four chains
-    # (the comment directly above `CreateBaseChainParams` names them:
-    # 8334/18334/38334/18445), a port this node does not listen on at
-    # all.
-    rpc_port: int
     # Core's `vSeeds` (`src/kernel/chainparams.cpp`,
     # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), the DNS seeds, in
     # Core's order and with its trailing dot, which makes each name
@@ -154,7 +67,6 @@ class Chain:
     # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): BIP155 serialized
     # endpoints, `p2p.address.fixed_seed_addresses`'s to decode.
     fixed_seeds: bytes
-    genesis_block: Block
     # Core's `nPruneAfterHeight` (`src/kernel/chainparams.cpp`,
     # at bitcoin/bitcoin@ca7162cde5): `rpc.callbacks.prune_blockchain`'s own
     # "Blockchain is too short for pruning." floor, below which Core
@@ -169,10 +81,29 @@ class Chain:
     # out, as a warning and not a rule.
     min_bip9_warning_height: int
 
+    @cached_property
+    def genesis_block(self) -> Block:
+        """This chain's genesis block, `btclib.block.genesis_block`'s.
+
+        The block and not the header alone: `Node.load` writes it to
+        `block_db`, and the block filter of height zero is built from its
+        output script like every other block's. Cached because header
+        checks read it through `pow_limit_bits`.
+        """
+        return genesis_block(self.name)
+
     @property
     def genesis(self) -> BlockHeader:
         """Return the genesis header, which is what most callers want."""
         return self.genesis_block.header
+
+    @property
+    def rpc_port(self) -> int:
+        """Core's default RPC port for this chain, bitcoin-core-rpc's."""
+        # Core's and not a pattern of this file's, such as `port + 1`:
+        # the client on the other end is `bitcoin-cli` or another program
+        # written against Core (CONTRIBUTING.md's `Following Bitcoin Core`)
+        return rpc_port_from_chain(chain_from_network(self.name))
 
     @property
     def consensus(self) -> ConsensusParams:
@@ -213,7 +144,7 @@ class Chain:
     def pow_limit_bits(self) -> bytes:
         """The network's easiest target, as its genesis block's own bits."""
         # A genesis block is mined at its network's easiest target, so
-        # the limit is already stated once, in create_genesis' argument.
+        # the limit is already stated once, in the genesis header's bits.
         # btclib's validation defaults to mainnet's, which would reject
         # every regtest and signet block, so it has to be passed in.
         return self.genesis.bits
@@ -229,7 +160,6 @@ class Main(Chain):
     def __init__(self) -> None:  # noqa: D107
         self.name = "mainnet"
         self.port = 8333
-        self.rpc_port = 8332
         self.addresses = [
             "seed.bitcoin.sipa.be.",
             "dnsseed.bluematt.me.",
@@ -241,9 +171,6 @@ class Main(Chain):
             "seed.mainnet.achownodes.xyz.",
         ]
         self.fixed_seeds = CHAINPARAMS_SEED_MAIN
-        self.genesis_block = create_genesis(
-            1231006505, 2083236893, 0x1D00FFFF, 1, 50 * 10**8
-        )
         # src/kernel/chainparams.cpp:154, at bitcoin/bitcoin@ca7162cde5
         self.prune_after_height = 100000
         # src/kernel/chainparams.cpp:95, at bitcoin/bitcoin@9be056a8a7
@@ -260,7 +187,6 @@ class TestNet(Chain):
     def __init__(self) -> None:  # noqa: D107
         self.name = "testnet"
         self.port = 18333
-        self.rpc_port = 18332
         self.addresses = [
             "testnet-seed.bitcoin.jonasschnelli.ch.",
             "seed.tbtc.petertodd.net.",
@@ -269,9 +195,6 @@ class TestNet(Chain):
             "seed.testnet.achownodes.xyz.",
         ]
         self.fixed_seeds = CHAINPARAMS_SEED_TEST
-        self.genesis_block = create_genesis(
-            1296688602, 414098458, 0x1D00FFFF, 1, 50 * 10**8
-        )
         # src/kernel/chainparams.cpp:273, at bitcoin/bitcoin@ca7162cde5
         self.prune_after_height = 1000
         # src/kernel/chainparams.cpp:226, at bitcoin/bitcoin@9be056a8a7
@@ -293,15 +216,11 @@ class SigNet(Chain):
     def __init__(self) -> None:  # noqa: D107
         self.name = "signet"
         self.port = 38333
-        self.rpc_port = 38332
         self.addresses = [
             "seed.signet.bitcoin.sprovoost.nl.",
             "seed.signet.achownodes.xyz.",
         ]
         self.fixed_seeds = CHAINPARAMS_SEED_SIGNET
-        self.genesis_block = create_genesis(
-            1598918400, 52613770, 0x1E0377AE, 1, 50 * 10**8
-        )
         # src/kernel/chainparams.cpp:518, at bitcoin/bitcoin@ca7162cde5
         self.prune_after_height = 1000
         # src/kernel/chainparams.cpp:490, at bitcoin/bitcoin@9be056a8a7
@@ -327,12 +246,10 @@ class RegTest(Chain):
     def __init__(self) -> None:  # noqa: D107
         self.name = "regtest"
         self.port = 18444
-        self.rpc_port = 18443
         # Core's own placeholder, a name under the `.invalid` top-level
         # domain, which RFC 6761 reserves to resolve to nothing
         self.addresses = ["dummySeed.invalid."]
         self.fixed_seeds = b""
-        self.genesis_block = create_genesis(1296688602, 2, 0x207FFFFF, 1, 50 * 10**8)
         # src/kernel/chainparams.cpp:601, at bitcoin/bitcoin@ca7162cde5:
         # `opts.fastprune ? 100 : 1000` -- this tree never passes
         # `-fastprune`, Core's own knob for a lower regtest value in its
@@ -360,29 +277,11 @@ class TestNet4(Chain):
     def __init__(self) -> None:  # noqa: D107
         self.name = "testnet4"
         self.port = 48333
-        self.rpc_port = 48332
         self.addresses = [
             "seed.testnet4.bitcoin.sprovoost.nl.",
             "seed.testnet4.wiz.biz.",
         ]
         self.fixed_seeds = CHAINPARAMS_SEED_TESTNET4
-        # unlike the four leaves above, not Bitcoin's original genesis
-        # coinbase: Core's own testnet4 message and output script,
-        # explained in `create_genesis`'s own docstring
-        # (at bitcoin/bitcoin@9be056a8a7, the v31.1 tag,
-        # `src/kernel/chainparams.cpp:368-371`)
-        self.genesis_block = create_genesis(
-            1714777860,
-            393743547,
-            0x1D00FFFF,
-            1,
-            50 * 10**8,
-            message=b"03/May/2024 000000000000000000001ebd58c244970b3aa9d783bb001011fbe8ea8e98e00e",
-            script_pub_key_ops=(
-                "000000000000000000000000000000000000000000000000000000000000000000",
-                "OP_CHECKSIG",
-            ),
-        )
         # src/kernel/chainparams.cpp:374, at bitcoin/bitcoin@ca7162cde5
         self.prune_after_height = 1000
         # src/kernel/chainparams.cpp:333, at bitcoin/bitcoin@9be056a8a7

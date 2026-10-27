@@ -95,10 +95,11 @@ def test_port() -> None:
 def test_default_rpc_port_is_cores_own(chain_name: str, core_chain_name: str) -> None:
     """The default `rpc_port` is Core's own for the chain, not `p2p_port + 1`.
 
-    `rpc_port_from_chain` (`bitcoin_core_rpc`) is Core's own table, read
-    independently of this node's `Config` -- a client built the way
-    `bitcoin-cli` is, against Core's own default rather than against
-    `node.rpc_port` read back from this node (btclib-org/btclib-node#605).
+    `Chain.rpc_port` and this test both read `rpc_port_from_chain`
+    (`bitcoin_core_rpc`), Core's own table, which is what a client built
+    the way `bitcoin-cli` is dials (btclib-org/btclib-node#605). Core's
+    chain names are written here by hand, so the test checks that `Config`
+    falls back to `Chain.rpc_port` and that each chain reaches its own row.
     """
     assert Config(chain=chain_name).rpc_port == rpc_port_from_chain(core_chain_name)
 

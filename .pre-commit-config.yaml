@@ -171,11 +171,11 @@ repos:
         # has read.
         # The baseline was generated with the two entropy plugins off
         # (--disable-plugin Base64HighEntropyString --disable-plugin
-        # HexHighEntropyString): with them on, the scan's only findings
-        # are the four hex genesis-block constants in chains.py and its
-        # test, and a new protocol constant is exactly what a legitimate
-        # addition looks like here -- the plugins would flag every one
-        # of them and nothing else, forever
+        # HexHighEntropyString). They judge a string by its entropy
+        # alone, and a Bitcoin node's hashes, public keys, scripts and
+        # blocks are high-entropy strings that are public by design: each
+        # legitimate addition would be one more finding to record, and a
+        # real secret would hide among them
         args: [--baseline, .secrets.baseline]
   # a typo in a comment is cosmetic; the same typo in the README is the
   # shop window, and in an exception message it is an interface.

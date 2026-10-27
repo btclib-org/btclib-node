@@ -92,8 +92,9 @@ EOF
 ```
 
 `bitcoin_core_rpc` is a required dependency, and `src/` imports only
-`RPCErrorCode` and `chain_from_network` from it — its error-code and
-chain vocabulary, eagerly loaded by the package's own `__init__` — never
+`RPCErrorCode`, `chain_from_network` and `rpc_port_from_chain` from it —
+its error-code and chain vocabulary and Core's RPC ports, eagerly loaded
+by the package's own `__init__` — never
 `BitcoinCoreRpcClient` or a transport, which the package loads lazily
 and only `tests/` (never shipped) asks for. `asyncio` and `socket` are
 what `P2pManager` and `RpcManager` open their listeners and connections
