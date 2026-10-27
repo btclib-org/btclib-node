@@ -1849,6 +1849,46 @@ def test_a_ping_carries_a_nonce_only_above_bip31(
     assert bool(connection.ping_nonce) is nonce
 
 
+def test_each_connection_draws_its_own_version_and_ping_nonce() -> None:
+    """ISS 2070: no two connections send the same VERSION or PING nonce.
+
+    A test that reads one connection's nonce cannot tell a fresh draw
+    from a constant. Three connections of one manager are asked for
+    their `version` and send a `ping`; the nonces each message carries
+    are compared across them, as `check_fresh` does in
+    bitcoin/bitcoin#36628.
+    """
+    first, _ = a_connection()
+    manager = cast("Any", first.manager)
+    manager.add_pending_outbound_nonce = lambda nonce: None
+    manager.port = 18444
+    connections = [first] + [
+        Connection(
+            manager,
+            socket.socket(),
+            peer_address(f"1.2.3.{i}", 18444),
+            i,
+            inbound=False,
+        )
+        for i in (5, 6)
+    ]
+    version_nonces: list[int] = []
+    ping_nonces: list[int] = []
+    for connection in connections:
+        sent: list[Any] = []
+        connection.send = sent.append  # type: ignore[method-assign,assignment]
+        connection.version_message = cast(
+            "Any", SimpleNamespace(version=PROTOCOL_VERSION)
+        )
+        version_nonces.append(connection.own_version().nonce)
+        connection.send_ping()
+        connection.client.close()
+        (ping,) = sent
+        ping_nonces.append(ping.nonce)
+    assert len(set(version_nonces)) == len(connections)
+    assert len(set(ping_nonces)) == len(connections)
+
+
 def test_send_ping_racing_pong_does_not_tear_the_ping_pair(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
