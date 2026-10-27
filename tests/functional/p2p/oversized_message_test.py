@@ -5,10 +5,11 @@
 """A message past `MAX_PROTOCOL_MESSAGE_LENGTH` drops its peer, of any type.
 
 Core's `V1Transport::readHeader` refuses a header announcing a payload
-longer than `MAX_PROTOCOL_MESSAGE_LENGTH`, and `ReceiveMsgBytes` answers
-by disconnecting the peer, which nothing discourages (`src/net.cpp`, at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The bound is the same for
-every type: nothing judges the command before the length.
+longer than `MAX_PROTOCOL_MESSAGE_LENGTH`, so `ReceiveMsgBytes` fails
+and the socket handler disconnects the peer, which nothing discourages
+(`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The
+bound is the same for every type: nothing judges the command before the
+length.
 
 Each command the node dispatches is sent once, from a raw socket, at one
 octet past the bound. `version` opens the connection, another command of
@@ -24,9 +25,8 @@ Over v2 the length is decrypted and checked before the command is, so
 one test holds that bound for every type:
 `tests/unit/p2p/v2transport_test.py`.
 
-The bounds a type holds on its own contents, counts such as
-`MAX_INV_SZ`, are each checked where the callback reads them, in
-`tests/unit/p2p/callbacks_test.py`.
+The bounds the callbacks hold on a type's own contents, counts such as
+`MAX_INV_SZ`, are checked in `tests/unit/p2p/callbacks_test.py`.
 """
 
 import functools
