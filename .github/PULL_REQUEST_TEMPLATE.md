@@ -17,17 +17,18 @@
 
 ## Checks
 
-<!-- The gate runs the first two of these and reports; whether a red one
-     blocks the merge is a repository setting rather than a file, and
-     nothing names a status check here today, so reading them is the
-     reviewer's job until something does. Running them locally is how
-     you find out before either of you. -->
+<!-- The first two run in CI and are required checks (`REPOSITORY.md`'s
+     *Required checks on main*). Running them locally is how you find
+     out first. The last two no command can run: they are yours to
+     answer. -->
 
 - [ ] `git add -A && uv run pre-commit run --all-files` is clean
 - [ ] `uv run pytest` passes, coverage floor included
 - [ ] What a reader would have to be told is written down: a comment
       saying why the code is as it is, or a line in the README if it
       changes how the node is run
+- [ ] I have read and understood every line of this change, and can
+      answer a review of it without the model
 
 ## Anything the reviewer should know
 

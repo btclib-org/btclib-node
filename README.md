@@ -106,6 +106,11 @@ report one that is not already there.
 
 ## Contributing
 
+Development is LLM-based: humans are welcome, as long as they are
+comfortable with agentic development ;-). A contribution must have been
+read and understood by the person who submits it.
+[`CONTRIBUTING.md`](./CONTRIBUTING.md#working-with-an-llm) has the rules.
+
 [CONTRIBUTING.md](./CONTRIBUTING.md)'s last section has the commands, and
 they are the ones CI runs: `uv sync` builds the environment, `uv run
 pytest` is the suite and its coverage floor, and the lint gate is
