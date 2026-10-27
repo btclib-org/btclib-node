@@ -8,8 +8,7 @@ Core's `V1Transport::readHeader` refuses a header announcing a payload
 longer than `MAX_PROTOCOL_MESSAGE_LENGTH`, and `ReceiveMsgBytes` answers
 by disconnecting the peer, which nothing discourages (`src/net.cpp`, at
 bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The bound is the same for
-every type: the check reads the length before anything reads the
-command.
+every type: nothing judges the command before the length.
 
 Each command the node dispatches is sent once, from a raw socket, at one
 octet past the bound. `version` opens the connection, another command of
@@ -21,8 +20,9 @@ Only a peer's own `version` tells the node it speaks v1: other opening
 octets are read as a v2 handshake, which fails on its own account and
 would drop the peer whatever the length.
 
-Over v2 the length is read before the command is decrypted, so no type
-reaches the bound there: `tests/unit/p2p/v2transport_test.py` holds it.
+Over v2 the length is decrypted and checked before the command is, so
+one test holds that bound for every type:
+`tests/unit/p2p/v2transport_test.py`.
 
 The bounds a type holds on its own contents, counts such as
 `MAX_INV_SZ`, are each checked where the callback reads them, in
