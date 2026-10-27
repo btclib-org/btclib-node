@@ -280,10 +280,12 @@ jobs:
       && needs.changes.outputs.code == 'true' }}
     needs: changes
     runs-on: windows-latest
-    # the same bound the coverage job above sets on the same suite: what
-    # it bounds is a runner wedged before or between the tests, not the
-    # work
-    timeout-minutes: 30
+    # 45 minutes, raised from 30 (issue #2006): the suite takes 16 to 21
+    # minutes here without coverage, so 30 left less than 2x headroom and
+    # tripped when a runner slowed down under contention or throttling.
+    # What this bounds is a runner wedged before or between the tests,
+    # not the work
+    timeout-minutes: 45
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
