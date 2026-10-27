@@ -254,11 +254,7 @@ def test_a_loopback_that_cannot_be_bound_is_warned_over_and_passed(
     "Binding RPC on address <host> port <port> failed." and listens on
     the other. A loopback the lookup refuses here fails its bind too.
     """
-    family = socket.AF_INET6 if ":" in taken else socket.AF_INET
-    with socket.socket(family, socket.SOCK_STREAM) as holder:
-        holder.bind((taken, 0))
-        holder.listen()
-        port = holder.getsockname()[1]
+    with taken_loopbacks([taken]) as port:
         manager = a_manager(port)
         warnings: list[tuple[object, ...]] = []
         monkeypatch.setattr(
