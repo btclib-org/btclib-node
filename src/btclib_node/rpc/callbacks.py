@@ -1299,7 +1299,8 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     try:
         block = Block.parse(params[0], check_validity=False)
     except BTClibException as error:
-        # src/rpc/mining.cpp:1111-1113, same text
+        # Core's "Block decode failed" (src/rpc/mining.cpp,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
         raise RpcError(
             RPCErrorCode.DESERIALIZATION_ERROR, "Block decode failed"
         ) from error

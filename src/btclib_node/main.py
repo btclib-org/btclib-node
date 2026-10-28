@@ -1169,18 +1169,17 @@ def passes_check_block(block: Block, chain: Chain) -> bool:
 def assert_valid_block(block: Block, chain: Chain) -> None:
     """Assert what `Block.assert_valid` asks, the signet solution spliced in.
 
-    `Block.assert_valid`'s own three steps -- the header, its proof of
-    work, then the rules `passes_check_block` above lists after the
-    solution -- with `signet.assert_valid_solution` run between the
-    second and the third, on a signet chain only: Core's own
-    `CheckBlock` asks it there too, gated on
+    `Block.assert_valid`'s own three steps -- the header, its proof of work,
+    then `Block.assert_valid_structure` -- with
+    `signet.assert_valid_solution` run between the second and the third, on
+    a signet chain only: Core's own `CheckBlock` asks it there too, gated on
     `consensusParams.signet_blocks` (`src/validation.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag), right after the header's
     proof of work and before the merkle root. btclib carries no signet
     concept to splice this into `Block.assert_valid` itself, hence the
-    decomposition here instead of a fourth argument to it -- the same
-    three calls that function already makes, in the same order, for
-    every chain but this one.
+    decomposition here instead of a fourth argument to it -- the same three
+    calls that function already makes, in the same order, for every chain
+    but this one.
     """
     assert_valid_block_proof(block, chain)
     block.assert_valid_structure()

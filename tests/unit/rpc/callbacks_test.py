@@ -8285,7 +8285,7 @@ def test_submit_block_leaves_no_header_for_a_bad_signet_solution(
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Measured against bitcoind
     v31.1 on a signet whose challenge is `OP_0`: `submitblock` answers
     `bad-signet-blksig` and `getblockheader` answers `Block not found`.
-    The same block, off signet, is accepted.
+    Off signet, the test's block is accepted.
     """
     node = regtest_node()
     (block,) = generate_random_chain(1, node.chain.genesis.hash)
