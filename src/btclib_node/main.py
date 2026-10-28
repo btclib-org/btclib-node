@@ -1137,10 +1137,11 @@ def is_block_mutated(block: Block, *, check_witness_root: bool) -> bool:
     return coinbase_witness_commitment(transactions, stack[0]) != commitment
 
 
-def passes_check_block(block: Block) -> bool:
+def passes_check_block(block: Block, chain: Chain) -> bool:
     """Whether `block` passes what Core's `CheckBlock` asks of a body.
 
-    The merkle root, `bad-blk-length`, `bad-cb-missing`,
+    On a signet chain the solution (`signet.assert_valid_solution`), then
+    the merkle root, `bad-blk-length`, `bad-cb-missing`,
     `bad-cb-multiple`, each transaction's `CheckTransaction` and
     `bad-blk-sigops`, in Core's order (`src/validation.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The header is checked
@@ -1149,6 +1150,8 @@ def passes_check_block(block: Block) -> bool:
     """
     transactions = block.transactions
     try:
+        if isinstance(chain, SigNet):
+            assert_valid_solution(block, chain)
         block.assert_valid_merkle_root()
         block.assert_valid_length()
         if not transactions or not transactions[0].is_coinbase:
@@ -1167,16 +1170,17 @@ def assert_valid_block(block: Block, chain: Chain) -> None:
     """Assert what `Block.assert_valid` asks, the signet solution spliced in.
 
     `Block.assert_valid`'s own three steps -- the header, its proof of
-    work, then every other rule `passes_check_block` above already
-    names -- with `signet.assert_valid_solution` run between the second
-    and the third, on a signet chain only: Core's own `CheckBlock` asks
-    it there too, gated on `consensusParams.signet_blocks`
-    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-    tag), right after the header's proof of work and before the merkle
-    root. btclib carries no signet concept to splice this into
-    `Block.assert_valid` itself, hence the decomposition here instead
-    of a fourth argument to it -- the same three calls that function
-    already makes, in the same order, for every chain but this one.
+    work, then the rules `passes_check_block` above names after the
+    solution -- with `signet.assert_valid_solution` run between the
+    second and the third, on a signet chain only: Core's own
+    `CheckBlock` asks it there too, gated on
+    `consensusParams.signet_blocks` (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), right after the header's
+    proof of work and before the merkle root. btclib carries no signet
+    concept to splice this into `Block.assert_valid` itself, hence the
+    decomposition here instead of a fourth argument to it -- the same
+    three calls that function already makes, in the same order, for
+    every chain but this one.
     """
     assert_valid_block_proof(block, chain)
     block.assert_valid_structure()
@@ -1193,7 +1197,7 @@ def assert_valid_block_proof(block: Block, chain: Chain) -> None:
         assert_valid_solution(block, chain)
 
 
-def is_block_failed(block: Block, *, check_witness_root: bool) -> bool:
+def is_block_failed(block: Block, chain: Chain, *, check_witness_root: bool) -> bool:
     """Whether `block`, failing `Block.assert_valid`, is marked failed.
 
     Core's `ProcessNewBlock` (`src/validation.cpp`, at
@@ -1207,12 +1211,12 @@ def is_block_failed(block: Block, *, check_witness_root: bool) -> bool:
     """
     return (
         not is_block_mutated(block, check_witness_root=check_witness_root)
-        and passes_check_block(block)
+        and passes_check_block(block, chain)
         and block.weight > MAX_BLOCK_WEIGHT
     )
 
 
-def is_cached_invalid(block_index: BlockIndex, block: Block) -> bool:
+def is_cached_invalid(block_index: BlockIndex, block: Block, chain: Chain) -> bool:
     """Whether `block` is Core's `duplicate-invalid`, `BLOCK_CACHED_INVALID`.
 
     Its header indexed and marked invalid already, and its body passing
@@ -1225,7 +1229,7 @@ def is_cached_invalid(block_index: BlockIndex, block: Block) -> bool:
     return (
         known is not None
         and known.status == BlockStatus.invalid
-        and passes_check_block(block)
+        and passes_check_block(block, chain)
     )
 
 

@@ -8267,8 +8267,41 @@ def test_submit_block_answers_a_bad_signet_solution_before_the_body_s_rules(
     assert isinstance(result, str)
     assert result.startswith("bad-signet-blksig")
     assert node.block_db.get_block(bad.header.hash) is None
-    block_info = node.chainstate.block_index.get_block_info(bad.header.hash)
-    assert block_info.status != BlockStatus.invalid
+    assert bad.header.hash not in node.chainstate.block_index.header_dict
+
+
+@pytest.mark.parametrize("signet", [False, True])
+def test_submit_block_leaves_no_header_for_a_bad_signet_solution(
+    regtest_node: Callable[..., Node],
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    signet: bool,
+) -> None:
+    """ISS 2079: a body failing only its signet solution leaves no header.
+
+    Core asks `CheckSignetBlockSolution` inside `CheckBlock`, and
+    `ProcessNewBlock` does not reach `AcceptBlock`, which indexes the
+    header, for a body failing it (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Measured against bitcoind
+    v31.1 on a signet whose challenge is `OP_0`: `submitblock` answers
+    `bad-signet-blksig` and `getblockheader` answers `Block not found`.
+    The same block, off signet, is accepted.
+    """
+    node = regtest_node()
+    (block,) = generate_random_chain(1, node.chain.genesis.hash)
+    if signet:
+        monkeypatch.setattr(main, "SigNet", RegTest)
+
+    result = submit_block(node, _CONN, [block.serialize(check_validity=False).hex()])
+
+    header_dict = node.chainstate.block_index.header_dict
+    if signet:
+        assert isinstance(result, str)
+        assert result.startswith("bad-signet-blksig")
+        assert block.header.hash not in header_dict
+    else:
+        assert result is None
+        assert block.header.hash in header_dict
 
 
 def test_submit_block_marks_a_contextual_failure_off_the_active_chain(

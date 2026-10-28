@@ -5203,13 +5203,13 @@ def a_block_of_weight(weight: int, *extra: Tx) -> Block:
 def test_a_committed_body_over_the_weight_is_marked_failed() -> None:
     """ISS 1242: Core's `bad-blk-weight`, a `ContextualCheckBlock` rule."""
     over = a_block_of_weight(MAX_BLOCK_WEIGHT + 1)
-    assert main.is_block_failed(over, check_witness_root=True)
+    assert main.is_block_failed(over, RegTest(), check_witness_root=True)
 
 
 def test_a_committed_body_at_the_weight_is_not_marked_failed() -> None:
     """ISS 1242: the bound is inclusive."""
     at = a_block_of_weight(MAX_BLOCK_WEIGHT)
-    assert not main.is_block_failed(at, check_witness_root=True)
+    assert not main.is_block_failed(at, RegTest(), check_witness_root=True)
 
 
 def test_a_body_over_the_weight_on_a_witness_it_does_not_commit_to_is_not_failed() -> (
@@ -5220,7 +5220,7 @@ def test_a_body_over_the_weight_on_a_witness_it_does_not_commit_to_is_not_failed
     stuffed = over.transactions[1].vin[0].script_witness.stack[0]
     over.transactions[1].vin[0].script_witness = Witness([b"\x01" * len(stuffed)])
     assert over.weight > MAX_BLOCK_WEIGHT
-    assert not main.is_block_failed(over, check_witness_root=True)
+    assert not main.is_block_failed(over, RegTest(), check_witness_root=True)
 
 
 def a_spend_paying(script_pub_key: bytes) -> Tx:
@@ -5265,7 +5265,7 @@ def test_a_committed_body_over_the_weight_failing_check_block_is_not_failed(
     with pytest.raises(BTClibValueError, match=error):
         over.assert_valid(RegTest().pow_limit_bits)
     assert not main.is_block_mutated(over, check_witness_root=True)
-    assert not main.is_block_failed(over, check_witness_root=True)
+    assert not main.is_block_failed(over, RegTest(), check_witness_root=True)
 
 
 def test_a_body_over_the_weight_with_no_coinbase_is_not_failed() -> None:
@@ -5279,7 +5279,7 @@ def test_a_body_over_the_weight_with_no_coinbase_is_not_failed() -> None:
     block = a_block_over([spend])
     assert block.weight > MAX_BLOCK_WEIGHT
     assert not main.is_block_mutated(block, check_witness_root=True)
-    assert not main.is_block_failed(block, check_witness_root=True)
+    assert not main.is_block_failed(block, RegTest(), check_witness_root=True)
 
 
 def a_fast_peer(
@@ -5486,9 +5486,9 @@ def test_a_block_whose_header_is_unknown_or_valid_is_not_cached_invalid(
     """ISS 1344: `duplicate-invalid` asks for a header indexed and invalid."""
     (block,) = generate_random_chain(1, RegTest().genesis.hash)
     block_index = node.chainstate.block_index
-    assert not main.is_cached_invalid(block_index, block)
+    assert not main.is_cached_invalid(block_index, block, node.chain)
     block_index.add_headers([block.header])
-    assert not main.is_cached_invalid(block_index, block)
+    assert not main.is_cached_invalid(block_index, block, node.chain)
 
 
 def test_a_body_passing_check_block_under_an_invalid_header_is_cached_invalid(
@@ -5502,7 +5502,7 @@ def test_a_body_passing_check_block_under_an_invalid_header_is_cached_invalid(
     block_index = node.chainstate.block_index
     block_index.add_headers([over.header])
     block_index.invalidate(over.header.hash)
-    assert main.is_cached_invalid(block_index, over)
+    assert main.is_cached_invalid(block_index, over, node.chain)
 
 
 @pytest.mark.parametrize("failure", ["merkle-root", "bad-cb-multiple"])
@@ -5519,7 +5519,27 @@ def test_a_body_failing_check_block_under_an_invalid_header_is_not_cached_invali
     block_index = node.chainstate.block_index
     block_index.add_headers([block.header])
     block_index.invalidate(block.header.hash)
-    assert not main.is_cached_invalid(block_index, block)
+    assert not main.is_cached_invalid(block_index, block, node.chain)
+
+
+def test_a_body_failing_its_signet_solution_is_neither_failed_nor_cached_invalid(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 2079: Core's `CheckBlock` asks the signet solution first.
+
+    The body is over the weight, under a header marked invalid: off
+    signet it is both. `main.SigNet` is `RegTest` here, so the real
+    BIP325 check runs on a regtest block.
+    """
+    over = a_block_of_weight(MAX_BLOCK_WEIGHT + 1)
+    block_index = node.chainstate.block_index
+    block_index.add_headers([over.header])
+    block_index.invalidate(over.header.hash)
+    assert main.is_block_failed(over, RegTest(), check_witness_root=True)
+    assert main.is_cached_invalid(block_index, over, RegTest())
+    monkeypatch.setattr(main, "SigNet", RegTest)
+    assert not main.is_block_failed(over, RegTest(), check_witness_root=True)
+    assert not main.is_cached_invalid(block_index, over, RegTest())
 
 
 def a_free_parent(node: Node) -> Tx:

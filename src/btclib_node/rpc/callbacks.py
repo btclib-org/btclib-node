@@ -121,6 +121,7 @@ if TYPE_CHECKING:
     from collections.abc import Generator, Iterator
 
     from btclib_node import Node
+    from btclib_node.chains import Chain
     from btclib_node.chainstate.block_index import BlockIndex, BlockInfo
     from btclib_node.chainstate.utxo_index import UtxoIndex
     from btclib_node.mempool import Mempool
@@ -1062,7 +1063,9 @@ def get_block(
     return out
 
 
-def _index_submitted_header(block_index: BlockIndex, block: Block) -> str | None:
+def _index_submitted_header(
+    block_index: BlockIndex, block: Block, chain: Chain
+) -> str | None:
     """Index a submitted block's header if new; answer why to stop, or None.
 
     `"duplicate"` for a block already downloaded whose body passes
@@ -1086,10 +1089,10 @@ def _index_submitted_header(block_index: BlockIndex, block: Block) -> str | None
         # a stored hash is refused for that reason, and a stored block left
         # as it is (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7)
         if block_index.get_block_info(block_hash).downloaded and passes_check_block(
-            block
+            block, chain
         ):
             return "duplicate"
-    elif passes_check_block(block):
+    elif passes_check_block(block, chain):
         try:
             if block_index.add_headers([block.header]) is None:
                 return "prev-blk-not-found"
@@ -1161,7 +1164,7 @@ def _submitted_body_refusal(
         error_text = str(error)
     # `passes_check_block` first: a body that was never indexed has no
     # parent here to read a height from
-    if not passes_check_block(block):
+    if not passes_check_block(block, node.chain):
         return error_text
     mutated = is_block_mutated(block, check_witness_root=segwit)
     assert parent is not None  # noqa: S101
@@ -1172,7 +1175,9 @@ def _submitted_body_refusal(
         mark_contextual_failure(node, block.header.hash, reason) or mutated
     ):
         return reason
-    if error_text is not None and is_block_failed(block, check_witness_root=segwit):
+    if error_text is not None and is_block_failed(
+        block, node.chain, check_witness_root=segwit
+    ):
         node.chainstate.block_index.invalidate(block.header.hash)
         # Core's own `InvalidChainFound` call, same citation as
         # `main.check_fork_warning_conditions`'s own docstring
@@ -1299,9 +1304,9 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     )
     _add_witness_nonce(block, segwit=segwit)
 
-    if is_cached_invalid(block_index, block):
+    if is_cached_invalid(block_index, block, node.chain):
         return "duplicate-invalid"
-    refusal = _index_submitted_header(block_index, block)
+    refusal = _index_submitted_header(block_index, block, node.chain)
     if refusal is not None:
         return refusal
 

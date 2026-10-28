@@ -3444,6 +3444,33 @@ def test_a_committed_body_failing_check_block_leaves_the_header_valid(
     node.chainstate.close()
 
 
+@pytest.mark.parametrize("signet", [False, True])
+def test_a_body_failing_its_signet_solution_leaves_no_header(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, signet: bool
+) -> None:
+    """ISS 2079: Core's `CheckBlock` asks the signet solution.
+
+    `ProcessNewBlock` asks `CheckBlock` before `AcceptBlock` indexes the
+    header (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag), so a body failing its solution leaves no header. `main.SigNet`
+    is `RegTest` here: no block at signet's target can be mined in a test.
+    The same block, off signet, has its header indexed.
+    """
+    node = a_chainstate_node(tmp_path)
+    node.chain = node.config.chain = RegTest()
+    block = generate_segwit_block()
+    header_dict = node.chainstate.block_index.header_dict
+    if signet:
+        monkeypatch.setattr("btclib_node.main.SigNet", RegTest)
+        with pytest.raises(MisbehavingError, match="bad-signet-blksig"):
+            block_callback(node, a_block_payload(block), a_peer())
+        assert block.header.hash not in header_dict
+    else:
+        block_callback(node, a_block_payload(block), a_peer())
+        assert block.header.hash in header_dict
+    node.chainstate.close()
+
+
 def test_check_block_failure_asks_assert_valid_block_not_plain_assert_valid(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
