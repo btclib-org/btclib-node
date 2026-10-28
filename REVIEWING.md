@@ -519,8 +519,8 @@ peer-to-peer protocol under `src/btclib_node/p2p/`, the chain state under
 JSON-RPC surface under `src/btclib_node/rpc/`, and the ordered key-value
 store all of them are kept in, `src/btclib_node/db.py`.
 
-Each of these is a question, and the document that answers it is named
-because that document, and not this one, is where the rule lives.
+Each of these is a question. Where another document holds the rule, the
+question names it.
 
 - **Does a change to `requires-python` or to `.python-version` know that
   the two are one claim?** `pyproject.toml` asks for `>=3.14`, that file
