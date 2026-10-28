@@ -1170,7 +1170,7 @@ def assert_valid_block(block: Block, chain: Chain) -> None:
     """Assert what `Block.assert_valid` asks, the signet solution spliced in.
 
     `Block.assert_valid`'s own three steps -- the header, its proof of
-    work, then the rules `passes_check_block` above names after the
+    work, then the rules `passes_check_block` above lists after the
     solution -- with `signet.assert_valid_solution` run between the
     second and the third, on a signet chain only: Core's own
     `CheckBlock` asks it there too, gated on

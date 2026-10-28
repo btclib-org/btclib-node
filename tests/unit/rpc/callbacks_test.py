@@ -8304,6 +8304,45 @@ def test_submit_block_leaves_no_header_for_a_bad_signet_solution(
         assert block.header.hash in header_dict
 
 
+def unmined(block: Block, pow_limit_bits: bytes) -> Block:
+    """Return `block` with the next nonce whose hash misses its target."""
+    while True:
+        block.header.nonce += 1
+        try:
+            block.header.assert_valid_pow(pow_limit_bits)
+        except BTClibValueError:
+            return block
+
+
+@pytest.mark.parametrize("body", ["bad-signet-blksig", "bad-cb-multiple"])
+def test_submit_block_answers_high_hash_before_check_block_s_body_rules(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch, body: str
+) -> None:
+    """ISS 2079: a header failing its proof of work is `high-hash`.
+
+    Core's `CheckBlock` asks `CheckBlockHeader` before the signet solution
+    and the coinbase, and `ProcessNewBlock` indexes no header for a block
+    failing `CheckBlock` (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Measured against bitcoind
+    v31.1 on a signet whose challenge is `OP_0`: a block at height 1 whose
+    hash misses its target is answered `high-hash`, and `getblockheader`
+    answers `Block not found`.
+    """
+    node = regtest_node()
+    if body == "bad-signet-blksig":
+        (block,) = generate_random_chain(1, node.chain.genesis.hash)
+        monkeypatch.setattr(main, "SigNet", RegTest)
+    else:
+        block = generate_segwit_block(generate_coinbase(height=1))
+    block = unmined(block, node.chain.pow_limit_bits)
+
+    result = submit_block(node, _CONN, [block.serialize(check_validity=False).hex()])
+
+    assert result == "high-hash"
+    assert block.header.hash not in node.chainstate.block_index.header_dict
+    assert node.block_db.get_block(block.header.hash) is None
+
+
 def test_submit_block_marks_a_contextual_failure_off_the_active_chain(
     regtest_node: Callable[..., Node],
 ) -> None:

@@ -43,7 +43,11 @@ from btclib_wallet.descriptors import Provider, infer_descriptor
 
 from btclib_node import clock
 from btclib_node.block_db import Coin
-from btclib_node.chainstate.block_index import BlockStatus, block_time
+from btclib_node.chainstate.block_index import (
+    BlockStatus,
+    block_time,
+    check_headers_pow,
+)
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, USER_AGENT
 from btclib_node.exceptions import MissingPrevoutError, TxRejectedError
 from btclib_node.fee_estimator import track_accepted
@@ -1136,24 +1140,26 @@ def _submitted_body_refusal(
 ) -> str | None:
     """Answer why a submitted body is refused, marking its header if Core does.
 
-    A body failing `main.assert_valid_block_proof` (on signet, its
-    solution) is refused for it, and nothing is marked: Core asks it in
-    `CheckBlock`, and `ProcessNewBlock` marks nothing for a body failing
-    that. A body that passes `CheckBlock` (`main.passes_check_block`) is
-    then asked Core's `ContextualCheckBlock`
-    (`mining.contextual_block_reason`), weight included, as Core's
-    `AcceptBlock` asks it before storing the block (`src/validation.cpp`,
-    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Where
-    `main.mark_contextual_failure` marks its header, the body is refused
-    with that rule's word. A mutated body (`main.is_block_mutated`) is
-    refused with the first rule it fails, whichever it is, which may come
+    A header failing its proof of work is refused as `high-hash`, the reason
+    `block_index.check_headers_pow` gives it: Core's `CheckBlock` asks
+    `CheckBlockHeader` before anything of the body. A body failing
+    `main.assert_valid_block_proof` (on signet, its solution) is refused for
+    it, and nothing is marked: Core asks it in `CheckBlock`, and
+    `ProcessNewBlock` marks nothing for a body failing that. A body that
+    passes `CheckBlock` (`main.passes_check_block`) is then asked Core's
+    `ContextualCheckBlock` (`mining.contextual_block_reason`), weight
+    included, as Core's `AcceptBlock` asks it before storing the block
+    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    Where `main.mark_contextual_failure` marks its header, the body is
+    refused with that rule's word. A mutated body (`main.is_block_mutated`)
+    is refused with the first rule it fails, whichever it is, which may come
     before the witness. A witness rule leaves its header alone
-    (`main.mark_contextual_failure`). A body over the weight behind a
-    header rule `contextual_check_block` asks again is refused in
-    btclib's text and marked (`main.is_block_failed`). Any other refusal
-    is btclib's text.
+    (`main.mark_contextual_failure`). A body over the weight behind a header
+    rule `contextual_check_block` asks again is refused in btclib's text and
+    marked (`main.is_block_failed`). Any other refusal is btclib's text.
     """
     try:
+        check_headers_pow([block.header], node.chain.pow_limit_bits)
         assert_valid_block_proof(block, node.chain)
     except BTClibException as error:
         return str(error)
@@ -1213,26 +1219,28 @@ def _validate_extending_tip(node: Node, block_hash: bytes) -> str | None:
 def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | None:
     """Answer `submitblock`, Core's own two arguments, the second ignored.
 
-    Core's own `submitblock` (`rpc/mining.cpp:1089-1136`, at
-    bitcoin/bitcoin@bb529657) decodes, indexes the header if it is new, and
-    hands the block to `ProcessNewBlock`: `None` for one accepted,
-    `"duplicate"` for one already held, and a reject reason for one refused.
-    Some reasons are Core's literally: `"duplicate-invalid"` for one whose
-    header is marked invalid (`main.is_cached_invalid`),
+    Core's own `submitblock` (`src/rpc/mining.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) decodes the block, calls
+    `UpdateUncommittedBlockStructures` where its parent is indexed, and
+    hands it to `ProcessNewBlock`, whose `AcceptBlock` indexes the header
+    only once `CheckBlock` passes (`src/validation.cpp`, same sha): `None`
+    for one accepted, `"duplicate"` for one already held, and a reject
+    reason for one refused. Some reasons are Core's literally:
+    `"duplicate-invalid"` for one whose header is marked invalid
+    (`main.is_cached_invalid`),
     `BlockValidationResult::BLOCK_MISSING_PREV`'s own `"prev-blk-not-found"`
-    (`validation.cpp:4225`, same sha), which this node's own
+    (`src/validation.cpp`, same sha), which this node's own
     `block_index.add_headers` answers the identical way
     `p2p.callbacks.block` already reads it (missing rather than invalid),
     `AcceptBlockHeader`'s `"bad-prevblk"` for a parent marked invalid, and
     `ContextualCheckBlockHeader`'s `bad-diffbits`, `time-too-old`,
-    `time-timewarp-attack`, `time-too-new` and `"bad-version(0x%08x)"`,
-    and `CheckBlockHeader`'s `high-hash`, which `add_headers` raises in
-    Core's words (`src/validation.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Any other invalid block is
-    answered with btclib's own exception message instead of one of Core's:
-    `BlockValidationResult` names dozens of distinct single-word reasons
-    across `validation.cpp`, and this tree does not reproduce that
-    vocabulary.
+    `time-timewarp-attack`, `time-too-new` and `"bad-version(0x%08x)"`, and
+    `CheckBlockHeader`'s `high-hash`, which `block_index.check_headers_pow`
+    raises in Core's words whether or not the body passes `CheckBlock`. Any
+    other invalid block is answered with btclib's own exception message
+    instead of one of Core's: `BlockValidationResult` names dozens of
+    distinct single-word reasons across `validation.cpp`, and this tree does
+    not reproduce that vocabulary.
 
     Stores through the same `block_index`/`block_db` calls
     `p2p.callbacks.block` makes for a block delivered over the wire,
