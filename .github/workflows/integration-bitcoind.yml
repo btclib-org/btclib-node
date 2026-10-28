@@ -128,16 +128,14 @@ jobs:
       contents: read
     with:
       # the release under test, and the sha256 of its linux tarball as
-      # four independent guix builders attested it in
-      # bitcoin-core/guix.sigs. Pinned rather than resolved to "latest":
-      # a run that installs whatever is newest reports the day Core
-      # released rather than the day this tree changed, and the version
-      # that answered would then be unknowable from a green run. Raising
-      # it is a commit, with the new sha read from the same place --
-      # `btclib-org/btclib` and `btclib-org/bitcoin-core-rpc` pin the
-      # identical release and digest for their own copies of this job
-      bitcoind-version: "31.1"
-      bitcoind-sha256: b80d9c3e04da78fb6f0569685673418cf686fadba9042d926d13fb87ff503f9e
+      # independent guix builders attested it in bitcoin-core/guix.sigs.
+      # Pinned rather than resolved to "latest": a run that installs
+      # whatever is newest reports the day Core released rather than the
+      # day this tree changed, and the version that answered would then
+      # be unknowable from a green run. Raising it is a commit, with the
+      # new sha read from the same place
+      bitcoind-version: "32.1"
+      bitcoind-sha256: 61545c17c3120fb7412f896d248b11993af04ec8817aad3649c55b2afb044963
       # tests/integration/conftest.py's own two switches
       integration-env-var: BTCLIB_NODE_INTEGRATION
       bitcoind-path-env-var: BTCLIB_NODE_BITCOIND
