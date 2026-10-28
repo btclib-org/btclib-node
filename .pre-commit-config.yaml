@@ -89,11 +89,12 @@ repos:
         args: [--fix=lf]
         exclude: ^fuzz/corpus/
       - id: check-case-conflict
-      # scripts/ has no shebang or executable bit today, and this hook
-      # is the pair that keeps it that way: it matches every text file
-      # but those its exclude below names, so the day one of them gains
-      # a shebang without chmod +x, or the reverse, one of the two
-      # catches it
+      # fails a text file that opens with a shebang and whose git mode is
+      # not executable; it reads every text file but those its exclude
+      # below names. Its reverse, check-executables-have-shebangs, is not
+      # here: it reads only executable text files, none is tracked, and
+      # check-hooks-apply above fails a hook that matches no file. The day
+      # one is tracked, that hook goes in beside this one
       - id: check-shebang-scripts-are-executable
         # Core's vendored test framework keeps its shebangs and the mode
         # Core gives it, which is not executable
