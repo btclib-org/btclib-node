@@ -3482,8 +3482,8 @@ def test_check_block_failure_asks_assert_valid_block_not_plain_assert_valid(
     merkle root in Core's own `CheckBlock` (`src/validation.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag) -- proven here, as
     `main_test.py`'s own isolated gating test is, by a stub standing in
-    for `assert_valid_block` rather than a real signet-difficulty block,
-    which this test's chain (regtest) could not mine in reasonable time.
+    for `assert_valid_block` rather than a real block at signet's target,
+    whose mining takes millions of hashes.
     """
     node = a_chainstate_node(tmp_path)
     twice = generate_segwit_block(generate_coinbase(height=1))

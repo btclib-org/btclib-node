@@ -5525,11 +5525,12 @@ def test_a_body_failing_check_block_under_an_invalid_header_is_not_cached_invali
 def test_a_body_failing_its_signet_solution_is_neither_failed_nor_cached_invalid(
     node: Node, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ISS 2079: Core's `CheckBlock` asks the signet solution first.
+    """ISS 2079: Core's `CheckBlock` asks the signet solution.
 
-    The body is over the weight, under a header marked invalid: off
-    signet it is both. `main.SigNet` is `RegTest` here, so the real
-    BIP325 check runs on a regtest block.
+    It does so before `AcceptBlock` marks anything. The body is over the
+    weight, under a header marked invalid: off signet it is both.
+    `main.SigNet` is `RegTest` here, so the real BIP325 check runs on a
+    regtest block.
     """
     over = a_block_of_weight(MAX_BLOCK_WEIGHT + 1)
     block_index = node.chainstate.block_index
