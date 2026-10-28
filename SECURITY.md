@@ -173,6 +173,15 @@ the wipe a corrupt record would survive the rebuild. A stop between the
 chainstate wipe and the undo wipe keeps the old patches until a start with
 the option wipes them.
 
+The log escapes C1 controls, U+0080 to U+009F, as `\x` and two hex digits,
+beside the C0 controls and DEL that Bitcoin Core escapes too
+(btclib-org/btclib-node#1952). Core's `BCLog::LogEscapeMessage` escapes bytes
+below 0x20 and 0x7f (`src/logging.cpp`, at bitcoin/bitcoin@aa76bd266d). A C1
+control's UTF-8 is 0xc2 and a byte from 0x80 to 0x9f, so Core writes it as it
+is, and a terminal that decodes UTF-8 and honours C1 controls acts on it in a
+log it shows, as it would on an ESC. The cost is a log line that differs from
+Core's where a message holds such a character.
+
 ## Limitations, not vulnerabilities
 
 The [assurance case](./ASSURANCE_CASE.md) is the threat model these are

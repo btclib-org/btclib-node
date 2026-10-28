@@ -33,6 +33,7 @@ warning, then the data directory and configuration file lines, then
 """
 
 import logging
+import re
 import threading
 import time
 from collections.abc import Callable  # noqa: TC003 -- the docs build resolves it
@@ -171,6 +172,24 @@ def _prefix(record: logging.LogRecord) -> str:
     return "[debug] "
 
 
+# C0 controls (0x00-0x1F), DEL (0x7F) and C1 controls (0x80-0x9F)
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def _escape(text: str) -> str:
+    r"""Escape every C0 control, DEL and C1 control as `\x` and two hex digits.
+
+    It follows Core master's `BCLog::LogEscapeMessage` (`src/logging.cpp`,
+    at bitcoin/bitcoin@aa76bd266d), which escapes a newline too; the v31.1
+    tag's, at bitcoin/bitcoin@9be056a8a7, leaves it as it is. Core escapes
+    bytes, so it writes a C1 control's UTF-8 as it is; this escapes it too,
+    because a terminal reading the log can act on it, and SECURITY.md's
+    *Where this node departs from Bitcoin Core* lists the departure
+    (btclib-org/btclib-node#1952).
+    """
+    return _CONTROL_CHARS.sub(lambda m: f"\\x{ord(m.group()):02x}", text)
+
+
 class _LevelFormatter(logging.Formatter):
     """A `Formatter` writing Core's time, `_prefix`, then the message.
 
@@ -186,7 +205,11 @@ class _LevelFormatter(logging.Formatter):
 
     @override
     def formatMessage(self, record: logging.LogRecord) -> str:
-        return f"{record.asctime} {_prefix(record)}{record.message}"
+        # Strip one trailing newline a caller may pass, as Core master's
+        # `Logger::Format` does before `LogEscapeMessage` (`src/logging.cpp`,
+        # at bitcoin/bitcoin@aa76bd266d), so only embedded newlines are escaped
+        message = record.message.removesuffix("\n")
+        return f"{record.asctime} {_prefix(record)}{_escape(message)}"
 
     @override
     def format(self, record: logging.LogRecord) -> str:
