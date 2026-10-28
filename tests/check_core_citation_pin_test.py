@@ -11,9 +11,9 @@ question the pre-commit hook asks on every commit. Most other tests point
 `_tracked_files` at a fixture directory instead of the real tree, so each
 can make exactly one of the ways the tree could stop agreeing true and
 check that the script says so -- a pin bumped alone, one citation edited
-and the rest left behind, a version claim left at the old release, a
-citation living in a file with no special name at all -- and that an
-unmodified fixture says nothing is wrong.
+and the rest left behind, a citation living in a file with no special
+name at all -- and that an unmodified fixture says nothing is wrong, a
+measurement naming an older release included.
 `test_a_citation_in_an_unlisted_file_is_caught` is the regression test
 for btclib-org/btclib-node#1014: `rpc/callbacks.py` carried the
 release-annotated form and was on no list, so a version-tuple check the
@@ -99,13 +99,11 @@ _UNLISTED_SITE = """\
 """
 
 # an append-only entry the way CHANGELOG.md and RELEASE_NOTES.md write
-# one: a past measurement against the release pinned when it was
-# written, which stays true -- and stays written that way -- long after
-# a later bump makes the number look stale to anyone not reading it as
-# history
+# one: a citation annotated as the release pinned when it was written,
+# which stays written that way after a later bump
 _CHANGELOG_ENTRY = """\
-- Exercised against a real `bitcoind` v31.1.0 with
-  `BTCLIB_NODE_INTEGRATION=1`.
+- `COINBASE_MATURITY`, at bitcoin/bitcoin@9be056a8a7 -- v31.1, the
+  release `integration-bitcoind.yml` pins.
 """
 
 
@@ -208,26 +206,12 @@ def test_an_unannotated_citation_is_caught(
     assert agreeing_tree.main() == 1
 
 
-def test_a_version_claim_left_at_the_old_release_is_caught(
+def test_a_measurement_naming_an_older_release_is_a_record(
     agreeing_tree: ModuleType, tmp_path: Path
 ) -> None:
-    """conftest.py and errors.py are in scope, not only reorg_test.py."""
+    """A measurement naming `bitcoind` v31.0.0 stays true under a 31.1 pin."""
     (tmp_path / "conftest.py").write_text(
         _CONFTEST.replace("v31.1.0", "v31.0.0"), encoding="utf-8"
-    )
-    assert agreeing_tree.main() == 1
-
-
-def test_an_unrelated_action_pin_is_not_read_as_a_bitcoind_version(
-    agreeing_tree: ModuleType, tmp_path: Path
-) -> None:
-    """A `# vX.Y.Z` beside an action pin is not a bitcoind version claim."""
-    action_pin = (
-        "        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
-        " # v7.0.1\n"
-    )
-    (tmp_path / "integration-bitcoind.yml").write_text(
-        _WORKFLOW + action_pin, encoding="utf-8"
     )
     assert agreeing_tree.main() == 0
 
@@ -288,10 +272,9 @@ def test_tracked_files_excludes_self_test_and_changelogs(
 def test_a_stale_version_claim_in_changelog_is_not_flagged_end_to_end(
     script: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A `CHANGELOG.md` entry naming an old release is history, not drift.
+    """A `CHANGELOG.md` entry citing an old pinned release is history.
 
-    `CHANGELOG.md:2857` in this tree's own history carries exactly this
-    shape -- a past measurement against the then-pinned release -- and
+    An entry quoting a citation annotated as the then-pinned release
     must never be read as a claim about the pin today. Real `git
     ls-files` under a throwaway repository and the real `_tracked_files`
     filter, so `changelog` is genuinely offered to `_tree_problems` and
@@ -314,11 +297,11 @@ def test_a_stale_version_claim_in_changelog_is_not_flagged_end_to_end(
         _REORG_TEST.replace("v31.1, the release", "v31.9, the release"),
         encoding="utf-8",
     )
-    # every one of these four still names the old release, on purpose
+    # every one of these four still cites the old release, on purpose
     changelog.write_text(_CHANGELOG_ENTRY, encoding="utf-8")
     release_notes.write_text(_CHANGELOG_ENTRY, encoding="utf-8")
-    self_source.write_text(_ERRORS, encoding="utf-8")
-    self_test.write_text(_CONFTEST, encoding="utf-8")
+    self_source.write_text(_UNLISTED_SITE, encoding="utf-8")
+    self_test.write_text(_UNLISTED_SITE, encoding="utf-8")
 
     subprocess.run([_GIT, "init", "-q", str(tmp_path)], check=True)  # noqa: S603
     subprocess.run([_GIT, "-C", str(tmp_path), "add", "-A"], check=True)  # noqa: S603

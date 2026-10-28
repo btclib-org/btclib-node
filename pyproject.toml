@@ -750,10 +750,9 @@ addopts = "-ra --cov --durations=8 -n auto --strict-config --strict-markers"
 markers = [
     "slow: too slow for every run; skipped unless --run-slow is given",
 ]
-# This suite has no `xfail` today (`grep -rn xfail tests/` matches only
-# a comment in tests/_data/README.md, not a call), so turning it on costs
-# nothing, where waiting for the first one risks that nobody notices it
-# stopped meaning anything.
+# An `xfail` here is a known divergence, and its reason cites the issue
+# tracking it. Strict, so a case that starts passing fails the run until
+# its mark goes, instead of the mark going on meaning nothing.
 xfail_strict = true
 # What a single test is given before the run says which test hung and
 # where, instead of sitting there. Measured rather than picked, on the

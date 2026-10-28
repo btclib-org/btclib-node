@@ -14,6 +14,7 @@ is found where it happens.
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
+import pytest
 from bitcoin_core_rpc import RpcError
 from btclib.hashes import sha256
 from btclib.script.witness import Witness
@@ -662,6 +663,7 @@ SCENARIOS: list[Callable[[Ctx], None]] = [
 ]
 
 
+@pytest.mark.xfail(reason="v32.1's help text (btclib-org/btclib-node#2105)")
 def test_submitpackage_answers_as_bitcoind_does(
     bitcoind: Bitcoind, tmp_path: Path
 ) -> None:

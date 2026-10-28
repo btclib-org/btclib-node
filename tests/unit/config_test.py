@@ -589,7 +589,7 @@ def test_split_host_port_reads_leading_zeros() -> None:
 
 
 def test_max_connections_defaults_to_core_s_own() -> None:
-    """Core's own `DEFAULT_MAX_PEER_CONNECTIONS`, at the pinned release."""
+    """Core's own `DEFAULT_MAX_PEER_CONNECTIONS`, at v31.1 (ISS 1769)."""
     assert DEFAULT_MAX_PEER_CONNECTIONS == 125
     assert Config(chain="regtest").max_connections == DEFAULT_MAX_PEER_CONNECTIONS
 

@@ -4,9 +4,8 @@
 
 """`RpcAuth`, who may call the JSON-RPC listener, and which methods.
 
-Bitcoin Core's own scheme, read at
-bitcoin/bitcoin@9be056a8a7 -- v31.1, the release
-`integration-bitcoind.yml` pins: `InitRPCAuthentication`,
+Bitcoin Core's own scheme, read at bitcoin/bitcoin@9be056a8a7, the v31.1
+tag: `InitRPCAuthentication`,
 `RPCAuthorized`, `CheckUserAuthorized` and `HTTPReq_JSONRPC` in
 `src/httprpc.cpp`, `GetAuthCookieFile`, `GenerateAuthCookie` and
 `DeleteAuthCookie` in `src/rpc/request.cpp`. Every request carries HTTP

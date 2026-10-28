@@ -85,8 +85,9 @@ _OUTBOUND_TX_ANNOUNCE_INTERVAL = 2.0
 # the 5 second inbound interval) and `INVENTORY_BROADCAST_MAX`, at
 # bitcoin/bitcoin@9be056a8a7, the v31.1 tag: the number of transactions one
 # trickle announces to a peer is the target plus 5 for each 1000 queued, at
-# most the maximum. bitcoin/bitcoin#34628 replaces this with two global
-# buckets after v31.1; relay follows the release.
+# most the maximum. bitcoin/bitcoin#34628 replaces this with global rate
+# limits in v32.1, which this node does not follow yet
+# (btclib-org/btclib-node#2106).
 _INVENTORY_BROADCAST_TARGET = 70
 _INVENTORY_BROADCAST_MAX = 1000
 

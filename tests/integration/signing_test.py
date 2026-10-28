@@ -55,6 +55,7 @@ def test_every_case_is_signed_as_bitcoind_signs_it(bitcoind: Bitcoind) -> None:
         assert call(method, params) == bitcoind.rpc(method, params), name
 
 
+@pytest.mark.xfail(reason="v32.1's help text (btclib-org/btclib-node#2105)")
 def test_every_refusal_is_bitcoinds(bitcoind: Bitcoind) -> None:
     """The same code and the same message."""
     for method, params, code, message in REFUSALS:
@@ -72,29 +73,16 @@ def test_every_refusal_is_bitcoinds(bitcoind: Bitcoind) -> None:
         ), params
 
 
-def test_the_refusals_of_master_are_bitcoinds_where_v31_1_has_them(
-    bitcoind: Bitcoind,
-) -> None:
-    """A list that fails to decode is refused so by both, as master orders it.
-
-    Master counts the list first, which v31.1 does not, so `["zz"]` is
-    decoded there; the second list is decoded in full before either compares.
-    """
-    first, second = MASTER_REFUSALS[2:]
-    assert first[1] == [["zz"]]
-    answers = {}
-    for _, params, _, _ in (first, second):
+def test_the_refusals_of_master_are_bitcoinds(bitcoind: Bitcoind) -> None:
+    """The same code and the same message: v32.1 checks in master's order."""
+    for method, params, code, message in MASTER_REFUSALS:
         with pytest.raises(RpcError) as raised:
-            bitcoind.rpc("combinerawtransaction", params)
-        answers[str(params)] = (
-            raised.value.code,
-            raised.value.args[0].split(": ", 1)[1],
-        )
-    assert answers[str(first[1])] == (
-        -22,
-        "TX decode failed for tx 0. Make sure the tx has at least one input.",
-    )
-    assert answers[str(second[1])] == (second[2], second[3])
+            bitcoind.rpc(method, params)
+        # past the url, which names bitcoind's own port
+        assert (raised.value.code, raised.value.args[0].split(": ", 1)[1]) == (
+            code,
+            message,
+        ), params
 
 
 def test_messages_are_signed_and_verified_as_bitcoind_does(

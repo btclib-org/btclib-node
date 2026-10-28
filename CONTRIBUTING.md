@@ -652,10 +652,7 @@ the wire is never speaking master's tip. A peer-refusal rule may go
 stricter than the release ahead of that behaviour landing in one,
 provided the code argues the divergence against the release and cites
 master's sha beside it: refusing a misbehaving peer more readily changes
-nothing an honest peer's messages achieve. `sendcmpct`'s announce octet
-is the case in point: master reads it as a byte and calls `Misbehaving`
-on a value above one, where the release reads a bare bool and refuses
-nothing.
+nothing an honest peer's messages achieve.
 
 ### A defect rooted in btclib
 
