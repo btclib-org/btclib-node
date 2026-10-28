@@ -85,7 +85,7 @@ def _agree(
 
 
 @pytest.mark.xfail(
-    reason="v32.1 drops bip125-replaceable (btclib-org/btclib-node#2107)"
+    reason="v32.1 diverges: no bip125-replaceable (btclib-org/btclib-node#2107)"
 )
 def test_clusters_are_answered_as_bitcoind_does(
     bitcoind: Bitcoind, tmp_path: Path

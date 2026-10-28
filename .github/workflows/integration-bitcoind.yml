@@ -139,7 +139,10 @@ jobs:
       # tests/integration/conftest.py's own two switches
       integration-env-var: BTCLIB_NODE_INTEGRATION
       bitcoind-path-env-var: BTCLIB_NODE_BITCOIND
-      # skip-reason-prefix left at its default, the empty string, which
-      # exempts no skip: tests/integration/conftest.py skips only for want
-      # of the switch or of a bitcoind, which is what the called
-      # workflow's node-ran check is there to fail on
+      # JUnit reports an `xfail` as a skip, and the called workflow's
+      # node-ran check fails on any skip whose reason lacks this prefix.
+      # Every `xfail` under tests/integration/ is a known divergence from
+      # the pinned release and its reason starts with it;
+      # tests/integration/conftest.py's own skips, for want of the switch
+      # or of a bitcoind, do not, and still fail the check
+      skip-reason-prefix: "v32.1 diverges: "
