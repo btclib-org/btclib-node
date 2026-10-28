@@ -8253,8 +8253,8 @@ def test_submit_block_answers_a_bad_signet_solution_before_the_body_s_rules(
     `ProcessNewBlock` does not reach `AcceptBlock`, which marks, for a
     body failing it (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7,
     the v31.1 tag). `main.SigNet` is `RegTest` here, so the real BIP325
-    check runs on a regtest block: no block at signet's target can be
-    mined in a test.
+    check runs on a regtest block: mining a block at signet's target takes
+    millions of hashes.
     """
     node = regtest_node()
     chain = generate_random_chain(COINBASE_MATURITY, node.chain.genesis.hash)

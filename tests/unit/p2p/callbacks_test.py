@@ -3453,8 +3453,8 @@ def test_a_body_failing_its_signet_solution_leaves_no_header(
     `ProcessNewBlock` asks `CheckBlock` before `AcceptBlock` indexes the
     header (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
     tag), so a body failing its solution leaves no header. `main.SigNet`
-    is `RegTest` here: no block at signet's target can be mined in a test.
-    The same block, off signet, has its header indexed.
+    is `RegTest` here: mining a block at signet's target takes millions of
+    hashes. The same block, off signet, has its header indexed.
     """
     node = a_chainstate_node(tmp_path)
     node.chain = node.config.chain = RegTest()
