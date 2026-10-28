@@ -21,7 +21,7 @@ way this module worked before #1014 would pass it silently, and the
 fixture in that test is built the same way.
 
 `test_tracked_files_excludes_self_test_and_changelogs` and
-`test_a_stale_version_claim_in_changelog_is_not_flagged_end_to_end`
+`test_a_stale_citation_in_changelog_is_not_flagged_end_to_end`
 exercise that same exclusion against a throwaway git repository, rather
 than through a fixture the other tests monkeypatch `_tracked_files`
 away with -- the first at `_tracked_files` itself, the second through
@@ -102,8 +102,9 @@ _UNLISTED_SITE = """\
 # one: a citation annotated as the release pinned when it was written,
 # which stays written that way after a later bump
 _CHANGELOG_ENTRY = """\
-- `COINBASE_MATURITY`, at bitcoin/bitcoin@9be056a8a7 -- v31.1, the
-  release `integration-bitcoind.yml` pins.
+- `COINBASE_MATURITY`, at
+  bitcoin/bitcoin@9be056a8a7 -- v31.1, the release
+  `integration-bitcoind.yml` pins.
 """
 
 
@@ -269,7 +270,7 @@ def test_tracked_files_excludes_self_test_and_changelogs(
     assert script._tracked_files() == [kept]
 
 
-def test_a_stale_version_claim_in_changelog_is_not_flagged_end_to_end(
+def test_a_stale_citation_in_changelog_is_not_flagged_end_to_end(
     script: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A `CHANGELOG.md` entry citing an old pinned release is history.
@@ -279,9 +280,9 @@ def test_a_stale_version_claim_in_changelog_is_not_flagged_end_to_end(
     ls-files` under a throwaway repository and the real `_tracked_files`
     filter, so `changelog` is genuinely offered to `_tree_problems` and
     the exclusion is what keeps it from being flagged, not the fixture
-    choosing not to include it. `release_notes`, this script's own
-    source and its own test carry the identical stale text, proving the
-    same exclusion for all four at once.
+    choosing not to include it. `release_notes` carries the same entry,
+    and this script's own source and its own test carry `_UNLISTED_SITE`,
+    so each of the four would be flagged but for its exclusion.
     """
     workflow = tmp_path / "integration-bitcoind.yml"
     reorg_test = tmp_path / "reorg_test.py"

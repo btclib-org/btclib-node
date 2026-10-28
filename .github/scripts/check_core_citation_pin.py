@@ -36,13 +36,14 @@ citation elsewhere in the tree (a `CHANGELOG.md` entry, one of
 a commit unrelated to the others and to the pin on purpose, so requiring
 tree-wide agreement between arbitrary bare citations would be wrong.
 
-A measurement that names the release it was taken on -- "Measured on
-`bitcoind` vX.Y.Z", "what `bitcoind` vX.Y.Z answers" -- is a record and
-not a claim about the pin: it stays true of that release whatever the
-pin names, so it is not read here. The release-annotated form, "--
-vX.Y, the release `integration-bitcoind.yml` pins", is the one that
-says what the tree is tested against *now* (`CONTRIBUTING.md`'s
-*Following Bitcoin Core*), and the one a bump leaves false.
+Outside `reorg_test.py`, only the release-annotated form is read: "--
+vX.Y, the release `integration-bitcoind.yml` pins", which says what the
+tree is tested against *now* (`CONTRIBUTING.md`'s *Following Bitcoin
+Core*) and is what a bump leaves false. Any other mention of a release,
+a bare `bitcoind vX.Y.Z` included, is not read at all. The usual one is
+a measurement naming the release it was taken on -- "Measured on
+`bitcoind` vX.Y.Z", "what `bitcoind` vX.Y.Z answers" -- which stays true
+of that release whatever the pin names.
 
 This reads the tree rather than Bitcoin Core: it has no Core checkout
 and no network access here, so it cannot say whether `bitcoin/bitcoin@
