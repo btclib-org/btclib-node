@@ -137,9 +137,9 @@ jobs:
         difference with `git diff
         origin/${{ github.event.pull_request.base.ref }} -- <path>`.
       # Bitcoin Core's source for the review to read: the commit of the
-      # v31.1 tag, the release integration-bitcoind.yml pins and
+      # v32.1 tag, the release integration-bitcoind.yml pins and
       # CONTRIBUTING.md's *Following Bitcoin Core* follows
-      bitcoin-core-ref: 9be056a8a72b624dae9623b2f7bded92c2a21c91
+      bitcoin-core-ref: f0de87f040621468b956f01f526a43a010310501
       # no leading comma: the called workflow writes the one that joins
       # this to its own list
       #
