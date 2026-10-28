@@ -15,6 +15,8 @@ import time
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, cast
 
+import pytest
+
 from btclib_node import Node
 from btclib_node.config import Config
 from btclib_node.p2p.address import peer_address
@@ -82,6 +84,9 @@ def _agree(
         assert ours == theirs, method
 
 
+@pytest.mark.xfail(
+    reason="v32.1 drops bip125-replaceable (btclib-org/btclib-node#2107)"
+)
 def test_clusters_are_answered_as_bitcoind_does(
     bitcoind: Bitcoind, tmp_path: Path
 ) -> None:
