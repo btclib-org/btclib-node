@@ -384,6 +384,38 @@ def test_an_announcement_of_an_orphan_with_every_parent_had_asks_nothing() -> No
     assert manager.tx_requests.size() == 0
 
 
+def test_a_repeated_orphan_announcement_does_not_recompute_parents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Core returns early if the peer already announces the orphan."""
+    first, second = a_conn(1, inbound=False), a_conn(2, inbound=False)
+    manager = make_manager([first, second])
+    _parent, child = a_parent_and_child()
+    manager.orphanage.add_tx(child, 1)
+
+    calls = 0
+    original = download_module.DownloadManager.unique_parents
+
+    def counting_unique_parents(tx: Tx) -> list[bytes]:
+        nonlocal calls
+        calls += 1
+        return original(tx)
+
+    monkeypatch.setattr(
+        download_module.DownloadManager,
+        "unique_parents",
+        staticmethod(counting_unique_parents),
+    )
+    manager.inv_txs = [(2, child.hash, False)]
+    manager.tx_download()
+    assert calls == 1
+    assert manager.orphanage.have_tx_from_peer(child.hash, 2)
+
+    manager.inv_txs = [(2, child.hash, False)]
+    manager.tx_download()
+    assert calls == 1
+
+
 def test_a_peer_without_wtxid_relay_is_not_made_a_resolver_by_a_txid() -> None:
     """The orphanage is looked up by wtxid only for a peer that relays them."""
     conn = a_conn(2, inbound=False, wtxidrelay_received=False)
