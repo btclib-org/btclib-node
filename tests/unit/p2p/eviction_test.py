@@ -500,6 +500,7 @@ NET_GROUP_CASES = [
     ("fe80::1", Network.UNROUTABLE, "00", False),
     ("fc00::1", Network.UNROUTABLE, "00", False),
     ("2001:db8::1", Network.UNROUTABLE, "00", False),
+    ("3fff::1", Network.UNROUTABLE, "00", False),
     ("2001:10::1", Network.UNROUTABLE, "00", False),
     ("::", Network.UNROUTABLE, "00", False),
     # an IPv4 address mapped into IPv6 is that IPv4 address
@@ -573,6 +574,10 @@ VALID_CASES = [
     ("::ffff:255.255.255.255", False),
     ("::", False),
     ("2001:db8::1", False),
+    # two addresses inside RFC9637's /20, and one outside it
+    ("3fff::1", False),
+    ("3fff:fff:ffff::1", False),
+    ("3fff:1000::1", True),
     ("fd6b:88c0:8724::1", False),
     ("fd87:d87e:eb43::1", False),
     # beside both prefixes, and valid

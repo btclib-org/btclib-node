@@ -247,11 +247,14 @@ type _IP = IPv4Address | IPv6Address
 # `CNetAddr::IsLocal`
 _LOCAL = (IPv4Network("127.0.0.0/8"), IPv4Network("0.0.0.0/8"), IPv6Network("::1/128"))
 # What `CNetAddr::IsValid` refuses of an IP address, `NET_INTERNAL` aside
+# (`src/netaddress.cpp`, at bitcoin/bitcoin@f0de87f040 -- v32.1, the release
+# `integration-bitcoind.yml` pins)
 _INVALID = (
     IPv4Network("0.0.0.0/32"),  # INADDR_ANY
     IPv4Network("255.255.255.255/32"),  # INADDR_NONE
     IPv6Network("::/128"),  # unspecified
     IPv6Network("2001:db8::/32"),  # RFC3849
+    IPv6Network("3fff::/20"),  # RFC9637
 )
 # What `CNetAddr::IsRoutable` refuses, beside the local and the invalid
 # addresses above
