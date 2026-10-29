@@ -614,9 +614,7 @@ def test_contextual_check_block_leaves_a_version_in_btclib_s_text(
     """A version under the least one is refused in btclib's text.
 
     `BlockIndex.add_headers` refuses such a header first, as Core's
-    `bad-version`, so only a direct call reaches this refusal. The
-    exception is a version under 1 below BIP34's height, which
-    `add_headers` accepts and btclib refuses (btclib-org/btclib#2833).
+    `bad-version`, so only a direct call reaches this refusal.
     `_CONTEXTUAL_REASONS` does not translate it.
     """
     chain = generate_random_chain(1, RegTest().genesis.hash)
