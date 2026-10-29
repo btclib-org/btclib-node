@@ -752,7 +752,9 @@ markers = [
 ]
 # An `xfail` here is a known divergence, and its reason cites the issue
 # tracking it. Strict, so a case that starts passing fails the run until
-# its mark goes, instead of the mark going on meaning nothing.
+# its mark goes, instead of the mark going on meaning nothing. Where the
+# divergence raises one known exception type, the mark names it
+# (`raises=`), so that a timeout or a crash still fails the run.
 xfail_strict = true
 # What a single test is given before the run says which test hung and
 # where, instead of sitting there. Measured rather than picked, on the

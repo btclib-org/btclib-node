@@ -518,7 +518,8 @@ def test_the_answer_is_bitcoind_s(case: str, bitcoind: Bitcoind, node: Node) -> 
 
 
 @pytest.mark.xfail(
-    reason="v32.1 diverges: new estimatesmartfee and dumptxoutset parameters (btclib-org/btclib-node#2102, btclib-org/btclib-node#2103)"
+    raises=AssertionError,
+    reason="v32.1 diverges: new estimatesmartfee and dumptxoutset parameters (btclib-org/btclib-node#2102, btclib-org/btclib-node#2103)",
 )
 def test_each_method_names_its_positions_as_bitcoind_does(bitcoind: Bitcoind) -> None:
     """`arg_names` is `bitcoind`'s own table, for every method this node has.

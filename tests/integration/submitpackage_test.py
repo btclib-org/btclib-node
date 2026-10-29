@@ -663,7 +663,10 @@ SCENARIOS: list[Callable[[Ctx], None]] = [
 ]
 
 
-@pytest.mark.xfail(reason="v32.1 diverges: help text (btclib-org/btclib-node#2105)")
+@pytest.mark.xfail(
+    raises=AssertionError,
+    reason="v32.1 diverges: help text (btclib-org/btclib-node#2105)",
+)
 def test_submitpackage_answers_as_bitcoind_does(
     bitcoind: Bitcoind, tmp_path: Path
 ) -> None:

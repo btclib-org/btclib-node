@@ -99,7 +99,8 @@ def _mined_descriptor(bitcoind: Bitcoind) -> str:
 
 
 @pytest.mark.xfail(
-    reason="v32.1 diverges: mempool fee rate estimator (btclib-org/btclib-node#2102)"
+    raises=AssertionError,
+    reason="v32.1 diverges: mempool fee rate estimator (btclib-org/btclib-node#2102)",
 )
 def test_estimates_and_their_file_are_bitcoind_s(  # noqa: PLR0915
     bitcoind_path: str, tmp_path: Path
