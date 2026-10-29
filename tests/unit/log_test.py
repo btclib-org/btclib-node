@@ -6,6 +6,7 @@
 
 import ast
 import logging
+import os
 import re
 import time
 from pathlib import Path
@@ -489,7 +490,9 @@ def test_a_traceback_and_a_stack_cannot_forge_a_line_or_reach_a_terminal(
     except ValueError:
         logger.exception("chained", stack_info=True)
     logger.close()
-    lines = path.read_bytes().split(b"\n")[5:-1]
+    # a text-mode file ends each line in `os.linesep`; splitting on it, not
+    # on every line break, leaves a stray `\r` in a line for the last check
+    lines = path.read_bytes().split(os.linesep.encode())[5:-1]
     assert [line for line in lines if _RECORD_START.match(line)] == [lines[0]]
     assert lines[0].endswith(b" [error] chained")
     assert all(line.startswith(b"  ") for line in lines[1:])
