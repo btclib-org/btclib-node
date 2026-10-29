@@ -39,11 +39,14 @@ tree-wide agreement between arbitrary bare citations would be wrong.
 Outside `reorg_test.py`, only the release-annotated form is read: "--
 vX.Y, the release `integration-bitcoind.yml` pins", which says what the
 tree is tested against *now* (`CONTRIBUTING.md`'s *Following Bitcoin
-Core*) and is what a bump leaves false. Any other mention of a release,
-a bare `bitcoind vX.Y.Z` included, is not read at all. The usual one is
-a measurement naming the release it was taken on -- "Measured on
-`bitcoind` vX.Y.Z", "what `bitcoind` vX.Y.Z answers" -- which stays true
-of that release whatever the pin names.
+Core*) and is what a bump leaves false. It is read wherever it wraps:
+between any two of its words may fall a line break, with the indent and
+the `#`, `//` or `*` that opens the next line, and its release may be
+written vX.Y.Z, read as vX.Y where Z is 0. Any other mention of a
+release, a bare `bitcoind vX.Y.Z` included, is not read at all. The
+usual one is a measurement naming the release it was taken on --
+"Measured on `bitcoind` vX.Y.Z", "what `bitcoind` vX.Y.Z answers" --
+which stays true of that release whatever the pin names.
 
 This reads the tree rather than Bitcoin Core: it has no Core checkout
 and no network access here, so it cannot say whether `bitcoin/bitcoin@
@@ -102,9 +105,19 @@ _EXCLUDED_FROM_SCAN = (
 
 _PIN = re.compile(r'version:\s*"([0-9]+\.[0-9]+)"')
 _CITED_SHA = re.compile(r"bitcoin/bitcoin@([0-9a-f]{7,40})")
+# what may separate two words of the annotated form: spaces, and at most
+# one line break with the indent and comment marker opening the next line
+_GAP = r"[ \t]*(?:\r?\n[ \t]*(?:#+|//+|\*+)?[ \t]*)?"
 _ANNOTATED = re.compile(
-    r"bitcoin/bitcoin@[0-9a-f]{7,40} -- v([0-9]+\.[0-9]+), the release"
+    rf"bitcoin/bitcoin@[0-9a-f]{{7,40}}{_GAP}--{_GAP}"
+    rf"v([0-9]+\.[0-9]+)(?:\.([0-9]+))?,{_GAP}the{_GAP}release"
 )
+
+
+def _annotated_release(match: re.Match[str]) -> str:
+    """Return the release an annotated citation names, vX.Y.0 read as vX.Y."""
+    release, patch = match.group(1, 2)
+    return release if patch in {None, "0"} else f"{release}.{patch}"
 
 
 def _pinned_version() -> str:
@@ -168,10 +181,10 @@ def _sha_problems(pinned_version: str) -> list[str]:
             " to, as CONTRIBUTING.md's Following Bitcoin Core asks of a"
             " release-pinned citation"
         )
-    elif annotated.group(1) != pinned_version:
+    elif _annotated_release(annotated) != pinned_version:
         problems.append(
             f"{_REORG_TEST}: citations are annotated as release"
-            f" v{annotated.group(1)}, integration-bitcoind.yml pins"
+            f" v{_annotated_release(annotated)}, integration-bitcoind.yml pins"
             f" {pinned_version}"
         )
     return problems
@@ -193,7 +206,7 @@ def _tree_problems(pinned_version: str) -> list[str]:
         if text is None:
             continue
         for match in _ANNOTATED.finditer(text):
-            version = match.group(1)
+            version = _annotated_release(match)
             if version != pinned_version:
                 line = text.count("\n", 0, match.start()) + 1
                 problems.append(

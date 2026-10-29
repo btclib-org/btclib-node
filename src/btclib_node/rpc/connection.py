@@ -28,10 +28,10 @@ rather than requiring a fresh accept per call (issue #640).
 The framing is the libevent `bitcoind` v31.1.0 links, not Core's own
 source: bitcoin/bitcoin@9be056a8a7, the v31.1 tag, hands the socket to
 `evhttp`, and `depends/packages/libevent.mk` there pins
-2.1.12-stable, read at libevent/libevent@5df3037 (`http.c`). v32.1, the
-release `integration-bitcoind.yml` pins, frames with Core's own HTTP
-server instead, and answers otherwise where
-`tests/integration/rpc_framing_test.py` marks it
+2.1.12-stable, read at libevent/libevent@5df3037 (`http.c`).
+`httpserver.cpp`, at bitcoin/bitcoin@f0de87f040 -- v32.1, the release
+`integration-bitcoind.yml` pins, is Core's own HTTP server, which answers
+otherwise where `tests/integration/rpc_framing_test.py` marks it
 (btclib-org/btclib-node#2101).
 """
 

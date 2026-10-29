@@ -1933,10 +1933,10 @@ def disconnect_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
     manager.remove_connection(found[0])
 
 
-# Core's own four names (`rpc/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
-# the v31.1 tag) -- `manual` is v31.1's own fifth `addconnection`
-# connection type, past this pinned release (issue #1465's own
-# citation), so it is not one of these.
+# Core's own four names, at bitcoin/bitcoin@f0de87f040 -- v32.1, the release
+# `integration-bitcoind.yml` pins (`rpc/net.cpp:423`). `manual` is master's
+# alone, in no release yet (`rpc/net.cpp:456`, at bitcoin/bitcoin@aa76bd266d),
+# so it is not one of these (btclib-org/btclib-node#1465).
 _ADDCONNECTION_TYPES = (
     "outbound-full-relay",
     "block-relay-only",

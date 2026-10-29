@@ -402,9 +402,10 @@ def node(tmp_path: Path) -> Iterator[Node]:
         node.join()
 
 
-# The cases `bitcoind` v32.1, the release `integration-bitcoind.yml` pins,
-# answers otherwise: its own HTTP server, where this node frames as
-# libevent does (btclib-org/btclib-node#2101).
+# The cases Core's own HTTP server answers otherwise (`httpserver.cpp`, at
+# bitcoin/bitcoin@f0de87f040 -- v32.1, the release `integration-bitcoind.yml`
+# pins), where this node frames as libevent does
+# (btclib-org/btclib-node#2101).
 _FRAMED_AS_LIBEVENT = frozenset(
     {
         "absolute-form",

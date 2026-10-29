@@ -233,6 +233,40 @@ def test_a_citation_in_an_unlisted_file_is_caught(
     assert agreeing_tree.main() == 1
 
 
+@pytest.mark.parametrize(
+    "citation",
+    [
+        "at bitcoin/bitcoin@9be056a8a7 --\n    v31.0, the release",
+        "at bitcoin/bitcoin@9be056a8a7\n    -- v31.0, the release",
+        "at bitcoin/bitcoin@9be056a8a7 -- v31.0,\n    the release",
+        "at bitcoin/bitcoin@9be056a8a7 -- v31.0.0, the release",
+        "at bitcoin/bitcoin@9be056a8a7 -- v31.1.1, the release",
+        "# at bitcoin/bitcoin@9be056a8a7 --\n# v31.0, the release",
+        "// at bitcoin/bitcoin@9be056a8a7\n// -- v31.0, the release",
+        " * at bitcoin/bitcoin@9be056a8a7 --\n * v31.0, the release",
+    ],
+)
+def test_a_wrapped_or_three_part_citation_is_caught(
+    agreeing_tree: ModuleType, tmp_path: Path, citation: str
+) -> None:
+    """A stale annotation is read across a line break and its comment marker."""
+    (tmp_path / "some_unrelated_module.py").write_text(
+        f"{citation}\n`integration-bitcoind.yml` pins\n", encoding="utf-8"
+    )
+    assert agreeing_tree.main() == 1
+
+
+def test_a_three_part_citation_of_the_pin_agrees(
+    agreeing_tree: ModuleType, tmp_path: Path
+) -> None:
+    """`v31.1.0` names the release a `31.1` pin names."""
+    (tmp_path / "some_unrelated_module.py").write_text(
+        _UNLISTED_SITE.replace(" -- v31.1, the release", " -- v31.1.0, the release"),
+        encoding="utf-8",
+    )
+    assert agreeing_tree.main() == 0
+
+
 def test_tracked_files_excludes_self_test_and_changelogs(
     script: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
