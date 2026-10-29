@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import stat
+import subprocess
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -418,11 +418,20 @@ httpd.serve_forever()
 """
 
 
-def test_main_writes_the_document(fetch: ModuleType, tmp_path: Path) -> None:
+def test_main_writes_the_document(
+    fetch: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """The document is written indented, with a final newline."""
-    bitcoind = tmp_path / "bitcoind"
-    bitcoind.write_text(f"#!{sys.executable}\n{_FAKE_BITCOIND}", encoding="utf-8")
-    bitcoind.chmod(bitcoind.stat().st_mode | stat.S_IXUSR)
+    bitcoind = tmp_path / "bitcoind.py"
+    bitcoind.write_text(_FAKE_BITCOIND, encoding="utf-8")
+    # Windows starts no script by its shebang, so the stand-in runs
+    # under this Python, with the arguments `fetch` gives bitcoind
+    popen = subprocess.Popen
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda args, **kwargs: popen([sys.executable, *args], **kwargs),
+    )
     output = tmp_path / "core-openrpc.json"
     assert fetch.main([str(bitcoind), str(output)]) == 0
     assert output.read_text(encoding="utf-8") == '{\n  "methods": [\n    "é"\n  ]\n}\n'
