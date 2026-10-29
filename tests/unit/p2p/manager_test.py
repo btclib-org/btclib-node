@@ -41,7 +41,11 @@ from btclib.p2p.limits import MAX_ADDR_TO_SEND, PROTOCOL_VERSION
 
 from btclib_node import clock as clock_module
 from btclib_node.chains import Main, RegTest
-from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS, BindAddress
+from btclib_node.config import (
+    DEFAULT_FULL_RELAY_INBOUND_PCT,
+    DEFAULT_MAX_PEER_CONNECTIONS,
+    BindAddress,
+)
 from btclib_node.constants import (
     DEFAULT_MAXRECEIVEBUFFER,
     DEFAULT_MAXSENDBUFFER,
@@ -275,6 +279,7 @@ class AManagerFactory(Protocol):
         externalip: Sequence[str] = (),
         discover: bool | None = None,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
+        inbound_relay_percent: int = DEFAULT_FULL_RELAY_INBOUND_PCT,
         forcednsseed: bool = False,
         fixed_seeds: bool = True,
         v2transport: bool = False,
@@ -310,6 +315,7 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
         externalip: Sequence[str] = (),
         discover: bool | None = None,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
+        inbound_relay_percent: int = DEFAULT_FULL_RELAY_INBOUND_PCT,
         forcednsseed: bool = False,
         fixed_seeds: bool = True,
         v2transport: bool = False,
@@ -369,6 +375,7 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
                 # resolves.
                 discover=(listen and not externalip) if discover is None else discover,
                 max_connections=max_connections,
+                inbound_relay_percent=inbound_relay_percent,
                 dnsseed=not connect and max_connections > 0,
                 forcednsseed=forcednsseed,
                 fixed_seeds=fixed_seeds,
@@ -5790,7 +5797,7 @@ def test_a_manager_accepts_an_ipv6_peer_too(  # pragma: no cover -- the body nee
     [
         # Core's own default: eleven outbound slots reserved, the rest
         # inbound, eight of the eleven full-relay and two block-relay-only
-        (DEFAULT_MAX_PEER_CONNECTIONS, 114, 8, 2, 11),
+        (DEFAULT_MAX_PEER_CONNECTIONS, 189, 8, 2, 11),
         # one past the reservation: a single inbound slot
         (12, 1, 8, 2, 11),
         # one block-relay-only slot left over by the full-relay eight
@@ -6226,6 +6233,106 @@ def test_an_eviction_candidate_reads_relay_off_the_version_message() -> None:
     assert not manager_module._eviction_candidate(conn).relay_txs
     conn.version_message = SimpleNamespace(is_relay_requested=True)
     assert manager_module._eviction_candidate(conn).relay_txs
+
+
+@pytest.mark.parametrize(
+    ("max_connections", "percent", "share"),
+    [
+        # v32.1's defaults: half of 189 inbound slots, truncated
+        (DEFAULT_MAX_PEER_CONNECTIONS, DEFAULT_FULL_RELAY_INBOUND_PCT, 94),
+        (15, 50, 2),
+        (15, 100, 4),
+        (15, 0, 0),
+        (5, 50, 0),
+    ],
+)
+def test_the_relay_share_is_counted_the_way_core_counts_it(
+    a_manager: AManagerFactory, *, max_connections: int, percent: int, share: int
+) -> None:
+    """ISS 1769: `m_max_inbound_full_relay`, a truncated share of inbound."""
+    manager = a_manager(max_connections=max_connections, inbound_relay_percent=percent)
+    assert manager.max_inbound_full_relay == share
+
+
+def _an_inbound_peer(conn_id: int, *, relay: bool, **attributes: Any) -> Any:
+    """Build an inbound `a_conn` that asked, or not, for transactions.
+
+    It carries what `_eviction_candidate` reads; `**attributes` goes to
+    `a_conn`.
+    """
+    conn = a_conn(conn_id, **{"inbound": True, **attributes})
+    conn.__dict__.update(
+        min_ping_time=0.0,
+        last_novel_block_time=0,
+        last_novel_tx_time=0,
+        has_all_wanted_services=False,
+        keyed_net_group=conn_id,
+        prefer_evict=False,
+        version_message=SimpleNamespace(is_relay_requested=relay),
+    )
+    return conn
+
+
+def test_a_tx_relay_peer_past_the_share_evicts_one_of_its_kind_only(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1769: Core's `EvictTxPeerIfFull`, with the new peer protected.
+
+    `max_connections=15` leaves four inbound slots, two of them for
+    peers that relay transactions. Two such peers fill the share, so
+    nothing is asked of the selector; a third, pending, goes past it.
+    The selector is then offered every connection that relays
+    transactions but the protected one: an outbound one included, as
+    Core's own list does, `select_node_to_evict` keeping it out. Neither
+    an inbound peer that relays nothing nor a closing one is offered,
+    or counted.
+    """
+    quiet = _an_inbound_peer(4, relay=False)
+    manager = a_manager(
+        [
+            _an_inbound_peer(1, relay=True),
+            _an_inbound_peer(2, relay=True),
+            quiet,
+            _an_inbound_peer(5, relay=True, status=P2pConnStatus.Closed),
+            _an_inbound_peer(6, relay=True, inbound=False),
+        ],
+        max_connections=15,
+    )
+    assert manager.max_inbound_full_relay == 2
+    offered: list[set[int]] = []
+
+    def select(candidates: Iterable[EvictionCandidate]) -> int:
+        ids = {candidate.id for candidate in candidates}
+        offered.append(ids)
+        return min(ids)
+
+    monkeypatch.setattr(manager_module, "select_node_to_evict", select)
+    assert manager.evict_tx_peer_if_full()
+    assert not offered
+    manager.pending_connections[3] = _an_inbound_peer(3, relay=True)
+    assert manager.evict_tx_peer_if_full(protect_peer=3)
+    assert offered == [{1, 2, 6}]
+    assert 1 not in manager.connections
+    assert quiet.stopped == []
+    assert 4 in manager.connections
+    assert 3 in manager.pending_connections
+
+
+def test_a_tx_relay_peer_past_the_share_with_none_to_evict_is_answered_false(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1769: every peer protected, so `EvictTxPeerIfFull` answers false.
+
+    The real selector: two candidates are both kept by its protections,
+    so it names nobody, and nobody is dropped.
+    """
+    manager = a_manager(
+        [_an_inbound_peer(1, relay=True), _an_inbound_peer(2, relay=True)],
+        max_connections=13,
+    )
+    assert manager.max_inbound_full_relay == 1
+    assert not manager.evict_tx_peer_if_full(protect_peer=2)
+    assert sorted(manager.connections) == [1, 2]
 
 
 def test_an_outbound_connection_takes_no_inbound_slot(

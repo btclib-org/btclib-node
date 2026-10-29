@@ -538,6 +538,14 @@ class P2pManager(threading.Thread):
         )
         automatic_outbound = full_relay + block_relay + _MAX_FEELER_CONNECTIONS
         self.max_inbound = max(0, max_connections - automatic_outbound)
+        # Core's `m_max_inbound_full_relay` (`src/net.h`,
+        # at bitcoin/bitcoin@f0de87f040 -- v32.1, the release
+        # `integration-bitcoind.yml` pins): the inbound slots
+        # transaction-relaying peers may hold, which
+        # `evict_tx_peer_if_full` holds them to.
+        self.max_inbound_full_relay = max(
+            0, int(node.config.inbound_relay_percent / 100.0 * self.max_inbound)
+        )
         self.max_outbound_full_relay = full_relay
         # The size of Core's `semOutbound`,
         # `min(m_max_automatic_outbound, m_max_automatic_connections)`
@@ -662,7 +670,8 @@ class P2pManager(threading.Thread):
         # again. `promote_connection` runs on `Node`'s own loop, off
         # `callbacks.verack`; `remove_connection` runs on this
         # manager's own loop, off `_prune_stale_connections`, and on
-        # `Node`'s, off the `disconnectnode` RPC. Unlocked,
+        # `Node`'s, off the `disconnectnode` RPC and off
+        # `evict_tx_peer_if_full`. Unlocked,
         # a `remove_connection` whose first pop misses because the
         # connection is still pending can run its second pop after
         # `promote_connection` has already moved it, missing it there
@@ -3454,14 +3463,18 @@ class P2pManager(threading.Thread):
                 )
             )
 
-    def _attempt_to_evict_connection(self) -> bool:
+    def _attempt_to_evict_connection(
+        self, *, evict_tx_relay_peer_only: bool = False, protect_peer: int | None = None
+    ) -> bool:
         """Disconnect one inbound peer to make room, and say whether one went.
 
-        Core's `CConnman::AttemptToEvictConnection` (`src/net.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a candidate for every
-        connection not already closing, pending ones included, and
-        `select_node_to_evict` keeps the outbound ones out. The peer
-        chosen leaves through `remove_connection`, the same drop
+        Core's `CConnman::AttemptToEvictConnection` (`src/net.cpp`,
+        at bitcoin/bitcoin@f0de87f040 -- v32.1, the release
+        `integration-bitcoind.yml` pins): a candidate for every connection
+        not already closing, pending ones included, but `protect_peer`
+        and, where `evict_tx_relay_peer_only` holds, any that relays no
+        transactions; `select_node_to_evict` keeps the outbound ones out.
+        The peer chosen leaves through `remove_connection`, the same drop
         `_prune_stale_connections` uses.
         """
         with self._connections_lock:
@@ -3472,6 +3485,8 @@ class P2pManager(threading.Thread):
                     *self.pending_connections.values(),
                 )
                 if conn.status < P2pConnStatus.Closed
+                and conn.id != protect_peer
+                and (not evict_tx_relay_peer_only or _relays_txs(conn))
             }
         evict_id = select_node_to_evict(_eviction_candidate(c) for c in conns.values())
         if evict_id is None:
@@ -3485,6 +3500,32 @@ class P2pManager(threading.Thread):
             ip_and_port(str(endpoint.ip), endpoint.port),
         )
         self.remove_connection(evict_id)
+        return True
+
+    def evict_tx_peer_if_full(self, protect_peer: int | None = None) -> bool:
+        """Evict a transaction-relaying inbound peer past their share.
+
+        Core's `CConnman::EvictTxPeerIfFull` (`src/net.cpp`,
+        at bitcoin/bitcoin@f0de87f040 -- v32.1, the release
+        `integration-bitcoind.yml` pins): where more inbound peers not
+        already closing relay transactions than `max_inbound_full_relay`
+        allows, one of them other than `protect_peer` is evicted.
+        Answers false only where one had to go and none could;
+        `callbacks.version` then drops its own peer.
+        """
+        with self._connections_lock:
+            tx_inbound_peers = sum(
+                conn.inbound and _relays_txs(conn)
+                for conn in (
+                    *self.connections.values(),
+                    *self.pending_connections.values(),
+                )
+                if conn.status < P2pConnStatus.Closed
+            )
+        if tx_inbound_peers > self.max_inbound_full_relay:
+            return self._attempt_to_evict_connection(
+                evict_tx_relay_peer_only=True, protect_peer=protect_peer
+            )
         return True
 
     async def server(
@@ -4023,6 +4064,23 @@ class P2pManager(threading.Thread):
             conn.stop()
 
 
+def _relays_txs(conn: Connection) -> bool:
+    """Answer Core's `CNode::m_relays_txs` for an inbound `conn`.
+
+    The peer's `version` relay flag once that message has arrived, and
+    false before it. It is read off `version_message` itself rather than
+    `Connection.relay_tx`, which `callbacks.version` writes later, so a
+    selection or a count landing between the two writes reads the flag
+    and not `relay_tx`'s default. Core also sets it on a `filterload` or
+    `filterclear`, and checks the share there too, but only where it
+    offers `NODE_BLOOM`, dropping the peer otherwise. This node offers
+    `NODE_BLOOM` to no peer and ignores both messages
+    (btclib-org/btclib-node#1971).
+    """
+    version_message = conn.version_message
+    return version_message is not None and version_message.is_relay_requested
+
+
 def _eviction_candidate(conn: Connection) -> EvictionCandidate:
     """Build the `NodeEvictionCandidate` Core builds for `conn`, where it can.
 
@@ -4031,13 +4089,8 @@ def _eviction_candidate(conn: Connection) -> EvictionCandidate:
 
     - `fBloomFilter`: this node answers no BIP37 `filterload`.
 
-    `m_relay_txs` is the peer's `version` relay flag once that message
-    has arrived and false before it, as Core's `m_relays_txs` is. It is
-    read off `version_message` itself rather than `Connection.relay_tx`,
-    which `callbacks.version` writes later, so a selection landing
-    between the two writes reads the flag and not `relay_tx`'s default.
+    `m_relay_txs` is `_relays_txs`.
     """
-    version_message = conn.version_message
     return EvictionCandidate(
         id=conn.id,
         connected=conn.connected_time,
@@ -4045,7 +4098,7 @@ def _eviction_candidate(conn: Connection) -> EvictionCandidate:
         last_block_time=conn.last_novel_block_time,
         last_tx_time=conn.last_novel_tx_time,
         relevant_services=conn.has_all_wanted_services,
-        relay_txs=version_message is not None and version_message.is_relay_requested,
+        relay_txs=_relays_txs(conn),
         bloom_filter=False,
         keyed_net_group=conn.keyed_net_group,
         prefer_evict=conn.prefer_evict,

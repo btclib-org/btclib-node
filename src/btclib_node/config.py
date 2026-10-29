@@ -65,6 +65,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DEFAULT_DUST_RELAY_FEERATE",
+    "DEFAULT_FULL_RELAY_INBOUND_PCT",
     "DEFAULT_INCREMENTAL_RELAY_FEERATE",
     "DEFAULT_MAX_DATACARRIER_BYTES",
     "DEFAULT_MAX_HTTP_CONNECTIONS",
@@ -104,14 +105,13 @@ DEFAULT_DUST_RELAY_FEERATE = FeeRate(sats_per_kvbyte=3000)
 # `MAX_STANDARD_TX_WEIGHT / WITNESS_SCALE_FACTOR`: the default of
 # `-datacarriersize`, in bytes.
 DEFAULT_MAX_DATACARRIER_BYTES = 400_000 // 4
-# Core's own `-maxconnections` default, `DEFAULT_MAX_PEER_CONNECTIONS`
-# (`src/net.h`), at bitcoin/bitcoin@9be056a8a7, the v31.1 tag. v32.1
-# sets 200 (`src/net.h`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
-# beside `-inboundrelaypercent`, which by default holds
-# transaction-relaying inbound peers to half of the inbound slots; this
-# node has no such split, so it keeps the value v31.1 pairs with no split
-# either until it has one (btclib-org/btclib-node#1769).
-DEFAULT_MAX_PEER_CONNECTIONS = 125
+# Core's own `-maxconnections` and `-inboundrelaypercent` defaults,
+# `DEFAULT_MAX_PEER_CONNECTIONS` and `DEFAULT_FULL_RELAY_INBOUND_PCT`
+# (`src/net.h`, at bitcoin/bitcoin@f0de87f040 -- v32.1, the release
+# `integration-bitcoind.yml` pins): the automatic connections, and the
+# percentage of the inbound slots transaction-relaying peers may hold.
+DEFAULT_MAX_PEER_CONNECTIONS = 200
+DEFAULT_FULL_RELAY_INBOUND_PCT = 50
 # Core's own `-rpcmaxconnections` default, `DEFAULT_MAX_HTTP_CONNECTIONS`
 # (`src/httpserver.h`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
 # the most RPC clients connected at once.
@@ -853,6 +853,12 @@ class Config:
     # connection outside it too. `P2pManager.__init__` divides it into
     # inbound and outbound slots.
     max_connections: int
+    # Core's own `-inboundrelaypercent`: the percentage of the inbound
+    # slots that transaction-relaying peers may hold. `cli` clamps it to
+    # 0 to 100, as `AppInitMain` does (`src/init.cpp`,
+    # at bitcoin/bitcoin@f0de87f040), and `P2pManager.__init__` turns it
+    # into a count.
+    inbound_relay_percent: int
     # Core's own `-dnsseed`: whether `P2pManager` asks the DNS seeds.
     # `InitParameterInteraction` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7)
     # soft-sets it off under `-connect` or a `-maxconnections` whose
@@ -977,6 +983,7 @@ class Config:
         v2transport: bool = True,
         v1transport: bool | None = None,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
+        inbound_relay_percent: int = DEFAULT_FULL_RELAY_INBOUND_PCT,
         dnsseed: bool | None = None,
         forcednsseed: bool = False,
         fixed_seeds: bool = True,
@@ -1082,6 +1089,7 @@ class Config:
             err_msg = "-maxconnections must be greater or equal than zero"
             raise ValueError(err_msg)
         self.max_connections = max_connections
+        self.inbound_relay_percent = inbound_relay_percent
         _refuse_rpcmaxconnections(rpcmaxconnections)
         self.rpcmaxconnections = rpcmaxconnections
         self.fixed_seeds = fixed_seeds
