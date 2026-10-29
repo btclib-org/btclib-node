@@ -689,8 +689,8 @@ package = ["src/btclib_node"]
 # `git ls-files`, `tests/pragma_test.py` runs `git grep` over every
 # tracked .py file, `tests/secret_free_test.py` tests the helper copied
 # verbatim from btclib-org/.github, and the rest load a script under
-# .github/scripts/ by path -- so each mirrors no module of the package
-# and drives no node.
+# .github/scripts/ or scripts/ by path -- so each mirrors no module of
+# the package and drives no node.
 # Naming one is what collects it -- and [tool.coverage.run]'s `source`
 # takes all of tests/, so a module no run collects is a file the floor
 # reports at zero.
@@ -717,6 +717,7 @@ testpaths = [
     "tests/check_vendored_pin_test.py",
     "tests/fuzz_corpus_test.py",
     "tests/interpreters_test.py",
+    "tests/openrpc_test.py",
     "tests/pragma_test.py",
     "tests/property_test.py",
     "tests/release_digests_test.py",

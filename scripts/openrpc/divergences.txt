@@ -1,0 +1,148 @@
+OpenRPC 1.4.1 document, version v32.1.0
+Result fields are read from help.py, not from a live answer: a field help.py documents and the code does not answer is not seen.
+
+## Methods Core serves and btclib-node does not
+
+blockchain getblockfilter
+blockchain getblockfrompeer
+blockchain getblockstats
+blockchain getchainstates
+blockchain getchaintxstats
+blockchain getdeploymentinfo
+blockchain getdescriptoractivity
+blockchain getdifficulty
+blockchain gettxoutproof
+blockchain loadtxoutset
+blockchain scanblocks
+blockchain verifychain
+blockchain verifytxoutproof
+control getmemoryinfo
+control getopenrpcinfo
+control logging
+control rpc.discover
+control uptime
+hidden echo
+hidden echoipc
+hidden echojson
+hidden generate
+hidden generatetodescriptor
+hidden getrawaddrman
+hidden mockscheduler
+hidden sendmsgtopeer
+hidden syncwithvalidationinterfacequeue
+mining getmininginfo
+mining getnetworkhashps
+network exportasmap
+network getaddednodeinfo
+network getaddrmaninfo
+network getnettotals
+rawtransactions abortprivatebroadcast
+rawtransactions analyzepsbt
+rawtransactions combinepsbt
+rawtransactions converttopsbt
+rawtransactions createpsbt
+rawtransactions createrawtransaction
+rawtransactions decodepsbt
+rawtransactions decodescript
+rawtransactions descriptorprocesspsbt
+rawtransactions finalizepsbt
+rawtransactions fundrawtransaction
+rawtransactions getprivatebroadcastinfo
+rawtransactions joinpsbts
+rawtransactions utxoupdatepsbt
+signer enumeratesigners
+util createmultisig
+util deriveaddresses
+util getdescriptorinfo
+util getindexinfo
+util validateaddress
+wallet abandontransaction
+wallet abortrescan
+wallet addhdkey
+wallet backupwallet
+wallet bumpfee
+wallet createwallet
+wallet createwalletdescriptor
+wallet derivehdkey
+wallet encryptwallet
+wallet exportwatchonlywallet
+wallet getaddressesbylabel
+wallet getaddressinfo
+wallet getbalance
+wallet getbalances
+wallet gethdkeys
+wallet getnewaddress
+wallet getrawchangeaddress
+wallet getreceivedbyaddress
+wallet getreceivedbylabel
+wallet gettransaction
+wallet getwalletinfo
+wallet importdescriptors
+wallet importprunedfunds
+wallet keypoolrefill
+wallet listaddressgroupings
+wallet listdescriptors
+wallet listlabels
+wallet listlockunspent
+wallet listreceivedbyaddress
+wallet listreceivedbylabel
+wallet listsinceblock
+wallet listtransactions
+wallet listunspent
+wallet listwalletdir
+wallet listwallets
+wallet loadwallet
+wallet lockunspent
+wallet migratewallet
+wallet psbtbumpfee
+wallet removeprunedfunds
+wallet rescanblockchain
+wallet restorewallet
+wallet send
+wallet sendall
+wallet sendmany
+wallet sendtoaddress
+wallet setlabel
+wallet setwalletflag
+wallet signmessage
+wallet signrawtransactionwithwallet
+wallet simulaterawtransaction
+wallet unloadwallet
+wallet walletcreatefundedpsbt
+wallet walletdisplayaddress
+wallet walletlock
+wallet walletpassphrase
+wallet walletpassphrasechange
+wallet walletprocesspsbt
+zmq getzmqnotifications
+
+## Methods btclib-node serves and Core does not
+
+
+## Parameters
+
+dumptxoutset options: Core (rollback, in_memory), btclib-node (rollback)
+estimatesmartfee: Core (conf_target, estimate_mode, options), btclib-node (conf_target, estimate_mode)
+
+## Result fields
+
+estimatesmartfee .estimator: in Core, not in help.py
+estimatesmartfee .mempool_health_statistics: in Core, not in help.py
+getblockchaininfo .backgroundvalidation: in Core, not in help.py
+getmempoolancestors .*.bip125-replaceable: in help.py, not in Core
+getmempoolancestors .*.vsize_adjusted: in Core, not in help.py
+getmempoolancestors .*.vsize_bip141: in Core, not in help.py
+getmempooldescendants .*.bip125-replaceable: in help.py, not in Core
+getmempooldescendants .*.vsize_adjusted: in Core, not in help.py
+getmempooldescendants .*.vsize_bip141: in Core, not in help.py
+getmempoolentry .bip125-replaceable: in help.py, not in Core
+getmempoolinfo .fullrbf: in help.py, not in Core
+getnetworkinfo .asmap_version: in Core, not in help.py
+getnetworkinfo .inv_buckets: in Core, not in help.py
+getnetworkinfo .tx_send_rate: in Core, not in help.py
+getorphantxs [].vsize_bip141: in Core, not in help.py
+getpeerinfo [].startingheight: in help.py, not in Core
+getrawmempool .*.bip125-replaceable: in help.py, not in Core
+getrawtransaction .vsize_adjusted: in Core, not in help.py
+submitpackage .tx-results.*.vsize_adjusted: in Core, not in help.py
+submitpackage .tx-results.*.vsize_bip141: in Core, not in help.py
