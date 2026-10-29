@@ -888,6 +888,10 @@ class DownloadManager:
         by_wtxid = not txid
         orphan = self.orphanage.get_tx(announced) if by_wtxid else None
         if orphan is not None:
+            # Core reaches this refusal in `MaybeAddOrphanResolutionCandidate`,
+            # after the parent lookups a repeat announcement would pay for
+            if self.orphanage.have_tx_from_peer(announced, conn.id):
+                return
             self._resolve_orphan_with(conn, orphan, now, wtxid_peers)
             return
         if self.already_have_tx(announced, wtxid=by_wtxid, include_reconsiderable=True):
