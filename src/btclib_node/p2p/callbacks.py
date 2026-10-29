@@ -516,12 +516,13 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     `sendaddrv2` ahead of it where the common version reaches
     `WTXID_RELAY_VERSION` and, to an inbound peer, this node's own
     `version` ahead of all three; setting up address relay with a peer
-    this node dialled, and asking it for addresses; recording a peer
-    this node dialled as answered, block-relay-only peers and feelers
-    included, right where Core calls `AddrMan::Good` -- not waiting for
-    its own `verack`, which may never come (#1169); and recording whether
-    the peer asked to have transactions relayed. A feeler is then dropped
-    once those are written, as Core's `VERSION` handler ends one
+    this node dialled, and asking it for addresses, unless
+    `_refuses_addr_relay` holds; recording a peer this node dialled as
+    answered, block-relay-only peers and feelers included, right where
+    Core calls `AddrMan::Good` -- not waiting for its own `verack`,
+    which may never come (#1169); and recording whether the peer asked
+    to have transactions relayed. A feeler is then dropped once those
+    are written, as Core's `VERSION` handler ends one
     (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
     tag).
     """
@@ -555,14 +556,14 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     conn.send(Verack())
 
     # Core's `VERSION` handler, right after `VERACK`, calls
-    # `SetupAddressRelay` for a peer this node dialled, and sends it a
-    # `getaddr` with room for the answer past
+    # `SetupAddressRelay` for a peer this node dialled, and where it
+    # holds sends a `getaddr` with room for the answer past
     # `_MAX_ADDR_PROCESSING_TOKEN_BUCKET` (`net_processing.cpp`,
-    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). An inbound peer keeps
-    # the one token it started with, and waits for its own first `addr`,
-    # `addrv2` or `getaddr`. `SetupAddressRelay` answers false, and so
-    # sends no `getaddr`, for a block-relay-only peer.
-    if not conn.inbound and not conn.block_relay:
+    # at bitcoin/bitcoin@f0de87f040 -- v32.1, the release
+    # `integration-bitcoind.yml` pins). An inbound peer keeps the one
+    # token it started with, and waits for its own first `addr`, `addrv2`
+    # or `getaddr`.
+    if not conn.inbound and not _refuses_addr_relay(conn):
         conn.addr_relay_enabled = True
         conn.send(GetAddr())
         conn.getaddr_sent = True
@@ -617,15 +618,27 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
 def _end_if_feeler(node: Node, conn: Connection) -> None:
     """Drop a feeler once its `version` is handled, as Core's handler ends one.
 
-    Any other connection is left as it is. `SetupAddressRelay` holds
-    for a feeler, so `version` has asked it for addresses already, and
-    has recorded its address as answered. Split out of `version` for
+    Any other connection is left as it is. `version` has recorded the
+    feeler's address as answered already. Split out of `version` for
     ruff's complexity ceiling.
     """
     if not conn.feeler:
         return
     node.logger.log_debug("net", "feeler connection completed, peer=%s", conn.id)
     conn.stop_when_sent()
+
+
+def _refuses_addr_relay(conn: Connection) -> bool:
+    """Answer whether Core's `SetupAddressRelay` returns false for `conn`.
+
+    It does for a block-relay-only peer, so as not to give away the link
+    through address traffic, and for a feeler, which is dropped before an
+    answer to `getaddr` could arrive (`net_processing.cpp`,
+    at bitcoin/bitcoin@f0de87f040 -- v32.1, the release
+    `integration-bitcoind.yml` pins). Such a peer is sent no `getaddr`,
+    and its `addr` and `addrv2` are ignored.
+    """
+    return conn.block_relay or conn.feeler
 
 
 def verack(node: Node, msg: bytes, conn: Connection) -> None:
@@ -939,14 +952,14 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
 def addr(node: Node, msg: bytes, conn: Connection) -> None:
     """Merge the addr-version-1 entries a peer gossiped into the table.
 
-    Ignored from a block-relay-only peer once parsed, as Core's `ADDR`
-    handler (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag) ignores it, `SetupAddressRelay` refusing the peer ahead
-    of the `MAX_ADDR_TO_SEND` check. A payload the parse refuses is
-    logged by `main.handle_p2p` and costs the peer nothing, as in Core,
-    whose parse reads a count past that bound where btclib's refuses it.
+    Ignored once parsed where `_refuses_addr_relay` holds, as Core's
+    `ADDR` handler ignores it at the sha that predicate's docstring
+    cites, `SetupAddressRelay` refusing the peer ahead of the
+    `MAX_ADDR_TO_SEND` check. A payload the parse refuses is logged by
+    `main.handle_p2p` and costs the peer nothing, as in Core, whose parse
+    reads a count past that bound where btclib's refuses it.
     """
-    if conn.block_relay:
+    if _refuses_addr_relay(conn):
         Addr.parse(BytesIO(msg))
         return
     # Addr.parse(msg) would refuse an octet past the last address
@@ -973,10 +986,9 @@ def addr(node: Node, msg: bytes, conn: Connection) -> None:
 def addrv2(node: Node, msg: bytes, conn: Connection) -> None:
     """Merge the BIP155 entries a peer gossiped into the address table.
 
-    Ignored from a block-relay-only peer once parsed, as `addr` above
-    ignores it.
+    Ignored once parsed where `addr` above ignores it.
     """
-    if conn.block_relay:
+    if _refuses_addr_relay(conn):
         AddrV2.parse(BytesIO(msg))
         return
     # the same leniency as addr above, and the same reason: BIP155
