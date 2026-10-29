@@ -7,20 +7,25 @@
 A file handler where a caller names a path -- `Node.__init__` resolves
 one under `Config.data_dir` when `Config.log_path` is set -- a stream
 handler otherwise, and `close` to release whichever one it opened.
-Each line opens as Core's `debug.log` line does: `LogTimestampStr`'s
+Each record opens as Core's `debug.log` line does: `LogTimestampStr`'s
 time, in UTC and to the second, then what `GetLogPrefix` writes: the
 category of a debug line, as in `[net]`, or the level of any other line.
+The message follows on the same line, its control characters escaped as
+`_escape` says. A traceback or a stack the record carries follows on
+lines of its own, each starting with two spaces, so that none reads as a
+record; `_escape` escapes every control character in them except the
+newlines that end those lines (btclib-org/btclib-node#2092).
 
 A debug line is written through `Logger.log_debug` with Core's category
 for it, and only where `-debug` selects that category.
 
-A `Logger` writing to a file limits each source location's info,
-warning and error lines as Core's `LogRateLimiter` does (`-logratelimit`,
-on by default): `RATELIMIT_MAX_BYTES` per `RATELIMIT_WINDOW`, then one
-warning and silence until the window ends, then one more warning for
-what was dropped. Every line written while a location is silenced starts
-with `[*]` and a space. A debug line is never limited: Core's `LogDebug`
-is not, "because users specifying -debug are assumed to be developers or
+A `Logger` writing to a file limits each source location's info, warning
+and error lines as Core's `LogRateLimiter` does (`-logratelimit`, on by
+default): `RATELIMIT_MAX_BYTES` per `RATELIMIT_WINDOW`, then one warning
+and silence until the window ends, then one more warning for what was
+dropped. Every record written while a location is silenced opens with
+`[*]` and a space. A debug line is never limited: Core's `LogDebug` is
+not, "because users specifying -debug are assumed to be developers or
 power users" (`src/util/log.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1
 tag).
 
@@ -190,6 +195,10 @@ def _escape(text: str) -> str:
     return _CONTROL_CHARS.sub(lambda m: f"\\x{ord(m.group()):02x}", text)
 
 
+# a record's own line starts with its time or `[*] `, never with a space
+_CONTINUATION = "  "
+
+
 class _LevelFormatter(logging.Formatter):
     """A `Formatter` writing Core's time, `_prefix`, then the message.
 
@@ -213,7 +222,14 @@ class _LevelFormatter(logging.Formatter):
 
     @override
     def format(self, record: logging.LogRecord) -> str:
-        line = super().format(record)
+        # `formatMessage` escapes the message's newlines, so whatever follows
+        # the first newline is the traceback and the stack that
+        # `logging.Formatter.format` appends
+        line, newline, rest = super().format(record).partition("\n")
+        if newline:
+            line += "".join(
+                f"\n{_CONTINUATION}{_escape(part)}" for part in rest.split("\n")
+            )
         # `[*] ` ahead of the time, as `Logger::LogPrintStr_` puts it
         return f"[*] {line}" if getattr(record, "suppressing", False) else line
 
