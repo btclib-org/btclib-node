@@ -155,9 +155,8 @@ caller.
 
 Core's log of the settings also writes each `settings.json` value in clear,
 a `SENSITIVE` option's included (`ArgsManager::LogArgs`,
-`src/common/args.cpp`, at bitcoin/bitcoin@9be056a8a7). This node writes
-`****` for the value of a sensitive option and for the value of a name no
-option has, which may be one misspelled.
+`src/common/args.cpp`, at bitcoin/bitcoin@9be056a8a7). This node masks some
+of them, as ASSURANCE_CASE.md's CWE-209 entry says.
 
 What a refusal may print about a secret is the organization's rule, section 7's
 *A refusal carries no secret* in
