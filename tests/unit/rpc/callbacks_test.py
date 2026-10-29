@@ -8253,8 +8253,8 @@ def test_submit_block_answers_a_bad_signet_solution_before_the_body_s_rules(
     `ProcessNewBlock` does not reach `AcceptBlock`, which marks, for a
     body failing it (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7,
     the v31.1 tag). `main.SigNet` is `RegTest` here, so the real BIP325
-    check runs on a regtest block: no block at signet's target can be
-    mined in a test.
+    check runs on a regtest block: mining a block at signet's target takes
+    millions of hashes.
     """
     node = regtest_node()
     chain = generate_random_chain(COINBASE_MATURITY, node.chain.genesis.hash)
@@ -8267,8 +8267,80 @@ def test_submit_block_answers_a_bad_signet_solution_before_the_body_s_rules(
     assert isinstance(result, str)
     assert result.startswith("bad-signet-blksig")
     assert node.block_db.get_block(bad.header.hash) is None
-    block_info = node.chainstate.block_index.get_block_info(bad.header.hash)
-    assert block_info.status != BlockStatus.invalid
+    assert bad.header.hash not in node.chainstate.block_index.header_dict
+
+
+@pytest.mark.parametrize("signet", [False, True])
+def test_submit_block_leaves_no_header_for_a_bad_signet_solution(
+    regtest_node: Callable[..., Node],
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    signet: bool,
+) -> None:
+    """ISS 2079: a body failing only its signet solution leaves no header.
+
+    Core asks `CheckSignetBlockSolution` inside `CheckBlock`, and
+    `ProcessNewBlock` does not reach `AcceptBlock`, which indexes the
+    header, for a body failing it (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Measured against bitcoind
+    v31.1 on a signet whose challenge is `OP_0`: `submitblock` answers
+    `bad-signet-blksig` and `getblockheader` answers `Block not found`.
+    Off signet, the test's block is accepted.
+    """
+    node = regtest_node()
+    (block,) = generate_random_chain(1, node.chain.genesis.hash)
+    if signet:
+        monkeypatch.setattr(main, "SigNet", RegTest)
+
+    result = submit_block(node, _CONN, [block.serialize(check_validity=False).hex()])
+
+    header_dict = node.chainstate.block_index.header_dict
+    if signet:
+        assert isinstance(result, str)
+        assert result.startswith("bad-signet-blksig")
+        assert block.header.hash not in header_dict
+    else:
+        assert result is None
+        assert block.header.hash in header_dict
+
+
+def unmined(block: Block, pow_limit_bits: bytes) -> Block:
+    """Return `block` with the next nonce whose hash misses its target."""
+    while True:
+        block.header.nonce += 1
+        try:
+            block.header.assert_valid_pow(pow_limit_bits)
+        except BTClibValueError:
+            return block
+
+
+@pytest.mark.parametrize("body", ["bad-signet-blksig", "bad-cb-multiple"])
+def test_submit_block_answers_high_hash_before_check_block_s_body_rules(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch, body: str
+) -> None:
+    """ISS 2079: a header failing its proof of work is `high-hash`.
+
+    Core's `CheckBlock` asks `CheckBlockHeader` before the signet solution
+    and the coinbase, and `ProcessNewBlock` indexes no header for a block
+    failing `CheckBlock` (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Measured against bitcoind
+    v31.1 on a signet whose challenge is `OP_0`: a block at height 1 whose
+    hash misses its target is answered `high-hash`, and `getblockheader`
+    answers `Block not found`.
+    """
+    node = regtest_node()
+    if body == "bad-signet-blksig":
+        (block,) = generate_random_chain(1, node.chain.genesis.hash)
+        monkeypatch.setattr(main, "SigNet", RegTest)
+    else:
+        block = generate_segwit_block(generate_coinbase(height=1))
+    block = unmined(block, node.chain.pow_limit_bits)
+
+    result = submit_block(node, _CONN, [block.serialize(check_validity=False).hex()])
+
+    assert result == "high-hash"
+    assert block.header.hash not in node.chainstate.block_index.header_dict
+    assert node.block_db.get_block(block.header.hash) is None
 
 
 def test_submit_block_marks_a_contextual_failure_off_the_active_chain(

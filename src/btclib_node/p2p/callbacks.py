@@ -1570,11 +1570,10 @@ def _check_block(
     # body failing it is refused, and its peer punished, before its header
     # is indexed or its being unrequested is looked at; Core never marks
     # such a block failed (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7).
-    # `assert_valid_block`, not `passes_check_block`'s own `Block.assert_valid`,
-    # so a signet block failing both this and the signet solution answers
-    # `bad-signet-blksig` first, `CheckSignetBlockSolution` running ahead of
-    # the merkle root in Core's own `CheckBlock` too.
-    if not passes_check_block(block):
+    # The refusal is `assert_valid_block`'s text, which asks the header's
+    # proof of work and, on signet, the solution before the merkle root, in
+    # the order of Core's own `CheckBlock`.
+    if not passes_check_block(block, node.chain):
         try:
             assert_valid_block(block, node.chain)
         except BTClibException as e:
@@ -1582,7 +1581,7 @@ def _check_block(
     # Core's `duplicate-invalid`, before the stored block is looked at:
     # `MaybePunishNodeForBlock` punishes `BLOCK_CACHED_INVALID` from an
     # outbound peer alone, so an inbound one is refused and kept
-    if is_cached_invalid(node.chainstate.block_index, block):
+    if is_cached_invalid(node.chainstate.block_index, block, node.chain):
         err_msg = f"duplicate-invalid: {block_hash.hex()}"
         raise _block_refusal(err_msg, punish=not (via_compact_block or conn.inbound))
 
@@ -1742,7 +1741,7 @@ def _accept_block(
         assert_valid_block(block, node.chain)
     except BTClibException as e:
         segwit = _segwit_after_parent(node, block.header)
-        if is_block_failed(block, check_witness_root=segwit):
+        if is_block_failed(block, node.chain, check_witness_root=segwit):
             block_index.invalidate(block_hash)
             # Core's own `InvalidChainFound` call, same citation as
             # `main.check_fork_warning_conditions`'s own docstring
