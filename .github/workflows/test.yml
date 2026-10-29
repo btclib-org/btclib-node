@@ -197,7 +197,7 @@ jobs:
   # `true` outside a pull request, or the suite would skip on main too
   changes:
     name: Decide whether the suite has anything to check
-    uses: btclib-org/.github/.github/workflows/reusable-changes.yml@eb3b0c28476b98694ab3a3c3a9dce7e8e26ab4f5 # v2026.10.26
+    uses: btclib-org/.github/.github/workflows/reusable-changes.yml@ed616d71c43cd4c8bded40d1182befccd99e6ee7 # v2026.10.29
     # REPOSITORY.md's *Token permissions* section has why this job
     # names a permissions: block of its own -- the callee's own job
     # needs pull-requests: read to list a pull request's files, which
@@ -246,7 +246,7 @@ jobs:
           # on the gate, which runs on every pull request
           persist-credentials: false
       - name: Setup uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           # the cache holds what uv.lock resolves, which is wheels and
           # no build: what this job spends its time on is the suite
@@ -290,7 +290,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Setup uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           # the cache holds what uv.lock resolves: btclib_secp256k1 and
           # cffi both publish a wheel for this interpreter on this
@@ -330,7 +330,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Setup uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true
           python-version: "3.14t"
@@ -414,7 +414,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Setup uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true
       # the files the checks below read, from the signed build
