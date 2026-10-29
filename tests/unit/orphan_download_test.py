@@ -387,7 +387,7 @@ def test_an_announcement_of_an_orphan_with_every_parent_had_asks_nothing() -> No
 def test_a_repeated_orphan_announcement_does_not_recompute_parents(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Core returns early if the peer already announces the orphan."""
+    """A repeat announcement by the orphan's announcer computes no parents."""
     first, second = a_conn(1, inbound=False), a_conn(2, inbound=False)
     manager = make_manager([first, second])
     _parent, child = a_parent_and_child()
