@@ -7,7 +7,7 @@ name = "btclib-node"
 # one cycle takes and what each means. The release's own pull request
 # replaces it by hand with the date the release is cut, YYYY.M.D, whose
 # month need not be this one.
-version = "2026.10.25"
+version = "2026.10.29"
 description = "Bitcoin node in python"
 authors = [{ name = "The btclib developers", email = "devs@btclib.org" }]
 readme = "README.md"
@@ -84,7 +84,13 @@ dependencies = [
     # `btclib.p2p.headers_sync` and `HEADERS_SYNC_PARAMS`
     # (btclib-org/btclib#2718), which `p2p/callbacks.py` and `chains.py`
     # import.
-    "btclib[secp256k1,bip324]>=2026.10.24",
+    #
+    # 2026.10.28 is the first release whose `BlockContext.min_version`
+    # sets no version floor below the BIP34, BIP66 and BIP65 heights, as
+    # Core does: an earlier one refuses a block of version 0 or below
+    # there, which `add_headers` accepts (btclib-org/btclib#2833). The
+    # floor is the maintainer's decision.
+    "btclib[secp256k1,bip324]>=2026.10.28",
     # `rpc/callbacks.py` and `rpc/utxo_set.py` import from
     # `btclib_wallet.descriptors`, where btclib's own `descriptors`
     # moved (btclib-org/btclib#2129): a runtime dependency now, not the
@@ -115,9 +121,9 @@ dependencies = [
     # (btclib-org/btclib-node#1431). `tests/unit/interpreter_test.py` builds
     # its signatures through the same package.
     #
-    # The floor is 2026.10.23, the release btclib 2026.10.24 asks for.
+    # The floor is 2026.10.28, the release btclib 2026.10.28 asks for.
     # 2026.10.2 fixed GHSA-r5pw-9wrg-m3mj and GHSA-m38m-987v-j55h.
-    "ecc>=2026.10.23",
+    "ecc>=2026.10.28",
     "rocksdict>=0.3.29",
     # `rpc/errors.py` imports `RPCErrorCode` directly now, so this is a
     # direct runtime dependency rather than the transitive arrival

@@ -22,6 +22,103 @@ release was cut, and it promises nothing about compatibility, so a
 breaking change is announced in this file — read it before upgrading,
 rather than a digit.
 
+## v2026.10.29
+
+Everything below is measured against `v2026.10.25`. `CHANGELOG.md`'s own
+`v2026.10.29` section is the record of what went into it.
+
+The suite passes with btclib 2026.10.28, ecc 2026.10.28 and btclib-wallet
+2026.10.29, which a fresh install resolves.
+
+### Breaking changes
+
+- **The floors are `btclib>=2026.10.28` and `ecc>=2026.10.28`**, the
+  maintainer's decision for this release. An earlier btclib refuses a block
+  of version 0 or below under the BIP34, BIP66 and BIP65 heights, which Core
+  accepts (issue btclib-org/btclib#2833), and ecc 2026.10.28 is the release
+  btclib 2026.10.28 requires. Such a block, from `submitblock` or from a
+  peer, is no longer refused for its version. 2026.10.25, with its locked
+  btclib 2026.10.24, refused it once it was to join the active chain, and
+  marked its header invalid. Extending the tip, `submitblock` answered
+  `invalid version (outdated): 0x00000000 < 1` for version 0, and a peer's
+  block was stored and then refused when connected. Off the tip, the block
+  was stored and its header left `valid_header`, as it is in this release,
+  until its branch became the best. On regtest, signet and testnet4 the
+  three heights are 1, and the node takes no `-testactivationheight`, so
+  there this concerns height 0 only; on mainnet and testnet3 it concerns the
+  history below them.
+- **`btclib_node.rpc.solver` is gone** (closes #1998, closes #2055). Import
+  `solver` from `btclib.script.solver`, which the node calls itself.
+- **`btclib_node.p2p.headers_sync` is gone, and `HeadersSyncParams` leaves
+  `btclib_node.chains`' `__all__`** (issue btclib-org/btclib#2706). The node
+  runs btclib's `btclib.p2p.headers_sync`, with the pairs of
+  `btclib.consensus.HEADERS_SYNC_PARAMS`. Import `HeadersSyncParams` from
+  `btclib.consensus`.
+- **`Chain` takes no `rpc_port`, `genesis_block` or `headers_sync_params`**
+  (closes #2074, issue btclib-org/btclib#2706, issue
+  btclib-org/btclib#2707). Each is a property:
+  `genesis_block` is btclib's `genesis_block` for the chain's name,
+  `rpc_port` bitcoin-core-rpc's `rpc_port_from_chain`, and
+  `headers_sync_params` the chain's row of btclib's table. `Main`,
+  `TestNet`, `TestNet4`, `SigNet` and `RegTest` answer the same values as in
+  2026.10.25. `addresses`, `fixed_seeds`, `prune_after_height` and
+  `min_bip9_warning_height` move forward among `Chain`'s positional
+  parameters. `create_genesis` is no longer importable from
+  `btclib_node.chains`.
+- **`mining.witness_reason` is gone** (issue btclib-org/btclib#2705). Call
+  `mining.contextual_block_reason` instead: it answers why a block fails
+  Core's `ContextualCheckBlock` at a height.
+- **A block that fails bad-txns-nonfinal or bad-cb-height marks its header
+  invalid and is not stored, from `submitblock` and from a peer**
+  (closes #2075, closes #2053), as Core's `AcceptBlock` does. This holds
+  where no earlier check refuses the block first, such as a header rule,
+  time-too-new for a header more than two hours ahead of the clock among
+  them, or, from a peer, the check for a mutated body. Off the active chain,
+  2026.10.25's `submitblock` accepted such a block and answered nothing. A
+  mutated body given to `submitblock` is answered with the rule, where
+  2026.10.25 answered with the witness rule, such as
+  `bad-witness-nonce-size`. A peer that sends such a block is judged
+  misbehaving, unless it came as a compact block.
+- **`submitblock` answers a body over the weight limit with `bad-blk-weight`
+  and marks its header invalid**, where 2026.10.25 answered btclib's text,
+  such as `invalid weight: 4001500 > 4000000`. This holds where no earlier
+  check refuses the body first. Where bad-txns-nonfinal or bad-cb-height is
+  the first refusal, it marks the header too.
+- **A node whose store holds a header that misses its proof of work refuses
+  to start** (closes #1997), with `Error loading block database`, and logs a
+  line starting `CheckProofOfWork failed: block <hash> at height <height>`.
+  A stored header is indexed under its own hash, not under the hash in its
+  key.
+- **A stored block is checked where Core's `ReadBlock` checks it**
+  (closes #2002, closes #2038). A record that hashes to another block,
+  misses its proof of work or, on signet, fails its solution is refused.
+  `getrawtransaction` with that blockhash answers `No such transaction found
+  in the provided block. Use gettransaction for wallet transactions.` A
+  peer's `getblocktxn` for it, within `MAX_BLOCKTXN_DEPTH` of the tip, stops
+  the node, and so do connecting the block and a reorg that removes it.
+  `invalidateblock` and `dumptxoutset`'s rollback over it stop the node and
+  leave the chain as it was, where Core's `InvalidateBlock` answers and runs
+  on. The filter index's catch-up over it ends the node's start. `getblock`
+  answers the record as stored, as Core's does. Over a record holding
+  another block, 2026.10.25 answered `getrawtransaction`, connected,
+  reorged, invalidated and caught up without a refusal.
+- **`generatetoaddress` and `generateblock` refuse a signet block whose
+  solution fails** (closes #2080), answering `ProcessNewBlock, block not
+  accepted`; the block is neither indexed nor stored. 2026.10.25 stored it
+  and made it the tip.
+
+### Worth knowing, though nothing raises
+
+- **The log escapes control characters in a message** (closes #1952).
+  Every C0 control, DEL and C1 control in the message is written as `\x`
+  and its hex code, so a newline becomes `\x0a` and ESC `\x1b`, after one
+  trailing newline is stripped. A traceback is written as it is. 2026.10.25
+  wrote both as they were. Escaping C1 departs from Core, and `SECURITY.md`
+  says so.
+- **A clock more than two hours behind the chain start's median time past
+  starts no low-work headers sync** (issue btclib-org/btclib#2706), where
+  2026.10.25 started one. The node keeps the peer.
+
 ## v2026.10.25
 
 Everything below is measured against `v2026.10.18`. `CHANGELOG.md`'s own

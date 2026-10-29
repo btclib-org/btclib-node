@@ -292,15 +292,15 @@ wheels = [
 
 [[package]]
 name = "btclib"
-version = "2026.10.24"
+version = "2026.10.28"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "ecc" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/87/b1/fab35c5a9a7b08320c6575dbcadd51f4e321f8a6a21cb901725828ed07a0/btclib-2026.10.24.tar.gz", hash = "sha256:b32b45b93489ac3177768ea8f4a0828d64ee9fbb1e2066444b07c5d4655915fa", size = 7477800, upload-time = "2026-10-24T22:29:44.639Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b7/a9/78af618f5f1731d89afebf2556dd9ba7997151ad139b86dfe61f41882185/btclib-2026.10.28.tar.gz", hash = "sha256:82bb3907da76137db202a736e40f4a327192310247cfe3939e81c54addb1e2e5", size = 8256251, upload-time = "2026-10-28T08:35:43.894Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/43/bf/96470d34ce8ef250d329889d3dffb955a72186f32810f15a6f348eb3836e/btclib-2026.10.24-py3-none-any.whl", hash = "sha256:a4a88030aacb32543dc123db4b00baba164ff29990d75e47d42f77a088726a6f", size = 448479, upload-time = "2026-10-24T22:29:43.05Z" },
+    { url = "https://files.pythonhosted.org/packages/da/20/72bb8814443e7afb1476e982e75f05f62306be24164ff4a8d757574f3094/btclib-2026.10.28-py3-none-any.whl", hash = "sha256:d7c725ab186cbe6a8dc68ce2af85c9c9694d504d56060e98a6eb3c9ba585a0fc", size = 452311, upload-time = "2026-10-28T08:35:42.258Z" },
 ]
 
 [package.optional-dependencies]
@@ -313,7 +313,7 @@ secp256k1 = [
 
 [[package]]
 name = "btclib-node"
-version = "2026.10.25"
+version = "2026.10.29"
 source = { editable = "." }
 dependencies = [
     { name = "bitcoin-core-rpc" },
@@ -398,9 +398,9 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "bitcoin-core-rpc", specifier = ">=2026.10.4" },
-    { name = "btclib", extras = ["secp256k1", "bip324"], specifier = ">=2026.10.24" },
+    { name = "btclib", extras = ["secp256k1", "bip324"], specifier = ">=2026.10.28" },
     { name = "btclib-wallet", specifier = ">=2026.10.25" },
-    { name = "ecc", specifier = ">=2026.10.23" },
+    { name = "ecc", specifier = ">=2026.10.28" },
     { name = "rocksdict", specifier = ">=0.3.29" },
 ]
 
@@ -940,14 +940,14 @@ wheels = [
 
 [[package]]
 name = "ecc"
-version = "2026.10.23"
+version = "2026.10.28"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/57/df/d7d03f3aa63475cae1ac75663c608995879ec75fd58c980663c0a8c3e025/ecc-2026.10.23.tar.gz", hash = "sha256:023b3a9099223bcb7c04744901c5ed550feaa552c99fc58692d8cae721a9f621", size = 2034565, upload-time = "2026-10-23T07:05:26.127Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3e/dd/62441bc3c7e4cfb4dd0a9f3aa03e30d107aa68e2c57ee584c669731b1675/ecc-2026.10.28.tar.gz", hash = "sha256:78a4768200a16badd922e28f04423f5f152defdd9fa55cfae8fcc65ecc28ebca", size = 2082102, upload-time = "2026-10-28T03:01:48.797Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/fd/f2/a621fd191ebfaeb7dc67efd560603f9b188cd5be708c6b01e871a9ce2f3d/ecc-2026.10.23-py3-none-any.whl", hash = "sha256:ee86bc2f0622f8835b11d8f84f1f03d9d3ae7b30b17d3082bf6cd43af29d7bfc", size = 299600, upload-time = "2026-10-23T07:05:24.552Z" },
+    { url = "https://files.pythonhosted.org/packages/49/95/0e949e277bf8e64502b30036d8a9ad86bb2d8b4ad91bc4d13865b61c6d04/ecc-2026.10.28-py3-none-any.whl", hash = "sha256:9e933dd6128dc5fc76c3f69f9edc47bda7fcc9df9b8e29bf9f0c8ed2f843d460", size = 300598, upload-time = "2026-10-28T03:01:47.356Z" },
 ]
 
 [package.optional-dependencies]

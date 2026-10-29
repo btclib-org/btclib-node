@@ -1444,9 +1444,9 @@ def contextual_check_block(node: Node, block: Block, index: int) -> tuple[int, b
     went back. Core does not ask them again of a header it holds, so there
     it answers `bad-txns-nonfinal`, or goes on to the block's other rules,
     where this refuses `time-too-new`: btclib has no public block-only
-    check (btclib-org/btclib#2836). A version under 1 below BIP34's height
-    reaches this too: `add_headers` accepts it, as Core does, and btclib
-    refuses it (btclib-org/btclib#2833). `bad-diffbits` is left to
+    check (btclib-org/btclib#2836). A version under 1 below the BIP34,
+    BIP66 and BIP65 heights passes here as it passes `add_headers`, as
+    Core accepts it (btclib-org/btclib#2833). `bad-diffbits` is left to
     `add_headers`: the context carries no `required_bits`. The refusal is
     raised in Core's word where `_CONTEXTUAL_REASONS` has one, and in
     btclib's text otherwise.
