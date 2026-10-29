@@ -22,8 +22,8 @@ Each option is registered with the flags `SetupServerArgs`
 (`src/chainparamsbase.cpp`) and `AddLoggingArgs` (`src/init/common.cpp`)
 give it, and each is read the way Core's own code reads it --
 `build_config` below names the reader at each one. `-maxconnections`'s
-default is the pinned release's rather than Core `master`'s,
-`config.py`'s comment on `DEFAULT_MAX_PEER_CONNECTIONS` saying why.
+default is v31.1's rather than v32.1's, `config.py`'s comment on
+`DEFAULT_MAX_PEER_CONNECTIONS` saying why.
 `-server` is `Config.allow_rpc`, on unless negated or set false, as
 `bitcoind` soft-sets it on (`src/bitcoind.cpp`). An RPC or P2P listener
 that cannot start stops the node, `main` below exiting `1`, as Core's

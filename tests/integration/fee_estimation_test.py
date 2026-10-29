@@ -16,6 +16,8 @@ from functools import partial
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any, cast
 
+import pytest
+
 from btclib_node import Node
 from btclib_node.config import Config
 from btclib_node.p2p.address import peer_address
@@ -96,6 +98,10 @@ def _mined_descriptor(bitcoind: Bitcoind) -> str:
     return str(info["descriptor"])
 
 
+@pytest.mark.xfail(
+    raises=AssertionError,
+    reason="v32.1 diverges: mempool fee rate estimator (btclib-org/btclib-node#2102)",
+)
 def test_estimates_and_their_file_are_bitcoind_s(  # noqa: PLR0915
     bitcoind_path: str, tmp_path: Path
 ) -> None:

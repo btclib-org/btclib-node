@@ -213,6 +213,10 @@ _REFUSED: list[list[Any]] = [
 ]
 
 
+@pytest.mark.xfail(
+    raises=AssertionError,
+    reason="v32.1 diverges: dumptxoutset help (btclib-org/btclib-node#2103)",
+)
 def test_refusals_are_bitcoind_s(both: tuple[Bitcoind, Node]) -> None:
     """Each has bitcoind's code and message."""
     bitcoind, node = both

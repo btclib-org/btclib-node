@@ -720,22 +720,15 @@ _SENDCMPCT_SIZE = 9
 def sendcmpct(node: Node, msg: bytes, conn: Connection) -> None:
     """Record whether the peer wants new blocks announced as `cmpctblock`.
 
-    Core's `SENDCMPCT` handler (`src/net_processing.cpp`) on master,
-    at bitcoin/bitcoin@ba8fdb9717: the announce octet is read as a
-    `uint8_t`, not a `bool`, so a value above one is refused as
-    "invalid sendcmpct announce field" before a version other than
+    Core's `SENDCMPCT` handler (`src/net_processing.cpp`), at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag: the announce octet is
+    read as a `uint8_t`, not a `bool`, so a value above one is refused
+    as "invalid sendcmpct announce field" before a version other than
     `CMPCTBLOCKS_VERSION` is ignored; otherwise the announce octet is
     the peer's choice of this node as a BIP152 high-bandwidth peer,
     which a later `sendcmpct` can take back. Either way the peer is one
     that provides compact blocks, which `cmpctblock` below and
     `DownloadManager.headers_direct_fetch` read.
-
-    v31.1, at bitcoin/bitcoin@9be056a8a7, the release
-    `.github/workflows/integration-bitcoind.yml` pins and the
-    integration tests run against, still reads the octet as a plain
-    `bool` and never refuses one above one: the `uint8_t` read and the
-    `Misbehaving` call are Core commit 2d0dce0af5, on master and in
-    `v32.0rc1`, not yet in a release.
     """
     # read as Core's `vRecv >> sendcmpct_hb >> sendcmpct_version` reads
     # it, bytes past the ninth left unread; btclib's `SendCmpct.parse`
@@ -2098,18 +2091,13 @@ def _serve_getdata_block(node: Node, conn: Connection, item: Inventory) -> None:
     `BlockRequestAllowed` refuses -- off the active chain and not
     recently valid -- before the prune threshold.
 
-    A `MSG_FILTERED_BLOCK` drops the peer ahead of all that. Core master,
-    at bitcoin/bitcoin@cce32b1687, opens `ProcessGetBlockData` with "A
-    filtered-block can only ever be requested if we offer NODE_BLOOM",
-    and sets `fDisconnect` where it does not. This node offers
-    `NODE_BLOOM` to no peer (`connection.local_services`), a
-    `bloomfilter` permission included (`permissions.py`). The check is
-    bitcoin/bitcoin@9871fb726c, merged by bitcoin/bitcoin#35832: in
-    v32.0rc1, not in v31.1, the release `integration-bitcoind.yml` pins.
-    v31.1, at bitcoin/bitcoin@9be056a8a7, refuses every `filterload`
-    without `NODE_BLOOM`, so the item finds no bloom filter and gets no
-    answer. *Following Bitcoin Core* in `CONTRIBUTING.md` lets a
-    peer-refusal rule follow master ahead of a release.
+    A `MSG_FILTERED_BLOCK` drops the peer ahead of all that. Core, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag, opens
+    `ProcessGetBlockData` with "A filtered-block can only ever be
+    requested if we offer NODE_BLOOM", and sets `fDisconnect` where it
+    does not. This node offers `NODE_BLOOM` to no peer
+    (`connection.local_services`), a `bloomfilter` permission included
+    (`permissions.py`).
     """
     if item.type_code == InventoryType.MSG_FILTERED_BLOCK:
         node.logger.log_debug(
@@ -3141,15 +3129,11 @@ def getblocktxn(node: Node, msg: bytes, conn: Connection) -> None:
     so a block it keeps was checked once, and a refusal ends the node.
 
     An empty `indexes` is dropped, undiscouraged, ahead of any lookup:
-    Core commit 28641fd195db2a175fd43fee2e32758aef9816a6 ("p2p: reject
-    empty getblocktxn requests"), on master and not yet in a release,
-    at bitcoin/bitcoin@28641fd195db -- "No legitimate reason to send
-    indexes empty" -- sets `fDisconnect` rather than calling
-    `Misbehaving`, so this raises no `MisbehavingError` and instead
-    drops the peer directly, matching `tx`'s own block-relay-only
-    refusal above. v31.1, at bitcoin/bitcoin@9be056a8a7, answers an
-    empty request the same as any other and keeps the peer, as this
-    node did before this check.
+    Core, at bitcoin/bitcoin@f0de87f040, the v32.1 tag -- "No legitimate
+    reason to send indexes empty" -- sets `fDisconnect` rather than
+    calling `Misbehaving`, so this raises no `MisbehavingError` and
+    instead drops the peer directly, matching `tx`'s own block-relay-only
+    refusal above.
     """
     request = GetBlockTxn.parse(msg)
     if not request.indexes:

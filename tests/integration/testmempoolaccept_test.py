@@ -5,10 +5,7 @@
 """`testmempoolaccept` of one or several transactions against bitcoind's.
 
 Both nodes hold the same chain and mempool and are asked the same call,
-and the answers are held equal key for key, in Core's order. This node
-answers `vsize_adjusted` and `vsize_bip141` beside `vsize`, Core 32's sizes
-(btclib-org/btclib-node#1757), which bitcoind v31.1 does not: they are
-dropped from this node's answer before comparing.
+and the answers are held equal key for key, in Core's order.
 """
 
 from dataclasses import replace
@@ -39,25 +36,11 @@ if TYPE_CHECKING:
 
     from tests.integration.conftest import Bitcoind
 
-_CORE_32_SIZES = ("vsize_adjusted", "vsize_bip141")
-
-
-def without_core_32_sizes(answer: Any) -> Any:
-    """Return `answer` without the sizes bitcoind v31.1 does not answer."""
-    if answer[0] != "result":
-        return answer
-    entries = [
-        {key: value for key, value in entry.items() if key not in _CORE_32_SIZES}
-        for entry in answer[1]
-    ]
-    return ("result", entries)
-
 
 def asked(ctx: Ctx, txs: list[Tx], *args: Any) -> Any:
     """Ask both `testmempoolaccept` of `txs`, and return bitcoind's answer."""
     ours, theirs = ctx.ask("testmempoolaccept", [[_hex(tx) for tx in txs], *args])
     if ours is not None:
-        ours = without_core_32_sizes(ours)
         assert ours == theirs, (txs, args)
         assert key_order(ours) == key_order(theirs), (txs, args)
     return theirs

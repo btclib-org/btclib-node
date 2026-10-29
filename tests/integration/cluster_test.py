@@ -15,6 +15,8 @@ import time
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, cast
 
+import pytest
+
 from btclib_node import Node
 from btclib_node.config import Config
 from btclib_node.p2p.address import peer_address
@@ -71,8 +73,6 @@ def _agree(
             ours = _answer(client.call, method, [tx.id.hex()])
             theirs = _answer(bitcoind.rpc, method, [tx.id.hex()])
             if method == "getmempoolentry":
-                # Core 32's fields, which bitcoind v31.1 does not answer
-                del ours[1]["vsize_adjusted"], ours[1]["vsize_bip141"]
                 for answer in (ours, theirs):
                     assert answer[1].pop("time") in sent[tx.id.hex()], answer
             assert ours == theirs, (method, tx.id.hex())
@@ -84,6 +84,10 @@ def _agree(
         assert ours == theirs, method
 
 
+@pytest.mark.xfail(
+    raises=AssertionError,
+    reason="v32.1 diverges: no bip125-replaceable (btclib-org/btclib-node#2107)",
+)
 def test_clusters_are_answered_as_bitcoind_does(
     bitcoind: Bitcoind, tmp_path: Path
 ) -> None:

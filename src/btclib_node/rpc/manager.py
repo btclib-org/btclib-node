@@ -614,12 +614,9 @@ class RpcManager(threading.Thread):
         A socket from a source `client_allowed` refuses is closed as it is
         accepted, before anything is read off it, and logged at debug:
         Core's `HTTPServer::AcceptConnection` (`src/httpserver.cpp`, at
-        bitcoin/bitcoin@cce32b1687, and in v32.0rc1). The release
-        `integration-bitcoind.yml` pins, v31.1, reads the request first,
-        up to `-rpcservertimeout`, answers it a bare 403 and keeps the
-        connection. This node takes `master`'s, since otherwise a refused
-        source holds one of `max_connections` places for as long as it
-        likes (btclib-org/btclib-node#1963).
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag). Otherwise a refused
+        source would hold one of `max_connections` places for as long as
+        it liked (btclib-org/btclib-node#1963).
 
         `loop.sock_accept` retries a `BlockingIOError`/`InterruptedError`
         internally on both loop families this node runs on (a selector

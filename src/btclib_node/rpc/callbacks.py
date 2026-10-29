@@ -1823,29 +1823,13 @@ def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
     messages (`rpc/net.cpp:365-377`, at bitcoin/bitcoin@bb529657). The
     empty-`node` refusal is master's own fix
     (`rpc: reject empty node argument in addnode`,
-    at bitcoin/bitcoin@90ce21e21d) rather than this tree's own pinned
-    `bitcoind`'s: at bitcoin/bitcoin@9be056a8a7 -- v31.1, the release
-    `integration-bitcoind.yml` pins, answers an empty `node` with a
-    silent, do-nothing success instead, measured directly against a
-    real v31.1.0 (issue #1010). `90ce21e21d` post-dates v31.1's own tag
-    commit and is confirmed on `bb529657`'s own ancestry via
-    `git merge-base --is-ancestor`.
-
-    Matching master here rather than the release this tree tests
-    against is a decision, not an oversight: `CONTRIBUTING.md`'s own
-    *Following Bitcoin Core* names matching Core's behaviour as the
-    default, and reserves a release-pinned citation for a claim about
-    the behaviour of the bitcoind this tree is tested against rather
-    than for what this node implements. Master's own code comment names
-    why the fix exists -- "Such a node would never resolve, but would
-    be retried indefinitely" -- and nothing under `tests/integration/`
-    drives `addnode ""`, so this tree's own integration suite, run
-    against v31.1, never exercises the one call shape the two
-    disagree on. Matching the release instead would mean knowingly
-    carrying a defect Core itself already fixed, only to undo that the
-    moment the pin advances past it -- issue #1010 is closed on this
-    reasoning. `v2transport` is Core's own optional third argument, kept
-    with an added peer and passed to a `onetry` dial.
+    at bitcoin/bitcoin@90ce21e21d), and the bitcoind this tree is tested
+    against has it too (`rpc/net.cpp:372-376`, at
+    bitcoin/bitcoin@f0de87f040 -- v32.1, the release
+    `integration-bitcoind.yml` pins): "Such a node would never resolve,
+    but would be retried indefinitely". `v2transport` is Core's own
+    optional third argument, kept with an added peer and passed to a
+    `onetry` dial.
     """
     node_arg, command, use_v2transport = _parsed_addnode_args(node, params)
 
@@ -1949,10 +1933,10 @@ def disconnect_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
     manager.remove_connection(found[0])
 
 
-# Core's own four names (`rpc/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
-# the v31.1 tag) -- `manual` is v31.1's own fifth `addconnection`
-# connection type, past this pinned release (issue #1465's own
-# citation), so it is not one of these.
+# Core's own four names, at bitcoin/bitcoin@f0de87f040 -- v32.1, the release
+# `integration-bitcoind.yml` pins (`rpc/net.cpp:423`). `manual` is master's
+# alone, in no release yet (`rpc/net.cpp:456`, at bitcoin/bitcoin@aa76bd266d),
+# so it is not one of these (btclib-org/btclib-node#1465).
 _ADDCONNECTION_TYPES = (
     "outbound-full-relay",
     "block-relay-only",

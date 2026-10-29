@@ -105,20 +105,16 @@ DEFAULT_DUST_RELAY_FEERATE = FeeRate(sats_per_kvbyte=3000)
 # `-datacarriersize`, in bytes.
 DEFAULT_MAX_DATACARRIER_BYTES = 400_000 // 4
 # Core's own `-maxconnections` default, `DEFAULT_MAX_PEER_CONNECTIONS`
-# (`src/net.h`), read at the release `integration-bitcoind.yml` pins,
-# v31.1 at bitcoin/bitcoin@9be056a8a7. Core's `master` sets 200 (at
-# bitcoin/bitcoin@e8e7e91a11) beside `-inboundrelaypercent`, which by
-# default holds transaction-relaying inbound peers to half of the
-# inbound slots; this node has no such split, so it takes the value the
-# pinned release pairs with no split either.
+# (`src/net.h`), at bitcoin/bitcoin@9be056a8a7, the v31.1 tag. v32.1
+# sets 200 (`src/net.h`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
+# beside `-inboundrelaypercent`, which by default holds
+# transaction-relaying inbound peers to half of the inbound slots; this
+# node has no such split, so it keeps the value v31.1 pairs with no split
+# either until it has one (btclib-org/btclib-node#1769).
 DEFAULT_MAX_PEER_CONNECTIONS = 125
 # Core's own `-rpcmaxconnections` default, `DEFAULT_MAX_HTTP_CONNECTIONS`
-# (`src/httpserver.h`, at bitcoin/bitcoin@649bc0a645, in v32.0rc4 too):
-# the most RPC clients connected at once. The release
-# `integration-bitcoind.yml` pins, v31.1, has no such option and sets no
-# limit. This node takes `master`'s, since without a limit any client
-# that reaches the port can use up the descriptors the peers and the
-# store need (btclib-org/btclib-node#1953).
+# (`src/httpserver.h`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag):
+# the most RPC clients connected at once.
 DEFAULT_MAX_HTTP_CONNECTIONS = 16
 # A named module-level singleton rather than `Main()` written straight
 # into __init__'s own signature below: a call there is made once, at

@@ -11,9 +11,9 @@ question the pre-commit hook asks on every commit. Most other tests point
 `_tracked_files` at a fixture directory instead of the real tree, so each
 can make exactly one of the ways the tree could stop agreeing true and
 check that the script says so -- a pin bumped alone, one citation edited
-and the rest left behind, a version claim left at the old release, a
-citation living in a file with no special name at all -- and that an
-unmodified fixture says nothing is wrong.
+and the rest left behind, a citation living in a file with no special
+name at all -- and that an unmodified fixture says nothing is wrong, a
+measurement naming an older release included.
 `test_a_citation_in_an_unlisted_file_is_caught` is the regression test
 for btclib-org/btclib-node#1014: `rpc/callbacks.py` carried the
 release-annotated form and was on no list, so a version-tuple check the
@@ -21,7 +21,7 @@ way this module worked before #1014 would pass it silently, and the
 fixture in that test is built the same way.
 
 `test_tracked_files_excludes_self_test_and_changelogs` and
-`test_a_stale_version_claim_in_changelog_is_not_flagged_end_to_end`
+`test_a_stale_citation_in_changelog_is_not_flagged_end_to_end`
 exercise that same exclusion against a throwaway git repository, rather
 than through a fixture the other tests monkeypatch `_tracked_files`
 away with -- the first at `_tracked_files` itself, the second through
@@ -99,13 +99,12 @@ _UNLISTED_SITE = """\
 """
 
 # an append-only entry the way CHANGELOG.md and RELEASE_NOTES.md write
-# one: a past measurement against the release pinned when it was
-# written, which stays true -- and stays written that way -- long after
-# a later bump makes the number look stale to anyone not reading it as
-# history
+# one: a citation annotated as the release pinned when it was written,
+# which stays written that way after a later bump
 _CHANGELOG_ENTRY = """\
-- Exercised against a real `bitcoind` v31.1.0 with
-  `BTCLIB_NODE_INTEGRATION=1`.
+- `COINBASE_MATURITY`, at
+  bitcoin/bitcoin@9be056a8a7 -- v31.1, the release
+  `integration-bitcoind.yml` pins.
 """
 
 
@@ -208,26 +207,12 @@ def test_an_unannotated_citation_is_caught(
     assert agreeing_tree.main() == 1
 
 
-def test_a_version_claim_left_at_the_old_release_is_caught(
+def test_a_measurement_naming_an_older_release_is_a_record(
     agreeing_tree: ModuleType, tmp_path: Path
 ) -> None:
-    """conftest.py and errors.py are in scope, not only reorg_test.py."""
+    """A measurement naming `bitcoind` v31.0.0 stays true under a 31.1 pin."""
     (tmp_path / "conftest.py").write_text(
         _CONFTEST.replace("v31.1.0", "v31.0.0"), encoding="utf-8"
-    )
-    assert agreeing_tree.main() == 1
-
-
-def test_an_unrelated_action_pin_is_not_read_as_a_bitcoind_version(
-    agreeing_tree: ModuleType, tmp_path: Path
-) -> None:
-    """A `# vX.Y.Z` beside an action pin is not a bitcoind version claim."""
-    action_pin = (
-        "        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
-        " # v7.0.1\n"
-    )
-    (tmp_path / "integration-bitcoind.yml").write_text(
-        _WORKFLOW + action_pin, encoding="utf-8"
     )
     assert agreeing_tree.main() == 0
 
@@ -246,6 +231,40 @@ def test_a_citation_in_an_unlisted_file_is_caught(
         encoding="utf-8",
     )
     assert agreeing_tree.main() == 1
+
+
+@pytest.mark.parametrize(
+    "citation",
+    [
+        "at bitcoin/bitcoin@9be056a8a7 --\n    v31.0, the release",
+        "at bitcoin/bitcoin@9be056a8a7\n    -- v31.0, the release",
+        "at bitcoin/bitcoin@9be056a8a7 -- v31.0,\n    the release",
+        "at bitcoin/bitcoin@9be056a8a7 -- v31.0.0, the release",
+        "at bitcoin/bitcoin@9be056a8a7 -- v31.1.1, the release",
+        "# at bitcoin/bitcoin@9be056a8a7 --\n# v31.0, the release",
+        "// at bitcoin/bitcoin@9be056a8a7\n// -- v31.0, the release",
+        " * at bitcoin/bitcoin@9be056a8a7 --\n * v31.0, the release",
+    ],
+)
+def test_a_wrapped_or_three_part_citation_is_caught(
+    agreeing_tree: ModuleType, tmp_path: Path, citation: str
+) -> None:
+    """A stale annotation is read across a line break and its comment marker."""
+    (tmp_path / "some_unrelated_module.py").write_text(
+        f"{citation}\n`integration-bitcoind.yml` pins\n", encoding="utf-8"
+    )
+    assert agreeing_tree.main() == 1
+
+
+def test_a_three_part_citation_of_the_pin_agrees(
+    agreeing_tree: ModuleType, tmp_path: Path
+) -> None:
+    """`v31.1.0` names the release a `31.1` pin names."""
+    (tmp_path / "some_unrelated_module.py").write_text(
+        _UNLISTED_SITE.replace(" -- v31.1, the release", " -- v31.1.0, the release"),
+        encoding="utf-8",
+    )
+    assert agreeing_tree.main() == 0
 
 
 def test_tracked_files_excludes_self_test_and_changelogs(
@@ -285,20 +304,19 @@ def test_tracked_files_excludes_self_test_and_changelogs(
     assert script._tracked_files() == [kept]
 
 
-def test_a_stale_version_claim_in_changelog_is_not_flagged_end_to_end(
+def test_a_stale_citation_in_changelog_is_not_flagged_end_to_end(
     script: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A `CHANGELOG.md` entry naming an old release is history, not drift.
+    """A `CHANGELOG.md` entry citing an old pinned release is history.
 
-    `CHANGELOG.md:2857` in this tree's own history carries exactly this
-    shape -- a past measurement against the then-pinned release -- and
+    An entry quoting a citation annotated as the then-pinned release
     must never be read as a claim about the pin today. Real `git
     ls-files` under a throwaway repository and the real `_tracked_files`
     filter, so `changelog` is genuinely offered to `_tree_problems` and
     the exclusion is what keeps it from being flagged, not the fixture
-    choosing not to include it. `release_notes`, this script's own
-    source and its own test carry the identical stale text, proving the
-    same exclusion for all four at once.
+    choosing not to include it. `release_notes` carries the same entry,
+    and this script's own source and its own test carry `_UNLISTED_SITE`,
+    so each of the four would be flagged but for its exclusion.
     """
     workflow = tmp_path / "integration-bitcoind.yml"
     reorg_test = tmp_path / "reorg_test.py"
@@ -314,11 +332,11 @@ def test_a_stale_version_claim_in_changelog_is_not_flagged_end_to_end(
         _REORG_TEST.replace("v31.1, the release", "v31.9, the release"),
         encoding="utf-8",
     )
-    # every one of these four still names the old release, on purpose
+    # every one of these four still cites the old release, on purpose
     changelog.write_text(_CHANGELOG_ENTRY, encoding="utf-8")
     release_notes.write_text(_CHANGELOG_ENTRY, encoding="utf-8")
-    self_source.write_text(_ERRORS, encoding="utf-8")
-    self_test.write_text(_CONFTEST, encoding="utf-8")
+    self_source.write_text(_UNLISTED_SITE, encoding="utf-8")
+    self_test.write_text(_UNLISTED_SITE, encoding="utf-8")
 
     subprocess.run([_GIT, "init", "-q", str(tmp_path)], check=True)  # noqa: S603
     subprocess.run([_GIT, "-C", str(tmp_path), "add", "-A"], check=True)  # noqa: S603

@@ -18,13 +18,13 @@ btclib-org/btclib-node#856.
 pattern, and btclib-org/btclib-node#1014 is the same trap closing a
 second time: `rpc/callbacks.py` grew an identical release-annotated
 citation that neither the reorg-test check nor a hardcoded tuple of
-version-claim files named, so a future bump would have left it stale
-with this gate exiting 0 throughout. So the version-claim half of this
-reads every file `git` tracks (`git ls-files`, in place of a directory
-walk that would need its own exclude list for `.venv`, `.git` and build
-output) rather than a named few: a release-annotated citation or a bare
-version claim is checked wherever it is written, and a citation site
-gained later needs no entry added here to be covered.
+files named, so a future bump would have left it stale with this gate
+exiting 0 throughout. So the tree-wide half of this reads every file
+`git` tracks (`git ls-files`, in place of a directory walk that would
+need its own exclude list for `.venv`, `.git` and build output) rather
+than a named few: a release-annotated citation is checked wherever it is
+written, and a citation site gained later needs no entry added here to
+be covered.
 
 What stays scoped to `reorg_test.py` alone is its own convention of
 citing one commit several times and annotating it only once -- every
@@ -36,16 +36,26 @@ citation elsewhere in the tree (a `CHANGELOG.md` entry, one of
 a commit unrelated to the others and to the pin on purpose, so requiring
 tree-wide agreement between arbitrary bare citations would be wrong.
 
+Outside `reorg_test.py`, only the release-annotated form is read: "--
+vX.Y, the release `integration-bitcoind.yml` pins", which says what the
+tree is tested against *now* (`CONTRIBUTING.md`'s *Following Bitcoin
+Core*) and is what a bump leaves false. It is read wherever it wraps:
+between any two of its words may fall a line break, with the indent and
+the `#`, `//` or `*` that opens the next line, and its release may be
+written vX.Y.Z, read as vX.Y where Z is 0. Any other mention of a
+release, a bare `bitcoind vX.Y.Z` included, is not read at all. The
+usual one is a measurement naming the release it was taken on --
+"Measured on `bitcoind` vX.Y.Z", "what `bitcoind` vX.Y.Z answers" --
+which stays true of that release whatever the pin names.
+
 This reads the tree rather than Bitcoin Core: it has no Core checkout
 and no network access here, so it cannot say whether `bitcoin/bitcoin@
 <sha>` still describes anything real -- only a human re-reading Core at
 the new tag can say that. What it can say without either is whether the
 tree still agrees with itself: every citation in `reorg_test.py` names
 the same sha, that sha's own annotation names the release
-`integration-bitcoind.yml` pins, and every release-annotated citation or
-bare version claim anywhere else in the tree names that same release.
-Disagreement anywhere in that set is what a bump leaves behind where the
-citations are not re-read, and is what this reports.
+`integration-bitcoind.yml` pins, and every release-annotated citation
+anywhere else in the tree names that same release.
 
 Three kinds of file are excluded from the tree-wide scan, none of them a
 citation site being enumerated back in. This script's own source and its
@@ -59,18 +69,9 @@ would check text meant to simulate a tree, not a claim about this one.
 
 `CHANGELOG.md` and `RELEASE_NOTES.md` are the third, and for a
 different reason: both are append-only narrations of history rather
-than descriptions of current state, so a past entry saying a measurement
-was taken "against a real `bitcoind` v31.1.0" stays true, and stays
-written that way, long after a later pin bump makes the number a claim
-this check would otherwise read as drift on a file nothing in this
-change touched. `CHANGELOG.md:2857`'s own entry is exactly this shape
-today, and reads as drift the moment the pin moves unless the file is
-out of scope. The release-annotated citation form, by contrast, exists
-specifically to describe what the tree is tested against *now*
-(`CONTRIBUTING.md`'s *Following Bitcoin Core*), and neither file currently
-carries one -- excluding both here is a decision about what kind of
-claim each file makes, not a measurement of what happens to be in them
-today.
+than descriptions of current state, so an entry quoting a citation
+annotated as the release pinned when it was written stays true, and
+stays written that way, after a later bump.
 
     python3 .github/scripts/check_core_citation_pin.py
 """
@@ -104,14 +105,19 @@ _EXCLUDED_FROM_SCAN = (
 
 _PIN = re.compile(r'version:\s*"([0-9]+\.[0-9]+)"')
 _CITED_SHA = re.compile(r"bitcoin/bitcoin@([0-9a-f]{7,40})")
+# what may separate two words of the annotated form: spaces, and at most
+# one line break with the indent and comment marker opening the next line
+_GAP = r"[ \t]*(?:\r?\n[ \t]*(?:#+|//+|\*+)?[ \t]*)?"
 _ANNOTATED = re.compile(
-    r"bitcoin/bitcoin@[0-9a-f]{7,40} -- v([0-9]+\.[0-9]+), the release"
+    rf"bitcoin/bitcoin@[0-9a-f]{{7,40}}{_GAP}--{_GAP}"
+    rf"v([0-9]+\.[0-9]+)(?:\.([0-9]+))?,{_GAP}the{_GAP}release"
 )
-# "Core vX.Y.Z" or "bitcoind vX.Y.Z", allowing the odd punctuation mark
-# in between -- a bare `v\d+\.\d+\.\d+` also matches a pinned action's
-# own tag in a trailing comment (`actions/checkout@... # v7.0.1`), which
-# is not a bitcoind version and has no reason to track this pin
-_VERSION_CLAIM = re.compile(r"(?:Core|bitcoind)[^\n]{0,20}?v([0-9]+\.[0-9]+)\.[0-9]+")
+
+
+def _annotated_release(match: re.Match[str]) -> str:
+    """Return the release an annotated citation names, vX.Y.0 read as vX.Y."""
+    release, patch = match.group(1, 2)
+    return release if patch in {None, "0"} else f"{release}.{patch}"
 
 
 def _pinned_version() -> str:
@@ -175,17 +181,17 @@ def _sha_problems(pinned_version: str) -> list[str]:
             " to, as CONTRIBUTING.md's Following Bitcoin Core asks of a"
             " release-pinned citation"
         )
-    elif annotated.group(1) != pinned_version:
+    elif _annotated_release(annotated) != pinned_version:
         problems.append(
             f"{_REORG_TEST}: citations are annotated as release"
-            f" v{annotated.group(1)}, integration-bitcoind.yml pins"
+            f" v{_annotated_release(annotated)}, integration-bitcoind.yml pins"
             f" {pinned_version}"
         )
     return problems
 
 
 def _tree_problems(pinned_version: str) -> list[str]:
-    """Every release-annotated citation or bare version claim, tree-wide.
+    """Every release-annotated citation, tree-wide.
 
     Unlike `_sha_problems` above, this does not care which file it is
     reading or whether the tree already knew to name it: it is what
@@ -200,7 +206,7 @@ def _tree_problems(pinned_version: str) -> list[str]:
         if text is None:
             continue
         for match in _ANNOTATED.finditer(text):
-            version = match.group(1)
+            version = _annotated_release(match)
             if version != pinned_version:
                 line = text.count("\n", 0, match.start()) + 1
                 problems.append(
@@ -208,19 +214,11 @@ def _tree_problems(pinned_version: str) -> list[str]:
                     f" v{version}, integration-bitcoind.yml pins"
                     f" {pinned_version}"
                 )
-        for match in _VERSION_CLAIM.finditer(text):
-            version = match.group(1)
-            if version != pinned_version:
-                line = text.count("\n", 0, match.start()) + 1
-                problems.append(
-                    f"{path}:{line}: names bitcoind v{version}.x,"
-                    f" integration-bitcoind.yml pins {pinned_version}"
-                )
     return problems
 
 
 def main() -> int:
-    """Report every citation or claim a bitcoind pin bump left behind."""
+    """Report every citation a bitcoind pin bump left behind."""
     pinned_version = _pinned_version()
     problems = [
         *_sha_problems(pinned_version),
@@ -230,7 +228,7 @@ def main() -> int:
         print(f"DRIFT: {problem}")
     if not problems:
         print(
-            "Every release-pinned Core citation and version claim agrees"
+            "Every release-pinned Core citation agrees"
             f" with the {pinned_version} bitcoind pin."
         )
     return 1 if problems else 0

@@ -29,6 +29,10 @@ The framing is the libevent `bitcoind` v31.1.0 links, not Core's own
 source: bitcoin/bitcoin@9be056a8a7, the v31.1 tag, hands the socket to
 `evhttp`, and `depends/packages/libevent.mk` there pins
 2.1.12-stable, read at libevent/libevent@5df3037 (`http.c`).
+`httpserver.cpp`, at bitcoin/bitcoin@f0de87f040 -- v32.1, the release
+`integration-bitcoind.yml` pins, is Core's own HTTP server, which answers
+otherwise where `tests/integration/rpc_framing_test.py` marks it
+(btclib-org/btclib-node#2101).
 """
 
 import asyncio
@@ -95,10 +99,7 @@ __all__ = [
 # chunked body's trailer counted on from them (`HTTPHeaders::Read`,
 # `src/httpserver.cpp`, at bitcoin/bitcoin@cce32b1687). So it refuses with
 # 400 a header section of many short lines that libevent reads. This node
-# keeps libevent's count: `tests/integration/rpc_framing_test.py` holds
-# it to the bitcoind release `integration-bitcoind.yml` pins, its
-# `size-8192-many-lines` case included. Issue #1972 is the change for a
-# v32 pin.
+# keeps libevent's count, and issue #1972 is the change to Core's.
 MAX_HEADER_BYTES = 8192
 MAX_BODY_BYTES = 32 * 1024 * 1024
 # What bounds how *long* a read may take, where the two above only bound
