@@ -633,3 +633,40 @@ behind  0 revisions; that commit is the tip of the path
 
 Floresta's MIT licence, one of the two its `LICENSE.md` offers, which the two
 files above are distributed under and which travels with them.
+
+## `tests/_data/core_openrpc.json`
+
+Not vendored -- derived. What Bitcoin Core v32.1's `getopenrpcinfo true`
+answered on regtest, written by `scripts/openrpc/fetch_core_openrpc.py`,
+byte for byte as the run below uploaded it. `tests/openrpc_test.py` holds
+`scripts/openrpc/divergences.txt` to what `diff_openrpc.py` reports
+against it.
+
+```text
+release   v32.1, tag commit f0de87f040621468b956f01f526a43a010310501
+tarball   bitcoin-32.1-x86_64-linux-gnu.tar.gz
+          sha256 61545c17c3120fb7412f896d248b11993af04ec8817aad3649c55b2afb044963
+run       https://github.com/btclib-org/btclib-node/actions/runs/40797574342
+          job openrpc, at commit ffcc18460dc4965064c76f43c3dcddd278596871
+sha256    0a979b86290dddb4d4436f6738f3072c01bdeffd982e5d7a9b6b3518ef71f459
+```
+
+The job ran on `ubuntu-latest`, dispatched with `workflow_dispatch`. It
+was added to `integration-bitcoind.yml` on the branch of
+btclib-org/btclib-node#1759 for that run alone, and is not on `main`. It
+checked out btclib-org/.github at
+`eb3b0c28476b98694ab3a3c3a9dce7e8e26ab4f5`, sparse on `.github/scripts`,
+into `standard/` inside this tree's checkout. `install_bitcoind.py` downloads the
+tarball, checks its sha256 and prints the daemon's path. The script
+starts that downloaded binary, so it runs on a CI runner, from this
+tree's root:
+
+```shell
+daemon=$(uv run --no-project --python 3.15 \
+    standard/.github/scripts/install_bitcoind.py \
+    32.1 61545c17c3120fb7412f896d248b11993af04ec8817aad3649c55b2afb044963)
+uv run --no-project --python 3.14 \
+    scripts/openrpc/fetch_core_openrpc.py "$daemon" tests/_data/core_openrpc.json
+uv run python scripts/openrpc/diff_openrpc.py \
+    tests/_data/core_openrpc.json > scripts/openrpc/divergences.txt
+```
