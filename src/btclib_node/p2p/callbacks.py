@@ -486,6 +486,31 @@ def _refuses(node: Node, conn: Connection, version_msg: Version) -> bool:
     )
 
 
+def _over_tx_relay_capacity(node: Node, conn: Connection, version_msg: Version) -> bool:
+    """Answer whether `version` drops an inbound peer for the relay share.
+
+    Core's `MaybeDisconnectForTxRelayCapacity`, ahead of `VERACK`
+    (`src/net_processing.cpp`, at bitcoin/bitcoin@f0de87f040 -- v32.1,
+    the release `integration-bitcoind.yml` pins): an inbound peer that
+    asks for transactions has `P2pManager.evict_tx_peer_if_full` evict
+    another such peer where they are past their share, itself
+    protected, and is dropped only where none can go. Core checks again
+    on `filterload` and `filterclear`, which `manager._relays_txs` says
+    this node has no counterpart for.
+    """
+    if not conn.inbound or not version_msg.is_relay_requested:
+        return False
+    if node.p2p_manager.evict_tx_peer_if_full(protect_peer=conn.id):
+        return False
+    node.logger.log_debug(
+        "net",
+        "failed to find a tx-relaying eviction candidate - connection dropped"
+        " after version message, peer=%d",
+        conn.id,
+    )
+    return True
+
+
 def _see_local(node: Node, conn: Connection, version_msg: Version) -> None:
     """Raise the score of the address an inbound peer says it reached us at.
 
@@ -511,6 +536,9 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     point reaches this callback, and unguarded would resend
     `WtxidRelay`, `SendAddrV2` and `Verack` in answer.
     btclib-org/btclib-node#482
+
+    An inbound peer that `_over_tx_relay_capacity` drops is sent no
+    `verack`.
 
     Continuing means answering `verack`, with `wtxidrelay` and
     `sendaddrv2` ahead of it where the common version reaches
@@ -553,6 +581,9 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     if common_version(conn) >= WTXID_RELAY_VERSION:
         conn.send(WtxidRelay())
         conn.send(SendAddrV2())
+    if _over_tx_relay_capacity(node, conn, version_msg):
+        conn.stop()
+        return
     conn.send(Verack())
 
     # Core's `VERSION` handler, right after `VERACK`, calls

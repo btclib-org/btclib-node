@@ -16,6 +16,7 @@ from btclib.fee import FeeRate
 from btclib_node import config as config_module
 from btclib_node.chains import Main, RegTest, SigNet, TestNet, TestNet4
 from btclib_node.config import (
+    DEFAULT_FULL_RELAY_INBOUND_PCT,
     DEFAULT_MAX_PEER_CONNECTIONS,
     DEFAULT_MIN_RELAY_FEERATE,
     BindAddress,
@@ -588,10 +589,14 @@ def test_split_host_port_reads_leading_zeros() -> None:
     )
 
 
-def test_max_connections_defaults_to_v31_1_s() -> None:
-    """v31.1's `DEFAULT_MAX_PEER_CONNECTIONS`; v32.1's is 200 (ISS 1769)."""
-    assert DEFAULT_MAX_PEER_CONNECTIONS == 125
-    assert Config(chain="regtest").max_connections == DEFAULT_MAX_PEER_CONNECTIONS
+def test_max_connections_and_the_relay_share_default_to_v32_1_s() -> None:
+    """ISS 1769: v32.1's `DEFAULT_MAX_PEER_CONNECTIONS` and relay share."""
+    assert DEFAULT_MAX_PEER_CONNECTIONS == 200
+    assert DEFAULT_FULL_RELAY_INBOUND_PCT == 50
+    config = Config(chain="regtest")
+    assert config.max_connections == DEFAULT_MAX_PEER_CONNECTIONS
+    assert config.inbound_relay_percent == DEFAULT_FULL_RELAY_INBOUND_PCT
+    assert Config(chain="regtest", inbound_relay_percent=7).inbound_relay_percent == 7
 
 
 def test_max_connections_given_is_stored_back() -> None:

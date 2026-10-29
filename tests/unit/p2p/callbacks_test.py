@@ -846,6 +846,7 @@ def a_handshake_node(
     min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
     discouraged_hosts: Sequence[str] = (),
     banned: Sequence[str] = (),
+    evicts: bool = True,
 ) -> Any:
     """Build a node double with just what handshake callbacks read or write.
 
@@ -855,9 +856,16 @@ def a_handshake_node(
     another. `config.block_notify`/`config.alert_notify` are `""` and
     `warnings` an empty `notify.Warnings` -- `check_fork_warning_conditions`
     reaches both wherever a callback built on this double invalidates a
-    block (btclib-org/btclib-node#1522).
+    block (btclib-org/btclib-node#1522). `evict_tx_peer_if_full` answers
+    `evicts`, recording each `protect_peer` in `eviction_asks`.
     """
     discouraged, record = discourage_recorder()
+    eviction_asks: list[int | None] = []
+
+    def evict_tx_peer_if_full(protect_peer: int | None = None) -> bool:
+        eviction_asks.append(protect_peer)
+        return evicts
+
     seen: list[Any] = []
     relayed: list[Any] = []
     discouraged_keys = {host_key(peer_address(host, 0)) for host in discouraged_hosts}
@@ -887,6 +895,8 @@ def a_handshake_node(
             seen_local=seen.append,
             relay_address=lambda conn, address, now: relayed.append((conn, address)),
             relayed=relayed,
+            evict_tx_peer_if_full=evict_tx_peer_if_full,
+            eviction_asks=eviction_asks,
         ),
         chainstate=SimpleNamespace(
             block_index=SimpleNamespace(
@@ -922,6 +932,53 @@ def commands(peer: Any) -> list[str]:
         message if isinstance(message, str) else type(message).__name__
         for message in peer.sent
     ]
+
+
+@pytest.mark.parametrize("evicts", [True, False])
+def test_an_inbound_tx_relay_peer_asks_for_an_eviction_ahead_of_verack(
+    *, evicts: bool
+) -> None:
+    """ISS 1769: Core's `MaybeDisconnectForTxRelayCapacity`, the peer protected.
+
+    Where another peer can go, the handshake goes on; where none can,
+    the peer is dropped ahead of `verack`, after the three messages
+    Core also sends it first, with Core's own log line.
+    """
+    node = a_handshake_node(evicts=evicts)
+    logged: list[str] = []
+    node.logger.log_debug = lambda _category, msg, *args: logged.append(msg % args)
+    peer = a_peer(id=7, inbound=True)
+    version(node, a_version(relay=True), peer)
+    assert node.p2p_manager.eviction_asks == [7]
+    assert bool(peer.stopped) is not evicts
+    dropped = (
+        "failed to find a tx-relaying eviction candidate - connection dropped"
+        " after version message, peer=7"
+    )
+    assert (dropped in logged) is not evicts
+    if evicts:
+        assert commands(peer)[:4] == ["version", "WtxidRelay", "SendAddrV2", "Verack"]
+    else:
+        assert commands(peer) == ["version", "WtxidRelay", "SendAddrV2"]
+
+
+@pytest.mark.parametrize(
+    ("inbound", "relay"), [(True, False), (False, True)], ids=["inbound", "outbound"]
+)
+def test_a_peer_that_takes_no_inbound_relay_slot_asks_for_no_eviction(
+    *, inbound: bool, relay: bool
+) -> None:
+    """ISS 1769: a block-relay-only inbound peer, or one this node dialled.
+
+    Neither is held to the relay share, so neither asks
+    `evict_tx_peer_if_full`, and each is sent `verack`.
+    """
+    node = a_handshake_node(evicts=False)
+    peer = a_peer(inbound=inbound)
+    version(node, a_version(relay=relay), peer)
+    assert node.p2p_manager.eviction_asks == []
+    assert not peer.stopped
+    assert "Verack" in commands(peer)
 
 
 def test_a_version_is_answered_with_what_this_node_speaks() -> None:
