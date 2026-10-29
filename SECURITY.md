@@ -51,6 +51,11 @@ The latest security review is dated 2026-09-30.
 [assurance case](./ASSURANCE_CASE.md), and
 [issue 1559](https://github.com/btclib-org/btclib-node/issues/1559) records it.
 
+The review's scope is the tree at commit `02b2ed6effd2`, and release v2026.9.24
+where its RPC code differs.
+[What changed since](https://github.com/btclib-org/btclib-node/compare/02b2ed6effd25567c6e17c4adf53276f514a7fa5...main)
+is that commit's comparison with `main`.
+
 ## Supported versions
 
 Only the latest release is supported: a fix is published as a new
