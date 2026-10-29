@@ -748,20 +748,27 @@ def sendcmpct(node: Node, msg: bytes, conn: Connection) -> None:
     conn.requested_hb_cmpctblocks = announce != 0
 
 
+# the octets of a `ping`'s or a `pong`'s nonce, Core's `sizeof(nonce)`
+_NONCE_SIZE = 8
+
+
 def ping(node: Node, msg: bytes, conn: Connection) -> None:
     """Answer a `ping` with a `pong` carrying the same nonce.
 
     Unanswered at a common version of `BIP0031_VERSION` or below, whose
     `ping` carries no nonce and which Core does not answer either.
+
+    Core's `PING` (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag) reads the nonce off the payload's first eight octets
+    and answers whatever follows them. A payload too short to hold a
+    nonce goes unanswered: Core's read throws, as `Ping.parse` raises.
     """
     if common_version(conn) <= BIP0031_VERSION:
         return
-    nonce = Ping.parse(msg).nonce
+    # btclib's `Ping.parse` refuses octets past the nonce, so it is given
+    # the nonce's octets alone
+    nonce = Ping.parse(msg[:_NONCE_SIZE]).nonce
     conn.send(Pong(nonce))
-
-
-# the octets of a `pong`'s nonce, Core's `sizeof(nonce)`
-_PONG_NONCE_SIZE = 8
 
 
 def pong(node: Node, msg: bytes, conn: Connection) -> None:
@@ -776,8 +783,8 @@ def pong(node: Node, msg: bytes, conn: Connection) -> None:
     """
     # Core reads the nonce off the payload's first octets and ignores
     # the rest. A shorter payload finishes the ping as a zero nonce does.
-    head = msg[:_PONG_NONCE_SIZE]
-    nonce = Pong.parse(head).nonce if len(head) == _PONG_NONCE_SIZE else 0
+    head = msg[:_NONCE_SIZE]
+    nonce = Pong.parse(head).nonce if len(head) == _NONCE_SIZE else 0
     # The read that decides which of ping_sent/ping_nonce apply and the
     # clear that answers it are one step under conn._ping_lock, against
     # Connection.send_ping's own pair of writes on the other thread:

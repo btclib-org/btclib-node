@@ -1837,6 +1837,15 @@ def test_a_ping_is_answered_with_the_nonce_it_carried() -> None:
     assert answer.nonce == 1234
 
 
+def test_a_ping_reads_its_nonce_off_the_first_eight_octets() -> None:
+    """ISS 2086: octets past the nonce are ignored, as Core's `PING` does."""
+    peer = a_peer(version_message=a_parsed_version(protocol=BIP0031_VERSION + 1))
+    ping(a_handshake_node(), Ping(1234).serialize() + b"\xff", peer)
+    (answer,) = peer.sent
+    assert isinstance(answer, Pong)
+    assert answer.nonce == 1234
+
+
 @pytest.mark.parametrize("payload", [b"", Ping(1234).serialize()])
 def test_a_ping_at_bip31_or_below_is_not_answered(payload: bytes) -> None:
     """ISS 1180: Core answers a `ping` only above `BIP0031_VERSION`.
