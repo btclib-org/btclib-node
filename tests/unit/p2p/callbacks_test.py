@@ -7219,15 +7219,19 @@ def test_a_block_relay_only_peer_is_asked_for_no_addresses_but_recorded(
     assert known.timestamp == heard
 
 
-@pytest.mark.parametrize("block_relay", [True, False])
-def test_a_block_relay_only_peer_s_gossip_is_ignored_once_parsed(
-    *, block_relay: bool
+@pytest.mark.parametrize(
+    ("kind", "ignored"),
+    [("block_relay", True), ("feeler", True), ("automatic", False)],
+)
+def test_gossip_from_a_block_relay_only_peer_or_a_feeler_is_ignored_once_parsed(
+    *, kind: str, ignored: bool
 ) -> None:
-    """ISS 1095: `addr` and `addrv2` from it are parsed, then dropped.
+    """ISS 1095, ISS 1770: their `addr` and `addrv2` are parsed, then dropped.
 
     Core parses them and ignores them ahead of its `MAX_ADDR_TO_SEND`
-    check, so a payload that does not parse is refused as from any peer,
-    and one past the bound is no `MisbehavingError`, where the control's
+    check, `SetupAddressRelay` refusing both kinds, so a payload that
+    does not parse is refused as from any peer, and one past the bound
+    is no `MisbehavingError`, where the control's, a full-relay peer's,
     is.
     """
     given = [a_gossiped_address("1.2.3.4")]
@@ -7237,16 +7241,17 @@ def test_a_block_relay_only_peer_s_gossip_is_ignored_once_parsed(
     ):
         peer_db = PeerDB(cast("Chain", None), cast("Path", None))
         node = a_handshake_node(peer_db=peer_db)
-        peer = a_gossiping_peer(block_relay=block_relay)
+        peer = a_gossiping_peer(**{"automatic": True, kind: True})
         callback(node, message.serialize(), peer)
-        assert bool(peer_db.addresses) is not block_relay
-        assert peer.stats.addr_processed == (0 if block_relay else 1)
+        assert bool(peer_db.addresses) is not ignored
+        assert peer.addr_relay_enabled is not ignored
+        assert peer.stats.addr_processed == (0 if ignored else 1)
         with pytest.raises(BTClibException):
             callback(node, b"\xff" * 9, peer)
         past = var_int.serialize(MAX_ADDR_TO_SEND + 1) + entry * (MAX_ADDR_TO_SEND + 1)
         with pytest.raises(BTClibException) as refused:
             callback(node, past, peer)
-        assert isinstance(refused.value, MisbehavingError) is not block_relay
+        assert isinstance(refused.value, MisbehavingError) is not ignored
 
 
 @pytest.mark.parametrize("ibd", [True, False])
@@ -7342,14 +7347,15 @@ def test_a_transaction_announced_by_a_full_relay_peer_drops_nobody() -> None:
 
 
 @pytest.mark.parametrize("feeler", [True, False])
-def test_a_feeler_is_asked_for_addresses_recorded_and_dropped_at_its_version(
+def test_a_feeler_is_recorded_and_dropped_at_its_version_unasked_for_addresses(
     *, feeler: bool
 ) -> None:
     """ISS 1096: Core's `VERSION` handler ends a feeler once it has answered.
 
-    `getaddr` after the three answers, as to a full-relay peer, then the
-    address recorded as answered with the services the `version` names,
-    same as a full-relay peer, the control, and only then the drop,
+    The three answers and no `getaddr`, where a full-relay peer, the
+    control, is sent one (ISS 1770: v32.1's `SetupAddressRelay` refuses
+    a feeler). Then the address recorded as answered with the services
+    the `version` names, same as the control, and only then the drop,
     after what was sent. ISS 1226: Core's `FinalizeNode` never calls
     `Connected` for a feeler, so the time of the address is the one
     gossip gave it.
@@ -7363,6 +7369,9 @@ def test_a_feeler_is_asked_for_addresses_recorded_and_dropped_at_its_version(
     version(a_handshake_node(peer_db=peer_db), a_version(), peer)
     assert not peer.stopped
     assert peer.relay_tx is not feeler
+    assert peer.addr_relay_enabled is not feeler
+    assert peer.getaddr_sent is not feeler
+    assert peer.addr_token_bucket == (1.0 if feeler else 1.0 + MAX_ADDR_TO_SEND)
     (recorded,) = peer_db.active_addresses
     assert endpoint_key(recorded) == endpoint_key(dialled)
     assert recorded.services == ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
@@ -7373,7 +7382,6 @@ def test_a_feeler_is_asked_for_addresses_recorded_and_dropped_at_its_version(
             "WtxidRelay",
             "SendAddrV2",
             "Verack",
-            "GetAddr",
             "stop_when_sent",
         ]
     else:
