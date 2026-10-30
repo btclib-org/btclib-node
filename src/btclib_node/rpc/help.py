@@ -7,8 +7,8 @@
 `HELP_TEXT` is `RPCHelpMan::ToString`'s own literal answer for each
 method this node serves (`src/rpc/blockchain.cpp`, `src/rpc/net.cpp`,
 `src/rpc/mempool.cpp`, `src/rpc/mining.cpp`, `src/rpc/server.cpp`, at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag) -- read back from a regtest
-bitcoind v31.1.0's own `help <command>`, the way `disconnectnode`'s own
+bitcoin/bitcoin@f0de87f040, the v32.1 tag) -- read back from a regtest
+bitcoind v32.1.0's own `help <command>`, the way `disconnectnode`'s own
 help text already was before this module existed
 (btclib-org/btclib-node#1193). `rpc.main._execute` raises this same text
 under `RPC_MISC_ERROR` for a call outside its method's declared argument
@@ -23,11 +23,13 @@ and `setban`'s own invalid-command refusal, byte for byte). `help_rpc`
 below answers it for a command named explicitly, and un-truncated, where
 Core's own bare listing keeps only each entry's first line.
 
-The `vsize_adjusted`, `vsize` and `vsize_bip141` lines of
-`getmempoolentry`, `getrawmempool` and `testmempoolaccept` are Core 32's
-(`src/rpc/mempool.cpp`, at bitcoin/bitcoin@aef8a04966), laid out as
-`RPCHelpMan::ToString` lays them out. No bitcoind carrying them was read
-back (btclib-org/btclib-node#1757).
+`stop`'s text names this node, as the comment above `_HELP_STOP` says.
+`dumptxoutset`'s and `estimatesmartfee`'s are v31.1's, read back the same
+way (at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): v32.1's describe an
+`in_memory` option and an `options` argument this node does not take.
+`dumptxoutset`'s v32.1 text is owed by btclib-org/btclib-node#2103, whose
+`dumptxoutset_test.py` compares it, and `estimatesmartfee`'s by
+btclib-org/btclib-node#2102, with the `options` argument.
 
 `CATEGORY` is each command's own heading in Core's `help`'s bare
 listing (`CRPCTable::help`, `src/rpc/server.cpp:69-117`, at
@@ -130,7 +132,7 @@ _HELP_ESTIMATERAWFEE = (
     "      ...\n"
     "    },\n"
     '    "errors" : [               (json array, optional) Errors encountered during processing (if there are any)\n'
-    '      "str",                   (string)\n'
+    '      "str",                   (string) error\n'
     "      ...\n"
     "    ]\n"
     "  },\n"
@@ -228,7 +230,7 @@ _HELP_GETBLOCK = (
     '      "vin" : [                          (json array)\n'
     "        {                                (json object)\n"
     "          ...,                           The same output as verbosity = 2\n"
-    '          "prevout" : {                  (json object) (Only if undo information is available)\n'
+    '          "prevout" : {                  (json object, optional) (Only if undo information is available)\n'
     '            "generated" : true|false,    (boolean) Coinbase or not\n'
     '            "height" : n,                (numeric) The height of the prevout\n'
     '            "value" : n,                 (numeric) The value in BTC\n'
@@ -265,12 +267,20 @@ _HELP_GETBLOCKCHAININFO = (
     '  "headers" : n,                          (numeric) the current number of headers we have validated\n'
     '  "bestblockhash" : "str",                (string) the hash of the currently best block\n'
     '  "bits" : "hex",                         (string) nBits: compact representation of the block difficulty target\n'
-    '  "target" : "hex",                       (string) The difficulty target\n'
+    '  "target" : "hex",                       (string) the difficulty target\n'
     '  "difficulty" : n,                       (numeric) the current difficulty\n'
-    '  "time" : xxx,                           (numeric) The block time expressed in UNIX epoch time\n'
-    '  "mediantime" : xxx,                     (numeric) The median block time expressed in UNIX epoch time\n'
+    '  "time" : xxx,                           (numeric) the block time expressed in UNIX epoch time\n'
+    '  "mediantime" : xxx,                     (numeric) the median block time expressed in UNIX epoch time\n'
     '  "verificationprogress" : n,             (numeric) estimate of verification progress [0..1]\n'
     '  "initialblockdownload" : true|false,    (boolean) (debug information) estimate of whether this node is in Initial Block Download mode\n'
+    '  "backgroundvalidation" : {              (json object, optional) state info regarding background validation process\n'
+    '    "snapshotheight" : n,                 (numeric) the height of the snapshot block. Background validation verifies the chain from genesis up to this height\n'
+    '    "blocks" : n,                         (numeric) the height of the most-work background fully-validated chain. The genesis block has height 0\n'
+    '    "bestblockhash" : "str",              (string) the hash of the currently best block validated in the background\n'
+    '    "mediantime" : xxx,                   (numeric) the median block time expressed in UNIX epoch time\n'
+    '    "verificationprogress" : n,           (numeric) estimate of background verification progress [0..1]\n'
+    '    "chainwork" : "hex"                   (string) total amount of work in background validated chain, in hexadecimal\n'
+    "  },\n"
     '  "chainwork" : "hex",                    (string) total amount of work in active chain, in hexadecimal\n'
     '  "size_on_disk" : n,                     (numeric) the estimated size of the block and undo files on disk\n'
     '  "pruned" : true|false,                  (boolean) if the blocks are subject to pruning\n'
@@ -652,7 +662,6 @@ _HELP_GETMEMPOOLINFO = (
     '  "minrelaytxfee" : n,                  (numeric) Current minimum relay fee for transactions\n'
     '  "incrementalrelayfee" : n,            (numeric) minimum fee rate increment for mempool limiting or replacement in BTC/kvB\n'
     '  "unbroadcastcount" : n,               (numeric) Current number of transactions that haven\'t passed initial broadcast yet\n'
-    '  "fullrbf" : true|false,               (boolean) True if the mempool accepts RBF without replaceability signaling inspection (DEPRECATED)\n'
     '  "permitbaremultisig" : true|false,    (boolean) True if the mempool accepts transactions with bare multisig outputs\n'
     '  "maxdatacarriersize" : n,             (numeric) Maximum number of bytes that can be used by OP_RETURN outputs in the mempool\n'
     '  "limitclustercount" : n,              (numeric) Maximum number of transactions that can be in a cluster (configured by -limitclustercount)\n'
@@ -706,7 +715,7 @@ _HELP_IMPORTMEMPOOL = (
     "\n"
     "Examples:\n"
     "> bitcoin-cli importmempool /path/to/mempool.dat\n"
-    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "importmempool", "params": [/path/to/mempool.dat]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "importmempool", "params": ["/path/to/mempool.dat"]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
 _HELP_GETRAWMEMPOOL = (
@@ -1298,6 +1307,7 @@ _HELP_GENERATEBLOCK = (
     'generateblock "output" ["rawtx/txid",...] ( submit )\n'
     "\n"
     "Mine a set of ordered transactions to a specified address or descriptor and return the block hash.\n"
+    "Transaction fees are not collected in the block reward.\n"
     "\n"
     "Arguments:\n"
     "1. output               (string, required) The address or descriptor to send the newly generated bitcoin to.\n"
@@ -1477,7 +1487,7 @@ _HELP_ADDNODE = (
     "\n"
     "Examples:\n"
     '> bitcoin-cli addnode "192.168.0.6:8333" "onetry" true\n'
-    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "addnode", "params": ["192.168.0.6:8333", "onetry" true]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "addnode", "params": ["192.168.0.6:8333", "onetry", true]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
 _HELP_CLEARBANNED = (
@@ -1559,7 +1569,7 @@ _HELP_ADDCONNECTION = (
     "\n"
     "Examples:\n"
     '> bitcoin-cli addconnection "192.168.0.6:8333" "outbound-full-relay" true\n'
-    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "addconnection", "params": ["192.168.0.6:8333" "outbound-full-relay" true]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "addconnection", "params": ["192.168.0.6:8333", "outbound-full-relay", true]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
 )
 
 _HELP_GETNODEADDRESSES = (
@@ -1644,6 +1654,15 @@ _HELP_GETNETWORKINFO = (
     "  ],\n"
     '  "localrelay" : true|false,                         (boolean) true if transaction relay is requested from peers\n'
     '  "timeoffset" : n,                                  (numeric) the time offset\n'
+    '  "tx_send_rate" : n,                                (numeric) configured target for maximum number of transactions per second to send to inbound peers\n'
+    '  "inv_buckets" : {                                  (json object)\n'
+    '    "inbound/outbound" : {                           (json object) connection direction\n'
+    '      "backlog" : n,                                 (numeric) number of queued txs to announce\n'
+    '      "count_tok" : n,                               (numeric) tokens available to be consumed per-transaction\n'
+    '      "size_tok" : n                                 (numeric) tokens available to be consumed per-byte\n'
+    "    },\n"
+    "    ...\n"
+    "  },\n"
     '  "connections" : n,                                 (numeric) the total number of connections\n'
     '  "connections_in" : n,                              (numeric) the number of inbound connections\n'
     '  "connections_out" : n,                             (numeric) the number of outbound connections\n'
@@ -1658,6 +1677,7 @@ _HELP_GETNETWORKINFO = (
     "    },\n"
     "    ...\n"
     "  ],\n"
+    '  "asmap_version" : "hex",                           (string, optional) the SHA256 hash of the asmap data used for IP bucketing (only displayed if the -asmap config option is set)\n'
     '  "relayfee" : n,                                    (numeric) minimum relay fee rate for transactions in BTC/kvB\n'
     '  "incrementalfee" : n,                              (numeric) minimum fee rate increment for mempool limiting or replacement in BTC/kvB\n'
     '  "localaddresses" : [                               (json array) list of local addresses\n'
@@ -1718,7 +1738,6 @@ _HELP_GETPEERINFO = (
     '    "inbound" : true|false,               (boolean) Inbound (true) or Outbound (false)\n'
     '    "bip152_hb_to" : true|false,          (boolean) Whether we selected peer as (compact blocks) high-bandwidth peer\n'
     '    "bip152_hb_from" : true|false,        (boolean) Whether peer selected us as (compact blocks) high-bandwidth peer\n'
-    '    "startingheight" : n,                 (numeric, optional) (DEPRECATED, returned only if config option -deprecatedrpc=startingheight is passed) The starting height (block) of the peer\n'
     '    "presynced_headers" : n,              (numeric) The current height of header pre-synchronization with this peer, or -1 if no low-work sync is in progress\n'
     '    "synced_headers" : n,                 (numeric) The last header we have in common with this peer\n'
     '    "synced_blocks" : n,                  (numeric) The last block we have in common with this peer\n'
@@ -2013,10 +2032,15 @@ _HELP_SENDRAWTRANSACTION = (
     "privacy by leaking the transaction's origin, as nodes will normally not\n"
     "rebroadcast non-wallet transactions already in their mempool.\n"
     "\n"
-    "If -privatebroadcast is enabled, then the transaction will be sent only via\n"
-    "dedicated, short-lived connections to Tor or I2P peers or IPv4/IPv6 peers\n"
-    "via the Tor network. This conceals the transaction's origin. The transaction\n"
-    "will only enter the local mempool when it is received back from the network.\n"
+    "If -privatebroadcast is enabled, then the transaction will be sent via\n"
+    "dedicated, short-lived connections to Tor or I2P peers, or to IPv4/IPv6 peers\n"
+    "via the Tor network. This provides best-effort concealment of the transaction's origin.\n"
+    "Private broadcast is experimental and may change in future releases.\n"
+    "Submission does not itself add the transaction to the local mempool; normal\n"
+    "mempool acceptance and relay apply when it is received back from the network.\n"
+    "The private broadcast queue is bounded: when it is full, this RPC fails and\n"
+    "the transaction is not scheduled until an existing one completes or is\n"
+    "aborted. Use getprivatebroadcastinfo to inspect the queue and abortprivatebroadcast to abort.\n"
     "\n"
     "A specific exception, RPC_TRANSACTION_ALREADY_IN_UTXO_SET, may throw if the transaction cannot be added to the mempool.\n"
     "\n"
@@ -2256,7 +2280,7 @@ _HELP_SIGNRAWTRANSACTIONWITHKEY = (
     "       },\n"
     "       ...\n"
     "     ]\n"
-    '4. sighashtype                      (string, optional, default="DEFAULT for Taproot, ALL otherwise") The signature hash type. Must be one of:\n'
+    "4. sighashtype                      (string, optional, default=DEFAULT for Taproot, ALL otherwise) The signature hash type. Must be one of:\n"
     '                                    "DEFAULT"\n'
     '                                    "ALL"\n'
     '                                    "NONE"\n'

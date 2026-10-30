@@ -55,10 +55,6 @@ def test_every_case_is_signed_as_bitcoind_signs_it(bitcoind: Bitcoind) -> None:
         assert call(method, params) == bitcoind.rpc(method, params), name
 
 
-@pytest.mark.xfail(
-    raises=AssertionError,
-    reason="v32.1 diverges: help text (btclib-org/btclib-node#2105)",
-)
 def test_every_refusal_is_bitcoinds(bitcoind: Bitcoind) -> None:
     """The same code and the same message."""
     for method, params, code, message in REFUSALS:

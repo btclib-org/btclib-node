@@ -17,9 +17,11 @@ if TYPE_CHECKING:
     from btclib_node import Node
     from btclib_node.rpc.connection import RpcConnection
 
-# The bare listing a real regtest bitcoind v31.1.0's own `help` answers,
-# cut down to exactly the commands this node serves -- read back the same
-# way each entry of `HELP_TEXT` was, and reproduced here as the
+# The bare listing a real regtest bitcoind v32.1.0's own `help` answers,
+# cut down to exactly the commands this node serves, except that the
+# usage lines of `dumptxoutset` and `estimatesmartfee` are v31.1's, as
+# `rpc.help`'s docstring says -- read back the same way each entry of
+# `HELP_TEXT` was, and reproduced here as the
 # regression: `_BARE_LISTING`'s own construction (`rpc.help`'s module
 # level) is what this compares against, not a second copy of Core's own
 # text, so a change to `HELP_TEXT` or `CATEGORY` that breaks the grouping
@@ -94,7 +96,7 @@ _EXPECTED_BARE_LISTING = (
 
 
 # `HELP_TEXT["disconnectnode"]` and `HELP_TEXT["addnode"]`, read back
-# from a real regtest bitcoind v31.1.0's own `help disconnectnode` and
+# from a real regtest bitcoind v32.1.0's own `help disconnectnode` and
 # `help addnode`, kept here as a literal independent of `HELP_TEXT`
 # itself: every other test in this module and in `callbacks_test.py`
 # compares a callback's own refusal against `HELP_TEXT[name]`, which
@@ -162,7 +164,7 @@ _ADDNODE_HELP = (
     '> bitcoin-cli addnode "192.168.0.6:8333" "onetry" true\n'
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0",'
     ' "id": "curltest", "method": "addnode", "params":'
-    ' ["192.168.0.6:8333", "onetry" true]}\' -H'
+    ' ["192.168.0.6:8333", "onetry", true]}\' -H'
     " 'content-type: application/json' http://127.0.0.1:8332/\n"
 )
 
@@ -195,7 +197,7 @@ _GETRPCINFO_HELP = (
 def test_disconnectnode_addnode_and_getrpcinfo_help_match_a_real_bitcoind() -> None:
     """`HELP_TEXT`'s own content, not merely its agreement with itself.
 
-    Read back from a regtest bitcoind v31.1.0's own `help disconnectnode`,
+    Read back from a regtest bitcoind v32.1.0's own `help disconnectnode`,
     `help addnode` and `help getrpcinfo`, byte for byte (ISS 1486).
     """
     assert HELP_TEXT["disconnectnode"] == _DISCONNECTNODE_HELP

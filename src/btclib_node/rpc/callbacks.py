@@ -2424,7 +2424,9 @@ def import_mempool(
     is refused. The file is read as the load goes, a transaction a step,
     as the load at start is, so peers and other calls are served between
     steps. The load ends refused where the node stops meanwhile, as
-    Core's ends on `m_interrupt`.
+    Core's ends on `m_interrupt`. The refusal of a load that fails is
+    v32.1's, which names no `debug.log` (same file, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
     if not params:
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["importmempool"])
@@ -2466,7 +2468,7 @@ def import_mempool(
     if not loaded:
         raise RpcError(
             RPCErrorCode.MISC_ERROR,
-            "Unable to import mempool file, see debug.log for details.",
+            "Unable to import mempool file, see debug log for details.",
         )
     return {}
 
