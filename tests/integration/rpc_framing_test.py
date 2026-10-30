@@ -192,7 +192,7 @@ _RAW = {
     "http-1.0-404": b"POST /x HTTP/1.0\r\n\r\n",
     "http-1.0-length-abc": b"POST / HTTP/1.0\r\nContent-Length: abc\r\n\r\n",
     "http-1.5-length-abc": b"POST / HTTP/1.5\r\nContent-Length: abc\r\n\r\n",
-    "http-1.0-501": b"FOO / HTTP/1.0\r\n\r\n",
+    "http-1.0-405": b"FOO / HTTP/1.0\r\n\r\n",
     "lf-every-line": (
         b"POST / HTTP/1.1\n{AUTH}\nConnection: close\nContent-Length: 33\n\n" + _GOOD
     ),
@@ -417,22 +417,7 @@ def node(tmp_path: Path) -> Iterator[Node]:
         node.join()
 
 
-# The cases where Core reads one request more after an answer that closes,
-# as `RpcConnection._write` says, and this node closes at once
-# (btclib-org/btclib-node#2101).
-_READ_PAST_A_CLOSE = frozenset({"spaces-then-tab-close-kept", "tab-close-kept"})
-_PAST_A_CLOSE = pytest.mark.xfail(
-    reason="v32.1 diverges: a request read past a close (btclib-org/btclib-node#2101)"
-)
-
-
-@pytest.mark.parametrize(
-    "case",
-    [
-        pytest.param(case, marks=_PAST_A_CLOSE) if case in _READ_PAST_A_CLOSE else case
-        for case in [*_CASES, *_RAW]
-    ],
-)
+@pytest.mark.parametrize("case", [*_CASES, *_RAW])
 def test_the_answer_is_bitcoind_s(case: str, bitcoind: Bitcoind, node: Node) -> None:
     """This node answers `case` with `bitcoind`'s status, fields and body."""
     theirs = _answer(

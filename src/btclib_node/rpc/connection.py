@@ -11,7 +11,7 @@ a chunked body Core's HTTP server cannot read with 400 or 413
 (`_HeadReader`, `_ChunkedReader`), answers `manager.interrupted` with
 503 once `RpcManager.interrupt` has set it (issue #1515), refuses a
 method or a path Core refuses before it checks a credential
-(`_refusal`), answers a request whose `Authorization` header
+(`_dispatch_refusal`), answers a request whose `Authorization` header
 `rpc.auth.RpcAuth` does not accept with 401, and decodes the body of one
 it does accept, which `rpc.manager.RpcManager.messages` queues for
 `rpc.main.handle_rpc`. `RawJSON` is a JSON number written back out
@@ -291,40 +291,46 @@ def _request_line(line: bytes) -> tuple[bytes, bytes, tuple[int, int]]:
     return method, target, (1, int(match[1]))
 
 
-def _refusal(method: bytes, target: bytes) -> tuple[str, str, tuple[str, ...]] | None:
-    """Return Core's refusal of `method` at `target`: status, body, fields.
+def _dispatch_refusal(method: bytes, target: bytes) -> str | None:
+    """Return the status Core's dispatcher refuses `method` at `target` with.
 
-    Core answers these before `HTTPReq_JSONRPC` reads `Authorization`,
-    so a caller without a credential gets them too
-    (`MaybeDispatchRequestToWorker`, `src/httpserver.cpp`, and
-    `HTTPReq_JSONRPC` and `StartHTTPRPC`, `src/httprpc.cpp`, at
-    bitcoin/bitcoin@f0de87f040, the v32.1 tag):
+    `MaybeDispatchRequestToWorker` (`src/httpserver.cpp`, with
+    `StartHTTPRPC` in `src/httprpc.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag) answers these on its socket thread, with no body and
+    `_NO_STORE`, before any worker reads `Authorization`:
 
-    - a method outside `_CORE_METHODS` is 405 with no body, on any path;
+    - a method outside `_CORE_METHODS` is 405, on any path;
     - a target other than exactly `/` or one starting `/wallet/` matches
-      no handler `StartHTTPRPC` registers, and is 404 with no body;
-    - `GET`, `HEAD` and `PUT` there are 405, "JSONRPC server handles only
-      POST requests".
+      no handler `StartHTTPRPC` registers, and is 404.
 
-    The first two carry `_NO_STORE`. `/wallet/` is registered where
-    `HasWalletSupport()` holds, as it does in the `bitcoind` release
-    binary, which answers there. The only other handlers are
-    `StartREST`'s, registered only under `-rest`, off by default
-    (`DEFAULT_REST_ENABLE`, `src/init.cpp`); this node has no REST
-    interface, so `/rest/` is 404 here as in Core at its default. The
-    target is compared as the raw request-target, the way Core compares
-    `GetURI()`: a query string or an absolute URI matches neither
-    handler.
-
-    A `HEAD` is answered with its body, as Core answers it.
+    `/wallet/` is registered where `HasWalletSupport()` holds, as it
+    does in the `bitcoind` release binary, which answers there. The only
+    other handlers are `StartREST`'s, registered only under `-rest`, off
+    by default (`DEFAULT_REST_ENABLE`, `src/init.cpp`); this node has no
+    REST interface, so `/rest/` is 404 here as in Core at its default.
+    The target is compared as the raw request-target, the way Core
+    compares `GetURI()`: a query string or an absolute URI matches
+    neither handler.
     """
     if method not in _CORE_METHODS:
-        return _METHOD_NOT_ALLOWED, "", (_NO_STORE,)
+        return _METHOD_NOT_ALLOWED
     if target != b"/" and not target.startswith(b"/wallet/"):
-        return _NOT_FOUND, "", (_NO_STORE,)
-    if method != b"POST":
-        return _METHOD_NOT_ALLOWED, "JSONRPC server handles only POST requests", ()
+        return _NOT_FOUND
     return None
+
+
+def _framing_status(
+    error: MalformedRequestHeadError | OversizedRequestBodyError,
+) -> str:
+    """Return the status Core answers a request it cannot read with.
+
+    `HTTPRemoteClient::TryReadRequest` (`src/httpserver.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): 413 for a body past
+    `MAX_BODY_BYTES`, 400 for the rest.
+    """
+    if isinstance(error, OversizedRequestBodyError):
+        return _CONTENT_TOO_LARGE
+    return _BAD_REQUEST
 
 
 _CR = ord("\r")
@@ -724,6 +730,12 @@ class RpcConnection:
         # whether to close the socket or read another request off it
         # (issue #640).
         self.keep_alive = False
+        # Set by `_frame` with `keep_alive`: whether the request answered
+        # closes the connection itself, by its version or its
+        # `Connection` field, rather than by `_frame`'s `close`. `_write`
+        # reads it to decide whether Core would read one more request
+        # off the buffer (btclib-org/btclib-node#2101).
+        self._request_closes = False
         # A `-rpcwhitelist` refusal's own reply, kept for the reason
         # `_parse_error_reply` below is
         self._whitelist_reply: asyncio.Task[None] | None = None
@@ -741,7 +753,7 @@ class RpcConnection:
         # A 401's own reply, kept for the reason `_parse_error_reply`
         # above is
         self._unauthorized_reply: asyncio.Task[None] | None = None
-        # A `_refusal`'s own reply, kept for the same reason
+        # A `_send_refusal`'s own reply, kept for the same reason
         self._refusal_reply: asyncio.Task[None] | None = None
         # A warmup answer, kept for the same reason
         self._warmup_reply: asyncio.Task[None] | None = None
@@ -845,9 +857,10 @@ class RpcConnection:
         `_refused_early` ahead of everything below it, or by
         `_send_shutdown_refusal` where it is set only once
         `_refused_early` has let the request through (issue #1515); a
-        method or a target `_refusal` refuses is answered by
-        `_send_refusal`, whatever the credential; a request whose
-        `Authorization` header `manager.auth` does not accept is
+        method or a target `_dispatch_refusal` refuses, or a method other
+        than `POST`, is answered by `_send_refusal`, whatever the
+        credential; a request whose `Authorization` header
+        `manager.auth` does not accept is
         answered 401 by `_send_unauthorized`, its body read off the
         socket and never decoded; and one whose decoded body
         `manager.auth.refusal` refuses is answered by
@@ -1035,10 +1048,13 @@ class RpcConnection:
         `manager.interrupted` is a 503: `InterruptHTTPServer`
         (`src/httpserver.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
         tag) swaps `MaybeDispatchRequestToWorker` -- the dispatcher the
-        checks below model, `_refusal`'s own docstring naming which --
-        out for `RejectRequest`, which answers every request that reaches
-        it `503` with no body, whatever its method. Then a method or a
-        target `_refusal` refuses is answered as it says. A source
+        checks below model, `_dispatch_refusal`'s own docstring naming
+        which -- out for `RejectRequest`, which answers every request
+        that reaches it `503` with no body, whatever its method. Then a
+        method or a target `_dispatch_refusal` refuses is answered as it
+        says, and a `GET`, `HEAD` or `PUT` is answered 405 "JSONRPC
+        server handles only POST requests", as a worker running
+        `HTTPReq_JSONRPC` answers it, with its body. A source
         `-rpcallowip` does not name never reaches this:
         `RpcManager._accept_loop` closes it. Answers whether a reply was
         scheduled.
@@ -1051,13 +1067,20 @@ class RpcConnection:
                 self._send_refusal(_SERVICE_UNAVAILABLE)
             )
             return True
-        refusal = _refusal(head.method, head.target)
-        if refusal is None:
+        status = _dispatch_refusal(head.method, head.target)
+        if status is not None:
+            reply = self._send_refusal(status)
+        elif head.method != b"POST":
+            # `HTTPReq_JSONRPC`'s own refusal, written by a worker
+            reply = self._send_refusal(
+                _METHOD_NOT_ALLOWED,
+                "JSONRPC server handles only POST requests",
+                (),
+                on_worker=True,
+            )
+        else:
             return False
-        status, refusal_body, fields = refusal
-        self._refusal_reply = self._start_reply(
-            self._send_refusal(status, refusal_body, fields)
-        )
+        self._refusal_reply = self._start_reply(reply)
         return True
 
     def _frame(
@@ -1083,9 +1106,10 @@ class RpcConnection:
         ASCII one.
 
         Sets `self.keep_alive`, `False` where `close` asks for it with no
-        field written. The `Date` field Core adds from HTTP/1.1 on, and
-        the `Content-Type` it adds where `fields` has none, are not
-        written.
+        field written, and `self._request_closes` where the request
+        itself is not kept open. The `Date` field Core adds from
+        HTTP/1.1 on, and the `Content-Type` it adds where `fields` has
+        none, are not written.
         """
         head = self.head
         if head is None:
@@ -1102,6 +1126,7 @@ class RpcConnection:
         if connection == "close":
             lines.append("Connection: close")
             keep_alive = False
+        self._request_closes = not keep_alive
         self.keep_alive = keep_alive and not close
         text = f"HTTP/{major}.{minor} {status}\r\n"
         text += "".join(f"{line}\r\n" for line in lines)
@@ -1120,7 +1145,9 @@ class RpcConnection:
         `client` once the reply is written, whatever the request asked.
         """
         if reply.body is None:
-            await self._write(self._frame(reply.status, b"", close=close))
+            await self._write(
+                self._frame(reply.status, b"", close=close), on_worker=True
+            )
             return
         # A fresh token per call, not a fixed word: RawJSON's own
         # docstring has why -- a legitimate string value containing a
@@ -1138,7 +1165,9 @@ class RpcConnection:
         output_str = re.sub(f'"{mark}(.*?){mark}"', r"\1", output_str)
         body = (output_str + "\n").encode()
         fields = ("Content-Type: application/json",)
-        await self._write(self._frame(reply.status, body, fields, close=close))
+        await self._write(
+            self._frame(reply.status, body, fields, close=close), on_worker=True
+        )
 
     def _send_framing_error(
         self, error: MalformedRequestHeadError | OversizedRequestBodyError
@@ -1149,10 +1178,9 @@ class RpcConnection:
         `MAX_BODY_BYTES` and 400 for the rest, with no body, and the
         connection closed after it.
         """
-        status = _BAD_REQUEST
-        if isinstance(error, OversizedRequestBodyError):
-            status = _CONTENT_TOO_LARGE
-        self._refusal_reply = self._start_reply(self._send_refusal(status, close=True))
+        self._refusal_reply = self._start_reply(
+            self._send_refusal(_framing_status(error), close=True)
+        )
 
     def _shutting_down(self) -> bool:
         """Whether `Node.terminate_flag` is set, after which a reply closes.
@@ -1170,7 +1198,7 @@ class RpcConnection:
     async def _send_whitelist_refusal(self, refusal: Refusal) -> None:
         """Answer `refusal`, a request `-rpcwhitelist` refuses.
 
-        Measured against a real `bitcoind` v31.1.0: a 403 has no body,
+        Measured against a real `bitcoind` v32.1.0: a 403 has no body,
         and a request Core refuses before its whitelist check is its
         JSON-RPC error object on one line, as `application/json`, framed
         as `_frame` frames it. The `Content-Type` Core adds to a 403 is
@@ -1183,13 +1211,14 @@ class RpcConnection:
             text = json.dumps(refusal.body, separators=(",", ":"), ensure_ascii=False)
             body = (text + "\n").encode()
         await self._write(
-            self._frame(refusal.status, body, fields, close=self._shutting_down())
+            self._frame(refusal.status, body, fields, close=self._shutting_down()),
+            on_worker=True,
         )
 
     async def _send_unauthorized(self, delay: float) -> None:
         """Answer 401 with Core's `WWW-Authenticate`, `delay` seconds from now.
 
-        Measured against a real `bitcoind` v31.1.0: `401 Unauthorized`,
+        Measured against a real `bitcoind` v32.1.0: `401 Unauthorized`,
         `WWW-Authenticate: Basic realm="jsonrpc"` and no body, after 0.25
         seconds for a wrong credential and at once for none, framed as
         `_frame` frames it. Core's reply also carries a `Content-Type`,
@@ -1198,7 +1227,8 @@ class RpcConnection:
         await asyncio.sleep(delay)
         fields = (f"WWW-Authenticate: {WWW_AUTHENTICATE}",)
         await self._write(
-            self._frame("401 Unauthorized", b"", fields, close=self._shutting_down())
+            self._frame("401 Unauthorized", b"", fields, close=self._shutting_down()),
+            on_worker=True,
         )
 
     async def _send_refusal(
@@ -1208,12 +1238,14 @@ class RpcConnection:
         fields: tuple[str, ...] = (_NO_STORE,),
         *,
         close: bool = False,
+        on_worker: bool = False,
     ) -> None:
         """Answer `status` with `body` and `fields`, as `_frame` frames them.
 
         `fields` is `WriteNoStoreErrorReply`'s `_NO_STORE` unless given.
         `close` closes `client` after it, as it does once
-        `_shutting_down`.
+        `_shutting_down`. `on_worker` is for an answer Core writes on a
+        worker rather than on its socket thread, as `_write` says.
         """
         await self._write(
             self._frame(
@@ -1221,7 +1253,8 @@ class RpcConnection:
                 body.encode(),
                 fields,
                 close=close or self._shutting_down(),
-            )
+            ),
+            on_worker=on_worker,
         )
 
     async def _send_queue_refusal(self) -> None:
@@ -1255,18 +1288,12 @@ class RpcConnection:
             _SERVICE_UNAVAILABLE, "Request rejected during server shutdown", close=True
         )
 
-    async def _write(self, http_response: bytes) -> None:
+    async def _write(self, http_response: bytes, *, on_worker: bool = False) -> None:
         """Write one reply, then read the next request or close.
 
-        `self.keep_alive` decides which, as `_frame` set it.
-
-        Core departs from this once a reply its worker wrote closes the
-        connection: its socket thread still reads one request more off
-        what it has buffered, and answers it where that thread answers
-        it itself, a 400 or a 404 among them
-        (`HTTPRemoteClient::TryReadRequest`, `src/httpserver.cpp`, at
-        bitcoin/bitcoin@f0de87f040, the v32.1 tag). This closes at once
-        (btclib-org/btclib-node#2101).
+        `self.keep_alive` decides which, as `_frame` set it. Where an
+        answer `on_worker` closes because its own request asks for it,
+        `_answer_past_a_close` answers first what Core reads past it.
         """
         # A reply can run after its socket is gone: the client hung up,
         # or the socket was closed while this task was still queued.
@@ -1294,7 +1321,11 @@ class RpcConnection:
             # racy alternative (an eager pop there, compensated by a
             # re-insertion here) is argued against (issue #688).
             await self.run()
-        else:
+            return
+        try:
+            if on_worker and self._request_closes:
+                await self._answer_past_a_close()
+        finally:
             self.client.close()
             # The only place besides `run`'s own `except Exception` above
             # and `RpcManager.stop`'s shutdown sweep that removes this id
@@ -1305,6 +1336,71 @@ class RpcConnection:
             # socket-closing sweep in the meantime (issue #640 review
             # round 2).
             self.manager.forget_connection(self.id)
+
+    async def _answer_past_a_close(self) -> None:
+        """Answer one buffered request as Core's socket thread answers it.
+
+        A worker's reply that closes the connection sets
+        `m_disconnect` once it is sent, but Core's socket thread still
+        runs `HTTPRemoteClient::TryReadRequest` once on what the client
+        sent before it disconnects (`HTTPServer::SocketHandlerConnected`
+        and `HTTPServer::DisconnectClients`, `src/httpserver.cpp`, at
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag). Read from what
+        `self.buffer` already holds, with no further read, a request
+        that thread answers itself is answered, as `_socket_thread_answer`
+        says. One it would hand to a worker is not: measured against
+        `bitcoind` v32.1.0 in 10 runs of 10, its worker never answered a
+        `getblockcount` there, and answered a `GET /`, the quickest
+        answer a worker writes, in 2 runs of 10 (btclib-org/btclib-node#2101).
+        """
+        answer = self._socket_thread_answer()
+        if answer is not None:
+            with contextlib.suppress(OSError):
+                await self.loop.sock_sendall(self.client, answer)
+
+    def _socket_thread_answer(self) -> bytes | None:
+        """Frame Core's socket-thread answer to the request `self.buffer` holds.
+
+        `None` where it holds no whole request, or one Core's dispatcher
+        hands to a worker. The rest, in Core's order: a request Core
+        cannot read is 400 or 413; `manager.interrupted` is 503
+        (`RejectRequest`); a method or a target `_dispatch_refusal`
+        refuses is answered as it says; a full queue is 503 "Work queue
+        depth exceeded". Each carries `_NO_STORE`.
+        """
+        head = _HeadReader(self.buffer).read()
+        if head is None:
+            return None
+        self.head = head
+        error = head.error
+        if error is None and head.chunked:
+            try:
+                if not _ChunkedReader(self.buffer, head).read():
+                    return None
+            except (MalformedRequestHeadError, OversizedRequestBodyError) as e:
+                error = e
+        elif error is None and len(self.buffer) < head.length:
+            return None
+        body = b""
+        if error is not None:
+            status = _framing_status(error)
+        elif self.manager.interrupted.is_set():
+            self.manager.logger.log_debug(
+                "http", "Rejecting request while shutting down"
+            )
+            status = _SERVICE_UNAVAILABLE
+        elif (refusal := _dispatch_refusal(head.method, head.target)) is not None:
+            status = refusal
+        else:
+            with self.manager.queue_lock:
+                if len(self.manager.messages) < RPC_WORK_QUEUE:
+                    return None
+            self.manager.logger.warning(
+                "Request rejected because http work queue depth exceeded"
+            )
+            status = _SERVICE_UNAVAILABLE
+            body = b"Work queue depth exceeded"
+        return self._frame(status, body, (_NO_STORE,))
 
     def _start_reply(
         self, reply: Coroutine[Any, Any, None], delay: float = 0.0

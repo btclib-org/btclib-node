@@ -1224,7 +1224,7 @@ def test_an_interrupt_past_the_early_checks_is_refused_as_submit_refuses(
 ) -> None:
     """ISS 1515: interrupted after `_refused_early` let a request through.
 
-    `_refusal`, the last check `_refused_early` makes of a `POST`,
+    `_dispatch_refusal`, the last check `_refused_early` makes of a `POST`,
     interrupts the manager itself, so the request is past the 503
     `RejectRequest` stands for and not yet queued. Core's
     `ThreadPool::Submit` refuses it there, reading `m_interrupt` under
@@ -1234,15 +1234,15 @@ def test_an_interrupt_past_the_early_checks_is_refused_as_submit_refuses(
     """
 
     def interrupting(manager: SimpleNamespace) -> None:
-        refusal = connection_module._refusal
+        refusal = connection_module._dispatch_refusal
 
-        def interrupt_then_refuse(
-            method: bytes, target: bytes
-        ) -> tuple[str, str, tuple[str, ...]] | None:
+        def interrupt_then_refuse(method: bytes, target: bytes) -> str | None:
             interrupt(manager)
             return refusal(method, target)
 
-        monkeypatch.setattr(connection_module, "_refusal", interrupt_then_refuse)
+        monkeypatch.setattr(
+            connection_module, "_dispatch_refusal", interrupt_then_refuse
+        )
 
     reply, _, closed, messages, warnings = refused(with_length(), prepare=interrupting)
     body = b"Request rejected during server shutdown"
@@ -1364,7 +1364,7 @@ def test_a_method_or_a_path_core_refuses_is_refused_before_the_credential(
     Each row is what a real `bitcoind` v32.1.0 answers, with no
     `Authorization` as with a good one, and it keeps an HTTP/1.1
     connection open afterwards; a method it does not name is refused on
-    any path, the order `_refusal`'s own docstring cites. `body` is
+    any path, the order `_dispatch_refusal`'s own docstring cites. `body` is
     `None` for a refusal `WriteNoStoreErrorReply` writes.
     """
     for auth in (b"", RPCAUTH_LINE):
@@ -1678,15 +1678,19 @@ THEN_CLOSE_ANSWER = (
 )
 
 
-def conversation(data: bytes) -> tuple[bytes, bool]:
+def conversation(
+    data: bytes, prepare: Callable[[SimpleNamespace], None] | None = None
+) -> tuple[bytes, bool]:
     """Write `data` to a connection and return what it answers, to the close.
 
     A request `run` queues is answered `ANSWER`, as `handle_rpc` would
-    answer it. Returns everything written back, and whether the
-    connection closed. Where a request is to be kept open, `data` ends
-    in `THEN_CLOSE`, whose answer is what says it was kept: the
-    connection is left nothing unread where it closes, so a TCP
-    `socketpair`, which Windows emulates one with, closes it cleanly.
+    answer it, closing where `send` would; `prepare` is handed the
+    manager before that answer is written. Returns everything written
+    back, and whether the connection closed. Where a request is to be
+    kept open, `data` ends in `THEN_CLOSE`, whose answer is what says
+    it was kept: the connection is left nothing unread where it closes,
+    so a TCP `socketpair`, which Windows emulates one with, closes it
+    cleanly.
     `data` is written as `run` reads it, so that more of it than a
     socket buffer holds is not waited on before `run` starts.
     """
@@ -1701,7 +1705,11 @@ def conversation(data: bytes) -> tuple[bytes, bool]:
         sender = asyncio.ensure_future(loop.sock_sendall(theirs, data))
         await conn.run()
         if manager.messages:
-            await conn.async_send(HttpReply(OK, ANSWER))
+            if prepare is not None:
+                prepare(manager)
+            await conn.async_send(
+                HttpReply(OK, ANSWER), close=manager.node.terminate_flag.is_set()
+            )
         await sender
         reply = b""
         async with asyncio.timeout(5):
@@ -1790,6 +1798,161 @@ def test_an_answer_is_written_in_its_request_s_version(
     asked `keep-alive`, and the connection closed unless it did. A
     `Connection` value is read with its white space trimmed. Each row is
     what `bitcoind` v32.1.0 answers.
+    """
+    reply, closed = conversation(data)
+    assert reply == expected
+    assert closed
+
+
+CLOSING = good(b"HTTP/1.1", b"Connection: close\r\n")
+CLOSING_ANSWER = framed(
+    b"HTTP/1.1 200 OK", b"Content-Length: {length}", b"Connection: close"
+)
+TO_X = b"POST /x HTTP/1.1\r\n\r\n"
+X_ANSWER = no_store(b"404 Not Found")
+
+
+def queue_full(manager: SimpleNamespace) -> None:
+    """Fill `manager.messages` up to `RPC_WORK_QUEUE`."""
+    manager.messages.extend([(None, 0)] * RPC_WORK_QUEUE)
+
+
+@pytest.mark.parametrize(
+    ("data", "expected", "prepare"),
+    [
+        (CLOSING + TO_X, CLOSING_ANSWER + X_ANSWER, None),
+        (CLOSING + TO_X + TO_X, CLOSING_ANSWER + X_ANSWER, None),
+        (
+            CLOSING + b"POST /x HTTP/1.1\r\nConnection: close\r\n\r\n",
+            CLOSING_ANSWER + no_store(b"404 Not Found", b"Connection: close"),
+            None,
+        ),
+        (
+            CLOSING + b"POST /x HTTP/1.0\r\n\r\n",
+            CLOSING_ANSWER + no_store(b"404 Not Found", version=b"HTTP/1.0"),
+            None,
+        ),
+        (
+            CLOSING + b"FOO / HTTP/1.1\r\n\r\n",
+            CLOSING_ANSWER + no_store(b"405 Method Not Allowed"),
+            None,
+        ),
+        (
+            CLOSING + b"garbage\r\n\r\n",
+            CLOSING_ANSWER + no_store(b"400 Bad Request"),
+            None,
+        ),
+        (
+            CLOSING + b"POST / HTTP/1.1\r\nContent-Length: 99999999999\r\n\r\n",
+            CLOSING_ANSWER + no_store(b"413 Content too large"),
+            None,
+        ),
+        (
+            CLOSING + b"POST /x HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n",
+            CLOSING_ANSWER + no_store(b"400 Bad Request"),
+            None,
+        ),
+        (CLOSING + with_length(), CLOSING_ANSWER, None),
+        (CLOSING + b"GET / HTTP/1.1\r\n\r\n", CLOSING_ANSWER, None),
+        (CLOSING + b"POST /x HTTP/1.1\r\n", CLOSING_ANSWER, None),
+        (
+            CLOSING + b"POST /x HTTP/1.1\r\nContent-Length: 5\r\n\r\nab",
+            CLOSING_ANSWER,
+            None,
+        ),
+        (
+            CLOSING + b"POST /x HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nab",
+            CLOSING_ANSWER,
+            None,
+        ),
+        (
+            CLOSING + TO_X,
+            CLOSING_ANSWER + no_store(b"503 Service Unavailable"),
+            interrupt,
+        ),
+        (
+            CLOSING + with_length(),
+            CLOSING_ANSWER
+            + b"HTTP/1.1 503 Service Unavailable\r\nCache-Control: no-store\r\n"
+            b"Content-Length: 25\r\n\r\nWork queue depth exceeded",
+            queue_full,
+        ),
+        (
+            good(b"HTTP/1.0") + TO_X,
+            framed(b"HTTP/1.0 200 OK") + X_ANSWER,
+            None,
+        ),
+        (
+            good(b"HTTP/1.1") + TO_X,
+            framed(b"HTTP/1.1 200 OK", b"Content-Length: {length}"),
+            shutting_down,
+        ),
+    ],
+    ids=[
+        "404",
+        "only-one",
+        "404-close",
+        "404-1.0",
+        "405-unknown",
+        "400",
+        "413",
+        "400-chunk-size",
+        "worker",
+        "worker-get",
+        "head-not-whole",
+        "body-not-whole",
+        "chunks-not-whole",
+        "interrupted-503",
+        "queue-full-503",
+        "1.0-closes",
+        "shutdown-close-reads-none",
+    ],
+)
+def test_one_request_past_a_worker_s_close_is_answered_as_core_does(
+    data: bytes,
+    expected: bytes,
+    prepare: Callable[[SimpleNamespace], None] | None,
+) -> None:
+    """Past a worker's reply that closes, Core reads one buffered request.
+
+    It answers it where its socket thread does, and not where a worker
+    would: each row is what `bitcoind` v32.1.0 answered in 10 runs of
+    10, `worker-get` in 8 (btclib-org/btclib-node#2101). A close forced
+    by shutdown reads none: Core does not close there.
+    """
+    reply, closed = conversation(data, prepare)
+    assert reply == expected
+    assert closed
+
+
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        (
+            request(b"Connection: close\r\n", b"", auth=b"") + TO_X,
+            UNAUTHORIZED.removesuffix(b"\r\n")
+            + b"Connection: close\r\n\r\n"
+            + X_ANSWER,
+        ),
+        (
+            request(b"", b"", method=b"GET", version=b"HTTP/1.0") + TO_X,
+            b"HTTP/1.0 405 Method Not Allowed\r\n\r\n" + ONLY_POST + X_ANSWER,
+        ),
+        (
+            request(b"Connection: close\r\n", b"", target=b"/x") + TO_X,
+            no_store(b"404 Not Found", b"Connection: close"),
+        ),
+    ],
+    ids=["401", "jsonrpc-405", "dispatcher-404-reads-none"],
+)
+def test_a_refusal_a_worker_writes_is_read_past_as_an_answer_is(
+    data: bytes, expected: bytes
+) -> None:
+    """A 401, or `HTTPReq_JSONRPC`'s 405, is a worker's reply, read past.
+
+    The dispatcher's own 404 is written on Core's socket thread, which
+    reads nothing more once it closes. Each row is what `bitcoind`
+    v32.1.0 answered (btclib-org/btclib-node#2101).
     """
     reply, closed = conversation(data)
     assert reply == expected
