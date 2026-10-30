@@ -965,6 +965,37 @@ def test_help_names_the_buffer_options() -> None:
     ) in message
 
 
+@pytest.mark.parametrize(
+    ("argv", "conf", "percent"),
+    [
+        ([], "", 50),
+        (["-inboundrelaypercent=30"], "", 30),
+        ([], "inboundrelaypercent=0\n", 0),
+        (["-inboundrelaypercent=101"], "", 100),
+        (["-inboundrelaypercent=-1"], "", 0),
+        # `std::clamp<int>` narrows the `int64_t` before it clamps
+        ([f"-inboundrelaypercent={2**32 + 40}"], "", 40),
+    ],
+    ids=["Core's default", "command line", "file", "over", "under", "narrowed"],
+)
+def test_build_config_reads_the_relay_share_as_core_clamps_it(
+    tmp_path: Path, argv: list[str], conf: str, percent: int
+) -> None:
+    """ISS 1769: `-inboundrelaypercent`, clamped to 0 to 100 as in v32.1."""
+    assert _build(tmp_path, *argv, conf=conf).inbound_relay_percent == percent
+
+
+def test_help_names_the_relay_share() -> None:
+    """ISS 1769: in v32.1's words, among the connection options."""
+    message = " ".join(cli._help_message(show_debug=False).split())
+    assert (
+        "-inboundrelaypercent=<n> Permit a maximum percent of inbound "
+        "connections to relay transactions, to limit memory utilization "
+        "(0 to 100, default: 50)."
+    ) in message
+    assert "connections to peers (default: 200)" in message
+
+
 def test_help_names_bantime() -> None:
     """ISS 1219: in Core's words, among the connection options."""
     assert (

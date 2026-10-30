@@ -21,20 +21,21 @@ Each option is registered with the flags `SetupServerArgs`
 (`src/init.cpp`, same sha), `SetupChainParamsBaseOptions`
 (`src/chainparamsbase.cpp`) and `AddLoggingArgs` (`src/init/common.cpp`)
 give it, and each is read the way Core's own code reads it --
-`build_config` below names the reader at each one. `-maxconnections`'s
-default is v31.1's rather than v32.1's, `config.py`'s comment on
-`DEFAULT_MAX_PEER_CONNECTIONS` saying why.
+`build_config` below names the reader at each one. An option v32.1
+added, `-inboundrelaypercent` and `-rpcmaxconnections` among them, is
+registered in `src/init.cpp` at bitcoin/bitcoin@f0de87f040 -- v32.1, the
+release `integration-bitcoind.yml` pins, rather than at that sha.
 `-server` is `Config.allow_rpc`, on unless negated or set false, as
 `bitcoind` soft-sets it on (`src/bitcoind.cpp`). An RPC or P2P listener
 that cannot start stops the node, `main` below exiting `1`, as Core's
-init aborts. `-minrelaytxfee`, `-incrementalrelayfee` and `-dustrelayfee`
-are BTC/kvB, as Core's, and `Config`'s `min_relay_feerate`,
-`incremental_relay_feerate` and `dust_relay_feerate` the same rates in
-sat/kvB. Two `Config` fields
-have no option here: `log_path` (this command always takes
-`Config`'s own default -- a file under the data directory -- an operator
-who wants console output can read it from there), and `allow_p2p` (the
-P2P listener is always requested; `-listen=0` is what keeps it from
+init aborts. `-minrelaytxfee`, `-incrementalrelayfee` and
+`-dustrelayfee` are BTC/kvB, as Core's, and `Config`'s
+`min_relay_feerate`, `incremental_relay_feerate` and
+`dust_relay_feerate` the same rates in sat/kvB. Two `Config` fields have
+no option here: `log_path` (this command always takes `Config`'s own
+default -- a file under the data directory -- an operator who wants
+console output can read it from there), and `allow_p2p` (the P2P
+listener is always requested; `-listen=0` is what keeps it from
 accepting connections).
 
 `-debug=<category>` takes Core's logging category names
@@ -208,6 +209,7 @@ from btclib_node.block_db import blocks_directory
 from btclib_node.chains import Main, SigNet, TestNet, TestNet4
 from btclib_node.config import (
     DEFAULT_DUST_RELAY_FEERATE,
+    DEFAULT_FULL_RELAY_INBOUND_PCT,
     DEFAULT_INCREMENTAL_RELAY_FEERATE,
     DEFAULT_MAX_DATACARRIER_BYTES,
     DEFAULT_MAX_HTTP_CONNECTIONS,
@@ -609,6 +611,13 @@ _OPTIONS: dict[str, _Option] = {
         "Print help message with debugging options and exit",
         _DEBUG_TEST_TITLE,
     ),
+    "inboundrelaypercent": _Option(
+        "=<n>",
+        "Permit a maximum percent of inbound connections to relay transactions, "
+        "to limit memory utilization (0 to 100, default: "
+        f"{DEFAULT_FULL_RELAY_INBOUND_PCT}).",
+        _CONNECTION_TITLE,
+    ),
     "includeconf": _Option(
         "=<file>",
         "Specify additional configuration file, relative to the -datadir path "
@@ -654,7 +663,8 @@ _OPTIONS: dict[str, _Option] = {
         "=<n>",
         "Maintain at most <n> automatic connections to peers (default: "
         f"{DEFAULT_MAX_PEER_CONNECTIONS}); does not limit a peer dialled through "
-        "-connect or -addnode",
+        "-connect or -addnode. See -inboundrelaypercent for more information "
+        "about limits applied to transaction relay inbound peers.",
         _CONNECTION_TITLE,
     ),
     "maxreceivebuffer": _Option(
@@ -2711,6 +2721,15 @@ def _after_lock(before: _BeforeLock) -> Config:
     rpcservertimeout = (
         int(REQUEST_TIMEOUT) if rpcservertimeout is None else _to_int(rpcservertimeout)
     )
+    # `-inboundrelaypercent` as `AppInitMain` reads it
+    # (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040 -- v32.1, the release
+    # `integration-bitcoind.yml` pins): `std::clamp<int>` narrows the
+    # `int64_t` to an `int` first, as `_to_int` does, then clamps it to 0
+    # to 100.
+    inbound_relay_percent = _get_int(settings, "inboundrelaypercent")
+    if inbound_relay_percent is None:
+        inbound_relay_percent = DEFAULT_FULL_RELAY_INBOUND_PCT
+    inbound_relay_percent = min(max(_to_int(inbound_relay_percent), 0), 100)
 
     return Config(
         chain=before.chain_name,
@@ -2745,6 +2764,7 @@ def _after_lock(before: _BeforeLock) -> Config:
         v2transport=v2transport,
         v1transport=v1transport,
         max_connections=before.max_connections,
+        inbound_relay_percent=inbound_relay_percent,
         dnsseed=dnsseed,
         forcednsseed=bool(_get_bool(settings, "forcednsseed")),
         fixed_seeds=fixedseeds,

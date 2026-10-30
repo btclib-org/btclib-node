@@ -43,15 +43,19 @@ here are the ones [ARCHITECTURE](./ARCHITECTURE.md) describes.
   drains, as in Core, and one that stops reading is dropped by the ping
   timeout; the comment beside `Connection.send_buffer_max_size`
   (`src/btclib_node/p2p/connection.py`) argues what the two leave it
-  able to cost, closed as btclib-org/btclib-node#1805. Past `Config.max_connections`'s
-  inbound share, `P2pManager.server` evicts an inbound peer by Core's
-  own rules and closes the new one, before building anything for it,
-  only where every peer held is protected. A peer from a host this node
-  has discouraged is closed where it would take the last inbound slot or
+  able to cost, closed as btclib-org/btclib-node#1805. Past
+  `Config.max_connections`'s inbound share, `P2pManager.server` evicts
+  an inbound peer by Core's own rules and closes the new one, before
+  building anything for it, only where every peer held is protected.
+  Past the share `-inboundrelaypercent` gives transaction-relaying
+  inbound peers, the `version` of one more evicts one of them by the
+  same rules, the new peer protected, and closes the new one where none
+  can go (btclib-org/btclib-node#1769). A peer from a host this node has
+  discouraged is closed where it would take the last inbound slot or
   none is left, unless `-whitelist` grants it `noban`, and is otherwise
   preferred for eviction, as in Core (`src/btclib_node/p2p/manager.py`,
-  `src/btclib_node/p2p/eviction.py`),
-  closed as btclib-org/btclib-node#1054, btclib-org/btclib-node#1064 and
+  `src/btclib_node/p2p/eviction.py`), closed as
+  btclib-org/btclib-node#1054, btclib-org/btclib-node#1064 and
   btclib-org/btclib-node#1078.
 - **Inbound connections do not stop this node dialling.** The outbound
   dial target counts only the connections `P2pManager` dialled off its
