@@ -32,6 +32,65 @@ why it does not stay there once the bullet has it, and that section's
 *Nothing already written is rewritten* is why an entry already landed
 keeps whichever shape it was written in.
 
+## v2026.10.30
+
+### A block failing its signet solution leaves no header
+
+`submitblock` and a peer's block index no header for it, as in Core.
+`passes_check_block`, `is_block_failed` and `is_cached_invalid` take the chain,
+to ask the solution as Core's `CheckBlock` does (closes #2079).
+
+### `submitblock` answers `high-hash` before `CheckBlock`'s body rules
+
+A block whose header misses its proof of work is answered `high-hash`, as Core's
+`CheckBlockHeader` answers it ahead of the body (issue #2079).
+
+### A `ping` with octets past its nonce is answered
+
+The node reads the nonce off the first eight octets, as Core's `PING` does
+(closes #2086).
+
+### 3fff::/20 is an invalid address
+
+RFC 9637's documentation range is refused as Core v32.1's `CNetAddr::IsValid`
+refuses it (closes #1756).
+
+### A traceback in the log is escaped and indented
+
+Each line of a traceback or a stack starts with two spaces, its control
+characters escaped as a message's are (closes #2092).
+
+### `STANDARD_FLAGS` leaves out btclib's `MINIMALIF_ALL`
+
+The comment above the set says why, and the set is unchanged (closes #2141).
+
+### The integration tests run against bitcoind 32.1
+
+`integration-bitcoind.yml` pins v32.1, and each case where this node still
+answers as v31.1 is a strict xfail citing its issue (closes #2094).
+
+### The RPC surface is diffed against Core 32.1's OpenRPC document
+
+`scripts/openrpc/divergences.txt` is `scripts/openrpc/diff_openrpc.py`'s
+report, and `tests/openrpc_test.py` fails where it is out of date
+(closes #1759).
+
+### What a sync costs keeps only script validation
+
+`docs/source/running_a_node.md` drops the figures measured on the sqlite3 store
+(closes #2047).
+
+### The shared documents and the hook comments
+
+`REVIEWING.md` takes btclib-org/.github's sentence (issue
+btclib-org/.github#1919), and `.pre-commit-config.yaml` says what the one
+shebang hook checks (closes #2083).
+
+### The version is the release's date
+
+`pyproject.toml` declares `2026.10.30` in place of the `2026.11` placeholder
+(#2137).
+
 ## v2026.10.29
 
 ### The floors are btclib 2026.10.28 and ecc 2026.10.28
