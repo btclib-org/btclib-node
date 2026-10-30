@@ -36,10 +36,9 @@ keeps whichever shape it was written in.
 
 ### A block failing its signet solution leaves no header
 
-`passes_check_block` asks the signet solution, as Core's `CheckBlock` does, so
-`submitblock` and a peer's block index no header for a block failing it.
-`passes_check_block`, `is_block_failed` and `is_cached_invalid` take the chain
-(closes #2079).
+`submitblock` and a peer's block index no header for it, as in Core.
+`passes_check_block`, `is_block_failed` and `is_cached_invalid` take the chain,
+to ask the solution as Core's `CheckBlock` does (closes #2079).
 
 ### `submitblock` answers `high-hash` before `CheckBlock`'s body rules
 
