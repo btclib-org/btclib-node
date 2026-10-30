@@ -59,13 +59,14 @@ __all__ = ["dump_tx_out_set"]
 _STEP = 1024
 
 # `CChainParams::GetAvailableSnapshotHeights`, the heights of
-# `m_assumeutxo_data` (`src/kernel/chainparams.cpp`, at
-# bitcoin/bitcoin@9be056a8a7), keyed by this tree's chain names
+# `m_assumeutxo_data` (`src/kernel/chainparams.cpp`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag), keyed by this tree's
+# chain names
 _SNAPSHOT_HEIGHTS = {
-    "mainnet": (840_000, 880_000, 910_000, 935_000),
-    "testnet": (2_500_000, 4_840_000),
-    "testnet4": (90_000, 120_000),
-    "signet": (160_000, 290_000),
+    "mainnet": (840_000, 880_000, 910_000, 935_000, 965_000),
+    "testnet": (2_500_000, 4_840_000, 5_125_000),
+    "testnet4": (90_000, 120_000, 150_000),
+    "signet": (160_000, 290_000, 320_000),
     "regtest": (110, 200, 299),
 }
 
