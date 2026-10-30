@@ -292,7 +292,7 @@ def _request_line(line: bytes) -> tuple[bytes, bytes, tuple[int, int]]:
 
 
 def _refusal(method: bytes, target: bytes) -> tuple[str, str, tuple[str, ...]] | None:
-    """Return the status, body and fields Core refuses `method` at `target` for.
+    """Return Core's refusal of `method` at `target`: status, body, fields.
 
     Core answers these before `HTTPReq_JSONRPC` reads `Authorization`,
     so a caller without a credential gets them too
@@ -1259,6 +1259,14 @@ class RpcConnection:
         """Write one reply, then read the next request or close.
 
         `self.keep_alive` decides which, as `_frame` set it.
+
+        Core departs from this once a reply its worker wrote closes the
+        connection: its socket thread still reads one request more off
+        what it has buffered, and answers it where that thread answers
+        it itself, a 400 or a 404 among them
+        (`HTTPRemoteClient::TryReadRequest`, `src/httpserver.cpp`, at
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag). This closes at once
+        (btclib-org/btclib-node#2101).
         """
         # A reply can run after its socket is gone: the client hung up,
         # or the socket was closed while this task was still queued.

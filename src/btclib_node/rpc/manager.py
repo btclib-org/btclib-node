@@ -1051,17 +1051,16 @@ class RpcManager(threading.Thread):
         # `evhttp_free` coming only after it, so a request arriving on a
         # kept-alive connection idle until then reaches
         # `http_reject_request_cb`, set by `InterruptHTTPServer`, and is
-        # answered 503 with libevent's `Connection: close`; here the
-        # connection's read is still running, and `_refused_early`
-        # answers it the same, `interrupted` being set. `g_requests`
-        # counts no idle connection, and `replies` holds none either, so
-        # an idle read never holds the wait.
+        # answered 503; here the connection's read is still running, and
+        # `_refused_early` answers it the same, `interrupted` being set.
+        # `g_requests` counts no idle connection, and `replies` holds none
+        # either, so an idle read never holds the wait.
         #
-        # What differs is the 503 itself, and libevent's own error pages:
-        # Core does not register them, and its loop writes them while it
-        # runs, until `evhttp_free`. Here they are in `replies`, this loop
-        # running only while this method drives it, so the wait lasts
-        # until they are written, within the same bound.
+        # What differs is the 503 itself, and the answers to requests
+        # Core cannot read: Core does not register them, and its loop
+        # writes them while it runs, until `evhttp_free`. Here they are in
+        # `replies`, this loop running only while this method drives it,
+        # so the wait lasts until they are written, within the same bound.
         self._finish_replies()
         # Every task left -- a reply `_finish_replies` gave up on, and the
         # read of every connection -- cancelled as its own pass before

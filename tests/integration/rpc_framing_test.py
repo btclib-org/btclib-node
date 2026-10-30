@@ -6,19 +6,19 @@
 
 Each request is written over a raw socket to both, with each side's own
 cookie, and the two answers are held to the same status line, the same
-body and the same close: the request lines and `Content-Length` values
-libevent refuses (btclib-org/btclib-node#1086), the legacy and 2.0
-envelopes `HTTPReq_JSONRPC` answers with (btclib-org/btclib-node#1109),
-the request-targets libevent refuses or proxies and a `CONNECT`
+fields and body, and the same close: the request lines and
+`Content-Length` values Core refuses (btclib-org/btclib-node#1086), the
+legacy and 2.0 envelopes `HTTPReq_JSONRPC` answers with
+(btclib-org/btclib-node#1109), the request-targets and a `CONNECT`
 (btclib-org/btclib-node#1125), the version an answer is written in
 (btclib-org/btclib-node#1127), lines ended by a bare line feed
 (btclib-org/btclib-node#1150), an object naming a key twice
 (btclib-org/btclib-node#1151), the header fields, the header section's
-size and the chunked bodies libevent reads or refuses
-(btclib-org/btclib-node#1126), and named parameters
-(btclib-org/btclib-node#1168). Each exchange ends in a request asking
-for `Connection: close` or one libevent closes after, so each answer
-ends at the close.
+size and the chunked bodies Core reads or refuses
+(btclib-org/btclib-node#1126, btclib-org/btclib-node#1972), and named
+parameters (btclib-org/btclib-node#1168). Each exchange ends in a
+request asking for `Connection: close` or one Core closes after, so each
+answer ends at the close.
 """
 
 import base64
@@ -144,16 +144,20 @@ for _name, _call in _NAMED.items():
 # ending in a request that closes, where the one before it is kept open
 _THEN_CLOSE = b"POST /x HTTP/1.1\r\nConnection: close\r\n\r\n"
 _RAW = {
-    "target-colon-first": b"POST 1:x HTTP/1.1\r\n{AUTH}\r\n\r\n",
-    "target-port-past-65535": b"POST http://h:99999/ HTTP/1.1\r\n\r\n",
+    "target-colon-first": b"POST 1:x HTTP/1.1\r\n{AUTH}\r\n\r\n" + _THEN_CLOSE,
+    "target-port-past-65535": (b"POST http://h:99999/ HTTP/1.1\r\n\r\n" + _THEN_CLOSE),
     "target-bad-userinfo": b"POST http://a b@h/ HTTP/1.1\r\n\r\n",
-    "target-bad-ipv6": b"POST http://[zz]/ HTTP/1.1\r\n\r\n",
-    "target-ipv6-five-digit-group": b"POST http://[00000::1]/ HTTP/1.1\r\n\r\n",
-    "target-ipv6-scope": b"POST http://[::1%25lo0]/ HTTP/1.1\r\n\r\n",
-    "target-ipv6": b"POST http://[::1]:1/ HTTP/1.1\r\n\r\n",
-    "absolute-form": b"POST http://127.0.0.1:1/ HTTP/1.1\r\n{AUTH}\r\n\r\n",
+    "target-bad-ipv6": b"POST http://[zz]/ HTTP/1.1\r\n\r\n" + _THEN_CLOSE,
+    "target-ipv6-five-digit-group": (
+        b"POST http://[00000::1]/ HTTP/1.1\r\n\r\n" + _THEN_CLOSE
+    ),
+    "target-ipv6-scope": b"POST http://[::1%25lo0]/ HTTP/1.1\r\n\r\n" + _THEN_CLOSE,
+    "target-ipv6": b"POST http://[::1]:1/ HTTP/1.1\r\n\r\n" + _THEN_CLOSE,
+    "absolute-form": (
+        b"POST http://127.0.0.1:1/ HTTP/1.1\r\n{AUTH}\r\n\r\n" + _THEN_CLOSE
+    ),
     "absolute-form-proxy-keep-alive": (
-        b"POST HTTP://h/ HTTP/1.1\r\nProxy-Connection: keep-alive\r\n\r\n"
+        b"POST HTTP://h/ HTTP/1.1\r\nProxy-Connection: keep-alive\r\n\r\n" + _THEN_CLOSE
     ),
     "absolute-form-length-abc": b"POST https://h/ HTTP/1.1\r\nContent-Length: abc\r\n\r\n",
     "absolute-form-length-abc-proxy-keep-alive": (
@@ -207,8 +211,8 @@ _RAW = {
 }
 
 
-# issue #1126: header fields as `evhttp_parse_headers_` reads them, the
-# section's size as it counts it, and a chunked body
+# issue #1126: header fields, the section's size as `HTTPHeaders::Read`
+# counts it (issue #1972), and a chunked body
 _POST = b"POST / HTTP/1.1\r\n{AUTH}\r\n"
 _CLOSE = b"Connection: close\r\n"
 _LENGTH = b"Content-Length: 33\r\n"
@@ -217,8 +221,14 @@ _CHUNKED = b"21\r\n" + _GOOD + b"\r\n0\r\n\r\n"
 
 
 def _pad(size: int, eol: bytes = b"\r\n") -> bytes:
-    """Return a field line of `size` octets, `eol` apart."""
-    return b"X: " + b"a" * (size - 3) + eol
+    """Return a field line of `size` octets, its ending `eol` included."""
+    return b"X: " + b"a" * (size - 3 - len(eol)) + eol
+
+
+def _short_lines(size: int) -> bytes:
+    """Return field lines of four octets each, `size` octets in all."""
+    count, rest = divmod(size, len(b"X:\r\n"))
+    return b"X:\r\n" * (count - 1) + b"X" * (1 + rest) + b":\r\n"
 
 
 def _fields(fields: bytes) -> bytes:
@@ -231,9 +241,11 @@ def _chunked(fields: bytes, body: bytes) -> bytes:
     return _POST + fields + _CLOSE + _TE + b"\r\n" + body
 
 
-# the octets of `_POST` and `_CLOSE` and `_LENGTH`, their endings apart,
-# the credential's line as long for either side's cookie
-_HEAD = len(b"POST / HTTP/1.1") + 121 + len(_CLOSE + _LENGTH) - 4
+# the octets `HTTPHeaders::Read` counts of `_fields`' own lines, the
+# credential's line as long for either side's cookie and the empty line
+# included, and of `_chunked`'s
+_HEAD = len(b"\r\n") + 121 + len(_CLOSE + _LENGTH + b"\r\n")
+_CHUNKED_HEAD = _HEAD - len(_LENGTH) + len(_TE)
 _RAW |= {
     "101-fields": _fields(b"X: y\r\n" * 101),
     "cr-in-value": _fields(b"X: close\rY: y\r\n"),
@@ -272,10 +284,11 @@ _RAW |= {
     "size-8192": _fields(_pad(8192 - _HEAD)),
     "size-8193": _fields(_pad(8193 - _HEAD)),
     "size-8192-lf": _fields(_pad(8192 - _HEAD, b"\n")),
-    "size-8192-many-lines": _fields(b"X:\r\n" * ((8192 - _HEAD) // 2) + b":\r\n"),
-    "size-8193-many-lines": _fields(b"X:\r\n" * ((8193 - _HEAD) // 2)),
-    "unended-8193": b"POST / HTTP/1.1\r\n" + _pad(8193 - 15, b""),
+    "size-8192-many-lines": _fields(_short_lines(8192 - _HEAD)),
+    "size-8193-many-lines": _fields(_short_lines(8193 - _HEAD)),
+    "unended-8193": b"POST / HTTP/1.1\r\n" + _pad(8193, b""),
     "request-line-8192": b"POST /" + b"a" * (8192 - 15) + b" HTTP/1.0\r\n\r\n",
+    "request-line-8192-lf": b"POST /" + b"a" * (8192 - 15) + b" HTTP/1.0\n\n",
     "request-line-8193": b"POST /" + b"a" * (8193 - 15) + b" HTTP/1.0\r\n\r\n",
     "connect-bad-field": b"CONNECT h:1 HTTP/1.1\r\nbad\r\n" + _THEN_CLOSE,
     "connect-bad-field-then-more": (
@@ -299,10 +312,12 @@ _RAW |= {
     "chunked-any-case": (
         _POST + _CLOSE + b"Transfer-Encoding: ChUnKeD\r\n\r\n" + _CHUNKED
     ),
-    "chunked-tab-led-encoding": _fields(b"Transfer-Encoding:\tchunked\r\n"),
+    "chunked-tab-led-encoding": (
+        _POST + _CLOSE + b"Transfer-Encoding:\tchunked\r\n\r\n" + _CHUNKED
+    ),
     "chunked-http-1.0": b"POST / HTTP/1.0\r\n{AUTH}\r\n" + _TE + b"\r\n" + _CHUNKED,
     "chunked-kept": _POST + _TE + b"\r\n" + _CHUNKED + _THEN_CLOSE,
-    "chunked-semicolon": _chunked(b"", b"21;a=b\r\n"),
+    "chunked-semicolon": _chunked(b"", b"21;a=b\r\n" + _GOOD + b"\r\n0\r\n\r\n"),
     "chunked-not-hex": _chunked(b"", b"zz\r\n"),
     "chunked-negative": _chunked(b"", b"-1\r\n"),
     "chunked-0x-alone": _chunked(b"", b"0x\r\n"),
@@ -324,10 +339,10 @@ _RAW |= {
     "trailer-nul-ends": _chunked(b"", _CHUNKED[:-2] + b"\0junk\r\n"),
     "trailer-no-colon": _chunked(b"", _CHUNKED[:-2] + b"bad\r\n"),
     "trailer-8192": _chunked(
-        _pad(8180 - _HEAD + len(_LENGTH) - len(_TE)), _CHUNKED[:-2] + _pad(12) + b"\r\n"
+        _pad(8178 - _CHUNKED_HEAD), _CHUNKED[:-2] + _pad(12) + b"\r\n"
     ),
     "trailer-8193": _chunked(
-        _pad(8180 - _HEAD + len(_LENGTH) - len(_TE)), _CHUNKED[:-2] + _pad(13) + b"\r\n"
+        _pad(8178 - _CHUNKED_HEAD), _CHUNKED[:-2] + _pad(13) + b"\r\n"
     ),
     "trailer-proxy-keep-alive-refused": (
         b"POST http://x/ HTTP/1.1\r\n"
@@ -359,10 +374,10 @@ def _request(case: str, credential: bytes) -> bytes:
 def _answer(port: int, data: bytes) -> list[tuple[bytes, list[bytes], bytes]]:
     """Return each answer's status line, framing fields and body, to the close.
 
-    `Date` and `Content-Type` are left out: libevent writes them and this
-    node does not, as `RpcConnection._send_refusal` says. An answer ends
-    where the next status line starts, since an answer libevent writes
-    with no `Content-Length` says nothing else about where it ends.
+    `Date` and `Content-Type` are left out: Core writes them and this
+    node does not, as `RpcConnection._frame` says. An answer ends where
+    the next status line starts, since an answer written with no
+    `Content-Length` says nothing else about where it ends.
     """
     with socket.create_connection(("127.0.0.1", port), timeout=10) as client:
         client.sendall(data)
@@ -402,104 +417,19 @@ def node(tmp_path: Path) -> Iterator[Node]:
         node.join()
 
 
-# The cases Core's own HTTP server answers otherwise (`httpserver.cpp`, at
-# bitcoin/bitcoin@f0de87f040 -- v32.1, the release `integration-bitcoind.yml`
-# pins), where this node frames as libevent does
+# The cases where Core reads one request more after an answer that closes,
+# as `RpcConnection._write` says, and this node closes at once
 # (btclib-org/btclib-node#2101).
-_FRAMED_AS_LIBEVENT = frozenset(
-    {
-        "absolute-form",
-        "absolute-form-length-abc",
-        "absolute-form-length-abc-proxy-keep-alive",
-        "absolute-form-proxy-keep-alive",
-        "chunked-0x",
-        "chunked-0x-alone",
-        "chunked-empty-lines",
-        "chunked-kept",
-        "chunked-negative",
-        "chunked-no-line-end",
-        "chunked-not-hex",
-        "chunked-nul-after-size",
-        "chunked-nul-led-size",
-        "chunked-past-max",
-        "chunked-semicolon",
-        "chunked-space-ends",
-        "chunked-tab-led-encoding",
-        "connect",
-        "connect-1.0",
-        "connect-bad-field",
-        "connect-bad-field-then-more",
-        "connect-chunked-not-hex",
-        "connect-close",
-        "connect-cr-in-value",
-        "connect-length-abc",
-        "connect-port-past-65535",
-        "continuation-close-kept",
-        "continuation-first",
-        "continuation-length",
-        "continuation-length-twice",
-        "cr-ending-value",
-        "cr-in-key",
-        "cr-in-value",
-        "cr-space-in-value",
-        "empty-key",
-        "http-0.9",
-        "http-1.-1",
-        "http-1.0-404",
-        "http-1.0-501",
-        "http-1.0-keep-alive",
-        "http-1.0-length-abc",
-        "http-1.0-tab-keep-alive",
-        "http-1.5-length-abc",
-        "http-2.0",
-        "length-abc",
-        "length-negative",
-        "length-past-max",
-        "length-twice",
-        "no-authority-kept",
-        "no-colon",
-        "no-version",
-        "nul-in-key",
-        "nul-in-value",
-        "nul-line-ends-head",
-        "other-scheme-kept",
-        "request-line-8192",
-        "request-line-8193",
-        "size-8192-many-lines",
-        "size-8193",
-        "size-8193-many-lines",
-        "space-in-key",
-        "spaces-then-tab-close-kept",
-        "tab-before-colon",
-        "tab-close-kept",
-        "target-bad-ipv6",
-        "target-bad-userinfo",
-        "target-colon-first",
-        "target-ipv6",
-        "target-ipv6-five-digit-group",
-        "target-ipv6-scope",
-        "target-port-past-65535",
-        "trailer-8193",
-        "trailer-close",
-        "trailer-close-refused",
-        "trailer-continuation",
-        "trailer-credential",
-        "trailer-no-colon",
-        "trailer-nul-ends",
-        "trailer-proxy-keep-alive-refused",
-        "unended-8193",
-        "version-foo",
-    }
-)
-_AS_LIBEVENT = pytest.mark.xfail(
-    reason="v32.1 diverges: framed as libevent (btclib-org/btclib-node#2101)"
+_READ_PAST_A_CLOSE = frozenset({"spaces-then-tab-close-kept", "tab-close-kept"})
+_PAST_A_CLOSE = pytest.mark.xfail(
+    reason="v32.1 diverges: a request read past a close (btclib-org/btclib-node#2101)"
 )
 
 
 @pytest.mark.parametrize(
     "case",
     [
-        pytest.param(case, marks=_AS_LIBEVENT) if case in _FRAMED_AS_LIBEVENT else case
+        pytest.param(case, marks=_PAST_A_CLOSE) if case in _READ_PAST_A_CLOSE else case
         for case in [*_CASES, *_RAW]
     ],
 )

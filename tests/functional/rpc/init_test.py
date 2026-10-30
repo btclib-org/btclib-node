@@ -233,12 +233,11 @@ def test_a_request_sent_after_the_interrupt_gets_service_unavailable(
 ) -> None:
     """ISS 1515: a request arriving once the drain has begun is refused 503.
 
-    Core's `InterruptHTTPServer` swaps in `http_reject_request_cb` --
-    which answers every request `503 Service Unavailable`
-    (`evhttp_send_error(req, HTTP_SERVUNAVAIL, nullptr)`) -- and
+    Core's `InterruptHTTPServer` swaps in `RejectRequest` -- which
+    answers every request `503 Service Unavailable` with no body -- and
     `Interrupt()`s its `ThreadPool` before `Shutdown`'s own
     `StopHTTPServer` runs the pool's own drain (`src/httpserver.cpp`,
-    `src/util/threadpool.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    `src/util/threadpool.h`, at bitcoin/bitcoin@f0de87f040, the v32.1
     tag). `Node._drain_rpc_queue` calls `rpc_manager.interrupt()`
     first and only then drains `messages`, so a request arriving while
     that drain is still running -- one already queued still being
@@ -331,7 +330,7 @@ def test_a_request_sent_after_the_interrupt_gets_service_unavailable(
         stop_thread.join(15)
 
         assert status == 503
-        assert b"Service Unavailable" in body
+        assert body == b""
 
         assert queued_status == [200]
         assert queued_body[0]["result"] == 0

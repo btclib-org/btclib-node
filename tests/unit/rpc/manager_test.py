@@ -650,6 +650,15 @@ def test_a_body_that_is_not_json_answers_parse_error_and_forgets_the_client(
         manager.join(timeout=10)
 
 
+def read_a_head(sock: socket.socket) -> bytes:
+    """Read `sock` to the end of a header section, ten seconds a read."""
+    sock.settimeout(10)
+    data = b""
+    while b"\r\n\r\n" not in data:
+        data += sock.recv(1 << 16)
+    return data
+
+
 def read_to_the_end(sock: socket.socket) -> bytes:
     """Read `sock` until the other end closes, within ten seconds a read."""
     sock.settimeout(10)
@@ -711,16 +720,16 @@ def test_stop_answers_a_request_on_an_idle_connection_while_it_waits(
 ) -> None:
     """A request arriving on an idle connection during `stop`'s wait: 503.
 
-    Core's event loop runs through `StopHTTPServer`'s
-    `g_requests.WaitUntilEmpty()`, so a request on a kept-alive
-    connection idle until then reaches `http_reject_request_cb`, which
-    `InterruptHTTPServer` set, and is answered 503 with `Connection:
-    close` (`src/httpserver.cpp`, at bitcoin/bitcoin@9be056a8a7, the
-    v31.1 tag). One connection idles in `run`; another's reply is held
-    on the manager's loop, so `stop` is still waiting when the request
-    is sent, and released once the 503 is read. Nobody counts the idle
-    connection, so `stop` returns long before `request_timeout`
-    (btclib-org/btclib-node#1545).
+    Core's socket thread runs while `StopHTTPServer` waits for its
+    workers, so a request on a kept-alive connection idle until then
+    reaches `RejectRequest`, which `InterruptHTTPServer` set, and is
+    answered 503 with no body; the connection is closed only once
+    `StopHTTPServer` disconnects every client (`src/httpserver.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). One connection idles in
+    `run`; another's reply is held on the manager's loop, so `stop` is
+    still waiting when the request is sent, and released once the 503
+    is read. Nobody counts the idle connection, so `stop` returns long
+    before `request_timeout` (btclib-org/btclib-node#1545).
     """
     manager = a_manager(get_random_port())
     manager.start()
@@ -764,7 +773,7 @@ def test_stop_answers_a_request_on_an_idle_connection_while_it_waits(
             + b"Content-Length: %d\r\n\r\n" % len(body)
             + body
         )
-        reply = read_to_the_end(idle_peer)
+        reply = read_a_head(idle_peer)
         release()
         answered = read_to_the_end(busy_peer)
         stopping.join(10)
@@ -775,9 +784,13 @@ def test_stop_answers_a_request_on_an_idle_connection_while_it_waits(
         busy_peer.close()
         stopping.join(60)
     assert stopped
-    head = reply.partition(b"\r\n\r\n")[0].split(b"\r\n")
-    assert head[0] == b"HTTP/1.1 503 Service Unavailable"
-    assert b"Connection: close" in head
+    head, _, body = reply.partition(b"\r\n\r\n")
+    assert head.split(b"\r\n") == [
+        b"HTTP/1.1 503 Service Unavailable",
+        b"Cache-Control: no-store",
+        b"Content-Length: 0",
+    ]
+    assert not body
     assert answered.startswith(b"HTTP/1.1 200 OK\r\n")
 
 
@@ -1237,8 +1250,8 @@ def test_stop_finishes_a_reply_written_once_shutdown_began(
     `StopHTTPServer` waits for every reply it tracks to be sent before
     it frees the event base (`src/httpserver.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The request asked for
-    keep-alive, and the reply still carries the `Connection: close`
-    Core's `HTTPRequest::WriteReply` adds once shutdown has begun.
+    keep-alive, and the connection still closes after the reply, with no
+    `Connection: close` (`RpcConnection._shutting_down`).
     """
     manager = a_manager(get_random_port())
     manager.start()
@@ -1264,7 +1277,7 @@ def test_stop_finishes_a_reply_written_once_shutdown_began(
         theirs.close()
     assert not stopping.is_alive()
     head, _, body = reply.partition(b"\r\n\r\n")
-    assert b"Connection: close" in head.split(b"\r\n")
+    assert b"Connection: close" not in head.split(b"\r\n")
     assert json.loads(body)["result"] == result
 
 
