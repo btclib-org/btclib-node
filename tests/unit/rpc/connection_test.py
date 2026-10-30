@@ -1823,6 +1823,13 @@ def queue_full(manager: SimpleNamespace) -> None:
         (CLOSING + TO_X, CLOSING_ANSWER + X_ANSWER, None),
         (CLOSING + TO_X + TO_X, CLOSING_ANSWER + X_ANSWER, None),
         (
+            CLOSING
+            + b"POST /x HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n"
+            + b"2\r\nab\r\n0\r\n\r\n",
+            CLOSING_ANSWER + X_ANSWER,
+            None,
+        ),
+        (
             CLOSING + b"POST /x HTTP/1.1\r\nConnection: close\r\n\r\n",
             CLOSING_ANSWER + no_store(b"404 Not Found", b"Connection: close"),
             None,
@@ -1891,6 +1898,7 @@ def queue_full(manager: SimpleNamespace) -> None:
     ids=[
         "404",
         "only-one",
+        "404-chunked",
         "404-close",
         "404-1.0",
         "405-unknown",
