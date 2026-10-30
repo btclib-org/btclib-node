@@ -2987,13 +2987,15 @@ def get_orphan_txs(
 ) -> list[str] | list[dict[str, Any]]:
     """Answer `getorphantxs`: the orphanage, in Core's three verbosities.
 
-    Core's hidden RPC (`src/rpc/mempool.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag): the txids at verbosity 0, an object each with its
-    `txid`, `wtxid`, `bytes`, `vsize`, `weight` and the ids of the peers it
-    is `from` at 1, and the `hex` too at 2, in the order of the wtxids as
-    Core holds them. Any other number is `RPC_INVALID_PARAMETER`, and a bool
-    is refused (`_parse_verbosity`). `vsize` is `GetVirtualTransactionSize`
-    without sigops, as `getrawmempool`'s is not.
+    Core's hidden RPC (`OrphanToJSON`, `src/rpc/mempool.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): the txids at verbosity 0,
+    an object each with its `txid`, `wtxid`, `bytes`, `vsize`,
+    `vsize_bip141`, `weight` and the ids of the peers it is `from` at 1,
+    and the `hex` too at 2, in the order of the wtxids as Core holds them.
+    Any other number is `RPC_INVALID_PARAMETER`, and a bool is refused
+    (`_parse_verbosity`). `vsize` and `vsize_bip141` are both
+    `GetVirtualTransactionSize` without sigops, as `getrawmempool`'s
+    `vsize` is not.
     """
     verbosity = _parse_verbosity(params, 0, default=0, allow_bool=False)
     orphans = node.download_manager.orphanage.get_orphan_transactions()
@@ -3010,6 +3012,7 @@ def get_orphan_txs(
             "wtxid": tx.hash.hex(),
             "bytes": tx.size,
             "vsize": tx.vsize,
+            "vsize_bip141": tx.vsize,
             "weight": tx.weight,
             "from": announcers,
         }
@@ -3505,11 +3508,14 @@ def _raw_transaction_json(
 
     Core's key order is `in_active_chain` first, then `TxToUniv`'s keys,
     then the block's (`src/rpc/rawtransaction.cpp`, at
-    bitcoin/bitcoin@9be056a8a7). Verbosity 2 adds `fee` and each input's
-    `prevout` from the block's undo data; a coinbase has none, and for
-    any other transaction in a block Core answers a patch it cannot read
-    as an error, not as no `fee`. A block off the active chain is 0
-    confirmations and names no time.
+    bitcoin/bitcoin@9be056a8a7). A mempool transaction has no block and
+    opens with `vsize_adjusted` instead, its sigop-adjusted size, as Core
+    answers one looked up with no block hash (same file, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). Verbosity 2 adds `fee`
+    and each input's `prevout` from the block's undo data; a coinbase has
+    none, and for any other transaction in a block Core answers a patch it
+    cannot read as an error, not as no `fee`. A block off the active chain
+    is 0 confirmations and names no time.
     """
     tx, block_height, block, position = found
     out: dict[str, Any] = {}
@@ -3521,6 +3527,8 @@ def _raw_transaction_json(
             and active_chain[block_height] == block.header.hash
         )
         out["in_active_chain"] = on_active_chain
+    else:
+        out["vsize_adjusted"] = node.mempool.vsizes[tx.hash]
     undo: list[Coin] | None = None
     if verbosity >= 2 and block is not None and not tx.is_coinbase:  # noqa: PLR2004
         block_undo = _block_undo(node, block.header.hash, block)

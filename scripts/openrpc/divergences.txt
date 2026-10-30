@@ -140,9 +140,5 @@ getmempoolinfo .fullrbf: in help.py, not in Core
 getnetworkinfo .asmap_version: in Core, not in help.py
 getnetworkinfo .inv_buckets: in Core, not in help.py
 getnetworkinfo .tx_send_rate: in Core, not in help.py
-getorphantxs [].vsize_bip141: in Core, not in help.py
 getpeerinfo [].startingheight: in help.py, not in Core
 getrawmempool .*.bip125-replaceable: in help.py, not in Core
-getrawtransaction .vsize_adjusted: in Core, not in help.py
-submitpackage .tx-results.*.vsize_adjusted: in Core, not in help.py
-submitpackage .tx-results.*.vsize_bip141: in Core, not in help.py

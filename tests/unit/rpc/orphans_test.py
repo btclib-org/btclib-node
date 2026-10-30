@@ -53,6 +53,7 @@ def test_verbosity_1_answers_an_object_each_and_2_adds_the_hex() -> None:
         "wtxid": tx.hash.hex(),
         "bytes": tx.size,
         "vsize": tx.vsize,
+        "vsize_bip141": tx.vsize,
         "weight": tx.weight,
         "from": [2, 4],
     }

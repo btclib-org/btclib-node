@@ -794,15 +794,16 @@ _HELP_GETORPHANTXS = (
     "]\n"
     "\n"
     "Result (for verbose = 1):\n"
-    "[                       (json array)\n"
-    "  {                     (json object)\n"
-    '    "txid" : "hex",     (string) The transaction hash in hex\n'
-    '    "wtxid" : "hex",    (string) The transaction witness hash in hex\n'
-    '    "bytes" : n,        (numeric) The serialized transaction size in bytes\n'
-    '    "vsize" : n,        (numeric) The virtual transaction size as defined in BIP 141. This is different from actual serialized size for witness transactions as witness data is discounted.\n'
-    '    "weight" : n,       (numeric) The transaction weight as defined in BIP 141.\n'
-    '    "from" : [          (json array)\n'
-    "      n,                (numeric) Peer ID\n"
+    "[                          (json array)\n"
+    "  {                        (json object)\n"
+    '    "txid" : "hex",        (string) The transaction hash in hex\n'
+    '    "wtxid" : "hex",       (string) The transaction witness hash in hex\n'
+    '    "bytes" : n,           (numeric) The serialized transaction size in bytes\n'
+    '    "vsize" : n,           (numeric) (DEPRECATED) use vsize_bip141 instead. The virtual transaction size as defined in BIP 141. This is different from actual serialized size for witness transactions as witness data is discounted.\n'
+    '    "vsize_bip141" : n,    (numeric) The virtual transaction size as defined in BIP 141. This is different from actual serialized size for witness transactions as witness data is discounted.\n'
+    '    "weight" : n,          (numeric) The transaction weight as defined in BIP 141.\n'
+    '    "from" : [             (json array)\n'
+    "      n,                   (numeric) Peer ID\n"
     "      ...\n"
     "    ]\n"
     "  },\n"
@@ -810,18 +811,19 @@ _HELP_GETORPHANTXS = (
     "]\n"
     "\n"
     "Result (for verbose = 2):\n"
-    "[                       (json array)\n"
-    "  {                     (json object)\n"
-    '    "txid" : "hex",     (string) The transaction hash in hex\n'
-    '    "wtxid" : "hex",    (string) The transaction witness hash in hex\n'
-    '    "bytes" : n,        (numeric) The serialized transaction size in bytes\n'
-    '    "vsize" : n,        (numeric) The virtual transaction size as defined in BIP 141. This is different from actual serialized size for witness transactions as witness data is discounted.\n'
-    '    "weight" : n,       (numeric) The transaction weight as defined in BIP 141.\n'
-    '    "from" : [          (json array)\n'
-    "      n,                (numeric) Peer ID\n"
+    "[                          (json array)\n"
+    "  {                        (json object)\n"
+    '    "txid" : "hex",        (string) The transaction hash in hex\n'
+    '    "wtxid" : "hex",       (string) The transaction witness hash in hex\n'
+    '    "bytes" : n,           (numeric) The serialized transaction size in bytes\n'
+    '    "vsize" : n,           (numeric) (DEPRECATED) use vsize_bip141 instead. The virtual transaction size as defined in BIP 141. This is different from actual serialized size for witness transactions as witness data is discounted.\n'
+    '    "vsize_bip141" : n,    (numeric) The virtual transaction size as defined in BIP 141. This is different from actual serialized size for witness transactions as witness data is discounted.\n'
+    '    "weight" : n,          (numeric) The transaction weight as defined in BIP 141.\n'
+    '    "from" : [             (json array)\n'
+    "      n,                   (numeric) Peer ID\n"
     "      ...\n"
     "    ],\n"
-    '    "hex" : "hex"       (string) The serialized, hex-encoded transaction data\n'
+    '    "hex" : "hex"          (string) The serialized, hex-encoded transaction data\n'
     "  },\n"
     "  ...\n"
     "]\n"
@@ -829,7 +831,6 @@ _HELP_GETORPHANTXS = (
     "Examples:\n"
     "> bitcoin-cli getorphantxs 2\n"
     '> curl --user myusername --data-binary \'{"jsonrpc": "2.0", "id": "curltest", "method": "getorphantxs", "params": [2]}\' -H \'content-type: application/json\' http://127.0.0.1:8332/\n'
-    "\n"
 )
 
 _HELP_GETTXOUT = (
@@ -1923,6 +1924,7 @@ _HELP_GETRAWTRANSACTION = (
     "{                                    (json object)\n"
     '  "in_active_chain" : true|false,    (boolean, optional) Whether specified block is in the active chain or not (only present with explicit "blockhash" argument)\n'
     '  "blockhash" : "hex",               (string, optional) the block hash\n'
+    '  "vsize_adjusted" : n,              (numeric, optional) Sigop-adjusted virtual size in bytes, present for mempool transactions.\n'
     '  "confirmations" : n,               (numeric, optional) The confirmations\n'
     '  "blocktime" : xxx,                 (numeric, optional) The block time expressed in UNIX epoch time\n'
     '  "time" : n,                        (numeric, optional) Same as "blocktime"\n'
@@ -1973,7 +1975,7 @@ _HELP_GETRAWTRANSACTION = (
     '  "fee" : n,                         (numeric, optional) transaction fee in BTC, omitted if block undo data is not available\n'
     '  "vin" : [                          (json array)\n'
     "    {                                (json object) utxo being spent\n"
-    "      ...,                           Same output as verbosity = 1\n"
+    "      ...,                           Same vin fields as verbosity = 1\n"
     '      "prevout" : {                  (json object, optional) The previous output, omitted if block undo data is not available\n'
     '        "generated" : true|false,    (boolean) Coinbase or not\n'
     '        "height" : n,                (numeric) The height of the prevout\n'
@@ -2079,7 +2081,10 @@ _HELP_SUBMITPACKAGE = (
     '    "wtxid" : {                     (json object) transaction wtxid\n'
     '      "txid" : "hex",               (string) The transaction hash in hex\n'
     '      "other-wtxid" : "hex",        (string, optional) The wtxid of a different transaction with the same txid but different witness found in the mempool. This means the submitted transaction was ignored.\n'
-    '      "vsize" : n,                  (numeric, optional) Sigops-adjusted virtual transaction size.\n'
+    '      "vsize_adjusted" : n,         (numeric, optional) Maximum of sigop-adjusted size (-bytespersigop) and virtual transaction size as defined in BIP 141.\n'
+    '      "vsize" : n,                  (numeric, optional) (DEPRECATED) Was previously erroneously described as the BIP 141 vsize, but is actually sigops-adjusted vsize.\n'
+    "                                    Use vsize_bip141 to actually get that behavior or switch to the explicit vsize_adjusted for retained behavior.\n"
+    '      "vsize_bip141" : n,           (numeric, optional) Virtual transaction size as defined in BIP 141.\n'
     '      "fees" : {                    (json object, optional) Transaction fees\n'
     '        "base" : n,                 (numeric) transaction fee in BTC\n'
     '        "effective-feerate" : n,    (numeric, optional) if the transaction was not already in the mempool, the effective feerate in BTC per KvB. For example, the package feerate and/or feerate with modified fees from prioritisetransaction.\n'
