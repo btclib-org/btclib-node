@@ -146,8 +146,8 @@ what is read is this machine's own interface table, never a peer's.
 - Whoever can reach the RPC port: a request's credential is checked
   before its body is decoded, and a caller without an accepted one gets
   a closed connection for a request the listener does not read whole;
-  for one it does, a 501, a 405 or a 404 for a method or a path it
-  refuses, as from `bitcoind`, and otherwise a 401.
+  for one it does, a 405 or a 404 for a method or a path it refuses, as
+  from `bitcoind`, and otherwise a 401.
 - A party on the path of a p2p connection, reading or rewriting its
   traffic.
 - A party tampering with the medium the datadir sits on, or opening the
