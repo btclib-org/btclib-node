@@ -1118,66 +1118,6 @@ def test_entry_of_a_root_and_leaf_has_no_depends_or_spentby() -> None:
     assert entry.spent_by == []
 
 
-def _a_signaling_transaction(prevouthash: bytes | None = None) -> Tx:
-    """Build a transaction whose own input signals BIP125 opt-in replacement.
-
-    `mempool_module._MAX_BIP125_RBF_SEQUENCE` (Core's own
-    `MAX_BIP125_RBF_SEQUENCE`) is the bound `SignalsOptInRBF` reads; any
-    sequence under it opts in, `0` here.
-    """
-    prevouthash = prevouthash or secrets.token_bytes(32)
-    return Tx(
-        version=1,
-        lock_time=0,
-        vin=[
-            TxIn(
-                prev_out=OutPoint(prevouthash, 0),
-                script_sig=script.serialize([secrets.token_bytes(32)]),
-                sequence=0,
-            )
-        ],
-        vout=[
-            TxOut(
-                value=50 * 10**8,
-                script_pub_key=script.serialize([secrets.token_bytes(32)]),
-            )
-        ],
-    )
-
-
-def test_entry_is_bip125_replaceable_when_its_own_sequence_signals() -> None:
-    """A transaction signaling in its own right is replaceable."""
-    mempool = Mempool(Logger(debug=True))
-    tx = _a_signaling_transaction()
-    mempool.add_tx(tx, 0)
-    assert mempool.entry(tx.hash).bip125_replaceable is True
-
-
-def test_entry_is_bip125_replaceable_when_an_ancestor_signals() -> None:
-    """A final child of a signaling, unconfirmed parent is replaceable too.
-
-    Core's own `IsRBFOptIn`: the parent is free to be replaced, and a
-    replacement conflicts with everything that spends it.
-    """
-    mempool = Mempool(Logger(debug=True))
-    parent = _a_signaling_transaction()
-    child = generate_random_transaction(parent.id)
-    assert child.vin[0].sequence == 0xFFFFFFFF
-    mempool.add_tx(parent, 0)
-    mempool.add_tx(child, 0)
-    assert mempool.entry(child.hash).bip125_replaceable is True
-
-
-def test_entry_is_not_bip125_replaceable_when_nothing_signals() -> None:
-    """`bip125_replaceable` is `False` where nothing in the chain signals."""
-    mempool = Mempool(Logger(debug=True))
-    parent = generate_random_transaction()
-    child = generate_random_transaction(parent.id)
-    mempool.add_tx(parent, 0)
-    mempool.add_tx(child, 0)
-    assert mempool.entry(child.hash).bip125_replaceable is False
-
-
 def test_a_package_hash_does_not_depend_on_the_order() -> None:
     """Core's `GetPackageHash` sorts the wtxids and hashes them held."""
     first, second = secrets.token_bytes(32), secrets.token_bytes(32)

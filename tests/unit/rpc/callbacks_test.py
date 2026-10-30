@@ -9151,7 +9151,7 @@ def test_get_mempool_entry_answers_core_s_own_shape() -> None:
     assert entry["fees"]["descendant"].text == "0.00005000"
     assert entry["depends"] == [parent.id]
     assert entry["spentby"] == [child.id]
-    assert entry["bip125-replaceable"] is False
+    assert "bip125-replaceable" not in entry
     assert entry["unbroadcast"] is False
 
 

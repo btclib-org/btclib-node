@@ -3027,6 +3027,11 @@ def _mempool_entry_json(mempool: Mempool, wtxid: bytes) -> dict[str, Any]:
 
     The shape `getmempoolancestors` and `getmempooldescendants` give each
     transaction when `verbose` is true, too.
+
+    It has no `bip125-replaceable`: Core v32.1 answers it only under
+    `-deprecatedrpc=bip125` (`entryToJSON`, `src/rpc/mempool.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), and this node has no
+    `-deprecatedrpc`.
     """
     entry = mempool.entry(wtxid)
     return {
@@ -3053,7 +3058,6 @@ def _mempool_entry_json(mempool: Mempool, wtxid: bytes) -> dict[str, Any]:
         },
         "depends": entry.depends,
         "spentby": entry.spent_by,
-        "bip125-replaceable": entry.bip125_replaceable,
         "unbroadcast": entry.unbroadcast,
     }
 
@@ -3064,11 +3068,11 @@ def get_mempool_entry(
     """Answer `getmempoolentry`: one held transaction's own accounting.
 
     Core's own shape (`entryToJSON`, `src/rpc/mempool.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), with Core 32's
-    `vsize_adjusted` and `vsize_bip141` (at bitcoin/bitcoin@aef8a04966,
-    btclib-org/btclib-node#1757). A `txid` this mempool does not hold is Core's
-    own `RPC_INVALID_ADDRESS_OR_KEY`, "Transaction not in mempool".
-    btclib-org/btclib-node#1397
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag) with no `-deprecatedrpc`,
+    as `_mempool_entry_json` says, `vsize_adjusted` and `vsize_bip141`
+    included (btclib-org/btclib-node#1757). A `txid` this mempool does not
+    hold is Core's own `RPC_INVALID_ADDRESS_OR_KEY`, "Transaction not in
+    mempool". btclib-org/btclib-node#1397
     """
     if not params:
         # the whole help, as get_block_header's own missing-argument case

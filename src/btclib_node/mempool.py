@@ -37,15 +37,11 @@ if TYPE_CHECKING:
 
 __all__ = ["Mempool", "MempoolEntry", "format_money", "package_hash"]
 
-# Core's own `MAX_BIP125_RBF_SEQUENCE` (`src/policy/rbf.h`,
-# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `SignalsOptInRBF`'s own
-# bound, an input below it opting a transaction into BIP125 replacement.
-_MAX_BIP125_RBF_SEQUENCE = 0xFFFFFFFE
-
-# BIP431's TRUC policy (`src/policy/truc_policy.h`, same commit): the
-# version it applies to and the sizes it bounds. Core's
-# `SingleTRUCChecks` is specialized for an ancestor and a descendant limit
-# of two, a parent and one child, and so is `Mempool.check_truc`.
+# BIP431's TRUC policy (`src/policy/truc_policy.h`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the version it applies
+# to and the sizes it bounds. Core's `SingleTRUCChecks` is specialized
+# for an ancestor and a descendant limit of two, a parent and one child,
+# and so is `Mempool.check_truc`.
 _TRUC_VERSION = 3
 _TRUC_MAX_VSIZE = 10_000
 _TRUC_CHILD_MAX_VSIZE = 1_000
@@ -97,7 +93,6 @@ class MempoolEntry(NamedTuple):
     chunk_fee: int
     depends: list[bytes]
     spent_by: list[bytes]
-    bip125_replaceable: bool
     unbroadcast: bool
 
 
@@ -1450,8 +1445,8 @@ class Mempool:
         earlier transaction's own outputs, never its own, so the walk
         never revisits a wtxid it has not already added to the set that
         guards it. `getmempoolentry`'s own `ancestorcount`,
-        `ancestorsize` and `fees.ancestor`, and `is_bip125_replaceable`
-        below, are what read it. btclib-org/btclib-node#1397
+        `ancestorsize` and `fees.ancestor` read it.
+        btclib-org/btclib-node#1397
         """
         ancestors = {wtxid}
         frontier = list(self.transactions[wtxid].vin)
@@ -1486,24 +1481,6 @@ class Mempool:
         block takes them, `TxGraph.order_keys`.
         """
         return self.graph.order_keys(wtxids)
-
-    def is_bip125_replaceable(self, wtxid: bytes) -> bool:
-        """Whether `wtxid`, or an unconfirmed ancestor, signals BIP125 opt-in.
-
-        Core's own `IsRBFOptIn`/`SignalsOptInRBF` (`src/policy/rbf.cpp`,
-        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): any input sequence
-        number under `MAX_BIP125_RBF_SEQUENCE`, on this transaction or on
-        an ancestor this mempool still holds unconfirmed -- a child of a
-        replaceable parent is itself replaceable, its own parent being
-        free to leave and be replaced by something that double-spends it
-        too. It answers the signal alone: `check_replacement` replaces
-        what pays to be replaced, signal or not, as Core does.
-        """
-        return any(
-            vin.sequence < _MAX_BIP125_RBF_SEQUENCE
-            for ancestor_wtxid in self._ancestors(wtxid)
-            for vin in self.transactions[ancestor_wtxid].vin
-        )
 
     def entry(self, wtxid: bytes) -> MempoolEntry:
         """Return `wtxid`'s own `getmempoolentry` accounting.
@@ -1554,7 +1531,6 @@ class Mempool:
             chunk_fee=chunk.fee,
             depends=depends,
             spent_by=spent_by,
-            bip125_replaceable=self.is_bip125_replaceable(wtxid),
             unbroadcast=tx.id in self.unbroadcast,
         )
 
