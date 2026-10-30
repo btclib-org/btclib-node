@@ -22,6 +22,42 @@ release was cut, and it promises nothing about compatibility, so a
 breaking change is announced in this file — read it before upgrading,
 rather than a digit.
 
+## v2026.10.30
+
+Everything below is measured against `v2026.10.29`. `CHANGELOG.md`'s own
+`v2026.10.30` section is the record of what went into it.
+
+The floors are unchanged. The suite passes with btclib 2026.10.28 and ecc
+2026.10.28, which `uv.lock` pins, and with btclib 2026.10.30, ecc 2026.10.30,
+btclib-wallet 2026.10.29 and bitcoin-core-rpc 2026.10.23, which a fresh install
+resolves.
+
+### Breaking changes
+
+- **`main.passes_check_block`, `main.is_block_failed` and
+  `main.is_cached_invalid` take the chain as their argument after the block**
+  (closes #2079). Pass the node's `Chain`, as `node.chain`.
+- **On signet, a block failing its solution leaves no header** (closes #2079),
+  from `submitblock` and from a peer, as Core's `ProcessNewBlock` does.
+  2026.10.29 answered `submitblock` the same, `bad-signet-blksig`, and indexed
+  the header as `valid_header`.
+- **`submitblock` answers `high-hash` for a block whose header misses its proof
+  of work and whose body fails `CheckBlock`**, such as a second coinbase (issue
+  #2079). 2026.10.29 answered btclib's `invalid proof-of-work` text there.
+
+### Worth knowing, though nothing raises
+
+- **A `ping` longer than eight octets is answered** (closes #2086), with a
+  `pong` carrying its first eight, as Core does. 2026.10.29 refused to parse it
+  and sent nothing.
+- **An address in 3fff::/20 is invalid** (closes #1756), as in Core v32.1: the
+  address table drops it, and `setban` answers `Error: Invalid IP/Subnet`.
+  2026.10.29 accepted it.
+- **The log writes each line of a traceback or a stack after its record,
+  starting with two spaces, its control characters escaped** (closes #2092). A
+  reader that parses `history.log` takes such a line as part of the record
+  above it. 2026.10.29 wrote a traceback as it was.
+
 ## v2026.10.29
 
 Everything below is measured against `v2026.10.25`. `CHANGELOG.md`'s own
