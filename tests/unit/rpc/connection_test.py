@@ -1679,18 +1679,21 @@ THEN_CLOSE_ANSWER = (
 
 
 def conversation(
-    data: bytes, prepare: Callable[[SimpleNamespace], None] | None = None
+    data: bytes,
+    prepare: Callable[[SimpleNamespace], None] | None = None,
+    later: bytes = b"",
 ) -> tuple[bytes, bool]:
     """Write `data` to a connection and return what it answers, to the close.
 
     A request `run` queues is answered `ANSWER`, as `handle_rpc` would
     answer it, closing where `send` would; `prepare` is handed the
-    manager before that answer is written. Returns everything written
-    back, and whether the connection closed. Where a request is to be
-    kept open, `data` ends in `THEN_CLOSE`, whose answer is what says
-    it was kept: the connection is left nothing unread where it closes,
-    so a TCP `socketpair`, which Windows emulates one with, closes it
-    cleanly.
+    manager before that answer is written, and `later` is written to
+    the socket after `run` returns, before that answer. Returns
+    everything written back, and whether the connection closed. Where
+    a request is to be kept open, `data` ends in `THEN_CLOSE`, whose
+    answer is what says it was kept: the connection is left nothing
+    unread where it closes, so a TCP `socketpair`, which Windows
+    emulates one with, closes it cleanly.
     `data` is written as `run` reads it, so that more of it than a
     socket buffer holds is not waited on before `run` starts.
     """
@@ -1704,13 +1707,15 @@ def conversation(
         conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
         sender = asyncio.ensure_future(loop.sock_sendall(theirs, data))
         await conn.run()
+        await sender
+        if later:
+            await loop.sock_sendall(theirs, later)
         if manager.messages:
             if prepare is not None:
                 prepare(manager)
             await conn.async_send(
                 HttpReply(OK, ANSWER), close=manager.node.terminate_flag.is_set()
             )
-        await sender
         reply = b""
         async with asyncio.timeout(5):
             while chunk := await loop.sock_recv(theirs, 4096):
@@ -1924,9 +1929,11 @@ def test_one_request_past_a_worker_s_close_is_answered_as_core_does(
     """Past a worker's reply that closes, Core reads one buffered request.
 
     It answers it where its socket thread does, and not where a worker
-    would: each row is what `bitcoind` v32.1.0 answered in 10 runs of
-    10, `worker-get` in 8 (btclib-org/btclib-node#2101). A close forced
-    by shutdown reads none: Core does not close there.
+    would: each row is what `bitcoind` v32.1.0 answered
+    (btclib-org/btclib-node#2101). For `worker-get` the worker races
+    the disconnect and sometimes answers; the row is the more common
+    outcome. A close forced by shutdown reads none: Core does not close
+    there.
     """
     reply, closed = conversation(data, prepare)
     assert reply == expected
@@ -1965,6 +1972,43 @@ def test_a_refusal_a_worker_writes_is_read_past_as_an_answer_is(
     reply, closed = conversation(data)
     assert reply == expected
     assert closed
+
+
+@pytest.mark.parametrize(
+    ("later", "status"),
+    [(TO_X, b"404 Not Found"), (b"garbage\r\n\r\n", b"400 Bad Request")],
+    ids=["404", "400"],
+)
+def test_a_request_sent_before_a_worker_s_close_is_read_past(
+    later: bytes, status: bytes
+) -> None:
+    """A request sent apart, after the closing one, is answered too.
+
+    Core's socket thread receives while the worker runs, its buffer
+    empty, so the request is there when the reply closes;
+    `bitcoind` v32.1.0 answers it (btclib-org/btclib-node#2101).
+    """
+    reply, closed = conversation(CLOSING, later=later)
+    assert reply == CLOSING_ANSWER + no_store(status)
+    assert closed
+
+
+def test_a_get_with_the_work_queue_full_is_503() -> None:
+    """Core checks the queue before its worker answers a `GET` 405.
+
+    `bitcoind` v32.1.0 run with `-rpcthreads=1 -rpcworkqueue=1`, its
+    queue full, answers a `GET /` 503 "Work queue depth exceeded"
+    (`MaybeDispatchRequestToWorker`, `src/httpserver.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
+    """
+    data = request(method=b"GET", body=b"", auth=b"")
+    reply, _, _, _, warnings = refused(data, prepare=queue_full)
+    body = b"Work queue depth exceeded"
+    assert reply == (
+        b"HTTP/1.1 503 Service Unavailable\r\nCache-Control: no-store\r\n"
+        b"Content-Length: %d\r\n\r\n" % len(body) + body
+    )
+    assert warnings == [("Request rejected because http work queue depth exceeded",)]
 
 
 def test_a_refusal_is_written_in_its_request_s_version() -> None:

@@ -1044,6 +1044,9 @@ class RpcManager(threading.Thread):
         # socket is closed only once, whichever call reaches it first.
         for server_socket in self._server_sockets:
             server_socket.close()
+        # At v31.1 (`src/httpserver.cpp`, at bitcoin/bitcoin@9be056a8a7,
+        # the v31.1 tag, before v32.1 replaced libevent's server; this
+        # wait against v32.1's is btclib-org/btclib-node#2152),
         # `StopHTTPServer` then waits in `g_requests.WaitUntilEmpty()` for
         # the reply to every request `http_request_cb` registered, 403,
         # 404 and 405 included, and `_finish_replies` waits for every
@@ -1052,13 +1055,13 @@ class RpcManager(threading.Thread):
         # kept-alive connection idle until then reaches
         # `http_reject_request_cb`, set by `InterruptHTTPServer`, and is
         # answered 503; here the connection's read is still running, and
-        # `_refused_early` answers it the same, `interrupted` being set.
+        # `_refused_early` answers it 503, `interrupted` being set.
         # `g_requests` counts no idle connection, and `replies` holds none
         # either, so an idle read never holds the wait.
         #
-        # What differs is the 503 itself, and the answers to requests
-        # Core cannot read: Core does not register them, and its loop
-        # writes them while it runs, until `evhttp_free`. Here they are in
+        # What differs from v31.1 is the 503 itself, and libevent's own
+        # error pages: Core does not register them, and its loop writes
+        # them while it runs, until `evhttp_free`. Here they are in
         # `replies`, this loop running only while this method drives it,
         # so the wait lasts until they are written, within the same bound.
         self._finish_replies()

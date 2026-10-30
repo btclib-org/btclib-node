@@ -857,11 +857,11 @@ class RpcConnection:
         `_refused_early` ahead of everything below it, or by
         `_send_shutdown_refusal` where it is set only once
         `_refused_early` has let the request through (issue #1515); a
-        method or a target `_dispatch_refusal` refuses, or a method other
-        than `POST`, is answered by `_send_refusal`, whatever the
-        credential; a request whose `Authorization` header
-        `manager.auth` does not accept is
-        answered 401 by `_send_unauthorized`, its body read off the
+        method or a target `_dispatch_refusal` refuses is answered by
+        `_send_refusal`, whatever the credential; past the queue checks,
+        a method other than `POST` is answered 405 by `_queue`; a
+        request whose `Authorization` header `manager.auth` does not
+        accept is answered 401 by `_send_unauthorized`, its body read off the
         socket and never decoded; and one whose decoded body
         `manager.auth.refusal` refuses is answered by
         `_send_whitelist_refusal`.
@@ -942,7 +942,21 @@ class RpcConnection:
         check is answered `RPC_IN_WARMUP` here and not queued: `Node`'s
         thread is opening the stores.
         """
-        # Core's `HTTPReq_JSONRPC`: no `Authorization` at all is a
+        # Core's `HTTPReq_JSONRPC` answers a `GET`, `HEAD` or `PUT` 405
+        # "JSONRPC server handles only POST requests", with that body, on
+        # a worker: after the queue checks `run` makes, so a full queue
+        # is a 503 for these methods too.
+        if head.method != b"POST":
+            self._refusal_reply = self._start_reply(
+                self._send_refusal(
+                    _METHOD_NOT_ALLOWED,
+                    "JSONRPC server handles only POST requests",
+                    (),
+                    on_worker=True,
+                )
+            )
+            return
+        # Then no `Authorization` at all is a
         # 401 at once, one it does not accept a 401 after
         # `FAILED_ATTEMPT_DELAY`. Scheduled as a task of its own, as
         # the parse-error reply below is, for the reasons given there.
@@ -1052,10 +1066,7 @@ class RpcConnection:
         which -- out for `RejectRequest`, which answers every request
         that reaches it `503` with no body, whatever its method. Then a
         method or a target `_dispatch_refusal` refuses is answered as it
-        says, and a `GET`, `HEAD` or `PUT` is answered 405 "JSONRPC
-        server handles only POST requests", as a worker running
-        `HTTPReq_JSONRPC` answers it, with its body. A source
-        `-rpcallowip` does not name never reaches this:
+        says. A source `-rpcallowip` does not name never reaches this:
         `RpcManager._accept_loop` closes it. Answers whether a reply was
         scheduled.
         """
@@ -1068,19 +1079,9 @@ class RpcConnection:
             )
             return True
         status = _dispatch_refusal(head.method, head.target)
-        if status is not None:
-            reply = self._send_refusal(status)
-        elif head.method != b"POST":
-            # `HTTPReq_JSONRPC`'s own refusal, written by a worker
-            reply = self._send_refusal(
-                _METHOD_NOT_ALLOWED,
-                "JSONRPC server handles only POST requests",
-                (),
-                on_worker=True,
-            )
-        else:
+        if status is None:
             return False
-        self._refusal_reply = self._start_reply(reply)
+        self._refusal_reply = self._start_reply(self._send_refusal(status))
         return True
 
     def _frame(
@@ -1342,17 +1343,25 @@ class RpcConnection:
 
         A worker's reply that closes the connection sets
         `m_disconnect` once it is sent, but Core's socket thread still
-        runs `HTTPRemoteClient::TryReadRequest` once on what the client
-        sent before it disconnects (`HTTPServer::SocketHandlerConnected`
-        and `HTTPServer::DisconnectClients`, `src/httpserver.cpp`, at
-        bitcoin/bitcoin@f0de87f040, the v32.1 tag). Read from what
-        `self.buffer` already holds, with no further read, a request
-        that thread answers itself is answered, as `_socket_thread_answer`
-        says. One it would hand to a worker is not: measured against
-        `bitcoind` v32.1.0 in 10 runs of 10, its worker never answered a
-        `getblockcount` there, and answered a `GET /`, the quickest
-        answer a worker writes, in 2 runs of 10 (btclib-org/btclib-node#2101).
+        runs `HTTPRemoteClient::TryReadRequest` once on what it holds
+        before it disconnects (`HTTPServer::SocketHandlerConnected` and
+        `HTTPServer::DisconnectClients`, `src/httpserver.cpp`, at
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag). While the worker
+        runs, that thread receives whenever its buffer is empty
+        (`HTTPServer::GenerateWaitSockets`), so it holds what the client
+        sent after the closing request too. This reads `client` once,
+        without waiting, where `self.buffer` is empty, which takes in
+        what the client sent before the reply. A request that thread
+        answers itself is then answered, as `_socket_thread_answer`
+        says. One it hands to a worker is not: that worker races the
+        disconnect and sometimes answers, and this takes the more common
+        outcome, no answer (btclib-org/btclib-node#2101).
         """
+        if not self.buffer:
+            # Non-blocking, as every socket `loop` reads: nothing waiting
+            # is `BlockingIOError`, a peer gone some other `OSError`
+            with contextlib.suppress(OSError):
+                self.buffer += self.client.recv(65536)
         answer = self._socket_thread_answer()
         if answer is not None:
             with contextlib.suppress(OSError):
