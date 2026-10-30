@@ -71,8 +71,9 @@ answers as v31.1 is a strict xfail citing its issue (closes #2094).
 
 ### The RPC surface is diffed against Core 32.1's OpenRPC document
 
-`scripts/openrpc/diff_openrpc.py` writes `scripts/openrpc/divergences.txt`, and
-`tests/openrpc_test.py` fails where it is out of date (closes #1759).
+`scripts/openrpc/divergences.txt` is `scripts/openrpc/diff_openrpc.py`'s
+report, and `tests/openrpc_test.py` fails where it is out of date
+(closes #1759).
 
 ### What a sync costs keeps only script validation
 

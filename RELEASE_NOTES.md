@@ -29,8 +29,9 @@ Everything below is measured against `v2026.10.29`. `CHANGELOG.md`'s own
 
 The floors are unchanged. The suite passes with btclib 2026.10.28 and ecc
 2026.10.28, which `uv.lock` pins, and with btclib 2026.10.30, ecc 2026.10.30,
-btclib-wallet 2026.10.29 and bitcoin-core-rpc 2026.10.23, which a fresh install
-resolves.
+btclib-wallet 2026.10.29 and bitcoin-core-rpc 2026.10.30, which a fresh install
+resolves. The one exception is a test whose result depends on the machine's
+resolver (#2135).
 
 ### Breaking changes
 
