@@ -6,45 +6,38 @@
 
 Parses the header section off the wire, bounded by `MAX_HEADER_BYTES`
 and `MAX_BODY_BYTES` since both are read before any credential is
-checked, answers a request line, a request-target, a header field or
-a `Content-Length` Core's listener cannot frame, and a chunked body it
-cannot read, with 400 or 413 (`_HeadReader`, `_ChunkedReader`), answers
-an `Expect` it does not meet with 417 and `100-continue` with an interim
-`100 Continue`, answers `manager.interrupted` with 503 once
-`RpcManager.interrupt` has set it (issue #1515), refuses a method or a path
-Core's listener refuses before Core checks a credential (`_refusal`),
-answers a request whose `Authorization` header `rpc.auth.RpcAuth` does
-not accept with 401, and decodes the body of one it does accept, which
-`rpc.manager.RpcManager.messages` queues for `rpc.main.handle_rpc`.
-`RawJSON` is a JSON number written back out exactly as given, the way
-Core's own `UniValue` writes one built from a string rather than from a
-`float`.
+checked, answers a request line, a header field, a `Content-Length` or
+a chunked body Core's HTTP server cannot read with 400 or 413
+(`_HeadReader`, `_ChunkedReader`), answers `manager.interrupted` with
+503 once `RpcManager.interrupt` has set it (issue #1515), refuses a
+method or a path Core refuses before it checks a credential
+(`_refusal`), answers a request whose `Authorization` header
+`rpc.auth.RpcAuth` does not accept with 401, and decodes the body of one
+it does accept, which `rpc.manager.RpcManager.messages` queues for
+`rpc.main.handle_rpc`. `RawJSON` is a JSON number written back out
+exactly as given, the way Core's own `UniValue` writes one built from a
+string rather than from a `float`.
 
-Each answer is framed as libevent frames it (`_frame`), in the version
-of the request it answers, and the socket is kept open across answers
-where libevent keeps it, the next request read off the same connection
-rather than requiring a fresh accept per call (issue #640).
+Each answer is framed as Core's `HTTPRequest::WriteReply` frames it
+(`_frame`), in the version of the request it answers, and the socket is
+kept open across answers where Core keeps it, the next request read off
+the same connection rather than requiring a fresh accept per call
+(issue #640).
 
-The framing is the libevent `bitcoind` v31.1.0 links, not Core's own
-source: bitcoin/bitcoin@9be056a8a7, the v31.1 tag, hands the socket to
-`evhttp`, and `depends/packages/libevent.mk` there pins
-2.1.12-stable, read at libevent/libevent@5df3037 (`http.c`).
-`httpserver.cpp`, at bitcoin/bitcoin@f0de87f040 -- v32.1, the release
-`integration-bitcoind.yml` pins, is Core's own HTTP server, which answers
-otherwise where `tests/integration/rpc_framing_test.py` marks it
-(btclib-org/btclib-node#2101).
+The HTTP server read is Core's own, `src/httpserver.cpp` at
+bitcoin/bitcoin@f0de87f040 -- v32.1, the release
+`integration-bitcoind.yml` pins.
 """
 
 import asyncio
 import contextlib
 import dataclasses
-import ipaddress
 import json
 import re
 import secrets
 import time
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, cast, override
+from typing import TYPE_CHECKING, Any, override
 
 from bitcoin_core_rpc import RPCErrorCode
 
@@ -53,7 +46,6 @@ from btclib_node.exceptions import (
     IncompleteRequestHeadError,
     MalformedRequestHeadError,
     OversizedRequestBodyError,
-    UnmetExpectationError,
 )
 from btclib_node.p2p.address import ip_and_port
 from btclib_node.rpc.auth import (
@@ -86,20 +78,11 @@ __all__ = [
 # Bounds on the read below, which is fed by whoever connects: the header
 # section and the body are read whole before `RpcConnection.run` checks
 # a credential, as Core's HTTP server reads a request before
-# `HTTPReq_JSONRPC` sees it. Both are Core's own, handed to libevent in
-# `InitHTTPServer` (`src/httpserver.cpp`, at bitcoin/bitcoin@9be056a8a7,
-# the v31.1 tag): `MAX_HEADERS_SIZE` to `evhttp_set_max_headers_size`,
-# which libevent counts over every line of a header section without its
-# line ending (`_FieldReader`), and `MAX_SIZE` to
-# `evhttp_set_max_body_size`.
-#
-# Core's own HTTP server, which replaces libevent from v32.0rc1, counts
-# the same 8192 another way: the field lines with their endings, the
-# empty line after them included and the request line left out, a
-# chunked body's trailer counted on from them (`HTTPHeaders::Read`,
-# `src/httpserver.cpp`, at bitcoin/bitcoin@cce32b1687). So it refuses with
-# 400 a header section of many short lines that libevent reads. This node
-# keeps libevent's count, and issue #1972 is the change to Core's.
+# `HTTPReq_JSONRPC` sees it. Both are Core's own (`src/httpserver.h`,
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag): `MAX_HEADERS_SIZE` caps
+# each line `HTTPRemoteClient::ReadRequest` reads and the header section
+# `HTTPHeaders::Read` counts (`_LineReader`, `_FieldReader`), and
+# `MAX_BODY_SIZE` caps the body.
 MAX_HEADER_BYTES = 8192
 MAX_BODY_BYTES = 32 * 1024 * 1024
 # What bounds how *long* a read may take, where the two above only bound
@@ -238,292 +221,146 @@ class JSONEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
-def _error_page(status: str) -> str:
-    """Return the page libevent's `evhttp_send_error` writes for `status`."""
-    reason = status.partition(" ")[2]
-    return (
-        f"<HTML><HEAD>\n<TITLE>{status}</TITLE>\n"
-        f"</HEAD><BODY>\n<H1>{reason}</H1>\n</BODY></HTML>\n"
-    )
-
-
+# `HTTPStatusReasonString` (`src/rpc/protocol.h`, at bitcoin/bitcoin@f0de87f040,
+# the v32.1 tag) gives each status its reason phrase
 _BAD_REQUEST = "400 Bad Request"
-_ENTITY_TOO_LARGE = "413 Request Entity Too Large"
-_EXPECTATION_FAILED = "417 Expectation Failed"
-_NOT_IMPLEMENTED = "501 Not Implemented"
-# `http_reject_request_cb`'s own status (`src/httpserver.cpp`,
-# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `evhttp_send_error(req,
-# HTTP_SERVUNAVAIL, nullptr)`, `nullptr` reading libevent's own default
-# reason phrase for the code.
+_NOT_FOUND = "404 Not Found"
+_METHOD_NOT_ALLOWED = "405 Method Not Allowed"
+_CONTENT_TOO_LARGE = "413 Content too large"
 _SERVICE_UNAVAILABLE = "503 Service Unavailable"
-# The methods Core's listener lets through to `http_request_cb`: every
-# other one is answered 501 before that callback runs. Core's source has
-# no 501 and never sets evhttp's allowed methods, so the refusal is the
-# libevent Core links, measured against a real `bitcoind` v31.1.0.
-_LIBEVENT_METHODS = frozenset((b"GET", b"POST", b"HEAD", b"PUT", b"DELETE"))
-# `evhttp_method_may_have_body`: libevent reads no `Content-Length` for
-# any other method, so no body is read for it and none refused
-_BODY_METHODS = frozenset(
-    (b"GET", b"POST", b"PUT", b"DELETE", b"PATCH", b"OPTIONS", b"CONNECT")
-)
-# `evhttp_parse_request_line`'s shortest line, trailing spaces removed
+# What `WriteNoStoreErrorReply` adds to each answer Core's HTTP server
+# writes itself, before a request reaches `HTTPReq_JSONRPC`
+_NO_STORE = "Cache-Control: no-store"
+# The methods `HTTPRequest::LoadControlData` names, compared
+# case-sensitively: any other method is `HTTPRequestMethod::UNKNOWN`
+_CORE_METHODS = frozenset((b"GET", b"POST", b"HEAD", b"PUT"))
+# `MIN_REQUEST_LINE_LENGTH`, and the words a request line is
 _MIN_REQUEST_LINE = len(b"GET / HTTP/1.0")
-# `evhttp_parse_http_version`'s `sscanf(version, "HTTP/%d.%d%c", ...)`
-# with exactly two conversions: `%d` skips leading C white space and
-# takes a sign, and nothing may follow the minor number
-_C_SPACE = rb"[ \t\n\v\f\r]*"
-_HTTP_VERSION = re.compile(
-    rb"HTTP/%b([+-]?[0-9]+)\.%b([+-]?[0-9]+)" % (_C_SPACE, _C_SPACE)
-)
-# where `%d` stops being defined: C leaves a number past `int` undefined,
-# and `bitcoind` v31.1.0 on macOS answers `HTTP/1.99999999999` as
-# `HTTP/1.-1` and `HTTP/1.2147483648` as `HTTP/1.0`, which no rule here
-# models, so both are refused
-_C_INT = range(-(2**31), 2**31)
-# `evhttp_get_body_length`'s `evutil_strtoll(value, &endp, 10)`, which
-# must consume the whole value: leading C white space and a sign, then
-# decimal digits. One quantifier over the digits: a `0*` ahead of
-# `[0-9]+` matches the same zeros, and a failing tail after a long run
-# of them backtracks in quadratic time, before any credential is read
-_CONTENT_LENGTH = re.compile(_C_SPACE.decode() + "([+-]?)([0-9]+)")
-# The URI grammar of libevent's `evhttp_uri_parse_with_flags`:
-# `scheme_ok`, then `CHAR_IS_UNRESERVED`, `SUBDELIMS` and a `%` escape
-# of two hex digits, which `userinfo_ok` and `regname_ok` build on;
-# `end_of_authority`; and `bracket_addr_ok`'s `IPvFuture`
-_SCHEME = re.compile(rb"[A-Za-z][A-Za-z0-9+.-]*")
-_REG_CHAR = rb"[A-Za-z0-9._~!$&'()*+,;=-]"
-_REG_NAME = re.compile(rb"(?:%b|%%[0-9A-Fa-f]{2})*" % _REG_CHAR)
-_USERINFO = re.compile(rb"(?:%b|:|%%[0-9A-Fa-f]{2})*" % _REG_CHAR)
-# one quantifier over the digits, as `_CONTENT_LENGTH` has
-_PORT = re.compile(rb":([0-9]*)\Z")
-_MAX_PORT = 65535
-_AUTHORITY_END = re.compile(rb"[/?#]")
-_IP_FUTURE = re.compile(rb"\[v[0-9A-Fa-f]+\.(?:%b|:)*\]" % _REG_CHAR)
-_PATH_END = re.compile(rb"[?#]")
+_REQUEST_LINE_WORDS = len(("method", "target", "version"))
+# `LoadControlData`'s version: one digit, a point and one digit, the
+# first of them a 1
+_HTTP_VERSION = re.compile(rb"HTTP/1\.([0-9])")
+# what `util::TrimString` trims, and what a field name may not hold
+_WHITESPACE = b" \f\n\r\t\v"
+# what a field line may not hold, its ending apart
+_INVALID_IN_FIELD = re.compile(rb"[\r\n\0]")
+# `ToIntegral<uint64_t>`: `std::from_chars` over the whole value, which
+# takes no sign and no white space, in base 10 or 16, and the most
+# digits a `uint64_t` has in each
+_UINT64_MAX = 2**64 - 1
+_DIGITS = {10: re.compile(rb"[0-9]+"), 16: re.compile(rb"[0-9A-Fa-f]+")}
+_UINT64_WIDTH = {10: len(str(_UINT64_MAX)), 16: len(f"{_UINT64_MAX:x}")}
 
 
-def _split_request_line(line: bytes) -> tuple[bytes, bytes, bytes]:
-    """Split `line` into its method, target and version as libevent does.
+def _uint64(text: bytes, base: int) -> int | None:
+    """Return `ToIntegral<uint64_t>(text, base)`, `None` where it fails.
 
-    `evhttp_parse_request_line`: trailing spaces are dropped, the method
-    ends at the first space and the version starts after the last one,
-    so the target is everything between and may hold spaces of its own.
-    Raises `MalformedRequestHeadError` where libevent refuses the line
-    before it knows the method. A NUL in it is an ordinary byte here,
-    where libevent's C string ends at it.
+    A number past `uint64_t` fails, as `std::from_chars` answers
+    `result_out_of_range` for it.
     """
-    line = line.rstrip(b" ")
-    if len(line) < _MIN_REQUEST_LINE:
-        detail = "request line too short"
-        raise MalformedRequestHeadError(detail)
-    method, space, rest = line.partition(b" ")
-    target, space, version = rest.rpartition(b" ")
-    if not space or not target:
+    if _DIGITS[base].fullmatch(text) is None:
+        return None
+    digits = text.lstrip(b"0") or b"0"
+    # measured as text first: `int` refuses a string past 4300 digits
+    if len(digits) > _UINT64_WIDTH[base]:
+        return None
+    number = int(digits, base)
+    return number if number <= _UINT64_MAX else None
+
+
+def _request_line(line: bytes) -> tuple[bytes, bytes, tuple[int, int]]:
+    """Return the method, target and version `LoadControlData` reads.
+
+    The line is at least `MIN_REQUEST_LINE_LENGTH` octets, holds no NUL,
+    and is three words, one space apart. Raises
+    `MalformedRequestHeadError` where Core refuses it.
+    """
+    parts = line.split(b" ")
+    if (
+        len(line) < _MIN_REQUEST_LINE
+        or b"\0" in line
+        or len(parts) != _REQUEST_LINE_WORDS
+    ):
         detail = "request line not method, target and version"
         raise MalformedRequestHeadError(detail)
-    return method, target, version
-
-
-def _http_version(token: bytes) -> tuple[int, int]:
-    """Return the version `evhttp_parse_http_version` reads off `token`.
-
-    Raises `MalformedRequestHeadError` where it refuses the token, and
-    for a number past a C `int`, whose conversion C leaves undefined.
-    """
-    match = _HTTP_VERSION.fullmatch(token)
-    # measured as text first: `int` refuses a string past 4300 digits
-    digits = len(str(_C_INT.stop))
-    if match is None or any(len(n.lstrip(b"+-0")) > digits for n in match.groups()):
-        detail = "unsupported HTTP version"
-        raise MalformedRequestHeadError(detail)
-    major, minor = int(match[1]), int(match[2])
-    if major > 1 or major not in _C_INT or minor not in _C_INT:
-        detail = "unsupported HTTP version"
-        raise MalformedRequestHeadError(detail)
-    return major, minor
-
-
-def _authority_ok(authority: bytes) -> bool:
-    """Return whether libevent's `parse_authority` accepts `authority`.
-
-    An optional `userinfo@`, then an optional `:port` of digits up to
-    65535, and a host that is a bracketed IPv6 or IPvFuture address or
-    a registered name, an IPv4 address among them.
-    """
-    userinfo, at, host = authority.partition(b"@")
-    if not at:
-        host = authority
-    elif _USERINFO.fullmatch(userinfo) is None:
-        return False
-    port = _PORT.search(host)
-    if port is not None:
-        # leading zeros stripped, so a port is refused by its length
-        # before `int` reads it
-        digits = port[1].lstrip(b"0")
-        if len(digits) > len(str(_MAX_PORT)) or int(digits or b"0") > _MAX_PORT:
-            return False
-        host = host[: port.start()]
-    if host.startswith(b"[") and host.endswith(b"]"):
-        return _bracketed_ok(host)
-    return _REG_NAME.fullmatch(host) is not None
-
-
-def _bracketed_ok(host: bytes) -> bool:
-    """Return whether `bracket_addr_ok` accepts `host`, brackets included.
-
-    An IPvFuture address, or an IPv6 address as the platform's
-    `inet_pton` reads one, where libevent hands it. This reads one as
-    `ipaddress` does, with a `%` scope refused as `bitcoind` v31.1.0
-    refuses it; `bitcoind` on macOS also takes `::ffff:1.2.3.04`, which
-    `ipaddress` refuses.
-    """
-    if host[1:2] == b"v":
-        return _IP_FUTURE.fullmatch(host) is not None
-    address = host[1:-1]
-    try:
-        ipaddress.IPv6Address(address.decode("ascii"))
-    except ValueError:
-        return False
-    return b"%" not in address
-
-
-def _is_proxy_request(method: bytes, target: bytes) -> bool:
-    """Parse `target` as libevent does, and say whether it is proxied.
-
-    `evhttp_parse_request_line` parses a `CONNECT` target with
-    `evhttp_uri_parse_authority`, which reads the authority up to the
-    first `/`, `?` or `#` and nothing after it, and any other with
-    `evhttp_uri_parse_with_flags(uri, EVHTTP_URI_NONCONFORMANT)`: an
-    optional scheme, an optional `//` and authority, then a path up to
-    the first `?` or `#`, whose first segment may hold no `:` where
-    there is no scheme; what follows the path is never refused. The two
-    checks libevent's own comment calls "maybe-unreachable" are
-    unreachable here too. Raises `MalformedRequestHeadError` where the
-    parse fails.
-
-    A proxy request is an `http` or `https` target with an authority
-    naming no host libevent serves, and Core names none to it
-    (`evhttp_add_server_alias` and `evhttp_add_virtual_host` are called
-    nowhere in `src/`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so
-    every such target is one.
-    """
-    detail = f"request-target {target!r}"
-    if method == b"CONNECT":
-        end = _AUTHORITY_END.search(target)
-        if not _authority_ok(target[: end.start() if end else len(target)]):
-            raise MalformedRequestHeadError(detail)
-        return False
-    scheme = None
-    rest = target
-    colon = target.find(b":")
-    if colon != -1 and _SCHEME.fullmatch(target, 0, colon):
-        scheme, rest = target[:colon], target[colon + 1 :]
-    has_authority = rest.startswith(b"//")
-    if has_authority:
-        end = _AUTHORITY_END.search(rest, 2)
-        stop = end.start() if end else len(rest)
-        if not _authority_ok(rest[2:stop]):
-            raise MalformedRequestHeadError(detail)
-        rest = rest[stop:]
-    # `path_matches_noscheme`
-    path = _PATH_END.split(rest, maxsplit=1)[0]
-    if scheme is None and b":" in path.partition(b"/")[0]:
-        raise MalformedRequestHeadError(detail)
-    return (
-        has_authority and scheme is not None and scheme.lower() in {b"http", b"https"}
-    )
-
-
-def _content_length(value: str | None) -> int:
-    """Return the body length `value` declares, as libevent reads it.
-
-    Raises `MalformedRequestHeadError` where `evhttp_get_body_length`
-    refuses it. A length past `MAX_BODY_BYTES`, the `MAX_SIZE` Core
-    passes to `evhttp_set_max_body_size`, is returned as
-    `MAX_BODY_BYTES + 1`, for `_expectation` to refuse once the
-    `Expect` field has been read; so is a value past `strtoll`'s range,
-    which clamps it.
-    """
-    if value is None:
-        return 0
-    match = _CONTENT_LENGTH.fullmatch(value)
+    method, target, version = parts
+    match = _HTTP_VERSION.fullmatch(version)
     if match is None:
-        detail = f"Content-Length {value!r}"
+        detail = "unsupported HTTP version"
         raise MalformedRequestHeadError(detail)
-    sign, digits = match.groups()
-    digits = digits.lstrip("0") or "0"
-    # `int` refuses a string past 4300 digits, and a length that long is
-    # past the cap anyway
-    too_long = len(digits) > len(str(MAX_BODY_BYTES))
-    if sign == "-" and (too_long or int(digits) > 0):
-        detail = f"Content-Length {value!r}"
-        raise MalformedRequestHeadError(detail)
-    if too_long:
-        return MAX_BODY_BYTES + 1
-    return min(int(digits), MAX_BODY_BYTES + 1)
+    return method, target, (1, int(match[1]))
 
 
-def _refusal(method: bytes, target: bytes) -> tuple[str, str] | None:
-    """Return the status and body Core refuses `method` at `target` with.
+def _refusal(method: bytes, target: bytes) -> tuple[str, str, tuple[str, ...]] | None:
+    """Return the status, body and fields Core refuses `method` at `target` for.
 
     Core answers these before `HTTPReq_JSONRPC` reads `Authorization`,
-    so a caller without a credential gets them too (`http_request_cb`,
-    `src/httpserver.cpp`, and `HTTPReq_JSONRPC` and `StartHTTPRPC`,
-    `src/httprpc.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
+    so a caller without a credential gets them too
+    (`MaybeDispatchRequestToWorker`, `src/httpserver.cpp`, and
+    `HTTPReq_JSONRPC` and `StartHTTPRPC`, `src/httprpc.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag):
 
-    - a method outside `_LIBEVENT_METHODS` is libevent's 501;
-    - `DELETE`, which `HTTPRequest::GetRequestMethod` maps to `UNKNOWN`,
-      is 405 with no body, on any path;
+    - a method outside `_CORE_METHODS` is 405 with no body, on any path;
     - a target other than exactly `/` or one starting `/wallet/` matches
       no handler `StartHTTPRPC` registers, and is 404 with no body;
     - `GET`, `HEAD` and `PUT` there are 405, "JSONRPC server handles only
       POST requests".
 
-    `/wallet/` is registered where `HasWalletSupport()` holds, as it does
-    in the `bitcoind` v31.1.0 release binary, which answers there. The
-    only other handlers are `StartREST`'s, registered only under `-rest`,
-    off by default (`DEFAULT_REST_ENABLE`, `src/init.cpp`); this node has
-    no REST interface, so `/rest/` is 404 here as in Core at its default.
-    The target is compared as the raw request-target, the way Core
-    compares `GetURI()`: a query string or an absolute URI matches
-    neither handler.
+    The first two carry `_NO_STORE`. `/wallet/` is registered where
+    `HasWalletSupport()` holds, as it does in the `bitcoind` release
+    binary, which answers there. The only other handlers are
+    `StartREST`'s, registered only under `-rest`, off by default
+    (`DEFAULT_REST_ENABLE`, `src/init.cpp`); this node has no REST
+    interface, so `/rest/` is 404 here as in Core at its default. The
+    target is compared as the raw request-target, the way Core compares
+    `GetURI()`: a query string or an absolute URI matches neither
+    handler.
 
-    A `HEAD` reply here is framed like a `GET` one, by `Content-Length`;
-    `bitcoind` drops that header from a `HEAD` reply and still writes
-    the body, on a connection it keeps open, so nothing framed would
-    tell a client where that body ends.
+    A `HEAD` is answered with its body, as Core answers it.
     """
-    if method not in _LIBEVENT_METHODS:
-        return _NOT_IMPLEMENTED, _error_page(_NOT_IMPLEMENTED)
-    if method == b"DELETE":
-        return "405 Method Not Allowed", ""
+    if method not in _CORE_METHODS:
+        return _METHOD_NOT_ALLOWED, "", (_NO_STORE,)
     if target != b"/" and not target.startswith(b"/wallet/"):
-        return "404 Not Found", ""
+        return _NOT_FOUND, "", (_NO_STORE,)
     if method != b"POST":
-        return "405 Method Not Allowed", "JSONRPC server handles only POST requests"
+        return _METHOD_NOT_ALLOWED, "JSONRPC server handles only POST requests", ()
     return None
 
 
+_CR = ord("\r")
+
+
 class _LineReader:
-    r"""`evbuffer_readln(..., EVBUFFER_EOL_CRLF)` over a buffer that grows.
+    r"""`util::LineReader` over a buffer that grows.
 
     A line ends at a line feed, a carriage return before it dropped, and
-    is taken off the front of `buffer` as it is read. `record`, where
-    given, collects the octets taken. Each octet is searched for a line
-    feed once: `scan` is how much of `buffer` is known to hold none, so
-    a line arriving a byte at a time is not searched again from its
-    start.
+    is taken off the front of `buffer` as it is read. A line of more
+    than `MAX_HEADER_BYTES` octets before its line feed is refused,
+    whether or not the line feed has arrived: `HTTPRemoteClient::
+    ReadRequest` builds its reader with `MAX_HEADERS_SIZE` as the line
+    limit. `consumed` counts the octets taken, line endings included,
+    and `record`, where given, collects them. Each octet is searched for
+    a line feed once: `scan` is how much of `buffer` is known to hold
+    none, so a line arriving a byte at a time is not searched again from
+    its start.
     """
 
     def __init__(self, buffer: bytearray, record: bytearray | None = None) -> None:
         """Read lines off the front of `buffer`, into `record` where given."""
         self.buffer = buffer
         self.record = record
+        self.consumed = 0
         self.scan = 0
 
     def readln(self) -> bytes | None:
-        """Take the next whole line, its ending dropped; `None` if none yet."""
+        """Take the next whole line, its ending dropped; `None` if none yet.
+
+        Raises `MalformedRequestHeadError` for a line past the limit.
+        """
         eol = self.buffer.find(b"\n", self.scan)
+        if (len(self.buffer) if eol == -1 else eol) > MAX_HEADER_BYTES:
+            detail = "a line past MAX_HEADER_BYTES"
+            raise MalformedRequestHeadError(detail)
         if eol == -1:
             self.scan = len(self.buffer)
             return None
@@ -537,78 +374,60 @@ class _LineReader:
         taken = bytes(self.buffer[:size])
         del self.buffer[:size]
         self.scan = 0
+        self.consumed += size
         if self.record is not None:
             self.record += taken
         return taken
 
 
-_CR = ord("\r")
-# `evhttp_header_is_valid_value`: a carriage return is allowed only in a
-# run of them followed by a space or a tab, a continuation libevent
-# leaves in the value. One character and a lookahead, so no run of
-# carriage returns is matched twice.
-_BARE_CR = re.compile(rb"\r(?![\r \t])")
-
-
 class _FieldReader:
-    """`evhttp_parse_headers_`: a header section's field lines off `lines`.
+    """`HTTPHeaders::Read`: a header section's field lines off `lines`.
 
-    `size` is libevent's `headers_size`, every line counted without its
-    ending, the request line's included: past `MAX_HEADER_BYTES`, and
-    also where the lines read and the partial one after them are, the
-    section is refused. A line is read as the C string libevent reads,
-    to its first NUL, so a line starting with one ends the section. A
-    line starting with a space or a tab continues the previous field,
-    appended after a space; any other is a key up to its first colon
-    and a value after it, with leading spaces dropped and trailing
-    spaces and tabs, and a line with no colon, a key holding a carriage
-    return or a value `_BARE_CR` finds is refused. `fields` keeps every
-    field in order, a name named twice included, after `fields` given:
-    a trailer's are added to the request's, and a continuation line
-    that starts one continues the request's last field.
+    `size` is Core's `m_consumed`: the octets of each field line read,
+    its ending included, and of the empty line that ends the section,
+    the request line left out. Past `MAX_HEADER_BYTES` the section is
+    refused, and a chunked body's trailer is counted on from the
+    request's own section. A line holding a carriage return, a line feed
+    or a NUL is refused, and so is one with no colon or whose name is
+    empty or holds white space, a line starting with a space or a tab
+    among them. A value is what follows the first colon, white space
+    trimmed at both ends. `fields` keeps every field in order, a name
+    named twice included; a trailer's are read and not kept (`keep`).
     """
 
-    def __init__(
-        self,
-        lines: _LineReader,
-        size: int,
-        fields: tuple[tuple[bytes, bytes], ...] = (),
-    ) -> None:
+    def __init__(self, lines: _LineReader, size: int = 0, *, keep: bool = True) -> None:
         """Read field lines off `lines`, `size` octets already counted."""
         self.lines = lines
         self.size = size
-        self.fields = list(fields)
+        self.keep = keep
+        self.fields: list[tuple[bytes, bytes]] = []
 
     def read(self) -> bool:
         """Read what `lines` holds; `True` once the section's end is read.
 
-        Raises `MalformedRequestHeadError` where libevent refuses it.
+        Raises `MalformedRequestHeadError` where Core refuses it.
         """
-        while (line := self.lines.readln()) is not None:
-            self.size += len(line)
+        while True:
+            start = self.lines.consumed
+            if (line := self.lines.readln()) is None:
+                return False
+            self.size += self.lines.consumed - start
             if self.size > MAX_HEADER_BYTES:
                 detail = "header section past MAX_HEADER_BYTES"
                 raise MalformedRequestHeadError(detail)
-            text = line.partition(b"\0")[0]
-            if not text:
+            if not line:
                 return True
-            if text[:1] in {b" ", b"\t"}:
-                if not self.fields:
-                    detail = "a continuation line with no field before it"
-                    raise MalformedRequestHeadError(detail)
-                key, value = self.fields[-1]
-                self.fields[-1] = (key, value + b" " + text.strip(b" \t"))
-                continue
-            key, colon, value = text.partition(b":")
-            value = value.lstrip(b" ").rstrip(b" \t")
-            if not colon or b"\r" in key or _BARE_CR.search(value):
-                detail = f"header field {len(self.fields)} of {len(text)} octets"
+            key, colon, value = line.partition(b":")
+            if (
+                _INVALID_IN_FIELD.search(line)
+                or not colon
+                or not key
+                or any(c in _WHITESPACE for c in key)
+            ):
+                detail = f"header field {len(self.fields)} of {len(line)} octets"
                 raise MalformedRequestHeadError(detail)
-            self.fields.append((key, value))
-        if self.size + len(self.lines.buffer) > MAX_HEADER_BYTES:
-            detail = "header section past MAX_HEADER_BYTES"
-            raise MalformedRequestHeadError(detail)
-        return False
+            if self.keep:
+                self.fields.append((key, value.strip(_WHITESPACE)))
 
 
 @dataclass(frozen=True)
@@ -619,23 +438,16 @@ class RequestHead:
     same round-trip `tests/fuzz_corpus_test.py` already holds
     `p2p.transport.frame_message_bytes` to. `consumed` is its length.
 
-    `method` and `target` are the request line's first part and its
-    middle, `b""` where the line did not split, and `version` is `None`
-    where libevent had not read it. `proxy` is libevent's
-    `EVHTTP_PROXY_REQUEST` (`_is_proxy_request`). `fields` is every
-    field `_FieldReader` read, in order, a chunked body's trailer
-    appended once read, and `size` the octets it counted. `chunked` is
-    `evhttp_get_body`'s own test, a `Transfer-Encoding` of `chunked`,
-    and `length` the body's `Content-Length` where it is not.
-    `expects_continue` is its `Expect: 100-continue`, which
-    `RpcConnection._read_body` answers `100 Continue` where nothing of
-    the body has arrived yet.
+    `method`, `target` and `version` are the request line's three parts,
+    `b""` and `None` where Core had not read them. `fields` is every
+    field `_FieldReader` read, in order, and `size` the octets it
+    counted. `chunked` is `LoadBody`'s own test, a first
+    `Transfer-Encoding` of `chunked`, and `length` the body's
+    `Content-Length` where it is not.
 
-    `error` is what libevent refuses the request for, answered with its
-    error page, `fields` then holding what was read before it; `method`
-    is then what it knows of the request, which decides whether a
-    `CONNECT` keeps its connection, the next request read from the
-    line after the one refused.
+    `error` is what Core refuses the request for, answered with no body
+    and the connection closed, `fields` then holding what was read
+    before it.
 
     `raw` and `fields` hold the `Authorization` field, so `repr` leaves
     them out (section 7 of the btclib-org standard, *A refusal carries
@@ -646,18 +458,11 @@ class RequestHead:
     method: bytes
     target: bytes
     version: tuple[int, int] | None
-    proxy: bool
     fields: tuple[tuple[bytes, bytes], ...] = dataclasses.field(repr=False)
     size: int
     chunked: bool
     length: int
-    expects_continue: bool
-    error: (
-        MalformedRequestHeadError
-        | OversizedRequestBodyError
-        | UnmetExpectationError
-        | None
-    )
+    error: MalformedRequestHeadError | OversizedRequestBodyError | None
 
     @property
     def consumed(self) -> int:
@@ -671,9 +476,10 @@ class RequestHead:
     def field(self, name: bytes) -> str | None:
         """Return the first `name` field's value, `None` where there is none.
 
-        `evhttp_find_header`, comparing names ASCII case-insensitively,
-        as `bytes.lower` does. The value is decoded as Latin-1, where
-        `str.lower` changes no character into an ASCII one.
+        `HTTPHeaders::FindFirst`, comparing names ASCII
+        case-insensitively, as `bytes.lower` does. The value is decoded
+        as Latin-1, where `str.lower` changes no character into an ASCII
+        one.
         """
         name = name.lower()
         for key, value in self.fields:
@@ -687,19 +493,16 @@ class RequestHead:
         return self.field(b"Connection")
 
     @property
-    def proxy_connection(self) -> str | None:
-        """The first `Proxy-Connection` field's value."""
-        return self.field(b"Proxy-Connection")
-
-    @property
     def authorization(self) -> str | None:
-        """The first `Authorization` field's value, a trailer's included."""
+        """The first `Authorization` field's value."""
         return self.field(b"Authorization")
 
 
 class _HeadReader:
-    """`evhttp_read_firstline` and `evhttp_read_header` over a growing buffer.
+    """`HTTPRemoteClient::ReadRequest` over a growing buffer, up to the body.
 
+    `LoadControlData`, then `LoadHeaders`, then what `LoadBody` reads off
+    the fields before the body: a chunked body, or a `Content-Length`.
     `read` is called again as more of `buffer` arrives, carrying on from
     the line it stopped at, and takes each line off the front of
     `buffer` as it reads it.
@@ -711,13 +514,12 @@ class _HeadReader:
         self.lines = _LineReader(buffer, self.raw)
         self.method = self.target = b""
         self.version: tuple[int, int] | None = None
-        self.proxy = False
         self.fields: _FieldReader | None = None
 
     def read(self) -> RequestHead | None:
         """Read what `buffer` holds, `None` until the section is whole.
 
-        A section libevent refuses is returned with its `error` set.
+        A section Core refuses is returned with its `error` set.
         """
         try:
             if not self._read_section():
@@ -725,41 +527,21 @@ class _HeadReader:
         except MalformedRequestHeadError as e:
             return self._head(e)
         head = self._head(None)
-        # `evhttp_get_body`
-        if self.method not in _BODY_METHODS:
-            return head
         encoding = head.field(b"Transfer-Encoding")
         if encoding is not None and encoding.lower() == "chunked":
-            head = replace(head, chunked=True)
-        else:
-            try:
-                length = _content_length(head.field(b"Content-Length"))
-            except MalformedRequestHeadError as e:
-                return replace(head, error=e)
-            if length < 1:
-                return head
-            head = replace(head, length=length)
-        return _expectation(head)
+            return replace(head, chunked=True)
+        try:
+            return replace(head, length=_content_length(head))
+        except (MalformedRequestHeadError, OversizedRequestBodyError) as e:
+            return replace(head, error=e)
 
     def _read_section(self) -> bool:
-        """Read the request line, then fields; `True` once the section ends.
-
-        `evhttp_parse_firstline_` refuses a request line past
-        `MAX_HEADER_BYTES`, and one not yet ended with that much read.
-        """
+        """Read the request line, then fields; `True` once the section ends."""
         if self.fields is None:
-            line = self.lines.readln()
-            if (
-                len(self.lines.buffer) if line is None else len(line)
-            ) > MAX_HEADER_BYTES:
-                detail = "request line past MAX_HEADER_BYTES"
-                raise MalformedRequestHeadError(detail)
-            if line is None:
+            if (line := self.lines.readln()) is None:
                 return False
-            self.method, self.target, token = _split_request_line(line)
-            self.version = _http_version(token)
-            self.proxy = _is_proxy_request(self.method, self.target)
-            self.fields = _FieldReader(self.lines, len(line))
+            self.method, self.target, self.version = _request_line(line)
+            self.fields = _FieldReader(self.lines)
         return self.fields.read()
 
     def _head(self, error: MalformedRequestHeadError | None) -> RequestHead:
@@ -769,83 +551,51 @@ class _HeadReader:
             method=self.method,
             target=self.target,
             version=self.version,
-            proxy=self.proxy,
             fields=() if fields is None else tuple(fields.fields),
             size=0 if fields is None else fields.size,
             chunked=False,
             length=0,
-            expects_continue=False,
             error=error,
         )
 
 
-def _expectation(head: RequestHead) -> RequestHead:
-    """Read `head`'s `Expect` field, then refuse a body past the limit.
+def _content_length(head: RequestHead) -> int:
+    """Return the body length `head` declares, as `LoadBody` reads it.
 
-    `evhttp_get_body`, once it knows there is a body: `evhttp_have_expect`
-    reads the first `Expect` field of a request of HTTP/1.1 or later,
-    compared whole and ASCII case-insensitively to `100-continue`. Any
-    other value is refused 417, ahead of the 413 a `Content-Length` past
-    `MAX_BODY_BYTES` gets either way.
+    No `Content-Length` is no body. Every `Content-Length` must carry
+    the first one's value, which `ToIntegral<uint64_t>` must read.
+    Raises `MalformedRequestHeadError` where Core answers 400, and
+    `OversizedRequestBodyError` for a length past `MAX_BODY_BYTES`, the
+    `MAX_BODY_SIZE` it answers 413.
     """
-    expect = head.field(b"Expect")
-    if expect is not None and (head.version or (0, 0)) >= (1, 1):
-        if expect.lower() != "100-continue":
-            detail = f"Expect {expect!r}"
-            return replace(head, error=UnmetExpectationError(detail))
-        head = replace(head, expects_continue=True)
-    if not head.chunked and head.length > MAX_BODY_BYTES:
+    values = [value for key, value in head.fields if key.lower() == b"content-length"]
+    if not values:
+        return 0
+    if any(value != values[0] for value in values):
+        detail = "Content-Length values that differ"
+        raise MalformedRequestHeadError(detail)
+    length = _uint64(values[0], 10)
+    if length is None:
+        detail = f"Content-Length {values[0]!r}"
+        raise MalformedRequestHeadError(detail)
+    if length > MAX_BODY_BYTES:
         detail = f"Content-Length past {MAX_BODY_BYTES}"
-        return replace(head, error=OversizedRequestBodyError(detail))
-    return head
-
-
-# `evutil_strtoll(p, &endp, 16)`, the C library's `strtoll` in base 16:
-# leading C white space, a sign, a `0x` where a hex digit follows it,
-# then hex digits. No two parts can match the same character.
-_CHUNK_SIZE = re.compile(rb"[ \t\n\v\f\r]*([+-]?)(0[xX](?=[0-9A-Fa-f]))?([0-9A-Fa-f]*)")
-
-
-def _chunk_size(line: bytes) -> int:
-    """Return the size `evhttp_handle_chunked_read` reads off `line`.
-
-    `line` is a C string, not empty. `strtoll` may stop at the end or
-    at a space, what follows a space never read; with no digit it reads
-    0 and stops where it started. Raises `OversizedRequestBodyError`
-    where libevent refuses the line, for a negative size among them; a
-    size of more hex digits than `MAX_BODY_BYTES` has, leading zeros
-    apart, is returned as `MAX_BODY_BYTES + 1`, refused as it would be.
-    """
-    # every part of the pattern is optional, so it always matches
-    match = cast("re.Match[bytes]", _CHUNK_SIZE.match(line))
-    sign, _, digits = match.groups()
-    end = match.end() if digits else 0
-    digits = digits.lstrip(b"0")
-    size = (
-        MAX_BODY_BYTES + 1
-        if len(digits) > len(f"{MAX_BODY_BYTES:x}")
-        else int(digits or b"0", 16)
-    )
-    if line[end : end + 1] not in {b"", b" "} or (sign == b"-" and size):
-        detail = f"chunk size {line!r}"
         raise OversizedRequestBodyError(detail)
-    return size
+    return length
 
 
 class _ChunkedReader:
-    """`evhttp_handle_chunked_read`, then `evhttp_read_trailer`.
+    """`HTTPRequest::LoadBody` over a chunked body, then its trailer.
 
-    Each size line is read as a C string, and one empty as one is
-    skipped; a size's data is taken whole, whatever follows it read as
-    the next size line, so the line ending after it is an empty line
-    skipped. A size of 0 ends the body, and the trailer after it is a
-    header section read as `_FieldReader` reads one, counted on from
-    `head`'s and added to its fields, which `fields` is once the trailer
-    is whole. libevent answers 413 for a size line it cannot read, a
-    body past `MAX_BODY_BYTES` and a trailer it refuses, and so does
-    this, raising `OversizedRequestBodyError`. libevent reads a size
-    line of any length; this closes the connection, answering nothing,
-    once one runs past `MAX_BODY_BYTES`, which bounds what it buffers.
+    A size line is read up to its first `;`, white space trimmed, as a
+    hexadecimal `ToIntegral<uint64_t>`. A size's data is taken whole,
+    and the line after it must be empty. A size of 0 ends the body, and
+    the trailer after it is a header section read as `_FieldReader`
+    reads one, counted on from `head`'s and not kept. A size line Core
+    cannot read, data not ended by an empty line and a trailer it
+    refuses raise `MalformedRequestHeadError`, answered 400; a body
+    past `MAX_BODY_BYTES` raises `OversizedRequestBodyError`, answered
+    413.
     """
 
     def __init__(self, buffer: bytearray, head: RequestHead) -> None:
@@ -853,49 +603,46 @@ class _ChunkedReader:
         self.lines = _LineReader(buffer)
         self.head = head
         self.body = bytearray()
-        self.pending = -1
+        # Core's `m_chunk_size`, `None` where a size line is next
+        self.size: int | None = None
+        # whether the data of a chunk of `size` octets is taken
+        self.taken = False
         self.trailer: _FieldReader | None = None
-        self.fields = head.fields
 
     def read(self) -> bool:
         """Read what `buffer` holds; `True` once the trailer is whole."""
         while self.trailer is None:
-            if self.pending > 0:
-                if len(self.lines.buffer) < self.pending:
+            if self.size is None:
+                if (line := self.lines.readln()) is None:
                     return False
-                self.body += self.lines.take(self.pending)
-                self.pending = -1
-            elif not self._read_size():
+                self.size = self._chunk_size(line)
+                if not self.size:
+                    self.trailer = _FieldReader(self.lines, self.head.size, keep=False)
+                    break
+            if not self.taken:
+                if len(self.lines.buffer) < self.size:
+                    return False
+                self.body += self.lines.take(self.size)
+                self.taken = True
+            if (line := self.lines.readln()) is None:
                 return False
-        try:
-            done = self.trailer.read()
-        except MalformedRequestHeadError as e:
-            raise OversizedRequestBodyError(str(e)) from e
-        if done:
-            self.fields = tuple(self.trailer.fields)
-        return done
+            if line:
+                detail = "a chunk not ended by an empty line"
+                raise MalformedRequestHeadError(detail)
+            self.size = None
+            self.taken = False
+        return self.trailer.read()
 
-    def _read_size(self) -> bool:
-        """Read a size line, `False` where none is whole yet."""
-        line = self.lines.readln()
-        if line is None:
-            # This node's own bound, where libevent has none. A size line
-            # just under it is read in one pass once ended, which took
-            # about 160 ms of CPU for a 32 MiB line on an Apple M5.
-            if len(self.lines.buffer) > MAX_BODY_BYTES:
-                raise ConnectionError
-            return False
-        text = line.partition(b"\0")[0]
-        if text:
-            self.pending = _chunk_size(text)
-            if len(self.body) + self.pending > MAX_BODY_BYTES:
-                detail = "chunked body past MAX_BODY_BYTES"
-                raise OversizedRequestBodyError(detail)
-            if not self.pending:
-                self.trailer = _FieldReader(
-                    self.lines, self.head.size, self.head.fields
-                )
-        return True
+    def _chunk_size(self, line: bytes) -> int:
+        """Return the size `line` declares, refusing what Core refuses."""
+        size = _uint64(line.partition(b";")[0].strip(_WHITESPACE), 16)
+        if size is None:
+            detail = f"chunk size line of {len(line)} octets"
+            raise MalformedRequestHeadError(detail)
+        if size > MAX_BODY_BYTES - len(self.body):
+            detail = "chunked body past MAX_BODY_BYTES"
+            raise OversizedRequestBodyError(detail)
+        return size
 
 
 def parse_request_head(data: bytes) -> RequestHead:
@@ -913,12 +660,11 @@ def parse_request_head(data: bytes) -> RequestHead:
 
     Read as `_HeadReader` reads a section. Raises
     `IncompleteRequestHeadError` where `data` holds no whole section and
-    libevent would wait for more -- `run`'s own call site never hits
-    this, since it reads more instead, but a fuzzed byte string has no
-    such guarantee. Raises `MalformedRequestHeadError`, answered 400,
-    for a section libevent refuses, `UnmetExpectationError` for an
-    `Expect` it answers 417, and `OversizedRequestBodyError` for a
-    `Content-Length` past `MAX_BODY_BYTES`, which libevent answers 413.
+    Core would wait for more -- `run`'s own call site never hits this,
+    since it reads more instead, but a fuzzed byte string has no such
+    guarantee. Raises `MalformedRequestHeadError`, answered 400, for a
+    section Core refuses, and `OversizedRequestBodyError` for a
+    `Content-Length` past `MAX_BODY_BYTES`, which Core answers 413.
     """
     head = _HeadReader(bytearray(data)).read()
     if head is None:
@@ -1054,21 +800,11 @@ class RpcConnection:
         A refusal, `head`'s own or `_ChunkedReader`'s, is answered by
         `_send_framing_error`. What is left after the body belongs to a
         request after this one -- pipelined ahead of its own reply, or
-        simply not sent yet -- and is left in `self.buffer` for it. A
-        chunked body's trailer fields are the request's too, returned with
-        the body in the head, which is `self.head` from then on.
-
-        An `Expect: 100-continue` is answered `100 Continue` first, in the
-        request's own version, as `evhttp_send_continue` answers it, where
-        nothing of the body came with the head.
+        simply not sent yet -- and is left in `self.buffer` for it.
         """
         if head.error is not None:
             self._send_framing_error(head.error)
             return None
-        if head.expects_continue and not self.buffer:
-            major, minor = head.version or (0, 0)
-            interim = f"HTTP/{major}.{minor} 100 Continue\r\n\r\n"
-            await self.loop.sock_sendall(self.client, interim.encode())
         if not head.chunked:
             length = head.length
             await self._recv_until(lambda: len(self.buffer) >= length)
@@ -1079,14 +815,9 @@ class RpcConnection:
         try:
             while not chunked.read():
                 await self._recv()
-        except OversizedRequestBodyError as e:
-            # libevent adds each trailer field as it reads it, so those
-            # read before the refusal frame its answer
-            if chunked.trailer is not None:
-                self.head = replace(head, fields=tuple(chunked.trailer.fields))
+        except (MalformedRequestHeadError, OversizedRequestBodyError) as e:
             self._send_framing_error(e)
             return None
-        head = self.head = replace(head, fields=chunked.fields)
         return head, bytes(chunked.body)
 
     async def run(self) -> None:
@@ -1107,11 +838,10 @@ class RpcConnection:
         this task runs under.
 
         In the order Core answers them, and none of them queued: a
-        header section `_HeadReader` refuses, an `Expect` it does not
-        meet, or a chunked body `_ChunkedReader` refuses, is answered
-        400, 417 or 413 by `_send_framing_error`, as soon as it is
-        refused; a method outside `_LIBEVENT_METHODS` is answered
-        501; `manager.interrupted` is answered 503, by
+        header section `_HeadReader` refuses, or a chunked body
+        `_ChunkedReader` refuses, is answered 400 or 413 by
+        `_send_framing_error`, as soon as it is refused;
+        `manager.interrupted` is answered 503, by
         `_refused_early` ahead of everything below it, or by
         `_send_shutdown_refusal` where it is set only once
         `_refused_early` has let the request through (issue #1515); a
@@ -1302,38 +1032,31 @@ class RpcConnection:
     def _refused_early(self, head: RequestHead) -> bool:
         """Schedule the reply to what Core refuses ahead of the credential.
 
-        A method outside `_LIBEVENT_METHODS` is libevent's 501, answered
-        before any request callback of Core's runs. Past that,
         `manager.interrupted` is a 503: `InterruptHTTPServer`
-        (`src/httpserver.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-        tag) swaps `http_request_cb` -- the callback the checks below
-        model, `_refusal`'s own docstring naming which -- out for
-        `http_reject_request_cb`, which answers every request that
-        reaches it `503` outright. A real `bitcoind` v31.1.0, a `stop`
-        RPC asleep in its hidden `wait`, answers `FOO` 501 and a `POST`
-        or a `DELETE` 503. Then a method or a target `_refusal` refuses
-        is answered as it says. A source `-rpcallowip` does not name
-        never reaches this: `RpcManager._accept_loop` closes it. Answers
-        whether a reply was scheduled.
+        (`src/httpserver.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+        tag) swaps `MaybeDispatchRequestToWorker` -- the dispatcher the
+        checks below model, `_refusal`'s own docstring naming which --
+        out for `RejectRequest`, which answers every request that reaches
+        it `503` with no body, whatever its method. Then a method or a
+        target `_refusal` refuses is answered as it says. A source
+        `-rpcallowip` does not name never reaches this:
+        `RpcManager._accept_loop` closes it. Answers whether a reply was
+        scheduled.
         """
-        if head.method in _LIBEVENT_METHODS and self.manager.interrupted.is_set():
+        if self.manager.interrupted.is_set():
             self.manager.logger.log_debug(
                 "http", "Rejecting request while shutting down"
             )
             self._refusal_reply = self._start_reply(
-                self._send_refusal(
-                    _SERVICE_UNAVAILABLE,
-                    _error_page(_SERVICE_UNAVAILABLE),
-                    page=True,
-                )
+                self._send_refusal(_SERVICE_UNAVAILABLE)
             )
             return True
         refusal = _refusal(head.method, head.target)
         if refusal is None:
             return False
-        status, refusal_body = refusal
+        status, refusal_body, fields = refusal
         self._refusal_reply = self._start_reply(
-            self._send_refusal(status, refusal_body, page=status == _NOT_IMPLEMENTED)
+            self._send_refusal(status, refusal_body, fields)
         )
         return True
 
@@ -1343,64 +1066,43 @@ class RpcConnection:
         body: bytes,
         fields: tuple[str, ...] = (),
         *,
-        page: bool = False,
+        close: bool = False,
     ) -> bytes:
         """Frame `body` under `status` and `fields`, answering `self.head`.
 
-        libevent's `evhttp_make_header_response` and `evhttp_send_done`:
-        the status line carries the request's own version. HTTP/1.1 on,
-        and HTTP/1.0 asking `keep-alive`, get `Content-Length`, the
-        latter with `Connection: keep-alive`; any other version gets
-        neither. A request asking to close gets `Connection: close`, and
-        a proxy request (`RequestHead.proxy`) no `Connection` at all.
-        `page` is `evhttp_send_error`'s page, which replaces `fields`
-        with `Connection: close` and answers a version with a zero in it
-        as HTTP/1.1.
+        Core's `HTTPRequest::WriteReply`: the status line carries the
+        request's own version, HTTP/1.1 where Core had not read it. A
+        request of HTTP/1.1 on is kept open; one of HTTP/1.0 is kept
+        open where its first `Connection` field is `keep-alive`, and the
+        answer then says `Connection: keep-alive`. An answer on a
+        connection kept open carries `Content-Length`, unless it is a
+        204. A request whose first `Connection` field is `close` gets
+        `Connection: close`, and is not kept open. Both are compared
+        whole and ASCII case-insensitively. `RequestHead.field` decodes
+        a value as Latin-1, where `lower` changes no character into an
+        ASCII one.
 
-        Sets `self.keep_alive`: a connection closes after a request
-        before HTTP/1.1 that did not ask `keep-alive`, and after a
-        proxy request or an answer carrying `Connection: close`, unless
-        the request is a `CONNECT`. A `CONNECT`'s answer and a 204 carry
-        no `Content-Length`, as `evhttp_response_needs_body`; a
-        `HEAD`'s does, `_refusal` saying why. The `Date` header libevent
-        adds, and the `Content-Type` it adds where `fields` has none,
-        are not written.
+        Sets `self.keep_alive`, `False` where `close` asks for it with no
+        field written. The `Date` field Core adds from HTTP/1.1 on, and
+        the `Content-Type` it adds where `fields` has none, are not
+        written.
         """
         head = self.head
         if head is None:
             detail = "no request to answer"
             raise RuntimeError(detail)
-        major, minor = head.version or (0, 0)
-        if page:
-            fields = ("Connection: close",)
-            if not major or not minor:
-                major, minor = 1, 1
-        # `evhttp_is_connection_keepalive` compares a prefix, and
-        # `evhttp_is_connection_close` the whole value, both ASCII
-        # case-insensitively; `RequestHead.field` decodes a value as
-        # Latin-1, where `lower` changes no character into an ASCII one
+        major, minor = head.version or (1, 1)
         connection = (head.connection or "").lower()
-        asks_keep_alive = connection.startswith("keep-alive")
-        asks_close = connection == "close"
-        if head.proxy:
-            asks_close = (head.proxy_connection or "").lower() != "keep-alive"
+        keep_alive = minor >= 1 or connection == "keep-alive"
         lines = list(fields)
-        if major == 1:
-            if minor == 0 and asks_keep_alive:
-                lines.append("Connection: keep-alive")
-            if (
-                (minor >= 1 or asks_keep_alive)
-                and status != NO_CONTENT
-                and head.method != b"CONNECT"
-            ):
-                lines.append(f"Content-Length: {len(body)}")
-        if asks_close:
-            lines = [line for line in lines if not line.startswith("Connection:")]
-            if not head.proxy:
-                lines.append("Connection: close")
-        old = (major, minor) < (1, 1) and not asks_keep_alive
-        closing = head.proxy or "Connection: close" in lines
-        self.keep_alive = not old and (head.method == b"CONNECT" or not closing)
+        if minor == 0 and keep_alive:
+            lines.append("Connection: keep-alive")
+        if keep_alive and status != NO_CONTENT:
+            lines.append(f"Content-Length: {len(body)}")
+        if connection == "close":
+            lines.append("Connection: close")
+            keep_alive = False
+        self.keep_alive = keep_alive and not close
         text = f"HTTP/{major}.{minor} {status}\r\n"
         text += "".join(f"{line}\r\n" for line in lines)
         return (text + "\r\n").encode() + body
@@ -1414,13 +1116,11 @@ class RpcConnection:
         decides what happens once the reply is on the wire: `client`
         closes, or this reads another request off the same socket
         (issue #640). A reply with no body is `rpc.jsonrpc.NO_CONTENT`,
-        which `bitcoind` writes with no `Content-Type`. `close` is the
-        `Connection: close` Core's `HTTPRequest::WriteReply` adds once
-        shutdown has begun.
+        which `bitcoind` writes with no `Content-Type`. `close` closes
+        `client` once the reply is written, whatever the request asked.
         """
-        fields = ("Connection: close",) if close else ()
         if reply.body is None:
-            await self._write(self._frame(reply.status, b"", fields))
+            await self._write(self._frame(reply.status, b"", close=close))
             return
         # A fresh token per call, not a fixed word: RawJSON's own
         # docstring has why -- a legitimate string value containing a
@@ -1437,48 +1137,35 @@ class RpcConnection:
         # produced before this ran.
         output_str = re.sub(f'"{mark}(.*?){mark}"', r"\1", output_str)
         body = (output_str + "\n").encode()
-        fields = ("Content-Type: application/json", *fields)
-        await self._write(self._frame(reply.status, body, fields))
+        fields = ("Content-Type: application/json",)
+        await self._write(self._frame(reply.status, body, fields, close=close))
 
     def _send_framing_error(
-        self,
-        error: MalformedRequestHeadError
-        | OversizedRequestBodyError
-        | UnmetExpectationError,
+        self, error: MalformedRequestHeadError | OversizedRequestBodyError
     ) -> None:
-        """Schedule libevent's answer to a request it cannot frame.
+        """Schedule Core's answer to a request it cannot read.
 
-        `evhttp_connection_incoming_fail`: 413 for a body libevent
-        refuses and 400 for the rest, as `evhttp_send_error`'s own page,
-        which `_frame` closes after unless the request is a `CONNECT`;
-        and `evhttp_get_body`'s own `evhttp_send_error` of 417 for an
-        `Expect` it does not meet, the body left unread.
+        `HTTPRemoteClient::TryReadRequest`: 413 for a body past
+        `MAX_BODY_BYTES` and 400 for the rest, with no body, and the
+        connection closed after it.
         """
         status = _BAD_REQUEST
         if isinstance(error, OversizedRequestBodyError):
-            status = _ENTITY_TOO_LARGE
-        elif isinstance(error, UnmetExpectationError):
-            status = _EXPECTATION_FAILED
-        self._refusal_reply = self._start_reply(
-            self._send_refusal(status, _error_page(status), page=True)
-        )
+            status = _CONTENT_TOO_LARGE
+        self._refusal_reply = self._start_reply(self._send_refusal(status, close=True))
 
     def _shutting_down(self) -> bool:
-        """Whether `Node.terminate_flag` is set: Core's `m_interrupt`.
+        """Whether `Node.terminate_flag` is set, after which a reply closes.
 
-        `HTTPRequest::WriteReply` adds `Connection: close` to the reply it
-        writes once its `m_interrupt`, the `node.shutdown_signal`
-        `InitHTTPServer` hands every request, has been raised
-        (`src/httpserver.cpp`, `src/init.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Read where Core reads
-        it, as each reply is produced: after a 401's
+        Core writes no field for it: `StopHTTPServer` disconnects every
+        client once its replies are sent (`DisconnectAllClients`,
+        `src/httpserver.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+        tag). Core keeps a connection open until then, and answers a
+        request on it 503 (`_refused_early`); this closes it as each
+        reply is written. Read as each reply is produced: after a 401's
         `FAILED_ATTEMPT_DELAY`, not before (btclib-org/btclib-node#1542).
         """
         return self.manager.node.terminate_flag.is_set()
-
-    def _write_reply_fields(self) -> tuple[str, ...]:
-        """Return the header `WriteReply` adds once `_shutting_down`."""
-        return ("Connection: close",) if self._shutting_down() else ()
 
     async def _send_whitelist_refusal(self, refusal: Refusal) -> None:
         """Answer `refusal`, a request `-rpcwhitelist` refuses.
@@ -1486,8 +1173,8 @@ class RpcConnection:
         Measured against a real `bitcoind` v31.1.0: a 403 has no body,
         and a request Core refuses before its whitelist check is its
         JSON-RPC error object on one line, as `application/json`, framed
-        as `_frame` frames it. The `Content-Type` libevent adds to a 403
-        is not written, as `_send_unauthorized` does not write it.
+        as `_frame` frames it. The `Content-Type` Core adds to a 403 is
+        not written, as `_send_unauthorized` does not write it.
         """
         fields: tuple[str, ...] = ()
         body = b""
@@ -1495,8 +1182,9 @@ class RpcConnection:
             fields = ("Content-Type: application/json",)
             text = json.dumps(refusal.body, separators=(",", ":"), ensure_ascii=False)
             body = (text + "\n").encode()
-        fields += self._write_reply_fields()
-        await self._write(self._frame(refusal.status, body, fields))
+        await self._write(
+            self._frame(refusal.status, body, fields, close=self._shutting_down())
+        )
 
     async def _send_unauthorized(self, delay: float) -> None:
         """Answer 401 with Core's `WWW-Authenticate`, `delay` seconds from now.
@@ -1504,61 +1192,68 @@ class RpcConnection:
         Measured against a real `bitcoind` v31.1.0: `401 Unauthorized`,
         `WWW-Authenticate: Basic realm="jsonrpc"` and no body, after 0.25
         seconds for a wrong credential and at once for none, framed as
-        `_frame` frames it. Core's reply also carries the `Content-Type`
-        header libevent adds, which this does not write.
+        `_frame` frames it. Core's reply also carries a `Content-Type`,
+        which this does not write.
         """
         await asyncio.sleep(delay)
-        fields = (f"WWW-Authenticate: {WWW_AUTHENTICATE}", *self._write_reply_fields())
-        await self._write(self._frame("401 Unauthorized", b"", fields))
+        fields = (f"WWW-Authenticate: {WWW_AUTHENTICATE}",)
+        await self._write(
+            self._frame("401 Unauthorized", b"", fields, close=self._shutting_down())
+        )
 
     async def _send_refusal(
-        self, status: str, body: str, *, page: bool = False
+        self,
+        status: str,
+        body: str = "",
+        fields: tuple[str, ...] = (_NO_STORE,),
+        *,
+        close: bool = False,
     ) -> None:
-        """Answer `status` with `body`, one of `_refusal`'s own replies.
+        """Answer `status` with `body` and `fields`, as `_frame` frames them.
 
-        The status line and the body are `bitcoind` v31.1.0's, framed as
-        `_frame` frames them, `page` saying the body is libevent's own
-        error page; the `Content-Type` header libevent adds is not
-        written, as `_send_unauthorized` does not write it.
+        `fields` is `WriteNoStoreErrorReply`'s `_NO_STORE` unless given.
+        `close` closes `client` after it, as it does once
+        `_shutting_down`.
         """
-        fields = self._write_reply_fields()
-        await self._write(self._frame(status, body.encode(), fields, page=page))
+        await self._write(
+            self._frame(
+                status,
+                body.encode(),
+                fields,
+                close=close or self._shutting_down(),
+            )
+        )
 
     async def _send_queue_refusal(self) -> None:
         """Answer a request that arrives with `RPC_WORK_QUEUE` already waiting.
 
-        `http_request_cb`'s own answer (`src/httpserver.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a warning, then 503
-        "Work queue depth exceeded", before the credential is read.
+        `MaybeDispatchRequestToWorker`'s own answer (`src/httpserver.cpp`,
+        at bitcoin/bitcoin@f0de87f040, the v32.1 tag): a warning, then
+        503 "Work queue depth exceeded", before the credential is read.
         `constants.RPC_THREADS` has what plays the queue here. The warning
         leaves out Core's pointer to `-rpcworkqueue`, which is not read.
         """
         self.manager.logger.warning(
             "Request rejected because http work queue depth exceeded"
         )
-        body = b"Work queue depth exceeded"
-        await self._write(
-            self._frame(_SERVICE_UNAVAILABLE, body, self._write_reply_fields())
-        )
+        await self._send_refusal(_SERVICE_UNAVAILABLE, "Work queue depth exceeded")
 
     async def _send_shutdown_refusal(self) -> None:
         """Answer a request `manager.interrupted` stopped from being queued.
 
-        `http_request_cb`'s own answer where `Submit` refuses a request
-        once the pool is interrupted: a warning naming
+        `MaybeDispatchRequestToWorker`'s own answer where `Submit`
+        refuses a request once the pool is interrupted: a warning naming
         `SubmitError::Interrupted`, then 503 "Request rejected during
-        server shutdown", which `HTTPRequest::WriteReply` sends with
-        `Connection: close` once shutdown has begun (`src/httpserver.cpp`,
-        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The `Content-Type`
-        header libevent adds is not written, as `_send_unauthorized` does
-        not write it.
+        server shutdown" (`src/httpserver.cpp`, at
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag). The connection
+        closes after it, as `_shutting_down` says.
         """
         self.manager.logger.warning(
             "HTTP request rejected during server shutdown: '%s'", "Interrupted"
         )
-        fields = ("Connection: close",)
-        body = b"Request rejected during server shutdown"
-        await self._write(self._frame(_SERVICE_UNAVAILABLE, body, fields))
+        await self._send_refusal(
+            _SERVICE_UNAVAILABLE, "Request rejected during server shutdown", close=True
+        )
 
     async def _write(self, http_response: bytes) -> None:
         """Write one reply, then read the next request or close.
@@ -1635,10 +1330,8 @@ class RpcConnection:
     def send(self, reply: HttpReply) -> None:
         """Schedule `async_send` on `loop`, from `handle_rpc`'s own thread.
 
-        Once `Node.terminate_flag` is set, the reply carries the
-        `Connection: close` Core's `HTTPRequest::WriteReply` adds once
-        shutdown has begun (`src/httpserver.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+        Once `Node.terminate_flag` is set, the connection closes after
+        the reply, as `_shutting_down` says.
         """
         self._hand_reply(self.async_send(reply, close=self._shutting_down()))
 
@@ -1648,8 +1341,8 @@ class RpcConnection:
 
         `rpc.main._step` is the only caller, for a `stop` request: the client
         has to see its own reply before `node.stop()` starts tearing
-        `loop` down under it. Writes `Connection: close` and closes,
-        whatever the request asked for -- `RpcManager.stop`, called right
+        `loop` down under it. Closes once the reply is written, whatever
+        the request asked for -- `RpcManager.stop`, called right
         after this returns, tears the whole loop down, so there is no
         next request this connection could still answer.
         """
