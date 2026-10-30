@@ -69,6 +69,13 @@ __all__ = [
 #
 # `SIGPUSHONLY` is a standardness flag btclib carries and this set leaves
 # out, Core leaving it out of `STANDARD_SCRIPT_VERIFY_FLAGS` too.
+#
+# `MINIMALIF_ALL`, which btclib carries from 2026.10.30, is left out as
+# well. It is not Core's: it applies MINIMALIF to every script, for
+# BIP322, where Core's `SCRIPT_VERIFY_MINIMALIF` reaches witness v0 alone
+# (`src/script/interpreter.cpp:631-637`, at bitcoin/bitcoin@4519933391).
+# In this set it would refuse to relay a P2SH spend that Core relays.
+#
 # `CONST_SCRIPTCODE` is in, and btclib reads it more widely than Core:
 # `btclib.script.engine._check_script_sig_policy` refuses a signature
 # check carried anywhere in the script_sig, where Core errors inside the
