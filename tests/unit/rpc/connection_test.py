@@ -1930,10 +1930,13 @@ def test_one_request_past_a_worker_s_close_is_answered_as_core_does(
 
     It answers it where its socket thread does, and not where a worker
     would: each row is what `bitcoind` v32.1.0 answered
-    (btclib-org/btclib-node#2101). For `worker-get` the worker races
-    the disconnect and sometimes answers; the row is the more common
-    outcome. A close forced by shutdown reads none: Core does not close
-    there.
+    (btclib-org/btclib-node#2101), but two. For `worker-get` the worker
+    races the disconnect and sometimes answers; the row is the more
+    common outcome. `queue-full-503` follows the order of Core's
+    `MaybeDispatchRequestToWorker`, which a run does not reach: the
+    worker writing the closing reply takes the next queued request
+    first. `shutdown-close-reads-none` is this node's own close on
+    shutdown, which reads none: Core does not close there.
     """
     reply, closed = conversation(data, prepare)
     assert reply == expected

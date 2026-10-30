@@ -935,7 +935,7 @@ class RpcConnection:
             self.manager.forget_connection(self.id)
 
     def _queue(self, head: RequestHead, body_bytes: bytes) -> None:
-        """Answer what Core refuses at or past the credential; queue the rest.
+        """Answer what `HTTPReq_JSONRPC` refuses on a worker; queue the rest.
 
         `run` calls this holding `manager.queue_lock`, `manager.interrupted`
         unset. While `manager.in_warmup` holds, a request that passes every
@@ -1349,9 +1349,11 @@ class RpcConnection:
         bitcoin/bitcoin@f0de87f040, the v32.1 tag). While the worker
         runs, that thread receives whenever its buffer is empty
         (`HTTPServer::GenerateWaitSockets`), so it holds what the client
-        sent after the closing request too. This reads `client` once,
-        without waiting, where `self.buffer` is empty, which takes in
-        what the client sent before the reply. A request that thread
+        sent after the closing request too, and what arrives within its
+        next wait, up to `SELECT_TIMEOUT` (50 ms). This reads `client`
+        once, without waiting, where `self.buffer` is empty, which takes
+        in what the client sent before the reply, and not what arrives
+        after it (btclib-org/btclib-node#2153). A request that thread
         answers itself is then answered, as `_socket_thread_answer`
         says. One it hands to a worker is not: that worker races the
         disconnect and sometimes answers, and this takes the more common
