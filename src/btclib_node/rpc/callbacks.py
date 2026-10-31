@@ -4709,7 +4709,7 @@ arg_names: dict[str, tuple[str, ...]] = {
     "getrawtransaction": ("txid", "verbosity|verbose", "blockhash"),
     "gettxout": ("txid", "n", "include_mempool"),
     "gettxoutsetinfo": ("hash_type", "hash_or_height", "use_index"),
-    "dumptxoutset": ("path", "type", "options|rollback"),
+    "dumptxoutset": ("path", "type", "options|rollback|in_memory"),
     "scantxoutset": ("action", "scanobjects"),
     "decoderawtransaction": ("hexstring", "iswitness"),
     "testmempoolaccept": ("rawtxs", "maxfeerate"),
@@ -4731,7 +4731,7 @@ arg_names: dict[str, tuple[str, ...]] = {
 # The names of each method's `OBJ_NAMED_PARAMS` options, which
 # `transform_named_arguments` gathers into the options object.
 named_only: dict[str, tuple[str, ...]] = {
-    "dumptxoutset": ("rollback",),
+    "dumptxoutset": ("rollback", "in_memory"),
     "gettxspendingprevout": ("mempool_only", "return_spending_tx"),
     "importmempool": (
         "use_current_time",

@@ -159,7 +159,7 @@ def test_the_tip_is_dumped_as_bitcoind_dumps_it(both: tuple[Bitcoind, Node]) -> 
     assert ours["coins_written"] > 300
 
 
-@pytest.mark.parametrize("target", ["height", "hash", "type"])
+@pytest.mark.parametrize("target", ["height", "hash", "type", "in_memory"])
 def test_a_rollback_is_dumped_as_bitcoind_dumps_it(
     both: tuple[Bitcoind, Node], target: str
 ) -> None:
@@ -167,13 +167,17 @@ def test_a_rollback_is_dumped_as_bitcoind_dumps_it(
     bitcoind, node = both
     for number in (len(_SCRIPTS) + 1, 7):
         base = cast("str", bitcoind.rpc("getblockhash", [number]))
-        rollback: object = number if target == "height" else base
+        options: dict[str, object] = {
+            "rollback": base if target in ("hash", "type") else number
+        }
+        if target == "in_memory":
+            options["in_memory"] = True
         ours, theirs, our_file, their_file = _both(
             both,
             [
                 f"back{number}.dat",
                 "" if target != "type" else "rollback",
-                {"rollback": rollback},
+                options,
             ],
         )
         assert ours["base_height"] == number
@@ -210,13 +214,11 @@ _REFUSED: list[list[Any]] = [
     ["a.dat", "", {"rollback": 1.5}],
     ["a.dat", "", {"rollback": [1]}],
     ["a.dat", "rollback"],
+    ["a.dat", "", {"rollback": 3, "in_memory": "x"}],
+    ["a.dat", "", {"rollback": 3, "in_memory": None}],
 ]
 
 
-@pytest.mark.xfail(
-    raises=AssertionError,
-    reason="v32.1 diverges: dumptxoutset help (btclib-org/btclib-node#2103)",
-)
 def test_refusals_are_bitcoind_s(both: tuple[Bitcoind, Node]) -> None:
     """Each has bitcoind's code and message."""
     bitcoind, node = both
