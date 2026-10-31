@@ -2494,20 +2494,19 @@ def _warn_unrecognized_sections(settings: _Settings) -> None:
 def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     """Read `argv` and its file, and refuse what Core refuses before its lock.
 
-    `InitConfig`, then `AppInitParameterInteraction` (`src/init.cpp`, at
-    bitcoin/bitcoin@9be056a8a7) in its order: a `NETWORK_ONLY` option set
-    only in the default section off `main`, the warning about a section
-    naming no chain, a missing blocks directory, `-prune` beside
-    `-reindex-chainstate`, `-forcednsseed` beside a `-dnsseed` that is
-    off, a negative `-maxconnections`, a `-rpcmaxconnections` below one
-    (where Core's `master` refuses it, at bitcoin/bitcoin@649bc0a645),
-    `-debug`'s categories, `-testactivationheight` on mainnet (at
-    bitcoin/bitcoin@f0de87f040, the v32.1 tag), `-minimumchainwork`,
-    `-assumevalid`, `-maxtipage` (the order
-    `node::ApplyArgsManOptions`'s own chainstate-manager options are
-    read in,
-    `src/node/chainstatemanager_args.cpp`, at bitcoin/bitcoin@9be056a8a7),
-    `-prune`, the mempool's options.
+    `InitConfig`, then `AppInitParameterInteraction` (`src/init.cpp`,
+    at bitcoin/bitcoin@9be056a8a7) in its order: a `NETWORK_ONLY`
+    option set only in the default section off `main`, the warning
+    about a section naming no chain, a missing blocks directory,
+    `-prune` beside `-reindex-chainstate`, `-forcednsseed` beside
+    a `-dnsseed` that is off, a negative `-maxconnections`, a
+    `-rpcmaxconnections` below one (where Core's `master` refuses
+    it, at bitcoin/bitcoin@649bc0a645), `-debug`'s categories,
+    `-testactivationheight` on mainnet (at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag), `-minimumchainwork`, `-assumevalid`, `-maxtipage`
+    (the order `node::ApplyArgsManOptions`'s own chainstate-manager
+    options are read in, `src/node/chainstatemanager_args.cpp`, at
+    bitcoin/bitcoin@9be056a8a7), `-prune`, the mempool's options.
     """
     settings, base_dir, chain_name, activation_heights = _read_settings(argv)
     _check_network_only_args(settings)
