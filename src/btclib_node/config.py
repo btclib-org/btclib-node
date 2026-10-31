@@ -566,7 +566,7 @@ class Config:
     rpc_host: str | None
     # Core's `-rpcbind` values, checked by `cli`: `RpcManager` binds
     # them where `rpcallowip` below names something, and warns over them
-    # where it does not, as `HTTPBindAddresses` does.
+    # where it does not, as `GetBindAddresses` does.
     rpcbind: tuple[str, ...]
     # Core's `-rpcallowip` values, which `RpcManager` parses when it
     # starts, as `InitHTTPServer` parses them, and closes a connection

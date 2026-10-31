@@ -2624,6 +2624,33 @@ def test_a_node_logs_the_configuration_warnings_first(tmp_path: Path) -> None:
     assert warning_at < version_at < section_at < loop_at
 
 
+def test_stop_waits_on_a_reply_deadline_past_timeout_max(tmp_path: Path) -> None:
+    """ISS 2152: a `-rpcservertimeout` past `threading.TIMEOUT_MAX` stops.
+
+    `_finish_replies` records `request_timeout` past now, as here, and
+    `Node.stop` waits on what is left of it in `join`, which raises
+    `OverflowError` past `TIMEOUT_MAX` unless the wait is capped there.
+    Core reads the option as `int64_t` seconds, so it accepts such a
+    value.
+    """
+    seconds = int(threading.TIMEOUT_MAX) + 1
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path,
+            allow_p2p=False,
+            allow_rpc=False,
+            rpcservertimeout=seconds,
+        )
+    )
+    node.start()
+    request_timeout = node.rpc_manager.request_timeout
+    assert request_timeout == float(seconds)
+    node.rpc_manager.extend_reply_deadline(time.monotonic() + request_timeout)
+    node.stop()
+    assert not node.is_alive()
+
+
 def test_a_node_logs_the_debug_warnings_after_the_section_warning(
     tmp_path: Path,
 ) -> None:
