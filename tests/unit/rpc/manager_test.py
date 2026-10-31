@@ -224,6 +224,11 @@ def test_bindable_refuses_a_name() -> None:
     assert not bindable("localhost")
 
 
+def test_bindable_refuses_an_address_of_no_interface_here() -> None:
+    """The control for `LOOPBACKS`: `192.0.2.1`, TEST-NET-1, fails its bind."""
+    assert not bindable("192.0.2.1")
+
+
 def test_bind_uses_both_loopbacks_not_every_interface(
     a_manager: AManagerFactory,
 ) -> None:
@@ -350,7 +355,8 @@ def test_an_option_core_passes_over_is_logged_at_debug(
         def setsockopt(self, level: int, optname: int, value: Any, *rest: Any) -> None:
             if (level, optname) in refused:
                 raise OSError(errno.ENOPROTOOPT, "Protocol not available")
-            super().setsockopt(level, optname, value, *rest)
+            # `SO_EXCLUSIVEADDRUSE`, set on Windows alone
+            super().setsockopt(level, optname, value, *rest)  # pragma: no cover
 
     monkeypatch.setattr(socket, "socket", Refusing)
     service = lookup_service(loopback, 0)
@@ -434,9 +440,8 @@ def test_a_host_that_is_no_address_is_not_looked_up(
         name: bytes | str | None, port: bytes | str | int | None, **kw: Any
     ) -> list[Any]:
         flags_asked.append(kw.get("flags", 0))
-        if not flags_asked[-1] & socket.AI_NUMERICHOST:
-            name = "127.0.0.1"
-        return lookup(name, port, **kw)
+        numeric = flags_asked[-1] & socket.AI_NUMERICHOST
+        return lookup(name if numeric else "127.0.0.1", port, **kw)
 
     monkeypatch.setattr(socket, "getaddrinfo", answering_every_name)
     port = get_random_port()
