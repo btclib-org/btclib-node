@@ -51,6 +51,7 @@ from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
 from btclib_node.chains import RegTest
+from btclib_node.config import lookup_service
 from btclib_node.p2p.address import peer_address
 from btclib_node.rpc import manager as rpc_manager
 from btclib_node.rpc.auth import COOKIE_FILE, password_hmac
@@ -720,26 +721,35 @@ def get_random_port() -> int:
     return _PORTS.draw()
 
 
-def resolvable(host: str) -> bool:
-    """Whether the lookup the JSON-RPC listener binds through answers `host`.
+def _family(host: str) -> socket.AddressFamily:
+    """Return the address family of the loopback `host`."""
+    return socket.AF_INET6 if ":" in host else socket.AF_INET
 
-    `AI_ADDRCONFIG`, which libevent holds a literal to off Windows, can
-    refuse `::1` on a host with no IPv6 address, so what `bitcoind`
-    binds depends on the machine too. A loopback this refuses is one the
-    tests neither open nor expect bound.
+
+def bindable(host: str) -> bool:
+    """Whether the JSON-RPC listener can bind `host` on this machine.
+
+    Its lookup reads a numeric address alone, and `::1` binds only on a
+    host with IPv6, so what `bitcoind` binds depends on the machine too.
+    A loopback this refuses is one the tests neither open nor expect
+    bound.
     """
-    # numeric alone, which changes nothing for a literal and keeps a
-    # name from being looked up
-    flags = rpc_manager._address_flags(host) | socket.AI_NUMERICHOST
-    try:
-        socket.getaddrinfo(host, 0, type=socket.SOCK_STREAM, flags=flags)
-    except OSError:
+    service = lookup_service(host, 0)
+    if service is None:
         return False
+    with socket.socket(_family(host), socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind((str(service[0]), 0))
+        except OSError:
+            return False
     return True
 
 
 # the loopbacks the JSON-RPC listener binds by default, on this machine
-LOOPBACKS = [host for host in rpc_manager._LOOPBACK_HOSTS if resolvable(host)]
+LOOPBACKS = [host for host in rpc_manager._LOOPBACK_HOSTS if bindable(host)]
+
+# what `_bind` warns where a bind fails, then the address and the reason
+BIND_FAILED = "Binding RPC on address %s failed: %s"
 
 
 def unbindable(args: tuple[object, ...]) -> bool:
@@ -748,10 +758,10 @@ def unbindable(args: tuple[object, ...]) -> bool:
     What the JSON-RPC listener logs on a host without IPv6, whatever the
     test: a test recording warnings passes these over.
     """
-    return (
-        args[:1] == ("Binding RPC on address %s port %s failed.",)
-        and args[1] not in LOOPBACKS
-    )
+    if args[:1] != (BIND_FAILED,):
+        return False
+    host = str(args[1]).rpartition(":")[0].removeprefix("[").removesuffix("]")
+    return host not in LOOPBACKS
 
 
 def warnings_into(logged: list[tuple[object, ...]]) -> Callable[..., None]:
@@ -762,11 +772,6 @@ def warnings_into(logged: list[tuple[object, ...]]) -> Callable[..., None]:
             logged.append(args)
 
     return warning
-
-
-def _family(host: str) -> socket.AddressFamily:
-    """Return the address family of the loopback `host`."""
-    return socket.AF_INET6 if ":" in host else socket.AF_INET
 
 
 def assert_loopbacks_free(port: int) -> None:

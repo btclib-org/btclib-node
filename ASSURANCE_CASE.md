@@ -290,10 +290,9 @@ describes.
   transport, the census under *Threat model* shows. The only sockets
   this process opens are the p2p and RPC listeners and the outbound
   peer connections `P2pManager.connect` makes. Names are resolved by
-  `getaddrinfo`, for the DNS seeds (`p2p/address.py`), for `-connect`
-  and `-addnode` hosts (`p2p/manager.py`) and for `-rpcbind` hosts
-  (`rpc/manager.py`). The only files it opens are the ones *The
-  environment and the files* names.
+  `getaddrinfo`, for example for the DNS seeds (`p2p/address.py`) and
+  for `-connect` and `-addnode` hosts (`p2p/manager.py`). The only files
+  it opens are the ones *The environment and the files* names.
 - **Psychological acceptability.** A malformed RPC request answers
   the HTTP status and the error `bitcoind` answers it with rather than
   closing the socket with nothing said, so a caller can tell its own

@@ -16,31 +16,38 @@ import errno
 import inspect
 import json
 import os
+import re
 import select
 import socket
+import sys
 import threading
 import time
 from concurrent.futures import Future
 from contextlib import suppress
+from ipaddress import IPv4Address, IPv6Address
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast, override
 
 import pytest
+from btclib.p2p.addrv2 import BIP155Network
 
 from btclib_node.chains import RegTest
-from btclib_node.config import Config
+from btclib_node.config import Config, lookup_service, service_text
+from btclib_node.constants import CLIENT_NAME
 from btclib_node.log import Logger
+from btclib_node.p2p.banman import SpecialAddress
 from btclib_node.rpc import manager as manager_module
 from btclib_node.rpc.connection import REQUEST_TIMEOUT, parse_request_head
 from btclib_node.rpc.jsonrpc import OK, HttpReply
 from btclib_node.rpc.manager import RpcManager
 from tests import (
+    BIND_FAILED,
     LOOPBACKS,
     RPCAUTH,
     RPCAUTH_LINE,
+    bindable,
     cookie_path,
     get_random_port,
-    resolvable,
     taken_loopbacks,
     wait_until,
     wait_until_listening,
@@ -206,20 +213,21 @@ def test_warnings_into_passes_over_a_loopback_the_host_cannot_bind() -> None:
     """
     logged: list[tuple[object, ...]] = []
     warning = warnings_into(logged)
-    warning("Binding RPC on address %s port %s failed.", "::2", 1)
-    warning("Binding RPC on address %s port %s failed.", LOOPBACKS[0], 1)
-    assert logged == [("Binding RPC on address %s port %s failed.", LOOPBACKS[0], 1)]
+    recorded = f"[{LOOPBACKS[0]}]:1" if ":" in LOOPBACKS[0] else f"{LOOPBACKS[0]}:1"
+    warning(BIND_FAILED, "[::2]:1", "refused")
+    warning(BIND_FAILED, recorded, "refused")
+    assert logged == [(BIND_FAILED, recorded, "refused")]
 
 
-def test_resolvable_refuses_what_the_lookup_does_not_answer() -> None:
-    """The control for `LOOPBACKS`: a name is not an address it answers."""
-    assert not resolvable("localhost")
+def test_bindable_refuses_a_name() -> None:
+    """The control for `LOOPBACKS`: a name is not an address it binds."""
+    assert not bindable("localhost")
 
 
 def test_bind_uses_both_loopbacks_not_every_interface(
     a_manager: AManagerFactory,
 ) -> None:
-    """ISS 1269: `::1` and `127.0.0.1`, as `HTTPBindAddresses` binds (#27).
+    """ISS 1269: `::1` and `127.0.0.1`, as `GetBindAddresses` binds (#27).
 
     The sockets themselves are asked what they bound, rather than only
     asking whether some interface can still reach them.
@@ -229,18 +237,18 @@ def test_bind_uses_both_loopbacks_not_every_interface(
 
 
 def test_the_two_loopbacks_bind_in_cores_own_order(a_manager: AManagerFactory) -> None:
-    """ISS 1269: `::1` before `127.0.0.1`, `HTTPBindAddresses`'s own order.
+    """ISS 1269: `::1` before `127.0.0.1`, `GetBindAddresses`'s own order.
 
     Independent of `LOOPBACKS` and of `_LOOPBACK_HOSTS`: the expected
     order is this test's own literal, Core's (`src/httpserver.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and only which of the two
-    a host without IPv6 answers -- never their order -- comes from
-    `resolvable`. Reordering `_LOOPBACK_HOSTS` moves nothing `LOOPBACKS`
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), and only which of the two
+    a host without IPv6 binds -- never their order -- comes from
+    `bindable`. Reordering `_LOOPBACK_HOSTS` moves nothing `LOOPBACKS`
     itself would catch, both sides of that assertion reading the same
     constant; this one reads the sockets `_bind` actually returned.
     """
     manager = a_manager(get_random_port())
-    expected = [host for host in ("::1", "127.0.0.1") if resolvable(host)]
+    expected = [host for host in ("::1", "127.0.0.1") if bindable(host)]
     assert bound_hosts(manager._bind()) == expected
 
 
@@ -248,11 +256,13 @@ def test_the_two_loopbacks_bind_in_cores_own_order(a_manager: AManagerFactory) -
 def test_a_loopback_that_cannot_be_bound_is_warned_over_and_passed(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, taken: str
 ) -> None:
-    """ISS 1269: `bitcoind` v31.1.0 binds the other loopback and starts.
+    """ISS 2152: `bitcoind` v32.1.0 binds the other loopback and starts.
 
     Measured with the one address held by another process: it logs
-    "Binding RPC on address <host> port <port> failed." and listens on
-    the other. A loopback the lookup refuses here fails its bind too.
+    "Binding RPC on address 127.0.0.1:<port> failed: Unable to bind to
+    127.0.0.1:<port> on this computer. Bitcoin Core is probably already
+    running." and listens on the other. A loopback this host cannot bind
+    fails its bind too.
     """
     with taken_loopbacks([taken]) as port:
         manager = a_manager(port)
@@ -262,11 +272,14 @@ def test_a_loopback_that_cannot_be_bound_is_warned_over_and_passed(
         )
         hosts = bound_hosts(manager._bind())
     assert hosts == [host for host in LOOPBACKS if host != taken]
-    assert warnings == [
-        ("Binding RPC on address %s port %s failed.", host, port)
-        for host in ("::1", "127.0.0.1")
-        if host == taken or host not in LOOPBACKS
-    ]
+    address = f"[{taken}]:{port}" if ":" in taken else f"{taken}:{port}"
+    held = [args for args in warnings if args[1] == address]
+    refusal = (
+        f"Unable to bind to {address} on this computer. "
+        f"{CLIENT_NAME} is probably already running."
+    )
+    assert [(args[0], str(args[2])) for args in held] == [(BIND_FAILED, refusal)]
+    assert all(args[0] == BIND_FAILED for args in warnings)
 
 
 @pytest.mark.parametrize("host", LOOPBACKS)
@@ -288,164 +301,172 @@ def test_a_request_is_answered_on_either_loopback(
         manager.join(timeout=10)
 
 
-def test_a_listening_socket_carries_libevent_s_options(
+def test_a_listening_socket_carries_cores_options(
     a_manager: AManagerFactory,
 ) -> None:
-    """ISS 1269: `SO_KEEPALIVE`, and `SO_REUSEADDR` off Windows alone.
+    """ISS 2152: `HTTPServer::BindAndStartListening`'s options.
 
-    `TCP_NODELAY` is Core's own, set once the socket is bound.
+    `SO_EXCLUSIVEADDRUSE` on Windows and `SO_REUSEADDR` elsewhere, and
+    `IPV6_V6ONLY` on the `::1` socket (`src/httpserver.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag).
     """
     manager = a_manager(get_random_port())
     server_sockets = manager._bind()
     try:
         for server_socket in server_sockets:
-            options = socket.SOL_SOCKET
-            assert server_socket.getsockopt(options, socket.SO_KEEPALIVE)
-            nodelay = server_socket.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY)
-            assert nodelay
-            reuse = server_socket.getsockopt(options, socket.SO_REUSEADDR)
-            assert bool(reuse) is (os.name != "nt")
+            if sys.platform == "win32":  # pragma: no cover -- the windows-latest cell
+                exclusive = socket.SO_EXCLUSIVEADDRUSE
+                assert server_socket.getsockopt(socket.SOL_SOCKET, exclusive)
+            else:
+                reuse = socket.SO_REUSEADDR
+                assert server_socket.getsockopt(socket.SOL_SOCKET, reuse)
+            if server_socket.family == socket.AF_INET6:
+                v6only = socket.IPV6_V6ONLY
+                assert server_socket.getsockopt(socket.IPPROTO_IPV6, v6only)
     finally:
         bound_hosts(server_sockets)
 
 
-def test_a_socket_refusing_tcp_nodelay_is_kept(
+@pytest.mark.parametrize("loopback", LOOPBACKS)
+def test_an_option_core_passes_over_is_logged_at_debug(
+    monkeypatch: pytest.MonkeyPatch, loopback: str
+) -> None:
+    """ISS 2152: `SO_REUSEADDR` or `IPV6_V6ONLY` refused, and the socket bound.
+
+    `HTTPServer::BindAndStartListening` logs either at debug and goes on.
+    """
+    debugged: list[tuple[object, ...]] = []
+    logger = Logger(debug=True)
+    monkeypatch.setattr(logger, "log_debug", lambda *args: debugged.append(args))
+    refused = {
+        (socket.SOL_SOCKET, socket.SO_REUSEADDR),
+        (socket.IPPROTO_IPV6, socket.IPV6_V6ONLY),
+    }
+
+    class Refusing(socket.socket):
+        """A socket refusing the two options Core passes over."""
+
+        @override
+        def setsockopt(self, level: int, optname: int, value: Any, *rest: Any) -> None:
+            if (level, optname) in refused:
+                raise OSError(errno.ENOPROTOOPT, "Protocol not available")
+            super().setsockopt(level, optname, value, *rest)
+
+    monkeypatch.setattr(socket, "socket", Refusing)
+    service = lookup_service(loopback, 0)
+    assert service is not None
+    host = service[0]
+    with manager_module._bind_and_listen(host, 0, logger) as server_socket:
+        assert server_socket.getsockname()[1]
+    names = [] if sys.platform == "win32" else ["SO_REUSEADDR"]
+    if isinstance(host, IPv6Address):
+        names.append("IPV6_V6ONLY")
+    text = f"Protocol not available ({errno.ENOPROTOOPT})"
+    line = "Cannot set %s on %s listen socket: %s, continuing anyway"
+    address = service_text(host, 0)
+    assert debugged == [("http", line, name, address, text) for name in names]
+
+
+class _Unlistening(socket.socket):
+    """A socket whose `listen` fails."""
+
+    @override
+    def listen(self, *_: int) -> None:
+        raise OSError(errno.EOPNOTSUPP, "Operation not supported")
+
+
+def test_a_bind_core_refuses_is_refused_in_its_words(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 2152: `BindAndStartListening`'s refusals, in its words.
+
+    An address of no local interface, `192.0.2.1`, fails its `bind`
+    with an error other than `EADDRINUSE`; then `socket` and `listen`
+    are made to fail.
+    """
+    logger = Logger(debug=True)
+    test_net = IPv4Address("192.0.2.1")
+    with pytest.raises(
+        OSError,
+        match=r"^Unable to bind to 192\.0\.2\.1:0 on this "
+        r"computer \(bind returned error .+ \(\d+\)\)$",
+    ):
+        manager_module._bind_and_listen(test_net, 0, logger)
+    loopback = IPv4Address("127.0.0.1")
+    monkeypatch.setattr(socket, "socket", _Unlistening)
+    unsupported = f"Operation not supported ({errno.EOPNOTSUPP})"
+    with pytest.raises(
+        OSError, match=re.escape(f"Cannot listen on 127.0.0.1:0: {unsupported}")
+    ):
+        manager_module._bind_and_listen(loopback, 0, logger)
+
+    def no_socket(*_: object) -> NoReturn:
+        raise OSError(errno.EMFILE, "Too many open files")
+
+    monkeypatch.setattr(socket, "socket", no_socket)
+    text = f"Too many open files ({errno.EMFILE})"
+    with pytest.raises(
+        OSError, match=re.escape(f"Cannot create 127.0.0.1:0 listen socket: {text}")
+    ):
+        manager_module._bind_and_listen(loopback, 0, logger)
+
+
+_LOOKUP_FAILED = "Could not bind RPC on address %s port %s: Address lookup failed."
+
+
+@pytest.mark.parametrize("host", ["localhost", "a..b", "\uff11\uff12\uff17.0.0.1", ""])
+def test_a_host_that_is_no_address_is_not_looked_up(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, host: str
+) -> None:
+    """ISS 2135: `Lookup(address, port, false)` reads a numeric address alone.
+
+    Measured on bitcoind v32.1.0 with `-rpcallowip=127.0.0.1` and each
+    host as `-rpcbind`: it logs "Could not bind RPC on address <host>
+    port <port>: Address lookup failed." and binds nothing there. Here
+    the system's lookup answers every name with `127.0.0.1`, as a
+    machine's resolver may answer the fullwidth digits of 127, and is
+    asked with `AI_NUMERICHOST` alone, so it never resolves one.
+    """
+    lookup = socket.getaddrinfo
+    flags_asked: list[int] = []
+
+    def answering_every_name(
+        name: bytes | str | None, port: bytes | str | int | None, **kw: Any
+    ) -> list[Any]:
+        flags_asked.append(kw.get("flags", 0))
+        if not flags_asked[-1] & socket.AI_NUMERICHOST:
+            name = "127.0.0.1"
+        return lookup(name, port, **kw)
+
+    monkeypatch.setattr(socket, "getaddrinfo", answering_every_name)
+    port = get_random_port()
+    manager = a_manager(port, rpc_host=host)
+    warnings: list[tuple[object, ...]] = []
+    monkeypatch.setattr(manager.logger, "warning", lambda *args: warnings.append(args))
+    assert manager._bind() == []
+    assert warnings == [(_LOOKUP_FAILED, host, port)]
+    assert all(flags & socket.AI_NUMERICHOST for flags in flags_asked)
+
+
+def test_a_host_of_no_ip_network_is_warned_over(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ISS 1269: Core logs the refusal and keeps the socket bound."""
-    real_bind_endpoint = manager_module._bind_endpoint
+    """ISS 2152: an onion name is looked up, its bind refused in Core's words.
 
-    def refuses(*args: object) -> None:
-        raise OSError(args)
-
-    def refusing(host: str, port: int | None) -> Any:
-        bound = real_bind_endpoint(host, port)
-        return SimpleNamespace(
-            setsockopt=refuses, getsockname=bound.getsockname, close=bound.close
-        )
-
-    monkeypatch.setattr(manager_module, "_bind_endpoint", refusing)
-    manager = a_manager(get_random_port())
-    logged: list[tuple[object, ...]] = []
-    monkeypatch.setattr(manager.logger, "info", lambda *args: logged.append(args))
-    assert bound_hosts(manager._bind()) == LOOPBACKS
-    refusal = (
-        "WARNING: Unable to set TCP_NODELAY on RPC server socket, continuing anyway",
-    )
-    assert logged.count(refusal) == len(LOOPBACKS)
-
-
-@pytest.mark.parametrize("host", ["a..b", "\uff11\uff12\uff17.0.0.1"])
-def test_a_host_is_looked_up_as_its_bytes(host: str) -> None:
-    """ISS 1269: no IDNA, as libevent hands `getaddrinfo` the bytes.
-
-    `a..b` fails as a lookup rather than as a `UnicodeError`, and
-    fullwidth digits are not read as `127.0.0.1`.
+    Measured on bitcoind v32.1.0 with `-rpcallowip=127.0.0.1` and the
+    onion name as `-rpcbind`: "Binding RPC on address <onion>:<port>
+    failed: Bind address family for <onion>:<port> not supported".
     """
-    with pytest.raises(socket.gaierror):
-        manager_module._first_address(host, 0)
-
-
-PASSIVE = socket.AI_PASSIVE
-ADDRCONFIG = socket.AI_PASSIVE | socket.AI_ADDRCONFIG
-
-
-@pytest.mark.parametrize(
-    ("host", "windows", "flags"),
-    [
-        ("localhost", True, ADDRCONFIG),
-        ("localhost", False, ADDRCONFIG),
-        ("127.0.0.1", True, PASSIVE),
-        ("127.0.0.1", False, ADDRCONFIG),
-        ("::1", True, PASSIVE),
-        ("::1", False, ADDRCONFIG),
-        ("fe80::1%1", True, PASSIVE),
-        ("fe80::1% +1", True, PASSIVE),
-        ("fe80::1%", True, PASSIVE),
-        ("fe80::1%1x", True, ADDRCONFIG),
-        ("fe80::1%no-such-interface", True, ADDRCONFIG),
-        ("1.2.3", True, ADDRCONFIG),
-        ("::1\0x", True, PASSIVE),
-        ("127.0.0.1\0", True, PASSIVE),
-        ("fe80::1%1\0x", True, PASSIVE),
-        ("localhost\0::1", True, ADDRCONFIG),
-        ("\0::1", True, ADDRCONFIG),
-        ("", False, ADDRCONFIG),
-    ],
-)
-def test_the_lookup_is_held_to_addrconfig_where_libevent_holds_it(
-    monkeypatch: pytest.MonkeyPatch,
-    host: str,
-    windows: bool,  # noqa: FBT001
-    flags: int,
-) -> None:
-    """ISS 1269: a literal libevent parses itself on Windows is not held to it.
-
-    Every other lookup is the system's, asked with `make_addrinfo`'s flags.
-    """
-    monkeypatch.setattr(manager_module, "_WINDOWS", windows)
-    assert manager_module._address_flags(host) == flags
-
-
-def test_a_zone_naming_an_interface_is_a_literal_libevent_parses(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """ISS 1269: `evutil_inet_pton_scope` takes a zone naming an interface."""
-    monkeypatch.setattr(manager_module, "_WINDOWS", True)
-    name = socket.if_nameindex()[0][1]
-    assert manager_module._address_flags(f"fe80::1%{name}") == PASSIVE
-
-
-def test_the_empty_host_is_0_0_0_0_first_on_windows(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """ISS 1269: `evutil_getaddrinfo_common_`'s own answer, not the system's."""
-    monkeypatch.setattr(manager_module, "_WINDOWS", True)
-    asked: list[object] = []
-    monkeypatch.setattr(socket, "getaddrinfo", lambda *args, **_: asked.append(args))
-    family, _, _, sockaddr = manager_module._first_address("", 8332)
-    assert (family, sockaddr) == (socket.AF_INET, ("0.0.0.0", 8332))  # noqa: S104
-    assert not asked
-
-
-def test_the_empty_host_is_the_system_s_passive_answer_elsewhere(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """ISS 1269: `getaddrinfo(NULL, ...)`, as libevent asks it off Windows.
-
-    The system's first answer is bound, whichever family it is.
-    """
-    monkeypatch.setattr(manager_module, "_WINDOWS", False)
-    asked: list[tuple[object, ...]] = []
-    answers: list[tuple[object, ...]] = [
-        (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::", 8332, 0, 0)),
-        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("0.0.0.0", 8332)),  # noqa: S104
-    ]
-
-    def getaddrinfo(
-        host: bytes | None,
-        port: int | None,
-        *,
-        type: int,  # noqa: A002
-        flags: int,
-    ) -> list[tuple[object, ...]]:
-        asked.append((host, port, type, flags))
-        return answers
-
-    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
-    first = manager_module._first_address("", 8332)
-    assert first == (socket.AF_INET6, socket.SOCK_STREAM, 6, ("::", 8332, 0, 0))
-    assert asked == [(None, 8332, socket.SOCK_STREAM, ADDRCONFIG)]
-
-
-def test_bind_warns_of_a_host_idna_would_refuse(a_manager: AManagerFactory) -> None:
-    """ISS 1269: `a..b` is a bind that failed, not an exception out of it."""
+    onion = str(SpecialAddress(BIP155Network.TORV3, bytes(range(32))))
     port = get_random_port()
-    manager = a_manager(port, rpc_host="a..b")
-    logged: list[tuple[object, ...]] = []
-    manager.logger.warning = lambda *args: logged.append(args)  # type: ignore[method-assign]
+    manager = a_manager(port, rpc_host=onion)
+    warnings: list[tuple[object, ...]] = []
+    monkeypatch.setattr(manager.logger, "warning", lambda *args: warnings.append(args))
     assert manager._bind() == []
-    assert logged == [("Binding RPC on address %s port %s failed.", "a..b", port)]
+    address = f"{onion}:{port}"
+    assert [(args[0], args[1], str(args[2])) for args in warnings] == [
+        (BIND_FAILED, address, f"Bind address family for {address} not supported")
+    ]
 
 
 def test_bind_honors_a_different_rpc_host(a_manager: AManagerFactory) -> None:
@@ -471,23 +492,26 @@ _EVERY_INTERFACE = "0.0.0.0"  # noqa: S104
     ("rpc_host", "rpcbind", "warned"),
     [
         pytest.param("127.0.0.1", (), [], id="loopback"),
-        pytest.param(None, (_EVERY_INTERFACE,), [_IGNORED], id="ignored"),
-        pytest.param(_EVERY_INTERFACE, (), [_EXPOSED], id="every interface"),
-        pytest.param("localhost", (), [], id="a name, not looked up"),
+        pytest.param(None, (_EVERY_INTERFACE,), [(_IGNORED,)], id="ignored"),
+        pytest.param(_EVERY_INTERFACE, (), [(_EXPOSED,)], id="every interface"),
+        pytest.param(
+            "localhost", (), [(_LOOKUP_FAILED, "localhost")], id="a name, not looked up"
+        ),
     ],
 )
-def test_bind_warns_as_cores_http_bind_addresses(
+def test_bind_warns_as_cores_init_http_server(
     a_manager: AManagerFactory,
     monkeypatch: pytest.MonkeyPatch,
     rpc_host: str | None,
     rpcbind: tuple[str, ...],
-    warned: list[str],
+    warned: list[tuple[str, ...]],
 ) -> None:
-    """ISS 1211: `HTTPBindAddresses`'s warnings, and its "Binding RPC" line.
+    """ISS 1211: `InitHTTPServer`'s warnings, and its "Binding RPC" line.
 
-    Measured on bitcoind v31.1.0: `-rpcbind=0.0.0.0` without
+    Measured on bitcoind v32.1.0: `-rpcbind=0.0.0.0` without
     `-rpcallowip` logs the first warning and binds loopback. The second
-    is logged for an address that binds every interface, once bound.
+    is logged for an address naming every interface, before its bind,
+    and the third for a name.
     """
     manager = a_manager(get_random_port(), rpc_host=rpc_host, rpcbind=rpcbind)
     warnings: list[tuple[object, ...]] = []
@@ -495,10 +519,11 @@ def test_bind_warns_as_cores_http_bind_addresses(
     monkeypatch.setattr(manager.logger, "warning", warnings_into(warnings))
     monkeypatch.setattr(manager.logger, "info", lambda *args: infos.append(args))
     bound_hosts(manager._bind())
-    assert warnings == [(warning,) for warning in warned]
+    port = manager.port
+    assert warnings == [(*w, port) if len(w) > 1 else w for w in warned]
     hosts = ("::1", "127.0.0.1") if rpc_host is None else (rpc_host,)
     assert infos == [
-        ("Binding RPC on address %s port %s", host, manager.port) for host in hosts
+        ("Binding RPC on address %s port %s", host, port) for host in hosts
     ]
 
 
@@ -556,14 +581,14 @@ def test_rpcbind_beside_rpcallowip_binds_each_endpoint(
     ]
 
 
-def test_an_rpcbind_idna_would_refuse_is_warned_over_beside_a_good_one(
+def test_an_rpcbind_name_is_warned_over_beside_a_good_one(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ISS 1268: `a..b` fails as a bind, and `127.0.0.1` still listens.
+    """ISS 2152: `a..b` is no address, and `127.0.0.1` still listens.
 
-    Measured on bitcoind v31.1.0 with `-rpcbind=127.0.0.1 -rpcbind=a..b
-    -rpcallowip=127.0.0.1`: it starts, and warns "Binding RPC on address
-    a..b port <port> failed.".
+    Measured on bitcoind v32.1.0 with `-rpcbind=a..b -rpcbind=127.0.0.1
+    -rpcallowip=127.0.0.1`: it starts, and warns "Could not bind RPC on
+    address a..b port <port>: Address lookup failed.".
     """
     port = get_random_port()
     manager = a_manager(port, rpcbind=("127.0.0.1", "a..b"), rpcallowip=("127.0.0.1",))
@@ -572,7 +597,7 @@ def test_an_rpcbind_idna_would_refuse_is_warned_over_beside_a_good_one(
     monkeypatch.setattr(manager.logger, "warning", lambda *args: warnings.append(args))
     server_sockets = manager._bind()
     assert bound_hosts(server_sockets) == ["127.0.0.1"]
-    assert ("Binding RPC on address %s port %s failed.", "a..b", port) in warnings
+    assert (_LOOKUP_FAILED, "a..b", port) in warnings
 
 
 def test_an_rpcbind_port_core_refuses_binds_nothing(
@@ -1740,6 +1765,18 @@ def test_a_refused_source_is_closed_as_it_is_accepted(
         manager.join(timeout=10)
 
 
+def tcp_pair() -> tuple[socket.socket, socket.socket]:
+    """Return the two ends of a loopback TCP connection, the accepted one first.
+
+    What `_accept_loop` sets `TCP_NODELAY` on, which the Unix socket
+    `socket.socketpair` answers off Windows refuses.
+    """
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+        theirs = socket.create_connection(listener.getsockname()[:2])
+        ours, _ = listener.accept()
+    return ours, theirs
+
+
 @pytest.mark.parametrize(
     ("sockaddr", "logged"),
     [
@@ -1767,7 +1804,7 @@ def test_accept_loop_closes_a_refused_source_and_queues_the_next(
     accepted: asyncio.Queue[Any] = asyncio.Queue()
     debugged: list[tuple[Any, ...]] = []
     monkeypatch.setattr(manager.logger, "log_debug", lambda *a: debugged.append(a))
-    pairs = [socket.socketpair() for _ in range(2)]
+    pairs = [tcp_pair() for _ in range(2)]
     refused, allowed = pairs[0][0], pairs[1][0]
     backlog = [(allowed, ("127.0.0.1", 45001)), (refused, sockaddr)]
 
@@ -1817,7 +1854,7 @@ def test_accept_loop_out_of_descriptors_logs_each_failure_and_waits(
     failed: list[Any] = []
     monkeypatch.setattr(manager.logger, "log_debug", lambda *a: debugged.append(a))
     monkeypatch.setattr(manager.logger, "exception", lambda *a, **k: failed.append(a))
-    ours, theirs = socket.socketpair()
+    ours, theirs = tcp_pair()
     refusals: list[float] = []
     fail_until = time.monotonic() + 0.35
     backlog = [(ours, ("127.0.0.1", 45000))]
@@ -1853,6 +1890,70 @@ def test_accept_loop_out_of_descriptors_logs_each_failure_and_waits(
     line = ("http", "Cannot accept new connection: %s", text)
     assert debugged == [line] * len(refusals)
     assert not failed
+
+
+def test_an_accepted_socket_has_nagle_s_algorithm_off(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 2152: `HTTPServer::NewSockAccepted` sets `TCP_NODELAY` on it."""
+    port = get_random_port()
+    manager = a_manager(port)
+    manager.start()
+    try:
+        wait_until_listening(manager)
+        with socket.create_connection(("127.0.0.1", port), timeout=20):
+            wait_until(lambda: manager.connections)
+            (conn,) = manager.connections.values()
+            nodelay = conn.client.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY)
+        assert nodelay
+    finally:
+        manager.stop()
+        manager.join(timeout=10)
+
+
+def test_accept_loop_queues_a_socket_refusing_tcp_nodelay(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 2152: Core logs the refusal at debug and keeps the connection."""
+    manager = a_manager(get_random_port())
+    loop = manager.loop
+    accepted: asyncio.Queue[Any] = asyncio.Queue()
+    debugged: list[tuple[Any, ...]] = []
+    monkeypatch.setattr(manager.logger, "log_debug", lambda *a: debugged.append(a))
+
+    class Refusing:
+        """An accepted socket refusing every option."""
+
+        def setsockopt(self, *_: object) -> None:
+            raise OSError(errno.ENOPROTOOPT, "Protocol not available")
+
+        def settimeout(self, _: object) -> None:
+            """Do nothing, as a socket already non-blocking would."""
+
+    refusing = Refusing()
+    backlog = [(refusing, ("127.0.0.1", 45001))]
+
+    async def accept(sock: socket.socket) -> tuple[Any, tuple[str, int]]:
+        if backlog:
+            return backlog.pop()
+        # an empty backlog: the accept waits
+        waiting: asyncio.Future[tuple[Any, tuple[str, int]]] = (
+            asyncio.get_running_loop().create_future()
+        )
+        return await waiting
+
+    monkeypatch.setattr(loop, "sock_accept", accept)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+        task = loop.create_task(manager._accept_loop(server_socket, accepted))
+        try:
+            queued = loop.run_until_complete(asyncio.wait_for(accepted.get(), 60))
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                loop.run_until_complete(task)
+    assert queued == (refusing, ("127.0.0.1", 45001))
+    line = "connection from %s: unable to set TCP_NODELAY, continuing anyway"
+    assert debugged == [("http", line, "127.0.0.1:45001")]
 
 
 def test_report_server_failure_logs_a_real_exception(

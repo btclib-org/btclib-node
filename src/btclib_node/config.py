@@ -557,8 +557,8 @@ class Config:
     # this node's control plane, not a peer-to-peer listener, so a
     # caller holding a credential still has to reach it from an
     # interface this names. `None` is Core's own default, `::1` and
-    # `127.0.0.1` both (`HTTPBindAddresses`, `src/httpserver.cpp`,
-    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag); a host a Python
+    # `127.0.0.1` both (`GetBindAddresses`, `src/httpserver.cpp`,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag); a host a Python
     # caller names is bound alone, where `-rpcbind` and `-rpcallowip`
     # are not both given. P2pManager binds every interface unless
     # `bind` below names some, and is right to, since a peer listener is
