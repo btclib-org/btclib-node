@@ -151,7 +151,7 @@ def test_importmempool_refuses_in_core_s_order(
     unloadable = refused(node, [missing, {"use_current_time": None, "foo": 1}])
     assert unloadable.code == RPCErrorCode.MISC_ERROR
     assert unloadable.message == (
-        "Unable to import mempool file, see debug.log for details."
+        "Unable to import mempool file, see debug log for details."
     )
 
 
@@ -234,12 +234,12 @@ def test_importmempool_ends_refused_where_the_node_stops(
     with pytest.raises(RpcError) as raised:
         finish(job)
     assert raised.value.message == (
-        "Unable to import mempool file, see debug.log for details."
+        "Unable to import mempool file, see debug log for details."
     )
     assert node.mempool.size == 0
 
 
-_NOT_LOADED = "Unable to import mempool file, see debug.log for details."
+_NOT_LOADED = "Unable to import mempool file, see debug log for details."
 
 
 def test_importmempool_refuses_a_path_that_is_no_file_as_core_does(

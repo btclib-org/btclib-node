@@ -152,8 +152,10 @@ def test_one_transaction_is_taken_and_announced(node: Node) -> None:
     assert answer["package_msg"] == "success"
     assert answer["replaced-transactions"] == []
     entry = result(answer, tx)
-    assert list(entry) == ["txid", "vsize", "fees"]
-    assert entry["vsize"] == tx.vsize
+    assert list(entry) == ["txid", "vsize_adjusted", "vsize", "vsize_bip141", "fees"]
+    assert (
+        entry["vsize_adjusted"] == entry["vsize"] == entry["vsize_bip141"] == tx.vsize
+    )
     assert fees_of(entry) == {
         "base": btc(FEE),
         "effective-feerate": btc(FEE * 1000 // tx.vsize),
@@ -166,13 +168,20 @@ def test_one_transaction_is_taken_and_announced(node: Node) -> None:
 
 
 def test_a_held_transaction_answers_its_size_and_fee_only(node: Node) -> None:
-    """It is not taken again, and is announced again."""
+    """It is not taken again, and is announced again.
+
+    `vsize_adjusted` and `vsize` are the mempool's size for it, and
+    `vsize_bip141` the transaction's own.
+    """
     tx = funded_spends(node, 1)[0]
     submit(node, [tx])
+    node.mempool.vsizes[tx.hash] += 7
     answer = submit(node, [tx])
     assert answer["package_msg"] == "success"
     entry = result(answer, tx)
-    assert list(entry) == ["txid", "vsize", "fees"]
+    assert list(entry) == ["txid", "vsize_adjusted", "vsize", "vsize_bip141", "fees"]
+    assert entry["vsize_adjusted"] == entry["vsize"] == tx.vsize + 7
+    assert entry["vsize_bip141"] == tx.vsize
     assert fees_of(entry) == {"base": btc(FEE)}
     assert announced(node) == [tx.hash, tx.hash]
 

@@ -2000,6 +2000,26 @@ def test_a_mempool_transaction_verbose_carries_no_block_fields() -> None:
     assert "confirmations" not in out
 
 
+@pytest.mark.parametrize("verbosity", [1, 2])
+def test_a_mempool_transaction_opens_with_its_sigop_adjusted_size(
+    verbosity: int,
+) -> None:
+    """`vsize_adjusted` is the mempool's size for it, and the first key.
+
+    `vsize` stays the BIP141 size, as Core's `TxToUniv` writes it
+    (`src/rpc/rawtransaction.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag).
+    """
+    tx = a_tx()
+    node = a_tx_lookup_node()
+    node.mempool.add_tx(tx, 0, tx.vsize + 7)
+    out = get_raw_transaction(node, _CONN, [tx.id.hex(), verbosity])
+    assert isinstance(out, dict)
+    assert list(out)[:2] == ["vsize_adjusted", "txid"]
+    assert out["vsize_adjusted"] == tx.vsize + 7
+    assert out["vsize"] == tx.vsize
+
+
 def test_a_transaction_neither_mempool_nor_named_block_is_refused() -> None:
     """`getrawtransaction` refuses a txid in neither the mempool nor a block.
 
@@ -2128,6 +2148,7 @@ def test_getrawtransaction_verbosity_1_answers_neither_fee_nor_prevout(
     assert isinstance(answer, dict)
     assert "fee" not in answer
     assert "prevout" not in answer["vin"][0]
+    assert "vsize_adjusted" not in answer
 
 
 def test_getrawtransaction_verbosity_2_of_a_coinbase_has_no_fee(
@@ -3433,7 +3454,8 @@ def test_a_transaction_is_core_s_txtouniv_key_for_key() -> None:
     """The top-level keys are `TxToUniv`'s, in its order, `hex` last.
 
     `decoderawtransaction` passes `include_hex=false`; `getrawtransaction`
-    adds the block fields after.
+    puts `vsize_adjusted` before them for a mempool transaction, and the
+    block fields after them for a block's.
     """
     tx = a_tx()
     keys = ["txid", "hash", "version", "size", "vsize", "weight", "locktime"]
@@ -3453,7 +3475,7 @@ def test_a_transaction_is_core_s_txtouniv_key_for_key() -> None:
         a_tx_lookup_node(mempool_txs=[tx]), _CONN, [tx.id.hex(), True]
     )
     assert isinstance(verbose, dict)
-    assert list(verbose) == [*keys, "hex"]
+    assert list(verbose) == ["vsize_adjusted", *keys, "hex"]
 
 
 def test_decoderawtransaction_renders_a_negative_output_value() -> None:
@@ -9129,7 +9151,7 @@ def test_get_mempool_entry_answers_core_s_own_shape() -> None:
     assert entry["fees"]["descendant"].text == "0.00005000"
     assert entry["depends"] == [parent.id]
     assert entry["spentby"] == [child.id]
-    assert entry["bip125-replaceable"] is False
+    assert "bip125-replaceable" not in entry
     assert entry["unbroadcast"] is False
 
 

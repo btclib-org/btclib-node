@@ -128,21 +128,3 @@ estimatesmartfee: Core (conf_target, estimate_mode, options), btclib-node (conf_
 
 estimatesmartfee .estimator: in Core, not in help.py
 estimatesmartfee .mempool_health_statistics: in Core, not in help.py
-getblockchaininfo .backgroundvalidation: in Core, not in help.py
-getmempoolancestors .*.bip125-replaceable: in help.py, not in Core
-getmempoolancestors .*.vsize_adjusted: in Core, not in help.py
-getmempoolancestors .*.vsize_bip141: in Core, not in help.py
-getmempooldescendants .*.bip125-replaceable: in help.py, not in Core
-getmempooldescendants .*.vsize_adjusted: in Core, not in help.py
-getmempooldescendants .*.vsize_bip141: in Core, not in help.py
-getmempoolentry .bip125-replaceable: in help.py, not in Core
-getmempoolinfo .fullrbf: in help.py, not in Core
-getnetworkinfo .asmap_version: in Core, not in help.py
-getnetworkinfo .inv_buckets: in Core, not in help.py
-getnetworkinfo .tx_send_rate: in Core, not in help.py
-getorphantxs [].vsize_bip141: in Core, not in help.py
-getpeerinfo [].startingheight: in help.py, not in Core
-getrawmempool .*.bip125-replaceable: in help.py, not in Core
-getrawtransaction .vsize_adjusted: in Core, not in help.py
-submitpackage .tx-results.*.vsize_adjusted: in Core, not in help.py
-submitpackage .tx-results.*.vsize_bip141: in Core, not in help.py
