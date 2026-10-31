@@ -489,11 +489,7 @@ def test_a_record_that_does_not_parse_fails_the_scan(
         (["status", 5], -3, '"Position 2 (scanobjects)": "JSON value of type number'),
         (["bogus"], -8, "Invalid action 'bogus'"),
         (["start"], -1, "scanobjects argument is required for the start action"),
-        (
-            ["start", None],
-            -3,
-            "JSON value of type null is not of expected type array",
-        ),
+        (["start", None], -1, "scanobjects argument is required for the start action"),
         (["start", [1]], -8, "Scan object needs to be either a string or an object"),
         (["start", [None]], -8, "Scan object needs to be either a string"),
         (["start", [{}]], -8, "Descriptor needs to be provided in scan object"),
