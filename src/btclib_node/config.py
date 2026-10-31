@@ -11,8 +11,8 @@ Core's own `DEFAULT_MIN_RELAY_TX_FEE`. `_resolve_chain` is what turns a chain
 already built, or a network's name, into the `Chain` a `Config` carries.
 `split_host_port` and `lookup_host_port` split a "host[:port]": the first
 is `-rpcbind`'s, the second a peer's. `lookup_service`, `parse_bind` and
-`listen_port` read an address Core's `Lookup` reads, for `-externalip`
-and `-bind`, `parse_whitebind` that of `-whitebind`.
+`listen_port` read an address Core's `Lookup` reads, for `-externalip`,
+`-bind` and `-rpcbind`, `parse_whitebind` that of `-whitebind`.
 `get_path_arg` is `cli.py`'s reader of `-datadir`, `-conf` and
 `-blocksdir`. All of these are public here because other modules read
 them.

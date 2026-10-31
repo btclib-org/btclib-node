@@ -475,6 +475,37 @@ def test_a_host_of_no_ip_network_is_warned_over(
     ]
 
 
+def test_an_ipv6_host_is_bound_with_its_scope() -> None:
+    """ISS 2152: the 4-tuple `bind` reads a scope from, the scope apart.
+
+    CPython reads `fe80::1%3` in a 2-tuple at scope 0, and the bind of a
+    link-local address there fails.
+    """
+    scoped = IPv6Address("fe80::1%3")
+    assert manager_module._sockaddr(scoped, 5) == ("fe80::1", 5, 0, 3)
+    assert manager_module._sockaddr(IPv6Address("::1"), 5) == ("::1", 5, 0, 0)
+    assert manager_module._sockaddr(IPv4Address("127.0.0.1"), 5) == ("127.0.0.1", 5)
+
+
+@pytest.mark.skipif(  # pragma: no cover -- macOS alone, whose lo0 holds fe80::1
+    sys.platform != "darwin", reason="macOS's lo0 holds fe80::1, Linux's lo does not"
+)
+def test_a_scoped_ipv6_host_binds_at_its_scope(a_manager: AManagerFactory) -> None:
+    """ISS 2152: `fe80::1%<lo0's index>` binds on lo0, its scope kept.
+
+    Measured on bitcoind v32.1.0 on macOS: `-rpcbind=[fe80::1%1]
+    -rpcallowip=fe80::/10` binds, and a client reaches it at
+    `fe80::1%lo0`.
+    """
+    scope = socket.if_nametoindex("lo0")
+    manager = a_manager(get_random_port(), rpc_host=f"fe80::1%{scope}")
+    server_sockets = manager._bind()
+    try:
+        assert [sock.getsockname()[3] for sock in server_sockets] == [scope]
+    finally:
+        bound_hosts(server_sockets)
+
+
 def test_bind_honors_a_different_rpc_host(a_manager: AManagerFactory) -> None:
     """_bind binds whatever rpc_host the node's own config carries, alone."""
     all_interfaces = "0.0.0.0"  # noqa: S104
@@ -566,8 +597,10 @@ def test_rpcbind_beside_rpcallowip_binds_each_endpoint(
 ) -> None:
     """ISS 1268: `HTTPBindAddresses`'s other branch, one socket an endpoint.
 
-    Measured on bitcoind v31.1.0: `-rpcbind=127.0.0.1 -rpcallowip=127.0.0.1`
-    listens on `127.0.0.1` at `-rpcport`, and a port given overrides it.
+    That function is Core's at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag. Measured on bitcoind v31.1.0: `-rpcbind=127.0.0.1
+    -rpcallowip=127.0.0.1` listens on `127.0.0.1` at `-rpcport`, and a
+    port given overrides it.
     """
     port, other = get_random_port(), get_random_port()
     manager = a_manager(
@@ -609,7 +642,7 @@ def test_an_rpcbind_name_is_warned_over_beside_a_good_one(
 def test_an_rpcbind_port_core_refuses_binds_nothing(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ISS 1268: `HTTPBindAddresses` logs `InvalidPortErrMsg` and binds nothing.
+    """ISS 1268: `GetBindAddresses` logs `InvalidPortErrMsg` and binds nothing.
 
     `cli` refuses such a value first; a `Config` built in Python reaches
     this, and the listener does not start.
@@ -1776,8 +1809,8 @@ def test_a_refused_source_is_closed_as_it_is_accepted(
 def tcp_pair() -> tuple[socket.socket, socket.socket]:
     """Return the two ends of a loopback TCP connection, the accepted one first.
 
-    What `_accept_loop` sets `TCP_NODELAY` on, which the Unix socket
-    `socket.socketpair` answers off Windows refuses.
+    What `_accept_loop` sets `TCP_NODELAY` on. Off Windows
+    `socket.socketpair` answers a Unix socket, which refuses `TCP_NODELAY`.
     """
     with socket.create_server(("127.0.0.1", 0)) as listener:
         theirs = socket.create_connection(listener.getsockname()[:2])
