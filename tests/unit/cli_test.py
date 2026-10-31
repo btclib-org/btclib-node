@@ -14,13 +14,14 @@ import stat
 import sys
 import tempfile
 from contextlib import redirect_stderr, suppress
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from btclib_node import Node, cli
-from btclib_node.chains import Main, RegTest, SigNet, TestNet, TestNet4
+from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet, TestNet4
 from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS, DEFAULT_MAX_TIP_AGE, Config
 from btclib_node.constants import CLIENT_NAME, MIN_PRUNE_TARGET_MIB, default_data_dir
 from btclib_node.rpc.auth import COOKIE_FILE, RpcAuthEntry, password_hmac, to_bytes
@@ -2338,6 +2339,118 @@ def test_build_config_minimumchainwork_is_debug_only(
     with pytest.raises(SystemExit):
         _build(tmp_path, "-help-debug")
     assert "-minimumchainwork=<hex>" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("chain_flag", "chain"),
+    [
+        ("-regtest", RegTest()),
+        ("-testnet", TestNet()),
+        ("-signet", SigNet()),
+        ("-testnet4", TestNet4()),
+    ],
+)
+def test_build_config_testactivationheight_moves_heights_off_mainnet(
+    tmp_path: Path, chain_flag: str, chain: Chain
+) -> None:
+    """ISS 2155: read on every chain but mainnet, a later value winning.
+
+    The file's chain section is read as the command line is, and the
+    heights left out keep the chain's own.
+    """
+    conf = "".join(
+        f"[{section}]\ntestactivationheight=csv@0005\n"
+        for section in ("regtest", "test", "signet", "testnet4")
+    )
+    config = _build(
+        tmp_path,
+        chain_flag,
+        "-testactivationheight=segwit@432",
+        "-testactivationheight=bip34@-0",
+        "-testactivationheight=segwit@2147483646",
+        conf=conf,
+    )
+    assert config.chain.consensus == replace(
+        chain.consensus, segwit_height=2147483646, bip34_height=0, csv_height=5
+    )
+
+
+def test_build_config_testactivationheight_unset_keeps_the_shared_row(
+    tmp_path: Path,
+) -> None:
+    """Without the option the chain's row is btclib's own, not a copy."""
+    config = _build(tmp_path, "-regtest")
+    assert config.chain.consensus is RegTest().consensus
+
+
+@pytest.mark.parametrize(
+    ("value", "refusal"),
+    [
+        ("segwit", "Invalid format"),
+        ("segwit=5", "Invalid format"),
+        ("segwit@", "Invalid height value"),
+        ("segwit@-1", "Invalid height value"),
+        ("segwit@+5", "Invalid height value"),
+        ("segwit@ 5", "Invalid height value"),
+        ("segwit@5 ", "Invalid height value"),
+        ("segwit@0x5", "Invalid height value"),
+        ("segwit@2147483647", "Invalid height value"),
+        ("segwit@99999999999", "Invalid height value"),
+        ("segwit@" + "9" * 5000, "Invalid height value"),
+        ("segwit@5@6", "Invalid height value"),
+        ("bip65@5", "Invalid name"),
+        ("SEGWIT@5", "Invalid name"),
+        ("@5", "Invalid name"),
+    ],
+)
+def test_build_config_testactivationheight_refuses_what_core_refuses(
+    tmp_path: Path, value: str, refusal: str
+) -> None:
+    """`HandleDeploymentArgs`'s refusals, in Core's words."""
+    expected = re.escape(f"{refusal} ({value}) for -testactivationheight=name@height.")
+    with pytest.raises(ValueError, match=f"^{expected}$"):
+        _build(tmp_path, "-regtest", f"-testactivationheight={value}")
+
+
+def test_build_config_testactivationheight_is_refused_before_the_help(
+    tmp_path: Path,
+) -> None:
+    """`InitConfig`'s `SelectParams` reads it ahead of `ProcessInitCommands`."""
+    with pytest.raises(ValueError, match=r"^Invalid format"):
+        _build(tmp_path, "-regtest", "-help", "-testactivationheight=segwit")
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("-testactivationheight=segwit@5",),
+        ("-notestactivationheight",),
+        ("-chain=main", "-testactivationheight=csv@1"),
+    ],
+)
+def test_build_config_testactivationheight_is_refused_on_mainnet(
+    tmp_path: Path, argv: Sequence[str]
+) -> None:
+    """`AppInitParameterInteraction`'s `IsArgSet`: a negation is refused too."""
+    expected = re.escape("The -testactivationheight option may not be used on mainnet.")
+    with pytest.raises(ValueError, match=f"^{expected}$"):
+        _build(tmp_path, *argv)
+
+
+def test_build_config_testactivationheight_is_debug_only(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`DEBUG_ONLY`: listed under `-help-debug` alone, in Core's words."""
+    with pytest.raises(SystemExit):
+        _build(tmp_path, "-help")
+    assert "-testactivationheight" not in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        _build(tmp_path, "-help-debug")
+    assert (
+        "  -testactivationheight=name@height.\n"
+        "       Set the activation height of 'name' (segwit, bip34, dersig, cltv, csv).\n"
+        "       (test-only)\n"
+    ) in capsys.readouterr().out
 
 
 def test_build_config_assumevalid_is_off_when_not_given(tmp_path: Path) -> None:

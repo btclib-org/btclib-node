@@ -15,10 +15,15 @@ the easiest target and the exceptions a chain's own history forces, is
 the same `name` `magic_from_network` already resolves. `config.py`'s
 `_resolve_chain` is what turns a chain's name, read from the command
 line or a functional test, into one of these.
+
+`Chain.with_activation_heights` is Core's `-testactivationheight`.
 """
 
-from dataclasses import dataclass
-from functools import cached_property
+import copy
+from dataclasses import dataclass, replace
+from functools import cache, cached_property
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, Self
 
 from bitcoin_core_rpc import chain_from_network, rpc_port_from_chain
 from btclib.block import Block, BlockHeader, genesis_block
@@ -37,7 +42,11 @@ from btclib_node._chainparamsseeds import (
     CHAINPARAMS_SEED_TESTNET4,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
 __all__ = [
+    "BURIED_DEPLOYMENTS",
     "Chain",
     "Main",
     "RegTest",
@@ -45,6 +54,31 @@ __all__ = [
     "TestNet",
     "TestNet4",
 ]
+
+# The names `-testactivationheight` takes, Core's `GetBuriedDeployment`
+# (`src/deploymentinfo.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+# tag), each with the `ConsensusParams` field it moves
+BURIED_DEPLOYMENTS: Mapping[str, str] = MappingProxyType(
+    {
+        "segwit": "segwit_height",
+        "bip34": "bip34_height",
+        "dersig": "bip66_height",
+        "cltv": "bip65_height",
+        "csv": "csv_height",
+    }
+)
+
+
+@cache
+def _moved_consensus(
+    name: str, activation_heights: tuple[tuple[str, int], ...]
+) -> ConsensusParams:
+    """Return `name`'s row with `activation_heights`' fields replaced.
+
+    Cached, so that reading `Chain.consensus` builds no new row.
+    """
+    moved: dict[str, Any] = dict(activation_heights)
+    return replace(CONSENSUS_PARAMS[name], **moved)
 
 
 @dataclass
@@ -80,6 +114,9 @@ class Chain:
     # `__init__` cites the line it copies. `btclib.consensus` leaves it
     # out, as a warning and not a rule.
     min_bip9_warning_height: int
+    # the `ConsensusParams` fields `with_activation_heights` moved, with
+    # their heights, sorted by field; empty on a chain nothing moved
+    activation_heights: tuple[tuple[str, int], ...] = ()
 
     @cached_property
     def genesis_block(self) -> Block:
@@ -114,9 +151,34 @@ class Chain:
         two never disagree about which networks exist. Every activation
         height, the subsidy interval, the easiest target, and the
         exceptions this chain's own history forces are read off it
-        rather than held here a second time.
+        rather than held here a second time. A chain
+        `with_activation_heights` built answers a row of its own instead,
+        the shared one with those heights replaced.
         """
-        return CONSENSUS_PARAMS[self.name]
+        if not self.activation_heights:
+            return CONSENSUS_PARAMS[self.name]
+        return _moved_consensus(self.name, self.activation_heights)
+
+    def with_activation_heights(self, heights: Mapping[str, int]) -> Self:
+        """Return a copy of this chain whose deployments bind at `heights`.
+
+        Core's `-testactivationheight=name@height`, applied by
+        `CChainParams::ApplyDeploymentOptions`
+        (`src/kernel/chainparams.cpp`, at bitcoin/bitcoin@f0de87f040, the
+        v32.1 tag): `heights` maps a key of `BURIED_DEPLOYMENTS` to the
+        first height its rule binds at, on top of what this chain
+        already moved. This chain and the shared row are left as they
+        are, so two nodes in one process can differ.
+
+        Core's kernel applies such heights on every chain, mainnet
+        included (`CChainParams::Main`), and so does this; `cli.py`
+        refuses the option on mainnet, as Core's init does.
+        """
+        moved = dict(self.activation_heights)
+        moved.update((BURIED_DEPLOYMENTS[name], h) for name, h in heights.items())
+        chain = copy.copy(self)
+        chain.activation_heights = tuple(sorted(moved.items()))
+        return chain
 
     @property
     def headers_sync_params(self) -> HeadersSyncParams:

@@ -91,6 +91,7 @@ from tests import (
     generate_random_transaction,
     generate_segwit_block,
 )
+from tests.conftest import unstarted_node_context
 from tests.unit.orphanage_test import a_tx as an_orphanage_tx
 from tests.unit.rpc.mempool_graph_test import a_tx
 
@@ -606,6 +607,32 @@ def test_reject_block_whose_coinbase_does_not_commit_to_its_height(
     assert bad.header.hash not in block_index.active_chain
     assert len(block_index.active_chain) == connected
     rejected_because(node, bad, "bad-cb-height")
+
+
+def test_a_moved_bip34_height_binds_there_and_not_before(tmp_path: Path) -> None:
+    """ISS 2155: with `bip34@3`, BIP34 binds from height 3 and not before.
+
+    A coinbase committing to no height connects at heights 1 and 2, the
+    one above is refused at height 3, and the coinbase that commits to 3
+    connects there: the node reads the height off its own `Chain`.
+    """
+    chain = RegTest().with_activation_heights({"bip34": 3})
+    with unstarted_node_context(tmp_path, chain=chain) as node:
+        node.status = NodeStatus.HeaderSynced
+        block_index = node.chainstate.block_index
+        parent = chain.genesis.hash
+        for height in (1, 2):
+            block = build_block(parent, [generate_coinbase()], height)
+            connect(node, [block])
+            assert block.header.hash in block_index.active_chain
+            parent = block.header.hash
+        bad = build_block(parent, [generate_coinbase()], 3)
+        connect(node, [bad])
+        assert bad.header.hash not in block_index.active_chain
+        rejected_because(node, bad, "bad-cb-height")
+        good = build_block(parent, [generate_coinbase(height=3)], 3)
+        connect(node, [good])
+        assert good.header.hash in block_index.active_chain
 
 
 def test_contextual_check_block_leaves_a_version_in_btclib_s_text(
