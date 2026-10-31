@@ -660,6 +660,9 @@ class Config:
     # no chain (`cli._warn_unrecognized_sections`), logged after the
     # version line; `""` where no section is unrecognised
     section_warning: str
+    # `SetLoggingCategories`'s warnings, one per deprecated category it
+    # reads (`cli._resolve_debug`), logged after `section_warning`
+    debug_warnings: tuple[str, ...]
     # `ArgsManager::LogArgs`'s own lines (`cli._log_args`): the config
     # file's args, then the command line's, logged after
     # `section_warning`
@@ -995,6 +998,7 @@ class Config:
         rpcwhitelistdefault: bool | None = None,
         log_warnings: Sequence[str] = (),
         section_warning: str = "",
+        debug_warnings: Sequence[str] = (),
         config_args: Sequence[str] = (),
         config_file_line: str = "",
     ) -> None:
@@ -1153,6 +1157,7 @@ class Config:
         self.log_path = log_path
         self.log_warnings = tuple(log_warnings)
         self.section_warning = section_warning
+        self.debug_warnings = tuple(debug_warnings)
         self.config_args = tuple(config_args)
         self.config_file_line = config_file_line
         self.min_relay_feerate = min_relay_feerate

@@ -359,7 +359,8 @@ class Node(threading.Thread):
         self.log_path = log_path
         # `open_history_log` writes what Core logs ahead of anything this
         # node logs: the settings' own warnings, its version line, the
-        # section warning, then `LogArgs`'s lines, in that order
+        # section warning, the debug categories' warnings, then
+        # `LogArgs`'s lines, in that order
         self.logger = open_history_log(
             log_path,
             debug=config.debug,
@@ -369,6 +370,7 @@ class Node(threading.Thread):
             config_file_line=config.config_file_line,
             log_warnings=config.log_warnings,
             section_warning=config.section_warning,
+            debug_warnings=config.debug_warnings,
             config_args=config.config_args,
             rate_limit=config.log_rate_limit,
         )
