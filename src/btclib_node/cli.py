@@ -111,12 +111,11 @@ the active chain's section over the default section; within the command
 line the last value, within a file the first, the chain selectors
 aside; and a negation discarding every value named before it at its own
 level.
-`-connect`, `-addnode`, `-seednode`, `-rpcauth`, `-rpcwhitelist`,
-`-rpcbind`, `-rpcallowip`, `-whitelist`, `-whitebind`, `-debug` and
-`-shutdownnotify` are lists, every value from every level applying --
-`-shutdownnotify` alone among the four notify options below, Core reading
-it with `GetArgs` rather than the `GetArg` the other three are read with
-(`notify.py`'s own module docstring).
+An option Core reads with `GetArgs`, which `_get_args` below ports, is a
+list, every value from every level applying: `-connect` and `-debug`
+among them, and `-shutdownnotify` alone among the four notify options
+below, Core reading it with `GetArgs` rather than the `GetArg` the other
+three are read with (`notify.py`'s own module docstring).
 
 Not every option answers to the file the same way once the chain is
 not `main`: `-port`, `-rpcport`, `-rpcbind`, `-connect` and `-addnode`
@@ -205,7 +204,7 @@ from btclib.fee import FeeRate
 
 from btclib_node import Node, install_signal_handlers
 from btclib_node.block_db import blocks_directory
-from btclib_node.chains import Main, SigNet, TestNet, TestNet4
+from btclib_node.chains import BURIED_DEPLOYMENTS, Main, SigNet, TestNet, TestNet4
 from btclib_node.config import (
     DEFAULT_DUST_RELAY_FEERATE,
     DEFAULT_INCREMENTAL_RELAY_FEERATE,
@@ -255,6 +254,8 @@ from btclib_node.settings_file import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from btclib_node.chains import Chain
+
 __all__ = ["build_config", "main"]
 
 # Core's own default filename, `BITCOIN_CONF_FILENAME` (`src/init.cpp`,
@@ -287,6 +288,10 @@ _LEADING_INTEGER = re.compile(r"-?[0-9]+")
 _INT64_MIN, _INT64_MAX = -(2**63), 2**63 - 1
 _INT_MIN = -(2**31)
 _INT_MAX = 2**31 - 1
+# `ToIntegral<int32_t>`'s grammar, an optional `-` and ASCII digits and
+# nothing else, its leading zeros matched apart so that `int` reads at
+# most ten digits
+_ACTIVATION_HEIGHT = re.compile(r"(-?)0*([0-9]{1,10})")
 # the MiB a `uint64_t` byte count wraps at
 _PRUNE_MIB_WRAP = 2**64 // 2**20
 
@@ -850,6 +855,16 @@ _OPTIONS: dict[str, _Option] = {
         "", "Use the signet chain. Equivalent to -chain=signet.", _CHAINPARAMS_TITLE
     ),
     "startupnotify": _Option("=<cmd>", "Execute command on startup.", _OPTIONS_TITLE),
+    # Core's registration (`src/chainparamsbase.cpp`, at
+    # bitcoin/bitcoin@f0de87f040, the v32.1 tag), the period after the
+    # parameter included
+    "testactivationheight": _Option(
+        "=name@height.",
+        "Set the activation height of 'name' (segwit, bip34, dersig, cltv, "
+        "csv). (test-only)",
+        _DEBUG_TEST_TITLE,
+        debug_only=True,
+    ),
     "testnet": _Option(
         "",
         "Use the testnet3 chain. Equivalent to -chain=test. Support for "
@@ -1809,6 +1824,36 @@ def _resolve_debug(
     return bool(enabled), frozenset(enabled), frozenset(excluded)
 
 
+def _get_activation_heights(settings: _Settings) -> dict[str, int]:
+    """Return `-testactivationheight`'s heights by deployment name.
+
+    Core's `HandleDeploymentArgs` (`src/chainparams.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), on every chain: each
+    value is split at its first `@`, the height after it is
+    `ToIntegral<int32_t>`'s, refused below zero and from `INT_MAX` up,
+    and the name before it is a key of `BURIED_DEPLOYMENTS`. A later
+    value for the same name wins.
+    """
+    heights: dict[str, int] = {}
+    for arg in _get_args(settings, "testactivationheight"):
+        name, found, value = arg.partition("@")
+        if not found:
+            err_msg = f"Invalid format ({arg}) for -testactivationheight=name@height."
+            raise ValueError(err_msg)
+        match = _ACTIVATION_HEIGHT.fullmatch(value)
+        # `-0` is zero, and any other negative refused
+        if match is None or (match[1] and int(match[2])) or int(match[2]) >= _INT_MAX:
+            err_msg = (
+                f"Invalid height value ({arg}) for -testactivationheight=name@height."
+            )
+            raise ValueError(err_msg)
+        if name not in BURIED_DEPLOYMENTS:
+            err_msg = f"Invalid name ({arg}) for -testactivationheight=name@height."
+            raise ValueError(err_msg)
+        heights[name] = int(match[2])
+    return heights
+
+
 def _help_message(*, show_debug: bool) -> str:
     """Return the help `-h` prints: `GetHelpMessage`'s groups and layout.
 
@@ -2200,13 +2245,19 @@ def _prune_target_mib(prune: int) -> int:
     return target_mib
 
 
-def _read_settings(argv: Sequence[str]) -> tuple[_Settings, Path, str]:
+def _read_settings(
+    argv: Sequence[str],
+) -> tuple[_Settings, Path, str, dict[str, int]]:
     """Return `argv`'s settings, file included, data directory and chain.
 
     `ParseArgs` (`src/bitcoind.cpp`, at bitcoin/bitcoin@9be056a8a7) in
     its order: the command line, then the file and the chain it selects,
     then the refusal of an argument that is not an option; and after it
     `ProcessInitCommands`'s help, printed to stdout with exit `0`.
+    The fourth value is `-testactivationheight`'s, read where
+    `InitConfig`'s `SelectParams` reads it (`src/common/init.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): once the chain is
+    known, before `settings.json` is.
     """
     warnings: list[str] = []
     options, token = _parse_parameters(argv, warnings)
@@ -2275,6 +2326,7 @@ def _read_settings(argv: Sequence[str]) -> tuple[_Settings, Path, str]:
         )
     chain_name = _resolve_chain_name(settings)
     settings.network = _CHAIN_SECTION[chain_name]
+    activation_heights = _get_activation_heights(settings)
     net_dir = os.path.join(base_display, chain_name)  # noqa: PTH118
     _make_data_dirs(net_dir)
     _check_ignored_conf(settings, base_dir, conf_path)
@@ -2293,7 +2345,7 @@ def _read_settings(argv: Sequence[str]) -> tuple[_Settings, Path, str]:
             _help_message(show_debug=bool(_get_bool(settings, "help-debug")))
         )
         raise SystemExit(0)
-    return settings, base_dir, chain_name
+    return settings, base_dir, chain_name, activation_heights
 
 
 @dataclass(frozen=True)
@@ -2312,6 +2364,8 @@ class _BeforeLock:
     settings: _Settings
     base_dir: Path
     chain_name: str
+    # `directories.chain` with `-testactivationheight`'s heights applied
+    chain: Chain
     blocksdir: str | None
     # `-maxconnections` as `GetIntArg` reads it, which the soft-set of
     # `-listen` compares with zero, and as the `int` the limit is
@@ -2447,13 +2501,15 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     `-reindex-chainstate`, `-forcednsseed` beside a `-dnsseed` that is
     off, a negative `-maxconnections`, a `-rpcmaxconnections` below one
     (where Core's `master` refuses it, at bitcoin/bitcoin@649bc0a645),
-    `-debug`'s categories, `-minimumchainwork`, `-assumevalid`,
-    `-maxtipage` (the order `node::ApplyArgsManOptions`'s own
-    chainstate-manager options are read in,
+    `-debug`'s categories, `-testactivationheight` on mainnet (at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag), `-minimumchainwork`,
+    `-assumevalid`, `-maxtipage` (the order
+    `node::ApplyArgsManOptions`'s own chainstate-manager options are
+    read in,
     `src/node/chainstatemanager_args.cpp`, at bitcoin/bitcoin@9be056a8a7),
     `-prune`, the mempool's options.
     """
-    settings, base_dir, chain_name = _read_settings(argv)
+    settings, base_dir, chain_name, activation_heights = _read_settings(argv)
     _check_network_only_args(settings)
     _warn_unrecognized_sections(settings)
     # `GetBlocksDirPath`: a negated `-blocksdir` is an empty path, which
@@ -2496,6 +2552,12 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
         reindex_chainstate=bool(_get_bool(settings, "reindex-chainstate")),
     )
     debug, debug_categories, debug_exclude = _resolve_debug(settings)
+    # `IsArgSet`, so a negation is refused too and `settings.json` is
+    # read, unlike `_read_settings`'s read of the heights themselves
+    if chain_name == "mainnet" and _is_set(settings, "testactivationheight"):
+        err_msg = "The -testactivationheight option may not be used on mainnet."
+        raise ValueError(err_msg)
+    chain = directories.chain.with_activation_heights(activation_heights)
     # after `-debug`'s categories, where `AppInitParameterInteraction`
     # applies the chainstate manager's options, ahead of the blockmanager's
     # (`-prune`, below) and the mempool's (btclib-org/btclib-node#1332)
@@ -2508,6 +2570,7 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
         settings,
         base_dir,
         chain_name,
+        chain,
         blocksdir,
         max_connections_arg,
         max_connections,
@@ -2713,7 +2776,7 @@ def _after_lock(before: _BeforeLock) -> Config:
     )
 
     return Config(
-        chain=before.chain_name,
+        chain=before.chain,
         data_dir=before.base_dir,
         blocks_dir=before.blocksdir,
         p2p_port=p2p_port,

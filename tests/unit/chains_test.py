@@ -12,11 +12,15 @@ which the subclass holds itself, are checked against Core's.
 """
 
 import runpy
+from dataclasses import fields, replace
 from pathlib import Path
+from typing import Any
 
-from btclib.consensus import CONSENSUS_PARAMS, HEADERS_SYNC_PARAMS
+from btclib.consensus import CONSENSUS_PARAMS, HEADERS_SYNC_PARAMS, ConsensusParams
+from btclib.script.engine.flags import ScriptFlag
 
 from btclib_node.chains import (
+    BURIED_DEPLOYMENTS,
     Chain,
     Main,
     RegTest,
@@ -121,12 +125,55 @@ def test_the_genesis_block_carries_the_coinbase_its_header_commits_to() -> None:
 def test_consensus_is_the_row_of_the_same_name_in_btclibs_own_table() -> None:
     """`Chain.consensus` reaches `btclib.consensus.CONSENSUS_PARAMS` by name.
 
-    Not a copy: the same frozen row every other reader of that table
-    gets, so a value read off `chain.consensus` and one read off
-    `CONSENSUS_PARAMS[chain.name]` can never disagree.
+    On a chain no height was moved on, not a copy: the same frozen row
+    every other reader of that table gets, so a value read off
+    `chain.consensus` and one read off `CONSENSUS_PARAMS[chain.name]`
+    can never disagree.
     """
     for chain in CHAINS:
         assert chain.consensus is CONSENSUS_PARAMS[chain.name], chain.name
+
+
+def test_buried_deployments_name_every_activation_height() -> None:
+    """Each of Core's names moves its own field of `ConsensusParams`."""
+    heights = {f.name for f in fields(ConsensusParams) if f.name.endswith("_height")}
+    assert set(BURIED_DEPLOYMENTS.values()) == heights
+    for name, field_name in BURIED_DEPLOYMENTS.items():
+        moved = RegTest().with_activation_heights({name: 7}).consensus
+        changes: dict[str, Any] = {field_name: 7}
+        assert moved == replace(RegTest().consensus, **changes), name
+
+
+def test_moved_heights_are_the_copy_s_alone() -> None:
+    """ISS 2155: the copy carries a row of its own, the original the shared one.
+
+    A second call moves on top of the first, a later height for the same
+    name winning, so two nodes in one process can carry different rows.
+    """
+    regtest = RegTest()
+    moved = regtest.with_activation_heights({"segwit": 432, "cltv": 1351})
+    again = moved.with_activation_heights({"csv": 432, "segwit": 500})
+    assert regtest.consensus is CONSENSUS_PARAMS["regtest"]
+    assert regtest != moved
+    assert moved.consensus == replace(
+        regtest.consensus, segwit_height=432, bip65_height=1351
+    )
+    assert again.consensus == replace(
+        regtest.consensus, segwit_height=500, bip65_height=1351, csv_height=432
+    )
+    assert moved.consensus is moved.consensus
+    assert (moved.name, moved.port, moved.genesis) == (
+        regtest.name,
+        regtest.port,
+        regtest.genesis,
+    )
+
+
+def test_moved_cltv_binds_the_script_flags_from_its_height() -> None:
+    """`script_flags_at`, `interpreter.get_flags`'s answer, follows the row."""
+    consensus = RegTest().with_activation_heights({"cltv": 10}).consensus
+    assert not consensus.script_flags_at(9) & ScriptFlag.CHECKLOCKTIMEVERIFY
+    assert consensus.script_flags_at(10) & ScriptFlag.CHECKLOCKTIMEVERIFY
 
 
 def test_the_fixed_seeds_regenerate_from_cores_lists() -> None:
