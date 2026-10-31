@@ -551,6 +551,13 @@ def _reconcile_mempool_for_reorg(
         # during initial block download would pay for every transaction
         removed = node.mempool.remove_for_block(block.transactions)
         node.fee_estimator.process_block(removed, height)
+        # v32.1's `ConnectTip` signals the block to the estimators only
+        # outside initial block download (`src/validation.cpp`, at
+        # bitcoin/bitcoin@f0de87f040, the v32.1 tag). The block policy
+        # estimator is still told during it, as v31.1 told it
+        # (btclib-org/btclib-node#2178).
+        if not node.is_initial_block_download:
+            node.mempool_estimator.block_connected(block, removed, height)
         # Core's own `removeForBlock` (`src/txmempool.cpp:405-427`,
         # at bitcoin/bitcoin@58a7869f86): once per block connected,
         # whether or not it held anything this mempool was also

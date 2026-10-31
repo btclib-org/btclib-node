@@ -88,6 +88,7 @@ from btclib_node.rpc.errors import (
     RpcError,
     bool_mismatch,
     bool_param,
+    check_object,
     is_hex,
     json_type_name,
     parse_hash_v,
@@ -3277,34 +3278,6 @@ def get_prioritised_transactions(
     return answer
 
 
-def _check_object(
-    obj: dict[str, Any], fields: dict[str, str], *, allow_null: bool
-) -> None:
-    """Core's `RPCTypeCheckObj` with `fStrict`: each named field, then no other.
-
-    `src/rpc/util.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag.
-    `fields` maps a name to the JSON type it must have, named as univalue
-    does. A missing field is null: refused as "Missing" unless
-    `allow_null`, where it and an explicit null pass. Every error is
-    `RPC_TYPE_ERROR`.
-    """
-    for key, expected in fields.items():
-        value = obj.get(key)
-        if value is None:
-            if allow_null:
-                continue
-            raise RpcError(RPCErrorCode.TYPE_ERROR, f"Missing {key}")
-        if json_type_name(value) != expected:
-            raise RpcError(
-                RPCErrorCode.TYPE_ERROR,
-                f"JSON value of type {json_type_name(value)} for field {key} "
-                f"is not of expected type {expected}",
-            )
-    for key in obj:
-        if key not in fields:
-            raise RpcError(RPCErrorCode.TYPE_ERROR, f"Unexpected key {key}")
-
-
 def _bool_option(options: dict[str, Any], key: str, *, default: bool) -> bool:
     """Read `key` as `get_bool` does: absent is `default`, null is refused."""
     if key not in options:
@@ -3334,7 +3307,7 @@ def _spending_prevout(output: object) -> tuple[bytes, int]:
             f"JSON value of type {json_type_name(output)} "
             "is not of expected type object",
         )
-    _check_object(output, {"txid": "string", "vout": "number"}, allow_null=False)
+    check_object(output, {"txid": "string", "vout": "number"}, allow_null=False)
     txid = parse_hash_v("txid", output["txid"])
     vout = output["vout"]
     if isinstance(vout, float) or not -_INT_MAX - 1 <= vout <= _INT_MAX:
@@ -3377,7 +3350,7 @@ def get_tx_spending_prevout(
             RPCErrorCode.INVALID_PARAMETER, "Invalid parameter, outputs are missing"
         )
     options = {} if options is None else options
-    _check_object(
+    check_object(
         options,
         {"mempool_only": "bool", "return_spending_tx": "bool"},
         allow_null=True,
@@ -4719,7 +4692,7 @@ arg_names: dict[str, tuple[str, ...]] = {
     "signrawtransactionwithkey": ("hexstring", "privkeys", "prevtxs", "sighashtype"),
     "combinerawtransaction": ("txs",),
     "submitpackage": ("package", "maxfeerate", "maxburnamount"),
-    "estimatesmartfee": ("conf_target", "estimate_mode"),
+    "estimatesmartfee": ("conf_target", "estimate_mode", "options"),
     "estimaterawfee": ("conf_target", "threshold"),
     "ping": (),
     "setmocktime": ("timestamp",),

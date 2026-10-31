@@ -1271,7 +1271,11 @@ class Mempool:
             wtxid = self.txid_index.get(txid)
             if wtxid is not None:
                 entry = RemovedTx(
-                    txid, self.fees[wtxid], self.vsizes[wtxid], self.heights[wtxid]
+                    txid,
+                    self.fees[wtxid],
+                    self.vsizes[wtxid],
+                    self.heights[wtxid],
+                    self.transactions[wtxid].weight,
                 )
                 removed.append(entry)
                 self._pop(wtxid, notify=False)

@@ -13,6 +13,7 @@ __all__ = [
     "RpcError",
     "bool_mismatch",
     "bool_param",
+    "check_object",
     "is_hex",
     "parse_hash_v",
     "type_error",
@@ -114,6 +115,34 @@ def type_error(position: int, name: str, value: object, expected: str) -> RpcErr
     argues.
     """
     return type_errors((position, name, value, expected))
+
+
+def check_object(
+    obj: dict[str, Any], fields: dict[str, str], *, allow_null: bool
+) -> None:
+    """Core's `RPCTypeCheckObj` with `fStrict`: each named field, then no other.
+
+    `src/rpc/util.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag.
+    `fields` maps a name to the JSON type it must have, named as univalue
+    does. A missing field is null: refused as "Missing" unless
+    `allow_null`, where it and an explicit null pass. Every error is
+    `RPC_TYPE_ERROR`.
+    """
+    for key, expected in fields.items():
+        value = obj.get(key)
+        if value is None:
+            if allow_null:
+                continue
+            raise RpcError(RPCErrorCode.TYPE_ERROR, f"Missing {key}")
+        if json_type_name(value) != expected:
+            raise RpcError(
+                RPCErrorCode.TYPE_ERROR,
+                f"JSON value of type {json_type_name(value)} for field {key} "
+                f"is not of expected type {expected}",
+            )
+    for key in obj:
+        if key not in fields:
+            raise RpcError(RPCErrorCode.TYPE_ERROR, f"Unexpected key {key}")
 
 
 def type_errors(*mismatches: tuple[int, str, object, str]) -> RpcError:

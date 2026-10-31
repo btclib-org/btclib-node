@@ -24,10 +24,9 @@ below answers it for a command named explicitly, and un-truncated, where
 Core's own bare listing keeps only each entry's first line.
 
 `stop`'s text names this node, as the comment above `_HELP_STOP` says.
-`estimatesmartfee`'s is v31.1's, read back the same way (at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag): v32.1's describes an
-`options` argument this node does not take. Its v32.1 text is owed by
-btclib-org/btclib-node#2102, with the `options` argument.
+`estimatesmartfee`'s is written from v32.1's source by the rules of
+`RPCMethod::ToString`, and `fee_estimation_test.py` compares it with
+bitcoind's.
 
 `CATEGORY` is each command's own heading in Core's `help`'s bare
 listing (`CRPCTable::help`, `src/rpc/server.cpp:69-117`, at
@@ -54,7 +53,7 @@ from btclib_node.rpc.errors import type_error
 __all__ = ["CATEGORY", "HELP_TEXT", "answer_help"]
 
 _HELP_ESTIMATESMARTFEE = (
-    'estimatesmartfee conf_target ( "estimate_mode" )\n'
+    'estimatesmartfee conf_target ( "estimate_mode" {"fee_rate_estimator":"str","verbosity":n} )\n'
     "\n"
     "Estimates the approximate fee per kilobyte needed for a transaction to begin\n"
     "confirmation within conf_target blocks if possible and return the number of blocks\n"
@@ -62,30 +61,45 @@ _HELP_ESTIMATESMARTFEE = (
     "in BIP 141 (witness data is discounted).\n"
     "\n"
     "Arguments:\n"
-    "1. conf_target      (numeric, required) Confirmation target in blocks (1 - 1008)\n"
-    '2. estimate_mode    (string, optional, default="economical") The fee estimate mode.\n'
-    "                    unset, economical, conservative \n"
-    "                    unset means no mode set (default mode will be used). \n"
-    "                    economical estimates use a shorter time horizon, making them more\n"
-    "                    responsive to short-term drops in the prevailing fee market. This mode\n"
-    "                    potentially returns a lower fee rate estimate.\n"
-    "                    conservative estimates use a longer time horizon, making them\n"
-    "                    less responsive to short-term drops in the prevailing fee market. This mode\n"
-    "                    potentially returns a higher fee rate estimate.\n"
-    "                    \n"
+    "1. conf_target                         (numeric, required) Confirmation target in blocks (1 - 1008)\n"
+    '2. estimate_mode                       (string, optional, default="economical") The fee estimate mode.\n'
+    "                                       unset, economical, conservative \n"
+    "                                       unset means no mode set (default mode will be used). \n"
+    "                                       economical mode potentially returns a lower fee rate estimate.\n"
+    "                                       conservative potentially returns a higher fee rate estimate.\n"
+    "                                       \n"
+    "3. options                             (json object, optional)\n"
+    "     {\n"
+    '       "fee_rate_estimator": "str",    (string, optional, default="auto") Selects which fee rate estimator to use.\n'
+    '                                       "auto" (the default) combines both estimators, returning the lower of the block policy and\n'
+    "                                       mempool fee rate estimates. If the mempool fee rate estimator cannot produce an estimate, the\n"
+    "                                       block policy fee rate estimate is returned instead. An error is returned only if the block\n"
+    "                                       policy fee rate estimate is unavailable.\n"
+    '                                       "block_policy" uses only the block policy fee rate estimator.\n'
+    '                                       "mempool_policy" uses only the mempool fee rate estimator.\n'
+    '       "verbosity": n,                 (numeric, optional, default=1) 1 returns feerate or errors. 2 also returns "mempool_health_statistics".\n'
+    "     }\n"
     "\n"
     "Result:\n"
-    "{                   (json object)\n"
-    '  "feerate" : n,    (numeric, optional) estimate fee rate in BTC/kvB (only present if no errors were encountered)\n'
-    '  "errors" : [      (json array, optional) Errors encountered during processing (if there are any)\n'
-    '    "str",          (string) error\n'
+    "{                                    (json object)\n"
+    '  "feerate" : n,                     (numeric, optional) estimate fee rate in BTC/kvB (only present if no errors were encountered)\n'
+    '  "estimator" : "str",               (string, optional) the fee estimator used to produce the result (only present for successful estimates when fee_rate_estimator is "auto")\n'
+    '  "errors" : [                       (json array, optional) Errors encountered during processing (if there are any)\n'
+    '    "str",                           (string) error\n'
     "    ...\n"
     "  ],\n"
-    '  "blocks" : n      (numeric) block number where estimate was found\n'
-    "                    The request target will be clamped between 2 and the highest target\n"
-    "                    fee estimation is able to return based on how long it has been running.\n"
-    "                    An error is returned if not enough transactions and blocks\n"
-    "                    have been observed to make an estimate for any number of blocks.\n"
+    '  "blocks" : n,                      (numeric) the confirmation target in blocks for the returned fee rate estimate.\n'
+    "                                     For the block policy fee rate estimator, this is the target the estimate was found at, clamped to at\n"
+    "                                     least 2 and at most the estimator's maximum usable target. For the mempool fee rate\n"
+    "                                     estimator, it is always 2.\n"
+    '  "mempool_health_statistics" : [    (json array, optional) Health statistics for the most recently mined blocks tracked by the mempool fee rate estimator (only present when verbosity >= 2)\n'
+    "    {                                (json object)\n"
+    '      "block_height" : n,            (numeric) Block height\n'
+    '      "block_weight" : n,            (numeric) Total weight of non-coinbase transactions in the block\n'
+    '      "mempool_txs_weight" : n       (numeric) Total weight of transactions removed from the mempool for this block\n'
+    "    },\n"
+    "    ...\n"
+    "  ]\n"
     "}\n"
     "\n"
     "Examples:\n"

@@ -227,6 +227,7 @@ _CATEGORY_OF_FILE = {
     "fee_estimator.py": "estimatefee",
     "main.py": "validation",
     "mempool.py": "mempool",
+    "mempool_estimator.py": "estimatefee",
     "p2p/banman.py": "net",
     "p2p/callbacks.py": "net",
     "p2p/compact_block.py": "net",
@@ -234,6 +235,7 @@ _CATEGORY_OF_FILE = {
     "p2p/main.py": "net",
     "p2p/manager.py": "net",
     "rpc/connection.py": "http",
+    "rpc/fees.py": "estimatefee",
     "rpc/main.py": "rpc",
     "rpc/manager.py": "http",
 }

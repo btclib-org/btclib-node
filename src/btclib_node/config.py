@@ -725,7 +725,7 @@ class Config:
     # a tip's age against this, in seconds, rather than building a
     # `timedelta` from it.
     max_tip_age: int
-    # Core's own `-acceptstalefeeestimates`: read `fee_estimates.dat`
+    # Core's own `-acceptstalefeeestimates`: read `block_policy_estimates.dat`
     # however old it is, on regtest alone (`FeeEstimator`)
     accept_stale_fee_estimates: bool
     # (host, port) pairs, split by `_split_peers` above, host unresolved:
