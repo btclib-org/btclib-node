@@ -487,6 +487,31 @@ def test_an_ipv6_host_is_bound_with_its_scope() -> None:
     assert manager_module._sockaddr(IPv4Address("127.0.0.1"), 5) == ("127.0.0.1", 5)
 
 
+def test_bind_and_listen_binds_an_ipv6_host_with_its_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 2152: `bind` receives `_sockaddr`'s 4-tuple, on every platform.
+
+    The socket records its address and refuses it, so no interface here
+    has to hold `fe80::1`.
+    """
+    bound: list[object] = []
+
+    class Recording(socket.socket):
+        """A socket recording what it is asked to bind, and refusing it."""
+
+        @override
+        def bind(self, address: Any, /) -> None:
+            bound.append(address)
+            raise OSError(errno.EADDRNOTAVAIL, "Can't assign requested address")
+
+    monkeypatch.setattr(socket, "socket", Recording)
+    host = IPv6Address("fe80::1%3")
+    with pytest.raises(OSError, match=r"^Unable to bind to \[fe80::1%3\]:7 "):
+        manager_module._bind_and_listen(host, 7, Logger(debug=True))
+    assert bound == [("fe80::1", 7, 0, 3)]
+
+
 @pytest.mark.skipif(  # pragma: no cover -- macOS alone, whose lo0 holds fe80::1
     sys.platform != "darwin", reason="macOS's lo0 holds fe80::1, Linux's lo does not"
 )
