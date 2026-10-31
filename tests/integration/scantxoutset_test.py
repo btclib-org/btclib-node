@@ -215,7 +215,7 @@ def both(bitcoind: Bitcoind, tmp_path: Path) -> Iterator[tuple[Bitcoind, Node]]:
 
 @pytest.mark.xfail(
     raises=AssertionError,
-    reason="v32.1 diverges: descriptor origin path (btclib-org/btclib-node#2104)",
+    reason="v32.1 diverges: descriptor origin path (btclib-org/btclib-node#2104, btclib-org/btclib-wallet#616)",
 )
 def test_a_scan_answers_as_bitcoind_does(both: tuple[Bitcoind, Node]) -> None:
     """Every scan holds bitcoind's own keys, in its order, and its values."""
@@ -251,10 +251,6 @@ def test_status_and_abort_answer_as_bitcoind_does(both: tuple[Bitcoind, Node]) -
         )
 
 
-@pytest.mark.xfail(
-    raises=AssertionError,
-    reason="v32.1 diverges: code for a null scanobjects (btclib-org/btclib-node#2104)",
-)
 def test_refusals_are_bitcoind_s(both: tuple[Bitcoind, Node]) -> None:
     """Each refusal has bitcoind's code, and its message but a parser's.
 
