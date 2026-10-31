@@ -210,8 +210,9 @@ def scan_tx_out_set(
     Where one fragment spells a key twice, btclib_wallet's provider puts
     the later origin in front of the earlier one, as Core v31.1 does. v32.1
     replaces the earlier origin (bitcoin/bitcoin@b42f7fade0), so its `desc`
-    names the later origin, where this one names the later fingerprint
-    over both paths (btclib-org/btclib-wallet#616).
+    names the later origin, where this node's names the later fingerprint
+    over both paths (btclib-org/btclib-node#2104,
+    btclib-org/btclib-wallet#616).
 
     A descriptor parse error has Core's code and btclib_wallet's message.
     """
