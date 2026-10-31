@@ -353,10 +353,11 @@ def test_an_option_core_passes_over_is_logged_at_debug(
 
         @override
         def setsockopt(self, level: int, optname: int, value: Any, *rest: Any) -> None:
-            if (level, optname) in refused:
-                raise OSError(errno.ENOPROTOOPT, "Protocol not available")
-            # `SO_EXCLUSIVEADDRUSE`, set on Windows alone
-            super().setsockopt(level, optname, value, *rest)  # pragma: no cover
+            # `SO_EXCLUSIVEADDRUSE`, the one option set and not refused
+            if (level, optname) not in refused:  # pragma: no cover -- Windows alone
+                super().setsockopt(level, optname, value, *rest)
+                return
+            raise OSError(errno.ENOPROTOOPT, "Protocol not available")
 
     monkeypatch.setattr(socket, "socket", Refusing)
     service = lookup_service(loopback, 0)
