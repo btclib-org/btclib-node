@@ -2624,6 +2624,65 @@ def test_a_node_logs_the_configuration_warnings_first(tmp_path: Path) -> None:
     assert warning_at < version_at < section_at < loop_at
 
 
+def test_stop_waits_on_a_reply_deadline_past_timeout_max(tmp_path: Path) -> None:
+    """ISS 2152: a `-rpcservertimeout` past `threading.TIMEOUT_MAX` stops.
+
+    `_finish_replies` records `request_timeout` past now, as here, and
+    `Node.stop` waits on what is left of it in `join`, which raises
+    `OverflowError` past `TIMEOUT_MAX` unless the wait is capped there.
+    Core reads the option as `int64_t` seconds, so it accepts such a
+    value.
+    """
+    seconds = int(threading.TIMEOUT_MAX) + 1
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path,
+            allow_p2p=False,
+            allow_rpc=False,
+            rpcservertimeout=seconds,
+        )
+    )
+    node.start()
+    request_timeout = node.rpc_manager.request_timeout
+    assert request_timeout == float(seconds)
+    node.rpc_manager.extend_reply_deadline(time.monotonic() + request_timeout)
+    node.stop()
+    assert not node.is_alive()
+
+
+def test_a_node_logs_the_debug_warnings_after_the_section_warning(
+    tmp_path: Path,
+) -> None:
+    """ISS 2152: `SetLoggingCategories` runs after the section warning.
+
+    `AppInitParameterInteraction` warns over the sections, then sets the
+    categories, both ahead of `init::StartLogging`'s "Default data
+    directory" (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+    tag), the order bitcoind v32.1.0's `debug.log` shows.
+    """
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path,
+            allow_p2p=False,
+            allow_rpc=False,
+            section_warning="a.conf:1 Section [x] is not recognized.\n",
+            debug_warnings=["first", "second"],
+        )
+    )
+    try:
+        node.start()
+    finally:
+        node.stop()
+    log_text = (node.data_dir / "history.log").read_text(encoding="utf-8")
+    section_at = log_text.index("Section [x] is not recognized.")
+    first_at = log_text.index("[warning] first")
+    second_at = log_text.index("[warning] second")
+    data_dir_at = log_text.index("Default data directory")
+    assert section_at < first_at < second_at < data_dir_at
+
+
 def test_a_node_logs_its_config_args_after_the_section_warning(
     tmp_path: Path,
 ) -> None:

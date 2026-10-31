@@ -11,8 +11,8 @@ Core's own `DEFAULT_MIN_RELAY_TX_FEE`. `_resolve_chain` is what turns a chain
 already built, or a network's name, into the `Chain` a `Config` carries.
 `split_host_port` and `lookup_host_port` split a "host[:port]": the first
 is `-rpcbind`'s, the second a peer's. `lookup_service`, `parse_bind` and
-`listen_port` read an address Core's `Lookup` reads, for `-externalip`
-and `-bind`, `parse_whitebind` that of `-whitebind`.
+`listen_port` read an address Core's `Lookup` reads, for `-externalip`,
+`-bind` and `-rpcbind`, `parse_whitebind` that of `-whitebind`.
 `get_path_arg` is `cli.py`'s reader of `-datadir`, `-conf` and
 `-blocksdir`. All of these are public here because other modules read
 them.
@@ -557,8 +557,8 @@ class Config:
     # this node's control plane, not a peer-to-peer listener, so a
     # caller holding a credential still has to reach it from an
     # interface this names. `None` is Core's own default, `::1` and
-    # `127.0.0.1` both (`HTTPBindAddresses`, `src/httpserver.cpp`,
-    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag); a host a Python
+    # `127.0.0.1` both (`GetBindAddresses`, `src/httpserver.cpp`,
+    # at bitcoin/bitcoin@f0de87f040, the v32.1 tag); a host a Python
     # caller names is bound alone, where `-rpcbind` and `-rpcallowip`
     # are not both given. P2pManager binds every interface unless
     # `bind` below names some, and is right to, since a peer listener is
@@ -566,7 +566,7 @@ class Config:
     rpc_host: str | None
     # Core's `-rpcbind` values, checked by `cli`: `RpcManager` binds
     # them where `rpcallowip` below names something, and warns over them
-    # where it does not, as `HTTPBindAddresses` does.
+    # where it does not, as `GetBindAddresses` does.
     rpcbind: tuple[str, ...]
     # Core's `-rpcallowip` values, which `RpcManager` parses when it
     # starts, as `InitHTTPServer` parses them, and closes a connection
@@ -583,9 +583,8 @@ class Config:
     # `RpcConnection.run` may take reading one request, and the idle gap
     # a kept-alive connection may sit in between two of them, both
     # matched to `REQUEST_TIMEOUT` by default. `RpcManager.__init__` is
-    # where `0` and `-1` both read as no bound at all, as they do for
-    # Core's own `evhttp_set_timeout` (`rpc.manager._request_timeout`'s
-    # own docstring).
+    # where a value of 0 or less reads as no bound at all, as in Core
+    # (`rpc.manager._request_timeout`'s own docstring).
     rpcservertimeout: int
     # Core's own `-rpcmaxconnections`: how many RPC clients
     # `RpcManager` holds at once. `rpc.manager`'s module docstring has
@@ -661,6 +660,9 @@ class Config:
     # no chain (`cli._warn_unrecognized_sections`), logged after the
     # version line; `""` where no section is unrecognised
     section_warning: str
+    # `SetLoggingCategories`'s warnings, one per deprecated category it
+    # reads (`cli._resolve_debug`), logged after `section_warning`
+    debug_warnings: tuple[str, ...]
     # `ArgsManager::LogArgs`'s own lines (`cli._log_args`): the config
     # file's args, then the command line's, logged after
     # `section_warning`
@@ -996,6 +998,7 @@ class Config:
         rpcwhitelistdefault: bool | None = None,
         log_warnings: Sequence[str] = (),
         section_warning: str = "",
+        debug_warnings: Sequence[str] = (),
         config_args: Sequence[str] = (),
         config_file_line: str = "",
     ) -> None:
@@ -1154,6 +1157,7 @@ class Config:
         self.log_path = log_path
         self.log_warnings = tuple(log_warnings)
         self.section_warning = section_warning
+        self.debug_warnings = tuple(debug_warnings)
         self.config_args = tuple(config_args)
         self.config_file_line = config_file_line
         self.min_relay_feerate = min_relay_feerate

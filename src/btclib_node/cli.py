@@ -38,10 +38,11 @@ P2P listener is always requested; `-listen=0` is what keeps it from
 accepting connections).
 
 `-debug=<category>` takes Core's logging category names
-(`LOG_CATEGORIES_BY_STR`, `src/logging.cpp`, same sha) and refuses any
-other with Core's own "Unsupported logging category" message
-(`SetLoggingCategories`, `src/init/common.cpp`), and `0` or `none`
-discards the categories before it. Each debug line is written under
+(`LOG_CATEGORIES_BY_STR`, `src/logging.cpp`, at bitcoin/bitcoin@f0de87f040,
+the v32.1 tag), and `libevent` with Core's warning that it does nothing.
+It refuses any other with Core's own "Unsupported logging category"
+message (`SetLoggingCategories`, `src/init/common.cpp`), and `0` or
+`none` discards the categories before it. Each debug line is written under
 Core's category for it (`Logger.log_debug`), and `-debug` with no
 category, `1` or `all` selects every one. `-debugexclude=<category>` takes
 a category out after `-debug`'s, refused the same way.
@@ -299,8 +300,9 @@ _CHAIN_ALIASES = {
 }
 
 # `LOG_CATEGORIES_BY_STR` (`src/logging.cpp`,
-# at bitcoin/bitcoin@9be056a8a7), `lock` left out as a release build leaves
-# it out, it being compiled in only under `DEBUG_LOCKCONTENTION`.
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag), `lock` left out as a
+# release build leaves it out, it being compiled in only under
+# `DEBUG_LOCKCONTENTION`.
 _LOG_CATEGORIES = frozenset(
     {
         "net",
@@ -320,7 +322,6 @@ _LOG_CATEGORIES = frozenset(
         "prune",
         "proxy",
         "mempoolrej",
-        "libevent",
         "coindb",
         "qt",
         "leveldb",
@@ -333,8 +334,13 @@ _LOG_CATEGORIES = frozenset(
         "txpackages",
         "kernel",
         "privatebroadcast",
+        "mining",
     }
 )
+
+# what `GetLogCategory` accepts outside `LOG_CATEGORIES_BY_STR`, warning
+# that it does nothing (same file, same tag)
+_DEPRECATED_CATEGORY = "libevent"
 
 # `GetLogCategory`'s own spellings of every category at once, and the two
 # `SetLoggingCategories` reads as discarding the categories before them.
@@ -962,6 +968,8 @@ class _Settings:
     # `_warn_unrecognized_sections`'s one warning, logged after the
     # version line; `""` where no section is unrecognised
     section_warning: str = field(default="", repr=False)
+    # `_resolve_debug`'s warnings, logged after `section_warning`
+    debug_warnings: list[str] = field(default_factory=list, repr=False)
     # `init::StartLogging`'s "Config file:" line, logged after the data
     # directory's; `_read_settings` sets it
     config_file_line: str = ""
@@ -1775,32 +1783,47 @@ def _chain_section(settings: _Settings) -> str:
     )
 
 
+def _warn_deprecated_category(settings: _Settings) -> None:
+    """Append `GetLogCategory`'s warning over `libevent` to `settings`."""
+    settings.debug_warnings.append(
+        f"The logging category `{_DEPRECATED_CATEGORY}` is deprecated, does "
+        "nothing, and will be removed in a future version"
+    )
+
+
 def _resolve_debug(
     settings: _Settings,
 ) -> tuple[bool, frozenset[str], frozenset[str]]:
     """Return whether `-debug` is on, for which categories, and but for which.
 
     `SetLoggingCategories` (`src/init/common.cpp`, at
-    bitcoin/bitcoin@9be056a8a7): the categories after the last `0` or
-    `none`, each refused unless `GetLogCategory` (`src/logging.cpp`)
-    knows it. The first set is empty where every category is on, `-debug`,
-    `-debug=1` or `-debug=all` being among them. The second is
-    `-debugexclude`'s, applied after `-debug`'s and refused the same way
-    for a category Core does not know; `all` excludes every one.
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): the categories after the
+    last `0` or `none`, each refused unless `GetLogCategory`
+    (`src/logging.cpp`) knows it. The first set is empty where every
+    category is on, `-debug`, `-debug=1` or `-debug=all` being among
+    them. The second is `-debugexclude`'s, applied after `-debug`'s and
+    refused the same way for a category Core does not know; `all`
+    excludes every one. `libevent`, in either, selects nothing and
+    appends `GetLogCategory`'s warning to `settings.debug_warnings`.
     """
     categories = _get_args(settings, "debug")
     discard = [i for i, category in enumerate(categories) if category in _DEBUG_NONE]
     enabled = categories[discard[-1] + 1 :] if discard else categories
     for category in enabled:
-        if category not in _DEBUG_ALL and category not in _LOG_CATEGORIES:
+        if category == _DEPRECATED_CATEGORY:
+            _warn_deprecated_category(settings)
+        elif category not in _DEBUG_ALL and category not in _LOG_CATEGORIES:
             err_msg = f"Unsupported logging category -debug={category}."
             raise ValueError(err_msg)
+    enabled = [category for category in enabled if category != _DEPRECATED_CATEGORY]
     excluded: set[str] = set()
     for category in _get_args(settings, "debugexclude"):
         if category in _DEBUG_ALL:
             excluded |= _LOG_CATEGORIES
         elif category in _LOG_CATEGORIES:
             excluded.add(category)
+        elif category == _DEPRECATED_CATEGORY:
+            _warn_deprecated_category(settings)
         else:
             err_msg = f"Unsupported logging category -debugexclude={category}."
             raise ValueError(err_msg)
@@ -2702,15 +2725,12 @@ def _after_lock(before: _BeforeLock) -> Config:
     if ban_time is None:
         ban_time = DEFAULT_MISBEHAVING_BANTIME
     prune = before.prune
-    # `-rpcservertimeout`, which `InitHTTPServer` hands to libevent's
-    # `evhttp_set_timeout` as a 32-bit `int`
-    # (`src/httpserver.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-    # tag): the same `int64_t`-to-`int` narrowing `-maxconnections`
-    # above takes through `_to_int`.
+    # `-rpcservertimeout`, which `InitHTTPServer` reads as `int64_t`
+    # seconds (`src/httpserver.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    # v32.1 tag)
     rpcservertimeout = _get_int(settings, "rpcservertimeout")
-    rpcservertimeout = (
-        int(REQUEST_TIMEOUT) if rpcservertimeout is None else _to_int(rpcservertimeout)
-    )
+    if rpcservertimeout is None:
+        rpcservertimeout = int(REQUEST_TIMEOUT)
 
     return Config(
         chain=before.chain_name,
@@ -2781,6 +2801,7 @@ def _after_lock(before: _BeforeLock) -> Config:
         rpcwhitelistdefault=_get_bool(settings, "rpcwhitelistdefault"),
         log_warnings=settings.log_warnings,
         section_warning=settings.section_warning,
+        debug_warnings=settings.debug_warnings,
         config_args=_log_args(settings),
         config_file_line=settings.config_file_line,
     )
@@ -2873,6 +2894,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 config_file_line=before.settings.config_file_line,
                 log_warnings=before.settings.log_warnings,
                 section_warning=before.settings.section_warning,
+                debug_warnings=before.settings.debug_warnings,
                 config_args=_log_args(before.settings),
                 rate_limit=_get_bool(before.settings, "logratelimit") is not False,
             )
