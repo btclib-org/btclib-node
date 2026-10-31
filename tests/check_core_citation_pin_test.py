@@ -98,6 +98,19 @@ _UNLISTED_SITE = """\
     silent, do-nothing success instead.
 """
 
+# `claude-review.yml`'s `bitcoin-core-ref`, the citation above it
+# abbreviating the value; the line of `bitcoin-core-ref:` is _REF_LINE
+_REF = "9be056a8a7" + "0" * 30
+_REF_LINE = 6
+_REVIEW = f"""\
+      extra-prompt: |
+        Read the diff.
+      # Bitcoin Core's source for the review to read, at
+      # bitcoin/bitcoin@9be056a8a7 -- v31.1, the release
+      # `integration-bitcoind.yml` pins.
+      bitcoin-core-ref: {_REF}
+"""
+
 # an append-only entry the way CHANGELOG.md and RELEASE_NOTES.md write
 # one: a citation annotated as the release pinned when it was written,
 # which stays written that way after a later bump
@@ -137,6 +150,8 @@ def agreeing_tree(
     conftest = tmp_path / "conftest.py"
     errors = tmp_path / "errors.py"
     unlisted_site = tmp_path / "some_unrelated_module.py"
+    review = tmp_path / "claude-review.yml"
+    review.write_text(_REVIEW, encoding="utf-8")
     workflow.write_text(_WORKFLOW, encoding="utf-8")
     reorg_test.write_text(_REORG_TEST, encoding="utf-8")
     conftest.write_text(_CONFTEST, encoding="utf-8")
@@ -144,10 +159,11 @@ def agreeing_tree(
     unlisted_site.write_text(_UNLISTED_SITE, encoding="utf-8")
     monkeypatch.setattr(script, "_WORKFLOW", workflow)
     monkeypatch.setattr(script, "_REORG_TEST", reorg_test)
+    monkeypatch.setattr(script, "_REVIEW_WORKFLOW", review)
     monkeypatch.setattr(
         script,
         "_tracked_files",
-        lambda: [workflow, reorg_test, conftest, errors, unlisted_site],
+        lambda: [workflow, reorg_test, conftest, errors, unlisted_site, review],
     )
     return script
 
@@ -267,6 +283,65 @@ def test_a_three_part_citation_of_the_pin_agrees(
     assert agreeing_tree.main() == 0
 
 
+def _ref_problems_for(script: ModuleType, tmp_path: Path, review: str) -> list[str]:
+    """Write `review` as the fixture's `claude-review.yml` and check its ref."""
+    (tmp_path / "claude-review.yml").write_text(review, encoding="utf-8")
+    problems: list[str] = script._ref_problems()
+    return problems
+
+
+def test_a_review_ref_matching_its_citation_agrees(
+    agreeing_tree: ModuleType, tmp_path: Path
+) -> None:
+    """A full sha starting with the cited sha is what the check asks for."""
+    assert _ref_problems_for(agreeing_tree, tmp_path, _REVIEW) == []
+
+
+@pytest.mark.parametrize(
+    ("review", "problem"),
+    [
+        pytest.param(
+            _REVIEW.replace(_REF, "f0de87f040" + "0" * 30),
+            "does not start with the sha the citation above it names",
+            id="ref-left-behind",
+        ),
+        pytest.param(
+            _REVIEW.replace(_REF, "9be056a8a7"),
+            "not a full 40-hex sha",
+            id="short-ref",
+        ),
+        pytest.param(
+            _REVIEW.replace(" -- v31.1, the release", ""),
+            "no release-annotated citation",
+            id="missing-citation",
+        ),
+    ],
+)
+def test_a_review_ref_off_its_citation_is_caught(
+    agreeing_tree: ModuleType, tmp_path: Path, review: str, problem: str
+) -> None:
+    """btclib-org/btclib-node#2149: the ref is held to the citation above it.
+
+    Each problem names the line of `bitcoin-core-ref:`.
+    """
+    (problem_line,) = _ref_problems_for(agreeing_tree, tmp_path, review)
+    assert f"claude-review.yml:{_REF_LINE}: " in problem_line
+    assert problem in problem_line
+    assert agreeing_tree.main() == 1
+
+
+def test_a_review_workflow_without_a_ref_is_caught(
+    agreeing_tree: ModuleType, tmp_path: Path
+) -> None:
+    """A renamed key must not read the same as a ref that agrees."""
+    (problem_line,) = _ref_problems_for(
+        agreeing_tree,
+        tmp_path,
+        _REVIEW.replace("bitcoin-core-ref:", "bitcoin-core-rev:"),
+    )
+    assert "no `bitcoin-core-ref:` line found" in problem_line
+
+
 def test_tracked_files_excludes_self_test_and_changelogs(
     script: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -324,8 +399,13 @@ def test_a_stale_citation_in_changelog_is_not_flagged_end_to_end(
     release_notes = tmp_path / "RELEASE_NOTES.md"
     self_source = tmp_path / "check_core_citation_pin.py"
     self_test = tmp_path / "check_core_citation_pin_test.py"
+    review = tmp_path / "claude-review.yml"
     workflow.write_text(
         _WORKFLOW.replace('"31.1"', '"31.9"').replace("v31.1.0", "v31.9.0"),
+        encoding="utf-8",
+    )
+    review.write_text(
+        _REVIEW.replace("v31.1, the release", "v31.9, the release"),
         encoding="utf-8",
     )
     reorg_test.write_text(
@@ -344,6 +424,7 @@ def test_a_stale_citation_in_changelog_is_not_flagged_end_to_end(
     monkeypatch.setattr(script, "_ROOT", tmp_path)
     monkeypatch.setattr(script, "_WORKFLOW", workflow)
     monkeypatch.setattr(script, "_REORG_TEST", reorg_test)
+    monkeypatch.setattr(script, "_REVIEW_WORKFLOW", review)
     monkeypatch.setattr(
         script,
         "_EXCLUDED_FROM_SCAN",
