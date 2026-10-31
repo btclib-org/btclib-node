@@ -127,8 +127,8 @@ MAX_BODY_BYTES = 32 * 1024 * 1024
 # that would otherwise disagree with an int-inferred attribute. This is
 # `cli.py`'s own default for `-rpcservertimeout`, which is what
 # `RpcManager.request_timeout` actually carries once a `Node` is built
-# from a `Config` -- `rpc.manager._request_timeout`'s own docstring has
-# Core's `0` and `-1`, both of which turn this into `None` instead.
+# from a `Config` -- `rpc.manager._request_timeout`'s own docstring says
+# which values turn this into `None` instead.
 REQUEST_TIMEOUT = 30.0
 
 
@@ -953,9 +953,8 @@ class RpcConnection:
         `manager.request_timeout` -- is built or told to hand over
         something else, which is the seam a test uses to keep
         `REQUEST_TIMEOUT`'s own real, Core-matching value off its own
-        critical path. `None` is `-rpcservertimeout=0` or `=-1`, Core's
-        own two ways of arming no timeout at all
-        (`rpc.manager._request_timeout`'s own docstring).
+        critical path. `None` is a `-rpcservertimeout` arming no timeout
+        at all (`rpc.manager._request_timeout`'s own docstring).
         """
         super().__init__()
         self.loop = loop

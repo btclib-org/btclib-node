@@ -2702,15 +2702,12 @@ def _after_lock(before: _BeforeLock) -> Config:
     if ban_time is None:
         ban_time = DEFAULT_MISBEHAVING_BANTIME
     prune = before.prune
-    # `-rpcservertimeout`, which `InitHTTPServer` hands to libevent's
-    # `evhttp_set_timeout` as a 32-bit `int`
-    # (`src/httpserver.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-    # tag): the same `int64_t`-to-`int` narrowing `-maxconnections`
-    # above takes through `_to_int`.
+    # `-rpcservertimeout`, which `InitHTTPServer` reads as `int64_t`
+    # seconds (`src/httpserver.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    # v32.1 tag)
     rpcservertimeout = _get_int(settings, "rpcservertimeout")
-    rpcservertimeout = (
-        int(REQUEST_TIMEOUT) if rpcservertimeout is None else _to_int(rpcservertimeout)
-    )
+    if rpcservertimeout is None:
+        rpcservertimeout = int(REQUEST_TIMEOUT)
 
     return Config(
         chain=before.chain_name,

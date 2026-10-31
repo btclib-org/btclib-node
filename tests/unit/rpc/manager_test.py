@@ -1333,7 +1333,7 @@ def test_stop_waits_unbounded_for_a_reply_once_request_timeout_is_none(
 ) -> None:
     """`request_timeout=None` leaves `stop`'s own reply wait unbounded.
 
-    `-rpcservertimeout=0` or `=-1` is `_request_timeout`'s own `None`
+    A `-rpcservertimeout` of 0 or less is `_request_timeout`'s own `None`
     (its docstring has why); Core's `WaitUntilEmpty` has no bound of its
     own once `evhttp_set_timeout` has armed none either. The shape is
     the sibling test above, its own `request_timeout=0.2` bound turned
@@ -1406,14 +1406,16 @@ def test_manager_takes_request_timeout_from_rpcservertimeout(
 ) -> None:
     """`RpcManager.__init__` reads `request_timeout` off `Config`.
 
-    `-rpcservertimeout=0` is one of Core's own two spellings for no
-    bound at all (`_request_timeout`'s own docstring has the other,
-    `-1`), which this manager carries as `None` from construction --
-    not only where a test lowers `request_timeout` directly afterward,
-    the seam `RpcManager.__init__`'s own comment names.
+    A value of 0 or less is no bound at all (ISS 2152), which this
+    manager carries as `None` from construction -- not only where a
+    test lowers `request_timeout` directly afterward, the seam
+    `RpcManager.__init__`'s own comment names. Measured on bitcoind
+    v32.1.0: with `-rpcservertimeout=1` an idle connection is closed
+    within two seconds, and with `0` or `-5` it is still open after 6.
     """
-    manager = a_manager(get_random_port(), rpcservertimeout=0)
-    assert manager.request_timeout is None
+    for seconds in (0, -1, -5):
+        manager = a_manager(get_random_port(), rpcservertimeout=seconds)
+        assert manager.request_timeout is None
     other = a_manager(get_random_port(), rpcservertimeout=45)
     assert other.request_timeout == 45.0
 

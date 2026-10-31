@@ -172,22 +172,21 @@ def _set_or_log(
 
 
 def _request_timeout(seconds: int) -> float | None:
-    """Return what `-rpcservertimeout=<seconds>` binds every read and write to.
+    """Return the bound `-rpcservertimeout=<seconds>` sets, `None` for none.
 
-    Core's own `evhttp_set_timeout` (`src/httpserver.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `-1` builds no `timeval`
-    at all (`evhttp_set_timeout_tv(http, NULL)`), and `0` builds one that
-    is zero in both fields -- `{0, 0}` -- which libevent's own
-    `evutil_timerisset` then reads as unset wherever it decides whether
-    to arm a connection's read or write timer at all
-    (`bufferevent_generic_adj_timeouts_`, `bufferevent.c`, at
-    libevent/libevent@5df3037): every other value arms one, `0` included
-    in name only. `None` here is what `asyncio.timeout` reads as no
-    bound at all, for both call sites this feeds: `RpcConnection.run`,
-    directly, and `RpcManager._finish_replies`, as the bound it would
-    otherwise give the shutdown wait for a reply still being written.
+    Core arms its timeout only for a value above 0
+    (`HTTPRemoteClient::MaybeDisconnect`, `src/httpserver.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). `None` is what
+    `asyncio.timeout` reads as no bound at all, for both call sites this
+    feeds: `RpcConnection.run`, directly, and
+    `RpcManager._finish_replies`, as the bound it would otherwise give
+    the shutdown wait for a reply still being written.
+
+    What the bound covers differs from Core's: `RpcConnection.run` bounds
+    the read of one request, where Core's idle timeout is reset on every
+    receive and send (btclib-org/btclib-node#2152).
     """
-    return None if seconds in (0, -1) else float(seconds)
+    return None if seconds <= 0 else float(seconds)
 
 
 class RpcManager(threading.Thread):
@@ -217,8 +216,8 @@ class RpcManager(threading.Thread):
         # connection it means to time out, without waiting through
         # REQUEST_TIMEOUT's own real, Core-matching value. `-rpcservertimeout`
         # is this attribute's own source once `Config` resolves it, `None`
-        # for no bound at all -- `_request_timeout`'s own docstring has
-        # Core's `0` and `-1`.
+        # for no bound at all -- `_request_timeout`'s own docstring says
+        # which values arm none.
         self.request_timeout = _request_timeout(node.config.rpcservertimeout)
         # `-rpcmaxconnections`: the most entries `connections` holds. An
         # instance attribute, as `request_timeout` is, so a test can lower
@@ -861,14 +860,13 @@ class RpcManager(threading.Thread):
         read off any connection, `stop` leaving every read running -- is
         waited for too, within the same bound.
 
-        `request_timeout` being `None` -- `-rpcservertimeout=0` or `=-1`,
-        `_request_timeout`'s own docstring has why both read that way --
-        there is no bound of Core's left to read either, `evhttp_set_timeout`
-        having armed none of its own for this same reason: the wait below
-        is then for as long as it takes, same as `WaitUntilEmpty` is, and
-        nothing is recorded through `extend_reply_deadline`, `Node.stop`'s
-        own `STOP_TIMEOUT` remaining as the one bound still standing over
-        this manager's own thread.
+        `request_timeout` being `None` -- `-rpcservertimeout` of 0 or
+        less, `_request_timeout`'s own docstring has why -- there is no
+        bound left to read: the wait below is then for as long as it
+        takes, same as `WaitUntilEmpty` is, and nothing is recorded
+        through `extend_reply_deadline`, `Node.stop`'s own `STOP_TIMEOUT`
+        remaining as the one bound still standing over this manager's own
+        thread.
         """
         with self._replies_lock:
             if not self.replies:

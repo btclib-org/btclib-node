@@ -583,9 +583,8 @@ class Config:
     # `RpcConnection.run` may take reading one request, and the idle gap
     # a kept-alive connection may sit in between two of them, both
     # matched to `REQUEST_TIMEOUT` by default. `RpcManager.__init__` is
-    # where `0` and `-1` both read as no bound at all, as they do for
-    # Core's own `evhttp_set_timeout` (`rpc.manager._request_timeout`'s
-    # own docstring).
+    # where a value of 0 or less reads as no bound at all, as in Core
+    # (`rpc.manager._request_timeout`'s own docstring).
     rpcservertimeout: int
     # Core's own `-rpcmaxconnections`: how many RPC clients
     # `RpcManager` holds at once. `rpc.manager`'s module docstring has
