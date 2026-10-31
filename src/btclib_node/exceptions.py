@@ -54,7 +54,6 @@ __all__ = [
     "StoreCorruptionError",
     "TxRejectedError",
     "UnknownChainError",
-    "UnmetExpectationError",
     "UnsupportedAddressTypeError",
     "WrongNetworkMagicError",
 ]
@@ -563,12 +562,13 @@ class IncompleteRequestHeadError(BTClibRuntimeError):
 
 
 class MalformedRequestHeadError(BTClibValueError):
-    """A request's header section is one libevent answers 400 Bad Request.
+    """A request Core's HTTP server cannot read: it answers 400 Bad Request.
 
     A request line, a header field or a `Content-Length` that
-    `rpc.connection.parse_request_head` refuses. `BTClibValueError` and
-    not a plain `ValueError`, for `WrongNetworkMagicError`'s own reason
-    above: `fuzz/fuzz_rpc_head.py` and `tests/fuzz_corpus_test.py`'s own
+    `rpc.connection.parse_request_head` refuses, and a chunked body
+    `rpc.connection` cannot read. `BTClibValueError` and not a plain
+    `ValueError`, for `WrongNetworkMagicError`'s own reason above:
+    `fuzz/fuzz_rpc_head.py` and `tests/fuzz_corpus_test.py`'s own
     `_parsed` narrow on `BTClibException`.
     """
 
@@ -577,26 +577,13 @@ class MalformedRequestHeadError(BTClibValueError):
 
 
 class OversizedRequestBodyError(BTClibValueError):
-    """A request's body is one libevent answers 413.
+    """A request's body is past the limit Core's HTTP server answers 413 past.
 
-    A `Content-Length` past `rpc.connection.MAX_BODY_BYTES`, the body
-    limit Core sets on its HTTP server, and a chunked body libevent
-    cannot read, which it answers the same way. A class of its own
-    rather than a `MalformedRequestHeadError`, since the status it is
-    answered with is another.
+    A `Content-Length`, or a chunked body's sizes summed, past
+    `rpc.connection.MAX_BODY_BYTES`. A class of its own rather than a
+    `MalformedRequestHeadError`, since the status it is answered with is
+    another.
     """
 
     def __init__(self, detail: str) -> None:
         super().__init__(f"request body refused: {detail}")
-
-
-class UnmetExpectationError(BTClibValueError):
-    """A request's `Expect` is one libevent answers 417 Expectation Failed.
-
-    Any value but `100-continue` on a request of HTTP/1.1 or later that
-    has a body. A class of its own for `OversizedRequestBodyError`'s
-    reason.
-    """
-
-    def __init__(self, detail: str) -> None:
-        super().__init__(f"expectation refused: {detail}")
