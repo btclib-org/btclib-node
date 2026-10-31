@@ -57,16 +57,16 @@ from btclib_node.rpc.jsonrpc import NO_CONTENT, HttpReply, decode, error_reply
 
 if TYPE_CHECKING:
     import socket
-    from collections.abc import Callable, Coroutine
+    from collections.abc import AsyncIterator, Callable, Coroutine
     from concurrent.futures import Future
 
     from btclib_node.rpc.manager import RpcManager
 
 __all__ = [
     "COIN",
+    "IDLE_TIMEOUT",
     "MAX_BODY_BYTES",
     "MAX_HEADER_BYTES",
-    "REQUEST_TIMEOUT",
     "JSONEncoder",
     "RawJSON",
     "RequestHead",
@@ -85,34 +85,21 @@ __all__ = [
 # `MAX_BODY_SIZE` caps the body.
 MAX_HEADER_BYTES = 8192
 MAX_BODY_BYTES = 32 * 1024 * 1024
-# What bounds how *long* a read may take, where the two above only bound
-# how much of it this node buffers: a client that sends a byte and then
-# stops never crosses either cap, and used to leave `run` below suspended
-# on `sock_recv` for the life of the node, its socket and its entry in
-# `RpcManager.connections` both held the whole time (issue #437). Core's
-# own `-rpcservertimeout`, `DEFAULT_HTTP_SERVER_TIMEOUT` (`src/httpserver.h:42`,
-# at bitcoin/bitcoin@ca7162cde5), is 30 seconds, and is what this is matched
-# to -- for both of the bounds Core spends it on: one request in flight,
-# and the idle gap a kept-alive connection may sit in between two of them
-# before `HTTPServer::DisconnectClients` (`httpserver.cpp:1097`) drops it,
-# its own `m_idle_since` reset on every receive (`:947`) and every send
-# (`:1292`), not on each byte. `async_send` below re-enters this same
-# `asyncio.timeout(self.request_timeout)` scope for a connection's next
-# request rather than closing after its first one (issue #640), so
-# REQUEST_TIMEOUT now serves both of Core's own two roles the way Core's
-# own single constant does, rather than a second constant duplicating the
-# same citation -- not reset per byte or per request either way, which is
-# also what bounds a client dribbling one byte of a single request at a
-# time forever.
-# a float, not Core's own int seconds: asyncio.timeout below and
-# RpcManager.request_timeout both carry this as a float throughout, a
-# test lowering it to a fraction of a second being the only assignment
-# that would otherwise disagree with an int-inferred attribute. This is
-# `cli.py`'s own default for `-rpcservertimeout`, which is what
-# `RpcManager.request_timeout` actually carries once a `Node` is built
-# from a `Config` -- `rpc.manager._request_timeout`'s own docstring says
-# which values turn this into `None` instead.
-REQUEST_TIMEOUT = 30.0
+# How long a connection may sit idle, where the two above only bound how
+# much of a request this node buffers: a client that sends a byte and
+# then stops never crosses either cap (issue #437). Core's own
+# `-rpcservertimeout` default, `DEFAULT_HTTP_SERVER_TIMEOUT`
+# (`src/httpserver.h`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag), in
+# seconds. `RpcConnection` says how it is applied. A float, so that a
+# test can lower it below a second.
+IDLE_TIMEOUT = 30.0
+# The size of the pieces `RpcConnection._send_all` writes a reply in,
+# the idle timeout reset after each. Core resets it after every `send`
+# that moves a byte (`HTTPRemoteClient::MaybeSendBytesFromBuffer`, same
+# file, same tag), and `loop.sock_sendall` reports no progress until it
+# has sent everything, so a piece is the finest step this node sees. The
+# size is that of Core's own reads (`HTTPRemoteClient::Receive`).
+_SEND_CHUNK = 0x10000
 
 
 class RawJSON:
@@ -688,6 +675,19 @@ class RpcConnection:
     reads the request off `client`, queuing it onto `manager.messages`
     for `rpc.main.handle_rpc` on `Node`'s own thread to answer, through
     `send` or `send_and_wait`.
+
+    The connection is closed once it has been idle for longer than
+    `idle_timeout` seconds, as Core's `HTTPRemoteClient::MaybeDisconnect`
+    closes it (`src/httpserver.cpp`, at bitcoin/bitcoin@f0de87f040, the
+    v32.1 tag). Idle time starts at the accept and again at every receive
+    and every send. It is not counted while a request is being served, from
+    its last byte read until its reply begins: `run` and `_write` apply it,
+    and nothing between them does. `_write` restarts it as the reply begins,
+    where Core restarts it once the first bytes are sent. `None` arms no
+    timeout. Core counts idle time in whole seconds and checks it at least
+    every 50 ms (`SELECT_TIMEOUT`), so it closes up to about a second later
+    than this does, or, for a value that wraps
+    (`rpc.manager._idle_timeout`), possibly earlier.
     """
 
     def __init__(
@@ -696,17 +696,13 @@ class RpcConnection:
         client: socket.socket,
         manager: RpcManager,
         connection_id: int,
-        request_timeout: float | None = REQUEST_TIMEOUT,
+        idle_timeout: float | None = IDLE_TIMEOUT,
     ) -> None:
         """Set up empty buffers for `client`, tracked under `connection_id`.
 
-        `request_timeout` is `REQUEST_TIMEOUT` unless `manager` -- in
-        practice `RpcManager.create_connection`, handing over
-        `manager.request_timeout` -- is built or told to hand over
-        something else, which is the seam a test uses to keep
-        `REQUEST_TIMEOUT`'s own real, Core-matching value off its own
-        critical path. `None` is a `-rpcservertimeout` arming no timeout
-        at all (`rpc.manager._request_timeout`'s own docstring).
+        `RpcManager.create_connection` passes `manager.idle_timeout`,
+        which `rpc.manager._idle_timeout` derives from
+        `-rpcservertimeout`.
         """
         super().__init__()
         self.loop = loop
@@ -720,7 +716,19 @@ class RpcConnection:
         # everything held so far on the other -- btclib-org/btclib-node#466,
         # the same shape btclib-org/btclib-node#438 fixed on the p2p side.
         self.buffer = bytearray()
-        self.request_timeout = request_timeout
+        self.idle_timeout = idle_timeout
+        # When the connection was last active, a `time.monotonic()`
+        # value: its accept, then its latest receive or send (`_touch`)
+        self._idle_since = time.monotonic()
+        # The timeout `run` or `_write` is reading or writing under,
+        # rescheduled by `_touch` as data moves; `None` between them
+        self._idle: asyncio.Timeout | None = None
+        # Whether that timeout is `run`'s, waiting for a request
+        self._reading = False
+        # Core's `m_connection_busy`, which `disconnect_if_idle` reads:
+        # set until the first reply is sent, and again by each receive
+        # after one
+        self._received = True
         # The request being answered, set by `run` as each one is read
         # and framing its answer (`_frame`)
         self.head: RequestHead | None = None
@@ -779,6 +787,55 @@ class RpcConnection:
         """
         self.client.close()
 
+    def _idle_deadline(self) -> float | None:
+        """Return when, on `loop`'s clock, this connection idles out."""
+        if self.idle_timeout is None:
+            return None
+        left = self._idle_since + self.idle_timeout - time.monotonic()
+        return self.loop.time() + left
+
+    def _touch(self) -> None:
+        """Restart the idle time, as Core does on a receive or a send."""
+        self._idle_since = time.monotonic()
+        if self._idle is not None:
+            self._idle.reschedule(self._idle_deadline())
+
+    def disconnect_if_idle(self) -> None:
+        """Close the connection where it is idle between two requests.
+
+        Core's `StopHTTPServer` disconnects every client except one
+        waiting for its first request or one it has received from since
+        it last finished sending (`HTTPServer::DisconnectAllClients`,
+        `src/httpserver.h`, and `HTTPRemoteClient::MaybeDisconnect`,
+        `src/httpserver.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1
+        tag). This ends `run`'s wait as its idle timeout does, which
+        closes the connection.
+        """
+        if self._reading and not self._received and self._idle is not None:
+            self._idle.reschedule(self.loop.time())
+
+    @contextlib.asynccontextmanager
+    async def _idle_bound(self, *, reading: bool = False) -> AsyncIterator[None]:
+        """Raise `TimeoutError` once the connection idles out inside.
+
+        `reading` is for `run`'s wait for a request, which
+        `disconnect_if_idle` may end.
+        """
+        # Already idle past the bound, a `-rpcservertimeout` that
+        # overflows included (`rpc.manager._idle_timeout`): Core closes
+        # before it reads anything more. `asyncio.timeout_at` alone would
+        # not, where every read inside completes at once.
+        deadline = self._idle_deadline()
+        if reading and deadline is not None and deadline <= self.loop.time():
+            raise TimeoutError
+        try:
+            async with asyncio.timeout_at(deadline) as self._idle:
+                self._reading = reading
+                yield
+        finally:
+            self._idle = None
+            self._reading = False
+
     async def _recv_until(self, predicate: Callable[[], bool]) -> None:
         while not predicate():
             await self._recv()
@@ -803,6 +860,8 @@ class RpcConnection:
         data = await self.loop.sock_recv(self.client, 65536)
         if not data:
             raise ConnectionError
+        self._touch()
+        self._received = True
         self.buffer += data
 
     async def _read_body(self, head: RequestHead) -> tuple[RequestHead, bytes] | None:
@@ -837,12 +896,11 @@ class RpcConnection:
         Reads the header section a line at a time, as `_HeadReader` does,
         then the body, up to its own `Content-Length` or as
         `_ChunkedReader` reads a chunked one, both bounded against an
-        unterminated or overstated one and, together, against taking
-        longer than `self.request_timeout` -- `REQUEST_TIMEOUT`'s own
-        docstring is where that bound is argued against Core's. A body
-        that is not valid JSON is answered `PARSE_ERROR` directly, on
-        the spot, and a body that is gets appended to `manager.messages`
-        for `rpc.main.handle_rpc` to answer instead, through `send`. Any
+        unterminated or overstated one, and every wait for them bounded
+        by the idle timeout the class docstring describes. A body that is
+        not valid JSON is answered `PARSE_ERROR` directly, on the spot,
+        and a body that is gets appended to `manager.messages` for
+        `rpc.main.handle_rpc` to answer instead, through `send`. Any
         failure -- `asyncio.timeout` raises the standard library's own
         `TimeoutError` once expired, caught below like any other -- closes
         `client` rather than raising, since nothing reads the `Future`
@@ -872,7 +930,7 @@ class RpcConnection:
         this one already consumed.
         """
         try:
-            async with asyncio.timeout(self.request_timeout):
+            async with self._idle_bound(reading=True):
                 # `_HeadReader` is what `fuzz/fuzz_rpc_head.py` also
                 # drives, through `parse_request_head`, directly over
                 # octets -- the latter's own docstring is where the
@@ -920,7 +978,7 @@ class RpcConnection:
         # `self.manager.forget_connection` below covers every other way
         # this method fails: `ConnectionError` (an unterminated header, a
         # peer that goes away mid-request) and `TimeoutError`
-        # (`REQUEST_TIMEOUT` elapsing) never reach `send()` or
+        # (the idle timeout elapsing) never reach `send()` or
         # `async_send`'s own close branch either,
         # and one of those two is otherwise the only place this id leaves
         # `manager.connections` (issue #437). Popped in the same
@@ -1302,8 +1360,15 @@ class RpcConnection:
         # prints it as "Task exception was never retrieved". What
         # follows cleans up either way: the close branch below, or a
         # read in `run` that fails and closes (issue #1079).
+        #
+        # A client that stops reading idles out here. The `TimeoutError`
+        # that ends the write is an `OSError` too, and what follows
+        # closes the connection: the close branch below, or `run`,
+        # which finds it still idle.
+        self._touch()
         with contextlib.suppress(OSError):
-            await self.loop.sock_sendall(self.client, http_response)
+            async with self._idle_bound():
+                await self._send_all(http_response)
         # The reply is written, or its client gone: `RpcManager.stop`
         # waits for no more of this task, which on a kept-alive
         # connection goes on below to read the next request, idle until
@@ -1366,7 +1431,20 @@ class RpcConnection:
         answer = self._socket_thread_answer()
         if answer is not None:
             with contextlib.suppress(OSError):
-                await self.loop.sock_sendall(self.client, answer)
+                async with self._idle_bound():
+                    await self._send_all(answer)
+
+    async def _send_all(self, data: bytes) -> None:
+        """Write `data` to `client`, restarting the idle time as it goes.
+
+        In pieces of `_SEND_CHUNK` bytes, the idle time restarted after
+        each, as Core restarts it after each `send` that moves a byte.
+        """
+        view = memoryview(data)
+        for start in range(0, len(view), _SEND_CHUNK):
+            await self.loop.sock_sendall(self.client, view[start : start + _SEND_CHUNK])
+            self._touch()
+        self._received = False
 
     def _socket_thread_answer(self) -> bytes | None:
         """Frame Core's socket-thread answer to the request `self.buffer` holds.

@@ -1237,10 +1237,7 @@ class Node(threading.Thread):
                 remaining = start + STOP_TIMEOUT - time.monotonic()
                 if remaining <= 0:
                     break
-                # `join` raises `OverflowError` past `TIMEOUT_MAX`, which
-                # a deadline `-rpcservertimeout` sets can pass; the loop
-                # reads the deadline again once this wait ends
-                self.join(timeout=min(remaining, threading.TIMEOUT_MAX))
+                self.join(timeout=remaining)
             if self.is_alive():
                 # named by its data directory, which is what tells one
                 # node from another where several are running

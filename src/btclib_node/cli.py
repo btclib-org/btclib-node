@@ -242,7 +242,7 @@ from btclib_node.log import open_history_log
 from btclib_node.p2p.address import BAD_PORTS
 from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME, is_valid_host
 from btclib_node.p2p.permissions import NET_PERMISSIONS_DOC
-from btclib_node.rpc.connection import REQUEST_TIMEOUT
+from btclib_node.rpc.connection import IDLE_TIMEOUT
 from btclib_node.settings_file import (
     SETTINGS_FILENAME,
     Json,
@@ -802,7 +802,7 @@ _OPTIONS: dict[str, _Option] = {
     ),
     "rpcservertimeout": _Option(
         "=<n>",
-        f"Timeout during HTTP requests (default: {int(REQUEST_TIMEOUT)})",
+        f"Timeout during HTTP requests (default: {int(IDLE_TIMEOUT)})",
         _RPC_TITLE,
         debug_only=True,
     ),
@@ -2730,7 +2730,7 @@ def _after_lock(before: _BeforeLock) -> Config:
     # v32.1 tag)
     rpcservertimeout = _get_int(settings, "rpcservertimeout")
     if rpcservertimeout is None:
-        rpcservertimeout = int(REQUEST_TIMEOUT)
+        rpcservertimeout = int(IDLE_TIMEOUT)
 
     return Config(
         chain=before.chain_name,
