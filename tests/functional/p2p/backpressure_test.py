@@ -308,8 +308,17 @@ def a_deaf_peer(
         try:
             peer.shake_hands()
             wait_until(lambda: len(node.p2p_manager.connections) == 1)
-            the_connection(node).client.setsockopt(
+            connection = the_connection(node)
+            connection.client.setsockopt(
                 socket.SOL_SOCKET, socket.SO_SNDBUF, _SOCKET_BUFFER_BYTES
+            )
+            # The peer is in `connections` before `Node`'s thread has sent
+            # it what follows a handshake, down to the `getheaders` and the
+            # `feefilter` of the next `DownloadManager.step`, the last of
+            # them. Anything sent after a test's first block stands behind
+            # it in `send_memusage`, so a test starts once they are written.
+            wait_until(
+                lambda: connection.feefilter_sent and not connection.send_memusage
             )
             yield node, peer, chain
         finally:
