@@ -164,7 +164,7 @@ the `desc` of every scriptPubKey answer included. The `test` group keeps
 btclib-wallet for `tests/functional/rpc/chain_test.py` and `tx_test.py`,
 which check its `BitcoinCoreFetcher` against this node, until they move
 to btclib-functional-tests
-([ISS btclib-functional-tests#544](https://github.com/btclib-org/btclib-functional-tests/issues/544)).
+([ISS btclib-org/btclib-functional-tests#544](https://github.com/btclib-org/btclib-functional-tests/issues/544)).
 `tests/unit/` mirrors the layout above, `tests/functional/` builds a
 node and speaks to it over a socket, and `tests/integration/` runs one
 against a real `bitcoind` (`.github/workflows/integration-bitcoind.yml`).
