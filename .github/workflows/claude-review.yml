@@ -140,10 +140,10 @@ jobs:
       # Bitcoin Core's source for the review to read, at
       # bitcoin/bitcoin@f0de87f040 -- v32.1, the release
       # `integration-bitcoind.yml` pins and CONTRIBUTING.md's *Following
-      # Bitcoin Core* follows. Written in that form, the release name is
-      # held to the pin by the core-citation-pin hook, which does not
-      # read the sha. The sha and the value below are the tag's commit,
-      # which `git ls-remote https://github.com/bitcoin/bitcoin
+      # Bitcoin Core* follows. Written in that form, the citation is read
+      # by the core-citation-pin hook, whose docstring says what it holds
+      # and what it cannot. The sha and the value below are the tag's
+      # commit, which `git ls-remote https://github.com/bitcoin/bitcoin
       # 'refs/tags/v32.1^{}'` prints
       bitcoin-core-ref: f0de87f040621468b956f01f526a43a010310501
       # no leading comma: the called workflow writes the one that joins
