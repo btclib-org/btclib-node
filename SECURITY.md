@@ -195,6 +195,16 @@ is, and a terminal that decodes UTF-8 and honours C1 controls acts on it in a
 log it shows, as it would on an ESC. The cost is a log line that differs from
 Core's where a message holds such a character.
 
+Where the reader of a named pipe goes during `dumptxoutset`, this node answers
+`AutoFile::write`'s failure (btclib-org/btclib-node#2187). Bitcoin Core
+answers that where a write fails, and `Error closing`'s message where the
+bytes left fit its `FILE` buffer and only the close fails
+(`src/rpc/blockchain.cpp`, at bitcoin/bitcoin@f0de87f040, v32.1). The two
+cases split on a buffer size in Core's C library, so no client can rely on
+which text it gets. The failure and its RPC code, `RPC_MISC_ERROR`, are the
+same. The cost is a message that differs from Core's where the reader goes
+near the end of a dump.
+
 ## Limitations, not vulnerabilities
 
 The [assurance case](./ASSURANCE_CASE.md) is the threat model these are

@@ -9,6 +9,8 @@ shape of the answer, are what `bitcoind` v32.1.0 says for the same call
 (`tests/integration/dumptxoutset_test.py` asks it, and compares the files).
 """
 
+import contextlib
+import os
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -40,6 +42,8 @@ CONN = cast("RpcConnection", None)
 KEY = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
 OTHER_KEY = "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
 MAGIC = "fabfb5da"
+
+pipes = pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no named pipes")
 
 
 @pytest.fixture
@@ -650,3 +654,279 @@ def test_a_chain_shortened_during_the_count_refuses_and_keeps_the_network(
     assert caught.value.message == "Block is not in the active chain"
     assert node.p2p_manager.get_network_active() is True
     assert not (node.data_dir / "x.dat.incomplete").exists()
+
+
+def drained(
+    job: Generator[bool, None, dict[str, Any]], reader: int
+) -> tuple[dict[str, Any], bytes]:
+    """Run `job` to its answer, reading what it writes from `reader`."""
+    read: list[bytes] = []
+    while True:
+        try:
+            next(job)
+        except StopIteration as done:
+            return done.value, b"".join(read) + os.read(reader, 2**20)
+        with contextlib.suppress(BlockingIOError):
+            read.append(os.read(reader, 2**20))
+
+
+@pytest.fixture
+def pipe(node: Node) -> Path:
+    """Give a named pipe in the data directory."""
+    path = node.data_dir / "pipe.dat"
+    os.mkfifo(path)
+    return path
+
+
+@pipes
+@pytest.mark.parametrize(
+    "params",
+    [
+        ["latest"],
+        ["", {"rollback": 101, "in_memory": True}],
+        ["", {"rollback": 101, "in_memory": False}],
+    ],
+)
+def test_a_named_pipe_is_written_directly(
+    node: Node,
+    pipe: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    params: list[object],
+) -> None:
+    """The bytes a file gets, with no temporary file and no refusal, as Core."""
+    monkeypatch.setattr(rpc_snapshot, "_STEP", 2)
+    mine(node, 101, desc="raw(51)")
+    _spend_and_chain(node, 1)
+    mine(node, 2)
+    answered = dump(node, "file.dat", *params)
+    reader = os.open(pipe, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        job = dump_tx_out_set(node, CONN, [str(pipe), *params])
+        result, data = drained(job, reader)
+    finally:
+        os.close(reader)
+    assert {k: v for k, v in result.items() if k != "path"} == {
+        k: v for k, v in answered.items() if k != "path"
+    }
+    assert result["path"] == str(pipe)
+    assert data == (node.data_dir / "file.dat").read_bytes()
+    assert pipe.is_fifo()
+    assert not (node.data_dir / "pipe.dat.incomplete").exists()
+    assert not (node.data_dir / "temp_utxo_101").exists()
+
+
+@pipes
+def test_a_named_pipe_with_no_reader_is_waited_for_without_holding_the_loop(
+    node: Node, pipe: Path
+) -> None:
+    """Each step returns, saying it did no work, and a block arrives meanwhile.
+
+    Core's `fopen` waits on its worker thread. The tip is read once the
+    reader has come, as Core's write reads it after the `fopen`.
+    """
+    mine(node)
+    job = dump_tx_out_set(node, CONN, [str(pipe), "latest"])
+    assert next(job) is False
+    assert next(job) is False
+    mine(node)
+    reader = os.open(pipe, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        result, _ = drained(job, reader)
+    finally:
+        os.close(reader)
+    assert result["base_height"] == height(node)
+
+
+@pipes
+def test_a_rollback_to_the_tip_of_a_named_pipe_is_a_dump_of_the_new_tip(
+    node: Node, pipe: Path
+) -> None:
+    """Core reads the tip before `fopen`, and compares the target with that."""
+    mine(node, 2)
+    job = dump_tx_out_set(node, CONN, [str(pipe), "", {"rollback": 2}])
+    assert next(job) is False
+    mine(node)
+    reader = os.open(pipe, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        result, _ = drained(job, reader)
+    finally:
+        os.close(reader)
+    assert result["base_height"] == height(node) == 3
+
+
+@pipes
+@pytest.mark.parametrize("by_hash", [False, True])
+def test_a_block_replaced_while_a_named_pipe_is_awaited_refuses_the_dump(
+    node: Node, pipe: Path, *, by_hash: bool
+) -> None:
+    """The block named at the call is pinned, not its height."""
+    mine(node, 5)
+    chain = node.chainstate.block_index.active_chain
+    named = chain[3].hex() if by_hash else 3
+    job = dump_tx_out_set(node, CONN, [str(pipe), "", {"rollback": named}])
+    assert next(job) is False
+    invalidate_chain(node, chain[3])
+    mine(node, 4, key=OTHER_KEY)
+    reader = os.open(pipe, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        with pytest.raises(RpcError) as caught:
+            finish(job)
+    finally:
+        os.close(reader)
+    assert caught.value.message == "Block is not in the active chain"
+
+
+@pipes
+def test_a_chain_shortened_while_a_named_pipe_is_awaited_refuses_the_dump(
+    node: Node, pipe: Path
+) -> None:
+    """The refusal a regular file gets when the chain shortens under it."""
+    mine(node, 5)
+    job = dump_tx_out_set(node, CONN, [str(pipe), "", {"rollback": 3}])
+    assert next(job) is False
+    invalidate_chain(node, node.chainstate.block_index.active_chain[2])
+    reader = os.open(pipe, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        with pytest.raises(RpcError) as caught:
+            finish(job)
+    finally:
+        os.close(reader)
+    assert caught.value.message == "Block is not in the active chain"
+
+
+@pipes
+@pytest.mark.parametrize("in_memory", [False, True])
+@pytest.mark.parametrize("fork", [3, 2])
+def test_a_reorg_during_the_count_of_coins_for_a_named_pipe_is_not_in_the_dump(
+    node: Node,
+    pipe: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    fork: int,
+    in_memory: bool,
+) -> None:
+    """The base is the block the coins are of, replaced or above the new tip."""
+    mine(node, 5)
+    params = ["", {"rollback": 3, "in_memory": in_memory}]
+    answered = dump(node, "file.dat", *params)
+    chain = node.chainstate.block_index.active_chain
+    count = rpc_snapshot._count_coins
+
+    def after_a_reorg(*args: Any) -> Generator[bool, None, int | None]:
+        invalidate_chain(node, chain[fork])
+        if fork == 3:
+            mine(node, 4, key=OTHER_KEY)
+        return count(*args)
+
+    monkeypatch.setattr(rpc_snapshot, "_count_coins", after_a_reorg)
+    reader = os.open(pipe, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        job = dump_tx_out_set(node, CONN, [str(pipe), *params])
+        result, data = drained(job, reader)
+    finally:
+        os.close(reader)
+    assert {k: v for k, v in result.items() if k != "path"} == {
+        k: v for k, v in answered.items() if k != "path"
+    }
+    assert data == (node.data_dir / "file.dat").read_bytes()
+
+
+@pipes
+def test_a_write_larger_than_a_named_pipe_is_taken_in_parts(
+    node: Node, pipe: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pipe takes what fits, and the rest follows, in order."""
+    data = bytes(range(256)) * 2**12
+    monkeypatch.setattr(rpc_snapshot, "serialize_metadata", lambda *_: data)
+    mine(node)
+    reader = os.open(pipe, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        job = dump_tx_out_set(node, CONN, [str(pipe), "latest"])
+        assert next(job) is False
+        first = os.read(reader, 2 * len(data))
+        assert 0 < len(first) < len(data)
+        rest = drained(job, reader)[1]
+    finally:
+        os.close(reader)
+    assert (first + rest)[: len(data)] == data
+
+
+@pipes
+def test_a_full_named_pipe_is_waited_for_without_holding_the_loop(
+    node: Node, pipe: Path
+) -> None:
+    """A reader that has stopped reading holds this request alone."""
+    mine(node)
+    held = os.open(pipe, os.O_RDWR | os.O_NONBLOCK)
+    try:
+        with contextlib.suppress(BlockingIOError):
+            while True:
+                os.write(held, bytes(4096))
+        job = dump_tx_out_set(node, CONN, [str(pipe), "latest"])
+        assert next(job) is False
+        assert next(job) is False
+        answered = drained(job, held)[0]
+    finally:
+        os.close(held)
+    assert answered["coins_written"] == 1
+
+
+@pipes
+def test_a_stopping_node_stops_waiting_for_a_named_pipe(node: Node, pipe: Path) -> None:
+    """Neither an absent reader nor a full pipe delays the stop."""
+    mine(node)
+    job = dump_tx_out_set(node, CONN, [str(pipe), "latest"])
+    assert next(job) is False
+    node.terminate_flag.set()
+    with pytest.raises(RpcError) as caught:
+        finish(job)
+    assert caught.value.message == "Shutting down"
+    node.terminate_flag.clear()
+    held = os.open(pipe, os.O_RDWR | os.O_NONBLOCK)
+    try:
+        with contextlib.suppress(BlockingIOError):
+            while True:
+                os.write(held, bytes(4096))
+        job = dump_tx_out_set(node, CONN, [str(pipe), "latest"])
+        assert next(job) is False
+        node.terminate_flag.set()
+        with pytest.raises(RpcError) as caught:
+            finish(job)
+    finally:
+        os.close(held)
+    assert caught.value.message == "Shutting down"
+
+
+@pipes
+def test_a_reader_gone_from_a_named_pipe_ends_the_dump(
+    node: Node, pipe: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's `AutoFile::write` throws, and `ExecuteCommand` names it."""
+    monkeypatch.setattr(rpc_snapshot, "_STEP", 1)
+    mine(node)
+    reader = os.open(pipe, os.O_RDONLY | os.O_NONBLOCK)
+    job = dump_tx_out_set(node, CONN, [str(pipe), "latest"])
+    assert next(job) is True
+    os.close(reader)
+    with pytest.raises(RpcError) as caught:
+        finish(job)
+    assert (int(caught.value.code), caught.value.message) == (
+        -1,
+        "AutoFile::write: write failed: iostream error",
+    )
+
+
+@pipes
+def test_a_named_pipe_that_cannot_be_opened_is_refused(
+    node: Node, pipe: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core names the pipe itself, there being no `.incomplete` file."""
+
+    def denied(*_: object) -> int:
+        raise PermissionError
+
+    monkeypatch.setattr(os, "open", denied)
+    assert refusal(node, str(pipe), "latest") == (
+        -8,
+        f"Couldn't open file {pipe} for writing.",
+    )

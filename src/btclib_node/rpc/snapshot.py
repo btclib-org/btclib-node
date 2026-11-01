@@ -26,10 +26,20 @@ The store is built without yielding, so a deep rollback holds the loop,
 where Core does it on an HTTP worker thread. Pruning runs on the same
 loop, so it cannot remove the undo data meanwhile; Core holds a prune
 lock for that.
+
+A named pipe is written directly, as Core writes it, and the dump waits
+for its reader as Core's does. Core waits in a blocking `fopen` and
+`fwrite` on its worker thread. Those calls would hold `Node`'s loop for
+as long as the reader likes, or for ever, and a stop with it, so here
+the pipe is opened and written without blocking, and the generator
+yields while the reader is absent or behind. A pipe cannot seek, so
+the coins of a rollback are counted first, in a pass of their own, as
+Core counts them.
 """
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import heapq
 import os
@@ -61,6 +71,7 @@ from btclib_node.snapshot import (
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Iterator
     from pathlib import Path
+    from typing import BinaryIO
 
     from btclib_node import Node
     from btclib_node.rpc.connection import RpcConnection
@@ -200,9 +211,7 @@ def _counted(node: Node, target: int | None) -> Generator[bool, None, tuple[int,
     if target is not None:
         pinned = chain[target]
         count = yield from _chain_tx_count(node, 0, target)
-        chain = node.chainstate.block_index.active_chain
-        if chain[target : target + 1] != [pinned]:
-            raise RpcError(RPCErrorCode.MISC_ERROR, "Block is not in the active chain")
+        _require_block(node, target, pinned)
         return count, target
     counted = 0
     total = 0
@@ -216,6 +225,13 @@ def _counted(node: Node, target: int | None) -> Generator[bool, None, tuple[int,
             counted = total = 0
         elif len(chain) - 1 == tip:
             return total, tip
+
+
+def _require_block(node: Node, height: int, block: bytes | None) -> None:
+    """Refuse where `block` is no longer the active chain's at `height`."""
+    chain = node.chainstate.block_index.active_chain
+    if chain[height : height + 1] != [block]:
+        raise RpcError(RPCErrorCode.MISC_ERROR, "Block is not in the active chain")
 
 
 def _interruption_point(node: Node) -> None:
@@ -240,6 +256,15 @@ def dump_tx_out_set(
     keeps the count with each header, answers.
 
     `in_memory` is read only for a rollback, as Core reads it.
+
+    Where `path` is a named pipe, it is written directly, with no
+    `.incomplete` file, no rename and no refusal, as Core writes it. It
+    is opened before the transactions are counted. A `latest` dump, and
+    a rollback to the block that is the tip when the call starts, are of
+    the tip once the reader has come, as Core reads the tip before its
+    `fopen`, and compares the target with that. A rollback below the tip
+    is pinned by its block from the call on, so a reorg that removes the
+    block while the reader is awaited refuses the dump.
     """
     if not params:
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["dumptxoutset"])
@@ -258,6 +283,8 @@ def dump_tx_out_set(
 
     target = _target(node, type_arg, options)
     path = node.data_dir / path_arg
+    if path.is_fifo():
+        return (yield from _dump_to_pipe(node, path, target, options))
     temp_path = path.with_name(path.name + ".incomplete")
     if path.exists():
         raise RpcError(
@@ -276,6 +303,11 @@ def dump_tx_out_set(
     with file:
         result = yield from _rolled_back_write(node, height, options, file, temp_path)
     temp_path.replace(path)
+    return _answer(result, path, chain_tx_count)
+
+
+def _answer(result: dict[str, Any], path: Path, chain_tx_count: int) -> dict[str, Any]:
+    """Return the answer, in Core's order, to a write that `result` reports."""
     return {
         "coins_written": result["coins_written"],
         "base_hash": result["base_hash"],
@@ -284,6 +316,92 @@ def dump_tx_out_set(
         "txoutset_hash": result["txoutset_hash"],
         "nchaintx": chain_tx_count,
     }
+
+
+def _dump_to_pipe(
+    node: Node, path: Path, target: int | None, options: dict[str, Any]
+) -> Generator[bool, None, dict[str, Any]]:
+    """Write the snapshot to the named pipe `path`, once it has a reader."""
+    chain = node.chainstate.block_index.active_chain
+    if target == len(chain) - 1:
+        target = None
+    block = None if target is None else chain[target]
+    with (yield from _open_pipe(node, path)) as file:
+        if target is not None:
+            _require_block(node, target, block)
+        chain_tx_count, height = yield from _counted(node, target)
+        result = yield from _rolled_back_write(node, height, options, file, path)
+    return _answer(result, path, chain_tx_count)
+
+
+def _open_pipe(node: Node, path: Path) -> Generator[bool, None, BinaryIO]:
+    """Open the named pipe `path` once it has a reader, without blocking.
+
+    Without a reader the open fails with `ENXIO`, so it is tried again on
+    each step. The file is unbuffered, so `_put` sees a full pipe.
+    """
+    while True:
+        _interruption_point(node)
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_NONBLOCK)
+        except OSError as err:
+            if err.errno != errno.ENXIO:
+                raise RpcError(
+                    RPCErrorCode.INVALID_PARAMETER,
+                    f"Couldn't open file {path} for writing.",
+                ) from err
+            yield False
+        else:
+            return os.fdopen(fd, "wb", buffering=0)
+
+
+def _put(node: Node, file: Any, data: bytes) -> Generator[bool]:  # noqa: ANN401
+    """Write all of `data` to `file`, yielding while a pipe is full.
+
+    A regular file takes `data` whole. A pipe takes part of it, or
+    answers `None` where it is full. A pipe whose reader has gone is
+    `AutoFile::write`'s failure, in the words `what()` gives it under
+    libstdc++, the library whose words `cli.py` answers too.
+
+    Core's `FILE` buffers what it writes, so where the bytes left fit its
+    buffer the same reader fails Core at the close, with `Error closing`'s
+    message. This answers the write's failure there too: `SECURITY.md`'s
+    *Where this node departs from Bitcoin Core* lists the departure.
+    """
+    rest = memoryview(data)
+    while rest:
+        try:
+            written = file.write(rest)
+        except BrokenPipeError as err:
+            raise RpcError(
+                RPCErrorCode.MISC_ERROR,
+                "AutoFile::write: write failed: iostream error",
+            ) from err
+        if written is None:
+            _interruption_point(node)
+            yield False
+        else:
+            rest = rest[written:]
+
+
+def _count_coins(
+    node: Node,
+    stored: Iterator[tuple[bytes, bytes]] | None,
+    changes: Iterator[tuple[bytes, bytes]],
+) -> Generator[bool, None, int | None]:
+    """Return how many coins `stored` holds as `changes` leave them.
+
+    Core's first pass over its temporary database. `None`, with no pass,
+    where `stored` is, which is how a file that can seek asks for none.
+    """
+    if stored is None:
+        return None
+    count = 0
+    for count, _ in enumerate(_merged(stored, changes), 1):
+        if count % _STEP == 0:
+            _interruption_point(node)
+            yield True
+    return count
 
 
 def _rolled_back_write(
@@ -298,7 +416,9 @@ def _rolled_back_write(
     The chainstate is flushed and a cursor opened, whose view is fixed
     there, as Core's `PrepareUTXOSnapshot` does. Nothing yields between
     the flush, the cursor and the read of the chain, so the cursor holds
-    the coins of that chain's tip.
+    the coins of that chain's tip. The base block is read there too, as
+    `chain` is one list that a reorg changes, and the first pass over a
+    rollback's coins for a pipe yields.
     """
     node.chainstate.flush()
     chain = node.chainstate.block_index.active_chain
@@ -326,7 +446,9 @@ def _rolled_back_write(
             f"JSON value of type {json_type_name(in_memory)} "
             "is not of expected type bool",
         )
+    base = (chain[height], height)
     cursor = utxo_index.cursor()
+    counted = None if file.seekable() else utxo_index.cursor()
     db_path = temp_path.parent / f"temp_utxo_{height}"
     if in_memory:
         node.logger.info(
@@ -335,29 +457,26 @@ def _rolled_back_write(
         )
         changes: dict[bytes, bytes] = {}
         _disconnect(node, chain, height, changes.update)
+        changed = sorted(changes.items())
+        count = yield from _count_coins(node, counted, iter(changed))
         return (
-            yield from _write(
-                node,
-                file,
-                (chain[height], height),
-                _merged(cursor, iter(sorted(changes.items()))),
-            )
+            yield from _write(node, file, base, _merged(cursor, iter(changed)), count)
         )
     KeyValueStore.destroy(db_path)
     store = KeyValueStore(db_path)
-    scan = None
+    scan = tally = None
     try:
         _disconnect(node, chain, height, partial(_put_all, store))
         # closed below, so that the store's directory `LOCK` is let go
         scan = cast("Generator[tuple[bytes, bytes]]", store.scan_prefix(b"utxo-"))
-        return (
-            yield from _write(
-                node, file, (chain[height], height), _merged(cursor, scan)
-            )
-        )
+        tally = cast("Generator[tuple[bytes, bytes]]", store.scan_prefix(b"utxo-"))
+        count = yield from _count_coins(node, counted, tally)
+        return (yield from _write(node, file, base, _merged(cursor, scan), count))
     finally:
         if scan is not None:
             scan.close()
+        if tally is not None:
+            tally.close()
         store.close()
         try:
             KeyValueStore.destroy(db_path)
@@ -444,7 +563,8 @@ def _write(
     in a first pass over the temporary database.
     """
     base_hash, base_height = base
-    file.write(serialize_metadata(node.chain.magic, base_hash, coins_count or 0))
+    metadata = serialize_metadata(node.chain.magic, base_hash, coins_count or 0)
+    yield from _put(node, file, metadata)
     hasher = hashlib.sha256()
     written = 0
     for rows in UtxoIndex.by_txid(cursor):
@@ -458,7 +578,7 @@ def _write(
                 ) from err
             hasher.update(tx_out_ser(out_point_bytes, coin))
             coins.append((n, coin))
-        file.write(serialize_tx_coins(rows[0][1][:32], coins))
+        yield from _put(node, file, serialize_tx_coins(rows[0][1][:32], coins))
         written += len(coins)
         if written // _STEP != (written - len(coins)) // _STEP:
             _interruption_point(node)
@@ -470,7 +590,8 @@ def _write(
     elif written != coins_count:
         raise RpcError(RPCErrorCode.INTERNAL_ERROR, "Unable to read UTXO set")
     file.flush()
-    os.fsync(file.fileno())
+    if file.seekable():
+        os.fsync(file.fileno())
     return {
         "coins_written": written,
         "base_hash": base_hash,
