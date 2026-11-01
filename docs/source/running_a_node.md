@@ -31,6 +31,11 @@ btclib-node -signet
 btclib-node -regtest
 ```
 
+`-testactivationheight=<name>@<height>`, one of the debugging options,
+moves the first height at which a buried deployment binds — `segwit`,
+`bip34`, `dersig`, `cltv` or `csv` — as Core's does. It can be given
+more than once; on mainnet the node refuses to start with it.
+
 Data lives under `-datadir=<dir>` (`~/.btclib` if it is not given),
 inside a subdirectory named for the chain — `<dir>/mainnet`,
 `<dir>/testnet`, `<dir>/signet`, `<dir>/regtest` — so the four chains
