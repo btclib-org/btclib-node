@@ -54,8 +54,16 @@ and no network access here, so it cannot say whether `bitcoin/bitcoin@
 the new tag can say that. What it can say without either is whether the
 tree still agrees with itself: every citation in `reorg_test.py` names
 the same sha, that sha's own annotation names the release
-`integration-bitcoind.yml` pins, and every release-annotated citation
-anywhere else in the tree names that same release.
+`integration-bitcoind.yml` pins, every release-annotated citation
+anywhere else in the tree names that same release, and
+`claude-review.yml`'s `bitcoin-core-ref` is a full 40-hex sha starting
+with the sha of the release-annotated citation in the comment directly
+above it.
+
+That `bitcoin-core-ref` is the Core commit the review bot reads. This
+catches a value left behind when the comment moves, and a typo in the
+cited prefix. A typo after that prefix passes: the hook is offline and
+cannot read the tag's full sha (btclib-org/btclib-node#2149).
 
 Three kinds of file are excluded from the tree-wide scan, none of them a
 citation site being enumerated back in. This script's own source and its
@@ -93,6 +101,7 @@ _GIT = shutil.which("git") or "git"
 _ROOT = Path(__file__).resolve().parents[2]
 _WORKFLOW = _ROOT / ".github/workflows/integration-bitcoind.yml"
 _REORG_TEST = _ROOT / "tests/integration/reorg_test.py"
+_REVIEW_WORKFLOW = _ROOT / ".github/workflows/claude-review.yml"
 # this script's own source and test, plus the two append-only prose
 # files -- none of the three is a citation site; the module docstring
 # above says why each is excluded rather than read
@@ -105,18 +114,21 @@ _EXCLUDED_FROM_SCAN = (
 
 _PIN = re.compile(r'version:\s*"([0-9]+\.[0-9]+)"')
 _CITED_SHA = re.compile(r"bitcoin/bitcoin@([0-9a-f]{7,40})")
+# the value may be followed by a YAML comment, as `_PIN` allows
+_CORE_REF = re.compile(r"[ \t]*bitcoin-core-ref:[ \t]*(\S*)(?:[ \t]+#.*)?")
+_FULL_SHA = re.compile(r"[0-9a-f]{40}")
 # what may separate two words of the annotated form: spaces, and at most
 # one line break with the indent and comment marker opening the next line
 _GAP = r"[ \t]*(?:\r?\n[ \t]*(?:#+|//+|\*+)?[ \t]*)?"
 _ANNOTATED = re.compile(
-    rf"bitcoin/bitcoin@[0-9a-f]{{7,40}}{_GAP}--{_GAP}"
-    rf"v([0-9]+\.[0-9]+)(?:\.([0-9]+))?,{_GAP}the{_GAP}release"
+    rf"bitcoin/bitcoin@(?P<sha>[0-9a-f]{{7,40}}){_GAP}--{_GAP}"
+    rf"v(?P<release>[0-9]+\.[0-9]+)(?:\.(?P<patch>[0-9]+))?,{_GAP}the{_GAP}release"
 )
 
 
 def _annotated_release(match: re.Match[str]) -> str:
     """Return the release an annotated citation names, vX.Y.0 read as vX.Y."""
-    release, patch = match.group(1, 2)
+    release, patch = match.group("release", "patch")
     return release if patch in {None, "0"} else f"{release}.{patch}"
 
 
@@ -217,12 +229,53 @@ def _tree_problems(pinned_version: str) -> list[str]:
     return problems
 
 
+def _ref_problems() -> list[str]:
+    """Return every `bitcoin-core-ref` that is not the sha its citation names.
+
+    The citation is the release-annotated one in the comment lines
+    directly above the `bitcoin-core-ref:` line.
+    """
+    lines = _REVIEW_WORKFLOW.read_text(encoding="utf-8").splitlines()
+    refs = [
+        (index, match)
+        for index, line in enumerate(lines)
+        if (match := _CORE_REF.fullmatch(line)) is not None
+    ]
+    if not refs:
+        return [f"{_REVIEW_WORKFLOW}: no `bitcoin-core-ref:` line found"]
+    problems = []
+    for index, match in refs:
+        ref = match.group(1)
+        start = index
+        while start > 0 and lines[start - 1].lstrip().startswith("#"):
+            start -= 1
+        comment = "\n".join(lines[start:index])
+        cited = sorted({m["sha"] for m in _ANNOTATED.finditer(comment)})
+        where = f"{_REVIEW_WORKFLOW}:{index + 1}"
+        if not cited:
+            problems.append(
+                f"{where}: no release-annotated citation in the comment"
+                " directly above `bitcoin-core-ref`"
+            )
+        elif _FULL_SHA.fullmatch(ref) is None:
+            problems.append(
+                f"{where}: `bitcoin-core-ref` is {ref!r}, not a full 40-hex sha"
+            )
+        elif not all(ref.startswith(sha) for sha in cited):
+            problems.append(
+                f"{where}: `bitcoin-core-ref` {ref} does not start with"
+                f" the sha the citation above it names: {cited}"
+            )
+    return problems
+
+
 def main() -> int:
     """Report every citation a bitcoind pin bump left behind."""
     pinned_version = _pinned_version()
     problems = [
         *_sha_problems(pinned_version),
         *_tree_problems(pinned_version),
+        *_ref_problems(),
     ]
     for problem in problems:
         print(f"DRIFT: {problem}")
