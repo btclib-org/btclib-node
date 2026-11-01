@@ -15,9 +15,9 @@ from collections.abc import Generator
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
+from bip32_descriptors.descriptors import Provider, multipath_descriptors, parse
 from btclib.hashes import hash160
 from btclib.script.script_pub_key import ScriptPubKey
-from btclib_wallet.descriptors import Provider, multipath_descriptors, parse
 
 from btclib_node.rpc import utxo_set
 from btclib_node.rpc.callbacks import arg_names, callbacks

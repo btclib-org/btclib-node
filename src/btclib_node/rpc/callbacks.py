@@ -23,6 +23,7 @@ from ipaddress import ip_address
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
+from bip32_descriptors.descriptors import Provider, infer_descriptor
 from bitcoin_core_rpc import RPCErrorCode, chain_from_network
 from btclib import b32, b58
 from btclib.block import Block, BlockHeader, median_time_past
@@ -39,7 +40,6 @@ from btclib.script.spendability import is_unspendable
 from btclib.script.witness import Witness
 from btclib.tx import Tx
 from btclib.tx.out_point import OutPoint
-from btclib_wallet.descriptors import Provider, infer_descriptor
 
 from btclib_node import clock
 from btclib_node.block_db import Coin
