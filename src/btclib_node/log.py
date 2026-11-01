@@ -411,6 +411,7 @@ def open_history_log(  # noqa: PLR0913
     config_file_line: str = "",
     log_warnings: Sequence[str] = (),
     section_warning: str = "",
+    debug_warnings: Sequence[str] = (),
     config_args: Sequence[str] = (),
     rate_limit: bool = True,
 ) -> Logger:
@@ -444,6 +445,8 @@ def open_history_log(  # noqa: PLR0913
     logger.info("%s version %s", CLIENT_NAME, CLIENT_VERSION)
     if section_warning:
         logger.warning(section_warning)
+    for warning in debug_warnings:
+        logger.warning(warning)
     logger.info("Default data directory %s", default_data_dir())
     logger.info("Using data directory %s", data_dir)
     if config_file_line:

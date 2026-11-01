@@ -1034,13 +1034,19 @@ def test_help_names_the_four_notify_options() -> None:
         ([], "rpcservertimeout=5\n", 5),
         (["-rpcservertimeout=0"], "", 0),
         (["-rpcservertimeout=-1"], "", -1),
+        (["-rpcservertimeout=4294967297"], "", 2**32 + 1),
     ],
-    ids=["Core's default", "command line", "file", "zero", "negative one"],
+    ids=["Core's default", "command line", "file", "zero", "negative one", "int64"],
 )
 def test_build_config_reads_rpcservertimeout(
     tmp_path: Path, argv: list[str], conf: str, rpcservertimeout: int
 ) -> None:
-    """ISS 1548: `-rpcservertimeout` reaches `Config`, as `-bantime` does."""
+    """ISS 1548: `-rpcservertimeout` reaches `Config`, as `-bantime` does.
+
+    As the `int64_t` `InitHTTPServer` reads (ISS 2152): bitcoind v32.1.0
+    run with `-rpcservertimeout=4294967297` keeps an idle connection
+    open past 6 seconds, where one second would close it.
+    """
     assert _build(tmp_path, *argv, conf=conf).rpcservertimeout == rpcservertimeout
 
 
@@ -4535,6 +4541,50 @@ def test_build_config_refuses_a_debugexclude_category_core_does_not_know(
     expected = re.escape(f"Unsupported logging category -debugexclude={category}.")
     with pytest.raises(ValueError, match=f"^{expected}$"):
         _build(tmp_path, f"-debugexclude={category}")
+
+
+_LIBEVENT_WARNING = (
+    "The logging category `libevent` is deprecated, does nothing, and will be "
+    "removed in a future version"
+)
+
+
+@pytest.mark.parametrize(
+    ("argv", "warned", "categories"),
+    [
+        (["-debug=libevent"], 1, set()),
+        (["-debug=libevent", "-debug=net"], 1, {"net"}),
+        (["-debug=libevent", "-debugexclude=libevent"], 2, set()),
+        (["-debug=libevent", "-debug=0"], 0, set()),
+    ],
+    ids=["alone", "beside net", "excluded too", "discarded"],
+)
+def test_build_config_warns_over_libevent_and_selects_nothing(
+    tmp_path: Path, argv: list[str], warned: int, categories: set[str]
+) -> None:
+    """ISS 2152: `GetLogCategory` warns once each time it reads `libevent`.
+
+    Measured on bitcoind v32.1.0: `-debug=libevent -debugexclude=libevent`
+    logs the warning twice, after the section warning, and starts. A
+    category discarded by a later `0` is not read at all.
+    """
+    config = _build(tmp_path, *argv)
+    assert config.debug_warnings == (_LIBEVENT_WARNING,) * warned
+    assert config.debug is bool(categories)
+    assert config.debug_categories == categories
+    assert not config.debug_exclude
+
+
+def test_build_config_takes_v32_1_s_mining_category(tmp_path: Path) -> None:
+    """ISS 2152: `mining` is in v32.1's `LOG_CATEGORIES_BY_STR`."""
+    assert _build(tmp_path, "-debug=mining").debug_categories == {"mining"}
+
+
+def test_help_lists_v32_1_s_categories() -> None:
+    """ISS 2152: `LogCategoriesString` lists `mining`, and not `libevent`."""
+    message = " ".join(cli._help_message(show_debug=True).split())
+    assert "mempoolrej, mining, net" in message
+    assert "libevent" not in message
 
 
 def test_help_names_debugexclude_under_debug_alone() -> None:

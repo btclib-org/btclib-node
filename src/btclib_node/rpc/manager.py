@@ -32,8 +32,6 @@ listening socket that can be accepted past it.
 
 import asyncio
 import errno
-import os
-import re
 import socket
 import sys
 import threading
@@ -41,12 +39,14 @@ import time
 from collections import deque
 from concurrent.futures import CancelledError
 from contextlib import ExitStack, suppress
-from ipaddress import ip_address
+from ipaddress import IPv4Address, IPv6Address
 from typing import TYPE_CHECKING, Any, override
 
-from btclib_node.config import split_host_port
+from btclib_node.config import lookup_service, service_text, split_host_port
+from btclib_node.constants import CLIENT_NAME
 from btclib_node.exceptions import RpcCredentialRefusedError
 from btclib_node.p2p.address import ip_and_port
+from btclib_node.p2p.banman import SpecialAddress
 from btclib_node.p2p.manager import network_error_string
 from btclib_node.rpc.allow import allowed_subnets, client_allowed
 from btclib_node.rpc.auth import RpcAuth
@@ -58,14 +58,15 @@ if TYPE_CHECKING:
     from concurrent.futures import Future
 
     from btclib_node import Node
-    from btclib_node.p2p.banman import Subnet
+    from btclib_node.log import Logger
+    from btclib_node.p2p.banman import Host, Subnet
     from btclib_node.rpc.jsonrpc import HttpReply
 
 __all__ = ["RpcManager"]
 
-# What `HTTPBindAddresses` binds without `-rpcbind` and `-rpcallowip`
+# What `GetBindAddresses` binds without `-rpcbind` and `-rpcallowip`
 # both given, in its order (`src/httpserver.cpp`,
-# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+# at bitcoin/bitcoin@f0de87f040, the v32.1 tag).
 _LOOPBACK_HOSTS = ("::1", "127.0.0.1")
 
 
@@ -82,119 +83,71 @@ _OUT_OF_DESCRIPTORS = frozenset((errno.EMFILE, errno.ENFILE))
 _ACCEPT_RETRY_DELAY = 0.1
 
 
-def _is_bind_any(host: str) -> bool:
-    """Whether `host` is an IP literal naming every interface.
-
-    Core's `CNetAddr::IsBindAny`, over `LookupHost(host, false)`: a
-    name that is no IP literal is not looked up, and is not one.
-    """
-    try:
-        return ip_address(host.strip("[]")).is_unspecified
-    except ValueError:
-        return False
-
-
-_WINDOWS = sys.platform == "win32"
-# what `strtoul` reads whole as a zone index, the empty zone included
-_NUMERIC_ZONE = re.compile(r"([ \t\n\v\f\r]*[+-]?[0-9]+)?")
-
-
-def _libevent_literal(host: str) -> bool:
-    """Whether libevent's own parse reads `host` as an IP address.
-
-    `evutil_getaddrinfo_common_` tries `evutil_inet_pton_scope` for IPv6,
-    whose zone after `%` is an interface name or a number `strtoul`
-    reads to its end, then `evutil_inet_pton` for IPv4 (`evutil.c`, at
-    libevent 2.1.12-stable). libevent is handed `c_str()`, which ends at
-    a NUL byte, so `host` is read up to it (ISS 1377).
-    """
-    host = host.partition("\0")[0]
-    address, percent, zone = host.partition("%")
-    try:
-        socket.inet_pton(socket.AF_INET6, address)
-    except OSError:
-        pass
-    else:
-        if not percent or _NUMERIC_ZONE.fullmatch(zone):
-            return True
-        try:
-            socket.if_nametoindex(zone)
-        except OSError:
-            return False
-        return True
-    try:
-        socket.inet_pton(socket.AF_INET, host)
-    except OSError:
-        return False
-    return True
-
-
-def _address_flags(host: str) -> int:
-    """Return the flags libevent's lookup of `host` is held to.
-
-    `make_addrinfo` asks for `AI_PASSIVE | AI_ADDRCONFIG` (`http.c`, at
-    libevent 2.1.12-stable). On Windows, `evutil_getaddrinfo` answers an IP
-    literal itself, never held to `AI_ADDRCONFIG`, and hands a name to
-    the system's `getaddrinfo` with it.
-    """
-    if _WINDOWS and _libevent_literal(host):
-        return socket.AI_PASSIVE
-    return socket.AI_PASSIVE | socket.AI_ADDRCONFIG
-
-
-# what `getaddrinfo` answers as an address
-_SockAddr = tuple[str, int] | tuple[str, int, int, int] | tuple[int, bytes]
-
-
-def _first_address(
-    host: str, port: int | None
-) -> tuple[socket.AddressFamily, socket.SocketKind, int, _SockAddr]:
-    """Return the family, type, protocol and address `host` binds first.
-
-    `host` reaches `getaddrinfo` as its bytes, as libevent hands it
-    over: a `str` would be IDNA-encoded first, which reads fullwidth
-    digits as ASCII ones and refuses `a..b` with a `UnicodeError`
-    rather than as a lookup that failed. The empty host is libevent's
-    `NULL`, every interface, which on Windows `evutil_getaddrinfo_common_`
-    answers itself, `0.0.0.0` ahead of `::`; elsewhere the system
-    lookup answers it, in the order it answers `bitcoind`.
-    """
-    if not host and _WINDOWS:
-        return (
-            socket.AF_INET,
-            socket.SOCK_STREAM,
-            socket.IPPROTO_TCP,
-            # libevent's own `0.0.0.0`, bound exactly as `bitcoind` binds it
-            ("0.0.0.0", port or 0),  # noqa: S104
-        )
-    family, kind, proto, _, sockaddr = socket.getaddrinfo(
-        os.fsencode(host) if host else None,
-        port,
-        type=socket.SOCK_STREAM,
-        flags=_address_flags(host),
-    )[0]
-    return family, kind, proto, sockaddr
-
-
-def _bind_endpoint(host: str, port: int | None) -> socket.socket:
+def _bind_and_listen(host: Host, port: int, logger: Logger) -> socket.socket:
     """Return a socket listening at `host` and `port`, non-blocking.
 
-    What libevent's `evhttp_bind_socket_with_handle` does for Core
-    (`http.c`, at libevent 2.1.12-stable, the version Core's `depends`
-    builds): the first address a passive lookup answers, an empty host
-    being every interface, then `SO_KEEPALIVE`, and `SO_REUSEADDR` off
-    Windows alone, where it would let another process bind the port
-    this one holds. Raises `OSError` where any step fails, the socket
-    closed.
+    Core's `HTTPServer::BindAndStartListening` (`src/httpserver.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): `SO_EXCLUSIVEADDRUSE` on
+    Windows, so that no other process binds the port, `SO_REUSEADDR`
+    elsewhere, and `IPV6_V6ONLY` on an IPv6 socket, a failure to set
+    either of the last two logged and passed over. Raises `OSError` in
+    Core's words where any other step fails, the socket closed.
+
+    Core also sets `IPV6_PROTECTION_LEVEL` on Windows, and this does not:
+    `P2pManager._bind_one` leaves it unset for Core's `BindListenPort`
+    too (btclib-org/btclib-node#2163).
     """
-    family, kind, proto, sockaddr = _first_address(host, port)
-    server_socket = socket.socket(family, kind, proto)
+    address = service_text(host, port)
+    if isinstance(host, SpecialAddress):
+        err_msg = f"Bind address family for {address} not supported"
+        raise OSError(err_msg)
+    family = socket.AF_INET if isinstance(host, IPv4Address) else socket.AF_INET6
     try:
-        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-        # 0 is the option's default, so Windows is left as libevent leaves it
-        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, not _WINDOWS)
-        server_socket.bind(sockaddr)
-        server_socket.listen()
+        server_socket = socket.socket(family, socket.SOCK_STREAM, socket.IPPROTO_TCP)
+    except OSError as error:
+        err_msg = (
+            f"Cannot create {address} listen socket: {network_error_string(error)}"
+        )
+        raise OSError(err_msg) from error
+    try:
+        if sys.platform == "win32":  # pragma: no cover -- the windows-latest cell
+            try:
+                server_socket.setsockopt(
+                    socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1
+                )
+            except OSError as error:
+                err_msg = (
+                    f"Cannot set SO_EXCLUSIVEADDRUSE on {address} listen socket: "
+                    f"{network_error_string(error)}"
+                )
+                raise OSError(err_msg) from error
+        else:
+            _set_or_log(
+                server_socket, socket.SOL_SOCKET, "SO_REUSEADDR", address, logger
+            )
+        if family == socket.AF_INET6:
+            _set_or_log(
+                server_socket, socket.IPPROTO_IPV6, "IPV6_V6ONLY", address, logger
+            )
+        try:
+            server_socket.bind(_sockaddr(host, port))
+        except OSError as error:
+            if error.errno == errno.EADDRINUSE:
+                err_msg = (
+                    f"Unable to bind to {address} on this computer. "
+                    f"{CLIENT_NAME} is probably already running."
+                )
+            else:
+                err_msg = (
+                    f"Unable to bind to {address} on this computer (bind returned "
+                    f"error {network_error_string(error)})"
+                )
+            raise OSError(err_msg) from error
+        try:
+            server_socket.listen(socket.SOMAXCONN)
+        except OSError as error:
+            err_msg = f"Cannot listen on {address}: {network_error_string(error)}"
+            raise OSError(err_msg) from error
         server_socket.settimeout(0.0)
     except OSError:
         server_socket.close()
@@ -202,23 +155,51 @@ def _bind_endpoint(host: str, port: int | None) -> socket.socket:
     return server_socket
 
 
-def _request_timeout(seconds: int) -> float | None:
-    """Return what `-rpcservertimeout=<seconds>` binds every read and write to.
+def _sockaddr(
+    host: IPv4Address | IPv6Address, port: int
+) -> tuple[str, int] | tuple[str, int, int, int]:
+    """Return the address `bind` takes for `host`, an IPv6 one with its scope.
 
-    Core's own `evhttp_set_timeout` (`src/httpserver.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `-1` builds no `timeval`
-    at all (`evhttp_set_timeout_tv(http, NULL)`), and `0` builds one that
-    is zero in both fields -- `{0, 0}` -- which libevent's own
-    `evutil_timerisset` then reads as unset wherever it decides whether
-    to arm a connection's read or write timer at all
-    (`bufferevent_generic_adj_timeouts_`, `bufferevent.c`, at
-    libevent/libevent@5df3037): every other value arms one, `0` included
-    in name only. `None` here is what `asyncio.timeout` reads as no
-    bound at all, for both call sites this feeds: `RpcConnection.run`,
-    directly, and `RpcManager._finish_replies`, as the bound it would
-    otherwise give the shutdown wait for a reply still being written.
+    CPython reads a scope written after `%` in a 2-tuple's host as 0, so
+    `fe80::1%1` binds only as a 4-tuple naming scope 1.
     """
-    return None if seconds in (0, -1) else float(seconds)
+    if isinstance(host, IPv4Address):
+        return str(host), port
+    return str(host).partition("%")[0], port, 0, int(host.scope_id or 0)
+
+
+def _set_or_log(
+    server_socket: socket.socket, level: int, name: str, address: str, logger: Logger
+) -> None:
+    """Turn the option `name` on, or log at debug that it could not be."""
+    try:
+        server_socket.setsockopt(level, getattr(socket, name), 1)
+    except OSError as error:
+        logger.log_debug(
+            "http",
+            "Cannot set %s on %s listen socket: %s, continuing anyway",
+            name,
+            address,
+            network_error_string(error),
+        )
+
+
+def _request_timeout(seconds: int) -> float | None:
+    """Return the bound `-rpcservertimeout=<seconds>` sets, `None` for none.
+
+    Core arms its timeout only for a value above 0
+    (`HTTPRemoteClient::MaybeDisconnect`, `src/httpserver.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag). `None` is what
+    `asyncio.timeout` reads as no bound at all, for both call sites this
+    feeds: `RpcConnection.run`, directly, and
+    `RpcManager._finish_replies`, as the bound it would otherwise give
+    the shutdown wait for a reply still being written.
+
+    What the bound covers differs from Core's: `RpcConnection.run` bounds
+    the read of one request, where Core's idle timeout is reset on every
+    receive and send (btclib-org/btclib-node#2152).
+    """
+    return None if seconds <= 0 else float(seconds)
 
 
 class RpcManager(threading.Thread):
@@ -248,8 +229,8 @@ class RpcManager(threading.Thread):
         # connection it means to time out, without waiting through
         # REQUEST_TIMEOUT's own real, Core-matching value. `-rpcservertimeout`
         # is this attribute's own source once `Config` resolves it, `None`
-        # for no bound at all -- `_request_timeout`'s own docstring has
-        # Core's `0` and `-1`.
+        # for no bound at all -- `_request_timeout`'s own docstring says
+        # which values arm none.
         self.request_timeout = _request_timeout(node.config.rpcservertimeout)
         # `-rpcmaxconnections`: the most entries `connections` holds. An
         # instance attribute, as `request_timeout` is, so a test can lower
@@ -457,44 +438,45 @@ class RpcManager(threading.Thread):
     def _bind(self) -> list[socket.socket]:
         """Bind and listen on every endpoint, before anything is scheduled.
 
-        Core's `HTTPBindAddresses` (`src/httpserver.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): each endpoint is
-        logged before it is tried, and one that cannot be bound is warned
-        about and passed over, so a host without IPv6 still listens on
-        `127.0.0.1`. Empty where none binds. See
-        `P2pManager._bind` for why this is synchronous (#88). Unlike that
-        one, this does not set `listening`: `_listen` does, once the
-        cookie is written too.
+        Core's `InitHTTPServer` (`src/httpserver.cpp`, at
+        bitcoin/bitcoin@f0de87f040, the v32.1 tag): each endpoint is
+        logged before it is tried, and looked up as `Lookup(address,
+        port, false)` does, with no DNS lookup, so a name binds nothing.
+        One that cannot be looked up or bound is warned about and passed
+        over, so a host without IPv6 still listens on `127.0.0.1`. Empty
+        where none binds. See `P2pManager._bind` for why this is
+        synchronous (#88). Unlike that one, this does not set
+        `listening`: `_listen` does, once the cookie is written too.
         """
         bound: list[socket.socket] = []
         for host, port in self._endpoints():
             self.logger.info("Binding RPC on address %s port %s", host, port)
-            try:
-                bound.append(_bind_endpoint(host, port))
-            except OSError:
+            service = lookup_service(host, port)
+            if service is None:
                 self.logger.warning(
-                    "Binding RPC on address %s port %s failed.", host, port
+                    "Could not bind RPC on address %s port %s: Address lookup failed.",
+                    host,
+                    port,
                 )
                 continue
-            # once bound, as Core warns: an empty host or one `LookupHost`
-            # reads, without a DNS lookup, as the any address
-            if not host or _is_bind_any(host):
+            address, service_port = service
+            if not isinstance(address, SpecialAddress) and address.is_unspecified:
                 self.logger.warning(
                     "The RPC server is not safe to expose to untrusted networks "
                     "such as the public internet"
                 )
-            # Nagle's algorithm off, as Core sets it on every bound socket
             try:
-                bound[-1].setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            except OSError:
-                self.logger.info(
-                    "WARNING: Unable to set TCP_NODELAY on RPC server socket, "
-                    "continuing anyway"
+                bound.append(_bind_and_listen(address, service_port, self.logger))
+            except OSError as error:
+                self.logger.warning(
+                    "Binding RPC on address %s failed: %s",
+                    service_text(address, service_port),
+                    error,
                 )
         return bound
 
     def _endpoints(self) -> list[tuple[str, int]]:
-        """Return what `HTTPBindAddresses` binds, logging its warnings.
+        """Return what `GetBindAddresses` binds, logging its warnings.
 
         Loopback, where `-rpcbind` and `-rpcallowip` are not both given;
         every `-rpcbind` endpoint otherwise, its port defaulting to
@@ -673,6 +655,17 @@ class RpcManager(threading.Thread):
                 )
                 sock.close()
                 continue
+            # Nagle's algorithm off, as `HTTPServer::NewSockAccepted` sets
+            # it on every accepted socket (`src/httpserver.cpp`, at
+            # bitcoin/bitcoin@f0de87f040, the v32.1 tag)
+            try:
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError:
+                self.logger.log_debug(
+                    "http",
+                    "connection from %s: unable to set TCP_NODELAY, continuing anyway",
+                    ip_and_port(host, port),
+                )
             sock.settimeout(0.0)
             accepted.put_nowait((sock, sockaddr))
 
@@ -880,14 +873,13 @@ class RpcManager(threading.Thread):
         read off any connection, `stop` leaving every read running -- is
         waited for too, within the same bound.
 
-        `request_timeout` being `None` -- `-rpcservertimeout=0` or `=-1`,
-        `_request_timeout`'s own docstring has why both read that way --
-        there is no bound of Core's left to read either, `evhttp_set_timeout`
-        having armed none of its own for this same reason: the wait below
-        is then for as long as it takes, same as `WaitUntilEmpty` is, and
-        nothing is recorded through `extend_reply_deadline`, `Node.stop`'s
-        own `STOP_TIMEOUT` remaining as the one bound still standing over
-        this manager's own thread.
+        `request_timeout` being `None` -- `-rpcservertimeout` of 0 or
+        less, `_request_timeout`'s own docstring has why -- there is no
+        bound left to read: the wait below is then for as long as it
+        takes, same as `WaitUntilEmpty` is, and nothing is recorded
+        through `extend_reply_deadline`, `Node.stop`'s own `STOP_TIMEOUT`
+        remaining as the one bound still standing over this manager's own
+        thread.
         """
         with self._replies_lock:
             if not self.replies:
