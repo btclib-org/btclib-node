@@ -95,10 +95,11 @@ MAX_BODY_BYTES = 32 * 1024 * 1024
 IDLE_TIMEOUT = 30.0
 # The size of the pieces `RpcConnection._send_all` writes a reply in,
 # the idle timeout reset after each. Core resets it after every `send`
-# that moves a byte (`HTTPRemoteClient::MaybeSendBytesFromBuffer`, same
-# file, same tag), and `loop.sock_sendall` reports no progress until it
-# has sent everything, so a piece is the finest step this node sees. The
-# size is that of Core's own reads (`HTTPRemoteClient::Receive`).
+# that moves a byte (`HTTPRemoteClient::MaybeSendBytesFromBuffer`,
+# `src/httpserver.cpp`, same tag), and `loop.sock_sendall` reports no
+# progress until it has sent everything, so a piece is the finest step
+# this node sees. The size is that of Core's own reads
+# (`HTTPRemoteClient::Receive`).
 _SEND_CHUNK = 0x10000
 
 
@@ -680,9 +681,13 @@ class RpcConnection:
     `idle_timeout` seconds, as Core's `HTTPRemoteClient::MaybeDisconnect`
     closes it (`src/httpserver.cpp`, at bitcoin/bitcoin@f0de87f040, the
     v32.1 tag). Idle time starts at the accept and again at every receive
-    and every send. It is not counted while a request is being served, from
-    its last byte read until its reply begins: `run` and `_write` apply it,
-    and nothing between them does. `_write` restarts it as the reply begins,
+    and after every `_SEND_CHUNK` piece of a reply, where Core restarts it
+    after every `send` that moves a byte. So a reader that takes longer
+    than `idle_timeout` to drain one piece is closed here, however steadily
+    it reads, though Core can restart the time partway through that piece.
+    Idle time is not counted while a request is being served, from its last
+    byte read until its reply begins: `run` and `_write` apply it, and
+    nothing between them does. `_write` restarts it as the reply begins,
     where Core restarts it once the first bytes are sent. `None` arms no
     timeout. Core counts idle time in whole seconds and checks it at least
     every 50 ms (`SELECT_TIMEOUT`), so it closes up to about a second later

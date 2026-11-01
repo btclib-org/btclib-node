@@ -841,11 +841,7 @@ class RpcManager(threading.Thread):
         sockets open for `stop` to close last.
         """
         # Cancelled directly, whether or not `_finish_replies` has run the
-        # loop first. What `server` has accepted waits in a queue, and a
-        # cancel cannot lose an item already there: `server`'s `finally`
-        # closes what is left (btclib-org/btclib-node#391). An accept the
-        # kernel has completed but `_accept_loop` has not yet queued can
-        # be lost, as `server`'s comment says (btclib-org/btclib-node#430).
+        # loop first: `server`'s comment says what a cancel can lose.
         # `run_until_complete` is safe here because `stop` cancelled its
         # own `loop.stop` handle first (btclib-org/btclib-node#377,
         # btclib-org/btclib-node#380).
