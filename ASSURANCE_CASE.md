@@ -250,9 +250,10 @@ A caller holding an accepted credential can name a file too, where
 `-rpcwhitelist` leaves it the method. `importmempool` reads the regular
 file its `filepath` argument names. `dumptxoutset` writes the file its
 `path` argument names: a relative path is joined to the datadir, and an
-absolute one stands as it is. It writes through a `.incomplete` file
-beside that file. For a block below the tip it also builds the temporary
-store `temp_utxo_<height>` beside it, unless `in_memory` is set.
+absolute one stands as it is. It writes a named pipe directly, and any
+other file through a `.incomplete` file beside it. For a block below the
+tip it also builds the temporary store `temp_utxo_<height>` beside it,
+unless `in_memory` is set.
 
 These two paragraphs name every file `src/` opens. This lists the calls
 that open one:
