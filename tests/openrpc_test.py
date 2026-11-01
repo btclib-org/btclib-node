@@ -221,8 +221,13 @@ def test_named_options_are_compared(diff: ModuleType) -> None:
             {"name": "options", "schema": _obj(rollback={}, in_memory={})},
         ]
     }
+    assert diff.compare_params("dumptxoutset", method) == []
+    method["params"][2]["schema"] = _obj(rollback={}, in_memory={}, other={})
     assert diff.compare_params("dumptxoutset", method) == [
-        "dumptxoutset options: Core (rollback, in_memory), btclib-node (rollback)"
+        (
+            "dumptxoutset options: Core (rollback, in_memory, other),"
+            " btclib-node (rollback, in_memory)"
+        )
     ]
 
 

@@ -24,11 +24,9 @@ below answers it for a command named explicitly, and un-truncated, where
 Core's own bare listing keeps only each entry's first line.
 
 `stop`'s text names this node, as the comment above `_HELP_STOP` says.
-`dumptxoutset`'s and `estimatesmartfee`'s are v31.1's, read back the same
-way (at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): v32.1's describe an
-`in_memory` option and an `options` argument this node does not take.
-`dumptxoutset`'s v32.1 text is owed by btclib-org/btclib-node#2103, whose
-`dumptxoutset_test.py` compares it, and `estimatesmartfee`'s by
+`estimatesmartfee`'s is v31.1's, read back the same way (at
+bitcoin/bitcoin@9be056a8a7, the v31.1 tag): v32.1's describes an
+`options` argument this node does not take. Its v32.1 text is owed by
 btclib-org/btclib-node#2102, with the `options` argument.
 
 `CATEGORY` is each command's own heading in Core's `help`'s bare
@@ -883,13 +881,11 @@ _HELP_GETTXOUT = (
 )
 
 _HELP_DUMPTXOUTSET = (
-    'dumptxoutset "path" ( "type" {"rollback":n,...} )\n'
+    'dumptxoutset "path" ( "type" {"rollback":n,"in_memory":bool,...} )\n'
     "\n"
     "Write the serialized UTXO set to a file. This can be used in loadtxoutset afterwards if this snapshot height is supported in the chainparams as well.\n"
-    "\n"
-    'Unless the "latest" type is requested, the node will roll back to the requested height and network activity will be suspended during this process. Because of this it is discouraged to interact with the node in any other way during the execution of this call to avoid inconsistent results and race conditions, particularly RPCs that interact with blockstorage.\n'
-    "\n"
-    "This call may take several minutes. Make sure to use no RPC timeout (bitcoin-cli -rpcclienttimeout=0)\n"
+    "This creates a temporary UTXO database when rolling back, keeping the main chain intact. Should the node experience an unclean shutdown the temporary database may need to be removed from the datadir manually.\n"
+    "For deep rollbacks, make sure to use no RPC timeout (bitcoin-cli -rpcclienttimeout=0) as it may take several minutes.\n"
     "\n"
     "Arguments:\n"
     "1. path       (string, required) Path to the output file. If relative, will be prefixed by datadir.\n"
@@ -897,7 +893,8 @@ _HELP_DUMPTXOUTSET = (
     "3. options    (json object, optional) Options object that can be used to pass named arguments, listed below.\n"
     "\n"
     "Named Arguments:\n"
-    "rollback    (string or numeric, optional) Height or hash of the block to roll back to before creating the snapshot. Note: The further this number is from the tip, the longer this process will take. Consider setting a higher -rpcclienttimeout value in this case.\n"
+    "rollback     (string or numeric, optional) Height or hash of the block to roll back to before creating the snapshot. Note: The further this number is from the tip, the longer this process will take. Consider setting a higher -rpcclienttimeout value in this case.\n"
+    "in_memory    (boolean, optional, default=false) If true, the temporary UTXO-set database used during rollback is kept entirely in memory. This can significantly speed up the process but requires sufficient free RAM (over 10 GB on mainnet).\n"
     "\n"
     "Result:\n"
     "{                             (json object)\n"
@@ -913,6 +910,7 @@ _HELP_DUMPTXOUTSET = (
     "> bitcoin-cli -rpcclienttimeout=0 dumptxoutset utxo.dat latest\n"
     "> bitcoin-cli -rpcclienttimeout=0 dumptxoutset utxo.dat rollback\n"
     "> bitcoin-cli -rpcclienttimeout=0 -named dumptxoutset utxo.dat rollback=853456\n"
+    "> bitcoin-cli -rpcclienttimeout=0 -named dumptxoutset utxo.dat rollback=853456 in_memory=true\n"
 )
 
 _HELP_GETTXOUTSETINFO = (

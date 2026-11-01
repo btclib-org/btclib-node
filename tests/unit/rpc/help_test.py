@@ -18,17 +18,16 @@ if TYPE_CHECKING:
     from btclib_node.rpc.connection import RpcConnection
 
 # The bare listing a real regtest bitcoind v32.1.0's own `help` answers,
-# cut down to exactly the commands this node serves, except that the
-# usage lines of `dumptxoutset` and `estimatesmartfee` are v31.1's, as
-# `rpc.help`'s docstring says -- read back the same way each entry of
-# `HELP_TEXT` was, and reproduced here as the
-# regression: `_BARE_LISTING`'s own construction (`rpc.help`'s module
-# level) is what this compares against, not a second copy of Core's own
-# text, so a change to `HELP_TEXT` or `CATEGORY` that breaks the grouping
-# is caught here rather than only by eye.
+# cut down to exactly the commands this node serves, except that the usage
+# line of `estimatesmartfee` is v31.1's, as `rpc.help`'s docstring says --
+# read back the same way each entry of `HELP_TEXT` was, and reproduced
+# here as the regression: `_BARE_LISTING`'s own construction (`rpc.help`'s
+# module level) is what this compares against, not a second copy of Core's
+# own text, so a change to `HELP_TEXT` or `CATEGORY` that breaks the
+# grouping is caught here rather than only by eye.
 _EXPECTED_BARE_LISTING = (
     "== Blockchain ==\n"
-    'dumptxoutset "path" ( "type" {"rollback":n,...} )\n'
+    'dumptxoutset "path" ( "type" {"rollback":n,"in_memory":bool,...} )\n'
     "getbestblockhash\n"
     'getblock "blockhash" ( verbosity )\n'
     "getblockchaininfo\n"

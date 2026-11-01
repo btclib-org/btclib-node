@@ -121,7 +121,6 @@ zmq getzmqnotifications
 
 ## Parameters
 
-dumptxoutset options: Core (rollback, in_memory), btclib-node (rollback)
 estimatesmartfee: Core (conf_target, estimate_mode, options), btclib-node (conf_target, estimate_mode)
 
 ## Result fields

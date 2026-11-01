@@ -75,10 +75,10 @@ fixes there; a thread of the call's own hashes them, reading no state of
 it, as the others are. `stop` ends the scan at its next coin.
 
 `dumptxoutset` is not: it writes the snapshot on `Node`'s thread, a step of
-coins at a time. A rollback dump invalidates the block after its target,
-writes, and reconsiders it, with the network off meanwhile. The invalidate
-and the reconsider run without yielding, so a deep rollback holds `Node`'s
-loop, where Core does it on an HTTP worker thread.
+coins at a time. A rollback dump leaves the chain as it is, and first reads
+the undo data of the blocks above its target into a temporary store. That
+runs without yielding, so a deep rollback holds `Node`'s loop, where Core
+does it on an HTTP worker thread.
 
 `scantxoutset` is not either: it walks the same cursor on `Node`'s thread,
 a step of coins at a time, and yields between steps. `status` and `abort` are
