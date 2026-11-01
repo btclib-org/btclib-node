@@ -38,11 +38,12 @@ from btclib_node.constants import DIR_MODE, RPC_THREADS, NodeStatus
 from btclib_node.dirlock import lock_directories
 from btclib_node.download import DownloadManager
 from btclib_node.exceptions import NodeShutdownTimeoutError, ReimportedMainProcessError
-from btclib_node.fee_estimator import FeeEstimator
+from btclib_node.fee_estimator import FeeEstimator, migrate_legacy_file
 from btclib_node.interpreter import warm
 from btclib_node.log import open_history_log
 from btclib_node.main import check_fork_warning_conditions, update_chain
 from btclib_node.mempool import Mempool
+from btclib_node.mempool_estimator import MempoolEstimator
 from btclib_node.mempool_persist import FILENAME, dump_mempool, load_mempool
 from btclib_node.notify import Warnings, run_detached, run_shutdown_notify
 from btclib_node.p2p.address import PeerDB
@@ -524,20 +525,6 @@ class Node(threading.Thread):
         )
         self.p2p_manager = P2pManager(self, self.p2p_port, peer_db, ban_man)
         self._opened.callback(self.p2p_manager.loop.close)
-        # where Core's step 6 builds its estimator, with its refusal of
-        # `-acceptstalefeeestimates` (`src/init.cpp`, at
-        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
-        if self.config.accept_stale_fee_estimates and self.chain.name != "regtest":
-            chain = chain_from_network(self.chain.name)
-            msg = f"acceptstalefeeestimates is not supported on {chain} chain."
-            raise ValueError(msg)
-        self.fee_estimator = FeeEstimator(
-            self.data_dir / "fee_estimates.dat",
-            self.logger,
-            read_stale=self.config.accept_stale_fee_estimates,
-        )
-        # Core's `Shutdown` writes it even where a later step fails
-        self._opened.callback(self.fee_estimator.flush)
         warmup("Loading block index…")
         self.block_db = BlockDB(self.data_dir, self.logger, self.config.blocks_dir)
         self._opened.callback(self.block_db.close)
@@ -564,6 +551,26 @@ class Node(threading.Thread):
         self._opened.callback(self.chainstate.close)
         if reindex:
             self.block_db.wipe_undo()
+        # where Core's step 7 builds its estimators, once the chainstate
+        # is loaded, with its refusal of `-acceptstalefeeestimates`
+        # (`src/init.cpp`, at bitcoin/bitcoin@f0de87f040, the v32.1 tag)
+        if self.config.accept_stale_fee_estimates and self.chain.name != "regtest":
+            chain = chain_from_network(self.chain.name)
+            msg = f"acceptstalefeeestimates is not supported on {chain} chain."
+            raise ValueError(msg)
+        self.fee_estimator = FeeEstimator(
+            migrate_legacy_file(self.data_dir, self.logger),
+            self.logger,
+            read_stale=self.config.accept_stale_fee_estimates,
+        )
+        active_chain = self.chainstate.block_index.active_chain
+        self.mempool_estimator = MempoolEstimator(
+            self.data_dir / "fees" / "mempool_policy_estimator.dat",
+            self.logger,
+            (len(active_chain) - 1, active_chain[-1]),
+        )
+        # Core's `Shutdown` writes them even where a later step fails
+        self._opened.callback(self._flush_estimators)
         # Core holds `LoadingBlocks()` on every start while `ImportBlocks`
         # connects what is stored (`ImportingNow` at
         # `src/node/blockstorage.cpp:1263`, `ActivateBestChains` at
@@ -847,15 +854,26 @@ class Node(threading.Thread):
         )
 
     def _resume_mempool_load(self) -> bool:
-        """Take one step of the load, and answer whether there was one."""
+        """Take one step of the load, and answer whether there was one.
+
+        A load that ends unread, `-persistmempool=0` included, clears the
+        mempool estimator's blocks, as Core's `initload` does.
+        """
         if self._mempool_load is None or self.status == NodeStatus.Reindexing:
             return False
         try:
             next(self._mempool_load)
-        except StopIteration:
+        except StopIteration as done:
             self._mempool_load = None
+            if not done.value:
+                self.mempool_estimator.mempool_load_failed()
             self.mempool.load_tried = True
         return True
+
+    def _flush_estimators(self) -> None:
+        """Write both fee estimators' files: Core's `ShutdownFlush`."""
+        self.fee_estimator.flush()
+        self.mempool_estimator.flush()
 
     def _step_chain(self) -> bool:
         """Advance the chain one step, and answer whether `run` should stop.
@@ -1064,7 +1082,7 @@ class Node(threading.Thread):
                 )
             # Core's `Shutdown`: what is still unconfirmed counts as a
             # failure, and the estimates are written
-            self.fee_estimator.flush()
+            self._flush_estimators()
             self.chainstate.close()
             self.block_db.close()
 
@@ -1140,7 +1158,8 @@ class Node(threading.Thread):
             # read.
             if self.terminate_flag.is_set() or self._step_chain():
                 break
-            self.fee_estimator.flush_if_due()
+            if self.fee_estimator.flush_if_due():
+                self.mempool_estimator.flush()
         self._stop_managers_and_close_stores()
 
         # joined before the read below, not asked for: the same race

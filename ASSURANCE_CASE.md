@@ -233,14 +233,14 @@ CLI flag `cli.py` reads, and `bitcoin.conf` inside the datadir it names,
 are the operator's own input, not a remote party's — `cli.py`'s own
 module docstring is where each flag is named against Bitcoin Core's
 equivalent. The datadir holds the stores, `banlist.json`, `anchors.dat`,
-`fee_estimates.dat`, the log file and the RPC cookie `.cookie`;
+the fee estimator files under `fees/` (a `fee_estimates.dat` an older
+node left is moved there), the log file and the RPC cookie `.cookie`;
 `-blocksdir` moves the block files, `-rpccookiefile` the cookie, and
-`-conf` and `-includeconf` name the files read for options. Beside these,
-`dirlock.py` creates a `.lock`
-file in the datadir and in the blocks directory, `rpc/auth.py` writes the
-cookie through a `.tmp` file beside it, and `p2p/anchors.py` writes
-`anchors.dat` through a temporary file beside it. Nothing under `src/`
-opens a file outside those.
+`-conf` and `-includeconf` name the files read for options. Beside
+these, `dirlock.py` creates a `.lock` file in the datadir and in the
+blocks directory, `rpc/auth.py` writes the cookie through a `.tmp` file
+beside it, and `p2p/anchors.py` writes `anchors.dat` through a temporary
+file beside it. Nothing under `src/` opens a file outside those.
 
 `PYTEST_XDIST_WORKER_COUNT` is read in any process, not only under
 pytest: `_default_worker_count` in `src/btclib_node/__init__.py` sizes

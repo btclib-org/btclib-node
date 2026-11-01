@@ -326,7 +326,8 @@ def diff(document: dict[str, Any]) -> str:
             continue
         schema = methods[name]["result"]["schema"]
         lines += [f"{name} {entry}" for entry in compare_fields("", nodes, [schema])]
-    return "\n".join(lines) + "\n"
+    # an empty last section ends at its heading, as end-of-file-fixer has it
+    return "\n".join(lines).rstrip("\n") + "\n"
 
 
 def main(argv: list[str] | None = None) -> int:

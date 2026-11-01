@@ -121,9 +121,5 @@ zmq getzmqnotifications
 
 ## Parameters
 
-estimatesmartfee: Core (conf_target, estimate_mode, options), btclib-node (conf_target, estimate_mode)
 
 ## Result fields
-
-estimatesmartfee .estimator: in Core, not in help.py
-estimatesmartfee .mempool_health_statistics: in Core, not in help.py

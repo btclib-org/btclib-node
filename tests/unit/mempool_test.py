@@ -1869,7 +1869,7 @@ def test_a_block_returns_what_it_held_and_reports_only_its_conflicts() -> None:
     told: list[bytes] = []
     mempool.removal_listener = told.append
     removed = mempool.remove_for_block([mined, a_spend_of([coin])])
-    assert removed == [RemovedTx(mined.id, 1_000, mined.vsize, 7)]
+    assert removed == [RemovedTx(mined.id, 1_000, mined.vsize, 7, mined.weight)]
     assert sorted(told) == sorted([held.id, child.id])
 
 

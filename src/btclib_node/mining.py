@@ -68,6 +68,7 @@ from btclib.tx.tx_context import is_final
 
 from btclib_node import clock
 from btclib_node.chainstate.block_index import block_time
+from btclib_node.cluster_linearize import FeeFrac
 from btclib_node.exceptions import (
     InvalidBlockInputError,
     PrevoutCountMismatchError,
@@ -98,6 +99,7 @@ __all__ = [
     "accept_block",
     "block_with_transactions",
     "check_block_validity",
+    "chunk_feerates",
     "contextual_block_reason",
     "create_new_block",
     "solve_block",
@@ -221,17 +223,21 @@ def _prev_outputs(node: Node, tx: Tx) -> list[TxOut]:
     return outputs
 
 
-def _add_chunks(node: Node, height: int, lock_time_cutoff: int) -> list[_Chosen]:
+def _add_chunks(
+    node: Node, height: int, lock_time_cutoff: int
+) -> tuple[list[_Chosen], list[FeeFrac]]:
     """Choose the mempool's chunks for a block at `height`: Core's `addChunks`.
 
     The chunks come best first, as `TxGraph.block_builder` gives them,
     ranked by modified fee (`prioritisetransaction`); what a block pays
     out is the fees paid. A chunk that does not fit the weight or sigop
     limit, or holds a transaction not final at `height`, is skipped with
-    the rest of its cluster.
+    the rest of its cluster. Beside the transactions, the feerate of each
+    chunk taken, per vbyte: the template's `m_package_feerates`.
     """
     pool = node.mempool
     chosen: list[_Chosen] = []
+    feerates: list[FeeFrac] = []
     weight = _RESERVED_WEIGHT
     cost = _RESERVED_SIGOPS
     failures = 0
@@ -264,7 +270,8 @@ def _add_chunks(node: Node, height: int, lock_time_cutoff: int) -> list[_Chosen]
             chosen.append(_Chosen(tx, pool.fees[wtxid], tx_sigops))
             weight += tx.weight
             cost += tx_sigops
-    return chosen
+        feerates.append(FeeFrac(chunk.feerate.fee, vsize))
+    return chosen, feerates
 
 
 def _assemble(
@@ -355,15 +362,33 @@ def create_new_block(node: Node, script_pub_key: ScriptPubKey) -> BlockTemplate:
     of work and merkle root, and throws where it is refused; this raises
     `TemplateError`.
     """
-    block_index = node.chainstate.block_index
-    height = len(block_index.active_chain)
-    tip_header = block_index.header_dict[block_index.active_chain[-1]].header
-    tip_mtp = median_time_past(tip_header, height - 1, parent_lookup(node))
-    template = _assemble(node, script_pub_key, _add_chunks(node, height, tip_mtp))
+    chosen, _ = _add_chunks(node, *_next_block(node))
+    template = _assemble(node, script_pub_key, chosen)
     reason = check_block_validity(node, template.block, check_merkle_root=False)
     if reason is not None:
         raise TemplateError(reason)
     return template
+
+
+def chunk_feerates(node: Node) -> list[FeeFrac]:
+    """Return the feerates of the chunks a block on the tip would take.
+
+    The `m_package_feerates` of Core's `CreateNewBlock`, without the
+    validity check, as `MemPoolFeeRateEstimator::EstimateFeeRate` builds
+    it (`src/policy/fees/mempool_estimator.cpp`, at
+    bitcoin/bitcoin@f0de87f040, the v32.1 tag): best first, each a fee
+    over a size in vbytes.
+    """
+    _, feerates = _add_chunks(node, *_next_block(node))
+    return feerates
+
+
+def _next_block(node: Node) -> tuple[int, int]:
+    """Return the height of a block on the tip, and its lock-time cutoff."""
+    block_index = node.chainstate.block_index
+    height = len(block_index.active_chain)
+    tip_header = block_index.header_dict[block_index.active_chain[-1]].header
+    return height, median_time_past(tip_header, height - 1, parent_lookup(node))
 
 
 def block_with_transactions(

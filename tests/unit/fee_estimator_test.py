@@ -14,8 +14,9 @@ import os
 import struct
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import pytest
 from btclib import var_int
@@ -28,15 +29,13 @@ from btclib_node.fee_estimator import (
     _divide,
     is_current_for_fee_estimation,
     llround,
+    migrate_legacy_file,
     track_accepted,
 )
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from tests import LogLines
 from tests.unit.mempool_test import a_transaction_spending
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 # the `fee_estimates.dat` a fresh regtest bitcoind v31.1.0 writes at its
 # first stop, 309269 bytes
@@ -379,16 +378,16 @@ def test_a_well_formed_small_file_is_read(tmp_path: Path) -> None:
     assert estimator.highest_target_tracked(FeeEstimateHorizon.LONG) == 1
 
 
-def test_an_older_version_is_warned_about_and_ignored(tmp_path: Path) -> None:
-    """Core's "Incompatible old fee estimation data": nothing is read."""
+def test_an_older_version_is_refused(tmp_path: Path) -> None:
+    """v32.1 reads no file of an older version, and says so."""
     estimator, lines = an_estimator(tmp_path)
     before = estimator.write()
-    assert estimator.read(_header(309899, 7, 0, 0))
+    assert not estimator.read(_header(309899, 7, 0, 0))
     assert estimator.write() == before
     assert (
-        "Incompatible old fee estimation data (non-fatal). Version: 309899"
-        in lines.messages
-    )
+        "Unable to read policy estimator data (non-fatal): File version (309899) "
+        "incompatible: Too old to be read"
+    ) in lines.messages
 
 
 def test_a_nan_is_written_and_read_as_core_s_one_nan(tmp_path: Path) -> None:
@@ -406,9 +405,85 @@ def test_a_nan_is_written_and_read_as_core_s_one_nan(tmp_path: Path) -> None:
 def test_a_write_that_fails_is_warned_about(tmp_path: Path) -> None:
     """A path that cannot be written is Core's warning, and nothing else."""
     estimator, lines = an_estimator(tmp_path)
-    estimator.path = tmp_path / "missing" / "fee_estimates.dat"
+    estimator.path = tmp_path / "fees" / "block_policy_estimates.dat"
+    estimator.path.mkdir(parents=True)
     estimator.flush_estimates()
     assert any("Failed to write fee estimates to" in line for line in lines.messages)
+
+
+def test_a_directory_that_cannot_be_made_is_warned_about(tmp_path: Path) -> None:
+    """The file's directory is made first, and a failure is Core's warning."""
+    estimator, lines = an_estimator(tmp_path)
+    (tmp_path / "fees").write_bytes(b"")
+    estimator.path = tmp_path / "fees" / "block_policy_estimates.dat"
+    estimator.flush_estimates()
+    assert any(
+        "Failed to create fee estimates directory" in line for line in lines.messages
+    )
+    estimator.path = tmp_path / "made" / "block_policy_estimates.dat"
+    estimator.flush_estimates()
+    assert estimator.path.read_bytes() == estimator.write()
+
+
+def test_a_legacy_file_is_moved_to_the_new_path(tmp_path: Path) -> None:
+    """Core's `MaybeMigrateLegacyFeeEstimates` moves the old file alone."""
+    logger, lines = Logger(debug=True), LogLines()
+    logger.addHandler(lines)
+    path = migrate_legacy_file(tmp_path, logger)
+    assert path == tmp_path / "fees" / "block_policy_estimates.dat"
+    assert not path.exists()
+    (tmp_path / "fee_estimates.dat").write_bytes(b"legacy")
+    assert migrate_legacy_file(tmp_path, logger) == path
+    assert path.read_bytes() == b"legacy"
+    assert not (tmp_path / "fee_estimates.dat").exists()
+    assert any("Migrated fee estimates from" in line for line in lines.messages)
+
+
+def test_a_legacy_file_beside_the_new_one_is_removed(tmp_path: Path) -> None:
+    """Where both are there, the new one is kept."""
+    logger, lines = Logger(debug=True), LogLines()
+    logger.addHandler(lines)
+    path = tmp_path / "fees" / "block_policy_estimates.dat"
+    path.parent.mkdir()
+    path.write_bytes(b"new")
+    (tmp_path / "fee_estimates.dat").write_bytes(b"legacy")
+    assert migrate_legacy_file(tmp_path, logger) == path
+    assert path.read_bytes() == b"new"
+    assert not (tmp_path / "fee_estimates.dat").exists()
+    assert any("Removed legacy fee estimates file" in line for line in lines.messages)
+
+
+@pytest.mark.parametrize(
+    ("blocked", "warning"),
+    [
+        ("remove", "Failed to remove legacy fee estimates file"),
+        ("directory", "Failed to create block policy fee estimates directory"),
+        ("rename", "Failed to migrate fee estimates from"),
+    ],
+)
+def test_a_migration_that_fails_is_warned_about(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, blocked: str, warning: str
+) -> None:
+    """Each step's failure is Core's warning, and the start goes on."""
+    logger, lines = Logger(debug=True), LogLines()
+    logger.addHandler(lines)
+    legacy = tmp_path / "fee_estimates.dat"
+    legacy.write_bytes(b"legacy")
+    if blocked == "remove":
+        (tmp_path / "fees").mkdir()
+        (tmp_path / "fees" / "block_policy_estimates.dat").write_bytes(b"new")
+        monkeypatch.setattr(Path, "unlink", _refuse)
+    elif blocked == "directory":
+        (tmp_path / "fees").write_bytes(b"")
+    else:
+        monkeypatch.setattr(Path, "rename", _refuse)
+    migrate_legacy_file(tmp_path, logger)
+    assert legacy.exists()
+    assert any(warning in line for line in lines.messages)
+
+
+def _refuse(*_args: object, **_kwargs: object) -> None:
+    raise PermissionError(1, "Operation not permitted")
 
 
 def test_the_estimates_are_written_every_hour(tmp_path: Path) -> None:

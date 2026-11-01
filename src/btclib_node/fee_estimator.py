@@ -9,8 +9,13 @@ bitcoin/bitcoin@9be056a8a7, the v31.1 tag. A transaction entering the
 mempool is put in a feerate bucket; each connected block records how
 many blocks the transactions it confirms took, in three moving averages
 of different half-lives; `estimate_smart_fee` and `estimate_raw_fee`
-read them back. `write` and `read` are Core's `fee_estimates.dat`, byte
-for byte.
+read them back. `write` and `read` are Core's
+`fees/block_policy_estimates.dat`, byte for byte.
+
+These follow v32.1 instead, at bitcoin/bitcoin@f0de87f040, the v32.1
+tag: the file's path, with `migrate_legacy_file` moving the
+`fee_estimates.dat` an older node left; the directory `flush_estimates`
+creates; and the refusal of a file of an older version.
 
 Every caller runs on `Node`'s thread, so this carries no lock where Core
 has `m_cs_fee_estimator`. Core's estimator also learns of each event
@@ -34,6 +39,7 @@ from btclib import var_int
 
 from btclib_node import clock
 from btclib_node.chainstate.block_index import block_time
+from btclib_node.constants import DIR_MODE
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -55,6 +61,7 @@ __all__ = [
     "SmartFee",
     "is_current_for_fee_estimation",
     "llround",
+    "migrate_legacy_file",
     "track_accepted",
 ]
 
@@ -114,12 +121,15 @@ class RemovedTx(NamedTuple):
 
     Core's `RemovedMempoolTransactionInfo`: the fee without its delta,
     the sigop-adjusted vsize and the tip height when it was accepted.
+    `weight` is the mempool's copy's, without sigops: what
+    `MempoolEstimator.block_connected` sums.
     """
 
     txid: bytes
     fee: int
     vsize: int
     height: int
+    weight: int = 0
 
 
 class SmartFee(NamedTuple):
@@ -843,12 +853,10 @@ class FeeEstimator:
         if version > _FILE_VERSION:
             msg = f"File version ({version}) too high to be read."
             raise ValueError(msg)
-        best_seen = reader.u32()
         if version < _FILE_VERSION:
-            self.logger.warning(
-                "Incompatible old fee estimation data (non-fatal). Version: %d", version
-            )
-            return
+            msg = f"File version ({version}) incompatible: Too old to be read"
+            raise ValueError(msg)
+        best_seen = reader.u32()
         first, best = reader.u32(), reader.u32()
         if first > best or best > best_seen:
             msg = "Corrupt estimates file. Historical block range for estimates is invalid"
@@ -874,6 +882,15 @@ class FeeEstimator:
     def flush_estimates(self) -> None:
         """Write the estimates to `path`, Core's `FlushFeeEstimates`."""
         try:
+            self.path.parent.mkdir(mode=DIR_MODE, parents=True, exist_ok=True)
+        except OSError as error:
+            self.logger.warning(
+                "Failed to create fee estimates directory %s: %s. Continue anyway.",
+                self.path.parent,
+                error.strerror,
+            )
+            return
+        try:
             self.path.write_bytes(self.write())
         except OSError:
             self.logger.warning(
@@ -887,13 +904,67 @@ class FeeEstimator:
         self.flush_unconfirmed()
         self.flush_estimates()
 
-    def flush_if_due(self) -> None:
-        """Write the estimates if `FEE_FLUSH_INTERVAL` has passed since last."""
+    def flush_if_due(self) -> bool:
+        """Write the estimates if `FEE_FLUSH_INTERVAL` has passed since last.
+
+        Answer whether they were written: Core's `IntervalFlush` writes the
+        mempool estimator's blocks at the same time.
+        """
         now = time.monotonic()
         if now < self._next_flush:
-            return
+            return False
         self._next_flush = now + FEE_FLUSH_INTERVAL
         self.flush_estimates()
+        return True
+
+
+def migrate_legacy_file(data_dir: Path, logger: Logger) -> Path:
+    """Move `fee_estimates.dat` to `fees/block_policy_estimates.dat`.
+
+    Core's `MaybeMigrateLegacyFeeEstimates`
+    (`src/policy/fees/estimator_args.cpp`, at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag): where both are there, the legacy file is removed.
+    Return the new path.
+    """
+    legacy = data_dir / "fee_estimates.dat"
+    path = data_dir / "fees" / "block_policy_estimates.dat"
+    if not legacy.exists():
+        return path
+    if path.exists():
+        try:
+            legacy.unlink()
+        except OSError as error:
+            logger.warning(
+                "Failed to remove legacy fee estimates file %s: %s. Continuing anyway.",
+                legacy,
+                error.strerror,
+            )
+            return path
+        logger.info("Removed legacy fee estimates file %s.", legacy)
+        return path
+    try:
+        path.parent.mkdir(mode=DIR_MODE, parents=True, exist_ok=True)
+    except OSError as error:
+        logger.warning(
+            "Failed to create block policy fee estimates directory %s: %s. "
+            "Continuing without migration.",
+            path.parent,
+            error.strerror,
+        )
+        return path
+    try:
+        legacy.rename(path)
+    except OSError as error:
+        logger.warning(
+            "Failed to migrate fee estimates from %s to %s: %s. "
+            "Continuing with fresh estimates.",
+            legacy,
+            path,
+            error.strerror,
+        )
+        return path
+    logger.info("Migrated fee estimates from %s to %s.", legacy, path)
+    return path
 
 
 def is_current_for_fee_estimation(node: Node) -> bool:
