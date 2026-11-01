@@ -233,10 +233,22 @@ def test_a_held_port_is_passed_over() -> None:
 def test_a_port_whose_next_one_is_held_is_passed_over() -> None:
     """The next port is the Tor listener's, which a node needs to start."""
     first = get_random_port()
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+    # drawn, not `first + 2`: another run on the machine draws from
+    # `TEST_PORTS` too, and may hold that port or the one above it
+    second = get_random_port()
+    with (
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock,
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM) as other,
+    ):
         sock.bind(("", first + 1))
-        pool = PortPool(range(first, first + 3, 2), start=0)
-        assert pool.draw() == first + 2
+        low, high = sorted((first, second))
+        # a pool of exactly the two, walked from `first`
+        ports = range(low, high + 1, high - low)
+        pool = PortPool(ports, start=ports.index(first))
+        assert pool.draw() == second
+        other.bind(("", second))
+        with pytest.raises(OSError, match="is held"):
+            pool.draw()
 
 
 def test_a_condition_that_holds_is_not_waited_for() -> None:
