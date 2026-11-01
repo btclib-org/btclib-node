@@ -7,7 +7,8 @@
 The coins are coinbases the node mines to the scripts under test, on a
 regtest node built and driven in this thread. The shapes, the refusals
 and the descriptors are what `bitcoind` v31.1.0 answers for the same
-call (`tests/integration/scantxoutset_test.py` asks it).
+call, except where a comment beside a row says otherwise
+(`tests/integration/scantxoutset_test.py` asks it).
 """
 
 from collections.abc import Generator
@@ -256,6 +257,8 @@ def test_a_key_s_origin_is_the_first_index_s(node: Node) -> None:
         f"wsh(multi(1,[aaaaaaaa/5/0/0]{CHILD_00},[bbbbbbbb/7/0/1]{CHILD_01}))#ry2d83lg",
         f"wsh(multi(1,[bbbbbbbb/7/0/1]{CHILD_01},[bbbbbbbb/7/0/1]{CHILD_01}))#5xzh3ty0",
     ]
+    # v31.1.0's answer; v32.1 answers [bbbbbbbb/7/0/1]
+    # (btclib-org/btclib-wallet#616)
     assert descs(scan(node, {"desc": ranged, "range": [1, 1]})) == [
         f"wsh(multi(1,[bbbbbbbb/7/5/0/1]{CHILD_01},[bbbbbbbb/7/5/0/1]{CHILD_01}))#q0ht8plu",
     ]
@@ -489,11 +492,8 @@ def test_a_record_that_does_not_parse_fails_the_scan(
         (["status", 5], -3, '"Position 2 (scanobjects)": "JSON value of type number'),
         (["bogus"], -8, "Invalid action 'bogus'"),
         (["start"], -1, "scanobjects argument is required for the start action"),
-        (
-            ["start", None],
-            -3,
-            "JSON value of type null is not of expected type array",
-        ),
+        # v32.1's answer; v31.1.0 answers -3, for a null that is not an array
+        (["start", None], -1, "scanobjects argument is required for the start action"),
         (["start", [1]], -8, "Scan object needs to be either a string or an object"),
         (["start", [None]], -8, "Scan object needs to be either a string"),
         (["start", [{}]], -8, "Descriptor needs to be provided in scan object"),
