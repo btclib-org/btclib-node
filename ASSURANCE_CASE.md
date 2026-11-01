@@ -233,14 +233,34 @@ CLI flag `cli.py` reads, and `bitcoin.conf` inside the datadir it names,
 are the operator's own input, not a remote party's — `cli.py`'s own
 module docstring is where each flag is named against Bitcoin Core's
 equivalent. The datadir holds the stores, `banlist.json`, `anchors.dat`,
-the fee estimator files under `fees/` (a `fee_estimates.dat` an older
-node left is moved there), the log file and the RPC cookie `.cookie`;
-`-blocksdir` moves the block files, `-rpccookiefile` the cookie, and
+`mempool.dat`, `settings.json`, the fee estimator files under `fees/` (a
+`fee_estimates.dat` an older node left is moved there), the log file and
+the RPC cookie `.cookie`; `-blocksdir` moves the block files and their
+store, `-rpccookiefile` the cookie, `-settings` the settings file, and
 `-conf` and `-includeconf` name the files read for options. Beside
 these, `dirlock.py` creates a `.lock` file in the datadir and in the
-blocks directory, `rpc/auth.py` writes the cookie through a `.tmp` file
-beside it, and `p2p/anchors.py` writes `anchors.dat` through a temporary
-file beside it. Nothing under `src/` opens a file outside those.
+blocks directory, `rpc/auth.py` and `settings_file.py` write the cookie
+and `settings.json` through a `.tmp` file beside each,
+`mempool_persist.py` writes `mempool.dat` through a `.new` file beside
+it, and `p2p/anchors.py` writes `anchors.dat` through a temporary file
+beside it.
+
+A caller holding an accepted credential can name a file too, where
+`-rpcwhitelist` leaves it the method. `importmempool` reads the regular
+file its `filepath` argument names. `dumptxoutset` writes the file its
+`path` argument names: a relative path is joined to the datadir, and an
+absolute one stands as it is. It writes through a `.incomplete` file
+beside that file. For a block below the tip it also builds the temporary
+store `temp_utxo_<height>` beside it, unless `in_memory` is set.
+
+These two paragraphs name every file `src/` opens. This lists the calls
+that open one:
+
+```shell
+git grep -nP -e '(?<![\w`])(os\.|\.)?open\(' \
+  -e '\.(read|write)_(bytes|text)\(' \
+  -e '(FileHandler|KeyValueStore|Rdict)\(' -- 'src/*.py'
+```
 
 `PYTEST_XDIST_WORKER_COUNT` is read in any process, not only under
 pytest: `_default_worker_count` in `src/btclib_node/__init__.py` sizes
