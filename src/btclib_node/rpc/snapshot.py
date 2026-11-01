@@ -247,9 +247,9 @@ def dump_tx_out_set(
     """Answer `dumptxoutset`: write the UTXO set of a block to `path`.
 
     `latest` is the active tip's, and a `rollback` option or type is an
-    earlier block's. A relative `path` is joined to the data directory. The
-    file is written to `path` and `.incomplete` and renamed once whole, and
-    a path that exists is refused.
+    earlier block's. A relative `path` is joined to the data directory. A
+    file other than a named pipe is written to `path` and `.incomplete`
+    and renamed once whole, and a path that exists is refused.
 
     `nchaintx` is a sum of every block's transaction count up to the base
     block, read from the stored blocks. A node whose blocks are pruned
