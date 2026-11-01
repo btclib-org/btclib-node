@@ -40,9 +40,9 @@ from btclib_node.rpc.auth import (
     parse_whitelist,
 )
 from btclib_node.rpc.connection import (
+    IDLE_TIMEOUT,
     MAX_BODY_BYTES,
     MAX_HEADER_BYTES,
-    REQUEST_TIMEOUT,
     JSONEncoder,
     RawJSON,
     RequestHead,
@@ -55,7 +55,7 @@ from tests import RPCAUTH, RPCAUTH_LINE
 from tests.secret_free import assert_secret_free
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Buffer, Callable
 
 
 BODY = b'{"jsonrpc":"2.0","id":"x","method":"getbestblockhash"}'
@@ -135,16 +135,15 @@ def drive(
     *,
     timeout: float = 1.0,
     hang_up: bool = False,
-    request_timeout: float = REQUEST_TIMEOUT,
+    idle_timeout: float = IDLE_TIMEOUT,
 ) -> tuple[str, list[Any], bool]:
     """Feed `chunks` to a RpcConnection.run and report what it did.
 
     Returns (outcome, dispatched messages, whether the socket was
     closed). The sender is async because a socketpair holds only a few
     kilobytes: a blocking send of a large chunk would deadlock before
-    the loop starts. `request_timeout` is `REQUEST_TIMEOUT` unless a
-    caller lowers it, which is what a test of the deadline itself does
-    rather than waiting out the real, Core-matching default.
+    the loop starts. A test of the idle timeout lowers `idle_timeout`
+    rather than waiting out `IDLE_TIMEOUT`.
 
     `manager.connections` is seeded with the id `run` is given below,
     the way `RpcManager.create_connection` seeds it before scheduling
@@ -161,7 +160,7 @@ def drive(
         loop = asyncio.get_running_loop()
         manager = fake_manager(connections={0: None})
         conn = RpcConnection(
-            loop, ours, cast("RpcManager", manager), 0, request_timeout=request_timeout
+            loop, ours, cast("RpcManager", manager), 0, idle_timeout=idle_timeout
         )
 
         async def send() -> None:
@@ -337,18 +336,18 @@ def test_a_body_shorter_than_its_length_is_waited_for() -> None:
     assert not messages
 
 
-def test_a_stalled_read_is_refused_once_request_timeout_elapses() -> None:
-    """A client that never completes a request is refused at request_timeout.
+def test_a_stalled_read_is_refused_once_idle_timeout_elapses() -> None:
+    """A client that never completes a request is refused once idle.
 
     ISS 437: with no deadline at all, this coroutine hung on `sock_recv`
     for as long as the node ran instead of ever reaching either outcome
-    above. `request_timeout` is lowered here, well below the external
+    above. `idle_timeout` is lowered here, well below the external
     `timeout` `drive` itself waits on, so the assertion is that `run`
     gives up **on its own** -- `outcome == "returned"`, not `"waiting"` --
     rather than that `drive`'s own `asyncio.wait_for` gave up on it.
     """
     outcome, messages, closed = drive(
-        [b"POST / HTTP/1.1\r\nHost: x\r\n"], timeout=1.0, request_timeout=0.05
+        [b"POST / HTTP/1.1\r\nHost: x\r\n"], timeout=1.0, idle_timeout=0.05
     )
     assert outcome == "returned"
     assert not messages
@@ -511,15 +510,11 @@ def test_a_connection_asking_for_close_is_closed_after_its_reply() -> None:
     assert b"\r\nConnection: close\r\n" in head + b"\r\n"
 
 
-def test_a_kept_alive_connection_idles_out_once_request_timeout_elapses() -> None:
+def test_a_kept_alive_connection_idles_out_once_idle_timeout_elapses() -> None:
     """A kept-alive connection with no next request is dropped once idle.
 
-    Matches Core's own idle-connection disconnect
-    (`HTTPServer::DisconnectClients`, `REQUEST_TIMEOUT`'s own docstring
-    above has the citation and the reasoning for reusing that same
-    constant here). `request_timeout` is lowered, well below
-    `REQUEST_TIMEOUT`'s own real, Core-matching default, so this test
-    does not itself wait thirty seconds for it.
+    `RpcConnection`'s docstring has Core's rule. `idle_timeout` is
+    lowered, so that this test does not wait out `IDLE_TIMEOUT`.
     """
 
     async def main() -> tuple[bool, bool]:
@@ -529,7 +524,7 @@ def test_a_kept_alive_connection_idles_out_once_request_timeout_elapses() -> Non
         loop = asyncio.get_running_loop()
         manager = fake_manager(connections={})
         conn = RpcConnection(
-            loop, ours, cast("RpcManager", manager), 0, request_timeout=0.2
+            loop, ours, cast("RpcManager", manager), 0, idle_timeout=0.2
         )
 
         await loop.sock_sendall(theirs, with_length())
@@ -548,6 +543,182 @@ def test_a_kept_alive_connection_idles_out_once_request_timeout_elapses() -> Non
     closed, still_registered = asyncio.run(main())
     assert closed
     assert not still_registered
+
+
+def test_each_receive_restarts_the_idle_time() -> None:
+    """ISS 2152: a request sent in pieces, each within the timeout, is read.
+
+    Core restarts the idle time on every receive (`RpcConnection`'s
+    docstring), so a request whose pieces arrive 0.2 seconds apart is
+    read whole under a 0.6-second timeout, though it takes longer.
+    """
+
+    async def main() -> tuple[list[Any], bool]:
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        theirs.setblocking(False)
+        loop = asyncio.get_running_loop()
+        manager = fake_manager(connections={0: None})
+        conn = RpcConnection(
+            loop, ours, cast("RpcManager", manager), 0, idle_timeout=0.6
+        )
+        data = with_length()
+        pieces = [
+            data[i : i + len(data) // 4 + 1]
+            for i in range(0, len(data), len(data) // 4 + 1)
+        ]
+        task = asyncio.ensure_future(conn.run())
+        for piece in pieces:
+            await asyncio.sleep(0.2)
+            await loop.sock_sendall(theirs, piece)
+        await asyncio.wait_for(task, 10)
+        closed = ours.fileno() == -1
+        ours.close()
+        theirs.close()
+        return manager.messages, closed
+
+    messages, closed = asyncio.run(main())
+    assert len(messages) == 1
+    assert not closed
+
+
+def test_the_idle_time_is_not_counted_while_a_request_is_served() -> None:
+    """ISS 2152: a reply after the timeout has passed still reaches the client.
+
+    Core ignores the idle timeout while a request is being served
+    (`RpcConnection`'s docstring). The request is read, then answered
+    only after twice the timeout.
+    """
+
+    async def main() -> bytes:
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        theirs.setblocking(False)
+        loop = asyncio.get_running_loop()
+        manager = fake_manager(connections={0: None})
+        conn = RpcConnection(
+            loop, ours, cast("RpcManager", manager), 0, idle_timeout=0.2
+        )
+        await loop.sock_sendall(
+            theirs, request(b"Connection: close\r\nContent-Length: %d\r\n" % len(BODY))
+        )
+        await conn.run()
+        assert manager.messages
+        await asyncio.sleep(0.4)
+        await asyncio.wait_for(
+            conn.async_send(HttpReply(OK, {"id": "x", "result": None})), timeout=10
+        )
+        reply = b""
+        while chunk := await loop.sock_recv(theirs, 1 << 16):
+            reply += chunk
+        theirs.close()
+        return reply
+
+    reply = asyncio.run(main())
+    assert reply.startswith(b"HTTP/1.1 200 OK\r\n")
+
+
+def test_each_send_restarts_the_idle_time() -> None:
+    """ISS 2152: a reply whose pieces each take 0.2 s is written whole.
+
+    Core restarts the idle time on every send (`RpcConnection`'s docstring).
+    Each piece's `loop.sock_sendall` waits 0.2 seconds before it writes,
+    under a 0.6-second timeout, so the whole reply takes longer than the
+    timeout. The pace is set here rather than by a slow reader: when a
+    socket pair's writer is woken is the kernel's own choice, and Linux
+    wakes it only once its reader has drained most of what is queued, which
+    is more than one piece.
+    """
+    result = "0" * (8 * 0x10000)
+
+    async def main() -> bytes:
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        theirs.setblocking(False)
+        loop = asyncio.get_running_loop()
+        sock_sendall = loop.sock_sendall
+
+        async def paced_sendall(sock: socket.socket, data: Buffer) -> None:
+            await asyncio.sleep(0.2)
+            await sock_sendall(sock, data)
+
+        loop.sock_sendall = paced_sendall  # type: ignore[method-assign]
+        manager = fake_manager(connections={0: None})
+        conn = answering(
+            RpcConnection(loop, ours, cast("RpcManager", manager), 0, idle_timeout=0.6)
+        )
+        writing = asyncio.ensure_future(
+            conn.async_send(HttpReply(OK, {"id": "x", "result": result}))
+        )
+        reply = b""
+        while chunk := await loop.sock_recv(theirs, 0x10000):
+            reply += chunk
+        await asyncio.wait_for(writing, 10)
+        theirs.close()
+        return reply
+
+    reply = asyncio.run(main())
+    _, _, body = reply.partition(b"\r\n\r\n")
+    assert json.loads(body)["result"] == result
+
+
+def test_an_idle_timeout_below_zero_closes_before_reading() -> None:
+    """ISS 2152: an overflowed `-rpcservertimeout` closes before reading.
+
+    `rpc.manager._idle_timeout` wraps `9223372037` below 0 as Core
+    does, and Core then disconnects a client at once. The request is
+    already in the socket, which `run` would otherwise read without
+    waiting.
+    """
+    outcome, messages, closed = drive([with_length()], idle_timeout=-1.0)
+    assert outcome == "returned"
+    assert not messages
+    assert closed
+
+
+def test_disconnect_if_idle_keeps_a_connection_partway_through_a_request() -> None:
+    """ISS 2152: `disconnect_if_idle` keeps a connection partway through.
+
+    Core keeps a client it has received from since it last finished
+    sending (`RpcConnection.disconnect_if_idle`). Here the head is read
+    and the body is still due, so `buffer` is empty and the connection is
+    still kept, and its request is read once the body arrives.
+    """
+
+    async def main() -> tuple[list[Any], bool]:
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        theirs.setblocking(False)
+        loop = asyncio.get_running_loop()
+        manager = fake_manager(connections={0: None})
+        conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
+        data = with_length()
+        head_end = data.index(b"\r\n\r\n") + 4
+        # set once `run` has read the head and goes on to the body
+        head_read = asyncio.Event()
+        read_body = conn._read_body
+
+        async def signalled(head: RequestHead) -> tuple[RequestHead, bytes] | None:
+            head_read.set()
+            return await read_body(head)
+
+        conn._read_body = signalled  # type: ignore[method-assign]
+        task = asyncio.ensure_future(conn.run())
+        await loop.sock_sendall(theirs, data[:head_end])
+        await asyncio.wait_for(head_read.wait(), 10)
+        assert not conn.buffer
+        conn.disconnect_if_idle()
+        await asyncio.sleep(0)
+        await loop.sock_sendall(theirs, data[head_end:])
+        await asyncio.wait_for(task, 10)
+        closed = ours.fileno() == -1
+        ours.close()
+        theirs.close()
+        return manager.messages, closed
+
+    messages, closed = asyncio.run(main())
+    assert len(messages) == 1
+    assert not closed
 
 
 @pytest.mark.parametrize(

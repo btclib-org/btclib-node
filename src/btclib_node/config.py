@@ -58,7 +58,7 @@ from btclib_node.rpc.auth import (
     cookie_perms,
     parse_whitelist,
 )
-from btclib_node.rpc.connection import REQUEST_TIMEOUT
+from btclib_node.rpc.connection import IDLE_TIMEOUT
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -579,12 +579,8 @@ class Config:
     whitelist: tuple[str, ...]
     whitelist_relay: bool
     whitelist_force_relay: bool
-    # Core's own `-rpcservertimeout`, in seconds: how long
-    # `RpcConnection.run` may take reading one request, and the idle gap
-    # a kept-alive connection may sit in between two of them, both
-    # matched to `REQUEST_TIMEOUT` by default. `RpcManager.__init__` is
-    # where a value of 0 or less reads as no bound at all, as in Core
-    # (`rpc.manager._request_timeout`'s own docstring).
+    # Core's own `-rpcservertimeout`, in seconds: how long an RPC
+    # connection may sit idle (`rpc.manager._idle_timeout`).
     rpcservertimeout: int
     # Core's own `-rpcmaxconnections`: how many RPC clients
     # `RpcManager` holds at once. `rpc.manager`'s module docstring has
@@ -942,7 +938,7 @@ class Config:
         whitelist: Sequence[str] = (),
         whitelist_relay: bool = True,
         whitelist_force_relay: bool = False,
-        rpcservertimeout: int = int(REQUEST_TIMEOUT),
+        rpcservertimeout: int = int(IDLE_TIMEOUT),
         rpcmaxconnections: int = DEFAULT_MAX_HTTP_CONNECTIONS,
         allow_p2p: bool = True,
         allow_rpc: bool = True,

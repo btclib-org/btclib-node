@@ -53,10 +53,9 @@ def test_a_client_that_sends_nothing_is_dropped_within_the_deadline(
     ISS 437: `RpcConnection.run` used to await `sock_recv` with no
     deadline anywhere in it, so a client shaped exactly like this one
     held its socket -- and its entry in `RpcManager.connections` -- for
-    the life of the node. `request_timeout` is lowered on the live
-    manager before the stalled connection is opened, rather than left at
-    `REQUEST_TIMEOUT`'s own real, Core-matching default, so this test
-    does not itself wait thirty seconds to prove it.
+    the life of the node. `idle_timeout` is lowered on the live manager
+    before the stalled connection is opened, so that this test does not
+    wait out `IDLE_TIMEOUT`.
 
     A well-behaved request made against the same, still-lowered deadline
     is answered normally, which is the other half of this: the fix
@@ -64,7 +63,7 @@ def test_a_client_that_sends_nothing_is_dropped_within_the_deadline(
     """
     node = rpc_node
     wait_until_listening(node.rpc_manager)
-    node.rpc_manager.request_timeout = 0.5
+    node.rpc_manager.idle_timeout = 0.5
 
     # 60s, not a bound close to the 0.5s deadline under test: this is the
     # client's own patience, and it must not be what expires first on a
