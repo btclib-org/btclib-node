@@ -14,7 +14,7 @@ so a taproot output is signed only where a key is its output key itself.
 Signatures are made and checked with `ecc`, the signature hashes are
 `btclib.script.sig_hash`'s, a script is verified and evaluated by
 `btclib.script.engine` and a witness script that is a miniscript is satisfied by
-`btclib_wallet.descriptors.miniscript`. What is Core's here is the order
+`bip32_descriptors.descriptors.miniscript`. What is Core's here is the order
 of the steps, which decides what a partly signed input holds and so what
 `combinerawtransaction` can merge, and the words of the refusals.
 
@@ -26,6 +26,7 @@ from copy import copy
 from itertools import chain
 from typing import TYPE_CHECKING
 
+from bip32_descriptors.descriptors.miniscript import SpendContext, from_script
 from btclib.exceptions import BTClibException, ScriptError, ScriptErrorCode
 from btclib.hashes import hash160, ripemd160
 from btclib.script import sig_hash
@@ -36,7 +37,6 @@ from btclib.script.script import serialize
 from btclib.script.solver import solver
 from btclib.script.witness import Witness
 from btclib.tx.tx_out import TxOut
-from btclib_wallet.descriptors.miniscript import SpendContext, from_script
 from ecc.curves import bytes_from_prv_key_int
 from ecc.ecc import dsa, ssa
 

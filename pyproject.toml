@@ -91,31 +91,9 @@ dependencies = [
     # there, which `add_headers` accepts (btclib-org/btclib#2833). The
     # floor is the maintainer's decision.
     "btclib[secp256k1,bip324]>=2026.10.28",
-    # `rpc/callbacks.py` and `rpc/utxo_set.py` import from
-    # `btclib_wallet.descriptors`, where btclib's own `descriptors`
-    # moved (btclib-org/btclib#2129): a runtime dependency now, not the
-    # `test` group's own it used to be, carried there only for
-    # `BitcoinCoreFetcher` (btclib-org/btclib-node#1181,
-    # btclib-org/btclib-node#1508).
-    #
-    # The floor is 2026.10.25, the first release that asks for
-    # `btclib>=2026.10.24` and `ecc>=2026.10.23`: an earlier one imports
-    # btclib names that 2026.10.24 renames, such as
-    # `taproot.output_pubkey_from_merkle_root`, and fails at import beside
-    # it (btclib-org/btclib-node#2008).
-    #
-    # 2026.10.9 is the first release carrying `Descriptor.expand`,
-    # which returns the scripts and the provider from one derivation of each
-    # key and which `scantxoutset` expands with (btclib-org/btclib-wallet#303,
-    # btclib-org/btclib-node#1850).
-    #
-    # 2026.10.8 is the release fixing GHSA-62jf-v327-86h5: 2026.10.7 quotes
-    # a private key in a refusal that `scantxoutset` answers with.
-    # 2026.10.7 is the first release carrying `infer_descriptor` and
-    # `Provider`, which `rpc/callbacks.py` and `rpc/utxo_set.py` import.
-    # 2026.10.4 is the first whose `parse` refuses a key of another
-    # network, which `rpc/mining.py` relies on.
-    "btclib-wallet>=2026.10.25",
+    # Descriptors and miniscript, as ARCHITECTURE.md's *What is delegated,
+    # and what is not* says. The floor is 2026.10.31, the first release.
+    "bip32-descriptors>=2026.10.31",
     # `signing.py` and `p2p/v2transport.py` import `ecc` directly, so it
     # is a direct runtime dependency, not what btclib happens to bring
     # (btclib-org/btclib-node#1431). `tests/unit/interpreter_test.py` builds
@@ -359,6 +337,12 @@ test = [
     # The floor is 0.8.0.10, the release fixing GHSA-8h6f-34jj-7p6c.
     # `ecc[secp256k1]`, which `btclib[secp256k1]` brings, asks for 0.8.0.12.
     "btclib-secp256k1>=0.8.0.10",
+    # For `tests/functional/rpc/chain_test.py` and `tx_test.py`, as
+    # ARCHITECTURE.md's *What is delegated, and what is not* says. The
+    # floor is 2026.10.25, the first release that asks for
+    # `btclib>=2026.10.24` and `ecc>=2026.10.23`
+    # (btclib-org/btclib-node#2008).
+    "btclib-wallet>=2026.10.25",
 ]
 # mypy runs from this environment rather than from a hook's own --
 # .pre-commit-config.yaml's mypy hook is where that decision is argued

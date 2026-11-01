@@ -73,9 +73,9 @@ btclib-node is an application, not a library: it opens sockets of its
 own, on both surfaces ARCHITECTURE.md's *The protocol and the RPC
 surface* describes, and it writes to a datadir on disk. The command
 below lists the top-level name of every module `src/` imports, at any
-depth and in any spelling of the statement — `bitcoin_core_rpc`,
-`btclib_wallet` and `rocksdict` beside btclib itself, and otherwise the
-standard library.
+depth and in any spelling of the statement — `bip32_descriptors`,
+`bitcoin_core_rpc`, `ecc` and `rocksdict` beside btclib itself, and
+otherwise the standard library.
 
 ```shell
 python3 - <<'EOF'
@@ -101,11 +101,12 @@ what `P2pManager` and `RpcManager` open their listeners and connections
 through; `rocksdict` is the store; `multiprocessing` is `Node.worker_pool`
 under a GIL interpreter.
 
-`btclib_wallet` is a required dependency: `rpc/callbacks.py` and
+`bip32_descriptors` is a required dependency: `rpc/callbacks.py` and
 `rpc/utxo_set.py` take `infer_descriptor` from its `descriptors` to write
-a script's descriptor, and `rpc/utxo_set.py` parses with its `parse` the
-descriptors a `scantxoutset` caller sends, so what it returns reaches a
-caller's answer.
+a script's descriptor, `rpc/mining.py` and `rpc/utxo_set.py` parse with
+its `parse` the descriptors a caller sends, and `signing.py` satisfies a
+miniscript with its `miniscript`, so what it returns reaches a caller's
+answer.
 
 `ctypes` is imported by `p2p/netif.py` alone, which loads the C library
 with `CDLL(None)`, calls `getifaddrs` and reads the `ifaddrs` memory it

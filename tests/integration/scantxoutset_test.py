@@ -14,8 +14,8 @@ which words what it finds wrong in its own way.
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
+from bip32_descriptors.descriptors import multipath_descriptors, parse
 from bitcoin_core_rpc import RpcError
-from btclib_wallet.descriptors import multipath_descriptors, parse
 
 from btclib_node import Node
 from btclib_node.config import Config

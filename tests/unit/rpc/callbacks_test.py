@@ -25,6 +25,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, cast, override
 
 import pytest
+from bip32_descriptors.descriptors import add_checksum, from_address
 from bitcoin_core_rpc import RPCErrorCode
 from btclib.block import Block, BlockHeader, witness_commitment_output
 from btclib.consensus import MAX_BLOCK_WEIGHT, HeadersSyncParams
@@ -46,7 +47,6 @@ from btclib.tx.out_point import OutPoint
 from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
-from btclib_wallet.descriptors import add_checksum, from_address
 
 import btclib_node.p2p.banman as banman_module
 import btclib_node.rpc.callbacks as cb
