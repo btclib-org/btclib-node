@@ -43,6 +43,7 @@ import errno
 import hashlib
 import heapq
 import os
+import stat
 from functools import partial
 from itertools import groupby
 from operator import itemgetter
@@ -287,11 +288,7 @@ def dump_tx_out_set(
         return (yield from _dump_to_pipe(node, path, target, options))
     temp_path = path.with_name(path.name + ".incomplete")
     if path.exists():
-        raise RpcError(
-            RPCErrorCode.INVALID_PARAMETER,
-            f"{path} already exists. If you are sure this is what you want, "
-            "move it out of the way first",
-        )
+        raise _exists(path)
     chain_tx_count, height = yield from _counted(node, target)
     try:
         file = temp_path.open("wb")
@@ -304,6 +301,15 @@ def dump_tx_out_set(
         result = yield from _rolled_back_write(node, height, options, file, temp_path)
     temp_path.replace(path)
     return _answer(result, path, chain_tx_count)
+
+
+def _exists(path: Path) -> RpcError:
+    """Return Core's refusal of a `path` that exists and is not a pipe."""
+    return RpcError(
+        RPCErrorCode.INVALID_PARAMETER,
+        f"{path} already exists. If you are sure this is what you want, "
+        "move it out of the way first",
+    )
 
 
 def _answer(result: dict[str, Any], path: Path, chain_tx_count: int) -> dict[str, Any]:
@@ -339,6 +345,11 @@ def _open_pipe(node: Node, path: Path) -> Generator[bool, None, BinaryIO]:
 
     Without a reader the open fails with `ENXIO`, so it is tried again on
     each step. The file is unbuffered, so `_put` sees a full pipe.
+
+    Each try looks `path` up again, where Core's `fopen` waits on the
+    pipe it found. A `path` that is no longer a pipe when the open
+    succeeds is refused as Core refuses a file that exists, and nothing
+    is written to it.
     """
     while True:
         _interruption_point(node)
@@ -352,6 +363,9 @@ def _open_pipe(node: Node, path: Path) -> Generator[bool, None, BinaryIO]:
                 ) from err
             yield False
         else:
+            if not stat.S_ISFIFO(os.fstat(fd).st_mode):
+                os.close(fd)
+                raise _exists(path)
             return os.fdopen(fd, "wb", buffering=0)
 
 

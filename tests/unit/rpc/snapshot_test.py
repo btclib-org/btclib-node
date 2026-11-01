@@ -917,6 +917,28 @@ def test_a_reader_gone_from_a_named_pipe_ends_the_dump(
 
 
 @pipes
+def test_a_named_pipe_replaced_by_a_file_while_awaited_is_refused(
+    node: Node, pipe: Path
+) -> None:
+    """The file stays as it is: Core's `fopen` holds the pipe it found."""
+    mine(node)
+    job = dump_tx_out_set(node, CONN, [str(pipe), "latest"])
+    assert next(job) is False
+    pipe.unlink()
+    pipe.write_bytes(b"kept")
+    with pytest.raises(RpcError) as caught:
+        finish(job)
+    assert (int(caught.value.code), caught.value.message) == (
+        -8,
+        (
+            f"{pipe} already exists. If you are sure this is what you want, "
+            "move it out of the way first"
+        ),
+    )
+    assert pipe.read_bytes() == b"kept"
+
+
+@pipes
 def test_a_named_pipe_that_cannot_be_opened_is_refused(
     node: Node, pipe: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
