@@ -609,8 +609,7 @@ class RpcManager(threading.Thread):
         `AcceptEx`) and raises anything else -- `ECONNABORTED` being the
         ordinary way, a peer resetting the connection between the kernel
         reporting it readable and the accept reaching it -- which is what
-        the `except OSError` below answers exactly as `server`'s own
-        former reader callback used to.
+        the `except OSError` below answers.
 
         `sock_accept`'s own internal future is already resolved with
         that exception by the time this coroutine's `await` reaches it
