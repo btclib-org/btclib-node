@@ -298,10 +298,23 @@ def test_a_marked_child_comes_before_a_newer_one() -> None:
 def test_orphans_are_listed_by_the_bytes_core_holds_the_wtxid_as() -> None:
     """Core's order is the order of the reversed display bytes."""
     orphanage = TxOrphanage()
-    orphans = [a_tx((bytes([i]) * 32, 0)) for i in range(8)]
-    # Deliberately make insertion order differ from the expected order. The
-    # random wtxids must not decide whether this test exercises the ordering.
-    orphans.sort(key=lambda orphan: orphan.hash[::-1], reverse=True)
+    # an empty script_sig, unlike `a_tx`'s random one, fixes the wtxids, so
+    # that the two orders the asserts tell apart differ on every run
+    orphans = [
+        Tx(
+            version=1,
+            lock_time=0,
+            vin=[
+                TxIn(
+                    prev_out=OutPoint(bytes([i]) * 32, 0),
+                    script_sig=b"",
+                    sequence=0xFFFFFFFF,
+                )
+            ],
+            vout=[TxOut(value=1000, script_pub_key=anyone_can_spend())],
+        )
+        for i in range(8)
+    ]
     for orphan in orphans:
         orphanage.add_tx(orphan, 1)
     listed = [tx.hash for tx, _ in orphanage.get_orphan_transactions()]
