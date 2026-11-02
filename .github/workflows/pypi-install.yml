@@ -160,17 +160,14 @@ jobs:
         # own header is why aarch64 Linux is here at all -- this package
         # resolves a different published btclib_secp256k1 wheel there
         # from the one ubuntu-latest installs -- os-macos.yml's is why
-        # both macOS images are here rather than one, the btclib_secp256k1
-        # wheel a Darwin cell resolves being the architecture's where the
-        # start method that file argues from is the platform's -- and
-        # test.yml's `windows` job is why windows-latest is here: this
-        # package's classifiers now name Windows too (issue #430), and
-        # this workflow checks that claim against the index the way it
-        # already checks the other two
+        # macos-latest is here, arm64 alone as section 10 of
+        # btclib-org/.github's README.md says -- and test.yml's `windows`
+        # job is why windows-latest is here: this package's classifiers
+        # now name Windows too (issue #430), and this workflow checks that
+        # claim against the index the way it already checks the other two
         os:
           - ubuntu-latest
           - ubuntu-24.04-arm
-          - macos-26-intel
           - macos-latest
           - windows-latest
         include:
