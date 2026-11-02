@@ -33,24 +33,36 @@ if TYPE_CHECKING:
 # these cases wait for
 _READ_TIMEOUT = 10.0
 
+# the `-rpcservertimeout` both nodes are given, in seconds; the module
+# docstring and the 0.6 s gaps of `_pieces` assume 1, so changing it
+# means re-timing them
+_RPCSERVERTIMEOUT = 1
+
 
 @pytest.fixture
 def bitcoind_port(bitcoind_path: str, tmp_path: Path) -> Iterator[tuple[int, bytes]]:
-    """Start bitcoind with `-rpcservertimeout=1`; give its port and cookie."""
-    with _started_bitcoind(bitcoind_path, tmp_path, "-rpcservertimeout=1") as node:
+    """Start bitcoind at `-rpcservertimeout=_RPCSERVERTIMEOUT`.
+
+    Gives its port and cookie.
+    """
+    timeout = f"-rpcservertimeout={_RPCSERVERTIMEOUT}"
+    with _started_bitcoind(bitcoind_path, tmp_path, timeout) as node:
         yield node.rpc_port, node.cookie_path.read_bytes()
 
 
 @pytest.fixture
 def node_port(tmp_path: Path) -> Iterator[tuple[int, bytes]]:
-    """Start this node with `-rpcservertimeout=1`; give its port and cookie."""
+    """Start this node at `-rpcservertimeout=_RPCSERVERTIMEOUT`.
+
+    Gives its port and cookie.
+    """
     node = Node(
         config=Config(
             chain="regtest",
             data_dir=tmp_path / "node",
             p2p_port=get_random_port(),
             rpc_port=get_random_port(),
-            rpcservertimeout=1,
+            rpcservertimeout=_RPCSERVERTIMEOUT,
         )
     )
     node.start()
@@ -150,11 +162,14 @@ def _stop(port: int, cookie: bytes) -> tuple[bytes, bytes, bytes, bytes]:
 def test_an_idle_connection_is_closed_as_bitcoind_closes_it(
     bitcoind_port: tuple[int, bytes], node_port: tuple[int, bytes]
 ) -> None:
-    """At `-rpcservertimeout=1` both close a silent connection within 3 s."""
+    """Both close an idle connection after about their timeout.
+
+    Each closes within 3 times it.
+    """
     theirs = _idle_close(bitcoind_port[0])
     ours = _idle_close(node_port[0])
-    assert 0.9 < theirs < 3.0
-    assert 0.9 < ours < 3.0
+    assert 0.9 * _RPCSERVERTIMEOUT < theirs < 3 * _RPCSERVERTIMEOUT
+    assert 0.9 * _RPCSERVERTIMEOUT < ours < 3 * _RPCSERVERTIMEOUT
 
 
 def test_a_request_in_pieces_restarts_the_timer_as_bitcoind_does(
