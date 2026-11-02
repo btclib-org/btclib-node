@@ -32,6 +32,118 @@ why it does not stay there once the bullet has it, and that section's
 *Nothing already written is rewritten* is why an entry already landed
 keeps whichever shape it was written in.
 
+## v2026.11.2
+
+### A `settings.json` secret stays out of the log
+
+A value is written only for a known option that is not sensitive, and a name
+goes through `_quoted_line` (closes #1967, closes #1986).
+
+### A mempool entry drops `bip125-replaceable`
+
+The mempool RPCs answer it no more, as in bitcoind v32.1, and
+`MempoolEntry.bip125_replaceable` and `Mempool.is_bip125_replaceable` are
+deleted (closes #2107).
+
+### The help texts are bitcoind v32.1's
+
+Each is what `help <command>` answers on a regtest bitcoind v32.1.0, but for
+`stop`'s, which names this node, and `estimatesmartfee`'s, written from v32.1's
+source (closes #2105).
+
+### `getorphantxs`, `submitpackage` and `getrawtransaction` answer v32.1's sizes
+
+`vsize_bip141` and `vsize_adjusted` are answered as v32.1 answers them
+(closes #2115, closes #2116, closes #2117).
+
+### The RPC listener frames answers as v32.1's HTTP server
+
+`UnmetExpectationError`, `RequestHead`'s `proxy` and `expects_continue` fields
+and its `proxy_connection` property are deleted, and the 8192-octet limit counts
+as `HTTPHeaders::Read` does (closes #1972, closes #2101).
+
+### The RPC server binds a numeric address alone
+
+`-rpcbind` refuses a name and binds with Core's socket options, a scoped IPv6
+host at its scope (closes #2135).
+
+### `-rpcservertimeout` is v32.1's idle timeout
+
+It is restarted on every receive and every piece of a reply sent, and `stop`
+waits for the replies as `StopHTTPServer` does (closes #2152).
+
+### `-debug=libevent` is warned over, and `-debug=mining` is taken
+
+`Config.debug_warnings` carries the warnings to the log, as v32.1's
+`GetLogCategory` gives them (issue #2152).
+
+### `estimatesmartfee` takes v32.1's mempool estimator and options
+
+`MempoolEstimator` ports `MemPoolFeeRateEstimator`, and both estimators keep
+their files under `fees/` (closes #2102).
+
+### `dumptxoutset rollback` leaves the chain and the network alone
+
+It rolls back in a temporary store, takes `in_memory`, and targets v32.1's
+snapshot heights (closes #2103, closes #2059).
+
+### `dumptxoutset` writes to a named pipe
+
+A pipe is written to as Core v32.1 writes to it (closes #2187).
+
+### `scantxoutset` refuses a null `scanobjects` with -1
+
+It answers "scanobjects argument is required for the start action", as v32.1
+does (issue #2104).
+
+### `-testactivationheight` moves the buried deployments
+
+The heights bind on the node's own `Chain`, and mainnet refuses the option
+(issue #2155).
+
+### Inbound tx-relay peers are capped, and a feeler is sent no `getaddr`
+
+`-maxconnections` defaults to 200 and `-inboundrelaypercent` to 50, as in
+v32.1 (closes #1769, closes #1770).
+
+### Descriptors and miniscript come from bip32-descriptors
+
+`bip32-descriptors>=2026.10.31` replaces btclib-wallet in `dependencies`, and
+btclib-wallet stays in the `test` group (issue #2174, closes #1999).
+
+### Tests that failed now and then hold on every run
+
+The passed-over port (closes #2022), the deaf peer (closes #2183) and the
+orphan order (closes #2100).
+
+### The RPC idle-close test bounds a ratio
+
+It bounds each close by the timeout both nodes are given (closes #2195).
+
+### The review bot reads Bitcoin Core at v32.1
+
+`claude-review.yml`'s `bitcoin-core-ref` is the v32.1 tag, and the
+core-citation-pin hook holds it to its citation (closes #2146, closes #2149).
+
+### `ASSURANCE_CASE.md` lists the files the node opens
+
+`mempool.dat`, `settings.json` and their temporary files, and a file an RPC
+caller names (#2188).
+
+### `SECURITY.md` links what changed since the security review
+
+The section names the reviewed commit and compares it with `main` (issue
+btclib-org/.github#1795).
+
+### `CONTRIBUTING.md`'s shared part follows btclib-org/.github
+
+It takes the standard's copy (#2196).
+
+### The version is 2026.11.2
+
+`pyproject.toml` declares `2026.11.2` in place of the `2026.11` placeholder
+(#2145).
+
 ## v2026.10.30
 
 ### A block failing its signet solution leaves no header
