@@ -2072,7 +2072,7 @@ def _init_settings_file(settings: _Settings, net_dir: str) -> None:
     if path is None:
         return
     try:
-        settings.rw_settings = read_settings(path)
+        settings.rw_settings = read_settings(path, quote=_quoted_line)
     except OSError as os_error:
         # `fs::exists` throws, and `InitConfig` shows libstdc++'s `what()`
         err_msg = (

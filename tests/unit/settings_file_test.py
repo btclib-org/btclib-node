@@ -39,10 +39,15 @@ _WARNING = (
 )
 
 
+def _quote(key: str) -> str:
+    """Mark `key`, so that a test sees where the refusal quotes it."""
+    return f"[{key}]"
+
+
 def _read(tmp_path: Path, content: str | bytes) -> dict[str, Json]:
     path = tmp_path / "settings.json"
     path.write_bytes(content.encode() if isinstance(content, str) else content)
-    return read_settings(str(path))
+    return read_settings(str(path), quote=_quote)
 
 
 def _refusal(tmp_path: Path, content: str | bytes) -> str:
@@ -334,25 +339,21 @@ def test_a_file_nested_512_deep_is_read_and_written(
 @pytest.mark.parametrize(
     ("content", "shown"),
     [
-        pytest.param("[1,2]", "[1,2]", id="array"),
-        pytest.param('"string"', '"string"', id="string"),
+        pytest.param("[1,2]", "array", id="array"),
+        pytest.param('"string"', "string", id="string"),
         pytest.param("null", "null", id="null"),
-        pytest.param("5", "5", id="number"),
-        pytest.param("1.50", "1.50", id="number keeps its text"),
-        pytest.param("true", "true", id="true"),
-        pytest.param("false", "false", id="false"),
-        pytest.param(" \t5\n", "5", id="number between blanks"),
-        pytest.param("-", "-", id="a sign alone ends the text, as UniValue reads it"),
-        pytest.param('[{"a":[]}]', '[{"a":[]}]', id="compact"),
-        pytest.param('"\\u0001\\"/"', '"\\u0001\\"/"', id="escaped"),
+        pytest.param("5", "number", id="number"),
+        pytest.param("true", "bool", id="true"),
+        pytest.param(" \t5\n", "number", id="number between blanks"),
+        pytest.param("-", "number", id="a sign alone is a number"),
     ],
 )
 def test_a_value_that_is_not_an_object_is_refused(
     tmp_path: Path, content: str, shown: str
 ) -> None:
-    """The refusal writes the value compactly, as `UniValue::write` does."""
+    """The refusal names the value's type, and never writes the value."""
     assert _refusal(tmp_path, content) == (
-        f"Found non-object value {shown} in settings file <FILE>"
+        f"Found non-object value of type {shown} in settings file <FILE>"
     )
 
 
@@ -368,15 +369,15 @@ def test_a_value_that_is_not_an_object_is_refused(
     ],
 )
 def test_a_key_named_twice_is_refused(tmp_path: Path, content: str, key: str) -> None:
-    """Only a key of the top-level object counts."""
+    """Only a top-level key counts, given as `quote` returns it."""
     assert _refusal(tmp_path, content) == (
-        f"Found duplicate key {key} in settings file <FILE>"
+        f"Found duplicate key [{key}] in settings file <FILE>"
     )
 
 
 def test_a_missing_file_holds_nothing(tmp_path: Path) -> None:
     """Core: "Ok for file to not exist"."""
-    assert read_settings(str(tmp_path / "settings.json")) == {}
+    assert read_settings(str(tmp_path / "settings.json"), quote=_quote) == {}
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot open one")
@@ -385,7 +386,7 @@ def test_a_directory_is_not_valid_json(tmp_path: Path) -> None:
     path = tmp_path / "settings.json"
     path.mkdir()
     with pytest.raises(ValueError, match=_INVALID):
-        read_settings(str(path))
+        read_settings(str(path), quote=_quote)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="POSIX opens a directory")
@@ -396,7 +397,7 @@ def test_a_directory_cannot_be_opened_on_windows(  # pragma: no cover -- Windows
     path = tmp_path / "settings.json"
     path.mkdir()
     with pytest.raises(ValueError, match=r"\. Please check permissions\.$"):
-        read_settings(str(path))
+        read_settings(str(path), quote=_quote)
 
 
 @pytest.mark.skipif(
@@ -412,7 +413,7 @@ def test_a_file_whose_status_cannot_be_read_raises_the_os_error(
     directory.chmod(0)
     try:
         with pytest.raises(PermissionError):
-            read_settings(str(directory / "settings.json"))
+            read_settings(str(directory / "settings.json"), quote=_quote)
     finally:
         directory.chmod(0o700)
 
@@ -420,7 +421,7 @@ def test_a_file_whose_status_cannot_be_read_raises_the_os_error(
 def test_a_path_under_a_file_holds_nothing(tmp_path: Path) -> None:
     """`ENOTDIR` is `fs::exists`'s `false` too."""
     (tmp_path / "file").write_text("", encoding="utf-8")
-    assert read_settings(str(tmp_path / "file" / "settings.json")) == {}
+    assert read_settings(str(tmp_path / "file" / "settings.json"), quote=_quote) == {}
 
 
 def test_a_file_that_cannot_be_opened_asks_for_its_permissions(
@@ -435,7 +436,7 @@ def test_a_file_that_cannot_be_opened_asks_for_its_permissions(
 
     monkeypatch.setattr("builtins.open", refuse)
     with pytest.raises(ValueError, match=r"\. Please check permissions\.$") as refused:
-        read_settings(str(path))
+        read_settings(str(path), quote=_quote)
     assert str(refused.value) == f"{path}. Please check permissions."
 
 
@@ -465,8 +466,8 @@ def test_a_number_is_told_from_a_string(tmp_path: Path) -> None:
     ("value", "name"),
     [
         (None, "null"),
-        (True, "boolean"),
-        (False, "boolean"),
+        (True, "bool"),
+        (False, "bool"),
         (Number("1"), "number"),
         ("1", "string"),
         ([], "array"),

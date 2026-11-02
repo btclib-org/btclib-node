@@ -390,32 +390,25 @@ and what counters each.
   and `WriteBatch`, so no stored value is unpickled. The census under
   *Threat model* lists neither `pickle` nor `marshal` nor `shelve`.
   `.github/workflows/codeql.yml` analyses the code and the workflows.
-- **Exposure of sensitive information (CWE-209).** The rule is section
-  7's *A refusal carries no secret* in btclib-org/.github's README.md.
+- **Exposure of sensitive information (CWE-209).** The rule is section 7's
+  *A refusal carries no secret* in btclib-org/.github's README.md.
   `tests/secret_free/__init__.py`'s `assert_secret_free` is the helper the
   rule's tests call. A configuration line that fails to parse, a refused
   command-line argument, an unknown configuration key, a section name in
   its warning and in the configuration log, and a `settings.json` name in
-  its unknown-name warning and in the settings log are quoted up to the
-  first sensitive option's name and the first `=`, and only where that is
-  at most 16 characters, a longer one being given by its length (`cli.py`'s
-  `_quoted_line`). The settings log writes a `settings.json` value only
-  where its name is a known option that is not sensitive, and `****` for
-  any other (`cli.py`'s `_log_args`). A malformed RPC header field is
-  named by its index and its length (`rpc/connection.py`'s
-  `_FieldReader`), and the reprs of `RequestHead` and `_Settings` leave out
-  the fields that hold a credential. `tests/unit/cli_test.py`'s
-  `test_parse_parameters_leaves_a_value_out_of_a_refusal`,
-  `test_parse_conf_text_leaves_a_value_out_of_a_refusal`,
-  `test_an_unknown_key_is_warned_about_by_its_name_alone`,
-  `test_parse_conf_text_gives_a_long_unknown_key_by_length_and_line`,
-  `test_load_conf_tree_names_the_included_file_in_an_unknown_key_warning`,
-  `test_an_unrecognized_section_is_warned_about_by_its_name_alone`,
-  `test_log_args_quotes_a_section_by_its_name_alone`,
-  `test_a_settings_value_is_logged_by_its_name_and_never_as_written`, and
-  `tests/unit/rpc/connection_test.py`'s
-  `test_a_malformed_header_is_named_by_index_not_by_its_text`, call it on
-  those refusals, warnings and log lines.
+  its unknown-name warning, in its duplicate-key refusal and in the
+  settings log are quoted up to the first sensitive option's name and the
+  first `=`, and only where that is at most 16 characters, a longer one
+  being given by its length (`cli.py`'s `_quoted_line`). The settings log
+  writes a `settings.json` value only where its name is a known option that
+  is not sensitive, and `****` for any other (`cli.py`'s `_log_args`). A
+  `settings.json` that is not an object is refused by its value's type,
+  never by the value (`settings_file.py`'s `read_settings`). A malformed
+  RPC header field is named by its index and its length
+  (`rpc/connection.py`'s `_FieldReader`), and the reprs of `RequestHead`
+  and `_Settings` leave out the fields that hold a credential. The callers
+  under `tests/unit/` (`git grep assert_secret_free -- tests/unit`) are the
+  tests of those refusals, warnings and log lines.
 - **Type confusion (CWE-843).** mypy runs with `strict = true`
   (`pyproject.toml`) over this tree and its suite, as a hook of the lint
   gate in `.pre-commit-config.yaml`.
