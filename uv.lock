@@ -327,7 +327,7 @@ secp256k1 = [
 
 [[package]]
 name = "btclib-node"
-version = "2026.11"
+version = "2026.11.2"
 source = { editable = "." }
 dependencies = [
     { name = "bip32-descriptors" },

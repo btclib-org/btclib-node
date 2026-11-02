@@ -22,6 +22,75 @@ release was cut, and it promises nothing about compatibility, so a
 breaking change is announced in this file — read it before upgrading,
 rather than a digit.
 
+## v2026.11.2
+
+Everything below is measured against `v2026.10.30`. `CHANGELOG.md`'s own
+`v2026.11.2` section is the record of what went into it.
+
+The floors of btclib and ecc are unchanged, 2026.10.28 for both.
+
+### Security
+
+- **A `settings.json` value is logged only where its name is an option that is
+  not sensitive** (closes #1967, closes #1986). From 2026.10.8 to 2026.10.30
+  the log of the settings at start wrote every `settings.json` value in clear,
+  an `rpcpassword` and a misspelled `rpcpasword` included. Upgrade, and treat a
+  secret kept in `settings.json` as exposed to whoever reads `history.log`.
+
+### Breaking changes
+
+- **A mempool entry answers no `bip125-replaceable`** (closes #2107), as
+  bitcoind v32.1 answers it only under `-deprecatedrpc=bip125`, in
+  `getmempoolentry`, `getrawmempool`, `getmempoolancestors` and
+  `getmempooldescendants`. `MempoolEntry.bip125_replaceable` and
+  `Mempool.is_bip125_replaceable` are gone. Stop reading them.
+- **`-rpcbind` takes a numeric address** (closes #2135), as in bitcoind v32.1.
+  A name such as `localhost`, or an empty host, binds nothing and logs
+  "Address lookup failed.". Write the address, such as `127.0.0.1`.
+- **`-rpcservertimeout` is the idle timeout of an RPC connection** (closes
+  #2152), as in bitcoind v32.1, and 0 or less arms none. `REQUEST_TIMEOUT` is
+  `IDLE_TIMEOUT`, `RpcConnection` takes `idle_timeout` for `request_timeout`,
+  `RpcManager.request_timeout` and `RpcConnection.request_timeout` are
+  `idle_timeout`, and `Config`'s `rpcservertimeout` defaults to `IDLE_TIMEOUT`.
+- **The RPC server frames its answers as bitcoind v32.1's own HTTP server
+  does** (closes #1972, closes #2101). `UnmetExpectationError` is gone from
+  `btclib_node.exceptions`. `RequestHead` loses `proxy`, `expects_continue` and
+  `proxy_connection`, and its later fields move up the positional order.
+- **The fee estimates are kept in v32.1's files** (closes #2102),
+  `fees/block_policy_estimates.dat` and `fees/mempool_policy_estimator.dat`. A
+  `fee_estimates.dat` found at start is moved to the first. Act on it if you
+  back the file up or copy it between nodes.
+- **`-maxconnections` defaults to 200, and `-inboundrelaypercent`, 50 by
+  default, caps the inbound peers that relay transactions** (closes #1769), as
+  in bitcoind v32.1. `DEFAULT_MAX_PEER_CONNECTIONS` is 200.
+- **btclib-wallet is not installed with btclib-node** (issue #2174):
+  bip32-descriptors 2026.10.31 replaces it among the dependencies. Install
+  btclib-wallet yourself if you import it.
+- **`Chain`, `Main`, `TestNet`, `TestNet4`, `SigNet` and `RegTest` have an
+  `activation_heights` field** (issue #2155), and `Config` has
+  `debug_warnings` (issue #2152) and `inbound_relay_percent` (closes #1769).
+  Act on it if you read their fields with `dataclasses.fields` or `astuple`.
+
+### Worth knowing, though nothing raises
+
+- **`estimatesmartfee` takes v32.1's `options`** (closes #2102),
+  `fee_rate_estimator` and `verbosity`, and names the estimator it used.
+  `arg_names` and `named_only` carry it, and `dumptxoutset`'s `in_memory`
+  (closes #2103).
+- **`dumptxoutset rollback` leaves the chain and the network alone** (closes
+  #2103), rolls back to v32.1's snapshot heights (closes #2059), and writes to
+  a named pipe (closes #2187).
+- **A feeler is sent no `getaddr`** (closes #1770), and its addresses are
+  ignored.
+- **`getorphantxs`, `submitpackage` and `getrawtransaction` answer v32.1's
+  size fields** (closes #2115, closes #2116, closes #2117), and the help texts
+  are v32.1's (closes #2105).
+- **`scantxoutset` answers -1 for a null `scanobjects`** (issue #2104).
+- **`-testactivationheight` moves the buried deployments** (issue #2155), and
+  is refused on mainnet.
+- **`-debug=libevent` is warned over and selects nothing** (issue #2152), and
+  `-debug=mining` is taken. `Node` writes the warning to the log.
+
 ## v2026.10.30
 
 Everything below is measured against `v2026.10.29`. `CHANGELOG.md`'s own
